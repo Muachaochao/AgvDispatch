@@ -1,0 +1,27 @@
+{
+  "name": "CurvedFactoryMap",
+  "coordinateSystem": "LocalCartesian",
+  "unit": "m",
+  "resources": [],
+  "nodes": [
+    { "id": "START", "x": 0, "y": 0, "type": "Station", "enabled": true, "resourceIds": [], "agvSiteId": "LM-START" },
+    { "id": "TURN", "x": 4, "y": 0, "type": "Waypoint", "enabled": true, "resourceIds": [], "agvSiteId": "LM-TURN" },
+    { "id": "END", "x": 8, "y": 0, "type": "Station", "enabled": true, "resourceIds": [], "agvSiteId": "LM-END" }
+  ],
+  "edges": [
+    {
+      "id": "ARC-01", "from": "START", "to": "TURN",
+      "distance": 6.283185307179586, "speedLimit": 0.8,
+      "bidirectional": true, "enabled": true, "resourceIds": [],
+      "geometryKind": "CircularArc",
+      "controlPoints": [{ "x": 2, "y": 2 }]
+    },
+    {
+      "id": "BEZIER-01", "from": "TURN", "to": "END",
+      "distance": 5.5786249987, "speedLimit": 0.8,
+      "bidirectional": true, "enabled": true, "resourceIds": [],
+      "geometryKind": "CubicBezier",
+      "controlPoints": [{ "x": 4, "y": 2 }, { "x": 8, "y": 2 }]
+    }
+  ]
+}

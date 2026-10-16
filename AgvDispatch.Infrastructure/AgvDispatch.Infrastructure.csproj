@@ -1,0 +1,21 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\AgvDispatch.Domain\AgvDispatch.Domain.csproj" />
+    <ProjectReference Include="..\AgvDispatch.Application\AgvDispatch.Application.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ACadSharp.Image" Version="0.1.6" />
+    <PackageReference Include="SqlSugarCore" Version="5.1.4.221" />
+    <!-- Security floor for the Oracle provider's transitive PKCS dependency. -->
+    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="8.0.2" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>

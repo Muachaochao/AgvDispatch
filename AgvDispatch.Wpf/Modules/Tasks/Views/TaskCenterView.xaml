@@ -1,0 +1,399 @@
+﻿<UserControl x:Class="AgvDispatch.Wpf.Views.TaskCenterView"
+    Foreground="{DynamicResource TextPrimaryBrush}"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:prism="http://prismlibrary.com/"
+    xmlns:views="clr-namespace:AgvDispatch.Wpf.Views"
+    xmlns:converters="clr-namespace:AgvDispatch.Wpf.Converters"
+    prism:ViewModelLocator.AutoWireViewModel="True">
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="HistoryBoolVisibility" />
+        <converters:TaskLabelConverter x:Key="TaskLabel" />
+        <Style TargetType="DataGrid" BasedOn="{StaticResource AppDataGridStyle}">
+            <Setter Property="AutoGenerateColumns" Value="False" />
+            <Setter Property="IsReadOnly" Value="True" />
+            <Setter Property="CanUserAddRows" Value="False" />
+            <Setter Property="CanUserDeleteRows" Value="False" />
+            <Setter Property="HeadersVisibility" Value="Column" />
+            <Setter Property="GridLinesVisibility" Value="Horizontal" />
+            <Setter Property="RowHeight" Value="36" />
+            <Setter Property="HorizontalGridLinesBrush" Value="{DynamicResource BorderBrush}" />
+            <Setter Property="VerticalGridLinesBrush" Value="{DynamicResource BorderBrush}" />
+            <Setter Property="RowBackground" Value="{DynamicResource SurfaceBrush}" />
+            <Setter Property="AlternatingRowBackground" Value="{DynamicResource MutedSurfaceBrush}" />
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
+        </Style>
+    </UserControl.Resources>
+    <Grid Margin="24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" /><RowDefinition Height="Auto" />
+            <RowDefinition Height="0.6*" MinHeight="100" /><RowDefinition Height="8" />
+            <RowDefinition Height="3*" MinHeight="140" /><RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <StackPanel>
+            <TextBlock Text="任务中心" Style="{StaticResource PageTitleTextStyle}" />
+            <TextBlock Text="创建取满箱任务，追踪执行步骤、PLC握手、AGV命令与交通路权。"
+                Style="{StaticResource PageDescriptionTextStyle}" Margin="0,6,0,0" />
+            <Expander Header="创建取满箱任务" IsExpanded="{Binding IsCreationOpen}" Margin="0,10,0,0">
+              <Border Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="8" Padding="12">
+                <ScrollViewer x:Name="CreationFormScroll" MaxHeight="280" VerticalScrollBarVisibility="Auto">
+                <StackPanel>
+                  <TextBlock Text="取满箱 → 倒料 → 返空箱 · 固定九步流程" FontWeight="SemiBold" />
+                  <TextBlock Text="{Binding CreationMapText}" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,3,0,6" />
+                  <Grid IsEnabled="{Binding CreationInputsEnabled}">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="12" /><ColumnDefinition Width="*" /><ColumnDefinition Width="12" /><ColumnDefinition Width="120" /></Grid.ColumnDefinitions>
+                    <StackPanel><TextBlock Text="取货工位" /><ComboBox ItemsSource="{Binding CreationStations}" SelectedItem="{Binding CreationStation}" DisplayMemberPath="StationId" Margin="0,4,0,0" /><TextBlock Text="{Binding CreationStationExplanation}" TextWrapping="Wrap" FontSize="12" Margin="0,3,0,0" /></StackPanel>
+                    <StackPanel Grid.Column="2"><TextBlock Text="派车方式 / 指定车辆" /><ComboBox ItemsSource="{Binding CreationVehicles}" SelectedItem="{Binding CreationVehicle}" DisplayMemberPath="Label" Margin="0,4,0,0" /><TextBlock Text="{Binding CreationVehicleExplanation}" TextWrapping="Wrap" FontSize="12" Margin="0,3,0,0" /></StackPanel>
+                    <StackPanel Grid.Column="4"><TextBlock Text="优先级（0–100）" /><TextBox Text="{Binding CreationPriorityInput, UpdateSourceTrigger=PropertyChanged}" Margin="0,4,0,0" ToolTip="数字越大越优先" /></StackPanel>
+                  </Grid>
+                  <WrapPanel Margin="0,8,0,0"><Button Content="刷新工位和车辆" Command="{Binding RefreshCreationOptionsCommand}" Padding="12,6" Margin="0,0,8,0" /><Button x:Name="SubmitTaskButton" Content="创建任务" Command="{Binding SubmitTaskCommand}" Padding="12,6" /></WrapPanel>
+                  <TextBlock Text="{Binding CreationMessage}" TextWrapping="Wrap" Margin="0,6,0,0" Foreground="{DynamicResource TextSecondaryBrush}" />
+                  <Expander Header="当前后台四段路线核验（只读）" IsExpanded="True" Margin="0,8,0,0">
+                    <StackPanel>
+                      <WrapPanel><Button Content="查询当前四段路线" Command="{Binding PreviewCreationRoutesCommand}" Padding="12,6"/><Button Content="放大路线地图" Click="ShowCreationRouteMap" Padding="12,6" Margin="8,0"/><Button Content="取消 / 清空预览" Command="{Binding ClearCreationRoutesCommand}" Padding="12,6" Margin="8,0"/></WrapPanel>
+                      <ScrollViewer MaxHeight="62" VerticalScrollBarVisibility="Auto" Margin="0,6"><TextBlock Text="{Binding CreationRoutePreviewMessage}" Foreground="{DynamicResource TextPrimaryBrush}" TextWrapping="Wrap"/></ScrollViewer>
+                      <TabControl Height="180"><TabItem Header="四段路径"><DataGrid x:Name="CreationRouteLegGrid" ItemsSource="{Binding CreationRouteLegs}" IsReadOnly="True" CanUserAddRows="False" AutoGenerateColumns="False"><DataGrid.Columns>
+                        <DataGridTextColumn Header="步骤" Binding="{Binding Sequence}" Width="50"/><DataGridTextColumn Header="运输阶段" Binding="{Binding Name}" Width="130"/><DataGridTextColumn Header="业务路径" Binding="{Binding LogicalPath}" Width="260"/><DataGridTextColumn Header="厂家站点路径" Binding="{Binding VendorPath}" Width="260"/><DataGridTextColumn Header="本地检查" Binding="{Binding Message}" Width="350"/>
+                      </DataGrid.Columns></DataGrid></TabItem>
+                      <TabItem Header="逐路段核验与阻止原因" x:Name="CreationRouteDetailsTab"><DataGrid x:Name="CreationRouteSegmentGrid" SelectedItem="{Binding SelectedCreationRouteSegment}" SelectionMode="Single" ItemsSource="{Binding CreationRouteSegments}" IsReadOnly="True" CanUserAddRows="False" AutoGenerateColumns="False" EnableRowVirtualization="True" Margin="0,6"><DataGrid.Columns>
+                        <DataGridTextColumn Header="步骤" Binding="{Binding Sequence}" Width="50"/><DataGridTextColumn Header="子段" Binding="{Binding Segment}" Width="50"/><DataGridTextColumn Header="路段" Binding="{Binding EdgeId}" Width="110"/><DataGridTextColumn Header="业务起点 → 终点" Binding="{Binding LogicalPair}" Width="180"/><DataGridTextColumn Header="厂家起点 → 终点" Binding="{Binding VendorPair}" Width="180"/><DataGridTextColumn Header="本次观察" Binding="{Binding Status}" Width="100"/><DataGridTextColumn Header="原因" Binding="{Binding Message}" Width="*" MinWidth="150"/>
+                      </DataGrid.Columns></DataGrid></TabItem><TabItem Header="地图联动" x:Name="CreationRouteMapTab" IsSelected="{Binding CreationRouteMapOpen}"><views:TaskCreationRouteMapView/></TabItem></TabControl>
+                    </StackPanel>
+                  </Expander>
+                  <Expander Header="创建前九步预览 · 站点 / 车辆动作 / PLC 条件" IsExpanded="True" Margin="0,8,0,0">
+                    <StackPanel>
+                      <TextBlock Text="{Binding CreationPreviewExplanation}" TextWrapping="Wrap" FontSize="12" Margin="0,4,0,6" Foreground="{DynamicResource TextSecondaryBrush}" />
+                      <ScrollViewer x:Name="CreationPreviewScroll" Height="170" VerticalScrollBarVisibility="Auto">
+                        <ItemsControl x:Name="CreationStepPreviewList" ItemsSource="{Binding CreationStepPreview}">
+                          <ItemsControl.ItemTemplate><DataTemplate>
+                            <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,0,1" Padding="4,8">
+                              <Grid>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="32" /><ColumnDefinition Width="190" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                <TextBlock Text="{Binding Sequence}" FontSize="18" Foreground="{DynamicResource TextSecondaryBrush}" />
+                                <StackPanel Grid.Column="1" Margin="0,0,12,0">
+                                  <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
+                                  <TextBlock Text="{Binding Location}" TextWrapping="Wrap" Margin="0,4,0,0" FontSize="12" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="2">
+                                  <TextBlock Text="{Binding VehicleAction, StringFormat=车辆：{0}}" TextWrapping="Wrap" />
+                                  <TextBlock Text="{Binding WaitingCondition, StringFormat=完成条件：{0}}" TextWrapping="Wrap" Margin="0,3,0,0" />
+                                  <TextBlock Text="{Binding PlcHandshake, StringFormat=PLC 操作：{0}}" TextWrapping="Wrap" FontSize="12" Margin="0,3,0,0" />
+                                  <TextBlock Text="{Binding ConfigurationNote}" TextWrapping="Wrap" FontSize="12" Margin="0,3,0,0" Foreground="{DynamicResource TextSecondaryBrush}" />
+                                  <TextBlock Text="{Binding ValidationMessage}" TextWrapping="Wrap" Foreground="OrangeRed" FontWeight="SemiBold" Margin="0,3,0,0" />
+                                </StackPanel>
+                              </Grid>
+                            </Border>
+                          </DataTemplate></ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                      </ScrollViewer>
+                    </StackPanel>
+                  </Expander>
+                </StackPanel>
+                </ScrollViewer>
+              </Border>
+            </Expander>
+            <Expander Header="任务参数 · 动作 / 站点 / 步骤超时" IsExpanded="{Binding IsParametersOpen}" Margin="0,6,0,0">
+              <Border Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="8" Padding="12">
+                <ScrollViewer x:Name="ParameterFormScroll" MaxHeight="250" VerticalScrollBarVisibility="Auto">
+                  <StackPanel>
+                    <TextBlock Text="{Binding ParameterRevisionText}" TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource TextSecondaryBrush}" />
+                    <WrapPanel Margin="0,6,0,6">
+                      <Button Content="重新加载参数" Command="{Binding LoadTaskParametersCommand}" Padding="12,6" Margin="0,0,8,0" />
+                      <Button Content="校验九步配置" Command="{Binding ValidateTaskParametersCommand}" Padding="12,6" Margin="0,0,8,0" />
+                      <Button x:Name="SaveTaskParametersButton" Content="保存并生效" Command="{Binding SaveTaskParametersCommand}" Padding="12,6" />
+                    </WrapPanel>
+                    <TextBlock Text="{Binding ParameterMessage}" TextWrapping="Wrap" Margin="0,0,0,8" />
+                    <StackPanel IsEnabled="{Binding ParameterInputsEnabled}">
+                      <Grid>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="12" /><ColumnDefinition Width="*" /><ColumnDefinition Width="12" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                        <StackPanel><TextBlock Text="倒料 PLC 工位" /><TextBox Text="{Binding DumperStationInput, UpdateSourceTrigger=PropertyChanged}" Margin="0,4,0,0" /></StackPanel>
+                        <StackPanel Grid.Column="2"><TextBlock Text="倒料等待 AGV 站点" /><TextBox Text="{Binding WaitingSiteInput, UpdateSourceTrigger=PropertyChanged}" Margin="0,4,0,0" /></StackPanel>
+                        <StackPanel Grid.Column="4"><TextBlock Text="倒料 AGV 站点" /><TextBox Text="{Binding DumpingSiteInput, UpdateSourceTrigger=PropertyChanged}" Margin="0,4,0,0" /></StackPanel>
+                      </Grid>
+                      <TextBlock Text="取货工位映射 · AGV 站点填写运行地图的节点编号或车辆站点编号" Margin="0,10,0,5" FontWeight="SemiBold" />
+                      <WrapPanel Margin="0,0,0,5"><Button Content="添加工位" Command="{Binding AddParameterPickupCommand}" Padding="10,4" Margin="0,0,8,0" /><Button Content="删除选中工位" Command="{Binding RemoveParameterPickupCommand}" Padding="10,4" /></WrapPanel>
+                      <DataGrid ItemsSource="{Binding ParameterPickups}" SelectedItem="{Binding SelectedParameterPickup}" IsReadOnly="False" Height="110">
+                        <DataGrid.Columns>
+                          <DataGridTextColumn Header="取货 PLC 工位" Binding="{Binding StationId, UpdateSourceTrigger=PropertyChanged}" Width="*" />
+                          <DataGridTextColumn Header="取货 AGV 站点" Binding="{Binding PickupSite, UpdateSourceTrigger=PropertyChanged}" Width="*" />
+                        </DataGrid.Columns>
+                      </DataGrid>
+                      <TextBlock Text="运输动作 · 高度留空表示不指定；识别 / PGV 可选择不指定、是或否" TextWrapping="Wrap" Margin="0,10,0,5" FontWeight="SemiBold" />
+                      <DataGrid x:Name="ParameterActionGrid" ItemsSource="{Binding ParameterActions}" IsReadOnly="False" Height="180">
+                        <DataGrid.Columns>
+                          <DataGridTextColumn Header="步骤" Binding="{Binding Name}" IsReadOnly="True" Width="200" />
+                          <DataGridTemplateColumn Header="动作" Width="140"><DataGridTemplateColumn.CellTemplate><DataTemplate>
+                            <ComboBox ItemsSource="{Binding DataContext.ParameterOperations, RelativeSource={RelativeSource AncestorType=UserControl}}" SelectedItem="{Binding Operation, UpdateSourceTrigger=PropertyChanged}" />
+                          </DataTemplate></DataGridTemplateColumn.CellTemplate></DataGridTemplateColumn>
+                          <DataGridTextColumn Header="JackHeight" Binding="{Binding HeightInput, UpdateSourceTrigger=PropertyChanged}" Width="120" />
+                          <DataGridTemplateColumn Header="识别" Width="110"><DataGridTemplateColumn.CellTemplate><DataTemplate><ComboBox ItemsSource="{Binding DataContext.ParameterBooleans, RelativeSource={RelativeSource AncestorType=UserControl}}" SelectedItem="{Binding RecognizeInput, UpdateSourceTrigger=PropertyChanged}" /></DataTemplate></DataGridTemplateColumn.CellTemplate></DataGridTemplateColumn>
+                          <DataGridTemplateColumn Header="PGV" Width="110"><DataGridTemplateColumn.CellTemplate><DataTemplate><ComboBox ItemsSource="{Binding DataContext.ParameterBooleans, RelativeSource={RelativeSource AncestorType=UserControl}}" SelectedItem="{Binding PgvInput, UpdateSourceTrigger=PropertyChanged}" /></DataTemplate></DataGridTemplateColumn.CellTemplate></DataGridTemplateColumn>
+                          <DataGridTemplateColumn Header="下 PGV" Width="110"><DataGridTemplateColumn.CellTemplate><DataTemplate><ComboBox ItemsSource="{Binding DataContext.ParameterBooleans, RelativeSource={RelativeSource AncestorType=UserControl}}" SelectedItem="{Binding DownPgvInput, UpdateSourceTrigger=PropertyChanged}" /></DataTemplate></DataGridTemplateColumn.CellTemplate></DataGridTemplateColumn>
+                        </DataGrid.Columns>
+                      </DataGrid>
+                      <TextBlock Text="步骤超时阈值（秒）· 0 关闭，最大 604800；从步骤激活开始计时，仅提示" TextWrapping="Wrap" Margin="0,10,0,5" FontWeight="SemiBold" />
+                      <DataGrid x:Name="ParameterTimeoutGrid" ItemsSource="{Binding ParameterTimeouts}" IsReadOnly="False" ScrollViewer.VerticalScrollBarVisibility="Disabled">
+                        <DataGrid.Columns>
+                          <DataGridTextColumn Header="步骤" Binding="{Binding Name}" IsReadOnly="True" Width="*" />
+                          <DataGridTextColumn Header="阈值（秒）" Binding="{Binding SecondsInput, UpdateSourceTrigger=PropertyChanged}" Width="180" />
+                        </DataGrid.Columns>
+                      </DataGrid>
+                    </StackPanel>
+                    <ItemsControl ItemsSource="{Binding ParameterValidationSteps}" Margin="0,8,0,0">
+                      <ItemsControl.ItemTemplate><DataTemplate>
+                        <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,0,1" Padding="4,6">
+                          <StackPanel>
+                            <TextBlock FontWeight="SemiBold"><Run Text="{Binding StationId, Mode=OneWay}" /><Run Text=" · 第 " /><Run Text="{Binding Step.Sequence, Mode=OneWay}" /><Run Text=" 步 · " /><Run Text="{Binding Step.Name, Mode=OneWay}" /></TextBlock>
+                            <TextBlock Text="{Binding Step.VehicleAction}" FontSize="12" />
+                            <ItemsControl ItemsSource="{Binding Step.ValidationErrors}"><ItemsControl.ItemTemplate><DataTemplate><TextBlock Text="{Binding}" TextWrapping="Wrap" Foreground="OrangeRed" /></DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
+                          </StackPanel>
+                        </Border>
+                      </DataTemplate></ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                  </StackPanel>
+                </ScrollViewer>
+              </Border>
+            </Expander>
+        </StackPanel>
+        <DockPanel Grid.Row="1" Margin="0,16,0,12" LastChildFill="False">
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                <Button Content="上一页" Command="{Binding PreviousPageCommand}" Padding="12,7" />
+                <TextBlock Text="{Binding PageText}" VerticalAlignment="Center" Margin="12,0" />
+                <Button Content="下一页" Command="{Binding NextPageCommand}" Padding="12,7" />
+            </StackPanel>
+            <ComboBox ItemsSource="{Binding Filters}" SelectedItem="{Binding SelectedFilter}"
+                DisplayMemberPath="Label" Width="130" Margin="0,0,10,0" />
+            <TextBox Text="{Binding Search, UpdateSourceTrigger=PropertyChanged}" Width="210"
+                ToolTip="搜索任务编号、工位编号或车辆编号" Margin="0,0,10,0" VerticalContentAlignment="Center">
+                <TextBox.InputBindings><KeyBinding Key="Enter" Command="{Binding SearchCommand}" /></TextBox.InputBindings>
+            </TextBox>
+            <Button Content="查询" Command="{Binding SearchCommand}" Padding="14,7" Margin="0,0,8,0" />
+            <Button Content="刷新" Command="{Binding RefreshCommand}" Padding="14,7" />
+        </DockPanel>
+        <Border Grid.Row="2" Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}"
+            BorderThickness="1" CornerRadius="8" Padding="10">
+            <DataGrid ItemsSource="{Binding Tasks}" SelectedItem="{Binding SelectedTask}" SelectionMode="Single">
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="状态" Binding="{Binding Stage, Converter={StaticResource TaskLabel}}" Width="120" />
+                    <DataGridTextColumn Header="任务编号" Binding="{Binding TaskId}" Width="230" />
+                    <DataGridTextColumn Header="工位" Binding="{Binding StationId}" Width="100" />
+                    <DataGridTextColumn Header="AGV" Binding="{Binding VehicleId, TargetNullValue=未分配}" Width="90" />
+                    <DataGridTextColumn Header="优先级" Binding="{Binding Priority}" Width="70" />
+                    <DataGridTextColumn Header="创建时间" Binding="{Binding CreatedAt, StringFormat=MM-dd HH:mm:ss}" Width="130" />
+                    <DataGridTextColumn Header="最近更新" Binding="{Binding UpdatedAt, StringFormat=MM-dd HH:mm:ss}" Width="130" />
+                    <DataGridTextColumn Header="错误说明" Binding="{Binding ErrorMessage}" Width="*" MinWidth="180" />
+                </DataGrid.Columns>
+            </DataGrid>
+        </Border>
+        <GridSplitter Grid.Row="3" Height="6" HorizontalAlignment="Stretch" VerticalAlignment="Center" />
+        <Border Grid.Row="4" Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}"
+            BorderThickness="1" CornerRadius="8" Padding="14">
+            <Grid>
+                <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                <StackPanel Margin="0,0,0,10">
+                    <TextBlock Text="{Binding Detail.Task.TaskId, TargetNullValue=请选择任务查看详情}" FontSize="16" FontWeight="SemiBold" />
+                    <TextBlock Text="{Binding Detail.Task.RequestedVehicleId, StringFormat=指定车辆：{0}, TargetNullValue=车辆选择：自动派车}" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,3,0,0" />
+                    <TextBlock Text="{Binding Detail.WaitingExplanation}" TextWrapping="Wrap" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,5,0,0" />
+                    <Expander x:Name="TaskOperationsPanel" Header="取消与现场恢复" Margin="0,5,0,0">
+                        <StackPanel>
+                            <Expander Header="原取消记录"><StackPanel>
+                            <TextBlock Text="{Binding Detail.Cancellation.RequestId, StringFormat=取消请求编号：{0}}" TextWrapping="Wrap" />
+                            <TextBlock Text="{Binding Detail.Cancellation.Reason, StringFormat=原取消依据：{0}}" TextWrapping="Wrap" />
+                            <TextBlock Text="{Binding Detail.Cancellation.Operator, StringFormat=申请人：{0}}" />
+                            <TextBlock Text="{Binding Detail.Cancellation.SendAttempts, StringFormat=车辆取消发送次数：{0}}" />
+                            <TextBlock Text="{Binding Detail.Cancellation.ConfirmedAt, StringFormat=取消核对确认：MM-dd HH:mm:ss, TargetNullValue=尚无车辆结束确认}" />
+                            </StackPanel></Expander>
+                            <TextBlock Text="{Binding TaskOperationMessage}" TextWrapping="Wrap" Margin="0,4" />
+                            <TextBlock Text="处置依据（至少10字）· 恢复核对会冻结全场后续推进" TextWrapping="Wrap" />
+                            <TextBox Text="{Binding TaskOperationReason, UpdateSourceTrigger=PropertyChanged}" MaxLength="1000" Margin="0,4" />
+                            <WrapPanel><Button x:Name="CancelTaskButton" Content="请求取消原任务" Command="{Binding CancelDispatchTaskCommand}" Margin="0,0,8,0" Padding="10,4" />
+                                <Button x:Name="BeginTaskRecoveryButton" Content="进入现场恢复核对" Command="{Binding BeginTaskRecoveryCommand}" Padding="10,4" />
+                            </WrapPanel>
+                        </StackPanel>
+                    </Expander>
+                    <TextBlock Text="{Binding Detail.Task.ErrorMessage}" TextWrapping="Wrap" Foreground="OrangeRed" Margin="0,3,0,0" />
+                </StackPanel>
+                <TabControl Grid.Row="1">
+                    <TabItem Header="步骤时间线">
+                      <DockPanel>
+                        <TextBlock DockPanel.Dock="Top" Text="蓝色边框标记当前步骤，橙红色表示超时；耗时从步骤激活开始，包含派车、发送及 PLC 等待，每 3 秒刷新。" TextWrapping="Wrap" FontSize="12" Margin="8,4" Foreground="{DynamicResource TextSecondaryBrush}" />
+                        <ScrollViewer x:Name="TaskTimelineScroll" VerticalScrollBarVisibility="Auto">
+                            <ItemsControl ItemsSource="{Binding Steps}">
+                                <ItemsControl.ItemTemplate><DataTemplate>
+                                    <Border Padding="8,10">
+                                        <Border.Style>
+                                            <Style TargetType="Border">
+                                                <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}" />
+                                                <Setter Property="BorderThickness" Value="0,0,0,1" />
+                                                <Style.Triggers><DataTrigger Binding="{Binding IsCurrent}" Value="True">
+                                                    <Setter Property="BorderBrush" Value="DodgerBlue" />
+                                                    <Setter Property="BorderThickness" Value="3,0,0,1" />
+                                                    <Setter Property="Background" Value="{DynamicResource MutedSurfaceBrush}" />
+                                                </DataTrigger><DataTrigger Binding="{Binding IsTimedOut}" Value="True">
+                                                    <Setter Property="BorderBrush" Value="OrangeRed" />
+                                                    <Setter Property="BorderThickness" Value="4,0,0,1" />
+                                                </DataTrigger></Style.Triggers>
+                                            </Style>
+                                        </Border.Style>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions><ColumnDefinition Width="36" /><ColumnDefinition Width="*" /><ColumnDefinition Width="180" /></Grid.ColumnDefinitions>
+                                            <TextBlock Text="{Binding Sequence}" FontSize="20" Foreground="{DynamicResource TextSecondaryBrush}" />
+                                            <StackPanel Grid.Column="1">
+                                                <StackPanel Orientation="Horizontal">
+                                                    <TextBlock Text="{Binding StepType, Converter={StaticResource TaskLabel}}" FontWeight="SemiBold" />
+                                                    <TextBlock Text="{Binding Status, Converter={StaticResource TaskLabel}}" Margin="18,0,0,0" />
+                                                </StackPanel>
+                                                <TextBlock Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,4,0,0">
+                                                    <Run Text="{Binding SourceSite, Mode=OneWay, TargetNullValue=—}" /><Run Text=" → " /><Run Text="{Binding DestinationSite, Mode=OneWay, TargetNullValue=—}" />
+                                                    <Run Text=" · 重试 " /><Run Text="{Binding RetryCount, Mode=OneWay}" />
+                                                </TextBlock>
+                                                <TextBlock Text="{Binding VendorTaskId, StringFormat=厂家任务：{0}}" FontSize="12" />
+                                                <TextBlock Text="{Binding ErrorMessage}" TextWrapping="Wrap" Foreground="OrangeRed" />
+                                                <TextBlock Text="{Binding TimeoutText}" FontWeight="SemiBold" TextWrapping="Wrap">
+                                                    <TextBlock.Style><Style TargetType="TextBlock"><Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsTimedOut}" Value="True"><Setter Property="Foreground" Value="OrangeRed" /></DataTrigger>
+                                                    </Style.Triggers></Style></TextBlock.Style>
+                                                </TextBlock>
+                                                <TextBlock Text="{Binding WaitingExplanation}" TextWrapping="Wrap" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,3,0,0" />
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="2">
+                                                <TextBlock Text="{Binding StartedAt, StringFormat=开始：MM-dd HH:mm:ss, TargetNullValue=未开始}" FontSize="12" />
+                                                <TextBlock Text="{Binding CompletedAt, StringFormat=完成：MM-dd HH:mm:ss, TargetNullValue=未完成}" FontSize="12" Margin="0,4,0,0" />
+                                                <TextBlock Text="{Binding ElapsedText, StringFormat=耗时：{0}}" FontSize="12" Margin="0,4,0,0" />
+                                            </StackPanel>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate></ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </ScrollViewer>
+                      </DockPanel>
+                    </TabItem>
+                    <TabItem Header="PLC等待条件">
+                        <DockPanel>
+                            <TextBlock DockPanel.Dock="Top" Text="仅列当前握手阶段条件；未知、过期、禁用和无效信号均不算满足。写入及复位还需由后台流程执行。"
+                                TextWrapping="Wrap" Margin="8" Foreground="{DynamicResource TextSecondaryBrush}" />
+                            <DataGrid ItemsSource="{Binding PlcConditions}">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="工位" Binding="{Binding StationId}" Width="110" />
+                                    <DataGridTextColumn Header="英文变量" Binding="{Binding VariableName}" Width="230" />
+                                    <DataGridTextColumn Header="地址" Binding="{Binding Address}" Width="140" />
+                                    <DataGridTextColumn Header="期望值" Binding="{Binding ExpectedValue}" Width="85" />
+                                    <DataGridTextColumn Header="当前值" Binding="{Binding CurrentValue, TargetNullValue=未知}" Width="85" />
+                                    <DataGridTextColumn Header="质量" Binding="{Binding Quality, Converter={StaticResource TaskLabel}}" Width="80" />
+                                    <DataGridTextColumn Header="满足" Binding="{Binding Satisfied, Converter={StaticResource TaskLabel}}" Width="80" />
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </DockPanel>
+                    </TabItem>
+                    <TabItem Header="AGV命令 / 重试">
+                        <DockPanel>
+                            <TextBlock DockPanel.Dock="Top" Text="显示每条持久化命令的累计尝试次数、下一次重试时间及最近错误；不是每次尝试的完整历史。"
+                                Margin="8" TextWrapping="Wrap" Foreground="{DynamicResource TextSecondaryBrush}" />
+                            <DataGrid ItemsSource="{Binding Commands}">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="状态" Binding="{Binding Status, Converter={StaticResource TaskLabel}}" Width="100" />
+                                    <DataGridTextColumn Header="车辆" Binding="{Binding VehicleId}" Width="85" />
+                                    <DataGridTextColumn Header="累计尝试" Binding="{Binding AttemptCount}" Width="80" />
+                                    <DataGridTextColumn Header="下次尝试（仅待发送/重试有效）" Binding="{Binding NextAttemptAt, StringFormat=MM-dd HH:mm:ss}" Width="230" />
+                                    <DataGridTextColumn Header="发送成功" Binding="{Binding SentAt, StringFormat=MM-dd HH:mm:ss}" Width="130" />
+                                    <DataGridTextColumn Header="步骤编号" Binding="{Binding StepId}" Width="210" />
+                                    <DataGridTextColumn Header="最近错误" Binding="{Binding LastError}" Width="*" MinWidth="180" />
+                                    <DataGridTextColumn Header="厂家命令编号" Binding="{Binding VendorCommandId}" Width="210" />
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </DockPanel>
+                    </TabItem>
+                    <TabItem Header="占用路权">
+                        <DockPanel>
+                            <TextBlock DockPanel.Dock="Top" Text="路权心跳过期不代表已释放；本页无强制删除操作。人工解锁请进入调度监控，由授权操作员确认现场并填写原因。"
+                                Margin="8" TextWrapping="Wrap" Foreground="{DynamicResource TextSecondaryBrush}" />
+                            <DataGrid ItemsSource="{Binding Resources}">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="资源" Binding="{Binding ResourceId}" Width="160" />
+                                    <DataGridTextColumn Header="车辆" Binding="{Binding VehicleId}" Width="90" />
+                                    <DataGridTextColumn Header="占用步骤" Binding="{Binding OwnerStepId}" Width="230" />
+                                    <DataGridTextColumn Header="获得时间" Binding="{Binding AcquiredAt, StringFormat=MM-dd HH:mm:ss}" Width="140" />
+                                    <DataGridTextColumn Header="心跳期限" Binding="{Binding ExpiresAt, StringFormat=MM-dd HH:mm:ss}" Width="140" />
+                                    <DataGridTextColumn Header="心跳过期（仍锁定）" Binding="{Binding HeartbeatExpired, Converter={StaticResource TaskLabel}}" Width="170" />
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </DockPanel>
+                    </TabItem>
+                    <TabItem x:Name="TaskOperationHistoryTab" Header="取消 / 恢复历史">
+                        <DockPanel>
+                            <Expander DockPanel.Dock="Bottom" Header="{Binding HistoryExportSummary}" IsExpanded="False" Visibility="{Binding HasHistoryExportMessage, Converter={StaticResource HistoryBoolVisibility}}">
+                                <StackPanel><TextBox Text="{Binding HistoryExportMessage, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap" />
+                                    <TextBox Text="{Binding HistoryExportFile, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap" /></StackPanel>
+                            </Expander>
+                            <StackPanel DockPanel.Dock="Top" Margin="6,2">
+                                <WrapPanel>
+                                    <ComboBox ItemsSource="{Binding HistoryCategories}" SelectedItem="{Binding HistoryCategory}" DisplayMemberPath="Label" Width="105" Margin="0,0,6,0" />
+                                    <ComboBox x:Name="TaskHistorySessionCombo" ItemsSource="{Binding HistorySessions}" SelectedItem="{Binding HistorySession}" DisplayMemberPath="Label" Width="170" Margin="0,0,6,0" ToolTip="恢复批次；仅包含明确关联该批次的操作" />
+                                    <TextBlock Text="从" VerticalAlignment="Center" Margin="0,0,4,0" />
+                                    <TextBox Text="{Binding HistoryFromText, UpdateSourceTrigger=PropertyChanged}" Width="155" ToolTip="本地时间 yyyy-MM-dd HH:mm:ss；留空不限" Margin="0,0,6,0" />
+                                    <TextBlock Text="至" VerticalAlignment="Center" Margin="0,0,4,0" />
+                                    <TextBox Text="{Binding HistoryToText, UpdateSourceTrigger=PropertyChanged}" Width="155" ToolTip="本地时间 yyyy-MM-dd HH:mm:ss；留空不限" Margin="0,0,6,0" />
+                                    <Button Content="筛选" Command="{Binding ApplyHistoryFilterCommand}" Margin="0,0,6,0" />
+                                    <Button Content="重置" Command="{Binding ResetHistoryFilterCommand}" />
+                                    <Button Content="上一页" Command="{Binding PreviousHistoryPageCommand}" Margin="12,0,6,0" />
+                                    <Button Content="下一页" Command="{Binding NextHistoryPageCommand}" />
+                                    <Button x:Name="CancelTaskHistoryExportButton" Content="取消导出" Command="{Binding CancelHistoryExportCommand}" Margin="8,0,0,0" />
+                                    <Button x:Name="ExportTaskHistoryButton" Content="导出全部匹配记录" Command="{Binding ExportHistoryCommand}" Margin="8,0,0,0" ToolTip="使用已点击筛选后生效的条件，导出所有页及完整证据（ZIP）" />
+                                </WrapPanel>
+                                <ProgressBar x:Name="TaskHistoryExportProgressBar" Value="{Binding HistoryExportProgress, Mode=OneWay}" Maximum="100" Height="18" Margin="0,3,0,0" Visibility="{Binding IsHistoryExporting, Converter={StaticResource HistoryBoolVisibility}}" />
+                                <TextBlock Text="{Binding HistoryExportProgressText}" TextWrapping="Wrap" FontSize="12" Visibility="{Binding IsHistoryExporting, Converter={StaticResource HistoryBoolVisibility}}" />
+                                <WrapPanel Margin="0,3">
+                                    <TextBlock Text="{Binding OperationHistorySummary}" VerticalAlignment="Center" FontSize="12" Margin="0,0,12,0" />
+                                    <TextBlock Text="{Binding HistoryMessage}" TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource TextSecondaryBrush}" />
+                                </WrapPanel>
+                            </StackPanel>
+                            <TabControl>
+                                <TabItem Header="操作记录">
+                                    <DataGrid x:Name="TaskOperationHistoryGrid" ItemsSource="{Binding OperationHistory}" SelectedItem="{Binding SelectedOperation}">
+                                        <DataGrid.Columns>
+                                            <DataGridTextColumn Header="时间" Binding="{Binding OccurredAt, StringFormat=yyyy-MM-dd HH:mm:ss.fff}" Width="190" />
+                                            <DataGridTextColumn Header="操作" Binding="{Binding Operation}" Width="230" />
+                                            <DataGridTextColumn Header="操作人" Binding="{Binding Operator}" Width="150" />
+                                            <DataGridTextColumn Header="范围" Binding="{Binding Scope}" Width="170" />
+                                            <DataGridTextColumn Header="路权资源" Binding="{Binding ResourceId}" Width="120" />
+                                            <DataGridTextColumn Header="原因" Binding="{Binding Reason}" Width="*" MinWidth="200" />
+                                        </DataGrid.Columns>
+                                    </DataGrid>
+                                </TabItem>
+                                <TabItem x:Name="TaskHistoryCacheTab" Header="导出缓存">
+                                    <DockPanel Margin="6">
+                                        <StackPanel DockPanel.Dock="Top">
+                                            <WrapPanel><TextBlock Text="保留天数" VerticalAlignment="Center" Margin="0,0,6,0" />
+                                                <ComboBox ItemsSource="{Binding ExportCacheRetentionChoices}" SelectedItem="{Binding ExportCacheRetention}" Width="65" />
+                                                <Button Content="刷新缓存" Command="{Binding RefreshExportCacheCommand}" Margin="8,0" />
+                                                <Button Content="清理过期缓存" Command="{Binding CleanExportCacheCommand}" /></WrapPanel>
+                                            <TextBlock Text="{Binding ExportCacheMessage}" TextWrapping="Wrap" FontSize="12" />
+                                        </StackPanel>
+                                        <DataGrid x:Name="TaskHistoryCacheGrid" ItemsSource="{Binding ExportCacheItems}"><DataGrid.Columns>
+                                            <DataGridTextColumn Header="文件" Binding="{Binding FileName}" Width="*" />
+                                            <DataGridTextColumn Header="类型" Binding="{Binding Kind}" Width="120" />
+                                            <DataGridTextColumn Header="缓存更新时间" Binding="{Binding UpdatedAt, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="175" />
+                                            <DataGridTextColumn Header="字节" Binding="{Binding SizeBytes}" Width="100" />
+                                            <DataGridTextColumn Header="可清理" Binding="{Binding CanClean, Converter={StaticResource TaskLabel}}" Width="80" />
+                                        </DataGrid.Columns></DataGrid>
+                                    </DockPanel>
+                                </TabItem>
+                                <TabItem x:Name="TaskHistoryEvidenceTab" Header="所选记录 / 证据">
+                                    <ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel Margin="8">
+                                        <TextBlock Text="{Binding SelectedOperation.Operation, TargetNullValue=请选择一条操作记录}" FontWeight="SemiBold" />
+                                        <TextBlock Text="{Binding SelectedOperation.Reason}" TextWrapping="Wrap" Margin="0,4" />
+                                        <TextBlock Text="{Binding SelectedOperation.StepId, StringFormat=原步骤：{0}}" TextWrapping="Wrap" />
+                                        <TextBlock Text="{Binding SelectedOperation.SessionId, StringFormat=恢复批次：{0}}" TextWrapping="Wrap" />
+                                        <TextBox x:Name="TaskHistoryEvidenceText" Text="{Binding SelectedOperation.EvidenceDisplay, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap" AcceptsReturn="True" Margin="0,8,0,0" />
+                                    </StackPanel></ScrollViewer>
+                                </TabItem>
+                            </TabControl>
+                        </DockPanel>
+                    </TabItem>
+                </TabControl>
+            </Grid>
+        </Border>
+        <TextBlock Grid.Row="5" Text="{Binding StatusMessage}" TextWrapping="Wrap" Margin="0,10,0,0"
+            Foreground="{DynamicResource TextSecondaryBrush}" />
+    </Grid>
+</UserControl>

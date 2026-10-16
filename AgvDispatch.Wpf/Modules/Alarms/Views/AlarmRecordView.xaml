@@ -1,0 +1,102 @@
+<UserControl x:Class="AgvDispatch.Wpf.Views.AlarmRecordView"
+    Foreground="{DynamicResource TextPrimaryBrush}"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:prism="http://prismlibrary.com/"
+             prism:ViewModelLocator.AutoWireViewModel="True">
+    <Grid Margin="24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="12" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="12" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="12" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <Grid>
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+            <StackPanel>
+                <TextBlock Text="报警记录" Style="{StaticResource PageTitleTextStyle}" />
+                <TextBlock Text="报警由后台规则引擎去重、持久化并自动恢复；确认报警不等于消除故障。"
+                           Style="{StaticResource PageDescriptionTextStyle}" Margin="0,6,0,0" />
+            </StackPanel>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                <CheckBox Content="只看活动报警" IsChecked="{Binding ActiveOnly}" VerticalAlignment="Center" Margin="0,0,16,0" />
+                <Button Content="立即刷新" Command="{Binding RefreshCommand}" Padding="16,8" />
+            </StackPanel>
+        </Grid>
+
+        <UniformGrid Grid.Row="2" Columns="3" MaxWidth="720" HorizontalAlignment="Left">
+            <Border Style="{StaticResource DashboardCardStyle}">
+                <StackPanel><TextBlock Text="未确认" Foreground="{DynamicResource TextSecondaryBrush}" />
+                    <TextBlock Text="{Binding OpenCount}" Style="{StaticResource MetricValueTextStyle}" Margin="0,6,0,0" /></StackPanel>
+            </Border>
+            <Border Style="{StaticResource DashboardCardStyle}">
+                <StackPanel><TextBlock Text="已确认未恢复" Foreground="{DynamicResource TextSecondaryBrush}" />
+                    <TextBlock Text="{Binding AcknowledgedCount}" Style="{StaticResource MetricValueTextStyle}" Margin="0,6,0,0" /></StackPanel>
+            </Border>
+            <Border Style="{StaticResource DashboardCardStyle}" Margin="0">
+                <StackPanel><TextBlock Text="严重报警" Foreground="{DynamicResource TextSecondaryBrush}" />
+                    <TextBlock Text="{Binding CriticalCount}" Style="{StaticResource MetricValueTextStyle}" Margin="0,6,0,0" /></StackPanel>
+            </Border>
+        </UniformGrid>
+
+        <Grid Grid.Row="4">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="12" />
+                <ColumnDefinition Width="360" />
+            </Grid.ColumnDefinitions>
+            <Border Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                    BorderThickness="1" CornerRadius="8" Padding="12">
+                <DataGrid ItemsSource="{Binding Alarms}" SelectedItem="{Binding SelectedAlarm}"
+                          AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False"
+                          SelectionMode="Single" HeadersVisibility="Column" GridLinesVisibility="Horizontal">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="状态" Binding="{Binding Status}" Width="105" />
+                        <DataGridTextColumn Header="等级" Binding="{Binding Severity}" Width="80" />
+                        <DataGridTextColumn Header="首次发生" Binding="{Binding FirstOccurredAt, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="145" />
+                        <DataGridTextColumn Header="最近观察" Binding="{Binding LastObservedAt, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="145" />
+                        <DataGridTextColumn Header="来源" Binding="{Binding SourceType}" Width="85" />
+                        <DataGridTextColumn Header="来源编号" Binding="{Binding SourceId}" Width="115" />
+                        <DataGridTextColumn Header="代码" Binding="{Binding Code}" Width="145" />
+                        <DataGridTextColumn Header="标题" Binding="{Binding Title}" Width="220" />
+                        <DataGridTextColumn Header="说明" Binding="{Binding Message}" Width="*" />
+                    </DataGrid.Columns>
+                </DataGrid>
+            </Border>
+
+            <Border Grid.Column="2" Background="{DynamicResource SurfaceBrush}"
+                    BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                    CornerRadius="8" Padding="18">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel>
+                        <TextBlock Text="报警详情与确认" FontSize="18" FontWeight="SemiBold" />
+                        <TextBlock Text="{Binding SelectedAlarm.Title, TargetNullValue=请先选择一条报警}"
+                                   FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,14,0,4" />
+                        <TextBlock Text="{Binding SelectedAlarm.Message}" TextWrapping="Wrap"
+                                   Foreground="{DynamicResource TextSecondaryBrush}" />
+                        <Separator Margin="0,14,0,12" />
+                        <TextBlock Text="操作来源（Windows 用户）" Foreground="{DynamicResource TextSecondaryBrush}" />
+                        <TextBlock Text="{Binding CurrentUser}" TextWrapping="Wrap" FontWeight="SemiBold" />
+                        <TextBlock Text="确认说明（至少2个字符）" />
+                        <TextBox Text="{Binding AcknowledgeComment, UpdateSourceTrigger=PropertyChanged}"
+                                 AcceptsReturn="True" TextWrapping="Wrap" Height="70" Margin="0,5,0,12" />
+                        <Button Content="确认已知晓并开始处置" Command="{Binding AcknowledgeCommand}"
+                                Padding="14,9" Background="#FFC87A18" Foreground="White" />
+                        <TextBlock Text="确认后报警仍会保留；只有故障条件消失，规则引擎才会自动标记为Recovered。"
+                                   TextWrapping="Wrap" FontSize="12" Foreground="#FFE59A22" Margin="0,10,0,0" />
+                    </StackPanel>
+                </ScrollViewer>
+            </Border>
+        </Grid>
+
+        <Border Grid.Row="6" Background="{DynamicResource SurfaceBrush}"
+                BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                CornerRadius="8" Padding="12">
+            <TextBlock Text="{Binding StatusMessage}" TextWrapping="Wrap" />
+        </Border>
+    </Grid>
+</UserControl>

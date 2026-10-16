@@ -1,0 +1,9 @@
+﻿# 独立进程逐段释放与路权交接
+
+运行 `dotnet run --project tools/SegmentTrafficHandoffSmokeTest`。31项验证。父进程启动本工具自己的隐藏子进程，唯一临时SQLite与私有文件信号协调；子进程使用真实ReceiptService、TrafficResourceManager和TrafficResourceControlService，内存可信进度/核定包络及固定虚拟设备时钟。不是生产Service.exe、Named Pipe前端或现场设备协议联调。
+
+验证原车持有R/R2/FINAL，第二车真实申请进入等待；消费后查询阻塞解除但不自动授予，再申请才能取得R/R2。原车请求立即只有FINAL，不把后来占用已过路段的车误作阻塞；保持原EdgeIds及命令快照，续期不重新取得R/R2，历史请求重放不删除第二车占用。资源管理层正常交接保留新步骤终点，随后取消仍Retained并阻止他车取得终点；不声称完整九步执行推进或取消现场核验。
+
+实际新进程在消费开关默认关闭时只重放已提交结果；另一个隔离库先在独立进程签发未提交凭据后退出，新进程拒绝旧会话消费，三条原占用保持。父进程只检查隔离库/报告，不修改现场。等待/时效用虚拟时钟，无真实车辆空间避碰或连续现场样本保证。
+
+仅结束本工具创建并持有Process对象的子进程；正常退出，超时才停止自己的子进程。数据库、ready/result与各阶段日志保留在输出的临时目录。证据见docs/commissioning/evidence/20261014-segment-handoff。生产评估和消费仍默认关闭，没有公开IPC或Worker调用。

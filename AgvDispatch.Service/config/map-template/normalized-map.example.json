@@ -1,0 +1,20 @@
+{
+  "name": "FactoryMap",
+  "coordinateSystem": "LocalCartesian",
+  "unit": "m",
+  "resources": [
+    { "id": "NARROW-01", "type": "NarrowAisle", "capacity": 1,
+      "boundary": [{ "x": 0, "y": -1 }, { "x": 16, "y": -1 }, { "x": 16, "y": 1 }, { "x": 0, "y": 1 }] },
+    { "id": "CROSS-01", "type": "Intersection", "capacity": 1,
+      "boundary": [{ "x": 7.5, "y": -1.5 }, { "x": 9.5, "y": -1.5 }, { "x": 9.5, "y": 1.5 }, { "x": 7.5, "y": 1.5 }] }
+  ],
+  "nodes": [
+    { "id": "PARK-01", "x": 0, "y": 0, "type": "Station", "enabled": true, "resourceIds": [], "agvSiteId": "LM-PARK-001" },
+    { "id": "JUNCTION-01", "x": 8.5, "y": 0, "type": "Intersection", "enabled": true, "resourceIds": ["CROSS-01"], "agvSiteId": "LM-JUNCTION-001" },
+    { "id": "CNC001-PICKUP", "x": 16.2, "y": 0, "type": "Station", "enabled": true, "resourceIds": [], "agvSiteId": "LM-CNC-001" }
+  ],
+  "edges": [
+    { "id": "E-001", "from": "PARK-01", "to": "JUNCTION-01", "distance": 8.5, "speedLimit": 1.0, "bidirectional": true, "enabled": true, "resourceIds": ["NARROW-01"] },
+    { "id": "E-002", "from": "JUNCTION-01", "to": "CNC001-PICKUP", "distance": 7.7, "speedLimit": 0.8, "bidirectional": true, "enabled": true, "resourceIds": [] }
+  ]
+}

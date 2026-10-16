@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net10.0": {
+      "agvdispatch.application": {
+        "type": "Project",
+        "dependencies": {
+          "AgvDispatch.Domain": "[1.0.0, )"
+        }
+      },
+      "agvdispatch.domain": {
+        "type": "Project"
+      }
+    }
+  }
+}

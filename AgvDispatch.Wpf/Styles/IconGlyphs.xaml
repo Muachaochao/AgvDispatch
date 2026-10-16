@@ -1,0 +1,5 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- 当前使用Windows内置离线字体。取得阿里Iconfont的iconfont.ttf后，替换此FontFamily即可。 -->
+    <FontFamily x:Key="AppIconFont">Segoe Fluent Icons</FontFamily>
+</ResourceDictionary>

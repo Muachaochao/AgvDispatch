@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <PublishSelfContained>true</PublishSelfContained>
+    <PublishTrimmed>false</PublishTrimmed>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.12" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.12" />
+    <PackageReference Include="NLog.Extensions.Logging" Version="6.2.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AgvDispatch.Domain\AgvDispatch.Domain.csproj" />
+    <ProjectReference Include="..\AgvDispatch.Application\AgvDispatch.Application.csproj" />
+    <ProjectReference Include="..\AgvDispatch.Infrastructure\AgvDispatch.Infrastructure.csproj" />
+    <ProjectReference Include="..\AgvDispatch.Connectors.Plc\AgvDispatch.Connectors.Plc.csproj" />
+    <ProjectReference Include="..\AgvDispatch.Connectors.Agv\AgvDispatch.Connectors.Agv.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="NLog.config" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="config\plc-signals.csv" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="config\map-template\**\*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

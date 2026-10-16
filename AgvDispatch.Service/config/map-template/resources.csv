@@ -1,0 +1,3 @@
+Id,Type,Capacity,Boundary
+NARROW-01,NarrowAisle,1,"0:-1|16:-1|16:1|0:1"
+CROSS-01,Intersection,1,"7.5:-1.5|9.5:-1.5|9.5:1.5|7.5:1.5"

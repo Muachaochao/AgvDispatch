@@ -1,0 +1,120 @@
+using AgvDispatch.Domain.Agvs;
+using AgvDispatch.Domain.Tasks;
+
+namespace AgvDispatch.Service;
+
+public sealed class DispatchOrchestratorOptions
+{
+    public const string SectionName = "Dispatching";
+
+    public bool Enabled { get; set; }
+    public int PollIntervalMs { get; set; } = 1000;
+    public int MaxConcurrentTasks { get; set; } = 1;
+    public string DumperSite { get; set; } = string.Empty;
+    public string DumperWaitingSite { get; set; } = string.Empty;
+    public string DumperDumpingSite { get; set; } = string.Empty;
+    public string[] IdleOperatingStates { get; set; } = ["Idle", "空闲"];
+    public bool AllowUnconfiguredDirectRoutes { get; set; }
+    public Dictionary<string, string> StationPickupSites { get; set; } =
+        new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, string[]> Routes { get; set; } =
+        new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, AgvStepActionOptions> StepActions { get; set; } =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    public string? GetPickupSite(string stationId) =>
+        StationPickupSites.TryGetValue(stationId, out var site) &&
+        !string.IsNullOrWhiteSpace(site)
+            ? site
+            : null;
+
+    public string? GetDumperWaitingSite() =>
+        !string.IsNullOrWhiteSpace(DumperWaitingSite)
+            ? DumperWaitingSite
+            : !string.IsNullOrWhiteSpace(DumperSite) ? DumperSite : null;
+
+    public IReadOnlyList<string>? GetRoute(string source, string destination)
+    {
+        var key = $"{source}->{destination}";
+        if (Routes.TryGetValue(key, out var route) &&
+            route.Length >= 2 &&
+            string.Equals(route[0], source, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(route[^1], destination, StringComparison.OrdinalIgnoreCase))
+        {
+            return route;
+        }
+
+        return AllowUnconfiguredDirectRoutes ? [source, destination] : null;
+    }
+
+    public AgvTransportAction? GetAction(DispatchTaskStepType stepType)
+    {
+        if (!StepActions.TryGetValue(stepType.ToString(), out var configured) ||
+            string.IsNullOrWhiteSpace(configured.Operation))
+        {
+            return null;
+        }
+
+        return new AgvTransportAction(
+            configured.Operation,
+            configured.JackHeight,
+            configured.Recognize,
+            configured.UsePgv,
+            configured.UseDownPgv);
+    }
+
+    public string? GetConfigurationError()
+    {
+        if (!Enabled)
+        {
+            return null;
+        }
+
+        if (PollIntervalMs < 500)
+        {
+            return "Dispatching:PollIntervalMs不能小于500ms。";
+        }
+
+        if (MaxConcurrentTasks < 1)
+        {
+            return "Dispatching:MaxConcurrentTasks必须大于0。";
+        }
+
+        if (GetDumperWaitingSite() is null)
+        {
+            return "启用调度前必须配置Dispatching:DumperWaitingSite。";
+        }
+
+        if (string.IsNullOrWhiteSpace(DumperDumpingSite))
+        {
+            return "启用调度前必须配置Dispatching:DumperDumpingSite。";
+        }
+
+        if (IdleOperatingStates.Length == 0)
+        {
+            return "Dispatching:IdleOperatingStates不能为空。";
+        }
+
+        var allowedOperations = new HashSet<string>(
+            ["Wait", "JackLoad", "JackUnload", "JackHeight"],
+            StringComparer.OrdinalIgnoreCase);
+        var invalidAction = StepActions.FirstOrDefault(pair =>
+            !string.IsNullOrWhiteSpace(pair.Value.Operation) &&
+            !allowedOperations.Contains(pair.Value.Operation));
+        if (!string.IsNullOrEmpty(invalidAction.Key))
+        {
+            return $"Dispatching:StepActions中的动作无效：{invalidAction.Key}/{invalidAction.Value.Operation}。";
+        }
+
+        return null;
+    }
+}
+
+public sealed class AgvStepActionOptions
+{
+    public string Operation { get; set; } = "Wait";
+    public double? JackHeight { get; set; }
+    public bool? Recognize { get; set; }
+    public bool? UsePgv { get; set; }
+    public bool? UseDownPgv { get; set; }
+}

@@ -1,0 +1,83 @@
+﻿<UserControl x:Class="AgvDispatch.Wpf.Views.ExecutionRecoveryView"
+    Foreground="{DynamicResource TextPrimaryBrush}"
+ xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+ xmlns:prism="http://prismlibrary.com/" prism:ViewModelLocator.AutoWireViewModel="True">
+ <UserControl.Resources>
+  <Style TargetType="Button">
+   <Setter Property="Height" Value="40"/><Setter Property="Foreground" Value="#173A6B"/>
+   <Setter Property="Background" Value="#EAF2FF"/><Setter Property="BorderBrush" Value="#C2D4EE"/>
+   <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button">
+    <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1" CornerRadius="5" Padding="{TemplateBinding Padding}">
+     <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" RecognizesAccessKey="True"/>
+    </Border>
+    <ControlTemplate.Triggers><Trigger Property="IsEnabled" Value="False"><Setter Property="Foreground" Value="#98A2B3"/><Setter Property="Background" Value="#344054"/></Trigger>
+     <Trigger Property="IsMouseOver" Value="True"><Setter Property="BorderBrush" Value="#53A1FF"/></Trigger></ControlTemplate.Triggers>
+   </ControlTemplate></Setter.Value></Setter>
+  </Style>
+  <Style x:Key="RecoveryLightText" TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}"><Setter Property="Foreground" Value="#1D2939"/></Style>
+ </UserControl.Resources>
+ <Grid Margin="24">
+  <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="140"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+  <Grid Margin="0,0,0,14">
+   <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+   <StackPanel><TextBlock Text="现场恢复" Style="{StaticResource PageTitleTextStyle}"/>
+    <TextBlock Text="{Binding BarrierText}" FontSize="18" Margin="0,6,0,4"/>
+    <TextBlock Text="核对原任务、车辆、载荷和PLC周期；所有条目通过后才能放行。地图切换仍独立控制。" TextWrapping="Wrap" Foreground="{DynamicResource TextSecondaryBrush}"/>
+   </StackPanel><Button Grid.Column="1" Content="重新采集状态" Command="{Binding RefreshCommand}" VerticalAlignment="Center" Height="40" Padding="14,0"/>
+  </Grid>
+  <Grid Grid.Row="1" Margin="0,0,0,12">
+   <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="16"/><ColumnDefinition Width="390"/></Grid.ColumnDefinitions>
+   <TabControl>
+    <TabControl.Resources><Style TargetType="TextBlock" BasedOn="{StaticResource RecoveryLightText}"/></TabControl.Resources>
+    <TabItem Header="恢复条目"><DataGrid ItemsSource="{Binding Items}" SelectedItem="{Binding Selected}" AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False">
+     <DataGrid.Columns><DataGridTextColumn Header="核对" Binding="{Binding State}" Width="85"/>
+      <DataGridTextColumn Header="任务" Binding="{Binding TaskText}" Width="175"/>
+      <DataGridTextColumn Header="工位" Binding="{Binding StationId}" Width="90"/>
+      <DataGridTextColumn Header="车辆" Binding="{Binding VehicleId}" Width="80"/>
+      <DataGridTextColumn Header="执行节点" Binding="{Binding StepText}" Width="150"/>
+      <DataGridTextColumn Header="等待原因" Binding="{Binding Reason}" Width="*"/>
+     </DataGrid.Columns></DataGrid></TabItem>
+    <TabItem Header="所选条目采集证据"><TextBox Foreground="{DynamicResource TextPrimaryBrush}" Text="{Binding Selected.Evidence, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"/></TabItem>
+   </TabControl>
+   <Border Grid.Column="2" Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="8" Padding="16">
+    <Grid><Grid.RowDefinitions><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+     <ScrollViewer x:Name="RecoveryAttestationScroll" VerticalScrollBarVisibility="Auto"><StackPanel>
+      <TextBlock Text="现场核对与处置" FontSize="18" FontWeight="SemiBold"/>
+      <TextBlock Text="{Binding PermissionText}" TextWrapping="Wrap" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,8,0,8"/>
+      <TextBlock Text="{Binding Selected.Reason, TargetNullValue=请选择需要核对的条目}" TextWrapping="Wrap" Margin="0,0,0,12"/>
+      <TextBlock Text="{Binding Selected.VehicleSummary}" TextWrapping="Wrap" Margin="0,0,0,8"/>
+      <TextBlock x:Name="RecoveryIdentitySummary" Text="{Binding Selected.IdentitySummary}" TextWrapping="Wrap" Margin="0,0,0,8"/>
+      <TextBlock Text="{Binding Selected.LoadSummary}" TextWrapping="Wrap" Margin="0,0,0,8"/>
+      <TextBlock Text="{Binding Selected.PlcSummary}" TextWrapping="Wrap" Margin="0,0,0,8"/>
+      <TextBlock Text="{Binding Selected.ResourceSummary}" TextWrapping="Wrap" Margin="0,0,0,8"/>
+      <CheckBox Content="已核对同一车辆、定位和原路线" IsChecked="{Binding VehicleConfirmed}" Margin="0,4"/>
+      <CheckBox Content="已核对载荷、容器及原任务归属" IsChecked="{Binding LoadConfirmed}" Margin="0,4"/>
+      <CheckBox Content="已核对PLC动作周期和握手状态" IsChecked="{Binding PlcConfirmed}" Margin="0,4"/>
+      <TextBlock Text="承载容器填设备精确编号；空载或接口未接入填现场核对说明" TextWrapping="Wrap" Margin="0,12,0,5"/>
+      <TextBox Text="{Binding Material, UpdateSourceTrigger=PropertyChanged}" MaxLength="128"/>
+      <TextBlock Text="现场依据 / 放行说明（至少10字）" Margin="0,12,0,5"/>
+      <TextBox Text="{Binding Reason, UpdateSourceTrigger=PropertyChanged}" AcceptsReturn="True" TextWrapping="Wrap" Height="85" MaxLength="4000"/>
+      <TextBlock Text="车辆历史缺失或发送结果不明时保留等待。到站补记只处理原运输节点；取放料和翻料需原握手核对。" TextWrapping="Wrap" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,12,0,12"/>
+     </StackPanel></ScrollViewer>
+     <StackPanel Grid.Row="1" Margin="0,10,0,0">
+      <Button Content="确认后继续原节点" Command="{Binding ContinueCommand}" Height="40" Padding="12,0" Margin="0,0,0,6"/>
+      <Button Content="核实已到站，补记原运输步骤" Command="{Binding CompleteCommand}" Height="40" Padding="12,0" Margin="0,0,0,6"/>
+      <Button Content="车辆 / PLC / 路权核对后关闭取消" Command="{Binding CloseCancelledCommand}" Height="40" Padding="12,0" Margin="0,0,0,6"/>
+      <Button Content="全部核对通过，放行后续执行" Command="{Binding ReleaseCommand}" Height="40" Padding="12,0"/>
+     </StackPanel>
+    </Grid>
+   </Border>
+  </Grid>
+  <DataGrid Grid.Row="2" ItemsSource="{Binding Audits}" AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False">
+   <DataGrid.Resources><Style TargetType="TextBlock" BasedOn="{StaticResource RecoveryLightText}"/></DataGrid.Resources>
+   <DataGrid.Columns><DataGridTextColumn Header="处置时间" Binding="{Binding OccurredAt, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="155"/>
+    <DataGridTextColumn Header="操作者" Binding="{Binding Operator}" Width="130"/>
+    <DataGridTextColumn Header="任务" Binding="{Binding TaskId}" Width="175"/>
+    <DataGridTextColumn Header="步骤" Binding="{Binding StepId}" Width="150"/>
+    <DataGridTextColumn Header="决定" Binding="{Binding DecisionText}" Width="165"/>
+    <DataGridTextColumn Header="依据" Binding="{Binding Reason}" Width="*"/>
+   </DataGrid.Columns>
+  </DataGrid>
+  <TextBlock Grid.Row="3" Text="{Binding Message}" TextWrapping="Wrap" Margin="0,12,0,0"/>
+ </Grid>
+</UserControl>

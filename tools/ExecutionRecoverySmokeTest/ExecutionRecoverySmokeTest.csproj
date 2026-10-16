@@ -1,0 +1,13 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+ <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup>
+ <ItemGroup>
+  <FrameworkReference Include="Microsoft.AspNetCore.App"/>
+  <ProjectReference Include="../../AgvDispatch.Infrastructure/AgvDispatch.Infrastructure.csproj"/>
+  <Compile Include="../MapSwitchSmokeTest/MapSwitchFixtures.cs" Link="MapSwitchFixtures.cs"/>
+  <Compile Include="../MapSwitchSmokeTest/GlobalUsings.cs" Link="GlobalUsings.cs"/>
+  <Compile Include="../../AgvDispatch.Service/Modules/Tasks/Commands/AgvCommandOutboxDispatcher.cs" Link="AgvCommandOutboxDispatcher.cs"/>
+  <Compile Include="../../AgvDispatch.Service/Modules/Tasks/Commands/AgvCommandOutboxOptions.cs" Link="AgvCommandOutboxOptions.cs"/>
+  <Compile Include="../../AgvDispatch.Service/Modules/Plc/Evidence/JournaledPlcGateway.cs" Link="JournaledPlcGateway.cs"/>
+ </ItemGroup>
+  <ItemGroup><Compile Include="../../AgvDispatch.Service/Hosting/IsolatedBackgroundService.cs" Link="IsolatedBackgroundService.cs" /></ItemGroup>
+</Project>

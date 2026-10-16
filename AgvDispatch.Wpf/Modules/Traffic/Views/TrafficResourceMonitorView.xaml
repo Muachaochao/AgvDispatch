@@ -1,0 +1,277 @@
+﻿<UserControl x:Class="AgvDispatch.Wpf.Views.TrafficResourceMonitorView"
+    Foreground="{DynamicResource TextPrimaryBrush}"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:prism="http://prismlibrary.com/"
+             prism:ViewModelLocator.AutoWireViewModel="True">
+    <Grid Margin="24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="12" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="12" />
+            <RowDefinition Height="220" />
+        </Grid.RowDefinitions>
+
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel>
+                <TextBlock Text="交通资源监控" Style="{StaticResource PageTitleTextStyle}" />
+                <TextBlock Text="所有写操作经 Windows Service；人工解锁经安全条件校验，操作全程留痕。"
+                           Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,6,0,0" />
+            </StackPanel>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                <Border Padding="14,8" Margin="0,0,8,0" CornerRadius="6"
+                        Background="{DynamicResource AccentMutedBrush}">
+                    <TextBlock Text="{Binding OccupiedResourceCount, StringFormat=占用资源：{0}}" />
+                </Border>
+                <Border Padding="14,8" Margin="0,0,12,0" CornerRadius="6" Background="#33E59A22">
+                    <TextBlock Text="{Binding ExpiredHeartbeatCount, StringFormat=心跳过期：{0}}" />
+                </Border>
+                <Border Padding="14,8" Margin="0,0,8,0" CornerRadius="6" Background="#3340A9FF">
+                    <TextBlock Text="{Binding CongestedEdgeCount, StringFormat=拥堵路段：{0}}" />
+                </Border>
+                <Border Padding="14,8" Margin="0,0,12,0" CornerRadius="6" Background="#33D84040">
+                    <TextBlock Text="{Binding DeadlockCandidateCount, StringFormat=死锁候选：{0}}" />
+                </Border>
+                <Button Content="立即刷新" Command="{Binding RefreshCommand}" Padding="16,8" />
+            </StackPanel>
+        </Grid>
+
+        <Grid Grid.Row="2">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="2*" />
+                <ColumnDefinition Width="12" />
+                <ColumnDefinition Width="380" />
+            </Grid.ColumnDefinitions>
+
+            <Border Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                    BorderThickness="1" CornerRadius="8" Padding="12">
+                <TabControl x:Name="TrafficOccupancyTabs">
+                <TabItem Header="几何预检" x:Name="TrafficGeometryTab"><Grid>
+                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition/></Grid.RowDefinitions>
+                    <StackPanel Margin="4,6">
+                        <TextBlock Text="比较两辆车已确认发送的原路线；只读结果不代表通行许可。" TextWrapping="Wrap"/>
+                        <Grid Margin="0,6"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="10"/><ColumnDefinition/></Grid.ColumnDefinitions>
+                            <StackPanel><TextBlock Text="第一条运输"/><ComboBox ItemsSource="{Binding TrafficRequests}" SelectedItem="{Binding GeometryFirst}" DisplayMemberPath="MapCaption" Margin="0,3,0,0"/></StackPanel>
+                            <StackPanel Grid.Column="2"><TextBlock Text="第二条运输"/><ComboBox ItemsSource="{Binding TrafficRequests}" SelectedItem="{Binding GeometrySecond}" DisplayMemberPath="MapCaption" Margin="0,3,0,0"/></StackPanel>
+                        </Grid>
+                        <Button Content="检查原路线几何" Command="{Binding CheckGeometryCommand}" HorizontalAlignment="Left" Margin="0,8" Padding="12,6"/>
+                    </StackPanel>
+                    <TextBlock Grid.Row="1" Text="{Binding GeometryNotice}" TextWrapping="Wrap" Margin="4,4" Foreground="{DynamicResource TextPrimaryBrush}"/>
+                    <Expander Grid.Row="2" Header="核对详情（地图 / 原运输 / 精检次数）" Margin="4,4,4,8"><ScrollViewer MaxHeight="65" VerticalScrollBarVisibility="Auto"><TextBlock Text="{Binding GeometryContext}" TextWrapping="Wrap" Foreground="{DynamicResource TextSecondaryBrush}"/></ScrollViewer></Expander>
+                    <DataGrid Grid.Row="3" x:Name="TrafficGeometryConflictsGrid" ItemsSource="{Binding GeometryConflicts}" AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False">
+                        <DataGrid.Columns><DataGridTextColumn Header="第一路段" Binding="{Binding FirstEdgeId}" Width="120"/><DataGridTextColumn Header="第二路段" Binding="{Binding SecondEdgeId}" Width="120"/><DataGridTextColumn Header="交叠原因" Binding="{Binding Reason}" Width="*" MinWidth="180"/></DataGrid.Columns>
+                    </DataGrid>
+                </Grid></TabItem><TabItem Header="资源占用">
+                <DataGrid ItemsSource="{Binding Leases}" SelectedItem="{Binding SelectedLease}"
+                          AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False"
+                          SelectionMode="Single" HeadersVisibility="Column" GridLinesVisibility="Horizontal">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="资源" Binding="{Binding ResourceId}" Width="120" />
+                        <DataGridTextColumn Header="类型" Binding="{Binding ResourceType}" Width="100" />
+                        <DataGridTextColumn Header="容量" Binding="{Binding Capacity}" Width="60" />
+                        <DataGridTextColumn Header="AGV" Binding="{Binding VehicleId}" Width="85" />
+                        <DataGridTextColumn Header="任务" Binding="{Binding TaskId}" Width="150" />
+                        <DataGridTextColumn Header="原步骤" Binding="{Binding StepId}" Width="145"/>
+                        <DataGridTextColumn Header="任务状态" Binding="{Binding TaskStage}" Width="110" />
+                        <DataGridTextColumn Header="获得时间" Binding="{Binding AcquiredAt, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="145" />
+                        <DataGridTextColumn Header="最近心跳" Binding="{Binding RenewedAt, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="145" />
+                        <DataGridTextColumn Header="心跳状态" Binding="{Binding HeartbeatState}" Width="125" />
+                    </DataGrid.Columns>
+                </DataGrid></TabItem>
+                <TabItem Header="路权请求与等待"><Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/></Grid.RowDefinitions>
+                    <TextBlock Text="{Binding LifecycleNotice}" TextWrapping="Wrap" Margin="4,6" Foreground="{DynamicResource TextSecondaryBrush}"/>
+                    <DataGrid Grid.Row="1" x:Name="TrafficRequestsGrid" ItemsSource="{Binding TrafficRequests}" SelectedItem="{Binding SelectedTrafficRequest}"
+                              AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False" SelectionMode="Single">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="状态" Binding="{Binding State}" Width="95"/>
+                            <DataGridTextColumn Header="任务" Binding="{Binding TaskId}" Width="155"/>
+                            <DataGridTextColumn Header="车辆" Binding="{Binding VehicleId}" Width="85"/>
+                            <DataGridTextColumn Header="步骤" Binding="{Binding StepId}" Width="145"/>
+                            <DataGridTextColumn Header="起终点" Binding="{Binding Route}" Width="160"/>
+                            <DataGridTextColumn Header="路段" Binding="{Binding Edges}" Width="160"/>
+                            <DataGridTextColumn Header="资源" Binding="{Binding Resources}" Width="130"/>
+                            <DataGridTextColumn Header="阻塞任务 / 车辆 / 步骤" Binding="{Binding Blockers}" Width="280"/>
+                            <DataGridTextColumn Header="等待 / 处置原因" Binding="{Binding Reason}" Width="320"/>
+                            <DataGridTextColumn Header="首次申请" Binding="{Binding RequestedAt, StringFormat=HH:mm:ss}" Width="95"/>
+                            <DataGridTextColumn Header="最近检查" Binding="{Binding UpdatedAt, StringFormat=HH:mm:ss}" Width="95"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </Grid></TabItem>
+                <TabItem Header="等待队列" x:Name="TrafficWaitingTab"><Grid>
+                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                    <WrapPanel Margin="4,6">
+                        <TextBlock Text="阻塞资源" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                        <ComboBox x:Name="WaitingResourceFilter" IsEditable="True" ItemsSource="{Binding WaitingBlockingResources}" Text="{Binding WaitingResourceInput, UpdateSourceTrigger=PropertyChanged}" Width="130" Margin="0,0,10,4" ToolTip="具体资源编号；空白表示全部。筛选当前实际阻塞方。"/>
+                        <TextBlock Text="最低优先级" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                        <TextBox Text="{Binding WaitingPriorityInput, UpdateSourceTrigger=PropertyChanged}" Width="45" Margin="0,0,10,4" ToolTip="0–100，空白不限"/>
+                        <ComboBox ItemsSource="{Binding WaitingSortChoices}" SelectedValue="{Binding WaitingSortInput}" SelectedValuePath="Value" DisplayMemberPath="Label" Width="135" Margin="0,0,8,4"/>
+                        <Button Content="应用筛选" Command="{Binding ApplyWaitingFilterCommand}" Margin="0,0,6,4"/><Button Content="重置" Command="{Binding ResetWaitingFilterCommand}" Margin="0,0,0,4"/>
+                    </WrapPanel>
+                    <DataGrid Grid.Row="1" x:Name="TrafficWaitingGrid" ItemsSource="{Binding WaitingQueue}" SelectedItem="{Binding SelectedWaitingRequest}" AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False" SelectionMode="Single">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="等待等级" Binding="{Binding WaitingAlertText}" Width="95">
+                                <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock">
+                                    <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
+                                    <Style.Triggers><DataTrigger Binding="{Binding WaitingWarning}" Value="True"><Setter Property="Foreground" Value="{DynamicResource WarningBrush}"/><Setter Property="FontWeight" Value="SemiBold"/></DataTrigger>
+                                    <DataTrigger Binding="{Binding WaitingCritical}" Value="True"><Setter Property="Foreground" Value="{DynamicResource DangerBrush}"/><Setter Property="FontWeight" Value="Bold"/></DataTrigger></Style.Triggers>
+                                </Style></DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Header="持续等待" Binding="{Binding WaitingDurationText}" Width="105"/>
+                            <DataGridTextColumn Header="优先级" Binding="{Binding PriorityText}" Width="65"/>
+                            <DataGridTextColumn Header="任务" Binding="{Binding TaskId}" Width="150"/>
+                            <DataGridTextColumn Header="车辆" Binding="{Binding VehicleId}" Width="85"/>
+                            <DataGridTextColumn Header="步骤" Binding="{Binding StepId}" Width="150"/>
+                            <DataGridTextColumn Header="阻塞资源 / 任务 / 车辆" Binding="{Binding Blockers}" Width="300"/>
+                            <DataGridTextColumn Header="当前持有" Binding="{Binding HeldResources}" Width="130"/>
+                            <DataGridTextColumn Header="阻塞观察" Binding="{Binding BlockingObservationText}" Width="230"/>
+                            <DataGridTextColumn Header="最近观察解除" Binding="{Binding LastBlockingClearedText}" Width="165"/>
+                            <DataGridTextColumn Header="本次等待起点" Binding="{Binding WaitingStartText}" Width="175"/>
+                            <DataGridTextColumn Header="等待原因" Binding="{Binding Reason}" Width="320"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                    <Grid Grid.Row="2" Margin="4,6"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                        <TextBlock x:Name="TrafficWaitingNotice" Text="{Binding WaitingNotice}" TextWrapping="Wrap" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,8,0"/>
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center"><Button Content="上一页" Command="{Binding PreviousWaitingPageCommand}" Margin="0,0,6,0"/><Button Content="下一页" Command="{Binding NextWaitingPageCommand}"/></StackPanel>
+                    </Grid>
+                </Grid></TabItem>
+                <TabItem Header="地图联动" x:Name="TrafficMapTab"><Grid>
+                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                    <StackPanel Margin="4,6">
+                        <ComboBox x:Name="TrafficMapRequestPicker" ItemsSource="{Binding TrafficRequests}" SelectedItem="{Binding SelectedTrafficRequest}" DisplayMemberPath="MapCaption" ToolTip="{Binding TrafficContext}" HorizontalAlignment="Stretch"/>
+                        <WrapPanel Margin="0,7,0,0"><TextBlock Text="蓝：路线 / 申请车辆" Foreground="#2389F7" Margin="0,0,12,0"/><TextBlock Text="橙：持有资源" Foreground="#EBA12C" Margin="0,0,12,0"/><TextBlock Text="紫：申请资源" Foreground="#9A72DA" Margin="0,0,12,0"/><TextBlock Text="红：阻塞资源 / 车辆" Foreground="#EF5350"/></WrapPanel>
+                    </StackPanel>
+                    <Viewbox Grid.Row="1" Stretch="Uniform"><Canvas x:Name="TrafficMapCanvas" Width="900" Height="{Binding MapCanvasHeight}" ClipToBounds="True" Background="{DynamicResource AppBackgroundBrush}">
+                        <ItemsControl ItemsSource="{Binding MapEdges}"><ItemsControl.ItemsPanel><ItemsPanelTemplate><Canvas/></ItemsPanelTemplate></ItemsControl.ItemsPanel><ItemsControl.ItemTemplate><DataTemplate><Polyline Points="{Binding Points}" Stroke="{Binding Stroke}" StrokeThickness="{Binding Thickness}" ToolTip="{Binding Hint}"/></DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
+                        <ItemsControl ItemsSource="{Binding MapAreas}"><ItemsControl.ItemsPanel><ItemsPanelTemplate><Canvas/></ItemsPanelTemplate></ItemsControl.ItemsPanel><ItemsControl.ItemTemplate><DataTemplate><Polygon Points="{Binding Points}" Stroke="{Binding Stroke}" StrokeThickness="3" Fill="{Binding Fill}" ToolTip="{Binding Hint}"/></DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
+                        <ItemsControl ItemsSource="{Binding MapRoutes}"><ItemsControl.ItemsPanel><ItemsPanelTemplate><Canvas/></ItemsPanelTemplate></ItemsControl.ItemsPanel><ItemsControl.ItemTemplate><DataTemplate><Polyline Points="{Binding Points}" Stroke="{Binding Stroke}" StrokeThickness="{Binding Thickness}" StrokeDashArray="{Binding Dash}" ToolTip="{Binding Hint}"/></DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
+                        <ItemsControl ItemsSource="{Binding MapNodes}"><ItemsControl.ItemsPanel><ItemsPanelTemplate><Canvas/></ItemsPanelTemplate></ItemsControl.ItemsPanel><ItemsControl.ItemContainerStyle><Style TargetType="ContentPresenter"><Setter Property="Canvas.Left" Value="{Binding Left}"/><Setter Property="Canvas.Top" Value="{Binding Top}"/></Style></ItemsControl.ItemContainerStyle><ItemsControl.ItemTemplate><DataTemplate><Canvas Width="24" Height="24"><Ellipse Width="{Binding Diameter}" Height="{Binding Diameter}" Fill="{Binding Fill}" ToolTip="{Binding Hint}"/><TextBlock Text="{Binding Label}" Canvas.Top="{Binding LabelTop}" FontSize="18" Foreground="{DynamicResource TextSecondaryBrush}"/></Canvas></DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
+                        <ItemsControl ItemsSource="{Binding MapVehicles}"><ItemsControl.ItemsPanel><ItemsPanelTemplate><Canvas/></ItemsPanelTemplate></ItemsControl.ItemsPanel><ItemsControl.ItemContainerStyle><Style TargetType="ContentPresenter"><Setter Property="Canvas.Left" Value="{Binding Left}"/><Setter Property="Canvas.Top" Value="{Binding Top}"/></Style></ItemsControl.ItemContainerStyle><ItemsControl.ItemTemplate><DataTemplate><Canvas Width="26" Height="26"><Ellipse Width="{Binding Diameter}" Height="{Binding Diameter}" Fill="{Binding Fill}" Stroke="White" StrokeThickness="2" ToolTip="{Binding Hint}"/><Border Canvas.Top="-31" Background="{DynamicResource SurfaceBrush}" Padding="3,1"><TextBlock Text="{Binding Id}" FontSize="22" FontWeight="SemiBold" Foreground="{Binding Fill}"/></Border></Canvas></DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
+                    </Canvas></Viewbox>
+                    <ScrollViewer Grid.Row="2" MaxHeight="72" VerticalScrollBarVisibility="Auto"><TextBlock x:Name="TrafficMapNoticeText" Text="{Binding TrafficMapNotice}" TextWrapping="Wrap" Foreground="{DynamicResource TextSecondaryBrush}" Margin="4,6"/></ScrollViewer>
+                </Grid></TabItem></TabControl>
+            </Border>
+
+            <Border Grid.Column="2" Background="{DynamicResource SurfaceBrush}"
+                    BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                    CornerRadius="8" Padding="18">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel>
+                        <TextBlock Text="关联详情" FontSize="18" FontWeight="SemiBold"/>
+                        <TextBlock x:Name="TrafficContextText" Text="{Binding TrafficContext}" TextWrapping="Wrap" Margin="0,8,0,12"/>
+                        <Separator Margin="0,0,0,12"/>
+                        <TextBlock Text="人工解锁" FontSize="18" FontWeight="SemiBold" />
+                        <TextBlock Text="活动任务和任务记录缺失都禁止解锁；后台校验后立即执行，无需第二人审批。"
+                                   Foreground="#FFE59A22" TextWrapping="Wrap" Margin="0,8,0,12" />
+                        <TextBlock Text="操作来源（Windows 用户）" Foreground="{DynamicResource TextSecondaryBrush}" />
+                        <TextBlock Text="{Binding CurrentUser}" FontWeight="SemiBold" TextWrapping="Wrap" />
+
+                        <TextBlock Text="已选资源" Foreground="{DynamicResource TextSecondaryBrush}" />
+                        <TextBlock Text="{Binding SelectedLease.ResourceId, TargetNullValue=未选择}"
+                                   FontWeight="SemiBold" Margin="0,3,0,8" />
+                        <TextBlock Text="解锁原因（至少5个字符）" />
+                        <TextBox Text="{Binding Reason, UpdateSourceTrigger=PropertyChanged}"
+                                 AcceptsReturn="True" Height="55" TextWrapping="Wrap" Margin="0,4,0,8" />
+                        <CheckBox IsChecked="{Binding VehicleClearConfirmed}"
+                                  Content="我已现场确认AGV完全离开该区域" Margin="0,2,0,8" />
+                        <TextBlock Text="{Binding RequiredConfirmationText}" FontSize="12"
+                                   Foreground="{DynamicResource TextSecondaryBrush}" TextWrapping="Wrap" />
+                        <TextBox Text="{Binding ConfirmationText, UpdateSourceTrigger=PropertyChanged}"
+                                 Margin="0,4,0,10" />
+                        <Button Content="确认并解锁"
+                                Command="{Binding SubmitReleaseCommand}" Padding="14,8"
+                                Background="#FFC87A18" Foreground="White" />
+
+                    </StackPanel>
+                </ScrollViewer>
+            </Border>
+        </Grid>
+
+        <Grid Grid.Row="4">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="300" />
+                <ColumnDefinition Width="12" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <Border Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                    BorderThickness="1" CornerRadius="8" Padding="12">
+                <TextBlock Text="{Binding StatusMessage}" TextWrapping="Wrap" VerticalAlignment="Center" />
+            </Border>
+            <TabControl Grid.Column="2">
+                <TabItem Header="路权过程"><DataGrid x:Name="TrafficEventsGrid" ItemsSource="{Binding TrafficEvents}" AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="时间" Binding="{Binding OccurredAt, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="145"/>
+                        <DataGridTextColumn Header="事件" Binding="{Binding Kind}" Width="90"/>
+                        <DataGridTextColumn Header="任务" Binding="{Binding TaskId}" Width="150"/>
+                        <DataGridTextColumn Header="步骤" Binding="{Binding StepId}" Width="150"/>
+                        <DataGridTextColumn Header="车辆" Binding="{Binding VehicleId}" Width="85"/>
+                        <DataGridTextColumn Header="资源" Binding="{Binding Resources}" Width="140"/>
+                        <DataGridTextColumn Header="依据" Binding="{Binding Reason}" Width="350"/>
+                    </DataGrid.Columns>
+                </DataGrid></TabItem>
+                <TabItem Header="操作历史">
+                    <DataGrid ItemsSource="{Binding Requests}" SelectedItem="{Binding SelectedRequest}"
+                              AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False"
+                              SelectionMode="Single" HeadersVisibility="Column" GridLinesVisibility="Horizontal">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="状态" Binding="{Binding Status}" Width="100" />
+                            <DataGridTextColumn Header="操作时间" Binding="{Binding RequestedAt, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="145" />
+                            <DataGridTextColumn Header="资源" Binding="{Binding ResourceId}" Width="100" />
+                            <DataGridTextColumn Header="AGV" Binding="{Binding VehicleId}" Width="75" />
+                            <DataGridTextColumn Header="操作人" Binding="{Binding RequestedByDisplayName}" Width="100" />
+                            <DataGridTextColumn Header="操作账号" Binding="{Binding RequestedBy}" Width="150" />
+                            <DataGridTextColumn Header="原因" Binding="{Binding Reason}" Width="*" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </TabItem>
+                <TabItem Header="已执行解锁审计">
+                    <DataGrid ItemsSource="{Binding Audits}" AutoGenerateColumns="False" IsReadOnly="True"
+                              CanUserAddRows="False" HeadersVisibility="Column" GridLinesVisibility="Horizontal">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="释放时间" Binding="{Binding ReleasedAt, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="145" />
+                            <DataGridTextColumn Header="资源" Binding="{Binding ResourceId}" Width="100" />
+                            <DataGridTextColumn Header="AGV" Binding="{Binding VehicleId}" Width="80" />
+                            <DataGridTextColumn Header="操作人" Binding="{Binding Operator}" Width="100" />
+                            <DataGridTextColumn Header="操作账号" Binding="{Binding RequestedBy}" Width="145" />
+                            <DataGridTextColumn Header="原任务状态" Binding="{Binding PreviousTaskStage}" Width="105" />
+                            <DataGridTextColumn Header="原因" Binding="{Binding Reason}" Width="*" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </TabItem>
+                <TabItem Header="动态路段占用">
+                    <DataGrid ItemsSource="{Binding EdgeTraffic}" AutoGenerateColumns="False" IsReadOnly="True"
+                              CanUserAddRows="False" HeadersVisibility="Column" GridLinesVisibility="Horizontal">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="路段" Binding="{Binding EdgeId}" Width="100" />
+                            <DataGridTextColumn Header="起点" Binding="{Binding From}" Width="90" />
+                            <DataGridTextColumn Header="终点" Binding="{Binding To}" Width="90" />
+                            <DataGridTextColumn Header="状态" Binding="{Binding State}" Width="90" />
+                            <DataGridTextColumn Header="车辆" Binding="{Binding VehicleIds}" Width="130" />
+                            <DataGridTextColumn Header="资源" Binding="{Binding ResourceIds}" Width="130" />
+                            <DataGridTextColumn Header="状态开始" Binding="{Binding StateSince, StringFormat=HH:mm:ss}" Width="90" />
+                            <DataGridTextColumn Header="动态代价" Binding="{Binding DynamicPenalty, StringFormat=F1}" Width="85" />
+                            <DataGridTextColumn Header="说明" Binding="{Binding Message}" Width="*" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </TabItem>
+                <TabItem Header="潜在死锁建议">
+                    <DataGrid ItemsSource="{Binding DeadlockCandidates}" AutoGenerateColumns="False" IsReadOnly="True"
+                              CanUserAddRows="False" HeadersVisibility="Column" GridLinesVisibility="Horizontal">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="发现时间" Binding="{Binding DetectedAt, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="145" />
+                            <DataGridTextColumn Header="路段" Binding="{Binding EdgeId}" Width="100" />
+                            <DataGridTextColumn Header="车辆" Binding="{Binding VehicleIds}" Width="130" />
+                            <DataGridTextColumn Header="资源" Binding="{Binding ResourceIds}" Width="130" />
+                            <DataGridTextColumn Header="原因" Binding="{Binding Reason}" Width="220" />
+                            <DataGridTextColumn Header="处置建议（不会自动解锁）" Binding="{Binding Suggestion}" Width="*" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </TabItem>
+            </TabControl>
+        </Grid>
+    </Grid>
+</UserControl>

@@ -1,0 +1,17 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <Compile Include="../MapSwitchSmokeTest/MapSwitchFixtures.cs" Link="MapSwitchFixtures.cs" />
+    <Compile Include="..\..\AgvDispatch.Service\Modules\Maps\MapOptions.cs" Link="MapOptions.cs" />
+    <None Include="..\..\AgvDispatch.Service\config\map-template\curved-map.example.json" Link="curved-map.example.json" CopyToOutputDirectory="PreserveNewest" />
+    <ProjectReference Include="..\..\AgvDispatch.Domain\AgvDispatch.Domain.csproj" />
+    <ProjectReference Include="..\..\AgvDispatch.Application\AgvDispatch.Application.csproj" />
+    <ProjectReference Include="..\..\AgvDispatch.Infrastructure\AgvDispatch.Infrastructure.csproj" />
+  </ItemGroup>
+</Project>

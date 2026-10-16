@@ -1,0 +1,15 @@
+# 独立进程连续周期九步与两车冲突
+
+从DispatchingSystem运行：`dotnet run --project tools/HostedDispatchSmokeTest`。2026-10-14完成18项检查，完整解决方案Debug构建0错误。
+
+前端测试进程启动本工具的专用后台子进程。后台使用真实Generic Host与TaskCreationCoordinator、DispatchTaskOrchestrator、AgvCommandOutboxDispatcher、DispatchTaskStepCoordinator、AgvPollingService及Named Pipe服务，按实际HostedService周期运行，不反射调用生产单轮方法。前端加载真实任务页面，实际提交任务并从后台查询九步与路权。
+
+模拟车只监听127.0.0.1随机端口，实际SeerRobotClient通过1100/1110/3066采集与执行。PLC仅在IPlcGateway/IPlcSignalCache边界模拟，用独立100ms扫描消费输出并按当前步骤模拟箱体和倒料反馈；不覆盖S7/HSL网络、电气扫描或物理动作。模拟器集合支持并发访问，避免将测试容器竞争误报为生产问题。Sqlite数据库、管道和证据均为唯一临时路径；不读取现场配置、不启用生产模拟开关。
+
+覆盖：独立前后台PID、两车/两工位可用、九步预览与前端提交、后台周期自动产生共享资源冲突、等待方无运输命令、两任务自动完成九步、每车四条唯一3066、每段尝试一次、PLC输出复位、无剩余占用及等待、最终界面、子进程正常停止、后台日志没有数据库并发错误。
+
+后台启动时继承预先初始化的SqlSugarScope异步上下文，曾导致并发读写时连接关闭/集合修改异常。生产后台循环已使用IsolatedBackgroundService隔离启动ExecutionContext；隔离仅包裹StartAsync的任务创建，不跨await持有SuppressFlow，恢复事务、控制门和操作证据仍在各循环内部执行。
+
+这是专用测试宿主，不是生产Service.exe含模拟PLC的部署模式；此前ServiceRestartSmokeTest另行验证真实Service.exe重启。本批不代替Windows服务管理器、实车和真实PLC验收。
+
+测试结束写stop.request并等待本测试子进程正常停止，超时才终止该Process对象；不按名称结束用户程序。Evidence目录含devices.json、任务详情、waiting.json、截图和后台日志。

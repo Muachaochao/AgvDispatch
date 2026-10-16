@@ -1,0 +1,4 @@
+Id,X,Y,Type,Enabled,ResourceIds,AgvSiteId
+PARK-01,0,0,Station,true,,LM-PARK-001
+JUNCTION-01,8.5,0,Intersection,true,CROSS-01,LM-JUNCTION-001
+CNC001-PICKUP,16.2,0,Station,true,,LM-CNC-001
