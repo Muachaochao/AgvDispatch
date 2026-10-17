@@ -7,8 +7,8 @@ import { isRunningStage, label } from '../state';
 import { shortTime } from '../dashboard';
 import { newTaskRequestId } from '../task-request';
 import type { CreationOptions, RoutePreview, TaskDetail, TaskRow } from '../types';
-import { IconListDetails, IconArrowLeft, IconPlus, IconSearch, IconChevronLeft, IconChevronRight } from '@tabler/icons-vue';
-import ConsoleDialog from '../ConsoleDialog.vue';
+import { ElCard, ElTable, ElTableColumn, ElTag, ElButton, ElInput, ElSelect, ElOption, ElSpace, ElEmpty, ElIcon, ElDialog, ElForm, ElFormItem, ElInputNumber, ElAlert, ElPagination, ElResult } from 'element-plus';
+import { ArrowLeft, Plus, Search, List } from '@element-plus/icons-vue';
 import TaskExecutionDetails from '../TaskExecutionDetails.vue';
 
 const store = useDispatchStore();
@@ -38,11 +38,10 @@ const actionMessage = ref('');
 const requestUncertain = ref(false);
 
 const visibleTasks = computed(() => queriedTasks.value?.items ?? store.allTasks.filter(task =>
-  (taskFilter.value === 'all' || (taskFilter.value === 'waiting' ? task.stage === 'WaitingForVehicle' || task.stage === 'Created' : taskFilter.value === 'failed' ? ['Faulted', 'CancellationReview'].includes(task.stage) : taskFilter.value === 'completed' ? task.stage === 'Completed' : taskFilter.value === 'cancelled' ? task.stage === 'Cancelled' : isRunningStage(task.stage))) &&
+  (taskFilter.value === 'all' || (taskFilter.value === 'waiting' ? ['WaitingForVehicle', 'Created'].includes(task.stage) : taskFilter.value === 'failed' ? ['Faulted', 'CancellationReview'].includes(task.stage) : taskFilter.value === 'completed' ? task.stage === 'Completed' : taskFilter.value === 'cancelled' ? task.stage === 'Cancelled' : isRunningStage(task.stage))) &&
   `${task.taskId} ${task.stationId} ${task.vehicleId ?? ''}`.toLowerCase().includes(search.value.toLowerCase())
 ));
-const pages = computed(() => Math.max(1, Math.ceil((queriedTasks.value?.totalCount ?? store.snapshot?.tasks?.totalCount ?? 0) / 50)));
-const tableCount = computed(() => queriedTasks.value?.totalCount ?? store.snapshot?.tasks?.totalCount ?? 0);
+const totalCount = computed(() => queriedTasks.value?.totalCount ?? store.snapshot?.tasks?.totalCount ?? 0);
 const canSubmit = computed(() => store.fresh && store.submissionEnabled && !actionBusy.value && (requestUncertain.value || (!!options.value?.available && !!station.value && !!vehicle.value)));
 
 watch([search, taskFilter], () => { queriedTasks.value = null; taskPage.value = 1; });
@@ -50,10 +49,8 @@ watch(() => route.params.id, id => { if (id && typeof id === 'string') openTask(
 
 async function loadDetail(id: string) {
   const selection = ++detailEpoch;
-  try {
-    const result = await store.api<TaskDetail | null>(`/api/tasks/${encodeURIComponent(id)}`);
-    if (selection === detailEpoch && selectedTask.value === id) detail.value = result;
-  } catch { detail.value = null; }
+  try { const r = await store.api<TaskDetail | null>(`/api/tasks/${encodeURIComponent(id)}`); if (selection === detailEpoch && selectedTask.value === id) detail.value = r; }
+  catch { detail.value = null; }
 }
 function selectTask(id: string) { selectedTask.value = id; detail.value = null; void loadDetail(id); }
 function openTask(id: string) { showTaskDialog.value = true; selectTask(id); }
@@ -61,117 +58,134 @@ function openTask(id: string) { showTaskDialog.value = true; selectTask(id); }
 async function queryTasks(page = 1) {
   queryError.value = ''; taskPage.value = page; queryBusy.value = true;
   try {
-    const filter = ({ all: 'All', waiting: 'Waiting', running: 'Running', failed: 'Failed', completed: 'Completed', cancelled: 'Cancelled' } as Record<string, string>)[taskFilter.value];
-    const result = await store.api<{ items: TaskRow[]; totalCount: number; page: number; pageSize: number }>(`/api/tasks?filter=${filter}&search=${encodeURIComponent(search.value)}&page=${page}`);
-    queriedTasks.value = result;
+    const f = ({ all:'All', waiting:'Waiting', running:'Running', failed:'Failed', completed:'Completed', cancelled:'Cancelled' } as Record<string,string>)[taskFilter.value];
+    queriedTasks.value = await store.api<{ items: TaskRow[]; totalCount: number; page: number; pageSize: number }>(`/api/tasks?filter=${f}&search=${encodeURIComponent(search.value)}&page=${page}`);
   } catch (ex) { queryError.value = String(ex); }
   finally { queryBusy.value = false; }
 }
 
-function resetTaskQuery() { search.value = ''; taskFilter.value = 'all'; queriedTasks.value = null; taskPage.value = 1; queryError.value = ''; }
-
 async function loadOptions() {
   formOpen.value = true; routePreview.value = null; actionMessage.value = '';
-  try {
-    const result = await store.api<CreationOptions>('/api/task-options');
-    options.value = result;
-    station.value = result.stations.find(s => s.available)?.stationId ?? '';
-    vehicle.value = result.vehicles.find(v => v.available)?.vehicleId ?? '';
-  } catch (ex) { actionMessage.value = String(ex); }
+  try { const r = await store.api<CreationOptions>('/api/task-options'); options.value = r; station.value = r.stations.find(s => s.available)?.stationId ?? ''; vehicle.value = r.vehicles.find(v => v.available)?.vehicleId ?? ''; }
+  catch (ex) { actionMessage.value = String(ex); }
 }
 
 async function previewRoute() {
   if (!options.value || !station.value || !vehicle.value) return;
   actionBusy.value = true; routePreview.value = null;
-  try {
-    routePreview.value = await store.api<RoutePreview>('/api/route-preview', { stationId: station.value, vehicleId: vehicle.value, mapId: options.value.mapId, mapVersionId: options.value.mapVersionId, parameterRevision: options.value.parameterRevision });
-  } catch (ex) { actionMessage.value = String(ex); }
+  try { routePreview.value = await store.api<RoutePreview>('/api/route-preview', { stationId: station.value, vehicleId: vehicle.value, mapId: options.value.mapId, mapVersionId: options.value.mapVersionId, parameterRevision: options.value.parameterRevision }); }
+  catch (ex) { actionMessage.value = String(ex); }
   finally { actionBusy.value = false; }
 }
 
 async function submitTask() {
   if (!canSubmit.value) return;
-  const storageKey = 'agv-web-pending-request';
+  const key = 'agv-web-pending-request';
   let request: Record<string, unknown>;
   try {
-    const stored = sessionStorage.getItem(storageKey);
+    const stored = sessionStorage.getItem(key);
     request = requestUncertain.value && stored ? JSON.parse(stored) : { requestId: newTaskRequestId(), stationId: station.value, requestedVehicleId: vehicle.value, priority: priority.value, mapId: options.value!.mapId, mapVersionId: options.value!.mapVersionId, parameterRevision: options.value!.parameterRevision };
-    sessionStorage.setItem(storageKey, JSON.stringify(request));
-  } catch { actionMessage.value = '无法持久保存申请编号，本次未提交。'; return; }
-  actionBusy.value = true; actionMessage.value = '正在提交，保持原申请编号。'; requestUncertain.value = true;
+    sessionStorage.setItem(key, JSON.stringify(request));
+  } catch { actionMessage.value = '无法保存申请编号'; return; }
+  actionBusy.value = true; requestUncertain.value = true;
   try {
-    const result = await store.api<{ accepted: boolean; created: boolean; taskId: string | null; message: string }>('/api/tasks', request);
-    sessionStorage.removeItem(storageKey); requestUncertain.value = false;
-    actionMessage.value = result.message;
-    if (result.accepted && result.taskId) { toast.success('任务已提交'); selectTask(result.taskId); }
-  } catch (ex) { actionMessage.value = `结果未确认：${String(ex)}。保留原申请，重试使用同一个编号。`; }
+    const r = await store.api<{ accepted: boolean; created: boolean; taskId: string | null; message: string }>('/api/tasks', request);
+    sessionStorage.removeItem(key); requestUncertain.value = false; actionMessage.value = r.message;
+    if (r.accepted && r.taskId) { toast.success('任务已提交'); selectTask(r.taskId); }
+  } catch (ex) { actionMessage.value = `结果未确认：${String(ex)}`; }
   finally { actionBusy.value = false; }
+}
+
+function stageType(stage: string): 'success' | 'warning' | 'danger' | 'info' | 'primary' {
+  if (stage === 'Faulted' || stage === 'CancellationReview') return 'danger';
+  if (stage === 'Completed') return 'success';
+  if (isRunningStage(stage)) return 'primary';
+  if (stage === 'Cancelled') return 'info';
+  return 'warning';
 }
 </script>
 
 <template>
-  <section class="management-page">
-    <header class="management-title">
-      <h2><IconListDetails :size="23" />任务列表</h2>
-      <span>{{ queriedTasks ? '查询总数' : '快照总数' }} {{ tableCount }} 条</span>
-      <button class="accent-button" @click="loadOptions"><IconPlus :size="15" />创建任务</button>
-      <button @click="router.push('/')"><IconArrowLeft :size="15" />返回大屏</button>
-    </header>
-    <div class="query-bar">
-      <label>任务 / 工位 / 车辆<input v-model="search" placeholder="输入关键词" aria-label="搜索任务" @keydown.enter="queryTasks(1)" /></label>
-      <label>任务状态<select v-model="taskFilter" aria-label="筛选任务状态"><option value="all">全部</option><option value="waiting">等待</option><option value="running">执行中</option><option value="completed">已完成</option><option value="failed">异常</option><option value="cancelled">已取消</option></select></label>
-      <button class="accent-button" :disabled="queryBusy || !store.fresh" @click="queryTasks(1)"><IconSearch :size="15" />{{ queryBusy ? '查询中' : '查询' }}</button>
-      <button @click="resetTaskQuery">重置</button>
-      <small>{{ queriedTasks ? '后台分页查询结果' : '当前快照筛选；后台可点击查询读取历史' }}</small>
+  <div class="page-container">
+    <div class="page-header">
+      <h2><ElIcon :size="22"><List /></ElIcon> 任务列表</h2>
+      <ElTag type="info" effect="plain" size="small">{{ queriedTasks ? '查询' : '快照' }} {{ totalCount }} 条</ElTag>
+      <ElButton type="primary" size="small" @click="loadOptions"><ElIcon><Plus /></ElIcon>创建任务</ElButton>
+      <ElButton size="small" @click="router.push('/')"><ElIcon><ArrowLeft /></ElIcon>返回大屏</ElButton>
     </div>
-    <p v-if="queryError" class="inline-warning">{{ queryError }}</p>
-    <div class="management-table">
-      <table>
-        <thead><tr><th>操作</th><th>任务编号</th><th>来源工位</th><th>车辆</th><th>状态</th><th>优先级</th><th>创建时间</th><th>更新时间</th><th>异常说明</th></tr></thead>
-        <tbody>
-          <tr v-for="task in visibleTasks" :key="task.taskId">
-            <td><button class="table-button" @click="openTask(task.taskId)">详情</button></td>
-            <td class="cyan mono">{{ task.taskId }}</td>
-            <td>{{ task.stationId }}</td>
-            <td>{{ task.vehicleId ?? '待分配' }}</td>
-            <td><span class="state-label" :class="task.stage === 'Faulted' ? 'fault' : task.stage === 'Completed' ? 'idle' : 'running'">{{ label(task.stage) }}</span></td>
-            <td>{{ task.priority }}</td>
-            <td>{{ shortTime(task.createdAt) }}</td>
-            <td>{{ shortTime(task.updatedAt) }}</td>
-            <td class="message-cell">{{ task.errorMessage ?? '—' }}</td>
-          </tr>
-        </tbody>
-      </table>
-      <p v-if="!visibleTasks.length" class="empty-panel">暂无匹配任务</p>
-    </div>
-    <footer class="pagination">
-      <span>当前页 {{ visibleTasks.length }} 条 · 每页最多50条</span>
-      <button :disabled="taskPage <= 1 || queryBusy" @click="queryTasks(taskPage - 1)"><IconChevronLeft :size="14" />上一页</button>
-      <b>{{ taskPage }} / {{ pages }}</b>
-      <button :disabled="taskPage >= pages || queryBusy" @click="queryTasks(taskPage + 1)">下一页<IconChevronRight :size="14" /></button>
-    </footer>
-  </section>
 
-  <ConsoleDialog v-if="showTaskDialog" title="任务运行详情 · 九步、条件与执行证据" wide @close="showTaskDialog = false">
+    <ElCard shadow="never" class="filter-card">
+      <ElSpace wrap>
+        <ElInput v-model="search" placeholder="任务 / 工位 / 车辆" clearable style="width:240px" size="small" @keydown.enter="queryTasks(1)" />
+        <ElSelect v-model="taskFilter" size="small" style="width:140px">
+          <ElOption label="全部" value="all" /><ElOption label="等待" value="waiting" /><ElOption label="执行中" value="running" /><ElOption label="已完成" value="completed" /><ElOption label="异常" value="failed" /><ElOption label="已取消" value="cancelled" />
+        </ElSelect>
+        <ElButton type="primary" size="small" :loading="queryBusy" :disabled="!store.fresh" @click="queryTasks(1)"><ElIcon><Search /></ElIcon>查询</ElButton>
+        <ElButton size="small" @click="search='';taskFilter='all';queriedTasks=null;taskPage=1">重置</ElButton>
+        <small style="color:#718aad">{{ queriedTasks ? '后台分页' : '快照筛选' }}</small>
+      </ElSpace>
+    </ElCard>
+
+    <ElAlert v-if="queryError" :title="queryError" type="warning" show-icon :closable="false" style="margin-bottom:12px" />
+
+    <ElCard shadow="never" class="table-card">
+      <ElTable :data="visibleTasks" stripe style="width:100%" :header-cell-style="{ background:'#0a1525', color:'#8ea7cc' }" :cell-style="{ color:'#c0d0e8' }">
+        <ElTableColumn label="操作" width="80" fixed><template #default="{ row }"><ElButton type="primary" text size="small" @click="openTask(row.taskId)">详情</ElButton></template></ElTableColumn>
+        <ElTableColumn prop="taskId" label="任务编号" width="150"><template #default="{ row }"><span class="mono text-cyan">{{ row.taskId }}</span></template></ElTableColumn>
+        <ElTableColumn prop="stationId" label="来源工位" width="130" />
+        <ElTableColumn label="车辆" width="110"><template #default="{ row }">{{ row.vehicleId ?? '待分配' }}</template></ElTableColumn>
+        <ElTableColumn label="状态" width="120"><template #default="{ row }"><ElTag :type="stageType(row.stage)" size="small" effect="dark">{{ label(row.stage) }}</ElTag></template></ElTableColumn>
+        <ElTableColumn prop="priority" label="优先级" width="80" />
+        <ElTableColumn label="创建时间" width="170"><template #default="{ row }">{{ shortTime(row.createdAt) }}</template></ElTableColumn>
+        <ElTableColumn label="更新时间" width="170"><template #default="{ row }">{{ shortTime(row.updatedAt) }}</template></ElTableColumn>
+        <ElTableColumn label="异常说明" min-width="200"><template #default="{ row }"><span style="color:#9daecc">{{ row.errorMessage ?? '—' }}</span></template></ElTableColumn>
+      </ElTable>
+      <ElEmpty v-if="!visibleTasks.length" description="暂无匹配任务" />
+      <div class="table-footer">
+        <ElPagination v-model:current-page="taskPage" :page-size="50" :total="totalCount" layout="total, prev, pager, next" small :disabled="queryBusy" @current-change="queryTasks" />
+      </div>
+    </ElCard>
+  </div>
+
+  <!-- Task Detail Dialog -->
+  <ElDialog v-model="showTaskDialog" title="任务运行详情 · 九步、条件与执行证据" width="1000px" destroy-on-close>
     <TaskExecutionDetails v-if="detail" :detail="detail" :fresh="store.fresh" :now="store.now" />
-    <p v-else class="empty-panel">{{ store.error || '正在读取任务详情…' }}</p>
-  </ConsoleDialog>
+    <ElEmpty v-else :description="store.error || '正在读取…'" />
+  </ElDialog>
 
-  <ConsoleDialog v-if="formOpen" title="创建调度任务" @close="formOpen = false">
-    <p class="form-explanation">{{ (options?.explanation ?? actionMessage) || '正在查询后台创建条件…' }}</p>
-    <div class="creation-grid">
-      <label>取料工位<select v-model="station" :disabled="requestUncertain || actionBusy"><option value="">请选择</option><option v-for="s in options?.stations ?? []" :key="s.stationId" :value="s.stationId" :disabled="!s.available">{{ s.stationId }} · {{ s.pickupSite }}</option></select></label>
-      <label>车辆<select v-model="vehicle" :disabled="requestUncertain || actionBusy"><option value="">请选择</option><option v-for="v in options?.vehicles ?? []" :key="v.vehicleId" :value="v.vehicleId" :disabled="!v.available">{{ v.label }}</option></select></label>
-      <label>优先级（0–100）<input v-model.number="priority" type="number" min="0" max="100" :disabled="requestUncertain || actionBusy" /></label>
-      <label>地图版本<input :value="options?.mapVersionId ?? '—'" readonly /></label>
+  <!-- Create Task Dialog -->
+  <ElDialog v-model="formOpen" title="创建调度任务" width="600px">
+    <p style="color:#93accc;margin-bottom:16px">{{ (options?.explanation ?? actionMessage) || '正在查询后台创建条件…' }}</p>
+    <ElForm label-position="top" size="default">
+      <ElFormItem label="取料工位"><ElSelect v-model="station" :disabled="requestUncertain||actionBusy" style="width:100%"><ElOption v-for="s in options?.stations??[]" :key="s.stationId" :value="s.stationId" :label="`${s.stationId} · ${s.pickupSite}`" :disabled="!s.available" /></ElSelect></ElFormItem>
+      <ElFormItem label="车辆"><ElSelect v-model="vehicle" :disabled="requestUncertain||actionBusy" style="width:100%"><ElOption v-for="v in options?.vehicles??[]" :key="v.vehicleId" :value="v.vehicleId" :label="v.label" :disabled="!v.available" /></ElSelect></ElFormItem>
+      <ElFormItem label="优先级（0–100）"><ElInputNumber v-model="priority" :min="0" :max="100" :disabled="requestUncertain||actionBusy" /></ElFormItem>
+      <ElFormItem label="地图版本"><ElInput :model-value="options?.mapVersionId??'—'" readonly /></ElFormItem>
+    </ElForm>
+    <ElAlert :title="store.submissionEnabled?'提交后仍须后台核验':'Web提交未启用'" type="warning" :closable="false" show-icon style="margin:12px 0" />
+    <div v-if="routePreview" style="padding:14px;background:#122b44;border:1px solid #285172;border-radius:4px;margin-top:12px">
+      <b style="color:#5fc9e0">{{ routePreview.message }}</b>
+      <p v-for="leg in routePreview.legs" :key="leg.sequence" style="margin-top:6px;color:#8eb5d4;font-size:12px">{{ leg.sequence }}. {{ leg.name }}：{{ leg.vendorPath || leg.logicalPath }}</p>
     </div>
-    <div class="inline-warning">{{ store.submissionEnabled ? '提交后仍须经过后台核验，成功接收不等于执行完成。' : 'Web提交未启用，可核对条件及路线。' }}</div>
-    <div v-if="routePreview" class="route-preview"><b>{{ routePreview.message }}</b><p v-for="leg in routePreview.legs" :key="leg.sequence">{{ leg.sequence }}. {{ leg.name }}：{{ leg.vendorPath || leg.logicalPath }}</p></div>
-    <p v-if="actionMessage" class="form-feedback" role="status">{{ actionMessage }}</p>
+    <ElAlert v-if="actionMessage" :title="actionMessage" type="info" :closable="false" style="margin-top:12px" />
     <template #footer>
-      <button @click="formOpen = false">取消</button>
-      <button :disabled="!options || !station || !vehicle || actionBusy || !store.fresh" @click="previewRoute">核对四段路线</button>
-      <button class="accent-button" :disabled="!canSubmit" @click="submitTask">{{ actionBusy ? '处理中…' : requestUncertain ? '重试原申请' : '提交后台' }}</button>
+      <ElButton @click="formOpen=false">取消</ElButton>
+      <ElButton :disabled="!options||!station||!vehicle||actionBusy||!store.fresh" @click="previewRoute">核对路线</ElButton>
+      <ElButton type="primary" :disabled="!canSubmit" :loading="actionBusy" @click="submitTask">{{ requestUncertain?'重试原申请':'提交后台' }}</ElButton>
     </template>
-  </ConsoleDialog>
+  </ElDialog>
 </template>
+
+<style scoped>
+.page-container{display:flex;flex-direction:column;gap:12px}
+.page-header{display:flex;align-items:center;gap:14px;padding:4px 0}
+.page-header h2{display:flex;align-items:center;gap:8px;font-size:18px;color:#d9eafb;margin:0}
+.page-header .el-tag{margin-right:auto}
+.filter-card{background:#0f1b30;border-color:#1e3352}.filter-card :deep(.el-card__body){padding:12px 16px}
+.table-card{background:#0f1b30;border-color:#1e3352}.table-card :deep(.el-card__body){padding:0}
+.table-card :deep(.el-table){background:#0f1b30;--el-table-border-color:#1e3352;--el-table-row-hover-bg-color:#142035;--el-table-header-bg-color:#0a1525}
+.table-card :deep(.el-table tr){background:#0f1b30}
+.table-card :deep(.el-table--striped .el-table__body tr.el-table__row--striped td.el-table__cell){background:#0b1628}
+.table-footer{padding:12px 16px;display:flex;justify-content:flex-end}
+.text-cyan{color:#67e8f9}.mono{font-family:Consolas,monospace}
+</style>
