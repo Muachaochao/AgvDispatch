@@ -45,6 +45,8 @@ export const useDispatchStore = defineStore('dispatch', () => {
 
   const mapVehicleCount = computed(() => snapshot.value ? vehicles.value.filter(v => mayPlot(snapshot.value!, v, now.value)).length : 0);
 
+  const previewMap = ref<import('../types').WebMap | null>(null);
+
   async function api<T>(path: string, payload?: unknown): Promise<T> {
     const controller = new AbortController();
     controllers.add(controller);
@@ -171,6 +173,6 @@ export const useDispatchStore = defineStore('dispatch', () => {
     fresh, vehicles, allTasks, equipment, resources, alarms, openAlarms,
     activeCount, vehicleStats, ringSegments, mapVehicleCount,
     api, connectBackend, stopConnection, dispose,
-    startNowTimer, stopNowTimer
+    startNowTimer, stopNowTimer, previewMap
   };
 });
