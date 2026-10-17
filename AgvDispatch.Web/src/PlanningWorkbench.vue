@@ -1,8 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch, toRef } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { IconMap, IconDeviceFloppy, IconDownload, IconUpload, IconPlus, IconTrash, IconArrowUp, IconArrowDown, IconCopy, IconRefresh, IconZoomIn, IconZoomOut, IconPlugConnected, IconCloudUpload, IconArrowLeft, IconEye } from '@tabler/icons-vue';
 import ConsoleDialog from './ConsoleDialog.vue';
+import MapEditorPanels from './MapEditorPanels.vue';
+import './map-editor.css';
+import { useMapEditor } from './use-map-editor';
+import * as geometry from './map-editing';
 import { useDispatchStore } from './stores/dispatch';
 import { useToastStore } from './stores/toast';
 import { clone, emptyPlan, parsePlan, validateDefinition, validateVehicles, routePlan, edgePath, type Plan, type Node, type Edge, type Resource, type VehicleConfig, type SceneItem } from './workbench';
@@ -12,7 +16,7 @@ const store = useDispatchStore();
 const toastStore = useToastStore();
 const currentRoute = useRoute();
 const mapRouter = useRouter();
-const effectiveSource = computed((): 'demo' | 'backend' => props.source ?? (store.fresh ? 'backend' : 'demo'));
+const effectiveSource = computed((): 'demo' | 'backend' => props.source ?? (store.fresh && store.snapshot?.source==='backend' && !store.demoMode ? 'backend' : 'demo'));
 const effectiveSnapshot = computed((): Snapshot | null => props.snapshot ?? store.snapshot);
 const uuid=()=>crypto.randomUUID();
 const vehicleMessage=ref('');
@@ -22,54 +26,49 @@ const tab=ref(queryTab.value);
 watch(queryTab, v => { if (v) tab.value = v; });
 watch(()=>props.initialTab,v=>{if(v)tab.value=v;});
 const plan=ref<Plan>(emptyPlan()),saved=ref<Plan[]>([]),dirty=ref(false),message=ref(''),busy=ref(false);
-const selected=ref(''),kind=ref<'node'|'edge'|'resource'|'scene'>('node'),tool=ref<'select'|'node'|'edge'|'scene'>('select');
+const selected=ref(''),kind=ref<'node'|'edge'|'resource'|'scene'>('node');
 const nodeForm=ref<Node>(),edgeForm=ref<Edge>(),resourceForm=ref<Resource>(),sceneForm=ref<SceneItem>();
-const undoStack=ref<Plan[]>([]),redoStack=ref<Plan[]>([]),pending=ref<Plan|null>(null),importInput=ref<HTMLInputElement>();
+const ed=useMapEditor(plan,tab,message,()=>{dirty.value=true;},inspectObject,saveLocal);
+const tool=toRef(ed,'tool'),undoStack=computed(()=>ed.undoStack),redoStack=computed(()=>ed.redoStack);
+const pending=ref<Plan|null>(null),importInput=ref<HTMLInputElement>();
 const maps=ref<MapSummary[]>([]),mapId=ref(''),workspace=ref<any>(null),versions=ref<any[]>([]),vehicleRevision=ref(''),canManage=ref(false),restart=ref(false);
-const vehicleForm=ref<VehicleConfig|null>(null),vehicleOriginal=ref(''),waypoint=ref(''),zoom=ref(1),pan=ref({x:0,y:0});
-const svg=ref<SVGSVGElement>();let drag:{id:string;x:number;y:number;panX:number;panY:number}|null=null;
+const vehicleForm=ref<VehicleConfig|null>(null),vehicleOriginal=ref(''),waypoint=ref('');
+const svg=toRef(ed,'svg');
+const editorPanels=[['properties','属性'],['batch','批量'],['layers','图层'],['history','历史']] as const;
+const mapTools=[{id:'select',label:'选择 / 框选'},{id:'pan',label:'平移'},{id:'node',label:'节点'},{id:'edge',label:'直线'},{id:'arc',label:'圆弧'},{id:'bezier',label:'贝塞尔'},{id:'boundary',label:'区域边界'},{id:'brush',label:'关联刷'},{id:'measure',label:'测量'}] as const;
+const sceneTools=[{id:'select',label:'选择 / 框选'},{id:'pan',label:'平移'},{id:'scene',label:'放置场景'},{id:'measure',label:'测量'}] as const;
 const tabs=[{id:'map',name:'地图编辑'},{id:'scene',name:'场景编辑'},{id:'plans',name:'方案管理'},{id:'vehicles',name:'车辆配置'},{id:'waypoints',name:'航点顺序'}];
 const definition=computed(()=>plan.value.definition),issues=computed(()=>validateDefinition(definition.value));
 const route=computed(()=>routePlan(definition.value,plan.value.waypoints));
-const bounds=computed(()=>{const pts=[...definition.value.nodes,...definition.value.resources.flatMap(r=>r.boundary??[]),...plan.value.scene.flatMap(s=>[{x:s.x,y:s.y},{x:s.x+s.width,y:s.y+s.height}])];if(!pts.length)return {x:-5,y:-25,w:40,h:30};const xs=pts.map(p=>p.x),ys=pts.map(p=>-p.y),loX=Math.min(...xs)-3,loY=Math.min(...ys)-3;return{x:loX,y:loY,w:Math.max(15,Math.max(...xs)-loX+3),h:Math.max(12,Math.max(...ys)-loY+3)};});
-const viewBox=computed(()=>{const b=bounds.value,w=b.w/zoom.value,h=b.h/zoom.value;return `${b.x+(b.w-w)/2+pan.value.x} ${b.y+(b.h-h)/2+pan.value.y} ${w} ${h}`;});
-const scale=computed(()=>Math.max(bounds.value.w,bounds.value.h)/100),nodeRadius=computed(()=>scale.value*.55);
+const viewBox=computed(()=>ed.viewBox),scale=computed(()=>ed.scale),nodeRadius=computed(()=>ed.scale*.55);
 const counts=computed(()=>`${definition.value.nodes.length} 航点 · ${definition.value.edges.length} 道路 · ${definition.value.resources.length} 共享区域`);
 const vehicleErrors=computed(()=>validateVehicles(plan.value.vehicles));
 let epoch=0;
-watch(()=>effectiveSource,()=>{++epoch;workspace.value=null;maps.value=[];versions.value=[];vehicleRevision.value='';canManage.value=false;message.value='数据源已切换。编辑稿保留，后台关联已解除，请重新读取目标。';});
-function edit(fn:()=>void){undoStack.value.push(clone(plan.value));if(undoStack.value.length>40)undoStack.value.shift();redoStack.value=[];fn();dirty.value=true;}
-function history(redo=false){const stack=redo?redoStack:undoStack,other=redo?undoStack:redoStack;const next=stack.value.pop();if(!next)return;other.value.push(clone(plan.value));plan.value=next;dirty.value=true;selected.value='';}
-function resetSelection(){selected.value='';nodeForm.value=undefined;edgeForm.value=undefined;resourceForm.value=undefined;sceneForm.value=undefined;}
-function select(type:typeof kind.value,id:string){kind.value=type;selected.value=id;nodeForm.value=clone(definition.value.nodes.find(n=>n.id===id));edgeForm.value=undefined;resourceForm.value=undefined;sceneForm.value=undefined;
- if(type==='edge')edgeForm.value=clone(definition.value.edges.find(n=>n.id===id));if(type==='resource')resourceForm.value=clone(definition.value.resources.find(n=>n.id===id));if(type==='scene')sceneForm.value=clone(plan.value.scene.find(n=>n.id===id));}
+watch(effectiveSource,()=>{++epoch;workspace.value=null;maps.value=[];versions.value=[];vehicleRevision.value='';canManage.value=false;message.value='数据源已切换。编辑稿保留，后台关联已解除，请重新读取目标。';});
+function edit(fn:()=>void,label='应用属性 / 编辑方案'){return ed.edit(fn,label);}
+function history(redo=false){ed.history(redo);}
+function resetSelection(){ed.clear();}
+function select(type:typeof kind.value,id:string,event?:MouseEvent){ed.pick(type,id,event);}
+function inspectObject(type:geometry.ObjectKind|null,id:string){
+ selected.value=id;nodeForm.value=undefined;edgeForm.value=undefined;resourceForm.value=undefined;sceneForm.value=undefined;
+ if(!type)return;kind.value=type;
+ if(type==='node')nodeForm.value=clone(plan.value.definition.nodes.find(n=>n.id===id));
+ if(type==='edge')edgeForm.value=clone(plan.value.definition.edges.find(n=>n.id===id));
+ if(type==='resource')resourceForm.value=clone(plan.value.definition.resources.find(n=>n.id===id));
+ if(type==='scene')sceneForm.value=clone(plan.value.scene.find(n=>n.id===id));
+}
+const activeForm=computed(()=>kind.value==='node'?nodeForm.value:kind.value==='edge'?edgeForm.value:kind.value==='resource'?resourceForm.value:sceneForm.value);
 function unique(prefix:string,ids:string[]){let n=1;while(ids.includes(`${prefix}${n}`))n++;return `${prefix}${n}`;}
-function addNode(x=0,y=0){const id=unique('P',definition.value.nodes.map(n=>n.id));edit(()=>definition.value.nodes.push({id,x,y,type:'Waypoint',enabled:true,resourceIds:[],agvSiteId:null,layerId:'navigation'}));select('node',id);}
-function addEdge(from=definition.value.nodes[0]?.id??'',to=definition.value.nodes[1]?.id??''){if(!from||!to||from===to){message.value='先新增两个不同航点。';return;}const id=unique('E',definition.value.edges.map(n=>n.id)),a=definition.value.nodes.find(n=>n.id===from)!,b=definition.value.nodes.find(n=>n.id===to)!;edit(()=>definition.value.edges.push({id,from,to,distance:Math.hypot(a.x-b.x,a.y-b.y),speedLimit:.5,enabled:true,bidirectional:false,resourceIds:[],geometryKind:'Line',layerId:'navigation'}));select('edge',id);}
-function addResource(){const id=unique('R',definition.value.resources.map(n=>n.id));edit(()=>definition.value.resources.push({id,type:'NarrowAisle',capacity:1,boundary:[{x:0,y:0},{x:3,y:0},{x:3,y:3},{x:0,y:3}],layerId:'navigation'}));select('resource',id);}
-function addScene(x=0,y=0){const id=unique('S',plan.value.scene.map(s=>s.id));edit(()=>plan.value.scene.push({id,name:'设备区',kind:'equipment',x,y,width:4,height:3,color:'#3a7897',visible:true}));select('scene',id);}
 function applyInspector(){
  const type=kind.value,old=selected.value,obj=type==='node'?nodeForm.value:type==='edge'?edgeForm.value:type==='resource'?resourceForm.value:sceneForm.value;if(!obj)return;
  const next=clone(plan.value),d=next.definition,list:any[]=type==='node'?d.nodes:type==='edge'?d.edges:type==='resource'?d.resources:next.scene;
  if(!obj.id.trim()||list.some(n=>n.id!==old&&n.id.toLowerCase()===obj.id.toLowerCase())){message.value='编号不能为空或重复。';return;}list[list.findIndex(n=>n.id===old)]=clone(obj);
- if(type==='node'){for(const e of d.edges){if(e.from===old)e.from=obj.id;if(e.to===old)e.to=obj.id;}next.waypoints=next.waypoints.map(id=>id===old?obj.id:id);}
+ if(type==='node'){for(const e of d.edges){if(e.from===old)e.from=obj.id;if(e.to===old)e.to=obj.id;if(e.from===obj.id||e.to===obj.id)e.distance=geometry.edgeLength(d,e);}next.waypoints=next.waypoints.map(id=>id===old?obj.id:id);}
  if(type==='resource')for(const item of [...d.nodes,...d.edges])item.resourceIds=item.resourceIds.map(id=>id===old?obj.id:id);
- try{parsePlan(JSON.stringify(next));edit(()=>plan.value=next);select(type,obj.id);message.value='属性已应用至编辑稿，尚未保存后台。';}catch(ex){message.value=String(ex);}
+ try{parsePlan(JSON.stringify(next));if(edit(()=>{const original=geometry.objects(plan.value,type).find(o=>o.id===old);if(original)geometry.requireEditable(definition.value,[original]);if(type==='node')geometry.requireEditable(definition.value,definition.value.edges.filter(e=>e.from===old||e.to===old));if(type==='resource')geometry.requireEditable(definition.value,[...definition.value.nodes,...definition.value.edges].filter(o=>o.resourceIds.includes(old)));geometry.requireLayer(next.definition,geometry.layerId(obj));plan.value=next;},'应用对象属性')){select(type,obj.id);message.value='属性已应用至编辑稿，尚未保存后台。';}}catch(ex){message.value=String(ex);}
 }
-function removeSelected(){const id=selected.value;if(!id)return;
- if(kind.value==='node'&&(definition.value.edges.some(e=>e.from===id||e.to===id)||plan.value.waypoints.includes(id))){message.value='航点被道路或航点顺序引用，先移除引用再删除。';return;}
- if(kind.value==='resource'&&[...definition.value.nodes,...definition.value.edges].some(n=>n.resourceIds.includes(id))){message.value='共享区域被航点/道路引用，先解除关联。';return;}
- edit(()=>{if(kind.value==='node')definition.value.nodes=definition.value.nodes.filter(n=>n.id!==id);else if(kind.value==='edge')definition.value.edges=definition.value.edges.filter(n=>n.id!==id);else if(kind.value==='resource')definition.value.resources=definition.value.resources.filter(n=>n.id!==id);else plan.value.scene=plan.value.scene.filter(n=>n.id!==id);});resetSelection();}
-let edgeStart='';
-watch(tab,()=>{tool.value='select';edgeStart='';resetSelection();});
-function nodeClick(id:string){if(tool.value==='edge'){if(!edgeStart){edgeStart=id;message.value=`起点 ${id}，继续点击终点`;return;}addEdge(edgeStart,id);edgeStart='';return;}select('node',id);}
-function svgPoint(e:PointerEvent){const point=new DOMPoint(e.clientX,e.clientY),matrix=svg.value?.getScreenCTM();return matrix?point.matrixTransform(matrix.inverse()):null;}
-function down(e:PointerEvent){if(e.button!==0)return;const point=svgPoint(e);if(!point)return;const target=e.target as Element;if(target.closest('[data-object]'))return;
- if(tool.value==='node'){addNode(Math.round(point.x*10)/10,Math.round(-point.y*10)/10);return;}if(tool.value==='scene'){addScene(point.x,-point.y);return;}
- drag={id:'',x:point.x,y:point.y,panX:pan.value.x,panY:pan.value.y};svg.value?.setPointerCapture(e.pointerId);}
-function move(e:PointerEvent){if(!drag)return;const point=svgPoint(e);if(!point)return;pan.value={x:pan.value.x+drag.x-point.x,y:pan.value.y+drag.y-point.y};}
-function up(){drag=null;}
-function fit(){zoom.value=1;pan.value={x:0,y:0};}
+function removeSelected(){ed.remove();}
+function fit(){ed.fit();}
 function replace(next:Plan){edit(()=>plan.value=clone(next));resetSelection();workspace.value=null;vehicleRevision.value='';canManage.value=false;fit();}
 function saveLocal(){try{parsePlan(JSON.stringify(plan.value));const next={...clone(plan.value),updatedAt:new Date().toISOString()};const list=[next,...saved.value.filter(p=>p.id!==next.id)];if(list.length>20)throw new Error('最多保存20个本机方案，请先导出备份再删除旧方案');localStorage.setItem('agv-web-plans-v1',JSON.stringify(list));saved.value=list;plan.value=next;dirty.value=false;message.value='已保存到此浏览器。本机方案不是后台运行配置，请定期导出文件备份。';}catch(ex){message.value=String(ex);}}
 function deleteLocal(id:string){try{const list=saved.value.filter(p=>p.id!==id);localStorage.setItem('agv-web-plans-v1',JSON.stringify(list));saved.value=list;message.value='已移出本机方案列表；当前编辑稿仍保留。';}catch(ex){message.value=String(ex);}}
@@ -112,7 +111,7 @@ onUnmounted(()=>{++epoch;window.removeEventListener('beforeunload',beforeUnload)
     <input v-model="plan.name" aria-label="方案名称" @change="dirty=true"/>
     <span :class="workspace?'green-text':effectiveSource==='backend'?'cyan':'amber-text'">{{workspace?`已关联后台 ${workspace.project.mapId}`:effectiveSource==='backend'?'后台已连接 · 未关联草稿':'离线模式'}}</span>
     <span :class="dirty?'amber-text':'green-text'">{{dirty?'· 未保存':saved.some(p=>p.id===plan.id)?'· 已保存':'· 新方案'}}</span>
-    <button @click="saveLocal"><IconDeviceFloppy :size="15"/>保存方案</button>
+    <button title="Ctrl+S · 保存到本机浏览器" @click="saveLocal"><IconDeviceFloppy :size="15"/>保存方案</button>
     <button @click="exportPlan"><IconDownload :size="15"/>导出方案</button>
     <button @click="importInput?.click()"><IconUpload :size="15"/>加载文件</button>
     <button v-if="!workspace&&effectiveSource==='backend'&&!issues.length" @click="pushOfflineToBackend"><IconCloudUpload :size="15"/>推送到后台新建</button>
@@ -134,22 +133,64 @@ onUnmounted(()=>{++epoch;window.removeEventListener('beforeunload',beforeUnload)
   <nav class="workbench-tabs" aria-label="工程模块"><button v-for="item in tabs" :key="item.id" :class="{active:tab===item.id}" @click="tab=item.id">{{item.name}}</button><small>{{counts}}</small></nav>
   <p class="workbench-message" role="status">{{message||'厂家激光扫图在RoboShop完成；此处编辑调度导航和场景。编辑稿不会自动影响运行地图。'}}</p>
   <template v-if="tab==='map'||tab==='scene'">
-   <div class="editor-toolbar"><button :class="{active:tool==='select'}" @click="tool='select'">选择 / 平移</button><button v-if="tab==='map'" :class="{active:tool==='node'}" @click="tool='node'">点击新增航点</button><button v-if="tab==='map'" :class="{active:tool==='edge'}" @click="tool='edge';edgeStart=''">依次点两点连线</button><button v-if="tab==='map'" @click="addResource">新增共享区域</button><button v-if="tab==='scene'" :class="{active:tool==='scene'}" @click="tool='scene'">点击放置场景</button><button :disabled="!undoStack.length" @click="history()">撤销</button><button :disabled="!redoStack.length" @click="history(true)">重做</button><button @click="importRuntime">从运行图复制</button><button @click="exportMap">导出地图JSON</button></div>
-   <div class="editor-layout"><aside class="editor-tree"><h3>{{tab==='scene'?'场景对象':'导航对象'}}</h3><template v-if="tab==='map'"><b>航点 {{definition.nodes.length}}</b><button v-for="n in definition.nodes" :key="n.id" :class="{active:kind==='node'&&selected===n.id}" @click="select('node',n.id)">{{n.id}} <small>{{n.agvSiteId||'未绑定厂家站点'}}</small></button><b>道路 {{definition.edges.length}}</b><button v-for="e in definition.edges" :key="e.id" :class="{active:kind==='edge'&&selected===e.id}" @click="select('edge',e.id)">{{e.id}}<small>{{e.from}}{{e.bidirectional?'↔':'→'}}{{e.to}}</small></button><b>共享区域 {{definition.resources.length}}</b><button v-for="r in definition.resources" :key="r.id" @click="select('resource',r.id)">{{r.id}}<small>容量 {{r.capacity}}</small></button></template><template v-else><button @click="addScene()"><IconPlus :size="13"/>新增场景对象</button><button v-for="s in plan.scene" :key="s.id" @click="select('scene',s.id)">{{s.name}}<small>{{s.visible?'可见':'已隐藏'}} · {{s.kind}}</small></button><p class="muted-note">场景图形仅用于显示；设备区不会自动成为障碍或交通锁。</p></template></aside>
-    <div class="editor-canvas"><svg ref="svg" :viewBox="viewBox" role="img" aria-label="调度地图编辑画布" @pointerdown="down" @pointermove="move" @pointerup="up" @pointercancel="up" @wheel.prevent="zoom=Math.max(.25,Math.min(8,zoom*($event.deltaY>0?.9:1.1)))"><defs><pattern id="edit-grid" width="1" height="1" patternUnits="userSpaceOnUse"><path d="M 1 0 L 0 0 0 1" fill="none" stroke="#26354e" stroke-width=".018"/></pattern><marker id="edge-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#40a6c4"/></marker></defs><rect :x="bounds.x-1000" :y="bounds.y-1000" width="3000" height="3000" fill="url(#edit-grid)"/>
-     <g v-for="s in plan.scene.filter(s=>s.visible)" :key="s.id" data-object="scene" @click.stop="select('scene',s.id)"><rect v-if="s.kind!=='text'" :x="s.x" :y="-s.y-s.height" :width="s.width" :height="s.height" :fill="s.color" fill-opacity=".2" :stroke="s.color" :stroke-width="scale*.08"/><text :x="s.x+.2" :y="-s.y-.3" :fill="s.color" :font-size="scale*1.2">{{s.name}}</text></g>
-     <polygon v-for="r in definition.resources" :key="r.id" data-object="resource" :points="r.boundary?.map(p=>`${p.x},${-p.y}`).join(' ')" fill="#e0b25b" fill-opacity=".09" stroke="#9f8351" :stroke-width="scale*.08" @click.stop="select('resource',r.id)"/>
-     <path v-for="e in definition.edges" :key="e.id" data-object="edge" :d="edgePath(e,definition)" fill="none" :stroke="selected===e.id&&kind==='edge'?'#fff':e.enabled?'#40a6c4':'#566175'" :stroke-width="scale*.16" :stroke-dasharray="e.enabled?undefined:'.3 .2'" :marker-end="e.bidirectional?undefined:'url(#edge-arrow)'" @click.stop="select('edge',e.id)"/>
-     <g v-for="n in definition.nodes" :key="n.id" data-object="node" @click.stop="nodeClick(n.id)"><circle :cx="n.x" :cy="-n.y" :r="nodeRadius" :fill="selected===n.id&&kind==='node'?'#effaff':'#0d2435'" :stroke="n.enabled?'#43d8b0':'#66758d'" :stroke-width="scale*.12"/><text :x="n.x" :y="-n.y+scale*1.8" text-anchor="middle" :font-size="scale*.95" fill="#9bdbce">{{n.agvSiteId||n.id}}</text></g>
-    </svg><div class="editor-zoom"><button aria-label="编辑地图缩小" @click="zoom=Math.max(.25,zoom*.8)"><IconZoomOut :size="15"/></button><button @click="fit">适配</button><button aria-label="编辑地图放大" @click="zoom=Math.min(8,zoom*1.25)"><IconZoomIn :size="15"/></button></div><span class="editor-coordinate">米制 · 滚轮缩放 · 空白处拖动平移 · 点击对象编辑属性</span></div>
-    <aside class="editor-inspector"><h3>{{selected?`属性 · ${selected}`:'地图属性'}}</h3>
+   <div class="editor-toolbar editor-tool-palette" aria-label="地图绘图工具">
+    <button v-for="item in (tab==='map'?mapTools:sceneTools)" :key="item.id" :class="{active:tool===item.id}" :aria-pressed="tool===item.id" @click="ed.changeTool(item.id)">{{item.label}}</button>
+    <span class="tool-divider"></span><button :disabled="!undoStack.length" title="Ctrl+Z" @click="history()">撤销</button><button :disabled="!redoStack.length" title="Ctrl+Y / Ctrl+Shift+Z" @click="history(true)">重做</button>
+    <button @click="ed.panel='batch'">批量 / 对齐 / 拓扑</button><button @click="ed.panel='layers'">图层</button><button @click="ed.panel='history'">历史</button>
+    <button @click="importRuntime">从运行图复制</button><button @click="exportMap">导出地图JSON</button>
+   </div>
+   <div class="editor-options">
+    <label>当前图层<select v-model="ed.currentLayer" @change="ed.settings"><option v-for="layer in ed.layerList" :key="layer.id" :value="layer.id">{{layer.name}}{{layer.isLocked?' · 锁定':''}}</option></select></label>
+    <label><input v-model="ed.grid" type="checkbox" @change="ed.settings"/>网格</label><label>间距(m)<input v-model.number="ed.gridStep" type="number" min=".001" step=".1" @change="ed.settings"/></label>
+    <label><input v-model="ed.snapGrid" type="checkbox" @change="ed.settings"/>网格吸附</label><label><input v-model="ed.snapNodes" type="checkbox" @change="ed.settings"/>节点吸附</label><label><input v-model="ed.snapAlignment" type="checkbox" @change="ed.settings"/>对齐参考线</label>
+    <span>已选 {{ed.count}}</span><button :disabled="!ed.count" @click="ed.remove">删除所选</button>
+    <template v-if="tool==='boundary'"><button :disabled="ed.draft.length<3" @click="ed.finishBoundary">完成边界（Enter）</button><button :disabled="!ed.draft.length" @click="ed.draft.pop()">撤回顶点</button></template>
+    <template v-if="tool==='brush'"><label>共享区域<select v-model="ed.brushResource"><option value="">选择共享区域</option><option v-for="r in definition.resources" :key="r.id" :value="r.id">{{r.id}}</option></select></label><label><input v-model="ed.brushRemove" type="checkbox"/>解除关联</label></template>
+   </div>
+   <p class="editor-tool-hint" role="status">{{ed.toolHint}} <strong v-if="ed.measurement!==null">距离 {{ed.measurement.toFixed(3)}} m</strong><span v-if="ed.snapTarget"> · 吸附 {{ed.snapTarget}}</span></p>
+   <div class="editor-layout"><aside class="editor-tree"><h3>{{tab==='scene'?'场景对象':'导航对象'}}</h3><template v-if="tab==='map'"><b>航点 {{definition.nodes.length}}</b><button v-for="n in definition.nodes" :key="n.id" :class="{active:ed.isSelected('node',n.id)}" @click="select('node',n.id,$event)">{{n.id}} <small>{{n.agvSiteId||'未绑定厂家站点'}}</small></button><b>道路 {{definition.edges.length}}</b><button v-for="e in definition.edges" :key="e.id" :class="{active:ed.isSelected('edge',e.id)}" @click="select('edge',e.id,$event)">{{e.id}}<small>{{e.from}}{{e.bidirectional?'↔':'→'}}{{e.to}}</small></button><b>共享区域 {{definition.resources.length}}</b><button v-for="r in definition.resources" :key="r.id" @click="select('resource',r.id,$event)">{{r.id}}<small>容量 {{r.capacity}}</small></button></template><template v-else><button @click="ed.addScene({x:0,y:0})"><IconPlus :size="13"/>新增场景对象</button><button v-for="s in plan.scene" :key="s.id" @click="select('scene',s.id,$event)">{{s.name}}<small>{{s.visible?'可见':'已隐藏'}} · {{s.kind}}</small></button><p class="muted-note">场景图形仅用于显示；设备区不会自动成为障碍或交通锁。</p></template></aside>
+    <div class="editor-canvas" :class="{'pan-mode':tool==='pan'||ed.space}">
+     <svg ref="svg" :viewBox="viewBox" role="application" tabindex="0" aria-label="调度地图编辑画布，支持框选、节点拖动与键盘快捷键" @pointerdown="ed.down" @pointermove="ed.move" @pointerup="ed.up" @pointercancel="ed.cancelGesture" @lostpointercapture="ed.cancelGesture" @contextmenu.prevent @dblclick.prevent="tool==='boundary'&&ed.finishBoundary()" @wheel.prevent="ed.wheel">
+      <defs><pattern id="planning-editor-grid" :width="Math.max(.001,Number(ed.gridStep)||1)" :height="Math.max(.001,Number(ed.gridStep)||1)" patternUnits="userSpaceOnUse"><path :d="`M ${Math.max(.001,Number(ed.gridStep)||1)} 0 L 0 0 0 ${Math.max(.001,Number(ed.gridStep)||1)}`" fill="none" stroke="#1a3550" :stroke-width="scale*.04"/></pattern><marker id="planning-editor-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#72bfd2"/></marker></defs>
+      <rect v-if="ed.grid" :x="Number(viewBox.split(' ')[0])" :y="Number(viewBox.split(' ')[1])" :width="Number(viewBox.split(' ')[2])" :height="Number(viewBox.split(' ')[3])" fill="url(#planning-editor-grid)" pointer-events="none"/>
+      <g v-for="s in ed.visibleScene" :key="s.id" data-object="scene" data-kind="scene" :data-id="s.id" :style="ed.layerStyle(s)">
+       <rect v-if="s.kind!=='text'" :x="s.x" :y="-s.y-s.height" :width="s.width" :height="s.height" :fill="s.color" fill-opacity=".18" :stroke="ed.isSelected('scene',s.id)?'#e8fbff':s.color" :stroke-width="scale*.12"/><text :x="s.x+scale*.2" :y="-s.y-s.height+scale*1.2" :fill="s.color" :font-size="scale*1.1">{{s.name}}</text>
+      </g>
+      <polygon v-for="r in ed.visibleResources" :key="r.id" data-object="resource" data-kind="resource" :data-id="r.id" :points="r.boundary?.map(p=>`${p.x},${-p.y}`).join(' ')" fill="#e0b25b" :fill-opacity="ed.isSelected('resource',r.id)?.22:.09" :stroke="ed.isSelected('resource',r.id)?'#fff4d0':ed.color(r,'#b79a68')" :stroke-width="ed.lineWidth(r)" :style="ed.layerStyle(r)"><title>{{r.id}} · {{r.type}}</title></polygon>
+      <g v-for="e in ed.visibleEdges" :key="e.id" data-kind="edge" :data-id="e.id" data-object="edge" :style="ed.layerStyle(e)">
+       <path :d="edgePath(e,definition)" fill="none" stroke="transparent" :stroke-width="scale*1.6" pointer-events="stroke"/>
+       <path :d="edgePath(e,definition)" fill="none" :stroke="ed.isSelected('edge',e.id)?'#effaff':ed.color(e,e.enabled?'#40a6c4':'#566175')" :stroke-width="ed.lineWidth(e)*(ed.isSelected('edge',e.id)?1.6:1)" :marker-end="'url(#planning-editor-arrow)'" :marker-start="e.bidirectional?'url(#planning-editor-arrow)':undefined" pointer-events="none"/><title>{{e.id}} · {{e.from}} → {{e.to}} · {{e.distance.toFixed(2)}} m</title>
+      </g>
+      <g v-for="n in ed.visibleNodes" :key="n.id" data-object="node" data-kind="node" :data-id="n.id" :style="ed.layerStyle(n)">
+       <circle :cx="n.x" :cy="-n.y" :r="scale*1.15" fill="transparent"/><circle :cx="n.x" :cy="-n.y" :r="nodeRadius" :fill="ed.isSelected('node',n.id)?'#effaff':ed.color(n,n.enabled?'#0d344a':'#344254')" :stroke="ed.isSelected('node',n.id)?'#70e0f2':ed.color(n,n.enabled?'#59bfd9':'#71829a')" :stroke-width="scale*.15"/><text :x="n.x+scale*.85" :y="-n.y-scale*.65" fill="#bdcfe3" :font-size="scale*1.05">{{n.id}}</text><title>{{n.id}} · {{n.x.toFixed(3)}}, {{n.y.toFixed(3)}} m</title>
+      </g>
+      <template v-for="e in ed.visibleEdges.filter(e=>ed.isSelected('edge',e.id)&&e.controlPoints?.length)" :key="`handles-${e.id}`">
+       <polyline :points="[definition.nodes.find(n=>n.id===e.from),...(e.controlPoints??[]),definition.nodes.find(n=>n.id===e.to)].filter(Boolean).map(p=>`${p!.x},${-p!.y}`).join(' ')" fill="none" stroke="#d9ad63" :stroke-width="scale*.08" :stroke-dasharray="`${scale*.3} ${scale*.3}`" pointer-events="none"/>
+       <circle v-for="(p,index) in e.controlPoints" :key="index" :cx="p.x" :cy="-p.y" :r="scale*.5" fill="#ffc767" stroke="#fff0ce" :stroke-width="scale*.1" data-kind="edge" :data-id="e.id" :data-control="index" class="curve-handle"><title>拖动控制点 {{index+1}}</title></circle>
+      </template>
+      <g pointer-events="none">
+       <path v-if="ed.draftPath" :d="ed.draftPath" fill="none" stroke="#ffe29d" :stroke-width="scale*.16" :stroke-dasharray="`${scale*.4} ${scale*.2}`"/>
+       <circle v-for="(p,i) in ed.draft" :key="i" :cx="p.x" :cy="-p.y" :r="scale*.32" fill="#ffd075"/>
+       <line v-for="(g,i) in ed.guides" :key="i" :x1="g.axis==='x'?g.value:-1e7" :x2="g.axis==='x'?g.value:1e7" :y1="g.axis==='y'?-g.value:-1e7" :y2="g.axis==='y'?-g.value:1e7" stroke="#e4ad55" :stroke-width="scale*.07" :stroke-dasharray="`${scale*.3} ${scale*.3}`"/>
+       <rect v-if="ed.box" :x="Math.min(ed.box.a.x,ed.box.b.x)" :y="-Math.max(ed.box.a.y,ed.box.b.y)" :width="Math.abs(ed.box.b.x-ed.box.a.x)" :height="Math.abs(ed.box.b.y-ed.box.a.y)" fill="#4cb7e0" fill-opacity=".12" stroke="#7bd6f4" :stroke-width="scale*.1"/>
+       <g v-if="ed.measure.length"><line :x1="ed.measure[0]!.x" :y1="-ed.measure[0]!.y" :x2="(ed.measure[1]??ed.cursor??ed.measure[0])!.x" :y2="-(ed.measure[1]??ed.cursor??ed.measure[0])!.y" stroke="#ecb960" :stroke-width="scale*.15"/><circle v-for="(p,i) in ed.measure" :key="i" :cx="p.x" :cy="-p.y" :r="scale*.35" fill="#ffe2a4"/></g>
+      </g>
+     </svg>
+     <div class="editor-zoom"><button aria-label="编辑地图缩小" @click="ed.zoom=Math.max(.1,ed.zoom*.8)"><IconZoomOut :size="15"/></button><button @click="fit">适配</button><button aria-label="编辑地图放大" @click="ed.zoom=Math.min(40,ed.zoom*1.25)"><IconZoomIn :size="15"/></button></div>
+     <div class="editor-coordinate">{{ed.cursor?`X ${ed.cursor.x.toFixed(3)} · Y ${ed.cursor.y.toFixed(3)} m`:'米制坐标'}} · {{Math.round(ed.zoom*100)}}% · 已选 {{ed.count}}{{ed.measurement!==null?` · 测量 ${ed.measurement.toFixed(3)} m`:''}}</div>
+    </div>
+    <aside class="editor-inspector">
+     <nav class="editor-panel-tabs" aria-label="编辑面板"><button v-for="[id,label] in editorPanels" :key="id" :class="{active:ed.panel===id}" @click="ed.panel=id">{{label}}</button></nav>
+     <MapEditorPanels v-if="ed.panel!=='properties'" :editor="ed"/>
+     <div v-else><h3>{{selected?`属性 · ${selected}`:'地图属性'}}</h3>
      <template v-if="!selected"><label>地图名称<input v-model="definition.name" @change="dirty=true"/></label><label>坐标系<input v-model="definition.coordinateSystem" @change="dirty=true"/></label><p class="muted-note">坐标单位：米。修改坐标系文字不会执行坐标变换。原生SMAP须使用厂家坐标与版本核对。</p></template>
      <template v-if="kind==='node'&&nodeForm"><label>航点编号<input v-model="nodeForm.id"/></label><div class="two-fields"><label>X（米）<input v-model.number="nodeForm.x" type="number" step=".1"/></label><label>Y（米）<input v-model.number="nodeForm.y" type="number" step=".1"/></label></div><label>类型<select v-model="nodeForm.type"><option value="Waypoint">普通航点</option><option value="Station">业务站点</option><option value="Intersection">路口</option><option value="WaitingPoint">等待位</option><option value="ChargingPoint">充电位</option></select></label><label>厂家站点编号<input v-model="nodeForm.agvSiteId" placeholder="例如 LM1，按厂家地图填写"/></label><label class="check-label"><input v-model="nodeForm.enabled" type="checkbox"/>启用航点</label><label>关联共享区域<select v-model="nodeForm.resourceIds" multiple><option v-for="r in definition.resources" :key="r.id" :value="r.id">{{r.id}}</option></select></label></template>
-     <template v-if="kind==='edge'&&edgeForm"><label>道路编号<input v-model="edgeForm.id"/></label><label>起点<select v-model="edgeForm.from"><option v-for="n in definition.nodes" :key="n.id">{{n.id}}</option></select></label><label>终点<select v-model="edgeForm.to"><option v-for="n in definition.nodes" :key="n.id">{{n.id}}</option></select></label><div class="two-fields"><label>路径距离（米）<input v-model.number="edgeForm.distance" type="number" min=".001" step=".1"/></label><label>限速（米/秒）<input v-model.number="edgeForm.speedLimit" type="number" min=".001" step=".1"/></label></div><label class="check-label"><input v-model="edgeForm.bidirectional" type="checkbox"/>双向通行</label><label class="check-label"><input v-model="edgeForm.enabled" type="checkbox"/>启用道路</label><p>几何：{{edgeForm.geometryKind}}（保留导入曲线）</p><div v-for="(p,i) in edgeForm.controlPoints??[]" :key="i" class="two-fields"><label>控制点{{i+1}} X<input v-model.number="p.x" type="number"/></label><label>Y<input v-model.number="p.y" type="number"/></label></div><label>关联共享区域<select v-model="edgeForm.resourceIds" multiple><option v-for="r in definition.resources" :key="r.id" :value="r.id">{{r.id}}</option></select></label></template>
+     <template v-if="kind==='edge'&&edgeForm"><label>道路编号<input v-model="edgeForm.id"/></label><label>起点<select v-model="edgeForm.from"><option v-for="n in definition.nodes" :key="n.id">{{n.id}}</option></select></label><label>终点<select v-model="edgeForm.to"><option v-for="n in definition.nodes" :key="n.id">{{n.id}}</option></select></label><div class="two-fields"><label>路径距离（米）<input v-model.number="edgeForm.distance" type="number" min=".001" step=".1"/></label><label>限速（米/秒）<input v-model.number="edgeForm.speedLimit" type="number" min=".001" step=".1"/></label></div><label class="check-label"><input v-model="edgeForm.bidirectional" type="checkbox"/>双向通行</label><label class="check-label"><input v-model="edgeForm.enabled" type="checkbox"/>启用道路</label><p>几何：{{edgeForm.geometryKind}} · 可在画布拖动黄色控制点。</p><div v-for="(p,i) in edgeForm.controlPoints??[]" :key="i" class="two-fields"><label>控制点{{i+1}} X<input v-model.number="p.x" type="number"/></label><label>Y<input v-model.number="p.y" type="number"/></label></div><label>关联共享区域<select v-model="edgeForm.resourceIds" multiple><option v-for="r in definition.resources" :key="r.id" :value="r.id">{{r.id}}</option></select></label></template>
      <template v-if="kind==='resource'&&resourceForm"><label>区域编号<input v-model="resourceForm.id"/></label><label>区域类型<select v-model="resourceForm.type"><option value="NarrowAisle">窄通道</option><option value="Intersection">路口</option><option value="SingleLane">单行区</option><option value="Station">工位</option><option value="ChargingBay">充电区</option></select></label><label>容量<input v-model.number="resourceForm.capacity" type="number" min="1"/></label><p>边界顶点（米）</p><div v-for="(p,i) in resourceForm.boundary??[]" :key="i" class="two-fields"><label>X{{i+1}}<input v-model.number="p.x" type="number"/></label><label>Y{{i+1}}<input v-model.number="p.y" type="number"/></label></div><button @click="resourceForm.boundary??=[];resourceForm.boundary.push({x:0,y:0})">增加顶点</button></template>
      <template v-if="kind==='scene'&&sceneForm"><label>对象编号<input v-model="sceneForm.id"/></label><label>名称 / 标注<input v-model="sceneForm.name"/></label><label>类型<select v-model="sceneForm.kind"><option value="area">车间区域</option><option value="equipment">设备区域</option><option value="text">文字标注</option></select></label><div class="two-fields"><label>X<input v-model.number="sceneForm.x" type="number"/></label><label>Y<input v-model.number="sceneForm.y" type="number"/></label><label>宽<input v-model.number="sceneForm.width" type="number" min=".1"/></label><label>高<input v-model.number="sceneForm.height" type="number" min=".1"/></label></div><label>颜色<input v-model="sceneForm.color" type="color"/></label><label class="check-label"><input v-model="sceneForm.visible" type="checkbox"/>显示对象</label></template>
+     <label v-if="activeForm">对象所属图层<select v-model="activeForm.layerId"><option v-for="layer in ed.layerList" :key="layer.id" :value="layer.id">{{layer.name}}</option></select></label>
      <div v-if="selected" class="inspector-actions"><button class="accent-button" @click="applyInspector">应用属性</button><button @click="removeSelected"><IconTrash :size="13"/>删除对象</button></div>
-    </aside></div>
+    </div></aside></div>
    <div class="backend-map-tools"><b>后台草稿</b><button :disabled="busy||effectiveSource!=='backend'" @click="listMaps">读取目录</button><select v-model="mapId" aria-label="选择后台地图"><option value="">选择后台地图</option><option v-for="m in maps" :key="m.mapId" :value="m.mapId">{{m.name}}</option></select><button :disabled="busy||!mapId||effectiveSource!=='backend'" @click="loadWorkspace">读取完整草稿并替换</button><button :disabled="busy||effectiveSource!=='backend'" @click="createBackend">新建后台地图</button><button :disabled="busy||!workspace||issues.length>0||effectiveSource!=='backend'" @click="saveBackend">保存地图草稿</button><button :disabled="busy||!workspace||effectiveSource!=='backend'" @click="publish">发布后台已保存草稿</button><small>{{workspace?`${workspace.project.mapId} / V${workspace.draft.versionNumber}`:'尚未关联后台草稿'}}</small></div>
    <div class="validation-strip"><span :class="issues.length?'amber-text':'green-text'">{{issues.length?issues.join('；'):'本地结构检查通过'}}</span><small>本地检查不代替后台几何/安全校验；正式运行切换沿用WPF流程。未应用的属性不参与保存。</small></div><details v-if="versions.length"><summary>后台版本记录 {{versions.length}}</summary><p v-for="v in versions" :key="v.versionId">V{{v.versionNumber}} · {{v.status}} · {{v.nodeCount}}节点 / {{v.edgeCount}}道路 · {{v.updatedAt}}</p></details>
   </template>

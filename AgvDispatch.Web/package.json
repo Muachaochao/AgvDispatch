@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "vue-tsc --noEmit && vite build",
-    "test": "node --experimental-strip-types --test tests/*.test.ts"
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "test:editor-browser": "node scripts/editor-browser-check.mjs"
   },
   "dependencies": {
     "@tabler/icons-vue": "^3.49.0",

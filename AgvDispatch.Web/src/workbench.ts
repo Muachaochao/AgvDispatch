@@ -2,7 +2,7 @@ export interface Node { id: string; x: number; y: number; type: string; enabled:
 export interface Edge { id: string; from: string; to: string; distance: number; speedLimit: number; enabled: boolean; bidirectional: boolean; resourceIds: string[]; geometryKind: string; controlPoints?: {x:number;y:number}[] | null; layerId?: string }
 export interface Resource { id: string; type: string; capacity: number; boundary?: {x:number;y:number}[] | null; layerId?: string }
 export interface Definition { name: string; source: string; coordinateSystem: string; unit: string; nodes: Node[]; edges: Edge[]; resources: Resource[]; [key:string]:unknown }
-export interface SceneItem { id: string; name: string; kind: 'area'|'equipment'|'text'; x:number; y:number; width:number; height:number; color:string; visible:boolean }
+export interface SceneItem { id: string; name: string; kind: 'area'|'equipment'|'text'; x:number; y:number; width:number; height:number; color:string; visible:boolean; layerId?:string }
 export interface VehicleConfig { vehicleId:string; displayName:string; ipAddress:string; port:number; navigationPort:number; enabled:boolean }
 export interface Plan { schema:'agv-web-plan'; version:1; id:string; name:string; updatedAt:string; definition:Definition; scene:SceneItem[]; vehicles:VehicleConfig[]; waypoints:string[] }
 export const clone = <T>(value:T):T => value === undefined ? value : JSON.parse(JSON.stringify(value));
@@ -14,6 +14,11 @@ export function validateDefinition(d:Definition):string[] {
   if(!d || !Array.isArray(d.nodes)||!Array.isArray(d.edges)||!Array.isArray(d.resources))return ['缺少nodes、edges或resources数组'];
   if(!name(d.name)||!name(d.coordinateSystem)||d.unit!=='m')errors.push('地图名称、坐标系必填；当前Web编辑使用米制');
   if(d.nodes.length>5000||d.edges.length>10000||d.resources.length>2000)return ['地图超出Web编辑预算'];
+  if(d.layers!==undefined){
+    if(!Array.isArray(d.layers)||d.layers.length>200)errors.push('图层列表无效或超过200层');
+    else {const ids=new Set<string>();for(const layer of d.layers){if(!layer||!name(layer.id)||!name(layer.name)||ids.has(layer.id.toLowerCase())||['visible','isLocked','isAllowSelect'].some(key=>layer[key]!==undefined&&typeof layer[key]!=='boolean')||(layer.alpha!==undefined&&(!finite(layer.alpha)||layer.alpha<0||layer.alpha>1))||(layer.strokeWidth!==undefined&&(!finite(layer.strokeWidth)||layer.strokeWidth<=0)))errors.push('图层编号、名称或显示设置无效');else ids.add(layer.id.toLowerCase());}}
+  }
+  for(const item of [...d.nodes,...d.edges,...d.resources])if(item?.layerId!==undefined&&item.layerId!==null&&!name(item.layerId))errors.push('对象图层编号无效');
   for(const [list,label] of [[d.nodes,'航点'],[d.edges,'道路'],[d.resources,'区域']] as const){const ids=new Set<string>();for(const item of list){if(!item||!name(item.id)||ids.has(item.id.toLowerCase()))errors.push(`${label}编号为空或重复`);else ids.add(item.id.toLowerCase());}}
   const nodes=new Set(d.nodes.map(n=>n?.id));const resources=new Set(d.resources.map(r=>r?.id));
   for(const n of d.nodes){if(!n||!finite(n.x)||!finite(n.y)||!['Waypoint','Station','Intersection','WaitingPoint','ChargingPoint'].includes(n.type)||typeof n.enabled!=='boolean')errors.push(`航点 ${n?.id} 坐标或类型无效`);}
