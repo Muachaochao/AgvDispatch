@@ -4,10 +4,10 @@ import { useRouter } from 'vue-router';
 import { useDispatchStore } from '../stores/dispatch';
 import { DispatchScene } from '../DispatchScene';
 import { isRunningStage, label, mayPlot } from '../state';
-import { vehicleCategory, categoryLabels, shortTime } from '../dashboard';
-import { ElButton, ElTag, ElProgress, ElEmpty, ElSelect, ElOption, ElIcon, ElTooltip, ElDialog, ElDescriptions, ElDescriptionsItem, ElCollapse, ElCollapseItem, ElBadge, ElScrollbar } from 'element-plus';
-import type { Vehicle, Alarm } from '../types';
-import { Van, FullScreen, ZoomIn, ZoomOut, Aim, ArrowLeft, ArrowRight } from '@element-plus/icons-vue';
+import { vehicleCategory, categoryLabels, shortTime, alarmSeverity, alarmStatus } from '../dashboard';
+import { ElTag, ElProgress, ElDialog, ElDescriptions, ElDescriptionsItem, ElButton, ElSelect, ElOption, ElEmpty } from 'element-plus';
+import type { Alarm } from '../types';
+import { IconRobot, IconRoute, IconCircleCheck, IconArrowsMaximize, IconZoomIn, IconZoomOut } from '@tabler/icons-vue';
 import RingChart from '../RingChart.vue';
 import TaskExecutionDetails from '../TaskExecutionDetails.vue';
 
@@ -22,14 +22,14 @@ const mapElement = ref<HTMLElement>();
 const mapView = ref<'top' | 'isometric'>('top');
 const showTaskDialog = ref(false);
 const selectedAlarm = ref<Alarm | null>(null);
-const leftCollapsed = ref(false);
-const rightCollapsed = ref(false);
+const selectedDevice = ref<import('../types').Device | null>(null);
 let scene: DispatchScene | undefined;
 let detailEpoch = 0;
 
 const chosenVehicle = computed(() => store.vehicles.find(v => v.vehicleId === selectedVehicle.value));
 const selectedRoad = computed(() => store.snapshot?.map?.edges.find(edge => edge.id === selectedEdge.value));
 const alarmDialogVisible = computed({ get: () => selectedAlarm.value !== null, set: (v: boolean) => { if (!v) selectedAlarm.value = null; } });
+const deviceDialogVisible = computed({ get: () => selectedDevice.value !== null, set: (v: boolean) => { if (!v) selectedDevice.value = null; } });
 
 function draw() { scene?.update(store.snapshot, selectedVehicle.value, selectedEdge.value); }
 
@@ -51,7 +51,7 @@ async function loadDetail(id: string) {
 function selectTask(id: string) { selectedTask.value = id; detail.value = null; void loadDetail(id); }
 function openTask(id: string) { showTaskDialog.value = true; selectTask(id); }
 function setMapView(mode: 'top' | 'isometric') { mapView.value = mode; scene?.view(mode); }
-function fullscreen() { void document.querySelector('.map-main')?.requestFullscreen().catch(() => {}); }
+function fullscreen() { void mapElement.value?.parentElement?.requestFullscreen().catch(() => { store.sceneError = '当前浏览器未允许全屏'; }); }
 
 onMounted(() => {
   try { scene = new DispatchScene(mapElement.value!, id => { selectedVehicle.value = id; }); draw(); }
@@ -61,235 +61,137 @@ onUnmounted(() => { scene?.dispose(); });
 </script>
 
 <template>
-  <div class="dashboard">
-    <!-- Top Stats Bar -->
-    <div class="stats-bar">
-      <div v-for="stat in store.vehicleStats.filter(s => s.key !== 'unknown' || s.count > 0)" :key="stat.key" class="stat-chip" @click="router.push({ path: '/vehicles', query: { filter: stat.key } })">
-        <i class="dot" :class="stat.key"></i>
-        <b>{{ stat.count }}</b>
-        <span>{{ stat.label }}</span>
+  <div class="control-grid">
+    <aside class="left-column">
+      <section class="control-panel statistics-panel">
+        <header class="section-heading"><h2>车辆状态统计 <small>FLEET STATUS</small></h2><ElTag size="small" effect="plain" round>{{ store.snapshot?.status ? `已观察 ${store.vehicles.length} 辆` : '待采集' }}</ElTag></header>
+        <div class="fleet-counts">
+          <button v-for="stat in store.vehicleStats.filter(s => s.key !== 'unknown' || s.count > 0)" :key="stat.key" :class="stat.key" @click="router.push({ path: '/vehicles', query: { filter: stat.key } })">
+            <i class="status-dot" :class="stat.key"></i><b>{{ stat.count }}</b><span>{{ stat.label }}</span>
+          </button>
+        </div>
+      </section>
+
+      <section class="control-panel vehicle-focus">
+        <header class="section-heading"><h2>车辆详情 <small>VEHICLE</small></h2><ElButton text size="small" @click="router.push('/vehicles')">列表</ElButton></header>
+        <template v-if="chosenVehicle">
+          <div class="focus-vehicle"><IconRobot :size="35" stroke="1.2" /><div><b>{{ chosenVehicle.vehicleId }}</b><small>{{ chosenVehicle.displayName }}</small></div>
+            <ElTag :type="({ running:'success', waiting:'warning', fault:'danger', offline:'info', idle:'primary', charging:'primary', unknown:'info' } as Record<string,any>)[vehicleCategory(chosenVehicle, store.allTasks, store.fresh)] ?? 'info'" size="small" effect="dark">{{ categoryLabels[vehicleCategory(chosenVehicle, store.allTasks, store.fresh)] }}</ElTag>
+          </div>
+          <div class="battery-line"><span>电量</span><ElProgress :percentage="chosenVehicle.batteryPercent ?? 0" :stroke-width="6" :color="(chosenVehicle.batteryPercent ?? 0) > 20 ? '#23d0a1' : '#f56c6c'" style="flex:1" /><b>{{ chosenVehicle.batteryPercent ?? '—' }}%</b></div>
+          <dl class="property-list">
+            <dt>当前站点</dt><dd>{{ chosenVehicle.currentStation ?? '未知' }}</dd>
+            <dt>导航状态</dt><dd>{{ chosenVehicle.navigationState ?? '未知' }}</dd>
+            <dt>原始坐标</dt><dd>{{ chosenVehicle.x?.toFixed(2) ?? '—' }} / {{ chosenVehicle.y?.toFixed(2) ?? '—' }}</dd>
+            <dt>定位质量</dt><dd>{{ label(chosenVehicle.quality) }} / {{ chosenVehicle.localizationConfidence ?? '—' }}</dd>
+            <dt>地图叠加</dt><dd>{{ store.snapshot && mayPlot(store.snapshot, chosenVehicle, store.now) ? '已核定且有效' : '待核对 / 不显示' }}</dd>
+          </dl>
+        </template>
+        <p v-else class="empty-panel">连接后台后选择车辆</p>
+        <div class="vehicle-picker">
+          <ElButton v-for="v in store.vehicles" :key="v.vehicleId" :type="v.vehicleId === selectedVehicle ? 'primary' : 'default'" size="small" @click="selectedVehicle = v.vehicleId">{{ v.vehicleId }}</ElButton>
+        </div>
+      </section>
+
+      <section class="control-panel alert-preview">
+        <header class="section-heading"><h2>异常告警 <small>ALARM CENTER</small></h2><ElButton text size="small" @click="router.push('/alarms')">更多 {{ store.openAlarms.length }}</ElButton></header>
+        <div class="mini-table-head"><span>级别 / 对象</span><span>告警信息</span></div>
+        <button v-for="alarm in store.openAlarms.slice(0, 5)" :key="alarm.alarmId" class="alarm-preview-row" @click="selectedAlarm = alarm">
+          <div><ElTag :type="alarm.severity === 'Error' || alarm.severity === 'Critical' ? 'danger' : 'warning'" size="small" effect="dark">{{ alarmSeverity(alarm.severity) }}</ElTag><small>{{ alarm.sourceId }}</small></div>
+          <span>{{ alarm.title }}<small>{{ shortTime(alarm.lastObservedAt) }}</small></span>
+        </button>
+        <p v-if="!store.openAlarms.length" class="empty-panel"><IconCircleCheck :size="25" />{{ store.fresh ? '暂无未确认告警' : '等待有效告警数据' }}</p>
+        <div class="panel-footnote">确认与恢复是不同状态，不在此自动清除告警</div>
+      </section>
+    </aside>
+
+    <section class="control-panel map-control">
+      <header class="section-heading map-heading">
+        <div><h2>{{ store.snapshot?.map?.name ?? '当前运行地图' }}</h2><small>{{ store.snapshot?.map?.id ?? '未连接' }} · {{ store.snapshot?.map?.version ?? '—' }}</small></div>
+        <div class="map-toolbar">
+          <ElButton :type="mapView === 'top' ? 'primary' : 'default'" size="small" @click="setMapView('top')">2D</ElButton>
+          <ElButton :type="mapView === 'isometric' ? 'primary' : 'default'" size="small" @click="setMapView('isometric')">3D</ElButton>
+          <ElButton size="small" circle @click="fullscreen"><IconArrowsMaximize :size="15" /></ElButton>
+        </div>
+      </header>
+      <div class="map-viewport">
+        <div ref="mapElement" class="scene-container" aria-label="可交互的运行地图"></div>
+        <div v-if="store.sceneError || !store.snapshot?.map" class="scene-empty">{{ store.sceneError || '尚未取得后台运行地图。请确认C#主服务已启动、管道名称一致且已激活运行地图。' }}</div>
+        <div class="map-status-legend"><span><i class="status-dot running"></i>执行</span><span><i class="status-dot waiting"></i>等待</span><span><i class="status-dot fault"></i>故障</span><span><i class="status-dot offline"></i>离线</span></div>
+        <div class="map-navigation"><IconRoute :size="15" /><span>厂家站点与导航道路</span><small>显示不作为执行放行依据</small></div>
+        <div class="map-zoom"><button aria-label="缩小" @click="scene?.zoom(1.2)"><IconZoomOut :size="16" /></button><button @click="scene?.view(mapView)">复位</button><button aria-label="放大" @click="scene?.zoom(0.8)"><IconZoomIn :size="16" /></button></div>
+        <div class="map-caption-bottom"><span>{{ store.snapshot?.map?.nodes.length ?? 0 }} 节点 / {{ store.snapshot?.map?.edges.length ?? 0 }} 道路</span><span>{{ store.mapVehicleCount }} 辆可定位 · {{ mapView === 'top' ? '右键平移 · 滚轮缩放' : '左键旋转 · 右键平移' }}</span></div>
       </div>
-      <div class="stat-divider"></div>
-      <div class="stat-chip"><i class="dot green"></i><b>{{ store.ringSegments[0].value }}</b><span>执行任务</span></div>
-      <div class="stat-chip"><i class="dot amber"></i><b>{{ store.ringSegments[1].value }}</b><span>等待任务</span></div>
-      <div class="stat-chip" @click="router.push('/alarms')"><i class="dot" :class="store.openAlarms.length ? 'red' : 'green'"></i><b>{{ store.openAlarms.length }}</b><span>未确认告警</span></div>
-      <div class="stat-chip"><b>{{ store.allTasks.length }}</b><span>已加载任务</span></div>
-      <div class="stat-divider"></div>
-      <RingChart :segments="store.ringSegments" :total="store.allTasks.length" style="width:52px;height:52px" />
-    </div>
-
-    <!-- Main Area: Left Panel + Map + Right Panel -->
-    <div class="main-area">
-      <!-- Left Panel: Vehicle -->
-      <aside class="side-panel left-panel" :class="{ collapsed: leftCollapsed }">
-        <button class="panel-toggle" @click="leftCollapsed = !leftCollapsed"><ElIcon><ArrowLeft v-if="!leftCollapsed" /><ArrowRight v-else /></ElIcon></button>
-        <div v-show="!leftCollapsed" class="panel-scroll">
-          <div class="panel-section">
-            <div class="panel-title"><ElIcon :size="16"><Van /></ElIcon> 车辆详情 <ElButton text size="small" @click="router.push('/vehicles')">全部</ElButton></div>
-            <div class="vehicle-picker">
-              <ElButton v-for="v in store.vehicles" :key="v.vehicleId" :type="v.vehicleId === selectedVehicle ? 'primary' : 'default'" size="small" @click="selectedVehicle = v.vehicleId">
-                <i class="dot" :class="vehicleCategory(v, store.allTasks, store.fresh)"></i>{{ v.vehicleId }}
-              </ElButton>
-            </div>
-            <template v-if="chosenVehicle">
-              <div class="vehicle-head">
-                <div><b class="text-cyan mono">{{ chosenVehicle.vehicleId }}</b><small>{{ chosenVehicle.displayName }}</small></div>
-                <ElTag :type="({ running:'success', waiting:'warning', fault:'danger', offline:'info', idle:'primary', charging:'primary', unknown:'info' } as Record<string,any>)[vehicleCategory(chosenVehicle, store.allTasks, store.fresh)] ?? 'info'" size="small" effect="dark">
-                  {{ categoryLabels[vehicleCategory(chosenVehicle, store.allTasks, store.fresh)] }}
-                </ElTag>
-              </div>
-              <div class="battery-row"><span>电量</span><ElProgress :percentage="chosenVehicle.batteryPercent ?? 0" :stroke-width="6" :color="(chosenVehicle.batteryPercent ?? 0) > 20 ? '#67e8f9' : '#f56c6c'" style="flex:1" /><b class="mono">{{ chosenVehicle.batteryPercent ?? 0 }}%</b></div>
-              <ElDescriptions :column="1" size="small" border class="dark-desc">
-                <ElDescriptionsItem label="站点">{{ chosenVehicle.currentStation ?? '未知' }}</ElDescriptionsItem>
-                <ElDescriptionsItem label="导航">{{ chosenVehicle.navigationState ?? '未知' }}</ElDescriptionsItem>
-                <ElDescriptionsItem label="坐标">{{ chosenVehicle.x?.toFixed(2) ?? '—' }}, {{ chosenVehicle.y?.toFixed(2) ?? '—' }}</ElDescriptionsItem>
-                <ElDescriptionsItem label="定位">{{ label(chosenVehicle.quality) }} / {{ chosenVehicle.localizationConfidence ?? '—' }}</ElDescriptionsItem>
-                <ElDescriptionsItem label="叠加">{{ store.snapshot && mayPlot(store.snapshot, chosenVehicle, store.now) ? '有效' : '待核对' }}</ElDescriptionsItem>
-              </ElDescriptions>
-            </template>
-            <ElEmpty v-else description="选择车辆" :image-size="36" />
-          </div>
-
-          <div class="panel-section">
-            <div class="panel-title"><i class="dot amber"></i> 告警
-              <ElBadge :value="store.openAlarms.length" :hidden="!store.openAlarms.length" :max="99">
-                <ElButton text size="small" @click="router.push('/alarms')">查看</ElButton>
-              </ElBadge>
-            </div>
-            <div v-for="alarm in store.openAlarms.slice(0, 4)" :key="alarm.alarmId" class="alarm-item" @click="selectedAlarm = alarm">
-              <ElTag :type="alarm.severity === 'Error' || alarm.severity === 'Critical' ? 'danger' : 'warning'" size="small" effect="dark">{{ ({ Info:'信息',Warning:'警告',Error:'错误',Critical:'严重' } as Record<string,string>)[alarm.severity] ?? alarm.severity }}</ElTag>
-              <span>{{ alarm.title }}</span>
-            </div>
-            <div v-if="!store.openAlarms.length" class="no-data">暂无告警</div>
-          </div>
-        </div>
-      </aside>
-
-      <!-- Center: Map (takes all available space) -->
-      <div class="map-main">
-        <div class="map-header">
-          <div class="map-title">
-            <b>{{ store.snapshot?.map?.name ?? '当前运行地图' }}</b>
-            <small class="mono">{{ store.snapshot?.map?.id ?? '未连接' }} · {{ store.snapshot?.map?.version ?? '—' }} · {{ store.snapshot?.map?.nodes.length ?? 0 }} 节点 / {{ store.snapshot?.map?.edges.length ?? 0 }} 道路 · {{ store.mapVehicleCount }} 辆可定位</small>
-          </div>
-          <div class="map-controls">
-            <ElSelect v-model="selectedEdge" placeholder="选择道路" size="small" clearable filterable style="width:220px">
-              <ElOption v-for="edge in store.snapshot?.map?.edges ?? []" :key="edge.id" :label="`${edge.id} · ${edge.from}→${edge.to}`" :value="edge.id" />
-            </ElSelect>
-            <ElButton :type="mapView === 'top' ? 'primary' : 'default'" size="small" @click="setMapView('top')">2D</ElButton>
-            <ElButton :type="mapView === 'isometric' ? 'primary' : 'default'" size="small" @click="setMapView('isometric')">3D</ElButton>
-            <ElTooltip content="全屏"><ElButton size="small" circle @click="fullscreen"><ElIcon><FullScreen /></ElIcon></ElButton></ElTooltip>
-          </div>
-        </div>
-        <div class="map-viewport">
-          <div ref="mapElement" class="scene-container"></div>
-          <div v-if="store.sceneError || !store.snapshot?.map" class="scene-empty">{{ store.sceneError || '尚未取得后台运行地图。请确认C#主服务已启动且已激活运行地图。' }}</div>
-          <div class="map-legend">
-            <span><i class="dot running"></i>执行</span><span><i class="dot waiting"></i>等待</span><span><i class="dot fault"></i>故障</span><span><i class="dot offline"></i>离线</span>
-          </div>
-          <div class="map-zoom">
-            <ElButton size="small" @click="scene?.zoom(1.2)"><ElIcon><ZoomOut /></ElIcon></ElButton>
-            <ElButton size="small" @click="scene?.view(mapView)"><ElIcon><Aim /></ElIcon></ElButton>
-            <ElButton size="small" @click="scene?.zoom(0.8)"><ElIcon><ZoomIn /></ElIcon></ElButton>
-          </div>
-          <div class="map-bottom-info">
-            <span v-if="selectedRoad" class="mono">{{ selectedRoad.from }} {{ selectedRoad.bidirectional ? '↔' : '→' }} {{ selectedRoad.to }}</span>
-            <span v-else>{{ store.snapshot?.map?.coordinateSystem ?? '待核定' }} · {{ mapView === 'top' ? '右键平移 · 滚轮缩放' : '左键旋转 · 右键平移' }}</span>
-          </div>
-          <div v-for="warning in store.snapshot?.map?.warnings ?? []" :key="warning" class="map-warning"><ElTag type="warning" size="small" effect="dark">{{ warning }}</ElTag></div>
-        </div>
+      <div class="map-bottom-tools">
+        <label>路段定位
+          <ElSelect v-model="selectedEdge" placeholder="选择道路" size="small" clearable filterable style="max-width:270px">
+            <ElOption v-for="edge in store.snapshot?.map?.edges ?? []" :key="edge.id" :label="`${edge.id} · ${edge.from} → ${edge.to}`" :value="edge.id" />
+          </ElSelect>
+        </label>
+        <span v-if="selectedRoad">{{ selectedRoad.from }} {{ selectedRoad.bidirectional ? '↔' : '→' }} {{ selectedRoad.to }}</span>
+        <span v-else>米制导航图 / {{ store.snapshot?.map?.coordinateSystem ?? '待核定' }}</span>
       </div>
+      <div v-for="warning in store.snapshot?.map?.warnings ?? []" :key="warning" class="inline-warning">{{ warning }}</div>
+    </section>
 
-      <!-- Right Panel: Tasks & Resources -->
-      <aside class="side-panel right-panel" :class="{ collapsed: rightCollapsed }">
-        <button class="panel-toggle right" @click="rightCollapsed = !rightCollapsed"><ElIcon><ArrowRight v-if="!rightCollapsed" /><ArrowLeft v-else /></ElIcon></button>
-        <div v-show="!rightCollapsed" class="panel-scroll">
-          <div class="panel-section">
-            <div class="panel-title">当前任务 <ElButton text size="small" @click="router.push('/tasks')">全部 {{ store.allTasks.length }}</ElButton></div>
-            <div v-for="task in store.allTasks.slice(0, 8)" :key="task.taskId" class="task-item" @click="openTask(task.taskId)">
-              <div class="task-head">
-                <b class="mono text-cyan">{{ task.taskId }}</b>
-                <ElTag :type="task.stage === 'Faulted' ? 'danger' : isRunningStage(task.stage) ? 'success' : 'warning'" size="small" effect="dark">{{ label(task.stage) }}</ElTag>
-              </div>
-              <div class="task-sub">{{ task.stationId }} · {{ task.vehicleId ?? '待分配' }}</div>
-              <small>{{ task.errorMessage || '点击查看步骤' }}</small>
-            </div>
-            <div v-if="!store.allTasks.length" class="no-data">暂无任务</div>
-          </div>
+    <aside class="right-column">
+      <section class="control-panel distribution-panel">
+        <header class="section-heading"><h2>任务状态分布 <small>TASK STATUS</small></h2></header>
+        <RingChart :segments="store.ringSegments" :total="store.allTasks.length" />
+        <div class="ring-legend"><span v-for="segment in store.ringSegments" :key="segment.label"><i class="status-dot" :style="{ background: segment.color }"></i>{{ segment.label }}<b>{{ segment.value }}</b></span></div>
+        <p class="panel-footnote">当前快照最多50条，不代表全历史统计</p>
+      </section>
 
-          <div class="panel-section">
-            <div class="panel-title">共享区域</div>
-            <div v-for="resource in store.resources" :key="resource.resourceId" class="resource-item">
-              <span><i class="dot" :class="resource.occupiedCount ? 'amber' : 'green'"></i>{{ resource.resourceId }}</span>
-              <b class="mono">{{ resource.occupiedCount }}/{{ resource.capacity }}</b>
-              <small>{{ resource.leases.map(l => l.vehicleId).join('、') || '空闲' }}</small>
-            </div>
-            <div v-if="!store.resources.length" class="no-data">暂无资源</div>
+      <section class="control-panel live-tasks">
+        <header class="section-heading"><h2>当前任务 <small>LIVE TASKS</small></h2><ElButton text size="small" @click="router.push('/tasks')">全部</ElButton></header>
+        <div class="current-task-counts"><span>执行 <b>{{ store.ringSegments[0].value }}</b></span><span>等待 <b>{{ store.ringSegments[1].value }}</b></span></div>
+        <button v-for="task in store.allTasks.slice(0, 6)" :key="task.taskId" class="live-task" @click="openTask(task.taskId)">
+          <div><b>{{ task.taskId }}</b>
+            <ElTag :type="task.stage === 'Faulted' ? 'danger' : isRunningStage(task.stage) ? 'success' : 'warning'" size="small" effect="dark">{{ label(task.stage) }}</ElTag>
           </div>
+          <p>{{ task.stationId }}<span>{{ task.vehicleId ?? '待分配' }}</span></p>
+          <small>{{ task.errorMessage || '点击查看步骤及PLC条件' }}</small>
+        </button>
+        <p v-if="!store.allTasks.length" class="empty-panel">暂无任务数据</p>
+      </section>
+
+      <section class="control-panel shared-panel">
+        <header class="section-heading"><h2>共享区域 <small>TRAFFIC</small></h2></header>
+        <div v-for="resource in store.resources" :key="resource.resourceId" class="shared-resource">
+          <span><i class="status-dot" :class="resource.occupiedCount ? 'amber' : 'green'"></i>{{ resource.resourceId }}</span>
+          <b>{{ resource.occupiedCount }}/{{ resource.capacity }}</b>
+          <small>{{ resource.leases.map(l => l.vehicleId).join('、') || (resource.occupiedCount ? '已占用' : '空闲') }}</small>
         </div>
-      </aside>
-    </div>
+        <p v-if="!store.resources.length" class="empty-panel">暂无资源数据</p>
+      </section>
+    </aside>
   </div>
 
-  <!-- Dialogs -->
   <ElDialog v-model="showTaskDialog" title="任务运行详情 · 九步、条件与执行证据" width="1000px" destroy-on-close>
     <TaskExecutionDetails v-if="detail" :detail="detail" :fresh="store.fresh" :now="store.now" />
-    <ElEmpty v-else :description="store.error || '正在读取…'" />
+    <ElEmpty v-else :description="store.error || '正在读取任务详情…'" />
   </ElDialog>
 
-  <ElDialog v-model="alarmDialogVisible" title="告警详情" width="600px">
+  <ElDialog v-model="alarmDialogVisible" title="告警详情" width="620px">
     <template v-if="selectedAlarm">
       <ElDescriptions :column="2" border size="small">
-        <ElDescriptionsItem label="编号">{{ selectedAlarm.alarmId }}</ElDescriptionsItem>
-        <ElDescriptionsItem label="对象">{{ selectedAlarm.sourceId }}</ElDescriptionsItem>
-        <ElDescriptionsItem label="级别">{{ ({ Info:'信息',Warning:'警告',Error:'错误',Critical:'严重' } as Record<string,string>)[selectedAlarm.severity] ?? selectedAlarm.severity }}</ElDescriptionsItem>
-        <ElDescriptionsItem label="状态">{{ ({ Open:'未确认',Acknowledged:'已确认',Recovered:'已恢复' } as Record<string,string>)[selectedAlarm.status] ?? selectedAlarm.status }}</ElDescriptionsItem>
+        <ElDescriptionsItem label="告警编号">{{ selectedAlarm.alarmId }}</ElDescriptionsItem>
+        <ElDescriptionsItem label="关联对象">{{ selectedAlarm.sourceId }}</ElDescriptionsItem>
+        <ElDescriptionsItem label="级别 / 状态">{{ alarmSeverity(selectedAlarm.severity) }} / {{ alarmStatus(selectedAlarm.status) }}</ElDescriptionsItem>
+        <ElDescriptionsItem label="代码">{{ selectedAlarm.code }}</ElDescriptionsItem>
       </ElDescriptions>
-      <h4 style="margin:14px 0 6px;color:#cee2f5">{{ selectedAlarm.title }}</h4>
-      <p style="line-height:1.9;color:#afc6e3">{{ selectedAlarm.message }}</p>
+      <h3 class="subheading">{{ selectedAlarm.title }}</h3>
+      <p class="long-message">{{ selectedAlarm.message }}</p>
+      <p class="muted-note">首次发生：{{ shortTime(selectedAlarm.firstOccurredAt) }}<br>最近观察：{{ shortTime(selectedAlarm.lastObservedAt) }}<br>恢复时间：{{ shortTime(selectedAlarm.recoveredAt) }}</p>
+      <div class="inline-warning">此处只查看，确认及恢复按现有WPF流程处理。</div>
+    </template>
+  </ElDialog>
+
+  <ElDialog v-model="deviceDialogVisible" :title="(selectedDevice?.name ?? '') + ' · PLC设备状态'" width="800px">
+    <template v-if="selectedDevice">
+      <p class="form-explanation">{{ selectedDevice.summary }}</p>
+      <table class="dialog-table"><thead><tr><th>信号</th><th>值</th><th>质量</th><th>地址</th><th>更新时间</th></tr></thead>
+      <tbody><tr v-for="field in selectedDevice.fields" :key="field.name"><td>{{ field.name }}</td><td>{{ field.value }}</td><td>{{ field.quality }}</td><td>{{ field.address }}</td><td>{{ field.updatedAt }}</td></tr></tbody></table>
     </template>
   </ElDialog>
 </template>
-
-<style scoped>
-.dashboard{display:flex;flex-direction:column;gap:10px;height:calc(100dvh - 160px);min-height:500px}
-
-/* Stats Bar */
-.stats-bar{display:flex;align-items:center;gap:10px;padding:8px 14px;background:#0d1b2a;border:1px solid #1e3352;border-radius:6px;overflow-x:auto;flex-shrink:0}
-.stat-chip{display:flex;align-items:center;gap:6px;cursor:pointer;padding:4px 10px;border-radius:4px;transition:background .15s;white-space:nowrap}
-.stat-chip:hover{background:#142035}
-.stat-chip b{font:600 18px/1 Consolas,monospace;color:#e0edf8}
-.stat-chip span{font-size:10px;color:#8da3c6}
-.stat-divider{width:1px;height:30px;background:#1e3a5f;flex-shrink:0}
-
-/* Main Area */
-.main-area{display:flex;gap:0;flex:1;min-height:0;border-radius:6px;overflow:hidden;border:1px solid #1e3352}
-
-/* Side Panels */
-.side-panel{width:260px;flex-shrink:0;background:#0a1525;border-right:1px solid #1e3352;position:relative;transition:width .25s ease;display:flex;flex-direction:column}
-.side-panel.right-panel{border-right:none;border-left:1px solid #1e3352}
-.side-panel.collapsed{width:32px}
-.panel-toggle{position:absolute;top:50%;z-index:5;width:24px;height:48px;background:#142035;border:1px solid #1e3a5f;border-radius:0 6px 6px 0;color:#8da3c6;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;transform:translateY(-50%);right:-1px;min-height:auto}
-.panel-toggle.right{left:-1px;right:auto;border-radius:6px 0 0 6px}
-.panel-scroll{overflow-y:auto;flex:1;padding:12px}
-
-.panel-section{margin-bottom:16px}
-.panel-title{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:#c8daf0;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid #1e3352}
-.panel-title .el-button{margin-left:auto}
-
-.vehicle-picker{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:10px}
-.vehicle-picker .el-button{font-size:10px;padding:4px 8px}
-.vehicle-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
-.vehicle-head div{display:flex;flex-direction:column;gap:2px}
-.vehicle-head small{color:#7891b5;font-size:10px}
-.battery-row{display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:10px;color:#8da6ca}
-.battery-row b{font-size:11px;color:#67e8f9}
-
-.dark-desc :deep(.el-descriptions__label){background:#0a1525!important;color:#8da3c6!important;padding:6px 10px!important;font-size:11px!important}
-.dark-desc :deep(.el-descriptions__content){background:#0f1b30!important;color:#c8daf0!important;padding:6px 10px!important;font-size:11px!important}
-.dark-desc :deep(.el-descriptions){--el-descriptions-table-border:1px solid #1e3352}
-
-.alarm-item{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid #162540;cursor:pointer;font-size:11px;color:#b3c5e1}
-.alarm-item:hover{color:#67e8f9}
-.alarm-item span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
-
-.task-item{padding:10px 0;border-bottom:1px solid #162540;cursor:pointer;transition:background .15s}
-.task-item:hover{background:#0f1b30}
-.task-head{display:flex;justify-content:space-between;align-items:center}
-.task-sub{font-size:11px;color:#b3c5e1;margin-top:4px}
-.task-item small{display:block;margin-top:3px;font-size:10px;color:#7c96b7;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-
-.resource-item{display:grid;grid-template-columns:1fr auto;gap:3px;padding:8px 0;border-bottom:1px solid #162540;font-size:11px}
-.resource-item>span{display:flex;align-items:center;gap:5px;color:#adbfdb}
-.resource-item>b{color:#d2e4fa;font-size:12px}
-.resource-item small{grid-column:1/-1;color:#7390b1;font-size:10px}
-
-.no-data{color:#6b82a5;font-size:11px;text-align:center;padding:16px 0}
-
-/* Map (center, fills all remaining space) */
-.map-main{flex:1;display:flex;flex-direction:column;min-width:0;background:#0b1229}
-.map-header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 14px;background:#0d1b2a;border-bottom:1px solid #1e3352;flex-shrink:0;flex-wrap:wrap}
-.map-title{min-width:0}
-.map-title b{font-size:14px;color:#d0e2f4;display:block}
-.map-title small{color:#6b82a5;font-size:10px;display:block;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.map-controls{display:flex;align-items:center;gap:6px;flex-shrink:0}
-.map-viewport{position:relative;flex:1;min-height:300px;overflow:hidden}
-.scene-container{position:absolute;inset:0}.scene-container canvas{display:block;width:100%;height:100%;touch-action:none}
-.scene-empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#6b82a5;text-align:center;padding:30px;pointer-events:none;font-size:13px}
-.map-legend{position:absolute;right:14px;top:12px;display:flex;gap:12px;color:#7990b2;font-size:10px;pointer-events:none}
-.map-legend>span{display:flex;align-items:center;gap:5px}
-.map-zoom{position:absolute;right:12px;bottom:50px;display:flex;flex-direction:column;gap:4px}
-.map-bottom-info{position:absolute;bottom:10px;left:14px;right:14px;display:flex;justify-content:space-between;font-size:10px;color:#5d7a9e;pointer-events:none}
-.map-warning{position:absolute;top:12px;left:14px}
-
-/* Common */
-.dot{display:inline-block;width:7px;height:7px;border-radius:50%;flex-shrink:0}
-.dot.green,.dot.running{background:#25d3a4}.dot.amber,.dot.waiting{background:#e9b34f}
-.dot.red,.dot.fault{background:#ee668b}.dot.idle{background:#b48ae8}
-.dot.charging{background:#4db2ed}.dot.offline,.dot.unknown{background:#677b9b}
-.text-cyan{color:#67e8f9!important}.mono{font-family:Consolas,monospace}
-
-/* Responsive */
-@media(max-width:1200px){.side-panel{width:220px}}
-@media(max-width:900px){.side-panel{display:none}.stats-bar{flex-wrap:wrap}}
-</style>
