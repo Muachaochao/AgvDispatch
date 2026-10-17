@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { IconMap, IconDeviceFloppy, IconDownload, IconUpload, IconPlus, IconTrash, IconArrowUp, IconArrowDown, IconCopy, IconRefresh, IconZoomIn, IconZoomOut } from '@tabler/icons-vue';
-import { ElButton, ElTabs, ElTabPane, ElAlert, ElTag, ElInput, ElSelect, ElOption, ElDialog, ElForm, ElFormItem, ElCheckbox, ElInputNumber, ElCard, ElSpace, ElEmpty, ElTable, ElTableColumn, ElColorPicker } from 'element-plus';
 import ConsoleDialog from './ConsoleDialog.vue';
 import { clone, emptyPlan, parsePlan, validateDefinition, validateVehicles, routePlan, edgePath, type Plan, type Node, type Edge, type Resource, type VehicleConfig, type SceneItem } from './workbench';
 import type { Snapshot, MapSummary } from './types';
@@ -89,36 +88,11 @@ onUnmounted(()=>{++epoch;window.removeEventListener('beforeunload',beforeUnload)
 
 <template>
  <section class="planning-workbench">
-  <ElCard shadow="never" class="wb-header-card">
-    <div class="wb-header">
-      <h2><IconMap :size="20"/>调度工程工作台</h2>
-      <ElInput v-model="plan.name" style="width:220px" size="small" placeholder="方案名称" @change="dirty=true"/>
-      <ElTag :type="dirty ? 'warning' : 'success'" size="small" effect="dark">{{dirty?'编辑稿未保存':saved.some(p=>p.id===plan.id)?'已保存':'新方案'}}</ElTag>
-      <ElSpace>
-        <ElButton size="small" @click="saveLocal"><IconDeviceFloppy :size="14"/>保存</ElButton>
-        <ElButton size="small" @click="exportPlan"><IconDownload :size="14"/>导出</ElButton>
-        <ElButton size="small" @click="importInput?.click()"><IconUpload :size="14"/>加载文件</ElButton>
-      </ElSpace>
-      <input ref="importInput" class="file-picker" type="file" accept=".json,.smap" aria-label="导入" @change="importFile"/>
-    </div>
-  </ElCard>
-  <ElTabs v-model="tab" type="border-card" class="wb-tabs">
-    <ElTabPane v-for="item in tabs" :key="item.id" :label="item.name" :name="item.id" />
-  </ElTabs>
-  <ElAlert v-if="message" :title="message" type="info" show-icon :closable="true" @close="message=''" style="margin-bottom:10px" />
-  <p v-else class="workbench-message" role="status">厂家激光扫图在RoboShop完成；此处编辑调度导航和场景。编辑稿不会自动影响运行地图。</p>
+  <header class="workbench-title"><h2><IconMap :size="21"/>调度工程工作台</h2><input v-model="plan.name" aria-label="方案名称" @change="dirty=true"/><span :class="dirty?'amber-text':'green-text'">{{dirty?'编辑稿未保存':saved.some(p=>p.id===plan.id)?'本机方案已保存':'新建方案'}}</span><button @click="saveLocal"><IconDeviceFloppy :size="15"/>保存方案</button><button @click="exportPlan"><IconDownload :size="15"/>导出方案</button><button @click="importInput?.click()"><IconUpload :size="15"/>加载文件</button><input ref="importInput" class="file-picker" type="file" accept=".json,.smap" aria-label="导入地图或方案文件" @change="importFile"/></header>
+  <nav class="workbench-tabs" aria-label="工程模块"><button v-for="item in tabs" :key="item.id" :class="{active:tab===item.id}" @click="tab=item.id">{{item.name}}</button><small>{{counts}}</small></nav>
+  <p class="workbench-message" role="status">{{message||'厂家激光扫图在RoboShop完成；此处编辑调度导航和场景。编辑稿不会自动影响运行地图。'}}</p>
   <template v-if="tab==='map'||tab==='scene'">
-   <ElSpace wrap class="editor-toolbar">
-     <ElButton :type="tool==='select'?'primary':'default'" size="small" @click="tool='select'">选择 / 平移</ElButton>
-     <ElButton v-if="tab==='map'" :type="tool==='node'?'primary':'default'" size="small" @click="tool='node'">新增航点</ElButton>
-     <ElButton v-if="tab==='map'" :type="tool==='edge'?'primary':'default'" size="small" @click="tool='edge';edgeStart=''">连线</ElButton>
-     <ElButton v-if="tab==='map'" size="small" @click="addResource">新增共享区域</ElButton>
-     <ElButton v-if="tab==='scene'" :type="tool==='scene'?'primary':'default'" size="small" @click="tool='scene'">放置场景</ElButton>
-     <ElButton size="small" :disabled="!undoStack.length" @click="history()">撤销</ElButton>
-     <ElButton size="small" :disabled="!redoStack.length" @click="history(true)">重做</ElButton>
-     <ElButton size="small" @click="importRuntime">从运行图复制</ElButton>
-     <ElButton size="small" @click="exportMap">导出地图JSON</ElButton>
-   </ElSpace>
+   <div class="editor-toolbar"><button :class="{active:tool==='select'}" @click="tool='select'">选择 / 平移</button><button v-if="tab==='map'" :class="{active:tool==='node'}" @click="tool='node'">点击新增航点</button><button v-if="tab==='map'" :class="{active:tool==='edge'}" @click="tool='edge';edgeStart=''">依次点两点连线</button><button v-if="tab==='map'" @click="addResource">新增共享区域</button><button v-if="tab==='scene'" :class="{active:tool==='scene'}" @click="tool='scene'">点击放置场景</button><button :disabled="!undoStack.length" @click="history()">撤销</button><button :disabled="!redoStack.length" @click="history(true)">重做</button><button @click="importRuntime">从运行图复制</button><button @click="exportMap">导出地图JSON</button></div>
    <div class="editor-layout"><aside class="editor-tree"><h3>{{tab==='scene'?'场景对象':'导航对象'}}</h3><template v-if="tab==='map'"><b>航点 {{definition.nodes.length}}</b><button v-for="n in definition.nodes" :key="n.id" :class="{active:kind==='node'&&selected===n.id}" @click="select('node',n.id)">{{n.id}} <small>{{n.agvSiteId||'未绑定厂家站点'}}</small></button><b>道路 {{definition.edges.length}}</b><button v-for="e in definition.edges" :key="e.id" :class="{active:kind==='edge'&&selected===e.id}" @click="select('edge',e.id)">{{e.id}}<small>{{e.from}}{{e.bidirectional?'↔':'→'}}{{e.to}}</small></button><b>共享区域 {{definition.resources.length}}</b><button v-for="r in definition.resources" :key="r.id" @click="select('resource',r.id)">{{r.id}}<small>容量 {{r.capacity}}</small></button></template><template v-else><button @click="addScene()"><IconPlus :size="13"/>新增场景对象</button><button v-for="s in plan.scene" :key="s.id" @click="select('scene',s.id)">{{s.name}}<small>{{s.visible?'可见':'已隐藏'}} · {{s.kind}}</small></button><p class="muted-note">场景图形仅用于显示；设备区不会自动成为障碍或交通锁。</p></template></aside>
     <div class="editor-canvas"><svg ref="svg" :viewBox="viewBox" role="img" aria-label="调度地图编辑画布" @pointerdown="down" @pointermove="move" @pointerup="up" @pointercancel="up" @wheel.prevent="zoom=Math.max(.25,Math.min(8,zoom*($event.deltaY>0?.9:1.1)))"><defs><pattern id="edit-grid" width="1" height="1" patternUnits="userSpaceOnUse"><path d="M 1 0 L 0 0 0 1" fill="none" stroke="#26354e" stroke-width=".018"/></pattern><marker id="edge-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#40a6c4"/></marker></defs><rect :x="bounds.x-1000" :y="bounds.y-1000" width="3000" height="3000" fill="url(#edit-grid)"/>
      <g v-for="s in plan.scene.filter(s=>s.visible)" :key="s.id" data-object="scene" @click.stop="select('scene',s.id)"><rect v-if="s.kind!=='text'" :x="s.x" :y="-s.y-s.height" :width="s.width" :height="s.height" :fill="s.color" fill-opacity=".2" :stroke="s.color" :stroke-width="scale*.08"/><text :x="s.x+.2" :y="-s.y-.3" :fill="s.color" :font-size="scale*1.2">{{s.name}}</text></g>
@@ -134,19 +108,8 @@ onUnmounted(()=>{++epoch;window.removeEventListener('beforeunload',beforeUnload)
      <template v-if="kind==='scene'&&sceneForm"><label>对象编号<input v-model="sceneForm.id"/></label><label>名称 / 标注<input v-model="sceneForm.name"/></label><label>类型<select v-model="sceneForm.kind"><option value="area">车间区域</option><option value="equipment">设备区域</option><option value="text">文字标注</option></select></label><div class="two-fields"><label>X<input v-model.number="sceneForm.x" type="number"/></label><label>Y<input v-model.number="sceneForm.y" type="number"/></label><label>宽<input v-model.number="sceneForm.width" type="number" min=".1"/></label><label>高<input v-model.number="sceneForm.height" type="number" min=".1"/></label></div><label>颜色<input v-model="sceneForm.color" type="color"/></label><label class="check-label"><input v-model="sceneForm.visible" type="checkbox"/>显示对象</label></template>
      <div v-if="selected" class="inspector-actions"><button class="accent-button" @click="applyInspector">应用属性</button><button @click="removeSelected"><IconTrash :size="13"/>删除对象</button></div>
     </aside></div>
-   <ElCard shadow="never" class="wb-backend-tools">
-     <ElSpace wrap>
-       <b style="color:#98bad7">后台草稿</b>
-       <ElButton :disabled="busy||source!=='backend'" size="small" @click="listMaps">读取目录</ElButton>
-       <ElSelect v-model="mapId" placeholder="选择后台地图" size="small" style="width:180px"><ElOption value="" label="选择后台地图" /><ElOption v-for="m in maps" :key="m.mapId" :value="m.mapId" :label="m.name" /></ElSelect>
-       <ElButton :disabled="busy||!mapId||source!=='backend'" size="small" @click="loadWorkspace">读取草稿</ElButton>
-       <ElButton :disabled="busy||source!=='backend'" size="small" @click="createBackend">新建地图</ElButton>
-       <ElButton :disabled="busy||!workspace||issues.length>0||source!=='backend'" size="small" type="primary" @click="saveBackend">保存草稿</ElButton>
-       <ElButton :disabled="busy||!workspace||source!=='backend'" size="small" type="warning" @click="publish">发布</ElButton>
-       <ElTag size="small" effect="plain" type="info">{{workspace?`${workspace.project.mapId} / V${workspace.draft.versionNumber}`:'未关联草稿'}}</ElTag>
-     </ElSpace>
-   </ElCard>
-   <ElAlert :title="issues.length?issues.join('；'):'本地结构检查通过'" :type="issues.length?'warning':'success'" show-icon :closable="false" style="margin-top:8px" /><details v-if="versions.length"><summary>后台版本记录 {{versions.length}}</summary><p v-for="v in versions" :key="v.versionId">V{{v.versionNumber}} · {{v.status}} · {{v.nodeCount}}节点 / {{v.edgeCount}}道路 · {{v.updatedAt}}</p></details>
+   <div class="backend-map-tools"><b>后台草稿</b><button :disabled="busy||source!=='backend'" @click="listMaps">读取目录</button><select v-model="mapId" aria-label="选择后台地图"><option value="">选择后台地图</option><option v-for="m in maps" :key="m.mapId" :value="m.mapId">{{m.name}}</option></select><button :disabled="busy||!mapId||source!=='backend'" @click="loadWorkspace">读取完整草稿并替换</button><button :disabled="busy||source!=='backend'" @click="createBackend">新建后台地图</button><button :disabled="busy||!workspace||issues.length>0||source!=='backend'" @click="saveBackend">保存地图草稿</button><button :disabled="busy||!workspace||source!=='backend'" @click="publish">发布后台已保存草稿</button><small>{{workspace?`${workspace.project.mapId} / V${workspace.draft.versionNumber}`:'尚未关联后台草稿'}}</small></div>
+   <div class="validation-strip"><span :class="issues.length?'amber-text':'green-text'">{{issues.length?issues.join('；'):'本地结构检查通过'}}</span><small>本地检查不代替后台几何/安全校验；正式运行切换沿用WPF流程。未应用的属性不参与保存。</small></div><details v-if="versions.length"><summary>后台版本记录 {{versions.length}}</summary><p v-for="v in versions" :key="v.versionId">V{{v.versionNumber}} · {{v.status}} · {{v.nodeCount}}节点 / {{v.edgeCount}}道路 · {{v.updatedAt}}</p></details>
   </template>
   <div v-else-if="tab==='plans'" class="plan-manager"><div class="workbench-guide"><h3>方案内容与生效范围</h3><p>方案包含地图、场景、车辆配置、航点顺序。保存于此浏览器；导出JSON可备份或跨电脑加载。加载方案只替换编辑稿，不下发小车，不切换运行地图。</p><p>地图JSON仅导出地图定义，可由主工程规范化JSON导入；方案JSON是Web工作台格式，不是厂家SMAP文件。SMAP在连接后台后选择文件，复用主工程解析器。</p><button @click="pending=emptyPlan()"><IconPlus :size="14"/>新建空白方案</button><button @click="edit(()=>{plan.id=uuid();plan.name+=' 副本';});saveLocal()"><IconCopy :size="14"/>另存为副本</button><button @click="exportMap">导出地图JSON</button></div><div class="plan-cards"><article v-for="p in saved" :key="p.id"><h3>{{p.name}}</h3><p>{{p.definition.name}}</p><small>{{p.updatedAt}}</small><p>{{p.definition.nodes.length}} 航点 / {{p.vehicles.length}} 车辆 / {{p.scene.length}} 场景</p><button @click="pending=clone(p)">预览并加载</button><button @click="deleteLocal(p.id)">移出列表</button></article><p v-if="!saved.length" class="empty-panel">暂无本机方案。编辑后点击“保存方案”。</p></div></div>
   <div v-else-if="tab==='vehicles'" class="configuration-page"><div class="editor-toolbar"><button class="accent-button" @click="openVehicle()"><IconPlus :size="15"/>新增车辆</button><button :disabled="busy||source!=='backend'" @click="readVehicles"><IconRefresh :size="15"/>读取后台车辆配置并替换</button><button :disabled="busy||source!=='backend'||!vehicleRevision||!canManage||vehicleErrors.length>0" @click="saveVehicles">保存车辆配置到后台</button><span>{{plan.vehicles.length}}辆 · {{restart?'后台配置待重启':'配置与在线状态分别管理'}}</span></div><p class="muted-note">新增车辆默认不启用。状态端口19204、导航端口19206按现场厂家配置填写；保存后台受未结束任务、配置版本及权限核验，服务重启后生效。此处不会修改PLC、全局通信开关或自动确认地图坐标绑定。</p><div class="management-table"><table><thead><tr><th>编号</th><th>名称</th><th>控制器IP</th><th>状态端口</th><th>导航端口</th><th>启用配置</th><th>当前观察</th><th>操作</th></tr></thead><tbody><tr v-for="v in plan.vehicles" :key="v.vehicleId"><td>{{v.vehicleId}}</td><td>{{v.displayName}}</td><td>{{v.ipAddress}}</td><td>{{v.port}}</td><td>{{v.navigationPort}}</td><td>{{v.enabled?'已勾选':'不启用'}}</td><td>{{snapshot?.status?.agvs.find(a=>a.vehicleId===v.vehicleId)?.connection??'无在线数据'}}</td><td><button @click="openVehicle(v)">编辑</button><button @click="edit(()=>plan.vehicles=plan.vehicles.filter(n=>n.vehicleId!==v.vehicleId))">移出配置稿</button></td></tr></tbody></table></div><p v-if="!plan.vehicles.length" class="empty-panel">尚未配置车辆。点击新增，或连接后台读取已保存配置。</p><p class="amber-text">{{vehicleErrors.join('；')}}</p></div>

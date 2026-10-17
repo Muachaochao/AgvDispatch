@@ -3,12 +3,15 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { useDispatchStore } from '../stores/dispatch';
 import { DispatchScene } from '../DispatchScene';
-import { isRunningStage, label, mayPlot } from '../state';
-import { vehicleCategory, categoryLabels, shortTime, alarmSeverity, alarmStatus } from '../dashboard';
-import { ElTag, ElProgress, ElDialog, ElDescriptions, ElDescriptionsItem, ElButton, ElSelect, ElOption, ElEmpty } from 'element-plus';
-import type { Alarm } from '../types';
-import { IconRobot, IconRoute, IconCircleCheck, IconArrowsMaximize, IconZoomIn, IconZoomOut } from '@tabler/icons-vue';
+import { isFresh, isRunningStage, label, mayPlot } from '../state';
+import { vehicleCategory, categoryLabels, shortTime, type VehicleCategory } from '../dashboard';
+import type { Snapshot } from '../types';
+import {
+  IconRobot, IconRoute, IconCircleCheck, IconArrowsMaximize, IconPlus,
+  IconZoomIn, IconZoomOut, IconCpu, IconNetwork
+} from '@tabler/icons-vue';
 import RingChart from '../RingChart.vue';
+import ConsoleDialog from '../ConsoleDialog.vue';
 import TaskExecutionDetails from '../TaskExecutionDetails.vue';
 
 const store = useDispatchStore();
@@ -21,15 +24,13 @@ const detail = ref<import('../types').TaskDetail | null>(null);
 const mapElement = ref<HTMLElement>();
 const mapView = ref<'top' | 'isometric'>('top');
 const showTaskDialog = ref(false);
-const selectedAlarm = ref<Alarm | null>(null);
+const selectedAlarm = ref<import('../types').Alarm | null>(null);
 const selectedDevice = ref<import('../types').Device | null>(null);
 let scene: DispatchScene | undefined;
 let detailEpoch = 0;
 
 const chosenVehicle = computed(() => store.vehicles.find(v => v.vehicleId === selectedVehicle.value));
 const selectedRoad = computed(() => store.snapshot?.map?.edges.find(edge => edge.id === selectedEdge.value));
-const alarmDialogVisible = computed({ get: () => selectedAlarm.value !== null, set: (v: boolean) => { if (!v) selectedAlarm.value = null; } });
-const deviceDialogVisible = computed({ get: () => selectedDevice.value !== null, set: (v: boolean) => { if (!v) selectedDevice.value = null; } });
 
 function draw() { scene?.update(store.snapshot, selectedVehicle.value, selectedEdge.value); }
 
@@ -48,14 +49,17 @@ async function loadDetail(id: string) {
     if (selection === detailEpoch && selectedTask.value === id && store.fresh) detail.value = result;
   } catch { detail.value = null; }
 }
+
 function selectTask(id: string) { selectedTask.value = id; detail.value = null; void loadDetail(id); }
 function openTask(id: string) { showTaskDialog.value = true; selectTask(id); }
 function setMapView(mode: 'top' | 'isometric') { mapView.value = mode; scene?.view(mode); }
 function fullscreen() { void mapElement.value?.parentElement?.requestFullscreen().catch(() => { store.sceneError = '当前浏览器未允许全屏'; }); }
 
 onMounted(() => {
-  try { scene = new DispatchScene(mapElement.value!, id => { selectedVehicle.value = id; }); draw(); }
-  catch (ex) { store.sceneError = `三维视图初始化失败：${String(ex)}`; }
+  try {
+    scene = new DispatchScene(mapElement.value!, id => { selectedVehicle.value = id; });
+    draw();
+  } catch (ex) { store.sceneError = `三维视图初始化失败：${String(ex)}`; }
 });
 onUnmounted(() => { scene?.dispose(); });
 </script>
@@ -64,21 +68,19 @@ onUnmounted(() => { scene?.dispose(); });
   <div class="control-grid">
     <aside class="left-column">
       <section class="control-panel statistics-panel">
-        <header class="section-heading"><h2>车辆状态统计 <small>FLEET STATUS</small></h2><ElTag size="small" effect="plain" round>{{ store.snapshot?.status ? `已观察 ${store.vehicles.length} 辆` : '待采集' }}</ElTag></header>
+        <header class="section-heading"><h2>车辆状态统计 <small>FLEET STATUS</small></h2><span class="outline-badge">{{ store.snapshot?.status ? `已观察 ${store.vehicles.length} 辆` : '待采集' }}</span></header>
         <div class="fleet-counts">
-          <button v-for="stat in store.vehicleStats.filter(s => s.key !== 'unknown' || s.count > 0)" :key="stat.key" :class="stat.key" @click="router.push({ path: '/vehicles', query: { filter: stat.key } })">
+          <button v-for="stat in store.vehicleStats.filter(s => s.key !== 'unknown' || s.count > 0)" :key="stat.key" :class="stat.key" @click="router.push({ name: 'vehicles', query: { filter: stat.key } })">
             <i class="status-dot" :class="stat.key"></i><b>{{ stat.count }}</b><span>{{ stat.label }}</span>
           </button>
         </div>
       </section>
 
       <section class="control-panel vehicle-focus">
-        <header class="section-heading"><h2>车辆详情 <small>VEHICLE</small></h2><ElButton text size="small" @click="router.push('/vehicles')">列表</ElButton></header>
+        <header class="section-heading"><h2>车辆详情 <small>VEHICLE</small></h2><button class="text-button" @click="router.push('/vehicles')">列表</button></header>
         <template v-if="chosenVehicle">
-          <div class="focus-vehicle"><IconRobot :size="35" stroke="1.2" /><div><b>{{ chosenVehicle.vehicleId }}</b><small>{{ chosenVehicle.displayName }}</small></div>
-            <ElTag :type="({ running:'success', waiting:'warning', fault:'danger', offline:'info', idle:'primary', charging:'primary', unknown:'info' } as Record<string,any>)[vehicleCategory(chosenVehicle, store.allTasks, store.fresh)] ?? 'info'" size="small" effect="dark">{{ categoryLabels[vehicleCategory(chosenVehicle, store.allTasks, store.fresh)] }}</ElTag>
-          </div>
-          <div class="battery-line"><span>电量</span><ElProgress :percentage="chosenVehicle.batteryPercent ?? 0" :stroke-width="6" :color="(chosenVehicle.batteryPercent ?? 0) > 20 ? '#23d0a1' : '#f56c6c'" style="flex:1" /><b>{{ chosenVehicle.batteryPercent ?? '—' }}%</b></div>
+          <div class="focus-vehicle"><IconRobot :size="35" stroke="1.2" /><div><b>{{ chosenVehicle.vehicleId }}</b><small>{{ chosenVehicle.displayName }}</small></div><span class="state-label" :class="vehicleCategory(chosenVehicle, store.allTasks, store.fresh)">{{ categoryLabels[vehicleCategory(chosenVehicle, store.allTasks, store.fresh)] }}</span></div>
+          <div class="battery-line"><span>电量</span><progress max="100" :value="chosenVehicle.batteryPercent ?? 0"></progress><b>{{ chosenVehicle.batteryPercent ?? '—' }}%</b></div>
           <dl class="property-list">
             <dt>当前站点</dt><dd>{{ chosenVehicle.currentStation ?? '未知' }}</dd>
             <dt>导航状态</dt><dd>{{ chosenVehicle.navigationState ?? '未知' }}</dd>
@@ -88,16 +90,14 @@ onUnmounted(() => { scene?.dispose(); });
           </dl>
         </template>
         <p v-else class="empty-panel">连接后台后选择车辆</p>
-        <div class="vehicle-picker">
-          <ElButton v-for="v in store.vehicles" :key="v.vehicleId" :type="v.vehicleId === selectedVehicle ? 'primary' : 'default'" size="small" @click="selectedVehicle = v.vehicleId">{{ v.vehicleId }}</ElButton>
-        </div>
+        <div class="vehicle-picker"><button v-for="v in store.vehicles" :key="v.vehicleId" :class="{ selected: v.vehicleId === selectedVehicle }" @click="selectedVehicle = v.vehicleId">{{ v.vehicleId }}</button></div>
       </section>
 
       <section class="control-panel alert-preview">
-        <header class="section-heading"><h2>异常告警 <small>ALARM CENTER</small></h2><ElButton text size="small" @click="router.push('/alarms')">更多 {{ store.openAlarms.length }}</ElButton></header>
+        <header class="section-heading"><h2>异常告警 <small>ALARM CENTER</small></h2><button class="text-button" @click="router.push('/alarms')">更多 {{ store.openAlarms.length }}</button></header>
         <div class="mini-table-head"><span>级别 / 对象</span><span>告警信息</span></div>
         <button v-for="alarm in store.openAlarms.slice(0, 5)" :key="alarm.alarmId" class="alarm-preview-row" @click="selectedAlarm = alarm">
-          <div><ElTag :type="alarm.severity === 'Error' || alarm.severity === 'Critical' ? 'danger' : 'warning'" size="small" effect="dark">{{ alarmSeverity(alarm.severity) }}</ElTag><small>{{ alarm.sourceId }}</small></div>
+          <div><span class="severity" :class="alarm.severity.toLowerCase()">{{ ({ Info:'信息',Warning:'警告',Error:'错误',Critical:'严重' })[alarm.severity] ?? alarm.severity }}</span><small>{{ alarm.sourceId }}</small></div>
           <span>{{ alarm.title }}<small>{{ shortTime(alarm.lastObservedAt) }}</small></span>
         </button>
         <p v-if="!store.openAlarms.length" class="empty-panel"><IconCircleCheck :size="25" />{{ store.fresh ? '暂无未确认告警' : '等待有效告警数据' }}</p>
@@ -108,11 +108,7 @@ onUnmounted(() => { scene?.dispose(); });
     <section class="control-panel map-control">
       <header class="section-heading map-heading">
         <div><h2>{{ store.snapshot?.map?.name ?? '当前运行地图' }}</h2><small>{{ store.snapshot?.map?.id ?? '未连接' }} · {{ store.snapshot?.map?.version ?? '—' }}</small></div>
-        <div class="map-toolbar">
-          <ElButton :type="mapView === 'top' ? 'primary' : 'default'" size="small" @click="setMapView('top')">2D</ElButton>
-          <ElButton :type="mapView === 'isometric' ? 'primary' : 'default'" size="small" @click="setMapView('isometric')">3D</ElButton>
-          <ElButton size="small" circle @click="fullscreen"><IconArrowsMaximize :size="15" /></ElButton>
-        </div>
+        <div class="map-toolbar"><button :class="{ active: mapView === 'top' }" @click="setMapView('top')">2D</button><button :class="{ active: mapView === 'isometric' }" @click="setMapView('isometric')">3D</button><button class="icon-button" aria-label="全屏地图" @click="fullscreen"><IconArrowsMaximize :size="15" /></button></div>
       </header>
       <div class="map-viewport">
         <div ref="mapElement" class="scene-container" aria-label="可交互的运行地图"></div>
@@ -123,11 +119,7 @@ onUnmounted(() => { scene?.dispose(); });
         <div class="map-caption-bottom"><span>{{ store.snapshot?.map?.nodes.length ?? 0 }} 节点 / {{ store.snapshot?.map?.edges.length ?? 0 }} 道路</span><span>{{ store.mapVehicleCount }} 辆可定位 · {{ mapView === 'top' ? '右键平移 · 滚轮缩放' : '左键旋转 · 右键平移' }}</span></div>
       </div>
       <div class="map-bottom-tools">
-        <label>路段定位
-          <ElSelect v-model="selectedEdge" placeholder="选择道路" size="small" clearable filterable style="max-width:270px">
-            <ElOption v-for="edge in store.snapshot?.map?.edges ?? []" :key="edge.id" :label="`${edge.id} · ${edge.from} → ${edge.to}`" :value="edge.id" />
-          </ElSelect>
-        </label>
+        <label>路段定位<select v-model="selectedEdge" aria-label="选择地图路段"><option value="">选择道路</option><option v-for="edge in store.snapshot?.map?.edges ?? []" :key="edge.id" :value="edge.id">{{ edge.id }} · {{ edge.from }} → {{ edge.to }}</option></select></label>
         <span v-if="selectedRoad">{{ selectedRoad.from }} {{ selectedRoad.bidirectional ? '↔' : '→' }} {{ selectedRoad.to }}</span>
         <span v-else>米制导航图 / {{ store.snapshot?.map?.coordinateSystem ?? '待核定' }}</span>
       </div>
@@ -143,12 +135,10 @@ onUnmounted(() => { scene?.dispose(); });
       </section>
 
       <section class="control-panel live-tasks">
-        <header class="section-heading"><h2>当前任务 <small>LIVE TASKS</small></h2><ElButton text size="small" @click="router.push('/tasks')">全部</ElButton></header>
+        <header class="section-heading"><h2>当前任务 <small>LIVE TASKS</small></h2><button class="text-button" @click="router.push('/tasks')">全部</button></header>
         <div class="current-task-counts"><span>执行 <b>{{ store.ringSegments[0].value }}</b></span><span>等待 <b>{{ store.ringSegments[1].value }}</b></span></div>
         <button v-for="task in store.allTasks.slice(0, 6)" :key="task.taskId" class="live-task" @click="openTask(task.taskId)">
-          <div><b>{{ task.taskId }}</b>
-            <ElTag :type="task.stage === 'Faulted' ? 'danger' : isRunningStage(task.stage) ? 'success' : 'warning'" size="small" effect="dark">{{ label(task.stage) }}</ElTag>
-          </div>
+          <div><b>{{ task.taskId }}</b><span class="state-label" :class="task.stage === 'Faulted' ? 'fault' : isRunningStage(task.stage) ? 'running' : 'waiting'">{{ label(task.stage) }}</span></div>
           <p>{{ task.stationId }}<span>{{ task.vehicleId ?? '待分配' }}</span></p>
           <small>{{ task.errorMessage || '点击查看步骤及PLC条件' }}</small>
         </button>
@@ -167,31 +157,26 @@ onUnmounted(() => { scene?.dispose(); });
     </aside>
   </div>
 
-  <ElDialog v-model="showTaskDialog" title="任务运行详情 · 九步、条件与执行证据" width="1000px" destroy-on-close>
+  <ConsoleDialog v-if="showTaskDialog" title="任务运行详情 · 九步、条件与执行证据" wide @close="showTaskDialog = false">
     <TaskExecutionDetails v-if="detail" :detail="detail" :fresh="store.fresh" :now="store.now" />
-    <ElEmpty v-else :description="store.error || '正在读取任务详情…'" />
-  </ElDialog>
+    <p v-else class="empty-panel">{{ store.error || '正在读取任务详情…' }}</p>
+  </ConsoleDialog>
 
-  <ElDialog v-model="alarmDialogVisible" title="告警详情" width="620px">
-    <template v-if="selectedAlarm">
-      <ElDescriptions :column="2" border size="small">
-        <ElDescriptionsItem label="告警编号">{{ selectedAlarm.alarmId }}</ElDescriptionsItem>
-        <ElDescriptionsItem label="关联对象">{{ selectedAlarm.sourceId }}</ElDescriptionsItem>
-        <ElDescriptionsItem label="级别 / 状态">{{ alarmSeverity(selectedAlarm.severity) }} / {{ alarmStatus(selectedAlarm.status) }}</ElDescriptionsItem>
-        <ElDescriptionsItem label="代码">{{ selectedAlarm.code }}</ElDescriptionsItem>
-      </ElDescriptions>
-      <h3 class="subheading">{{ selectedAlarm.title }}</h3>
-      <p class="long-message">{{ selectedAlarm.message }}</p>
-      <p class="muted-note">首次发生：{{ shortTime(selectedAlarm.firstOccurredAt) }}<br>最近观察：{{ shortTime(selectedAlarm.lastObservedAt) }}<br>恢复时间：{{ shortTime(selectedAlarm.recoveredAt) }}</p>
-      <div class="inline-warning">此处只查看，确认及恢复按现有WPF流程处理。</div>
-    </template>
-  </ElDialog>
+  <ConsoleDialog v-if="selectedAlarm" title="告警详情" @close="selectedAlarm = null">
+    <div class="detail-summary">
+      <div><span>告警编号</span><b>{{ selectedAlarm.alarmId }}</b></div>
+      <div><span>关联对象</span><b>{{ selectedAlarm.sourceId }}</b></div>
+      <div><span>级别 / 状态</span><b>{{ ({ Info:'信息',Warning:'警告',Error:'错误',Critical:'严重' })[selectedAlarm.severity] ?? selectedAlarm.severity }} / {{ ({ Open:'未确认',Acknowledged:'已确认',Recovered:'已恢复' })[selectedAlarm.status] ?? selectedAlarm.status }}</b></div>
+    </div>
+    <h3 class="subheading">{{ selectedAlarm.title }}</h3>
+    <p class="long-message">{{ selectedAlarm.message }}</p>
+    <p class="muted-note">首次发生：{{ shortTime(selectedAlarm.firstOccurredAt) }}<br>最近观察：{{ shortTime(selectedAlarm.lastObservedAt) }}</p>
+    <div class="inline-warning">此处只查看，确认及恢复按现有WPF流程处理。</div>
+  </ConsoleDialog>
 
-  <ElDialog v-model="deviceDialogVisible" :title="(selectedDevice?.name ?? '') + ' · PLC设备状态'" width="800px">
-    <template v-if="selectedDevice">
-      <p class="form-explanation">{{ selectedDevice.summary }}</p>
-      <table class="dialog-table"><thead><tr><th>信号</th><th>值</th><th>质量</th><th>地址</th><th>更新时间</th></tr></thead>
-      <tbody><tr v-for="field in selectedDevice.fields" :key="field.name"><td>{{ field.name }}</td><td>{{ field.value }}</td><td>{{ field.quality }}</td><td>{{ field.address }}</td><td>{{ field.updatedAt }}</td></tr></tbody></table>
-    </template>
-  </ElDialog>
+  <ConsoleDialog v-if="selectedDevice" :title="selectedDevice.name + ' · PLC设备状态'" wide @close="selectedDevice = null">
+    <p class="form-explanation">{{ selectedDevice.summary }}</p>
+    <table class="dialog-table"><thead><tr><th>信号</th><th>值</th><th>质量</th><th>地址</th><th>更新时间</th></tr></thead>
+    <tbody><tr v-for="field in selectedDevice.fields" :key="field.name"><td>{{ field.name }}</td><td>{{ field.value }}</td><td>{{ field.quality }}</td><td>{{ field.address }}</td><td>{{ field.updatedAt }}</td></tr></tbody></table>
+  </ConsoleDialog>
 </template>
