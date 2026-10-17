@@ -6,6 +6,11 @@ public static class DiagnosticsApi
 {
     public static void MapDiagnosticsApi(this WebApplication app,bool recoveryEnabled)
     {
+        app.MapPost("/api/tasks/{id}/cancel",async(string id,TaskCancelRequest request,DispatchPipe pipe,CancellationToken ct)=>
+        {
+            if(request.TaskId!=id)return Results.BadRequest(new{error="任务身份不一致。"});
+            return Results.Ok(await pipe.ReadAsync<TaskCancelResult>("CancelDispatchTask",request,ct));
+        });
         app.MapPost("/api/commissioning",async(CommissioningQuery query,DispatchPipe pipe,CancellationToken ct)=>
         {
             if(query.StationId==null||query.VehicleId==null||query.StationId.Length>32||query.VehicleId.Length>32)return Results.BadRequest(new{error="工位或车辆编号无效。"});

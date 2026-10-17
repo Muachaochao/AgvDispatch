@@ -5,6 +5,11 @@ import type { Snapshot, WebMap } from './types';
 import { mayPlot } from './state';
 import { vehicleCategory } from './dashboard';
 
+const VEHICLE_COLORS: Record<string, string> = {
+  running: '#21dca3', waiting: '#eeb85c', idle: '#ad8aeb', charging: '#5aaee8',
+  fault: '#f05c7e', offline: '#6c7d9d', unknown: '#8398b8'
+};
+
 export class DispatchScene {
   private scene = new THREE.Scene();
   private camera = new THREE.PerspectiveCamera(42, 1, 0.1, 5000);
@@ -15,12 +20,17 @@ export class DispatchScene {
   private edges = new Map<string, THREE.Group>();
   private resizeObserver: ResizeObserver;
   private frame = 0;
-  private key = '';
+  private mapKey = '';
   private center = new THREE.Vector3();
   private span = 25;
   private mode: 'top' | 'isometric' = 'top';
   private pick = new THREE.Raycaster();
   private onPointer: (event: PointerEvent) => void;
+
+  private vehiclePool = new Map<string, { group: THREE.Group; label: THREE.Object3D; ring: THREE.Mesh | null }>();
+  private bodyGeometry = new THREE.BoxGeometry(1.2, 0.6, 0.85);
+  private ringGeometry = new THREE.RingGeometry(0.78, 0.85, 32);
+  private ringMaterial = new THREE.MeshBasicMaterial({ color: '#d6f5ff', side: THREE.DoubleSide });
 
   constructor(private container: HTMLElement, private onSelect: (id: string) => void) {
     this.scene.background = new THREE.Color('#0b1229');
@@ -42,46 +52,98 @@ export class DispatchScene {
       const rect = this.renderer.domElement.getBoundingClientRect();
       this.pick.setFromCamera(new THREE.Vector2((event.clientX - rect.left) / rect.width * 2 - 1, -(event.clientY - rect.top) / rect.height * 2 + 1), this.camera);
       const hit = this.pick.intersectObjects(this.vehicleGroup.children, true)[0];
-      if (hit) { let object: THREE.Object3D | null = hit.object; while (object && !object.userData.vehicleId) object = object.parent;
-        if (object) this.onSelect(object.userData.vehicleId); }
+      if (hit) {
+        let object: THREE.Object3D | null = hit.object;
+        while (object && !object.userData.vehicleId) object = object.parent;
+        if (object) this.onSelect(object.userData.vehicleId);
+      }
     };
     this.renderer.domElement.addEventListener('pointerup', this.onPointer);
     this.view('top');
-    const animate = () => { this.frame = requestAnimationFrame(animate); this.controls.update(); this.renderer.render(this.scene, this.camera); }; animate();
+    const animate = () => { this.frame = requestAnimationFrame(animate); this.controls.update(); this.renderer.render(this.scene, this.camera); };
+    animate();
   }
 
   update(snapshot: Snapshot | null, selected = '', selectedEdge = '') {
     const map = snapshot?.map;
-    const key = map ? JSON.stringify([snapshot?.source, map.id, map.version, map.nodes, map.edges, map.resources]) : '';
-    if (key !== this.key) { this.key = key; this.drawMap(map ?? null); }
+    const key = map ? `${snapshot?.source}:${map.id}:${map.version}` : '';
+    if (key !== this.mapKey) { this.mapKey = key; this.drawMap(map ?? null); }
+
     for (const [id, group] of this.edges) group.traverse(object => {
       if (object instanceof THREE.Line) (object.material as THREE.LineBasicMaterial).color.set(id === selectedEdge ? '#ffffff' : '#3e8da8');
     });
-    this.clear(this.vehicleGroup);
-    if (!snapshot) return;
-    for (const vehicle of snapshot.status?.agvs ?? []) {
-      if (!mayPlot(snapshot, vehicle)) continue;
-      const group = new THREE.Group(); group.position.set(vehicle.x!, 0.4, -vehicle.y!); group.rotation.y = vehicle.angle ?? 0;
-      group.userData.vehicleId = vehicle.vehicleId;
-      const colors = { running: '#21dca3', waiting: '#eeb85c', idle: '#ad8aeb', charging: '#5aaee8', fault: '#f05c7e', offline: '#6c7d9d', unknown: '#8398b8' };
-      const material = new THREE.MeshStandardMaterial({ color: colors[vehicleCategory(vehicle, snapshot.tasks?.items ?? [], true)], roughness: 0.4 });
-      const body = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.6, 0.85), material); group.add(body);
-      if (vehicle.vehicleId === selected) { const ring = new THREE.Mesh(new THREE.RingGeometry(0.78,0.85,32),new THREE.MeshBasicMaterial({color:'#d6f5ff',side:THREE.DoubleSide}));ring.rotation.x=-Math.PI/2;ring.position.y=-0.29;group.add(ring); }
-      const heading = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(0.2, 0.5, 0), 1, '#ffffff', 0.3, 0.2); group.add(heading);
-      this.vehicleGroup.add(group);
-      const label = makeLabel({ name: vehicle.vehicleId, type: 'vehicle', x: vehicle.x!, y: 0, z: -vehicle.y! - 1.1 });
-      label.scale.multiplyScalar(0.65); this.vehicleGroup.add(label);
+
+    const activeIds = new Set<string>();
+    if (snapshot) {
+      for (const vehicle of snapshot.status?.agvs ?? []) {
+        if (!mayPlot(snapshot, vehicle)) continue;
+        activeIds.add(vehicle.vehicleId);
+        const category = vehicleCategory(vehicle, snapshot.tasks?.items ?? [], true);
+        const color = VEHICLE_COLORS[category] ?? VEHICLE_COLORS.unknown;
+
+        let entry = this.vehiclePool.get(vehicle.vehicleId);
+        if (!entry) {
+          const group = new THREE.Group();
+          group.userData.vehicleId = vehicle.vehicleId;
+          const material = new THREE.MeshStandardMaterial({ color, roughness: 0.4 });
+          const body = new THREE.Mesh(this.bodyGeometry, material);
+          group.add(body);
+          const heading = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(0.2, 0.5, 0), 1, '#ffffff', 0.3, 0.2);
+          group.add(heading);
+          const label = makeLabel({ name: vehicle.vehicleId, type: 'vehicle', x: 0, y: 0, z: -1.1 });
+          label.scale.multiplyScalar(0.65);
+          entry = { group, label, ring: null };
+          this.vehiclePool.set(vehicle.vehicleId, entry);
+        }
+
+        entry.group.position.set(vehicle.x!, 0.4, -vehicle.y!);
+        entry.group.rotation.y = vehicle.angle ?? 0;
+        const body = entry.group.children[0] as THREE.Mesh;
+        (body.material as THREE.MeshStandardMaterial).color.set(color);
+
+        entry.label.position.set(vehicle.x!, 0.4, -vehicle.y! - 1.1);
+
+        if (vehicle.vehicleId === selected && !entry.ring) {
+          const ring = new THREE.Mesh(this.ringGeometry, this.ringMaterial);
+          ring.rotation.x = -Math.PI / 2;
+          ring.position.y = -0.29;
+          entry.group.add(ring);
+          entry.ring = ring;
+        } else if (vehicle.vehicleId !== selected && entry.ring) {
+          entry.group.remove(entry.ring);
+          entry.ring = null;
+        }
+
+        if (!entry.group.parent) this.vehicleGroup.add(entry.group);
+        if (!entry.label.parent) this.vehicleGroup.add(entry.label);
+      }
+    }
+
+    for (const [id, entry] of this.vehiclePool) {
+      if (!activeIds.has(id)) {
+        if (entry.group.parent) this.vehicleGroup.remove(entry.group);
+        if (entry.label.parent) this.vehicleGroup.remove(entry.label);
+      }
     }
   }
 
   private drawMap(map: WebMap | null) {
-    this.clear(this.mapGroup); this.edges.clear();
+    this.clearGroup(this.mapGroup); this.edges.clear();
+    for (const [, entry] of this.vehiclePool) {
+      if (entry.group.parent) this.vehicleGroup.remove(entry.group);
+      if (entry.label.parent) this.vehicleGroup.remove(entry.label);
+    }
+    this.vehiclePool.clear();
+
     if (!map?.nodes.length) return;
     const xs = map.nodes.map(n => n.x), ys = map.nodes.map(n => -n.y);
     if (![...xs, ...ys].every(Number.isFinite)) return;
     const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
-    this.center.set((minX + maxX) / 2, 0, (minY + maxY) / 2); this.span = Math.max(maxX - minX, maxY - minY, 15);
-    const grid = new THREE.GridHelper(Math.ceil(this.span * 1.5), 30, '#294258', '#1b2d40'); grid.position.copy(this.center); grid.position.y = -0.12; this.mapGroup.add(grid);
+    this.center.set((minX + maxX) / 2, 0, (minY + maxY) / 2);
+    this.span = Math.max(maxX - minX, maxY - minY, 15);
+    const grid = new THREE.GridHelper(Math.ceil(this.span * 1.5), 30, '#294258', '#1b2d40');
+    grid.position.copy(this.center); grid.position.y = -0.12; this.mapGroup.add(grid);
+
     for (const edge of map.edges) {
       const group = makePathObject(edge.id, edge.points.map(p => ({ x: p.x, y: 0, z: -p.y })), edge.enabled ? 0x3e8da8 : 0x455365);
       this.mapGroup.add(group); this.edges.set(edge.id, group);
@@ -93,7 +155,7 @@ export class DispatchScene {
     }
     for (const node of map.nodes) {
       const markerGroup = makePoint({ name: node.agvSiteId ?? node.id, type: 'station', x: node.x, y: 0, z: -node.y, color: node.enabled ? '#43d9b1' : '#637083' });
-      const marker = markerGroup.children[0] as THREE.Mesh; marker.geometry.dispose(); marker.geometry = new THREE.RingGeometry(0.18,0.23,24); marker.rotation.x=-Math.PI/2;
+      const marker = markerGroup.children[0] as THREE.Mesh; marker.geometry.dispose(); marker.geometry = new THREE.RingGeometry(0.18, 0.23, 24); marker.rotation.x = -Math.PI / 2;
       const label = markerGroup.children[1]; label.scale.multiplyScalar(0.65); label.position.z += 0.8;
       this.mapGroup.add(markerGroup);
     }
@@ -103,7 +165,6 @@ export class DispatchScene {
       const mesh = new THREE.Mesh(new THREE.ShapeGeometry(shape), new THREE.MeshBasicMaterial({ color: '#e4aa4f', transparent: true, opacity: 0.12, side: THREE.DoubleSide }));
       mesh.rotation.x = -Math.PI / 2; mesh.position.y = -0.03; this.mapGroup.add(mesh);
     }
-    // Reuse the upstream station area helper for visual waiting pads, not traffic authorization.
     for (const node of map.nodes.filter(n => n.type === 'WaitingPoint' || n.id === 'WAIT'))
       this.mapGroup.add(makeWaitingArea({ name: '', type: 'waiting', x: node.x, y: 0, z: -node.y, width: 2, height: 1.8 }));
     this.view(this.mode);
@@ -115,16 +176,41 @@ export class DispatchScene {
     this.camera.position.copy(this.center).add((mode === 'top' ? new THREE.Vector3(0, this.span * 1.75, 0.01) : new THREE.Vector3(this.span * 0.72, this.span * 1.15, this.span * 0.9)).multiplyScalar(fit));
     this.controls.target.copy(this.center); this.controls.update();
   }
-  zoom(factor: number) { const distance=this.camera.position.clone().sub(this.controls.target);const next=distance.length()*factor;
-    if(next<2||next>5000)return;this.camera.position.copy(this.controls.target).add(distance.multiplyScalar(factor));this.controls.update(); }
-  private clear(group: THREE.Group) {
+
+  zoom(factor: number) {
+    const distance = this.camera.position.clone().sub(this.controls.target);
+    const next = distance.length() * factor;
+    if (next < 2 || next > 5000) return;
+    this.camera.position.copy(this.controls.target).add(distance.multiplyScalar(factor));
+    this.controls.update();
+  }
+
+  private clearGroup(group: THREE.Group) {
     group.traverse(object => {
       const mesh = object as THREE.Mesh;
       mesh.geometry?.dispose();
       const materials = mesh.material ? (Array.isArray(mesh.material) ? mesh.material : [mesh.material]) : [];
       for (const material of materials) { (material as THREE.MeshBasicMaterial).map?.dispose(); material.dispose(); }
-    }); group.clear();
+    });
+    group.clear();
   }
-  dispose() { cancelAnimationFrame(this.frame); this.resizeObserver.disconnect(); this.controls.dispose();
-    this.renderer.domElement.removeEventListener('pointerup', this.onPointer); this.clear(this.mapGroup); this.clear(this.vehicleGroup); this.renderer.dispose(); this.renderer.domElement.remove(); }
+
+  dispose() {
+    cancelAnimationFrame(this.frame);
+    this.resizeObserver.disconnect();
+    this.controls.dispose();
+    this.renderer.domElement.removeEventListener('pointerup', this.onPointer);
+    this.clearGroup(this.mapGroup);
+    this.clearGroup(this.vehicleGroup);
+    this.bodyGeometry.dispose();
+    this.ringGeometry.dispose();
+    this.ringMaterial.dispose();
+    for (const [, entry] of this.vehiclePool) {
+      const body = entry.group.children[0] as THREE.Mesh;
+      (body.material as THREE.Material).dispose();
+    }
+    this.vehiclePool.clear();
+    this.renderer.dispose();
+    this.renderer.domElement.remove();
+  }
 }
