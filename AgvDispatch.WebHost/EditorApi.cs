@@ -55,6 +55,19 @@ public static class EditorApi
                 new SaveCommunicationSettingsRequest(request.ExpectedRevision, settings.Saved), ct);
             return Results.Ok(saved is null ? null : new { saved.Revision, Vehicles = saved.Saved.Agvs, saved.RestartRequired, saved.CanManage });
         });
+
+        app.MapPost("/api/maps/activate", async (ActivateMapRequest request, DispatchPipe pipe, CancellationToken ct) =>
+            await pipe.ReadAsync<MapOperationResult>(TrafficControlOperations.ActivateMap, request, ct));
+        app.MapGet("/api/maps/switch", async (DispatchPipe pipe, CancellationToken ct) =>
+            await pipe.ReadAsync<MapSwitchStatus>(TrafficControlOperations.GetMapSwitch, new { }, ct));
+        app.MapPost("/api/maps/switch/begin", async (BeginMapSwitchRequest request, DispatchPipe pipe, CancellationToken ct) =>
+            await pipe.ReadAsync<MapSwitchResult>(TrafficControlOperations.BeginMapSwitch, request, ct));
+        app.MapPost("/api/maps/switch/drain", async (FinishMapSwitchRequest request, DispatchPipe pipe, CancellationToken ct) =>
+            await pipe.ReadAsync<MapSwitchResult>(TrafficControlOperations.ContinueMapDrain, request, ct));
+        app.MapPost("/api/maps/switch/resume", async (FinishMapSwitchRequest request, DispatchPipe pipe, CancellationToken ct) =>
+            await pipe.ReadAsync<MapSwitchResult>(TrafficControlOperations.ResumeMapSwitch, request, ct));
+        app.MapPost("/api/maps/switch/cancel", async (FinishMapSwitchRequest request, DispatchPipe pipe, CancellationToken ct) =>
+            await pipe.ReadAsync<MapSwitchResult>(TrafficControlOperations.CancelMapSwitch, request, ct));
     }
     public sealed record VehicleConfigurationRequest(string ExpectedRevision, AgvConnectionSetting[] Vehicles);
 }
