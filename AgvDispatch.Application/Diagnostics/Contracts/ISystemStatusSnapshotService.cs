@@ -131,7 +131,10 @@ public sealed record SystemStatusSnapshot(
     IReadOnlyList<AgvDiagnostic> Agvs,
     TaskDiagnostic Tasks,
     NamedPipeDiagnostic NamedPipe,
-    SafetySwitchDiagnostic Safety);
+    SafetySwitchDiagnostic Safety)
+{
+    public BackendExecutionDiagnostic? Execution { get; init; }
+}
 
 public interface ISystemStatusSnapshotService
 {

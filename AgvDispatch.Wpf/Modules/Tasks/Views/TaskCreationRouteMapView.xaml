@@ -4,7 +4,9 @@
  <Grid Margin="4"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
   <WrapPanel><Button Content="定位首个不符段" Command="{Binding LocateFailedCreationRouteCommand}" Padding="10,5"/><Button Content="全图" Command="{Binding FitCreationRouteMapCommand}" Padding="10,5" Margin="6,0"/><Button Content="＋" Command="{Binding ZoomInCreationRouteMapCommand}" Padding="10,5"/><Button Content="－" Command="{Binding ZoomOutCreationRouteMapCommand}" Padding="10,5" Margin="6,0"/></WrapPanel>
   <ScrollViewer Grid.Row="1" MaxHeight="92" VerticalScrollBarVisibility="Auto" Margin="0,5"><TextBlock Text="{Binding CreationRouteMapMessage}" TextWrapping="Wrap"/></ScrollViewer>
-  <Border Grid.Row="2" Background="{DynamicResource MutedSurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" ClipToBounds="True">
+  <Grid Grid.Row="2"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="280"/></Grid.ColumnDefinitions>
+  <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto" Margin="10,0,0,0"><StackPanel><TextBlock Text="车辆动作与PLC条件" FontWeight="Bold" Margin="0,0,0,8"/><TextBlock Text="{Binding CreationRouteActionDetails}" TextWrapping="Wrap"/></StackPanel></ScrollViewer>
+  <Border Background="{DynamicResource MutedSurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" ClipToBounds="True">
    <Viewbox Stretch="Uniform"><Canvas Width="900" Height="500" ClipToBounds="True">
     <Canvas Width="900" Height="500"><Canvas.RenderTransform><TransformGroup><ScaleTransform ScaleX="{Binding CreationMapZoom}" ScaleY="{Binding CreationMapZoom}" CenterX="450" CenterY="250"/><TranslateTransform X="{Binding CreationMapPanX}" Y="{Binding CreationMapPanY}"/></TransformGroup></Canvas.RenderTransform>
      <ItemsControl ItemsSource="{Binding CreationMapRoads}" IsHitTestVisible="False"><ItemsControl.ItemsPanel><ItemsPanelTemplate><Canvas/></ItemsPanelTemplate></ItemsControl.ItemsPanel><ItemsControl.ItemTemplate><DataTemplate><Path Data="{Binding Geometry}" Stroke="#7D91AA" StrokeThickness="2"/></DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
@@ -19,5 +21,6 @@
     </Canvas>
    </Canvas></Viewbox>
   </Border>
+  </Grid>
  </Grid>
 </UserControl>

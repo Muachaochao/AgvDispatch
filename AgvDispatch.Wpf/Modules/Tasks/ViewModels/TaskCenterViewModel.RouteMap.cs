@@ -12,6 +12,9 @@ public sealed record TaskCreationRouteMapStroke(Geometry Geometry,Geometry Arrow
 public sealed partial class TaskCenterViewModel
 {
     private ManualTaskRouteMap? _creationMap;
+    private IReadOnlyList<ManualTaskStepPreview> _creationMapSteps=[];
+    private string _creationRouteActionDetails="请选中当前运输路段，查看末站动作及随后PLC配置要求。";
+    public string CreationRouteActionDetails {get=>_creationRouteActionDetails;private set=>SetProperty(ref _creationRouteActionDetails,value);}
     private string _creationMapVehicle="",_creationMapStation="",_creationMapOrigin="",_creationMapRevision="";
     private Dictionary<string,ManualTaskRouteMapEdge> _creationMapEdges=new(StringComparer.Ordinal);
     private Dictionary<string,ManualTaskRouteMapNode> _creationMapNodes=new(StringComparer.Ordinal);
@@ -43,6 +46,7 @@ public sealed partial class TaskCenterViewModel
     private void ZoomCreationMap(double factor){var next=Math.Clamp(CreationMapZoom*factor,.5,64);var ratio=next/CreationMapZoom;CreationMapPanX*=ratio;CreationMapPanY*=ratio;CreationMapZoom=next;}
     private void ClearCreationRouteMap(string reason)
     {
+        _creationMapSteps=[];CreationRouteActionDetails="请重新查询并选中当前运输路段。";
         _creationMap=null;_creationMapVehicle=_creationMapStation=_creationMapOrigin=_creationMapRevision="";_creationMapEdges.Clear();_creationMapNodes.Clear();_selectedCreationRouteSegment=null;
         CreationMapRoads=[];CreationMapDots=[];CreationMapRoutes=[];CreationMapSelectedGeometry=Geometry.Empty;CreationMapSelectedArrow=Geometry.Empty;
         CreationMapZoom=1;CreationMapPanX=0;CreationMapPanY=0;CreationRouteMapOpen=false;CreationRouteMapMessage=reason;
@@ -75,6 +79,7 @@ public sealed partial class TaskCenterViewModel
             {
                 if(!Id(edge.Id)||!names.Add(edge.Id)||!nodes.TryGetValue(edge.From,out var a)||!nodes.TryGetValue(edge.To,out var b)||edge.Points.Count is <2 or >33||edge.Points.Any(p=>!Coordinate(p.X)||!Coordinate(p.Y))||!Enum.TryParse<MapEdgeGeometryKind>(edge.Kind,out var kind)||!Enum.IsDefined(kind)||(kind==MapEdgeGeometryKind.Line?edge.Points.Count!=2:edge.Points.Count!=33)||Math.Abs(edge.Points[0].X-a.X)>1e-6||Math.Abs(edge.Points[0].Y-a.Y)>1e-6||Math.Abs(edge.Points[^1].X-b.X)>1e-6||Math.Abs(edge.Points[^1].Y-b.Y)>1e-6||!edges.TryAdd(edge.Id,edge))throw new InvalidOperationException("地图道路几何、端点或编号无效。");
             }
+            _creationMapSteps=preview.Steps??[];
             _creationMap=map;_creationMapNodes=nodes;_creationMapEdges=edges;_creationMapVehicle=preview.VehicleId;_creationMapStation=preview.StationId;_creationMapOrigin=preview.CurrentSite;_creationMapRevision=preview.ParameterRevision;
             var points=map.Nodes.Select(n=>new MapPoint2D(n.X,n.Y)).Concat(map.Edges.SelectMany(e=>e.Points)).ToArray();var minX=points.Min(p=>p.X);var maxX=points.Max(p=>p.X);var minY=points.Min(p=>p.Y);var maxY=points.Max(p=>p.Y);
             _creationMapScale=Math.Min(840/Math.Max(1,maxX-minX),440/Math.Max(1,maxY-minY));_creationMapMidX=(minX+maxX)/2;_creationMapMidY=(minY+maxY)/2;
@@ -119,12 +124,14 @@ public sealed partial class TaskCenterViewModel
     }
     public void LocateCreationRouteSegment(ManualTaskRouteSegment? segment)
     {
+        CreationRouteActionDetails="请选中当前有效运输路段。";
         _selectedCreationRouteSegment=null;CreationMapSelectedGeometry=Geometry.Empty;CreationMapSelectedArrow=Geometry.Empty;
         if(segment is null){RaiseCreationMapChanges();return;}
         ExpireCreationRoutePreview();
         CreationRouteMapOpen=true;
         if(_creationMap is null||!CreationRouteSegments.Any(s=>ReferenceEquals(s,segment))){CreationRouteMapMessage="该行不属于当前有效地图观察，未定位。";RaiseCreationMapChanges();return;}
         if(!TryCreationMapEdge(segment,out var edge,out var reverse)){CreationRouteMapMessage=$"{segment.EdgeId} 缺少一致的几何、方向或业务/厂家端点，未补画路线。原因：{segment.Message}";RaiseCreationMapChanges();return;}
+        SetCreationRouteActionDetails(segment);
         _selectedCreationRouteSegment=segment;CreationMapSelectedGeometry=CreationMapGeometry(edge.Points);CreationMapSelectedArrow=CreationMapArrow((reverse?edge.Points.Reverse():edge.Points).ToArray());
         var points=edge.Points.Select(p=>CreationMapPoint(p.X,p.Y)).ToArray();var minX=points.Min(p=>p.X);var maxX=points.Max(p=>p.X);var minY=points.Min(p=>p.Y);var maxY=points.Max(p=>p.Y);
         CreationMapZoom=Math.Clamp(Math.Min(800/Math.Max(1,maxX-minX),420/Math.Max(1,maxY-minY)),.5,64);CreationMapPanX=(450-(minX+maxX)/2)*CreationMapZoom;CreationMapPanY=(250-(minY+maxY)/2)*CreationMapZoom;

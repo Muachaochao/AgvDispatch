@@ -24,6 +24,11 @@ public sealed record TaskStepDetail(string StepId, int Sequence, DispatchTaskSte
     public bool IsCurrent { get; init; }
     public string ElapsedText { get; init; } = "未开始";
     public string WaitingExplanation { get; init; } = "";
+    public string ObservedPhase { get; init; } = "";
+    public string CompletionRequirement { get; init; } = "";
+    public string EvidenceBoundary { get; init; } = "";
+    public string CommandStateExplanation { get; init; } = "";
+    public IReadOnlyList<TaskPlcCondition> ProgressConditions { get; init; } = [];
 }
 public sealed record TaskCommandDetail(string CommandId, string StepId, string VehicleId,
     AgvCommandStatus Status, int AttemptCount, DateTimeOffset NextAttemptAt,
@@ -31,7 +36,18 @@ public sealed record TaskCommandDetail(string CommandId, string StepId, string V
 public sealed record TaskResourceDetail(string ResourceId, string OwnerStepId, string VehicleId,
     DateTimeOffset AcquiredAt, DateTimeOffset ExpiresAt, bool HeartbeatExpired);
 public sealed record TaskPlcCondition(string StationId, string VariableName, string Address,
-    bool ExpectedValue, bool? CurrentValue, SignalQuality Quality, bool Satisfied);
+    bool ExpectedValue, bool? CurrentValue, SignalQuality Quality, bool Satisfied)
+{
+    public string RuleId { get; init; } = "";
+    public string Name { get; init; } = "";
+    public string Result { get; init; } = "Unknown";
+    public string Reason { get; init; } = "";
+    public DateTimeOffset? ObservedAt { get; init; }
+    public long? SignalVersion { get; init; }
+    public string Role { get; init; } = "执行条件";
+}
+public sealed record TaskExecutionEvent(string Id, DateTimeOffset OccurredAt, string StepId,
+    string Kind, string Title, string Summary, string Source);
 public sealed record TaskCancellationInfo(string RequestId, string Reason, string Operator, DateTimeOffset? RequestedAt,
     int SendAttempts, DateTimeOffset? SentAt, DateTimeOffset? ConfirmedAt);
 public sealed record TaskOperationHistoryEntry(string Id, DateTimeOffset OccurredAt, string Category, string Operation,
@@ -48,6 +64,13 @@ public sealed record TaskCenterDetail(TaskCenterRow Task, IReadOnlyList<TaskStep
     public IReadOnlyList<TaskOperationHistoryEntry> OperationHistory { get; init; } = [];
     public int OperationHistoryTotal { get; init; }
     public TaskCancellationInfo? Cancellation { get; init; }
+    public IReadOnlyList<TaskExecutionEvent> ExecutionTimeline { get; init; } = [];
+    public int ExecutionTimelineTotal { get; init; }
+    public DateTimeOffset? DiagnosticsObservedAt { get; init; }
+    public string HandshakeMode { get; init; } = "ObservationOnly";
+    public string HandshakeContractVersion { get; init; } = "";
+    public IReadOnlyList<HandshakeCheckpoint> Handshakes { get; init; } = [];
+    public TaskHandoverDiagnosis? Handover { get; init; }
 }
 public sealed record TaskDetailRequest(string TaskId, bool IncludeOperationHistory = true);
 public enum TaskHistoryCategory { All, Cancellation, Recovery, TrafficRelease }

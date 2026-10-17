@@ -1,4 +1,4 @@
-﻿using AgvDispatch.Application.Abstractions;
+using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Domain.Maps;
 using AgvDispatch.Infrastructure.Persistence.Entities;
 using SqlSugar;
@@ -60,6 +60,11 @@ public sealed class DatabaseInitializer : IDatabaseInitializer
         _database.Ado.ExecuteCommand("CREATE INDEX IF NOT EXISTS ix_traffic_request_updated ON traffic_request(UpdatedAt DESC)");
         _database.Ado.ExecuteCommand("CREATE INDEX IF NOT EXISTS ix_traffic_lifecycle_time ON traffic_lifecycle_event(OccurredAt DESC)");
         _database.CodeFirst.InitTables<ExecutionRecoverySessionEntity, ExecutionRecoveryTicketEntity, ExecutionEvidenceEntity>();
+        _database.CodeFirst.InitTables<TaskHandshakeEntity, TaskRuntimeEventEntity, TaskSignalLastEntity, TaskEquipmentClaimEntity>();
+        _database.Ado.ExecuteCommand("CREATE INDEX IF NOT EXISTS ix_runtime_event_task_sequence ON task_runtime_event(TaskId,Sequence)");
+        _database.Ado.ExecuteCommand("CREATE TRIGGER IF NOT EXISTS guard_runtime_event_delete BEFORE DELETE ON task_runtime_event BEGIN SELECT RAISE(ABORT,'runtime event is immutable'); END;");
+        _database.Ado.ExecuteCommand("CREATE TRIGGER IF NOT EXISTS guard_runtime_event_update BEFORE UPDATE ON task_runtime_event BEGIN SELECT RAISE(ABORT,'runtime event is immutable'); END;");
+        _database.Ado.ExecuteCommand("CREATE TRIGGER IF NOT EXISTS guard_handshake_identity BEFORE UPDATE ON task_handshake_checkpoint WHEN NEW.TaskId IS NOT OLD.TaskId OR NEW.StepId IS NOT OLD.StepId OR NEW.CycleId IS NOT OLD.CycleId OR NEW.ContractVersion IS NOT OLD.ContractVersion OR NEW.BaselineJson IS NOT OLD.BaselineJson OR NEW.StartedAtUtc IS NOT OLD.StartedAtUtc OR NEW.Revision != OLD.Revision+1 BEGIN SELECT RAISE(ABORT,'handshake identity/version is immutable'); END;");
         _database.Ado.ExecuteCommand("CREATE INDEX IF NOT EXISTS ix_execution_evidence_task_time ON execution_evidence(TaskId, OccurredAt DESC)");
         _database.Ado.ExecuteCommand("CREATE INDEX IF NOT EXISTS ix_execution_evidence_session_task_time ON execution_evidence(SessionId, TaskId, OccurredAt DESC)");
         _database.Ado.ExecuteCommand("CREATE INDEX IF NOT EXISTS ix_traffic_release_task_time ON traffic_resource_release_audit(TaskId, ReleasedAt DESC)");

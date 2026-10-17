@@ -207,6 +207,7 @@ internal static partial class Program
             var wirePreview=Complete(wire.GetTaskRoutePreviewAsync(new("CNC001","AGV-01","MAP","VERSION",wireOptions.ParameterRevision),default));
             Require(!wirePreview.Verified&&wirePreview.Legs.Count==4,"current route preview survives real pipe dispatcher and client serialization");
             Require(wirePreview.Map is {Nodes.Count:4,Edges.Count:3}&&wirePreview.Map.ObservationId==wirePreview.ObservationId,"same-batch navigation geometry survives real pipe dispatcher and client");
+            Require(wirePreview.Steps.Count==9&&wirePreview.Steps[3].PlcStationId==creation.DumperStationId,"same-observation actions and PLC metadata survive real pipe serialization");
             Require(wireOptions.MapVersionId == "VERSION", "actual pipe client loads creation options");
             Require(wireOptions.Stations.Single().PreviewSteps.Count == 9 && wireOptions.Stations.Single().PreviewSteps[3].PlcStationId == creation.DumperStationId,
                 "nine step preview survives actual pipe serialization");

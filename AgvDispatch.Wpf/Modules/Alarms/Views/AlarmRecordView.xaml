@@ -16,16 +16,17 @@
         </Grid.RowDefinitions>
 
         <Grid>
+            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
             <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
             <StackPanel>
                 <TextBlock Text="报警记录" Style="{StaticResource PageTitleTextStyle}" />
                 <TextBlock Text="报警由后台规则引擎去重、持久化并自动恢复；确认报警不等于消除故障。"
                            Style="{StaticResource PageDescriptionTextStyle}" Margin="0,6,0,0" />
             </StackPanel>
-            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+            <WrapPanel Grid.Row="1" Grid.ColumnSpan="2" Margin="0,12,0,0">
                 <CheckBox Content="只看活动报警" IsChecked="{Binding ActiveOnly}" VerticalAlignment="Center" Margin="0,0,16,0" />
                 <Button Content="立即刷新" Command="{Binding RefreshCommand}" Padding="16,8" />
-            </StackPanel>
+            </WrapPanel>
         </Grid>
 
         <UniformGrid Grid.Row="2" Columns="3" MaxWidth="720" HorizontalAlignment="Left">
@@ -55,15 +56,15 @@
                           AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False"
                           SelectionMode="Single" HeadersVisibility="Column" GridLinesVisibility="Horizontal">
                     <DataGrid.Columns>
-                        <DataGridTextColumn Header="状态" Binding="{Binding Status}" Width="105" />
-                        <DataGridTextColumn Header="等级" Binding="{Binding Severity}" Width="80" />
-                        <DataGridTextColumn Header="首次发生" Binding="{Binding FirstOccurredAt, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="145" />
-                        <DataGridTextColumn Header="最近观察" Binding="{Binding LastObservedAt, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="145" />
-                        <DataGridTextColumn Header="来源" Binding="{Binding SourceType}" Width="85" />
-                        <DataGridTextColumn Header="来源编号" Binding="{Binding SourceId}" Width="115" />
-                        <DataGridTextColumn Header="代码" Binding="{Binding Code}" Width="145" />
-                        <DataGridTextColumn Header="标题" Binding="{Binding Title}" Width="220" />
-                        <DataGridTextColumn Header="说明" Binding="{Binding Message}" Width="*" />
+                        <DataGridTextColumn Header="状态" Binding="{Binding Status}" Width="105"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+                        <DataGridTextColumn Header="等级" Binding="{Binding Severity}" Width="80"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+                        <DataGridTextColumn Header="首次发生" Binding="{Binding FirstOccurredAt, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="145"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+                        <DataGridTextColumn Header="最近观察" Binding="{Binding LastObservedAt, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="145"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+                        <DataGridTextColumn Header="来源" Binding="{Binding SourceType}" Width="85"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+                        <DataGridTextColumn Header="来源编号" Binding="{Binding SourceId}" Width="115"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+                        <DataGridTextColumn Header="代码" Binding="{Binding Code}" Width="145"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+                        <DataGridTextColumn Header="标题" Binding="{Binding Title}" Width="220"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+                        <DataGridTextColumn Header="说明" Binding="{Binding Message}" Width="*"  ElementStyle="{StaticResource AppGridTextStyle}"/>
                     </DataGrid.Columns>
                 </DataGrid>
             </Border>
@@ -87,7 +88,7 @@
                         <Button Content="确认已知晓并开始处置" Command="{Binding AcknowledgeCommand}"
                                 Padding="14,9" Background="#FFC87A18" Foreground="White" />
                         <TextBlock Text="确认后报警仍会保留；只有故障条件消失，规则引擎才会自动标记为Recovered。"
-                                   TextWrapping="Wrap" FontSize="12" Foreground="#FFE59A22" Margin="0,10,0,0" />
+                                   TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource WarningBrush}" Margin="0,10,0,0" />
                     </StackPanel>
                 </ScrollViewer>
             </Border>

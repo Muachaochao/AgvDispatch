@@ -1,0 +1,73 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using AgvDispatch.Application.Abstractions;
+using AgvDispatch.Domain.Maps;
+
+namespace AgvDispatch.WebHost;
+
+public static class WebJson
+{
+    public static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web)
+    { Converters = { new JsonStringEnumConverter() } };
+}
+
+public sealed record WebMap(string? Id, string? Version, string Name, string Unit, string CoordinateSystem,
+    object[] Nodes, object[] Edges, object[] Resources, string[] Warnings);
+
+public sealed record WebSnapshot(DateTimeOffset ReceivedAt, bool Connected, string Source, string? Error,
+    SystemStatusSnapshot? Status, WebMap? Map, DeviceMonitoringSnapshot? Devices,
+    TaskListPage? Tasks, IReadOnlyList<TrafficResourceSnapshot>? Resources, string[] PositionedVehicleIds)
+{
+    public IReadOnlyList<AlarmSnapshot> Alarms { get; init; } = [];
+}
+
+public sealed class SnapshotReader(DispatchPipe pipe)
+{
+    public async Task<WebSnapshot> ReadAsync(CancellationToken ct)
+    {
+        // The production server handles pipe clients serially. Do not fan out connections.
+        var status = await pipe.ReadAsync<SystemStatusSnapshot>(TrafficControlOperations.GetSystemStatus, new { }, ct)
+            ?? throw new InvalidDataException("缺少系统状态。");
+        var map = await pipe.ReadAsync<TrafficMapSnapshot>(TrafficControlOperations.GetTrafficMap, new TrafficMapQuery(), ct);
+        var tasks = await pipe.ReadAsync<TaskListPage>(TrafficControlOperations.GetTasks, new TaskListQuery(PageSize: 50), ct);
+        var devices = await pipe.ReadAsync<DeviceMonitoringSnapshot>(TrafficControlOperations.GetDeviceMonitoring, new { }, ct);
+        var resources = await pipe.ReadAsync<TrafficResourceSnapshot[]>(TrafficControlOperations.GetResources, new { }, ct);
+        var alarms = await pipe.ReadAsync<AlarmSnapshot[]>(TrafficControlOperations.GetAlarms, new { MaximumCount = 100, ActiveOnly = false }, ct);
+        var settings = await pipe.ReadAsync<CommunicationSettingsSnapshot>(TrafficControlOperations.GetCommunicationSettings, new { }, ct);
+        // Multi-call observations are not an atomic device snapshot. Reject a map switch observed between calls.
+        if (map?.MapId != status.Safety.ActiveMapId || map?.VersionId != status.Safety.ActiveMapVersionId ||
+            settings?.RuntimeMapId != map?.MapId || settings?.RuntimeMapVersion != map?.VersionId)
+            throw new InvalidOperationException("采集期间运行地图已变化，请等待下一次完整观察。");
+        var positioned = settings?.Active.MapBindings?.Where(b => b.CoordinatesVerified &&
+            b.LocalMapId == map?.MapId && b.LocalMapVersion == map?.VersionId &&
+            !string.IsNullOrWhiteSpace(b.ConfirmationNote)).Select(b => b.VehicleId).Distinct().ToArray() ?? [];
+        // Imported translated SMAP currently has no transform in the IPC contract. Do not put raw robot XY on it.
+        if (map?.Definition?.CoordinateSystem == "SmapWorldTranslated") positioned = [];
+        return new(DateTimeOffset.UtcNow, true, "backend", null, status, ProjectMap(map), devices, tasks, resources, positioned)
+        { Alarms = alarms ?? [] };
+    }
+
+    public static WebMap? ProjectMap(TrafficMapSnapshot? snapshot)
+    {
+        if (snapshot?.Definition is not { } definition) return null;
+        if (definition.Nodes.Count > 5000 || definition.Edges.Count > 10000 || definition.Resources.Count > 2000)
+            throw new InvalidDataException("地图超出本版 Web 显示预算（5000节点/10000道路/2000资源）。");
+        var nodes = definition.Nodes.ToDictionary(n => n.Id, StringComparer.OrdinalIgnoreCase);
+        var warnings = new List<string>();
+        var edges = new List<object>();
+        foreach (var edge in definition.Edges)
+        {
+            if (!nodes.TryGetValue(edge.From, out var from) || !nodes.TryGetValue(edge.To, out var to) ||
+                !MapEdgeGeometry.TryValidate(edge, from, to, out _))
+            { warnings.Add($"路段 {edge.Id} 几何不可用，未绘制。"); continue; }
+            edges.Add(new { edge.Id, edge.From, edge.To, edge.Enabled, edge.Bidirectional,
+                kind = edge.GeometryKind.ToString(), points = MapEdgeGeometry.Sample(edge, from, to, 32) });
+        }
+        if (definition.CoordinateSystem == "SmapWorldTranslated")
+            warnings.Add("当前地图为 Smap 平移坐标；尚未取得车位变换，原始车位只在车辆面板显示。");
+        if (definition.Unit != "m") warnings.Add("当前地图非米制，车位不叠加。");
+        return new(snapshot.MapId, snapshot.VersionId, definition.Name, definition.Unit, definition.CoordinateSystem,
+            definition.Nodes.Select(n => (object)new { n.Id, n.X, n.Y, n.AgvSiteId, n.Enabled, type = n.Type.ToString() }).ToArray(),
+            edges.ToArray(), definition.Resources.Select(r => (object)new { r.Id, r.Capacity, r.Boundary }).ToArray(), warnings.ToArray());
+    }
+}

@@ -8,7 +8,7 @@
         xmlns:hc="https://handyorg.github.io/handycontrol"
         prism:ViewModelLocator.AutoWireViewModel="True"
         mc:Ignorable="d"
-        Title="铝屑回收智能调度平台"
+        Title="{Binding WindowTitle}"
         Icon="/AgvDispatch.Wpf;component/Assets/Icons/AppIcon.ico"
         Width="1440"
         Height="900"
@@ -63,12 +63,14 @@
                     </Border>
                     <StackPanel VerticalAlignment="Center">
                         <TextBlock Text="铝屑回收智能调度平台" Foreground="White" FontSize="16" FontWeight="SemiBold" />
-                        <TextBlock Text="AGV FLEET &amp; TRAFFIC CONTROL" Foreground="#FF83A8BD" FontSize="8" FontWeight="SemiBold" />
+                        <TextBlock Text="AGV FLEET &amp; TRAFFIC CONTROL" Foreground="#FF83A8BD" FontSize="9" FontWeight="SemiBold" />
                     </StackPanel>
                 </StackPanel>
 
                 <Border Grid.Column="2" BorderBrush="#3F6DAF" BorderThickness="1,0,0,0" Padding="24,0,0,0" VerticalAlignment="Center">
-                    <TextBlock Text="{Binding CurrentPage}" Foreground="White" FontSize="15" FontWeight="SemiBold" />
+                    <StackPanel><TextBlock Text="{Binding CurrentPage}" Foreground="White" FontSize="15" FontWeight="SemiBold" />
+                        <TextBlock Text="{Binding ClientBuild}" ToolTip="{Binding ClientBuild}" Foreground="#ABC7D8" FontSize="10" MaxWidth="350" TextTrimming="CharacterEllipsis" />
+                    </StackPanel>
                 </Border>
 
                 <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
@@ -139,7 +141,7 @@
                                             </Border>
                                             <StackPanel Grid.Column="1" VerticalAlignment="Center" Visibility="{Binding DataContext.IsSidebarExpanded, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource SidebarVisibility}}">
                                                 <TextBlock Text="{Binding Title}" FontSize="13" FontWeight="SemiBold" />
-                                                <TextBlock Text="{Binding Description}" FontSize="9.5" Foreground="{DynamicResource TextSecondaryBrush}"
+                                                <TextBlock Text="{Binding Description}" FontSize="11" Foreground="{DynamicResource TextSecondaryBrush}"
                                                            TextTrimming="CharacterEllipsis" Margin="0,2,0,0" />
                                             </StackPanel>
                                             <TextBlock Grid.Column="2" Text="›" Width="18" FontSize="20" Foreground="{DynamicResource TextSecondaryBrush}" Visibility="{Binding DataContext.IsSidebarExpanded, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource SidebarVisibility}}"

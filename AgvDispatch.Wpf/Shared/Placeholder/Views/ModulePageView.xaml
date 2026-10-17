@@ -1,4 +1,4 @@
-﻿<UserControl x:Class="AgvDispatch.Wpf.Views.ModulePageView"
+<UserControl x:Class="AgvDispatch.Wpf.Views.ModulePageView"
     Foreground="{DynamicResource TextPrimaryBrush}"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
@@ -23,10 +23,10 @@
                         <TextBlock Text="{Binding Description}" Style="{StaticResource PageDescriptionTextStyle}" Margin="0,4,0,0" />
                     </StackPanel>
                 </StackPanel>
-                <Border Grid.Column="1" Padding="12,6" CornerRadius="13" Background="#FFEAF7EE" VerticalAlignment="Center">
+                <Border Grid.Column="1" Padding="12,6" CornerRadius="13" Background="{DynamicResource MutedSurfaceBrush}" VerticalAlignment="Center">
                     <StackPanel Orientation="Horizontal">
-                        <Ellipse Width="7" Height="7" Fill="#FF2EAD63" Margin="0,0,7,0" />
-                        <TextBlock Text="业务功能未接入" Foreground="#FF237849" FontWeight="SemiBold" />
+                        <Ellipse Width="7" Height="7" Fill="{DynamicResource OfflineBrush}" Margin="0,0,7,0" />
+                        <TextBlock Text="业务功能未接入" Foreground="{DynamicResource TextSecondaryBrush}" FontWeight="SemiBold" />
                     </StackPanel>
                 </Border>
             </Grid>
@@ -39,14 +39,14 @@
                     <StackPanel>
                         <TextBlock Text="{Binding PrimaryLabel}" Foreground="{DynamicResource TextSecondaryBrush}" />
                         <TextBlock Text="{Binding PrimaryMetric}" Style="{StaticResource MetricValueTextStyle}" Margin="0,9,0,2" />
-                        <TextBlock Text="尚未接入数据源" FontSize="10" Foreground="{DynamicResource InfoBrush}" />
+                        <TextBlock Text="尚未接入数据源" FontSize="12" Foreground="{DynamicResource InfoBrush}" />
                     </StackPanel>
                 </Border>
                 <Border Grid.Column="2" Style="{StaticResource DashboardCardStyle}" Margin="0">
                     <StackPanel>
                         <TextBlock Text="{Binding SecondaryLabel}" Foreground="{DynamicResource TextSecondaryBrush}" />
                         <TextBlock Text="{Binding SecondaryMetric}" Style="{StaticResource MetricValueTextStyle}" Margin="0,9,0,2" />
-                        <TextBlock Text="此处不代表设备状态" FontSize="10" Foreground="{DynamicResource WarningBrush}" />
+                        <TextBlock Text="此处不代表设备状态" FontSize="12" Foreground="{DynamicResource WarningBrush}" />
                     </StackPanel>
                 </Border>
                 <Border Grid.Column="4" Padding="18" CornerRadius="8" Background="#FF123C50" BorderBrush="#FF2A91BD" BorderThickness="1">

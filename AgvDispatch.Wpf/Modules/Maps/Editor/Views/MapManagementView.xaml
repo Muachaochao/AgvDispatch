@@ -1,18 +1,16 @@
-<UserControl xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:prism="http://prismlibrary.com/" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Class="AgvDispatch.Wpf.Views.MapManagementView" FontSize="13" Foreground="#243347" prism:ViewModelLocator.AutoWireViewModel="True" Background="#F5F7FA" Focusable="True" PreviewKeyDown="Workbench_OnPreviewKeyDown">
+<UserControl xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:prism="http://prismlibrary.com/" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Class="AgvDispatch.Wpf.Views.MapManagementView" FontSize="13" Foreground="{DynamicResource TextPrimaryBrush}" prism:ViewModelLocator.AutoWireViewModel="True" Background="{DynamicResource AppBackgroundBrush}" Focusable="True" PreviewKeyDown="Workbench_OnPreviewKeyDown">
   <UserControl.Resources>
     <ResourceDictionary>
-      <ResourceDictionary.MergedDictionaries>
-        <ResourceDictionary Source="/AgvDispatch.Wpf;component/Themes/Light.xaml" />
-      </ResourceDictionary.MergedDictionaries>
+
       <Style TargetType="TextBlock">
         <Setter Property="FontSize" Value="13" />
       </Style>
       <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}" x:Key="MapBaseButton">
         <Setter Property="Height" Value="Auto" />
         <Setter Property="MinHeight" Value="30" />
-        <Setter Property="Foreground" Value="#26364B" />
-        <Setter Property="Background" Value="#FFFFFF" />
-        <Setter Property="BorderBrush" Value="#D8E1EC" />
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
+        <Setter Property="Background" Value="{DynamicResource SurfaceBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Cursor" Value="Hand" />
         <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button">
@@ -36,7 +34,11 @@
       <Style TargetType="ComboBox" BasedOn="{StaticResource {x:Type ComboBox}}">
         <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
       </Style>
-      <Style TargetType="DataGridColumnHeader" BasedOn="{StaticResource {x:Type DataGridColumnHeader}}">
+      <Style x:Key="EditorColumnHeaderStyle" TargetType="DataGridColumnHeader" BasedOn="{StaticResource {x:Type DataGridColumnHeader}}">
+        <Setter Property="Background" Value="{DynamicResource MutedSurfaceBrush}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}" />
+        <Setter Property="Padding" Value="10,8" />
         <Setter Property="ContentTemplate">
           <Setter.Value>
             <DataTemplate>
@@ -45,12 +47,21 @@
           </Setter.Value>
         </Setter>
       </Style>
+      <Style TargetType="DataGrid" BasedOn="{StaticResource {x:Type DataGrid}}">
+        <Setter Property="ColumnHeaderStyle" Value="{StaticResource EditorColumnHeaderStyle}" />
+        <Setter Property="Background" Value="{DynamicResource SurfaceBrush}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
+        <Setter Property="RowBackground" Value="{DynamicResource SurfaceBrush}" />
+        <Setter Property="AlternatingRowBackground" Value="{DynamicResource MutedSurfaceBrush}" />
+        <Setter Property="HorizontalGridLinesBrush" Value="{DynamicResource BorderBrush}" />
+        <Setter Property="GridLinesVisibility" Value="Horizontal" />
+      </Style>
       <Style x:Key="MapToolToggleStyle" TargetType="ToggleButton">
         <Setter Property="Padding" Value="11,6" />
         <Setter Property="Margin" Value="0,0,6,6" />
-        <Setter Property="Foreground" Value="#26364B" />
-        <Setter Property="Background" Value="#FFFFFF" />
-        <Setter Property="BorderBrush" Value="#D8E1EC" />
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
+        <Setter Property="Background" Value="{DynamicResource SurfaceBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Cursor" Value="Hand" />
         <Setter Property="Template">
@@ -82,13 +93,13 @@
         <Setter Property="Margin" Value="2,0" />
         <Setter Property="Padding" Value="10,0" />
         <Setter Property="ContentTemplate" Value="{x:Null}" />
-        <Setter Property="Foreground" Value="#26364B" />
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
       </Style>
       <Style x:Key="WorkbenchToolStyle" TargetType="ToggleButton">
         <Setter Property="MinWidth" Value="70" />
         <Setter Property="Height" Value="50" />
         <Setter Property="Margin" Value="1,0" />
-        <Setter Property="Foreground" Value="#34465D" />
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
         <Setter Property="Background" Value="Transparent" />
         <Setter Property="Cursor" Value="Hand" />
         <Setter Property="Template">
@@ -99,11 +110,11 @@
               </Border>
               <ControlTemplate.Triggers>
                 <Trigger Property="IsMouseOver" Value="True">
-                  <Setter Property="Background" Value="#EEF3F9" />
+                  <Setter Property="Background" Value="{DynamicResource MutedSurfaceBrush}" />
                 </Trigger>
                 <Trigger Property="IsChecked" Value="True">
-                  <Setter Property="Background" Value="#DBEAFE" />
-                  <Setter Property="Foreground" Value="#1D4ED8" />
+                  <Setter Property="Background" Value="{DynamicResource AccentMutedBrush}" />
+                  <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
                 </Trigger>
                 <Trigger Property="IsEnabled" Value="False">
                   <Setter Property="Opacity" Value="0.45" />
@@ -144,10 +155,10 @@
       <RowDefinition Height="Auto" />
       <RowDefinition Height="30" />
     </Grid.RowDefinitions>
-    <Border Background="#FFFFFF" BorderBrush="#D8E1EC" BorderThickness="0,0,0,1">
+    <Border Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,0,1">
       <DockPanel Margin="10,0">
         <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
-          <TextBlock Text="{Binding VersionText}" FontSize="11" Foreground="#64748B" VerticalAlignment="Center" Margin="8,0" />
+          <TextBlock Text="{Binding VersionText}" FontSize="11" Foreground="{DynamicResource TextSecondaryBrush}" VerticalAlignment="Center" Margin="8,0" />
           <Button Content="{Binding SaveButtonText}" Command="{Binding SaveCommand}" />
           <Button Content="校验发布" Command="{Binding PublishCommand}" />
         </StackPanel>
@@ -165,7 +176,7 @@
         </StackPanel>
       </DockPanel>
     </Border>
-    <Border Grid.Row="1" Background="#FFFFFF" BorderBrush="#D8E1EC" BorderThickness="0,0,0,1">
+    <Border Grid.Row="1" Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,0,1">
       <DockPanel Margin="10,3">
         <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
           <CheckBox Content="吸附" IsChecked="{Binding SnapToGrid}" Margin="6,0" VerticalAlignment="Center" />
@@ -467,7 +478,7 @@
         </Grid>
       </Border>
       <Grid x:Name="RightEditorPanel" Grid.Column="1" Width="280" Visibility="{Binding ShowInspector, Converter={StaticResource WorkbenchVisibility}}">
-          <Border x:Name="MapSetupPanel" Background="#FFFFFF" BorderBrush="#D8E1EC" BorderThickness="1,0,0,0" Padding="12" Visibility="{Binding ShowMapSetup, Converter={StaticResource WorkbenchVisibility}}">
+          <Border x:Name="MapSetupPanel" Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1,0,0,0" Padding="12" Visibility="{Binding ShowMapSetup, Converter={StaticResource WorkbenchVisibility}}">
             <DockPanel>
               <DockPanel DockPanel.Dock="Top" Margin="0,0,0,12">
                 <Button DockPanel.Dock="Right" Content="›" Click="CloseEditorPanel_OnClick" ToolTip="收起右侧面板" AutomationProperties.Name="收起地图配置" />
@@ -485,7 +496,7 @@
                   <Button DockPanel.Dock="Right" Content="选择…" Click="BrowseCad_OnClick" IsEnabled="{Binding CanEditWorkbench}" />
                   <TextBox Text="{Binding BackgroundFilePath, UpdateSourceTrigger=PropertyChanged}" TextWrapping="Wrap" />
                 </DockPanel>
-                <TextBlock Text="DWG / DXF；从所选文件读取真实图层。底图不自动生成车辆路线。" FontSize="11" Foreground="#64748B" TextWrapping="Wrap" Margin="0,4,0,0" />
+                <TextBlock Text="DWG / DXF；从所选文件读取真实图层。底图不自动生成车辆路线。" FontSize="11" Foreground="{DynamicResource TextSecondaryBrush}" TextWrapping="Wrap" Margin="0,4,0,0" />
                 <TextBlock Text="底图清晰度（重建后生效）" Margin="0,8,0,4" />
                 <ComboBox ItemsSource="{Binding UnderlayQualityChoices}" SelectedIndex="{Binding UnderlayQualityIndex}" />
                 <TextBlock Text="底图不透明度" Margin="0,8,0,4" />
@@ -555,10 +566,10 @@
             </ScrollViewer>
             </DockPanel>
           </Border>
-      <Border x:Name="ObjectInspectorPanel" Background="#FFFFFF">
+      <Border x:Name="ObjectInspectorPanel" Background="{DynamicResource SurfaceBrush}">
         <Border.Style><Style TargetType="Border"><Setter Property="Visibility" Value="Visible" /><Style.Triggers><DataTrigger Binding="{Binding ShowMapSetup}" Value="True"><Setter Property="Visibility" Value="Collapsed" /></DataTrigger></Style.Triggers></Style></Border.Style>
         <DockPanel>
-          <Border DockPanel.Dock="Top" Padding="14,12" BorderBrush="#E2E8F0" BorderThickness="0,0,0,1">
+          <Border DockPanel.Dock="Top" Padding="14,12" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,0,1">
             <DockPanel><Button DockPanel.Dock="Right" Content="›" Click="CloseEditorPanel_OnClick" ToolTip="收起右侧面板" AutomationProperties.Name="收起对象属性" /><TextBlock Text="对象与图层" FontWeight="SemiBold" FontSize="14" VerticalAlignment="Center" /></DockPanel>
           </Border>
           <TabControl Margin="8" x:Name="InspectorTabs" SelectedIndex="0">
@@ -571,7 +582,7 @@
               <ScrollViewer VerticalScrollBarVisibility="Auto">
                 <StackPanel Margin="8">
                   <TextBlock Text="节点 / 站点" FontWeight="SemiBold" />
-                  <TextBlock Text="选择画布对象查看属性；修改支持撤销。" TextWrapping="Wrap" Foreground="#64748B" FontSize="11" Margin="0,5,0,10" />
+                  <TextBlock Text="选择画布对象查看属性；修改支持撤销。" TextWrapping="Wrap" Foreground="{DynamicResource TextSecondaryBrush}" FontSize="11" Margin="0,5,0,10" />
                   <TextBlock Text="编号" />
                   <TextBox Text="{Binding SelectedNode.Id, UpdateSourceTrigger=PropertyChanged}" Style="{StaticResource InspectorField}" />
                   <TextBlock Text="厂家站点编号" />
@@ -593,8 +604,8 @@
                   <TextBlock Text="编号" Margin="0,10,0,0" />
                   <TextBox Text="{Binding SelectedEdge.Id, UpdateSourceTrigger=PropertyChanged}" Style="{StaticResource InspectorField}" />
                   <TextBlock Text="起点 → 终点" />
-                  <TextBlock Text="{Binding SelectedEdge.From}" Foreground="#64748B" />
-                  <TextBlock Text="{Binding SelectedEdge.To}" Foreground="#64748B" />
+                  <TextBlock Text="{Binding SelectedEdge.From}" Foreground="{DynamicResource TextSecondaryBrush}" />
+                  <TextBlock Text="{Binding SelectedEdge.To}" Foreground="{DynamicResource TextSecondaryBrush}" />
                   <TextBlock Text="限速 / m/s" Margin="0,10,0,0" />
                   <TextBox Text="{Binding SelectedEdge.SpeedLimit, UpdateSourceTrigger=PropertyChanged}" Style="{StaticResource InspectorField}" />
                   <TextBlock Text="曲线控制点 x,y;x,y" />
@@ -610,7 +621,7 @@
             </TabItem>
             <TabItem Header="图层"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel Margin="10">
               <TextBlock Text="对象归属图层" FontWeight="SemiBold"/>
-              <TextBlock Text="选中行设置当前绘图层；勾选控制可见。切换当前层不会删除或移动原对象。" TextWrapping="Wrap" FontSize="11" Foreground="#64748B" Margin="0,6"/>
+              <TextBlock Text="选中行设置当前绘图层；勾选控制可见。切换当前层不会删除或移动原对象。" TextWrapping="Wrap" FontSize="11" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,6"/>
               <ListBox ItemsSource="{Binding MapLayers}" SelectedItem="{Binding CurrentLayer}" HorizontalContentAlignment="Stretch" MinHeight="75" MaxHeight="140"><ListBox.ItemTemplate><DataTemplate><DockPanel Margin="0,3"><CheckBox DockPanel.Dock="Left" IsChecked="{Binding Visible}" ToolTip="显示/隐藏该层对象，不禁行道路" VerticalAlignment="Center" Margin="0,0,8,0"/><TextBox Text="{Binding Name,UpdateSourceTrigger=LostFocus}" ToolTip="图层名称"/></DockPanel></DataTemplate></ListBox.ItemTemplate></ListBox>
               <CheckBox Content="仅看当前对象图层" IsChecked="{Binding OnlyCurrentLayer}" Margin="0,8,0,3"/>
               <CheckBox Content="锁定当前层对象编辑" IsChecked="{Binding CurrentLayer.IsLocked}" Margin="0,3"/>
@@ -632,62 +643,62 @@
               <CheckBox Content="自动稀疏标签与方向箭头" IsChecked="{Binding SparseNodeLabels}" Margin="0,2"/>
               <CheckBox Content="标签优先使用厂家站点号" IsChecked="{Binding UseVendorSiteLabels}" Margin="0,2"/>
               <CheckBox Content="显示道路方向箭头" IsChecked="{Binding ShowDirectionArrows}" Margin="0,2"/>
-              <TextBlock Text="{Binding LabelDisplaySummary}" TextWrapping="Wrap" FontSize="11" Foreground="#64748B" Margin="0,5"/>
+              <TextBlock Text="{Binding LabelDisplaySummary}" TextWrapping="Wrap" FontSize="11" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,5"/>
               <Separator Margin="0,10"/><TextBlock Text="环境参考底图" FontWeight="SemiBold"/>
               <CheckBox Content="显示环境底图（总开关）" IsChecked="{Binding ShowUnderlayLayer}" Margin="0,6"/>
               <CheckBox Content="扫描点 / 普通线" IsChecked="{Binding ShowScanLayer}" IsEnabled="{Binding HasSmapBackgroundLayers}" Margin="0,2"/>
               <CheckBox Content="厂家禁行线 / 区域轮廓" IsChecked="{Binding ShowSmapAnnotations}" IsEnabled="{Binding HasSmapBackgroundLayers}" Margin="0,2"/>
               <TextBlock Text="底图不透明度：左淡 → 右深" Margin="0,6,0,2"/><Slider Minimum="0" Maximum="1" Value="{Binding UnderlayOpacity}" TickFrequency="0.1"/>
-              <TextBlock Text="{Binding BackgroundLayerHint}" TextWrapping="Wrap" FontSize="11" Foreground="#64748B" Margin="0,5"/>
+              <TextBlock Text="{Binding BackgroundLayerHint}" TextWrapping="Wrap" FontSize="11" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,5"/>
               <Button Content="CAD内部图层（CAD源适用）" Tag="CAD图层" Click="OpenDetails_OnClick" Margin="0,5"/>
               <Separator Margin="0,10"/><TextBlock Text="画布与网格（米）" FontWeight="SemiBold"/>
               <CheckBox Content="显示网格" IsChecked="{Binding ShowGrid}" Margin="0,6"/>
               <WrapPanel><TextBlock Text="宽" VerticalAlignment="Center"/><TextBox Text="{Binding CanvasWorldWidth,StringFormat=0.###,UpdateSourceTrigger=LostFocus}" Width="85" Margin="4,0,8,0"/><TextBlock Text="高" VerticalAlignment="Center"/><TextBox Text="{Binding CanvasWorldHeight,StringFormat=0.###,UpdateSourceTrigger=LostFocus}" Width="85" Margin="4,0"/></WrapPanel>
               <WrapPanel Margin="0,6"><TextBlock Text="网格间距" VerticalAlignment="Center"/><TextBox Text="{Binding GridSize,StringFormat=0.###,UpdateSourceTrigger=LostFocus}" Width="90" Margin="8,0"/></WrapPanel>
-              <TextBlock Text="有底图时按底图坐标框架绘网格；无底图时宽高定义画布。放大请用滚轮。网格过密时自动放宽显示步长，不改变吸附间距。" TextWrapping="Wrap" FontSize="11" Foreground="#64748B"/>
-              <TextBlock Text="显示设置随草稿保存；隐藏不禁行、不删除对象或路权。" TextWrapping="Wrap" Foreground="#1D4ED8" FontSize="11" Margin="0,8"/>
+              <TextBlock Text="有底图时按底图坐标框架绘网格；无底图时宽高定义画布。放大请用滚轮。网格过密时自动放宽显示步长，不改变吸附间距。" TextWrapping="Wrap" FontSize="11" Foreground="{DynamicResource TextSecondaryBrush}"/>
+              <TextBlock Text="显示设置随草稿保存；隐藏不禁行、不删除对象或路权。" TextWrapping="Wrap" Foreground="{DynamicResource AccentBrush}" FontSize="11" Margin="0,8"/>
             </StackPanel></ScrollViewer></TabItem><TabItem Header="模型">
               <StackPanel Margin="10">
                 <TextBlock Text="站点模板" FontWeight="SemiBold" Margin="0,5,0,12" />
-                <TextBlock Text="选择模板后在画布左键放置，右键结束。" TextWrapping="Wrap" Foreground="#64748B" FontSize="11" Margin="0,0,0,12" />
+                <TextBlock Text="选择模板后在画布左键放置，右键结束。" TextWrapping="Wrap" Foreground="{DynamicResource TextSecondaryBrush}" FontSize="11" Margin="0,0,0,12" />
                 <Button Content="业务站点" Command="{Binding SelectWorkbenchToolCommand}" CommandParameter="station" Margin="0,4" />
                 <Button Content="等待点" Command="{Binding SelectWorkbenchToolCommand}" CommandParameter="waiting" Margin="0,4" />
                 <Button Content="充电点" Command="{Binding SelectWorkbenchToolCommand}" CommandParameter="charging" Margin="0,4" />
                 <Button Content="交叉点" Command="{Binding SelectWorkbenchToolCommand}" CommandParameter="intersection" Margin="0,4" />
                 <Button Content="路径节点" Command="{Binding SelectWorkbenchToolCommand}" CommandParameter="point" Margin="0,4" />
-                <TextBlock Text="模板使用已有调度节点类型，可保存、校验和发布。" TextWrapping="Wrap" Foreground="#64748B" FontSize="11" Margin="0,16" />
+                <TextBlock Text="模板使用已有调度节点类型，可保存、校验和发布。" TextWrapping="Wrap" Foreground="{DynamicResource TextSecondaryBrush}" FontSize="11" Margin="0,16" />
               </StackPanel>
             </TabItem>
           </TabControl>
         </DockPanel>
       </Border>
       </Grid>
-      <Border Grid.Column="2" Background="#FFFFFF" BorderBrush="#D8E1EC" BorderThickness="1,0,0,0">
+      <Border Grid.Column="2" Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1,0,0,0">
         <StackPanel Margin="6,8">
           <Button x:Name="MapSetupRailButton" Click="OpenMapSetup_OnClick" ToolTip="地图配置：文件、CAD、坐标与导入" AutomationProperties.Name="地图配置" Padding="6,0" Height="36" Margin="0,0,0,8" HorizontalAlignment="Stretch">
-            <StackPanel Orientation="Horizontal"><TextBlock Text="⚙" FontSize="20" Foreground="#34465D" VerticalAlignment="Center" Margin="0,0,8,0" /><TextBlock Text="配置" Foreground="#26364B" VerticalAlignment="Center" /></StackPanel>
+            <StackPanel Orientation="Horizontal"><TextBlock Text="⚙" FontSize="20" Foreground="{DynamicResource TextPrimaryBrush}" VerticalAlignment="Center" Margin="0,0,8,0" /><TextBlock Text="配置" Foreground="{DynamicResource TextPrimaryBrush}" VerticalAlignment="Center" /></StackPanel>
           </Button>
           <Button x:Name="AttributeRailButton" Tag="0" Click="OpenInspector_OnClick" ToolTip="对象属性" AutomationProperties.Name="对象属性" Padding="6,0" Height="36" Margin="0,0,0,8" HorizontalAlignment="Stretch">
             <StackPanel Orientation="Horizontal">
-            <Path Data="M3,6 L21,6 M3,12 L21,12 M3,18 L21,18 M8,3 L8,9 M16,9 L16,15 M10,15 L10,21" Stroke="#34465D" StrokeThickness="1.6" Width="18" Height="18" Stretch="Uniform" />
-            <TextBlock Text="属性" Foreground="#26364B" VerticalAlignment="Center" Margin="8,0,0,0" /></StackPanel>
+            <Path Data="M3,6 L21,6 M3,12 L21,12 M3,18 L21,18 M8,3 L8,9 M16,9 L16,15 M10,15 L10,21" Stroke="{DynamicResource TextPrimaryBrush}" StrokeThickness="1.6" Width="18" Height="18" Stretch="Uniform" />
+            <TextBlock Text="属性" Foreground="{DynamicResource TextPrimaryBrush}" VerticalAlignment="Center" Margin="8,0,0,0" /></StackPanel>
           </Button>
           <Button x:Name="LayerRailButton" Tag="1" Click="OpenInspector_OnClick" ToolTip="图层与显示" AutomationProperties.Name="图层与显示" Padding="6,0" Height="36" Margin="0,0,0,8" HorizontalAlignment="Stretch">
             <StackPanel Orientation="Horizontal">
-            <Path Data="M12,2 L22,7 12,12 2,7 Z M2,12 L12,17 22,12 M2,17 L12,22 22,17" Stroke="#34465D" StrokeThickness="1.6" Width="18" Height="18" Stretch="Uniform" />
-            <TextBlock Text="图层" Foreground="#26364B" VerticalAlignment="Center" Margin="8,0,0,0" /></StackPanel>
+            <Path Data="M12,2 L22,7 12,12 2,7 Z M2,12 L12,17 22,12 M2,17 L12,22 22,17" Stroke="{DynamicResource TextPrimaryBrush}" StrokeThickness="1.6" Width="18" Height="18" Stretch="Uniform" />
+            <TextBlock Text="图层" Foreground="{DynamicResource TextPrimaryBrush}" VerticalAlignment="Center" Margin="8,0,0,0" /></StackPanel>
           </Button>
           <Button x:Name="TemplateRailButton" Tag="2" Click="OpenInspector_OnClick" ToolTip="站点模板" AutomationProperties.Name="站点模板" Padding="6,0" Height="36" HorizontalAlignment="Stretch">
             <StackPanel Orientation="Horizontal">
-            <Path Data="M3,3 L10,3 10,10 3,10 Z M14,3 L21,3 21,10 14,10 Z M3,14 L10,14 10,21 3,21 Z M14,14 L21,14 21,21 14,21 Z" Stroke="#34465D" StrokeThickness="1.6" Width="18" Height="18" Stretch="Uniform" />
-            <TextBlock Text="模板" Foreground="#26364B" VerticalAlignment="Center" Margin="8,0,0,0" /></StackPanel>
+            <Path Data="M3,3 L10,3 10,10 3,10 Z M14,3 L21,3 21,10 14,10 Z M3,14 L10,14 10,21 3,21 Z M14,14 L21,14 21,21 14,21 Z" Stroke="{DynamicResource TextPrimaryBrush}" StrokeThickness="1.6" Width="18" Height="18" Stretch="Uniform" />
+            <TextBlock Text="模板" Foreground="{DynamicResource TextPrimaryBrush}" VerticalAlignment="Center" Margin="8,0,0,0" /></StackPanel>
           </Button>
           <Separator Margin="0,12,0,8" />
           <ToggleButton x:Name="DetailsPanelButton" Style="{StaticResource WorkbenchToolStyle}" IsChecked="{Binding ShowDetails}" ToolTip="详细面板：高级工具、对象数据、地图校验、CAD与安全切换" AutomationProperties.Name="详细面板" Height="36" Margin="0,0,0,8" HorizontalAlignment="Stretch">
             <StackPanel Orientation="Horizontal"><Path Data="M3,3 L21,3 21,21 3,21 Z M3,14 L21,14 M8,17 L16,17" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}" StrokeThickness="1.6" Width="18" Height="18" Stretch="Uniform" /><TextBlock Text="详细" VerticalAlignment="Center" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}" Margin="8,0,0,0" /></StackPanel>
           </ToggleButton>
           <Button x:Name="RefreshRailButton" Command="{Binding RefreshCommand}" ToolTip="离线时刷新本地地图；在线时重连后台并读取地图，不连接现场PLC/AGV" AutomationProperties.Name="连接 / 刷新" Padding="6,0" Height="36" HorizontalAlignment="Stretch">
-            <StackPanel Orientation="Horizontal"><Path Data="M20,8 A9,9 0 1 0 21,16 M20,2 L20,8 14,8" Stroke="#34465D" StrokeThickness="1.6" Width="18" Height="18" Stretch="Uniform" /><TextBlock Text="刷新" Foreground="#26364B" VerticalAlignment="Center" Margin="8,0,0,0" /></StackPanel>
+            <StackPanel Orientation="Horizontal"><Path Data="M20,8 A9,9 0 1 0 21,16 M20,2 L20,8 14,8" Stroke="{DynamicResource TextPrimaryBrush}" StrokeThickness="1.6" Width="18" Height="18" Stretch="Uniform" /><TextBlock Text="刷新" Foreground="{DynamicResource TextPrimaryBrush}" VerticalAlignment="Center" Margin="8,0,0,0" /></StackPanel>
           </Button>
         </StackPanel>
       </Border>
@@ -702,10 +713,10 @@
           </StackPanel>
           <DataGrid ItemsSource="{Binding EditHistory}" AutoGenerateColumns="False" IsReadOnly="True">
             <DataGrid.Columns>
-              <DataGridTextColumn Header="步骤" Binding="{Binding Step}" Width="60" />
-              <DataGridTextColumn Header="操作" Binding="{Binding Operation}" Width="220" MinWidth="160" />
-              <DataGridTextColumn Header="时间" Binding="{Binding Time, StringFormat=HH:mm:ss.fff}" Width="140" />
-              <DataGridTextColumn Header="状态" Binding="{Binding State}" Width="90" />
+              <DataGridTextColumn Header="步骤" Binding="{Binding Step}" Width="60"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+              <DataGridTextColumn Header="操作" Binding="{Binding Operation}" Width="220" MinWidth="160"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+              <DataGridTextColumn Header="时间" Binding="{Binding Time, StringFormat=HH:mm:ss.fff}" Width="140"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+              <DataGridTextColumn Header="状态" Binding="{Binding State}" Width="90"  ElementStyle="{StaticResource AppGridTextStyle}"/>
             </DataGrid.Columns>
           </DataGrid>
         </DockPanel>
@@ -717,19 +728,19 @@
               <TextBlock Text="精确建图" Foreground="{DynamicResource TextPrimaryBrush}" />
             </TabItem.Header>
             <WrapPanel Margin="4,7,0,0">
-              <TextBlock Text="坐标 X" Foreground="#334155" VerticalAlignment="Center" Margin="0,0,4,6" />
+              <TextBlock Text="坐标 X" Foreground="{DynamicResource TextPrimaryBrush}" VerticalAlignment="Center" Margin="0,0,4,6" />
               <TextBox Text="{Binding NewNodeX}" Width="60" Height="29" Margin="0,0,6,6" />
-              <TextBlock Text="Y" Foreground="#334155" VerticalAlignment="Center" Margin="0,0,4,6" />
+              <TextBlock Text="Y" Foreground="{DynamicResource TextPrimaryBrush}" VerticalAlignment="Center" Margin="0,0,4,6" />
               <TextBox Text="{Binding NewNodeY}" Width="60" Height="29" Margin="0,0,6,6" />
               <Button Content="精确建点" Command="{Binding AddPreciseNodeCommand}" Style="{StaticResource MapToolButtonStyle}" />
-              <CheckBox Content="网格吸附" IsChecked="{Binding SnapToGrid}" Foreground="#334155" VerticalAlignment="Center" Margin="8,0,4,6" />
+              <CheckBox Content="网格吸附" IsChecked="{Binding SnapToGrid}" Foreground="{DynamicResource TextPrimaryBrush}" VerticalAlignment="Center" Margin="8,0,4,6" />
               <TextBox Text="{Binding GridSize}" Width="48" Height="29" Margin="0,0,8,6" ToolTip="网格间距（米）" />
-              <CheckBox Content="站点吸附" IsChecked="{Binding SnapToExisting}" Foreground="#334155" VerticalAlignment="Center" Margin="0,0,4,6" />
-              <CheckBox Content="对齐吸附" IsChecked="{Binding SnapToAlignment}" Foreground="#334155" VerticalAlignment="Center" Margin="0,0,4,6" ToolTip="绘制点和路段时对齐可见站点的横纵坐标；橙色辅助线显示实际落点" />
+              <CheckBox Content="站点吸附" IsChecked="{Binding SnapToExisting}" Foreground="{DynamicResource TextPrimaryBrush}" VerticalAlignment="Center" Margin="0,0,4,6" />
+              <CheckBox Content="对齐吸附" IsChecked="{Binding SnapToAlignment}" Foreground="{DynamicResource TextPrimaryBrush}" VerticalAlignment="Center" Margin="0,0,4,6" ToolTip="绘制点和路段时对齐可见站点的横纵坐标；橙色辅助线显示实际落点" />
               <TextBox Text="{Binding SnapDistance}" Width="48" Height="29" Margin="0,0,12,6" />
-              <CheckBox Content="曲线关键点" IsChecked="{Binding SnapToGeometry}" Foreground="#334155" VerticalAlignment="Center" Margin="0,0,8,6" ToolTip="吸附控制点及路段中点；不会自动分割原路段" /><TextBlock Text="画布(m)" Foreground="#334155" VerticalAlignment="Center" Margin="0,0,4,6" />
+              <CheckBox Content="曲线关键点" IsChecked="{Binding SnapToGeometry}" Foreground="{DynamicResource TextPrimaryBrush}" VerticalAlignment="Center" Margin="0,0,8,6" ToolTip="吸附控制点及路段中点；不会自动分割原路段" /><TextBlock Text="画布(m)" Foreground="{DynamicResource TextPrimaryBrush}" VerticalAlignment="Center" Margin="0,0,4,6" />
               <TextBox Text="{Binding CanvasWorldWidth}" Width="48" Height="29" Margin="0,0,3,6" />
-              <TextBlock Text="×" Foreground="#334155" VerticalAlignment="Center" Margin="0,0,3,6" />
+              <TextBlock Text="×" Foreground="{DynamicResource TextPrimaryBrush}" VerticalAlignment="Center" Margin="0,0,3,6" />
               <TextBox Text="{Binding CanvasWorldHeight}" Width="48" Height="29" Margin="0,0,6,6" />
             </WrapPanel>
           </TabItem>
@@ -780,10 +791,10 @@
             <TextBlock Text="{Binding IntersectionPreviewSummary}" TextWrapping="Wrap" Margin="8,4" />
             <DataGrid ItemsSource="{Binding TopologyJunctionPreview}" AutoGenerateColumns="False" IsReadOnly="True" Height="125" Margin="8,4">
               <DataGrid.Columns>
-                <DataGridTextColumn Header="连接节点" Binding="{Binding NodeId}" Width="140" />
-                <DataGridTextColumn Header="X / m" Binding="{Binding X, StringFormat=0.######}" Width="120" />
-                <DataGridTextColumn Header="Y / m" Binding="{Binding Y, StringFormat=0.######}" Width="120" />
-                <DataGridTextColumn Header="操作" Binding="{Binding Action}" Width="180" />
+                <DataGridTextColumn Header="连接节点" Binding="{Binding NodeId}" Width="140"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+                <DataGridTextColumn Header="X / m" Binding="{Binding X, StringFormat=0.######}" Width="120"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+                <DataGridTextColumn Header="Y / m" Binding="{Binding Y, StringFormat=0.######}" Width="120"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+                <DataGridTextColumn Header="操作" Binding="{Binding Action}" Width="180"  ElementStyle="{StaticResource AppGridTextStyle}"/>
               </DataGrid.Columns>
             </DataGrid>
             </StackPanel>
@@ -860,10 +871,10 @@
             <TextBlock Grid.Row="2" Text="切换记录（保留中断、取消与放行依据）" FontWeight="SemiBold" />
             <DataGrid Grid.Row="3" ItemsSource="{Binding MapSwitchHistory}" AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False" Margin="0,5,0,0">
               <DataGrid.Columns>
-                <DataGridTextColumn Header="阶段" Binding="{Binding PhaseText}" Width="110" />
-                <DataGridTextColumn Header="目标版本" Binding="{Binding VersionId}" Width="160" />
-                <DataGridTextColumn Header="发起人" Binding="{Binding OperatorIdentity}" Width="130" />
-                <DataGridTextColumn Header="核对依据" Binding="{Binding Evidence}" Width="*" />
+                <DataGridTextColumn Header="阶段" Binding="{Binding PhaseText}" Width="110"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+                <DataGridTextColumn Header="目标版本" Binding="{Binding VersionId}" Width="160"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+                <DataGridTextColumn Header="发起人" Binding="{Binding OperatorIdentity}" Width="130"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+                <DataGridTextColumn Header="核对依据" Binding="{Binding Evidence}" Width="*"  ElementStyle="{StaticResource AppGridTextStyle}"/>
               </DataGrid.Columns>
             </DataGrid>
           </Grid>
@@ -900,13 +911,13 @@
               </Style>
             </DataGrid.RowStyle>
             <DataGrid.Columns>
-              <DataGridTextColumn Header="站点ID" Binding="{Binding Id, UpdateSourceTrigger=PropertyChanged}" Width="130" />
-              <DataGridTextColumn Header="Robokit站点ID" Binding="{Binding AgvSiteId, UpdateSourceTrigger=PropertyChanged}" Width="150" />
-              <DataGridTextColumn Header="X" Binding="{Binding X, UpdateSourceTrigger=PropertyChanged}" Width="100" />
-              <DataGridTextColumn Header="Y" Binding="{Binding Y, UpdateSourceTrigger=PropertyChanged}" Width="100" />
+              <DataGridTextColumn Header="站点ID" Binding="{Binding Id, UpdateSourceTrigger=PropertyChanged}" Width="130"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+              <DataGridTextColumn Header="Robokit站点ID" Binding="{Binding AgvSiteId, UpdateSourceTrigger=PropertyChanged}" Width="150"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+              <DataGridTextColumn Header="X" Binding="{Binding X, UpdateSourceTrigger=PropertyChanged}" Width="100"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+              <DataGridTextColumn Header="Y" Binding="{Binding Y, UpdateSourceTrigger=PropertyChanged}" Width="100"  ElementStyle="{StaticResource AppGridTextStyle}"/>
               <DataGridComboBoxColumn Header="类型" SelectedItemBinding="{Binding Type}" ItemsSource="{Binding DataContext.NodeTypes, RelativeSource={RelativeSource AncestorType=UserControl}}" Width="140" />
               <DataGridCheckBoxColumn Header="启用" Binding="{Binding Enabled}" Width="70" />
-              <DataGridTextColumn Header="资源ID（;分隔）" Binding="{Binding ResourceIds}" Width="*" />
+              <DataGridTextColumn Header="资源ID（;分隔）" Binding="{Binding ResourceIds}" Width="*"  ElementStyle="{StaticResource AppGridTextStyle}"/>
             </DataGrid.Columns>
           </DataGrid>
         </Grid>
@@ -943,16 +954,16 @@
               </Style>
             </DataGrid.RowStyle>
             <DataGrid.Columns>
-              <DataGridTextColumn Header="路段ID" Binding="{Binding Id}" Width="110" />
-              <DataGridTextColumn Header="起点" Binding="{Binding From}" Width="110" />
-              <DataGridTextColumn Header="终点" Binding="{Binding To}" Width="110" />
-              <DataGridTextColumn Header="形状" Binding="{Binding GeometryLabel}" Width="105" IsReadOnly="True" />
-              <DataGridTextColumn Header="控制点m（x,y;x,y）" Binding="{Binding ControlPointsText, UpdateSourceTrigger=PropertyChanged}" Width="220" />
-              <DataGridTextColumn Header="长度m" Binding="{Binding Distance, StringFormat=F3}" Width="90" IsReadOnly="True" />
-              <DataGridTextColumn Header="限速m/s" Binding="{Binding SpeedLimit}" Width="90" />
+              <DataGridTextColumn Header="路段ID" Binding="{Binding Id}" Width="110"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+              <DataGridTextColumn Header="起点" Binding="{Binding From}" Width="110"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+              <DataGridTextColumn Header="终点" Binding="{Binding To}" Width="110"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+              <DataGridTextColumn Header="形状" Binding="{Binding GeometryLabel}" Width="105" IsReadOnly="True"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+              <DataGridTextColumn Header="控制点m（x,y;x,y）" Binding="{Binding ControlPointsText, UpdateSourceTrigger=PropertyChanged}" Width="220"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+              <DataGridTextColumn Header="长度m" Binding="{Binding Distance, StringFormat=F3}" Width="90" IsReadOnly="True"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+              <DataGridTextColumn Header="限速m/s" Binding="{Binding SpeedLimit}" Width="90"  ElementStyle="{StaticResource AppGridTextStyle}"/>
               <DataGridCheckBoxColumn Header="双向" Binding="{Binding Bidirectional}" Width="65" />
               <DataGridCheckBoxColumn Header="启用" Binding="{Binding Enabled}" Width="65" />
-              <DataGridTextColumn Header="资源ID（;分隔）" Binding="{Binding ResourceIds}" Width="*" />
+              <DataGridTextColumn Header="资源ID（;分隔）" Binding="{Binding ResourceIds}" Width="*"  ElementStyle="{StaticResource AppGridTextStyle}"/>
             </DataGrid.Columns>
           </DataGrid>
         </Grid>
@@ -976,10 +987,10 @@
           </WrapPanel>
           <DataGrid Grid.Row="1" ItemsSource="{Binding Resources}" SelectedItem="{Binding SelectedResource}" AutoGenerateColumns="False" CanUserAddRows="False" GridLinesVisibility="Horizontal" BeginningEdit="MapGrid_OnBeginningEdit" CellEditEnding="MapGrid_OnCellEditEnding">
             <DataGrid.Columns>
-              <DataGridTextColumn Header="资源ID" Binding="{Binding Id}" Width="180" />
+              <DataGridTextColumn Header="资源ID" Binding="{Binding Id}" Width="180"  ElementStyle="{StaticResource AppGridTextStyle}"/>
               <DataGridComboBoxColumn Header="资源类型" SelectedItemBinding="{Binding Type}" ItemsSource="{Binding DataContext.ResourceTypes, RelativeSource={RelativeSource AncestorType=UserControl}}" Width="180" />
-              <DataGridTextColumn Header="容量" Binding="{Binding Capacity}" Width="100" />
-              <DataGridTextColumn Header="多边形边界（x,y;x,y）" Binding="{Binding Boundary, UpdateSourceTrigger=PropertyChanged}" Width="*" />
+              <DataGridTextColumn Header="容量" Binding="{Binding Capacity}" Width="100"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+              <DataGridTextColumn Header="多边形边界（x,y;x,y）" Binding="{Binding Boundary, UpdateSourceTrigger=PropertyChanged}" Width="*"  ElementStyle="{StaticResource AppGridTextStyle}"/>
             </DataGrid.Columns>
           </DataGrid>
         </Grid>
@@ -1009,7 +1020,7 @@
           <DataGrid Grid.Row="1" ItemsSource="{Binding CadLayers}" AutoGenerateColumns="False" CanUserAddRows="False" GridLinesVisibility="Horizontal">
             <DataGrid.Columns>
               <DataGridCheckBoxColumn Header="显示" Binding="{Binding Included}" Width="80" />
-              <DataGridTextColumn Header="CAD图层名称" Binding="{Binding Name}" IsReadOnly="True" Width="*" />
+              <DataGridTextColumn Header="CAD图层名称" Binding="{Binding Name}" IsReadOnly="True" Width="*"  ElementStyle="{StaticResource AppGridTextStyle}"/>
             </DataGrid.Columns>
           </DataGrid>
         </Grid>
@@ -1040,10 +1051,10 @@
           </Grid>
           <DataGrid Grid.Row="1" ItemsSource="{Binding CalibrationPoints}" SelectedItem="{Binding SelectedCalibrationPoint}" AutoGenerateColumns="False" CanUserAddRows="False" GridLinesVisibility="Horizontal">
             <DataGrid.Columns>
-              <DataGridTextColumn Header="CAD X" Binding="{Binding CadX}" Width="*" />
-              <DataGridTextColumn Header="CAD Y" Binding="{Binding CadY}" Width="*" />
-              <DataGridTextColumn Header="地图 X（米）" Binding="{Binding MapX}" Width="*" />
-              <DataGridTextColumn Header="地图 Y（米）" Binding="{Binding MapY}" Width="*" />
+              <DataGridTextColumn Header="CAD X" Binding="{Binding CadX}" Width="*"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+              <DataGridTextColumn Header="CAD Y" Binding="{Binding CadY}" Width="*"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+              <DataGridTextColumn Header="地图 X（米）" Binding="{Binding MapX}" Width="*"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+              <DataGridTextColumn Header="地图 Y（米）" Binding="{Binding MapY}" Width="*"  ElementStyle="{StaticResource AppGridTextStyle}"/>
             </DataGrid.Columns>
           </DataGrid>
         </Grid>
@@ -1069,18 +1080,18 @@
           </StackPanel>
           <DataGrid Grid.Row="1" ItemsSource="{Binding LiveAgvs}" SelectedItem="{Binding SelectedLiveAgv}" AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False" GridLinesVisibility="Horizontal">
             <DataGrid.Columns>
-              <DataGridTextColumn Header="车辆" Binding="{Binding DisplayName}" Width="100" />
-              <DataGridTextColumn Header="车辆ID" Binding="{Binding VehicleId}" Width="110" />
-              <DataGridTextColumn Header="连接" Binding="{Binding Connection}" Width="90" />
-              <DataGridTextColumn Header="X(m)" Binding="{Binding X, StringFormat=F2}" Width="75" />
-              <DataGridTextColumn Header="Y(m)" Binding="{Binding Y, StringFormat=F2}" Width="75" />
-              <DataGridTextColumn Header="角度" Binding="{Binding Angle, StringFormat=F1}" Width="70" />
-              <DataGridTextColumn Header="定位置信度" Binding="{Binding LocalizationConfidence, StringFormat=P0}" Width="100" />
-              <DataGridTextColumn Header="地图判定" Binding="{Binding MapPositionState}" Width="105" />
-              <DataGridTextColumn Header="最近路段" Binding="{Binding NearestEdgeId}" Width="100" />
-              <DataGridTextColumn Header="偏差(m)" Binding="{Binding DistanceToRouteMeters, StringFormat=F2}" Width="80" />
-              <DataGridTextColumn Header="电量(%)" Binding="{Binding BatteryPercent, StringFormat=F0}" Width="80" />
-              <DataGridTextColumn Header="诊断原因" Binding="{Binding MapPositionMessage}" Width="*" />
+              <DataGridTextColumn Header="车辆" Binding="{Binding DisplayName}" Width="100"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+              <DataGridTextColumn Header="车辆ID" Binding="{Binding VehicleId}" Width="110"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+              <DataGridTextColumn Header="连接" Binding="{Binding Connection}" Width="90"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+              <DataGridTextColumn Header="X(m)" Binding="{Binding X, StringFormat=F2}" Width="75"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+              <DataGridTextColumn Header="Y(m)" Binding="{Binding Y, StringFormat=F2}" Width="75"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+              <DataGridTextColumn Header="角度" Binding="{Binding Angle, StringFormat=F1}" Width="70"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+              <DataGridTextColumn Header="定位置信度" Binding="{Binding LocalizationConfidence, StringFormat=P0}" Width="100"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+              <DataGridTextColumn Header="地图判定" Binding="{Binding MapPositionState}" Width="105"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+              <DataGridTextColumn Header="最近路段" Binding="{Binding NearestEdgeId}" Width="100"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+              <DataGridTextColumn Header="偏差(m)" Binding="{Binding DistanceToRouteMeters, StringFormat=F2}" Width="80"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+              <DataGridTextColumn Header="电量(%)" Binding="{Binding BatteryPercent, StringFormat=F0}" Width="80"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+              <DataGridTextColumn Header="诊断原因" Binding="{Binding MapPositionMessage}" Width="*"  ElementStyle="{StaticResource AppGridTextStyle}"/>
             </DataGrid.Columns>
           </DataGrid>
         </Grid>
@@ -1093,10 +1104,10 @@
           <Button DockPanel.Dock="Top" Content="校验当前编辑区" Command="{Binding ValidateLocalCommand}" HorizontalAlignment="Left" Margin="8" ToolTip="本地检查拓扑，无需调度服务" />
         <DataGrid ItemsSource="{Binding ValidationIssues}" AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False" GridLinesVisibility="Horizontal">
           <DataGrid.Columns>
-            <DataGridTextColumn Header="级别" Binding="{Binding Severity}" Width="100" />
-            <DataGridTextColumn Header="代码" Binding="{Binding Code}" Width="170" />
-            <DataGridTextColumn Header="问题说明" Binding="{Binding Message}" Width="*" />
-            <DataGridTextColumn Header="对象" Binding="{Binding ObjectIds}" Width="220" />
+            <DataGridTextColumn Header="级别" Binding="{Binding Severity}" Width="100"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+            <DataGridTextColumn Header="代码" Binding="{Binding Code}" Width="170"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+            <DataGridTextColumn Header="问题说明" Binding="{Binding Message}" Width="*"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+            <DataGridTextColumn Header="对象" Binding="{Binding ObjectIds}" Width="220"  ElementStyle="{StaticResource AppGridTextStyle}"/>
           </DataGrid.Columns>
         </DataGrid>
         </DockPanel>
@@ -1138,10 +1149,10 @@
           </Border>
           <DataGrid Grid.Row="2" ItemsSource="{Binding SimulationSteps}" AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False" GridLinesVisibility="Horizontal">
             <DataGrid.Columns>
-              <DataGridTextColumn Header="顺序" Binding="{Binding Sequence}" Width="80" />
-              <DataGridTextColumn Header="业务节点ID" Binding="{Binding LogicalNodeId}" Width="*" />
-              <DataGridTextColumn Header="Robokit站点ID（实际下发）" Binding="{Binding AgvSiteId}" Width="*" />
-              <DataGridTextColumn Header="节点类型" Binding="{Binding NodeType}" Width="160" />
+              <DataGridTextColumn Header="顺序" Binding="{Binding Sequence}" Width="80"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+              <DataGridTextColumn Header="业务节点ID" Binding="{Binding LogicalNodeId}" Width="*"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+              <DataGridTextColumn Header="Robokit站点ID（实际下发）" Binding="{Binding AgvSiteId}" Width="*"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+              <DataGridTextColumn Header="节点类型" Binding="{Binding NodeType}" Width="160"  ElementStyle="{StaticResource AppGridTextStyle}"/>
             </DataGrid.Columns>
           </DataGrid>
         </Grid>
@@ -1168,13 +1179,13 @@
           </Grid>
           <DataGrid Grid.Row="1" ItemsSource="{Binding PreflightEntries}" AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False" GridLinesVisibility="Horizontal">
             <DataGrid.Columns>
-              <DataGridTextColumn Header="起点" Binding="{Binding Source}" Width="150" />
-              <DataGridTextColumn Header="终点" Binding="{Binding Destination}" Width="150" />
+              <DataGridTextColumn Header="起点" Binding="{Binding Source}" Width="150"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+              <DataGridTextColumn Header="终点" Binding="{Binding Destination}" Width="150"  ElementStyle="{StaticResource AppGridTextStyle}"/>
               <DataGridCheckBoxColumn Header="可达" Binding="{Binding Reachable}" Width="70" />
-              <DataGridTextColumn Header="成本" Binding="{Binding Cost, StringFormat=F3}" Width="90" />
-              <DataGridTextColumn Header="路段数" Binding="{Binding EdgeCount}" Width="80" />
-              <DataGridTextColumn Header="占用资源" Binding="{Binding ResourceText}" Width="220" />
-              <DataGridTextColumn Header="结果" Binding="{Binding Message}" Width="*" />
+              <DataGridTextColumn Header="成本" Binding="{Binding Cost, StringFormat=F3}" Width="90"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+              <DataGridTextColumn Header="路段数" Binding="{Binding EdgeCount}" Width="80"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+              <DataGridTextColumn Header="占用资源" Binding="{Binding ResourceText}" Width="220"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+              <DataGridTextColumn Header="结果" Binding="{Binding Message}" Width="*"  ElementStyle="{StaticResource AppGridTextStyle}"/>
             </DataGrid.Columns>
           </DataGrid>
         </Grid>
@@ -1198,10 +1209,10 @@
           </Grid>
           <DataGrid Grid.Row="1" ItemsSource="{Binding VersionDifferences}" AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False" GridLinesVisibility="Horizontal">
             <DataGrid.Columns>
-              <DataGridTextColumn Header="对象类型" Binding="{Binding ObjectType}" Width="130" />
-              <DataGridTextColumn Header="对象ID" Binding="{Binding ObjectId}" Width="220" />
-              <DataGridTextColumn Header="变化" Binding="{Binding Kind}" Width="110" />
-              <DataGridTextColumn Header="说明" Binding="{Binding Details}" Width="*" />
+              <DataGridTextColumn Header="对象类型" Binding="{Binding ObjectType}" Width="130"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+              <DataGridTextColumn Header="对象ID" Binding="{Binding ObjectId}" Width="220"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+              <DataGridTextColumn Header="变化" Binding="{Binding Kind}" Width="110"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+              <DataGridTextColumn Header="说明" Binding="{Binding Details}" Width="*"  ElementStyle="{StaticResource AppGridTextStyle}"/>
             </DataGrid.Columns>
           </DataGrid>
         </Grid>
@@ -1221,12 +1232,12 @@
           </Grid>
           <DataGrid Grid.Row="1" ItemsSource="{Binding MapAudits}" AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False" GridLinesVisibility="Horizontal">
             <DataGrid.Columns>
-              <DataGridTextColumn Header="时间" Binding="{Binding OccurredAt, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="165" />
-              <DataGridTextColumn Header="操作" Binding="{Binding Operation}" Width="135" />
+              <DataGridTextColumn Header="时间" Binding="{Binding OccurredAt, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="165"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+              <DataGridTextColumn Header="操作" Binding="{Binding Operation}" Width="135"  ElementStyle="{StaticResource AppGridTextStyle}"/>
               <DataGridCheckBoxColumn Header="成功" Binding="{Binding Success}" Width="65" />
-              <DataGridTextColumn Header="操作账号" Binding="{Binding OperatorIdentity}" Width="190" />
-              <DataGridTextColumn Header="版本ID" Binding="{Binding VersionId}" Width="190" />
-              <DataGridTextColumn Header="摘要" Binding="{Binding Summary}" Width="*" />
+              <DataGridTextColumn Header="操作账号" Binding="{Binding OperatorIdentity}" Width="190"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+              <DataGridTextColumn Header="版本ID" Binding="{Binding VersionId}" Width="190"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+              <DataGridTextColumn Header="摘要" Binding="{Binding Summary}" Width="*"  ElementStyle="{StaticResource AppGridTextStyle}"/>
             </DataGrid.Columns>
           </DataGrid>
         </Grid>
@@ -1252,12 +1263,12 @@
             </Grid>
             <DataGrid Grid.Row="1" ItemsSource="{Binding VersionHistory}" SelectedItem="{Binding SelectedHistoryVersion}" AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False" GridLinesVisibility="Horizontal">
               <DataGrid.Columns>
-                <DataGridTextColumn Header="版本" Binding="{Binding VersionNumber, StringFormat=V{0}}" Width="70" />
-                <DataGridTextColumn Header="状态" Binding="{Binding Status}" Width="95" />
-                <DataGridTextColumn Header="节点" Binding="{Binding NodeCount}" Width="65" />
-                <DataGridTextColumn Header="路段" Binding="{Binding EdgeCount}" Width="65" />
-                <DataGridTextColumn Header="错误" Binding="{Binding ErrorCount}" Width="65" />
-                <DataGridTextColumn Header="更新时间" Binding="{Binding UpdatedAt, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="165" />
+                <DataGridTextColumn Header="版本" Binding="{Binding VersionNumber, StringFormat=V{0}}" Width="70"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+                <DataGridTextColumn Header="状态" Binding="{Binding Status}" Width="95"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+                <DataGridTextColumn Header="节点" Binding="{Binding NodeCount}" Width="65"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+                <DataGridTextColumn Header="路段" Binding="{Binding EdgeCount}" Width="65"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+                <DataGridTextColumn Header="错误" Binding="{Binding ErrorCount}" Width="65"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+                <DataGridTextColumn Header="更新时间" Binding="{Binding UpdatedAt, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="165"  ElementStyle="{StaticResource AppGridTextStyle}"/>
               </DataGrid.Columns>
             </DataGrid>
           </Grid>
@@ -1276,25 +1287,25 @@
             </Border>
             <DataGrid Grid.Row="2" ItemsSource="{Binding HistoryPreviewDifferences}" AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False" GridLinesVisibility="Horizontal">
               <DataGrid.Columns>
-                <DataGridTextColumn Header="对象" Binding="{Binding ObjectType}" Width="100" />
-                <DataGridTextColumn Header="ID" Binding="{Binding ObjectId}" Width="180" />
-                <DataGridTextColumn Header="变化" Binding="{Binding Kind}" Width="90" />
-                <DataGridTextColumn Header="说明" Binding="{Binding Details}" Width="*" />
+                <DataGridTextColumn Header="对象" Binding="{Binding ObjectType}" Width="100"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+                <DataGridTextColumn Header="ID" Binding="{Binding ObjectId}" Width="180"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+                <DataGridTextColumn Header="变化" Binding="{Binding Kind}" Width="90"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+                <DataGridTextColumn Header="说明" Binding="{Binding Details}" Width="*"  ElementStyle="{StaticResource AppGridTextStyle}"/>
               </DataGrid.Columns>
             </DataGrid>
           </Grid>
         </Grid>
       </TabItem>
     </TabControl>
-    <Border Grid.Row="4" Background="#FFFFFF" BorderBrush="#D8E1EC" BorderThickness="0,1,0,0">
+    <Border Grid.Row="4" Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0">
       <DockPanel Margin="12,0">
         <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
-          <StackPanel Orientation="Horizontal" VerticalAlignment="Center"><TextBlock Text="当前层" VerticalAlignment="Center" Margin="0,0,6,0" /><ComboBox ItemsSource="{Binding MapLayers}" SelectedItem="{Binding CurrentLayer}" DisplayMemberPath="Name" Width="120" Height="25" /></StackPanel><TextBlock Text="{Binding PointerText}" FontFamily="Consolas" Foreground="#475569" Margin="10,0" />
-          <TextBlock Text="{Binding CanvasViewText}" Foreground="#475569" Margin="10,0" />
+          <StackPanel Orientation="Horizontal" VerticalAlignment="Center"><TextBlock Text="当前层" VerticalAlignment="Center" Margin="0,0,6,0" /><ComboBox ItemsSource="{Binding MapLayers}" SelectedItem="{Binding CurrentLayer}" DisplayMemberPath="Name" Width="120" Height="25" /></StackPanel><TextBlock Text="{Binding PointerText}" FontFamily="Consolas" Foreground="{DynamicResource TextSecondaryBrush}" Margin="10,0" />
+          <TextBlock Text="{Binding CanvasViewText}" Foreground="{DynamicResource TextSecondaryBrush}" Margin="10,0" />
         </StackPanel>
         <StackPanel VerticalAlignment="Center">
-          <TextBlock Text="{Binding StatusMessage}" ToolTip="{Binding StatusMessage}" FontSize="11" Foreground="#1D4ED8" TextTrimming="CharacterEllipsis" />
-          <TextBlock Text="{Binding WorkbenchHint}" ToolTip="{Binding WorkbenchHint}" FontSize="10" Foreground="#475569" TextTrimming="CharacterEllipsis" />
+          <TextBlock Text="{Binding StatusMessage}" ToolTip="{Binding StatusMessage}" FontSize="11" Foreground="{DynamicResource AccentBrush}" TextTrimming="CharacterEllipsis" />
+          <TextBlock Text="{Binding WorkbenchHint}" ToolTip="{Binding WorkbenchHint}" FontSize="10" Foreground="{DynamicResource TextSecondaryBrush}" TextTrimming="CharacterEllipsis" />
         </StackPanel>
       </DockPanel>
     </Border>

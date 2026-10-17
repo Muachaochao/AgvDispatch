@@ -1,4 +1,4 @@
-﻿using AgvDispatch.Application.Abstractions;
+using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Domain.Tasks;
 using AgvDispatch.Infrastructure.Persistence.Entities;
 using SqlSugar;
@@ -49,6 +49,18 @@ public sealed partial class TaskCenterReadRepository(ISqlSugarClient database) :
         var leases = await database.Queryable<TrafficResourceLeaseEntity>()
             .Where(t => t.TaskId == taskId).OrderBy(t => t.ResourceId).ToListAsync(cancellationToken);
         var history = request.IncludeOperationHistory ? await ReadOperationHistoryAsync(taskId, cancellationToken) : (Items: (IReadOnlyList<TaskOperationHistoryEntry>)[], Total: 0);
+        var timeline = await ReadTimelineAsync(taskId, cancellationToken);
+        var handshakes = await database.Queryable<TaskHandshakeEntity>().Where(e=>e.TaskId==taskId).OrderBy(e=>e.StartedAtUtc).ToListAsync(cancellationToken);
+        var releaseReasons = await database.Queryable<TrafficLifecycleEventEntity>().Where(e=>e.TaskId==taskId && e.Kind=="Released").OrderBy(e=>e.OccurredAt,OrderByType.Desc).Take(100).Select(e=>e.Reason).ToListAsync(cancellationToken);
+        var returned = steps.Any(s=>s.StepType==70 && s.Status==50 && s.VendorTaskId!=null);
+        var closure = handshakes.FirstOrDefault(h=>steps.Any(s=>s.StepId==h.StepId && s.StepType==90));
+        var exitRecorded = await database.Queryable<TaskRuntimeEventEntity>().Where(e=>e.TaskId==taskId&&e.Kind=="ExitVerified").AnyAsync(cancellationToken);
+        var exitChecked = exitRecorded && closure != null && closure.Phase is "AwaitDumperClosed" or "ClearEmptyResponsibility" or "ClearPlaced" or "ClearRemainingCall" or "ClearRemainingRemoved" or "VerifyClosure" or "ReadyToComplete";
+        var equipmentClaims=await database.Queryable<TaskEquipmentClaimEntity>().Where(e=>e.TaskId==taskId).ToListAsync(cancellationToken);
+        var handover = new TaskHandoverDiagnosis(exitChecked?"ConservativeReturnObserved":returned?"ReturnCompletedExitUnverified":"ExitUnverified",
+            exitChecked?"新契约已记录返程完成及原站新鲜定位核对；不是更早的中途出区时刻。":"尚无新契约返程定位核对；命令准备、发送、到位通知清零或租期到期均不能证明物理离站。",
+            returned,exitChecked,leases.Select(l=>l.ResourceId).Concat(equipmentClaims.Select(e=>"设备:"+e.EquipmentId)).Distinct().ToArray(),releaseReasons);
+
         return new(ToRow(task), steps.Select(s => new TaskStepDetail(s.StepId, s.Sequence,
                 (DispatchTaskStepType)s.StepType, (DispatchTaskStepStatus)s.Status, s.VehicleId,
                 s.SourceSite, s.DestinationSite, s.VendorTaskId, s.RetryCount,
@@ -58,7 +70,7 @@ public sealed partial class TaskCenterReadRepository(ISqlSugarClient database) :
                 TimeOrNull(c.SentAt), c.VendorCommandId, c.LastError)).ToArray(),
             leases.Select(l => new TaskResourceDetail(l.ResourceId, l.OwnerStepId, l.VehicleId,
                 Time(l.AcquiredAt), Time(l.ExpiresAt), Time(l.ExpiresAt) < DateTimeOffset.Now)).ToArray(),
-            [], "") { OperationHistory = history.Items, OperationHistoryTotal = history.Total, Cancellation = task.CancelRequestId == null ? null : new(task.CancelRequestId, task.CancelReason ?? "", task.CancelRequestedBy ?? "",
+            [], "") { Handshakes=handshakes.Select(TaskHandshakeStore.Describe).ToArray(), Handover=handover, ExecutionTimeline = timeline.Items, ExecutionTimelineTotal = timeline.Total, OperationHistory = history.Items, OperationHistoryTotal = history.Total, Cancellation = task.CancelRequestId == null ? null : new(task.CancelRequestId, task.CancelReason ?? "", task.CancelRequestedBy ?? "",
                 TimeOrNull(task.CancelRequestedAt), task.CancelAttemptCount ?? 0, TimeOrNull(task.CancelSentAt), TimeOrNull(task.CancelConfirmedAt)) };
     }
 

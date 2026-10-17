@@ -11,6 +11,7 @@ public sealed partial class ManualTaskCreationService
         using var budget=CancellationTokenSource.CreateLinkedTokenSource(ct);budget.CancelAfter(TimeSpan.FromSeconds(20));var token=budget.Token;
         var legs=new List<ManualTaskRouteLeg>();var segments=new List<ManualTaskRouteSegment>();var current="";
         var observationId=Guid.NewGuid().ToString("N");ActiveMapRuntimeSnapshot? geometrySource=null;
+        IReadOnlyList<ManualTaskStepPreview> stepSource=[];
         bool sourceAvailable=false,sourceVehicle=false,sourceStation=false,sourceConfiguration=false;
         ManualTaskRoutePreview Result(bool verified,string message)
         {
@@ -23,12 +24,12 @@ public sealed partial class ManualTaskCreationService
                 {geometry=null;verified=false;issue="构建地图期间运行图或参数变化，未提供定位图。";message=issue;segments=segments.Select(s=>s with{Status="已失效",Message=issue}).ToList();}
             }
             static string Text(string value,int max)=>value.Length<=max?value:value[..max]+"…（显示已限长）";
-            var result=new ManualTaskRoutePreview(request.MapId,request.MapVersionId,request.ParameterRevision,request.StationId,request.VehicleId,current,DateTimeOffset.Now,verified,Text(message,2048),legs.Select(l=>l with{LogicalPath=Text(l.LogicalPath,8192),VendorPath=Text(l.VendorPath,8192),Message=Text(l.Message,1024)}).ToArray(),segments.Select(s=>s with{Message=Text(s.Message,1024)}).ToArray()){ObservationId=observationId,Map=geometry,MapIssue=issue};
+            var result=new ManualTaskRoutePreview(request.MapId,request.MapVersionId,request.ParameterRevision,request.StationId,request.VehicleId,current,DateTimeOffset.Now,verified,Text(message,2048),legs.Select(l=>l with{LogicalPath=Text(l.LogicalPath,8192),VendorPath=Text(l.VendorPath,8192),Message=Text(l.Message,1024)}).ToArray(),segments.Select(s=>s with{Message=Text(s.Message,1024)}).ToArray()){ObservationId=observationId,Map=geometry,MapIssue=issue,Steps=geometry is null?[]:stepSource};
             var jsonOptions=new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web);
             token.ThrowIfCancellationRequested();
             if(System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(result,jsonOptions).Length>8*1024*1024)
             {
-                result=result with{Map=null,MapIssue="同批几何超过8MiB显示预算，未返回地图。"};
+                result=result with{Map=null,Steps=[],MapIssue="同批几何超过8MiB显示预算，未返回地图。"};
                 if(System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(result,jsonOptions).Length>8*1024*1024)result=result with{Verified=false,Legs=[],Segments=[],Message="本次预览超过8MiB响应预算，未提供明细。任务提交仍需独立核验。"};
             }
             return result;
@@ -40,6 +41,7 @@ public sealed partial class ManualTaskCreationService
         if(map is null||map.MapId!=request.MapId||map.VersionId!=request.MapVersionId||parameters.Revision!=request.ParameterRevision)return Result(false,"运行地图或任务参数已变化，请刷新创建选项。");
         var station=options.Stations.FirstOrDefault(s=>s.StationId==request.StationId);var vehicle=options.Vehicles.FirstOrDefault(v=>v.VehicleId==request.VehicleId);
         if(station is null||vehicle is null)return Result(false,"所选工位或车辆不属于当前后台配置。");
+        stepSource=station.PreviewSteps.ToArray();
         current=vehicle.CurrentSite;geometrySource=map;sourceAvailable=options.Available;sourceVehicle=vehicle.Available;sourceStation=station.Available;sourceConfiguration=station.ConfigurationValid;
         var nodes=map.Definition.Nodes.ToDictionary(n=>n.Id,StringComparer.Ordinal);
         MapNode? Resolve(string id){var found=map.Definition.Nodes.Where(n=>n.Enabled&&(n.Id.Equals(id,StringComparison.OrdinalIgnoreCase)||n.AgvSiteId==id)).ToArray();return found.Length==1?found[0]:null;}

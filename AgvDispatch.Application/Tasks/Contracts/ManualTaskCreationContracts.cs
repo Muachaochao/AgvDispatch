@@ -57,6 +57,7 @@ public sealed record ManualTaskRouteSegment(int Sequence,int Segment,string Edge
 }
 public sealed record ManualTaskRoutePreview(string MapId,string MapVersionId,string ParameterRevision,string StationId,string VehicleId,string CurrentSite,DateTimeOffset ObservedAt,bool Verified,string Message,IReadOnlyList<ManualTaskRouteLeg> Legs,IReadOnlyList<ManualTaskRouteSegment> Segments)
 {
+    public IReadOnlyList<ManualTaskStepPreview> Steps {get;init;}=[];
     public string ObservationId {get;init;}="";
     public ManualTaskRouteMap? Map {get;init;}
     public string MapIssue {get;init;}="后台未提供同批导航几何。";

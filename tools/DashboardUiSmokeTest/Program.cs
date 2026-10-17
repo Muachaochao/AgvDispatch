@@ -7,6 +7,8 @@ using System.Windows.Threading;
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Domain.Devices;
 using AgvDispatch.Domain.Maps;
+using AgvDispatch.Domain.Tasks;
+using AgvDispatch.Wpf.Services;
 using AgvDispatch.Wpf.ViewModels;
 using AgvDispatch.Wpf.Views;
 using Prism.Mvvm;
@@ -29,6 +31,7 @@ internal static class Program
         Require(vm.Map.Vehicles.Single(v => v.VehicleId == "AGV-02").Rotation == -90, "radians to inverted screen rotation");
         Require(vm.Map.Vehicles.Single(v => v.VehicleId == "AGV-04").Label.Contains("旧位置"), "stale marker explicitly labelled");
         Require(vm.Vehicles.Count == 5, "unlocalized vehicle still available in parameters");
+        Require(vm.IsStatusAvailable && vm.TaskEmptyMessage.Contains("当前没有活动任务"), "connected empty task state is explicit");
         Require(vm.OnlineVehicles.Count == 4 && vm.OnlineVehicles.All(v => v.VehicleId != "AGV-04"), "panel only contains online fresh vehicles");
         Require(!vm.IsAgvPanelOpen, "map panel starts collapsed for maximum map area");
         Render(view, app, "collapsed");
@@ -42,6 +45,29 @@ internal static class Program
         vm.RefreshAsync().GetAwaiter().GetResult();
         Require(proxy.MapReads == 1 && vm.SelectedVehicle.VehicleId == "AGV-02", "refresh preserves selection and map cache");
         Render(view, app, "live");
+        vm.ActiveTasks.Add(new("TASK-20261017-001", "CNC-01", "AGV-02", null, DispatchTaskStage.GoingToPickup, DateTimeOffset.Now, DateTimeOffset.Now));
+        Render(view, app, "populated");
+        Require(((FrameworkElement)view.FindName("TaskEmptyState")).Visibility == Visibility.Collapsed, "empty message never covers active tasks");
+        vm.ActiveTasks.Clear();
+        // 1180px shell minus the expanded 258px sidebar, 720px minus its 52px header.
+        Render(view, app, "compact-light", 922, 668);
+        Require(((FrameworkElement)view.FindName("MapViewport")).ActualWidth > 500, "minimum shell still leaves usable map width with vehicle panel open");
+        Require(((FrameworkElement)view.FindName("OnlineAgvPanel")).ActualHeight > 200, "minimum shell keeps a scrollable vehicle panel");
+        var details = (System.Windows.Controls.ScrollViewer)view.FindName("VehicleDetailsScroll");
+        Require(details.ScrollableHeight > 0, "compact parameter details expose a vertical scroll range");
+        details.ScrollToBottom();
+        Render(view, app, "compact-parameters-scrolled", 922, 668);
+        Require(details.VerticalOffset > 0 && Math.Abs(details.VerticalOffset - details.ScrollableHeight) < 1, "last vehicle parameters remain reachable at minimum shell size");
+        details.ScrollToTop();
+        var theme = new ThemeService(); theme.Toggle();
+        // A new view resolves resources in the new theme without a PresentationSource;
+        // the smoke renderer does not attach these views to a desktop window.
+        var darkView = new DashboardView { DataContext = vm };
+        Render(darkView, app, "compact-dark", 922, 668);
+        Require(((Brush)((System.Windows.Controls.Border)darkView.FindName("OnlineAgvPanel")).Background).ToString() == ((Brush)app.FindResource("SurfaceBrush")).ToString(), "vehicle panel resolves the dark surface token");
+        Render(darkView, app, "live-dark");
+        theme.Toggle();
+        Render(view, app, "live");
         Require(collapsedWidth - ((FrameworkElement)view.FindName("MapViewport")).ActualWidth > 300, "collapse genuinely returns width to map");
         Require(((FrameworkElement)view.FindName("RuntimeMapModule")).ActualHeight > 600, "runtime map is the dominant module");
         var toggle = (System.Windows.Controls.Primitives.ToggleButton)view.FindName("AgvPanelToggle");
@@ -54,22 +80,29 @@ internal static class Program
         proxy.NoMap = true; vm.RefreshAsync().GetAwaiter().GetResult();
         Require(vm.Map.Nodes.Count == 0 && vm.Map.Vehicles.Count == 0 && vm.Vehicles.Count == 5, "no map does not hide vehicle table");
         Render(view, app, "no-map");
+        Require(((FrameworkElement)view.FindName("MapEmptyState")).Visibility == Visibility.Visible, "missing map has a centered explanation");
         proxy.Fail = true; vm.RefreshAsync().GetAwaiter().GetResult();
         Require(vm.Vehicles.Count == 0 && vm.Map.Vehicles.Count == 0 && vm.OnlineVehicles.Count == 0, "unavailable service clears misleading live values");
+        Require(!vm.IsStatusAvailable && vm.TaskEmptyMessage.Contains("暂不可用") && vm.Metrics.All(m => m.Value == "—"), "disconnection shows unknown values rather than a false zero-task state");
         Render(view, app, "offline");
+        Render(view, app, "offline-compact", 922, 668);
+        proxy.Fail = false; proxy.NoMap = false; vm.RefreshAsync().GetAwaiter().GetResult();
+        Require(vm.IsStatusAvailable && vm.Map.Nodes.Count > 0 && vm.TaskEmptyMessage.Contains("当前没有活动任务"), "reconnection restores map and normal empty message");
         var scene = new RuntimeMapScene(); scene.SetMap(proxy.Map with { Unit = "mm" });
         scene.UpdateVehicles(proxy.Robots, DateTimeOffset.Now);
         Require(scene.Vehicles.Count == 0 && scene.Message.Contains("坐标转换"), "millimetre CAD coordinates never mixed with metre robot poses");
         Console.WriteLine("PASS: runtime map, exact active version, cache, selection, telemetry, stale/no-position/no-map/offline safeguards and XAML rendering.");
     }
-    private static void Render(System.Windows.Controls.Control view, System.Windows.Application app, string name)
+    private static void Render(System.Windows.Controls.Control view, System.Windows.Application app, string name, int width = 1280, int height = 900)
     {
-        view.Width = 1280; view.Height = 900; view.Background = (Brush)app.FindResource("AppBackgroundBrush");
-        view.Measure(new Size(1280, 900)); view.Arrange(new Rect(0, 0, 1280, 900)); view.UpdateLayout();
+        view.Width = width; view.Height = height; view.Background = (Brush)app.FindResource("AppBackgroundBrush");
+        view.Measure(new Size(width, height)); view.Arrange(new Rect(0, 0, width, height)); view.UpdateLayout();
         Dispatcher.CurrentDispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle); view.UpdateLayout();
-        var bitmap = new RenderTargetBitmap(1280, 900, 96, 96, PixelFormats.Pbgra32); bitmap.Render(view);
+        var bitmap = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32); bitmap.Render(view);
         var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
-        var path = Path.Combine(Path.GetTempPath(), $"agv-dashboard-{name}-{Guid.NewGuid():N}.png");
+        var directory = Path.Combine(Directory.GetCurrentDirectory(), "docs", "screenshots", "wpf-overview-20261017");
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, $"{name}.png");
         using(var file = File.Create(path)) encoder.Save(file); Console.WriteLine(path);
     }
     private static void Require(bool ok, string message)

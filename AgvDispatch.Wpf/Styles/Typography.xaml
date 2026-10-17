@@ -8,19 +8,30 @@
     <Style TargetType="UserControl">
         <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
         <Setter Property="FontFamily" Value="Microsoft YaHei UI" />
+        <Setter Property="FontSize" Value="13" />
+        <Setter Property="UseLayoutRounding" Value="True" />
+        <Setter Property="SnapsToDevicePixels" Value="True" />
+        <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
     </Style>
     <Style x:Key="PageTitleTextStyle" TargetType="TextBlock">
-        <Setter Property="FontSize" Value="25" />
+        <Setter Property="FontSize" Value="24" />
         <Setter Property="FontWeight" Value="SemiBold" />
         <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
     </Style>
     <Style x:Key="PageDescriptionTextStyle" TargetType="TextBlock">
         <Setter Property="FontSize" Value="13" />
         <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}" />
+        <Setter Property="TextWrapping" Value="Wrap" />
     </Style>
     <Style x:Key="MetricValueTextStyle" TargetType="TextBlock">
         <Setter Property="FontSize" Value="28" />
         <Setter Property="FontWeight" Value="SemiBold" />
         <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
+    </Style>
+    <Style x:Key="AppGridTextStyle" TargetType="TextBlock">
+        <Setter Property="VerticalAlignment" Value="Center" />
+        <Setter Property="Margin" Value="8,0" />
+        <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+        <Setter Property="ToolTip" Value="{Binding Text, RelativeSource={RelativeSource Self}}" />
     </Style>
 </ResourceDictionary>

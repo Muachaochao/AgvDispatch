@@ -958,7 +958,7 @@ internal static class Program
             { Source = new Uri("pack://application:,,,/HandyControl;component/Themes/Theme.xaml") });
             app.Resources.MergedDictionaries.Add(new ResourceDictionary
             { Source = new Uri($"pack://application:,,,/AgvDispatch.Wpf;component/Themes/{(name == "Compact" ? "Light" : name)}.xaml") });
-            foreach (var resource in new[] { "Typography", "IconGlyphs", "Controls" })
+            foreach (var resource in new[] { "Typography", "IconGlyphs", "Controls", "HandyControls" })
                 app.Resources.MergedDictionaries.Add(new ResourceDictionary
                 { Source = new Uri($"pack://application:,,,/AgvDispatch.Wpf;component/Styles/{resource}.xaml") });
 

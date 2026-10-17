@@ -1,4 +1,4 @@
-﻿using System.IO.Compression;
+using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
 using System.Security.Cryptography;
@@ -84,6 +84,25 @@ Require(detail.Steps[0].ElapsedText == "00:01:00" && detail.Steps[1].ElapsedText
 Require(detail.Steps[2].ElapsedText == "未开始", "pending step does not invent elapsed time");
 Require(detail.WaitingExplanation.Contains("BoxPresent") && detail.WaitingExplanation.Contains("Stale") &&
     detail.Steps[1].WaitingExplanation.Contains("fixture PLC write timeout"), "waiting reason identifies bad-quality PLC input and latest step error");
+Require(detail.DiagnosticsObservedAt == clock.Now && detail.Steps[1].ProgressConditions.Count == 3, "diagnostics use backend clock and current step conditions");
+Require(detail.Steps[1].ProgressConditions[0].Result == "Unknown" && detail.Steps[1].ProgressConditions[0].ObservedAt != null, "stale value exposes unknown and source time");
+Require(detail.Steps[0].ProgressConditions.Count == 0 && detail.Steps[2].ProgressConditions.Count == 0, "past and future steps never re-evaluated using live PLC");
+Require(detail.Steps.All(s => s.CompletionRequirement.Length > 0 && s.EvidenceBoundary.Length > 0), "all nine steps have current behavior and evidence boundary");
+Require(detail.Steps[1].ObservedPhase.Contains("Unknown") && detail.Steps[1].EvidenceBoundary.Contains("ACK"), "phase identifies unknown; readback not mislabelled business ACK");
+var predicateSnapshot = new PlcSignalSnapshot("TEST", "Input", "输入", "DB1.DBX0.0", "Bool", "PlcToHost", "Read", true, null, SignalQuality.Good, clock.Now, clock.Now, 1);
+Require(!TaskSignalPredicate.TryRead(predicateSnapshot, out _) && TaskSignalPredicate.Evaluate("TEST", "Input", false, predicateSnapshot).Result == "Unknown", "Good but null is unknown rather than false");
+var eventTime = DateTime.Now;
+await database.Insertable(new ExecutionEvidenceEntity { Id = "diagnostic-other-task", TaskId = b.Task.TaskId, StepId = "foreign", Kind = "AgvSendIntent", Evidence = "{\"private\":\"DO-NOT-EXPOSE\"}", OccurredAt = eventTime }).ExecuteCommandAsync();
+await database.Insertable(new ExecutionEvidenceEntity { Id = "diagnostic-condition", TaskId = a.Task.TaskId, StepId = secondStep.StepId, Kind = "StepConditionsObserved", Evidence = JsonSerializer.Serialize(new { Conditions = detail.Steps[1].ProgressConditions }), OccurredAt = eventTime }).ExecuteCommandAsync();
+await database.Insertable(new ExecutionEvidenceEntity { Id = "diagnostic-bad-json", TaskId = a.Task.TaskId, StepId = secondStep.StepId, Kind = "StepConditionsObserved", Evidence = "{malformed", OccurredAt = eventTime }).ExecuteCommandAsync();
+var diagnostics = (await service.GetDetailAsync(new TaskDetailRequest(a.Task.TaskId, false), token))!;
+Require(diagnostics.ExecutionTimeline.Any(e => e.Id == "diagnostic-condition" && e.Summary.Contains("BoxPresent")), "persistent conditions available independently of operation history");
+Require(diagnostics.ExecutionTimeline.Any(e => e.Kind == "TaskCreated") && diagnostics.ExecutionTimeline.Any(e => e.Kind == "StepCompleted"), "timeline includes real persisted business milestones");
+Require(!diagnostics.ExecutionTimeline.Any(e => e.Id == "diagnostic-other-task") && !JsonSerializer.Serialize(diagnostics).Contains("DO-NOT-EXPOSE"), "timeline task isolation and no arbitrary evidence payload leak");
+Require(diagnostics.ExecutionTimeline.Single(e => e.Id == "diagnostic-bad-json").Summary.Contains("不可解析"), "malformed historical evidence does not break detail");
+Require(diagnostics.ExecutionTimeline.Select(e => e.OccurredAt).SequenceEqual(diagnostics.ExecutionTimeline.Select(e => e.OccurredAt).OrderBy(t => t)), "timeline deterministic chronological order");
+var restartRead = await new TaskCenterQueryService(new TaskCenterReadRepository(database), cache, creation, parameters, clock).GetDetailAsync(a.Task.TaskId, token);
+Require(restartRead!.ExecutionTimeline.Any(e => e.Id == "diagnostic-condition"), "evidence survives new query service instance");
 var config = parameters.Capture() with { StepTimeouts = parameters.Capture().StepTimeouts.Select(row => row with { Seconds = 60 }).ToArray() };
 // Populate the required transport actions to reuse the real runtime validation.
 config = config with { Actions = config.Actions.Select(row => row with { Operation = "Wait" }).ToArray() };
@@ -133,6 +152,7 @@ await database.Insertable(new[] {
  new TrafficResourceReleaseAuditEntity { AuditId="release-a", TaskId=a.Task.TaskId, ResourceId="NARROW", ReleasedAt=historyAt.AddSeconds(3), Operator="原操作员", RequestedBy="现场确认员", Reason="车辆已离开区域" },
  new TrafficResourceReleaseAuditEntity { AuditId="release-b", TaskId=b.Task.TaskId, ReleasedAt=historyAt.AddSeconds(3) }
 }).ExecuteCommandAsync();
+var evidenceBeforeHistoryReads = await database.Queryable<ExecutionEvidenceEntity>().CountAsync();
 var history=(await reader.GetDetailAsync(a.Task.TaskId, token))!;
 Require(history.OperationHistoryTotal==5 && history.OperationHistory.Count==5, "exclude other tasks and unrelated batches, polling without multiplying batch records");
 Require(history.OperationHistory.Select(e=>e.Id).SequenceEqual(new[]{"E:h01","E:h02","E:h03","R:release-a","E:h04"}), "mixed history chronological ordering");
@@ -143,7 +163,10 @@ Require((await database.Queryable<ExecutionEvidenceEntity>().Where(e=>e.Id=="h04
 await database.Insertable(Enumerable.Range(0,205).Select(n=>HistoryEvent($"window-{n:D3}",a.Task.TaskId,"CloseCancelled",10)).ToArray()).ExecuteCommandAsync();
 history=(await reader.GetDetailAsync(a.Task.TaskId,token))!;
 Require(history.OperationHistoryTotal==210 && history.OperationHistory.Count==200 && history.OperationHistory.First().Id=="E:window-005" && history.OperationHistory.Last().Id=="E:window-204", "latest 200 stable timestamp ties and full count");
-Require(await database.Queryable<ExecutionEvidenceEntity>().CountAsync()==212 && await database.Queryable<TrafficResourceLeaseEntity>().CountAsync()==1 && history.Task.Stage==DispatchTaskStage.Cancelled, "reads preserve audits leases and task state");
+Require(await database.Queryable<ExecutionEvidenceEntity>().CountAsync()==evidenceBeforeHistoryReads+205 && await database.Queryable<TrafficResourceLeaseEntity>().CountAsync()==1 && history.Task.Stage==DispatchTaskStage.Cancelled, "reads preserve audits leases and task state");
+var cappedTimeline = (await service.GetDetailAsync(new TaskDetailRequest(a.Task.TaskId, false), token))!;
+Require(cappedTimeline.ExecutionTimeline.Count == 100 && cappedTimeline.ExecutionTimelineTotal > 100, "execution timeline bounded with full count and history disabled");
+Require(cappedTimeline.Steps.All(s => !s.IsCurrent && s.ProgressConditions.Count == 0), "cancelled task never shows live PLC gates");
 // Real SQL pagination, including records outside the former 200-row window.
 var firstHistoryPage = await reader.QueryHistoryAsync(new(a.Task.TaskId), token);
 Require(firstHistoryPage.TotalCount == 210 && firstHistoryPage.Items.Count == 50 && firstHistoryPage.Items.First().Id == "E:window-204" && firstHistoryPage.Items.Last().Id == "E:window-155", "history page one queries newest records descending");

@@ -25,6 +25,7 @@
  </Style>
  <Style TargetType="ComboBox" BasedOn="{StaticResource AppComboBoxStyle}"/>
  <Style x:Key="AppButtonStyle" TargetType="Button" BasedOn="{StaticResource ButtonDefault}">
+  <Setter Property="Cursor" Value="Hand"/>
   <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
   <Setter Property="Background" Value="{DynamicResource SurfaceBrush}"/>
   <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
@@ -33,9 +34,14 @@
   <Setter Property="Padding" Value="14,6"/>
   <Setter Property="FontSize" Value="13"/>
   <Setter Property="hc:BorderElement.CornerRadius" Value="6"/>
+  <Style.Triggers>
+   <Trigger Property="IsKeyboardFocused" Value="True"><Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}"/></Trigger>
+  </Style.Triggers>
  </Style>
  <Style TargetType="Button" BasedOn="{StaticResource AppButtonStyle}"/>
  <Style x:Key="AppPrimaryButtonStyle" TargetType="Button" BasedOn="{StaticResource ButtonPrimary}">
+  <Setter Property="Cursor" Value="Hand"/>
+  <Setter Property="FontSize" Value="13"/>
   <Setter Property="Foreground" Value="White"/>
   <Setter Property="Background" Value="{DynamicResource PrimaryBrush}"/>
   <Setter Property="BorderBrush" Value="{DynamicResource PrimaryBrush}"/>
@@ -48,14 +54,27 @@
   <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
   <Setter Property="BorderThickness" Value="0"/>
   <Setter Property="VerticalContentAlignment" Value="Center"/>
+  <Style.Triggers>
+   <Trigger Property="IsSelected" Value="True"><Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/><Setter Property="Background" Value="{DynamicResource AccentMutedBrush}"/></Trigger>
+   <Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}"/><Setter Property="BorderThickness" Value="1"/></Trigger>
+  </Style.Triggers>
  </Style>
  <Style TargetType="DataGridCell" BasedOn="{StaticResource AppDataGridCellStyle}"/>
  <Style x:Key="AppDataGridHeaderStyle" TargetType="DataGridColumnHeader" BasedOn="{StaticResource DataGridColumnHeaderStyle}">
   <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
   <Setter Property="Background" Value="{DynamicResource MutedSurfaceBrush}"/>
   <Setter Property="Padding" Value="10,8"/>
+  <Setter Property="FontWeight" Value="SemiBold"/>
+  <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+  <Setter Property="BorderThickness" Value="0,0,0,1"/>
  </Style>
  <Style x:Key="AppDataGridStyle" TargetType="DataGrid">
+  <Setter Property="FontSize" Value="13"/>
+  <Setter Property="GridLinesVisibility" Value="Horizontal"/>
+  <Setter Property="RowHeaderWidth" Value="0"/>
+  <Setter Property="CanUserResizeRows" Value="False"/>
+  <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Auto"/>
+  <Setter Property="ScrollViewer.VerticalScrollBarVisibility" Value="Auto"/>
   <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
   <Setter Property="Background" Value="{DynamicResource SurfaceBrush}"/>
   <Setter Property="RowBackground" Value="{DynamicResource SurfaceBrush}"/>
@@ -71,5 +90,23 @@
  <Style TargetType="ToolTip" BasedOn="{StaticResource {x:Type ToolTip}}">
   <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
   <Setter Property="Background" Value="{DynamicResource SurfaceBrush}"/>
+  <Setter Property="MaxWidth" Value="600"/>
+  <Setter Property="Padding" Value="10,7"/>
+ </Style>
+ <Style TargetType="TabControl" BasedOn="{StaticResource {x:Type TabControl}}">
+  <Setter Property="Background" Value="{DynamicResource SurfaceBrush}"/>
+  <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
+  <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+ </Style>
+ <Style TargetType="TabItem" BasedOn="{StaticResource {x:Type TabItem}}">
+  <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
+  <Setter Property="Padding" Value="14,8"/>
+  <Setter Property="MinHeight" Value="36"/>
+  <Style.Triggers><Trigger Property="IsSelected" Value="True"><Setter Property="Foreground" Value="{DynamicResource AccentBrush}"/></Trigger></Style.Triggers>
+ </Style>
+ <Style TargetType="ListBox" BasedOn="{StaticResource {x:Type ListBox}}">
+  <Setter Property="Background" Value="{DynamicResource SurfaceBrush}"/>
+  <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
+  <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
  </Style>
 </ResourceDictionary>

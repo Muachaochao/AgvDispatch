@@ -1,4 +1,4 @@
-﻿using AgvDispatch.Application.Abstractions;
+using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Domain.Devices;
 using AgvDispatch.Domain.Tasks;
 
@@ -17,8 +17,9 @@ public sealed class DispatchTaskStepCoordinator(
     ITrafficResourceManager trafficResources,
     IMapExecutionGate executionGate,
     IExecutionEvidenceJournal? journal = null,
-    IAgvStateCache? vehicleStates = null, IActiveMapRuntime? activeMap = null) : IsolatedBackgroundService
+    IAgvStateCache? vehicleStates = null, IActiveMapRuntime? activeMap = null, PersistentHandshakeExecutor? handshake = null) : IsolatedBackgroundService
 {
+    private readonly Dictionary<string, string> _conditionFingerprints = new(StringComparer.Ordinal);
     private readonly HashSet<string> _observedSteps = new(StringComparer.Ordinal);
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -66,6 +67,8 @@ public sealed class DispatchTaskStepCoordinator(
     private async Task RunCycleAsync(CancellationToken cancellationToken)
     {
         var readySteps = await tasks.GetReadyStepsAsync(options.BatchSize, cancellationToken);
+        var readyIds = readySteps.Select(s => s.StepId).ToHashSet(StringComparer.Ordinal);
+        foreach (var id in _conditionFingerprints.Keys.Where(id => !readyIds.Contains(id)).ToArray()) _conditionFingerprints.Remove(id);
         foreach (var step in readySteps)
         {
             try
@@ -74,7 +77,18 @@ public sealed class DispatchTaskStepCoordinator(
                 if (journal != null && !_observedSteps.Contains(step.StepId)) await journal.RecordAsync(step.TaskId, step.StepId, "StepObservation",
                     new { step, Plc = signals.GetStation(step.StationId), Vehicles = vehicleStates?.GetAll() }, cancellationToken);
                 _observedSteps.Add(step.StepId);
-                await ProcessStepAsync(step, cancellationToken);
+                if (journal != null)
+                {
+                    var observed = TaskStepProgressRules.Observe(step.StepType, step.StationId, creationOptions.DumperStationId, signals);
+                    // Only changes in value/quality are journaled; observation timestamps alone do not generate poll spam.
+                    var fingerprint = string.Join("|", observed.Select(c => $"{c.RuleId}:{c.CurrentValue}:{c.Quality}"));
+                    if (observed.Count > 0 && (!_conditionFingerprints.TryGetValue(step.StepId, out var previous) || previous != fingerprint))
+                    {
+                        await journal.RecordAsync(step.TaskId, step.StepId, "StepConditionsObserved", new { Conditions = observed }, cancellationToken);
+                        _conditionFingerprints[step.StepId] = fingerprint;
+                    }
+                }
+                if (handshake == null || !await handshake.ProcessAsync(step, cancellationToken)) await ProcessStepAsync(step, cancellationToken);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -129,6 +143,7 @@ public sealed class DispatchTaskStepCoordinator(
         DispatchTaskStepWorkItem step,
         CancellationToken cancellationToken)
     {
+        if(handshake?.Enabled==true)await handshake.ValidateTransportAsync(step,cancellationToken);
         if (string.IsNullOrWhiteSpace(step.VehicleId))
         {
             throw new InvalidOperationException($"步骤{step.StepId}缺少已分配车辆。");
@@ -195,10 +210,9 @@ public sealed class DispatchTaskStepCoordinator(
                     cancellationToken);
             if (commandPrepared)
             {
-                await trafficResources.ReleaseTaskExceptStepAsync(
-                    step.TaskId,
-                    step.StepId,
-                    cancellationToken);
+                // New contract conservatively retains earlier path leases until verified full-cycle closure.
+                if (handshake?.Enabled != true) await trafficResources.ReleaseTaskExceptStepAsync(
+                    step.TaskId, step.StepId, cancellationToken);
                 logger.LogInformation(
                     "后续AGV运输步骤已取得路权并写入Outbox。TaskId={TaskId}, StepType={StepType}, VehicleId={VehicleId}, From={Source}, To={Destination}, Resources={Resources}",
                     step.TaskId,
@@ -407,22 +421,15 @@ public sealed class DispatchTaskStepCoordinator(
 
     private bool TryGetGood(string stationId, string variableName, out bool value)
     {
-        if (signals.TryGet(stationId, variableName, out var snapshot) &&
-            snapshot.Quality == SignalQuality.Good &&
-            snapshot.Value is bool current)
-        {
-            value = current;
-            return true;
-        }
-
-        value = false;
-        return false;
+        signals.TryGet(stationId, variableName, out var snapshot);
+        return TaskSignalPredicate.TryRead(snapshot, out value);
     }
 
-    private bool IsGoodValue(string stationId, string variableName, bool expected) =>
-        signals.TryGet(stationId, variableName, out var snapshot) &&
-        snapshot.Quality == SignalQuality.Good &&
-        snapshot.Value == expected;
+    private bool IsGoodValue(string stationId, string variableName, bool expected)
+    {
+        signals.TryGet(stationId, variableName, out var snapshot);
+        return TaskSignalPredicate.Evaluate(stationId, variableName, expected, snapshot).Satisfied;
+    }
 
     private async Task WriteIfNeededAsync(
         string stationId,

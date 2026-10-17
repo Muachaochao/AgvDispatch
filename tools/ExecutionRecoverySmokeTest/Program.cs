@@ -1,4 +1,4 @@
-﻿using AgvDispatch.Application.Abstractions;
+using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Domain.Agvs;
 using AgvDispatch.Domain.Devices;
 using AgvDispatch.Domain.Stations;
@@ -398,6 +398,51 @@ await using (var f = await Fixture.Create())
     Check(f.Gateway.Sends == 0 && f.Gateway.Cancels == 0 && f.Db.Queryable<ExecutionEvidenceEntity>().Any(e => e.Kind == "VerificationRevoked"), "模拟联调只保存核验证据不发送或取消实车动作");
 }
 
+await using(var f=await Fixture.Create(new MapSwitchSafetySettings{CheckPlcSignals=true}))
+{
+    var id=await f.Prepare();
+    var original=await f.Step(id);
+    await f.Db.Updateable<DispatchTaskStepEntity>().SetColumns(s=>new DispatchTaskStepEntity{Status=50,CompletedAt=DateTime.Now}).Where(s=>s.StepId==original.StepId).ExecuteCommandAsync();
+    var next=await f.Step(id);
+    await f.Db.Updateable<DispatchTaskStepEntity>().SetColumns(s=>new DispatchTaskStepEntity{Status=10,StartedAt=DateTime.Now}).Where(s=>s.StepId==next.StepId).ExecuteCommandAsync();
+    await f.Db.Updateable<DispatchTaskEntity>().SetColumns(t=>t.Stage==(int)DispatchTaskStage.PickingUp).Where(t=>t.TaskId==id).ExecuteCommandAsync();
+    var work=(await new DispatchOrchestrationRepository(f.Db).GetReadyStepsAsync(100,ct)).Single(s=>s.TaskId==id);
+    var signal=SwitchSignalCache.Ready() with{VariableName="FullBoxRemoved",Value=true};
+    var store=new TaskHandshakeStore(f.Db);
+    var state=await store.BeginAsync(work,HandshakeExecutionOptions.Version,"NotifyRemoved",[new("PLC-01","FullBoxRemoved",true,"Good",signal.UpdatedAt,signal.Version,signal.Address)],ct);
+    await store.MoveAsync(state,"WritePending","isolated lost write response","PLC-01/FullBoxRemoved",true,"NotifyEmptyResponsibility",ct);
+    await f.Boot();f.Fresh("SITE-B");f.Signals.Items.Add(signal with{UpdatedAt=DateTimeOffset.Now});await f.Recovery.InspectAsync(ct);
+    var request=await Request(f,id);
+    Check(!(await f.Recovery.DecideAsync(admin,request,ct)).Accepted,"待确认写入未明确确认，拒绝原节点续接");
+    Check(!(await f.Recovery.DecideAsync(admin,request with{Decision=RecoveryDecision.RecordPhysicalCompletion,HandshakePendingWriteConfirmed=true},ct)).Accepted,"新PLC契约不能用补记完成跳过握手阶段");
+    var resumed=await f.Recovery.DecideAsync(admin,(await Request(f,id)) with{HandshakePendingWriteConfirmed=true},ct);
+    Check(resumed.Accepted,"新鲜同地址期望值及完整现场核对后允许原阶段续接："+resumed.Message);
+    var restored=(await store.GetAsync(id,next.StepId,ct))!;
+    Check(restored.Phase=="NotifyEmptyResponsibility"&&restored.PendingSignal==null,"恢复原子提交原写入核对及下一子阶段");
+    Check(f.Gateway.Sends==0&&f.Db.Queryable<TaskRuntimeEventEntity>().Any(e=>e.TaskId==id&&e.Kind=="HandshakeReviewed"),"恢复只保存核对证据，不重发设备动作");
+    await store.MoveAsync(restored,"AwaitPickupReadback","isolated state change",null,null,null,ct);
+    await f.Recovery.InspectAsync(ct);
+    Check(!(await f.Recovery.GetAsync(ct)).Items.Single(i=>i.TaskId==id).Verified,"握手阶段改变使旧恢复确认失效");
+}
+foreach (var scenario in new[] { "disabled-bound", "wrong-version", "enabled-unbound" })
+{
+    await using var f = await Fixture.Create();
+    await f.Boot();
+    var created = await f.Tasks.TryCreateAsync("PLC-01", "DUMPER", 1, ct);
+    await f.Tasks.MarkAcknowledgedAsync(created.Task.TaskId, ct);
+    var work = (await new DispatchOrchestrationRepository(f.Db).GetReadyStepsAsync(10, ct)).Single();
+    var store = new TaskHandshakeStore(f.Db);
+    if (scenario != "enabled-unbound")
+        await store.BeginAsync(work, HandshakeExecutionOptions.Version, "TransportBound", [], ct);
+    await f.Outbox.TryPrepareTransportStepAsync(work.TaskId, work.StepId, "AGV-01", ["SITE-A", "SITE-B"], null, ct);
+    var mode = new HandshakeExecutionOptions { Enabled = scenario != "disabled-bound", PlcContractVersion = scenario == "wrong-version" ? "other-version" : HandshakeExecutionOptions.Version };
+    using var dispatcher = new AgvCommandOutboxDispatcher(NullLogger<AgvCommandOutboxDispatcher>.Instance,
+        new AgvCommandOutboxOptions { Enabled = true, PollIntervalMs = 100 }, f.Outbox, f.Gateway, f.Gate,
+        handshakes: store, taskReader: f.Tasks, handshakeOptions: mode);
+    await dispatcher.StartAsync(ct); await Task.Delay(250); await dispatcher.StopAsync(ct);
+    Check(f.Gateway.Sends == 0 && (await f.Outbox.GetDueCommandsAsync(DateTimeOffset.Now, 10, ct)).Single().AttemptCount == 0,
+        "契约模式不匹配不领取或发送原Outbox：" + scenario);
+}
 Console.WriteLine($"Execution recovery: {checks} checks passed.");
 
 sealed class Fixture : IAsyncDisposable

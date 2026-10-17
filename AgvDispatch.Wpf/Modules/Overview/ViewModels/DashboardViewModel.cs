@@ -18,6 +18,7 @@ public sealed class DashboardViewModel : BindableBase, INavigationAware
     private OverviewVehicle? _selectedVehicle;
     private string _mapTitle = "运行地图 · 未激活";
     private bool _isAgvPanelOpen;
+    private bool _isStatusAvailable;
     public DashboardViewModel(ITrafficControlClient client)
     {
         _client = client;
@@ -36,12 +37,27 @@ public sealed class DashboardViewModel : BindableBase, INavigationAware
     public ObservableCollection<OverviewVehicle> Vehicles { get; } = [];
     public ObservableCollection<OverviewVehicle> OnlineVehicles { get; } = [];
     public bool IsAgvPanelOpen { get => _isAgvPanelOpen; set => SetProperty(ref _isAgvPanelOpen, value); }
-    public string OnlineVehicleText => $"在线 AGV · {OnlineVehicles.Count} 台";
+    public string OnlineVehicleText => IsStatusAvailable ? $"在线 AGV · {OnlineVehicles.Count} 台" : "车辆状态暂不可用";
     public RuntimeMapScene Map { get; } = new();
     public DelegateCommand<string> SelectVehicleCommand { get; }
     public OverviewVehicle? SelectedVehicle { get => _selectedVehicle; set => SetProperty(ref _selectedVehicle, value); }
     public string MapTitle { get => _mapTitle; private set => SetProperty(ref _mapTitle, value); }
     public string UpdateText { get => _updateText; private set => SetProperty(ref _updateText, value); }
+    public bool IsStatusAvailable
+    {
+        get => _isStatusAvailable;
+        private set
+        {
+            if (SetProperty(ref _isStatusAvailable, value))
+            {
+                RaisePropertyChanged(nameof(TaskEmptyMessage));
+                RaisePropertyChanged(nameof(OnlineVehicleText));
+            }
+        }
+    }
+    public string TaskEmptyMessage => IsStatusAvailable
+        ? "当前没有活动任务，可在任务中心查看记录或创建任务。"
+        : "任务状态暂不可用，后台连接恢复后自动更新。";
     public async void OnNavigatedTo(NavigationContext navigationContext) { _timer.Start(); await RefreshAsync(); }
     public void OnNavigatedFrom(NavigationContext navigationContext) => _timer.Stop();
     public bool IsNavigationTarget(NavigationContext navigationContext) => true;
@@ -92,6 +108,7 @@ public sealed class DashboardViewModel : BindableBase, INavigationAware
             }
             Map.UpdateVehicles(s.Agvs, DateTimeOffset.Now);
             UpdateText = $"最近更新 {s.GeneratedAt.LocalDateTime:HH:mm:ss} · 每3秒刷新 · 运行地图 {s.Safety.ActiveMapId ?? "未激活"}";
+            IsStatusAvailable = true;
         }
         catch (Exception)
         {
@@ -102,6 +119,7 @@ public sealed class DashboardViewModel : BindableBase, INavigationAware
     }
     private void SetUnavailable(string message)
     {
+        IsStatusAvailable = false;
         Metrics.Clear(); Connections.Clear(); ActiveTasks.Clear();
         Vehicles.Clear(); SelectedVehicle = null;
         OnlineVehicles.Clear(); RaisePropertyChanged(nameof(OnlineVehicleText));

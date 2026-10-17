@@ -21,6 +21,7 @@
             </Grid.RowDefinitions>
 
             <Grid>
+            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
@@ -30,12 +31,12 @@
                     <TextBlock Text="从Windows Service读取PLC、AGV、任务、数据库及Named Pipe只读快照。"
                                Style="{StaticResource PageDescriptionTextStyle}" Margin="0,6,0,0" />
                 </StackPanel>
-                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                <WrapPanel Grid.Row="1" Grid.ColumnSpan="2" Margin="0,12,0,0">
                     <TextBlock Text="{Binding GeneratedAt, StringFormat=快照时间：{0}}"
                                Foreground="{DynamicResource TextSecondaryBrush}" VerticalAlignment="Center"
                                Margin="0,0,14,0" />
                     <Button Content="立即刷新" Command="{Binding RefreshCommand}" Padding="16,8" />
-                </StackPanel>
+                </WrapPanel>
             </Grid>
 
             <UniformGrid Grid.Row="2" Columns="5">
@@ -81,20 +82,20 @@
                               CanUserAddRows="False" HeadersVisibility="Column" GridLinesVisibility="Horizontal"
                               Height="220">
                         <DataGrid.Columns>
-                            <DataGridTextColumn Header="车辆" Binding="{Binding VehicleId}" Width="85" />
-                            <DataGridTextColumn Header="名称" Binding="{Binding DisplayName}" Width="95" />
-                            <DataGridTextColumn Header="地址" Binding="{Binding Endpoint}" Width="140" />
-                            <DataGridTextColumn Header="连接" Binding="{Binding Connection}" Width="95" />
-                            <DataGridTextColumn Header="质量" Binding="{Binding Quality}" Width="80" />
-                            <DataGridTextColumn Header="电量" Binding="{Binding BatteryPercent, StringFormat={}{0:F1}%}" Width="75" />
-                            <DataGridTextColumn Header="站点" Binding="{Binding CurrentStation}" Width="95" />
-                            <DataGridTextColumn Header="导航状态" Binding="{Binding NavigationState}" Width="110" />
-                            <DataGridTextColumn Header="任务" Binding="{Binding TaskCount}" Width="55" />
-                            <DataGridTextColumn Header="报警" Binding="{Binding AlarmCount}" Width="55" />
-                            <DataGridTextColumn Header="最近心跳" Binding="{Binding LastSuccessfulPollAt, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="145" />
-                            <DataGridTextColumn Header="响应ms" Binding="{Binding LastResponseTimeMs, StringFormat=F1}" Width="75" />
-                            <DataGridTextColumn Header="连续失败" Binding="{Binding ConsecutiveFailures}" Width="75" />
-                            <DataGridTextColumn Header="错误" Binding="{Binding ErrorMessage}" Width="*" />
+                            <DataGridTextColumn Header="车辆" Binding="{Binding VehicleId}" Width="85"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+                            <DataGridTextColumn Header="名称" Binding="{Binding DisplayName}" Width="95"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+                            <DataGridTextColumn Header="地址" Binding="{Binding Endpoint}" Width="140"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+                            <DataGridTextColumn Header="连接" Binding="{Binding Connection}" Width="95"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+                            <DataGridTextColumn Header="质量" Binding="{Binding Quality}" Width="80"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+                            <DataGridTextColumn Header="电量" Binding="{Binding BatteryPercent, StringFormat={}{0:F1}%}" Width="75"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+                            <DataGridTextColumn Header="站点" Binding="{Binding CurrentStation}" Width="95"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+                            <DataGridTextColumn Header="导航状态" Binding="{Binding NavigationState}" Width="110"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+                            <DataGridTextColumn Header="任务" Binding="{Binding TaskCount}" Width="55"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+                            <DataGridTextColumn Header="报警" Binding="{Binding AlarmCount}" Width="55"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+                            <DataGridTextColumn Header="最近心跳" Binding="{Binding LastSuccessfulPollAt, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="145"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+                            <DataGridTextColumn Header="响应ms" Binding="{Binding LastResponseTimeMs, StringFormat=F1}" Width="75"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+                            <DataGridTextColumn Header="连续失败" Binding="{Binding ConsecutiveFailures}" Width="75"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+                            <DataGridTextColumn Header="错误" Binding="{Binding ErrorMessage}" Width="*"  ElementStyle="{StaticResource AppGridTextStyle}"/>
                         </DataGrid.Columns>
                     </DataGrid>
                 </StackPanel>
@@ -114,12 +115,12 @@
                                   CanUserAddRows="False" HeadersVisibility="Column" GridLinesVisibility="Horizontal"
                                   Height="190">
                             <DataGrid.Columns>
-                                <DataGridTextColumn Header="任务" Binding="{Binding TaskId}" Width="145" />
-                                <DataGridTextColumn Header="工位" Binding="{Binding StationId}" Width="90" />
-                                <DataGridTextColumn Header="AGV" Binding="{Binding VehicleId}" Width="80" />
-                                <DataGridTextColumn Header="状态" Binding="{Binding Stage}" Width="130" />
-                                <DataGridTextColumn Header="厂家任务" Binding="{Binding VendorTaskId}" Width="145" />
-                                <DataGridTextColumn Header="更新时间" Binding="{Binding UpdatedAt, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="145" />
+                                <DataGridTextColumn Header="任务" Binding="{Binding TaskId}" Width="145"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+                                <DataGridTextColumn Header="工位" Binding="{Binding StationId}" Width="90"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+                                <DataGridTextColumn Header="AGV" Binding="{Binding VehicleId}" Width="80"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+                                <DataGridTextColumn Header="状态" Binding="{Binding Stage}" Width="130"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+                                <DataGridTextColumn Header="厂家任务" Binding="{Binding VendorTaskId}" Width="145"  ElementStyle="{StaticResource AppGridTextStyle}"/>
+                                <DataGridTextColumn Header="更新时间" Binding="{Binding UpdatedAt, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="145"  ElementStyle="{StaticResource AppGridTextStyle}"/>
                             </DataGrid.Columns>
                         </DataGrid>
                     </StackPanel>
@@ -133,7 +134,7 @@
                         <Separator Margin="0,14,0,12" />
                         <TextBlock Text="现场写入安全开关" FontSize="16" FontWeight="SemiBold" />
                         <TextBlock Text="{Binding SafetyDetails}" TextWrapping="Wrap" Margin="0,8,0,0"
-                                   Foreground="#FFE59A22" />
+                                   Foreground="{DynamicResource WarningBrush}" />
                     </StackPanel>
                 </Border>
             </Grid>

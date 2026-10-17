@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Domain.Devices;
 using AgvDispatch.Domain.Tasks;
@@ -11,7 +11,7 @@ public sealed class AgvCommandOutboxDispatcher(
     IAgvCommandOutboxRepository outbox,
     IAgvGateway agvGateway,
     IMapExecutionGate executionGate,
-    IExecutionEvidenceJournal? journal = null) : IsolatedBackgroundService
+    IExecutionEvidenceJournal? journal = null, ITaskHandshakeStore? handshakes = null, IDispatchTaskRepository? taskReader = null, HandshakeExecutionOptions? handshakeOptions = null) : IsolatedBackgroundService
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -82,6 +82,16 @@ public sealed class AgvCommandOutboxDispatcher(
             cancellationToken);
         foreach (var candidate in due)
         {
+            if(handshakes!=null&&taskReader!=null)
+            {
+                var root=(await taskReader.GetStepsAsync(candidate.TaskId,cancellationToken)).FirstOrDefault(s=>s.StepType==DispatchTaskStepType.GoToPickup);
+                var binding=root==null?null:await handshakes.GetAsync(candidate.TaskId,root.StepId,cancellationToken);
+                if(binding!=null&&(handshakeOptions?.Enabled!=true||handshakeOptions.PlcContractVersion!=binding.ContractVersion)||binding==null&&handshakeOptions?.Enabled==true)
+                {
+                    logger.LogDebug("命令契约与当前握手模式不一致，保留原Outbox，不领取、不发送。TaskId={TaskId}",candidate.TaskId);
+                    continue;
+                }
+            }
             var command = await outbox.TryClaimAsync(
                 candidate.CommandId,
                 DateTimeOffset.Now,

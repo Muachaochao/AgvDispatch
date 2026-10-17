@@ -17,7 +17,7 @@ public sealed class DispatchTaskOrchestrator(
     MapOptions mapOptions,
     IRoutePlanner routePlanner,
     ITrafficResourceManager trafficResources,
-    IMapExecutionGate executionGate, IRobokitTaskMapPreflight? robokitMap = null) : IsolatedBackgroundService
+    IMapExecutionGate executionGate, IRobokitTaskMapPreflight? robokitMap = null, HandshakeExecutionOptions? handshakeOptions = null, PersistentHandshakeExecutor? handshake = null) : IsolatedBackgroundService
 {
     private readonly HashSet<string> _missingRouteWarnings =
         new(StringComparer.OrdinalIgnoreCase);
@@ -215,6 +215,7 @@ public sealed class DispatchTaskOrchestrator(
                 var commandPrepared = false;
                 try
                 {
+                    if(handshake!=null)await handshake.BindBeforeTransportAsync(readyStep with {VehicleId=vehicle.VehicleId},cancellationToken);
                     commandPrepared = await outbox.TryPrepareTransportStepAsync(
                         task.TaskId,
                         readyStep.StepId,
@@ -230,7 +231,7 @@ public sealed class DispatchTaskOrchestrator(
                         break;
                     }
 
-                    await trafficResources.ReleaseTaskExceptStepAsync(
+                    if (handshakeOptions?.Enabled != true) await trafficResources.ReleaseTaskExceptStepAsync(
                         task.TaskId,
                         readyStep.StepId,
                         cancellationToken);

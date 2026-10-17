@@ -6,6 +6,9 @@
   <ItemGroup>
     <ProjectReference Include="../../AgvDispatch.Infrastructure/AgvDispatch.Infrastructure.csproj" />
     <Compile Include="../../AgvDispatch.Service/Modules/Tasks/Queries/TaskCenterQueryService.cs" Link="TaskCenterQueryService.cs" />
+    <Compile Include="../../AgvDispatch.Service/Modules/Tasks/Queries/TaskCenterQueryService.Diagnostics.cs" Link="TaskCenterQueryService.Diagnostics.cs" />
+    <Compile Include="../../AgvDispatch.Service/Modules/Tasks/Steps/PersistedHandshakeConditions.cs" Link="PersistedHandshakeConditions.cs" />
+    <Compile Include="../../AgvDispatch.Service/Modules/Tasks/Steps/TaskStepProgressRules.cs" Link="TaskStepProgressRules.cs" />
     <Compile Include="../../AgvDispatch.Service/Modules/Tasks/Creation/TaskCreationOptions.cs" Link="TaskCreationOptions.cs" />
     <Compile Include="../../AgvDispatch.Service/Modules/Tasks/Settings/TaskParameterRuntime.cs" Link="TaskParameterRuntime.cs" />
     <Compile Include="../../AgvDispatch.Service/Modules/Tasks/Dispatching/DispatchOrchestratorOptions.cs" Link="DispatchOrchestratorOptions.cs" />

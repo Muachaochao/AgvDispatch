@@ -1,41 +1,32 @@
-﻿<UserControl x:Class="AgvDispatch.Wpf.Views.ExecutionRecoveryView"
+<UserControl x:Class="AgvDispatch.Wpf.Views.ExecutionRecoveryView"
     Foreground="{DynamicResource TextPrimaryBrush}"
  xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
  xmlns:prism="http://prismlibrary.com/" prism:ViewModelLocator.AutoWireViewModel="True">
  <UserControl.Resources>
-  <Style TargetType="Button">
-   <Setter Property="Height" Value="40"/><Setter Property="Foreground" Value="#173A6B"/>
-   <Setter Property="Background" Value="#EAF2FF"/><Setter Property="BorderBrush" Value="#C2D4EE"/>
-   <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button">
-    <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1" CornerRadius="5" Padding="{TemplateBinding Padding}">
-     <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" RecognizesAccessKey="True"/>
-    </Border>
-    <ControlTemplate.Triggers><Trigger Property="IsEnabled" Value="False"><Setter Property="Foreground" Value="#98A2B3"/><Setter Property="Background" Value="#344054"/></Trigger>
-     <Trigger Property="IsMouseOver" Value="True"><Setter Property="BorderBrush" Value="#53A1FF"/></Trigger></ControlTemplate.Triggers>
-   </ControlTemplate></Setter.Value></Setter>
-  </Style>
-  <Style x:Key="RecoveryLightText" TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}"><Setter Property="Foreground" Value="#1D2939"/></Style>
+  <Style TargetType="Button" BasedOn="{StaticResource AppButtonStyle}"><Setter Property="Height" Value="40"/></Style>
+  <Style x:Key="RecoveryLightText" TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}"><Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/></Style>
  </UserControl.Resources>
  <Grid Margin="24">
-  <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="140"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+  <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="*" MinHeight="100" MaxHeight="140"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
   <Grid Margin="0,0,0,14">
+   <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
    <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
    <StackPanel><TextBlock Text="现场恢复" Style="{StaticResource PageTitleTextStyle}"/>
     <TextBlock Text="{Binding BarrierText}" FontSize="18" Margin="0,6,0,4"/>
     <TextBlock Text="核对原任务、车辆、载荷和PLC周期；所有条目通过后才能放行。地图切换仍独立控制。" TextWrapping="Wrap" Foreground="{DynamicResource TextSecondaryBrush}"/>
-   </StackPanel><Button Grid.Column="1" Content="重新采集状态" Command="{Binding RefreshCommand}" VerticalAlignment="Center" Height="40" Padding="14,0"/>
+   </StackPanel><Button Grid.Row="1" Grid.ColumnSpan="2" HorizontalAlignment="Left" Margin="0,12,0,0" Content="重新采集状态" Command="{Binding RefreshCommand}" VerticalAlignment="Center" Height="40" Padding="14,0"/>
   </Grid>
   <Grid Grid.Row="1" Margin="0,0,0,12">
    <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="16"/><ColumnDefinition Width="390"/></Grid.ColumnDefinitions>
    <TabControl>
     <TabControl.Resources><Style TargetType="TextBlock" BasedOn="{StaticResource RecoveryLightText}"/></TabControl.Resources>
     <TabItem Header="恢复条目"><DataGrid ItemsSource="{Binding Items}" SelectedItem="{Binding Selected}" AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False">
-     <DataGrid.Columns><DataGridTextColumn Header="核对" Binding="{Binding State}" Width="85"/>
-      <DataGridTextColumn Header="任务" Binding="{Binding TaskText}" Width="175"/>
-      <DataGridTextColumn Header="工位" Binding="{Binding StationId}" Width="90"/>
-      <DataGridTextColumn Header="车辆" Binding="{Binding VehicleId}" Width="80"/>
-      <DataGridTextColumn Header="执行节点" Binding="{Binding StepText}" Width="150"/>
-      <DataGridTextColumn Header="等待原因" Binding="{Binding Reason}" Width="*"/>
+     <DataGrid.Columns><DataGridTextColumn Header="核对" Binding="{Binding State}" Width="85" ElementStyle="{StaticResource AppGridTextStyle}"/>
+      <DataGridTextColumn Header="任务" Binding="{Binding TaskText}" Width="175" ElementStyle="{StaticResource AppGridTextStyle}"/>
+      <DataGridTextColumn Header="工位" Binding="{Binding StationId}" Width="90" ElementStyle="{StaticResource AppGridTextStyle}"/>
+      <DataGridTextColumn Header="车辆" Binding="{Binding VehicleId}" Width="80" ElementStyle="{StaticResource AppGridTextStyle}"/>
+      <DataGridTextColumn Header="执行节点" Binding="{Binding StepText}" Width="150" ElementStyle="{StaticResource AppGridTextStyle}"/>
+      <DataGridTextColumn Header="等待原因" Binding="{Binding Reason}" Width="*" ElementStyle="{StaticResource AppGridTextStyle}"/>
      </DataGrid.Columns></DataGrid></TabItem>
     <TabItem Header="所选条目采集证据"><TextBox Foreground="{DynamicResource TextPrimaryBrush}" Text="{Binding Selected.Evidence, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"/></TabItem>
    </TabControl>
@@ -70,12 +61,12 @@
   </Grid>
   <DataGrid Grid.Row="2" ItemsSource="{Binding Audits}" AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False">
    <DataGrid.Resources><Style TargetType="TextBlock" BasedOn="{StaticResource RecoveryLightText}"/></DataGrid.Resources>
-   <DataGrid.Columns><DataGridTextColumn Header="处置时间" Binding="{Binding OccurredAt, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="155"/>
-    <DataGridTextColumn Header="操作者" Binding="{Binding Operator}" Width="130"/>
-    <DataGridTextColumn Header="任务" Binding="{Binding TaskId}" Width="175"/>
-    <DataGridTextColumn Header="步骤" Binding="{Binding StepId}" Width="150"/>
-    <DataGridTextColumn Header="决定" Binding="{Binding DecisionText}" Width="165"/>
-    <DataGridTextColumn Header="依据" Binding="{Binding Reason}" Width="*"/>
+   <DataGrid.Columns><DataGridTextColumn Header="处置时间" Binding="{Binding OccurredAt, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="155" ElementStyle="{StaticResource AppGridTextStyle}"/>
+    <DataGridTextColumn Header="操作者" Binding="{Binding Operator}" Width="130" ElementStyle="{StaticResource AppGridTextStyle}"/>
+    <DataGridTextColumn Header="任务" Binding="{Binding TaskId}" Width="175" ElementStyle="{StaticResource AppGridTextStyle}"/>
+    <DataGridTextColumn Header="步骤" Binding="{Binding StepId}" Width="150" ElementStyle="{StaticResource AppGridTextStyle}"/>
+    <DataGridTextColumn Header="决定" Binding="{Binding DecisionText}" Width="165" ElementStyle="{StaticResource AppGridTextStyle}"/>
+    <DataGridTextColumn Header="依据" Binding="{Binding Reason}" Width="*" ElementStyle="{StaticResource AppGridTextStyle}"/>
    </DataGrid.Columns>
   </DataGrid>
   <TextBlock Grid.Row="3" Text="{Binding Message}" TextWrapping="Wrap" Margin="0,12,0,0"/>

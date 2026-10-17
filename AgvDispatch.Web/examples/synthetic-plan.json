@@ -1,0 +1,263 @@
+{
+  "schema": "agv-web-plan",
+  "version": 1,
+  "id": "e0c0c9cc-3c6e-4aab-9a7b-890236c3fe94",
+  "name": "合成示例-工程编辑样例",
+  "updatedAt": "2026-10-16T09:51:12.299Z",
+  "definition": {
+    "name": "取满箱 · 倒料 · 返空箱 / 合成示例",
+    "source": "",
+    "coordinateSystem": "DemoCartesian",
+    "unit": "m",
+    "nodes": [
+      {
+        "id": "HOME1",
+        "x": 1,
+        "y": 4,
+        "agvSiteId": "LM-HOME1",
+        "enabled": true,
+        "type": "Waypoint",
+        "resourceIds": []
+      },
+      {
+        "id": "PICK1",
+        "x": 4,
+        "y": 4,
+        "agvSiteId": "LM-PICK1",
+        "enabled": true,
+        "type": "Waypoint",
+        "resourceIds": []
+      },
+      {
+        "id": "CROSS1",
+        "x": 10,
+        "y": 4,
+        "agvSiteId": "LM-CROSS1",
+        "enabled": true,
+        "type": "Waypoint",
+        "resourceIds": []
+      },
+      {
+        "id": "WAIT",
+        "x": 14,
+        "y": 4,
+        "agvSiteId": "LM-WAIT",
+        "enabled": true,
+        "type": "WaitingPoint",
+        "resourceIds": []
+      },
+      {
+        "id": "DUMP",
+        "x": 20,
+        "y": 9,
+        "agvSiteId": "LM-DUMP",
+        "enabled": true,
+        "type": "Waypoint",
+        "resourceIds": []
+      },
+      {
+        "id": "CROSS2",
+        "x": 10,
+        "y": 12,
+        "agvSiteId": "LM-CROSS2",
+        "enabled": true,
+        "type": "Waypoint",
+        "resourceIds": []
+      },
+      {
+        "id": "PICK2",
+        "x": 4,
+        "y": 12,
+        "agvSiteId": "LM-PICK2",
+        "enabled": true,
+        "type": "Waypoint",
+        "resourceIds": []
+      },
+      {
+        "id": "HOME2",
+        "x": 1,
+        "y": 12,
+        "agvSiteId": "LM-HOME2",
+        "enabled": true,
+        "type": "Waypoint",
+        "resourceIds": []
+      }
+    ],
+    "edges": [
+      {
+        "id": "E01",
+        "from": "HOME1",
+        "to": "PICK1",
+        "distance": 3,
+        "speedLimit": 0.5,
+        "enabled": true,
+        "bidirectional": true,
+        "resourceIds": [],
+        "geometryKind": "Line"
+      },
+      {
+        "id": "E02",
+        "from": "PICK1",
+        "to": "CROSS1",
+        "distance": 6,
+        "speedLimit": 0.5,
+        "enabled": true,
+        "bidirectional": true,
+        "resourceIds": [],
+        "geometryKind": "Line"
+      },
+      {
+        "id": "E03",
+        "from": "CROSS1",
+        "to": "WAIT",
+        "distance": 4,
+        "speedLimit": 0.5,
+        "enabled": true,
+        "bidirectional": true,
+        "resourceIds": [],
+        "geometryKind": "Line"
+      },
+      {
+        "id": "E04",
+        "from": "WAIT",
+        "to": "DUMP",
+        "distance": 7.810249675906656,
+        "speedLimit": 0.5,
+        "enabled": true,
+        "bidirectional": true,
+        "resourceIds": [],
+        "geometryKind": "Line"
+      },
+      {
+        "id": "E05",
+        "from": "DUMP",
+        "to": "CROSS2",
+        "distance": 10.44030650891055,
+        "speedLimit": 0.5,
+        "enabled": true,
+        "bidirectional": true,
+        "resourceIds": [],
+        "geometryKind": "Line"
+      },
+      {
+        "id": "E06",
+        "from": "CROSS2",
+        "to": "PICK2",
+        "distance": 6,
+        "speedLimit": 0.5,
+        "enabled": true,
+        "bidirectional": true,
+        "resourceIds": [],
+        "geometryKind": "Line"
+      },
+      {
+        "id": "E07",
+        "from": "PICK2",
+        "to": "HOME2",
+        "distance": 3,
+        "speedLimit": 0.5,
+        "enabled": true,
+        "bidirectional": true,
+        "resourceIds": [],
+        "geometryKind": "Line"
+      },
+      {
+        "id": "E08",
+        "from": "PICK2",
+        "to": "CROSS1",
+        "distance": 10,
+        "speedLimit": 0.5,
+        "enabled": true,
+        "bidirectional": true,
+        "resourceIds": [],
+        "geometryKind": "Line"
+      },
+      {
+        "id": "E09",
+        "from": "CROSS2",
+        "to": "CROSS1",
+        "distance": 8,
+        "speedLimit": 0.5,
+        "enabled": true,
+        "bidirectional": true,
+        "resourceIds": [],
+        "geometryKind": "Line"
+      }
+    ],
+    "resources": [
+      {
+        "id": "SHARED-01",
+        "capacity": 1,
+        "boundary": [
+          {
+            "x": 8,
+            "y": 2
+          },
+          {
+            "x": 12,
+            "y": 2
+          },
+          {
+            "x": 12,
+            "y": 14
+          },
+          {
+            "x": 8,
+            "y": 14
+          }
+        ],
+        "type": "NarrowAisle"
+      },
+      {
+        "id": "DUMPER-01",
+        "capacity": 1,
+        "boundary": [
+          {
+            "x": 17,
+            "y": 7
+          },
+          {
+            "x": 23,
+            "y": 7
+          },
+          {
+            "x": 23,
+            "y": 11
+          },
+          {
+            "x": 17,
+            "y": 11
+          }
+        ],
+        "type": "NarrowAisle"
+      }
+    ]
+  },
+  "scene": [
+    {
+      "id": "S1",
+      "name": "倒料设备区",
+      "kind": "equipment",
+      "x": 0,
+      "y": 0,
+      "width": 4,
+      "height": 3,
+      "color": "#3a7897",
+      "visible": true
+    }
+  ],
+  "vehicles": [
+    {
+      "vehicleId": "AGV-1",
+      "displayName": "示例车辆01",
+      "ipAddress": "192.168.10.21",
+      "port": 19204,
+      "navigationPort": 19206,
+      "enabled": false
+    }
+  ],
+  "waypoints": [
+    "PICK1",
+    "DUMP"
+  ]
+}

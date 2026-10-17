@@ -12,6 +12,9 @@ namespace AgvDispatch.Wpf.ViewModels;
 
 public sealed class MainWindowViewModel : BindableBase
 {
+    public string ClientBuild => typeof(MainWindowViewModel).Assembly.GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute),false)
+        .OfType<System.Reflection.AssemblyInformationalVersionAttribute>().FirstOrDefault()?.InformationalVersion ?? "unknown";
+    public string WindowTitle => "铝屑回收智能调度平台 · " + ClientBuild;
     private static readonly Logger Logger = LogManager.GetCurrentClassLogger();
     private readonly IRegionManager _regionManager;
     private readonly IThemeService _themeService;

@@ -41,6 +41,8 @@ internal static partial class Program
         Require(vm.CreationMapRoutes.Count==5&&vm.CreationMapRoads.Count==3&&vm.CreationMapDots.Count==4,"current map scene consumes same-batch navigation geometry");
         var first=vm.CreationRouteSegments[0];vm.SelectedCreationRouteSegment=first;
         Require(vm.CreationRouteMapOpen&&!vm.CreationMapSelectedGeometry.Bounds.IsEmpty&&vm.CreationRouteMapMessage.Contains("LM-HOME → LM-PICK"),"table selection locates business and manufacturer exact endpoints");
+        CheckRouteActions(vm,client,positive,app,evidence);
+        vm.SelectedCreationRouteSegment=vm.CreationRouteSegments[0];
         var bounds=vm.CreationMapSelectedGeometry.Bounds;
         Require(Math.Abs((bounds.X+bounds.Width/2-450)*vm.CreationMapZoom+450+vm.CreationMapPanX-450)<1e-5&&Math.Abs((bounds.Y+bounds.Height/2-250)*vm.CreationMapZoom+250+vm.CreationMapPanY-250)<1e-5,"selected segment is centred with correct Y projection");
         vm.FitCreationRouteMapCommand.Execute();Require(vm.CreationMapZoom==1&&vm.CreationMapPanX==0&&vm.CreationMapPanY==0,"full-map reset does not mutate source");
@@ -68,7 +70,7 @@ internal static partial class Program
         Load(positive);var stale=vm.CreationRouteSegments[0];client.Override=null;Complete(vm.PreviewCreationRoutesAsync());vm.LocateCreationRouteSegment(stale);Require(vm.SelectedCreationRouteSegment is null,"old same-value segment cannot select new observation");
         vm.LocateCreationRouteSegment(vm.CreationRouteSegments[0] with{});Require(vm.CreationMapSelectedGeometry.Bounds.IsEmpty,"forged same-value row rejected");
         vm.ClearCreationRoutesCommand.Execute();Require(vm.CreationMapRoads.Count==0&&vm.CreationMapRoutes.Count==0&&vm.SelectedCreationRouteSegment is null&&!vm.LocateFailedCreationRouteCommand.CanExecute(),"clear removes map geometry selection and failure command");
-        client.Override=null;Complete(vm.PreviewCreationRoutesAsync());typeof(TaskCenterViewModel).GetField("_routePreviewExpires",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic)!.SetValue(vm,DateTimeOffset.Now.AddSeconds(-1));vm.ExpireCreationRoutePreview();Require(vm.CreationMapRoads.Count==0&&vm.CreationMapDots.Count==0,"expiry clears standalone shared map state");
+        client.Override=null;Complete(vm.PreviewCreationRoutesAsync());typeof(TaskCenterViewModel).GetField("_routePreviewExpires",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic)!.SetValue(vm,DateTimeOffset.Now.AddSeconds(-1));vm.ExpireCreationRoutePreview();Require(vm.CreationMapRoads.Count==0&&vm.CreationMapDots.Count==0&&!vm.CreationRouteActionDetails.Contains("JackLoad"),"expiry clears standalone shared map and action state");
         client.Override=null;Complete(vm.PreviewCreationRoutesAsync());var options=Complete(client.Service.GetOptionsAsync(default));
         client.ReadOptions=()=>Task.FromResult(options with{MapRuntimeId=Guid.NewGuid().ToString("N")});Complete(vm.RecheckCreationRouteMapContextAsync(default));Require(vm.CreationMapRoutes.Count==0,"same map ID and version with replaced runtime instance clears map");
         client.ReadOptions=null;Complete(vm.PreviewCreationRoutesAsync());client.ReadOptions=()=>Task.FromResult(options with{ParameterRevision="CHANGED"});Complete(vm.RecheckCreationRouteMapContextAsync(default));Require(vm.CreationMapRoads.Count==0,"background parameter revision change clears map");

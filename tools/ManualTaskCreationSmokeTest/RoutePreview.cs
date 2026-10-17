@@ -20,7 +20,7 @@ internal static partial class Program
 {
     static void CheckRoutePreview(AgvDispatch.Wpf.App app)
     {
-        var evidence=Path.GetFullPath("docs/commissioning/evidence/20261016-task-route-map");Directory.CreateDirectory(evidence);
+        var evidence=Path.GetFullPath("docs/commissioning/evidence/20261016-task-route-actions");Directory.CreateDirectory(evidence);
         using var db=DatabaseFactory.Create(new DatabaseOptions{DatabasePath=Path.Combine(Path.GetTempPath(),"agv-route-preview-"+Guid.NewGuid().ToString("N")+".db")});Complete(new DatabaseInitializer(db).InitializeAsync(default));
         var nodes=new[]{"HOME","PICK","WAIT","DUMP"}.Select((id,i)=>new MapNode(id,i*5,0,MapNodeType.Station,true,[],"LM-"+id)).ToArray();
         var definition=new MapDefinition("preview-test","","LocalCartesian","m",nodes,Enumerable.Range(0,3).Select(i=>new MapEdge("EDGE"+i,nodes[i].Id,nodes[i+1].Id,5,1,true,true,[])).ToArray(),[]);

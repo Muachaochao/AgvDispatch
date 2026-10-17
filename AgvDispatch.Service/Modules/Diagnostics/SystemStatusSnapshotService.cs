@@ -20,7 +20,9 @@ public sealed class SystemStatusSnapshotService(
     IActiveMapRuntime activeMap,
     DispatchOrchestratorOptions dispatchOptions,
     TrafficSecurityOptions securityOptions,
-    NamedPipeDiagnostics pipeDiagnostics) : ISystemStatusSnapshotService
+    NamedPipeDiagnostics pipeDiagnostics, HandshakeExecutionOptions? handshake = null,
+    DispatchTaskCreationOptions? creation = null, DispatchTaskStepOptions? steps = null,
+    AgvCommandOutboxOptions? outbox = null) : ISystemStatusSnapshotService
 {
     private static readonly DateTimeOffset ProcessStartedAt =
         new(Process.GetCurrentProcess().StartTime);
@@ -127,7 +129,8 @@ public sealed class SystemStatusSnapshotService(
                 mapOptions.Enabled || activeMap.Current is not null,
                 dispatchOptions.Enabled,
                 activeMap.Current?.MapId,
-                activeMap.Current?.VersionId));
+                activeMap.Current?.VersionId))
+        { Execution = BackendBuildIdentity.Read(handshake, creation, steps, outbox) };
     }
 
     private static TaskDiagnostic BuildTaskDiagnostic(IReadOnlyList<ActiveDispatchTask> tasks)

@@ -37,7 +37,10 @@ public sealed record RecoveryStatus(string SessionId, bool Released, string Mess
     IReadOnlyList<RecoveryItem> Items, IReadOnlyList<RecoveryAudit> Audits);
 public sealed record RecoveryDecisionRequest(string SessionId, string TicketId, int Revision,
     RecoveryDecision Decision, string MaterialReference, string Reason,
-    bool VehicleAndLocationConfirmed, bool LoadAndOwnershipConfirmed, bool PlcCycleConfirmed);
+    bool VehicleAndLocationConfirmed, bool LoadAndOwnershipConfirmed, bool PlcCycleConfirmed)
+{
+    public bool HandshakePendingWriteConfirmed { get; init; }
+}
 public sealed record RecoveryReleaseRequest(string SessionId, string Reason);
 public sealed record RecoveryResult(bool Accepted, string Message);
 

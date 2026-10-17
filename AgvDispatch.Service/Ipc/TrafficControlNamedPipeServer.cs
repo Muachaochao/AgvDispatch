@@ -1,4 +1,4 @@
-﻿using System.Buffers.Binary;
+using System.Buffers.Binary;
 using System.IO.Pipes;
 using System.Security.AccessControl;
 using System.Security.Principal;
@@ -31,7 +31,7 @@ public sealed class TrafficControlNamedPipeServer(
     ICommunicationSettingsService communicationSettings,
     NamedPipeDiagnostics pipeDiagnostics,
     ITrafficGeometryPreviewService? geometry=null,
-    IRobokitInspectionService? robokit=null, IRobokitInspectionHistory? robokitHistory=null,IMapTransferLedger? mapTransfers=null) : IsolatedBackgroundService
+    IRobokitInspectionService? robokit=null, IRobokitInspectionHistory? robokitHistory=null,IMapTransferLedger? mapTransfers=null, ITaskHandshakeStore? handshakes=null, ITaskDiagnosticArchiveService? diagnosticExports=null, ICommissioningQueryService? commissioning=null) : IsolatedBackgroundService
 {
     private async Task<RobokitInspectionSnapshot> InspectRobokitAsync(TrafficUserContext user,RobokitInspectionQuery query,CancellationToken ct)
     {
@@ -166,6 +166,9 @@ public sealed class TrafficControlNamedPipeServer(
 
         return request.Operation switch
         {
+            "GetCommissioningReport" => Success(await (commissioning??throw new NotSupportedException("当前后台未提供联调检查，请部署匹配版本。")).ReadAsync(user,Deserialize<CommissioningQuery>(request.Payload),cancellationToken)),
+            "GetTaskRuntimeEvents" => Success(await (handshakes??throw new NotSupportedException("后台未配置运行事件查询。")).QueryAsync(Deserialize<TaskRuntimeQuery>(request.Payload),cancellationToken)),
+            "ExportTaskDiagnostics" => Success(await (diagnosticExports??throw new NotSupportedException("后台未配置联调诊断导出。")).ExportAsync(Deserialize<TaskDetailRequest>(request.Payload).TaskId,cancellationToken)),
             "CancelDispatchTask" => Success(await taskCancellation.RequestAsync(user, Deserialize<TaskCancelRequest>(request.Payload), cancellationToken)),
             "BeginTaskRecoveryReview" => Success(await recovery.BeginReviewAsync(user, Deserialize<TaskRecoveryReviewRequest>(request.Payload), cancellationToken)),
             "GetExecutionRecovery" => Success(await recovery.GetAsync(cancellationToken)),

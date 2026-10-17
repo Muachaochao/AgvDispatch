@@ -184,6 +184,11 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
             step.VendorTaskId != null && request.Decision == RecoveryDecision.RecordPhysicalCompletion;
         if (recoveringFault) step!.Status = (int)DispatchTaskStepStatus.Executing;
         var completing = request.Decision == RecoveryDecision.RecordPhysicalCompletion;
+        if(task!=null&&step!=null)
+        {
+            var handshakeBlock=await HandshakeReviewBlockAsync(task.TaskId,step.StepId,request,ct);
+            if(handshakeBlock!=null)return await RejectAsync(user,ticket.TicketId,handshakeBlock,ct);
+        }
         if (ticket.TaskId == SiteTask && completing) return await RejectAsync(user, request.TicketId, "全场核对不能补记任务完成。", ct);
         if (ticket.TaskId != SiteTask && (task == null || step == null || (task.Stage is 90 or 110 or 120 or 130 || task.Stage == 100 && !recoveringFault)))
             return await RejectAsync(user, request.TicketId, "残留命令、故障或孤立占用需专项处置；此页面不会释放占用或重置任务。", ct);
@@ -218,7 +223,7 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
                     .OrderByDescending(s => s.Sequence).FirstAsync(ct);
                 if (previous?.DestinationSite != null && observed.Vehicle?.CurrentStation != previous.DestinationSite)
                     return await RejectAsync(user, request.TicketId, "车辆已离开原流程停靠站，不能继续PLC节点或下一段运输。", ct);
-                var plcBlock = PlcContinuationBlock(task, step);
+                var plcBlock = await PlcContinuationBlockAsync(task, step, ct);
                 if (plcBlock != null) return await RejectAsync(user, request.TicketId, plcBlock, ct);
             }
             if (!completing && step.Status != (int)DispatchTaskStepStatus.Executing &&
@@ -230,6 +235,8 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
         }
         var transaction = await database.Ado.UseTranAsync(async () =>
         {
+            if(task!=null&&step!=null&&request.Decision==RecoveryDecision.ContinueOriginal)
+                await ResolveHandshakeWriteAsync(task.TaskId,step.StepId,request,user.WindowsIdentity,ct);
             if (!recoveringFault && task != null && step != null && observed.Command is { } command && command.AttemptCount > 0)
                 await BindAcceptedCommandAsync(task, step, command, observed.Vendor!, ct);
             if (completing && task != null && step != null)
@@ -330,6 +337,8 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
                     .Where(s => s.TaskId == task.TaskId && s.Status != (int)DispatchTaskStepStatus.Completed).ExecuteCommandAsync(ct);
             }
             if (observed.Step != null) observed.Step.Status = (int)DispatchTaskStepStatus.Cancelled;
+            var equipmentReleased=await database.Deleteable<TaskEquipmentClaimEntity>().Where(e=>e.TaskId==task.TaskId).ExecuteCommandAsync(ct);
+            if(equipmentReleased>0)await database.Insertable(new TaskRuntimeEventEntity{TaskId=task.TaskId,StepId=ticket.StepId,Kind="EquipmentReleased",RecordedAtUtc=DateTime.UtcNow,Reason="原恢复流程核对取消闭合后释放设备归属；操作人："+user.WindowsIdentity}).ExecuteCommandAsync(ct);
             ticket.Verified = true; ticket.MaterialReference = request.MaterialReference.Trim(); ticket.VerifiedAt = DateTime.Now;
             ticket.Revision++; ticket.Fingerprint = await FingerprintAsync(task.TaskId, ct);
             ticket.PhysicalFingerprint = PhysicalFingerprint(observed);
@@ -350,8 +359,10 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
         var steps = await database.Queryable<DispatchTaskStepEntity>().Where(s => s.TaskId == taskId).OrderBy(s => s.Sequence).ToListAsync(ct);
         var commands = await database.Queryable<AgvCommandOutboxEntity>().Where(c => c.TaskId == taskId).OrderBy(c => c.CommandId).ToListAsync(ct);
         var leases = await database.Queryable<TrafficResourceLeaseEntity>().Where(l => l.TaskId == taskId).OrderBy(l => l.LeaseId).ToListAsync(ct);
+        var handshakes=await database.Queryable<TaskHandshakeEntity>().Where(h=>h.TaskId==taskId).OrderBy(h=>h.StepId).ToListAsync(ct);
+        var equipment=await database.Queryable<TaskEquipmentClaimEntity>().Where(h=>h.TaskId==taskId).OrderBy(h=>h.EquipmentId).ToListAsync(ct);
         var segmentReleases=await database.Queryable<TrafficSegmentCommitLeaseEntity>().Where(a=>a.TaskId==taskId).OrderBy(a=>a.AuditId).ToListAsync(ct);
-        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { task, steps, commands, leases, segmentReleases, Map = map.Current?.VersionId }))));
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { task, steps, commands, leases, segmentReleases, handshakes, equipment, Map = map.Current?.VersionId }))));
     }
     private sealed record Observation(DispatchTaskEntity? Task, DispatchTaskStepEntity? Step, AgvCommandOutboxEntity? Command,
         AgvRobotSnapshot? Vehicle, AgvTransportTaskStatus? Vendor, bool AutoSafe, string Reason, string? HardBlock, string Evidence, string Fingerprint, RecoveryIdentityVerification Identity,string? SegmentContinuationBlock=null);
@@ -452,10 +463,19 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
     }
     private static string PlcStation(DispatchTaskEntity task, DispatchTaskStepEntity? step) =>
         step?.StepType is (int)DispatchTaskStepType.DumpFullBox or (int)DispatchTaskStepType.WaitForDumperReady ? step.SourceSite ?? task.StationId : task.StationId;
-    private string? PlcContinuationBlock(DispatchTaskEntity task, DispatchTaskStepEntity step)
+    private async Task<string?> PlcContinuationBlockAsync(DispatchTaskEntity task, DispatchTaskStepEntity step,CancellationToken ct)
     {
         if (step.StepType is (int)DispatchTaskStepType.DeliverFullBoxToDumper or (int)DispatchTaskStepType.EnterDumpingPosition or (int)DispatchTaskStepType.ReturnEmptyBox) return null;
         if (!settings.CheckPlcSignals) return "物理握手恢复需要启用PLC采集，不允许在无现场证据时继续。";
+        var checkpoint=await database.Queryable<TaskHandshakeEntity>().Where(h=>h.TaskId==task.TaskId&&h.StepId==step.StepId).FirstAsync(ct);
+        if(checkpoint!=null)
+        {
+            if(checkpoint.ContractVersion!=HandshakeExecutionOptions.Version||checkpoint.Phase=="ReviewRequired")return "新契约原始绑定/阶段不可核对，保持等待。";
+            foreach(var baseline in TaskHandshakeStore.Describe(checkpoint).Baseline.Where(b=>b.StationId!="__context"))
+                if(!signals.TryGet(baseline.StationId,baseline.VariableName,out var sample)||!sample.Enabled||sample.Address!=baseline.Address||sample.Quality!=SignalQuality.Good||sample.Value==null||sample.UpdatedAt is not {} time||time<_started||time>DateTimeOffset.Now.AddSeconds(1)||DateTimeOffset.Now-time>settings.StateMaxAge)
+                    return "新契约原信号地址或本次恢复观察无效，禁止续接。";
+            return null; // Resume the persisted phase; the executor still evaluates its own guards. Never reassert earlier notifications.
+        }
         var station = PlcStation(task, step);
         bool Is(string name, bool value) => signals.TryGet(station, name, out var signal) && signal.Quality == SignalQuality.Good && signal.Value == value;
         var safe = (DispatchTaskStepType)step.StepType switch

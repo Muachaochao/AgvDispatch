@@ -55,6 +55,7 @@ internal static class Program
     {
         var root=Path.Combine(Path.GetTempPath(),"agv-integration-"+Guid.NewGuid().ToString("N")); Directory.CreateDirectory(root);
         Console.WriteLine("Evidence: "+root);
+        var timeline=new List<object>();
         using var db=DatabaseFactory.Create(new() { DatabasePath=Path.Combine(root,"test.db") });
         var resource=new TrafficResourceDefinition("SHARED",TrafficResourceType.NarrowAisle);
         var catalog=new TrafficResourceCatalog([resource]); var init=new DatabaseInitializer(db,catalog); Await(init.InitializeAsync(default));
@@ -109,9 +110,21 @@ internal static class Program
             Await(server.StartAsync(default)); Poll();
             var app=new AgvDispatch.Wpf.App(); app.InitializeComponent();
             vm=new TaskCenterViewModel(client); ViewModelLocationProvider.SetDefaultViewModelFactory(_=>vm);
-            vm.OnNavigatedTo(null!); Await(vm.LoadCreationOptionsAsync());
+            vm.OnNavigatedTo(null!); Pump(()=>!vm.IsBusy); Await(vm.LoadCreationOptionsAsync());
+            if (!vm.CreationStations.Any() || !vm.CreationVehicles.Any(v=>v.Id=="AGV-01")) throw new InvalidOperationException("创建选项未就绪：" + vm.CreationMessage + "；工位=" + string.Join(",",vm.CreationStations.Select(s=>s.StationId)) + "；车辆=" + string.Join(",",vm.CreationVehicles.Select(v=>v.Id)));
             vm.CreationStation=vm.CreationStations.Single(s=>s.StationId=="CNC001"); vm.CreationVehicle=vm.CreationVehicles.Single(v=>v.Id=="AGV-01");
             Check(vm.CreationStepPreview.Count==9 && vm.CreationStepPreview.All(s=>!s.HasErrors),"真实IPC载入创建前九步预览，PLC及动作配置通过");
+            Await(vm.PreviewCreationRoutesAsync());
+            Check(vm.CreationMapRoutes.Count==4,"真实IPC返回同批四段导航几何");
+            foreach(var sequence in new[]{1,3,5,7})
+            {
+                vm.SelectedCreationRouteSegment=vm.CreationRouteSegments.Single(s=>s.Sequence==sequence);
+                Check(vm.CreationRouteActionDetails.Contains("随后第")&&vm.CreationRouteActionDetails.Contains("非实时信号"),"地图选段联动动作和后续PLC配置 第"+sequence+"步");
+                var mapView=new TaskCreationRouteMapView{DataContext=vm,Width=1100,Height=650};
+                mapView.Measure(new Size(1100,650));mapView.Arrange(new Rect(0,0,1100,650));mapView.UpdateLayout();
+                var image=new RenderTargetBitmap(1100,650,96,96,PixelFormats.Pbgra32);image.Render(mapView);var encoder=new PngBitmapEncoder();encoder.Frames.Add(BitmapFrame.Create(image));using(var file=File.Create(Path.Combine(root,"preview-step-"+sequence+".png")))encoder.Save(file);
+                timeline.Add(new{Kind="PreviewConfiguration",Step=sequence,Details=vm.CreationRouteActionDetails,Note="本模拟未配置车端地图核验，不把本地路线视为厂家已确认。"});
+            }
             vm.CreationPriorityInput="80"; Await(vm.SubmitTaskAsync());
             Check(vm.Detail?.Task.StationId=="CNC001" && vm.Detail.Task.Priority==80,"前端提交命令经真实管道创建任务并读回详情");
             var a=vm.Detail!.Task.TaskId;
@@ -141,26 +154,33 @@ internal static class Program
             Check(plc.Pending.Count==0 && new[]{"CNC001","CNC002"}.All(s=>new[]{"FullBoxRequestAcknowledged","FullBoxRemoved","EmptyBoxTaskAcknowledged","EmptyBoxPlaced"}.All(n=>!plc.Value(s,n))),"PLC应答与收尾信号均已复位");
             Cycle(vm,"RefreshAsync"); vm.SelectedTask=vm.Tasks.Single(t=>t.TaskId==b); Pump(()=>vm.Detail?.Task.TaskId==b);
             Check(vm.Steps.All(s=>s.Status==DispatchTaskStepStatus.Completed),"前端最终显示九步全部完成"); Render(app,vm,Path.Combine(root,"task-completed.png"));
-            File.WriteAllText(Path.Combine(root,"result.json"),JsonSerializer.Serialize(new { Checks=checks,First=a,Second=b,Robot1=robot1.Commands,Robot2=robot2.Commands,PlcWrites=plc.Writes.Select(w=>new { w.Station,w.Name,w.Value }).ToArray(),Scope="in-process real service components + Named Pipe + WPF + loopback Robokit; PLC simulated at gateway/cache boundary" },new JsonSerializerOptions{WriteIndented=true}));
+            File.WriteAllText(Path.Combine(root,"result.json"),JsonSerializer.Serialize(new { Checks=checks,First=a,Second=b,Robot1=robot1.Commands,Robot2=robot2.Commands,PlcWrites=plc.Writes.Select(w=>new { w.Station,w.Name,w.Value }).ToArray(),Timeline=timeline,Scope="in-process real service components + Named Pipe + WPF + loopback Robokit; PLC simulated at gateway/cache boundary" },new JsonSerializerOptions{WriteIndented=true}));
 
             void CompleteNine(string taskId,SimulatedRobot robot,string station)
             {
                 Transport(0); WaitStep(1);
                 // Missing/stale PLC data cannot advance pickup even when its boolean looks satisfied.
                 plc.Set(station,"BoxPresent",false,SignalQuality.Bad); Cycle(steps,"RunCycleAsync");
-                Check(Await(tasks.GetStepsAsync(taskId,default))[1].Status==DispatchTaskStepStatus.Ready,"坏质量箱体信号阻止取箱步骤推进 "+station);
+                Check(Await(tasks.GetStepsAsync(taskId,default))[1].Status==DispatchTaskStepStatus.Ready,"坏质量箱体信号阻止取箱步骤推进 "+station);Capture(2,"BoxPresent=false但Quality=Bad，等待有效质量");
                 plc.Set(station,"BoxPresent",false); Handshake(); Transport(2); WaitStep(3);
                 plc.Set("DUMPER-001","DumperReady",false); Handshake();
-                Check(Await(tasks.GetStepsAsync(taskId,default))[3].Status==DispatchTaskStepStatus.Ready,"倒料Ready未满足保持等待 "+station);
+                Check(Await(tasks.GetStepsAsync(taskId,default))[3].Status==DispatchTaskStepStatus.Ready,"倒料Ready未满足保持等待 "+station);Capture(4,"DumperReady=false，保持等待");
                 plc.Set("DUMPER-001","DumperReady",true); Handshake(); Transport(4); WaitStep(5);
                 plc.Set("DUMPER-001","DumpingCompletedMayLeave",false); Handshake();
-                Check(Await(tasks.GetStepsAsync(taskId,default))[5].Status==DispatchTaskStepStatus.Ready,"未允许离开不跳过倒料步骤 "+station);
+                Check(Await(tasks.GetStepsAsync(taskId,default))[5].Status==DispatchTaskStepStatus.Ready,"未允许离开不跳过倒料步骤 "+station);Capture(6,"DumpingCompletedMayLeave=false，不离开倒料位");
                 plc.Set("DUMPER-001","DumpingCompletedMayLeave",true); Handshake(); Transport(6); WaitStep(7);
-                Handshake(); Check(Await(tasks.GetStepsAsync(taskId,default))[7].Status==DispatchTaskStepStatus.Ready,"空箱未检测到时不完成放箱 "+station);
+                Handshake(); Check(Await(tasks.GetStepsAsync(taskId,default))[7].Status==DispatchTaskStepStatus.Ready,"空箱未检测到时不完成放箱 "+station);Capture(8,"BoxPresent=false，空箱未到位不收尾");
                 plc.Set(station,"BoxPresent",true); Handshake(); Handshake();
                 var completed=Await(client.GetTaskDetailAsync(taskId,default))!;
                 Check(completed.Task.Stage==DispatchTaskStage.Completed && completed.Steps.All(s=>s.Status==DispatchTaskStepStatus.Completed),"九步任务经PLC条件闭环完成 "+station);
-                Check(completed.Commands.Count==4 && completed.Commands.All(c=>c.AttemptCount==1),"每段运输仅发送一次 "+station);
+                Check(completed.Commands.Count==4 && completed.Commands.All(c=>c.AttemptCount==1),"每段运输仅发送一次 "+station);Capture(9,"PLC收尾复位、九步完成并释放资源");
+                void Capture(int sequence,string cause)
+                {
+                    var detail=Await(client.GetTaskDetailAsync(taskId,default))!;
+                    var row=detail.Steps.Single(s=>s.Sequence==sequence);
+                    timeline.Add(new{Kind="Execution",TaskId=taskId,Station=station,Step=sequence,Reason=cause,Stage=detail.Task.Stage.ToString(),Status=row.Status.ToString(),Signals=plc.GetAll().Where(s=>s.StationId==station||s.StationId=="DUMPER-001").Select(s=>new{s.StationId,s.VariableName,s.Value,Quality=s.Quality.ToString()}).ToArray()});
+                    if(taskId==a){Cycle(vm,"RefreshAsync");vm.SelectedTask=vm.Tasks.Single(t=>t.TaskId==taskId);Pump(()=>vm.Detail?.Task.TaskId==taskId);Render(app,vm,Path.Combine(root,"execution-step-"+sequence+".png"),sequence);}
+                }
                 void WaitStep(int index) => Check(Await(tasks.GetStepsAsync(taskId,default))[index].Status==DispatchTaskStepStatus.Ready,"仅激活下一步 "+(index+1)+" "+station);
                 void Transport(int index)
                 {
@@ -169,7 +189,7 @@ internal static class Program
                     var current=Await(tasks.GetStepsAsync(taskId,default))[index];
                     Check(current.Status==DispatchTaskStepStatus.Executing && robot.Commands.ContainsKey(current.StepId),"运输步骤真正经TCP下发 "+(index+1)+" "+station);
                     robot.Complete(current.StepId); Poll(); Cycle(orchestrator,"RunCycleAsync");
-                    Check(Await(tasks.GetStepsAsync(taskId,default))[index].Status==DispatchTaskStepStatus.Completed,"1110完成反馈推进运输步骤 "+(index+1)+" "+station);
+                    Check(Await(tasks.GetStepsAsync(taskId,default))[index].Status==DispatchTaskStepStatus.Completed,"1110完成反馈推进运输步骤 "+(index+1)+" "+station);Capture(index+1,"1110确认完成；真实3066模拟报文动作="+robot.Commands[current.StepId].Operation);
                 }
             }
             void Handshake() { for(int i=0;i<3;i++) { Cycle(steps,"RunCycleAsync"); plc.Scan(); } }
@@ -177,13 +197,21 @@ internal static class Program
         finally { vm?.OnNavigatedFrom(null!); Await(server.StopAsync(default)); Await(manager.DisposeAsync().AsTask()); }
         void Poll() { foreach(var robot in manager.Clients) { var sample=Await(robot.PollAsync(default)); states.ApplyTelemetry(robot.Robot.VehicleId,sample.Telemetry,sample.ResponseTime); } }
     }
-    static void Render(AgvDispatch.Wpf.App app,TaskCenterViewModel vm,string file)
+    static void Render(AgvDispatch.Wpf.App app,TaskCenterViewModel vm,string file,int sequence=0)
     {
         var view=new TaskCenterView { DataContext=vm,Width=1280,Height=800,Background=(Brush)app.FindResource("AppBackgroundBrush") };
         view.Measure(new Size(1280,800)); view.Arrange(new Rect(0,0,1280,800)); view.UpdateLayout();
+        if(sequence>0)
+        {
+            var timeline=Children(view).OfType<System.Windows.Controls.ItemsControl>().First(c=>ReferenceEquals(c.ItemsSource,vm.Steps));
+            var scroll=(System.Windows.Controls.ScrollViewer)view.FindName("TaskTimelineScroll");
+            if(timeline.ItemContainerGenerator.ContainerFromIndex(sequence-1) is FrameworkElement container){var position=container.TransformToAncestor(timeline).Transform(new Point());scroll.ScrollToVerticalOffset(Math.Max(0,position.Y));view.UpdateLayout();}
+        }
         var image=new RenderTargetBitmap(1280,800,96,96,PixelFormats.Pbgra32); image.Render(view);
         var png=new PngBitmapEncoder(); png.Frames.Add(BitmapFrame.Create(image)); using var stream=File.Create(file); png.Save(stream);
     }
+    static IEnumerable<DependencyObject> Children(DependencyObject parent)
+    {for(var i=0;i<VisualTreeHelper.GetChildrenCount(parent);i++){var child=VisualTreeHelper.GetChild(parent,i);yield return child;foreach(var nested in Children(child))yield return nested;}}
 }
 
 sealed class EmptyFlow : ITrafficFlowMonitor
@@ -273,4 +301,3 @@ sealed class SimulatedRobot : IDisposable
     }
     public void Dispose() { stop.Cancel(); listener.Stop(); try{server.GetAwaiter().GetResult();}finally{stop.Dispose();} }
 }
-

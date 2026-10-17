@@ -1,11 +1,11 @@
-﻿using AgvDispatch.Application.Abstractions;
+using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Domain.Devices;
 using AgvDispatch.Domain.Tasks;
 
 namespace AgvDispatch.Service;
 
-public sealed class TaskCenterQueryService(ITaskCenterReadRepository repository,
-    IPlcSignalCache signals, DispatchTaskCreationOptions options, TaskParameterRuntime? parameters = null, TimeProvider? clock = null) : ITaskCenterQueryService
+public sealed partial class TaskCenterQueryService(ITaskCenterReadRepository repository,
+    IPlcSignalCache signals, DispatchTaskCreationOptions options, TaskParameterRuntime? parameters = null, TimeProvider? clock = null, HandshakeExecutionOptions? handshakeOptions = null) : ITaskCenterQueryService
 {
     public Task<TaskListPage> QueryAsync(TaskListQuery query, CancellationToken cancellationToken) =>
         repository.QueryAsync(query, cancellationToken);
@@ -29,9 +29,7 @@ public sealed class TaskCenterQueryService(ITaskCenterReadRepository repository,
         void Add(string station, string variable, bool expected)
         {
             signals.TryGet(station, variable, out var signal);
-            var quality = signal?.Quality ?? SignalQuality.Unknown;
-            conditions.Add(new(station, variable, signal?.Address ?? "未配置", expected,
-                signal?.Value, quality, quality == SignalQuality.Good && signal?.Value == expected));
+            conditions.Add(TaskSignalPredicate.Evaluate(station, variable, expected, signal));
         }
         var explanation = "当前步骤等待执行；请结合步骤状态和命令队列排查。";
         if (task.Stage == DispatchTaskStage.Created)
@@ -43,34 +41,22 @@ public sealed class TaskCenterQueryService(ITaskCenterReadRepository repository,
             explanation = "等待可用车辆、工位映射、可行路径和交通资源；此处不代表已诊断出具体阻塞原因。";
         else if (current?.Status == DispatchTaskStepStatus.Ready)
         {
+            conditions.AddRange(TaskStepProgressRules.Observe(current.StepType, task.StationId, options.DumperStationId, signals));
             switch (current.StepType)
             {
                 case DispatchTaskStepType.PickupFullBox:
-                    Add(task.StationId, "BoxPresent", false);
-                    Add(task.StationId, "FullBoxRemoved", true);
-                    Add(task.StationId, "EmptyBoxTaskAcknowledged", true);
                     explanation = "取箱握手：先确认箱体离开，再写入并回读满箱拉走/空箱任务应答。";
                     break;
                 case DispatchTaskStepType.WaitForDumperReady:
-                    Add(options.DumperStationId, "Faulted", false);
-                    Add(options.DumperStationId, "AgvAtWaitingPosition", true);
-                    Add(options.DumperStationId, "DumperReady", true);
                     explanation = "等待倒料机无故障、等待位握手回读和Ready。";
                     break;
                 case DispatchTaskStepType.DumpFullBox:
-                    Add(options.DumperStationId, "Faulted", false);
-                    Add(options.DumperStationId, "AgvAtDumpingPosition", true);
-                    Add(options.DumperStationId, "DumpingCompletedMayLeave", true);
                     explanation = "倒料握手：等待倒料机完成并允许离开。";
                     break;
                 case DispatchTaskStepType.PlaceEmptyBox:
-                    Add(task.StationId, "EmptyBoxPlaced", true);
-                    Add(task.StationId, "BoxPresent", true);
                     explanation = "放箱握手：等待空箱放到位回读和箱体检测。";
                     break;
                 case DispatchTaskStepType.CompletePlcHandshake:
-                    foreach (var variable in new[] { "EmptyBoxTaskAcknowledged", "EmptyBoxPlaced", "FullBoxRequestAcknowledged", "FullBoxRemoved" })
-                        Add(task.StationId, variable, false);
                     explanation = "PLC收尾：显示复位目标与当前回读值，不是额外的调度判断。";
                     break;
                 default:
@@ -94,6 +80,16 @@ public sealed class TaskCenterQueryService(ITaskCenterReadRepository repository,
             };
             explanation = $"当前步骤状态：{state}；PLC握手尚未进入，查看厂家任务编号和命令发送状态。";
         }
+        var checkpoint=detail.Handshakes.FirstOrDefault(h=>h.StepId==current?.StepId);
+        if(checkpoint!=null && current?.Status==DispatchTaskStepStatus.Ready)
+        {
+            conditions=PersistedHandshakeConditions.Observe(checkpoint,current.StepType,task.StationId,options.DumperStationId,signals,(clock??TimeProvider.System).GetUtcNow(),handshakeOptions?.StateMaxAgeSeconds??5).ToList();
+            explanation=$"持久化阶段：{checkpoint.Phase}；周期{checkpoint.CycleId}；修订{checkpoint.Revision}。{checkpoint.Reason}";
+            if(checkpoint.PendingSignal!=null)explanation+=" 原写入结果待人工核对，不自动重发。";
+            if(handshakeOptions?.Enabled!=true)explanation+=" 新契约执行未启用，检查点仅供核对。";
+        }
+        if(detail.Handshakes.Count>0&&(handshakeOptions?.Enabled!=true||detail.Handshakes.Any(h=>h.ContractVersion!=handshakeOptions.PlcContractVersion)))
+            explanation="原任务契约与当前执行模式/版本不一致，后续PLC与原Outbox保持核对，不降级发送。"+explanation;
         var unmet = conditions.Where(condition => !condition.Satisfied).Select(condition =>
             $"{condition.StationId}/{condition.VariableName} 期望={condition.ExpectedValue}，当前={condition.CurrentValue?.ToString() ?? "未知"}，质量={condition.Quality}").ToArray();
         if (unmet.Length > 0) explanation += " 未满足：" + string.Join("；", unmet) + "。";
@@ -128,6 +124,6 @@ public sealed class TaskCenterQueryService(ITaskCenterReadRepository repository,
             return step with { TimeoutSeconds = threshold, IsTimedOut = timedOut, TimeoutText = timeoutText, IsCurrent = step.StepId == currentStepId, ElapsedText = elapsed,
                 WaitingExplanation = step.StepId == currentStepId ? detail.WaitingExplanation : "" };
         }).ToArray();
-        return detail with { Steps = steps };
+        return AddDiagnostics(detail with { Steps = steps, DiagnosticsObservedAt = now, HandshakeMode = handshakeOptions?.Enabled==true?"PersistentExecution":"ObservationOnly", HandshakeContractVersion = handshakeOptions?.PlcContractVersion??"" });
     }
 }
