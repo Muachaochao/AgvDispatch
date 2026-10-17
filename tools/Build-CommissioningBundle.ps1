@@ -1,4 +1,4 @@
-param([string]$OutputDirectory='', [ValidateRange(1024,65535)][int]$WebPort=5198)
+﻿param([string]$OutputDirectory='', [ValidateRange(1024,65535)][int]$WebPort=5198)
 $ErrorActionPreference='Stop'
 $bundleProject=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $bundleStamp=Get-Date -Format yyyyMMdd-HHmmss
@@ -75,16 +75,27 @@ popd
 
 批次：$bundleId
 
-1. 双击Start-Service.cmd，保持窗口打开。
-2. 双击Start-Web.cmd，浏览器访问 http://127.0.0.1:$WebPort/ 。
-3. WPF用Start-WPF.cmd；标题栏显示客户端批次，Web联调页核对页面/WebHost/主服务批次。
+1. 首选双击Start-Latest-Web.cmd：启动本版后台与Web，等待就绪并打开浏览器；重复点击复用原进程。
+2. 需要停止本入口启动的程序时，双击Stop-Latest-Web.cmd；仅核对并停止本版记录的进程，不关闭浏览器。不要与分组件启动入口混用。
+3. 页面地址 http://127.0.0.1:$WebPort/ 。WPF仅在需未迁移配置时使用Start-WPF.cmd。
+4. 分组件Start-Service/Start-Web.cmd保留作工程排查，它们需分别管理窗口；不属于一键启动记录。
 
-三份程序均为Windows x64自带运行时；CMD不调用PowerShell脚本。候选使用独立管道$bundlePipe、独立空数据库、关闭的通信和执行配置；没有导入现场数据。原有服务、WPF、5188预览及配置不会被替换或停止。窗口Ctrl+C停止各自进程。
+三份程序均为Windows x64自带运行时；CMD不调用PowerShell脚本。候选使用独立管道$bundlePipe、独立空数据库、关闭的通信和执行配置；没有导入现场数据。原有服务、WPF、5188预览及配置不会被替换或停止。一键入口强制关闭设备通信、PLC写入、AGV发送、任务创建/派发和新握手，用于安全开发联调；不能通过此入口现场开跑。分组件入口的窗口Ctrl+C停止各自进程。
 
 联调检查出现缺地图、缺车辆、缺点位是当前候选配置为空的真实结果，不会生成示例。配置迁移与现场启用需沿原系统的地图、身份、任务、恢复门禁办理；不能覆盖原data/config后直接视为现场可运行。正式任务提交仍重新核验。
 
 release-manifest.json记录逐文件SHA256与共享程序集身份。若本目录运行或修改过配置，原清单不再代表其当前全部文件；保留原包作为部署基线。批次一致只证明软件版本关系，不证明PLC固件匹配或实车验收。
 "@ | Set-Content -LiteralPath (Join-Path $bundleOutput 'README.md') -Encoding utf8
+@'
+@echo off
+"%~dp0Web\host\AgvDispatch.WebHost.exe" --launch-local --bundle-root "%~dp0."
+if errorlevel 1 pause
+'@ | Set-Content -LiteralPath (Join-Path $bundleOutput 'Start-Latest-Web.cmd') -Encoding ascii
+@'
+@echo off
+"%~dp0Web\host\AgvDispatch.WebHost.exe" --launch-local --stop --bundle-root "%~dp0."
+if errorlevel 1 pause
+'@ | Set-Content -LiteralPath (Join-Path $bundleOutput 'Stop-Latest-Web.cmd') -Encoding ascii
 $bundleFiles=@(Get-ChildItem -LiteralPath $bundleOutput -File -Recurse | ForEach-Object {@{path=[IO.Path]::GetRelativePath($bundleOutput,$_.FullName);sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant();bytes=$_.Length}})
 @{schema='agv-commissioning-release';version=1;releaseId=$bundleId;createdAt=(Get-Date).ToString('o');runtime='win-x64 self-contained';pipeName=$bundlePipe;port=$WebPort;files=$bundleFiles;siteConfigurationImported=$false;deviceExecutionEnabled=$false} | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $bundleOutput 'release-manifest.json') -Encoding utf8
 Write-Output "Candidate=$bundleOutput"

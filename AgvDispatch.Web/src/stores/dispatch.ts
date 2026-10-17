@@ -1,4 +1,4 @@
-import { defineStore } from 'pinia';
+﻿import { defineStore } from 'pinia';
 import { computed, ref, shallowRef } from 'vue';
 import type { Alarm, CreationOptions, Device, MapSummary, RoutePreview, Snapshot, TaskDetail, TaskRow } from '../types';
 import type { AdapterIdentity } from '../release-state';
@@ -56,6 +56,9 @@ export const useDispatchStore = defineStore('dispatch', () => {
     clearInterval(demoTimer);
     ++epoch;
     demoMode.value = true;
+    submissionEnabled.value = false;
+    adapterIdentity.value = null;
+    previewMap.value = null;
     error.value = '';
     demoStep = 0;
     snapshot.value = demoSnapshot(demoStep);
@@ -110,6 +113,8 @@ export const useDispatchStore = defineStore('dispatch', () => {
   }
 
   async function connectBackend() {
+    stopDemo();
+    previewMap.value = null;
     stopConnection();
     const mine = ++epoch;
     snapshot.value = null;
@@ -180,7 +185,7 @@ export const useDispatchStore = defineStore('dispatch', () => {
   }
 
   function onVisibilityChange() {
-    if (document.visibilityState === 'visible' && !socket) {
+    if (document.visibilityState === 'visible' && !socket && !demoMode.value) {
       reconnectDelay = 1000;
       void connectBackend();
     }

@@ -1,6 +1,6 @@
 ﻿# 铝屑回收调度系统
 
-工业AGV回收调度系统的上位机与后台调度服务。仓库保存开发工程，不包含现场资料、生产数据或授权信息。
+工业AGV回收调度系统，当前以Web操作界面接入C#调度后台，保留WPF工程与运维工具。仓库保存开发工程，不包含现场资料、生产数据或授权信息。
 
 ## 从 GitHub 获取工程
 
@@ -20,10 +20,18 @@ dotnet build AgvDispatch.sln -c Debug --no-restore
 
 当前项目依据（2026-10-13 用户确认）：对接快捷 AGV 厂家，使用 Robokit TCP。2026-09-20 之前的旧架构和协议资料不再作为需求或验收依据。旧 Okapi、MES HTTP 及多厂商方案不能用于推导当前必需功能。现场协议档案及其来源清单本地保留，不在本仓库分发。
 
+## 最新版的构建与启动
+
+完整构建使用 `tools/Build-CommissioningBundle.ps1 -WebPort 5188`，验证使用 `tools/Verify-CommissioningBundle.ps1`。每次输出独立目录，避免覆盖旧配置与数据。完整包内双击 `Start-Latest-Web.cmd`，等待后台和Web接入就绪后自动打开浏览器；重复点击复用本版进程。停止使用 `Stop-Latest-Web.cmd`，只核对并停止本入口记录的进程。入口不依赖系统安装.NET或PowerShell脚本执行策略。
+
+一键入口强制关闭设备通信及执行，用于安全开发联调；不会导入旧数据库或现场配置。后台缺配置时如实显示缺项，可显式切换合成演示。日常入口与阶段边界见 [Web统一发布与固定入口](docs/architecture/Web统一发布与固定入口-20261018.md)。
+
 ## 技术栈
 
 - C# / .NET 10 LTS
-- WPF / MVVM / Prism
+- Vue 3 / TypeScript / Vite / Three.js（Web操作界面）
+- ASP.NET Core WebHost（本机HTTP/WebSocket到Named Pipe适配）
+- WPF / MVVM / Prism（保留的工程与运维客户端）
 - HandyControl
 - SqlSugarCore / SQLite
 - HslCommunication
@@ -36,7 +44,9 @@ dotnet build AgvDispatch.sln -c Debug --no-restore
 
 详细目录、职责及故障定位请看 [项目结构说明](docs/architecture/项目结构说明.md)。源码已按“架构层 → 业务模块 → 功能职责”分类，现有命名空间和运行配置路径保持不变。
 
-- `AgvDispatch.Wpf`：操作员WPF上位机
+- `AgvDispatch.Web`：Web大屏、工程编辑、任务与联调检查
+- `AgvDispatch.WebHost`：本机Web接入及完整版本一键启动
+- `AgvDispatch.Wpf`：保留的工程配置与运维工具
 - `AgvDispatch.Service`：后台调度Windows服务
 - `AgvDispatch.Domain`：任务、工位、AGV等领域模型
 - `AgvDispatch.Application`：PLC、AGV及数据库应用接口

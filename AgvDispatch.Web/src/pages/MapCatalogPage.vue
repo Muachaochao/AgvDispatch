@@ -1,9 +1,10 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { useDispatchStore } from '../stores/dispatch';
 import { useToastStore } from '../stores/toast';
 import { shortTime } from '../dashboard';
+import { isMapSwitchPhase } from '../map-lifecycle';
 import type { MapSummary } from '../types';
 import { IconMap, IconArrowLeft, IconRefresh, IconEye, IconPlayerPlay, IconEdit, IconAlertTriangle, IconCircleCheck, IconX } from '@tabler/icons-vue';
 import ConsoleDialog from '../ConsoleDialog.vue';
@@ -16,10 +17,11 @@ const catalogError = ref('');
 const selectedMap = ref<MapSummary | null>(null);
 const busy = ref(false);
 
-interface MapSwitch { mode: string; current: { releaseId: string; mapId: string; versionId: string; previousMapId: string | null; phase: number; phaseText: string; evidence: string; startedAt: string; updatedAt: string } | null; blockers: string[]; history: any[] }
+interface MapSwitch { mode: string; current: { releaseId: string; mapId: string; versionId: string; previousMapId: string | null; phase: number | string; phaseText: string; evidence: string; startedAt: string; updatedAt: string } | null; blockers: string[]; history: any[] }
 const switchStatus = ref<MapSwitch | null>(null);
 const switchOpen = ref(false);
 const switchEvidence = ref('');
+const switchTargetMapId=ref('');
 const switchSafetyConfirmed = ref(false);
 const switchVehicleConfirmed = ref(false);
 const switchWorkflowConfirmed = ref(false);
@@ -27,6 +29,7 @@ const switchWorkflowConfirmed = ref(false);
 const activateOpen = ref(false);
 const activateMap = ref<MapSummary | null>(null);
 const activateConfirmation = ref('');
+const activateEvidence=ref('');
 const activateSafetyConfirmed = ref(false);
 const activateVehicleConfirmed = ref(false);
 
@@ -53,22 +56,25 @@ function openEditDraft(mapId: string) {
 
 function openActivate(map: MapSummary) {
   activateMap.value = map; activateOpen.value = true;
-  activateConfirmation.value = ''; activateSafetyConfirmed.value = false; activateVehicleConfirmed.value = false;
+  activateConfirmation.value = ''; activateEvidence.value=''; activateSafetyConfirmed.value = false; activateVehicleConfirmed.value = false;
 }
 
 async function doActivate() {
   if (!activateMap.value || !activateConfirmation.value.trim()) return;
   busy.value = true;
   try {
+    const pending=await store.api<MapSwitch>('/api/maps/switch');
+    if(pending.current&&(pending.current.mapId!==activateMap.value.mapId||pending.current.versionId!==activateMap.value.publishedVersionId||!isMapSwitchPhase(pending.current.phase,10))){toast.warning('当前已有其他切换或已激活待放行，请先在安全切换中处理原批次。');return;}
+    if(!pending.current){const begun=await store.api<{accepted:boolean;message:string}>('/api/maps/switch/begin',{mapId:activateMap.value.mapId,versionId:activateMap.value.publishedVersionId});if(!begun.accepted){toast.warning(begun.message);return;}}
     const result = await store.api<{ accepted: boolean; message: string }>('/api/maps/activate', {
       mapId: activateMap.value.mapId,
       versionId: activateMap.value.publishedVersionId,
       confirmationText: activateConfirmation.value.trim(),
       siteSafetyConfirmed: activateSafetyConfirmed.value,
       vehicleMapCompatibilityConfirmed: activateVehicleConfirmed.value,
-      evidence: `Web激活 · ${activateMap.value.mapId} · ${activateMap.value.publishedVersionId}`
+      evidence: activateEvidence.value.trim()
     });
-    if (result.accepted) { toast.success(result.message || '地图已激活'); activateOpen.value = false; void loadCatalog(); }
+    if (result.accepted) { toast.success('地图已激活待放行，请核对安全切换状态后确认放行。'); activateOpen.value = false; void loadCatalog(); await loadSwitchStatus(); }
     else toast.warning(result.message || '激活未被接受');
   } catch (ex) { toast.error(`激活失败：${String(ex)}`); }
   finally { busy.value = false; }
@@ -87,7 +93,7 @@ async function switchAction(action: 'begin' | 'drain' | 'resume' | 'cancel') {
   try {
     let result: { accepted: boolean; message: string };
     if (action === 'begin') {
-      const target = catalog.value.find(m => m.publishedVersionId && !m.isActive);
+      const target = catalog.value.find(m => m.mapId===switchTargetMapId.value && m.publishedVersionId);
       if (!target) { toast.warning('没有可切换的已发布地图'); return; }
       result = await store.api<any>('/api/maps/switch/begin', { mapId: target.mapId, versionId: target.publishedVersionId });
     } else {
@@ -128,7 +134,7 @@ const currentPhase = computed(() => switchStatus.value?.current?.phaseText ?? '�
           <button @click="selectedMap = map"><IconEye :size="14" />详情</button>
           <button @click="loadVersions(map.mapId)">版本历史</button>
           <button @click="openEditDraft(map.mapId)"><IconEdit :size="14" />编辑草稿</button>
-          <button v-if="map.publishedVersionId && !map.isActive" class="accent-button" :disabled="busy" @click="openActivate(map)"><IconPlayerPlay :size="14" />激活</button>
+          <button v-if="map.publishedVersionId && (!map.isActive || map.publishedVersionId !== map.activeVersionId)" class="accent-button" :disabled="busy" @click="openActivate(map)"><IconPlayerPlay :size="14" />激活</button>
           <button v-if="map.isActive && map.mapId === store.snapshot?.map?.id" @click="router.push('/')">查看运行图</button>
         </footer>
       </article>
@@ -177,15 +183,17 @@ const currentPhase = computed(() => switchStatus.value?.current?.phaseText ?? '�
       </dl>
       <div class="inline-warning">激活将切换后台运行地图。在途任务使用安全切换流程处理。</div>
       <label style="display:block;margin:14px 0;font-size:12px;color:#8da5c9">
-        确认文字（必填，描述激活原因）
-        <input v-model="activateConfirmation" style="width:100%;margin-top:6px" placeholder="例如：首次部署运行地图" />
+        确认文字（必须与下面的提示完全一致）
+        <input v-model="activateConfirmation" style="width:100%;margin-top:6px" :placeholder="`ACTIVATE ${activateMap.name}`" />
       </label>
+      <p class="mono">{{ `ACTIVATE ${activateMap.name}` }}</p>
+      <label>激活依据<input v-model="activateEvidence" maxlength="1500" placeholder="填写本次现场与地图核对依据" /></label>
       <label style="display:flex;gap:8px;font-size:12px;color:#8da5c9;margin:8px 0"><input v-model="activateSafetyConfirmed" type="checkbox" />已确认现场安全条件</label>
       <label style="display:flex;gap:8px;font-size:12px;color:#8da5c9;margin:8px 0"><input v-model="activateVehicleConfirmed" type="checkbox" />已确认车辆地图兼容</label>
     </template>
     <template #footer>
       <button @click="activateOpen = false">取消</button>
-      <button class="accent-button" :disabled="busy || !activateConfirmation.trim() || !activateSafetyConfirmed || !activateVehicleConfirmed" @click="doActivate">确认激活</button>
+      <button class="accent-button" :disabled="busy || activateConfirmation.trim() !== `ACTIVATE ${activateMap?.name}` || !activateEvidence.trim() || !activateSafetyConfirmed || !activateVehicleConfirmed" @click="doActivate">确认激活</button>
     </template>
   </ConsoleDialog>
 
@@ -212,6 +220,8 @@ const currentPhase = computed(() => switchStatus.value?.current?.phaseText ?? '�
       </dl>
     </div>
 
+    <label v-if="!switchStatus?.current">目标地图<select v-model="switchTargetMapId"><option value="">请选择目标地图</option><option v-for="m in catalog.filter(m=>m.publishedVersionId && (!m.isActive || m.publishedVersionId!==m.activeVersionId))" :key="m.mapId" :value="m.mapId">{{m.name}} · {{m.publishedVersionId}}</option></select></label>
+    <p v-if="isMapSwitchPhase(switchStatus?.current?.phase,10)">原任务收尾后，请关闭此窗口，在目标地图卡片中点击激活并核对确认文字。中断后的继续收尾只恢复原流程，不会激活新图。</p>
     <label style="display:block;margin:12px 0;font-size:12px;color:#8da5c9">操作依据（必填）
       <textarea v-model="switchEvidence" rows="2" style="width:100%;margin-top:6px;background:#0a1530;color:#c2d7ed;border:1px solid #2b4168;border-radius:3px;padding:8px;resize:vertical;font:inherit" placeholder="描述现场状况和切换原因"></textarea>
     </label>
@@ -221,10 +231,10 @@ const currentPhase = computed(() => switchStatus.value?.current?.phaseText ?? '�
 
     <template #footer>
       <button @click="loadSwitchStatus"><IconRefresh :size="14" />刷新状态</button>
-      <button :disabled="busy || !!switchStatus?.current" @click="switchAction('begin')">开始安全切换</button>
-      <button :disabled="busy || switchStatus?.current?.phase !== 10" @click="switchAction('drain')">继续排空</button>
-      <button :disabled="busy || switchStatus?.current?.phase !== 20" @click="switchAction('resume')"><IconCircleCheck :size="14" />确认放行</button>
-      <button :disabled="busy || !switchStatus?.current || switchStatus?.current?.phase === 90" @click="switchAction('cancel')"><IconX :size="14" />取消切换</button>
+      <button :disabled="busy || !!switchStatus?.current || !switchTargetMapId" @click="switchAction('begin')">开始安全切换</button>
+      <button :disabled="busy || !isMapSwitchPhase(switchStatus?.current?.phase,10) || switchStatus?.mode !== 'Held'" @click="switchAction('drain')">恢复中断的原任务收尾</button>
+      <button :disabled="busy || !isMapSwitchPhase(switchStatus?.current?.phase,20)" @click="switchAction('resume')"><IconCircleCheck :size="14" />确认放行</button>
+      <button :disabled="busy || !switchStatus?.current || isMapSwitchPhase(switchStatus?.current?.phase,90)" @click="switchAction('cancel')"><IconX :size="14" />取消切换</button>
     </template>
   </ConsoleDialog>
 </template>

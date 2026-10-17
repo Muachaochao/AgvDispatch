@@ -1,8 +1,10 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.WebSockets;
 using System.Text.Json;
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.WebHost;
+
+if(args.Contains("--launch-local")){Environment.ExitCode=await WebLocalLauncher.RunAsync(args);return;}
 
 var builder = WebApplication.CreateBuilder(args);
 // This first local adapter deliberately has one loopback listener, independent of ASPNETCORE_URLS.

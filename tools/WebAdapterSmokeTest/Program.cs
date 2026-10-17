@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Json;
 using System.Net.Sockets;
@@ -9,6 +9,7 @@ using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Domain.Maps;
 using AgvDispatch.Domain.Tasks;
 using AgvDispatch.Infrastructure.Persistence;
+using AgvDispatch.Infrastructure.Maps;
 using AgvDispatch.Infrastructure.Persistence.Entities;
 using AgvDispatch.WebHost;
 
@@ -38,8 +39,9 @@ using (var db = DatabaseFactory.Create(new() { DatabasePath = databasePath }))
     await new DatabaseInitializer(db, new TrafficResourceCatalog([])).InitializeAsync(default);
     db.Insertable(new MapProjectEntity { MapId = "MAP-WEB-TEST", Name = definition.Name, CoordinateSystem = definition.CoordinateSystem,
         Unit = "m", CoordinateScale = 1, IsActive = true, ActiveVersionId = "V1", PublishedVersionId = "V1", CreatedAt = DateTime.Now, UpdatedAt = DateTime.Now }).ExecuteCommand();
-    db.Insertable(new MapVersionEntity { MapId = "MAP-WEB-TEST", VersionId = "V1", VersionNumber = 1, Status = 1,
-        DefinitionJson = JsonSerializer.Serialize(definition, WebJson.Options), ValidationJson = "{}", CreatedBy = "isolated-test", CreatedAt = DateTime.Now, UpdatedAt = DateTime.Now }).ExecuteCommand();
+    db.Insertable(new MapVersionEntity { MapId = "MAP-WEB-TEST", VersionId = "V1", VersionNumber = 1, Status = (int)MapVersionStatus.Published,
+        DefinitionJson = JsonSerializer.Serialize(definition, WebJson.Options), ValidationJson = JsonSerializer.Serialize(new MapValidationService().Validate(definition),WebJson.Options), CreatedBy = "isolated-test", CreatedAt = DateTime.Now, UpdatedAt = DateTime.Now }).ExecuteCommand();
+    db.Insertable(new MapVersionEntity { MapId="MAP-WEB-TEST",VersionId="V2-DRAFT",VersionNumber=2,Status=(int)MapVersionStatus.Draft,DefinitionJson=JsonSerializer.Serialize(definition,WebJson.Options),ValidationJson=JsonSerializer.Serialize(new MapValidationService().Validate(definition),WebJson.Options),EditToken=Guid.NewGuid().ToString("N"),CreatedBy="isolated-test",CreatedAt=DateTime.Now,UpdatedAt=DateTime.Now }).ExecuteCommand();
     db.Insertable(new DispatchTaskEntity { TaskId = "WEB-ISOLATED-TASK", StationId = "TEST-STATION", Stage = (int)DispatchTaskStage.Completed,
         Priority = 50, CreatedAt = DateTime.Now.AddMinutes(-12), UpdatedAt = DateTime.Now }).ExecuteCommand();
     var sequence = 0;
@@ -174,6 +176,31 @@ try
     Check(versionHistory.IsSuccessStatusCode, "后台版本列表可读取");
     using var publishedMap = await http.PostAsJsonAsync("/api/maps/publish", new PublishMapRequest(workspaceMap.Project.MapId, workspaceMap.Draft.VersionId), WebJson.Options);
     Check((await publishedMap.Content.ReadFromJsonAsync<MapOperationResult>(WebJson.Options))?.Accepted == true, "Web可发布后台已保存的有效地图草稿");
+    var publishedWorkspace=await new DispatchPipe(pipeName).ReadAsync<MapWorkspaceSnapshot>(TrafficControlOperations.GetMapWorkspace,new{MapId=workspaceMap.Project.MapId},default);
+    var activation=new ActivateMapRequest(workspaceMap.Project.MapId,publishedWorkspace!.Project.PublishedVersionId!,"ACTIVATE "+publishedWorkspace.Project.Name,true,true,"isolated web lifecycle test; no devices");
+    using var deniedActivation=await http.PostAsJsonAsync("/api/maps/activate",activation with{SiteSafetyConfirmed=false},WebJson.Options);
+    Check((await deniedActivation.Content.ReadFromJsonAsync<MapOperationResult>(WebJson.Options))?.Accepted==false,"Web激活仍拒绝未确认的安全条件");
+    using var startActivation=await http.PostAsJsonAsync("/api/maps/switch/begin",new BeginMapSwitchRequest(activation.MapId,activation.VersionId),WebJson.Options);
+    Check((await startActivation.Content.ReadFromJsonAsync<MapSwitchResult>(WebJson.Options))?.Accepted==true,"Web先开始目标版本安全切换");
+    using var activated=await http.PostAsJsonAsync("/api/maps/activate",activation,WebJson.Options);
+    var activatedResult=await activated.Content.ReadFromJsonAsync<MapOperationResult>(WebJson.Options);
+    Check(activatedResult?.Accepted==true,"隔离环境Web激活已保存发布版本："+activatedResult?.Message);
+    var activatedSwitch=await http.GetFromJsonAsync<MapSwitchStatus>("/api/maps/switch",WebJson.Options);
+    Check(activatedSwitch?.Current?.Phase==MapSwitchPhase.AwaitingResume,"激活只进入待放行，不自动恢复派发");
+    using var releaseActivation=await http.PostAsJsonAsync("/api/maps/switch/resume",new FinishMapSwitchRequest(activatedSwitch!.Current!.ReleaseId,true,true,"isolated activation verification",true),WebJson.Options);
+    Check((await releaseActivation.Content.ReadFromJsonAsync<MapSwitchResult>(WebJson.Options))?.Accepted==true,"核对后由原后台完成地图放行");
+    using var beginSwitch=await http.PostAsJsonAsync("/api/maps/switch/begin",new BeginMapSwitchRequest("MAP-WEB-TEST","V1"),WebJson.Options);
+    Check((await beginSwitch.Content.ReadFromJsonAsync<MapSwitchResult>(WebJson.Options))?.Accepted==true,"Web开始安全切换回原隔离地图");
+    var switching=await http.GetFromJsonAsync<MapSwitchStatus>("/api/maps/switch",WebJson.Options);
+    Check(switching?.Current?.Phase==MapSwitchPhase.Draining,"Web读取正在收尾的切换身份和阶段");
+    var finishSwitch=new FinishMapSwitchRequest(switching!.Current!.ReleaseId,true,true,"isolated no-device workflow and safety evidence",true);
+    using var drained=await http.PostAsJsonAsync("/api/maps/switch/drain",finishSwitch,WebJson.Options);
+    Check((await drained.Content.ReadFromJsonAsync<MapSwitchResult>(WebJson.Options))?.Accepted==false,"普通收尾不能冒充中断恢复或直接激活");
+    using var activateOriginal=await http.PostAsJsonAsync("/api/maps/activate",new ActivateMapRequest("MAP-WEB-TEST","V1","ACTIVATE "+definition.Name,true,true,"isolated return to original map"),WebJson.Options);
+    var originalActivation=await activateOriginal.Content.ReadFromJsonAsync<MapOperationResult>(WebJson.Options);
+    Check(originalActivation?.Accepted==true,"收尾后通过明确激活请求返回原图："+originalActivation?.Message+(!activateOriginal.IsSuccessStatusCode?await activateOriginal.Content.ReadAsStringAsync():""));
+    using var resumed=await http.PostAsJsonAsync("/api/maps/switch/resume",finishSwitch,WebJson.Options);
+    Check((await resumed.Content.ReadFromJsonAsync<MapSwitchResult>(WebJson.Options))?.Accepted==true,"Web完成原后台安全切换恢复流程");
     using var importPreview = await http.PostAsJsonAsync("/api/maps/import?format=json", definition, WebJson.Options);
     var imported = await importPreview.Content.ReadFromJsonAsync<MapImportPreviewResult>(WebJson.Options);
     Check(imported?.Accepted == true && imported.Definition?.Source == "", "选择文件的规范化地图导入预览成功且不保留临时路径");

@@ -1,4 +1,4 @@
-// Local browser integration check. Uses a separate disposable profile and synthetic data only.
+﻿// Local browser integration check. Uses a separate disposable profile and synthetic data only.
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
@@ -38,6 +38,13 @@ try{
  await rpc('Page.enable');await rpc('Runtime.enable');await rpc('Emulation.setDeviceMetricsOverride',{width:1680,height:1100,deviceScaleFactor:1,mobile:false});await rpc('Page.navigate',{url:target});
  await wait(()=>evaluate('Boolean(document.querySelector(".editor-canvas svg"))'),'Editor did not mount');
  await button('演示模式');await settle();
+ check('explicit demo selection labels synthetic data',await evaluate('document.querySelector(".source-bar").textContent.includes("演示模式 · 合成数据")'));
+ const configReads=await evaluate('performance.getEntriesByType("resource").filter(e=>e.name.endsWith("/api/config")).length');
+ await evaluate('document.dispatchEvent(new Event("visibilitychange"))');await sleep(150);
+ check('visibility change in demo does not reconnect the real backend',configReads===await evaluate('performance.getEntriesByType("resource").filter(e=>e.name.endsWith("/api/config")).length'));
+ await button('退出演示');await sleep(3400);
+ check('leaving demo stops the synthetic timer and restores backend mode',await evaluate('[...document.querySelectorAll(".header-actions button")].some(b=>b.textContent.trim()==="演示模式")&&!document.querySelector(".source-bar").textContent.includes("演示模式 · 合成数据")'));
+ await button('演示模式');await settle();
  await button('节点');for(const p of [[2,3],[12,3],[12,13],[2,13]])await clickWorld(...p);
  check('draws four nodes through the canvas',await evaluate('document.querySelectorAll("g[data-kind=node]").length===4'));
  await button('选择 / 框选');await drag([2,3],[3,4]);check('node dragging snaps to grid',JSON.stringify(await node('P1'))===JSON.stringify({x:3,y:4}));
@@ -66,6 +73,25 @@ try{
  await button('贝塞尔');await clickWorld(3,4);await key('Escape','Escape');check('Escape cancels an unfinished drawing',await evaluate('document.querySelector(".editor-tool-palette button.active").textContent==="选择 / 框选"'));
  await save();
  await button('适配');await evaluate('document.querySelector(".planning-workbench").scrollTop=0;document.querySelector(".editor-inspector").scrollTop=0');await settle();await shot('desktop');await rpc('Emulation.setDeviceMetricsOverride',{width:1100,height:820,deviceScaleFactor:1,mobile:false});await settle();await shot('laptop');
+ if(process.env.EDITOR_TEST_BACKEND_FLOW==='1'){
+   await button('退出演示');await wait(()=>evaluate('document.querySelector(".source-bar").textContent.includes("真实后台已连接")'),'Private backend did not connect');
+   const fixture=await evaluate(`(async()=>{const post=async(path,body)=>{const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const result=await response.json();if(!response.ok||!result.accepted)throw new Error(JSON.stringify(result));return result;};const created=await post('/api/maps/create',{name:'Browser lifecycle fixture',description:'synthetic',backgroundFilePath:'',coordinateSystem:'TestCartesian',unit:'m',coordinateScale:1});const w=created.workspace;await post('/api/maps/draft',{mapId:w.project.mapId,versionId:w.draft.versionId,name:w.project.name,description:'synthetic',backgroundFilePath:'',coordinateSystem:'TestCartesian',unit:'m',coordinateScale:1,expectedEditToken:w.draft.editToken,definition:{name:w.project.name,source:'',coordinateSystem:'TestCartesian',unit:'m',nodes:[{id:'A',x:0,y:0,type:'Station',enabled:true,resourceIds:[],agvSiteId:'LM1'},{id:'B',x:10,y:0,type:'Station',enabled:true,resourceIds:[],agvSiteId:'LM2'}],edges:[{id:'AB',from:'A',to:'B',distance:10,speedLimit:1,bidirectional:true,enabled:true,resourceIds:[],geometryKind:'Line',controlPoints:[]}],resources:[]}});await post('/api/maps/publish',{mapId:w.project.mapId,versionId:w.draft.versionId});return{mapId:w.project.mapId,name:w.project.name};})()`);
+   await button('地图查看');await wait(()=>evaluate('document.querySelectorAll(".map-card").length>0'),'Published fixture not visible');
+   await button('激活');
+   await evaluate('(()=>{const inputs=document.querySelectorAll(".console-dialog input");})()');
+   const controls=await evaluate('(()=>{const inputs=[...document.querySelectorAll("input")].filter(e=>e.getClientRects().length);return inputs.map(e=>({type:e.type,placeholder:e.placeholder}));})()');
+   assert.ok(controls.some(c=>c.placeholder.startsWith('ACTIVATE ')),'Exact confirmation hint is visible');
+   await evaluate(`(()=>{const input=document.querySelector('input[placeholder^="ACTIVATE "]');input.value='wrong confirmation';input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+   check('map activation requires the exact backend confirmation text',await evaluate('[...document.querySelectorAll("button")].find(b=>b.textContent.trim()==="确认激活").disabled'));
+   await evaluate(`(()=>{const inputs=[...document.querySelectorAll('input')].filter(e=>e.getClientRects().length);for(const input of inputs){if(input.placeholder.startsWith('ACTIVATE '))input.value='ACTIVATE '+${JSON.stringify(fixture.name)};else if(input.placeholder.includes('核对依据'))input.value='Isolated browser test, no physical devices';else if(input.type==='checkbox')input.checked=true;input.dispatchEvent(new Event(input.type==='checkbox'?'change':'input',{bubbles:true}));}})()`);
+   await button('确认激活');await wait(()=>evaluate('document.body.textContent.includes("已激活待放行")'),'Activation did not reach awaiting-resume');
+   check('browser activation begins the original switch and waits for explicit release',await evaluate('(async()=>{const s=await(await fetch("/api/maps/switch")).json();return s.current?.phase==="AwaitingResume";})()'));
+   await evaluate('(()=>{for(const input of [...document.querySelectorAll("input[type=checkbox]")].filter(e=>e.getClientRects().length)){input.checked=true;input.dispatchEvent(new Event("change",{bubbles:true}));}const area=[...document.querySelectorAll("textarea")].find(e=>e.getClientRects().length);area.value="Isolated release evidence; original workflow checked";area.dispatchEvent(new Event("input",{bubbles:true}));})()');
+   await button('确认放行');await wait(()=>evaluate('(async()=>{const s=await(await fetch("/api/maps/switch")).json();return !s.current&&s.mode==="Running";})()'),'Release did not complete');
+   check('named enum phase enables the correct release button and completes safe switching',true);
+   check('web runtime map equals the browser-activated published map',await evaluate(`(async()=>{const s=await(await fetch('/api/snapshot')).json();return s.connected&&s.map.id===${JSON.stringify(fixture.mapId)}&&s.status.agvs.length===0;})()`));
+   await shot('map-activation-complete');
+ }
  check('no uncaught browser exceptions',errors.length===0);writeFileSync(resolve(evidence,'results.json'),JSON.stringify({passed:checks.length,checks,errors},null,2));console.log(`PASS ${checks.length} browser interaction checks; ${evidence}`);
 }catch(error){if(ws?.readyState===1)await shot('failure').catch(()=>{});writeFileSync(resolve(evidence,'failure.txt'),String(error.stack||error));console.error(error);process.exitCode=1;}
 finally{if(ws?.readyState===1)await rpc('Browser.close').catch(()=>{});ws?.close();child.kill();}
