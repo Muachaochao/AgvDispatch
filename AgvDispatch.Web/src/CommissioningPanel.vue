@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed,nextTick,onMounted,onUnmounted,ref,watch } from 'vue';
+import { ElCard, ElButton, ElTag, ElSelect, ElOption, ElSpace, ElAlert, ElTable, ElTableColumn, ElDescriptions, ElDescriptionsItem, ElCheckbox, ElEmpty, ElCollapse, ElCollapseItem } from 'element-plus';
 import type { Snapshot,RoutePreview,CreationOptions } from './types';
 import { commissioningCurrent,checkLabels,type CommissioningReport } from './commissioning';
 import { frontendReleaseId,releaseAgreement,type AdapterIdentity } from './release-state';
@@ -59,12 +60,35 @@ onUnmounted(()=>{++epoch;controller?.abort();clearInterval(timer);});
 </script>
 
 <template>
- <section class="commissioning-page control-panel">
-  <header class="commissioning-heading"><div><h2>联调检查</h2><p>首次配置 → 只读检查 → 四段路线核验 → 单车任务 → 异常核对</p></div><div><button @click="act('service')">后台连接与部署说明</button> <button :disabled="busy" @click="refresh">{{busy?'读取后台中…':'重新检查'}}</button></div></header>
-  <p class="commissioning-note">检查结果是后台当前观察，实际提交与执行会重新核验。本页不启用设备、不创建任务、不复位PLC、不自动查询车端。</p>
-  <div class="commissioning-selection"><label>检查工位<select ref="stationInput" v-model="station"><option value="">请选择工位</option><option v-for="s in choices?.stations??[]" :key="s.stationId" :value="s.stationId">{{s.stationId}} · {{s.pickupSite}}</option></select></label><label>检查车辆<select v-model="vehicle"><option value="">请选择车辆</option><option v-for="v in choices?.vehicles??[]" :key="v.vehicleId" :value="v.vehicleId">{{v.label}}</option></select></label><button :disabled="busy||!current||!station||!vehicle" @click="verifyRoute">只读核对四段路线</button><button @click="emit('navigate','tasks')">进入任务列表</button></div>
-  <p v-if="error" class="commissioning-error" role="alert">{{error}}</p>
-  <section class="commissioning-note"><b>发布批次核对 · {{checkLabels[releaseCheck.status]}}</b><p>页面 {{frontendReleaseId}} · WebHost {{adapter?.informationalVersion??'未返回'}} · 主服务 {{snapshot?.status?.execution?.informationalVersion??'未返回'}}</p><p>{{releaseCheck.reason}}</p><p v-if="!current">这是构建身份信息；当前执行条件仍需重新检查。</p></section>
+ <section class="commissioning-page">
+  <ElCard shadow="never" class="comm-header-card">
+    <div class="comm-header">
+      <div><h2>联调检查</h2><p style="color:#94aac4;font-size:12px;margin-top:4px">首次配置 → 只读检查 → 四段路线核验 → 单车任务 → 异常核对</p></div>
+      <ElSpace>
+        <ElButton size="small" @click="act('service')">后台部署说明</ElButton>
+        <ElButton size="small" type="primary" :loading="busy" @click="refresh">{{busy?'读取后台中…':'重新检查'}}</ElButton>
+      </ElSpace>
+    </div>
+  </ElCard>
+  <ElAlert title="检查结果是后台当前观察，实际提交与执行会重新核验。本页不启用设备、不创建任务、不复位PLC、不自动查询车端。" type="info" :closable="false" show-icon style="margin:10px 0" />
+  <ElCard shadow="never" class="comm-selection-card">
+    <ElSpace wrap :size="14">
+      <label style="color:#9ab0d0;font-size:12px">检查工位
+        <ElSelect ref="stationInput" v-model="station" size="small" placeholder="请选择工位" style="width:200px;margin-left:8px"><ElOption v-for="s in choices?.stations??[]" :key="s.stationId" :value="s.stationId" :label="`${s.stationId} · ${s.pickupSite}`" /></ElSelect>
+      </label>
+      <label style="color:#9ab0d0;font-size:12px">检查车辆
+        <ElSelect v-model="vehicle" size="small" placeholder="请选择车辆" style="width:200px;margin-left:8px"><ElOption v-for="v in choices?.vehicles??[]" :key="v.vehicleId" :value="v.vehicleId" :label="v.label" /></ElSelect>
+      </label>
+      <ElButton :disabled="busy||!current||!station||!vehicle" size="small" @click="verifyRoute">只读核对四段路线</ElButton>
+      <ElButton size="small" @click="emit('navigate','tasks')">进入任务列表</ElButton>
+    </ElSpace>
+  </ElCard>
+  <ElAlert v-if="error" :title="error" type="error" show-icon :closable="false" style="margin:10px 0" />
+  <ElCard shadow="never" class="comm-release-card">
+    <div class="comm-release-header"><ElTag :type="releaseCheck.status==='Pass'?'success':releaseCheck.status==='Blocked'?'danger':'warning'" size="small" effect="dark">{{checkLabels[releaseCheck.status]}}</ElTag> <b>发布批次核对</b></div>
+    <p style="font-size:11px;color:#8ea7c5;margin-top:6px">页面 {{frontendReleaseId}} · WebHost {{adapter?.informationalVersion??'未返回'}} · 主服务 {{snapshot?.status?.execution?.informationalVersion??'未返回'}}</p>
+    <p style="font-size:11px;color:#8ea7c5">{{releaseCheck.reason}}</p>
+  </ElCard>
   <template v-if="report">
    <div class="commissioning-runtime"><div><small>主服务版本 / 构建</small><b>{{report.serviceVersion}} · {{report.runtime.buildId.slice(0,12)}}</b><span>启动 {{new Date(report.serviceStartedAt).toLocaleString()}}</span></div><div><small>执行模式</small><b>{{report.runtime.handshakeEnabled?'持久化新握手':'原执行器＋变化观测'}}</b><span>配置契约 {{report.runtime.configuredContract||'未配置'}}</span></div><div><small>运行地图 / 参数修订</small><b>{{report.mapId||'未激活'}} / {{report.mapVersion||'—'}}</b><span>{{report.parameterRevision}}</span></div></div>
    <details class="commissioning-build"><summary>构建身份及软件支持契约</summary><p>{{report.runtime.informationalVersion}}</p><code>{{report.runtime.buildId}}</code><p>支持 {{report.runtime.supportedContract}}；匹配版本不等于现场已验收。</p></details>
@@ -78,5 +102,13 @@ onUnmounted(()=>{++epoch;controller?.abort();clearInterval(timer);});
 </template>
 
 <style scoped>
-.commissioning-page{margin:16px;padding:24px;line-height:1.7;min-height:75vh;color:#c2d3e7}.commissioning-heading,.commissioning-selection,.commissioning-results{display:flex;align-items:center;gap:16px;flex-wrap:wrap}.commissioning-heading{justify-content:space-between}.commissioning-heading h2{font-size:20px}.commissioning-heading p,.commissioning-note,small{color:#94aac4}.commissioning-note{margin:16px 0;padding:12px 16px;background:#101c30;border-left:3px solid #3fbdd3}.commissioning-selection label{display:grid;gap:6px;min-width:210px}.commissioning-selection{align-items:end}.commissioning-selection select{max-width:340px}.commissioning-runtime{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin:22px 0 12px}.commissioning-runtime>div{padding:16px;background:#12213a;border:1px solid #2a4262;overflow-wrap:anywhere}.commissioning-runtime b,.commissioning-runtime span,.commissioning-runtime small{display:block}.commissioning-runtime span{font-size:11px;color:#9eb2cd;margin-top:8px}.commissioning-build{font-size:12px;overflow-wrap:anywhere}.commissioning-results{margin:24px 0 12px}.commissioning-results label{margin-left:auto}.commissioning-stale,.commissioning-error{color:#efb968}.commissioning-error{padding:15px;border:1px solid #9d673b;margin-top:14px}.commissioning-table{overflow-x:auto;margin:14px 0 26px}.commissioning-table table{width:100%;border-collapse:collapse;min-width:780px}.commissioning-table th{text-align:left;color:#89b0ce;font-size:12px;background:#11233c}.commissioning-table td,.commissioning-table th{padding:13px 14px;border-bottom:1px solid #263b56;vertical-align:top}.commissioning-table td{font-size:12px}.commissioning-table td:first-child{width:21%}.commissioning-table small,.commissioning-table b{display:block}.commissioning-table small{font-size:11px;overflow-wrap:anywhere}.commissioning-table button{white-space:nowrap}.check-status{font-size:11px;white-space:nowrap}.Pass{color:#46d5b0}.Blocked{color:#fa9b7d}.Unknown{color:#e7bd6b}.Notice{color:#94b9d7}.commissioning-route,.commissioning-help{border:1px solid #3c5876;background:#13243b;padding:20px;margin:20px 0}.commissioning-help li{margin:12px 0}.commissioning-help{position:relative}.help-close{float:right}.commissioning-route h3,#commissioning-signals h3,.commissioning-help h3{font-size:15px}#commissioning-signals>p{font-size:12px;color:#93a9c3;margin-top:10px}@media(max-width:900px){.commissioning-runtime{grid-template-columns:1fr}.commissioning-page{margin:8px;padding:16px}.commissioning-selection label{min-width:170px}.commissioning-results label{margin-left:0}}
+.commissioning-page{padding:16px;line-height:1.7;color:#c2d3e7;display:flex;flex-direction:column;gap:10px}
+.comm-header-card{background:#0d1b2a;border-color:#1e3352}
+.comm-header-card :deep(.el-card__body){padding:16px 20px}
+.comm-header{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px}
+.comm-header h2{font-size:20px;color:#d0e2f4;margin:0}
+.comm-selection-card,.comm-release-card{background:#0f1b30;border-color:#1e3352}
+.comm-selection-card :deep(.el-card__body),.comm-release-card :deep(.el-card__body){padding:14px 18px}
+.comm-release-header{display:flex;align-items:center;gap:8px}
+.comm-release-header b{color:#c8daf0;font-size:13px}.commissioning-runtime{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin:22px 0 12px}.commissioning-runtime>div{padding:16px;background:#12213a;border:1px solid #2a4262;overflow-wrap:anywhere}.commissioning-runtime b,.commissioning-runtime span,.commissioning-runtime small{display:block}.commissioning-runtime span{font-size:11px;color:#9eb2cd;margin-top:8px}.commissioning-build{font-size:12px;overflow-wrap:anywhere}.commissioning-results{margin:24px 0 12px}.commissioning-results label{margin-left:auto}.commissioning-stale,.commissioning-error{color:#efb968}.commissioning-error{padding:15px;border:1px solid #9d673b;margin-top:14px}.commissioning-table{overflow-x:auto;margin:14px 0 26px}.commissioning-table table{width:100%;border-collapse:collapse;min-width:780px}.commissioning-table th{text-align:left;color:#89b0ce;font-size:12px;background:#11233c}.commissioning-table td,.commissioning-table th{padding:13px 14px;border-bottom:1px solid #263b56;vertical-align:top}.commissioning-table td{font-size:12px}.commissioning-table td:first-child{width:21%}.commissioning-table small,.commissioning-table b{display:block}.commissioning-table small{font-size:11px;overflow-wrap:anywhere}.commissioning-table button{white-space:nowrap}.check-status{font-size:11px;white-space:nowrap}.Pass{color:#46d5b0}.Blocked{color:#fa9b7d}.Unknown{color:#e7bd6b}.Notice{color:#94b9d7}.commissioning-route,.commissioning-help{border:1px solid #3c5876;background:#13243b;padding:20px;margin:20px 0}.commissioning-help li{margin:12px 0}.commissioning-help{position:relative}.help-close{float:right}.commissioning-route h3,#commissioning-signals h3,.commissioning-help h3{font-size:15px}#commissioning-signals>p{font-size:12px;color:#93a9c3;margin-top:10px}@media(max-width:900px){.commissioning-runtime{grid-template-columns:1fr}.commissioning-page{margin:8px;padding:16px}.commissioning-selection label{min-width:170px}.commissioning-results label{margin-left:0}}
 </style>
