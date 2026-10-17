@@ -5,6 +5,7 @@ import type { AdapterIdentity } from '../release-state';
 import { isFresh, isRunningStage, mayPlot } from '../state';
 import { vehicleCategory, type VehicleCategory } from '../dashboard';
 import { useToastStore } from './toast';
+import { demoSnapshot } from '../demo';
 
 export const useDispatchStore = defineStore('dispatch', () => {
   const snapshot = shallowRef<Snapshot | null>(null);
@@ -46,6 +47,29 @@ export const useDispatchStore = defineStore('dispatch', () => {
   const mapVehicleCount = computed(() => snapshot.value ? vehicles.value.filter(v => mayPlot(snapshot.value!, v, now.value)).length : 0);
 
   const previewMap = ref<import('../types').WebMap | null>(null);
+  const demoMode = ref(false);
+  let demoTimer: ReturnType<typeof setInterval> | undefined;
+  let demoStep = 0;
+
+  function connectDemo() {
+    stopConnection();
+    clearInterval(demoTimer);
+    ++epoch;
+    demoMode.value = true;
+    error.value = '';
+    demoStep = 0;
+    snapshot.value = demoSnapshot(demoStep);
+    demoTimer = setInterval(() => {
+      demoStep = (demoStep + 1) % 10;
+      snapshot.value = demoSnapshot(demoStep);
+    }, 3000);
+  }
+
+  function stopDemo() {
+    clearInterval(demoTimer);
+    demoTimer = undefined;
+    demoMode.value = false;
+  }
 
   async function api<T>(path: string, payload?: unknown): Promise<T> {
     const controller = new AbortController();
@@ -165,6 +189,7 @@ export const useDispatchStore = defineStore('dispatch', () => {
   function dispose() {
     ++epoch;
     stopConnection();
+    stopDemo();
     stopNowTimer();
   }
 
@@ -172,7 +197,7 @@ export const useDispatchStore = defineStore('dispatch', () => {
     snapshot, error, sceneError, now, submissionEnabled, adapterIdentity,
     fresh, vehicles, allTasks, equipment, resources, alarms, openAlarms,
     activeCount, vehicleStats, ringSegments, mapVehicleCount,
-    api, connectBackend, stopConnection, dispose,
-    startNowTimer, stopNowTimer, previewMap
+    api, connectBackend, connectDemo, stopConnection, dispose,
+    startNowTimer, stopNowTimer, previewMap, demoMode
   };
 });

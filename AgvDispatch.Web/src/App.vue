@@ -62,15 +62,17 @@ onUnmounted(() => {
       </nav>
       <div class="header-actions">
         <button class="accent-button" @click="router.push({ name: 'tasks', query: { create: '1' } })"><IconPlus :size="16" />创建任务</button>
+        <button v-if="!store.demoMode" @click="store.connectDemo()" title="启动演示模式（合成数据，无需后台）">演示模式</button>
+        <button v-else class="accent-button" @click="store.connectBackend()" title="退出演示，连接真实后台">退出演示</button>
         <button class="icon-button" aria-label="重新连接后台" title="重新连接后台" @click="store.connectBackend()"><IconPlugConnected :size="19" /></button>
       </div>
     </header>
 
-    <div class="source-bar" :class="{ disconnected: !store.fresh }">
+    <div class="source-bar" :class="{ disconnected: !store.fresh && !store.demoMode }">
       <div class="source-indicator">
-        <i class="status-dot" :class="store.fresh ? 'green' : 'red'"></i>
-        <b>{{ store.fresh ? '真实后台已连接' : '真实后台未连接 / 数据过期' }}</b>
-        <span>{{ store.error || (store.snapshot ? `最近观察 ${shortTime(store.snapshot.receivedAt)} · 非原子设备快照` : '正在连接C#调度主服务…') }}</span>
+        <i class="status-dot" :class="store.demoMode ? 'amber' : store.fresh ? 'green' : 'red'"></i>
+        <b>{{ store.demoMode ? '演示模式 · 合成数据' : store.fresh ? '真实后台已连接' : '真实后台未连接 / 数据过期' }}</b>
+        <span>{{ store.demoMode ? '九步任务流程模拟，每3秒推进一步。数据为浏览器合成，不代表真实设备。' : store.error || (store.snapshot ? `最近观察 ${shortTime(store.snapshot.receivedAt)}` : '正在连接C#调度主服务…') }}</span>
       </div>
       <button class="text-button" @click="router.push('/commissioning')">
         {{ store.fresh ? '主服务' : '最后观察主服务' }}
