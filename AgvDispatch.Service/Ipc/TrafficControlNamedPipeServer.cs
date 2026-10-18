@@ -206,6 +206,7 @@ public sealed class TrafficControlNamedPipeServer(
             TrafficControlOperations.GetRobokitInspectionHistory => Success(await (robokitHistory ?? throw new NotSupportedException("后台未配置核验记录。")).ReadAsync(Deserialize<RobokitInspectionHistoryQuery>(request.Payload),cancellationToken)),
             TrafficControlOperations.GetRobokitInspection => Success(await InspectRobokitAsync(user,Deserialize<RobokitInspectionQuery>(request.Payload),cancellationToken)),
             TrafficControlOperations.GetTrafficGeometryPreview => Success(await (geometry??throw new NotSupportedException("后台未配置几何只读预检。")).ReadAsync(Deserialize<TrafficGeometryPreviewQuery>(request.Payload),cancellationToken)),
+            TrafficControlOperations.GetTrafficBlocking => Success(await resources.GetBlockingAsync(Deserialize<TrafficBlockingQuery>(request.Payload), cancellationToken)),
             TrafficControlOperations.GetTrafficWaiting => Success(await resources.GetWaitingAsync(Deserialize<TrafficWaitingQuery>(request.Payload), cancellationToken)),
             TrafficControlOperations.GetTrafficMap => Success(await resources.GetMapAsync(Deserialize<TrafficMapQuery>(request.Payload), cancellationToken)),
             TrafficControlOperations.GetTrafficLifecycle => Success(await resources.GetLifecycleAsync(cancellationToken)),

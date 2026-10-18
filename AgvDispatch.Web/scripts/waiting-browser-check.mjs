@@ -48,7 +48,7 @@ try{
  check('explicit clear stays cleared after the next backend snapshot',await evaluate('document.querySelector(".traffic-focus select").value===""&&!document.querySelector(".traffic-focus").textContent.includes("原命令路线（绿）")'));
 
  await wait(()=>evaluate('document.querySelectorAll(".waiting-table tbody tr").length===25'),'Initial waiting page missing');
- check('waiting panel reads the authoritative total and first 25 rows',await evaluate('document.querySelector(".waiting-summary").textContent.includes("等待总数 28")'));
+ check('waiting panel reads the authoritative total and first 25 rows',await evaluate('document.querySelector(".waiting-summary").textContent.includes("等待总数 29")'));
  await evaluate('(()=>{const s=document.querySelector("select[aria-label=等待队列阻塞资源]");s.value="NARROW";s.dispatchEvent(new Event("change",{bubbles:true}));})()');await wait(()=>evaluate('document.querySelectorAll(".waiting-table tbody tr").length===25&&document.querySelector(".waiting-summary").textContent.includes("有效观察")'),'Resource filter not applied');
  check('blocking resource filter preserves matching backend records',await evaluate('document.querySelector(".waiting-summary").textContent.includes("筛选命中 28")'));
  await button('定位 NARROW');await sleep(2300);

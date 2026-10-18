@@ -191,6 +191,8 @@ public sealed class NamedPipeTrafficControlClient : ITrafficControlClient, IDevi
         SendNullableAsync<MapVersionSnapshot>(
             TrafficControlOperations.GetMapVersion, new { MapId = mapId, VersionId = versionId }, cancellationToken);
 
+    public Task<TrafficBlockingDetails> GetTrafficBlockingAsync(TrafficBlockingQuery query,CancellationToken ct)=>
+        SendAsync<TrafficBlockingDetails>(TrafficControlOperations.GetTrafficBlocking,query,ct);
     public Task<TrafficWaitingPage> GetTrafficWaitingAsync(TrafficWaitingQuery query, CancellationToken ct) =>
         SendAsync<TrafficWaitingPage>(TrafficControlOperations.GetTrafficWaiting, query, ct);
 

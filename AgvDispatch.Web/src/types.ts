@@ -43,3 +43,10 @@ export interface TrafficObservation {capturedAt:string;requests:TrafficRequest[]
 
 export interface WaitingQuery {blockingResourceId:string|null;minimumPriority:number|null;sort:'LongestWait'|'PriorityThenWait';pageNumber:number;pageSize:number}
 export interface WaitingPage {page:{capturedAt:string;totalWaiting:number;totalMatched:number;pageNumber:number;pageSize:number;items:TrafficRequest[];blockingResources:string[]};mapId:string|null;mapVersion:string|null;mapDefinitionHash:string|null}
+
+export interface ReleaseRequirement {id:string;state:string;text:string;evidence:string}
+export interface BlockingNode {taskId:string;stepId:string;vehicleId:string;mapId:string|null;mapVersionId:string|null;state:string;reason:string;taskStage:string|null;stepStatus:string|null;commandStatus:string|null;missingEvidence:boolean;releaseRequirements:ReleaseRequirement[]}
+export interface BlockingLink {fromTaskId:string;fromStepId:string;toTaskId:string;toStepId:string;vehicleId:string;kind:string;resourceId:string|null;heartbeatExpired:boolean;mapId:string|null;mapVersionId:string|null}
+export interface TrafficEvent {eventId:string;taskId:string;stepId:string;vehicleId:string;kind:string;reason:string;resourceIds:string[];occurredAt:string}
+export interface BlockingDetail {capturedAt:string;taskId:string;stepId:string;available:boolean;message:string;nodes:BlockingNode[];links:BlockingLink[];events:TrafficEvent[];truncated:boolean;eventsTruncated:boolean;cycleObserved:boolean}
+export interface BlockingPage {detail:BlockingDetail;mapId:string|null;mapVersion:string|null;mapDefinitionHash:string|null}

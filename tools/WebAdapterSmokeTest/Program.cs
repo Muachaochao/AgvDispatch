@@ -335,6 +335,25 @@ try
     var activeDetail = await activeDiagnostic.Content.ReadFromJsonAsync<TaskCenterDetail>(WebJson.Options);
     Check(activeDetail?.Steps.Single(s => s.IsCurrent).ProgressConditions.Count == 3 && activeDetail.PlcConditions.All(c => c.Result == "Unknown"), "活动步骤输出三项实际条件；关闭PLC时为未知，不生成满足值");
     Check(activeDetail?.Commands.Single().Route is {MapId:"MAP-WEB-TEST",MapVersionId:"V1",Action:"JackLoad"} route&&route.EdgeIds.SequenceEqual(new[]{"CURVE"}),"HTTP任务详情保留已校验原命令曲线、地图及动作，当前PLC步可关联前段");
+    // Add a real persisted dependency loop after the independent waiting-pagination assertions.
+    using(var chainDb=DatabaseFactory.Create(new(){DatabasePath=databasePath})){
+        chainDb.Insertable(new DispatchTaskEntity{TaskId="BLOCK-TASK",StationId="BLOCK-STATION",VehicleId="BLOCKER",Stage=(int)DispatchTaskStage.GoingToPickup,Priority=80,CreatedAt=DateTime.Now,UpdatedAt=DateTime.Now}).ExecuteCommand();
+        foreach(var sid in new[]{"BLOCK-STEP","BLOCK-WAIT"})chainDb.Insertable(new DispatchTaskStepEntity{TaskId="BLOCK-TASK",StepId=sid,Sequence=sid=="BLOCK-STEP"?1:2,StepType=(int)DispatchTaskStepType.GoToPickup,Status=(int)DispatchTaskStepStatus.Pending,CreatedAt=DateTime.Now,UpdatedAt=DateTime.Now}).ExecuteCommand();
+        var manager=new TrafficResourceManager(chainDb,new TrafficResourceCatalog(definition.Resources),new(TimeSpan.FromMinutes(5)));
+        await manager.RecordRouteAsync(new("BLOCK-WAIT","BLOCK-TASK","BLOCKER","A","B",["CURVE"],["HELD"],true,"isolated dependency loop"){MapId="MAP-WEB-TEST",MapVersionId="V1"},default);
+        await manager.TryAcquireAsync("BLOCK-WAIT","BLOCK-TASK","BLOCKER",["HELD"],default);
+        chainDb.Insertable(new TrafficResourceReleaseAuditEntity{AuditId="OLD-MANUAL-AUDIT",LeaseId="OLD-LEASE",ResourceId="NARROW",OwnerStepId="BLOCK-STEP",TaskId="BLOCK-TASK",VehicleId="BLOCKER",Operator="isolated",Reason="历史人工处置示例，不解除当前占用",AcquiredAt=DateTime.Now,RenewedAt=DateTime.Now,ExpiresAt=DateTime.Now,ReleasedAt=DateTime.Now}).ExecuteCommand();
+        chainDb.Insertable(new TrafficLifecycleEventEntity{EventId="UNRELATED-EVENT",TaskId="UNRELATED",StepId="UNRELATED",VehicleId="OTHER",Kind="Unrelated",Reason="同名资源不属于原链",ResourceIds="[\"NARROW\"]",OccurredAt=DateTime.Now.AddMinutes(1)}).ExecuteCommand();
+    }
+    object Blocking(string task="WEB-ISOLATED-TASK",string step="WEB-STEP-2",string hash="")=>new{taskId=task,stepId=step,expectedMapId="MAP-WEB-TEST",expectedMapVersion="V1",expectedMapDefinitionHash=hash==""?projected.DefinitionHash:hash};
+    using var blockingResponse=await http.PostAsJsonAsync("/api/traffic/blocking",Blocking());blockingResponse.EnsureSuccessStatusCode();var blocking=await blockingResponse.Content.ReadFromJsonAsync<JsonElement>();var chain=blocking.GetProperty("detail");
+    Check(chain.GetProperty("cycleObserved").GetBoolean()&&chain.GetProperty("nodes").GetArrayLength()==4&&chain.GetProperty("links").GetArrayLength()==4,"HTTP经真实Named Pipe读取多步骤阻塞循环，区分资源边和同任务等待边");
+    Check(chain.GetProperty("events").EnumerateArray().Any(e=>e.GetProperty("kind").GetString()=="ManualReleaseAudit")&&!chain.GetProperty("events").EnumerateArray().Any(e=>e.GetProperty("kind").GetString()=="Unrelated"),"仅展示关联路权与人工审计事件，不借全场同名资源补历史");
+    Check(chain.GetProperty("nodes").EnumerateArray().All(n=>n.GetProperty("releaseRequirements").EnumerateArray().All(r=>r.GetProperty("state").GetString()!="Ready")),"释放条件区分核验要求，不输出自动放行许可");
+    using var blockingMismatch=await http.PostAsJsonAsync("/api/traffic/blocking",Blocking(hash:"OTHER"));Check(blockingMismatch.StatusCode==HttpStatusCode.Conflict,"阻塞详情拒绝旧地图内容摘要");
+    using var missingBlocking=await http.PostAsJsonAsync("/api/traffic/blocking",Blocking(task:"OTHER"));var missingChain=await missingBlocking.Content.ReadFromJsonAsync<JsonElement>();Check(!missingChain.GetProperty("detail").GetProperty("available").GetBoolean(),"原等待任务与步骤不一致时不补造阻塞链");
+    using var invalidBlocking=await http.PostAsJsonAsync("/api/traffic/blocking",Blocking(task:new string('X',65)));Check(invalidBlocking.StatusCode==HttpStatusCode.BadRequest,"阻塞详情编号预算无效时拒绝透传");
+    using(var immutable=DatabaseFactory.Create(new(){DatabasePath=databasePath}))Check(immutable.Queryable<TrafficResourceLeaseEntity>().Count()==2,"详情和历史只读核对没有解锁或改变实际租约");
     if (args.Contains("--inspect"))
     {
         Console.WriteLine($"INSPECT http://127.0.0.1:{port}/ — isolated fixture only; all device execution disabled. Remove inspect-hold to finish.");
@@ -378,7 +397,7 @@ try
     Check(disconnected, "后台停止后推送明确断连，不切换成演示数据");
     await ws.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "test complete", disconnectTimeout.Token);
     using var db = DatabaseFactory.Create(new() { DatabasePath = databasePath });
-    Check(db.Queryable<DispatchTaskEntity>().Count() == 28 && db.Queryable<DispatchTaskEntity>().Count(t=>t.TaskId=="WEB-ISOLATED-TASK")==1, "查询及被拒绝提交没有创建额外任务");
+    Check(db.Queryable<DispatchTaskEntity>().Count() == 29 && db.Queryable<DispatchTaskEntity>().Count(t=>t.TaskId=="WEB-ISOLATED-TASK")==1, "查询及被拒绝提交没有创建额外任务");
 }
 finally
 {

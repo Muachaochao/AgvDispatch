@@ -19,6 +19,7 @@ public interface ITrafficControlClient
     Task<IReadOnlyList<RobokitInspectionRecord>> GetRobokitInspectionHistoryAsync(RobokitInspectionHistoryQuery query,CancellationToken ct) => throw new NotSupportedException("后台未支持核验记录，请更新后台。");
     Task<RobokitInspectionSnapshot> GetRobokitInspectionAsync(RobokitInspectionQuery query, CancellationToken ct) => throw new NotSupportedException("后台未支持Robokit只读核验，请更新后台。");
     Task<TrafficGeometryPreviewSnapshot> GetTrafficGeometryPreviewAsync(TrafficGeometryPreviewQuery query,CancellationToken ct) => throw new NotSupportedException("后台未支持几何只读预检，请更新后台。");
+    Task<TrafficBlockingDetails> GetTrafficBlockingAsync(TrafficBlockingQuery query,CancellationToken ct)=>throw new NotSupportedException("后台未支持阻塞链详情。");
     Task<TrafficWaitingPage> GetTrafficWaitingAsync(TrafficWaitingQuery query, CancellationToken ct) => throw new NotSupportedException("后台未支持等待队列。");
     Task<TrafficMapSnapshot> GetTrafficMapAsync(TrafficMapQuery query, CancellationToken ct) => throw new NotSupportedException("后台未支持交通地图联动。");
     Task<TrafficLifecycleSnapshot> GetTrafficLifecycleAsync(CancellationToken ct) => throw new NotSupportedException("后台尚不支持路权过程监控。");

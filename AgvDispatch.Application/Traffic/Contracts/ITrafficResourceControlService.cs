@@ -37,6 +37,7 @@ public sealed record TrafficResourceReleaseAuditSnapshot(
 
 public interface ITrafficResourceControlService
 {
+    Task<TrafficBlockingDetails> GetBlockingAsync(TrafficBlockingQuery query,CancellationToken ct)=>throw new NotSupportedException("后台未支持阻塞链详情。");
     Task<TrafficWaitingPage> GetWaitingAsync(TrafficWaitingQuery query, CancellationToken ct) => throw new NotSupportedException("后台未支持等待队列。");
     Task<TrafficMapSnapshot> GetMapAsync(TrafficMapQuery query, CancellationToken ct) => throw new NotSupportedException("后台未支持交通地图联动。");
     Task<TrafficLifecycleSnapshot> GetLifecycleAsync(CancellationToken ct) => throw new NotSupportedException("后台尚不支持路权过程监控。");
