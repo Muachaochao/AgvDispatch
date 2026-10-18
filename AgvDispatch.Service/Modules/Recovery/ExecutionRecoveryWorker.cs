@@ -1,6 +1,6 @@
-﻿using AgvDispatch.Application.Abstractions;
+using AgvDispatch.Application.Abstractions;
 namespace AgvDispatch.Service;
-public sealed class ExecutionRecoveryWorker(IExecutionRecoveryService recovery, ILogger<ExecutionRecoveryWorker> logger) : IsolatedBackgroundService
+public sealed class ExecutionRecoveryWorker(IExecutionRecoveryService recovery, ILogger<ExecutionRecoveryWorker> logger, IHostApplicationLifetime lifetime) : IsolatedBackgroundService
 {
     public override async Task StartAsync(CancellationToken ct)
     {
@@ -9,6 +9,12 @@ public sealed class ExecutionRecoveryWorker(IExecutionRecoveryService recovery, 
     }
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        // Initialization creates the recovery hold before IPC starts. Periodic inspection
+        // must not contend for its control gate while later hosted services initialize.
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var registration = lifetime.ApplicationStarted.Register(() => started.TrySetResult());
+        try { await started.Task.WaitAsync(stoppingToken); }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { return; }
         while (!stoppingToken.IsCancellationRequested)
         {
             try { await recovery.InspectAsync(stoppingToken); }

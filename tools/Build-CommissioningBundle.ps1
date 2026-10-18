@@ -47,7 +47,7 @@ foreach($bundleShared in @('AgvDispatch.Application.dll','AgvDispatch.Domain.dll
 New-Item -ItemType Directory -Path (Join-Path $bundleOutput 'Web/licenses') -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $bundleProject 'AgvDispatch.Web/src/vendor/agv-web-visible/LICENSE'),(Join-Path $bundleProject 'AgvDispatch.Web/src/vendor/agv-web-visible/UPSTREAM.md') -Destination (Join-Path $bundleOutput 'Web/licenses')
 New-Item -ItemType Directory -Path (Join-Path $bundleOutput 'Docs') -Force | Out-Null
-Copy-Item -LiteralPath (Join-Path $bundleProject 'docs/architecture/六项路线进度与统一候选发布-20261017.md'),(Join-Path $bundleProject 'docs/architecture/单车与异常现场验收记录模板-20261017.md'),(Join-Path $bundleProject 'docs/architecture/Web工程配置方案库与任务地图联动-20261018.md'),(Join-Path $bundleProject 'docs/architecture/Web中央地图联动与取消恢复演练-20261018.md'),(Join-Path $bundleProject 'docs/architecture/Web等待队列筛选与资源定位-20261018.md'),(Join-Path $bundleProject 'docs/architecture/Web阻塞链详情与释放条件-20261018.md') -Destination (Join-Path $bundleOutput 'Docs')
+Copy-Item -LiteralPath (Join-Path $bundleProject 'docs/architecture/六项路线进度与统一候选发布-20261017.md'),(Join-Path $bundleProject 'docs/architecture/单车与异常现场验收记录模板-20261017.md'),(Join-Path $bundleProject 'docs/architecture/Web工程配置方案库与任务地图联动-20261018.md'),(Join-Path $bundleProject 'docs/architecture/Web中央地图联动与取消恢复演练-20261018.md'),(Join-Path $bundleProject 'docs/architecture/Web等待队列筛选与资源定位-20261018.md'),(Join-Path $bundleProject 'docs/architecture/Web阻塞链详情与释放条件-20261018.md'),(Join-Path $bundleProject 'docs/architecture/多车冲突断连与切图组合验证-20261018.md') -Destination (Join-Path $bundleOutput 'Docs')
 @'
 @echo off
 pushd "%~dp0Service"

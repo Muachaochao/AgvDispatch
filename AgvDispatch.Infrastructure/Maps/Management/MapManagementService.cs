@@ -1,4 +1,4 @@
-﻿using System.Text;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Security.Cryptography;
@@ -550,6 +550,23 @@ public sealed class MapManagementService(
         if (previous?.MapId != release.PreviousMapId || previous?.ActiveVersionId != release.PreviousVersionId ||
             activeMap.Current?.MapId != release.PreviousMapId || activeMap.Current?.VersionId != release.PreviousVersionId)
             return new(false, "原地图指针与切换记录不一致，禁止切换。");
+        // Materialize the response before committing. Missing/corrupt workspace metadata must
+        // not turn a committed activation into an apparent failure while building its reply.
+        MapWorkspaceSnapshot responseWorkspace;
+        try
+        {
+            var workspace = await GetWorkspaceAsync(user, request.MapId, cancellationToken)
+                ?? throw new InvalidOperationException("目标地图工作区不存在。");
+            responseWorkspace = workspace with
+            {
+                Project = ToSummary(project) with { IsActive = true, ActiveVersionId = request.VersionId, UpdatedAt = ToOffset(now) },
+                Published = ToSnapshot(version)
+            };
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or JsonException or InvalidDataException)
+        {
+            return new(false, "目标地图工作区不完整，未激活：" + exception.Message);
+        }
         executionGate.SetMode(MapExecutionMode.Held);
         // Stay held on any exception/ambiguous outcome; the persistent release is reconciled on restart.
         var transaction = await database.Ado.UseTranAsync(async () =>
@@ -583,7 +600,7 @@ public sealed class MapManagementService(
         activeMap.Replace(snapshot);
         resourceCatalog.Replace(snapshot.Definition.Resources);
         return new(true, $"地图V{version.VersionNumber}已激活，派单仍暂停；重新核对现场后点击确认放行。",
-            await GetWorkspaceAsync(user, request.MapId, cancellationToken));
+            responseWorkspace);
     }
 
     private static string? ValidateMetadata(
