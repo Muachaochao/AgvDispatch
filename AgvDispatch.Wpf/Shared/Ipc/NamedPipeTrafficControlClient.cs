@@ -148,6 +148,7 @@ public sealed class NamedPipeTrafficControlClient : ITrafficControlClient, IDevi
         CancellationToken cancellationToken) =>
         SendAsync<MapOperationResult>(TrafficControlOperations.ActivateMap, request, cancellationToken);
 
+    public Task<MapActivationReview> ReviewMapActivationAsync(MapActivationReviewQuery query,CancellationToken cancellationToken) => SendAsync<MapActivationReview>(TrafficControlOperations.ReviewMapActivation,query,cancellationToken);
     public Task<MapSwitchStatus> GetMapSwitchAsync(CancellationToken cancellationToken) =>
         SendAsync<MapSwitchStatus>(TrafficControlOperations.GetMapSwitch, new { }, cancellationToken);
     public Task<MapSwitchResult> BeginMapSwitchAsync(BeginMapSwitchRequest request, CancellationToken cancellationToken) =>

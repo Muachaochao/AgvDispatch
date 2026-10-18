@@ -56,6 +56,11 @@ public static class EditorApi
             return Results.Ok(saved is null ? null : new { saved.Revision, Vehicles = saved.Saved.Agvs, saved.RestartRequired, saved.CanManage });
         });
 
+        app.MapPost("/api/maps/activation-review", async (MapActivationReviewQuery query, DispatchPipe pipe, CancellationToken ct) =>
+        {
+            if(new[]{query.ReleaseId,query.ExpectedMapId,query.ExpectedVersionId}.Any(id=>string.IsNullOrWhiteSpace(id)||id.Length>64))return Results.BadRequest(new{error="原切换/目标地图/版本编号无效。"});
+            return Results.Ok(await pipe.ReadAsync<MapActivationReview>(TrafficControlOperations.ReviewMapActivation, query, ct));
+        });
         app.MapPost("/api/maps/activate", async (ActivateMapRequest request, DispatchPipe pipe, CancellationToken ct) =>
             await pipe.ReadAsync<MapOperationResult>(TrafficControlOperations.ActivateMap, request, ct));
         app.MapGet("/api/maps/switch", async (DispatchPipe pipe, CancellationToken ct) =>

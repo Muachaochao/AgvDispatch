@@ -1,4 +1,4 @@
-﻿using AgvDispatch.Domain.Maps;
+using AgvDispatch.Domain.Maps;
 
 namespace AgvDispatch.Application.Abstractions;
 
@@ -47,6 +47,7 @@ public interface IMapExecutionGate
 
 public interface IMapSwitchService
 {
+    Task<MapActivationReview> ReviewActivationAsync(TrafficUserContext user, MapActivationReviewQuery query, CancellationToken cancellationToken) => throw new NotSupportedException("后台未提供地图激活只读复核。");
     Task InitializeAsync(CancellationToken cancellationToken);
     Task<MapSwitchStatus> GetAsync(TrafficUserContext user, CancellationToken cancellationToken);
     Task<MapSwitchResult> BeginAsync(TrafficUserContext user, BeginMapSwitchRequest request, CancellationToken cancellationToken);
@@ -56,3 +57,9 @@ public interface IMapSwitchService
     // Activation calls this while holding the common control lease.
     Task<IReadOnlyList<string>> GetBlockersAsync(MapDefinition definition, CancellationToken cancellationToken);
 }
+
+public sealed record MapActivationReviewQuery(string ReleaseId, string ExpectedMapId, string ExpectedVersionId);
+public sealed record MapActivationReview(DateTimeOffset CapturedAt, string ReleaseId, string ExpectedMapId, string ExpectedVersionId,
+    string Outcome, string Message, MapSwitchSnapshot? Record, string? PersistentMapId, string? PersistentVersionId,
+    string? PersistentDefinitionHash, string? RuntimeMapId, string? RuntimeVersionId, string? RuntimeDefinitionHash,
+    MapExecutionMode Mode, bool CanStartNewWork, bool ContentConsistent, IReadOnlyList<string> Evidence);

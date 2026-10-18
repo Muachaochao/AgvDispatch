@@ -75,6 +75,14 @@ try
     Check(!(await switches.BeginAsync(editor, new(target.MapId, target.VersionId), ct)).Accepted, "不能并发发起第二次发布");
     var status = await switches.GetAsync(editor, ct);
     var releaseId = status.Current!.ReleaseId;
+    var reviewQuery=new MapActivationReviewQuery(releaseId,target.MapId,target.VersionId);
+    var originalReview=await switches.ReviewActivationAsync(viewer,reviewQuery,ct);
+    Check(originalReview.Outcome=="OriginalMapObserved"&&originalReview.ContentConsistent&&runtime.Current is null,"只读复核原收尾空图不当作未执行证明");
+    Check((await switches.ReviewActivationAsync(viewer,reviewQuery with{ReleaseId="MISSING"},ct)).Outcome=="Unknown","原编号未找到不解释为未执行");
+    Check((await switches.ReviewActivationAsync(viewer,reviewQuery with{ExpectedVersionId="OTHER"},ct)).Outcome=="IdentityMismatch","不同目标版本不能借用原切换结论");
+    var reviewDenied=false;try{await switches.ReviewActivationAsync(new("none","none",(TrafficPermission)0),reviewQuery,ct);}catch(UnauthorizedAccessException){reviewDenied=true;}Check(reviewDenied,"结果复核仍要求View权限");
+    Check(!(await manager.ActivateAsync(editor,activate with{ExpectedReleaseId="OTHER"},ct)).Accepted&&runtime.Current is null,"带原编号的旧请求不得用于不同切换");
+
     Check(status.Current.PreviousVersionId is null && status.Mode == MapExecutionMode.Draining, "切换目标与原版本持久化");
 
     async Task<bool> Blocked(string word) => (await switches.GetBlockersAsync(definition, ct)).Any(item => item.Contains(word));
@@ -143,6 +151,14 @@ try
     Check(gate.Mode == MapExecutionMode.Held && runtime.Current?.VersionId == target.VersionId, "提交后不自动恢复派单");
     status = await switches.GetAsync(editor, ct);
     Check(status.Current!.Phase == MapSwitchPhase.AwaitingResume, "待放行阶段与地图提交一起保存");
+    var auditCount=await database.Queryable<MapOperationAuditEntity>().CountAsync(ct);
+    var committedReview=await switches.ReviewActivationAsync(viewer,reviewQuery,ct);
+    Check(committedReview.Outcome=="CommittedAwaitingReview"&&committedReview.ContentConsistent&&committedReview.PersistentDefinitionHash==committedReview.RuntimeDefinitionHash,"复核原提交阶段、活动指针和运行图内容一致");
+    Check(!committedReview.CanStartNewWork&&committedReview.Mode==MapExecutionMode.Held&&await database.Queryable<MapOperationAuditEntity>().CountAsync(ct)==auditCount,"只读复核不解除执行门或补激活审计");
+    var durable=await database.Queryable<MapVersionEntity>().Where(v=>v.VersionId==target.VersionId).FirstAsync(ct);var originalDefinition=durable.DefinitionJson;
+    await database.Updateable<MapVersionEntity>().SetColumns(v=>v.DefinitionJson=="{").Where(v=>v.VersionId==target.VersionId).ExecuteCommandAsync(ct);
+    Check((await switches.ReviewActivationAsync(viewer,reviewQuery,ct)).Outcome=="Inconsistent","数据库内容损坏时不以同编号认定内容一致");
+    await database.Updateable<MapVersionEntity>().SetColumns(v=>v.DefinitionJson==originalDefinition).Where(v=>v.VersionId==target.VersionId).ExecuteCommandAsync(ct);
     Check(!(await switches.CancelAsync(editor, new(releaseId, true, true, "取消"), ct)).Accepted, "提交后不能取消回旧指针");
 
     // Simulate a process crash after commit: new runtime/gate loads only durable DB state.
@@ -163,6 +179,8 @@ try
     Check((await restartedSwitches.ResumeAsync(editor, new(releaseId, true, true, "重新采集并核对所有车辆和PLC"), ct)).Accepted,
         "现场重新核对后明确放行");
     Check(restartedGate.Mode == MapExecutionMode.Running, "放行后恢复运行");
+    Check((await restartedSwitches.ReviewActivationAsync(viewer,reviewQuery,ct)).Outcome=="ClosedHistory","已关闭原记录只报告历史，不重新激活");
+
 
     using (var occupied = await restartedGate.EnterControlAsync(ct))
     {
@@ -235,6 +253,8 @@ try
     Check(gateway.Sends == 1, "允许收尾时原命令仅发送一次");
     Check((await switches.GetAsync(editor, ct)).History.Any(item => item.Phase == MapSwitchPhase.Completed && item.Evidence.Contains("重新采集")),
         "切换历史保留确认人员和依据");
+    for(var i=0;i<35;i++)await database.Insertable(new MapSwitchEntity{ReleaseId="CLOSED-"+i,MapId=target.MapId,VersionId=target.VersionId,Phase=90,StartedAt=DateTime.Now.AddMinutes(i+1),UpdatedAt=DateTime.Now.AddMinutes(i+1)}).ExecuteCommandAsync(ct);
+    Check(!(await restartedSwitches.GetAsync(viewer,ct)).History.Any(r=>r.ReleaseId==releaseId)&&(await restartedSwitches.ReviewActivationAsync(viewer,reviewQuery,ct)).Record?.ReleaseId==releaseId,"按原编号复核不受最近30条切换历史截断限制");
     Console.WriteLine($"Map switch smoke tests passed: {checks} checks.");
 }
 finally

@@ -531,6 +531,9 @@ public sealed class MapManagementService(
         if (release is null || release.MapId != request.MapId || release.VersionId != request.VersionId ||
             release.Phase != (int)MapSwitchPhase.Draining)
             return new(false, "请先开始该版本的安全切换并等待旧任务收尾。");
+        if (request.ExpectedReleaseId is not null && (string.IsNullOrWhiteSpace(request.ExpectedReleaseId) ||
+            request.ExpectedReleaseId.Length > 64 || release.ReleaseId != request.ExpectedReleaseId))
+            return new(false, "原切换编号不一致，禁止将旧激活请求应用到其他切换。");
         if (!request.SiteSafetyConfirmed || !request.VehicleMapCompatibilityConfirmed ||
             string.IsNullOrWhiteSpace(request.Evidence) || request.Evidence.Length > 1500)
             return new(false, "请确认现场安全和车辆地图兼容，并填写1至1500字的核对依据。");

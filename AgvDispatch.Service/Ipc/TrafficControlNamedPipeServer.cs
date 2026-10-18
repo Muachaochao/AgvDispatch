@@ -1,4 +1,4 @@
-using System.Buffers.Binary;
+﻿using System.Buffers.Binary;
 using System.IO.Pipes;
 using System.Security.AccessControl;
 using System.Security.Principal;
@@ -259,6 +259,7 @@ public sealed class TrafficControlNamedPipeServer(
                     user,
                     Deserialize<SaveMapCalibrationRequest>(request.Payload),
                     cancellationToken)),
+            TrafficControlOperations.ReviewMapActivation => Success(await mapSwitches.ReviewActivationAsync(user, Deserialize<MapActivationReviewQuery>(request.Payload), cancellationToken)),
             TrafficControlOperations.GetMapSwitch => Success(await mapSwitches.GetAsync(user, cancellationToken)),
             TrafficControlOperations.BeginMapSwitch => Success(await mapSwitches.BeginAsync(user,
                 Deserialize<BeginMapSwitchRequest>(request.Payload), cancellationToken)),

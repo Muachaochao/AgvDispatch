@@ -1,5 +1,6 @@
 ﻿<script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, watch, onUnmounted } from 'vue';
+import {activationIntentKey,parseActivationIntent,reviewMatches,acknowledgeReview,reviewLabel,type ActivationIntent,type ActivationReview} from '../map-activation-review';
 import { useRouter } from 'vue-router';
 import { useDispatchStore } from '../stores/dispatch';
 import { useToastStore } from '../stores/toast';
@@ -16,6 +17,20 @@ const catalog = ref<MapSummary[]>([]);
 const catalogError = ref('');
 const selectedMap = ref<MapSummary | null>(null);
 const busy = ref(false);
+const activationIntent=ref<ActivationIntent|null>(null),review=ref<ActivationReview|null>(null),reviewOpen=ref(false),reviewBusy=ref(false),reviewError=ref(''),storageError=ref('');
+try{activationIntent.value=parseActivationIntent(localStorage.getItem(activationIntentKey));reviewOpen.value=!!activationIntent.value;}catch(e){storageError.value=String(e);}
+const sourceContext=computed(()=>[store.demoMode,store.adapterIdentity?.sha256,store.snapshot?.map?.id,store.snapshot?.map?.version,store.snapshot?.map?.definitionHash].join('|'));
+const reviewCurrent=computed(()=>store.fresh&&!store.demoMode&&reviewMatches(review.value,activationIntent.value,store.now));
+const mayAcknowledge=computed(()=>reviewCurrent.value&&acknowledgeReview(review.value,activationIntent.value,store.now));
+const activationBlocked=computed(()=>!!activationIntent.value||!!storageError.value||!store.fresh||store.demoMode);
+let reviewEpoch=0,switchEpoch=0;
+function keepIntent(i:ActivationIntent){const existing=parseActivationIntent(localStorage.getItem(activationIntentKey));if(existing){activationIntent.value=existing;throw new Error('已有原激活待核对，未发送新请求。');}localStorage.setItem(activationIntentKey,JSON.stringify(i));activationIntent.value=i;review.value=null;}
+function clearIntent(){const existing=parseActivationIntent(localStorage.getItem(activationIntentKey));if(existing&&existing.releaseId!==activationIntent.value?.releaseId)throw new Error('本地原编号已变化，不能清除其他复核记录。');localStorage.removeItem(activationIntentKey);activationIntent.value=null;review.value=null;}
+async function loadActivationReview(){reviewOpen.value=true;review.value=null;reviewError.value='';if(!activationIntent.value||!store.fresh||store.demoMode){reviewError.value='请连接原后台，再点击只读复核。';return;}const mine=++reviewEpoch,ctx=sourceContext.value,i=activationIntent.value;reviewBusy.value=true;try{const r=await store.api<ActivationReview>('/api/maps/activation-review',{releaseId:i.releaseId,expectedMapId:i.mapId,expectedVersionId:i.versionId});if(mine===reviewEpoch&&ctx===sourceContext.value&&i===activationIntent.value)review.value=r;}catch(e){if(mine===reviewEpoch)reviewError.value=String(e);}finally{if(mine===reviewEpoch)reviewBusy.value=false;}}
+async function acknowledgeActivation(){if(!mayAcknowledge.value)return;try{clearIntent();reviewOpen.value=false;await loadCatalog();await loadSwitchStatus();}catch(e){storageError.value=String(e);}}
+watch(sourceContext,()=>{++reviewEpoch;++switchEpoch;review.value=null;reviewBusy.value=false;switchStatus.value=null;switchSafetyConfirmed.value=false;switchVehicleConfirmed.value=false;switchWorkflowConfirmed.value=false;if(reviewOpen.value&&activationIntent.value&&store.fresh)void loadActivationReview();});
+watch(()=>store.fresh,f=>{if(!f){++reviewEpoch;++switchEpoch;review.value=null;reviewBusy.value=false;switchStatus.value=null;switchSafetyConfirmed.value=false;switchVehicleConfirmed.value=false;switchWorkflowConfirmed.value=false;}else if(reviewOpen.value&&activationIntent.value)void loadActivationReview();});
+
 
 interface MapSwitch { mode: string; current: { releaseId: string; mapId: string; versionId: string; previousMapId: string | null; phase: number | string; phaseText: string; evidence: string; startedAt: string; updatedAt: string } | null; blockers: string[]; history: any[] }
 const switchStatus = ref<MapSwitch | null>(null);
@@ -55,18 +70,23 @@ function openEditDraft(mapId: string) {
 }
 
 function openActivate(map: MapSummary) {
+  if(activationBlocked.value)return;
   activateMap.value = map; activateOpen.value = true;
   activateConfirmation.value = ''; activateEvidence.value=''; activateSafetyConfirmed.value = false; activateVehicleConfirmed.value = false;
 }
 
 async function doActivate() {
-  if (!activateMap.value || !activateConfirmation.value.trim()) return;
-  busy.value = true;
+  if (activationBlocked.value || !activateMap.value || !activateConfirmation.value.trim()) return;
+  busy.value = true;const activationSource=sourceContext.value;
   try {
-    const pending=await store.api<MapSwitch>('/api/maps/switch');
+    let pending=await store.api<MapSwitch>('/api/maps/switch');
     if(pending.current&&(pending.current.mapId!==activateMap.value.mapId||pending.current.versionId!==activateMap.value.publishedVersionId||!isMapSwitchPhase(pending.current.phase,10))){toast.warning('当前已有其他切换或已激活待放行，请先在安全切换中处理原批次。');return;}
-    if(!pending.current){const begun=await store.api<{accepted:boolean;message:string}>('/api/maps/switch/begin',{mapId:activateMap.value.mapId,versionId:activateMap.value.publishedVersionId});if(!begun.accepted){toast.warning(begun.message);return;}}
+    if(!pending.current){const begun=await store.api<{accepted:boolean;message:string}>('/api/maps/switch/begin',{mapId:activateMap.value.mapId,versionId:activateMap.value.publishedVersionId});if(!begun.accepted){toast.warning(begun.message);return;}pending=await store.api<MapSwitch>('/api/maps/switch');}
+    const original=pending.current;if(!original||original.mapId!==activateMap.value.mapId||original.versionId!==activateMap.value.publishedVersionId||!isMapSwitchPhase(original.phase,10))throw new Error('未取得匹配的原切换编号，未发送激活。');
+    if(activationSource!==sourceContext.value||!store.fresh||store.demoMode)throw new Error('原后台上下文已变化，未发送激活。');
+    keepIntent({schema:1,releaseId:original.releaseId,mapId:original.mapId,versionId:original.versionId,requestedAt:new Date().toISOString()});
     const result = await store.api<{ accepted: boolean; message: string }>('/api/maps/activate', {
+      expectedReleaseId:original.releaseId,
       mapId: activateMap.value.mapId,
       versionId: activateMap.value.publishedVersionId,
       confirmationText: activateConfirmation.value.trim(),
@@ -74,20 +94,25 @@ async function doActivate() {
       vehicleMapCompatibilityConfirmed: activateVehicleConfirmed.value,
       evidence: activateEvidence.value.trim()
     });
-    if (result.accepted) { toast.success('地图已激活待放行，请核对安全切换状态后确认放行。'); activateOpen.value = false; void loadCatalog(); await loadSwitchStatus(); }
-    else toast.warning(result.message || '激活未被接受');
-  } catch (ex) { toast.error(`激活失败：${String(ex)}`); }
+    if(typeof result.accepted!=='boolean')throw new Error('激活回执格式无效，结果待核对。');
+    if(result.accepted){activateOpen.value=false;await loadActivationReview();void loadCatalog();}
+    else{activateOpen.value=false;toast.warning(result.message||'后台未接受本次请求，仍需按原编号复核。');await loadActivationReview();}
+  } catch(ex){if(activationIntent.value){activateOpen.value=false;toast.warning('激活结果未确认，请只读复核原编号；不会自动重发或放行。');await loadActivationReview();}else toast.error(`未完成激活准备：${String(ex)}`);}
+
   finally { busy.value = false; }
 }
 
 async function loadSwitchStatus() {
   switchOpen.value = true; switchEvidence.value = ''; switchSafetyConfirmed.value = false;
   switchVehicleConfirmed.value = false; switchWorkflowConfirmed.value = false;
-  try { switchStatus.value = await store.api<MapSwitch>('/api/maps/switch'); }
+  switchStatus.value=null;const mine=++switchEpoch,ctx=sourceContext.value;
+  try { const r=await store.api<MapSwitch>('/api/maps/switch');if(mine===switchEpoch&&ctx===sourceContext.value&&store.fresh)switchStatus.value=r; }
   catch (ex) { toast.error(`安全切换状态加载失败：${String(ex)}`); }
 }
 
 async function switchAction(action: 'begin' | 'drain' | 'resume' | 'cancel') {
+  if(!store.fresh||store.demoMode||storageError.value){toast.warning('请先核对原后台连接及本地复核记录。');return;}
+  if(activationIntent.value&&!(action==='cancel'&&reviewCurrent.value&&review.value?.outcome==='OriginalMapObserved'&&switchStatus.value?.current?.releaseId===activationIntent.value.releaseId)){toast.warning('存在原激活待核对，只能只读复核或在有效原图观察下取消原切换。');return;}
   if (!switchEvidence.value.trim()) { toast.warning('请填写操作依据'); return; }
   busy.value = true;
   try {
@@ -102,12 +127,15 @@ async function switchAction(action: 'begin' | 'drain' | 'resume' | 'cancel') {
       const body = { releaseId: current.releaseId, siteSafetyConfirmed: switchSafetyConfirmed.value, vehicleMapCompatibilityConfirmed: switchVehicleConfirmed.value, evidence: switchEvidence.value, originalWorkflowConfirmed: switchWorkflowConfirmed.value };
       result = await store.api<any>(`/api/maps/switch/${action}`, body);
     }
-    if (result.accepted) { toast.success(result.message); void loadSwitchStatus(); }
+    if (result.accepted) { toast.success(result.message);if(activationIntent.value)await loadActivationReview();else void loadSwitchStatus(); }
     else toast.warning(result.message);
   } catch (ex) { toast.error(`安全切换操作失败：${String(ex)}`); }
   finally { busy.value = false; }
 }
 
+function storageChanged(e:StorageEvent){if(e.key!==activationIntentKey)return;++reviewEpoch;review.value=null;try{activationIntent.value=parseActivationIntent(e.newValue);}catch(ex){storageError.value=String(ex);}}
+window.addEventListener('storage',storageChanged);
+onUnmounted(()=>{++reviewEpoch;++switchEpoch;window.removeEventListener('storage',storageChanged);});
 const currentPhase = computed(() => switchStatus.value?.current?.phaseText ?? '无进行中');
 </script>
 
@@ -123,6 +151,8 @@ const currentPhase = computed(() => switchStatus.value?.current?.phaseText ?? '�
       <button @click="router.push('/')"><IconArrowLeft :size="15" />返回大屏</button>
     </header>
     <div class="map-catalog-note">复用厂家建好的地图。此页管理地图版本与激活状态。正式运行切换需使用安全切换流程。</div>
+    <p v-if="storageError" class="inline-warning">本地激活复核记录不可读，地图写操作保持禁用：{{storageError}}</p>
+    <p v-if="activationIntent" class="inline-warning activation-pending">存在原激活结果待核对：{{activationIntent.releaseId}} · {{activationIntent.mapId}} / {{activationIntent.versionId}}。禁止重复激活和直接放行。<button @click="loadActivationReview">只读复核原激活</button></p>
     <p v-if="catalogError" class="inline-warning">{{ catalogError }}</p>
     <div class="map-catalog">
       <article v-for="map in catalog" :key="map.mapId" class="map-card">
@@ -134,7 +164,7 @@ const currentPhase = computed(() => switchStatus.value?.current?.phaseText ?? '�
           <button @click="selectedMap = map"><IconEye :size="14" />详情</button>
           <button @click="loadVersions(map.mapId)">版本历史</button>
           <button @click="openEditDraft(map.mapId)"><IconEdit :size="14" />编辑草稿</button>
-          <button v-if="map.publishedVersionId && (!map.isActive || map.publishedVersionId !== map.activeVersionId)" class="accent-button" :disabled="busy" @click="openActivate(map)"><IconPlayerPlay :size="14" />激活</button>
+          <button v-if="map.publishedVersionId && (!map.isActive || map.publishedVersionId !== map.activeVersionId)" class="accent-button" :disabled="busy||activationBlocked" @click="openActivate(map)"><IconPlayerPlay :size="14" />激活</button>
           <button v-if="map.isActive && map.mapId === store.snapshot?.map?.id" @click="router.push('/')">查看运行图</button>
         </footer>
       </article>
@@ -193,7 +223,7 @@ const currentPhase = computed(() => switchStatus.value?.current?.phaseText ?? '�
     </template>
     <template #footer>
       <button @click="activateOpen = false">取消</button>
-      <button class="accent-button" :disabled="busy || activateConfirmation.trim() !== `ACTIVATE ${activateMap?.name}` || !activateEvidence.trim() || !activateSafetyConfirmed || !activateVehicleConfirmed" @click="doActivate">确认激活</button>
+      <button class="accent-button" :disabled="busy || activationBlocked || activateConfirmation.trim() !== `ACTIVATE ${activateMap?.name}` || !activateEvidence.trim() || !activateSafetyConfirmed || !activateVehicleConfirmed" @click="doActivate">确认激活</button>
     </template>
   </ConsoleDialog>
 
@@ -231,10 +261,22 @@ const currentPhase = computed(() => switchStatus.value?.current?.phaseText ?? '�
 
     <template #footer>
       <button @click="loadSwitchStatus"><IconRefresh :size="14" />刷新状态</button>
-      <button :disabled="busy || !!switchStatus?.current || !switchTargetMapId" @click="switchAction('begin')">开始安全切换</button>
-      <button :disabled="busy || !isMapSwitchPhase(switchStatus?.current?.phase,10) || switchStatus?.mode !== 'Held'" @click="switchAction('drain')">恢复中断的原任务收尾</button>
-      <button :disabled="busy || !isMapSwitchPhase(switchStatus?.current?.phase,20)" @click="switchAction('resume')"><IconCircleCheck :size="14" />确认放行</button>
-      <button :disabled="busy || !switchStatus?.current || isMapSwitchPhase(switchStatus?.current?.phase,90)" @click="switchAction('cancel')"><IconX :size="14" />取消切换</button>
+      <button :disabled="busy || activationBlocked || !!switchStatus?.current || !switchTargetMapId" @click="switchAction('begin')">开始安全切换</button>
+      <button :disabled="busy || activationBlocked || !isMapSwitchPhase(switchStatus?.current?.phase,10) || switchStatus?.mode !== 'Held'" @click="switchAction('drain')">恢复中断的原任务收尾</button>
+      <button :disabled="busy || activationBlocked || !isMapSwitchPhase(switchStatus?.current?.phase,20)" @click="switchAction('resume')"><IconCircleCheck :size="14" />确认放行</button>
+      <button :disabled="busy || !store.fresh || !!storageError || (activationIntent && !(reviewCurrent && review?.outcome==='OriginalMapObserved' && switchStatus?.current?.releaseId===activationIntent.releaseId)) || !switchStatus?.current || isMapSwitchPhase(switchStatus?.current?.phase,90)" @click="switchAction('cancel')"><IconX :size="14" />取消切换</button>
     </template>
+  </ConsoleDialog>
+
+  <ConsoleDialog v-if="reviewOpen" title="原地图激活结果 · 只读复核" wide @close="reviewOpen=false">
+    <section class="activation-review"><p>原编号 {{activationIntent?.releaseId}} · {{activationIntent?.mapId}} / {{activationIntent?.versionId}}</p>
+    <p class="inline-warning">通信失败不等于未提交；只读复核不重发激活、不取消切换、不恢复派发、不解除占用。</p>
+    <button :disabled="reviewBusy||!store.fresh||store.demoMode" @click="loadActivationReview">刷新只读复核</button><p v-if="reviewError" role="status">{{reviewError}}</p>
+    <template v-if="review"><h3>{{reviewLabel(review.outcome)}}</h3><p>{{reviewCurrent?'有效观察':'观察已失效，联动禁用'}} · {{shortTime(review.capturedAt)}}</p><p>{{review.message}}</p>
+    <dl class="property-list"><dt>持久化阶段</dt><dd>{{review.record?.phaseText||'原记录未找到'}}</dd><dt>数据库活动图</dt><dd>{{review.persistentMapId||'无'}} / {{review.persistentVersionId||'无'}}</dd><dt>运行图</dt><dd>{{review.runtimeMapId||'无'}} / {{review.runtimeVersionId||'无'}}</dd><dt>执行门</dt><dd>{{review.mode}} · 观察到的新任务门 {{review.canStartNewWork?'开（不是放行许可）':'关'}}</dd><dt>本地内容一致</dt><dd>{{review.contentConsistent?'是':'否/未知'}}</dd></dl>
+    <details><summary>查看本地内容摘要和证据边界</summary><p style="overflow-wrap:anywhere">数据库SHA256 {{review.persistentDefinitionHash||'未取得'}}<br/>运行图SHA256 {{review.runtimeDefinitionHash||'未取得'}}</p><p v-for="e in review.evidence" :key="e">{{e}}</p></details>
+    <p v-if="review.outcome==='OriginalMapObserved'">未观察到提交不能自动重试。可关闭本窗口进入安全切换；只有有效同编号原图观察时允许人工取消原切换，后台仍核验原门禁。</p>
+    </template></section>
+    <template #footer><button @click="reviewOpen=false">关闭并保留待核对</button><button :disabled="!mayAcknowledge" @click="acknowledgeActivation">已知原结果，转安全流程核对</button></template>
   </ConsoleDialog>
 </template>

@@ -4,6 +4,7 @@ namespace AgvDispatch.Application.Abstractions;
 
 public static class TrafficControlOperations
 {
+    public const string ReviewMapActivation="ReviewMapActivation";
     public const string ListMapTransfers="ListMapTransfers";
     public const string GetMapTransferHistory="GetMapTransferHistory";
     public const string GetMapTransferReview="GetMapTransferReview";

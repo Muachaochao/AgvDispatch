@@ -79,6 +79,7 @@ public interface ITrafficControlClient
     Task<MapOperationResult> ActivateMapAsync(
         ActivateMapRequest request,
         CancellationToken cancellationToken);
+    Task<MapActivationReview> ReviewMapActivationAsync(MapActivationReviewQuery query, CancellationToken cancellationToken) => throw new NotSupportedException("后台未提供地图激活只读复核。");
     Task<MapSwitchStatus> GetMapSwitchAsync(CancellationToken cancellationToken) => throw new NotSupportedException("服务不支持安全切换。");
     Task<MapSwitchResult> BeginMapSwitchAsync(BeginMapSwitchRequest request, CancellationToken cancellationToken) => throw new NotSupportedException("服务不支持安全切换。");
     Task<MapSwitchResult> ContinueMapDrainAsync(FinishMapSwitchRequest request, CancellationToken cancellationToken) => throw new NotSupportedException("服务不支持安全切换。");

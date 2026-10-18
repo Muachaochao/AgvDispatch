@@ -1,4 +1,4 @@
-using AgvDispatch.Domain.Maps;
+﻿using AgvDispatch.Domain.Maps;
 
 namespace AgvDispatch.Application.Abstractions;
 
@@ -86,7 +86,8 @@ public sealed record SaveMapCalibrationRequest(
     IReadOnlyList<MapCalibrationPoint> ControlPoints);
 
 public sealed record ActivateMapRequest(string MapId, string VersionId, string ConfirmationText,
-    bool SiteSafetyConfirmed = false, bool VehicleMapCompatibilityConfirmed = false, string Evidence = "");
+    bool SiteSafetyConfirmed = false, bool VehicleMapCompatibilityConfirmed = false, string Evidence = "")
+{ public string? ExpectedReleaseId { get; init; } }
 
 public sealed record PreviewMapImportRequest(
     string Path,

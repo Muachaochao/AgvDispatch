@@ -10,7 +10,7 @@ using SqlSugar;
 
 namespace AgvDispatch.Infrastructure.Persistence;
 
-public sealed class MapSwitchService(ISqlSugarClient database, IMapExecutionGate gate,
+public sealed partial class MapSwitchService(ISqlSugarClient database, IMapExecutionGate gate,
     IActiveMapRuntime runtime, IAgvStateCache vehicles, IPlcSignalCache signals,
     MapSwitchSafetySettings settings,IMapTransferRecoveryBarrier? mapTransfers=null) : IMapSwitchService
 {
