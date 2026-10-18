@@ -25,6 +25,9 @@ internal static class WebLocalLauncher
             var release=manifest.RootElement.GetProperty("releaseId").GetString()!;
             var port=manifest.RootElement.GetProperty("port").GetInt32();
             var pipe=manifest.RootElement.GetProperty("pipeName").GetString()!;
+            var storeArg=Array.IndexOf(args,"--project-store-path");
+            var storePath=System.IO.Path.GetFullPath(storeArg>=0&&storeArg+1<args.Length?args[storeArg+1]:System.IO.Path.Combine(root,"Web","data","projects"));
+            var storeId=Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(storePath)));
             if(port is <1024 or >65535||string.IsNullOrWhiteSpace(pipe))throw new InvalidDataException("Invalid local endpoint.");
             var servicePath=System.IO.Path.Combine(root,"Service","AgvDispatch.Service.exe");
             var webPath=System.IO.Path.Combine(root,"Web","host","AgvDispatch.WebHost.exe");
@@ -53,7 +56,7 @@ internal static class WebLocalLauncher
                     var probe=new TcpListener(IPAddress.Loopback,port);
                     try{probe.Start();}catch(SocketException){throw new InvalidOperationException($"Port {port} is occupied. No existing program was stopped.");}finally{probe.Stop();}
                     var service=Start(servicePath,[$"--Security:PipeName={pipe}","--Plc:Enabled=false","--Plc:AllowWrites=false","--Agv:Enabled=false","--Agv:AllowCommands=false","--TaskCreation:Enabled=false","--Dispatching:Enabled=false","--AgvCommandOutbox:Enabled=false","--DispatchTaskSteps:Enabled=false","--HandshakeExecution:Enabled=false"]);created.Add(service);
-                    var web=Start(webPath,[$"--Web:Port={port}",$"--Web:PipeName={pipe}","--Web:EnableTaskSubmission=false","--Web:EnableRecoveryActions=false",$"--Web:StaticPath={System.IO.Path.Combine(root,"Web","wwwroot")}"]);
+                    var web=Start(webPath,[$"--Web:Port={port}",$"--Web:PipeName={pipe}","--Web:EnableTaskSubmission=false","--Web:EnableRecoveryActions=false",$"--Web:ProjectStorePath={storePath}",$"--Web:StaticPath={System.IO.Path.Combine(root,"Web","wwwroot")}"]);
                     created.Add(web);session=new(release,Describe(service,servicePath),Describe(web,webPath));
                     var pending=statePath+".tmp";File.WriteAllText(pending,JsonSerializer.Serialize(session,new JsonSerializerOptions{WriteIndented=true}));File.Move(pending,statePath,true);
                 }
@@ -65,7 +68,7 @@ internal static class WebLocalLauncher
                     try
                     {
                         using var config=JsonDocument.Parse(await http.GetStringAsync("/api/config",timeout.Token));
-                        if(config.RootElement.GetProperty("adapter").GetProperty("informationalVersion").GetString()!=release||config.RootElement.GetProperty("servicePipeName").GetString()!=pipe)
+                        if(config.RootElement.GetProperty("adapter").GetProperty("informationalVersion").GetString()!=release||config.RootElement.GetProperty("servicePipeName").GetString()!=pipe||config.RootElement.GetProperty("projectStoreId").GetString()!=storeId)
                             throw new InvalidDataException("The web endpoint belongs to a different release.");
                         using var snapshot=JsonDocument.Parse(await http.GetStringAsync("/api/snapshot",timeout.Token));
                         if(snapshot.RootElement.GetProperty("connected").GetBoolean())break;

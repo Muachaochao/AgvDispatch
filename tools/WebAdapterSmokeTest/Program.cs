@@ -10,6 +10,8 @@ using AgvDispatch.Domain.Maps;
 using AgvDispatch.Domain.Tasks;
 using AgvDispatch.Infrastructure.Persistence;
 using AgvDispatch.Infrastructure.Maps;
+using AgvDispatch.Infrastructure.Traffic;
+using AgvDispatch.Application.Maps;
 using AgvDispatch.Infrastructure.Persistence.Entities;
 using AgvDispatch.WebHost;
 
@@ -79,7 +81,7 @@ using var service = Launch(Path.Combine(deploy, "AgvDispatch.Service.exe"), depl
     "--TaskCreation:Enabled=false", "--Dispatching:Enabled=false", "--AgvCommandOutbox:Enabled=false", "--DispatchTaskSteps:Enabled=false", "--ExecutionIdentityAcquisition:Enabled=false", "--Map:Enabled=false"]);
 var serviceOut = service.StandardOutput.ReadToEndAsync(); var serviceErr = service.StandardError.ReadToEndAsync();
 using var listener = new TcpListener(IPAddress.Loopback, 0); listener.Start(); var port = ((IPEndPoint)listener.LocalEndpoint).Port; listener.Stop();
-var bridgeArguments=new[]{"--Web:Port=" + port, "--Web:PipeName=" + pipeName,"--Web:EnableTaskSubmission=false","--Web:StaticPath="+(candidateRoot==null?Path.Combine(workspace,"AgvDispatch.Web/dist"):Path.Combine(candidateRoot,"Web/wwwroot"))};
+var bridgeArguments=new[]{"--Web:Port=" + port, "--Web:PipeName=" + pipeName,"--Web:EnableTaskSubmission=false","--Web:ProjectStorePath="+Path.Combine(root,"projects"),"--Web:StaticPath="+(candidateRoot==null?Path.Combine(workspace,"AgvDispatch.Web/dist"):Path.Combine(candidateRoot,"Web/wwwroot"))};
 using var bridge = candidateRoot==null?Launch("dotnet",workspace,[Path.Combine(workspace,"AgvDispatch.WebHost/bin/Debug/net10.0-windows10.0.19041.0/AgvDispatch.WebHost.dll"),..bridgeArguments]):
     Launch(Path.Combine(candidateRoot,"Web/host/AgvDispatch.WebHost.exe"),Path.Combine(candidateRoot,"Web"),bridgeArguments);
 var bridgeOut = bridge.StandardOutput.ReadToEndAsync(); var bridgeErr = bridge.StandardError.ReadToEndAsync();
@@ -221,6 +223,47 @@ try
     using var configSave = await http.PostAsJsonAsync("/api/vehicles/configuration", vehiclePayload, WebJson.Options);
     var savedConfig = await configSave.Content.ReadFromJsonAsync<JsonElement>();
     Check(configSave.IsSuccessStatusCode && savedConfig.GetProperty("restartRequired").GetBoolean(), "无未结束任务时可保存新增车辆，须服务重启生效");
+    var taskParameters=await http.GetFromJsonAsync<TaskParameterSnapshot>("/api/task-parameters",WebJson.Options);
+    Check(taskParameters?.Configuration.Actions.Count==4,"Web任务参数返回四段动作及原修订");
+    using var parameterValidation=await http.PostAsJsonAsync("/api/task-parameters/validate",new TaskParameterRequest(Guid.NewGuid().ToString("N"),"OLD","MAP-WEB-TEST","V1",taskParameters!.Configuration),WebJson.Options);
+    Check((await parameterValidation.Content.ReadFromJsonAsync<TaskParameterResult>(WebJson.Options))?.Accepted==false,"Web参数校验不接受旧修订");
+    using var parameterSave=await http.PostAsJsonAsync("/api/task-parameters/save",new TaskParameterRequest(Guid.NewGuid().ToString("N"),"OLD","MAP-WEB-TEST","V1",taskParameters.Configuration),WebJson.Options);
+    Check((await parameterSave.Content.ReadFromJsonAsync<TaskParameterResult>(WebJson.Options))?.Accepted==false,"Web参数保存复用后台旧修订门禁");
+    var bindingState=await http.GetFromJsonAsync<JsonElement>("/api/map-bindings",WebJson.Options);
+    using var staleBinding=await http.PostAsJsonAsync("/api/map-bindings",new{expectedRevision="OLD",bindings=Array.Empty<object>()},WebJson.Options);
+    Check(staleBinding.StatusCode==HttpStatusCode.Conflict,"Web绑定旧修订拒绝覆盖");
+    using var bindingSave=await http.PostAsJsonAsync("/api/map-bindings",new{expectedRevision=bindingState.GetProperty("revision").GetString(),bindings=Array.Empty<object>()},WebJson.Options);
+    Check(bindingSave.IsSuccessStatusCode,"Web绑定保存经原配置服务校验");
+    var retainedVehicles=await http.GetFromJsonAsync<JsonElement>("/api/vehicles/configuration",WebJson.Options);
+    Check(retainedVehicles.GetProperty("vehicles").GetArrayLength()==1,"保存绑定保留其他车辆配置");
+    var planId=Guid.NewGuid().ToString();
+    var plan=JsonSerializer.SerializeToElement(new{schema="agv-web-plan",version=1,id=planId,name="server engineering fixture",updatedAt=DateTimeOffset.UtcNow,definition,scene=new[]{new{id="AREA",name="synthetic scene",kind="area",x=0,y=0,width=2,height=2,color="#123456",visible=true}},vehicles=Array.Empty<object>(),waypoints=new[]{"A","B"}},WebJson.Options);
+    using var projectSave=await http.PostAsJsonAsync("/api/projects",new ProjectSaveRequest("",plan,"MAP-WEB-TEST","V1"),WebJson.Options);
+    var project=await projectSave.Content.ReadFromJsonAsync<SavedProject>(WebJson.Options);
+    Check(projectSave.IsSuccessStatusCode&&project?.Plan.GetProperty("scene").GetArrayLength()==1,"服务端方案保存场景/地图/顺序，返回内容修订");
+    using var conflictingProject=await http.PostAsJsonAsync("/api/projects",new ProjectSaveRequest("",plan),WebJson.Options);
+    Check(conflictingProject.StatusCode==HttpStatusCode.Conflict,"服务端项目并发旧修订不覆盖");
+    var changedPlan=System.Text.Json.Nodes.JsonNode.Parse(plan.GetRawText())!;changedPlan["name"]="second version";
+    using var updatedProject=await http.PostAsJsonAsync("/api/projects",new ProjectSaveRequest(project!.Revision,JsonSerializer.SerializeToElement(changedPlan),"MAP-WEB-TEST","V1"),WebJson.Options);
+    var updated=await updatedProject.Content.ReadFromJsonAsync<SavedProject>(WebJson.Options);
+    Check(updatedProject.IsSuccessStatusCode&&updated!.Revision!=project.Revision,"服务端方案生成新版本");
+    var versionsProject=await http.GetFromJsonAsync<JsonElement[]>("/api/projects/"+planId+"/history",WebJson.Options);
+    Check(versionsProject?.Length==2,"服务端保留两版历史而非覆写备份");
+    var originalProject=await http.GetFromJsonAsync<SavedProject>("/api/projects/"+planId+"?revision="+project.Revision,WebJson.Options);
+    Check(originalProject!.Plan.GetProperty("name").GetString()=="server engineering fixture","历史恢复预览仍保留原内容");
+    var reopened=new WebProjectStore(Path.Combine(root,"projects"));
+    Check((await reopened.ReadAsync(planId,null,default))!.Revision==updated!.Revision,"重建服务端库对象仍可读取持久化项目");
+    using var restoreProject=await http.PostAsJsonAsync("/api/projects",new ProjectSaveRequest(updated!.Revision,plan,"MAP-WEB-TEST","V1"),WebJson.Options);
+    var restoredProject=await restoreProject.Content.ReadFromJsonAsync<SavedProject>(WebJson.Options);
+    Check(restoreProject.IsSuccessStatusCode&&restoredProject!.Revision!=project.Revision,"恢复旧内容生成新修订，不改写原历史");
+    var verifiedOld=await http.GetFromJsonAsync<SavedProject>("/api/projects/"+planId+"?revision="+project.Revision,WebJson.Options);
+    Check(verifiedOld!.SavedAt==project.SavedAt,"恢复不覆盖原存档时间和摘要");
+    using var unchangedProject=await http.PostAsJsonAsync("/api/projects",new ProjectSaveRequest(restoredProject!.Revision,plan,"MAP-WEB-TEST","V1"),WebJson.Options);
+    Check((await unchangedProject.Content.ReadFromJsonAsync<SavedProject>(WebJson.Options))!.Revision==restoredProject.Revision,"重复保存相同内容不会堆积历史");
+    using var invalidProjectPath=await http.GetAsync("/api/projects/not-a-guid");Check(invalidProjectPath.StatusCode==HttpStatusCode.BadRequest,"方案编号不能作为任意路径");
+    var badPlan=System.Text.Json.Nodes.JsonNode.Parse(plan.GetRawText())!;badPlan["id"]=Guid.NewGuid().ToString();badPlan["waypoints"]=new System.Text.Json.Nodes.JsonArray("MISSING");
+    using var invalidProject=await http.PostAsJsonAsync("/api/projects",new ProjectSaveRequest("",JsonSerializer.SerializeToElement(badPlan)),WebJson.Options);
+    Check(invalidProject.StatusCode==HttpStatusCode.BadRequest,"服务端拒绝丢失航点引用");
     using var runtimeAfterDraft = await http.GetAsync("/api/snapshot");
     var runtimeJson = await runtimeAfterDraft.Content.ReadFromJsonAsync<JsonElement>();
     Check(runtimeJson.GetProperty("map").GetProperty("id").GetString() == "MAP-WEB-TEST" && runtimeJson.GetProperty("status").GetProperty("agvs").GetArrayLength() == 0, "编辑地图及车辆保存不切换运行地图或自动启动小车连接");
@@ -246,6 +289,11 @@ try
     Check(received.GetProperty("connected").GetBoolean() && received.GetProperty("map").GetProperty("id").GetString() == "MAP-WEB-TEST", "WebSocket发送真实后台地图与任务快照");
     using (var diagnosticDb = DatabaseFactory.Create(new() { DatabasePath = databasePath }))
     {
+        diagnosticDb.Updateable<DispatchTaskEntity>().SetColumns(t=>t.VehicleId=="AGV-TEST").Where(t=>t.TaskId=="WEB-ISOLATED-TASK").ExecuteCommand();
+        var payloadJson=JsonSerializer.Serialize(new AgvTransportCommandPayload("WEB-STEP-1","AGV-TEST","LM1","LM2",["LM1","LM2"],new("JackLoad")),new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        var originalRoute=TransportRouteSnapshots.Capture("WEB-ISOLATED-TASK","WEB-STEP-1","WEB-TRANSPORT","AGV-TEST",payloadJson,new("MAP-WEB-TEST","V1",definition,DateTimeOffset.UtcNow),new TrafficRequestEntity{TaskId="WEB-ISOLATED-TASK",StepId="WEB-STEP-1",VehicleId="AGV-TEST",MapId="MAP-WEB-TEST",MapVersionId="V1",Source="A",Destination="B",State="Acquired",EdgeIds="[\"CURVE\"]"});
+        var originalJson=TransportRouteSnapshots.Serialize(originalRoute);
+        diagnosticDb.Insertable(new AgvCommandOutboxEntity{CommandId="WEB-TRANSPORT",IdempotencyKey="WEB-TRANSPORT",TaskId="WEB-ISOLATED-TASK",StepId="WEB-STEP-1",VehicleId="AGV-TEST",PayloadJson=payloadJson,Status=(int)AgvCommandStatus.Sent,AttemptCount=1,ExecutionMapId="MAP-WEB-TEST",ExecutionMapVersionId="V1",ExecutionRouteSnapshotJson=originalJson,ExecutionRouteSnapshotHash=TransportRouteSnapshots.Hash(originalJson),CreatedAt=DateTime.Now,UpdatedAt=DateTime.Now,NextAttemptAt=DateTime.Now}).ExecuteCommand();
         diagnosticDb.Updateable<DispatchTaskEntity>().SetColumns(t => t.Stage == (int)DispatchTaskStage.PickingUp).Where(t => t.TaskId == "WEB-ISOLATED-TASK").ExecuteCommand();
         diagnosticDb.Updateable<DispatchTaskStepEntity>().SetColumns(s => new DispatchTaskStepEntity { Status=(int)DispatchTaskStepStatus.Ready, CompletedAt=null }).Where(s => s.StepId == "WEB-STEP-2").ExecuteCommand();
         diagnosticDb.Updateable<DispatchTaskStepEntity>().SetColumns(s => new DispatchTaskStepEntity { Status=(int)DispatchTaskStepStatus.Pending, StartedAt=null, CompletedAt=null }).Where(s => s.TaskId == "WEB-ISOLATED-TASK" && s.Sequence > 2).ExecuteCommand();
@@ -253,6 +301,7 @@ try
     using var activeDiagnostic = await http.GetAsync("/api/tasks/WEB-ISOLATED-TASK");
     var activeDetail = await activeDiagnostic.Content.ReadFromJsonAsync<TaskCenterDetail>(WebJson.Options);
     Check(activeDetail?.Steps.Single(s => s.IsCurrent).ProgressConditions.Count == 3 && activeDetail.PlcConditions.All(c => c.Result == "Unknown"), "活动步骤输出三项实际条件；关闭PLC时为未知，不生成满足值");
+    Check(activeDetail?.Commands.Single().Route is {MapId:"MAP-WEB-TEST",MapVersionId:"V1",Action:"JackLoad"} route&&route.EdgeIds.SequenceEqual(new[]{"CURVE"}),"HTTP任务详情保留已校验原命令曲线、地图及动作，当前PLC步可关联前段");
     if (args.Contains("--inspect"))
     {
         Console.WriteLine($"INSPECT http://127.0.0.1:{port}/ — isolated fixture only; all device execution disabled. Remove inspect-hold to finish.");

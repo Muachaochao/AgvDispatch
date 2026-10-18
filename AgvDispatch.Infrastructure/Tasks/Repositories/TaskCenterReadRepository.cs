@@ -1,4 +1,4 @@
-using AgvDispatch.Application.Abstractions;
+﻿using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Domain.Tasks;
 using AgvDispatch.Infrastructure.Persistence.Entities;
 using SqlSugar;
@@ -67,7 +67,7 @@ public sealed partial class TaskCenterReadRepository(ISqlSugarClient database) :
                 TimeOrNull(s.StartedAt), TimeOrNull(s.CompletedAt), s.ErrorMessage)).ToArray(),
             commands.Select(c => new TaskCommandDetail(c.CommandId, c.StepId, c.VehicleId,
                 (AgvCommandStatus)c.Status, c.AttemptCount, Time(c.NextAttemptAt),
-                TimeOrNull(c.SentAt), c.VendorCommandId, c.LastError)).ToArray(),
+                TimeOrNull(c.SentAt), c.VendorCommandId, c.LastError){Route=ReadRoute(c)}).ToArray(),
             leases.Select(l => new TaskResourceDetail(l.ResourceId, l.OwnerStepId, l.VehicleId,
                 Time(l.AcquiredAt), Time(l.ExpiresAt), Time(l.ExpiresAt) < DateTimeOffset.Now)).ToArray(),
             [], "") { Handshakes=handshakes.Select(TaskHandshakeStore.Describe).ToArray(), Handover=handover, ExecutionTimeline = timeline.Items, ExecutionTimelineTotal = timeline.Total, OperationHistory = history.Items, OperationHistoryTotal = history.Total, Cancellation = task.CancelRequestId == null ? null : new(task.CancelRequestId, task.CancelReason ?? "", task.CancelRequestedBy ?? "",

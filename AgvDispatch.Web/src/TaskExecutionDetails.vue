@@ -1,6 +1,7 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import TaskRuntimeHistory from './TaskRuntimeHistory.vue';
+import TaskRouteMap from './TaskRouteMap.vue';
 import TaskRecoveryPanel from './TaskRecoveryPanel.vue';
 import TaskCancelDialog from './components/TaskCancelDialog.vue';
 import type { TaskDetail } from './types';
@@ -25,6 +26,7 @@ const events = computed(() => props.detail.executionTimeline ?? []);
     <p class="muted-note">握手模式：{{ detail.handshakeMode==='PersistentExecution'?'持久化执行':'原执行器＋变化观测' }} · 配置契约：{{ detail.handshakeContractVersion||'未配置新契约' }}</p>
     <p class="muted-note">后台观察：{{ detail.diagnosticsObservedAt ? shortTime(detail.diagnosticsObservedAt) : '旧版后台未提供诊断时间' }} · {{ live ? '诊断连接有效' : '非当前有效观察，请重新连接或等待刷新' }}</p>
     <div class="waiting-callout" role="status">{{ live ? detail.waitingExplanation : '当前诊断已过期或接口未提供诊断时间；以下内容仅供回看，不代表现场当前状态。' }}</div>
+    <TaskRouteMap v-if="step" :detail="detail" :sequence="step.sequence"/>
     <nav class="execution-steps" aria-label="九步业务流程"><button v-for="s in detail.steps" :key="s.sequence" :class="{ selected: step?.sequence===s.sequence, current: s.isCurrent, done:s.status==='Completed' }" :aria-pressed="step?.sequence===s.sequence" @click="selected=s.sequence"><span>{{ s.sequence }}</span><b>{{ label(s.stepType) }}</b><small>{{ s.isCurrent ? '当前 · ' : '' }}{{ stepStatusLabel(s.status,label(s.status)) }}</small></button></nav>
     <section v-if="step" class="execution-inspection">
       <h3>第{{ step.sequence }}步 · {{ label(step.stepType) }}</h3>

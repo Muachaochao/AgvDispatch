@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { onMounted, onUnmounted } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import { useDispatchStore } from './stores/dispatch';
@@ -23,6 +23,7 @@ const navigation = [
   { path: '/alarms', label: '异常告警', icon: IconBell },
   { path: '/maps', label: '地图查看', icon: IconMap },
   { path: '/planning', label: '工程编辑', icon: IconRoute },
+  { path: '/engineering-settings', label: '工程配置', icon: IconCpu },
   { path: '/commissioning', label: '联调检查', icon: IconCircleCheck }
 ] as const;
 

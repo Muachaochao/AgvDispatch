@@ -1,4 +1,4 @@
-import { createRouter, createWebHashHistory } from 'vue-router';
+﻿import { createRouter, createWebHashHistory } from 'vue-router';
 
 const router = createRouter({
   history: createWebHashHistory(),
@@ -10,6 +10,7 @@ const router = createRouter({
     { path: '/alarms', name: 'alarms', component: () => import('./pages/AlarmPage.vue') },
     { path: '/maps', name: 'maps', component: () => import('./pages/MapCatalogPage.vue') },
     { path: '/planning', name: 'planning', component: () => import('./PlanningWorkbench.vue'), props: true },
+    { path: '/engineering-settings', name: 'engineering-settings', component: () => import('./pages/EngineeringSettingsPage.vue') },
     { path: '/commissioning', name: 'commissioning', component: () => import('./CommissioningPanel.vue'), props: true },
   ]
 });

@@ -47,7 +47,7 @@ foreach($bundleShared in @('AgvDispatch.Application.dll','AgvDispatch.Domain.dll
 New-Item -ItemType Directory -Path (Join-Path $bundleOutput 'Web/licenses') -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $bundleProject 'AgvDispatch.Web/src/vendor/agv-web-visible/LICENSE'),(Join-Path $bundleProject 'AgvDispatch.Web/src/vendor/agv-web-visible/UPSTREAM.md') -Destination (Join-Path $bundleOutput 'Web/licenses')
 New-Item -ItemType Directory -Path (Join-Path $bundleOutput 'Docs') -Force | Out-Null
-Copy-Item -LiteralPath (Join-Path $bundleProject 'docs/architecture/六项路线进度与统一候选发布-20261017.md'),(Join-Path $bundleProject 'docs/architecture/单车与异常现场验收记录模板-20261017.md') -Destination (Join-Path $bundleOutput 'Docs')
+Copy-Item -LiteralPath (Join-Path $bundleProject 'docs/architecture/六项路线进度与统一候选发布-20261017.md'),(Join-Path $bundleProject 'docs/architecture/单车与异常现场验收记录模板-20261017.md'),(Join-Path $bundleProject 'docs/architecture/Web工程配置方案库与任务地图联动-20261018.md') -Destination (Join-Path $bundleOutput 'Docs')
 @'
 @echo off
 pushd "%~dp0Service"
@@ -88,7 +88,7 @@ release-manifest.json记录逐文件SHA256与共享程序集身份。若本目�
 "@ | Set-Content -LiteralPath (Join-Path $bundleOutput 'README.md') -Encoding utf8
 @'
 @echo off
-"%~dp0Web\host\AgvDispatch.WebHost.exe" --launch-local --bundle-root "%~dp0."
+"%~dp0Web\host\AgvDispatch.WebHost.exe" --launch-local --bundle-root "%~dp0." %*
 if errorlevel 1 pause
 '@ | Set-Content -LiteralPath (Join-Path $bundleOutput 'Start-Latest-Web.cmd') -Encoding ascii
 @'

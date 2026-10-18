@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed,nextTick,onMounted,onUnmounted,ref,watch } from 'vue';
 import type { Snapshot,RoutePreview,CreationOptions } from './types';
 import { commissioningCurrent,checkLabels,type CommissioningReport } from './commissioning';
@@ -18,8 +18,8 @@ const totals=computed(()=>({blocked:report.value?.checks.filter(c=>c.status==='B
 const routeCurrent=computed(()=>current.value&&!!routeTime.value&&now.value-Date.parse(routeTime.value)<=15000);
 const guidance:Record<string,{title:string;steps:string[]}>= {
   service:{title:'后台运行配置与部署',steps:['确认主Service已部署本次版本；WebHost是接入层，不会启动主服务。','WPF系统设置维护通信配置，保存后按提示受控重启后台；任务创建、调度、步骤、Outbox及设备读写开关仍由主服务配置管理。','重启前核对在途任务与现场车辆；重启后重新检查，并完成原恢复批次。此页不修改开关或重启进程。']},
-  'task-settings':{title:'任务参数与站点映射',steps:['在WPF任务中心的任务参数配置中核对取货工位、等待站、倒料站和各段动作。','九步预览会标明缺失点位和动作配置。站点必须能对应到当前运行地图及厂家站点。','保存参数后返回此页刷新；参数修订变化后需重新核对路线。']},
-  'map-binding':{title:'车辆地图与坐标绑定',steps:['WPF系统设置 → Robokit地图绑定：选择车辆、本地地图版本，填写已核定的车端地图/MD5及坐标核对依据。','WPF AGV管理 → Robokit车端地图、站点与版本：在通信开启后只读核验所选车辆。','保存绑定后按后台提示重启；核验记录不能替代当前状态，检查页中的绑定通过也不是车端实时一致性证明。']},
+  'task-settings':{title:'任务参数与站点映射',steps:['在顶部“工程配置”核对取货工位、等待站、倒料站和各段动作；读取后逐步校验并保存。','九步预览会标明缺失点位和动作配置。站点必须能对应到当前运行地图及厂家站点。','保存参数后返回此页刷新；参数修订变化后需重新核对路线。']},
+  'map-binding':{title:'车辆地图与坐标绑定',steps:['顶部“工程配置” → 厂家地图绑定：填写车辆、本地地图版本和已核定车端地图/MD5及坐标依据。','绑定卡片“只读查询车端版本／站点”可核验所选车辆；通信未开启时明确不可用。','保存绑定后按后台提示重启；核验记录不能替代当前状态，检查页中的绑定通过也不是车端实时一致性证明。']},
   recovery:{title:'现场恢复处理',steps:['WPF现场恢复，或Web任务详情底部“现场恢复核对入口”，查看原批次、原车辆、原命令及现场依据。','Web恢复写操作默认关闭。建立核对会冻结全场后续执行，但不会自动停止车辆已经接受的动作。','按照原节点续接或核对取消流程处理；不要通过删除任务、手工清位或强制解锁来代替现场核对。']},
   contract:{title:'握手契约与启用范围',steps:['当前模式和配置版本见本页。新契约要求PLC发送方复位自己的位，Ready消费、本轮Done基线及返程后撤销倒料通知必须一致。','sender-owned-return-confirmed-v1默认不启用；配置版本相同不代表PLC程序已完成联调。','完整时序见主工程docs/architecture/持久化握手与Web联调闭环-20261017.md；旧任务不自动迁入，新任务也不能静默降级。']}
 };

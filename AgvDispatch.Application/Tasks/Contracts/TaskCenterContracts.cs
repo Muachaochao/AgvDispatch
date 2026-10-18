@@ -32,7 +32,9 @@ public sealed record TaskStepDetail(string StepId, int Sequence, DispatchTaskSte
 }
 public sealed record TaskCommandDetail(string CommandId, string StepId, string VehicleId,
     AgvCommandStatus Status, int AttemptCount, DateTimeOffset NextAttemptAt,
-    DateTimeOffset? SentAt, string? VendorCommandId, string? LastError);
+    DateTimeOffset? SentAt, string? VendorCommandId, string? LastError)
+{ public TaskRouteDetail? Route {get;init;} }
+public sealed record TaskRouteDetail(string TaskId,string StepId,string CommandId,string VehicleId,string MapId,string MapVersionId,string MapDefinitionHash,string[] NodeIds,string[] EdgeIds,string[] VendorSites,string Action);
 public sealed record TaskResourceDetail(string ResourceId, string OwnerStepId, string VehicleId,
     DateTimeOffset AcquiredAt, DateTimeOffset ExpiresAt, bool HeartbeatExpired);
 public sealed record TaskPlcCondition(string StationId, string VariableName, string Address,

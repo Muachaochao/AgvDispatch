@@ -1,8 +1,9 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch, toRef } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { IconMap, IconDeviceFloppy, IconDownload, IconUpload, IconPlus, IconTrash, IconArrowUp, IconArrowDown, IconCopy, IconRefresh, IconZoomIn, IconZoomOut, IconPlugConnected, IconCloudUpload, IconArrowLeft, IconEye } from '@tabler/icons-vue';
 import ConsoleDialog from './ConsoleDialog.vue';
+import ServerProjects from './ServerProjects.vue';
 import MapEditorPanels from './MapEditorPanels.vue';
 import './map-editor.css';
 import { useMapEditor } from './use-map-editor';
@@ -132,6 +133,7 @@ onUnmounted(()=>{++epoch;window.removeEventListener('beforeunload',beforeUnload)
   </div>
   <nav class="workbench-tabs" aria-label="工程模块"><button v-for="item in tabs" :key="item.id" :class="{active:tab===item.id}" @click="tab=item.id">{{item.name}}</button><small>{{counts}}</small></nav>
   <p class="workbench-message" role="status">{{message||'厂家激光扫图在RoboShop完成；此处编辑调度导航和场景。编辑稿不会自动影响运行地图。'}}</p>
+  <ServerProjects v-if="tab==='plans'" :plan="plan" :available="effectiveSource==='backend'" :map-id="workspace?.project?.mapId" :map-version="workspace?.draft?.versionId" @preview="pending=$event"/>
   <template v-if="tab==='map'||tab==='scene'">
    <div class="editor-toolbar editor-tool-palette" aria-label="地图绘图工具">
     <button v-for="item in (tab==='map'?mapTools:sceneTools)" :key="item.id" :class="{active:tool===item.id}" :aria-pressed="tool===item.id" @click="ed.changeTool(item.id)">{{item.label}}</button>

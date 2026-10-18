@@ -14,12 +14,13 @@ $launchManifest | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $launchMan
 $launchExecutable=Join-Path $launchPrivate 'Web/host/AgvDispatch.WebHost.exe'
 $launchChecks=[Collections.Generic.List[string]]::new()
 function Check([bool]$pass,[string]$message){if(!$pass){throw $message};$launchChecks.Add($message);Write-Output "PASS $message"}
-function Invoke-Launcher([string]$tag,[switch]$Stop){
+function Invoke-Launcher([string]$tag,[switch]$Stop,[string]$ProjectStorePath=''){
     $launchInfo=[Diagnostics.ProcessStartInfo]::new($launchExecutable)
     $launchInfo.UseShellExecute=$false;$launchInfo.CreateNoWindow=$true;$launchInfo.WindowStyle='Hidden'
     $launchInfo.RedirectStandardOutput=$true;$launchInfo.RedirectStandardError=$true
     foreach($launchArg in @('--launch-local','--no-browser','--bundle-root',$launchPrivate)){$launchInfo.ArgumentList.Add($launchArg)}
     if($Stop){$launchInfo.ArgumentList.Add('--stop')}
+    if($ProjectStorePath){$launchInfo.ArgumentList.Add('--project-store-path');$launchInfo.ArgumentList.Add($ProjectStorePath)}
     $launchProcess=[Diagnostics.Process]::Start($launchInfo)
     $launchOut=$launchProcess.StandardOutput.ReadToEndAsync();$launchErr=$launchProcess.StandardError.ReadToEndAsync()
     if(!$launchProcess.WaitForExit(90000)){$launchProcess.Kill();throw 'Launcher timeout'}
@@ -47,6 +48,17 @@ try{
     try{Check ((Invoke-Launcher 'occupied') -ne 0) 'Occupied port refuses startup without stopping the listener'}finally{$launchProbe.Stop()}
     $launchServiceHash=(Get-FileHash -LiteralPath (Join-Path $launchPrivate 'Service/AgvDispatch.Service.dll')).Hash
     Check ($launchServiceHash -eq (Get-FileHash -LiteralPath (Join-Path ([IO.Path]::GetFullPath($BundleDirectory)) 'Service/AgvDispatch.Service.dll')).Hash) 'Private launch leaves release binaries unchanged'
+    $launchShared=Join-Path $launchPrivate 'SharedProjectData'
+    Check ((Invoke-Launcher 'shared' -ProjectStorePath $launchShared) -eq 0) 'Explicit shared project directory starts without changing device controls'
+    $launchProjectId=[Guid]::NewGuid().ToString()
+    $launchPlan=@{schema='agv-web-plan';version=1;id=$launchProjectId;name='launcher project';updatedAt=[DateTimeOffset]::UtcNow.ToString('o');definition=@{name='draft';source='';coordinateSystem='TestCartesian';unit='m';nodes=@();edges=@();resources=@()};scene=@();vehicles=@();waypoints=@()}
+    $launchSaved=Invoke-RestMethod "http://127.0.0.1:$launchPort/api/projects" -Method Post -ContentType application/json -Body (@{expectedRevision='';plan=$launchPlan} | ConvertTo-Json -Depth 15)
+    Check ([IO.File]::Exists((Join-Path $launchShared ($launchProjectId.Replace('-','')+'/current.json')))) 'Project archive is written to the explicit shared directory'
+    Check ((Invoke-Launcher 'different-store') -ne 0) 'Running release cannot be silently reused with a different project directory'
+    Invoke-Launcher 'shared-stop' -Stop | Out-Null
+    Check ((Invoke-Launcher 'shared-restart' -ProjectStorePath $launchShared) -eq 0) 'Restart reuses the shared project directory'
+    $launchRestored=Invoke-RestMethod "http://127.0.0.1:$launchPort/api/projects/$launchProjectId"
+    Check ($launchRestored.revision -eq $launchSaved.revision) 'Project content and revision survive a real WebHost process restart'
 }finally{
     try{Invoke-Launcher 'cleanup' -Stop | Out-Null}catch{Write-Warning $_.Exception.Message}
     @{checks=$launchChecks;privateDirectory=$launchPrivate;port=$launchPort;scope='Copied release only; random loopback port, unique pipe, empty private database, no browser or site devices'} | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $launchEvidence 'results.json') -Encoding utf8

@@ -14,6 +14,8 @@ builder.WebHost.UseKestrel(o => { o.Listen(IPAddress.Loopback, port); o.Limits.M
 builder.Services.ConfigureHttpJsonOptions(o => o.SerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter()));
 builder.Services.AddSingleton(new DispatchPipe(builder.Configuration["Web:PipeName"] ?? "AgvDispatch.Service"));
 builder.Services.AddSingleton<SnapshotReader>();
+var projectStorePath=Path.GetFullPath(builder.Configuration["Web:ProjectStorePath"]??Path.Combine(builder.Environment.ContentRootPath,"data","projects"));
+builder.Services.AddSingleton(new WebProjectStore(projectStorePath));
 var app = builder.Build();
 var submissions = builder.Configuration.GetValue("Web:EnableTaskSubmission", false);
 var webRoot = Path.GetFullPath(builder.Configuration["Web:StaticPath"] ?? Path.Combine(app.Environment.ContentRootPath, "..", "AgvDispatch.Web", "dist"));
@@ -38,15 +40,18 @@ app.Use(async (ctx, next) =>
     try { await next(); }
     catch (Exception ex) when (!ctx.RequestAborted.IsCancellationRequested && !ctx.Response.HasStarted)
     {
-        ctx.Response.StatusCode = ex is ArgumentException ? 400 : ex is UnauthorizedAccessException ? 403 : ex is OperationCanceledException or TimeoutException ? 504 : 503;
+        ctx.Response.StatusCode = ex is ProjectConflictException ? 409 : ex is ArgumentException or InvalidDataException or JsonException or KeyNotFoundException or FormatException ? 400 : ex is UnauthorizedAccessException ? 403 : ex is OperationCanceledException or TimeoutException ? 504 : 503;
         await ctx.Response.WriteAsJsonAsync(new { error = "后台不可用或拒绝请求", detail = ex.Message }, ctx.RequestAborted);
     }
 });
 app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(20) });
 app.MapGet("/api/config", () => new { taskSubmissionEnabled = submissions, source = "backend", loopbackOnly = true,
+    projectStoreId=Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(projectStorePath))),
     adapter = new { informationalVersion=AdapterBuildIdentity.InformationalVersion, sha256=AdapterBuildIdentity.Sha256 },
     servicePipeName = builder.Configuration["Web:PipeName"] ?? "AgvDispatch.Service" });
 app.MapEditorApi();
+app.MapEngineeringApi();
+app.MapProjectApi();
 app.MapDiagnosticsApi(builder.Configuration.GetValue("Web:EnableRecoveryActions",false));
 app.MapGet("/api/snapshot", async (SnapshotReader reader, CancellationToken ct) => await reader.ReadAsync(ct));
 app.MapGet("/api/task-options", async (DispatchPipe pipe, CancellationToken ct) =>

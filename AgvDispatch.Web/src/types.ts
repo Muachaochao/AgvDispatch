@@ -1,8 +1,9 @@
-export interface Point { x: number; y: number }
+﻿export interface Point { x: number; y: number }
 export interface MapNode extends Point { id: string; agvSiteId?: string; enabled: boolean; type: string }
 export interface MapEdge { id: string; from: string; to: string; enabled: boolean; bidirectional: boolean; kind: string; points: Point[] }
 export interface MapResource { id: string; capacity: number; boundary?: Point[] }
-export interface WebMap { id: string; version: string; name: string; unit: string; coordinateSystem: string; nodes: MapNode[]; edges: MapEdge[]; resources: MapResource[]; warnings: string[] }
+export interface TaskRoute {taskId:string;stepId:string;commandId:string;vehicleId:string;mapId:string;mapVersionId:string;mapDefinitionHash:string;nodeIds:string[];edgeIds:string[];vendorSites:string[];action:string}
+export interface WebMap { definitionHash?:string; id: string; version: string; name: string; unit: string; coordinateSystem: string; nodes: MapNode[]; edges: MapEdge[]; resources: MapResource[]; warnings: string[] }
 export interface Vehicle { vehicleId: string; displayName: string; connection: string; quality: string; batteryPercent: number | null; currentStation: string | null;
   navigationState: string | null; x: number | null; y: number | null; angle: number | null; localizationConfidence: number | null;
   mapPositionState: string; mapPositionMessage: string; lastSuccessfulPollAt: string | null; updatedAt: string; blocked: boolean | null; emergencyStopped: boolean | null; charging?: boolean | null }
@@ -16,7 +17,7 @@ export interface Snapshot { receivedAt: string; connected: boolean; source: 'dem
   resources: { resourceId: string; capacity: number; occupiedCount: number; leases: { vehicleId: string; taskId: string }[] }[] | null }
 export interface TaskDetail { handshakeMode?:string; handshakeContractVersion?:string; handshakes?:HandshakeCheckpoint[]; handover?:HandoverDiagnosis; task: TaskRow; waitingExplanation: string; steps: { stepId?:string; observedPhase?:string; completionRequirement?:string; evidenceBoundary?:string; commandStateExplanation?:string; progressConditions?:ProgressCondition[]; sequence: number; stepType: string; status: string; isCurrent: boolean; waitingExplanation: string; vendorTaskId?: string; sourceSite?:string; destinationSite?:string; elapsedText?:string; timeoutText?:string; errorMessage?:string }[];
   diagnosticsObservedAt?:string; executionTimelineTotal?:number; executionTimeline?:ExecutionEvent[];
-  commands?: {commandId:string;stepId:string;status:string;attemptCount:number;lastError?:string;vendorCommandId?:string}[];
+  commands?: {route?:TaskRoute|null;commandId:string;stepId:string;status:string;attemptCount:number;lastError?:string;vendorCommandId?:string}[];
   resources?: {resourceId:string;vehicleId:string;expiresAt:string;heartbeatExpired:boolean}[];
   plcConditions: { stationId: string; variableName: string; currentValue: boolean | null; expectedValue: boolean; quality: string; satisfied: boolean }[] }
 export interface CreationOptions { available: boolean; explanation: string; mapId: string; mapVersionId: string; parameterRevision: string;

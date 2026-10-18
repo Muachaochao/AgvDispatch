@@ -1,4 +1,4 @@
-using System.Buffers.Binary;
+﻿using System.Buffers.Binary;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
@@ -59,7 +59,7 @@ internal static class Program
         using var db=DatabaseFactory.Create(new() { DatabasePath=Path.Combine(root,"test.db") });
         var resource=new TrafficResourceDefinition("SHARED",TrafficResourceType.NarrowAisle);
         var catalog=new TrafficResourceCatalog([resource]); var init=new DatabaseInitializer(db,catalog); Await(init.InitializeAsync(default));
-        var tasks=new DispatchTaskRepository(db); var orchestration=new DispatchOrchestrationRepository(db); var outbox=new AgvCommandOutboxRepository(db);
+        var tasks=new DispatchTaskRepository(db); var orchestration=new DispatchOrchestrationRepository(db);
         var map=new ActiveMapRuntime();
         var sites=new[]{"HOME1","HOME2","PICK1","PICK2","WAIT","DUMP"};
         var nodes=sites.Select((s,i)=>new MapNode(s,i*2,0,MapNodeType.Station,true,[],s)).ToArray();
@@ -67,6 +67,7 @@ internal static class Program
             .Select((p,i)=>new MapEdge("E"+i,p.Item1,p.Item2,2,1,false,true,["SHARED"])).ToArray();
         var definition=new MapDefinition("integration","","LocalCartesian","m",nodes,edges,[resource]);
         map.Replace(new("MAP-INTEGRATION","V1",definition,DateTimeOffset.Now));
+        var outbox=new AgvCommandOutboxRepository(db,map);
         var gate=new MapExecutionGate(); gate.SetMode(MapExecutionMode.Running);
         var dispatch=new DispatchOrchestratorOptions { Enabled=true,MaxConcurrentTasks=2,DumperWaitingSite="WAIT",DumperDumpingSite="DUMP",
             StationPickupSites=new() { ["CNC001"]="PICK1",["CNC002"]="PICK2" } };
@@ -188,6 +189,8 @@ internal static class Program
                     if(taskId==a) Check(robot2.Commands.Count==0 && db.Queryable<TrafficResourceLeaseEntity>().ToList().Select(l=>l.TaskId).Distinct().SequenceEqual(new[]{a}),"第一任务运输期间第二车辆持续等待且容量不超额 "+(index+1));
                     var current=Await(tasks.GetStepsAsync(taskId,default))[index];
                     Check(current.Status==DispatchTaskStepStatus.Executing && robot.Commands.ContainsKey(current.StepId),"运输步骤真正经TCP下发 "+(index+1)+" "+station);
+                    var observedRoute=Await(client.GetTaskDetailAsync(taskId,default))!.Commands.Single(c=>c.StepId==current.StepId).Route;
+                    Check(observedRoute is not null&&observedRoute.TaskId==taskId&&observedRoute.VehicleId==robot.Configuration.VehicleId&&observedRoute.MapId=="MAP-INTEGRATION"&&observedRoute.EdgeIds.Length==observedRoute.NodeIds.Length-1,"真实IPC任务详情带原运输快照与动作 "+(index+1)+" "+station);
                     robot.Complete(current.StepId); Poll(); Cycle(orchestrator,"RunCycleAsync");
                     Check(Await(tasks.GetStepsAsync(taskId,default))[index].Status==DispatchTaskStepStatus.Completed,"1110完成反馈推进运输步骤 "+(index+1)+" "+station);Capture(index+1,"1110确认完成；真实3066模拟报文动作="+robot.Commands[current.StepId].Operation);
                 }
