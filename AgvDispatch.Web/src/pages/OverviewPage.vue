@@ -3,6 +3,8 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { useDispatchStore } from '../stores/dispatch';
 import { DispatchScene } from '../DispatchScene';
+import {trafficFocus} from '../traffic-focus';
+import TrafficRehearsal from '../TrafficRehearsal.vue';
 import { isFresh, isRunningStage, label, mayPlot } from '../state';
 import { vehicleCategory, categoryLabels, shortTime, type VehicleCategory } from '../dashboard';
 import type { Snapshot } from '../types';
@@ -28,29 +30,34 @@ const selectedAlarm = ref<import('../types').Alarm | null>(null);
 const selectedDevice = ref<import('../types').Device | null>(null);
 let scene: DispatchScene | undefined;
 let detailEpoch = 0;
+let autoSelectTask=true;
 
 const chosenVehicle = computed(() => store.vehicles.find(v => v.vehicleId === selectedVehicle.value));
 const selectedRoad = computed(() => store.snapshot?.map?.edges.find(edge => edge.id === selectedEdge.value));
 
-function draw() { scene?.update(store.snapshot, selectedVehicle.value, selectedEdge.value); }
+const focus=computed(()=>trafficFocus(store.snapshot,detail.value,store.now,store.demoMode));
+function draw() { scene?.update(store.snapshot, selectedVehicle.value, selectedEdge.value,focus.value,store.now); }
+watch([focus,()=>store.now],draw);
 
 watch(() => store.snapshot, () => {
   if (!selectedVehicle.value && store.vehicles.length) selectedVehicle.value = store.vehicles[0].vehicleId;
-  if (!selectedTask.value && store.allTasks.length) selectTask(store.allTasks[0].taskId);
+  if (autoSelectTask && store.allTasks.length) selectTask(store.allTasks[0].taskId);
   else if (selectedTask.value) void loadDetail(selectedTask.value);
   draw();
 });
 watch([selectedVehicle, selectedEdge], draw);
+watch(()=>store.demoMode,()=>{++detailEpoch;detail.value=null;selectedTask.value='';autoSelectTask=true;});
 
 async function loadDetail(id: string) {
   const selection = ++detailEpoch;
+  if(store.demoMode){detail.value=store.demoTaskDetail(id);return;}
   try {
     const result = await store.api<import('../types').TaskDetail | null>(`/api/tasks/${encodeURIComponent(id)}`);
-    if (selection === detailEpoch && selectedTask.value === id && store.fresh) detail.value = result;
-  } catch { detail.value = null; }
+    if (selection === detailEpoch && selectedTask.value === id && store.fresh && !store.demoMode) detail.value = result;
+  } catch { if(selection===detailEpoch)detail.value = null; }
 }
 
-function selectTask(id: string) { selectedTask.value = id; detail.value = null; void loadDetail(id); }
+function selectTask(id: string) { autoSelectTask=false; ++detailEpoch;selectedTask.value = id; detail.value = null; if(id)void loadDetail(id); }
 function openTask(id: string) { showTaskDialog.value = true; selectTask(id); }
 function setMapView(mode: 'top' | 'isometric') { mapView.value = mode; scene?.view(mode); }
 function fullscreen() { void mapElement.value?.parentElement?.requestFullscreen().catch(() => { store.sceneError = '当前浏览器未允许全屏'; }); }
@@ -61,10 +68,11 @@ onMounted(() => {
     draw();
   } catch (ex) { store.sceneError = `三维视图初始化失败：${String(ex)}`; }
 });
-onUnmounted(() => { scene?.dispose(); });
+onUnmounted(() => { ++detailEpoch;scene?.dispose(); });
 </script>
 
 <template>
+  <TrafficRehearsal v-if="store.demoMode"/>
   <div class="control-grid">
     <aside class="left-column">
       <section class="control-panel statistics-panel">
@@ -123,6 +131,8 @@ onUnmounted(() => { scene?.dispose(); });
         <span v-if="selectedRoad">{{ selectedRoad.from }} {{ selectedRoad.bidirectional ? '↔' : '→' }} {{ selectedRoad.to }}</span>
         <span v-else>米制导航图 / {{ store.snapshot?.map?.coordinateSystem ?? '待核定' }}</span>
       </div>
+      <section class="traffic-focus" aria-label="当前任务地图联动"><label>联动任务 <select v-model="selectedTask" @change="selectTask(selectedTask)"><option value="">取消联动</option><option v-for="t in store.allTasks" :key="t.taskId" :value="t.taskId">{{t.taskId}} · {{label(t.stage)}}</option></select></label><button :disabled="!selectedTask" @click="showTaskDialog=true">查看步骤与处置</button>
+      <template v-if="focus.taskId"><p>任务车辆 {{focus.vehicleId||'未分配'}} · 原命令路线（绿） {{focus.edgeIds.join('、')||'未提供'}}</p><p>持有资源（橙） {{focus.held.join('、')||'无同图返回'}} · 阻塞资源（红） {{focus.blocked.join('、')||'无当前阻塞返回'}}</p><p>阻塞车辆 <button v-for="id in focus.blockers" :key="id" @click="selectedVehicle=id">{{id}}</button>{{focus.blockers.length?'':'无当前阻塞返回'}}</p><p v-if="focus.unplotted.length">未画车体（位置未核定或无效）：{{focus.unplotted.join('、')}}；不使用站点或路线端点代替。</p><p>{{focus.reason}}</p><p v-if="focus.truncated">路权记录已截断，当前列表不代表全场。</p></template><p v-else>{{focus.reason}}</p></section>
       <div v-for="warning in store.snapshot?.map?.warnings ?? []" :key="warning" class="inline-warning">{{ warning }}</div>
     </section>
 
@@ -180,3 +190,5 @@ onUnmounted(() => { scene?.dispose(); });
     <tbody><tr v-for="field in selectedDevice.fields" :key="field.name"><td>{{ field.name }}</td><td>{{ field.value }}</td><td>{{ field.quality }}</td><td>{{ field.address }}</td><td>{{ field.updatedAt }}</td></tr></tbody></table>
   </ConsoleDialog>
 </template>
+
+<style scoped>.traffic-focus{padding:12px 16px;border-top:1px solid #2c4563;font-size:12px;line-height:1.8}.traffic-focus select{max-width:100%}.traffic-focus button{margin:4px}.traffic-focus p{overflow-wrap:anywhere;margin:5px 0}</style>

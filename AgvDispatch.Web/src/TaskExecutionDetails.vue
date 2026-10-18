@@ -1,7 +1,9 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import TaskRuntimeHistory from './TaskRuntimeHistory.vue';
 import TaskRouteMap from './TaskRouteMap.vue';
+import {useDispatchStore} from './stores/dispatch';
+const store=useDispatchStore();
 import TaskRecoveryPanel from './TaskRecoveryPanel.vue';
 import TaskCancelDialog from './components/TaskCancelDialog.vue';
 import type { TaskDetail } from './types';
@@ -48,9 +50,11 @@ const events = computed(() => props.detail.executionTimeline ?? []);
     <section v-if="detail.handover" class="execution-boundary"><b>离站及资源交接诊断</b><p>{{ detail.handover.reason }}</p><p>返程命令完成：{{ detail.handover.returnCommandCompleted?'已记录':'未记录' }} · 保守返程定位核对：{{ detail.handover.exitPhysicallyVerified?'已记录':'尚未记录' }}</p><p>当前持有：{{ detail.handover.heldResources.join('、') || '无返回记录' }}</p><details v-if="detail.handover.recordedReleaseReasons.length"><summary>查看后台已记录的释放依据</summary><p v-for="(r,i) in detail.handover.recordedReleaseReasons" :key="i">{{ r }}</p></details></section>
     <h3 class="subheading">关键事件时间线</h3><p class="muted-note">来自数据库时间戳及持久化执行证据，不是动画。显示最近{{ events.length }}项 / 共{{ detail.executionTimelineTotal ?? events.length }}项；同时间排序不证明跨设备因果。未采集的历史不补造。</p>
     <ol v-if="events.length" class="execution-events"><li v-for="e in events" :key="e.id"><time>{{ shortTime(e.occurredAt) }}</time><div><b>{{ e.title }}</b><p>{{ e.summary }}</p><small>{{ e.source }}<span v-if="e.stepId"> · 步骤 {{ detail.steps.find(s=>s.stepId===e.stepId)?.sequence ?? e.stepId }}</span></small></div></li></ol><p v-else class="muted-note">尚无执行事件返回，或旧版后台未提供；不生成示例轨迹。</p>
-    <TaskCancelDialog :task-id="detail.task.taskId" :stage="detail.task.stage" />
+    <section v-if="detail.cancellation" class="execution-boundary cancellation-progress"><h3>取消进度与原占用</h3><p>原请求 {{detail.cancellation.requestId}} · {{detail.cancellation.reason}}</p><p>请求记录 {{shortTime(detail.cancellation.requestedAt)}} · 发送尝试 {{detail.cancellation.sendAttempts}}</p><p>取消发送记录 {{shortTime(detail.cancellation.sentAt)}} · 原运输结束确认 {{shortTime(detail.cancellation.confirmedAt)}}</p><p>发送/接受不等于车辆已停；原运输结束仍须核对箱体、PLC周期及原路权，不自动完成九步或释放占用。</p></section>
+    <p v-if="store.demoMode" class="inline-warning">合成演示详情；不访问真实任务历史或恢复接口。操作流程请使用大屏演练面板。</p>
+    <template v-else><TaskCancelDialog :task-id="detail.task.taskId" :stage="detail.task.stage" />
     <TaskRuntimeHistory :task-id="detail.task.taskId" :fresh="live" />
-    <TaskRecoveryPanel :task-id="detail.task.taskId" :fresh="live" :now="now" />
+    <TaskRecoveryPanel :task-id="detail.task.taskId" :fresh="live" :now="now" /></template>
   </div>
 </template>
 

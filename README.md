@@ -680,3 +680,6 @@ dotnet run --project AgvDispatch.Service/AgvDispatch.Service.csproj
 
 
 Web新增工程配置、服务端方案库及任务详情原命令路线图，用法与保存边界见[本批操作说明](docs/architecture/Web工程配置方案库与任务地图联动-20261018.md)。
+
+
+2026-10-18新增大屏“联动任务”：原命令道路、持有/阻塞资源、阻塞车辆同图显示；演示模式有八阶段取消等待与恢复教学。真实取消改用expectedStage并保留响应不明时原申请编号，Web默认写入关闭。用法及边界见[本批说明](docs/architecture/Web中央地图联动与取消恢复演练-20261018.md)。

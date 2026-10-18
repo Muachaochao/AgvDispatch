@@ -4,6 +4,7 @@ import { useDispatchStore } from '../stores/dispatch';
 import { useToastStore } from '../stores/toast';
 import { newTaskRequestId } from '../task-request';
 import ConsoleDialog from '../ConsoleDialog.vue';
+import {cancelIntent,type CancelIntent} from '../cancel-intent';
 
 const props = defineProps<{ taskId: string; stage: string }>();
 const emit = defineEmits<{ done: [] }>();
@@ -25,12 +26,12 @@ async function submit() {
   if (busy.value || reason.value.trim().length < 10) return;
   busy.value = true;
   try {
-    const result = await store.api<{ accepted: boolean; message: string }>(`/api/tasks/${encodeURIComponent(props.taskId)}/cancel`, {
-      requestId: newTaskRequestId(),
-      taskId: props.taskId,
-      currentStage: props.stage,
-      reason: reason.value.trim()
-    });
+    const key='agv-cancel-intent-v1:'+props.taskId;
+    const raw=sessionStorage.getItem(key);const previous=raw?JSON.parse(raw) as CancelIntent:null;
+    const intent=cancelIntent(previous,props.taskId,props.stage,reason.value,newTaskRequestId);
+    sessionStorage.setItem(key,JSON.stringify(intent));
+    const result = await store.api<{ accepted: boolean; message: string }>(`/api/tasks/${encodeURIComponent(props.taskId)}/cancel`,intent);
+    sessionStorage.removeItem(key);
     if (result.accepted) {
       toast.success(result.message || '取消请求已提交');
     } else {
@@ -39,7 +40,8 @@ async function submit() {
     open.value = false;
     emit('done');
   } catch (ex) {
-    toast.error(`取消请求失败：${String(ex)}`);
+    toast.error(`取消结果需核对：${String(ex)}。原请求编号保留，请刷新任务；勿换编号重发。`);
+    emit('done');
   } finally {
     busy.value = false;
   }

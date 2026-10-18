@@ -52,7 +52,7 @@ app.MapGet("/api/config", () => new { taskSubmissionEnabled = submissions, sourc
 app.MapEditorApi();
 app.MapEngineeringApi();
 app.MapProjectApi();
-app.MapDiagnosticsApi(builder.Configuration.GetValue("Web:EnableRecoveryActions",false));
+app.MapDiagnosticsApi(builder.Configuration.GetValue("Web:EnableRecoveryActions",false),submissions);
 app.MapGet("/api/snapshot", async (SnapshotReader reader, CancellationToken ct) => await reader.ReadAsync(ct));
 app.MapGet("/api/task-options", async (DispatchPipe pipe, CancellationToken ct) =>
     await pipe.ReadAsync<ManualTaskCreationOptions>(TrafficControlOperations.GetTaskCreationOptions, new { }, ct));

@@ -27,7 +27,7 @@ var databasePath = Path.Combine(root, "private.db");
 var pipeName = "AgvWebTest-" + Guid.NewGuid().ToString("N");
 var nodes = new MapNode[] { new("A", 0, 0, MapNodeType.Station, true, [], "LM1"), new("B", 10, 0, MapNodeType.WaitingPoint, true, [], "LM2") };
 var edge = new MapEdge("CURVE", "A", "B", 12, 1, true, true, []) { GeometryKind = MapEdgeGeometryKind.CubicBezier, ControlPoints = [new(2, 4), new(8, 4)] };
-var definition = new MapDefinition("隔离测试地图", "synthetic", "TestCartesian", "m", nodes, [edge], []);
+var definition = new MapDefinition("隔离测试地图", "synthetic", "TestCartesian", "m", nodes, [edge], [new("NARROW",TrafficResourceType.NarrowAisle,1,[new(4,-1),new(6,-1),new(6,3),new(4,3)]),new("HELD",TrafficResourceType.Station,1,[new(-1,-1),new(1,-1),new(1,1),new(-1,1)])]);
 var projected = SnapshotReader.ProjectMap(new(DateTimeOffset.UtcNow, "MAP-WEB-TEST", "V1", definition, []))!;
 var projectionJson = JsonSerializer.SerializeToElement(projected, WebJson.Options);
 Check(projectionJson.GetProperty("edges")[0].GetProperty("points").GetArrayLength() == 33, "曲线使用Domain统一采样33点，不退化为直线");
@@ -132,6 +132,8 @@ try
     var diagnosticBytes=await archiveResponse.Content.ReadAsByteArrayAsync();
     Check(archiveResponse.IsSuccessStatusCode&&archiveResponse.Content.Headers.ContentType?.MediaType=="application/zip"&&Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(diagnosticBytes))==archiveResponse.Headers.GetValues("X-Content-SHA256").Single(),"HTTP下载联调ZIP且SHA256一致");
     using(var archiveZip=new System.IO.Compression.ZipArchive(new MemoryStream(diagnosticBytes)))Check(archiveZip.GetEntry("manifest.json")!=null&&archiveZip.GetEntry("runtime-events.csv")!=null,"联调包含清单和信号/阶段CSV");
+    using var cancelDefault=await http.PostAsJsonAsync("/api/tasks/WEB-ISOLATED-TASK/cancel",new TaskCancelRequest(Guid.NewGuid().ToString("N"),"WEB-ISOLATED-TASK",DispatchTaskStage.Completed,"隔离测试默认取消写入必须拒绝"),WebJson.Options);
+    Check(cancelDefault.StatusCode==HttpStatusCode.Forbidden,"Web默认关闭取消写入口，与界面开关一致");
     using var recoveryRead=await http.GetAsync("/api/recovery");
     var recoveryJson=await recoveryRead.Content.ReadFromJsonAsync<JsonElement>();
     Check(recoveryRead.IsSuccessStatusCode&&!recoveryJson.GetProperty("recoveryEnabled").GetBoolean()&&recoveryJson.GetProperty("items").ValueKind==JsonValueKind.Array,"恢复入口可只读查询，写操作默认关闭");
@@ -298,6 +300,18 @@ try
         diagnosticDb.Updateable<DispatchTaskStepEntity>().SetColumns(s => new DispatchTaskStepEntity { Status=(int)DispatchTaskStepStatus.Ready, CompletedAt=null }).Where(s => s.StepId == "WEB-STEP-2").ExecuteCommand();
         diagnosticDb.Updateable<DispatchTaskStepEntity>().SetColumns(s => new DispatchTaskStepEntity { Status=(int)DispatchTaskStepStatus.Pending, StartedAt=null, CompletedAt=null }).Where(s => s.TaskId == "WEB-ISOLATED-TASK" && s.Sequence > 2).ExecuteCommand();
     }
+    using(var trafficDb=DatabaseFactory.Create(new(){DatabasePath=databasePath})){
+        var manager=new TrafficResourceManager(trafficDb,new TrafficResourceCatalog(definition.Resources),new(TimeSpan.FromMinutes(5)));
+        await manager.RecordRouteAsync(new("BLOCK-STEP","BLOCK-TASK","BLOCKER","A","B",["CURVE"],["NARROW"],false,"isolated blocker"){MapId="MAP-WEB-TEST",MapVersionId="V1"},default);
+        await manager.TryAcquireAsync("BLOCK-STEP","BLOCK-TASK","BLOCKER",["NARROW"],default);
+        await manager.RecordRouteAsync(new("WEB-STEP-1","WEB-ISOLATED-TASK","AGV-TEST","A","B",["CURVE"],["HELD"],false,"isolated held"){MapId="MAP-WEB-TEST",MapVersionId="V1"},default);
+        await manager.TryAcquireAsync("WEB-STEP-1","WEB-ISOLATED-TASK","AGV-TEST",["HELD"],default);
+        await manager.RecordRouteAsync(new("WEB-STEP-2","WEB-ISOLATED-TASK","AGV-TEST","A","B",["CURVE"],["NARROW"],true,"isolated waiting"){MapId="MAP-WEB-TEST",MapVersionId="V1"},default);
+        await manager.TryAcquireAsync("WEB-STEP-2","WEB-ISOLATED-TASK","AGV-TEST",["NARROW"],default);
+    }
+    using var observedTraffic=await http.GetAsync("/api/snapshot");var trafficSnapshot=await observedTraffic.Content.ReadFromJsonAsync<JsonElement>();
+    var waitingObservation=trafficSnapshot.GetProperty("traffic").GetProperty("requests").EnumerateArray().Single(x=>x.GetProperty("stepId").GetString()=="WEB-STEP-2");
+    Check(waitingObservation.GetProperty("blockingObservationCurrent").GetBoolean()&&waitingObservation.GetProperty("blockers")[0].GetProperty("vehicleId").GetString()=="BLOCKER","真实路权观察输出明确阻塞车辆，不按路线交叉推测");
     using var activeDiagnostic = await http.GetAsync("/api/tasks/WEB-ISOLATED-TASK");
     var activeDetail = await activeDiagnostic.Content.ReadFromJsonAsync<TaskCenterDetail>(WebJson.Options);
     Check(activeDetail?.Steps.Single(s => s.IsCurrent).ProgressConditions.Count == 3 && activeDetail.PlcConditions.All(c => c.Result == "Unknown"), "活动步骤输出三项实际条件；关闭PLC时为未知，不生成满足值");
@@ -308,6 +322,33 @@ try
         var hold = Path.Combine(root, "inspect-hold"); File.WriteAllText(hold, "isolated UI verification");
         var deadline = DateTimeOffset.UtcNow.AddMinutes(10);
         while (File.Exists(hold) && DateTimeOffset.UtcNow < deadline) await Task.Delay(500);
+    }
+    // A second loopback adapter enables Web operations only against this private Service. Device execution stays disabled.
+    using(var controlListener=new TcpListener(IPAddress.Loopback,0)){
+        controlListener.Start();var controlPort=((IPEndPoint)controlListener.LocalEndpoint).Port;controlListener.Stop();
+        var controls=bridgeArguments.Select(a=>a.StartsWith("--Web:Port=")?"--Web:Port="+controlPort:a=="--Web:EnableTaskSubmission=false"?"--Web:EnableTaskSubmission=true":a).Append("--Web:EnableRecoveryActions=true").ToArray();
+        using var controlBridge=candidateRoot==null?Launch("dotnet",workspace,[Path.Combine(workspace,"AgvDispatch.WebHost/bin/Debug/net10.0-windows10.0.19041.0/AgvDispatch.WebHost.dll"),..controls]):Launch(Path.Combine(candidateRoot,"Web/host/AgvDispatch.WebHost.exe"),Path.Combine(candidateRoot,"Web"),controls);
+        var controlOut=controlBridge.StandardOutput.ReadToEndAsync();var controlErr=controlBridge.StandardError.ReadToEndAsync();
+        try{
+            using var controlHttp=new HttpClient{BaseAddress=new Uri($"http://127.0.0.1:{controlPort}"),Timeout=TimeSpan.FromSeconds(12)};
+            for(var retry=0;retry<60;retry++){try{if((await controlHttp.GetAsync("/health")).IsSuccessStatusCode)break;}catch(HttpRequestException){}await Task.Delay(100);}
+            using var missingStage=await controlHttp.PostAsJsonAsync("/api/tasks/WEB-ISOLATED-TASK/cancel",new{requestId=Guid.NewGuid().ToString("N"),taskId="WEB-ISOLATED-TASK",currentStage="PickingUp",reason="隔离测试旧字段不能默认为其他阶段"});
+            Check(missingStage.StatusCode==HttpStatusCode.BadRequest,"取消接口拒绝旧currentStage或缺少expectedStage，不能缺省成Created");
+            using(var cancelDb=DatabaseFactory.Create(new(){DatabasePath=databasePath})){
+                cancelDb.Updateable<DispatchTaskEntity>().SetColumns(t=>t.Stage==(int)DispatchTaskStage.GoingToPickup).Where(t=>t.TaskId=="WEB-ISOLATED-TASK").ExecuteCommand();
+                cancelDb.Updateable<DispatchTaskStepEntity>().SetColumns(t=>new DispatchTaskStepEntity{Status=(int)DispatchTaskStepStatus.Executing,CompletedAt=null}).Where(t=>t.StepId=="WEB-STEP-1").ExecuteCommand();
+                cancelDb.Updateable<DispatchTaskStepEntity>().SetColumns(t=>t.Status==(int)DispatchTaskStepStatus.Pending).Where(t=>t.StepId=="WEB-STEP-2").ExecuteCommand();
+            }
+            var cancelRequest=new TaskCancelRequest(Guid.NewGuid().ToString("N"),"WEB-ISOLATED-TASK",DispatchTaskStage.GoingToPickup,"隔离HTTP验证取消原运输并保留路权等待确认");
+            using var cancelResponse=await controlHttp.PostAsJsonAsync("/api/tasks/WEB-ISOLATED-TASK/cancel",cancelRequest,WebJson.Options);var cancelResult=await cancelResponse.Content.ReadFromJsonAsync<TaskCancelResult>(WebJson.Options);
+            Check(cancelResult?.Accepted==true,"Web expectedStage沿原Service取消入口接受原阶段意图");
+            using var replayResponse=await controlHttp.PostAsJsonAsync("/api/tasks/WEB-ISOLATED-TASK/cancel",cancelRequest,WebJson.Options);var replayResult=await replayResponse.Content.ReadFromJsonAsync<TaskCancelResult>(WebJson.Options);
+            Check(replayResult?.Accepted==true,"取消同编号重放关联原意图，不生成第二次请求");
+            using var pendingResponse=await controlHttp.GetAsync("/api/tasks/WEB-ISOLATED-TASK");var pending=await pendingResponse.Content.ReadFromJsonAsync<TaskCenterDetail>(WebJson.Options);
+            Check(pending?.Task.Stage==DispatchTaskStage.CancellationPending&&pending.Cancellation?.ConfirmedAt==null&&pending.Resources.Any(x=>x.ResourceId=="HELD"),"取消确认未到时原占用仍在，任务不伪装已取消或已完成");
+            using var earlyRecovery=await controlHttp.PostAsJsonAsync("/api/recovery/begin",new TaskRecoveryReviewRequest("WEB-ISOLATED-TASK","隔离测试车辆取消未确认不得进入恢复处置"),WebJson.Options);var early=await earlyRecovery.Content.ReadFromJsonAsync<RecoveryResult>(WebJson.Options);
+            Check(early?.Accepted==false,"Web不能在原车取消待确认时提前开启恢复处置");
+        }finally{if(!controlBridge.HasExited){controlBridge.Kill();await controlBridge.WaitForExitAsync();}File.WriteAllText(Path.Combine(root,"control-web.log"),await controlOut+await controlErr);}
     }
     service.Kill(); await service.WaitForExitAsync();
     using var disconnectTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));

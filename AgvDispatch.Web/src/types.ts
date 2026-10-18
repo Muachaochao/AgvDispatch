@@ -1,4 +1,4 @@
-﻿export interface Point { x: number; y: number }
+export interface Point { x: number; y: number }
 export interface MapNode extends Point { id: string; agvSiteId?: string; enabled: boolean; type: string }
 export interface MapEdge { id: string; from: string; to: string; enabled: boolean; bidirectional: boolean; kind: string; points: Point[] }
 export interface MapResource { id: string; capacity: number; boundary?: Point[] }
@@ -11,11 +11,12 @@ export interface TaskRow { taskId: string; stationId: string; vehicleId: string 
 export interface DeviceField { name: string; value: string; quality: string; address: string; updatedAt: string }
 export interface Device { id: string; name: string; status: string; quality: string; summary: string; fields: DeviceField[] }
 export interface Snapshot { receivedAt: string; connected: boolean; source: 'demo' | 'backend'; error: string | null; map: WebMap | null;
+  traffic?: TrafficObservation | null;
   alarms?: Alarm[];
   positionedVehicleIds: string[]; status: { service?:{version:string;startedAt:string};execution?:import('./commissioning').BackendExecution; generatedAt: string; agvs: Vehicle[]; safety: { dispatchingEnabled: boolean; plcWritesAllowed: boolean; agvCommandsAllowed: boolean }; plc: { state: string; goodSignals: number; totalSignals: number } } | null;
   tasks: { items: TaskRow[]; totalCount: number } | null; devices: { equipment: Device[] } | null;
   resources: { resourceId: string; capacity: number; occupiedCount: number; leases: { vehicleId: string; taskId: string }[] }[] | null }
-export interface TaskDetail { handshakeMode?:string; handshakeContractVersion?:string; handshakes?:HandshakeCheckpoint[]; handover?:HandoverDiagnosis; task: TaskRow; waitingExplanation: string; steps: { stepId?:string; observedPhase?:string; completionRequirement?:string; evidenceBoundary?:string; commandStateExplanation?:string; progressConditions?:ProgressCondition[]; sequence: number; stepType: string; status: string; isCurrent: boolean; waitingExplanation: string; vendorTaskId?: string; sourceSite?:string; destinationSite?:string; elapsedText?:string; timeoutText?:string; errorMessage?:string }[];
+export interface TaskDetail { cancellation?:{requestId:string;reason:string;requestedAt?:string;sendAttempts:number;sentAt?:string;confirmedAt?:string}; handshakeMode?:string; handshakeContractVersion?:string; handshakes?:HandshakeCheckpoint[]; handover?:HandoverDiagnosis; task: TaskRow; waitingExplanation: string; steps: { stepId?:string; observedPhase?:string; completionRequirement?:string; evidenceBoundary?:string; commandStateExplanation?:string; progressConditions?:ProgressCondition[]; sequence: number; stepType: string; status: string; isCurrent: boolean; waitingExplanation: string; vendorTaskId?: string; sourceSite?:string; destinationSite?:string; elapsedText?:string; timeoutText?:string; errorMessage?:string }[];
   diagnosticsObservedAt?:string; executionTimelineTotal?:number; executionTimeline?:ExecutionEvent[];
   commands?: {route?:TaskRoute|null;commandId:string;stepId:string;status:string;attemptCount:number;lastError?:string;vendorCommandId?:string}[];
   resources?: {resourceId:string;vehicleId:string;expiresAt:string;heartbeatExpired:boolean}[];
@@ -34,3 +35,8 @@ export interface HandshakeCheckpoint {taskId:string;stepId:string;cycleId:string
 export interface HandoverDiagnosis {state:string;reason:string;returnCommandCompleted:boolean;exitPhysicallyVerified:boolean;heldResources:string[];recordedReleaseReasons:string[]}
 export interface RuntimeEvent {evidence?:string;sequence:number;taskId:string;stepId:string;kind:string;phase:string;stationId:string;signal:string;previousValue:boolean|null;value:boolean|null;quality:string;observedAt:string|null;recordedAt:string;reason:string}
 export interface RuntimePage {items:RuntimeEvent[];totalCount:number;page:number;pageSize:number;throughSequence:number}
+
+export interface TrafficOwner {resourceId:string;mapId?:string|null;mapVersionId?:string|null}
+export interface TrafficBlocker extends TrafficOwner {taskId:string;vehicleId:string;stepId:string;heartbeatExpired:boolean}
+export interface TrafficRequest {taskId:string;stepId:string;vehicleId:string;mapId?:string|null;mapVersionId?:string|null;state:string;reason:string;resourceIds:string[];heldResources:TrafficOwner[];blockers:TrafficBlocker[];blockingObservationCurrent:boolean;waitingSeconds?:number|null;waitingStartKnown?:boolean;waitingClockValid?:boolean;priority?:number|null}
+export interface TrafficObservation {capturedAt:string;requests:TrafficRequest[];requestsTruncated:boolean}

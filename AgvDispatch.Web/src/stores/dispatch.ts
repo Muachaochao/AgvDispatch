@@ -5,7 +5,8 @@ import type { AdapterIdentity } from '../release-state';
 import { isFresh, isRunningStage, mayPlot } from '../state';
 import { vehicleCategory, type VehicleCategory } from '../dashboard';
 import { useToastStore } from './toast';
-import { demoSnapshot } from '../demo';
+import { demoSnapshot,demoDetail } from '../demo';
+import {rehearsalSnapshot,rehearsalDetail} from '../traffic-rehearsal';
 
 export const useDispatchStore = defineStore('dispatch', () => {
   const snapshot = shallowRef<Snapshot | null>(null);
@@ -50,6 +51,9 @@ export const useDispatchStore = defineStore('dispatch', () => {
   const demoMode = ref(false);
   let demoTimer: ReturnType<typeof setInterval> | undefined;
   let demoStep = 0;
+  const rehearsalPhase=ref<number|null>(null);
+  function setRehearsal(phase:number){if(!demoMode.value)return;rehearsalPhase.value=phase;snapshot.value=rehearsalSnapshot(phase);}
+  function demoTaskDetail(id:string){if(!demoMode.value||!snapshot.value)return null;if(rehearsalPhase.value!==null)return rehearsalDetail(snapshot.value,id,rehearsalPhase.value);const d=demoDetail(demoStep);return d.task.taskId===id?d:null;}
 
   function connectDemo() {
     stopConnection();
@@ -60,18 +64,18 @@ export const useDispatchStore = defineStore('dispatch', () => {
     adapterIdentity.value = null;
     previewMap.value = null;
     error.value = '';
-    demoStep = 0;
+    demoStep = 0;rehearsalPhase.value=null;
     snapshot.value = demoSnapshot(demoStep);
     demoTimer = setInterval(() => {
       demoStep = (demoStep + 1) % 10;
-      snapshot.value = demoSnapshot(demoStep);
+      snapshot.value = rehearsalPhase.value===null?demoSnapshot(demoStep):rehearsalSnapshot(rehearsalPhase.value);
     }, 3000);
   }
 
   function stopDemo() {
     clearInterval(demoTimer);
     demoTimer = undefined;
-    demoMode.value = false;
+    demoMode.value = false;rehearsalPhase.value=null;
   }
 
   async function api<T>(path: string, payload?: unknown): Promise<T> {
@@ -203,6 +207,6 @@ export const useDispatchStore = defineStore('dispatch', () => {
     fresh, vehicles, allTasks, equipment, resources, alarms, openAlarms,
     activeCount, vehicleStats, ringSegments, mapVehicleCount,
     api, connectBackend, connectDemo, stopConnection, dispose,
-    startNowTimer, stopNowTimer, previewMap, demoMode
+    startNowTimer, stopNowTimer, previewMap, demoMode,rehearsalPhase,setRehearsal,demoTaskDetail
   };
 });

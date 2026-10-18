@@ -4,6 +4,7 @@ import { makePoint, makePathObject, makeWaitingArea, makeLabel } from './vendor/
 import type { Snapshot, WebMap } from './types';
 import { mayPlot } from './state';
 import { vehicleCategory } from './dashboard';
+import type {TrafficFocus} from './traffic-focus';
 
 const VEHICLE_COLORS: Record<string, string> = {
   running: '#21dca3', waiting: '#eeb85c', idle: '#ad8aeb', charging: '#5aaee8',
@@ -18,6 +19,7 @@ export class DispatchScene {
   private mapGroup = new THREE.Group();
   private vehicleGroup = new THREE.Group();
   private edges = new Map<string, THREE.Group>();
+  private resourceMeshes = new Map<string,THREE.Mesh>();
   private resizeObserver: ResizeObserver;
   private frame = 0;
   private mapKey = '';
@@ -64,19 +66,21 @@ export class DispatchScene {
     animate();
   }
 
-  update(snapshot: Snapshot | null, selected = '', selectedEdge = '') {
+  update(snapshot: Snapshot | null, selected = '', selectedEdge = '', focus?:TrafficFocus, now=Date.now()) {
     const map = snapshot?.map;
-    const key = map ? `${snapshot?.source}:${map.id}:${map.version}` : '';
+    const key = map ? `${snapshot?.source}:${map.id}:${map.version}:${map.definitionHash}` : '';
     if (key !== this.mapKey) { this.mapKey = key; this.drawMap(map ?? null); }
 
+    const enabled=new Set(map?.edges.filter(e=>e.enabled).map(e=>e.id)??[]);
     for (const [id, group] of this.edges) group.traverse(object => {
-      if (object instanceof THREE.Line) (object.material as THREE.LineBasicMaterial).color.set(id === selectedEdge ? '#ffffff' : '#3e8da8');
+      if (object instanceof THREE.Line) (object.material as THREE.LineBasicMaterial).color.set(focus?.edgeIds.includes(id) ? '#47e4b3' : id === selectedEdge ? '#ffffff' : enabled.has(id) ? '#3e8da8' : '#455365');
     });
 
+    for(const [id,mesh] of this.resourceMeshes){const material=mesh.material as THREE.MeshBasicMaterial;const blocked=focus?.blocked.includes(id),held=focus?.held.includes(id);material.color.set(blocked?'#ff657e':held?'#ffbd59':'#e4aa4f');material.opacity=blocked ? .5 : held ? .35 : .12;}
     const activeIds = new Set<string>();
     if (snapshot) {
       for (const vehicle of snapshot.status?.agvs ?? []) {
-        if (!mayPlot(snapshot, vehicle)) continue;
+        if (!mayPlot(snapshot, vehicle, now)) continue;
         activeIds.add(vehicle.vehicleId);
         const category = vehicleCategory(vehicle, snapshot.tasks?.items ?? [], true);
         const color = VEHICLE_COLORS[category] ?? VEHICLE_COLORS.unknown;
@@ -103,17 +107,19 @@ export class DispatchScene {
 
         entry.label.position.set(vehicle.x!, 0.4, -vehicle.y! - 1.1);
 
-        if (vehicle.vehicleId === selected && !entry.ring) {
-          const ring = new THREE.Mesh(this.ringGeometry, this.ringMaterial);
+        const role=focus?.blockers.includes(vehicle.vehicleId)?'blocker':focus?.vehicleId===vehicle.vehicleId?'task':vehicle.vehicleId===selected?'selected':'';
+        if (role && !entry.ring) {
+          const ring = new THREE.Mesh(this.ringGeometry, this.ringMaterial.clone());
           ring.rotation.x = -Math.PI / 2;
           ring.position.y = -0.29;
           entry.group.add(ring);
           entry.ring = ring;
-        } else if (vehicle.vehicleId !== selected && entry.ring) {
-          entry.group.remove(entry.ring);
+        } else if (!role && entry.ring) {
+          entry.group.remove(entry.ring); (entry.ring.material as THREE.Material).dispose();
           entry.ring = null;
         }
 
+        if(entry.ring)(entry.ring.material as THREE.MeshBasicMaterial).color.set(role==='blocker'?'#ff657e':role==='task'?'#47e4b3':'#d6f5ff');
         if (!entry.group.parent) this.vehicleGroup.add(entry.group);
         if (!entry.label.parent) this.vehicleGroup.add(entry.label);
       }
@@ -128,7 +134,7 @@ export class DispatchScene {
   }
 
   private drawMap(map: WebMap | null) {
-    this.clearGroup(this.mapGroup); this.edges.clear();
+    this.clearGroup(this.mapGroup); this.edges.clear();this.resourceMeshes.clear();
     for (const [, entry] of this.vehiclePool) {
       if (entry.group.parent) this.vehicleGroup.remove(entry.group);
       if (entry.label.parent) this.vehicleGroup.remove(entry.label);
@@ -136,9 +142,9 @@ export class DispatchScene {
     this.vehiclePool.clear();
 
     if (!map?.nodes.length) return;
-    const xs = map.nodes.map(n => n.x), ys = map.nodes.map(n => -n.y);
-    if (![...xs, ...ys].every(Number.isFinite)) return;
-    const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+    let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
+    const add=(p:{x:number;y:number})=>{if(!Number.isFinite(p.x)||!Number.isFinite(p.y))return;minX=Math.min(minX,p.x);maxX=Math.max(maxX,p.x);minY=Math.min(minY,-p.y);maxY=Math.max(maxY,-p.y);};
+    map.nodes.forEach(add);map.edges.forEach(e=>e.points.forEach(add));map.resources.forEach(r=>r.boundary?.forEach(add));if(!Number.isFinite(minX))return;
     this.center.set((minX + maxX) / 2, 0, (minY + maxY) / 2);
     this.span = Math.max(maxX - minX, maxY - minY, 15);
     const grid = new THREE.GridHelper(Math.ceil(this.span * 1.5), 30, '#294258', '#1b2d40');
@@ -163,7 +169,7 @@ export class DispatchScene {
       if (!resource.boundary?.length) continue;
       const shape = new THREE.Shape(resource.boundary.map(p => new THREE.Vector2(p.x, p.y)));
       const mesh = new THREE.Mesh(new THREE.ShapeGeometry(shape), new THREE.MeshBasicMaterial({ color: '#e4aa4f', transparent: true, opacity: 0.12, side: THREE.DoubleSide }));
-      mesh.rotation.x = -Math.PI / 2; mesh.position.y = -0.03; this.mapGroup.add(mesh);
+      mesh.rotation.x = -Math.PI / 2; mesh.position.y = -0.03; this.mapGroup.add(mesh);this.resourceMeshes.set(resource.id,mesh);
     }
     for (const node of map.nodes.filter(n => n.type === 'WaitingPoint' || n.id === 'WAIT'))
       this.mapGroup.add(makeWaitingArea({ name: '', type: 'waiting', x: node.x, y: 0, z: -node.y, width: 2, height: 1.8 }));

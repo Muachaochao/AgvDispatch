@@ -4,12 +4,15 @@ namespace AgvDispatch.WebHost;
 
 public static class DiagnosticsApi
 {
-    public static void MapDiagnosticsApi(this WebApplication app,bool recoveryEnabled)
+    public sealed record WebCancelRequest(string RequestId,string TaskId,AgvDispatch.Domain.Tasks.DispatchTaskStage? ExpectedStage,string Reason);
+    public static void MapDiagnosticsApi(this WebApplication app,bool recoveryEnabled,bool taskOperationsEnabled=false)
     {
-        app.MapPost("/api/tasks/{id}/cancel",async(string id,TaskCancelRequest request,DispatchPipe pipe,CancellationToken ct)=>
+        app.MapPost("/api/tasks/{id}/cancel",async(string id,WebCancelRequest request,DispatchPipe pipe,CancellationToken ct)=>
         {
+            if(!taskOperationsEnabled)return Disabled();
+            if(request.ExpectedStage is null)return Results.BadRequest(new{error="必须提供原观察expectedStage；不接受缺省状态。"});
             if(request.TaskId!=id)return Results.BadRequest(new{error="任务身份不一致。"});
-            return Results.Ok(await pipe.ReadAsync<TaskCancelResult>("CancelDispatchTask",request,ct));
+            return Results.Ok(await pipe.ReadAsync<TaskCancelResult>("CancelDispatchTask",new TaskCancelRequest(request.RequestId,request.TaskId,request.ExpectedStage.Value,request.Reason),ct));
         });
         app.MapPost("/api/commissioning",async(CommissioningQuery query,DispatchPipe pipe,CancellationToken ct)=>
         {

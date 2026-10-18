@@ -73,7 +73,7 @@ onUnmounted(() => {
       <div class="source-indicator">
         <i class="status-dot" :class="store.demoMode ? 'amber' : store.fresh ? 'green' : 'red'"></i>
         <b>{{ store.demoMode ? '演示模式 · 合成数据' : store.fresh ? '真实后台已连接' : '真实后台未连接 / 数据过期' }}</b>
-        <span>{{ store.demoMode ? '九步任务流程模拟，每3秒推进一步。数据为浏览器合成，不代表真实设备。' : store.error || (store.snapshot ? `最近观察 ${shortTime(store.snapshot.receivedAt)}` : '正在连接C#调度主服务…') }}</span>
+        <span>{{ store.demoMode ? (store.rehearsalPhase===null?'九步任务流程模拟，每3秒推进一步。数据为浏览器合成，不代表真实设备。':'交通与取消恢复演练：手动推进。全部为合成教学，不代表真实设备。') : store.error || (store.snapshot ? `最近观察 ${shortTime(store.snapshot.receivedAt)}` : '正在连接C#调度主服务…') }}</span>
       </div>
       <button class="text-button" @click="router.push('/commissioning')">
         {{ store.fresh ? '主服务' : '最后观察主服务' }}

@@ -20,6 +20,7 @@ public sealed record WebSnapshot(DateTimeOffset ReceivedAt, bool Connected, stri
     TaskListPage? Tasks, IReadOnlyList<TrafficResourceSnapshot>? Resources, string[] PositionedVehicleIds)
 {
     public IReadOnlyList<AlarmSnapshot> Alarms { get; init; } = [];
+    public TrafficLifecycleSnapshot? Traffic { get; init; }
 }
 
 public sealed class SnapshotReader(DispatchPipe pipe)
@@ -33,6 +34,7 @@ public sealed class SnapshotReader(DispatchPipe pipe)
         var tasks = await pipe.ReadAsync<TaskListPage>(TrafficControlOperations.GetTasks, new TaskListQuery(PageSize: 50), ct);
         var devices = await pipe.ReadAsync<DeviceMonitoringSnapshot>(TrafficControlOperations.GetDeviceMonitoring, new { }, ct);
         var resources = await pipe.ReadAsync<TrafficResourceSnapshot[]>(TrafficControlOperations.GetResources, new { }, ct);
+        var traffic = await pipe.ReadAsync<TrafficLifecycleSnapshot>(TrafficControlOperations.GetTrafficLifecycle, new { }, ct);
         var alarms = await pipe.ReadAsync<AlarmSnapshot[]>(TrafficControlOperations.GetAlarms, new { MaximumCount = 100, ActiveOnly = false }, ct);
         var settings = await pipe.ReadAsync<CommunicationSettingsSnapshot>(TrafficControlOperations.GetCommunicationSettings, new { }, ct);
         // Multi-call observations are not an atomic device snapshot. Reject a map switch observed between calls.
@@ -45,7 +47,7 @@ public sealed class SnapshotReader(DispatchPipe pipe)
         // Imported translated SMAP currently has no transform in the IPC contract. Do not put raw robot XY on it.
         if (map?.Definition?.CoordinateSystem == "SmapWorldTranslated") positioned = [];
         return new(DateTimeOffset.UtcNow, true, "backend", null, status, ProjectMap(map), devices, tasks, resources, positioned)
-        { Alarms = alarms ?? [] };
+        { Alarms = alarms ?? [], Traffic = traffic };
     }
 
     public static WebMap? ProjectMap(TrafficMapSnapshot? snapshot)
