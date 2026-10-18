@@ -51,6 +51,7 @@ app.MapGet("/api/config", () => new { taskSubmissionEnabled = submissions, sourc
     servicePipeName = builder.Configuration["Web:PipeName"] ?? "AgvDispatch.Service" });
 app.MapEditorApi();
 app.MapEngineeringApi();
+app.MapWaitingApi();
 app.MapProjectApi();
 app.MapDiagnosticsApi(builder.Configuration.GetValue("Web:EnableRecoveryActions",false),submissions);
 app.MapGet("/api/snapshot", async (SnapshotReader reader, CancellationToken ct) => await reader.ReadAsync(ct));

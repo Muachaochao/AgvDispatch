@@ -18,10 +18,12 @@ export class DispatchScene {
   private controls: OrbitControls;
   private mapGroup = new THREE.Group();
   private vehicleGroup = new THREE.Group();
+  private resourceFocus=new THREE.Group();
   private edges = new Map<string, THREE.Group>();
   private resourceMeshes = new Map<string,THREE.Mesh>();
   private resizeObserver: ResizeObserver;
   private frame = 0;
+  private sized=false;
   private mapKey = '';
   private center = new THREE.Vector3();
   private span = 25;
@@ -43,11 +45,11 @@ export class DispatchScene {
     this.controls.maxPolarAngle = Math.PI / 2 - 0.03;
     this.scene.add(new THREE.HemisphereLight(0xc6e8ff, 0x26374b, 3));
     const light = new THREE.DirectionalLight(0xffffff, 2); light.position.set(10, 25, 10); this.scene.add(light);
-    this.scene.add(this.mapGroup, this.vehicleGroup);
+    this.scene.add(this.mapGroup, this.vehicleGroup,this.resourceFocus);
     this.resizeObserver = new ResizeObserver(() => {
       const { width, height } = container.getBoundingClientRect();
       if (width < 1 || height < 1) return;
-      this.renderer.setSize(width, height); this.camera.aspect = width / Math.max(height, 1); this.camera.updateProjectionMatrix(); this.view(this.mode);
+      this.renderer.setSize(width, height); this.camera.aspect = width / Math.max(height, 1); this.camera.updateProjectionMatrix(); if(!this.sized){this.sized=true;this.view(this.mode);}
     });
     this.resizeObserver.observe(container);
     this.onPointer = event => {
@@ -134,7 +136,7 @@ export class DispatchScene {
   }
 
   private drawMap(map: WebMap | null) {
-    this.clearGroup(this.mapGroup); this.edges.clear();this.resourceMeshes.clear();
+    this.clearResourceFocus();this.clearGroup(this.mapGroup); this.edges.clear();this.resourceMeshes.clear();
     for (const [, entry] of this.vehiclePool) {
       if (entry.group.parent) this.vehicleGroup.remove(entry.group);
       if (entry.label.parent) this.vehicleGroup.remove(entry.label);
@@ -176,6 +178,15 @@ export class DispatchScene {
     this.view(this.mode);
   }
 
+  clearResourceFocus(){this.clearGroup(this.resourceFocus);}
+  focusResource(id:string,bounds:{x:number;y:number;span:number}){
+    const mesh=this.resourceMeshes.get(id);if(!mesh)return;
+    this.clearResourceFocus();const box=new THREE.Box3().setFromObject(mesh);
+    const outline=new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(box.min.x,.15,box.min.z),new THREE.Vector3(box.max.x,.15,box.min.z),new THREE.Vector3(box.max.x,.15,box.max.z),new THREE.Vector3(box.min.x,.15,box.max.z)]),new THREE.LineBasicMaterial({color:'#ffffff',depthTest:false}));outline.renderOrder=10;this.resourceFocus.add(outline);
+    const target=new THREE.Vector3(bounds.x,0,-bounds.y),direction=this.camera.position.clone().sub(this.controls.target).normalize();
+    const distance=Math.max(4,bounds.span/(2*Math.tan(THREE.MathUtils.degToRad(this.camera.fov/2)))*1.5/Math.min(1,this.camera.aspect));
+    this.controls.target.copy(target);this.camera.position.copy(target).add(direction.multiplyScalar(distance));this.controls.update();
+  }
   view(mode: 'top' | 'isometric') {
     this.mode = mode;
     const fit = 1 / Math.min(this.camera.aspect, 1);
@@ -207,7 +218,7 @@ export class DispatchScene {
     this.controls.dispose();
     this.renderer.domElement.removeEventListener('pointerup', this.onPointer);
     this.clearGroup(this.mapGroup);
-    this.clearGroup(this.vehicleGroup);
+    this.clearGroup(this.vehicleGroup);this.clearResourceFocus();
     this.bodyGeometry.dispose();
     this.ringGeometry.dispose();
     this.ringMaterial.dispose();

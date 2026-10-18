@@ -308,10 +308,29 @@ try
         await manager.TryAcquireAsync("WEB-STEP-1","WEB-ISOLATED-TASK","AGV-TEST",["HELD"],default);
         await manager.RecordRouteAsync(new("WEB-STEP-2","WEB-ISOLATED-TASK","AGV-TEST","A","B",["CURVE"],["NARROW"],true,"isolated waiting"){MapId="MAP-WEB-TEST",MapVersionId="V1"},default);
         await manager.TryAcquireAsync("WEB-STEP-2","WEB-ISOLATED-TASK","AGV-TEST",["NARROW"],default);
+        for(var i=1;i<=27;i++){
+            var task="WEB-QUEUE-"+i.ToString("D2");var step=task+"-STEP";
+            trafficDb.Insertable(new DispatchTaskEntity{TaskId=task,StationId="QUEUE-STATION-"+i,VehicleId="QUEUE-"+i,Stage=(int)DispatchTaskStage.Created,Priority=i%3*30,CreatedAt=DateTime.Now,UpdatedAt=DateTime.Now}).ExecuteCommand();
+            trafficDb.Insertable(new DispatchTaskStepEntity{StepId=step,TaskId=task,Sequence=1,StepType=(int)DispatchTaskStepType.GoToPickup,Status=(int)DispatchTaskStepStatus.Pending,CreatedAt=DateTime.Now,UpdatedAt=DateTime.Now}).ExecuteCommand();
+            await manager.RecordRouteAsync(new(step,task,"QUEUE-"+i,"A","B",["CURVE"],["NARROW"],true,"isolated queue pagination"){MapId="MAP-WEB-TEST",MapVersionId="V1"},default);
+            await manager.TryAcquireAsync(step,task,"QUEUE-"+i,["NARROW"],default);
+            var waitingSince=DateTime.UtcNow.AddMinutes(-i);trafficDb.Updateable<TrafficRequestEntity>().SetColumns(x=>new TrafficRequestEntity{WaitingSinceUtc=waitingSince,WaitingStartKnown=true}).Where(x=>x.StepId==step).ExecuteCommand();
+        }
+
     }
     using var observedTraffic=await http.GetAsync("/api/snapshot");var trafficSnapshot=await observedTraffic.Content.ReadFromJsonAsync<JsonElement>();
     var waitingObservation=trafficSnapshot.GetProperty("traffic").GetProperty("requests").EnumerateArray().Single(x=>x.GetProperty("stepId").GetString()=="WEB-STEP-2");
     Check(waitingObservation.GetProperty("blockingObservationCurrent").GetBoolean()&&waitingObservation.GetProperty("blockers")[0].GetProperty("vehicleId").GetString()=="BLOCKER","真实路权观察输出明确阻塞车辆，不按路线交叉推测");
+    async Task<JsonElement> Waiting(TrafficWaitingQuery query){using var r=await http.PostAsJsonAsync("/api/traffic/waiting",query,WebJson.Options);r.EnsureSuccessStatusCode();return await r.Content.ReadFromJsonAsync<JsonElement>();}
+    var waitingPage=await Waiting(new(PageSize:25));var secondWaiting=await Waiting(new(PageNumber:2,PageSize:25));
+    Check(waitingPage.GetProperty("page").GetProperty("items")[0].GetProperty("waitingSeconds").GetDouble()>60&&waitingPage.GetProperty("page").GetProperty("totalWaiting").GetInt32()==28&&waitingPage.GetProperty("page").GetProperty("items").GetArrayLength()==25&&secondWaiting.GetProperty("page").GetProperty("items").GetArrayLength()==3,"真实等待队列按后台28条完整计数与25/3分页，不用大屏截断记录计数");
+    var priorityPage=await Waiting(new(MinimumPriority:51,Sort:TrafficWaitingSort.PriorityThenWait));
+    Check(priorityPage.GetProperty("page").GetProperty("totalMatched").GetInt32()==9&&priorityPage.GetProperty("page").GetProperty("items").EnumerateArray().All(x=>x.GetProperty("priority").GetInt32()>=51),"最低优先级和排序沿后台查询，不修改任务优先级");
+    var missingResource=await Waiting(new(BlockingResourceId:"NOT-HELD"));var narrowWaiting=await Waiting(new(BlockingResourceId:"narrow"));
+    Check(missingResource.GetProperty("page").GetProperty("totalMatched").GetInt32()==0&&narrowWaiting.GetProperty("page").GetProperty("totalMatched").GetInt32()==28,"阻塞资源精确筛选且编号忽略大小写，空结果不生成假记录");
+    Check(waitingPage.GetProperty("mapId").GetString()=="MAP-WEB-TEST"&&waitingPage.GetProperty("mapDefinitionHash").GetString()==projected.DefinitionHash,"等待查询返回稳定活动图与摘要，供只读定位核对");
+    using var invalidWaiting=await http.PostAsJsonAsync("/api/traffic/waiting",new TrafficWaitingQuery(MinimumPriority:101),WebJson.Options);using var overWaiting=await http.PostAsJsonAsync("/api/traffic/waiting",new TrafficWaitingQuery(PageSize:51),WebJson.Options);
+    Check(invalidWaiting.StatusCode==HttpStatusCode.BadRequest&&overWaiting.StatusCode==HttpStatusCode.BadRequest,"等待接口拒绝无效优先级和超50条页面预算");
     using var activeDiagnostic = await http.GetAsync("/api/tasks/WEB-ISOLATED-TASK");
     var activeDetail = await activeDiagnostic.Content.ReadFromJsonAsync<TaskCenterDetail>(WebJson.Options);
     Check(activeDetail?.Steps.Single(s => s.IsCurrent).ProgressConditions.Count == 3 && activeDetail.PlcConditions.All(c => c.Result == "Unknown"), "活动步骤输出三项实际条件；关闭PLC时为未知，不生成满足值");
@@ -359,7 +378,7 @@ try
     Check(disconnected, "后台停止后推送明确断连，不切换成演示数据");
     await ws.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "test complete", disconnectTimeout.Token);
     using var db = DatabaseFactory.Create(new() { DatabasePath = databasePath });
-    Check(db.Queryable<DispatchTaskEntity>().Count() == 1 && db.Queryable<DispatchTaskEntity>().First().TaskId == "WEB-ISOLATED-TASK", "查询及被拒绝提交没有创建额外任务");
+    Check(db.Queryable<DispatchTaskEntity>().Count() == 28 && db.Queryable<DispatchTaskEntity>().Count(t=>t.TaskId=="WEB-ISOLATED-TASK")==1, "查询及被拒绝提交没有创建额外任务");
 }
 finally
 {

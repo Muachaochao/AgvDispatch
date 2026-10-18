@@ -36,7 +36,9 @@ try{
  ws=new WebSocket(page.webSocketDebuggerUrl);await new Promise((ok,no)=>{ws.addEventListener('open',ok,{once:true});ws.addEventListener('error',no,{once:true});});
  ws.addEventListener('message',event=>{const r=JSON.parse(event.data);if(r.id){const p=pending.get(r.id);if(p){pending.delete(r.id);r.error?p.no(new Error(JSON.stringify(r.error))):p.ok(r.result);}}else if(r.method==='Runtime.exceptionThrown')errors.push(r.params.exceptionDetails.exception?.description||r.params.exceptionDetails.text);});
  await rpc('Page.enable');await rpc('Runtime.enable');await rpc('Emulation.setDeviceMetricsOverride',{width:1680,height:1100,deviceScaleFactor:1,mobile:false});await rpc('Page.navigate',{url:target});
- await rpc('Network.enable');const mutations=[];ws.addEventListener('message',event=>{const x=JSON.parse(event.data);if(x.method==='Network.requestWillBeSent'&&x.params.request.method==='POST')mutations.push(x.params.request.url);});
+ await rpc('Network.enable');const mutations=[];let inDemo=false;ws.addEventListener('message',event=>{const x=JSON.parse(event.data);if(inDemo&&x.method==='Network.requestWillBeSent'&&x.params.request.method==='POST')mutations.push(x.params.request.url);});
+ await wait(()=>evaluate('Boolean(document.querySelector(".traffic-focus select option[value=WEB-ISOLATED-TASK]"))'),'Original task option missing');
+ await evaluate('(()=>{const s=document.querySelector(".traffic-focus select");s.value="WEB-ISOLATED-TASK";s.dispatchEvent(new Event("change",{bubbles:true}));})()');
  await wait(()=>evaluate('document.querySelector(".traffic-focus")?.textContent.includes("CURVE")'),'Original task did not link central map');
  check('central map links original command and held resource',await evaluate('document.querySelector(".traffic-focus").textContent.includes("HELD")'));
  check('backend blocker with no verified position is named without a fabricated vehicle body',await evaluate('document.querySelector(".traffic-focus").textContent.includes("BLOCKER")&&document.querySelector(".traffic-focus").textContent.includes("位置未核定或无效")'));
@@ -45,7 +47,7 @@ try{
  await evaluate('(()=>{const s=document.querySelector(".traffic-focus select");s.value="";s.dispatchEvent(new Event("change",{bubbles:true}));})()');await sleep(2300);
  check('explicit clear stays cleared after the next backend snapshot',await evaluate('document.querySelector(".traffic-focus select").value===""&&!document.querySelector(".traffic-focus").textContent.includes("原命令路线（绿）")'));
 
- await button('演示模式');await wait(()=>evaluate('Boolean(document.querySelector(".traffic-rehearsal"))'),'Demo panel missing');await button('开始 / 重置演练');
+ await button('演示模式');inDemo=true;await wait(()=>evaluate('Boolean(document.querySelector(".traffic-rehearsal"))'),'Demo panel missing');await button('开始 / 重置演练');
  await evaluate('(()=>{const s=document.querySelector(".traffic-focus select");s.value="DEMO-TASK-002";s.dispatchEvent(new Event("change",{bubbles:true}));})()');
  await wait(()=>evaluate('document.querySelector(".traffic-focus").textContent.includes("SHARED-01")&&document.querySelector(".traffic-focus").textContent.includes("AGV-01")'),'Demo conflict not linked');
  check('two-car demo links explicit blocker and resource',true);await shot('demo-conflict');

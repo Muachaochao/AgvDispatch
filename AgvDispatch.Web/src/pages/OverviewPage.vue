@@ -5,6 +5,8 @@ import { useDispatchStore } from '../stores/dispatch';
 import { DispatchScene } from '../DispatchScene';
 import {trafficFocus} from '../traffic-focus';
 import TrafficRehearsal from '../TrafficRehearsal.vue';
+import TrafficWaitingPanel from '../TrafficWaitingPanel.vue';
+import {resourceView} from '../waiting';
 import { isFresh, isRunningStage, label, mayPlot } from '../state';
 import { vehicleCategory, categoryLabels, shortTime, type VehicleCategory } from '../dashboard';
 import type { Snapshot } from '../types';
@@ -22,6 +24,7 @@ const router = useRouter();
 const selectedVehicle = ref('');
 const selectedTask = ref('');
 const selectedEdge = ref('');
+const locatedResource=ref(''),locationMessage=ref('');
 const detail = ref<import('../types').TaskDetail | null>(null);
 const mapElement = ref<HTMLElement>();
 const mapView = ref<'top' | 'isometric'>('top');
@@ -60,6 +63,9 @@ async function loadDetail(id: string) {
 function selectTask(id: string) { autoSelectTask=false; ++detailEpoch;selectedTask.value = id; detail.value = null; if(id)void loadDetail(id); }
 function openTask(id: string) { showTaskDialog.value = true; selectTask(id); }
 function setMapView(mode: 'top' | 'isometric') { mapView.value = mode; scene?.view(mode); }
+function clearLocation(){locatedResource.value='';locationMessage.value='';scene?.clearResourceFocus();}
+function locateResource(id:string){if(!store.fresh){clearLocation();return;}const view=resourceView(store.snapshot?.map,id);if(!view){clearLocation();locationMessage.value='资源 '+id+' 无有效边界，不能定位；不猜测位置。';return;}scene?.focusResource(id,view);mapElement.value?.scrollIntoView({block:'center'});locatedResource.value=id;locationMessage.value='已定位资源 '+id+'；仅调整视角，不改变资源归属或放行。';}
+watch(()=>[store.demoMode,store.snapshot?.map?.id,store.snapshot?.map?.version,store.snapshot?.map?.definitionHash,store.fresh].join('|'),clearLocation);
 function fullscreen() { void mapElement.value?.parentElement?.requestFullscreen().catch(() => { store.sceneError = '当前浏览器未允许全屏'; }); }
 
 onMounted(() => {
@@ -72,6 +78,7 @@ onUnmounted(() => { ++detailEpoch;scene?.dispose(); });
 </script>
 
 <template>
+<div class="overview-page">
   <TrafficRehearsal v-if="store.demoMode"/>
   <div class="control-grid">
     <aside class="left-column">
@@ -132,7 +139,8 @@ onUnmounted(() => { ++detailEpoch;scene?.dispose(); });
         <span v-else>米制导航图 / {{ store.snapshot?.map?.coordinateSystem ?? '待核定' }}</span>
       </div>
       <section class="traffic-focus" aria-label="当前任务地图联动"><label>联动任务 <select v-model="selectedTask" @change="selectTask(selectedTask)"><option value="">取消联动</option><option v-for="t in store.allTasks" :key="t.taskId" :value="t.taskId">{{t.taskId}} · {{label(t.stage)}}</option></select></label><button :disabled="!selectedTask" @click="showTaskDialog=true">查看步骤与处置</button>
-      <template v-if="focus.taskId"><p>任务车辆 {{focus.vehicleId||'未分配'}} · 原命令路线（绿） {{focus.edgeIds.join('、')||'未提供'}}</p><p>持有资源（橙） {{focus.held.join('、')||'无同图返回'}} · 阻塞资源（红） {{focus.blocked.join('、')||'无当前阻塞返回'}}</p><p>阻塞车辆 <button v-for="id in focus.blockers" :key="id" @click="selectedVehicle=id">{{id}}</button>{{focus.blockers.length?'':'无当前阻塞返回'}}</p><p v-if="focus.unplotted.length">未画车体（位置未核定或无效）：{{focus.unplotted.join('、')}}；不使用站点或路线端点代替。</p><p>{{focus.reason}}</p><p v-if="focus.truncated">路权记录已截断，当前列表不代表全场。</p></template><p v-else>{{focus.reason}}</p></section>
+      <template v-if="focus.taskId"><p>任务车辆 {{focus.vehicleId||'未分配'}} · 原命令路线（绿） {{focus.edgeIds.join('、')||'未提供'}}</p><p>持有资源（橙） {{focus.held.join('、')||'无同图返回'}} · 阻塞资源（红） <button v-for="id in focus.blocked" :key="id" @click="locateResource(id)">定位 {{id}}</button>{{focus.blocked.length?'':'无当前阻塞返回'}}</p><p>阻塞车辆 <button v-for="id in focus.blockers" :key="id" @click="selectedVehicle=id">{{id}}</button>{{focus.blockers.length?'':'无当前阻塞返回'}}</p><p v-if="focus.unplotted.length">未画车体（位置未核定或无效）：{{focus.unplotted.join('、')}}；不使用站点或路线端点代替。</p><p>{{focus.reason}}</p><p v-if="focus.truncated">路权记录已截断，当前列表不代表全场。</p></template><p v-else>{{focus.reason}}</p></section>
+      <p class="resource-location" role="status">{{locationMessage}} <button v-if="locatedResource" @click="clearLocation">清除资源定位</button></p>
       <div v-for="warning in store.snapshot?.map?.warnings ?? []" :key="warning" class="inline-warning">{{ warning }}</div>
     </section>
 
@@ -167,6 +175,7 @@ onUnmounted(() => { ++detailEpoch;scene?.dispose(); });
     </aside>
   </div>
 
+  <TrafficWaitingPanel @locate="locateResource" @task="openTask"/>
   <ConsoleDialog v-if="showTaskDialog" title="任务运行详情 · 九步、条件与执行证据" wide @close="showTaskDialog = false">
     <TaskExecutionDetails v-if="detail" :detail="detail" :fresh="store.fresh" :now="store.now" />
     <p v-else class="empty-panel">{{ store.error || '正在读取任务详情…' }}</p>
@@ -189,6 +198,7 @@ onUnmounted(() => { ++detailEpoch;scene?.dispose(); });
     <table class="dialog-table"><thead><tr><th>信号</th><th>值</th><th>质量</th><th>地址</th><th>更新时间</th></tr></thead>
     <tbody><tr v-for="field in selectedDevice.fields" :key="field.name"><td>{{ field.name }}</td><td>{{ field.value }}</td><td>{{ field.quality }}</td><td>{{ field.address }}</td><td>{{ field.updatedAt }}</td></tr></tbody></table>
   </ConsoleDialog>
+</div>
 </template>
 
-<style scoped>.traffic-focus{padding:12px 16px;border-top:1px solid #2c4563;font-size:12px;line-height:1.8}.traffic-focus select{max-width:100%}.traffic-focus button{margin:4px}.traffic-focus p{overflow-wrap:anywhere;margin:5px 0}</style>
+<style scoped>.overview-page{flex:1;min-height:0;overflow:auto;padding-bottom:12px}.overview-page .control-grid{height:max(780px,calc(100dvh - 205px));flex:none;min-height:780px}.traffic-focus{padding:12px 16px;border-top:1px solid #2c4563;font-size:12px;line-height:1.8}.traffic-focus select{max-width:100%}.traffic-focus button{margin:4px}.resource-location{padding:0 16px;font-size:12px;line-height:1.8;color:#c5dbec}.traffic-focus p{overflow-wrap:anywhere;margin:5px 0}</style>
