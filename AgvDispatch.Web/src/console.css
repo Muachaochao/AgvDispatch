@@ -32,3 +32,39 @@ input[type=checkbox]{width:16px;min-width:16px;height:16px;min-height:16px;flex:
 .runtime-map-note button{margin-left:auto}
 .publish-summary{line-height:1.9;overflow-wrap:anywhere}
 @media(max-width:700px){.management-title>span{margin-left:0}.management-title>button{flex:1 1 auto}.source-bar{flex-wrap:wrap;gap:6px}.console-header nav{flex-wrap:wrap}.console-header{flex-wrap:wrap}.engineering-settings .settings-row>b{flex-basis:100%}.dialog-backdrop{padding:12px}.console-dialog{max-height:calc(100dvh - 24px)}}
+
+/* Main navigation, clock and bottom connection status (2026-10-19). */
+.console-header{position:relative;z-index:5;gap:16px;padding:12px 16px}
+.brand-and-clock{display:flex;align-items:center;gap:18px;flex-shrink:0;min-width:0}
+.console-brand h1{font-size:20px;letter-spacing:1px}
+.console-brand span{font-size:8px;letter-spacing:2.7px}
+.header-clock{display:flex;flex-direction:column;gap:4px;border-left:1px solid #2c4162;padding-left:18px;white-space:nowrap}
+.header-clock b{font-family:Consolas,monospace;font-size:21px;font-variant-numeric:tabular-nums;letter-spacing:1.2px;color:#d8edf6;line-height:1.1}
+.header-clock span{font-size:10px;color:#8ca6c3}
+.console-header nav{gap:6px;align-items:center}
+.console-header nav>button,.engineering-menu>summary{font-size:11px;padding:8px 10px;min-height:34px;gap:6px}
+.engineering-menu{position:relative;flex-shrink:0}
+.engineering-menu>summary{display:flex;align-items:center;justify-content:center;list-style:none;cursor:pointer;border:1px solid #2c416c;border-radius:4px;background:#142342;color:#b9cde9;white-space:nowrap}
+.engineering-menu>summary::-webkit-details-marker{display:none}
+.engineering-menu>summary:hover,.engineering-menu[open]>summary{background:#1a3151;border-color:#46a9cc}
+.engineering-menu>summary.active{color:#54def2;background:#15314c;border-color:#29a0c1}
+.engineering-dropdown{position:absolute;right:0;top:calc(100% + 8px);min-width:160px;padding:7px;display:grid;gap:4px;border:1px solid #345275;border-radius:6px;background:#111d35;box-shadow:0 12px 30px #02071999;z-index:10}
+.console-header nav .engineering-dropdown button{justify-content:flex-start;min-height:37px;padding:8px 12px;font-size:12px;border-color:transparent;background:transparent}
+.console-header nav .engineering-dropdown button:hover,.console-header nav .engineering-dropdown button.active{background:#19324e;color:#68dff0}
+.header-actions{margin-left:0;flex-shrink:0}
+.equipment-strip>.backend-status{flex:1.5;min-width:310px;gap:9px}
+.backend-status.disconnected{border-color:#a96754;background:#2b2030}
+.backend-details-button{background:transparent;border:0;padding:0;min-height:28px;gap:7px;color:#8db6da;font-size:11px}
+.backend-details-button>svg{color:#4ca4c8}
+.backend-details-button:hover{background:transparent;border:0}
+.backend-observation{display:flex;flex-direction:column;gap:3px;min-width:0}
+.backend-observation>b{font-size:11px;font-weight:500}
+.equipment-strip .backend-observation>small{font-size:9px;max-width:240px;margin-left:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.backend-status>.icon-button{flex-shrink:0;margin-left:auto;width:28px;min-height:28px;height:28px}
+.connection-summary{margin-bottom:18px;font-size:13px;line-height:1.8}
+@media(max-width:1200px){.console-header{flex-wrap:wrap;gap:10px}.console-header nav{order:3;flex-basis:100%;justify-content:flex-start;border-top:1px solid #27395a;padding-top:9px}.console-header nav>button{flex:1}.engineering-menu{flex:1}.header-actions{margin-left:auto}}
+@media(max-width:650px){.brand-and-clock{gap:10px}.console-brand h1{font-size:16px}.console-brand span{font-size:7px;letter-spacing:1.7px}.header-clock{padding-left:10px}.header-clock b{font-size:18px}.header-clock span{font-size:9px}.console-header nav{flex-wrap:wrap}.console-header nav>button,.engineering-menu{flex:1 0 28%}.console-header nav>button,.engineering-menu>summary{font-size:11px;padding:8px}.console-header nav>button>svg{display:inline-block}.console-header .header-actions{margin-left:0}.console-header nav .engineering-dropdown button>svg{display:inline-block}}
+@media(max-width:400px){.brand-and-clock{flex-wrap:wrap}.header-clock{border:0;padding-left:39px}}
+/* Keep device connection controls visible even on shorter desktop windows. */
+.console-shell{height:100dvh;min-height:0}
+.console-shell>.overview-page,.console-shell>.management-page,.console-shell>.planning-workbench{min-height:0;overflow:auto;flex:1}

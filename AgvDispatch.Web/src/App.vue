@@ -1,31 +1,44 @@
 ﻿<script setup lang="ts">
-import { onMounted, onUnmounted } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import { useDispatchStore } from './stores/dispatch';
 import { shortTime } from './dashboard';
 import {
   IconRobot, IconRoute, IconBell, IconLayoutDashboard, IconListDetails, IconMap,
-  IconPlus, IconPlugConnected, IconCircleCheck, IconCpu, IconNetwork
+  IconPlus, IconPlugConnected, IconCircleCheck, IconCpu, IconNetwork, IconChevronDown
 } from '@tabler/icons-vue';
-import { isFresh } from './state';
-import type { AdapterIdentity } from './release-state';
+import ConsoleDialog from './ConsoleDialog.vue';
 import AppToast from './components/AppToast.vue';
 import AppLoading from './components/AppLoading.vue';
 
 const store = useDispatchStore();
 const router = useRouter();
 const route = useRoute();
+const connectionOpen = ref(false);
+const engineeringMenu = ref<HTMLDetailsElement>();
+const dateFormatter = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'short' });
+const timeFormatter = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' });
+const clockDate = computed(() => dateFormatter.format(store.now));
+const clockTime = computed(() => timeFormatter.format(store.now));
+const connectionState = computed(() => store.fresh ? '已连接' : store.snapshot ? '断连 / 数据过期' : store.error ? '未连接' : '连接中');
+const lastObservation = computed(() => store.snapshot ? `最近采样 ${shortTime(store.snapshot.receivedAt)}` : '尚无后台观察');
 
 const navigation = [
   { path: '/', label: '调度大屏', icon: IconLayoutDashboard },
   { path: '/vehicles', label: '车辆列表', icon: IconRobot },
   { path: '/tasks', label: '任务列表', icon: IconListDetails },
   { path: '/alarms', label: '异常告警', icon: IconBell },
-  { path: '/maps', label: '地图管理', icon: IconMap },
+  { path: '/maps', label: '地图管理', icon: IconMap }
+] as const;
+const engineering = [
   { path: '/planning', label: '工程编辑', icon: IconRoute },
   { path: '/engineering-settings', label: '工程配置', icon: IconCpu },
   { path: '/commissioning', label: '联调检查', icon: IconCircleCheck }
 ] as const;
+function closeMenu(event: Event) {
+  if (!engineeringMenu.value?.contains(event.target as Node)) engineeringMenu.value?.removeAttribute('open');
+}
+watch(() => route.fullPath, () => engineeringMenu.value?.removeAttribute('open'));
 
 function isActive(path: string) {
   if (path === '/') return route.path === '/';
@@ -35,9 +48,11 @@ function isActive(path: string) {
 onMounted(() => {
   store.startNowTimer();
   void store.connectBackend();
+  document.addEventListener('pointerdown', closeMenu);
 });
 onUnmounted(() => {
   store.dispose();
+  document.removeEventListener('pointerdown', closeMenu);
 });
 </script>
 
@@ -46,43 +61,27 @@ onUnmounted(() => {
     <AppLoading :active="!store.snapshot && !store.error" message="正在连接C#调度主服务…" />
 
     <header class="console-header">
-      <button class="console-brand" @click="router.push('/')">
+      <div class="brand-and-clock"><button class="console-brand" @click="router.push('/')">
         <IconRobot :size="31" stroke="1.5" />
         <div><h1>AGV 机器人调度系统</h1><span>DISPATCH CONTROL CENTER</span></div>
       </button>
-      <div class="header-totals">
-        <div><span>执行任务</span><b>{{ store.ringSegments[0].value }}</b></div>
-        <div><span>等待任务</span><b class="cyan">{{ store.ringSegments[1].value }}</b></div>
-        <div><span>未确认告警</span><b :class="store.openAlarms.length ? 'amber-text' : ''">{{ store.openAlarms.length }}</b></div>
-        <small>当前已加载数据</small>
-      </div>
+      <time class="header-clock" :datetime="new Date(store.now).toISOString()" aria-label="北京时间"><b>{{clockTime}}</b><span>{{clockDate}}</span></time></div>
       <nav aria-label="页面导航">
-        <button v-for="item in navigation" :key="item.path" :class="{ active: isActive(item.path) }" @click="router.push(item.path)">
+        <button v-for="item in navigation" :key="item.path" :class="{ active: isActive(item.path) }" :aria-current="isActive(item.path) ? 'page' : undefined" @click="router.push(item.path)">
           <component :is="item.icon" :size="15" />{{ item.label }}
         </button>
+        <details ref="engineeringMenu" class="engineering-menu" @keydown.esc="engineeringMenu?.removeAttribute('open'); engineeringMenu?.querySelector('summary')?.focus()">
+          <summary :class="{ active: engineering.some(item => isActive(item.path)) }"><IconCpu :size="15" />工程工具<IconChevronDown :size="13" /></summary>
+          <div class="engineering-dropdown" aria-label="工程工具">
+            <button v-for="item in engineering" :key="item.path" :class="{ active: isActive(item.path) }" :aria-current="isActive(item.path) ? 'page' : undefined" @click="router.push(item.path); engineeringMenu?.removeAttribute('open')"><component :is="item.icon" :size="16" />{{item.label}}</button>
+          </div>
+        </details>
       </nav>
       <div class="header-actions">
         <button class="accent-button" @click="router.push({ name: 'tasks', query: { create: '1' } })"><IconPlus :size="16" />创建任务</button>
-        <button v-if="!store.demoMode" @click="store.connectDemo()" title="启动演示模式（合成数据，无需后台）">演示模式</button>
-        <button v-else class="accent-button" @click="store.connectBackend()" title="退出演示，连接真实后台">退出演示</button>
-        <button class="icon-button" aria-label="重新连接后台" title="重新连接后台" @click="store.connectBackend()"><IconPlugConnected :size="19" /></button>
       </div>
     </header>
 
-    <div class="source-bar" :class="{ disconnected: !store.fresh && !store.demoMode }">
-      <div class="source-indicator">
-        <i class="status-dot" :class="store.demoMode ? 'amber' : store.fresh ? 'green' : 'red'"></i>
-        <b>{{ store.demoMode ? '演示模式 · 合成数据' : store.fresh ? '真实后台已连接' : '真实后台未连接 / 数据过期' }}</b>
-        <span>{{ store.demoMode ? (store.rehearsalPhase===null?'九步任务流程模拟，每3秒推进一步。数据为浏览器合成，不代表真实设备。':'交通与取消恢复演练：手动推进。全部为合成教学，不代表真实设备。') : store.error || (store.snapshot ? `最近观察 ${shortTime(store.snapshot.receivedAt)}` : '正在连接C#调度主服务…') }}</span>
-      </div>
-      <button class="text-button" @click="router.push('/commissioning')">
-        {{ store.fresh ? '主服务' : '最后观察主服务' }}
-        {{ store.snapshot?.status?.service?.version ?? '版本未返回' }} ·
-        {{ store.snapshot?.status?.execution ? store.snapshot.status.execution.handshakeEnabled ? '持久化新握手' : '原执行器' : '模式未返回' }}
-        {{ store.snapshot?.status?.execution?.buildId.slice(0, 12) ?? '' }}
-      </button>
-      <button class="text-button" @click="store.connectBackend()">重新连接后台</button>
-    </div>
 
     <router-view v-slot="{ Component }">
       <component :is="Component" :snapshot="store.snapshot" :adapter="store.adapterIdentity" />
@@ -95,10 +94,27 @@ onUnmounted(() => {
         <i class="status-dot" :class="store.fresh && device.quality === 'Good' ? 'green' : 'amber'"></i>
         <small>{{ store.fresh ? device.status : '数据非当前' }}</small>
       </button>
-      <div><IconNetwork :size="20" /><span>后台通信</span><i class="status-dot" :class="store.fresh ? 'green' : 'red'"></i><small>{{ store.fresh ? '已连接' : '未连接' }}</small></div>
+      <div class="backend-status" :class="{disconnected:!store.fresh}">
+        <button class="backend-details-button" aria-label="后台连接详情" @click="connectionOpen = true"><IconNetwork :size="19" /><span>后台通信</span></button>
+        <i class="status-dot" :class="store.fresh ? 'green' : 'red'"></i>
+        <div class="backend-observation"><b role="status">{{connectionState}}</b><small :title="store.error || lastObservation">{{store.error || lastObservation}}</small></div>
+        <button class="icon-button" aria-label="重新连接后台" title="重新连接后台" @click="store.connectBackend()"><IconPlugConnected :size="17" /></button>
+      </div>
       <div><IconRoute :size="20" /><span>执行开关</span><small>{{ !store.fresh || !store.snapshot?.status ? '未取得有效状态' : store.snapshot.status.safety.dispatchingEnabled ? '调度已启用' : '调度未启用' }}</small></div>
     </footer>
 
+    <ConsoleDialog v-if="connectionOpen" title="后台连接详情" @close="connectionOpen = false">
+      <p class="connection-summary" :class="store.fresh ? 'green-text' : 'amber-text'">{{connectionState}} · {{lastObservation}}</p>
+      <p v-if="store.error" class="inline-warning">{{store.error}}</p>
+      <dl class="property-list">
+        <dt>主服务版本</dt><dd>{{store.snapshot?.status?.service?.version ?? '未取得'}}</dd>
+        <dt>发布批次</dt><dd>{{store.snapshot?.status?.execution?.informationalVersion ?? '未取得'}}</dd>
+        <dt>执行模式</dt><dd>{{store.snapshot?.status?.execution ? store.snapshot.status.execution.handshakeEnabled ? '持久化新握手' : '原执行器' : '未取得'}}</dd>
+        <dt>构建身份</dt><dd>{{store.snapshot?.status?.execution?.buildId ?? '未取得'}}</dd>
+        <dt>活动地图</dt><dd>{{store.snapshot?.map ? `${store.snapshot.map.name} / ${store.snapshot.map.version}` : '未取得活动地图'}}</dd>
+      </dl>
+      <template #footer><button @click="connectionOpen = false">关闭</button><button @click="connectionOpen = false; router.push('/commissioning')">联调检查</button><button class="accent-button" @click="store.connectBackend()">重新连接后台</button></template>
+    </ConsoleDialog>
     <AppToast />
   </div>
 </template>

@@ -125,10 +125,6 @@ onUnmounted(() => { ++detailEpoch;scene?.dispose(); });
         <div><h2>{{ store.snapshot?.map?.name ?? '当前运行地图' }}</h2><small>{{ store.snapshot?.map?.id ?? (store.fresh ? '未激活' : '未连接') }} · {{ store.snapshot?.map?.version ?? '—' }}</small></div>
         <div class="map-toolbar"><button :class="{ active: mapView === 'top' }" @click="setMapView('top')">2D</button><button :class="{ active: mapView === 'isometric' }" @click="setMapView('isometric')">3D</button><button class="icon-button" aria-label="全屏地图" @click="fullscreen"><IconArrowsMaximize :size="15" /></button></div>
       </header>
-      <div class="runtime-map-note" role="status">
-        <span>{{store.demoMode?'演示地图 · 合成数据':store.fresh?(store.snapshot?.map?'后台当前运行地图':'尚未激活运行地图'):'后台断连／观察已过期'}} · {{store.demoMode?'演示内容不影响真实地图':'保存草稿、发布版本后，须在地图管理激活并按安全流程核对'}}</span>
-        <button @click="router.push('/maps')">地图管理</button>
-      </div>
       <div class="map-viewport">
         <div ref="mapElement" class="scene-container" aria-label="可交互的运行地图"></div>
         <div v-if="store.sceneError || !store.snapshot?.map" class="scene-empty">{{ store.sceneError || '尚未取得后台运行地图。请确认C#主服务已启动、管道名称一致且已激活运行地图。' }}</div>
@@ -205,4 +201,4 @@ onUnmounted(() => { ++detailEpoch;scene?.dispose(); });
 </div>
 </template>
 
-<style scoped>.overview-page{flex:1;min-height:0;overflow:auto;padding-bottom:12px}.overview-page .control-grid{height:max(780px,calc(100dvh - 205px));flex:none;min-height:780px}.traffic-focus{padding:12px 16px;border-top:1px solid #2c4563;font-size:12px;line-height:1.8}.traffic-focus select{max-width:100%}.traffic-focus button{margin:4px}.resource-location{padding:0 16px;font-size:12px;line-height:1.8;color:#c5dbec}.traffic-focus p{overflow-wrap:anywhere;margin:5px 0}</style>
+<style scoped>.overview-page{flex:1;min-height:0;overflow:auto;padding-bottom:12px}.overview-page .control-grid{height:max(780px,calc(100dvh - 205px));flex:none;min-height:780px}.traffic-focus{padding:12px 16px;border-top:1px solid #2c4563;font-size:12px;line-height:1.8}.traffic-focus select{max-width:100%}.traffic-focus button{margin:4px}.resource-location{padding:0 16px;font-size:12px;line-height:1.8;color:#c5dbec}.traffic-focus p{overflow-wrap:anywhere;margin:5px 0}@media(min-width:901px){.overview-page .control-grid{height:100%;min-height:560px}}</style>
