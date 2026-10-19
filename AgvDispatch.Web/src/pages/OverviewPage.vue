@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ActionIcon from '../components/ActionIcon.vue';
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { useDispatchStore } from '../stores/dispatch';
@@ -92,7 +93,7 @@ onUnmounted(() => { ++detailEpoch;scene?.dispose(); });
       </section>
 
       <section class="control-panel vehicle-focus">
-        <header class="section-heading"><h2>车辆详情 <small>VEHICLE</small></h2><button class="text-button" @click="router.push('/vehicles')">列表</button></header>
+        <header class="section-heading"><h2>车辆详情 <small>VEHICLE</small></h2><button class="text-button" @click="router.push('/vehicles')"><ActionIcon name="list"/>列表</button></header>
         <template v-if="chosenVehicle">
           <div class="focus-vehicle"><IconRobot :size="35" stroke="1.2" /><div><b>{{ chosenVehicle.vehicleId }}</b><small>{{ chosenVehicle.displayName }}</small></div><span class="state-label" :class="vehicleCategory(chosenVehicle, store.allTasks, store.fresh)">{{ categoryLabels[vehicleCategory(chosenVehicle, store.allTasks, store.fresh)] }}</span></div>
           <div class="battery-line"><span>电量</span><progress max="100" :value="chosenVehicle.batteryPercent ?? 0"></progress><b>{{ chosenVehicle.batteryPercent ?? '—' }}%</b></div>
@@ -130,7 +131,7 @@ onUnmounted(() => { ++detailEpoch;scene?.dispose(); });
         <div v-if="store.sceneError || !store.snapshot?.map" class="scene-empty">{{ store.sceneError || '尚未取得后台运行地图。请确认C#主服务已启动、管道名称一致且已激活运行地图。' }}</div>
         <div class="map-status-legend"><span><i class="status-dot running"></i>执行</span><span><i class="status-dot waiting"></i>等待</span><span><i class="status-dot fault"></i>故障</span><span><i class="status-dot offline"></i>离线</span></div>
         <div class="map-navigation"><IconRoute :size="15" /><span>厂家站点与导航道路</span><small>显示不作为执行放行依据</small></div>
-        <div class="map-zoom"><button aria-label="缩小" @click="scene?.zoom(1.2)"><IconZoomOut :size="16" /></button><button @click="scene?.view(mapView)">复位</button><button aria-label="放大" @click="scene?.zoom(0.8)"><IconZoomIn :size="16" /></button></div>
+        <div class="map-zoom"><button aria-label="缩小" @click="scene?.zoom(1.2)"><IconZoomOut :size="16" /></button><button @click="scene?.view(mapView)"><ActionIcon name="fit"/>复位</button><button aria-label="放大" @click="scene?.zoom(0.8)"><IconZoomIn :size="16" /></button></div>
         <div class="map-caption-bottom"><span>{{ store.snapshot?.map?.nodes.length ?? 0 }} 节点 / {{ store.snapshot?.map?.edges.length ?? 0 }} 道路</span><span>{{ store.mapVehicleCount }} 辆可定位 · {{ mapView === 'top' ? '右键平移 · 滚轮缩放' : '左键旋转 · 右键平移' }}</span></div>
       </div>
       <div class="map-bottom-tools">
@@ -138,9 +139,9 @@ onUnmounted(() => { ++detailEpoch;scene?.dispose(); });
         <span v-if="selectedRoad">{{ selectedRoad.from }} {{ selectedRoad.bidirectional ? '↔' : '→' }} {{ selectedRoad.to }}</span>
         <span v-else>米制导航图 / {{ store.snapshot?.map?.coordinateSystem ?? '待核定' }}</span>
       </div>
-      <section class="traffic-focus" aria-label="当前任务地图联动"><label>联动任务 <select v-model="selectedTask" @change="selectTask(selectedTask)"><option value="">取消联动</option><option v-for="t in store.allTasks" :key="t.taskId" :value="t.taskId">{{t.taskId}} · {{label(t.stage)}}</option></select></label><button :disabled="!selectedTask" @click="showTaskDialog=true">查看步骤与处置</button>
+      <section class="traffic-focus" aria-label="当前任务地图联动"><label>联动任务 <select v-model="selectedTask" @change="selectTask(selectedTask)"><option value="">取消联动</option><option v-for="t in store.allTasks" :key="t.taskId" :value="t.taskId">{{t.taskId}} · {{label(t.stage)}}</option></select></label><button :disabled="!selectedTask" @click="showTaskDialog=true"><ActionIcon name="list"/>查看步骤与处置</button>
       <template v-if="focus.taskId"><p>任务车辆 {{focus.vehicleId||'未分配'}} · 原命令路线（绿） {{focus.edgeIds.join('、')||'未提供'}}</p><p>持有资源（橙） {{focus.held.join('、')||'无同图返回'}} · 阻塞资源（红） <button v-for="id in focus.blocked" :key="id" @click="locateResource(id)">定位 {{id}}</button>{{focus.blocked.length?'':'无当前阻塞返回'}}</p><p>阻塞车辆 <button v-for="id in focus.blockers" :key="id" @click="selectedVehicle=id">{{id}}</button>{{focus.blockers.length?'':'无当前阻塞返回'}}</p><p v-if="focus.unplotted.length">未画车体（位置未核定或无效）：{{focus.unplotted.join('、')}}；不使用站点或路线端点代替。</p><p>{{focus.reason}}</p><p v-if="focus.truncated">路权记录已截断，当前列表不代表全场。</p></template><p v-else>{{focus.reason}}</p></section>
-      <p class="resource-location" role="status">{{locationMessage}} <button v-if="locatedResource" @click="clearLocation">清除资源定位</button></p>
+      <p class="resource-location" role="status">{{locationMessage}} <button v-if="locatedResource" @click="clearLocation"><ActionIcon name="close"/>清除资源定位</button></p>
       <div v-for="warning in store.snapshot?.map?.warnings ?? []" :key="warning" class="inline-warning">{{ warning }}</div>
     </section>
 
@@ -153,7 +154,7 @@ onUnmounted(() => { ++detailEpoch;scene?.dispose(); });
       </section>
 
       <section class="control-panel live-tasks">
-        <header class="section-heading"><h2>当前任务 <small>LIVE TASKS</small></h2><button class="text-button" @click="router.push('/tasks')">全部</button></header>
+        <header class="section-heading"><h2>当前任务 <small>LIVE TASKS</small></h2><button class="text-button" @click="router.push('/tasks')"><ActionIcon name="list"/>全部</button></header>
         <div class="current-task-counts"><span>执行 <b>{{ store.ringSegments[0].value }}</b></span><span>等待 <b>{{ store.ringSegments[1].value }}</b></span></div>
         <button v-for="task in store.allTasks.slice(0, 6)" :key="task.taskId" class="live-task" @click="openTask(task.taskId)">
           <div><b>{{ task.taskId }}</b><span class="state-label" :class="task.stage === 'Faulted' ? 'fault' : isRunningStage(task.stage) ? 'running' : 'waiting'">{{ label(task.stage) }}</span></div>

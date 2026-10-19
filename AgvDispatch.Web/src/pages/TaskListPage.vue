@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ActionIcon from '../components/ActionIcon.vue';
 import { computed, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useDispatchStore } from '../stores/dispatch';
@@ -121,7 +122,7 @@ async function submitTask() {
       <label>任务 / 工位 / 车辆<input v-model="search" placeholder="输入关键词" aria-label="搜索任务" @keydown.enter="queryTasks(1)" /></label>
       <label>任务状态<select v-model="taskFilter" aria-label="筛选任务状态"><option value="all">全部</option><option value="waiting">等待</option><option value="running">执行中</option><option value="completed">已完成</option><option value="failed">异常</option><option value="cancelled">已取消</option></select></label>
       <button class="accent-button" :disabled="queryBusy || !store.fresh" @click="queryTasks(1)"><IconSearch :size="15" />{{ queryBusy ? '查询中' : '查询' }}</button>
-      <button @click="resetTaskQuery">重置</button>
+      <button @click="resetTaskQuery"><ActionIcon name="refresh"/>重置</button>
       <small>{{ queriedTasks ? '后台分页查询结果' : '当前快照筛选；后台可点击查询读取历史' }}</small>
     </div>
     <p v-if="queryError" class="inline-warning">{{ queryError }}</p>
@@ -130,7 +131,7 @@ async function submitTask() {
         <thead><tr><th>操作</th><th>任务编号</th><th>来源工位</th><th>车辆</th><th>状态</th><th>优先级</th><th>创建时间</th><th>更新时间</th><th>异常说明</th></tr></thead>
         <tbody>
           <tr v-for="task in visibleTasks" :key="task.taskId">
-            <td><button class="table-button" @click="openTask(task.taskId)">详情</button></td>
+            <td><button class="table-button" @click="openTask(task.taskId)"><ActionIcon name="preview"/>详情</button></td>
             <td class="cyan mono">{{ task.taskId }}</td>
             <td>{{ task.stationId }}</td>
             <td>{{ task.vehicleId ?? '待分配' }}</td>
@@ -169,8 +170,8 @@ async function submitTask() {
     <div v-if="routePreview" class="route-preview"><b>{{ routePreview.message }}</b><p v-for="leg in routePreview.legs" :key="leg.sequence">{{ leg.sequence }}. {{ leg.name }}：{{ leg.vendorPath || leg.logicalPath }}</p></div>
     <p v-if="actionMessage" class="form-feedback" role="status">{{ actionMessage }}</p>
     <template #footer>
-      <button @click="formOpen = false">取消</button>
-      <button :disabled="!options || !station || !vehicle || actionBusy || !store.fresh" @click="previewRoute">核对四段路线</button>
+      <button @click="formOpen = false"><ActionIcon name="close"/>取消</button>
+      <button :disabled="!options || !station || !vehicle || actionBusy || !store.fresh" @click="previewRoute"><ActionIcon name="route"/>核对四段路线</button>
       <button class="accent-button" :disabled="!canSubmit" @click="submitTask">{{ actionBusy ? '处理中…' : requestUncertain ? '重试原申请' : '提交后台' }}</button>
     </template>
   </ConsoleDialog>

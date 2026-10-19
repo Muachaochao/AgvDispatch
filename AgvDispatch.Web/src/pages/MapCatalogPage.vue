@@ -1,4 +1,5 @@
 ﻿<script setup lang="ts">
+import ActionIcon from '../components/ActionIcon.vue';
 import { computed, ref, watch, onUnmounted } from 'vue';
 import {activationIntentKey,parseActivationIntent,reviewMatches,acknowledgeReview,reviewLabel,type ActivationIntent,type ActivationReview} from '../map-activation-review';
 import { useRouter } from 'vue-router';
@@ -148,7 +149,7 @@ const currentPhase = computed(() => switchStatus.value?.current?.phaseText ?? '�
       <h2><IconMap :size="23" />地图管理</h2>
       <span>共 {{ catalog.length }} 张</span>
       <button class="accent-button" @click="router.push({ name: 'planning', query: { tab: 'map' } })"><IconEdit :size="14" />地图编辑</button>
-      <button @click="router.push({ name: 'planning', query: { tab: 'plans' } })">方案管理</button>
+      <button @click="router.push({ name: 'planning', query: { tab: 'plans' } })"><ActionIcon name="folder"/>方案管理</button>
       <button @click="loadSwitchStatus"><IconAlertTriangle :size="14" />安全切换</button>
       <button @click="loadCatalog"><IconRefresh :size="15" />刷新</button>
       <button @click="router.push('/')"><IconArrowLeft :size="15" />返回大屏</button>
@@ -156,7 +157,7 @@ const currentPhase = computed(() => switchStatus.value?.current?.phaseText ?? '�
     <div class="map-workflow"><b>地图使用流程</b><span>工程编辑保存草稿 → 本页发布 → 激活与安全切换 → 大屏显示当前运行图</span></div>
     <div class="map-catalog-note">本页统一管理地图发布、版本与激活。发布是生成后台版本，车辆上传尚未开放。大屏只显示后台当前运行地图；现场条件或地图兼容未核定时，激活保持禁用。</div>
     <p v-if="storageError" class="inline-warning">本地激活复核记录不可读，地图写操作保持禁用：{{storageError}}</p>
-    <p v-if="activationIntent" class="inline-warning activation-pending">存在原激活结果待核对：{{activationIntent.releaseId}} · {{activationIntent.mapId}} / {{activationIntent.versionId}}。禁止重复激活和直接放行。<button @click="loadActivationReview">只读复核原激活</button></p>
+    <p v-if="activationIntent" class="inline-warning activation-pending">存在原激活结果待核对：{{activationIntent.releaseId}} · {{activationIntent.mapId}} / {{activationIntent.versionId}}。禁止重复激活和直接放行。<button @click="loadActivationReview"><ActionIcon name="search"/>只读复核原激活</button></p>
     <p v-if="catalogError" class="inline-warning">{{ catalogError }}</p>
     <div class="map-catalog">
       <article v-for="map in catalog" :key="map.mapId" class="map-card">
@@ -166,11 +167,11 @@ const currentPhase = computed(() => switchStatus.value?.current?.phaseText ?? '�
         <dl><dt>运行版本</dt><dd>{{ map.activeVersionId ?? '—' }}</dd><dt>发布版本</dt><dd>{{ map.publishedVersionId ?? '—' }}</dd></dl>
         <footer>
           <button @click="selectedMap = map"><IconEye :size="14" />详情</button>
-          <button @click="loadVersions(map.mapId)">版本历史</button>
+          <button @click="loadVersions(map.mapId)"><ActionIcon name="history"/>版本历史</button>
           <button @click="openEditDraft(map.mapId)"><IconEdit :size="14" />编辑草稿</button>
-          <button :disabled="busy || activationBlocked" @click="publishMapId = map.mapId">发布草稿</button>
+          <button :disabled="busy || activationBlocked" @click="publishMapId = map.mapId"><ActionIcon name="publish"/>发布草稿</button>
           <button v-if="map.publishedVersionId && (!map.isActive || map.publishedVersionId !== map.activeVersionId)" class="accent-button" :disabled="busy||activationBlocked" @click="openActivate(map)"><IconPlayerPlay :size="14" />激活</button>
-          <button v-if="map.isActive && map.mapId === store.snapshot?.map?.id" @click="router.push('/')">查看运行图</button>
+          <button v-if="map.isActive && map.mapId === store.snapshot?.map?.id" @click="router.push('/')"><ActionIcon name="map"/>查看运行图</button>
         </footer>
       </article>
       <p v-if="!catalog.length && !catalogError" class="empty-panel">没有可查看的地图。连接后台后刷新，或在工程编辑中新建。</p>
@@ -229,8 +230,8 @@ const currentPhase = computed(() => switchStatus.value?.current?.phaseText ?? '�
       <label style="display:flex;gap:8px;font-size:12px;color:#8da5c9;margin:8px 0"><input v-model="activateVehicleConfirmed" type="checkbox" />已确认车辆地图兼容</label>
     </template>
     <template #footer>
-      <button @click="activateOpen = false">取消</button>
-      <button class="accent-button" :disabled="busy || activationBlocked || activateConfirmation.trim() !== `ACTIVATE ${activateMap?.name}` || !activateEvidence.trim() || !activateSafetyConfirmed || !activateVehicleConfirmed" @click="doActivate">确认激活</button>
+      <button @click="activateOpen = false"><ActionIcon name="close"/>取消</button>
+      <button class="accent-button" :disabled="busy || activationBlocked || activateConfirmation.trim() !== `ACTIVATE ${activateMap?.name}` || !activateEvidence.trim() || !activateSafetyConfirmed || !activateVehicleConfirmed" @click="doActivate"><ActionIcon name="activate"/>确认激活</button>
     </template>
   </ConsoleDialog>
 
@@ -268,8 +269,8 @@ const currentPhase = computed(() => switchStatus.value?.current?.phaseText ?? '�
 
     <template #footer>
       <button @click="loadSwitchStatus"><IconRefresh :size="14" />刷新状态</button>
-      <button :disabled="busy || activationBlocked || !!switchStatus?.current || !switchTargetMapId" @click="switchAction('begin')">开始安全切换</button>
-      <button :disabled="busy || activationBlocked || !isMapSwitchPhase(switchStatus?.current?.phase,10) || switchStatus?.mode !== 'Held'" @click="switchAction('drain')">恢复中断的原任务收尾</button>
+      <button :disabled="busy || activationBlocked || !!switchStatus?.current || !switchTargetMapId" @click="switchAction('begin')"><ActionIcon name="safety"/>开始安全切换</button>
+      <button :disabled="busy || activationBlocked || !isMapSwitchPhase(switchStatus?.current?.phase,10) || switchStatus?.mode !== 'Held'" @click="switchAction('drain')"><ActionIcon name="route"/>恢复中断的原任务收尾</button>
       <button :disabled="busy || activationBlocked || !isMapSwitchPhase(switchStatus?.current?.phase,20)" @click="switchAction('resume')"><IconCircleCheck :size="14" />确认放行</button>
       <button :disabled="busy || !store.fresh || !!storageError || (activationIntent && !(reviewCurrent && review?.outcome==='OriginalMapObserved' && switchStatus?.current?.releaseId===activationIntent.releaseId)) || !switchStatus?.current || isMapSwitchPhase(switchStatus?.current?.phase,90)" @click="switchAction('cancel')"><IconX :size="14" />取消切换</button>
     </template>
@@ -278,12 +279,12 @@ const currentPhase = computed(() => switchStatus.value?.current?.phaseText ?? '�
   <ConsoleDialog v-if="reviewOpen" title="原地图激活结果 · 只读复核" wide @close="reviewOpen=false">
     <section class="activation-review"><p>原编号 {{activationIntent?.releaseId}} · {{activationIntent?.mapId}} / {{activationIntent?.versionId}}</p>
     <p class="inline-warning">通信失败不等于未提交；只读复核不重发激活、不取消切换、不恢复派发、不解除占用。</p>
-    <button :disabled="reviewBusy||!store.fresh||store.demoMode" @click="loadActivationReview">刷新只读复核</button><p v-if="reviewError" role="status">{{reviewError}}</p>
+    <button :disabled="reviewBusy||!store.fresh||store.demoMode" @click="loadActivationReview"><ActionIcon name="refresh"/>刷新只读复核</button><p v-if="reviewError" role="status">{{reviewError}}</p>
     <template v-if="review"><h3>{{reviewLabel(review.outcome)}}</h3><p>{{reviewCurrent?'有效观察':'观察已失效，联动禁用'}} · {{shortTime(review.capturedAt)}}</p><p>{{review.message}}</p>
     <dl class="property-list"><dt>持久化阶段</dt><dd>{{review.record?.phaseText||'原记录未找到'}}</dd><dt>数据库活动图</dt><dd>{{review.persistentMapId||'无'}} / {{review.persistentVersionId||'无'}}</dd><dt>运行图</dt><dd>{{review.runtimeMapId||'无'}} / {{review.runtimeVersionId||'无'}}</dd><dt>执行门</dt><dd>{{review.mode}} · 观察到的新任务门 {{review.canStartNewWork?'开（不是放行许可）':'关'}}</dd><dt>本地内容一致</dt><dd>{{review.contentConsistent?'是':'否/未知'}}</dd></dl>
     <details><summary>查看本地内容摘要和证据边界</summary><p style="overflow-wrap:anywhere">数据库SHA256 {{review.persistentDefinitionHash||'未取得'}}<br/>运行图SHA256 {{review.runtimeDefinitionHash||'未取得'}}</p><p v-for="e in review.evidence" :key="e">{{e}}</p></details>
     <p v-if="review.outcome==='OriginalMapObserved'">未观察到提交不能自动重试。可关闭本窗口进入安全切换；只有有效同编号原图观察时允许人工取消原切换，后台仍核验原门禁。</p>
     </template></section>
-    <template #footer><button @click="reviewOpen=false">关闭并保留待核对</button><button :disabled="!mayAcknowledge" @click="acknowledgeActivation">已知原结果，转安全流程核对</button></template>
+    <template #footer><button @click="reviewOpen=false"><ActionIcon name="close"/>关闭并保留待核对</button><button :disabled="!mayAcknowledge" @click="acknowledgeActivation"><ActionIcon name="safety"/>已知原结果，转安全流程核对</button></template>
   </ConsoleDialog>
 </template>
