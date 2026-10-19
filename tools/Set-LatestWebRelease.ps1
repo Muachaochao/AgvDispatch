@@ -27,15 +27,20 @@ foreach($latestName in @('启动最新版Web.cmd','停止最新版Web.cmd','最�
     $latestOld=Join-Path $latestRoot $latestName
     if(Test-Path -LiteralPath $latestOld){New-Item -ItemType Directory -Path $latestBackup -Force | Out-Null;Copy-Item -LiteralPath $latestOld -Destination $latestBackup}
 }
-@"
+$latestStartText=@"
 @echo off
 chcp 65001 >nul
-call "%~dp0$latestRelative\Start-Latest-Web.cmd" --project-store-path "%~dp0运行数据\Web工程方案"
-"@ | Set-Content -LiteralPath (Join-Path $latestRoot '启动最新版Web.cmd') -Encoding utf8
-@"
+call "%~dp0$latestRelative\Start-Latest-Web.cmd" --project-store-path "%~dp0运行数据\Web工程方案" %*
+"@
+$latestStopText=@"
 @echo off
 chcp 65001 >nul
 call "%~dp0$latestRelative\Stop-Latest-Web.cmd"
-"@ | Set-Content -LiteralPath (Join-Path $latestRoot '停止最新版Web.cmd') -Encoding utf8
+"@
+# CMD must parse the Chinese path after chcp; enforce CRLF even when this source uses LF.
+foreach($latestEntry in @(@{Name='启动最新版Web.cmd';Text=$latestStartText},@{Name='停止最新版Web.cmd';Text=$latestStopText})){
+    $latestEntryText=$latestEntry.Text.Replace("`r`n","`n").Replace("`n","`r`n").TrimEnd()+"`r`n"
+    [IO.File]::WriteAllText((Join-Path $latestRoot $latestEntry.Name),$latestEntryText,[Text.UTF8Encoding]::new($false))
+}
 @{releaseId=$latestManifest.releaseId;directory=$latestRelative;url="http://127.0.0.1:$($latestManifest.port)/";configurationMigrated=$false} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $latestRoot '最新版Web.json') -Encoding utf8
 Write-Output "Latest Web entry updated: $($latestManifest.releaseId). Existing programs and data were not moved."
