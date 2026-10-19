@@ -52,7 +52,12 @@ try
     var saved = await manager.SaveDraftAsync(editor, new(workspace.Project.MapId, workspace.Draft.VersionId,
         workspace.Project.Name, "", "", "LocalCartesian", "m", 1, definition, workspace.Draft.EditToken), ct);
     Check(saved.Accepted, "保存合法候选地图");
-    var published = await manager.PublishAsync(editor, new(workspace.Project.MapId, workspace.Draft.VersionId), ct);
+    var stalePublish = await manager.PublishAsync(editor, new(workspace.Project.MapId, workspace.Draft.VersionId)
+        { ExpectedEditToken = workspace.Draft.EditToken }, ct);
+    Check(!stalePublish.Accepted && (await manager.GetWorkspaceAsync(editor, workspace.Project.MapId, ct))!.Published is null,
+        "发布拒绝编辑前的旧令牌，不生成发布版本");
+    var published = await manager.PublishAsync(editor, new(workspace.Project.MapId, workspace.Draft.VersionId)
+        { ExpectedEditToken = saved.Workspace!.Draft!.EditToken }, ct);
     Check(published.Accepted, "发布不可变候选版本");
     var target = published.Workspace!.Published!;
     var activate = new ActivateMapRequest(target.MapId, target.VersionId, "ACTIVATE Switch-Test", true, true, "已核对车辆和PLC，原现场仍兼容");

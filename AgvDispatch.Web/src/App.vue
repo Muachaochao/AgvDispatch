@@ -21,7 +21,7 @@ const navigation = [
   { path: '/vehicles', label: '车辆列表', icon: IconRobot },
   { path: '/tasks', label: '任务列表', icon: IconListDetails },
   { path: '/alarms', label: '异常告警', icon: IconBell },
-  { path: '/maps', label: '地图查看', icon: IconMap },
+  { path: '/maps', label: '地图管理', icon: IconMap },
   { path: '/planning', label: '工程编辑', icon: IconRoute },
   { path: '/engineering-settings', label: '工程配置', icon: IconCpu },
   { path: '/commissioning', label: '联调检查', icon: IconCircleCheck }
@@ -90,7 +90,7 @@ onUnmounted(() => {
 
     <footer class="equipment-strip">
       <b>设备状态<small>DEVICE STATUS</small></b>
-      <button v-for="device in store.equipment.slice(0, 4)" :key="device.id">
+      <button v-for="device in store.equipment.slice(0, 4)" :key="device.id" title="查看设备通信与执行门禁" @click="router.push('/commissioning')">
         <IconCpu :size="19" /><span>{{ device.name }}</span>
         <i class="status-dot" :class="store.fresh && device.quality === 'Good' ? 'green' : 'amber'"></i>
         <small>{{ store.fresh ? device.status : '数据非当前' }}</small>

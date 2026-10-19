@@ -362,6 +362,8 @@ public sealed class MapManagementService(
                            item.Status == (int)MapVersionStatus.Draft)
             .FirstAsync(cancellationToken);
         if (draft is null) return new(false, "待发布草稿不存在或已经发布。");
+        if (request.ExpectedEditToken is not null && request.ExpectedEditToken != draft.EditToken)
+            return new(false, "草稿已被修改，请重新读取并核对后发布。");
         var definition = Deserialize<MapDefinition>(draft.DefinitionJson);
         var report = validator.Validate(definition);
         if (!report.IsValid)
@@ -403,6 +405,7 @@ public sealed class MapManagementService(
                     UpdatedAt = now
                 })
                 .Where(item => item.VersionId == request.VersionId &&
+                               item.EditToken == draft.EditToken &&
                                item.Status == (int)MapVersionStatus.Draft)
                 .ExecuteCommandAsync(cancellationToken);
             if (published != 1)

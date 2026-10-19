@@ -73,7 +73,10 @@ public sealed record SaveMapDraftRequest(
     MapDefinition Definition,
     string ExpectedEditToken);
 
-public sealed record PublishMapRequest(string MapId, string VersionId);
+public sealed record PublishMapRequest(string MapId, string VersionId)
+{
+    public string? ExpectedEditToken { get; init; }
+}
 
 public sealed record GenerateMapUnderlayRequest(
     string MapId,

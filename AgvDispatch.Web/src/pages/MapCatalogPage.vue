@@ -9,6 +9,7 @@ import { isMapSwitchPhase } from '../map-lifecycle';
 import type { MapSummary } from '../types';
 import { IconMap, IconArrowLeft, IconRefresh, IconEye, IconPlayerPlay, IconEdit, IconAlertTriangle, IconCircleCheck, IconX } from '@tabler/icons-vue';
 import ConsoleDialog from '../ConsoleDialog.vue';
+import MapPublishDialog from '../MapPublishDialog.vue';
 
 const store = useDispatchStore();
 const toast = useToastStore();
@@ -17,6 +18,8 @@ const catalog = ref<MapSummary[]>([]);
 const catalogError = ref('');
 const selectedMap = ref<MapSummary | null>(null);
 const busy = ref(false);
+const publishMapId = ref('');
+function published() { publishMapId.value = ''; toast.success('地图草稿已发布；需要激活并完成安全流程后才用于运行。'); void loadCatalog(); }
 const activationIntent=ref<ActivationIntent|null>(null),review=ref<ActivationReview|null>(null),reviewOpen=ref(false),reviewBusy=ref(false),reviewError=ref(''),storageError=ref('');
 try{activationIntent.value=parseActivationIntent(localStorage.getItem(activationIntentKey));reviewOpen.value=!!activationIntent.value;}catch(e){storageError.value=String(e);}
 const sourceContext=computed(()=>[store.demoMode,store.adapterIdentity?.sha256,store.snapshot?.map?.id,store.snapshot?.map?.version,store.snapshot?.map?.definitionHash].join('|'));
@@ -150,7 +153,8 @@ const currentPhase = computed(() => switchStatus.value?.current?.phaseText ?? '�
       <button @click="loadCatalog"><IconRefresh :size="15" />刷新</button>
       <button @click="router.push('/')"><IconArrowLeft :size="15" />返回大屏</button>
     </header>
-    <div class="map-catalog-note">复用厂家建好的地图。此页管理地图版本与激活状态。正式运行切换需使用安全切换流程。</div>
+    <div class="map-workflow"><b>地图使用流程</b><span>工程编辑保存草稿 → 本页发布 → 激活与安全切换 → 大屏显示当前运行图</span></div>
+    <div class="map-catalog-note">本页统一管理地图发布、版本与激活。发布是生成后台版本，车辆上传尚未开放。大屏只显示后台当前运行地图；现场条件或地图兼容未核定时，激活保持禁用。</div>
     <p v-if="storageError" class="inline-warning">本地激活复核记录不可读，地图写操作保持禁用：{{storageError}}</p>
     <p v-if="activationIntent" class="inline-warning activation-pending">存在原激活结果待核对：{{activationIntent.releaseId}} · {{activationIntent.mapId}} / {{activationIntent.versionId}}。禁止重复激活和直接放行。<button @click="loadActivationReview">只读复核原激活</button></p>
     <p v-if="catalogError" class="inline-warning">{{ catalogError }}</p>
@@ -164,6 +168,7 @@ const currentPhase = computed(() => switchStatus.value?.current?.phaseText ?? '�
           <button @click="selectedMap = map"><IconEye :size="14" />详情</button>
           <button @click="loadVersions(map.mapId)">版本历史</button>
           <button @click="openEditDraft(map.mapId)"><IconEdit :size="14" />编辑草稿</button>
+          <button :disabled="busy || activationBlocked" @click="publishMapId = map.mapId">发布草稿</button>
           <button v-if="map.publishedVersionId && (!map.isActive || map.publishedVersionId !== map.activeVersionId)" class="accent-button" :disabled="busy||activationBlocked" @click="openActivate(map)"><IconPlayerPlay :size="14" />激活</button>
           <button v-if="map.isActive && map.mapId === store.snapshot?.map?.id" @click="router.push('/')">查看运行图</button>
         </footer>
@@ -171,6 +176,8 @@ const currentPhase = computed(() => switchStatus.value?.current?.phaseText ?? '�
       <p v-if="!catalog.length && !catalogError" class="empty-panel">没有可查看的地图。连接后台后刷新，或在工程编辑中新建。</p>
     </div>
   </section>
+
+  <MapPublishDialog v-if="publishMapId" :map-id="publishMapId" @close="publishMapId = ''" @published="published" />
 
   <!-- Map Detail -->
   <ConsoleDialog v-if="selectedMap" title="地图版本信息" @close="selectedMap = null">

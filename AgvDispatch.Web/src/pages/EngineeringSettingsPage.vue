@@ -1,6 +1,7 @@
 ﻿<script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue';
 import { useDispatchStore } from '../stores/dispatch';
+import { taskStepName } from '../task-step-labels';
 const store=useDispatchStore();
 const parameters=ref<any>(null),bindings=ref<any>(null),message=ref(''),busy=ref(false),validation=ref<any>(null),inspection=ref<any>(null);
 let epoch=0;const loadedContext=ref("");
@@ -23,8 +24,8 @@ function addBinding(){bindings.value.bindings.push({vehicleId:'',localMapId:'',l
 <fieldset v-if="parameters" :disabled="busy||!editable"><legend>九步任务参数</legend><p>地图 {{parameters.mapId||'未激活'}} / {{parameters.mapVersionId||'无版本'}} · 修订 {{parameters.revision}}</p><p>{{parameters.explanation}}</p>
 <div class="creation-grid"><label>倒料PLC工位<input v-model="parameters.configuration.dumperStationId"/></label><label>等待点<input v-model="parameters.configuration.waitingSite"/></label><label>倒料点<input v-model="parameters.configuration.dumpingSite"/></label></div>
 <h3>取货工位与业务站点</h3><div v-for="(p,i) in parameters.configuration.pickups" :key="i" class="settings-row"><label>PLC工位<input v-model="p.stationId"/></label><label>业务取货点<input v-model="p.pickupSite"/></label><button @click="parameters.configuration.pickups.splice(i,1)">移除此行</button></div><button @click="parameters.configuration.pickups.push({stationId:'',pickupSite:''})">新增取货映射</button>
-<h3>四段末站车辆动作</h3><div v-for="a in parameters.configuration.actions" :key="a.stepType" class="settings-row"><b>{{a.stepType}}</b><label>动作<input v-model="a.operation" placeholder="使用厂家已核定动作"/></label><label>顶升高度（留空不指定）<input v-model.number="a.jackHeight" type="number" @change="a.jackHeight=a.jackHeight===''?null:a.jackHeight"/></label><label v-for="key in ['recognize','usePgv','useDownPgv']" :key="key">{{key}}<select v-model="a[key]"><option :value="null">未指定</option><option :value="true">是</option><option :value="false">否</option></select></label></div>
-<h3>步骤超时提示（秒，0关闭）</h3><div class="creation-grid"><label v-for="t in parameters.configuration.stepTimeouts" :key="t.stepType">{{t.stepType}}<input v-model.number="t.seconds" type="number" min="0"/></label></div>
+<h3>四段末站车辆动作</h3><div v-for="a in parameters.configuration.actions" :key="a.stepType" class="settings-row"><b>{{taskStepName(a.stepType)}}</b><label>动作<input v-model="a.operation" placeholder="使用厂家已核定动作"/></label><label>顶升高度（留空不指定）<input v-model.number="a.jackHeight" type="number" @change="a.jackHeight=a.jackHeight===''?null:a.jackHeight"/></label><label v-for="key in ['recognize','usePgv','useDownPgv']" :key="key">{{({recognize:'识别',usePgv:'使用PGV',useDownPgv:'使用下视PGV'} as Record<string,string>)[key]}}<select v-model="a[key]"><option :value="null">未指定</option><option :value="true">是</option><option :value="false">否</option></select></label></div>
+<h3>步骤超时提示（秒，0关闭）</h3><div class="creation-grid"><label v-for="t in parameters.configuration.stepTimeouts" :key="t.stepType">{{taskStepName(t.stepType)}}<input v-model.number="t.seconds" type="number" min="0"/></label></div>
 <button :disabled="!parameters.mapId" @click="validate()">逐步校验</button><button :disabled="!parameters.canSave||!parameters.mapId" @click="validate(true)">校验并保存任务参数</button>
 <div v-if="validation"><h3>后台逐步校验结果</h3><p v-for="(row,i) in validation.steps" :key="i">{{row.stationId}} · {{row.step.sequence}} {{row.step.name}}：{{row.step.validationErrors?.join('；')||'配置检查通过（不是现场动作通过）'}}</p></div></fieldset>
 <fieldset v-if="bindings" :disabled="busy||!editable"><legend>厂家地图及坐标绑定</legend><p>修订 {{bindings.revision}} · {{bindings.restartRequired?'存在待重启配置':'无待重启更改'}}</p>
