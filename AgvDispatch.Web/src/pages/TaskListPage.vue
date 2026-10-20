@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import ActionIcon from '../components/ActionIcon.vue';
-import { computed, ref, watch } from 'vue';
+import { computed, onUnmounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useDispatchStore } from '../stores/dispatch';
 import { useToastStore } from '../stores/toast';
@@ -27,6 +27,7 @@ const showTaskDialog = ref(false);
 const selectedTask = ref('');
 const detail = ref<TaskDetail | null>(null);
 let detailEpoch = 0;
+let detailPending = 0;
 
 const formOpen = ref(false);
 const station = ref('');
@@ -51,13 +52,23 @@ watch(() => route.params.id, id => { if (id && typeof id === 'string') openTask(
 
 async function loadDetail(id: string) {
   const selection = ++detailEpoch;
+  detailPending++;
   try {
     const result = await store.api<TaskDetail | null>(`/api/tasks/${encodeURIComponent(id)}`);
     if (selection === detailEpoch && selectedTask.value === id) detail.value = result;
-  } catch { detail.value = null; }
+  } catch { if (selection === detailEpoch && selectedTask.value === id) detail.value = null; }
+  finally { detailPending--; }
 }
 function selectTask(id: string) { selectedTask.value = id; detail.value = null; void loadDetail(id); }
 function openTask(id: string) { showTaskDialog.value = true; selectTask(id); }
+
+watch(() => store.snapshot?.receivedAt, () => {
+  if (!showTaskDialog.value) return;
+  if (!store.fresh) { detailEpoch++; detail.value = null; return; }
+  if (selectedTask.value && detailPending === 0) void loadDetail(selectedTask.value);
+});
+watch(showTaskDialog, open => { if (!open) { detailEpoch++; detail.value = null; } });
+onUnmounted(() => { detailEpoch++; });
 
 async function queryTasks(page = 1) {
   queryError.value = ''; taskPage.value = page; queryBusy.value = true;
@@ -104,10 +115,16 @@ async function submitTask() {
     const result = await store.api<{ accepted: boolean; created: boolean; taskId: string | null; message: string }>('/api/tasks', request);
     sessionStorage.removeItem(storageKey); requestUncertain.value = false;
     actionMessage.value = result.message;
-    if (result.accepted && result.taskId) { toast.success('任务已提交'); selectTask(result.taskId); }
+    if (result.accepted && result.taskId) { formOpen.value = false; toast.success('任务已提交'); openTask(result.taskId); }
   } catch (ex) { actionMessage.value = `结果未确认：${String(ex)}。保留原申请，重试使用同一个编号。`; }
   finally { actionBusy.value = false; }
 }
+
+watch(() => route.query.create, create => {
+  if (create !== '1') return;
+  void loadOptions();
+  void router.replace({ query: { ...route.query, create: undefined } });
+}, { immediate: true });
 </script>
 
 <template>

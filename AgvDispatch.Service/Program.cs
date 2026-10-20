@@ -249,4 +249,6 @@ builder.Services.AddSingleton(alarmOptions);
 builder.Services.AddHostedService<AlarmRuleEngine>();
 
 var host = builder.Build();
+// Build the schema before any polling/recording background service can query it.
+await host.Services.GetRequiredService<IDatabaseInitializer>().InitializeAsync(CancellationToken.None);
 host.Run();

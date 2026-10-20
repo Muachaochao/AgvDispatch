@@ -9,6 +9,8 @@ public sealed class DatabaseInitializer : IDatabaseInitializer
 {
     private readonly ISqlSugarClient _database;
     private readonly TrafficResourceCatalog _trafficResources;
+    private readonly object _initializationLock = new();
+    private bool _initialized;
 
     public DatabaseInitializer(ISqlSugarClient database)
         : this(database, new TrafficResourceCatalog([]))
@@ -24,6 +26,20 @@ public sealed class DatabaseInitializer : IDatabaseInitializer
     }
 
     public Task InitializeAsync(CancellationToken cancellationToken)
+    {
+        lock (_initializationLock)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!_initialized)
+            {
+                InitializeCore(cancellationToken);
+                _initialized = true;
+            }
+        }
+        return Task.CompletedTask;
+    }
+
+    private void InitializeCore(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         _database.DbMaintenance.CreateDatabase();
@@ -157,7 +173,6 @@ public sealed class DatabaseInitializer : IDatabaseInitializer
                     UpdatedAt = now
                 }).ToArray()).ExecuteCommand();
         }
-        return Task.CompletedTask;
     }
 
     public Task<bool> CanConnectAsync(CancellationToken cancellationToken)

@@ -60,6 +60,19 @@ var legacy=db.Queryable<AgvCommandOutboxEntity>().Single(x=>x.TaskId=="LEGACY");
 Check(legacy.ExecutionRouteSnapshotJson is null&&legacy.ExecutionRouteSnapshotHash is null,"遗留无快照保持未知");
 var oldRefused=false;try{TransportRouteSnapshots.Read(legacy);}catch(InvalidDataException){oldRefused=true;}Check(oldRefused,"遗留记录不能通过快照核验");
 var backfillRefused=false;try{db.Updateable<AgvCommandOutboxEntity>().Where(x=>x.TaskId=="LEGACY").SetColumns(x=>x.ExecutionRouteSnapshotJson==originalJson).ExecuteCommand();}catch(Exception ex){backfillRefused=ex.ToString().Contains("transport route snapshot is immutable");}Check(backfillRefused,"禁止事后补造遗留快照");
+Seed("NO-RESOURCES");
+db.Updateable<TrafficRequestEntity>().Where(x=>x.StepId=="NO-RESOURCES-STEP").SetColumns(x=>x.State=="NotRequired").ExecuteCommand();
+Check(await repository.TryPrepareTransportStepAsync("NO-RESOURCES","NO-RESOURCES-STEP","AGV",["P1","P2"],null,default),"无资源路径NotRequired仍生成完整发送快照");
+foreach(var nodeResource in new[]{false,true})
+{
+    var id=nodeResource?"HIDDEN-NODE-RESOURCE":"HIDDEN-EDGE-RESOURCE";Seed(id);
+    db.Updateable<TrafficRequestEntity>().Where(x=>x.TaskId==id).SetColumns(x=>x.State=="NotRequired").ExecuteCommand();
+    var protectedMap=nodeResource?map with{Nodes=map.Nodes.Select(n=>n.Id=="B"?n with{ResourceIds=["R"]}:n).ToArray(),Resources=[new("R",TrafficResourceType.Station)]}:map with{Edges=map.Edges.Select(e=>e with{ResourceIds=["R"]}).ToArray(),Resources=[new("R",TrafficResourceType.NarrowAisle)]};
+    active.Replace(new("M","V1",protectedMap,DateTimeOffset.UtcNow));
+    var blocked=false;try{await repository.TryPrepareTransportStepAsync(id,id+"-STEP","AGV",["P1","P2"],null,default);}catch(InvalidOperationException){blocked=true;}
+    Check(blocked&&!db.Queryable<AgvCommandOutboxEntity>().Any(x=>x.TaskId==id),"NotRequired不能绕过真实"+(nodeResource?"节点":"路段")+"资源且不留下发送命令");
+}
+active.Replace(new("M","V1",map,DateTimeOffset.UtcNow));
 var restarted=DatabaseFactory.Create(options);await new DatabaseInitializer(restarted).InitializeAsync(default);
 Check(TransportRouteSnapshots.Read(restarted.Queryable<AgvCommandOutboxEntity>().Single(x=>x.TaskId=="TASK")).EdgeIds.SequenceEqual(["AB"]),"重新初始化和新连接保留原快照及保护");
 Check(restarted.Queryable<AgvCommandOutboxEntity>().Single(x=>x.TaskId=="LEGACY").ExecutionRouteSnapshotJson is null,"初始化不回填历史");

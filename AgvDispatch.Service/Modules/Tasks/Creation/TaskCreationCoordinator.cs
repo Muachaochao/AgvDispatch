@@ -40,10 +40,11 @@ public sealed class TaskCreationCoordinator(
             throw new InvalidOperationException("TaskCreation:DumperStationId不能为空。");
         }
 
-        stationStates.StationStateChanged += OnStationStateChanged;
+        if (options.AutomaticCreationEnabled)
+            stationStates.StationStateChanged += OnStationStateChanged;
         try
         {
-            foreach (var station in stationStates.GetAll().Where(state => state.CanCreateTask))
+            foreach (var station in stationStates.GetAll().Where(state => options.AutomaticCreationEnabled && state.CanCreateTask))
             {
                 Enqueue(station.StationId);
             }
@@ -61,7 +62,7 @@ public sealed class TaskCreationCoordinator(
 
                 if (completed == retryTask)
                 {
-                    if (executionGate.CanStartNewWork)
+                    if (options.AutomaticCreationEnabled && executionGate.CanStartNewWork)
                         foreach (var station in stationStates.GetAll().Where(state => state.CanCreateTask)) Enqueue(station.StationId);
                     await ProcessPendingAcknowledgementsAsync(stoppingToken);
                     continue;

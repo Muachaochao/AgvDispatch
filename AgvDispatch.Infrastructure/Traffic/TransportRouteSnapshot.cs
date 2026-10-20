@@ -22,7 +22,7 @@ public static class TransportRouteSnapshots
         string payloadJson, ActiveMapRuntimeSnapshot map, TrafficRequestEntity request)
     {
         if (request.TaskId != taskId || request.StepId != stepId || request.VehicleId != vehicleId ||
-            request.MapId != map.MapId || request.MapVersionId != map.VersionId || request.State is not ("Acquired" or "Held"))
+            request.MapId != map.MapId || request.MapVersionId != map.VersionId || request.State is not ("Acquired" or "Held" or "NotRequired"))
             throw new InvalidDataException("发送路线与已取得路权的身份/地图不一致。");
         var payload = JsonSerializer.Deserialize<AgvTransportCommandPayload>(payloadJson, JsonOptions)
             ?? throw new InvalidDataException("发送载荷无效。");
@@ -48,6 +48,11 @@ public static class TransportRouteSnapshots
                 matches[0].Bidirectional && matches[0].To == nodes[i] && matches[0].From == nodes[i+1]))
                 throw new InvalidDataException("发送路径有序路段断链、禁用或方向不符。");
         }
+        if (request.State == "NotRequired" &&
+            ((JsonSerializer.Deserialize<string[]>(request.ResourceIds) ?? []).Length != 0 ||
+             map.Definition.Nodes.Where(n => nodes.Contains(n.Id)).Any(n => n.ResourceIds.Count > 0) ||
+             map.Definition.Edges.Where(e => edges.Contains(e.Id)).Any(e => e.ResourceIds.Count > 0)))
+            throw new InvalidDataException("无需申请状态只能用于确实不经过任何交通资源的路径。");
         return new(1,taskId,stepId,commandId,vehicleId,map.MapId,map.VersionId,map.Definition.CoordinateSystem,
             Hash(JsonSerializer.Serialize(map.Definition, JsonOptions)),
             Hash(payloadJson),nodes,edges,payload.Path.ToArray());
