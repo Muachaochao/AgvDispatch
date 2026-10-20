@@ -1,0 +1,58 @@
+<Window x:Class="PlcHandshakeLab.MainWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="AGV · PLC 握手时序实验台" Width="1440" Height="940" MinWidth="1120" MinHeight="760" Background="#F3F6FA" FontFamily="Microsoft YaHei UI" FontSize="13">
+  <Grid Margin="22,18">
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="150"/></Grid.RowDefinitions>
+    <DockPanel Margin="0,0,0,14">
+      <StackPanel DockPanel.Dock="Right" HorizontalAlignment="Right"><TextBlock Text="离线模拟 · 不连接现场 PLC" Foreground="#147F79" FontWeight="Bold"/><TextBlock Text="依据：2026-10-20 用户提供的 28 阶段表" FontSize="12" Margin="0,5,0,0"/></StackPanel>
+      <StackPanel><TextBlock Text="PLC 握手时序实验台" FontSize="26" FontWeight="Bold"/><TextBlock Text="满箱取走 → 等待许可 → 倒料退出 → 空箱返回" Margin="0,5,0,0" Foreground="#64748B"/></StackPanel>
+    </DockPanel>
+    <WrapPanel Grid.Row="1" Margin="0,0,0,12" VerticalAlignment="Center">
+      <Button x:Name="PlayButton" Content="▶ 自动演示" Click="Play_Click" Background="#137E79" Foreground="White"/>
+      <Button Content="暂停" Click="Pause_Click"/><Button Content="上一步" Click="Previous_Click"/>
+      <Button Content="下一步" Click="Next_Click" ToolTip="按标准表应用下一阶段，覆盖当前模拟电平"/>
+      <Button Content="重置" Click="Reset_Click"/>
+      <TextBlock Text="步间隔" VerticalAlignment="Center" Margin="10,0,8,0"/>
+      <ComboBox x:Name="Speed" Width="86" SelectedIndex="1" VerticalContentAlignment="Center"><ComboBoxItem Content="0.5 秒"/><ComboBoxItem Content="1 秒"/><ComboBoxItem Content="2 秒"/><ComboBoxItem Content="3 秒"/></ComboBox>
+      <CheckBox x:Name="Loop" Content="循环" VerticalAlignment="Center" Margin="14,0"/>
+      <Button Content="恢复本步标准值" Click="Restore_Click"/>
+      <Button Content="导出 CSV 日志" Click="Export_Click"/>
+    </WrapPanel>
+    <Border Grid.Row="2" Background="#FFFFFF" CornerRadius="8" Padding="16,12" Margin="0,0,0,12">
+      <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="330"/></Grid.ColumnDefinitions>
+        <StackPanel><TextBlock Text="{Binding StageTitle}" FontSize="21" FontWeight="Bold"/><TextBlock Text="{Binding Condition}" Margin="0,8,12,0" TextWrapping="Wrap"/></StackPanel>
+        <StackPanel Grid.Column="1"><TextBlock Text="{Binding Status}" Foreground="#147F79" FontWeight="Bold"/><TextBlock Text="{Binding Comparison}" TextWrapping="Wrap" Margin="0,8,0,0"/></StackPanel>
+      </Grid>
+    </Border>
+    <ItemsControl Grid.Row="3" ItemsSource="{Binding Signals}" Margin="0,0,0,12">
+      <ItemsControl.ItemsPanel><ItemsPanelTemplate><UniformGrid Columns="5"/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+      <ItemsControl.ItemTemplate><DataTemplate>
+        <Border Background="White" BorderThickness="1" BorderBrush="{Binding Border}" CornerRadius="6" Padding="10" Margin="0,0,7,7">
+          <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="30"/><ColumnDefinition Width="*"/><ColumnDefinition Width="32"/></Grid.ColumnDefinitions>
+            <Ellipse Width="16" Height="16" Fill="{Binding Lamp}" VerticalAlignment="Top" Margin="0,4,0,0">
+              <Ellipse.Style><Style TargetType="Ellipse"><Style.Triggers><DataTrigger Binding="{Binding Changed}" Value="True">
+                <DataTrigger.EnterActions><BeginStoryboard><Storyboard RepeatBehavior="Forever" AutoReverse="True"><DoubleAnimation Storyboard.TargetProperty="Opacity" From="1" To="0.3" Duration="0:0:0.55"/></Storyboard></BeginStoryboard></DataTrigger.EnterActions>
+                <DataTrigger.ExitActions><BeginStoryboard><Storyboard><DoubleAnimation Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0"/></Storyboard></BeginStoryboard></DataTrigger.ExitActions>
+              </DataTrigger></Style.Triggers></Style></Ellipse.Style>
+            </Ellipse>
+            <StackPanel Grid.Column="1"><TextBlock Text="{Binding Name}" FontWeight="Bold"/><TextBlock Text="{Binding AddressLabel}" FontSize="11" Margin="0,4,0,0" Foreground="#64748B"/><TextBlock Text="{Binding Expectation}" FontSize="11" Margin="0,4,0,0" Foreground="#64748B"/></StackPanel>
+            <Button Grid.Column="2" Content="{Binding Bit}" Tag="{Binding Index}" Click="Toggle_Click" Padding="0" Margin="0" Height="30" VerticalAlignment="Top" ToolTip="手动翻转模拟电平；自动播放将暂停"/>
+          </Grid>
+        </Border>
+      </DataTemplate></ItemsControl.ItemTemplate>
+    </ItemsControl>
+    <Grid Grid.Row="4" Margin="0,0,0,12">
+      <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+      <DockPanel Margin="0,0,0,8"><TextBlock Text="28 步时序表" FontWeight="Bold"/><TextBlock Text="点击行跳转并加载该步模拟值 · ↑/↓ 为本步边沿 · 闪灯表示本次电平变化 · 红框表示偏离标准" Foreground="#64748B" Margin="16,0,0,0"/></DockPanel>
+      <DataGrid x:Name="Timeline" Grid.Row="1" ItemsSource="{Binding Rows}" AutoGenerateColumns="False" IsReadOnly="True" SelectionMode="Single" SelectionUnit="FullRow" SelectionChanged="Timeline_SelectionChanged" CanUserAddRows="False" CanUserSortColumns="False" CanUserReorderColumns="False" HeadersVisibility="Column" GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="#E8EEF5" RowHeight="32" BorderThickness="0" Background="White" FrozenColumnCount="2" EnableRowVirtualization="True">
+        <DataGrid.RowStyle><Style TargetType="DataGridRow"><Setter Property="Background" Value="White"/><Style.Triggers><Trigger Property="IsSelected" Value="True"><Setter Property="Background" Value="#D5EDE9"/><Setter Property="Foreground" Value="#17283C"/><Setter Property="FontWeight" Value="Bold"/></Trigger></Style.Triggers></Style></DataGrid.RowStyle>
+      </DataGrid>
+    </Grid>
+    <Grid Grid.Row="5"><Grid.ColumnDefinitions><ColumnDefinition Width="2*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+      <GroupBox Header="事件记录 · 最近 500 条" BorderBrush="#D5DFEB" Padding="8"><ListBox x:Name="EventList" ItemsSource="{Binding Logs}" FontFamily="Consolas, Microsoft YaHei UI" FontSize="12" BorderThickness="0" Background="White" ScrollViewer.HorizontalScrollBarVisibility="Auto"/></GroupBox>
+      <Border Grid.Column="1" Background="#E8EEF5" Padding="12" Margin="12,0,0,0" CornerRadius="6"><StackPanel>
+        <TextBlock Text="调试说明" FontWeight="Bold"/><TextBlock Text="P = PLC 负责，H = 上位机负责。卡片按钮仅改变本地模拟值。P/H 地址是表内标识，尚未映射到实际 DB 地址。" TextWrapping="Wrap" Margin="0,6,0,0"/>
+        <TextBlock Text="本工具展示电平时序；到站、持久化、设备独占及实际离站等条件由人工假定成立，不代表现场动作或联锁已验证。" TextWrapping="Wrap" Margin="0,6,0,0" Foreground="#886031"/>
+      </StackPanel></Border>
+    </Grid>
+  </Grid>
+</Window>
