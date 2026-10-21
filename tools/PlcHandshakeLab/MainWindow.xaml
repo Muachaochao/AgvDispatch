@@ -7,7 +7,7 @@
       <StackPanel><TextBlock Text="PLC 握手时序实验台" FontSize="26" FontWeight="Bold"/><TextBlock Text="满箱取走 → 等待许可 → 倒料退出 → 空箱返回" Margin="0,5,0,0" Foreground="#64748B"/></StackPanel>
     </DockPanel>
     <StackPanel Grid.Row="1" Margin="0,0,0,10">
-      <WrapPanel><TextBlock Text="虚拟设备目录" VerticalAlignment="Center"/><TextBox x:Name="LabRoot" Width="440" Margin="8,0" VerticalContentAlignment="Center"/><Button Content="选择目录" Click="BrowseLab_Click"/><Button Content="连接虚拟PLC" Click="ConnectLab_Click"/><Button Content="返回离线28阶段" Click="DisconnectLab_Click"/></WrapPanel>
+      <WrapPanel><Button Content="打开独立PLC人工联调台" Click="OpenNetwork_Click" Background="#147F79" Foreground="White"/><TextBlock Text="虚拟设备目录" VerticalAlignment="Center"/><TextBox x:Name="LabRoot" Width="330" Margin="8,0" VerticalContentAlignment="Center"/><Button Content="选择目录" Click="BrowseLab_Click"/><Button Content="连接虚拟PLC" Click="ConnectLab_Click"/><Button Content="返回离线28阶段" Click="DisconnectLab_Click"/></WrapPanel>
       <WrapPanel Margin="0,6,0,0"><TextBlock Text="取料工位" VerticalAlignment="Center"/><ComboBox x:Name="LiveStation" Width="120" Margin="8,0" SelectedIndex="0" SelectionChanged="LiveStation_Changed"><ComboBoxItem Content="CNC-001"/><ComboBoxItem Content="CNC-002"/></ComboBox><Button x:Name="CallButton" Content="触发满箱呼叫" IsEnabled="False" Click="Call_Click"/><TextBlock x:Name="LiveStatus" Text="联调模式读取同一虚拟PLC；H侧输出只读，任务由Web提交。" VerticalAlignment="Center" TextWrapping="Wrap" Width="660"/></WrapPanel>
     </StackPanel>
     <WrapPanel x:Name="OfflineControls" Grid.Row="2" Margin="0,0,0,12" VerticalAlignment="Center">

@@ -4,5 +4,9 @@
     <Compile Include="../PlcHandshakeLab/Sequence.cs" Link="Sequence.cs"/>
     <Compile Include="../PlcHandshakeLab/LabSession.cs" Link="LabSession.cs"/>
     <Compile Include="../PlcHandshakeLab/LivePlcConnection.cs" Link="LivePlcConnection.cs"/>
+    <Compile Include="../PlcHandshakeLab/NetworkLab.cs" Link="NetworkLab.cs"/>
+    <Compile Include="../PlcHandshakeLab/S7LabServer.cs" Link="S7LabServer.cs"/>
+    <Compile Include="../../AgvDispatch.Connectors.Plc/Signals/PlcSignalCatalog.cs" Link="PlcSignalCatalog.cs"/>
+    <PackageReference Include="HslCommunication" Version="12.2.0"/>
   </ItemGroup>
 </Project>

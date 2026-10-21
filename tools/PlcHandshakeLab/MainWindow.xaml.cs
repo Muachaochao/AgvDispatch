@@ -79,6 +79,12 @@ public sealed class LabViewModel : INotifyPropertyChanged
 
 public partial class MainWindow : Window
 {
+    private void OpenNetwork_Click(object sender, RoutedEventArgs e)
+    {
+        Stop("已暂停离线演示");
+        Refresh();
+        new NetworkWindow { Owner = this }.ShowDialog();
+    }
     private readonly LabSession _session = new();
     private readonly LabViewModel _viewModel = new();
     private readonly DispatcherTimer _timer = new();
