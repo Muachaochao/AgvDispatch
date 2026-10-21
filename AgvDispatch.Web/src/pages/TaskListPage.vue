@@ -38,6 +38,10 @@ const routePreview = ref<RoutePreview | null>(null);
 const actionBusy = ref(false);
 const actionMessage = ref('');
 const requestUncertain = ref(false);
+const optionsBusy = ref(false);
+const selectedStation = computed(() => options.value?.stations.find(s => s.stationId === station.value));
+const selectedVehicle = computed(() => options.value?.vehicles.find(v => v.vehicleId === vehicle.value));
+const pickupReachable = computed(() => !!selectedStation.value?.pickupReachableVehicleIds?.includes(vehicle.value));
 
 const visibleTasks = computed(() => queriedTasks.value?.items ?? store.allTasks.filter(task =>
   (taskFilter.value === 'all' || (taskFilter.value === 'waiting' ? task.stage === 'WaitingForVehicle' || task.stage === 'Created' : taskFilter.value === 'failed' ? ['Faulted', 'CancellationReview'].includes(task.stage) : taskFilter.value === 'completed' ? task.stage === 'Completed' : taskFilter.value === 'cancelled' ? task.stage === 'Cancelled' : isRunningStage(task.stage))) &&
@@ -45,7 +49,7 @@ const visibleTasks = computed(() => queriedTasks.value?.items ?? store.allTasks.
 ));
 const pages = computed(() => Math.max(1, Math.ceil((queriedTasks.value?.totalCount ?? store.snapshot?.tasks?.totalCount ?? 0) / 50)));
 const tableCount = computed(() => queriedTasks.value?.totalCount ?? store.snapshot?.tasks?.totalCount ?? 0);
-const canSubmit = computed(() => store.fresh && store.submissionEnabled && !actionBusy.value && (requestUncertain.value || (!!options.value?.available && !!station.value && !!vehicle.value)));
+const canSubmit = computed(() => store.fresh && store.submissionEnabled && !actionBusy.value && !optionsBusy.value && (requestUncertain.value || (!!options.value?.available && !!selectedStation.value?.available && !!selectedVehicle.value?.available && pickupReachable.value)));
 
 watch([search, taskFilter], () => { queriedTasks.value = null; taskPage.value = 1; });
 watch(() => route.params.id, id => { if (id && typeof id === 'string') openTask(id); }, { immediate: true });
@@ -82,15 +86,20 @@ async function queryTasks(page = 1) {
 
 function resetTaskQuery() { search.value = ''; taskFilter.value = 'all'; queriedTasks.value = null; taskPage.value = 1; queryError.value = ''; }
 
-async function loadOptions() {
+async function loadOptions(preserveSelection = false) {
+  if (optionsBusy.value || actionBusy.value || requestUncertain.value) return;
   formOpen.value = true; routePreview.value = null; actionMessage.value = '';
+  optionsBusy.value = true;
   try {
     const result = await store.api<CreationOptions>('/api/task-options');
     options.value = result;
-    station.value = result.stations.find(s => s.available)?.stationId ?? '';
-    vehicle.value = result.vehicles.find(v => v.available)?.vehicleId ?? '';
-  } catch (ex) { actionMessage.value = String(ex); }
+    if (!preserveSelection || !result.stations.some(s => s.stationId === station.value)) station.value = result.stations.find(s => s.available)?.stationId ?? result.stations[0]?.stationId ?? '';
+    if (!preserveSelection || !result.vehicles.some(v => v.vehicleId === vehicle.value)) vehicle.value = result.vehicles.find(v => v.available)?.vehicleId ?? result.vehicles[0]?.vehicleId ?? '';
+  } catch (ex) { options.value = null; actionMessage.value = String(ex); }
+  finally { optionsBusy.value = false; }
 }
+
+watch([station, vehicle], () => { routePreview.value = null; });
 
 async function previewRoute() {
   if (!options.value || !station.value || !vehicle.value) return;
@@ -132,7 +141,7 @@ watch(() => route.query.create, create => {
     <header class="management-title">
       <h2><IconListDetails :size="23" />任务列表</h2>
       <span>{{ queriedTasks ? '查询总数' : '快照总数' }} {{ tableCount }} 条</span>
-      <button class="accent-button" @click="loadOptions"><IconPlus :size="15" />创建任务</button>
+      <button class="accent-button" @click="loadOptions()"><IconPlus :size="15" />创建任务</button>
       <button @click="router.push('/')"><IconArrowLeft :size="15" />返回大屏</button>
     </header>
     <div class="query-bar">
@@ -177,18 +186,26 @@ watch(() => route.query.create, create => {
 
   <ConsoleDialog v-if="formOpen" title="创建调度任务" @close="formOpen = false">
     <p class="form-explanation">{{ (options?.explanation ?? actionMessage) || '正在查询后台创建条件…' }}</p>
+    <p class="form-explanation">本表创建取满箱、倒料、返空箱任务，需要工位满箱呼叫。可选择工位查看条件和核对路线；满足条件后才能提交。</p>
     <div class="creation-grid">
-      <label>取料工位<select v-model="station" :disabled="requestUncertain || actionBusy"><option value="">请选择</option><option v-for="s in options?.stations ?? []" :key="s.stationId" :value="s.stationId" :disabled="!s.available">{{ s.stationId }} · {{ s.pickupSite }}</option></select></label>
-      <label>车辆<select v-model="vehicle" :disabled="requestUncertain || actionBusy"><option value="">请选择</option><option v-for="v in options?.vehicles ?? []" :key="v.vehicleId" :value="v.vehicleId" :disabled="!v.available">{{ v.label }}</option></select></label>
+      <label>取料工位<select v-model="station" :disabled="requestUncertain || actionBusy || optionsBusy"><option value="">请选择</option><option v-for="s in options?.stations ?? []" :key="s.stationId" :value="s.stationId">{{ s.stationId }} · {{ s.pickupSite }}{{ s.available ? '' : ' · 条件未满足' }}</option></select></label>
+      <label>车辆<select v-model="vehicle" :disabled="requestUncertain || actionBusy || optionsBusy"><option value="">请选择</option><option v-for="v in options?.vehicles ?? []" :key="v.vehicleId" :value="v.vehicleId">{{ v.label }}{{ v.available ? '' : ' · 暂不可用' }}</option></select></label>
       <label>优先级（0–100）<input v-model.number="priority" type="number" min="0" max="100" :disabled="requestUncertain || actionBusy" /></label>
       <label>地图版本<input :value="options?.mapVersionId ?? '—'" readonly /></label>
     </div>
+    <div class="form-explanation" role="status">
+      <p v-for="s in options?.stations ?? []" :key="s.stationId">{{ s.stationId }}：{{ s.explanation }}</p>
+      <p v-if="selectedVehicle">车辆：{{ selectedVehicle.explanation }}</p>
+      <p v-if="selectedStation && selectedVehicle && !pickupReachable">所选车辆当前站点到取料点没有可执行路径，请检查地图道路和方向。</p>
+    </div>
+    <p class="form-explanation"><RouterLink class="cyan" to="/engineering-settings" @click="formOpen = false">配置工位、等待点、倒料点及车辆动作</RouterLink>；道路与站点位置在地图编辑中定义。当前业务步骤固定为九步。</p>
     <div class="inline-warning">{{ store.submissionEnabled ? '提交后仍须经过后台核验，成功接收不等于执行完成。' : 'Web提交未启用，可核对条件及路线。' }}</div>
     <div v-if="routePreview" class="route-preview"><b>{{ routePreview.message }}</b><p v-for="leg in routePreview.legs" :key="leg.sequence">{{ leg.sequence }}. {{ leg.name }}：{{ leg.vendorPath || leg.logicalPath }}</p></div>
     <p v-if="actionMessage" class="form-feedback" role="status">{{ actionMessage }}</p>
     <template #footer>
       <button @click="formOpen = false"><ActionIcon name="close"/>取消</button>
-      <button :disabled="!options || !station || !vehicle || actionBusy || !store.fresh" @click="previewRoute"><ActionIcon name="route"/>核对四段路线</button>
+      <button :disabled="optionsBusy || actionBusy || requestUncertain || !store.fresh" @click="loadOptions(true)"><ActionIcon name="refresh"/>{{ optionsBusy ? '刷新中…' : '刷新条件' }}</button>
+      <button :disabled="!options || !station || !vehicle || optionsBusy || actionBusy || !store.fresh" @click="previewRoute"><ActionIcon name="route"/>核对四段路线</button>
       <button class="accent-button" :disabled="!canSubmit" @click="submitTask">{{ actionBusy ? '处理中…' : requestUncertain ? '重试原申请' : '提交后台' }}</button>
     </template>
   </ConsoleDialog>
