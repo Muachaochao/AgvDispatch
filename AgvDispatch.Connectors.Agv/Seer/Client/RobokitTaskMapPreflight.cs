@@ -7,6 +7,37 @@ namespace AgvDispatch.Connectors.Agv;
 public sealed class RobokitTaskMapPreflight(AgvOptions options,AgvConnectionManager connections,
     IActiveMapRuntime runtime,IRobokitInspectionService inspection) : IRobokitTaskMapPreflight
 {
+    public async Task<RobokitTaskMapCheck> CheckCurrentMapAsync(string vehicleId,string mapId,string versionId,CancellationToken ct)
+    {
+        RobokitTaskMapCheck Refuse(string reason)=>new(false,"实际出区当前地图核验："+reason);
+        var map=runtime.Current;
+        if(map is null||map.MapId!=mapId||map.VersionId!=versionId)return Refuse("运行地图与原业务绑定不一致。");
+        var matches=(options.MapBindings??[]).Where(b=>b.VehicleId==vehicleId&&b.LocalMapId==mapId&&b.LocalMapVersion==versionId).ToArray();
+        if(matches.Length!=1)return Refuse("缺少唯一车辆/本地地图版本绑定。");
+        var binding=matches[0];
+        if(!binding.CoordinatesVerified||string.IsNullOrWhiteSpace(binding.RobotMap)||string.IsNullOrWhiteSpace(binding.RobotMapMd5)||
+            binding.RobotMapMd5.Length!=32||binding.RobotMapMd5.Any(c=>!Uri.IsHexDigit(c)))return Refuse("车端地图名、32位MD5或坐标核定缺失。");
+        var expectedMap=binding.RobotMap;var expectedMd5=binding.RobotMapMd5;
+        if(!connections.TryGet(vehicleId,out _))return Refuse("车辆未配置。");
+        using var budget=CancellationTokenSource.CreateLinkedTokenSource(ct);budget.CancelAfter(TimeSpan.FromSeconds(15));
+        try
+        {
+            // The inspection obtains fresh 1300/1022/1302 observations and checks
+            // identity again at the end. It never sends navigation or reserves resources.
+            var observed=await inspection.ReadAsync(new(vehicleId),budget.Token);
+            var afterBindings=(options.MapBindings??[]).Where(b=>b.VehicleId==vehicleId&&b.LocalMapId==mapId&&b.LocalMapVersion==versionId).ToArray();
+            if(!observed.Available||!observed.Stable||observed.VehicleId!=vehicleId||observed.LocalMapId!=mapId||observed.LocalMapVersion!=versionId||
+                observed.RobotMap!=expectedMap||!string.Equals(observed.RobotMapMd5,expectedMd5,StringComparison.OrdinalIgnoreCase)||
+                observed.LoadMapStatus!=1||observed.Issues.Any(i=>i.Contains("1302"))||!ReferenceEquals(map,runtime.Current))
+                return Refuse("本次车端地图、MD5、载入状态或稳定性未通过；"+observed.Reason);
+            if(afterBindings.Length!=1||!afterBindings[0].CoordinatesVerified||afterBindings[0].RobotMap!=expectedMap||
+                !string.Equals(afterBindings[0].RobotMapMd5,expectedMd5,StringComparison.OrdinalIgnoreCase))return Refuse("采集期间车辆坐标绑定变化。");
+            return new(true,"实际出区当前车端地图、MD5与已核定坐标绑定一致。");
+        }
+        catch(OperationCanceledException)when(ct.IsCancellationRequested){throw;}
+        catch(Exception ex){return Refuse(ex is OperationCanceledException?"本次采集超时。":ex.Message);}
+    }
+
     public async Task<RobokitTaskMapCheck> CheckRouteAsync(string vehicleId,IReadOnlyList<string> path,CancellationToken ct)
     {
         var map=runtime.Current;
@@ -76,8 +107,9 @@ public sealed class RobokitTaskMapPreflight(AgvOptions options,AgvConnectionMana
                     return nodes.Length==1?nodes[0]:null;
                 }
                 var source=Resolve(routePairs[step].Item1);var target=Resolve(routePairs[step].Item2);
-                var route=source is null || target is null ? null : map.Graph.FindShortestRoute(source.Id,target.Id);
-                if(route is null || route.Nodes.Count is <2 or >2048)return Refuse($"第{new[]{1,3,5,7}[step]}步没有可执行路线。");
+                var protectedNodes=new[]{Resolve(waiting)?.Id,Resolve(dumping)?.Id}.Where(id=>id is not null).Select(id=>id!).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                var route=source is null || target is null ? null : step==0 ? map.Graph.FindShortestTransportRoute(source.Id,target.Id,forbiddenIntermediateNodes:protectedNodes) : map.Graph.FindShortestRoute(source.Id,target.Id);
+                if(route is null || route.Nodes.Count is <2 or >2048)return Refuse(step==0&&source?.Id==target?.Id ? "第1步车辆已在取货点，但无避开等待/倒料节点的真实已启用进出闭合路线，禁止虚构同点运输。" : $"第{new[]{1,3,5,7}[step]}步没有可执行路线。");
                 var path=new List<string>();
                 foreach(var id in route.Nodes)
                 {

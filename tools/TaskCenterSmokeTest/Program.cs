@@ -312,6 +312,72 @@ if(OperatingSystem.IsWindows())
     var linkedCache=await jobs.GetCacheAsync(exportUser,new(7),token);
     Require(!linkedCache.Items.Any(i=>i.FileName==Path.GetFileName(junction)) && (await jobs.CleanupAsync(exportUser,new(7),token)).DeletedCount==0 && File.Exists(outsideArchive),"cache cleanup never traverses directory links to outside files");
 }
+// A separate task verifies v2 diagnostics without changing the older fixtures or fabricating transport completion.
+clock.Now=DateTimeOffset.Now;
+var v2Task=(await writer.TryCreateAsync("CNC28","DUMPER-001",0,token)).Task.TaskId;
+var v2Steps=await writer.GetStepsAsync(v2Task,token);
+var returning=v2Steps.Single(s=>s.StepType==DispatchTaskStepType.ReturnEmptyBox);
+await database.Updateable<DispatchTaskStepEntity>().SetColumns(s=>new DispatchTaskStepEntity{Status=50,CompletedAt=DateTime.Now})
+    .Where(s=>s.TaskId==v2Task&&s.Sequence<returning.Sequence).ExecuteCommandAsync();
+await database.Updateable<DispatchTaskStepEntity>().SetColumns(s=>new DispatchTaskStepEntity{Status=40,VehicleId="AGV-28",VendorTaskId="RETURN-28",StartedAt=DateTime.Now})
+    .Where(s=>s.StepId==returning.StepId).ExecuteCommandAsync();
+await database.Updateable<DispatchTaskEntity>().SetColumns(t=>new DispatchTaskEntity{Stage=(int)DispatchTaskStage.ReturningEmptyBox,VehicleId="AGV-28"}).Where(t=>t.TaskId==v2Task).ExecuteCommandAsync();
+var exitCheckpoint=new TaskHandshakeEntity{TaskId=v2Task,StepId=returning.StepId,CycleId=v2Task,ContractVersion=HandshakeExecutionOptions.Version,Phase="AwaitPhysicalExit",Revision=1,StartedAtUtc=DateTime.UtcNow,UpdatedAtUtc=DateTime.UtcNow};
+await database.Insertable(exitCheckpoint).ExecuteCommandAsync();
+cache.Set("DUMPER-001","Faulted",false,SignalQuality.Good);cache.Set("DUMPER-001","AgvAtDumpingPosition",true,SignalQuality.Good);cache.Set("DUMPER-001","DumpingCompletedMayLeave",true,SignalQuality.Good);
+var v2Query=new TaskCenterQueryService(reader,cache,creation,parameters,clock,new(){Enabled=true,PlcContractVersion=HandshakeExecutionOptions.Version});
+var v2Detail=(await v2Query.GetDetailAsync(v2Task,token))!;
+Require(v2Detail.Steps[6].IsCurrent&&v2Detail.Steps[6].ObservedPhase.Contains("AwaitPhysicalExit")&&v2Detail.PlcConditions.Any(c=>c.VariableName=="AgvAtDumpingPosition"),"executing return exposes its actual exit checkpoint and PLC guards");
+Require(v2Detail.Steps[8].CompletionRequirement.Contains("最后清返箱责任")&&v2Detail.Steps[1].CompletionRequirement.Contains("保持到返箱"),"future and completed v2 steps retain the same 28-stage contract description");
+Require(!v2Detail.Handover!.ExitPhysicallyVerified&&!v2Detail.Handover.ReturnCommandCompleted,"executing return never fabricates completed return or physical exit");
+await database.Insertable(new TaskRuntimeEventEntity{TaskId=v2Task,StepId=returning.StepId,Kind="ExitVerified",Phase="ClearDumpingAfterExit",RecordedAtUtc=DateTime.UtcNow}).ExecuteCommandAsync();
+await database.Updateable<TaskHandshakeEntity>().SetColumns(h=>new TaskHandshakeEntity{Phase="ClearDumpingAfterExit",Revision=h.Revision+1}).Where(h=>h.StepId==returning.StepId).ExecuteCommandAsync();
+v2Detail=(await v2Query.GetDetailAsync(v2Task,token))!;
+Require(v2Detail.Handover!.ExitPhysicallyVerified&&v2Detail.Handover.State=="PhysicalExitVerified","physical exit evidence alone does not claim PLC and equipment handover complete");
+await database.Updateable<TaskHandshakeEntity>().SetColumns(h=>new TaskHandshakeEntity{Phase="ExitHandoverComplete",Revision=h.Revision+1}).Where(h=>h.StepId==returning.StepId).ExecuteCommandAsync();
+v2Detail=(await v2Query.GetDetailAsync(v2Task,token))!;
+Require(v2Detail.Handover!.State=="ExitHandoverComplete"&&!v2Detail.Handover.ReturnCommandCompleted,"handover can be recorded while the original return is still running");
+await database.Updateable<DispatchTaskStepEntity>().SetColumns(s=>new DispatchTaskStepEntity{Status=50,CompletedAt=DateTime.Now}).Where(s=>s.TaskId==v2Task&&s.Sequence<9).ExecuteCommandAsync();
+var closing=v2Steps.Single(s=>s.StepType==DispatchTaskStepType.CompletePlcHandshake);
+await database.Updateable<DispatchTaskStepEntity>().SetColumns(s=>new DispatchTaskStepEntity{Status=10,StartedAt=DateTime.Now}).Where(s=>s.StepId==closing.StepId).ExecuteCommandAsync();
+await database.Updateable<DispatchTaskEntity>().SetColumns(t=>t.Stage==(int)DispatchTaskStage.WaitingForPlcConfirmation).Where(t=>t.TaskId==v2Task).ExecuteCommandAsync();
+await database.Insertable(new TaskHandshakeEntity{TaskId=v2Task,StepId=closing.StepId,CycleId=v2Task,ContractVersion=HandshakeExecutionOptions.Version,Phase="VerifyClosure",Revision=1,StartedAtUtc=DateTime.UtcNow,UpdatedAtUtc=DateTime.UtcNow}).ExecuteCommandAsync();
+foreach(var name in new[]{"FullBoxRequested","FullBoxRequestAcknowledged","FullBoxRemoved","EmptyBoxTaskAcknowledged","EmptyBoxPlaced","Faulted"})cache.Set("CNC28",name,false,SignalQuality.Good);
+cache.Set("CNC28","BoxPresent",true,SignalQuality.Good);cache.Set("CNC28","CommunicationOnline",true,SignalQuality.Good);
+cache.Set("DUMPER-001","AgvAtWaitingPosition",true,SignalQuality.Good);cache.Set("DUMPER-001","DumperReady",true,SignalQuality.Good);
+v2Detail=(await v2Query.GetDetailAsync(v2Task,token))!;
+Require(v2Detail.PlcConditions.Count>0&&v2Detail.PlcConditions.All(c=>c.StationId=="CNC28"&&c.Satisfied),"front vehicle final closure does not read or require the following vehicle shared bits low");
+var pickupConditions=PersistedHandshakeConditions.Observe(new(v2Task,"pickup",v2Task,HandshakeExecutionOptions.Version,"ReadyToComplete",1,"",null,null,null,clock.Now,clock.Now,[]),DispatchTaskStepType.PickupFullBox,"CNC28","DUMPER-001",cache,clock.Now,5);
+Require(pickupConditions.Single(c=>c.VariableName=="FullBoxRemoved").ExpectedValue,"v2 pickup completion explicitly expects the held removed notification high");
+cache.Set("CNC28","FullBoxRequested",true,SignalQuality.Good);clock.Now=DateTimeOffset.Now;
+v2Detail=(await v2Query.GetDetailAsync(v2Task,token))!;
+Require(v2Detail.PlcConditions.All(c=>c.VariableName!="FullBoxRequested")&&v2Detail.PlcConditions.All(c=>c.Satisfied),"next call after responsibility clear remains pending without blocking prior closure in Web diagnostics");
+foreach(var phase in new[]{"AwaitReturnEvidence","ClearRemoved","ClearPlaced","ClearEmptyResponsibility","WritePending"})
+{
+    var condition=PersistedHandshakeConditions.Observe(new(v2Task,"closing",v2Task,HandshakeExecutionOptions.Version,phase,1,"",phase=="WritePending"?"CNC28/FullBoxRemoved":null,phase=="WritePending"?false:null,phase=="WritePending"?"ClearPlaced":null,clock.Now,clock.Now,[]),DispatchTaskStepType.CompletePlcHandshake,"CNC28","DUMPER-001",cache,clock.Now,5);
+    Require(condition.Single(c=>c.VariableName=="FullBoxRequested") is {ExpectedValue:false,Satisfied:false}&&condition.Single(c=>c.VariableName=="BoxPresent").ExpectedValue,"every v2 final phase retains origin box and withdrawn-call guard: "+phase);
+}
+foreach(var phase in new[]{"VerifyClosure","ReadyToComplete"})
+{
+    var condition=PersistedHandshakeConditions.Observe(new(v2Task,"closing",v2Task,HandshakeExecutionOptions.Version,phase,1,"",null,null,null,clock.Now,clock.Now,[]),DispatchTaskStepType.CompletePlcHandshake,"CNC28","DUMPER-001",cache,clock.Now,5);
+    Require(condition.All(c=>c.VariableName!="FullBoxRequested")&&condition.Single(c=>c.VariableName=="BoxPresent").ExpectedValue,"after last responsibility clear a new call does not become an old-cycle condition: "+phase);
+}
+foreach(var phase in new[]{"AwaitPickupReadback","ClearCallResponse","ReadyToComplete"})
+{
+    var condition=PersistedHandshakeConditions.Observe(new(v2Task,"pickup",v2Task,HandshakeExecutionOptions.Version,phase,1,"",null,null,null,clock.Now,clock.Now,[]),DispatchTaskStepType.PickupFullBox,"CNC28","DUMPER-001",cache,clock.Now,5);
+    Require(condition.Single(c=>c.VariableName=="FullBoxRequested") is {ExpectedValue:false,Satisfied:false},"pickup phase exposes residual-call block: "+phase);
+}
+var bindingConditions=PersistedHandshakeConditions.Observe(new(v2Task,"first",v2Task,HandshakeExecutionOptions.Version,"TransportBound",1,"",null,null,null,clock.Now,clock.Now,[]),DispatchTaskStepType.GoToPickup,"CNC28","DUMPER-001",cache,clock.Now,5);
+Require(bindingConditions.Any(c=>c.VariableName=="FullBoxRequested"&&!c.ExpectedValue&&!c.Satisfied)&&bindingConditions.Any(c=>c.VariableName=="FullBoxRequestAcknowledged"&&c.ExpectedValue),"initial binding explains withdrawn call and acknowledged request before pickup");
+var readyBaselineConditions=PersistedHandshakeConditions.Observe(new(v2Task,"waiting",v2Task,HandshakeExecutionOptions.Version,"AwaitReadyBaseline",1,"",null,null,null,clock.Now,clock.Now,[]),DispatchTaskStepType.WaitForDumperReady,"CNC28","DUMPER-001",cache,clock.Now,5);
+Require(readyBaselineConditions.Single(c=>c.VariableName=="AgvAtDumpingPosition") is {ExpectedValue:false,Satisfied:false},"waiting baseline exposes residual dumping cycle instead of only Ready/Done");
+cache.Set("CNC28","FullBoxRequested",false,SignalQuality.Good);
+var oldTask=(await writer.TryCreateAsync("CNCOLD","DUMPER-001",0,token)).Task.TaskId;
+var oldStep=(await writer.GetStepsAsync(oldTask,token)).First();
+await database.Insertable(new TaskHandshakeEntity{TaskId=oldTask,StepId=oldStep.StepId,CycleId=oldTask,ContractVersion=HandshakeExecutionOptions.LegacyVersion,Phase="TransportBound",Revision=1,StartedAtUtc=DateTime.UtcNow,UpdatedAtUtc=DateTime.UtcNow}).ExecuteCommandAsync();
+var oldDetail=(await v2Query.GetDetailAsync(oldTask,token))!;
+Require(oldDetail.PlcConditions.Count==0&&oldDetail.WaitingExplanation.Contains("不一致")&&oldDetail.Steps[0].EvidenceBoundary.Contains("旧契约"),"legacy checkpoint is not reinterpreted as 28-stage conditions or silently migrated");
+Console.WriteLine("PASS: 28-stage execution-time exit, handover, next-vehicle isolation and legacy diagnostic checks");
 Console.WriteLine("PASS: live progress, active cancellation, identity/replay and scoped cache retention checks");
 Console.WriteLine("PASS: task queries, PLC quality, commands, leases, current step, waiting reasons and elapsed time");
 Console.WriteLine($"Isolated test database: {path}");

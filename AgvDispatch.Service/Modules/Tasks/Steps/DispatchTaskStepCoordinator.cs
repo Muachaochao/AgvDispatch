@@ -66,9 +66,26 @@ public sealed class DispatchTaskStepCoordinator(
 
     private async Task RunCycleAsync(CancellationToken cancellationToken)
     {
+        if(handshake?.Enabled==true)
+            foreach(var task in (await tasks.GetAssignedTasksAsync(cancellationToken)).Where(t=>t.Stage is DispatchTaskStage.ReturningEmptyBox or DispatchTaskStage.WaitingForPlcConfirmation))
+            {
+                try { await handshake.ProcessExitAsync(task,cancellationToken); }
+                catch(OperationCanceledException) when(cancellationToken.IsCancellationRequested){throw;}
+                catch(Exception exception)
+                {
+                    // Retain equipment and road ownership; a failed exit observation never stops other tasks' ready-step polling.
+                    var key="exit:"+task.TaskId;
+                    if(!_conditionFingerprints.TryGetValue(key,out var prior)||prior!=exception.Message)
+                    {
+                        logger.LogWarning(exception,"28阶段实际出区核验未通过，保持原责任。TaskId={TaskId}",task.TaskId);
+                        if(journal!=null)await journal.RecordAsync(task.TaskId,"","DumperExitBlocked",new {Reason=exception.Message},cancellationToken);
+                        _conditionFingerprints[key]=exception.Message;
+                    }
+                }
+            }
         var readySteps = await tasks.GetReadyStepsAsync(options.BatchSize, cancellationToken);
         var readyIds = readySteps.Select(s => s.StepId).ToHashSet(StringComparer.Ordinal);
-        foreach (var id in _conditionFingerprints.Keys.Where(id => !readyIds.Contains(id)).ToArray()) _conditionFingerprints.Remove(id);
+        foreach (var id in _conditionFingerprints.Keys.Where(id => !id.StartsWith("exit:",StringComparison.Ordinal)&&!readyIds.Contains(id)).ToArray()) _conditionFingerprints.Remove(id);
         foreach (var step in readySteps)
         {
             try

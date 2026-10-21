@@ -11,9 +11,10 @@ public sealed class AgvCommandOutboxDispatcher(
     IAgvCommandOutboxRepository outbox,
     IAgvGateway agvGateway,
     IMapExecutionGate executionGate,
-    IExecutionEvidenceJournal? journal = null, ITaskHandshakeStore? handshakes = null, IDispatchTaskRepository? taskReader = null, HandshakeExecutionOptions? handshakeOptions = null) : IsolatedBackgroundService
+    IExecutionEvidenceJournal? journal = null, ITaskHandshakeStore? handshakes = null, IDispatchTaskRepository? taskReader = null, HandshakeExecutionOptions? handshakeOptions = null,PersistentHandshakeExecutor? handshake = null) : IsolatedBackgroundService
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private readonly Dictionary<string,string> _blockedReasons=new(StringComparer.Ordinal);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -86,9 +87,25 @@ public sealed class AgvCommandOutboxDispatcher(
             {
                 var root=(await taskReader.GetStepsAsync(candidate.TaskId,cancellationToken)).FirstOrDefault(s=>s.StepType==DispatchTaskStepType.GoToPickup);
                 var binding=root==null?null:await handshakes.GetAsync(candidate.TaskId,root.StepId,cancellationToken);
-                if(binding!=null&&(handshakeOptions?.Enabled!=true||handshakeOptions.PlcContractVersion!=binding.ContractVersion)||binding==null&&handshakeOptions?.Enabled==true)
+                if(binding!=null&&(handshakeOptions?.Enabled!=true||handshakeOptions.PlcContractVersion!=HandshakeExecutionOptions.Version||binding.ContractVersion!=HandshakeExecutionOptions.Version)||binding==null&&handshakeOptions?.Enabled==true)
                 {
                     logger.LogDebug("命令契约与当前握手模式不一致，保留原Outbox，不领取、不发送。TaskId={TaskId}",candidate.TaskId);
+                    continue;
+                }
+            }
+            if(handshakeOptions?.Enabled==true)
+            {
+                try
+                {
+                    if(handshake==null||handshakes==null||taskReader==null)throw new InvalidOperationException("28阶段发送缺少持久化执行及契约核验依赖。");
+                    await handshake.ValidatePendingTransportAsync(candidate.TaskId,candidate.StepId,candidate.VehicleId,cancellationToken);
+                    _blockedReasons.Remove(candidate.CommandId);
+                }
+                catch(OperationCanceledException)when(cancellationToken.IsCancellationRequested){throw;}
+                catch(Exception ex)
+                {
+                    if(!_blockedReasons.TryGetValue(candidate.CommandId,out var previous)||previous!=ex.Message)
+                    {logger.LogWarning("28阶段原命令暂不领取/发送，等待当前条件成立。CommandId={CommandId}, Reason={Reason}",candidate.CommandId,ex.Message);_blockedReasons[candidate.CommandId]=ex.Message;}
                     continue;
                 }
             }

@@ -46,13 +46,16 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
                 unavailableResourceIds, _trafficFlow.GetEdgePenalties());
         }
 
+        // A repeat pickup must be backed by actual enabled graph edges, not a
+        // legacy direct-route fallback such as [PICK, PICK].
+        if (string.Equals(source, destination, StringComparison.OrdinalIgnoreCase)) return null;
         var route = _legacyOptions.GetRoute(source, destination);
         return route is null
             ? null
             : new RoutePlan(route, [], [], Math.Max(0, route.Count - 1));
     }
 
-    private static RoutePlan? PlanAndMap(
+    private RoutePlan? PlanAndMap(
         MapGraph graph,
         MapDefinition definition,
         string source,
@@ -62,8 +65,12 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
     {
         var logicalSource = MapRouteSiteMapper.ResolveLogicalNodeId(definition, source);
         var logicalDestination = MapRouteSiteMapper.ResolveLogicalNodeId(definition, destination);
-        var plan = graph.FindShortestRoute(
-            logicalSource, logicalDestination, unavailableResourceIds, edgePenalties);
+        var protectedNodes = new[] { _legacyOptions.GetDumperWaitingSite(), _legacyOptions.DumperDumpingSite }
+            .Where(site => !string.IsNullOrWhiteSpace(site))
+            .Select(site => MapRouteSiteMapper.ResolveLogicalNodeId(definition, site!))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var plan = graph.FindShortestTransportRoute(
+            logicalSource, logicalDestination, unavailableResourceIds, edgePenalties, protectedNodes);
         return plan is null ? null : MapRouteSiteMapper.ToAgvSitePlan(definition, plan);
     }
 

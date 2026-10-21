@@ -8,11 +8,11 @@ using SqlSugar;
 
 namespace AgvDispatch.Infrastructure.Persistence;
 
-public sealed class TaskHandshakeStore(ISqlSugarClient database) : ITaskHandshakeStore
+public sealed partial class TaskHandshakeStore(ISqlSugarClient database, IActiveMapRuntime? activeMap = null, IPlcSignalCache? liveSignals = null) : ITaskHandshakeStore
 {
     public async Task<bool> RecordExitAsync(HandshakeCheckpoint checkpoint,TaskExitEvidence evidence,CancellationToken ct)
     {
-        if(checkpoint.Phase!="AwaitReturnEvidence"||evidence.TaskId!=checkpoint.TaskId||evidence.StepId!=checkpoint.StepId||evidence.MapId.Length==0||evidence.VendorTaskId.Length==0)
+        if(checkpoint.ContractVersion!=HandshakeExecutionOptions.LegacyVersion||checkpoint.Phase!="AwaitReturnEvidence"||evidence.TaskId!=checkpoint.TaskId||evidence.StepId!=checkpoint.StepId||evidence.MapId.Length==0||evidence.VendorTaskId.Length==0)
             throw new InvalidOperationException("离站核对身份或阶段不一致。");
         var moved=false;
         var result=await database.Ado.UseTranAsync(async()=>
@@ -36,19 +36,8 @@ public sealed class TaskHandshakeStore(ISqlSugarClient database) : ITaskHandshak
         {
             await EnsureReadyAsync(taskId,stepId,ct);
             var existing=await database.Queryable<TaskEquipmentClaimEntity>().Where(e=>e.EquipmentId==equipmentId).FirstAsync(ct);
-            if(existing!=null && existing.TaskId!=taskId)
-            {
-                // Reconcile only a finished new-contract cycle, never a fault/cancelled or expired claim.
-                var prior=await database.Queryable<DispatchTaskEntity>().Where(t=>t.TaskId==existing.TaskId && t.Stage==90).FirstAsync(ct);
-                var close=await database.Queryable<DispatchTaskStepEntity>().Where(s=>s.TaskId==existing.TaskId && s.StepType==90 && s.Status==50).FirstAsync(ct);
-                var proof=close==null?null:await database.Queryable<TaskHandshakeEntity>().Where(h=>h.TaskId==existing.TaskId && h.StepId==close.StepId && h.Phase=="ReadyToComplete").FirstAsync(ct);
-                if(prior!=null&&proof!=null&&proof.ContractVersion==HandshakeExecutionOptions.Version&&proof.PendingSignal==null)
-                {
-                    await database.Deleteable<TaskEquipmentClaimEntity>().Where(e=>e.EquipmentId==equipmentId && e.TaskId==existing.TaskId).ExecuteCommandAsync(ct);
-                    await database.Insertable(new TaskRuntimeEventEntity{TaskId=existing.TaskId,StepId=close!.StepId,Kind="EquipmentReleased",StationId=equipmentId,RecordedAtUtc=DateTime.UtcNow,Reason="后续申请核对到原新契约任务和收尾均已完成，清理其遗留设备归属。"}).ExecuteCommandAsync(ct);
-                    existing=null;
-                }
-            }
+            // A v2 handoff removes its claim atomically before return closure. A remaining
+            // claim is a contradiction to review, never a reason to infer exit from task completion.
             if(existing!=null){if(existing.TaskId!=taskId)owner=existing.TaskId;return;}
             await database.Insertable(new TaskEquipmentClaimEntity{EquipmentId=equipmentId,TaskId=taskId,AcquiredAtUtc=DateTime.UtcNow}).ExecuteCommandAsync(ct);
             await database.Insertable(new TaskRuntimeEventEntity{TaskId=taskId,StepId=stepId,Kind="EquipmentClaimed",StationId=equipmentId,RecordedAtUtc=DateTime.UtcNow,Reason="本轮独占倒料机握手，等待位容量仍由地图交通资源单独管理。"}).ExecuteCommandAsync(ct);
@@ -107,7 +96,8 @@ public sealed class TaskHandshakeStore(ISqlSugarClient database) : ITaskHandshak
     private async Task EnsureReadyAsync(string taskId, string stepId, CancellationToken ct)
     {
         var task = await database.Queryable<DispatchTaskEntity>().Where(t=>t.TaskId==taskId).FirstAsync(ct);
-        if (task == null || task.Stage >= 90 || !await database.Queryable<DispatchTaskStepEntity>().Where(s=>s.TaskId==taskId && s.StepId==stepId && s.Status==10).AnyAsync(ct))
+        if (task == null || task.Stage >= 90 || task.CancelRequestId!=null || !await database.Queryable<DispatchTaskStepEntity>().Where(s=>s.TaskId==taskId && s.StepId==stepId &&
+                (s.Status==10 || s.StepType==70 && (s.Status==40 || s.Status==50))).AnyAsync(ct))
             throw new InvalidOperationException("任务已冻结/结束或步骤不再Ready，禁止推进握手。");
     }
 

@@ -1,5 +1,6 @@
 using AgvDispatch.Domain.Devices;
 using AgvDispatch.Domain.Tasks;
+using AgvDispatch.Application.Tasks;
 
 namespace AgvDispatch.Application.Abstractions;
 
@@ -39,6 +40,13 @@ public interface ITaskDiagnosticArchiveService
 
 public interface ITaskHandshakeStore
 {
+    Task<bool> OwnsEquipmentAsync(string taskId,string equipmentId,CancellationToken ct) => Task.FromResult(false);
+    Task ValidatePhysicalExitAsync(HandshakeCheckpoint checkpoint, TaskDumperExitProof evidence, CancellationToken ct)
+        => throw new NotSupportedException("当前存储不支持28阶段出区证据复核。");
+    Task<bool> RecordPhysicalExitAsync(HandshakeCheckpoint checkpoint, TaskDumperExitProof evidence, CancellationToken ct)
+        => throw new NotSupportedException("当前存储不支持28阶段实际出区证据。");
+    Task<bool> ReleaseDumperAfterExitAsync(HandshakeCheckpoint checkpoint, string equipmentId, TaskDumperExitProof evidence, CancellationToken ct)
+        => throw new NotSupportedException("当前存储不支持28阶段设备交接。");
     Task<HandshakeCheckpoint> BeginAsync(DispatchTaskStepWorkItem step, string contractVersion, string initialPhase,
         IReadOnlyList<TaskSignalEvidence> baseline, CancellationToken ct);
     Task<HandshakeCheckpoint?> GetAsync(string taskId, string stepId, CancellationToken ct);
@@ -57,5 +65,27 @@ public sealed class HandshakeExecutionOptions
     public bool Enabled { get; set; }
     public string PlcContractVersion { get; set; } = "";
     public int StateMaxAgeSeconds { get; set; } = 5;
-    public const string Version = "sender-owned-return-confirmed-v1";
+    public DumperExitConfiguration DumperExit { get; set; } = new();
+    public const string Version = "plc-28-stage-v2";
+    public const string LegacyVersion = "sender-owned-return-confirmed-v1";
+}
+
+public sealed class DumperExitConfiguration
+{
+    public string[] ResourceIds { get; set; } = [];
+    public List<DumperExitBodyProfile> BodyProfiles { get; set; } = [];
+    public double MinimumObservationIntervalSeconds { get; set; } = 0.2;
+    public double MaximumAgeSeconds { get; set; } = 3;
+    public double MinimumConfidence { get; set; } = 0.9;
+    public double SafetyMarginMeters { get; set; } = 0.15;
+    public double MaximumRouteDeviationMeters { get; set; } = 0.5;
+    public DumperExitPolicy Policy => new(ResourceIds, MinimumObservationIntervalSeconds, MaximumAgeSeconds, MinimumConfidence, SafetyMarginMeters);
+}
+
+public sealed record TaskDumperExitProof(string TaskId, string StepId, string VehicleId, string VendorTaskId,
+    string MapId, string MapVersionId, string MapDefinitionHash, DumperExitFrame First, DumperExitFrame Second,
+    DumperExitBodyProfile Body, DumperExitPolicy Policy, double MaximumRouteDeviationMeters,
+    DateTimeOffset VendorObservedAt, DateTimeOffset CapturedAt)
+{
+    public IReadOnlyList<TaskSignalEvidence> PlcSignals { get; init; } = [];
 }

@@ -2,10 +2,11 @@
 from pathlib import Path
 import json
 import urllib.request
+from lab_paths import read_ready, resolve_lab_root
 
-root=Path(__file__).resolve().parents[2]/'artifacts/web-single-vehicle-20261020'
+root=resolve_lab_root()
 lab=json.loads((root/'lab.json').read_text(encoding='utf-8'))
-base=f"http://127.0.0.1:{lab['webPort']}"
+base=read_ready(root)['url'].rstrip('/') if (root/'ready.json').exists() else f"http://127.0.0.1:{lab['webPort']}"
 
 def api(path,data=None,raw=None):
     payload=raw if raw is not None else json.dumps(data,ensure_ascii=False).encode() if data is not None else None

@@ -4,9 +4,10 @@ import json
 import sqlite3
 import urllib.request
 from pathlib import Path
+from lab_paths import read_ready, resolve_lab_root
 
-root=Path(__file__).resolve().parents[2]/'artifacts/web-single-vehicle-20261020'
-ready=json.loads((root/'ready.json').read_text(encoding='utf-8'))
+root=resolve_lab_root()
+ready=read_ready(root)
 base=ready['url'].rstrip('/')
 target=Path(ready['root'])
 evidence=root/'final-evidence';evidence.mkdir(exist_ok=True)

@@ -53,12 +53,13 @@ public sealed partial class TaskCenterReadRepository(ISqlSugarClient database) :
         var handshakes = await database.Queryable<TaskHandshakeEntity>().Where(e=>e.TaskId==taskId).OrderBy(e=>e.StartedAtUtc).ToListAsync(cancellationToken);
         var releaseReasons = await database.Queryable<TrafficLifecycleEventEntity>().Where(e=>e.TaskId==taskId && e.Kind=="Released").OrderBy(e=>e.OccurredAt,OrderByType.Desc).Take(100).Select(e=>e.Reason).ToListAsync(cancellationToken);
         var returned = steps.Any(s=>s.StepType==70 && s.Status==50 && s.VendorTaskId!=null);
-        var closure = handshakes.FirstOrDefault(h=>steps.Any(s=>s.StepId==h.StepId && s.StepType==90));
-        var exitRecorded = await database.Queryable<TaskRuntimeEventEntity>().Where(e=>e.TaskId==taskId&&e.Kind=="ExitVerified").AnyAsync(cancellationToken);
-        var exitChecked = exitRecorded && closure != null && closure.Phase is "AwaitDumperClosed" or "ClearEmptyResponsibility" or "ClearPlaced" or "ClearRemainingCall" or "ClearRemainingRemoved" or "VerifyClosure" or "ReadyToComplete";
+        var exit = handshakes.FirstOrDefault(h=>h.ContractVersion==HandshakeExecutionOptions.Version && steps.Any(s=>s.StepId==h.StepId && s.StepType==70));
+        var exitRecorded = exit!=null && await database.Queryable<TaskRuntimeEventEntity>().Where(e=>e.TaskId==taskId&&e.StepId==exit.StepId&&e.Kind=="ExitVerified"&&e.Phase=="ClearDumpingAfterExit").AnyAsync(cancellationToken);
+        var exitChecked = exitRecorded && exit != null && exit.Phase is "ClearDumpingAfterExit" or "AwaitDumperClosed" or "ReleaseDumper" or "ExitHandoverComplete";
+        var handedOver = exitChecked && exit is { Phase:"ExitHandoverComplete", PendingSignal:null };
         var equipmentClaims=await database.Queryable<TaskEquipmentClaimEntity>().Where(e=>e.TaskId==taskId).ToListAsync(cancellationToken);
-        var handover = new TaskHandoverDiagnosis(exitChecked?"ConservativeReturnObserved":returned?"ReturnCompletedExitUnverified":"ExitUnverified",
-            exitChecked?"新契约已记录返程完成及原站新鲜定位核对；不是更早的中途出区时刻。":"尚无新契约返程定位核对；命令准备、发送、到位通知清零或租期到期均不能证明物理离站。",
+        var handover = new TaskHandoverDiagnosis(handedOver?"ExitHandoverComplete":exitChecked?"PhysicalExitVerified":returned?"ReturnCompletedExitUnverified":"ExitUnverified",
+            handedOver?"28阶段已持久化实际出区证据、PLC退出闭合及本任务倒料设备/已验证区域交接；返箱责任继续保持，其他道路占用以实际记录为准。":exitChecked?"28阶段已记录实际出区证据，仍需核对PLC周期闭合和设备/区域交接；物理出区本身不等于后车已获准进入。":"尚无28阶段实际出区核对；返回命令准备、接受、完成、通知清零或租期到期均不能单独证明出区交接。",
             returned,exitChecked,leases.Select(l=>l.ResourceId).Concat(equipmentClaims.Select(e=>"设备:"+e.EquipmentId)).Distinct().ToArray(),releaseReasons);
 
         return new(ToRow(task), steps.Select(s => new TaskStepDetail(s.StepId, s.Sequence,

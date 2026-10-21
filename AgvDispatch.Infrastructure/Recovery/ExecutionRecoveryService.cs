@@ -235,7 +235,8 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
         }
         var transaction = await database.Ado.UseTranAsync(async () =>
         {
-            if(task!=null&&step!=null&&request.Decision==RecoveryDecision.ContinueOriginal)
+            if(task!=null&&step!=null&&(request.Decision==RecoveryDecision.ContinueOriginal||
+                request.Decision==RecoveryDecision.RecordPhysicalCompletion&&step.StepType==(int)DispatchTaskStepType.ReturnEmptyBox))
                 await ResolveHandshakeWriteAsync(task.TaskId,step.StepId,request,user.WindowsIdentity,ct);
             if (!recoveringFault && task != null && step != null && observed.Command is { } command && command.AttemptCount > 0)
                 await BindAcceptedCommandAsync(task, step, command, observed.Vendor!, ct);
@@ -313,7 +314,12 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
         if (!settings.CheckPlcSignals) return await RejectAsync(user, ticket.TicketId, "关闭取消必须启用PLC采集并核对原握手清理。", ct);
         var steps = await database.Queryable<DispatchTaskStepEntity>().Where(s => s.TaskId == task.TaskId).ToListAsync(ct);
         var dumper = steps.FirstOrDefault(s => s.StepType == (int)DispatchTaskStepType.WaitForDumperReady)?.SourceSite;
-        foreach (var station in new[] { task.StationId, dumper }.Where(s => s != null).Distinct())
+        var handedOver=await ExitHandoverCompleteAsync(task.TaskId,ct);
+        var stage28=await database.Queryable<TaskHandshakeEntity>().Where(h=>h.TaskId==task.TaskId&&h.ContractVersion==HandshakeExecutionOptions.Version).AnyAsync(ct);
+        var ownClaims=await database.Queryable<TaskEquipmentClaimEntity>().Where(e=>e.TaskId==task.TaskId).ToListAsync(ct);
+        if(handedOver&&ownClaims.Count>0)
+            return await RejectAsync(user,ticket.TicketId,"已交接记录与本任务残留设备归属矛盾，保留记录并专项核对；不能再次释放或清共享位。",ct);
+        foreach (var station in new[] { task.StationId, handedOver?null:dumper }.Where(s => s != null).Distinct())
         {
             var block = PlcBlock(station);
             if (block != null) return await RejectAsync(user, ticket.TicketId, block, ct);
@@ -322,7 +328,7 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
             signal.Quality == SignalQuality.Good && signal.Value == false && signal.UpdatedAt >= _started &&
             signal.UpdatedAt <= DateTimeOffset.Now.AddSeconds(1) && DateTimeOffset.Now - signal.UpdatedAt <= settings.StateMaxAge;
         if (new[] { "FullBoxRequestAcknowledged", "FullBoxRemoved", "EmptyBoxTaskAcknowledged", "EmptyBoxPlaced" }.Any(v => !Cleared(task.StationId, v)) ||
-            dumper == null || !Cleared(dumper, "AgvAtWaitingPosition") || !Cleared(dumper, "AgvAtDumpingPosition"))
+            !handedOver && (dumper == null || !Cleared(dumper, "AgvAtWaitingPosition") || !Cleared(dumper, "AgvAtDumpingPosition") || stage28&&(!Cleared(dumper,"DumperReady") || !Cleared(dumper,"DumpingCompletedMayLeave"))))
             return await RejectAsync(user, ticket.TicketId, "取货工位或倒料机原握手尚未清理；需现场核对PLC周期，禁止自动复位。", ct);
         var result = await database.Ado.UseTranAsync(async () =>
         {
@@ -399,7 +405,7 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
         else if (vehicleId != null) hard = VehicleBlock(vehicle, false);
         if (ticket.TaskId != SiteTask && task != null && settings.CheckPlcSignals)
             hard ??= PlcBlock(PlcStation(task, step));
-        if (task?.CancelRequestId != null && settings.CheckPlcSignals)
+        if (task?.CancelRequestId != null && settings.CheckPlcSignals && !await ExitHandoverCompleteAsync(task.TaskId,ct))
         {
             var dumper = await database.Queryable<DispatchTaskStepEntity>().Where(s => s.TaskId == task.TaskId && s.StepType == (int)DispatchTaskStepType.WaitForDumperReady).FirstAsync(ct);
             if (dumper?.SourceSite != null) hard ??= PlcBlock(dumper.SourceSite);
@@ -463,6 +469,11 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
     }
     private static string PlcStation(DispatchTaskEntity task, DispatchTaskStepEntity? step) =>
         step?.StepType is (int)DispatchTaskStepType.DumpFullBox or (int)DispatchTaskStepType.WaitForDumperReady ? step.SourceSite ?? task.StationId : task.StationId;
+    private async Task<bool> ExitHandoverCompleteAsync(string taskId,CancellationToken ct)
+    {
+        var checkpoint=await database.Queryable<TaskHandshakeEntity>().Where(h=>h.TaskId==taskId&&h.ContractVersion==HandshakeExecutionOptions.Version&&h.Phase=="ExitHandoverComplete"&&h.PendingSignal==null).FirstAsync(ct);
+        return checkpoint!=null&&await database.Queryable<DispatchTaskStepEntity>().Where(s=>s.TaskId==taskId&&s.StepId==checkpoint.StepId&&s.StepType==(int)DispatchTaskStepType.ReturnEmptyBox).AnyAsync(ct);
+    }
     private async Task<string?> PlcContinuationBlockAsync(DispatchTaskEntity task, DispatchTaskStepEntity step,CancellationToken ct)
     {
         if (step.StepType is (int)DispatchTaskStepType.DeliverFullBoxToDumper or (int)DispatchTaskStepType.EnterDumpingPosition or (int)DispatchTaskStepType.ReturnEmptyBox) return null;
@@ -471,10 +482,37 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
         if(checkpoint!=null)
         {
             if(checkpoint.ContractVersion!=HandshakeExecutionOptions.Version||checkpoint.Phase=="ReviewRequired")return "新契约原始绑定/阶段不可核对，保持等待。";
-            foreach(var baseline in TaskHandshakeStore.Describe(checkpoint).Baseline.Where(b=>b.StationId!="__context"))
+            var handedOver=await ExitHandoverCompleteAsync(task.TaskId,ct);
+            foreach(var baseline in TaskHandshakeStore.Describe(checkpoint).Baseline.Where(b=>b.StationId!="__context"&&(!handedOver||b.StationId==task.StationId)))
                 if(!signals.TryGet(baseline.StationId,baseline.VariableName,out var sample)||!sample.Enabled||sample.Address!=baseline.Address||sample.Quality!=SignalQuality.Good||sample.Value==null||sample.UpdatedAt is not {} time||time<_started||time>DateTimeOffset.Now.AddSeconds(1)||DateTimeOffset.Now-time>settings.StateMaxAge)
                     return "新契约原信号地址或本次恢复观察无效，禁止续接。";
             return null; // Resume the persisted phase; the executor still evaluates its own guards. Never reassert earlier notifications.
+        }
+        if(step.StepType==(int)DispatchTaskStepType.PlaceEmptyBox)
+        {
+            var root=await database.Queryable<DispatchTaskStepEntity>().Where(s=>s.TaskId==task.TaskId&&s.StepType==(int)DispatchTaskStepType.GoToPickup).FirstAsync(ct);
+            var binding=root==null?null:await database.Queryable<TaskHandshakeEntity>().Where(h=>h.TaskId==task.TaskId&&h.StepId==root.StepId&&h.ContractVersion==HandshakeExecutionOptions.Version).FirstAsync(ct);
+            if(binding!=null)
+            {
+                var returned=await database.Queryable<DispatchTaskStepEntity>().Where(s=>s.TaskId==task.TaskId&&s.StepType==(int)DispatchTaskStepType.ReturnEmptyBox&&s.Status==50).FirstAsync(ct);
+                if(returned==null)return "返程机械终态尚未核实，不能续接放箱通知节点。";
+                var exit=await database.Queryable<TaskHandshakeEntity>().Where(h=>h.TaskId==task.TaskId&&h.StepId==returned.StepId).FirstAsync(ct);
+                if(exit!=null&&(exit.ContractVersion!=HandshakeExecutionOptions.Version||exit.PendingSignal!=null||exit.Phase is not ("AwaitPhysicalExit" or "ClearDumpingAfterExit" or "AwaitDumperClosed" or "ReleaseDumper" or "ExitHandoverComplete")))
+                    return "原返程出区阶段或待确认写入尚未核对，保留原责任。";
+                var dumping=await database.Queryable<DispatchTaskStepEntity>().Where(s=>s.TaskId==task.TaskId&&s.StepType==(int)DispatchTaskStepType.DumpFullBox).FirstAsync(ct);
+                var dump=dumping==null?null:await database.Queryable<TaskHandshakeEntity>().Where(h=>h.TaskId==task.TaskId&&h.StepId==dumping.StepId&&h.ContractVersion==HandshakeExecutionOptions.Version&&h.Phase=="ReadyToComplete"&&h.PendingSignal==null).FirstAsync(ct);
+                if(dump==null)return "缺少原倒料完成握手，不重建出区周期。";
+                var original=TaskHandshakeStore.Describe(binding).Baseline.Where(b=>b.StationId==task.StationId).ToArray();
+                var expected=new Dictionary<string,bool>{{"FullBoxRequested",false},{"BoxPresent",true},{"Faulted",false},{"CommunicationOnline",true},{"FullBoxRequestAcknowledged",false},{"FullBoxRemoved",true},{"EmptyBoxTaskAcknowledged",true},{"EmptyBoxPlaced",false}};
+                foreach(var pair in expected)
+                {
+                    var prior=original.Where(b=>b.VariableName==pair.Key).ToArray();
+                    if(prior.Length!=1||!signals.TryGet(task.StationId,pair.Key,out var signal)||!signal.Enabled||signal.Address!=prior[0].Address||signal.Quality!=SignalQuality.Good||signal.Value!=pair.Value||
+                        signal.UpdatedAt is not {} time||time<_started||time>DateTimeOffset.Now.AddSeconds(1)||DateTimeOffset.Now-time>settings.StateMaxAge)
+                        return "返程后原工位保持信号或本次恢复采集不成立："+pair.Key;
+                }
+                return null; // Only unfreeze; the executor must still prove exit/handoff before writing EmptyBoxPlaced.
+            }
         }
         var station = PlcStation(task, step);
         bool Is(string name, bool value) => signals.TryGet(station, name, out var signal) && signal.Quality == SignalQuality.Good && signal.Value == value;

@@ -1,8 +1,8 @@
 """Loopback-only Robokit/S7 device twins for the unchanged production Service.
 
 No task/database mutation, browser animation or production simulator switch.
-The virtual PLC implements the existing sender-owned-return-confirmed-v1
-contract, not the unimplemented 2026-10-20 proposed field sequence.
+The private instance selects its explicit PLC contract from its own settings.
+New instances use plc-28-stage-v2; old isolated evidence is never migrated.
 """
 import asyncio
 import hashlib
@@ -16,6 +16,13 @@ from pathlib import Path
 class DeviceTwin:
     def __init__(self, root):
         self.root = Path(root).resolve()
+        settings = self.root / 'service/appsettings.json'
+        if not settings.exists():
+            settings = self.root / 'service-settings.json'
+        self.contract = json.loads(settings.read_text(encoding='utf-8-sig'))['HandshakeExecution']['PlcContractVersion']
+        if self.contract not in ('plc-28-stage-v2', 'sender-owned-return-confirmed-v1'):
+            raise RuntimeError('Unknown explicit PLC contract; refusing to infer a sequence')
+        self.sequence28 = self.contract == 'plc-28-stage-v2'
         self.map_bytes = (self.root / 'navigation.agvmap.json').read_bytes()
         self.map = json.loads(self.map_bytes)
         self.md5 = hashlib.md5(self.map_bytes).hexdigest()
@@ -39,9 +46,10 @@ class DeviceTwin:
         self.setbit(0, 3, True)
         self.setbit(2, 1, True)
         self.setbit(2, 3, True)
-        self.setbit(610, 2, True)
+        self.setbit(610, 2, not self.sequence28)
         self.last_wait = False
         self.dump_started = None
+        self.dumper_reserved = False
         self.steps = 0
         self.input_sequence = None
         previous = self.root / 'device-state.json'
@@ -52,6 +60,11 @@ class DeviceTwin:
             self.station = state['station']
             self.x, self.y, self.angle = state['x'], state['y'], state['angle']
             self.loaded, self.tasks, self.steps = state['loaded'], state['tasks'], state['completed_segments']
+            if self.sequence28 and 'contract' not in state:
+                raise RuntimeError('Saved PLC cycle has no explicit contract; do not migrate old evidence')
+            if state.get('contract', self.contract) != self.contract:
+                raise RuntimeError('Saved PLC contract differs; preserve this instance and create a fresh lab')
+            self.dumper_reserved = state.get('dumper_reserved', False)
             if 'memory_hex' in state:
                 self.memory[:] = bytes.fromhex(state['memory_hex'])
             else:
@@ -133,6 +146,28 @@ class DeviceTwin:
     def site(self, name):
         return next(n['agvSiteId'] for n in self.map['nodes'] if n['id'] == name)
 
+    def scan_handshakes(self):
+        for offset in (0, 2):
+            if self.bit(offset, 0) and self.bit(offset, 4):
+                self.setbit(offset, 0, False)
+        wait = self.bit(610, 0)
+        if self.sequence28 and wait and not self.last_wait and not self.dumper_reserved and not any(self.bit(610, b) for b in (1, 3, 4)):
+            self.dumper_reserved = True
+            self.setbit(610, 2, True)
+        if self.last_wait and not wait:
+            self.setbit(610, 2, False)
+        self.last_wait = wait
+        if self.bit(610, 1) and self.station == self.site('倒料'):
+            if self.dump_started is None:
+                self.dump_started = time.monotonic()
+            if time.monotonic() - self.dump_started >= 5:
+                self.setbit(610, 3, True)
+        if not self.bit(610, 1) and self.dump_started is not None:
+            self.setbit(610, 3, False)
+            self.setbit(610, 2, not self.sequence28)
+            self.dump_started = None
+            self.dumper_reserved = False
+
     async def plc_scan(self):
         while True:
             control = self.root / 'device-input.json'
@@ -143,29 +178,19 @@ class DeviceTwin:
                         self.input_sequence = event['sequence']
                         station = event.get('call')
                         if station in ('CNC-001', 'CNC-002'):
-                            self.setbit(0 if station == 'CNC-001' else 2, 0, True)
+                            offset = 0 if station == 'CNC-001' else 2
+                            if self.sequence28 and (not self.bit(offset, 1) or any(self.bit(offset, b) for b in (4, 5, 6, 7))):
+                                self.log('virtual-call-rejected', reason='origin cycle not closed', event=event)
+                            else:
+                                self.setbit(offset, 0, True)
                             self.log('external-virtual-input', event=event)
                 except (OSError, ValueError, KeyError):
                     pass
-            for offset in (0, 2):
-                if self.bit(offset, 0) and self.bit(offset, 4):
-                    self.setbit(offset, 0, False)
-            wait = self.bit(610, 0)
-            if self.last_wait and not wait:
-                self.setbit(610, 2, False)
-            self.last_wait = wait
-            if self.bit(610, 1) and self.station == self.site('倒料'):
-                if self.dump_started is None:
-                    self.dump_started = time.monotonic()
-                if time.monotonic() - self.dump_started >= 5:
-                    self.setbit(610, 3, True)
-            if not self.bit(610, 1) and self.dump_started is not None:
-                self.setbit(610, 3, False)
-                self.setbit(610, 2, True)
-                self.dump_started = None
+            self.scan_handshakes()
             state = dict(station=self.station, x=self.x, y=self.y, angle=self.angle,
                          loaded=self.loaded, current_task=self.current, tasks=self.tasks,
-                         completed_segments=self.steps, db1=list(self.memory[:4]), dumper=list(self.memory[610:611]), memory_hex=self.memory.hex())
+                         completed_segments=self.steps, db1=list(self.memory[:4]), dumper=list(self.memory[610:611]), memory_hex=self.memory.hex(),
+                         contract=self.contract, dumper_reserved=self.dumper_reserved)
             temp = self.root / 'device-state.tmp'
             temp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding='utf-8')
             try:

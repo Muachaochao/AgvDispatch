@@ -5,8 +5,9 @@ import socket
 import sqlite3
 import sys
 from pathlib import Path
+from lab_paths import resolve_lab_root
 
-root=Path(__file__).resolve().parents[2]/'artifacts/web-single-vehicle-20261020'
+root=resolve_lab_root()
 fresh='--fresh-devices' in sys.argv
 name=sys.argv[sys.argv.index('--name')+1] if '--name' in sys.argv else ('runtime-clean' if fresh else 'runtime')
 if not name.startswith('runtime') or Path(name).name!=name:raise RuntimeError('Invalid private runtime name')
@@ -26,7 +27,7 @@ for plc in settings['Configuration']['Plcs']:
     plc['SignalCsvPath']='config/plc-signals.csv'
 service=json.loads((root/'service-settings.json').read_text(encoding='utf-8'))
 service['Database']['Path']=str(data/'agv-dispatch.db')
-service['Security']['PipeName']='AgvSingleVehicleLab20261020-'+name
+service['Security']['PipeName']=json.loads((root/'lab.json').read_text(encoding='utf-8'))['pipe']+'-'+name
 if fresh:
     shutil.copy2(root/'navigation.agvmap.json',runtime/'navigation.agvmap.json')
     ports=[]

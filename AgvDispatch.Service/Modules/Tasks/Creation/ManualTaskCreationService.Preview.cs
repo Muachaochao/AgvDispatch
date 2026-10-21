@@ -7,7 +7,7 @@ namespace AgvDispatch.Service;
 
 public sealed partial class ManualTaskCreationService
 {
-    // Describe the existing executor, including its writes; future PLC conditions are not live readiness checks.
+    // Preview the configured executor; future PLC phases are not current readiness checks.
     private IReadOnlyList<ManualTaskStepPreview> BuildStepPreview(string stationId, string pickup, ActiveMapRuntimeSnapshot? map)
     {
         var waiting = dispatch.GetDumperWaitingSite() ?? "";
@@ -25,7 +25,7 @@ public sealed partial class ManualTaskCreationService
             return "导航 + " + string.Join("，", parameters);
         }
         string Route(string from, string to) => CanRoute(map, from, to) ? "静态路径已连通；执行时重新取得路权" : "路径缺失、站点映射无效或路径节点不足";
-        return
+        ManualTaskStepPreview[] preview =
         [
             new(1, DispatchTaskStepType.GoToPickup, "前往取货点", "", pickup, stationId,
                 Action(DispatchTaskStepType.GoToPickup), "车辆任务完成（首段含配置的附加动作）",
@@ -52,5 +52,22 @@ public sealed partial class ManualTaskCreationService
                 "无独立车辆命令；完成后释放任务路权", "复位写入成功后结束；当前执行器不等待下一轮 PLC 读回",
                 "复位 EmptyBoxTaskAcknowledged、EmptyBoxPlaced、FullBoxRequestAcknowledged、FullBoxRemoved 为 false", "按现有执行器行为展示")
         ];
+        if(handshakeOptions is not { Enabled:true } || handshakeOptions.PlcContractVersion!=HandshakeExecutionOptions.Version)return preview;
+        return preview.Select(step=>step with
+        {
+            WaitingCondition=TaskStepProgressRules.Requirement28(step.StepType),
+            PlcHandshake=step.StepType switch
+            {
+                DispatchTaskStepType.GoToPickup=>"任务保存后置受理应答1；等待PLC撤满箱呼叫0，满足后才绑定并开始取箱运输",
+                DispatchTaskStepType.PickupFullBox=>"取箱后置 FullBoxRemoved、EmptyBoxTaskAcknowledged；持续核实呼叫0再清应答；FullBoxRemoved保持至第25阶段",
+                DispatchTaskStepType.WaitForDumperReady=>"取得本轮设备独占，核对申请/倒料周期/Ready/Done旧低后申请；消费Ready，撤申请并等Ready回低，PLC内部设备保留继续",
+                DispatchTaskStepType.DumpFullBox=>"核实Done旧低，置AgvAtDumpingPosition；本轮Done=1后仍保持周期，直到实际出区",
+                DispatchTaskStepType.ReturnEmptyBox=>"返程执行中核实车体/箱体完全出区；清倒料周期并等待PLC四位低；持久化设备及已验证区域交接，保留返箱责任",
+                DispatchTaskStepType.PlaceEmptyBox=>"置EmptyBoxPlaced并核实有箱；不提前清取箱通知或返箱责任",
+                DispatchTaskStepType.CompletePlcHandshake=>"持续核对本任务出区交接、原返程及原站有箱；清返箱责任前要求本轮呼叫0，依次清FullBoxRemoved→EmptyBoxPlaced→EmptyBoxTaskAcknowledged（最后）；之后保留新呼叫并回读原站闭合，不操作后车共享位",
+                _=>step.PlcHandshake
+            },
+            ConfigurationNote=step.ConfigurationNote+"；契约 "+HandshakeExecutionOptions.Version+"；"+TaskStepProgressRules.Boundary28(step.StepType)
+        }).ToArray();
     }
 }

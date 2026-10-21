@@ -10,7 +10,16 @@ public static class PersistedHandshakeConditions
         var list=new List<(string Station,string Variable,bool Expected)>();
         void Add(string s,string v,bool e)=>list.Add((s,v,e));
         if(type is DispatchTaskStepType.PickupFullBox or DispatchTaskStepType.PlaceEmptyBox or DispatchTaskStepType.CompletePlcHandshake){Add(station,"Faulted",false);Add(station,"CommunicationOnline",true);}
-        if(type is DispatchTaskStepType.WaitForDumperReady or DispatchTaskStepType.DumpFullBox or DispatchTaskStepType.CompletePlcHandshake)Add(dumper,"Faulted",false);
+        if(type==DispatchTaskStepType.GoToPickup){Add(station,"FullBoxRequested",false);Add(station,"FullBoxRequestAcknowledged",true);}
+        if(type==DispatchTaskStepType.PickupFullBox&&(checkpoint.Phase is "AwaitPickupReadback" or "ClearCallResponse" or "ReadyToComplete" || checkpoint.NextPhase=="ReadyToComplete"))Add(station,"FullBoxRequested",false);
+        if(type==DispatchTaskStepType.CompletePlcHandshake)
+        {
+            Add(station,"BoxPresent",true);
+            // PLC can latch the next demand after the final responsibility clear.
+            if(checkpoint.Phase is not ("VerifyClosure" or "ReadyToComplete")&&checkpoint.NextPhase!="VerifyClosure")Add(station,"FullBoxRequested",false);
+        }
+        var exitActive=type==DispatchTaskStepType.ReturnEmptyBox&&checkpoint.Phase is "AwaitPhysicalExit" or "ClearDumpingAfterExit" or "AwaitDumperClosed" or "ReleaseDumper";
+        if(type is DispatchTaskStepType.WaitForDumperReady or DispatchTaskStepType.DumpFullBox || exitActive)Add(dumper,"Faulted",false);
         if(checkpoint.PendingSignal is {} pending)
         {
             var parts=pending.Split('/');if(parts.Length==2&&checkpoint.PendingValue is {} value)Add(parts[0],parts[1],value);
@@ -23,7 +32,7 @@ public static class PersistedHandshakeConditions
             case "AwaitPickupReadback":Add(station,"BoxPresent",false);Add(station,"FullBoxRemoved",true);Add(station,"EmptyBoxTaskAcknowledged",true);break;
             case "ClearCallResponse":case "ClearRemainingCall":Add(station,"FullBoxRequestAcknowledged",false);break;
             case "ClearRemoved":case "ClearRemainingRemoved":Add(station,"FullBoxRemoved",false);break;
-            case "AwaitReadyBaseline":Add(dumper,"AgvAtWaitingPosition",false);Add(dumper,"DumpingCompletedMayLeave",false);break;
+            case "AwaitReadyBaseline":Add(dumper,"AgvAtWaitingPosition",false);Add(dumper,"AgvAtDumpingPosition",false);Add(dumper,"DumperReady",false);Add(dumper,"DumpingCompletedMayLeave",false);break;
             case "NotifyWaiting":Add(dumper,"AgvAtWaitingPosition",true);break;
             case "AwaitReady":Add(dumper,"AgvAtWaitingPosition",true);Add(dumper,"DumperReady",true);break;
             case "ConsumeReady":Add(dumper,"AgvAtWaitingPosition",false);break;
@@ -34,12 +43,14 @@ public static class PersistedHandshakeConditions
             case "NotifyPlaced":Add(station,"EmptyBoxPlaced",true);break;
             case "AwaitBoxPresent":Add(station,"EmptyBoxPlaced",true);Add(station,"BoxPresent",true);break;
             case "AwaitReturnEvidence":Add(station,"BoxPresent",true);break;
-            case "ClearDumpingAfterReturn":Add(dumper,"AgvAtDumpingPosition",false);break;
-            case "AwaitDumperClosed":Add(dumper,"AgvAtDumpingPosition",false);Add(dumper,"AgvAtWaitingPosition",false);Add(dumper,"DumpingCompletedMayLeave",false);break;
+            case "AwaitPhysicalExit":Add(dumper,"AgvAtDumpingPosition",true);Add(dumper,"DumpingCompletedMayLeave",true);break;
+            case "ClearDumpingAfterExit":Add(dumper,"AgvAtDumpingPosition",false);break;
+            case "AwaitDumperClosed":Add(dumper,"AgvAtDumpingPosition",false);Add(dumper,"AgvAtWaitingPosition",false);Add(dumper,"DumperReady",false);Add(dumper,"DumpingCompletedMayLeave",false);break;
+            case "ReleaseDumper":Add(dumper,"AgvAtDumpingPosition",false);Add(dumper,"AgvAtWaitingPosition",false);Add(dumper,"DumperReady",false);Add(dumper,"DumpingCompletedMayLeave",false);break;
             case "ClearEmptyResponsibility":Add(station,"EmptyBoxTaskAcknowledged",false);break;
             case "ClearPlaced":Add(station,"EmptyBoxPlaced",false);break;
             case "ReadyToComplete" when type==DispatchTaskStepType.PickupFullBox:
-                Add(station,"BoxPresent",false);Add(station,"FullBoxRemoved",false);Add(station,"EmptyBoxTaskAcknowledged",true);Add(station,"FullBoxRequestAcknowledged",false);break;
+                Add(station,"BoxPresent",false);Add(station,"FullBoxRemoved",true);Add(station,"EmptyBoxTaskAcknowledged",true);Add(station,"FullBoxRequestAcknowledged",false);break;
             case "ReadyToComplete" when type==DispatchTaskStepType.WaitForDumperReady:
                 Add(dumper,"AgvAtWaitingPosition",false);Add(dumper,"DumperReady",false);break;
             case "ReadyToComplete" when type==DispatchTaskStepType.DumpFullBox:
@@ -47,7 +58,7 @@ public static class PersistedHandshakeConditions
             case "ReadyToComplete" when type==DispatchTaskStepType.PlaceEmptyBox:
                 Add(station,"BoxPresent",true);Add(station,"EmptyBoxPlaced",true);break;
             case "ReadyToComplete" when type==DispatchTaskStepType.CompletePlcHandshake:
-            case "VerifyClosure":Add(station,"BoxPresent",true);foreach(var v in new[]{"FullBoxRequestAcknowledged","FullBoxRemoved","EmptyBoxTaskAcknowledged","EmptyBoxPlaced"})Add(station,v,false);Add(dumper,"AgvAtDumpingPosition",false);Add(dumper,"AgvAtWaitingPosition",false);Add(dumper,"DumpingCompletedMayLeave",false);break;
+            case "VerifyClosure":Add(station,"BoxPresent",true);foreach(var v in new[]{"FullBoxRequestAcknowledged","FullBoxRemoved","EmptyBoxTaskAcknowledged","EmptyBoxPlaced"})Add(station,v,false);break;
         }
         return list.Distinct().Select(r=>
         {

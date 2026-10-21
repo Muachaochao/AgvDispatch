@@ -21,7 +21,7 @@ const guidance:Record<string,{title:string;steps:string[]}>= {
   'task-settings':{title:'任务参数与站点映射',steps:['在顶部“工程配置”核对取货工位、等待站、倒料站和各段动作；读取后逐步校验并保存。','九步预览会标明缺失点位和动作配置。站点必须能对应到当前运行地图及厂家站点。','保存参数后返回此页刷新；参数修订变化后需重新核对路线。']},
   'map-binding':{title:'车辆地图与坐标绑定',steps:['顶部“工程配置” → 厂家地图绑定：填写车辆、本地地图版本和已核定车端地图/MD5及坐标依据。','绑定卡片“只读查询车端版本／站点”可核验所选车辆；通信未开启时明确不可用。','保存绑定后按后台提示重启；核验记录不能替代当前状态，检查页中的绑定通过也不是车端实时一致性证明。']},
   recovery:{title:'现场恢复处理',steps:['WPF现场恢复，或Web任务详情底部“现场恢复核对入口”，查看原批次、原车辆、原命令及现场依据。','Web恢复写操作默认关闭。建立核对会冻结全场后续执行，但不会自动停止车辆已经接受的动作。','按照原节点续接或核对取消流程处理；不要通过删除任务、手工清位或强制解锁来代替现场核对。']},
-  contract:{title:'握手契约与启用范围',steps:['当前模式和配置版本见本页。新契约要求PLC发送方复位自己的位，Ready消费、本轮Done基线及返程后撤销倒料通知必须一致。','sender-owned-return-confirmed-v1默认不启用；配置版本相同不代表PLC程序已完成联调。','完整时序见主工程docs/architecture/持久化握手与Web联调闭环-20261017.md；旧任务不自动迁入，新任务也不能静默降级。']}
+  contract:{title:'28阶段契约与启用范围',steps:['当前模式和配置版本见本页。plc-28-stage-v2：取箱通知保持至返箱；实际出区、PLC闭合后交接倒料设备和已验证区域；最后清返箱责任。','需显式启用28阶段，并配置匹配地图的倒料区域、车辆/箱体包络和有效定位。Ready消费、Done旧低及本轮完成分别核对；配置版本相同不代表实车联调通过。','完整时序见主工程docs/architecture/28阶段统一执行与联调-20261021.md；旧sender-owned-return-confirmed-v1任务保留原记录，不自动迁入或降级。']}
 };
 async function request<T>(path:string,payload:unknown,signal:AbortSignal):Promise<T>{
  const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal});

@@ -162,7 +162,7 @@ public sealed class DispatchTaskOrchestrator(
                     .OrderBy(v => v.Route?.Cost ?? double.MaxValue).FirstOrDefault();
                 if (diagnostic != null) await trafficResources.RecordRouteAsync(new(readyStep.StepId, task.TaskId, diagnostic.Vehicle.VehicleId,
                     diagnostic.Source, pickupSite, diagnostic.Route?.EdgeIds ?? [], diagnostic.Route?.ResourceIds ?? [], true,
-                    diagnostic.Route == null ? "地图路径不可达或车辆起点无效，请核对站点与路段。" : "候选路径被交通资源占用，等待容量释放；诊断路径不会发送车辆。") { MapId = planningMap?.MapId, MapVersionId = planningMap?.VersionId }, cancellationToken);
+                    diagnostic.Route == null ? "地图路径不可达或车辆起点无效；车辆已在取货点时必须配置真实已启用的进出闭合路线，禁止同点空路径代替取箱。" : "候选路径被交通资源占用，等待容量释放；诊断路径不会发送车辆。") { MapId = planningMap?.MapId, MapVersionId = planningMap?.VersionId }, cancellationToken);
                 var routeKey = $"ANY->{pickupSite}";
                 if (_missingRouteWarnings.Add(routeKey))
                 {

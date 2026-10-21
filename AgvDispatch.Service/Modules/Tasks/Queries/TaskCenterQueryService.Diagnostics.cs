@@ -56,13 +56,18 @@ public sealed partial class TaskCenterQueryService
                 _ => "等待运输准备；查看路径、资源与步骤错误"
             };
             var persisted=detail.Handshakes.FirstOrDefault(h=>h.StepId==step.StepId);
-            var newContract = persisted!=null || detail.HandshakeMode=="PersistentExecution" || detail.Handshakes.Count>0;
+            var newContract = persisted?.ContractVersion==HandshakeExecutionOptions.Version ||
+                persisted==null && (detail.Handshakes.Count>0
+                    ?detail.Handshakes.All(h=>h.ContractVersion==HandshakeExecutionOptions.Version)
+                    :detail.HandshakeMode=="PersistentExecution" && detail.HandshakeContractVersion==HandshakeExecutionOptions.Version);
             if(persisted!=null)phase=$"持久化阶段 {persisted.Phase} / r{persisted.Revision}：{persisted.Reason}";
             return step with
             {
                 ProgressConditions = conditions, ObservedPhase = phase,
-                CompletionRequirement = !newContract?TaskStepProgressRules.Requirement(step.StepType):"原运输按厂家任务终态核对；PLC阶段按新契约持久化顺序执行，本轮Done基线、Ready消费、保守返程到位及收尾回读分别核对。未来步骤尚无检查点时不能据当前电平认定完成。",
-                EvidenceBoundary = !newContract?TaskStepProgressRules.Boundary(step.StepType):"软件规划契约，需要匹配PLC程序；写调用/回读不等于机械完成。待确认写入须通过恢复核对，不自动重发。",
+                CompletionRequirement = !newContract?TaskStepProgressRules.Requirement(step.StepType):TaskStepProgressRules.Requirement28(step.StepType),
+                EvidenceBoundary = persisted!=null&&persisted.ContractVersion!=HandshakeExecutionOptions.Version
+                    ?"旧契约检查点仅供回看，不能按当前28阶段续接或静默迁移；不使用当前信号重新认定历史动作。"
+                    :!newContract?TaskStepProgressRules.Boundary(step.StepType):TaskStepProgressRules.Boundary28(step.StepType),
                 CommandStateExplanation = commandText
             };
         }).ToArray() };

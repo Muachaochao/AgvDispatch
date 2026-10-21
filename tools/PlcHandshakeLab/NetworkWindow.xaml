@@ -29,7 +29,7 @@
       <TextBlock x:Name="StageCondition" TextWrapping="Wrap" Margin="0,10,0,0"/>
       <TextBlock x:Name="WaitInfo" TextWrapping="Wrap" Margin="0,10,0,0" Foreground="#147F79"/>
       <TextBlock x:Name="Guidance" TextWrapping="Wrap" Margin="0,10,0,0"/>
-      <TextBlock Text="28步是目标参考表，现有调度执行器可能有时序差异。所有阶段均由人工选择；电平一致不能证明到站、取放箱、独占或实际退出。" TextWrapping="Wrap" Margin="0,10,0,0" Foreground="#886031"/>
+      <TextBlock Text="28阶段已作为plc-28-stage-v2契约；需调度显式启用并配置出区区域和车辆/箱体包络。人工选阶段只记录，不证明到站、取放或出区；第25/26/27阶段依次清取箱通知、放箱通知、最后返箱责任。旧版本任务不能自动迁入。" TextWrapping="Wrap" Margin="0,10,0,0" Foreground="#886031"/>
       <Separator Margin="0,12"/><TextBlock Text="现场观察（只记录，不触发动作）" FontWeight="Bold"/>
       <WrapPanel Margin="0,8,0,0"><TextBlock Text="车辆" VerticalAlignment="Center"/><TextBox x:Name="Vehicle" Width="125" Margin="6,0,12,0"/><TextBlock Text="任务" VerticalAlignment="Center"/><TextBox x:Name="TaskId" Width="145" Margin="6,0,0,0"/></WrapPanel>
       <ComboBox x:Name="ObservationKind" SelectedIndex="0" Margin="0,8,0,6"><ComboBoxItem Content="实际已取箱"/><ComboBoxItem Content="实际到等待点"/><ComboBoxItem Content="实际到倒料点"/><ComboBoxItem Content="倒料已完成"/><ComboBoxItem Content="实际已退出区域"/><ComboBoxItem Content="实际已放箱"/><ComboBoxItem Content="异常 / 其他观察"/></ComboBox>

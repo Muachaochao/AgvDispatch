@@ -45,7 +45,7 @@ public sealed partial class TaskCenterQueryService(ITaskCenterReadRepository rep
             switch (current.StepType)
             {
                 case DispatchTaskStepType.PickupFullBox:
-                    explanation = "取箱握手：先确认箱体离开，再写入并回读满箱拉走/空箱任务应答。";
+                    explanation = "取箱握手：先确认箱体离开，再写入并回读取箱通知/返箱责任；具体保持及清位以本任务契约为准。";
                     break;
                 case DispatchTaskStepType.WaitForDumperReady:
                     explanation = "等待倒料机无故障、等待位握手回读和Ready。";
@@ -57,7 +57,7 @@ public sealed partial class TaskCenterQueryService(ITaskCenterReadRepository rep
                     explanation = "放箱握手：等待空箱放到位回读和箱体检测。";
                     break;
                 case DispatchTaskStepType.CompletePlcHandshake:
-                    explanation = "PLC收尾：显示复位目标与当前回读值，不是额外的调度判断。";
+                    explanation = "PLC收尾：按本任务契约逐阶段核对返箱、通知复位和责任闭合，显示当前回读及目标。";
                     break;
                 default:
                     explanation = "等待运输步骤准备、站点映射、路径和路权；查看命令队列及错误说明。";
@@ -81,9 +81,11 @@ public sealed partial class TaskCenterQueryService(ITaskCenterReadRepository rep
             explanation = $"当前步骤状态：{state}；PLC握手尚未进入，查看厂家任务编号和命令发送状态。";
         }
         var checkpoint=detail.Handshakes.FirstOrDefault(h=>h.StepId==current?.StepId);
-        if(checkpoint!=null && current?.Status==DispatchTaskStepStatus.Ready)
+        if(checkpoint!=null && current is not null)
         {
-            conditions=PersistedHandshakeConditions.Observe(checkpoint,current.StepType,task.StationId,options.DumperStationId,signals,(clock??TimeProvider.System).GetUtcNow(),handshakeOptions?.StateMaxAgeSeconds??5).ToList();
+            conditions=checkpoint.ContractVersion==HandshakeExecutionOptions.Version
+                ?PersistedHandshakeConditions.Observe(checkpoint,current.StepType,task.StationId,options.DumperStationId,signals,(clock??TimeProvider.System).GetUtcNow(),handshakeOptions?.StateMaxAgeSeconds??5).ToList()
+                :[];
             explanation=$"持久化阶段：{checkpoint.Phase}；周期{checkpoint.CycleId}；修订{checkpoint.Revision}。{checkpoint.Reason}";
             if(checkpoint.PendingSignal!=null)explanation+=" 原写入结果待人工核对，不自动重发。";
             if(handshakeOptions?.Enabled!=true)explanation+=" 新契约执行未启用，检查点仅供核对。";

@@ -9,7 +9,8 @@ public sealed partial class ManualTaskCreationService(IManualTaskCreationReposit
     IAgvGateway gateway, IAgvStateCache states, IActiveMapRuntime activeMap, IMapExecutionGate gate,
     IDispatchOrchestrationRepository tasks, DispatchTaskCreationOptions creation, DispatchOrchestratorOptions dispatch,
     DispatchTaskStepOptions steps, MapOptions mapOptions, IPlcConfigurationInspector plcConfiguration,
-    TaskParameterRuntime parameters, IRobokitTaskMapPreflight? robokitMap = null) : IManualTaskCreationService
+    TaskParameterRuntime parameters, IRobokitTaskMapPreflight? robokitMap = null,
+    HandshakeExecutionOptions? handshakeOptions = null) : IManualTaskCreationService
 {
     public async Task<ManualTaskCreationOptions> GetOptionsAsync(CancellationToken ct)
     {
@@ -23,6 +24,8 @@ public sealed partial class ManualTaskCreationService(IManualTaskCreationReposit
             !creation.Enabled || !dispatch.Enabled || !steps.Enabled ? "任务创建、调度和步骤执行服务需全部启用。" :
             dispatch.GetConfigurationError() ?? (map is null ? "请先发布并激活运行地图。" :
                 string.IsNullOrWhiteSpace(creation.DumperStationId) ? "尚未配置倒料工位。" : null);
+        if(handshakeOptions?.Enabled==true&&handshakeOptions.PlcContractVersion!=HandshakeExecutionOptions.Version)
+            reason="握手契约不是当前28阶段版本，禁止创建新任务。";
         var choices = dispatch.StationPickupSites.Select(pair =>
         {
             var preview = ValidateStepPreview(BuildStepPreview(pair.Key, pair.Value, map), map);
@@ -48,11 +51,12 @@ public sealed partial class ManualTaskCreationService(IManualTaskCreationReposit
                 state is null || state.Quality != SignalQuality.Good || state.Blocked is not false || state.EmergencyStopped is not false ? "车辆状态未知、阻塞或急停。" :
                 position?.State != AgvMapPositionState.Normal ? position?.Message ?? "定位不可用。" :
                 string.IsNullOrWhiteSpace(vehicle.CurrentStation) ? "车辆当前站点未知。" : null;
+            block ??= VehicleExitConfigurationError(vehicle.VehicleId,map);
             return new ManualTaskVehicleChoice(vehicle.VehicleId, $"{vehicle.VehicleId} · {vehicle.BatteryPercent:g}% · {vehicle.CurrentStation ?? "未知站点"}",
                 vehicle.CurrentStation ?? "", block is null && reason is null, block ?? "在线空闲，定位正常。");
         }).OrderBy(vehicle => vehicle.VehicleId).ToArray();
         choices = choices.Select(choice => choice with
-        { PickupReachableVehicleIds = vehicles.Where(vehicle => CanRoute(map, vehicle.CurrentSite, choice.PickupSite)).Select(vehicle => vehicle.VehicleId).ToArray() }).ToArray();
+        { PickupReachableVehicleIds = vehicles.Where(vehicle => CanRoute(map, vehicle.CurrentSite, choice.PickupSite, true, PickupExcludedNodes(map))).Select(vehicle => vehicle.VehicleId).ToArray() }).ToArray();
         reason ??= !choices.Any(station => station.Available) ? "暂无满足 PLC 条件和路径要求的工位。" :
             !vehicles.Any(vehicle => vehicle.Available) ? "暂无在线空闲且定位正常的车辆。" : null;
         return new(map?.MapId, map?.VersionId, reason is null, reason ?? "使用当前运行地图创建取满箱、倒料、返空箱九步任务。",
@@ -60,7 +64,11 @@ public sealed partial class ManualTaskCreationService(IManualTaskCreationReposit
         { ParameterRevision = parameters.Revision, RequiresExplicitVehicle = robokitMap is not null, MapRuntimeId=map?.RuntimeId??"" };
     }
 
-    private static bool CanRoute(ActiveMapRuntimeSnapshot? map, string? from, string? to)
+    private IReadOnlySet<string> PickupExcludedNodes(ActiveMapRuntimeSnapshot? map) => map is null ? new HashSet<string>() :
+        new[] { dispatch.GetDumperWaitingSite(), dispatch.DumperDumpingSite }.Where(site => !string.IsNullOrWhiteSpace(site))
+            .Select(site => MapRouteSiteMapper.ResolveLogicalNodeId(map.Definition, site!)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    private static bool CanRoute(ActiveMapRuntimeSnapshot? map, string? from, string? to, bool requireTransport = false, IReadOnlySet<string>? forbiddenNodes = null)
     {
         if (map is null || string.IsNullOrWhiteSpace(from) || string.IsNullOrWhiteSpace(to)) return false;
         string? Resolve(string site)
@@ -70,7 +78,8 @@ public sealed partial class ManualTaskCreationService(IManualTaskCreationReposit
             return found.Length == 1 ? found[0].Id : null;
         }
         var source = Resolve(from); var destination = Resolve(to);
-        return source is not null && destination is not null && map.Graph.FindShortestRoute(source, destination) is { Nodes.Count: >= 2 };
+        return source is not null && destination is not null &&
+            (requireTransport ? map.Graph.FindShortestTransportRoute(source, destination, forbiddenIntermediateNodes: forbiddenNodes) : map.Graph.FindShortestRoute(source, destination)) is { Nodes.Count: >= 2 };
     }
 
     public async Task<ManualTaskCreationResult> CreateAsync(TrafficUserContext user, ManualTaskCreationRequest request, CancellationToken ct)
@@ -98,9 +107,9 @@ public sealed partial class ManualTaskCreationService(IManualTaskCreationReposit
         if (station is { ConfigurationValid: false }) return new(false, false, null, station.Explanation);
         if (!options.Available) return new(false, false, null, options.Explanation);
         if (station is not { Available: true }) return new(false, false, null, station?.Explanation ?? "工位不在当前调度配置中。");
-        var vehicles = options.Vehicles.Where(vehicle => vehicle.Available && CanRoute(activeMap.Current, vehicle.CurrentSite, station.PickupSite));
+        var vehicles = options.Vehicles.Where(vehicle => vehicle.Available && CanRoute(activeMap.Current, vehicle.CurrentSite, station.PickupSite, true, PickupExcludedNodes(activeMap.Current)));
         if (request.RequestedVehicleId is not null) vehicles = vehicles.Where(vehicle => vehicle.VehicleId == request.RequestedVehicleId);
-        if (!vehicles.Any()) return new(false, false, null, "第 1 步（前往取货点）：所选车辆当前不可用或到取货点无可执行路径，请刷新后重选。");
+        if (!vehicles.Any()) return new(false, false, null, options.Vehicles.FirstOrDefault(v=>v.VehicleId==request.RequestedVehicleId&& !v.Available)?.Explanation??"第 1 步（前往取货点）：所选车辆当前不可用或无可执行路径；车辆已在取货点时必须配置避开等待/倒料节点的真实已启用进出闭合路线，不能用同点空路径代替取箱动作。");
         if (robokitMap is not null)
         {
             if(request.RequestedVehicleId is null)return new(false,false,null,"车端地图核验需要明确选择车辆，不能以自动派车跳过核验。");

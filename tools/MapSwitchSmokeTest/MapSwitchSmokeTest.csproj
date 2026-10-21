@@ -10,6 +10,10 @@
     <ProjectReference Include="../../AgvDispatch.Infrastructure/AgvDispatch.Infrastructure.csproj" />
     <Compile Include="../../AgvDispatch.Service/Modules/Tasks/Commands/AgvCommandOutboxDispatcher.cs" Link="AgvCommandOutboxDispatcher.cs" />
     <Compile Include="../../AgvDispatch.Service/Modules/Tasks/Commands/AgvCommandOutboxOptions.cs" Link="AgvCommandOutboxOptions.cs" />
+    <Compile Include="../../AgvDispatch.Service/Modules/Tasks/Steps/PersistentHandshakeExecutor.cs" Link="PersistentHandshakeExecutor.cs" />
+    <Compile Include="../../AgvDispatch.Service/Modules/Tasks/Steps/PersistentHandshakeExecutor.Exit.cs" Link="PersistentHandshakeExecutor.Exit.cs" />
+    <Compile Include="../../AgvDispatch.Service/Modules/Tasks/Dispatching/DispatchOrchestratorOptions.cs" Link="DispatchOrchestratorOptions.cs" />
+    <Compile Include="../../AgvDispatch.Service/Modules/Tasks/Creation/TaskCreationOptions.cs" Link="TaskCreationOptions.cs" />
     <Compile Include="../../AgvDispatch.Service/Modules/Maps/ActiveMapLoader.cs" Link="ActiveMapLoader.cs" />
   </ItemGroup>
   <ItemGroup><Compile Include="../../AgvDispatch.Service/Hosting/IsolatedBackgroundService.cs" Link="IsolatedBackgroundService.cs" /></ItemGroup>

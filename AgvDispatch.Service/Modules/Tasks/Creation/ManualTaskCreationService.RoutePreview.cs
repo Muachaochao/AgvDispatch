@@ -49,11 +49,11 @@ public sealed partial class ManualTaskCreationService
         var localValid=true;
         foreach(var (sequence,name,source,target) in pairs)
         {
-            token.ThrowIfCancellationRequested();var from=Resolve(source);var to=Resolve(target);var route=from is null||to is null?null:map.Graph.FindShortestRoute(from.Id,to.Id);
-            if(route is null||route.Nodes.Count is <2 or >129||route.EdgeIds.Count!=route.Nodes.Count-1){legs.Add(new(sequence,name,source+" → "+target,"","无可执行本地路线、端点不唯一或超过本页每段运输128子段的显示预算。"));localValid=false;continue;}
+            token.ThrowIfCancellationRequested();var from=Resolve(source);var to=Resolve(target);var route=from is null||to is null?null:sequence==1?map.Graph.FindShortestTransportRoute(from.Id,to.Id,forbiddenIntermediateNodes:PickupExcludedNodes(map)):map.Graph.FindShortestRoute(from.Id,to.Id);
+            if(route is null||route.Nodes.Count is <2 or >129||route.EdgeIds.Count!=route.Nodes.Count-1){legs.Add(new(sequence,name,source+" → "+target,"",route is null&&sequence==1&&from is not null&&from.Id==to?.Id?"车辆已在取货点；缺少避开等待/倒料节点的真实已启用进出闭合路线，禁止同点空路径代替取箱动作。":"无可执行本地路线、端点不唯一或超过本页每段运输128子段的显示预算。"));localValid=false;continue;}
             var path=route.Nodes.Select(id=>nodes[id]).ToArray();
             var mapping=path.All(n=>!string.IsNullOrWhiteSpace(n.AgvSiteId)&&map.Definition.Nodes.Count(other=>other.Enabled&&other.AgvSiteId==n.AgvSiteId)==1);
-            legs.Add(new(sequence,name,string.Join(" → ",path.Select(n=>n.Id)),string.Join(" → ",path.Select(n=>n.AgvSiteId??"[未映射]")),mapping?"本地静态路线；厂家核验见逐段结果。":"存在缺失/重复厂家站点映射。"));
+            legs.Add(new(sequence,name,string.Join(" → ",path.Select(n=>n.Id)),string.Join(" → ",path.Select(n=>n.AgvSiteId??"[未映射]")),mapping?(sequence==1&&from!.Id==to!.Id?"实际进出闭合路线；沿真实相邻边离开并返回，在末点执行取箱动作；厂家核验见逐段结果。":"本地静态路线；厂家核验见逐段结果。"):"存在缺失/重复厂家站点映射。"));
             localValid&=mapping;
             for(var i=0;i<path.Length-1;i++)
             {

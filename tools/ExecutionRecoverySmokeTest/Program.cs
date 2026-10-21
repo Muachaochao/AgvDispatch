@@ -424,6 +424,96 @@ await using(var f=await Fixture.Create(new MapSwitchSafetySettings{CheckPlcSigna
     await f.Recovery.InspectAsync(ct);
     Check(!(await f.Recovery.GetAsync(ct)).Items.Single(i=>i.TaskId==id).Verified,"握手阶段改变使旧恢复确认失效");
 }
+await using(var f=await Fixture.Create())
+{
+    var id=await f.Prepare();var step=await f.Step(id);
+    await f.Db.Insertable(new TaskHandshakeEntity{TaskId=id,StepId=step.StepId,CycleId=id,ContractVersion=HandshakeExecutionOptions.LegacyVersion,Phase="WritePending",Revision=1,
+        PendingSignal="PLC-01/FullBoxRemoved",PendingValue=true,NextPhase="NotifyEmptyResponsibility",StartedAtUtc=DateTime.UtcNow,UpdatedAtUtc=DateTime.UtcNow}).ExecuteCommandAsync();
+    await f.Boot();f.Fresh();f.Signals.Items.Add(SwitchSignalCache.Ready() with{VariableName="FullBoxRemoved",Value=true});await f.Recovery.InspectAsync(ct);
+    var result=await f.Recovery.DecideAsync(admin,(await Request(f,id)) with{HandshakePendingWriteConfirmed=true},ct);
+    Check(!result.Accepted&&result.Message.Contains("其他版本"),"旧契约待确认写入即使人工勾选且读回匹配也不迁入28阶段");
+    var original=f.Db.Queryable<TaskHandshakeEntity>().Single();
+    Check(original.Phase=="WritePending"&&original.ContractVersion==HandshakeExecutionOptions.LegacyVersion&&original.Revision==1&&f.Gateway.Sends==0,"拒绝旧契约恢复保留原版本阶段和修订且不重发");
+}
+foreach(var exitPhase in new[]{"NoExitCheckpoint","AwaitPhysicalExit","ClearDumpingAfterExit","AwaitDumperClosed","ReleaseDumper","ExitHandoverComplete","WritePending"})
+await using(var f=await Fixture.Create(new MapSwitchSafetySettings{CheckPlcSignals=true}))
+{
+    var id=await f.Prepare();var taskSteps=await f.Tasks.GetStepsAsync(id,ct);var returning=taskSteps.Single(s=>s.StepType==DispatchTaskStepType.ReturnEmptyBox);
+    await f.Db.Updateable<DispatchTaskStepEntity>().SetColumns(s=>new DispatchTaskStepEntity{Status=50,CompletedAt=DateTime.Now}).Where(s=>s.TaskId==id&&s.Sequence<returning.Sequence).ExecuteCommandAsync();
+    await f.Db.Updateable<DispatchTaskStepEntity>().SetColumns(s=>new DispatchTaskStepEntity{Status=40,VehicleId="AGV-01",VendorTaskId=returning.StepId,DestinationSite="SITE-B"}).Where(s=>s.StepId==returning.StepId).ExecuteCommandAsync();
+    await f.Db.Updateable<DispatchTaskEntity>().SetColumns(t=>t.Stage==(int)DispatchTaskStage.ReturningEmptyBox).Where(t=>t.TaskId==id).ExecuteCommandAsync();
+    var source=new Dictionary<string,bool>{{"FullBoxRequested",false},{"BoxPresent",true},{"Faulted",false},{"CommunicationOnline",true},{"FullBoxRequestAcknowledged",false},{"FullBoxRemoved",true},{"EmptyBoxTaskAcknowledged",true},{"EmptyBoxPlaced",false}};
+    var baseline=source.Select((p,i)=>new TaskSignalEvidence("PLC-01",p.Key,p.Value,"Good",DateTimeOffset.Now,1,"DB1.DBX0."+i)).ToArray();
+    foreach(var pair in new[]{(taskSteps.Single(s=>s.StepType==DispatchTaskStepType.GoToPickup).StepId,"TransportBound"),(taskSteps.Single(s=>s.StepType==DispatchTaskStepType.DumpFullBox).StepId,"ReadyToComplete")})
+        await f.Db.Insertable(new TaskHandshakeEntity{TaskId=id,StepId=pair.StepId,CycleId=id,ContractVersion=HandshakeExecutionOptions.Version,Phase=pair.Item2,Revision=1,BaselineJson=System.Text.Json.JsonSerializer.Serialize(baseline),StartedAtUtc=DateTime.UtcNow,UpdatedAtUtc=DateTime.UtcNow}).ExecuteCommandAsync();
+    if(exitPhase!="NoExitCheckpoint")
+        await f.Db.Insertable(new TaskHandshakeEntity{TaskId=id,StepId=returning.StepId,CycleId=id,ContractVersion=HandshakeExecutionOptions.Version,Phase=exitPhase,Revision=1,BaselineJson=System.Text.Json.JsonSerializer.Serialize(baseline.Concat(new[]{new TaskSignalEvidence("DUMPER","AgvAtDumpingPosition",true,"Good",DateTimeOffset.Now,1,"DB1.DBX610.1")})),
+            PendingSignal=exitPhase=="WritePending"?"DUMPER/AgvAtDumpingPosition":null,PendingValue=exitPhase=="WritePending"?false:null,NextPhase=exitPhase=="WritePending"?"AwaitDumperClosed":null,StartedAtUtc=DateTime.UtcNow,UpdatedAtUtc=DateTime.UtcNow}).ExecuteCommandAsync();
+    await f.Db.Insertable(new TrafficResourceLeaseEntity{LeaseId="return-lease",ResourceId="NARROW",TaskId=id,OwnerStepId=returning.StepId,VehicleId="AGV-01",AcquiredAt=DateTime.Now,RenewedAt=DateTime.Now,ExpiresAt=DateTime.Now.AddMinutes(1)}).ExecuteCommandAsync();
+    if(exitPhase!="ExitHandoverComplete")await f.Db.Insertable(new TaskEquipmentClaimEntity{EquipmentId="DUMPER",TaskId=id,AcquiredAtUtc=DateTime.UtcNow}).ExecuteCommandAsync();
+    f.Gateway.Status=new(returning.StepId,returning.StepId,AgvTransportTaskState.Completed,"AGV-01",DateTimeOffset.Now);
+    await f.Boot();f.Fresh("SITE-B");f.Signals.Items.Clear();
+    foreach(var b in baseline)f.Signals.Items.Add(SwitchSignalCache.Ready() with{VariableName=b.VariableName,Address=b.Address,Value=b.Value,UpdatedAt=DateTimeOffset.Now});
+    foreach(var name in new[]{"Faulted","AgvAtWaitingPosition","AgvAtDumpingPosition","DumperReady","DumpingCompletedMayLeave"})f.Signals.Items.Add(SwitchSignalCache.Ready() with{StationId="DUMPER",VariableName=name,Address=name=="AgvAtDumpingPosition"?"DB1.DBX610.1":"DB1.DBX610.0",Value=false});
+    await f.Recovery.InspectAsync(ct);
+    Check(!(await f.Recovery.DecideAsync(admin,await Request(f,id),ct)).Accepted,"车端已完成的原返程须核实机械终态，不按执行中续跑："+exitPhase);
+    if(exitPhase=="WritePending")
+    {
+        Check(!(await f.Recovery.DecideAsync(admin,await Request(f,id,RecoveryDecision.RecordPhysicalCompletion),ct)).Accepted,"返程机械补记不能绕过未知PLC写入的明确确认");
+        var index=f.Signals.Items.FindIndex(s=>s.StationId=="DUMPER"&&s.VariableName=="AgvAtDumpingPosition");
+        f.Signals.Items[index]=f.Signals.Items[index] with{Value=true};
+        Check(!(await f.Recovery.DecideAsync(admin,(await Request(f,id,RecoveryDecision.RecordPhysicalCompletion)) with{HandshakePendingWriteConfirmed=true},ct)).Accepted,"明确确认也不能替代原清位的新鲜期望值回读");
+        f.Signals.Items[index]=f.Signals.Items[index] with{Value=false};
+        await f.Db.Ado.ExecuteCommandAsync("CREATE TRIGGER reject_return_recovery BEFORE INSERT ON execution_evidence WHEN NEW.Kind='RecordPhysicalCompletion' BEGIN SELECT RAISE(ABORT,'return-recovery-audit-failure'); END;");
+        var failed=false;try{await f.Recovery.DecideAsync(admin,(await Request(f,id,RecoveryDecision.RecordPhysicalCompletion)) with{HandshakePendingWriteConfirmed=true},ct);}catch(InvalidOperationException){failed=true;}
+        var unchanged=await f.Db.Queryable<TaskHandshakeEntity>().Where(h=>h.StepId==returning.StepId).FirstAsync();
+        Check(failed&&unchanged.Phase=="WritePending"&&unchanged.Revision==1&&(await f.Step(id)).Status==40&&!f.Barrier.IsOpen,"返程补记审计失败时原写入确认与机械终态一起回滚");
+        await f.Db.Ado.ExecuteCommandAsync("DROP TRIGGER reject_return_recovery;");
+    }
+    var recorded=await f.Recovery.DecideAsync(admin,(await Request(f,id,RecoveryDecision.RecordPhysicalCompletion)) with{HandshakePendingWriteConfirmed=exitPhase=="WritePending"},ct);
+    Check(recorded.Accepted,"原返程已完成可只补机械终态，待出区阶段不依赖关闭中的恢复屏障："+exitPhase+" / "+recorded.Message);
+    Check((await f.Step(id)).StepType==(int)DispatchTaskStepType.PlaceEmptyBox&&!f.Barrier.IsOpen&&f.Gateway.Sends==0,"返程补记仅激活原放箱通知节点，屏障仍关闭："+exitPhase);
+    var saved=await f.Db.Queryable<TaskHandshakeEntity>().Where(h=>h.StepId==returning.StepId).FirstAsync();
+    Check(exitPhase=="NoExitCheckpoint"?saved==null:saved.Phase==(exitPhase=="WritePending"?"AwaitDumperClosed":exitPhase)&&saved.PendingSignal==null,"原出区检查点保留，仅明确确认的原写入推进其下一阶段："+exitPhase);
+    Check(f.Db.Queryable<TrafficResourceLeaseEntity>().Count()==1&&f.Db.Queryable<TaskEquipmentClaimEntity>().Count()==(exitPhase=="ExitHandoverComplete"?0:1)&&!f.Db.Queryable<TaskRuntimeEventEntity>().Any(e=>e.Kind=="ExitVerified"||e.Kind=="EquipmentReleased"),"机械补记没有代替出区证据、清位或设备路权交接："+exitPhase);
+    var responsibility=f.Signals.Items.FindIndex(s=>s.StationId=="PLC-01"&&s.VariableName=="EmptyBoxTaskAcknowledged");
+    f.Signals.Items[responsibility]=f.Signals.Items[responsibility] with{Value=false};
+    Check(!(await f.Recovery.DecideAsync(admin,await Request(f,id),ct)).Accepted,"新的放箱通知节点仍要求原返箱责任保持，不能用机械补记绕过："+exitPhase);
+    f.Signals.Items[responsibility]=f.Signals.Items[responsibility] with{Value=true};
+    var resumed=await f.Recovery.DecideAsync(admin,await Request(f,id),ct);
+    Check(resumed.Accepted,"可核对原工位保持并续接未开始的放箱通知节点，出区交接留给执行器："+exitPhase+" / "+resumed.Message);
+    Check((await f.Recovery.DecideAsync(admin,await Request(f,"__SITE__"),ct)).Accepted,"返程后恢复仍显式核对全场设备与载荷："+exitPhase);
+    var status=await f.Recovery.GetAsync(ct);
+    var released=await f.Recovery.ReleaseAsync(admin,new(status.SessionId,"原返程到站和来源PLC保持均已核对，恢复原流程"),ct);
+    Check(released.Accepted&&f.Barrier.IsOpen,"核对后恢复屏障能放行，出区检查点与占用仍未改动："+exitPhase+" / "+released.Message);
+    Check(f.Db.Queryable<TrafficResourceLeaseEntity>().Count()==1&&f.Db.Queryable<TaskEquipmentClaimEntity>().Count()==(exitPhase=="ExitHandoverComplete"?0:1)&&!f.Db.Queryable<TaskRuntimeEventEntity>().Any(e=>e.Kind=="ExitVerified"||e.Kind=="EquipmentReleased")&&f.Signals.Items.Single(s=>s.VariableName=="EmptyBoxPlaced").Value==false,"恢复放行只打开执行屏障，不产生出区证明、放箱通知或设备路权释放："+exitPhase);
+}
+await using(var f=await Fixture.Create(new MapSwitchSafetySettings{CheckPlcSignals=true}))
+{
+    var id=await f.Prepare();var taskSteps=await f.Tasks.GetStepsAsync(id,ct);var returning=taskSteps.Single(s=>s.StepType==DispatchTaskStepType.ReturnEmptyBox);
+    await f.Db.Updateable<DispatchTaskStepEntity>().SetColumns(s=>new DispatchTaskStepEntity{Status=50,CompletedAt=DateTime.Now}).Where(s=>s.TaskId==id&&s.Sequence<returning.Sequence).ExecuteCommandAsync();
+    await f.Db.Updateable<DispatchTaskStepEntity>().SetColumns(s=>new DispatchTaskStepEntity{Status=100,VehicleId="AGV-01"}).Where(s=>s.StepId==returning.StepId).ExecuteCommandAsync();
+    var cancellingTask=await f.Db.Queryable<DispatchTaskEntity>().Where(t=>t.TaskId==id).FirstAsync();
+    cancellingTask.Stage=(int)DispatchTaskStage.CancellationReview;cancellingTask.VehicleId="AGV-01";cancellingTask.CancelRequestId=Guid.NewGuid().ToString("N");cancellingTask.CancelVehicleId="AGV-01";cancellingTask.CancelConfirmedAt=DateTime.Now;
+    await f.Db.Updateable(cancellingTask).ExecuteCommandAsync();
+    await f.Db.Insertable(new TaskHandshakeEntity{TaskId=id,StepId=returning.StepId,CycleId=id,ContractVersion=HandshakeExecutionOptions.Version,Phase="AwaitPhysicalExit",Revision=1,StartedAtUtc=DateTime.UtcNow,UpdatedAtUtc=DateTime.UtcNow}).ExecuteCommandAsync();
+    await f.Db.Insertable(new TaskEquipmentClaimEntity{EquipmentId="DUMPER",TaskId="FOLLOWING-TASK",AcquiredAtUtc=DateTime.UtcNow}).ExecuteCommandAsync();
+    await f.Boot();f.Fresh();
+    foreach(var name in new[]{"FullBoxRequestAcknowledged","FullBoxRemoved","EmptyBoxTaskAcknowledged","EmptyBoxPlaced"})f.Signals.Items.Add(SwitchSignalCache.Ready() with{VariableName=name});
+    f.Signals.Items.Add(SwitchSignalCache.Ready() with{VariableName="BoxPresent",Value=true});
+    foreach(var name in new[]{"Faulted","AgvAtWaitingPosition","AgvAtDumpingPosition","DumperReady","DumpingCompletedMayLeave"})f.Signals.Items.Add(SwitchSignalCache.Ready() with{StationId="DUMPER",VariableName=name,Value=true});
+    await f.Recovery.InspectAsync(ct);
+    Check(!(await f.Recovery.DecideAsync(admin,await Request(f,id,RecoveryDecision.CloseCancelled),ct)).Accepted,"尚无本任务出区交接证明时不忽略共享倒料周期冲突");
+    await f.Db.Updateable<TaskHandshakeEntity>().SetColumns(h=>new TaskHandshakeEntity{Phase="ExitHandoverComplete",Revision=h.Revision+1}).Where(h=>h.StepId==returning.StepId).ExecuteCommandAsync();
+    await f.Db.Insertable(new TaskEquipmentClaimEntity{EquipmentId="CONTRADICTORY-OWN-CLAIM",TaskId=id,AcquiredAtUtc=DateTime.UtcNow}).ExecuteCommandAsync();
+    await f.Recovery.InspectAsync(ct);
+    var contradictory=await f.Recovery.DecideAsync(admin,await Request(f,id,RecoveryDecision.CloseCancelled),ct);
+    Check(!contradictory.Accepted&&contradictory.Message.Contains("矛盾"),"已交接与本任务残留设备归属矛盾时保持冻结："+contradictory.Message);
+    await f.Db.Deleteable<TaskEquipmentClaimEntity>().Where(e=>e.TaskId==id).ExecuteCommandAsync();await f.Recovery.InspectAsync(ct);
+    var closed=await f.Recovery.DecideAsync(admin,await Request(f,id,RecoveryDecision.CloseCancelled),ct);
+    Check(closed.Accepted,"已出区交接的前车可关闭取消，不要求后车共享倒料位或故障低："+closed.Message);
+    Check(f.Db.Queryable<TaskEquipmentClaimEntity>().Single().TaskId=="FOLLOWING-TASK"&&f.Signals.Items.Where(s=>s.StationId=="DUMPER").All(s=>s.Value==true)&&f.Gateway.Sends==0&&f.Gateway.Cancels==0,"前车取消关闭保留后车设备归属和全部共享信号，不产生车辆指令");
+}
 foreach (var scenario in new[] { "disabled-bound", "wrong-version", "enabled-unbound" })
 {
     await using var f = await Fixture.Create();
