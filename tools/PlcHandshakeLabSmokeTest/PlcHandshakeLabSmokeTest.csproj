@@ -3,5 +3,6 @@
   <ItemGroup>
     <Compile Include="../PlcHandshakeLab/Sequence.cs" Link="Sequence.cs"/>
     <Compile Include="../PlcHandshakeLab/LabSession.cs" Link="LabSession.cs"/>
+    <Compile Include="../PlcHandshakeLab/LivePlcConnection.cs" Link="LivePlcConnection.cs"/>
   </ItemGroup>
 </Project>

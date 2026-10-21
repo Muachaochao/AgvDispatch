@@ -58,4 +58,41 @@ session.Reset();
 Check(session.Values.Count(v => v) == 1 && session.Values[1], "重置清除手动电平");
 try { session.GoTo(28); throw new Exception("越界未拒绝"); }
 catch (ArgumentOutOfRangeException) { checks++; }
-Console.WriteLine($"PASS: {checks} checks. 28阶段、关键保持位、可选传感器先后顺序、偏差阻断、循环、日志导出。");
+var root = Path.Combine(Path.GetTempPath(), "plc-lab-test-" + Guid.NewGuid().ToString("N"));
+Directory.CreateDirectory(Path.Combine(root, "service"));
+try
+{
+    void Config(string ip = "127.0.0.1", bool automatic = false) => File.WriteAllText(Path.Combine(root,"service","appsettings.json"), System.Text.Json.JsonSerializer.Serialize(new { Plc = new { IpAddress = ip }, TaskCreation = new { AutomaticCreationEnabled = automatic }, Agv = new { Robots = new[] { new { IpAddress = "127.0.0.1" } } } }));
+    var memory = new byte[1024]; memory[0] = 10; memory[2] = 10; memory[610] = 4;
+    void State() => File.WriteAllText(Path.Combine(root,"device-state.json"), System.Text.Json.JsonSerializer.Serialize(new { memory_hex = Convert.ToHexString(memory) }));
+    void Reject(Action operation, string message)
+    {
+        var rejected = false;
+        try { operation(); } catch (Exception ex) when (ex is InvalidOperationException or ArgumentException) { rejected = true; }
+        Check(rejected,message);
+    }
+    File.WriteAllText(Path.Combine(root,"lab.json"),"{}"); File.WriteAllText(Path.Combine(root,"navigation.agvmap.json"),"{}");
+    Config(); State(); var live = new LivePlcConnection(root);
+    Check(live.Read("CNC-001").Values[1] && live.Read("CNC-002").Values[8], "实时映射箱体与共享Ready");
+    var original = File.ReadAllText(Path.Combine(root,"device-state.json"));
+    live.Call("CNC-002");
+    using (var input = System.Text.Json.JsonDocument.Parse(File.ReadAllText(Path.Combine(root,"device-input.json"))))
+        Check(input.RootElement.GetProperty("call").GetString()=="CNC-002" && Guid.TryParseExact(input.RootElement.GetProperty("sequence").GetString(),"N",out _),"呼叫仅发布唯一编号输入");
+    Check(original==File.ReadAllText(Path.Combine(root,"device-state.json")),"不改写设备快照或H输出");
+    memory[2] |= 1; State(); var sent=File.ReadAllText(Path.Combine(root,"device-input.json")); live.Call("CNC-002");
+    Check(sent==File.ReadAllText(Path.Combine(root,"device-input.json")),"重复高电平不重新发输入");
+    memory[2] = 10 | 64; State(); Reject(()=>live.Call("CNC-002"),"返箱责任未结束拒绝新呼叫");
+    memory[2] = 10; memory[0] |= 16; State(); Check(live.Read("CNC-001").Values[2] && !live.Read("CNC-002").Values[2],"工位应答分别映射");
+    memory[610] |= 2 | 8; State(); Check(live.Read("CNC-002").Values[7] && live.Read("CNC-001").Values[9],"倒料输出共享映射");
+    memory[2] = 2; State(); Reject(()=>live.Call("CNC-002"),"下游离线拒绝输入");
+    memory[2] = 14; State(); Reject(()=>live.Call("CNC-002"),"工位故障拒绝输入");
+    memory[2] = 8; State(); Reject(()=>live.Call("CNC-002"),"无箱拒绝输入");
+    File.SetLastWriteTimeUtc(Path.Combine(root,"device-state.json"),DateTime.UtcNow.AddSeconds(-10));
+    Reject(()=>live.Read("CNC-001"),"过期显示未知"); Reject(()=>live.Call("CNC-001"),"过期禁止写输入");
+    State(); Config("192.0.2.1"); Reject(()=>live.Call("CNC-002"),"运行配置改为现场地址立即阻断");
+    Config(automatic:true); Reject(()=>new LivePlcConnection(root),"自动建单实例不允许联调输入");
+    Config(); File.WriteAllText(Path.Combine(root,"STOP"),""); Reject(()=>live.Read("CNC-001"),"停止实例不沿用快照");
+    Reject(()=>live.Read("CNC-003"),"不推算未知工位");
+}
+finally { Directory.Delete(root,true); }
+Console.WriteLine($"PASS: {checks} checks. 离线28阶段及联调输入、工位映射、H只读、重复呼叫、过期/故障/离线阻断。");

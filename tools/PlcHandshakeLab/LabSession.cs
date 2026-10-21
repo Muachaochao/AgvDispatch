@@ -4,7 +4,7 @@ namespace PlcHandshakeLab;
 
 public sealed record LabEvent(DateTimeOffset Time, int Stage, string Kind, string Signal, string Before, string After, string Detail)
 {
-    public override string ToString() => $"{Time:HH:mm:ss.fff}  [{Stage:00}] {Detail}";
+    public override string ToString() => $"{Time:HH:mm:ss.fff}  {(Stage > 0 ? $"[{Stage:00}]" : "[联调]")} {Detail}";
 }
 
 /// <summary>只管理离线值。未包含任何通信驱动、自动动作或现场状态推断。</summary>
