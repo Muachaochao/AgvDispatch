@@ -5,6 +5,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { useDispatchStore } from '../stores/dispatch';
 import { useToastStore } from '../stores/toast';
 import { isRunningStage, label } from '../state';
+import {taskWait} from '../traffic-display';
 import { shortTime } from '../dashboard';
 import { newTaskRequestId } from '../task-request';
 import type { CreationOptions, RoutePreview, TaskDetail, TaskRow } from '../types';
@@ -161,7 +162,7 @@ watch(() => route.query.create, create => {
             <td class="cyan mono">{{ task.taskId }}</td>
             <td>{{ task.stationId }}</td>
             <td>{{ task.vehicleId ?? '待分配' }}</td>
-            <td><span class="state-label" :class="task.stage === 'Faulted' ? 'fault' : task.stage === 'Completed' ? 'idle' : 'running'">{{ label(task.stage) }}</span></td>
+            <td><span class="state-label" :class="task.stage === 'Faulted' ? 'fault' : task.stage === 'Completed' ? 'idle' : taskWait(store.snapshot,task,store.now) ? 'waiting' : 'running'">{{ taskWait(store.snapshot,task,store.now)?.label ?? label(task.stage) }}</span><small v-if="taskWait(store.snapshot,task,store.now)" style="display:block;max-width:300px;white-space:normal">业务阶段：{{label(task.stage)}} · {{taskWait(store.snapshot,task,store.now)?.reason}}</small></td>
             <td>{{ task.priority }}</td>
             <td>{{ shortTime(task.createdAt) }}</td>
             <td>{{ shortTime(task.updatedAt) }}</td>
