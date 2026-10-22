@@ -31,7 +31,8 @@ public sealed class TrafficControlNamedPipeServer(
     ICommunicationSettingsService communicationSettings,
     NamedPipeDiagnostics pipeDiagnostics,
     ITrafficGeometryPreviewService? geometry=null,
-    IRobokitInspectionService? robokit=null, IRobokitInspectionHistory? robokitHistory=null,IMapTransferLedger? mapTransfers=null, ITaskHandshakeStore? handshakes=null, ITaskDiagnosticArchiveService? diagnosticExports=null, ICommissioningQueryService? commissioning=null) : IsolatedBackgroundService
+    IRobokitInspectionService? robokit=null, IRobokitInspectionHistory? robokitHistory=null,IMapTransferLedger? mapTransfers=null, ITaskHandshakeStore? handshakes=null, ITaskDiagnosticArchiveService? diagnosticExports=null, ICommissioningQueryService? commissioning=null,
+    ITrafficWaitingBayDepartureService? waitingBayDeparture=null) : IsolatedBackgroundService
 {
     private async Task<RobokitInspectionSnapshot> InspectRobokitAsync(TrafficUserContext user,RobokitInspectionQuery query,CancellationToken ct)
     {
@@ -207,6 +208,7 @@ public sealed class TrafficControlNamedPipeServer(
             TrafficControlOperations.GetRobokitInspection => Success(await InspectRobokitAsync(user,Deserialize<RobokitInspectionQuery>(request.Payload),cancellationToken)),
             TrafficControlOperations.GetTrafficGeometryPreview => Success(await (geometry??throw new NotSupportedException("后台未配置几何只读预检。")).ReadAsync(Deserialize<TrafficGeometryPreviewQuery>(request.Payload),cancellationToken)),
             TrafficControlOperations.GetTrafficBlocking => Success(await resources.GetBlockingAsync(Deserialize<TrafficBlockingQuery>(request.Payload), cancellationToken)),
+            TrafficControlOperations.GetWaitingBayDeparture => Success(await (waitingBayDeparture??throw new NotSupportedException("后台未配置候车位离位只读核验。")).ReadAsync(Deserialize<TrafficWaitingBayDepartureQuery>(request.Payload),cancellationToken)),
             TrafficControlOperations.GetTrafficWaiting => Success(await resources.GetWaitingAsync(Deserialize<TrafficWaitingQuery>(request.Payload), cancellationToken)),
             TrafficControlOperations.GetTrafficMap => Success(await resources.GetMapAsync(Deserialize<TrafficMapQuery>(request.Payload), cancellationToken)),
             TrafficControlOperations.GetTrafficLifecycle => Success(await resources.GetLifecycleAsync(cancellationToken)),

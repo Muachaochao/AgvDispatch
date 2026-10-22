@@ -96,7 +96,7 @@ public static class TrafficSegmentReleaseEvaluator
     }
     static bool Intersects(MapPoint2D a,MapPoint2D b,MapPoint2D c,MapPoint2D d)=>
         (Cross(a,b,c)*Cross(a,b,d)<0&&Cross(c,d,a)*Cross(c,d,b)<0)||Distance(a,c,d)<1e-8||Distance(b,c,d)<1e-8||Distance(c,a,b)<1e-8||Distance(d,a,b)<1e-8;
-    static bool ValidBoundary(IReadOnlyList<MapPoint2D>? polygon)
+    internal static bool ValidBoundary(IReadOnlyList<MapPoint2D>? polygon)
     {
         if(polygon==null||polygon.Count<3||polygon.Count>256||polygon.Any(p=>p==null||!Finite(p.X)||!Finite(p.Y)))return false;
         double area=0;

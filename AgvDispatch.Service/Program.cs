@@ -187,6 +187,10 @@ builder.Services.AddSingleton(waitingAlerts);
 // Read-only preparation; no commissioned progress source and no release operation.
 builder.Services.AddSingleton(new TrafficSegmentReleasePolicy());
 builder.Services.AddSingleton<TrafficSegmentReleaseInspector>();
+builder.Services.AddSingleton<ITrafficWaitingBayDepartureService>(p=>new TrafficWaitingBayDepartureInspector(
+    p.GetRequiredService<ISqlSugarClient>(),p.GetRequiredService<TrafficSegmentReleaseInspector>(),p.GetRequiredService<IMapExecutionGate>(),
+    ()=>new(dispatchOrchestratorOptions.GetDumperWaitingSite()??"",dispatchOrchestratorOptions.DumperDumpingSite??""),
+    p.GetService<IAuthoritativeTrafficProgressReader>(),p.GetService<ITrafficGeometryProfileProvider>()));
 // Only a read-only diagnostic policy; release/commit remain independently disabled.
 builder.Services.AddSingleton(new TrafficGeometryPreviewPolicy { Enabled=true });
 builder.Services.AddSingleton<ITrafficGeometryPreviewService,TrafficGeometryPreviewService>();

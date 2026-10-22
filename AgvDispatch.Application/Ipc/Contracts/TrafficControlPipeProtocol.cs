@@ -15,6 +15,7 @@ public static class TrafficControlOperations
     public const string GetRobokitInspection = "GetRobokitInspection";
     public const string GetTrafficGeometryPreview="GetTrafficGeometryPreview";
     public const string GetTrafficBlocking="GetTrafficBlocking";
+    public const string GetWaitingBayDeparture="GetWaitingBayDeparture";
     public const string GetTrafficWaiting = "GetTrafficWaiting";
     public const string GetTrafficMap = "GetTrafficMap";
     public const string GetTrafficLifecycle = "GetTrafficLifecycle";

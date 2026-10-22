@@ -98,6 +98,37 @@ try
         await Task.Delay(200);
     }
     Check(ready, "真实Service.exe → NamedPipe → WebHost → HTTP可用（私有库/独立管道）");
+    if(args.Contains("--waiting-bay-only"))
+    {
+        var currentMap=snapshot.GetProperty("map");
+        object Departure(string? hash=null,string step="WEB-STEP-5",string resource="HELD")=>new{
+            stepId=step,resourceId=resource,expectedMapId=currentMap.GetProperty("id").GetString(),
+            expectedMapVersion=currentMap.GetProperty("version").GetString(),
+            expectedMapDefinitionHash=hash??currentMap.GetProperty("definitionHash").GetString()};
+        using var validDeparture=await http.PostAsJsonAsync("/api/traffic/waiting-bay-departure",Departure());
+        Check(validDeparture.IsSuccessStatusCode,"候车位核验HTTP→唯一管道→真实后台返回只读结果");
+        var result=await validDeparture.Content.ReadFromJsonAsync<JsonElement>();var assessment=result.GetProperty("assessment");
+        Check(!assessment.GetProperty("available").GetBoolean()&&!assessment.GetProperty("departureEvidenceVerified").GetBoolean()&&
+            !assessment.GetProperty("resourcesReleased").GetBoolean()&&!assessment.GetProperty("releaseAuthorized").GetBoolean(),"无有效执行/证据的真实后台不生成通过或释放许可");
+        Check(result.GetProperty("mapDefinitionHash").GetString()==currentMap.GetProperty("definitionHash").GetString(),"核验回传同图摘要供前端失效判断");
+        using var old=await http.PostAsJsonAsync("/api/traffic/waiting-bay-departure",Departure(hash:"OLD"));
+        Check(old.StatusCode==HttpStatusCode.Conflict,"离位核验拒绝旧地图摘要");
+        using var absent=await http.PostAsJsonAsync("/api/traffic/waiting-bay-departure",Departure(hash:""));
+        Check(absent.StatusCode==HttpStatusCode.Conflict,"离位核验拒绝缺失地图摘要");
+        using var longId=await http.PostAsJsonAsync("/api/traffic/waiting-bay-departure",Departure(step:new string('X',65)));
+        Check(longId.StatusCode==HttpStatusCode.BadRequest,"原步骤编号预算检查");
+        using var empty=await http.PostAsJsonAsync("/api/traffic/waiting-bay-departure",Departure(resource:""));
+        Check(empty.StatusCode==HttpStatusCode.BadRequest,"候车资源空编号拒绝");
+        using var hostile=new HttpRequestMessage(HttpMethod.Post,"/api/traffic/waiting-bay-departure"){Content=JsonContent.Create(Departure())};
+        hostile.Headers.Add("Origin","https://example.invalid");using var denied=await http.SendAsync(hostile);
+        Check(denied.StatusCode==HttpStatusCode.Forbidden,"新只读接口仍受同源门禁保护");
+        using var verify=DatabaseFactory.Create(new(){DatabasePath=databasePath});
+        Check(verify.Queryable<TrafficResourceLeaseEntity>().Count()==0&&verify.Queryable<AgvCommandOutboxEntity>().Count()==0&&
+            verify.Queryable<DispatchTaskEntity>().Single(t=>t.TaskId=="WEB-ISOLATED-TASK").Stage==(int)DispatchTaskStage.Completed,
+            "接口检查不生成租约/车令也不改变原终态");
+        File.WriteAllText(Path.Combine(root,"waiting-bay-api-result.json"),JsonSerializer.Serialize(new{Checks=checks,ResourcesReleased=false,Scope="isolated actual service and webhost HTTP; no device communication"},WebJson.Options));
+        Console.WriteLine($"PASS {checks.Count} waiting-bay focused adapter checks. Evidence: {root}");return;
+    }
     using var identityConfig=await http.GetAsync("/api/config");
     var adapterIdentity=await identityConfig.Content.ReadFromJsonAsync<JsonElement>();
     Check(adapterIdentity.GetProperty("adapter").GetProperty("sha256").GetString()!.Length==64,"接入层返回实际程序集构建指纹");

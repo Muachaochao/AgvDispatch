@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import TaskRuntimeHistory from './TaskRuntimeHistory.vue';
+import WaitingBayDeparturePanel from './WaitingBayDeparturePanel.vue';
 import TaskRouteMap from './TaskRouteMap.vue';
 import {useDispatchStore} from './stores/dispatch';
 const store=useDispatchStore();
@@ -44,6 +45,7 @@ const events = computed(() => props.detail.executionTimeline ?? []);
       <div v-if="conditions.length" class="execution-table"><table class="dialog-table"><thead><tr><th>规则 / 信号</th><th>期望 / 实际</th><th>质量 / 时间</th><th>结果</th><th>解释</th></tr></thead><tbody><tr v-for="c in conditions" :key="c.stationId+c.ruleId"><td><b>{{ c.name }}</b><small>{{ c.ruleId }}<br>{{ c.stationId }} · {{ c.address }}<br>{{ c.role }}</small></td><td>{{ boolText(c.expectedValue) }} / {{ boolText(c.currentValue) }}</td><td>{{ label(c.quality) }}<small>{{ c.observedAt ? shortTime(c.observedAt) : '采集时间未提供' }} · v{{ c.signalVersion ?? '—' }}</small></td><td :class="live && c.satisfied && !c.role.includes('待人工核对') ? 'green-text' : 'amber-text'">{{ conditionLabel(c, live) }}</td><td>{{ c.reason }}</td></tr></tbody></table></div>
       <p v-else class="muted-note">此步骤没有当前PLC条件。未激活、历史步骤不使用实时PLC值重新判定；运输步骤查看原命令及后台完成依据。</p>
       <h4>本步骤车辆命令</h4>
+      <WaitingBayDeparturePanel v-if="step.stepType==='EnterDumpingPosition'&&step.stepId" :task-id="detail.task.taskId" :step-id="step.stepId" :resource-ids="detail.resources?.map(r=>r.resourceId)??[]" :live="live"/>
       <div v-if="commands.length" class="execution-table"><table class="dialog-table"><thead><tr><th>命令</th><th>持久化状态</th><th>次数</th><th>厂家身份</th><th>最近错误</th></tr></thead><tbody><tr v-for="c in commands" :key="c.commandId"><td>{{ c.commandId }}</td><td>{{ c.status==='Sent' ? '已发送并返回身份' : label(c.status) }}</td><td>{{ c.attemptCount }}</td><td>{{ c.vendorCommandId || '—' }}</td><td>{{ c.lastError || '—' }}</td></tr></tbody></table></div><p v-else class="muted-note">未返回本步骤车端命令；不表示动作已完成。取放确认步骤不额外发机械动作。</p>
     </section>
     <h3 class="subheading">当前保留的资源归属</h3><p v-if="!detail.resources?.length" class="muted-note">未返回资源记录；不据此推断现场区域一定空闲。</p><ul v-else class="execution-resources"><li v-for="r in detail.resources" :key="r.resourceId">{{ r.resourceId }} · {{ r.vehicleId }} · {{ r.heartbeatExpired ? '心跳租期已过，不能推断物理出区' : '后台持有记录' }}</li></ul>
