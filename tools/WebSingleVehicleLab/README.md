@@ -59,7 +59,9 @@ python tools/WebSingleVehicleLab/collect_results.py --root artifacts/web-single-
 
 ## 日志和停止
 
-`device-events.jsonl` 保存虚拟设备请求、响应、PLC 位变化及导航阶段；`device-state.json` 保存诊断状态。Service 的日志、任务诊断 ZIP、地图操作结果和 SQLite 各自留存。它们不是跨设备原子快照。虚拟设备历史不会补造为厂家历史。
+`device-events.jsonl` 持续保存运输命令及响应、取消、PLC 写入/位变化、导航阶段及故障，不自动裁掉历史，回归脚本仍从这里核对原运输。成功的高频只读查询单独写 `device-queries.jsonl`，每份约 5 MiB，最多保留 3 份历史；查询包含错误或告警时仍进入长期事件记录。较早查询会随轮转丢弃，不能把最近查询记录称为完整抓包。`device-state.json` 保存诊断状态。Service 的日志、任务诊断 ZIP、地图操作结果和 SQLite 各自留存；它们不是跨设备原子快照。虚拟设备历史不会补造为厂家历史。
+
+启动器在打开输出文件前，对达到 10 MiB 的 `*-stdout.log`/`*-stderr.log` 轮转，保留 3 份历史；持续运行期间不操作子进程已打开的文件。以上策略在设备模型/启动器下次启动时生效，不重启已有实验。
 
 设备目录中的 `STOP` 文件只停止该设备模型；不要在运输中用它当作暂停功能。存在活动运输时，设备重启明确拒绝静默恢复；应保留原任务，通过正常恢复流程处理。已经完成的历史及位置可从状态文件恢复。Service/WebHost 应由其所属实例的运维流程停止，不按进程名称批量结束。
 

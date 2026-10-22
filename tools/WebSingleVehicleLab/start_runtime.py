@@ -5,6 +5,7 @@ import subprocess
 import socket
 from pathlib import Path
 from lab_paths import read_ready, resolve_lab_root
+from lab_logging import rotate_before_launch
 
 workspace=Path(__file__).resolve().parents[2]
 labroot=resolve_lab_root()
@@ -43,6 +44,8 @@ env=os.environ.copy()
 env['AGV_DISPATCH_DATABASE_PATH']=str(database)
 processes=[]
 def launch(args,cwd,label):
+    for suffix in ('-stdout.log', '-stderr.log'):
+        rotate_before_launch(root / (label + suffix))
     out=(root/(label+'-stdout.log')).open('ab')
     err=(root/(label+'-stderr.log')).open('ab')
     try:

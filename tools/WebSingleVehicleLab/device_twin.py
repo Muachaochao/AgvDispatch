@@ -11,11 +11,13 @@ import math
 import struct
 import time
 from pathlib import Path
+from lab_logging import DeviceJournal
 
 
 class DeviceTwin:
     def __init__(self, root):
         self.root = Path(root).resolve()
+        self.journal = DeviceJournal(self.root)
         settings = self.root / 'service/appsettings.json'
         if not settings.exists():
             settings = self.root / 'service-settings.json'
@@ -72,8 +74,7 @@ class DeviceTwin:
                 self.memory[610:611] = bytes(state['dumper'])
 
     def log(self, kind, **data):
-        with (self.root / 'device-events.jsonl').open('a', encoding='utf-8') as f:
-            f.write(json.dumps(dict(time=time.time(), kind=kind, **data), ensure_ascii=False) + '\n')
+        self.journal.write(kind, **data)
 
     def bit(self, byte, bit):
         return bool(self.memory[byte] & (1 << bit))
