@@ -623,7 +623,9 @@ sealed class GatewayHarness : IAgvGateway
             ? new(vendorTaskId, vendorTaskId, State, task.Vehicle, DateTimeOffset.UtcNow) : null);
     }
     public Task<DeviceConnectionStatus> GetConnectionStatusAsync(CancellationToken ct) => Task.FromResult(new DeviceConnectionStatus("AGV", "isolated fleet", ConnectionState.Online, DateTimeOffset.UtcNow));
-    public Task<IReadOnlyList<AgvVehicleStatus>> GetVehiclesAsync(CancellationToken ct) => throw new NotSupportedException();
+    public Task<IReadOnlyList<AgvVehicleStatus>> GetVehiclesAsync(CancellationToken ct) =>
+        Task.FromResult<IReadOnlyList<AgvVehicleStatus>>(Enumerable.Range(1, 3)
+            .Select(i => new AgvVehicleStatus("AGV-" + i, ConnectionState.Online, "Idle", 100, null, DateTimeOffset.UtcNow)).ToArray());
     public Task<string> CreateTransportTaskAsync(string businessTaskId, string? preferredVehicleId, IReadOnlyList<string> path, AgvTransportAction? action, CancellationToken ct)
     {
         Creates++;

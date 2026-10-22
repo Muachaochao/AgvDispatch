@@ -83,6 +83,15 @@ public sealed class AgvCommandOutboxDispatcher(
             cancellationToken);
         foreach (var candidate in due)
         {
+            // A degraded fleet can still serve healthy cars. Do not claim an
+            // offline car's command: claiming records a possible send attempt,
+            // which cannot later be treated as proof that nothing was sent.
+            var vehicles = await agvGateway.GetVehiclesAsync(cancellationToken);
+            var vehicle = vehicles.SingleOrDefault(item => item.VehicleId == candidate.VehicleId);
+            if (vehicle?.Connection != ConnectionState.Online)
+            {
+                continue;
+            }
             if(handshakes!=null&&taskReader!=null)
             {
                 var root=(await taskReader.GetStepsAsync(candidate.TaskId,cancellationToken)).FirstOrDefault(s=>s.StepType==DispatchTaskStepType.GoToPickup);

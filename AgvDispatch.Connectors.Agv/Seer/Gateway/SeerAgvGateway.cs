@@ -64,7 +64,7 @@ public sealed class SeerAgvGateway(
         var persisted=chains is null ? null : await chains.FindAsync(businessTaskId,cancellationToken);
         if(persisted is not null && (persisted.VehicleId!=preferredVehicleId || !persisted.Path.SequenceEqual(path)))
             throw new AgvPartialAcceptanceException("请求与原持久化运输路径/车辆不符，禁止发送。");
-        var existing = await ReadAcceptanceAsync(client, ids, cancellationToken);
+        var existing = await ReadAcceptanceBeforeSendAsync(client, ids, cancellationToken);
         if (existing) return businessTaskId;
         if(persisted is { MaySend:false }) throw new AgvPartialAcceptanceException("原Outbox不是发送认领状态，禁止重新发送。");
         if(persisted?.AttemptCount>1)
@@ -119,6 +119,23 @@ public sealed class SeerAgvGateway(
 
             ExceptionDispatchInfo.Capture(sendException).Throw();
             throw;
+        }
+    }
+
+    private async Task<bool> ReadAcceptanceBeforeSendAsync(SeerRobotClient client, IReadOnlyList<string> ids, CancellationToken ct)
+    {
+        // Status and navigation use separate sockets. A fresh 1100 does not
+        // prove the old navigation socket survived a vehicle disconnection.
+        // Only retry this read-only identity query, before entering any send.
+        for (var attempt = 0; ; attempt++)
+        {
+            try { return await ReadAcceptanceAsync(client, ids, ct); }
+            catch (Exception error) when (!ct.IsCancellationRequested &&
+                attempt < Math.Max(1, options.CommandConfirmationAttempts) &&
+                error is IOException or System.Net.Sockets.SocketException or TimeoutException)
+            {
+                await Task.Delay(options.CommandConfirmationDelayMs, ct);
+            }
         }
     }
 

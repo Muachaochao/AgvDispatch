@@ -55,6 +55,13 @@ class StartRuntimeTests(unittest.TestCase):
             self.run_start(popen)
         popen.assert_not_called()
 
+    def test_two_vehicle_marker_selects_shared_plc_twin(self):
+        from unittest.mock import Mock
+        self.write('lab.json', dict(webPort=45000, pipe='private-test', twoVehicleSimulation=True))
+        popen = Mock(side_effect=[SimpleNamespace(pid=1001), SimpleNamespace(pid=1002), SimpleNamespace(pid=1003)])
+        self.run_start(popen)
+        self.assertTrue(popen.call_args_list[0].args[0][1].endswith('WebTwoVehicleLab\\multi_twin.py'))
+
     def test_later_failure_preserves_first_child_ownership(self):
         from unittest.mock import Mock
         popen = Mock(side_effect=[SimpleNamespace(pid=2001), OSError('isolated startup failure')])

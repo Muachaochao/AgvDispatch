@@ -98,7 +98,11 @@ internal sealed class SeerTcpChannel(string ipAddress, int port, AgvOptions opti
 
     private async Task EnsureConnectedAsync(CancellationToken cancellationToken)
     {
-        if (IsConnected)
+        // TcpClient.Connected reflects the last I/O. In a split-port setup the
+        // status channel may recover while navigation still holds a peer-closed
+        // socket. Observe an already-delivered FIN/RST before writing a command;
+        // this is not a retry of a possibly-sent control request.
+        if (IsConnected && !(_client!.Client.Poll(0, SelectMode.SelectRead) && _client.Available == 0))
         {
             return;
         }

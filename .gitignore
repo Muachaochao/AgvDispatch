@@ -78,6 +78,8 @@ id_ed25519*
 /docs/evidence/
 # Web visual verification outputs remain local, like WPF screenshots.
 /AgvDispatch.Web/evidence/
+# Generated local reports/inspection dumps are evidence, not source uploads.
+/outputs/
 # Architecture documentation is maintained by the project. Other local docs need review.
 /docs/*
 !/docs/architecture/

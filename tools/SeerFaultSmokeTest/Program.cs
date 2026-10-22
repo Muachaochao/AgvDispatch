@@ -52,9 +52,9 @@ internal static class Program
     {
         await using var robot=new WireRobot(Fault.FirstQueryDisconnect); var options=Options(robot);
         await using var manager=new AgvConnectionManager(options); var gateway=new SeerAgvGateway(Cache(options),manager,options);
-        var failed=false; try { await gateway.CreateTransportTaskAsync("STEP-QUERY","SIM",["HOME","PICK"],new("Wait"),default); } catch(IOException) { failed=true; }
-        Check(failed && robot.CreateCount==0,"创建前1110断连时禁止盲目下发3066");
-        Check(await gateway.CreateTransportTaskAsync("STEP-QUERY","SIM",["HOME","PICK"],new("Wait"),default)=="STEP-QUERY" && robot.CreateCount==1,"查询重连确认不存在后只创建一次");
+        Check(await gateway.CreateTransportTaskAsync("STEP-QUERY","SIM",["HOME","PICK"],new("Wait"),default)=="STEP-QUERY" && robot.CreateCount==1,
+            "创建前1110断连只重试原编号只读查询，确认不存在后才创建一次");
+        Check(await gateway.CreateTransportTaskAsync("STEP-QUERY","SIM",["HOME","PICK"],new("Wait"),default)=="STEP-QUERY" && robot.CreateCount==1,"重连后再次调用仍复用原任务，不重复创建");
     }
     static async Task SequenceFailure()
     {
