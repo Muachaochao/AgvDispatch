@@ -435,6 +435,45 @@ await using(var f=await Fixture.Create())
     var original=f.Db.Queryable<TaskHandshakeEntity>().Single();
     Check(original.Phase=="WritePending"&&original.ContractVersion==HandshakeExecutionOptions.LegacyVersion&&original.Revision==1&&f.Gateway.Sends==0,"拒绝旧契约恢复保留原版本阶段和修订且不重发");
 }
+await using(var f=await Fixture.Create(new MapSwitchSafetySettings{CheckPlcSignals=true}))
+{
+    var id=await f.Prepare(); var first=await f.Step(id);
+    var command=(await f.Outbox.GetDueCommandsAsync(DateTimeOffset.Now,10,ct)).Single();
+    await f.Outbox.TryClaimAsync(command.CommandId,DateTimeOffset.Now,ct); await f.Outbox.MarkSentAsync(command.CommandId,command.StepId,ct);
+    await f.Db.Updateable<DispatchTaskStepEntity>().SetColumns(s=>new DispatchTaskStepEntity{Status=50,CompletedAt=DateTime.Now}).Where(s=>s.StepId==first.StepId).ExecuteCommandAsync();
+    var pickup=await f.Step(id);
+    await f.Db.Updateable<DispatchTaskStepEntity>().SetColumns(s=>new DispatchTaskStepEntity{Status=10,VehicleId="AGV-01"}).Where(s=>s.StepId==pickup.StepId).ExecuteCommandAsync();
+    await f.Db.Updateable<DispatchTaskEntity>().SetColumns(t=>t.Stage==(int)DispatchTaskStage.PickingUp).Where(t=>t.TaskId==id).ExecuteCommandAsync();
+    var expected=new Dictionary<string,bool>{{"FullBoxRequested",false},{"BoxPresent",false},{"Faulted",false},{"CommunicationOnline",true},{"FullBoxRequestAcknowledged",true},{"FullBoxRemoved",false},{"EmptyBoxTaskAcknowledged",false},{"EmptyBoxPlaced",false}};
+    var baseline=expected.Select((p,i)=>new TaskSignalEvidence("PLC-01",p.Key,p.Key=="BoxPresent"||p.Value,"Good",DateTimeOffset.Now,1,"DB1.DBX0."+i)).ToArray();
+    await f.Boot();f.Fresh("SITE-B");f.Signals.Items.Clear();
+    foreach(var pair in expected)f.Signals.Items.Add(SwitchSignalCache.Ready() with{VariableName=pair.Key,Address=baseline.Single(b=>b.VariableName==pair.Key).Address,Value=pair.Value});
+    await f.Recovery.InspectAsync(ct);
+    Check(!(await f.Recovery.DecideAsync(admin,await Request(f,id),ct)).Accepted,"取箱机械完成后的新握手节点缺少原28阶段绑定时不能套用新初态");
+    await f.Db.Insertable(new TaskHandshakeEntity{TaskId=id,StepId=first.StepId,CycleId=id,ContractVersion=HandshakeExecutionOptions.Version,Phase="TransportBound",Revision=1,BaselineJson=System.Text.Json.JsonSerializer.Serialize(baseline),StartedAtUtc=DateTime.UtcNow,UpdatedAtUtc=DateTime.UtcNow}).ExecuteCommandAsync();
+    await f.Recovery.InspectAsync(ct);
+    foreach(var pair in expected)
+    {
+        var at=f.Signals.Items.FindIndex(s=>s.VariableName==pair.Key);var original=f.Signals.Items[at];
+        f.Signals.Items[at]=original with{Value=!pair.Value};
+        Check(!(await f.Recovery.DecideAsync(admin,await Request(f,id),ct)).Accepted,"新取箱节点恢复拒绝异常基线："+pair.Key);
+        f.Signals.Items[at]=original;
+    }
+    var boxAt=f.Signals.Items.FindIndex(s=>s.VariableName=="BoxPresent");var box=f.Signals.Items[boxAt];
+    f.Signals.Items[boxAt]=box with{Address="DB9.DBX9.1"};
+    Check(!(await f.Recovery.DecideAsync(admin,await Request(f,id),ct)).Accepted,"新取箱节点恢复不改用重映射传感器地址");
+    f.Signals.Items[boxAt]=box with{UpdatedAt=DateTimeOffset.Now.AddMinutes(-1)};
+    Check(!(await f.Recovery.DecideAsync(admin,await Request(f,id),ct)).Accepted,"新取箱节点恢复拒绝过期传感器");
+    f.Signals.Items[boxAt]=box with{UpdatedAt=DateTimeOffset.Now.AddMinutes(1)};
+    Check(!(await f.Recovery.DecideAsync(admin,await Request(f,id),ct)).Accepted,"新取箱节点恢复拒绝未来传感器时间");
+    f.Signals.Items[boxAt]=box with{UpdatedAt=DateTimeOffset.Now};
+    var result=await f.Recovery.DecideAsync(admin,await Request(f,id),ct);
+    Check(result.Accepted,"原取箱运输机械完成、阶段6基线和原地址核对后可续接尚未开始的取箱通知："+result.Message);
+    Check(f.Db.Queryable<TaskHandshakeEntity>().Count()==1&&f.Db.Queryable<TaskHandshakeEntity>().Single().Phase=="TransportBound"&&f.Gateway.Sends==0,"核对不创建新取箱检查点、不写通知、不重复发车");
+    Check((await f.Recovery.DecideAsync(admin,await Request(f,"__SITE__"),ct)).Accepted,"取箱后恢复仍单独核对全场载荷及PLC状态");
+    var status=await f.Recovery.GetAsync(ct);
+    Check((await f.Recovery.ReleaseAsync(admin,new(status.SessionId,"原取箱机械终态及未开始取箱通知初态已逐项核对"),ct)).Accepted,"恢复仅放开原执行器后续阶段，未把取箱通知补记完成");
+}
 foreach(var exitPhase in new[]{"NoExitCheckpoint","AwaitPhysicalExit","ClearDumpingAfterExit","AwaitDumperClosed","ReleaseDumper","ExitHandoverComplete","WritePending"})
 await using(var f=await Fixture.Create(new MapSwitchSafetySettings{CheckPlcSignals=true}))
 {

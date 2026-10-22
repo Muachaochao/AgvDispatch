@@ -8,7 +8,7 @@
 
 ### 厂家操作步骤
 
-1. 复制整个 `artifacts/PlcHandshakeLab-network` 发布目录到测试电脑，运行其中“打开人工联调台.cmd”。不需要安装.NET。
+1. 复制 `artifacts/PlcHandshakeLab-current.json` 所指的版本化发布目录，或解压本次 `PLC人工联调台_1.2.0_*.zip` 到测试电脑，运行其中“打开人工联调台.cmd”。不需要安装.NET。`release-manifest.json`记录源码提交和逐文件SHA256，旧发布包保留供追溯。
 2. 在“连接与点表”中填写测试电脑本机网卡IPv4、S7端口及允许连接的调度电脑IPv4。默认 `127.0.0.1:10200` 仅用于同机调试；跨电脑时使用测试电脑实际IP，调度端填同一个IP/端口，网络及防火墙需允许该TCP端口。工具不自行修改防火墙。
 3. 核对DB、字节、位和初值，可导入/导出JSON配置、添加/移除工位、导出正式 `PlcSignalCatalog` 可读取的14列CSV点表。默认CNC-001=DB1第0字节、CNC-002=第2字节、共享倒料=第610字节，共21点；不当作现场已核定地址。倒料站编号默认DUMPER-001，可配置。
 4. 点击“启动S7服务”。调度端使用现有SiemensS7驱动、相同连接参数和匹配CSV；调度的工位、倒料设备编号也必须匹配。真实车辆、地图、路线、派车权限仍由调度配置，本工具不修改它们。工具不会自动把导出的CSV应用到主工程。
@@ -22,7 +22,15 @@
 
 自动模式是**自动PLC握手（箱体仍人工）**：收到H呼叫响应后撤呼叫；收到等待申请后授予Ready，申请撤销后撤Ready并保留内部许可；本轮倒料周期通知成立、许可已消费后，按配置延时模拟Done；倒料周期撤销后撤Done并结束内部许可。该延时不是实际倒料结果。箱体检测一直由操作者确认，不按运输耗时推断取放箱。
 
-切回人工模式不改变已有电平，自动反馈立即停止。已有倒料周期、Ready或Done时不允许切入自动，先人工闭合，防止接管来源不明的半周期。自动时允许人工发起满箱呼叫，撤呼叫、Ready和Done由自动逻辑负责。工位故障/下游离线或倒料故障会阻止依赖它们的自动反馈；解除后应核实阶段，不能把超时当作动作成功。
+切回人工模式不改变已有电平，自动反馈立即停止。Ready消费后（12/13阶段）内部保留随模式切换继续，不会丢失许可。已有倒料周期、Ready、Done或恢复门禁时不允许切入自动，先核对闭合。工位故障/下游离线只抑制本站自动撤呼叫；共享自动倒料只由共享倒料故障点控制，这是模拟器策略，不能推定现场PLC联锁相同。
+
+共享倒料故障暂停计时；周期保持有效且故障解除后，重新等待完整延时。未完成倒料即撤周期、许可消费后重新申请、未消费许可就进周期、人工接管Ready/Done或活动周期通信中断，都进入“暂停待核对”。恢复通信不会清掉门禁。切人工，核实调度原任务及实际设备，等待H申请/周期撤销，按实际条件清P的Ready/Done并清倒料故障，在观察备注写明依据，点击“确认模拟周期闭合”，再切自动。该按钮只清模拟器内部保留，不写任何P/H、不取消调度任务、不释放调度路权。
+
+### 通信质量和逐阶段结果（1.2.0）
+
+状态条区分未连接、已连接待交换、正常、超过3秒无S7数据交换、停止回看。COTP连接或协商不算数据交换；断连和恢复持续写入JSONL。H旧值显示“·旧”并变灰，不能当新反馈。每点“最后变化”和“S7交换新鲜度”分开记录，重复同值写入也刷新交换时间；只读取某个BOOL不会把同字节其他位伪装成已交换。交换表示调度读取或写入模拟DB，不代表物理动作。
+
+人工选阶段后填写车辆、任务和观察依据，勾选“本阶段实际条件已核实”，再保存“通过/失败/跳过”。通过还要求通信有效、10点均有3秒内且不早于最后变化的交换记录、电平符合及无恢复门禁。未建单阶段可在任务栏明确填“未建单”。“逐阶段测试结果”页列出全部28阶段，未记录为“未测”，保留复测历史；“新一轮记录”只分组，不复位点位。可导出完整Markdown阶段报告，并继续使用全量CSV/JSONL保存原始证据。工具不会自动证明到站或出区。
 
 ### 通信范围与记录
 
@@ -35,7 +43,7 @@
 调度必须使用 `plc-28-stage-v2`：第7阶段取箱通知置1后保持到第25阶段；返程途中核实真实出区，撤倒料周期并等PLC退出闭合后交接设备/已验证区域；第26阶段撤放箱通知，第27阶段最后解除返箱责任。已有 `sender-owned-return-confirmed-v1` 任务不静默迁移。工具如实显示H写回，阶段选择与观察记录不能替代调度出区判据或实车验收。完整定义和恢复边界见 `../../docs/architecture/28阶段统一执行与联调-20261021.md`。
 
 ```powershell
-dotnet publish tools/PlcHandshakeLab -c Release -r win-x64 --self-contained true -o artifacts/PlcHandshakeLab-network
+# 正式携带包在源码提交后由Publish-Lab.ps1生成；下面是源码回归
 dotnet run --project tools/PlcHandshakeLabSmokeTest -c Release
 dotnet run --project tools/PlcHandshakeLab -- --network-smoke-test <绝对PNG路径>
 ```
@@ -44,7 +52,7 @@ dotnet run --project tools/PlcHandshakeLab -- --network-smoke-test <绝对PNG路
 
 ## Web联调（2026-10-21）
 
-1. 启动WebSingleVehicleLab实例。运行仓库根目录 `Start-PlcHandshakeLab.cmd`，优先读取本机 `artifacts/web-single-vehicle-20261021-28stage/ready.json`，选择新版28阶段设备实例；仅在新版入口不存在时回退到 `artifacts/web-single-vehicle-20261020/ready.json`。也可运行 `Start-PlcHandshakeLab.cmd --lab "<设备实例绝对目录>"` 显式选择其他实例，参数沿用程序的 `--lab`，或在新发布的程序中通过“选择目录”“连接虚拟PLC”连接。入口只选择目录，不迁移配置或数据库；新版入口存在但损坏时会报错，不静默连接旧实例。
+1. 启动WebSingleVehicleLab实例。运行仓库根目录 `Start-PlcHandshakeLab.cmd`，从当前发布指针选择工具及其`defaultLabReady`指定的新实例；未指定默认实例时使用 `artifacts/web-single-vehicle-20261021-28stage/ready.json`，不存在时明确报错。也可运行 `Start-PlcHandshakeLab.cmd --lab "<设备实例绝对目录>"` 显式选择其他实例，或在新发布的程序中通过“选择目录”“连接虚拟PLC”连接。入口只选择目录，不迁移配置或数据库，不自动回退旧20261020实例。
 2. 选择CNC-001或CNC-002，点击“触发满箱呼叫”（或满箱呼叫卡片的0按钮）。只发布置1事件，不修改任务、车辆位置、数据库或H输出。
 3. 等待“满箱呼叫已反馈为1”，在Web创建任务表单中刷新条件、选择车辆、核对路线、提交。工位呼叫满足不代表首段路线必然可执行，车辆当前就在取料点时现有路线校验可能拒绝零长度首段。
 4. 实验台每500ms读取虚拟设备实际状态，显示呼叫应答、箱体检测、返箱责任、等待申请、倒料周期、Ready和Done。设备快照超过3秒、停止、损坏或不可读取时显示未知并禁止输入，不沿用旧值。
@@ -57,7 +65,7 @@ dotnet run --project tools/PlcHandshakeLab -- --network-smoke-test <绝对PNG路
 发布与只读UI检查：
 
 ```powershell
-dotnet publish tools/PlcHandshakeLab -c Release -r win-x64 --self-contained true -o artifacts/PlcHandshakeLab-live
+# 直接检查当前源码；正式发布统一使用Publish-Lab.ps1
 dotnet run --project tools/PlcHandshakeLab -- --lab <设备实例绝对目录> --live-smoke-test <绝对PNG路径> --station CNC-002
 ```
 
@@ -74,7 +82,7 @@ dotnet run --project tools/PlcHandshakeLab -- --lab <设备实例绝对目录> -
 
 离线模式P/H为责任方，`0.0` / `610.0` 等为用户表内标识；联调模式显示虚拟实例明确的DB1映射（CNC-001为0字节，CNC-002为2字节，共享倒料为610字节），不把它当现场地址核定。本工具没有现场写入或AGV下发功能。离线值不与主工程共享；联调值来自同一虚拟设备，不能证明真实固件或现场联锁通过验收。
 
-到站、任务持久化、设备独占、许可消费、Done旧低基线、真实退出区域和返箱动作等仅显示为阶段条件，演示时人工假定成立。阶段12明确保留“Ready回低后PLC内部设备保留继续”的语义；此工具未实现PLC内部设备状态机或故障恢复协议。
+到站、任务持久化、设备独占、Done旧低基线、真实退出区域和返箱动作等在离线演示时人工假定成立。网络模式实现模拟许可保留及明确的恢复门禁；它不是厂家PLC内部程序，也不能代替现场故障恢复协议。
 
 后续接入真实点位需要先核定PLC型号、连接参数、工位/设备归属、实际DB地址及访问方向。建议先实现只读监视、数据质量和新鲜度，再实现独立于演示器的受控H侧单点测试；P侧点位不能作为上位机可写位。现场写操作不得由自动演示定时器驱动。
 
@@ -87,8 +95,13 @@ dotnet run --project tools/PlcHandshakeLab/PlcHandshakeLab.csproj
 dotnet run --project tools/PlcHandshakeLabSmokeTest/PlcHandshakeLabSmokeTest.csproj -c Release
 dotnet build tools/PlcHandshakeLab/PlcHandshakeLab.csproj -c Release
 dotnet publish tools/PlcHandshakeLab/PlcHandshakeLab.csproj -c Release -r win-x64 --self-contained true -o artifacts/PlcHandshakeLab
+
+# 验证并提交源码后，生成版本化携带目录、ZIP、文件哈希及当前启动入口
+./tools/PlcHandshakeLab/Publish-Lab.ps1 -DefaultLabRoot artifacts/web-single-vehicle-20261022-commissioning
 ```
 
 发布目录中启动 `PlcHandshakeLab.exe`，不依赖主程序服务或用户安装.NET运行时。开发项目未加入主解决方案，保持工具独立。
+
+两个仓库启动脚本均读取`artifacts/PlcHandshakeLab-current.json`，不会静默回退旧二进制或旧20261020实例。发布指针及实际运行目录属于本机产物，不入Git。跨电脑携带ZIP只含独立工具、对应说明及发布清单，不含调度数据库、凭据或现场配置。
 
 可执行文件支持 `--smoke-test <绝对PNG路径>`：执行窗口加载、偏差提示、自动开始/暂停及关键阶段检查，渲染窗口到PNG，生成旁边的 `.result.txt` 并退出。它只用于可重复的离线UI验证。

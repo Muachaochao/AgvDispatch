@@ -84,7 +84,20 @@ public sealed class NetworkLabConfig
 }
 
 public sealed record NetworkEvent(DateTimeOffset Time, string Kind, string Station, int Stage, string Point, string Before, string After, string Detail);
-public sealed record PointState(PointMapping Mapping, bool Value, DateTimeOffset UpdatedAt, string Source, string Requested);
+public sealed record PointState(PointMapping Mapping, bool Value, DateTimeOffset UpdatedAt, string Source, string Requested,
+    DateTimeOffset? HostAccessedAt = null, string HostAccess = "尚未交换");
+public sealed record StageTestResult(DateTimeOffset Time, string Station, int Round, int Stage, string Outcome,
+    string Vehicle, string TaskId, string Note, string Differences, string Snapshot);
+public sealed record CommunicationStatus(bool Fresh, string Label)
+{
+    public const double MaxAgeSeconds = 3;
+    public static CommunicationStatus Evaluate(bool running, int clients, DateTimeOffset? last, DateTimeOffset now) =>
+        !running ? new(false, "服务未运行 · 电平仅供回看") : clients == 0 ? new(false, "调度未连接 / 已断开 · H值为保留内存") :
+        last is null ? new(false, "已连接，等待S7数据交换") : now - last > TimeSpan.FromSeconds(MaxAgeSeconds) || last > now ?
+        new(false, "通信停滞 · 超过3秒无S7数据交换 · H值需重新核对") : new(true, "调度通信正常 · S7数据交换有效");
+    public static bool PointFresh(PointState point, DateTimeOffset now) => point.HostAccessedAt is { } at && at >= point.UpdatedAt && at <= now &&
+        now - at <= TimeSpan.FromSeconds(MaxAgeSeconds);
+}
 
 /// <summary>单一DB内存；UI只写P，网络只写H；所有访问及日志由同一把锁串行。</summary>
 public sealed class NetworkLab : IDisposable
@@ -102,11 +115,50 @@ public sealed class NetworkLab : IDisposable
     private bool _permit;
     private long? _dumpSince;
     private int _autoDone;
+    private bool _cycleStarted;
+    private string? _recoveryReason;
+    private bool _communicationHealthy = true;
+    private readonly List<StageTestResult> _testResults = [];
+    private readonly Dictionary<string, int> _rounds = new();
     public NetworkLabConfig Config { get; }
     public string JournalPath { get; }
     private string? _fault;
     public string? Fault { get { lock (_gate) return _fault; } }
     public bool Automatic { get { lock (_gate) return _automatic; } }
+    public string AutomaticStatus { get { lock (_gate) return _recoveryReason is { } reason ? "暂停待核对：" + reason :
+        !_communicationHealthy ? "等待有效调度通信" : Get(NetworkLabConfig.Shared, 12) ? "倒料故障，自动计时暂停" : !_permit ? "空闲，等待本轮申请" : _autoDone == 1 ? "Done已给出，等待实际退出闭合" :
+        _cycleStarted ? "本轮倒料计时中" : Get(NetworkLabConfig.Shared, 8) ? "Ready已授予，等待消费" : "Ready已消费，内部设备保留继续"; } }
+
+    public void UpdateCommunication(bool healthy)
+    {
+        lock (_gate)
+        {
+            if (_communicationHealthy == healthy) return;
+            Record(healthy ? "通信恢复" : "通信中断", "", "", "", "", healthy ? "收到有效S7数据交换；旧周期仍须按恢复提示核对。" : "暂停自动反馈，保留全部电平。");
+            _communicationHealthy = healthy;
+            if (!healthy && (_permit || Enumerable.Range(6, 4).Any(s => Get(NetworkLabConfig.Shared, s))))
+                RequireRecovery("活动许可或共享信号期间通信中断；请人工闭合并确认模拟周期。");
+        }
+    }
+
+    private void RequireRecovery(string reason)
+    {
+        if (_recoveryReason == reason) return;
+        Record("自动恢复门禁", NetworkLabConfig.Shared, "", "", "", reason);
+        _recoveryReason = reason; _dumpSince = null;
+    }
+
+    public void ConfirmCycleClosed(string note)
+    {
+        lock (_gate)
+        {
+            if (_automatic || !_communicationHealthy || Get(NetworkLabConfig.Shared, 12) ||
+                Enumerable.Range(6, 4).Any(s => Get(NetworkLabConfig.Shared, s)) || string.IsNullOrWhiteSpace(note))
+                throw new InvalidOperationException("请切人工模式，恢复通信、清除倒料故障，核对共享申请/周期/Ready/Done全部为0，并填写闭合依据。此操作只解除模拟器内部保留。");
+            Record("确认模拟周期闭合", NetworkLabConfig.Shared, "", "", "", note.Trim());
+            _permit = false; _cycleStarted = false; _dumpSince = null; _autoDone = 0; _recoveryReason = null;
+        }
+    }
 
     public NetworkLab(NetworkLabConfig config, string journalPath)
     {
@@ -151,6 +203,8 @@ public sealed class NetworkLab : IDisposable
             if (p.Owner != "P") throw new InvalidOperationException("H输出只允许调度经S7写入。");
             if (_automatic && (signal is 8 or 9 || signal == 0 && !value)) throw new InvalidOperationException("自动握手控制撤呼叫/Ready/Done；请切回人工模式后操作。");
             Set(p, value, "人工置位", true);
+            if (_permit && signal is 8 or 9) RequireRecovery("人工接管过Ready/Done；需核对并确认模拟周期闭合。");
+            if (signal == 12 && value && _autoDone == 0) _dumpSince = null;
         }
     }
 
@@ -159,9 +213,10 @@ public sealed class NetworkLab : IDisposable
         lock (_gate)
         {
             if (_automatic == automatic) return;
-            if (automatic && (Get(NetworkLabConfig.Shared, 7) || Get(NetworkLabConfig.Shared, 8) || Get(NetworkLabConfig.Shared, 9)))
-                throw new InvalidOperationException("存在倒料周期、Ready或Done反馈，请先人工闭合后再切入自动模式。");
-            _automatic = automatic; _permit = false; _dumpSince = null; _autoDone = 0;
+            if (automatic && (_recoveryReason is not null || Get(NetworkLabConfig.Shared, 7) || Get(NetworkLabConfig.Shared, 8) || Get(NetworkLabConfig.Shared, 9)))
+                throw new InvalidOperationException(_recoveryReason ?? "存在倒料周期、Ready或Done反馈，请先人工闭合后再切入自动模式。");
+            // A consumed Ready has no visible high bit in stages12/13. Preserve that reservation across mode changes.
+            _automatic = automatic; _dumpSince = null;
             Record("模式", "", "", "", "", automatic ? "自动PLC握手：呼叫应答撤销、Ready握手及定时Done；箱体仍由人工确认。非真实动作。" : "切回人工：保留所有电平，停止自动反馈。");
         }
     }
@@ -171,29 +226,99 @@ public sealed class NetworkLab : IDisposable
     {
         lock (_gate)
         {
-            if (!_automatic) return;
+            if (!_automatic || !_communicationHealthy) return;
             foreach (var station in Config.Points.Where(p => p.Signal == 0).Select(p => p.Station))
                 if (Get(station, 0) && Get(station, 2) && !Get(station, 10) && Get(station, 11)) Set(Find(station, 0), false, "自动撤呼叫");
             var shared = NetworkLabConfig.Shared;
-            if (Get(shared, 12) || Config.Points.Where(p => p.Signal == 0).Any(p => Get(p.Station, 10) || !Get(p.Station, 11)))
+            // Station faults inhibit that station's call acknowledgement only. Shared dumping has its own fault input.
+            if (Get(shared, 12))
             {
                 // Fault time must not count as a successful simulated dumping interval.
                 if (_autoDone == 0) _dumpSince = null;
                 return;
             }
+            if (_recoveryReason is not null) return;
+            if (_permit && !_cycleStarted && !Get(shared, 8) && Get(shared, 6))
+            { RequireRecovery("许可消费后再次提出等待申请；请核对原周期，不能自动授予第二份许可。"); return; }
+            if (_cycleStarted && !Get(shared, 7))
+            {
+                if (_autoDone == 1)
+                {
+                    Set(Find(shared, 9), false, "自动退出闭合");
+                    _dumpSince = null; _permit = false; _autoDone = 0; _cycleStarted = false;
+                }
+                else RequireRecovery("倒料完成前周期被撤销；不能把取消当作正常完成。");
+                return;
+            }
+            if (Get(shared, 7) && !_permit)
+            { RequireRecovery("未取得本轮许可即出现倒料周期；请人工核对闭合。"); return; }
             if (Get(shared, 6) && !Get(shared, 7) && !_permit && !Get(shared, 9))
             { Set(Find(shared, 8), true, "自动授予许可"); _permit = true; }
             if (_permit && !Get(shared, 6)) Set(Find(shared, 8), false, "自动消费许可");
             if (Get(shared, 7) && _permit && !Get(shared, 6))
             {
+                _cycleStarted = true;
                 _dumpSince ??= Stopwatch.GetTimestamp();
                 if (_autoDone == 0 && Stopwatch.GetElapsedTime(_dumpSince.Value).TotalSeconds >= Config.AutoDoneSeconds)
                 { Set(Find(shared, 9), true, "定时模拟倒料完成（非物理证据）"); _autoDone = 1; }
             }
-            else if (_dumpSince is not null)
+        }
+    }
+
+    public int TestRound(string station) { lock (_gate) return _rounds.GetValueOrDefault(station, 1); }
+    public void BeginTestRound(string station)
+    {
+        lock (_gate)
+        {
+            if (!_states.ContainsKey((station, 0))) throw new ArgumentException("工位不存在。");
+            var round = TestRound(station) + 1;
+            Record("新一轮测试记录", station, "", "", "", $"第{round}轮；只分组记录，不复位点位或调度任务。");
+            _rounds[station] = round;
+        }
+    }
+    public StageTestResult[] TestResults() { lock (_gate) return _testResults.ToArray(); }
+    public void RecordStageTest(string station, string outcome, string vehicle, string taskId, string note, bool physicalConfirmed)
+    {
+        lock (_gate)
+        {
+            if (!_stages.TryGetValue(station, out var stage) || outcome is not ("通过" or "失败" or "跳过")) throw new ArgumentException("先标记有效阶段并选择结果。");
+            var points = Snapshot(station).Where(p => p.Mapping.Signal < 10).ToArray();
+            var now = DateTimeOffset.Now;
+            var differences = string.Join("；", points.Where(p => !Sequence.Matches(stage, p.Mapping.Signal, p.Value))
+                .Select(p => $"{p.Mapping.Name}实际{(p.Value ? 1 : 0)}，期望{Sequence.Stages[stage].Pattern[p.Mapping.Signal]}"));
+            if (string.IsNullOrWhiteSpace(note)) throw new InvalidOperationException("请填写实际观察或失败/跳过原因。");
+            if (outcome == "通过" && (!physicalConfirmed || !_communicationHealthy || _recoveryReason is not null || differences.Length > 0 ||
+                Snapshot(station).Any(p => p.Mapping.Signal is 10 or 12 && p.Value || p.Mapping.Signal == 11 && !p.Value) ||
+                points.Any(p => !CommunicationStatus.PointFresh(p, now)) || string.IsNullOrWhiteSpace(vehicle) || string.IsNullOrWhiteSpace(taskId)))
+                throw new InvalidOperationException("通过需要：有效通信、10点均有3秒内交换记录、电平符合、无工位/倒料故障且下游在线、无恢复门禁，并填写车辆/任务/观察依据及勾选实际条件已核实。");
+            var result = new StageTestResult(now, station, TestRound(station), stage + 1, outcome, vehicle.Trim(), taskId.Trim(), note.Trim(), differences,
+                string.Join(" ", points.Select(p => $"{p.Mapping.Address}={(p.Value ? 1 : 0)}[交换={p.HostAccessedAt:O}]")));
+            Record("阶段测试", station, "", "", "", JsonSerializer.Serialize(result));
+            _testResults.Add(result);
+        }
+    }
+    public string ExportStageReport()
+    {
+        lock (_gate)
+        {
+            static string Cell(string value) => value.Replace("|", "\\|").Replace("\r", " ").Replace("\n", "<br>");
+            var report = new StringBuilder("# PLC逐阶段测试记录\n\n结果由操作者记录；电平符合不能代替实际动作核验。未记录的阶段不算通过。\n\n");
+            report.AppendLine("会话日志：" + JournalPath + "\n");
+            foreach (var group in Config.Points.Where(p => p.Signal == 0).Select(p => p.Station)
+                .SelectMany(station => Enumerable.Range(1, TestRound(station)).Select(round => (station, round))))
             {
-                Set(Find(shared, 9), false, "自动退出闭合"); _dumpSince = null; _permit = false; _autoDone = 0;
+                report.AppendLine($"## {Cell(group.station)} · 第{group.round}轮\n\n|阶段|名称|结果（最后记录）|\n|---|---|---|");
+                for (var stage = 1; stage <= 28; stage++)
+                {
+                    var last = _testResults.LastOrDefault(r => r.Station == group.station && r.Round == group.round && r.Stage == stage);
+                    report.AppendLine($"|{stage}|{Cell(Sequence.Stages[stage - 1].Name)}|{last?.Outcome ?? "未测"}|");
+                }
+                report.AppendLine();
             }
+            report.AppendLine("## 全部记录（含复测）\n");
+            foreach (var r in _testResults)
+                report.AppendLine($"- {r.Time:O} {Cell(r.Station)} 第{r.Round}轮 / {r.Stage} / {r.Outcome}；车辆={Cell(r.Vehicle)}；任务={Cell(r.TaskId)}；{Cell(r.Note)}；偏差={Cell(r.Differences)}\n  - {r.Snapshot}");
+            return report.ToString();
         }
     }
 
@@ -207,9 +332,15 @@ public sealed class NetworkLab : IDisposable
     }
     public void Note(string kind, string detail) { lock (_gate) Record(kind, "", "", "", "", detail); }
 
-    public byte[]? Read(int db, int offset, int count)
+    public byte[]? Read(int db, int offset, int count, string? peer = null, int? bit = null)
     {
-        lock (_gate) return _dbs.TryGetValue(db, out var bytes) && count > 0 && offset >= 0 && offset <= bytes.Length - count ? bytes.AsSpan(offset, count).ToArray() : null;
+        lock (_gate)
+        {
+            if (!_dbs.TryGetValue(db, out var bytes) || count <= 0 || offset < 0 || offset > bytes.Length - count) return null;
+            if (peer is not null)
+                foreach (var p in Config.Points.Where(p => p.Db == db && p.Byte >= offset && p.Byte < offset + count && (bit is null || p.Bit == bit))) Touch(p, "S7读取 " + peer);
+            return bytes.AsSpan(offset, count).ToArray();
+        }
     }
     public bool WriteHost(int db, int offset, int bit, byte[] data, bool bitWrite, string peer)
     {
@@ -221,6 +352,7 @@ public sealed class NetworkLab : IDisposable
                 if (data.Length != 1 || data[0] > 1 || !_addresses.TryGetValue((db, offset, bit), out var p) || p.Owner != "H")
                 { Record("拒绝写入", "", $"DB{db}.{offset}.{bit}", "", "", peer + " 请求非H位或无效位值"); return false; }
                 Set(p, data[0] != 0, "S7 " + peer);
+                Touch(p, "S7写入 " + peer);
                 return true;
             }
             // Accept BYTE read/modify/write only if every altered bit belongs to H.
@@ -232,13 +364,19 @@ public sealed class NetworkLab : IDisposable
                     { Record("拒绝写入", "", $"DB{db}.{offset + i}.{b}", "", "", peer + " 的BYTE写入会改变P位或未映射位"); return false; }
             for (var i = 0; i < data.Length; i++)
                 for (var b = 0; b < 8; b++)
-                    if (_addresses.TryGetValue((db, offset + i, b), out var p) && p.Owner == "H") Set(p, (data[i] & (1 << b)) != 0, "S7 " + peer);
+                    if (_addresses.TryGetValue((db, offset + i, b), out var p) && p.Owner == "H")
+                    { Set(p, (data[i] & (1 << b)) != 0, "S7 " + peer); Touch(p, "S7写入 " + peer); }
             return true;
         }
     }
 
     private PointMapping Find(string station, int signal) => _states[(station, signal)].Mapping;
     private bool Get(string station, int signal) => _states[(station, signal)].Value;
+    private void Touch(PointMapping p, string access)
+    {
+        var key = (p.Station, p.Signal);
+        _states[key] = _states[key] with { HostAccessedAt = DateTimeOffset.Now, HostAccess = access };
+    }
     private void Set(PointMapping p, bool value, string source, bool force = false)
     {
         var old = _states[(p.Station, p.Signal)];
@@ -246,7 +384,17 @@ public sealed class NetworkLab : IDisposable
         // Journal before publishing a change; a disk failure cannot silently drop evidence.
         Record(source, p.Station, p.Address + " " + p.Name, old.Value ? "1" : "0", value ? "1" : "0", "请求=" + (value ? 1 : 0) + "；应用到模拟DB；非物理反馈");
         if (value) _dbs[p.Db][p.Byte] |= (byte)(1 << p.Bit); else _dbs[p.Db][p.Byte] &= (byte)~(1 << p.Bit);
-        _states[(p.Station, p.Signal)] = new(p, value, DateTimeOffset.Now, source, value ? "1" : "0");
+        _states[(p.Station, p.Signal)] = old with { Value = value, UpdatedAt = DateTimeOffset.Now, Source = source, Requested = value ? "1" : "0" };
+        if (p.Station == NetworkLabConfig.Shared && p.Signal == 7)
+        {
+            if (value && _permit)
+            {
+                _cycleStarted = true;
+                if (Get(NetworkLabConfig.Shared, 6) || Get(NetworkLabConfig.Shared, 8)) RequireRecovery("等待申请/Ready握手未闭合就出现倒料周期。");
+            }
+            else if (value && _automatic) RequireRecovery("未取得本轮许可即出现倒料周期；请人工核对闭合。");
+            else if (!value && _cycleStarted && _autoDone == 0) RequireRecovery("倒料完成前周期被撤销；不能把取消当作正常完成。");
+        }
     }
     private void Record(string kind, string station, string point, string before, string after, string detail)
     {

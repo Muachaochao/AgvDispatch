@@ -62,10 +62,12 @@ internal static class NetworkTests
             lab.WriteHost(1, 610, 1, [1], true, "test");
             Reject(() => lab.SetAutomatic(true), "活动周期不能切入自动模式");
             lab.WriteHost(1, 610, 1, [0], true, "test");
+            lab.ConfirmCycleClosed("已人工核对共享低基线");
             lab.SetAutomatic(true);
             lab.WriteHost(1, 610, 1, [1], true, "test"); lab.TickAutomatic(); await Task.Delay(120); lab.TickAutomatic();
             Check(!Value(shared, 9), "未消费本次许可不生成Done");
             lab.WriteHost(1, 610, 1, [0], true, "test");
+            lab.SetAutomatic(false); lab.ConfirmCycleClosed("无许可周期已撤销，核对闭合"); lab.SetAutomatic(true);
             lab.WriteHost(1, 610, 0, [1], true, "test"); lab.TickAutomatic();
             lab.WriteHost(1, 610, 0, [0], true, "test"); lab.TickAutomatic();
             lab.WriteHost(1, 610, 1, [1], true, "test"); lab.TickAutomatic();
@@ -123,7 +125,7 @@ internal static class NetworkTests
         finally { Directory.Delete(directory, true); }
     }
 
-    private static int FreePort() { var l = new TcpListener(IPAddress.Loopback, 0); l.Start(); var p = ((IPEndPoint)l.LocalEndpoint).Port; l.Stop(); return p; }
+    internal static int FreePort() { var l = new TcpListener(IPAddress.Loopback, 0); l.Start(); var p = ((IPEndPoint)l.LocalEndpoint).Port; l.Stop(); return p; }
     private static void Put16(byte[] b, int at, int n) => BinaryPrimitives.WriteUInt16BigEndian(b.AsSpan(at, 2), (ushort)n);
     private static byte[] Frame(byte[] param, byte[]? data = null)
     {
@@ -131,7 +133,7 @@ internal static class NetworkTests
         packet[4] = 2; packet[5] = 0xf0; packet[6] = 0x80; packet[7] = 0x32; packet[8] = 1; packet[12] = 1;
         Put16(packet, 13, param.Length); Put16(packet, 15, data.Length); param.CopyTo(packet, 17); data.CopyTo(packet, 17 + param.Length); return packet;
     }
-    private static byte[] Variable(int func, int db, int offset, int bitOrCount, bool bit, byte[]? raw = null)
+    internal static byte[] Variable(int func, int db, int offset, int bitOrCount, bool bit, byte[]? raw = null)
     {
         byte[] param = [(byte)func, 1, 0x12, 10, 0x10, (byte)(bit ? 1 : 2), 0, 0, 0, 0, 0x84, 0, 0, 0];
         Put16(param, 6, bit ? 1 : bitOrCount); Put16(param, 8, db);
@@ -140,7 +142,7 @@ internal static class NetworkTests
         if (func == 5) { raw ??= [0]; data = new byte[4 + raw.Length]; data[1] = bit ? (byte)3 : (byte)4; Put16(data, 2, bit ? 1 : raw.Length * 8); raw.CopyTo(data, 4); }
         return Frame(param, data);
     }
-    private static async Task<byte[]> Exchange(NetworkStream stream, byte[] packet, bool fragment = false)
+    internal static async Task<byte[]> Exchange(NetworkStream stream, byte[] packet, bool fragment = false)
     {
         if (fragment) { await stream.WriteAsync(packet.AsMemory(0, 2)); await Task.Delay(10); await stream.WriteAsync(packet.AsMemory(2)); }
         else await stream.WriteAsync(packet);

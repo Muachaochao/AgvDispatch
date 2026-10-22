@@ -488,6 +488,12 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
                     return "新契约原信号地址或本次恢复观察无效，禁止续接。";
             return null; // Resume the persisted phase; the executor still evaluates its own guards. Never reassert earlier notifications.
         }
+        if(step.StepType==(int)DispatchTaskStepType.PickupFullBox)
+        {
+            var transport=await database.Queryable<DispatchTaskStepEntity>().Where(s=>s.TaskId==task.TaskId&&s.StepType==(int)DispatchTaskStepType.GoToPickup).FirstAsync(ct);
+            var binding=transport==null?null:await database.Queryable<TaskHandshakeEntity>().Where(h=>h.TaskId==task.TaskId&&h.StepId==transport.StepId&&h.ContractVersion==HandshakeExecutionOptions.Version).FirstAsync(ct);
+            if(binding!=null)return UnstartedPickupReviewBlock(task,transport!,binding);
+        }
         if(step.StepType==(int)DispatchTaskStepType.PlaceEmptyBox)
         {
             var root=await database.Queryable<DispatchTaskStepEntity>().Where(s=>s.TaskId==task.TaskId&&s.StepType==(int)DispatchTaskStepType.GoToPickup).FirstAsync(ct);

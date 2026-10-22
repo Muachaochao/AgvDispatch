@@ -6,6 +6,28 @@ namespace AgvDispatch.Infrastructure.Persistence;
 
 public sealed partial class ExecutionRecoveryService
 {
+    private string? UnstartedPickupReviewBlock(DispatchTaskEntity task, DispatchTaskStepEntity transport, TaskHandshakeEntity binding)
+    {
+        // Stage6 may be reached by an already-issued pickup while recovery holds the executor.
+        // Stage7 notifications have not started yet: demanding them high would deadlock recovery.
+        // Only unfreeze a reviewed mechanical terminal with the original addresses and exact pre-notification baseline.
+        if(transport.Status!=50||string.IsNullOrWhiteSpace(transport.VendorTaskId)||string.IsNullOrWhiteSpace(task.VehicleId)||
+            transport.VehicleId!=task.VehicleId||binding.CycleId!=task.TaskId||binding.Phase!="TransportBound"||binding.PendingSignal!=null)
+            return "原取箱运输机械终态、车辆或28阶段绑定未核实，不能续接未开始的取箱通知。";
+        var original=TaskHandshakeStore.Describe(binding).Baseline.Where(b=>b.StationId==task.StationId).ToArray();
+        var expected=new Dictionary<string,bool>{{"FullBoxRequested",false},{"BoxPresent",false},{"Faulted",false},{"CommunicationOnline",true},
+            {"FullBoxRequestAcknowledged",true},{"FullBoxRemoved",false},{"EmptyBoxTaskAcknowledged",false},{"EmptyBoxPlaced",false}};
+        foreach(var pair in expected)
+        {
+            var prior=original.Where(b=>b.VariableName==pair.Key).ToArray();
+            if(prior.Length!=1||!signals.TryGet(task.StationId,pair.Key,out var signal)||!signal.Enabled||signal.Address!=prior[0].Address||
+                signal.Quality!=SignalQuality.Good||signal.Value!=pair.Value||signal.UpdatedAt is not {} time||time<_started||
+                time>DateTimeOffset.Now.AddSeconds(1)||DateTimeOffset.Now-time>settings.StateMaxAge)
+                return "取箱后原工位阶段6基线或本次恢复采集不成立："+pair.Key;
+        }
+        return null; // No PLC write/checkpoint creation here. The original executor must run stage7 after release.
+    }
+
     private async Task<string?> HandshakeReviewBlockAsync(string taskId,string stepId,RecoveryDecisionRequest request,CancellationToken ct)
     {
         if(await database.Queryable<TaskHandshakeEntity>().Where(e=>e.TaskId==taskId&&e.ContractVersion!=HandshakeExecutionOptions.Version).AnyAsync(ct))

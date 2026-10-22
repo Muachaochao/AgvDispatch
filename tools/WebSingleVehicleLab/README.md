@@ -65,6 +65,18 @@ python tools/WebSingleVehicleLab/collect_results.py --root artifacts/web-single-
 
 ## 回归
 
+新独立实例完成正常地图激活、通信绑定及服务重启后，可执行：
+
+```powershell
+python tools/WebSingleVehicleLab/run_rounds.py --root artifacts/web-single-vehicle-20261022-commissioning --rounds 2 --release-idle-recovery
+```
+
+该命令只接受明确`simulationOnly`及`plc-28-stage-v2`的回环实例。通过正常Web建单和独立虚拟传感器事件运行，同工位第二轮保留真实进出取货路线。保存每轮创建请求、阶段变化、完成详情、原始设备报文和28阶段电平投影；稳定重复电平阶段仍需结合运输及检查点核对。不会改数据库、补任务终态或移动设备。`--release-idle-recovery`仅允许无活动任务、虚拟车空载静止及PLC全闭合的合成全场启动核对，不处理活动任务恢复。实例未完成地图及恢复配置时明确拒绝运行。
+
+`run_restart_probe.py --root <同一独立实验目录> --confirm-synthetic-crash-test`是明确选择的Windows进程崩溃测试：只允许合成回环设备，核对进程清单及PID实际映像路径后，仅终止该私有Service并无窗口重启，设备模型继续原运输。通过正常恢复接口核对新鲜停车、原车辆/原运输、机械完成及下一握手节点，再放行原任务；不重发原运输、不清PLC、不释放路权。需要进程环境中已有有效HSL授权，不打印或保存授权码。失败保留原任务及屏障；`--resume-evidence <原restart-probe目录>`可核对后继续同一测试，不另建任务。更换该合成Service后还须显式`--review-new-boot`，旧启动证据保留；不自动确认未知PLC写入。所有启动配置及保存的通信端点均须回环，其他进程和厂家实例不由脚本处理。
+
+`python tools/WebSingleVehicleLab/test_probe_guards.py`验证保存配置出现非回环地址、PID复用映像不符及进程归属不唯一时拒绝测试；使用临时目录和伪内核，不终止任何进程。
+
 `dotnet run --project tools/WebSingleVehicleLabSmokeTest -c Release` 验证数据库并发初始化、重复初始化不清活动资源、自动模式默认兼容，以及只手动建单时仍能正常应答。设备流程另由实际 Web 提交、正式后台运行和保存的原始报文验证；不能仅用本工具单元检查宣称端到端通过。
 
 `dotnet run --project tools/PickupRepeatRouteSmokeTest -c Release` 验证真实闭合路线、预览/建单/派车/3066及当前地图核验；`python tools/PickupRepeatRouteSmokeTest/check_lab_template.py` 只在临时工作区验证新模板，`python tools/WebSingleVehicleLab/test_lab_paths.py` 验证新旧实验路径隔离，`python tools/WebSingleVehicleLab/test_start_runtime.py` 用模拟Popen验证首次启动和拒绝条件。它们不启动现场或已有实验实例。

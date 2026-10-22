@@ -16,7 +16,9 @@ public sealed class S7LabServer : IAsyncDisposable
     private readonly ConcurrentDictionary<TcpClient, Task> _clients = new();
     private Task? _accept;
     private long _lastRequestTicks;
+    private long _lastDataTicks;
     public DateTimeOffset? LastRequest => Interlocked.Read(ref _lastRequestTicks) is > 0 and var ticks ? new DateTimeOffset(ticks, TimeSpan.Zero).ToLocalTime() : null;
+    public DateTimeOffset? LastDataRequest => Interlocked.Read(ref _lastDataTicks) is > 0 and var ticks ? new DateTimeOffset(ticks, TimeSpan.Zero).ToLocalTime() : null;
     public int Clients => _clients.Count;
     public int Port => ((IPEndPoint)_listener.LocalEndpoint).Port;
     public string? Fault { get; private set; }
@@ -29,7 +31,7 @@ public sealed class S7LabServer : IAsyncDisposable
     public void Start()
     {
         _listener.Start(8);
-        try { _lab.Note("监听", $"{_listener.LocalEndpoint}；允许调度IP={_lab.Config.AllowedClient}"); }
+        try { _lab.UpdateCommunication(false); _lab.Note("监听", $"{_listener.LocalEndpoint}；允许调度IP={_lab.Config.AllowedClient}"); }
         catch { _listener.Stop(); throw; }
         _accept = AcceptAsync();
     }
@@ -84,6 +86,11 @@ public sealed class S7LabServer : IAsyncDisposable
                 else response = Reply(packet, peer);
                 await stream.WriteAsync(response, budget.Token).ConfigureAwait(false);
                 Interlocked.Exchange(ref _lastRequestTicks, DateTimeOffset.UtcNow.Ticks);
+                if (packet[5] != 0xe0 && packet.Length > 17 && packet[17] is 4 or 5)
+                {
+                    Interlocked.Exchange(ref _lastDataTicks, DateTimeOffset.UtcNow.Ticks);
+                    _lab.UpdateCommunication(true);
+                }
             }
         }
         catch (OperationCanceledException) { }
@@ -98,6 +105,12 @@ public sealed class S7LabServer : IAsyncDisposable
         {
             _clients.TryRemove(client, out _);
             client.Dispose();
+            try
+            {
+                _lab.Note("断开连接", peer);
+                if (_clients.IsEmpty) _lab.UpdateCommunication(false);
+            }
+            catch (Exception ex) { Fault = "连接结束日志失败：" + ex.Message; _stop.Cancel(); _listener.Stop(); }
         }
     }
 
@@ -153,7 +166,7 @@ public sealed class S7LabServer : IAsyncDisposable
                 var item = items[i];
                 if (function == 4)
                 {
-                    var raw = item.Valid ? _lab.Read(item.Db, item.Offset, item.Count) : null;
+                    var raw = item.Valid ? _lab.Read(item.Db, item.Offset, item.Count, peer, item.Kind == 1 ? item.Bit : null) : null;
                     if (raw is null) { output.Write([0x05, 0, 0, 0]); continue; }
                     if (item.Kind == 1) raw = [(byte)((raw[0] >> item.Bit) & 1)];
                     output.Write([0xff, (byte)(item.Kind == 1 ? 3 : 4)]);
