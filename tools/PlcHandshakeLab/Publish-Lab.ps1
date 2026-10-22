@@ -18,14 +18,16 @@ try {
         if (!(Test-Path -LiteralPath $defaultReady)) { throw 'Start the selected independent laboratory first.' }
     }
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-    $name = "PlcHandshakeLab-1.2.0-$stamp-$($commit.Substring(0,8))"
+    $version = ([xml](Get-Content -LiteralPath (Join-Path $PSScriptRoot 'PlcHandshakeLab.csproj') -Raw)).Project.PropertyGroup.Version
+    if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid carrying package version.' }
+    $name = "PlcHandshakeLab-$version-$stamp-$($commit.Substring(0,8))"
     $package = Join-Path $workspace "artifacts/$name"
     if (Test-Path -LiteralPath $package) { throw 'Release path already exists.' }
     & dotnet publish tools/PlcHandshakeLab/PlcHandshakeLab.csproj -c Release -r win-x64 --self-contained true -o $package
     if ($LASTEXITCODE -ne 0) { throw 'Publish failed.' }
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'README.md') -Destination (Join-Path $package '使用说明.md')
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'FIELD-GUIDE.md') -Destination (Join-Path $package '厂家联调操作说明.md')
-    foreach ($document in @('28阶段统一执行与联调-20261021.md','PLC测试工具优化与28阶段回归-20261022.md')) {
+    foreach ($document in @('28阶段统一执行与联调-20261021.md','PLC测试工具优化与28阶段回归-20261022.md','PLC测试工具会话回看与证据导出-20261022.md')) {
         Copy-Item -LiteralPath (Join-Path $workspace ('docs/architecture/' + $document)) -Destination (Join-Path $package $document)
     }
     $utf8 = [Text.UTF8Encoding]::new($false)
@@ -38,12 +40,12 @@ try {
     $files = @(Get-ChildItem -LiteralPath $package -File -Recurse | ForEach-Object {
         [ordered]@{ path=[IO.Path]::GetRelativePath($package,$_.FullName); bytes=$_.Length; sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash }
     })
-    $manifest = [ordered]@{ version='1.2.0'; sourceCommit=$commit; publishedAt=[DateTimeOffset]::Now.ToString('O');
+    $manifest = [ordered]@{ version=$version; sourceCommit=$commit; publishedAt=[DateTimeOffset]::Now.ToString('O');
         contract='plc-28-stage-v2'; runtime='win-x64 self-contained'; uiSmoke='PASS'; files=$files }
     [IO.File]::WriteAllText((Join-Path $package 'release-manifest.json'), ($manifest | ConvertTo-Json -Depth 8), $utf8)
-    $zip = Join-Path $workspace "artifacts/PLC人工联调台_1.2.0_${stamp}_$($commit.Substring(0,8)).zip"
+    $zip = Join-Path $workspace "artifacts/PLC人工联调台_${version}_${stamp}_$($commit.Substring(0,8)).zip"
     Compress-Archive -LiteralPath $package -DestinationPath $zip -CompressionLevel Optimal
-    $pointer = [ordered]@{ packageDirectory=$package; sourceCommit=$commit; version='1.2.0'; zip=$zip; defaultLabReady=$defaultReady }
+    $pointer = [ordered]@{ packageDirectory=$package; sourceCommit=$commit; version=$version; zip=$zip; defaultLabReady=$defaultReady }
     $pointerPath = Join-Path $workspace 'artifacts/PlcHandshakeLab-current.json'
     [IO.File]::WriteAllText(($pointerPath + '.tmp'), ($pointer | ConvertTo-Json), $utf8)
     Move-Item -LiteralPath ($pointerPath + '.tmp') -Destination $pointerPath -Force

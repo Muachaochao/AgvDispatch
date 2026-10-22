@@ -98,3 +98,4 @@ finally { Directory.Delete(root,true); }
 Console.WriteLine($"PASS: {checks} checks. 离线28阶段及联调输入、工位映射、H只读、重复呼叫、过期/故障/离线阻断。");
 await NetworkTests.RunAsync();
 await RecoveryAndStageTests.RunAsync();
+await SessionEvidenceTests.RunAsync();

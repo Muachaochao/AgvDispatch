@@ -32,6 +32,8 @@ public partial class NetworkWindow : Window
     private string? _fatal;
     private string _pointsSignature = "";
     private string _resultSignature = "";
+    private CancellationTokenSource? _exportCancellation;
+    private Task? _exportTask;
 
     public NetworkWindow()
     {
@@ -64,6 +66,10 @@ public partial class NetworkWindow : Window
             _closeRequested = true;
             Dispatcher.BeginInvoke(async () =>
             {
+                _exportCancellation?.Cancel();
+                if (_exportTask is { } exporting)
+                    try { await exporting; } catch (Exception) { /* Export handler reports failure and removes its temporary file. */ }
+                foreach (var history in OwnedWindows.OfType<HistoryWindow>().ToArray()) await history.CloseForOwnerAsync();
                 await StopAsync(); _refresh.Stop();
                 try { _lab?.Dispose(); } catch (IOException) { /* Existing journal is preserved on a failing disk. */ }
                 _lab = null; _closing = true; Close();
@@ -323,8 +329,7 @@ public partial class NetworkWindow : Window
         _lab.BeginTestRound(SelectedStation); PhysicalConfirmed.IsChecked = false;
         Message.Text = "已开始新一轮测试记录；点位和任务未复位。"; RefreshPanel();
     }
-    private void ExportStageReport_Click(object sender, RoutedEventArgs e) => SaveText("Markdown报告|*.md", $"PLC逐阶段结果-{DateTime.Now:yyyyMMdd-HHmmss}.md",
-        () => _lab?.ExportStageReport() ?? throw new InvalidOperationException("尚无会话。"));
+    private async void ExportStageReport_Click(object sender, RoutedEventArgs e) => await ExportAsync("md");
 
     private void Import_Click(object sender, RoutedEventArgs e)
     {
@@ -353,7 +358,61 @@ public partial class NetworkWindow : Window
     }
     private void SaveConfig_Click(object sender, RoutedEventArgs e) => SaveText("JSON配置|*.json", "plc-lab-config.json", () => JsonSerializer.Serialize(ReadConfig(), new JsonSerializerOptions { WriteIndented = true }));
     private void SaveMappingCsv_Click(object sender, RoutedEventArgs e) => SaveText("CSV点表|*.csv", "plc-lab-signals.csv", () => ReadConfig().ExportSignalCsv());
-    private void ExportSession_Click(object sender, RoutedEventArgs e) => SaveText("CSV记录|*.csv", $"PLC联调-{DateTime.Now:yyyyMMdd-HHmmss}.csv", () => _lab?.ExportCsv() ?? throw new InvalidOperationException("尚无联调会话。"));
+    private async void ExportSession_Click(object sender, RoutedEventArgs e) => await ExportAsync("csv");
+    private async void ExportBundle_Click(object sender, RoutedEventArgs e) => await ExportAsync("zip");
+    private void CancelExport_Click(object sender, RoutedEventArgs e) => _exportCancellation?.Cancel();
+    private async Task ExportAsync(string format)
+    {
+        if (_exportTask is not null || _closeRequested) return;
+        if (_lab is null) { Message.Text = "尚无联调会话。历史记录请使用“历史会话只读回看”。"; return; }
+        var dialog = new SaveFileDialog { Filter = $"联调文件|*.{format}", FileName = $"PLC联调-{DateTime.Now:yyyyMMdd-HHmmss}.{format}" };
+        if (dialog.ShowDialog(this) != true) return;
+        var destination = dialog.FileName;
+        try
+        {
+            using var capture = _lab.CaptureSession();
+            using var cancellation = new CancellationTokenSource();
+            _exportCancellation = cancellation; CancelExportButton.IsEnabled = true;
+            ExportProgress.Text = "后台导出中 · 点位操作与S7通信继续；内容截至 " + capture.CapturedAt.ToString("HH:mm:ss");
+            _exportTask = Task.Run(() =>
+            {
+                if (format == "zip") SessionExports.Bundle(capture, destination, cancellation.Token);
+                else if (format == "md") SessionExports.Report(capture, destination, cancellation.Token);
+                else SessionExports.Csv(capture, destination, cancellation.Token);
+            });
+            await _exportTask;
+            Message.Text = "已导出：" + dialog.FileName;
+        }
+        catch (OperationCanceledException) { Message.Text = "导出已取消，原目标文件保留。"; }
+        catch (Exception ex) { Message.Text = "导出失败（不停止S7服务）：" + ex.Message; }
+        finally { _exportTask = null; _exportCancellation = null; CancelExportButton.IsEnabled = false; ExportProgress.Text = ""; }
+    }
+    private async void History_Click(object sender, RoutedEventArgs e)
+    {
+        if (!HistoryButton.IsEnabled || _closeRequested) return;
+        var dialog = new OpenFileDialog { Filter = "原会话日志|*.jsonl", InitialDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AgvDispatch", "PlcHandshakeLab") };
+        if (dialog.ShowDialog(this) != true) return;
+        SessionCapture? capture = null;
+        try
+        {
+            HistoryButton.IsEnabled = false;
+            var source = dialog.FileName;
+            Message.Text = "后台读取历史记录中；当前S7服务继续运行。";
+            var loaded = await Task.Run(() =>
+            {
+                var opened = SessionCapture.OpenHistory(source);
+                try { return (Capture: opened, History: SessionHistory.Read(opened)); }
+                catch { opened.Dispose(); throw; }
+            });
+            capture = loaded.Capture;
+            var history = loaded.History;
+            if (_closeRequested) { capture.Dispose(); return; }
+            new HistoryWindow(capture, history) { Owner = this }.Show();
+            capture = null;
+        }
+        catch (Exception ex) { capture?.Dispose(); Message.Text = "读取历史失败：" + ex.Message; }
+        finally { HistoryButton.IsEnabled = true; }
+    }
     private void SaveText(string filter, string name, Func<string> content)
     {
         var dialog = new SaveFileDialog { Filter = filter, FileName = name };
@@ -367,10 +426,10 @@ public partial class NetworkWindow : Window
         var args = Environment.GetCommandLineArgs(); var at = Array.IndexOf(args, "--network-smoke-test");
         if (at < 0 || at + 1 >= args.Length) return;
         var path = Path.GetFullPath(args[at + 1]);
-        void RenderWindow(string destination)
+        void RenderWindow(string destination, Window? target = null)
         {
-            UpdateLayout();
-            var bitmap = new RenderTargetBitmap((int)ActualWidth, (int)ActualHeight, 96, 96, PixelFormats.Pbgra32); bitmap.Render(this);
+            target ??= this; target.UpdateLayout();
+            var bitmap = new RenderTargetBitmap((int)target.ActualWidth, (int)target.ActualHeight, 96, 96, PixelFormats.Pbgra32); bitmap.Render(target);
             var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
             Directory.CreateDirectory(Path.GetDirectoryName(destination)!); using var stream = File.Create(destination); encoder.Save(stream);
         }
@@ -413,6 +472,16 @@ public partial class NetworkWindow : Window
             await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
             if (!TestSummary.Text.Contains("失败 1") || StageResults.Items.Count != 28) throw new InvalidOperationException("阶段结果页未反映28阶段及失败记录");
             RenderWindow(path + ".stages.png");
+            using (var evidence = _lab.CaptureSession())
+                await Task.Run(() => SessionExports.Bundle(evidence, path + ".evidence.zip"));
+            var historyCapture = _lab.CaptureSession();
+            var history = await Task.Run(() => SessionHistory.Read(historyCapture));
+            var historyWindow = new HistoryWindow(historyCapture, history) { Owner = this };
+            historyWindow.Show();
+            await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
+            if (!historyWindow.HasReadOnlyResults || history.Results.Single().Outcome != "失败") throw new InvalidOperationException("历史窗口未只读重建28阶段结果");
+            RenderWindow(path + ".history.png", historyWindow);
+            historyWindow.Close();
             NetworkTabs.SelectedIndex = 0;
             await StopAsync();
             var closed = await uiStream.ReadAsync(new byte[1], budget.Token);
@@ -421,7 +490,7 @@ public partial class NetworkWindow : Window
             if (!HealthText.Text.Contains("服务未运行") || Points.Items.Cast<NetworkPointRow>().Where(p => p.Owner == "H").Any(p => !p.Value.Contains("旧")))
                 throw new InvalidOperationException("停止后H旧值未明确标记");
             RenderWindow(path + ".disconnected.png");
-            File.WriteAllText(path + ".result.txt", "PASS: 独立S7启动/停止、P输入、H只读、阶段隔离、模式切换、观察落盘、阶段结果、断连旧值及窗口渲染。");
+            File.WriteAllText(path + ".result.txt", "PASS: 独立S7启动/停止、P输入、H只读、阶段隔离、模式切换、观察落盘、阶段结果、断连旧值、后台证据包、只读历史28阶段及窗口渲染。");
             Close();
         }
         catch (Exception ex) { File.WriteAllText(path + ".result.txt", ex.ToString()); await StopAsync(); System.Windows.Application.Current.Shutdown(1); }

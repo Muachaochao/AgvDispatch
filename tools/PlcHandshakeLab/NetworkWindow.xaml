@@ -72,6 +72,6 @@
     <WrapPanel Grid.Row="3" Margin="0,12,0,0"><Button Content="导出JSON配置" Click="SaveConfig_Click"/><Button Content="导出调度CSV点表" Click="SaveMappingCsv_Click"/><TextBlock Text="S7子集：DB BOOL/BYTE读写；Rack/Slot协商兼容。不提供CPU启停、程序下载、M/I/Q区。" VerticalAlignment="Center"/></WrapPanel>
    </Grid></TabItem>
   </TabControl>
-  <DockPanel Grid.Row="3" Margin="0,12,0,0"><Button Content="导出完整会话CSV" Click="ExportSession_Click"/><TextBlock x:Name="JournalLabel" Text="会话日志启动后保存到用户本机目录。关闭服务会断开调度连接，不清空界面记录。" TextWrapping="Wrap" VerticalAlignment="Center"/></DockPanel>
+  <StackPanel Grid.Row="3" Margin="0,12,0,0"><WrapPanel><Button Content="导出完整会话CSV" Click="ExportSession_Click"/><Button Content="一键导出联调证据ZIP" Click="ExportBundle_Click"/><Button x:Name="HistoryButton" Content="历史会话只读回看" Click="History_Click"/><Button x:Name="CancelExportButton" Content="取消导出" Click="CancelExport_Click" IsEnabled="False"/><TextBlock x:Name="ExportProgress" VerticalAlignment="Center" TextWrapping="Wrap"/></WrapPanel><TextBlock x:Name="JournalLabel" Text="会话日志启动后保存到用户本机目录。关闭服务会断开调度连接，不清空界面记录。" TextWrapping="Wrap" Margin="0,6,0,0"/></StackPanel>
  </Grid>
 </Window>

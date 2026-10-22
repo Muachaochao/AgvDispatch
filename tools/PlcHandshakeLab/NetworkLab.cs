@@ -297,29 +297,21 @@ public sealed class NetworkLab : IDisposable
             _testResults.Add(result);
         }
     }
-    public string ExportStageReport()
+    public SessionCapture CaptureSession()
     {
         lock (_gate)
         {
-            static string Cell(string value) => value.Replace("|", "\\|").Replace("\r", " ").Replace("\n", "<br>");
-            var report = new StringBuilder("# PLC逐阶段测试记录\n\n结果由操作者记录；电平符合不能代替实际动作核验。未记录的阶段不算通过。\n\n");
-            report.AppendLine("会话日志：" + JournalPath + "\n");
-            foreach (var group in Config.Points.Where(p => p.Signal == 0).Select(p => p.Station)
-                .SelectMany(station => Enumerable.Range(1, TestRound(station)).Select(round => (station, round))))
-            {
-                report.AppendLine($"## {Cell(group.station)} · 第{group.round}轮\n\n|阶段|名称|结果（最后记录）|\n|---|---|---|");
-                for (var stage = 1; stage <= 28; stage++)
-                {
-                    var last = _testResults.LastOrDefault(r => r.Station == group.station && r.Round == group.round && r.Stage == stage);
-                    report.AppendLine($"|{stage}|{Cell(Sequence.Stages[stage - 1].Name)}|{last?.Outcome ?? "未测"}|");
-                }
-                report.AppendLine();
-            }
-            report.AppendLine("## 全部记录（含复测）\n");
-            foreach (var r in _testResults)
-                report.AppendLine($"- {r.Time:O} {Cell(r.Station)} 第{r.Round}轮 / {r.Stage} / {r.Outcome}；车辆={Cell(r.Vehicle)}；任务={Cell(r.TaskId)}；{Cell(r.Note)}；偏差={Cell(r.Differences)}\n  - {r.Snapshot}");
-            return report.ToString();
+            _journal.Flush();
+            return new SessionCapture(JournalPath, JsonSerializer.Serialize(Config));
         }
+    }
+    public string ExportStageReport()
+    {
+        using var capture = CaptureSession();
+        var history = SessionHistory.Read(capture);
+        using var writer = new StringWriter(CultureInfo.InvariantCulture);
+        history.WriteReport(writer);
+        return writer.ToString();
     }
 
     public void Observe(string station, string vehicle, string task, string observation)
@@ -407,20 +399,10 @@ public sealed class NetworkLab : IDisposable
     }
     public string ExportCsv()
     {
-        lock (_gate)
-        {
-            _journal.Flush();
-            static string Q(string s) => "\"" + s.Replace("\"", "\"\"") + "\"";
-            var csv = new StringBuilder("时间,类型,工位,人工标记阶段,点位,原值,新值,说明\r\n");
-            // Export the durable full session, not only the UI's last 500 events.
-            using var reader = new StreamReader(new FileStream(JournalPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite), Encoding.UTF8);
-            while (reader.ReadLine() is { } line)
-            {
-                var e = JsonSerializer.Deserialize<NetworkEvent>(line)!;
-                csv.AppendLine(string.Join(",", new[] { e.Time.ToString("O", CultureInfo.InvariantCulture), e.Kind, e.Station, e.Stage.ToString(), e.Point, e.Before, e.After, e.Detail }.Select(Q)));
-            }
-            return csv.ToString();
-        }
+        using var capture = CaptureSession();
+        using var writer = new StringWriter(CultureInfo.InvariantCulture);
+        SessionExports.WriteCsv(capture, writer);
+        return writer.ToString();
     }
     public void Dispose() { lock (_gate) _journal.Dispose(); }
 }
