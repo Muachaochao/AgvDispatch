@@ -38,7 +38,7 @@ public sealed partial class TrafficResourceControlService
                 var retained=stage is null||task!.Stage is 90 or 100 or 110 or 120 or 130;
                 var requirements=new TrafficReleaseRequirement[]{
                     new("Ownership",associated?"Observed":"Unknown","原任务、步骤与车辆归属",associated?"数据库归属一致；不证明现场位置。":"缺少匹配的任务/步骤/车辆或原路径记录，不能反推历史。"),
-                    new("NormalHandover","NotAssessed","正常交接/收尾释放","需后续运输取得路权且原子保存命令，或业务收尾完成；当前步骤状态不是释放许可。"),
+                    new("NormalHandover","NotAssessed","正常交接/收尾释放","须核对适用契约、实际交接证据或完整业务收尾；整单保持的候车位须等原任务闭环。取得新路权、保存命令或当前步骤完成本身都不是释放许可。"),
                     new("SegmentEvidence","NotAssessed","逐段/空间释放","须按配置启用并核验原运输、两帧新鲜定位、车体包络和未来占用；本查询不执行评估或释放。"),
                     new("RetainedReview",retained?"RequiresReview":"NotAssessed","异常或取消保留处置",retained?"异常/取消或任务缺失，原占用保留。车辆结束或租约心跳到期均不足以自动解锁。":"原人工解锁/恢复流程仍需停车、载荷归属、PLC周期和路权处置证据，当前未核验。")};
                 nodes.Add(new(item.Task,item.Step,item.Vehicle,row?.MapId??lease?.MapId,row?.MapVersionId??lease?.MapVersionId,projected?.State??"Missing",projected?.Reason??"占用存在但原路径请求缺失，不反推路线。",stage,stepState,command,!associated||stage is null||stepState is null,requirements));

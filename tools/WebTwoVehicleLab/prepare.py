@@ -35,14 +35,20 @@ settings['HandshakeExecution']['DumperExit']['BodyProfiles'].append(profile)
 settings['Dispatching']['MaxConcurrentTasks'] = 2
 navigation = json.loads((root/'navigation.agvmap.json').read_text(encoding='utf-8'))
 navigation['name'] = '28阶段双车闭环联调车间'
+waiting = next(n for n in navigation['nodes'] if n['id']=='等待')
+navigation['resources'].append(dict(id='R4_候车位',type='Station',capacity=1,layerId='resources',
+    boundary=[dict(x=30.8,y=10.8),dict(x=33.2,y=10.8),dict(x=33.2,y=13.2),dict(x=30.8,y=13.2)]))
+waiting['resourceIds'] = list(dict.fromkeys([*waiting['resourceIds'],'R4_候车位']))
 (root/'navigation.agvmap.json').write_text(json.dumps(navigation,ensure_ascii=False,indent=2),encoding='utf-8')
 manifest = json.loads((root/'source-manifest.json').read_text(encoding='utf-8'))
 manifest['editedSha256'] = hashlib.sha256((root/'navigation.agvmap.json').read_bytes()).hexdigest()
 manifest['changes'].append('two-car display name; two independent synthetic body profiles')
+manifest['changes'].append('explicit capacity-one R4 waiting bay; held conservatively until original task closure')
 manifest['simulationBodyProfiles'] = settings['HandshakeExecution']['DumperExit']['BodyProfiles']
 (root/'source-manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding='utf-8')
 for path in ('service/appsettings.json', 'service-settings.json'):
     (root / path).write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding='utf-8')
 lab['twoVehicleSimulation'] = True
+lab['waitingBayProtection'] = True
 (root / 'lab.json').write_text(json.dumps(lab, ensure_ascii=False, indent=2), encoding='utf-8')
 print('Prepared two-car private lab: ' + str(root))

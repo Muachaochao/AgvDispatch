@@ -21,6 +21,7 @@ public sealed class DispatchTaskOrchestrator(
 {
     private readonly HashSet<string> _missingRouteWarnings =
         new(StringComparer.OrdinalIgnoreCase);
+    private string? _waitingBayError;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -79,6 +80,15 @@ public sealed class DispatchTaskOrchestrator(
             await trafficResources.RenewTaskAsync(activeTask.TaskId, cancellationToken);
         }
         if (!executionGate.CanStartNewWork) return;
+        var bayError = DumperWaitingBaySafety.GetError(activeMap.Current?.Definition, options,
+            handshakeOptions is { Enabled: true, PlcContractVersion: HandshakeExecutionOptions.Version });
+        if (bayError is not null)
+        {
+            if (_waitingBayError != bayError) logger.LogWarning("新派车被候车位门禁阻止：{Reason}", bayError);
+            _waitingBayError = bayError;
+            return;
+        }
+        _waitingBayError = null;
         var occupiedSlots = submitting.Count + assigned.Count;
         var availableSlots = options.MaxConcurrentTasks - occupiedSlots;
         if (availableSlots <= 0)

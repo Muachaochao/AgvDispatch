@@ -44,13 +44,13 @@ public sealed partial class TrafficResourceControlService
             r.State is "Acquired" or "Held" ? "NoLease" : r.State;
         var reason = state == "Retained" ? "原任务异常、取消核对或任务缺失；仍保留占用，须按现场处置流程核对。" :
             state == "NoLease" ? "当前无对应占用，请结合人工解锁和路权历史核对。" :
-            state == "Waiting" && blockers.Length == 0 && resourceIds.Length > 0 ? "上次资源冲突已不在当前占用中，等待下一次调度重新规划申请；不会在查询时自动取得路权。" : r.Reason;
+            state == "Waiting" && r.WaitingCategory != "Equipment" && blockers.Length == 0 && resourceIds.Length > 0 ? "上次资源冲突已不在当前占用中，等待下一次调度重新规划申请；不会在查询时自动取得路权。" : r.Reason;
         var seconds = state == "Waiting" && r.WaitingSinceUtc != null && nowUtc.UtcDateTime >= r.WaitingSinceUtc.Value ? (double?)(nowUtc.UtcDateTime-r.WaitingSinceUtc.Value).TotalSeconds : null;
         var clockValid = r.WaitingSinceUtc == null || nowUtc.UtcDateTime >= r.WaitingSinceUtc.Value;
         var alerts = waitingAlerts ?? new TrafficWaitingAlertOptions();
         return new TrafficRequestSnapshot(r.StepId, r.TaskId, r.VehicleId, r.Source, r.Destination,
             JsonSerializer.Deserialize<string[]>(r.EdgeIds) ?? [], resourceIds, state, reason, blockers,
-            new(r.RequestedAt), new(r.UpdatedAt)) { Priority = task?.Priority,
+            new(r.RequestedAt), new(r.UpdatedAt)) { WaitingCategory = r.WaitingCategory ?? "Route", Priority = task?.Priority,
             WaitingSince = state == "Waiting" && r.WaitingSinceUtc != null ? new DateTimeOffset(DateTime.SpecifyKind(r.WaitingSinceUtc.Value, DateTimeKind.Utc)) : null,
             WaitingStartKnown = r.WaitingStartKnown == true,
             WaitingAlertLevel = alerts.Evaluate(state,seconds,clockValid), WaitingWarningSeconds=alerts.WarningSeconds, WaitingCriticalSeconds=alerts.CriticalSeconds,

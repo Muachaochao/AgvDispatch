@@ -34,6 +34,7 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
         }
         if(options.PlcContractVersion!=HandshakeExecutionOptions.Version)throw new InvalidOperationException("新握手PLC契约版本未匹配，不准备首段运输。");
         if(map.Current==null)throw new InvalidOperationException("新契约缺少运行地图。");
+        if(DumperWaitingBaySafety.GetError(map.Current.Definition,dispatch,true) is {} bayError)throw new InvalidOperationException(bayError);
         ValidateExitConfiguration(step);
         var observed=TaskHandshakeSignals.Capture(signals,step.StationId,creation.DumperStationId);
         foreach(var signal in observed)
@@ -58,6 +59,8 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
     {
         if(!Enabled)return;
         if(options.PlcContractVersion!=HandshakeExecutionOptions.Version)throw new InvalidOperationException("当前不是28阶段契约，禁止准备/发送运输。");
+        if(step.StepType is DispatchTaskStepType.DeliverFullBoxToDumper or DispatchTaskStepType.EnterDumpingPosition &&
+            DumperWaitingBaySafety.GetError(map.Current?.Definition,dispatch,true) is {} bayError)throw new InvalidOperationException(bayError);
         var priorType=step.StepType switch {DispatchTaskStepType.DeliverFullBoxToDumper=>DispatchTaskStepType.PickupFullBox,DispatchTaskStepType.EnterDumpingPosition=>DispatchTaskStepType.WaitForDumperReady,DispatchTaskStepType.ReturnEmptyBox=>DispatchTaskStepType.DumpFullBox,_=>throw new InvalidOperationException("不支持的运输阶段。")};
         var prior=(await taskReader.GetStepsAsync(step.TaskId,ct)).FirstOrDefault(s=>s.StepType==priorType);
         var checkpoint=prior==null?null:await store.GetAsync(step.TaskId,prior.StepId,ct);
@@ -108,7 +111,11 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
         {
             if(!Is(creation.DumperStationId,"Faulted",false))throw new InvalidOperationException("倒料设备故障或反馈无效，保持等待。");
             var owner=await store.TryClaimEquipmentAsync(step.TaskId,step.StepId,creation.DumperStationId,ct);
-            if(owner!=null)throw new InvalidOperationException("倒料机由任务"+owner+"持有，当前任务不消费共享许可。");
+            var reason=owner!=null ? "倒料机由任务"+owner+"持有，当前任务不消费共享许可。" : "本任务已取得倒料设备归属；PLC就绪握手及实际入站另行核验。";
+            await traffic.RecordRouteAsync(new(step.StepId,step.TaskId,step.VehicleId??"",dispatch.GetDumperWaitingSite()??"",dispatch.DumperDumpingSite,
+                [],options.DumperExit.ResourceIds,owner!=null,reason)
+                {MapId=map.Current?.MapId,MapVersionId=map.Current?.VersionId,WaitingCategory="Equipment"},ct);
+            if(owner!=null)throw new InvalidOperationException(reason);
         }
         if(step.StepType==DispatchTaskStepType.DumpFullBox&&!await store.OwnsEquipmentAsync(step.TaskId,creation.DumperStationId,ct))throw new InvalidOperationException("本轮倒料设备归属缺失，禁止重新认领并开启周期。");
         var checkpoint=await store.GetAsync(step.TaskId,step.StepId,ct);

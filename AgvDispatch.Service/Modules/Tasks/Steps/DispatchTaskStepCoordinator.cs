@@ -186,9 +186,13 @@ public sealed class DispatchTaskStepCoordinator(
         if (plan == null)
         {
             var diagnostic = routePlanner.Plan(route.Item1, route.Item2, new HashSet<string>());
+            var bayBlocked = step.StepType == DispatchTaskStepType.DeliverFullBoxToDumper && planningMap is not null &&
+                DumperWaitingBaySafety.ExclusiveResourceIds(planningMap.Definition, dispatchOptions).Any(unavailable.Contains);
             await trafficResources.RecordRouteAsync(new(step.StepId, step.TaskId, step.VehicleId, route.Item1, route.Item2,
                 diagnostic?.EdgeIds ?? [], diagnostic?.ResourceIds ?? [], true,
-                diagnostic == null ? "地图路径不可达，请核对起终点、路段方向和启用状态。" : "候选路径被交通资源占用，等待容量释放；诊断路径不会发送车辆。") { MapId = planningMap?.MapId, MapVersionId = planningMap?.VersionId }, cancellationToken);
+                diagnostic == null ? "地图路径不可达，请核对起终点、路段方向和启用状态。" : bayBlocked ?
+                    "候车位容量已被其他任务占用，后车在原取箱工位等待；前车断连、取消或心跳过期不自动释放，诊断路线不会发车。" :
+                    "候选路径被交通资源占用，等待容量释放；诊断路径不会发送车辆。") { MapId = planningMap?.MapId, MapVersionId = planningMap?.VersionId }, cancellationToken);
             return;
         }
         await trafficResources.RecordRouteAsync(new(step.StepId, step.TaskId, step.VehicleId, route.Item1, route.Item2,

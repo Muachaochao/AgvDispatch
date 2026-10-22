@@ -156,6 +156,8 @@ Check(await fixture.EquipmentOwnerAsync() == a, "首任务实际取得倒料设�
 var b = await fixture.CreateAndPickupAsync("CNC-002", "AGV-2");
 await fixture.SetReadyAsync(b, DispatchTaskStepType.WaitForDumperReady);
 await ExpectHold(() => fixture.TickAsync(b), "第二任务不能消费第一任务倒料许可");
+var equipmentWait = await fixture.Db.Queryable<TrafficRequestEntity>().Where(r => r.TaskId == b && r.State == "Waiting").SingleAsync();
+Check(equipmentWait.WaitingCategory == "Equipment" && equipmentWait.Reason.Contains(a), "设备归属等待进入正式等待记录，保留占用方及类别而非仅写异常文字");
 Check(fixture.Signals.Get("DUMPER", "AgvAtWaitingPosition") &&
     await fixture.Store.GetAsync(b, (await fixture.CurrentAsync(b)).StepId, default) is null,
     "前车等待申请为高时后车先查原归属，不误建ReviewRequired检查点");

@@ -26,6 +26,8 @@ public sealed partial class ManualTaskCreationService(IManualTaskCreationReposit
                 string.IsNullOrWhiteSpace(creation.DumperStationId) ? "尚未配置倒料工位。" : null);
         if(handshakeOptions?.Enabled==true&&handshakeOptions.PlcContractVersion!=HandshakeExecutionOptions.Version)
             reason="握手契约不是当前28阶段版本，禁止创建新任务。";
+        reason ??= DumperWaitingBaySafety.GetError(map?.Definition, dispatch,
+            handshakeOptions is { Enabled: true, PlcContractVersion: HandshakeExecutionOptions.Version });
         var choices = dispatch.StationPickupSites.Select(pair =>
         {
             var preview = ValidateStepPreview(BuildStepPreview(pair.Key, pair.Value, map), map);

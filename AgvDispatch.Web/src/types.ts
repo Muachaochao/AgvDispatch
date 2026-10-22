@@ -38,7 +38,7 @@ export interface RuntimePage {items:RuntimeEvent[];totalCount:number;page:number
 
 export interface TrafficOwner {resourceId:string;mapId?:string|null;mapVersionId?:string|null}
 export interface TrafficBlocker extends TrafficOwner {taskId:string;vehicleId:string;stepId:string;heartbeatExpired:boolean}
-export interface TrafficRequest {taskId:string;stepId:string;vehicleId:string;mapId?:string|null;mapVersionId?:string|null;state:string;reason:string;resourceIds:string[];heldResources:TrafficOwner[];blockers:TrafficBlocker[];blockingObservationCurrent:boolean;waitingSeconds?:number|null;waitingStartKnown?:boolean;waitingClockValid?:boolean;priority?:number|null;waitingSince?:string|null;waitingAlertLevel?:string}
+export interface TrafficRequest {taskId:string;stepId:string;vehicleId:string;mapId?:string|null;mapVersionId?:string|null;state:string;reason:string;resourceIds:string[];heldResources:TrafficOwner[];blockers:TrafficBlocker[];blockingObservationCurrent:boolean;waitingSeconds?:number|null;waitingStartKnown?:boolean;waitingClockValid?:boolean;priority?:number|null;waitingCategory?:'Route'|'Equipment';waitingSince?:string|null;waitingAlertLevel?:string}
 export interface TrafficObservation {capturedAt:string;requests:TrafficRequest[];requestsTruncated:boolean}
 
 export interface WaitingQuery {blockingResourceId:string|null;minimumPriority:number|null;sort:'LongestWait'|'PriorityThenWait';pageNumber:number;pageSize:number}

@@ -15,7 +15,7 @@ python tools/WebTwoVehicleLab/prepare.py --name web-single-vehicle-你的新实�
 python tools/WebSingleVehicleLab/start_runtime.py --root artifacts/web-single-vehicle-你的新实验名
 python tools/WebSingleVehicleLab/configure_map.py --root artifacts/web-single-vehicle-你的新实验名
 python tools/WebTwoVehicleLab/run.py --root artifacts/web-single-vehicle-你的新实验名 --setup
-python tools/WebTwoVehicleLab/run.py --root artifacts/web-single-vehicle-你的新实验名
+python tools/WebTwoVehicleLab/run_waiting_bay.py --root artifacts/web-single-vehicle-你的新实验名
 ```
 
 发布顺序执行，避免同时修改共享编译输出。`--setup` 走正常安全切图、激活、放行、地图绑定、私有 Service 重启和启动恢复核对，不绕开拒绝。激活后需要新观测；恢复版本变化时刷新重新核对，不能强制成功。最终检查实际活动地图仍是目标版本，不能只看发布成功。
@@ -25,12 +25,12 @@ python tools/WebTwoVehicleLab/run.py --root artifacts/web-single-vehicle-你的�
 ## 场景
 
 1. 两车分别从取货 A/B 开始，用真实闭合支线取箱；共享一个虚拟 DB1，每车独立状态／导航 TCP 连接及运输历史。
-2. 前车实际进入倒料位、周期通知成立后断开它的 TCP；后车继续取箱和到等待位。
-3. 前车断连时，后车不能进入，原倒料周期保留，前车待发返程不消耗发送次数。
+2. 新模板等待节点绑定独立容量1资源R4，两车在首车仍取箱时接续提交。首个已接收送箱运输的资源持有车断连，设备模型继续原运输；后车载箱停在来源工位，不能生成进等待位的Outbox命令。
+3. 原持有车到等待位后继续断连观察至少8秒；R4归属不丢失，正式等待队列能定位R4及占用任务。恢复连接后继续同一原任务。
 4. 重连只核对原运输身份；各车四次 3066、九个后台步骤完成，原工位箱体及通知闭合，最终租约为零。
 5. `observations.jsonl`、原始 3066、PLC 边沿、正常接口请求、步骤详情及只读数据库检查构成证据。
 
-单等待位使用错峰入站。此图没有配置独立候车位占用，不证明两车同时抵达同一点、未绑定资源的几何交叉或任意地图都能避碰。合成车体／坐标确认只对虚拟模型成立。
+等待位采用保守整单保持：持有车完成原任务后，后车才取得R4并进等待位。资源在进站路径准备前原子申请；这不是几何自动避碰，也没有实现实际离开等待位后的提前释放。合成车体／坐标确认只对虚拟模型成立。`run.py`普通运行保留作历史未保护图的错峰证据，新模板明确拒绝该旧场景并提示使用`run_waiting_bay.py`；`run.py --setup`仍用于正常地图及恢复准备。
 
 ## 取消与重启：预期保留故障现场
 
@@ -40,7 +40,7 @@ python tools/WebTwoVehicleLab/run.py --root artifacts/web-single-vehicle-你的�
 python tools/WebTwoVehicleLab/cancel_restart_probe.py --root artifacts/web-single-vehicle-你的新实验名 --confirm-synthetic-crash-test
 ```
 
-新增两单，前车载箱进入倒料区的原运输执行中提交取消；相同请求号重放，查询原车确认后保留取消核对状态。后车到等待位仍不得入站。随后只终止进程清单中且实际映像路径吻合的本实验 Service，设备模型继续，验证重启屏障、原路权身份、PLC 和 Outbox 保留。
+新增两单，前车载箱进入倒料区的原运输执行中提交取消；相同请求号重放，查询原车确认后保留取消核对状态。受保护模板的后车保持在来源取箱点，不能进入等待位；历史未保护模板仍保留原等待位场景。随后只终止进程清单中且实际映像路径吻合的本实验 Service，设备模型继续，验证重启屏障、原路权身份、PLC 和 Outbox 保留。
 
 该场景**有意停在人工恢复核对阶段**，不自动清 PLC、不释放未知占用、不批准恢复。数据库和载荷证据保留，不能将这两单标成正常完成。失败时也保留原记录；普通正常场景拒绝带着这些未闭合任务重新开始。
 

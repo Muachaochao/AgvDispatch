@@ -71,7 +71,7 @@ def main():
         temporary = root / ('input-' + uuid.uuid4().hex + '.tmp')
         temporary.write_text(json.dumps(dict(sequence=uuid.uuid4().hex, **data)), encoding='utf-8')
         temporary.replace(root / filename)
-    def idle_review():
+    def idle_review(review_attempt=0):
         s = state()
         memory = bytes.fromhex(s['memory_hex'])
         if any(c['loaded'] or c['current_task'] or any(t in (1,2,3) for t in c['tasks'].values()) for c in s['cars'].values()) or memory[610] != 0 or any(memory[o] & 254 != 10 for o in (0,2)) or any(t['stage'] != 'Completed' for t in api('/api/tasks')['items']):
@@ -81,9 +81,14 @@ def main():
             if any(t['taskId'] != '__SITE__' for t in recovery['items']):
                 raise RuntimeError('Active-task recovery requires explicit individual review')
             for ticket in recovery['items']:
-                api('/api/recovery/decisions', dict(sessionId=recovery['sessionId'], ticketId=ticket['ticketId'], revision=ticket['revision'],
+                decision = api('/api/recovery/decisions', dict(sessionId=recovery['sessionId'], ticketId=ticket['ticketId'], revision=ticket['revision'],
                     decision=10, materialReference=f'SIM-ONLY两车空载静止，无任务及H责任；工位字节{memory[0]}/{memory[2]}，P呼叫是尚未受理需求。',
-                    reason='isolated synthetic boot baseline', vehicleAndLocationConfirmed=True, loadAndOwnershipConfirmed=True, plcCycleConfirmed=True))
+                    reason='isolated synthetic boot baseline', vehicleAndLocationConfirmed=True, loadAndOwnershipConfirmed=True, plcCycleConfirmed=True), allow_rejection=True)
+                if decision.get('accepted') is False:
+                    if review_attempt < 2 and '已变化' in decision.get('message',''):
+                        time.sleep(.5)
+                        return idle_review(review_attempt+1)
+                    raise RuntimeError('Idle baseline review rejected: '+str(decision))
             api('/api/recovery/release', dict(sessionId=recovery['sessionId'], reason='SIM-ONLY two-car idle baseline verified'))
     def connected():
         snap = api('/api/snapshot')
@@ -132,6 +137,8 @@ def main():
             raise RuntimeError('Published map did not remain active after setup restart')
         print('SETUP PASS ' + str(evidence), flush=True)
         return
+    if lab.get('waitingBayProtection'):
+        raise RuntimeError('Protected single-bay fixture: use run_waiting_bay.py. This historical staggered runner requires the follower to reach an unprotected waiting bay.')
     if not args.resume:
         idle_review()
     if api('/api/maps/switch')['mode'] != 'Running':

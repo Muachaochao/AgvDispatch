@@ -3,6 +3,7 @@
 public sealed record TrafficRouteObservation(string StepId, string TaskId, string VehicleId, string Source,
     string Destination, IReadOnlyList<string> EdgeIds, IReadOnlyList<string> ResourceIds, bool Waiting, string Reason)
 {
+    public string WaitingCategory { get; init; } = "Route";
     public string? MapId { get; init; }
     public string? MapVersionId { get; init; }
 }
@@ -16,6 +17,7 @@ public sealed record TrafficRequestSnapshot(string StepId, string TaskId, string
     IReadOnlyList<string> EdgeIds, IReadOnlyList<string> ResourceIds, string State, string Reason,
     IReadOnlyList<TrafficBlocker> Blockers, DateTimeOffset RequestedAt, DateTimeOffset UpdatedAt)
 {
+    public string WaitingCategory { get; init; } = "Route";
     public string? MapId { get; init; }
     public string? MapVersionId { get; init; }
     public int? Priority { get; init; }

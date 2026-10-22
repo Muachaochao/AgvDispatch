@@ -79,6 +79,15 @@ internal static partial class Program
         var user = TrafficUserContext.LocalOperation("isolated-test");
         var options = Complete(service.GetOptionsAsync(default));
         Require(options.Available && options.Stations.Single().Available && options.Vehicles.Single().Available, "healthy options available");
+        dispatch.MaxConcurrentTasks = 2;
+        var unsafeMulti = Complete(service.GetOptionsAsync(default));
+        Require(!unsafeMulti.Available && unsafeMulti.Stations.Single().PreviewSteps[2].ValidationErrors.Any(e => e.Contains("候车位")),
+            "unsafe multi-car waiting bay is reported at transport step 3 before creation");
+        var deniedMulti = Complete(service.CreateAsync(user, new(Guid.NewGuid().ToString("N"), "CNC001", "AGV-01", 20, "MAP", "VERSION")
+            { ParameterRevision = parameterRuntime.Revision }, default));
+        Require(!deniedMulti.Accepted && db.Queryable<DispatchTaskEntity>().Count() == 0,
+            "unsafe multi-car map cannot persist a manual task or bypass the capacity guard");
+        dispatch.MaxConcurrentTasks = 1;
         var preview = options.Stations.Single().PreviewSteps;
         Require(preview.Count == 9 && preview[2].DestinationSite == "WAIT" && preview[4].DestinationSite == "DUMP" && preview[6].DestinationSite == "PICK",
             "preview resolves configured pickup waiting dumping and return sites");

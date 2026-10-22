@@ -97,11 +97,20 @@ def main():
     # Same request identity must replay, never create a second cancellation.
     api('/api/tasks/'+owner+'/cancel',request)
     wait('original vehicle cancellation confirmed',lambda:(lambda d:d if d['task']['stage']=='CancellationReview' else None)(api('/api/tasks/'+owner)),45)
-    wait('follower reaches actual single waiting bay',lambda:state()['cars']['AGV-LOCAL-02']['station']=='TEST-LM107')
+    protected=lab.get('waitingBayProtection') is True
+    expected_follower_site='TEST-LM102' if protected else 'TEST-LM107'
+    if protected:
+        def blocked_at_pickup():
+            d=api('/api/tasks/'+follower)
+            p=api('/api/traffic/waiting',{})
+            return d['steps'][2]['status']=='Ready' and any(r['taskId']==follower and any(b['resourceId']=='R4_候车位' and b['taskId']==owner for b in r['blockers']) for r in p['page']['items'])
+        wait('follower loaded and blocked by protected waiting bay',blocked_at_pickup)
+    else:
+        wait('follower reaches actual single waiting bay',lambda:state()['cars']['AGV-LOCAL-02']['station']==expected_follower_site)
     time.sleep(5)
     held=state();held_leases=leases()
     origin=bytes.fromhex(held['memory_hex'])[0]
-    if origin & 96 != 96 or held['cars']['AGV-LOCAL-02']['x']>32.1 or not any(l['TaskId']==owner and l['ResourceId'].startswith('R2_') for l in held_leases):
+    if origin & 96 != 96 or held['cars']['AGV-LOCAL-02']['station']!=expected_follower_site or not any(l['TaskId']==owner and l['ResourceId'].startswith('R2_') for l in held_leases):
         raise RuntimeError('Cancellation lost origin responsibility, owner resource or follower exclusion')
     old_recovery=api('/api/recovery')
     save('cancel-held.json',dict(owner=api('/api/tasks/'+owner),follower=api('/api/tasks/'+follower),devices=held,leases=held_leases))
@@ -112,12 +121,12 @@ def main():
     after=state()
     if leases()!=held_leases or after['memory_hex']!=held['memory_hex'] or commands_before!=read_sql('select CommandId,TaskId,StepId,Status,AttemptCount from agv_command_outbox order by CommandId'):
         raise RuntimeError('Restart changed held ownership/PLC or dispatched another command')
-    if after['cars']['AGV-LOCAL-02']['station']!='TEST-LM107':
+    if after['cars']['AGV-LOCAL-02']['station']!=expected_follower_site:
         raise RuntimeError('Follower entered during cancellation/recovery hold')
     save('restart-held.json',dict(recovery=recovery,snapshot=api('/api/snapshot'),devices=after,leases=leases()))
     result=dict(passed=True,owner=owner,follower=follower,duplicateRequestReplayed=True,originalVehicleConfirmed=True,
         ownerOriginBits56Held=True,followerExcluded=True,leaseIdentityPreserved=True,plcUnchanged=True,
-        outboxUnchanged=True,newBootRecoveryHeld=True,finalState='Expected freeze; no recovery approval or automatic PLC reset')
+        outboxUnchanged=True,newBootRecoveryHeld=True,followerHeldAtPickup=protected,finalState='Expected freeze; no recovery approval or automatic PLC reset')
     save('result.json',result)
     print('PASS cancellation/restart HOLD '+str(evidence),flush=True)
 

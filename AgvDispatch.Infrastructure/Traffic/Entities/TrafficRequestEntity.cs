@@ -12,6 +12,7 @@ public sealed class TrafficRequestEntity
     [SugarColumn(ColumnDataType = "TEXT")] public string ResourceIds { get; set; } = "[]";
     [SugarColumn(Length = 32)] public string State { get; set; } = "";
     [SugarColumn(Length = 4000)] public string Reason { get; set; } = "";
+    [SugarColumn(Length = 32, IsNullable = true)] public string? WaitingCategory { get; set; }
     [SugarColumn(Length = 64, IsNullable = true)] public string? MapId { get; set; }
     [SugarColumn(Length = 64, IsNullable = true)] public string? MapVersionId { get; set; }
     [SugarColumn(IsNullable = true)] public DateTime? WaitingSinceUtc { get; set; }

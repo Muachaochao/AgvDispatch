@@ -39,6 +39,10 @@ public sealed partial class ManualTaskCreationService
         return preview.Select(step =>
         {
             var errors = new List<string>();
+            if (step.StepType == DispatchTaskStepType.DeliverFullBoxToDumper &&
+                DumperWaitingBaySafety.GetError(map?.Definition, dispatch,
+                    handshakeOptions is { Enabled: true, PlcContractVersion: HandshakeExecutionOptions.Version }) is { } bayError)
+                errors.Add(bayError);
             void Signal(string name, bool write = false)
             {
                 if (plcConfiguration.GetSignalConfigurationError(step.PlcStationId, name, write) is { } error)
