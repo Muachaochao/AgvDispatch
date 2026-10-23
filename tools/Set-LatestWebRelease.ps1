@@ -48,7 +48,7 @@ foreach($latestAlias in @(@{Name='启动界面修复版Web.cmd';Target='启动�
     $latestAliasText="@echo off`r`nchcp 65001 >nul`r`ncall `"%~dp0$($latestAlias.Target)`" %*`r`n"
     [IO.File]::WriteAllText((Join-Path $latestRoot $latestAlias.Name),$latestAliasText,[Text.UTF8Encoding]::new($false))
 }
-@{releaseId=$latestManifest.releaseId;directory=$latestRelative;url="http://127.0.0.1:$($latestManifest.port)/";configurationMigrated=$false} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $latestRoot '最新版Web.json') -Encoding utf8
+@{releaseId=$latestManifest.releaseId;directory=$latestRelative;url="http://127.0.0.1:$($latestManifest.port)/";configurationMigrated=[bool]$latestManifest.siteConfigurationImported} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $latestRoot '最新版Web.json') -Encoding utf8
 $latestGuide=@"
 # Web 启动说明
 
