@@ -135,7 +135,7 @@ export class DispatchScene {
     for (const [id, entry] of this.vehiclePool) {
       if (!activeIds.has(id)) {
         if (entry.group.parent) this.vehicleGroup.remove(entry.group);
-        entry.label.active=false;entry.label.element.hidden=true;
+        entry.label.active=false;entry.label.element.hidden=true;entry.label.leader.hidden=true;
       }
     }
   }
@@ -144,11 +144,11 @@ export class DispatchScene {
     this.clearResourceFocus();this.clearGroup(this.mapGroup); this.edges.clear();this.resourceMeshes.clear();
     for (const [, entry] of this.vehiclePool) {
       if (entry.group.parent) this.vehicleGroup.remove(entry.group);
-      entry.label.active=false;entry.label.element.hidden=true;
+      entry.label.active=false;entry.label.element.hidden=true;entry.label.leader.hidden=true;
     }
-    for(const entry of this.vehiclePool.values())entry.label.element.remove();
+    for(const entry of this.vehiclePool.values()){entry.label.element.remove();entry.label.leader.remove();}
     this.vehiclePool.clear();
-    this.stationLabels.forEach(label=>label.element.remove());this.stationLabels=[];
+    this.stationLabels.forEach(label=>{label.element.remove();label.leader.remove();});this.stationLabels=[];
 
     if (!map?.nodes.length) return;
     let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
@@ -187,7 +187,7 @@ export class DispatchScene {
 
   private makeSceneLabel(text:string,kind:'vehicle'|'station'):SceneLabel {
     const element=document.createElement('div');element.className=`scene-map-label ${kind}`;element.textContent=text;element.title=text;
-    this.labelLayer.appendChild(element);return {element,kind,anchor:new THREE.Vector3(),active:true};
+    const leader=document.createElement('div');leader.className='scene-label-leader';this.labelLayer.append(leader,element);return {element,leader,kind,anchor:new THREE.Vector3(),active:true};
   }
 
   private layoutLabels(){
@@ -203,7 +203,7 @@ export class DispatchScene {
         right:Math.max(...corners.map(p=>p.x))+5,bottom:Math.max(...corners.map(p=>p.y))+5});
     }
     for(const label of [...Array.from(this.vehiclePool.values()).map(e=>e.label),...this.stationLabels]){
-      const el=label.element;if(!label.active){el.hidden=true;continue;}
+      const el=label.element;label.leader.hidden=true;if(!label.active){el.hidden=true;continue;}
       const p=label.anchor.clone().project(this.camera);
       if(p.z<-1||p.z>1||Math.abs(p.x)>1||Math.abs(p.y)>1){el.hidden=true;continue;}
       el.hidden=false;const w=el.offsetWidth,h=el.offsetHeight,x=(p.x+1)*width/2,y=(1-p.y)*height/2;
@@ -214,6 +214,11 @@ export class DispatchScene {
       const offsets=label.kind==='vehicle'
         ? [[-w/2,-h-26],[20,-h/2],[-w-20,-h/2],[-w/2,28],[-w/2,-h-52]]
         : [[gap,gap],[gap,-h-gap],[-w-gap,gap],[-w-gap,-h-gap],[-w/2,gap+15],[-w/2,-h-gap-15],[gap+15,-h/2],[-w-gap-15,-h/2]];
+      // Expand the search beyond the body instead of dropping a station hidden by a parked vehicle.
+      for(const radius of [24,48,80,120,180,260,360]){
+        for(const [dx,dy] of [[-w/2,-h-gap-radius],[gap+radius,-h/2],[-w/2,gap+radius],[-w-gap-radius,-h/2],
+          [gap+radius,gap+radius],[-w-gap-radius,-h-gap-radius]])offsets.push([dx!,dy!]);
+      }
       let chosen:LabelRect|undefined;
       for(const [dx,dy] of offsets){
         const rect={left:x+dx!,top:y+dy!,right:x+dx!+w,bottom:y+dy!+h};
@@ -221,8 +226,17 @@ export class DispatchScene {
         if(occupied.some(r=>rect.left<r.right+6&&rect.right>r.left-6&&rect.top<r.bottom+6&&rect.bottom>r.top-6))continue;
         chosen=rect;break;
       }
-      if(!chosen){el.hidden=true;continue;}
+      if(!chosen){
+        // Last resort keeps the identifier visible at the viewport edge, even if the view is crowded.
+        const left=Math.max(6,Math.min(width-w-6,x+gap)),top=Math.max(6,Math.min(height-h-6,y+gap));
+        chosen={left,top,right:left+w,bottom:top+h};
+      }
       el.style.transform=`translate3d(${Math.round(chosen.left)}px,${Math.round(chosen.top)}px,0)`;occupied.push(chosen);
+      const endX=Math.max(chosen.left,Math.min(chosen.right,x)),endY=Math.max(chosen.top,Math.min(chosen.bottom,y));
+      const lineLength=Math.hypot(endX-x,endY-y);
+      if(lineLength>32){label.leader.hidden=false;label.leader.style.width=`${lineLength}px`;
+        label.leader.style.transform=`translate3d(${x}px,${y}px,0) rotate(${Math.atan2(endY-y,endX-x)}rad)`;}
+
     }
   }
 
@@ -281,5 +295,5 @@ export class DispatchScene {
   }
 }
 
-interface SceneLabel {element:HTMLDivElement;kind:'vehicle'|'station';anchor:THREE.Vector3;active:boolean}
+interface SceneLabel {element:HTMLDivElement;leader:HTMLDivElement;kind:'vehicle'|'station';anchor:THREE.Vector3;active:boolean}
 interface LabelRect {left:number;top:number;right:number;bottom:number}

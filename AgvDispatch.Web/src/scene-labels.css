@@ -1,5 +1,8 @@
 .scene-label-layer{position:absolute;inset:0;overflow:hidden;pointer-events:none;z-index:1}
-.scene-map-label{position:absolute;left:0;top:0;width:max-content;max-width:min(220px,80%);padding:4px 8px;border:1px solid #35536a;border-radius:4px;background:#0a152bee;color:#d6f6ee;font:600 12px/1.35 "Segoe UI","Microsoft YaHei",sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:.2px;box-shadow:0 2px 7px #02071455;pointer-events:none;will-change:transform}
+.scene-map-label{position:absolute;left:0;top:0;width:max-content;max-width:min(220px,80%);padding:5px 9px;border:1px solid #35536a;border-radius:4px;background:#0a152bee;color:#d6f6ee;font:600 14px/1.35 "Segoe UI","Microsoft YaHei",sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:.2px;box-shadow:0 2px 7px #02071455;pointer-events:none;will-change:transform}
 .scene-map-label[hidden]{display:none}
 .scene-map-label.vehicle{color:var(--label-color,#47e4b3);border-color:var(--label-color,#47e4b3);font-weight:700;padding:5px 9px}
 .scene-map-label.station.disabled{color:#91a1b7;border-color:#3f4f63}
+
+.scene-label-leader{position:absolute;left:0;top:0;height:1px;background:#9bcfc9a6;transform-origin:0 50%;pointer-events:none}
+.scene-label-leader[hidden]{display:none}
