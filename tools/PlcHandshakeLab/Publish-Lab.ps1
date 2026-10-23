@@ -5,8 +5,15 @@ Push-Location $workspace
 try {
     $commit = (& git rev-parse HEAD).Trim()
     if ($LASTEXITCODE -ne 0) { throw 'Cannot identify source revision.' }
-    $trackedChanges = & git status --porcelain --untracked-files=no
-    if ($trackedChanges) { throw 'Commit validated source changes before publishing a versioned carrying package.' }
+    $documents = @('28阶段统一执行与联调-20261021.md','PLC测试工具优化与28阶段回归-20261022.md','PLC测试工具会话回看与证据导出-20261022.md','PLC测试工具界面优化-20261024.md')
+    # This self-contained project has no project references. Require its complete source,
+    # verification source, packaged docs and inherited build configuration to match HEAD;
+    # unrelated main-application edits are not inputs to this independent carrying package.
+    $sourceScope = @('tools/PlcHandshakeLab','tools/PlcHandshakeLabSmokeTest','AgvDispatch.Connectors.Plc/Signals/PlcSignalCatalog.cs',
+        'global.json','NuGet.Config','nuget.config','Directory.Build.props','Directory.Build.targets','Directory.Packages.props',
+        'tools/Directory.Build.props','tools/Directory.Build.targets','tools/Directory.Packages.props') + @($documents | ForEach-Object { 'docs/architecture/' + $_ })
+    $sourceChanges = & git status --porcelain --untracked-files=all -- @sourceScope
+    if ($LASTEXITCODE -ne 0 -or $sourceChanges) { throw 'Commit validated tool source, verification, build configuration and packaged docs before publishing.' }
     $defaultReady = $null
     if ($DefaultLabRoot) {
         $labPath = [IO.Path]::GetFullPath((Join-Path $workspace $DefaultLabRoot))
@@ -27,7 +34,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Publish failed.' }
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'README.md') -Destination (Join-Path $package '使用说明.md')
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'FIELD-GUIDE.md') -Destination (Join-Path $package '厂家联调操作说明.md')
-    foreach ($document in @('28阶段统一执行与联调-20261021.md','PLC测试工具优化与28阶段回归-20261022.md','PLC测试工具会话回看与证据导出-20261022.md')) {
+    foreach ($document in $documents) {
         Copy-Item -LiteralPath (Join-Path $workspace ('docs/architecture/' + $document)) -Destination (Join-Path $package $document)
     }
     $utf8 = [Text.UTF8Encoding]::new($false)
@@ -41,7 +48,7 @@ try {
         [ordered]@{ path=[IO.Path]::GetRelativePath($package,$_.FullName); bytes=$_.Length; sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash }
     })
     $manifest = [ordered]@{ version=$version; sourceCommit=$commit; publishedAt=[DateTimeOffset]::Now.ToString('O');
-        contract='plc-28-stage-v2'; runtime='win-x64 self-contained'; uiSmoke='PASS'; files=$files }
+        contract='plc-28-stage-v2'; runtime='win-x64 self-contained'; sourceScope=$sourceScope; uiSmoke='PASS'; files=$files }
     [IO.File]::WriteAllText((Join-Path $package 'release-manifest.json'), ($manifest | ConvertTo-Json -Depth 8), $utf8)
     $zip = Join-Path $workspace "artifacts/PLC人工联调台_${version}_${stamp}_$($commit.Substring(0,8)).zip"
     Compress-Archive -LiteralPath $package -DestinationPath $zip -CompressionLevel Optimal

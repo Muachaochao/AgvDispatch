@@ -12,8 +12,11 @@ using Microsoft.Win32;
 
 namespace PlcHandshakeLab;
 
-public sealed record NetworkPointRow(int Signal, string Owner, string Name, string Address, string Value, string Applied, string Quality, string Source, Brush Color, bool CanSet, bool CanClear);
-public sealed record StageResultRow(int Stage, string Name, string Outcome, string Time, string Note);
+public sealed record NetworkPointRow(int Signal, string Owner, string Name, string Address, string Value, string Applied, string Quality, string Source, Brush Color, bool CanSet, bool CanClear, string Expected);
+public sealed record StageResultRow(int Stage, string Name, string Outcome, string Time, string Note)
+{
+    public string Tooltip => $"{Stage:00} · {Name} · {Outcome}";
+}
 
 public partial class NetworkWindow : Window
 {
@@ -32,12 +35,18 @@ public partial class NetworkWindow : Window
     private string? _fatal;
     private string _pointsSignature = "";
     private string _resultSignature = "";
+    private StageResultRow[] _resultRows = [];
+    private int _inspectionStage = 1;
     private CancellationTokenSource? _exportCancellation;
     private Task? _exportTask;
 
     public NetworkWindow()
     {
         InitializeComponent();
+        SizeChanged += (_, _) =>
+        {
+            PPoints.RowHeight = Points.RowHeight = ActualHeight < 820 ? 36 : 46;
+        };
         Title += " · " + typeof(NetworkWindow).Assembly.GetName().Version;
         MappingGrid.ItemsSource = _mapping;
         StageChoice.ItemsSource = Sequence.Stages.Select((s, i) => $"{i + 1:00} · {s.Name}").ToArray();
@@ -98,6 +107,7 @@ public partial class NetworkWindow : Window
         if (Station.SelectedIndex < 0) Station.SelectedIndex = 0;
         StageChoice.SelectedIndex = _markedStages.GetValueOrDefault(SelectedStation);
         _loading = false;
+        _pointsSignature = "";
     }
 
     private NetworkLabConfig ReadConfig()
@@ -191,6 +201,7 @@ public partial class NetworkWindow : Window
         if (_loading || StageChoice is null) return;
         _loading = true; StageChoice.SelectedIndex = _markedStages.GetValueOrDefault(SelectedStation); _loading = false;
         PhysicalConfirmed.IsChecked = false;
+        _inspectionStage = Math.Max(1, StageChoice.SelectedIndex + 1);
         RefreshPanel();
     }
     private void Stage_Changed(object sender, SelectionChangedEventArgs e)
@@ -226,6 +237,9 @@ public partial class NetworkWindow : Window
     {
         if (Points is null || _busy) return;
         var snapshot = _lab?.Snapshot(SelectedStation);
+        var displayedPoints = snapshot ?? _mapping.Where(p => p.Station == SelectedStation || p.Station == NetworkLabConfig.Shared)
+            .Select(p => new PointState(p, p.Initial, DateTimeOffset.MinValue, "初值配置", "")).ToArray();
+        var stage = Math.Max(0, StageChoice.SelectedIndex);
         var active = _server is not null && _server.Fault is null && _fatal is null;
         var now = DateTimeOffset.Now;
         var health = CommunicationStatus.Evaluate(active, _server?.Clients ?? 0, _server?.LastDataRequest, now);
@@ -236,27 +250,33 @@ public partial class NetworkWindow : Window
         ConnectionStatus.Text = _server is null ? "服务未运行 · 停止后的电平只供回看" : _server.Fault ??
             $"{_lab!.Config.BindAddress}:{_server.Port} · 连接 {_server.Clients} · 最近请求 {(_server.LastRequest is { } last ? last.ToString("HH:mm:ss") + $" / {(DateTimeOffset.Now - last).TotalSeconds:F1}s前" : "尚无")} ";
         if (_server?.Fault is { } fault) Message.Text = fault;
-        var signature = active + ":" + health.Fresh + ":" + _lab?.Automatic + ":" + SelectedStation + ":" + now.ToUnixTimeSeconds() + ":" + string.Join(";", (snapshot ?? []).Select(s => s.Mapping.Address + ":" + s.Value + ":" + s.UpdatedAt.Ticks));
+        var signature = active + ":" + health.Fresh + ":" + _lab?.Automatic + ":" + SelectedStation + ":" + stage + ":" + now.ToUnixTimeSeconds() + ":" + string.Join(";", displayedPoints.Select(s => s.Mapping.Address + ":" + s.Value + ":" + s.UpdatedAt.Ticks));
         if (signature != _pointsSignature)
         {
         _pointsSignature = signature;
-        Points.ItemsSource = (snapshot ?? []).Select(s => new NetworkPointRow(s.Mapping.Signal, s.Mapping.Owner, s.Mapping.Name,
-            s.Mapping.Address, (s.Value ? "1" : "0") + (s.Mapping.Owner == "H" && (!health.Fresh || !CommunicationStatus.PointFresh(s, now)) ? "·旧" : ""),
+        var rows = displayedPoints.Select(s => new NetworkPointRow(s.Mapping.Signal, s.Mapping.Owner, s.Mapping.Name,
+            s.Mapping.Address, snapshot is null ? "—" : (s.Value ? "1" : "0") + (s.Mapping.Owner == "H" && (!health.Fresh || !CommunicationStatus.PointFresh(s, now)) ? "·旧" : ""),
             $"{(s.Source == "初值" ? "初值" : s.Requested)} / {s.UpdatedAt:HH:mm:ss}",
             s.HostAccessedAt is { } at ? $"{(health.Fresh && CommunicationStatus.PointFresh(s, now) ? "已交换" : "旧记录")} {(now - at).TotalSeconds:F1}s前" : "尚未交换",
-            $"{s.Source}；最后变化{s.UpdatedAt:O}；{s.HostAccess} {s.HostAccessedAt:O}。交换表示S7读或写，不等于物理动作完成。",
+            $"{s.Source}；请求值{s.Requested}；最后变化/应用{s.UpdatedAt:O}；{s.HostAccess} {s.HostAccessedAt:O}。交换表示S7读或写，不等于物理动作完成。",
             s.Mapping.Owner == "H" && (!health.Fresh || !CommunicationStatus.PointFresh(s, now)) ? Brushes.Gray : s.Value ? Brushes.Teal : Brushes.SlateGray,
             active && s.Mapping.Owner == "P" && (!_lab!.Automatic || s.Mapping.Signal is not (8 or 9)),
-            active && s.Mapping.Owner == "P" && (!_lab!.Automatic || s.Mapping.Signal is not (0 or 8 or 9)))).ToArray();
+            active && s.Mapping.Owner == "P" && (!_lab!.Automatic || s.Mapping.Signal is not (0 or 8 or 9)),
+            s.Mapping.Signal < 10 ? "参考 " + LabPresentation.Expected(stage, s.Mapping.Signal) : "")).ToArray();
+        PPoints.ItemsSource = rows.Where(p => p.Signal < 10 && p.Owner == "P").ToArray();
+        Points.ItemsSource = rows.Where(p => p.Signal < 10 && p.Owner == "H").ToArray();
+        FaultPoints.ItemsSource = rows.Where(p => p.Signal >= 10).ToArray();
+        var faults = displayedPoints.Where(p => p.Mapping.Signal is 10 or 12 && p.Value || p.Mapping.Signal == 11 && !p.Value).Select(p => p.Mapping.Name).ToArray();
+        FaultSummary.Text = snapshot is null ? "故障与下游联锁 · 未启动，展开查看配置" : faults.Length == 0 ? "故障与下游联锁 · 内存无故障，展开设置" : "联锁异常：" + string.Join("、", faults) + " · 展开核对";
+        FaultSummary.Foreground = faults.Length > 0 && snapshot is not null ? Brushes.DarkRed : Brushes.DarkSlateGray;
         }
-        var stage = Math.Max(0, StageChoice.SelectedIndex);
         StageCondition.Text = Sequence.Stages[stage].Condition;
         var stateBySignal = (snapshot ?? []).Where(s => s.Mapping.Signal < 10).ToDictionary(s => s.Mapping.Signal);
         var differences = stateBySignal.Values.Where(s => !Sequence.Matches(stage, s.Mapping.Signal, s.Value)).ToArray();
         var h = differences.Where(s => s.Mapping.Owner == "H").Select(s => s.Mapping.Name + "→" + Sequence.Stages[stage].Pattern[s.Mapping.Signal]);
         var p = differences.Where(s => s.Mapping.Owner == "P").Select(s => s.Mapping.Name + "→" + Sequence.Stages[stage].Pattern[s.Mapping.Signal]);
-        WaitInfo.Text = _lab is null ? "启动服务后显示阶段对照。" : $"本阶段人工标记已停留 {_lab.StageElapsed(SelectedStation):F1} 秒\nH待观察：{string.Join("、", h.DefaultIfEmpty("本步电平已符合"))}";
-        Guidance.Text = _lab is null ? "按现场实际情况操作P点；按钮不会跳过调度执行。" : $"P待操作参考：{string.Join("、", p.DefaultIfEmpty("本步电平已符合"))}\n电平对照：{(differences.Length == 0 ? "符合参考值，仍需核实阶段条件" : "存在差异，可保留等待并记录现场情况")}\n自动模式只处理呼叫、Ready、Done，箱体检测始终人工给出。";
+        WaitInfo.Text = _lab is null ? "启动服务后显示阶段对照。" : $"{string.Join("、", h.DefaultIfEmpty("本步H电平已符合"))}\n{(health.Fresh ? "仍须核对各点新鲜度及实际条件" : "通信无效，保留值不能作为新反馈")}\n人工标记停留 {_lab.StageElapsed(SelectedStation):F1} 秒";
+        Guidance.Text = _lab is null ? "按现场实际情况操作P点；参考值见左侧，未启动不显示实际电平。" : $"{string.Join("、", p.DefaultIfEmpty("本步P电平已符合"))}\n先核实实际条件，再操作；选阶段不会写信号。";
         ObserveButton.IsEnabled = active;
         StageTestButton.IsEnabled = active;
         ConfirmClosureButton.IsEnabled = active;
@@ -266,23 +286,76 @@ public partial class NetworkWindow : Window
         if (_resultSignature != resultSignature)
         {
             _resultSignature = resultSignature;
-            var rows = Enumerable.Range(1, 28).Select(index =>
+            _resultRows = Enumerable.Range(1, 28).Select(index =>
             {
                 var last = results.LastOrDefault(r => r.Station == SelectedStation && r.Round == round && r.Stage == index);
                 return new StageResultRow(index, Sequence.Stages[index - 1].Name, last?.Outcome ?? "未测", last?.Time.ToString("HH:mm:ss") ?? "", last?.Note ?? "");
             }).ToArray();
-            StageResults.ItemsSource = rows;
-            TestSummary.Text = $"{SelectedStation} · 第{round}轮 · 通过 {rows.Count(r => r.Outcome == "通过")}/28 · 失败 {rows.Count(r => r.Outcome == "失败")} · 跳过 {rows.Count(r => r.Outcome == "跳过")} · 未测 {rows.Count(r => r.Outcome == "未测")}";
+            StageProgress.ItemsSource = _resultRows;
+            ApplyResultFilter();
+            TestSummary.Text = $"{SelectedStation} · 第{round}轮 · 通过 {_resultRows.Count(r => r.Outcome == "通过")}/28 · 失败 {_resultRows.Count(r => r.Outcome == "失败")} · 跳过 {_resultRows.Count(r => r.Outcome == "跳过")} · 未测 {_resultRows.Count(r => r.Outcome == "未测")}";
+            RoundProgress.Value = _resultRows.Count(r => r.Outcome != "未测");
         }
+        ProgressLabel.Text = $"已记录 {RoundProgress.Value}/28 · 人工标记 {stage + 1:00}";
+        RefreshInspection();
         var events = _lab?.Events();
         if (events is { Length: > 0 } && !ReferenceEquals(events[^1], _lastEvent))
         {
             _lastEvent = events[^1];
-            Events.ItemsSource = events.Select(e => $"{e.Time:HH:mm:ss.fff} [{e.Kind}] {e.Station} {e.Point} {e.Before} → {e.After} {e.Detail}").ToArray();
-            Events.ScrollIntoView(Events.Items[^1]);
+            var filtered = events.Where(e => LabPresentation.MatchesEvent(e, EventFilter.SelectedIndex)).ToArray();
+            Events.ItemsSource = filtered.Select(e => $"{e.Time:HH:mm:ss.fff} [{e.Kind}] {e.Station} {e.Point} {e.Before} → {e.After} {e.Detail}").ToArray();
+            EventCount.Text = $"本页 {filtered.Length} / 最近 {events.Length} 条 · 筛选不影响完整导出";
+            if (Events.Items.Count > 0) Events.ScrollIntoView(Events.Items[^1]);
             Events.UpdateLayout();
             FindScrollViewer(Events)?.ScrollToHorizontalOffset(0);
         }
+    }
+
+    private void EventFilter_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (Events is null) return;
+        _lastEvent = null;
+        RefreshPanel();
+    }
+
+    private void OpenEvents_Click(object sender, RoutedEventArgs e) => NetworkTabs.SelectedIndex = 3;
+
+    private void ResultFilter_Changed(object sender, RoutedEventArgs e)
+    {
+        if (StageResults is not null) ApplyResultFilter();
+    }
+
+    private void ApplyResultFilter()
+    {
+        StageResults.ItemsSource = _resultRows.Where(r => FailedOnly.IsChecked != true || r.Outcome == "失败").ToArray();
+        StageResults.SelectedItem = StageResults.Items.Cast<StageResultRow>().FirstOrDefault(r => r.Stage == _inspectionStage);
+    }
+
+    private void InspectStage_Click(object sender, RoutedEventArgs e)
+    {
+        _inspectionStage = (int)((Button)sender).Tag;
+        ApplyResultFilter();
+        RefreshInspection();
+    }
+
+    private void ResultSelection_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (StageResults.SelectedItem is not StageResultRow row) return;
+        _inspectionStage = row.Stage;
+        RefreshInspection();
+    }
+
+    private void RefreshInspection()
+    {
+        if (InspectionPoints is null) return;
+        var stage = _inspectionStage - 1;
+        InspectionTitle.Text = $"查看 {_inspectionStage:00} · {Sequence.Stages[stage].Name}（不改变人工标记）";
+        var last = _lab?.TestResults().LastOrDefault(r => r.Station == SelectedStation && r.Round == _lab.TestRound(SelectedStation) && r.Stage == _inspectionStage);
+        InspectionNote.Text = "下表为当前内存与本阶段参考值；保存时记录见下方。";
+        SavedInspection.Text = last is null ? "本阶段本轮尚无保存结果。" : $"保存于 {last.Time:HH:mm:ss} · {last.Outcome} · 车辆 {last.Vehicle} · 任务 {last.TaskId}\n观察：{last.Note}\n保存时差异：{(last.Differences.Length == 0 ? "电平符合参考，实际条件以原记录为准" : last.Differences)}\n保存时快照：{last.Snapshot}";
+        var now = DateTimeOffset.Now;
+        var health = CommunicationStatus.Evaluate(_server is not null && _fatal is null, _server?.Clients ?? 0, _server?.LastDataRequest, now);
+        InspectionPoints.ItemsSource = LabPresentation.Compare(stage, _lab?.Snapshot(SelectedStation), health.Fresh, now);
     }
 
     private static ScrollViewer? FindScrollViewer(DependencyObject root)
@@ -445,6 +518,8 @@ public partial class NetworkWindow : Window
             StageChoice.SelectedIndex = 4;
             if (!_lab.Snapshot(SelectedStation).Select(s => s.Value).SequenceEqual(before)) throw new InvalidOperationException("标记阶段改变了电平");
             if (Points.Items.Cast<NetworkPointRow>().Any(p => p.Owner == "H" && (p.CanSet || p.CanClear))) throw new InvalidOperationException("H被允许手动输入");
+            if (PPoints.Items.Count != 4 || Points.Items.Count != 6 || FaultPoints.Items.Count != 3 || FaultExpander.IsExpanded)
+                throw new InvalidOperationException("核心10点未分为4个P/6个H，或故障点未独立折叠");
             AutoMode.SelectedIndex = 1;
             if (!_lab.Automatic) throw new InvalidOperationException("模式切换失败");
             AutoMode.SelectedIndex = 0;
@@ -471,6 +546,21 @@ public partial class NetworkWindow : Window
             NetworkTabs.SelectedIndex = 1;
             await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
             if (!TestSummary.Text.Contains("失败 1") || StageResults.Items.Count != 28) throw new InvalidOperationException("阶段结果页未反映28阶段及失败记录");
+            var inspectedBefore = _lab.Snapshot(SelectedStation).Select(s => s.Value).ToArray();
+            var markedBefore = StageChoice.SelectedIndex;
+            var journalBefore = new FileInfo(_lab.JournalPath).Length;
+            FailedOnly.IsChecked = true;
+            if (StageResults.Items.Count != 1 || ((StageResultRow)StageResults.Items[0]).Stage != 5 || RoundProgress.Value != 1 || StageProgress.Items.Count != 28)
+                throw new InvalidOperationException("失败筛选或28阶段进度错误");
+            StageResults.SelectedIndex = 0;
+            if (_inspectionStage != 5 || InspectionPoints.Items.Count != 10 || !SavedInspection.Text.Contains("UI-ONLY"))
+                throw new InvalidOperationException("阶段点击未显示当前对照与独立保存记录");
+            InspectStage_Click(new Button { Tag = 22 }, new());
+            if (((SignalComparison)InspectionPoints.Items[1]).Expected != "0/1") throw new InvalidOperationException("第22阶段箱体参考范围错误");
+            if (StageChoice.SelectedIndex != markedBefore || !_lab.Snapshot(SelectedStation).Select(s => s.Value).SequenceEqual(inspectedBefore) || new FileInfo(_lab.JournalPath).Length != journalBefore)
+                throw new InvalidOperationException("只读查看或筛选改变了人工标记、点位或日志");
+            FailedOnly.IsChecked = false;
+            StageResults.SelectedItem = StageResults.Items.Cast<StageResultRow>().Single(r => r.Stage == 5);
             RenderWindow(path + ".stages.png");
             using (var evidence = _lab.CaptureSession())
                 await Task.Run(() => SessionExports.Bundle(evidence, path + ".evidence.zip"));
@@ -483,6 +573,34 @@ public partial class NetworkWindow : Window
             RenderWindow(path + ".history.png", historyWindow);
             historyWindow.Close();
             NetworkTabs.SelectedIndex = 0;
+            _lab.Note("拒绝写入", "UI筛选检查，无真实设备");
+            var eventTotal = _lab.Events().Length;
+            EventFilter.SelectedIndex = 3;
+            RefreshPanel();
+            if (!Events.Items.Cast<string>().Any(line => line.Contains("拒绝写入")) || !Events.Items.Cast<string>().Any(line => line.Contains("阶段测试")) ||
+                Events.Items.Cast<string>().Any(line => line.Contains("[阶段标记]") || line.Contains("[现场观察]") || line.Contains("[监听]")))
+                throw new InvalidOperationException("异常筛选未保留失败或拒绝写入");
+            EventFilter.SelectedIndex = 2;
+            if (Events.Items.Count == 0 || Events.Items.Cast<string>().Any(line => line.Contains("阶段标记"))) throw new InvalidOperationException("通信筛选错误");
+            if (_lab.Events().Length != eventTotal || !_lab.ExportCsv().Contains("现场观察")) throw new InvalidOperationException("日志筛选损失原始证据");
+            EventFilter.SelectedIndex = 0;
+            // Verify the default collapsed layout at the minimum supported window size too.
+            Width = MinWidth; Height = MinHeight;
+            await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle); UpdateLayout();
+            foreach (var grid in new[] { PPoints, Points })
+            {
+                var scroll = FindScrollViewer(grid);
+                if (scroll is null || scroll.ScrollableHeight > .01 || scroll.ScrollableWidth > .01)
+                    throw new InvalidOperationException($"最小窗口{grid.Name}核心点位需要滚动 H={scroll?.ScrollableHeight} W={scroll?.ScrollableWidth}，未固定展示10点");
+            }
+            RenderWindow(path + ".compact.png");
+            Width = 1380; Height = 900;
+            NetworkTabs.SelectedIndex = 3;
+            LogExpander.IsExpanded = true;
+            await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
+            RenderWindow(path + ".events.png");
+            LogExpander.IsExpanded = false;
+            NetworkTabs.SelectedIndex = 0;
             await StopAsync();
             var closed = await uiStream.ReadAsync(new byte[1], budget.Token);
             if (closed != 0) throw new InvalidOperationException("停止后调度连接未断开");
@@ -490,7 +608,7 @@ public partial class NetworkWindow : Window
             if (!HealthText.Text.Contains("服务未运行") || Points.Items.Cast<NetworkPointRow>().Where(p => p.Owner == "H").Any(p => !p.Value.Contains("旧")))
                 throw new InvalidOperationException("停止后H旧值未明确标记");
             RenderWindow(path + ".disconnected.png");
-            File.WriteAllText(path + ".result.txt", "PASS: 独立S7启动/停止、P输入、H只读、阶段隔离、模式切换、观察落盘、阶段结果、断连旧值、后台证据包、只读历史28阶段及窗口渲染。");
+            File.WriteAllText(path + ".result.txt", "PASS: 独立S7启动/停止、4P/6H固定显示及故障折叠、最小窗口无点位滚动、阶段只读对照/0或1范围、28阶段进度及失败筛选、日志分类不损失证据、模式切换、观察落盘、断连旧值、后台证据包、只读历史及窗口渲染。");
             Close();
         }
         catch (Exception ex) { File.WriteAllText(path + ".result.txt", ex.ToString()); await StopAsync(); System.Windows.Application.Current.Shutdown(1); }

@@ -99,3 +99,4 @@ Console.WriteLine($"PASS: {checks} checks. 离线28阶段及联调输入、工�
 await NetworkTests.RunAsync();
 await RecoveryAndStageTests.RunAsync();
 await SessionEvidenceTests.RunAsync();
+PresentationTests.Run();
