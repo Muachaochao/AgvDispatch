@@ -50,6 +50,16 @@ public sealed class TrafficControlNamedPipeServer(
     private async Task<CommunicationSettingsSnapshot> SaveCommunicationSettingsGuardedAsync(
         TrafficUserContext user, SaveCommunicationSettingsRequest request, CancellationToken cancellationToken)
     {
+        var current=await communicationSettings.GetAsync(user,cancellationToken);
+        if(CommunicationSettingsService.OnlyMapBindingsDiffer(current.Saved,request.Configuration))
+        {
+            // Persist coordinate evidence while startup execution recovery remains
+            // closed. No device endpoint/switch may change and this does not
+            // update the live bindings or release any execution barrier.
+            using var control=await executionGate.EnterControlAsync(cancellationToken);
+            if(executionGate.Mode!=MapExecutionMode.Running)throw new InvalidOperationException("请先完成原地图切换，再保存地图绑定。");
+            return await communicationSettings.SaveAsync(user,request,cancellationToken);
+        }
         using var execution = await executionGate.EnterAsync(MapExecutionOperation.NewWork, cancellationToken);
         if (execution is null) throw new InvalidOperationException("地图切换期间不能修改通信配置。");
         return await communicationSettings.SaveAsync(user, request, cancellationToken);

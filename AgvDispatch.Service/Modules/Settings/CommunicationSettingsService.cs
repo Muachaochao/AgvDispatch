@@ -43,6 +43,13 @@ public sealed class CommunicationSettingsService : ICommunicationSettingsService
         return document;
     }
 
+    public static bool OnlyMapBindingsDiffer(CommunicationConfiguration saved,CommunicationConfiguration proposed)
+    {
+        var copy=Clone(proposed);
+        copy.MapBindings=Clone(saved).MapBindings;
+        return JsonSerializer.Serialize(saved)==JsonSerializer.Serialize(copy);
+    }
+
     public static CommunicationConfiguration FromLegacy(PlcOptions p, AgvOptions a) => new()
     {
         Plcs = [new() { DeviceId = p.DeviceId, DisplayName = p.DisplayName, Enabled = p.Enabled,

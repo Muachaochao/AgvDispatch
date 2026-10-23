@@ -133,7 +133,12 @@ public sealed partial class MapSwitchService(ISqlSugarClient database, IMapExecu
         if (!cancel || gate.Mode != MapExecutionMode.Draining)
         {
             if (definition is null) return new(false, "地图定义不存在。");
-            var blockers = await GetBlockersAsync(definition, cancellationToken);
+            // Cancelling a never-committed first activation returns to no map.
+            // Its unused preview geometry must not trap that cancellation forever.
+            // Keep all task/lease/command, telemetry, stationary and PLC checks.
+            var bootstrapCancel=cancel && current.PreviousMapId is null && current.PreviousVersionId is null &&
+                active is null && runtime.Current is null;
+            var blockers = await GetBlockersCoreAsync(definition, !bootstrapCancel, cancellationToken);
             if (blockers.Count > 0) return new(false, string.Join("；", blockers));
             var committedAt = new DateTimeOffset(current.UpdatedAt);
             if (!cancel && (vehicles.GetAll().Any(vehicle => vehicle.Quality != SignalQuality.Disabled &&
@@ -156,6 +161,9 @@ public sealed partial class MapSwitchService(ISqlSugarClient database, IMapExecu
     }
 
     public async Task<IReadOnlyList<string>> GetBlockersAsync(MapDefinition definition, CancellationToken cancellationToken)
+        => await GetBlockersCoreAsync(definition,true,cancellationToken);
+
+    private async Task<IReadOnlyList<string>> GetBlockersCoreAsync(MapDefinition definition,bool checkTargetMap,CancellationToken cancellationToken)
     {
         var blockers = new List<string>();
         if(mapTransfers?.IsOpen==false)blockers.Add("存在未处置的地图传输不确定记录，不能解除执行屏障。");
@@ -178,11 +186,11 @@ public sealed partial class MapSwitchService(ISqlSugarClient database, IMapExecu
             row.Status == (int)DispatchTaskStepStatus.ManualIntervention || row.Status == (int)DispatchTaskStepStatus.Failed)
             .CountAsync(cancellationToken);
         if (steps > 0) blockers.Add($"执行或异常未确认步骤{steps}条");
-        blockers.AddRange(GetPhysicalBlockers(definition, false));
+        blockers.AddRange(GetPhysicalBlockers(definition, false,checkTargetMap));
         return blockers;
     }
 
-    private IReadOnlyList<string> GetPhysicalBlockers(MapDefinition definition, bool allowExecution)
+    private IReadOnlyList<string> GetPhysicalBlockers(MapDefinition definition, bool allowExecution,bool checkTargetMap=true)
     {
         var blockers = new List<string>();
         var now = DateTimeOffset.Now;
@@ -202,6 +210,12 @@ public sealed partial class MapSwitchService(ISqlSugarClient database, IMapExecu
             if (!allowExecution && (!Stopped(vehicle.VelocityX) || !Stopped(vehicle.VelocityY) || !Stopped(vehicle.AngularVelocity)))
                 blockers.Add($"{id}静止状态未确认");
             if (vehicle.LocalizationConfidence is null) blockers.Add($"{id}定位置信度缺失");
+            if(!checkTargetMap)
+            {
+                if(vehicle.LocalizationConfidence is not { } confidence || !double.IsFinite(confidence) || confidence<settings.MinimumLocalizationConfidence)
+                    blockers.Add($"{id}定位置信度不足");
+                continue;
+            }
             var position = AgvMapPositionAnalyzer.Analyze(vehicle.X, vehicle.Y, vehicle.LocalizationConfidence,
                 vehicle.LastSuccessfulPollAt, definition, now, settings.StateMaxAge,
                 settings.MinimumLocalizationConfidence, settings.MaximumRouteDeviationMeters);

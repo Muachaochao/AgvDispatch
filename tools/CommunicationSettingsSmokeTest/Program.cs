@@ -18,6 +18,11 @@ var settings = new CommunicationConfiguration
     Agvs = [new() { VehicleId = "AGV-01" }, new() { VehicleId = "AGV-02" }]
 };
 CommunicationSettingsService.Validate(settings, root);
+var bindingOnly=System.Text.Json.JsonSerializer.Deserialize<CommunicationConfiguration>(System.Text.Json.JsonSerializer.Serialize(settings))!;
+bindingOnly.MapBindings=[new(){VehicleId="AGV-01",LocalMapId="MAP",LocalMapVersion="V1",RobotMap="test",RobotMapMd5=new string('a',32)}];
+Require(CommunicationSettingsService.OnlyMapBindingsDiffer(settings,bindingOnly),"map binding-only persistence distinguished from device changes");
+bindingOnly.Agvs[0].IpAddress="192.0.2.20";
+Require(!CommunicationSettingsService.OnlyMapBindingsDiffer(settings,bindingOnly),"endpoint changes cannot use map binding-only path");
 using var fleet = new PlcFleet(settings.Plcs.Select(p => CommunicationSettingsService.ToPlcOptions(p, new PlcOptions(), root)).ToArray());
 Require(fleet.Connections.Count == 2 && fleet.Catalog.Count == 2, "multiple PLC connections and identical DB address isolated");
 var cache = new PlcSignalCache(fleet.Catalog);

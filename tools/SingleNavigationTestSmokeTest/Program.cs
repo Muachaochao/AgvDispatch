@@ -10,6 +10,15 @@ using AgvDispatch.Domain.Maps;
 using AgvDispatch.Domain.Tasks;
 using AgvDispatch.Infrastructure.Maps;
 
+if(args.Length==3&&args[0]=="--prepare-runtime")
+{
+ var parsed=new Smap2DImportService().Read(File.ReadAllBytes(args[1]),Path.GetFullPath(args[1]));
+ var definition=Smap2DImportService.PrepareRobotWorldRuntime(parsed,
+     parsed.Definition.Nodes.ToDictionary(n=>n.AgvSiteId!,_=>MapNodeType.WaitingPoint,StringComparer.Ordinal));
+ File.WriteAllText(args[2],JsonSerializer.Serialize(definition,new JsonSerializerOptions(JsonSerializerDefaults.Web){WriteIndented=true,Converters={new System.Text.Json.Serialization.JsonStringEnumConverter()}}));
+ Console.WriteLine("Prepared robot-world runtime map; explicit commissioning role: all sites are test waiting points. No runtime activation or device command.");return;
+}
+
 var count=0;
 void Check(bool ok,string name){if(!ok)throw new Exception(name);count++;Console.WriteLine("PASS "+name);}
 async Task Reject(Func<Task> run,string name){try{await run();throw new Exception("Did not reject: "+name);}catch(Exception e)when(e is InvalidOperationException or ArgumentException or InvalidDataException){Check(true,name);}}
@@ -30,6 +39,11 @@ Check(imported.Definition.Nodes.Count==2&&imported.Definition.Edges.Count==2,"De
 Check(imported.Definition.Edges.All(e=>e.GeometryKind==MapEdgeGeometryKind.CubicBezier&&!e.Enabled&&!e.Bidirectional),"Controls and conservative disabled state retained");
 Check(imported.Definition.Nodes.Single(n=>n.AgvSiteId=="LM1").X+imported.OffsetX==0,"Original robot coordinates recover exactly from display offset");
 Check(!imported.Warnings.Any(w=>w.Contains("未转换路径")),"Known degenerate curves no longer skipped");
+var prepared=Smap2DImportService.PrepareRobotWorldRuntime(imported,imported.Definition.Nodes.ToDictionary(n=>n.AgvSiteId!,_=>MapNodeType.WaitingPoint));
+Check(prepared.CoordinateSystem=="RobotWorld"&&prepared.Nodes.All(n=>n.Enabled&&n.Type==MapNodeType.WaitingPoint)&&prepared.Edges.All(e=>e.Enabled),"Runtime preparation explicitly enables confirmed waiting points and paths");
+Check(prepared.Nodes.Single(n=>n.AgvSiteId=="LM1").X==0&&prepared.Nodes.Single(n=>n.AgvSiteId=="LM2").X==1,"Runtime coordinates recover original robot-world positions");
+Check(prepared.Edges[0].ControlPoints![0].X==imported.Definition.Edges[0].ControlPoints![0].X+imported.OffsetX,"Runtime conversion translates ordered Bezier controls together with nodes");
+try{Smap2DImportService.PrepareRobotWorldRuntime(imported,new Dictionary<string,MapNodeType>());throw new Exception("Missing roles accepted");}catch(InvalidDataException){Check(true,"Missing station purpose prevents runtime preparation");}
 Check(new MapValidationService().Validate(imported.Definition).IsValid,"Explicit opposite one-way paths pass backend validation");
 var edge=imported.Definition.Edges[0];
 Check(new MapValidationService().Validate(imported.Definition with{Edges=[edge,edge with{Id="duplicate"}]}).Issues.Any(i=>i.Code=="EDGE_OVERLAP"),"Same-direction duplicates remain blocked");

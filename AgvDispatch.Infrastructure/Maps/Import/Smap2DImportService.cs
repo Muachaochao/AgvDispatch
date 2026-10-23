@@ -90,6 +90,26 @@ public sealed class Smap2DImportService
     {
         using var image=Image.LoadPixelData<Rgba32>(result.BackgroundPixels,900,520);image.SaveAsPng(path);
     }
+    public static MapDefinition PrepareRobotWorldRuntime(Result preview, IReadOnlyDictionary<string,MapNodeType> confirmedRoles)
+    {
+        if(preview.Warnings.Any(w=>w.StartsWith("未转换路径",StringComparison.Ordinal)||w.StartsWith("未知高级点",StringComparison.Ordinal)))
+            throw new InvalidDataException("存在未转换的厂家节点或路径，不能生成运行图。");
+        if(preview.Definition.Nodes.Count==0 || confirmedRoles.Count!=preview.Definition.Nodes.Count ||
+            preview.Definition.Nodes.Any(n=>n.AgvSiteId is null||!confirmedRoles.ContainsKey(n.AgvSiteId)) ||
+            confirmedRoles.Values.Any(role=>!Enum.IsDefined(role)))
+            throw new InvalidDataException("须逐一确认所有厂家站点的运行用途。");
+        MapPoint2D RobotPoint(MapPoint2D point)=>new(point.X+preview.OffsetX,point.Y+preview.OffsetY);
+        var definition=preview.Definition with {
+            Name=preview.OriginalMapName,CoordinateSystem="RobotWorld",
+            Nodes=preview.Definition.Nodes.Select(n=>n with {X=n.X+preview.OffsetX,Y=n.Y+preview.OffsetY,
+                Type=confirmedRoles[n.AgvSiteId!],Enabled=true}).ToArray(),
+            Edges=preview.Definition.Edges.Select(e=>e with {Enabled=true,
+                ControlPoints=e.ControlPoints?.Select(RobotPoint).ToArray()}).ToArray()
+        };
+        var validation=new MapValidationService().Validate(definition);
+        if(!validation.IsValid)throw new InvalidDataException("运行图结构校验失败："+string.Join("；",validation.Issues.Where(i=>i.Severity==MapValidationSeverity.Error).Select(i=>i.Message)));
+        return definition;
+    }
     public static void SavePixels(byte[] pixels,string path)
     {
         using var image=Image.LoadPixelData<Rgba32>(pixels,900,520);image.SaveAsPng(path);

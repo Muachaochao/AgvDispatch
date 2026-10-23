@@ -67,6 +67,17 @@ try
     catch (UnauthorizedAccessException) { denied = true; }
     Check(denied, "观察员不能开始切换");
 
+    Check((await switches.BeginAsync(editor,new(target.MapId,target.VersionId),ct)).Accepted,"首次未激活切换可建立原编号");
+    var bootstrap=(await switches.GetAsync(editor,ct)).Current!;
+    using(var control=await gate.EnterControlAsync(ct))gate.SetMode(MapExecutionMode.Held);
+    var bootstrapCancel=new FinishMapSwitchRequest(bootstrap.ReleaseId,true,true,"目标预览未提交，核对无运行图且无任务后取消");
+    vehicles.Items[0]=SwitchVehicleCache.Ready() with{X=100,VelocityX=0.2};
+    Check(!(await switches.CancelAsync(editor,bootstrapCancel,ct)).Accepted,"首次空图取消仍阻止车辆运动");
+    vehicles.Items[0]=SwitchVehicleCache.Ready() with{X=100};
+    Check((await switches.CancelAsync(editor,bootstrapCancel,ct)).Accepted&&runtime.Current is null,"首次未提交切换取消不依赖未使用目标图的停靠坐标");
+    Check((await switches.GetAsync(editor,ct)).Current is null&&gate.Mode==MapExecutionMode.Running,"首次取消保留无运行图并关闭原切换记录");
+    Fresh();
+
     // Begin must wait until an already admitted physical command operation has completed.
     var inFlight = await gate.EnterAsync(MapExecutionOperation.ExistingWork, ct);
     var begin = switches.BeginAsync(editor, new(target.MapId, target.VersionId), ct);
@@ -274,7 +285,7 @@ sealed class CountingGateway : IAgvGateway
     public int Sends;
     public Task<DeviceConnectionStatus> GetConnectionStatusAsync(CancellationToken ct) =>
         Task.FromResult(new DeviceConnectionStatus("fleet", "fleet", ConnectionState.Online, DateTimeOffset.Now));
-    public Task<IReadOnlyList<AgvVehicleStatus>> GetVehiclesAsync(CancellationToken ct) => Task.FromResult<IReadOnlyList<AgvVehicleStatus>>([]);
+    public Task<IReadOnlyList<AgvVehicleStatus>> GetVehiclesAsync(CancellationToken ct) => Task.FromResult<IReadOnlyList<AgvVehicleStatus>>([new("AGV-01",ConnectionState.Online,"Idle",90,"SITE-A",DateTimeOffset.Now)]);
     public Task<string> CreateTransportTaskAsync(string id, string? vehicle, IReadOnlyList<string> path, AgvTransportAction? action, CancellationToken ct)
     { Interlocked.Increment(ref Sends); return Task.FromResult(id); }
     public Task<AgvTransportTaskStatus?> GetTransportTaskStatusAsync(string id, CancellationToken ct) => Task.FromResult<AgvTransportTaskStatus?>(null);
