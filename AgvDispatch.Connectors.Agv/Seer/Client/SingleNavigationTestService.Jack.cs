@@ -89,23 +89,16 @@ public sealed partial class SingleNavigationTestService
                 if(_jackRecord.Action!=request.Action)throw new InvalidOperationException("不能将原请求编号用于其他动作。");
                 return _jackRecord;
             }
-            if(!request.AreaClearConfirmed||(request.Action=="Up"&&!request.EmptyLoadConfirmed))
-                throw new InvalidOperationException("须逐次确认顶升区域空闲；上升前还须确认车辆空载。");
             if(_record is not null&&!Terminal(_record.State))throw new InvalidOperationException("原导航任务未结束。");
             var client=await GuardAsync(_settings.VehicleId,ct);
-            // Lowering a raised jack is a local unloading maintenance action, not new transport.
-            // Serialize it with map control, while the fresh vehicle/task/control checks below
-            // prevent it from bypassing an active vehicle operation.
-            using var lease=request.Action=="Down"
-                ? (IDisposable)await _execution.EnterControlAsync(ct)
-                : await _execution.EnterAsync(MapExecutionOperation.NewWork,ct)
-                    ?? throw new InvalidOperationException("顶升未发送："+_execution.NewWorkBlockReason);
+            // Jack actions are local commissioning operations, not transport work. Serialize
+            // them with map control and keep the hardware/task safety checks below.
+            using var lease=await _execution.EnterControlAsync(ct);
+            RequireCommissioningMapRunning();
             if(_jackRecord is not null&&!JackTerminal(_jackRecord.State)&&_jackRecord.VehicleId!=_settings.VehicleId)throw new InvalidOperationException("未结束顶升记录属于另一台车。");
             var t=await FetchJackAsync(client,ct);ReconcileJack(t);
             if(_jackRecord is not null&&!JackTerminal(_jackRecord.State))throw new InvalidOperationException("原顶升测试未结束或结果不确定。");
             if(JackHealth(t) is {} health)throw new InvalidOperationException(health);
-            if(t.HasLoad&&request.Action=="Up")
-                throw new InvalidOperationException("车端报告有载荷；禁止继续上升。下降不受此限制。");
             if(t.State==(request.Action=="Up"?1:3))throw new InvalidOperationException("机构已经在所选目标位置，无需重复动作。");
             using var owner=await client.RequestAsync(1060,null,ct);
             if(!owner.RootElement.TryGetProperty("locked",out var locked)||locked.ValueKind!=JsonValueKind.False)throw new InvalidOperationException("控制权被占用或未知；本入口不会抢占控制权。");

@@ -56,6 +56,11 @@ public sealed partial class SingleNavigationTestService : ISingleNavigationTestS
             throw new InvalidOperationException("存在未结束业务任务，不能进行独立导航测试。");
         return client;
     }
+    private void RequireCommissioningMapRunning()
+    {
+        if(_execution.Mode!=MapExecutionMode.Running)
+            throw new InvalidOperationException("地图切换尚未完成，单次调试必须等待运行地图处于运行状态。");
+    }
     private static string? Text(JsonElement root,string key)=>root.TryGetProperty(key,out var p)&&p.ValueKind==JsonValueKind.String?p.GetString():null;
     private static int? Int(JsonElement root,string key)=>root.TryGetProperty(key,out var p)&&p.ValueKind==JsonValueKind.Number&&p.TryGetInt32(out var n)?n:null;
     private static double? Number(JsonElement root,string key)=>root.TryGetProperty(key,out var p)&&p.ValueKind==JsonValueKind.Number&&p.TryGetDouble(out var n)&&double.IsFinite(n)?n:null;
@@ -137,8 +142,8 @@ public sealed partial class SingleNavigationTestService : ISingleNavigationTestS
         {
             _preview=null;
             if(_record is not null&&!Terminal(_record.State))throw new InvalidOperationException("原测试未结束或结果不确定，请先查询原任务。");
-            using var lease=await _execution.EnterAsync(MapExecutionOperation.NewWork,ct);
-            if(lease is null)throw new InvalidOperationException("未发送导航："+_execution.NewWorkBlockReason);
+            using var lease=await _execution.EnterControlAsync(ct);
+            RequireCommissioningMapRunning();
             return _preview=await ObserveAsync(query,ct);
         }
         finally{_mutex.Release();}
@@ -152,8 +157,8 @@ public sealed partial class SingleNavigationTestService : ISingleNavigationTestS
             if(!request.SiteClearConfirmed||preview is null||preview.PreviewId!=request.PreviewId||preview.ExpiresAt<DateTimeOffset.UtcNow)
                 throw new InvalidOperationException("核验已失效或未确认测试区域，请重新核验。");
             if(_record is not null&&!Terminal(_record.State))throw new InvalidOperationException("原测试尚未结束。");
-            using var lease=await _execution.EnterAsync(MapExecutionOperation.NewWork,ct);
-            if(lease is null)throw new InvalidOperationException("未发送导航："+_execution.NewWorkBlockReason+"；阻塞解除后请重新核验。");
+            using var lease=await _execution.EnterControlAsync(ct);
+            RequireCommissioningMapRunning();
             var fresh=await ObserveAsync(new(preview.VehicleId,preview.SourceSite,preview.TargetSite),ct);
             if(fresh.RobotMap!=preview.RobotMap||fresh.RobotMapMd5!=preview.RobotMapMd5)throw new InvalidOperationException("地图身份已变化，拒绝沿用旧核验。");
             if(!fresh.Route.SequenceEqual(preview.Route,StringComparer.Ordinal)||fresh.TargetX!=preview.TargetX||fresh.TargetY!=preview.TargetY)
@@ -210,7 +215,7 @@ public sealed partial class SingleNavigationTestService : ISingleNavigationTestS
             var block=!enabled?"单次导航未启用、AGV动作未启用或业务执行未关闭。":
                 !_options.Enabled||_options.GetConfigurationError() is not null||string.IsNullOrWhiteSpace(_settings.VehicleId)||
                     !_connections.TryGet(_settings.VehicleId,out _)?"测试车通信配置不可用。":
-                _execution.NewWorkBlockReason;
+                _execution.Mode!=MapExecutionMode.Running?"地图切换尚未完成，单次调试暂不能发送。":null;
             if(block is null&&_jackRecord is not null&&!JackTerminal(_jackRecord.State))block="顶升测试未结束或结果不确定，请先查询顶升状态。";
             return new(enabled,_settings.VehicleId,_record,"单车路径导航，可经过中间站点；速度沿用厂家车端配置。不会启动PLC或自动调度。")
             {Ready=block is null,BlockReason=block};
