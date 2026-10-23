@@ -11,9 +11,9 @@ public sealed class SingleNavigationTestOptions
     public bool BusinessExecutionDisabled { get; init; }
 }
 
-/// <summary>One explicitly confirmed, adjacent vendor edge. Never retries a motion command.
+/// <summary>One explicitly confirmed 3051 single-vehicle navigation. Never retries a motion command.
 /// Independent of PLC business tasks; uses fresh robot-world coordinates, never editor coordinates.</summary>
-public sealed class SingleNavigationTestService : ISingleNavigationTestService
+public sealed partial class SingleNavigationTestService : ISingleNavigationTestService
 {
     private readonly SingleNavigationTestOptions _settings;
     private readonly AgvOptions _options;
@@ -55,7 +55,7 @@ public sealed class SingleNavigationTestService : ISingleNavigationTestService
         return client;
     }
     private static string? Text(JsonElement root,string key)=>root.TryGetProperty(key,out var p)&&p.ValueKind==JsonValueKind.String?p.GetString():null;
-    private static int? Int(JsonElement root,string key)=>root.TryGetProperty(key,out var p)&&p.TryGetInt32(out var n)?n:null;
+    private static int? Int(JsonElement root,string key)=>root.TryGetProperty(key,out var p)&&p.ValueKind==JsonValueKind.Number&&p.TryGetInt32(out var n)?n:null;
     private static double? Number(JsonElement root,string key)=>root.TryGetProperty(key,out var p)&&p.ValueKind==JsonValueKind.Number&&p.TryGetDouble(out var n)&&double.IsFinite(n)?n:null;
     private static bool Idle(AgvRobotTelemetry t)=>t.EmergencyStopped==false && t.Blocked==false &&
         t.VelocityX is { } vx && Math.Abs(vx)<0.01 && t.VelocityY is { } vy && Math.Abs(vy)<0.01 &&
@@ -100,26 +100,23 @@ public sealed class SingleNavigationTestService : ISingleNavigationTestService
         var map=Text(before.RootElement,"current_map");var md5=Text(before.RootElement,"current_map_md5");
         if(string.IsNullOrWhiteSpace(map)||md5?.Length!=32||md5.Any(c=>!Uri.IsHexDigit(c))||Int(load.RootElement,"loadmap_status")!=1)
             throw new InvalidOperationException("当前车端地图身份缺失或地图尚未加载成功。");
+        if((q.ExpectedRobotMap is not null||q.ExpectedRobotMapMd5 is not null)&&
+            (q.ExpectedRobotMap!=map||q.ExpectedRobotMapMd5!=md5))
+            throw new InvalidOperationException("车端地图与站点列表来源不一致，请重新读取车端站点。");
         using var stations=await client.RequestAsync(1301,null,ct);
-        if(!stations.RootElement.TryGetProperty("stations",out var list)||list.ValueKind!=JsonValueKind.Array||list.GetArrayLength()>10000)
-            throw new InvalidDataException("车端未返回有效站点列表。");
-        var rows=list.EnumerateArray().ToArray();
-        if(rows.Any(x=>x.ValueKind!=JsonValueKind.Object)||rows.GroupBy(x=>Text(x,"id"),StringComparer.Ordinal).Any(g=>string.IsNullOrWhiteSpace(g.Key)||g.Count()!=1))
-            throw new InvalidDataException("车端站点编号缺失或重复。");
-        var source=rows.Where(x=>Text(x,"id")==q.SourceSite).ToArray();
-        if(source.Length!=1||rows.Count(x=>Text(x,"id")==q.TargetSite)!=1)throw new InvalidOperationException("起点或终点不存在于当前车端地图。");
+        var rows=ParseStations(stations.RootElement);
+        var source=rows.SingleOrDefault(x=>x.Id==q.SourceSite);
+        var target=rows.SingleOrDefault(x=>x.Id==q.TargetSite);
+        if(source is null||target is null)throw new InvalidOperationException("起点或终点不存在于当前车端地图。");
         using var route=await client.RequestAsync(1303,new{source_id=q.SourceSite,target_id=q.TargetSite},ct);
-        if(!route.RootElement.TryGetProperty("list",out var path)||path.ValueKind!=JsonValueKind.Array||path.GetArrayLength()!=2||
-            path[0].ValueKind!=JsonValueKind.String||path[1].ValueKind!=JsonValueKind.String||path[0].GetString()!=q.SourceSite||path[1].GetString()!=q.TargetSite)
-            throw new InvalidOperationException("当前入口只测试一条直接相连的路径；车端寻路结果必须恰好为所选起点和终点。");
+        var path=ParseRoute(route.RootElement,q,rows);
         var (telemetry,_)=await client.PollAsync(ct);
         using var taskList=await client.RequestAsync(1110,new{},ct);
         RequireIdleTaskList(taskList.RootElement);
         if(!Idle(telemetry)||telemetry.LocalizationConfidence is not >=0.5 || telemetry.Charging!=false ||
             telemetry.Alarms.Any(a=>a.Severity is AgvAlarmSeverity.Error or AgvAlarmSeverity.Fatal))
             throw new InvalidOperationException("车辆未确认静止、存在任务/报警、急停阻挡、充电或定位置信度不足。");
-        var sx=Number(source[0],"x");var sy=Number(source[0],"y");
-        var atSource=sx is { } x && sy is { } y && telemetry.X is { } tx && telemetry.Y is { } ty && Math.Sqrt(Math.Pow(x-tx,2)+Math.Pow(y-ty,2))<=0.25;
+        var atSource=AtStation(telemetry,source.X,source.Y);
         if(!atSource)throw new InvalidOperationException("车辆不在所选起点；请先由厂家将车停到起点，再重新核验。");
         using var after=await client.RequestAsync(1300,null,ct);
         using var afterLoad=await client.RequestAsync(1022,null,ct);
@@ -127,7 +124,8 @@ public sealed class SingleNavigationTestService : ISingleNavigationTestService
         if(Text(after.RootElement,"current_map")!=map||Text(after.RootElement,"current_map_md5")!=md5||Int(afterLoad.RootElement,"loadmap_status")!=1||
             !afterOwner.RootElement.TryGetProperty("locked",out var al)||al.ValueKind!=JsonValueKind.False)
             throw new InvalidOperationException("核验期间地图或控制权发生变化，请重新核验。");
-        return new(Guid.NewGuid().ToString("N"),DateTimeOffset.UtcNow.AddSeconds(30),q.VehicleId,q.SourceSite,q.TargetSite,map,md5,[q.SourceSite,q.TargetSite]);
+        return new(Guid.NewGuid().ToString("N"),DateTimeOffset.UtcNow.AddSeconds(30),q.VehicleId,q.SourceSite,q.TargetSite,map,md5,path)
+        {TargetX=target.X,TargetY=target.Y};
     }
     public async Task<NavigationTestPreview> PreviewAsync(TrafficUserContext user,NavigationTestQuery query,CancellationToken ct)
     {
@@ -155,15 +153,18 @@ public sealed class SingleNavigationTestService : ISingleNavigationTestService
             if(lease is null)throw new InvalidOperationException("未发送导航："+_execution.NewWorkBlockReason+"；阻塞解除后请重新核验。");
             var fresh=await ObserveAsync(new(preview.VehicleId,preview.SourceSite,preview.TargetSite),ct);
             if(fresh.RobotMap!=preview.RobotMap||fresh.RobotMapMd5!=preview.RobotMapMd5)throw new InvalidOperationException("地图身份已变化，拒绝沿用旧核验。");
+            if(!fresh.Route.SequenceEqual(preview.Route,StringComparer.Ordinal)||fresh.TargetX!=preview.TargetX||fresh.TargetY!=preview.TargetY)
+                throw new InvalidOperationException("车端规划路线或终点坐标已变化，请重新核验并确认。");
             if(DateTimeOffset.UtcNow>preview.ExpiresAt)throw new InvalidOperationException("发送前核验已过期。");
             var client=await GuardAsync(preview.VehicleId,ct);
             var id="NAVTEST-"+Guid.NewGuid().ToString("N");
             var vendor=AgvTransportSegmentIds.For(id,2).Single();
-            _record=new(id,vendor,preview.VehicleId,preview.SourceSite,preview.TargetSite,preview.RobotMap,preview.RobotMapMd5,"Uncertain","已记录发送意图；未确认车端接受，禁止自动重发。",DateTimeOffset.Now,user.WindowsIdentity);
+            _record=new(id,vendor,preview.VehicleId,preview.SourceSite,preview.TargetSite,preview.RobotMap,preview.RobotMapMd5,"Uncertain","已记录发送意图；未确认车端接受，禁止自动重发。",DateTimeOffset.Now,user.WindowsIdentity)
+            {NavigationApi=3051,Route=preview.Route.ToArray(),TargetX=preview.TargetX,TargetY=preview.TargetY};
             Persist(); // write intent durably before any motion bytes
             try
             {
-                using var response=await client.RequestAsync(3066,new{move_task_list=new[]{new{source_id=preview.SourceSite,id=preview.TargetSite,task_id=vendor}}},ct);
+                using var response=await client.RequestAsync(3051,new{source_id=preview.SourceSite,id=preview.TargetSite,task_id=vendor},ct);
                 if(Int(response.RootElement,"ret_code")!=0)throw new InvalidDataException("导航应答缺少明确的ret_code=0。");
                 _record=_record with{State="Accepted",Message="车端已应答；不代表到点完成。",UpdatedAt=DateTimeOffset.Now};
             }
@@ -183,22 +184,31 @@ public sealed class SingleNavigationTestService : ISingleNavigationTestService
                 {
                     var task=(await client.QueryTasksAsync([_record.VendorTaskId],ct)).SingleOrDefault();
                     var state=task?.Status switch{1=>"Waiting",2=>"Running",3=>"Suspended",4=>"Completed",5 or 7=>"Failed",6=>"Cancelled",_=>"Uncertain"};
+                    var message=task is null?"原任务未找到，不视为未发送；保持阻塞。":$"原任务状态码 {task.Status}；仅终态且车辆静止时结束测试。";
+                    var (t,_)=await client.PollAsync(ct);
+                    _record=_record with{CurrentStation=t.CurrentStation,X=t.X,Y=t.Y,ObservedAt=t.ReadAt};
                     if(Terminal(state))
                     {
-                        var (t,_)=await client.PollAsync(ct);
                         using var taskList=await client.RequestAsync(1110,new{},ct);
                         RequireIdleTaskList(taskList.RootElement);
-                        if(!Idle(t))state="Uncertain";
+                        if(!Idle(t)){state="Uncertain";message="原任务已返回终态，但车辆尚未确认静止；请继续查询。";}
+                        else if(state=="Completed")
+                        {
+                            var arrivalError=await CheckArrivalAsync(client,t,_record,ct);
+                            if(arrivalError is not null){state="Uncertain";message=arrivalError;}
+                            else message="原任务已完成，车端地图一致，车辆已在所选终点静止。";
+                        }
                     }
-                    _record=_record with{State=state,Message=task is null?"原任务未找到，不视为未发送；保持阻塞。":$"原任务状态码 {task.Status}；仅终态且车辆静止时结束测试。",UpdatedAt=DateTimeOffset.Now};Persist();
+                    _record=_record with{State=state,Message=message,UpdatedAt=DateTimeOffset.Now};Persist();
                 }
                 catch(Exception ex)when(!ct.IsCancellationRequested){_record=_record with{State="Uncertain",Message="查询失败，不能重发："+ex.Message,UpdatedAt=DateTimeOffset.Now};Persist();}
             }
             var enabled=_settings.Enabled&&_settings.BusinessExecutionDisabled&&_options.AllowCommands;
             var block=!enabled?"单次导航未启用、AGV动作未启用或业务执行未关闭。":
-                !_options.Enabled||_options.GetConfigurationError() is not null?"测试车通信配置不可用。":
+                !_options.Enabled||_options.GetConfigurationError() is not null||string.IsNullOrWhiteSpace(_settings.VehicleId)||
+                    !_connections.TryGet(_settings.VehicleId,out _)?"测试车通信配置不可用。":
                 _execution.NewWorkBlockReason;
-            return new(enabled,_settings.VehicleId,_record,"现场单车、单段导航；速度沿用厂家车端路径配置。不会启动PLC或自动调度。")
+            return new(enabled,_settings.VehicleId,_record,"单车路径导航，可经过中间站点；速度沿用厂家车端配置。不会启动PLC或自动调度。")
             {Ready=block is null,BlockReason=block};
         }
         finally{_mutex.Release();}

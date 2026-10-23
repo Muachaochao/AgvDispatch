@@ -104,7 +104,7 @@ options.AllowCommands=false;await Reject(()=>service.PreviewAsync(user,query,def
 await Reject(()=>service.PreviewAsync(user,query with{VehicleId="OTHER"},default),"Unapproved vehicle rejected");
 robot.Locked=true;await Reject(()=>service.PreviewAsync(user,query,default),"Occupied control rejected");robot.Locked=false;
 robot.Away=true;await Reject(()=>service.PreviewAsync(user,query,default),"Vehicle away from source rejected");robot.Away=false;
-robot.Indirect=true;await Reject(()=>service.PreviewAsync(user,query,default),"Indirect route rejected");robot.Indirect=false;
+robot.Indirect=true;await Reject(()=>service.PreviewAsync(user,query,default),"Unknown intermediary rejected");robot.Indirect=false;
 robot.ActiveForeign=true;await Reject(()=>service.PreviewAsync(user,query,default),"Foreign running task rejected");robot.ActiveForeign=false;
 robot.MissingTasks=true;await Reject(()=>service.PreviewAsync(user,query,default),"Missing task list rejected");robot.MissingTasks=false;
 active.Busy=true;await Reject(()=>service.PreviewAsync(user,query,default),"Active PLC business task rejected");active.Busy=false;
@@ -119,7 +119,7 @@ Check(!File.Exists(recordPath)&&robot.Sends==0,"Gate closing after preview rejec
 preview=await service.PreviewAsync(user,query,default);
 robot.IntentPath=recordPath;
 var sent=await service.SubmitAsync(user,new(preview.PreviewId,true),default);
-Check(sent.State=="Accepted"&&robot.Sends==1&&robot.IntentExisted,"Intent is durable before sending one 3066 command");
+Check(sent.State=="Accepted"&&robot.Sends==1&&robot.IntentExisted,"Intent is durable before sending one 3051 command");
 Check(robot.LastSource=="LM1"&&robot.LastTarget=="LM2"&&robot.LastTask==sent.VendorTaskId,"Exact vendor pair/task id transmitted without action");
 await Reject(()=>service.SubmitAsync(user,new(preview.PreviewId,true),default),"Repeated click cannot resend");
 await Reject(()=>service.PreviewAsync(user,query,default),"Only one unresolved navigation allowed");
@@ -171,14 +171,14 @@ sealed class Robot:IAsyncDisposable
     case 1060:result=new{locked=Locked};break;
     case 1301:result=new{stations=new[]{new{id="LM1",x=0d,y=0d},new{id="LM2",x=1d,y=0d}}};break;
     case 1303:result=new{list=Indirect?new[]{"LM1","VIA","LM2"}:new[]{"LM1","LM2"}};break;
-    case 1100:result=new{x=Away?5d:0d,y=0d,angle=0d,confidence=0.9,battery_level=0.95,blocked=false,emergency=false,charging=false,current_station=Away?"":"LM1",vx=0d,vy=0d,w=0d};break;
+    case 1100:result=new{x=Away?5d:Status==4&&LastTask.Length>0?1d:0d,y=0d,angle=0d,confidence=0.9,battery_level=0.95,blocked=false,emergency=false,charging=false,current_station=Away?"":"LM1",vx=0d,vy=0d,w=0d};break;
     case 1110:
      if(MissingTasks){result=new{};break;}
      var filtered=req.RootElement.TryGetProperty("task_ids",out var ids);
      var taskData=new{task_status_list=filtered?new[]{new{task_id=ids[0].GetString()!,status=Status}}:ActiveForeign?new[]{new{task_id="foreign",status=2}}:UnknownStatus?new[]{new{task_id="unknown",status=404}}:LastTask.Length>0?new[]{new{task_id=LastTask,status=Status}}:EmptyHistoricalId?new[]{new{task_id="",status=4}}:Array.Empty<object>()};
      result=WrappedTasks?new{ret_code=0,task_status_package=(object)taskData}:(object)taskData;break;
-    case 3066:
-     if(!motion)throw new Exception("Wrong port");var item=req.RootElement.GetProperty("move_task_list")[0];if(item.TryGetProperty("operation",out _))throw new Exception("Unexpected action");
+    case 3051:
+     if(!motion)throw new Exception("Wrong port");var item=req.RootElement;if(item.TryGetProperty("operation",out _))throw new Exception("Unexpected action");
      LastSource=item.GetProperty("source_id").GetString()!;LastTarget=item.GetProperty("id").GetString()!;LastTask=item.GetProperty("task_id").GetString()!;IntentExisted=File.Exists(IntentPath);Status=2;Interlocked.Increment(ref Sends);
      if(DropReply)return;result=new{ret_code=0};break;
     case 3003:if(!motion)throw new Exception("Wrong cancel port");CancelId=req.RootElement.GetProperty("taskId").GetString()!;Interlocked.Increment(ref CancelCount);Status=6;result=new{ret_code=0};break;

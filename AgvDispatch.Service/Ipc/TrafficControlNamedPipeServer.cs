@@ -179,6 +179,7 @@ public sealed class TrafficControlNamedPipeServer(
         {
             "GetCurrentRobotMapDownload" => Success(await (robotMapDownload??throw new NotSupportedException("请更新车端地图只读下载后台。")).ReadCurrentAsync(Deserialize<RobotMapDownloadQuery>(request.Payload),cancellationToken)),
             "GetNavigationTest" => Success(await (navigationTest??throw new NotSupportedException("请更新单次导航后台。")).ReadAsync(cancellationToken)),
+            "GetNavigationTestStations" => Success(await (navigationTest??throw new NotSupportedException("请更新单次导航后台。")).ReadStationsAsync(cancellationToken)),
             "PreviewNavigationTest" => Success(await (navigationTest??throw new NotSupportedException("请更新单次导航后台。")).PreviewAsync(user,Deserialize<NavigationTestQuery>(request.Payload),cancellationToken)),
             "SubmitNavigationTest" => Success(await (navigationTest??throw new NotSupportedException("请更新单次导航后台。")).SubmitAsync(user,Deserialize<NavigationTestSubmit>(request.Payload),cancellationToken)),
             "CancelNavigationTest" => Success(await (navigationTest??throw new NotSupportedException("请更新单次导航后台。")).CancelAsync(user,Deserialize<NavigationTestCancel>(request.Payload),cancellationToken)),
