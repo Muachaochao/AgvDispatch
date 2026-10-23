@@ -145,6 +145,41 @@ transfer.Open=true;
 using(var lease=await realGate.EnterAsync(MapExecutionOperation.NewWork,default))Check(lease is not null&&realGate.NewWorkBlockReason is null,"All barriers open permits work");
 using(await realGate.EnterControlAsync(default))realGate.SetMode(MapExecutionMode.Held);
 Check(realGate.NewWorkBlockReason!.Contains("地图切换"),"Held map remains blocked independently of recovery");
+robot.DropReply=false;robot.LastTask="";robot.Status=4;gate.Open=true;
+var jackSettings=new SingleNavigationTestOptions{Enabled=true,VehicleId="SIM",BusinessExecutionDisabled=true,OtherApiPort=robot.ConfigPort};
+var jackPath=Path.Combine(folder,"jack-test-nav.json");robot.JackIntentPath=jackPath+".jack.json";
+SingleNavigationTestService CreateJack()=>new(jackSettings,options,connections,active,gate,jackPath);
+var jackService=CreateJack();JackTestSubmit JackRequest(string action="Up")=>new(Guid.NewGuid().ToString(),action,true,true);
+Check((await jackService.ReadJackAsync(default)).Telemetry?.State==3&&robot.JackWrites==0,"1027 is readonly and distinguishes lower endpoint");
+await Reject(()=>jackService.SubmitJackAsync(user,JackRequest() with{AreaClearConfirmed=false},default),"Jack requires per-action clearance confirmation");
+gate.Open=false;await Reject(()=>jackService.SubmitJackAsync(user,JackRequest(),default),"Jack lift obeys startup/map execution barrier");gate.Open=true;
+robot.Locked=true;await Reject(()=>jackService.SubmitJackAsync(user,JackRequest(),default),"Jack never takes occupied control");robot.Locked=false;
+robot.JackEnabled=false;await Reject(()=>jackService.SubmitJackAsync(user,JackRequest(),default),"Unconfigured jack rejected");robot.JackEnabled=true;
+robot.JackEmergency=true;await Reject(()=>jackService.SubmitJackAsync(user,JackRequest(),default),"Jack emergency blocks actuation");robot.JackEmergency=false;
+robot.JackError=42;await Reject(()=>jackService.SubmitJackAsync(user,JackRequest(),default),"Jack fault blocks actuation");robot.JackError=0;
+robot.JackLoad=true;await Reject(()=>jackService.SubmitJackAsync(user,JackRequest(),default),"Loaded vehicle rejected by lift test");robot.JackLoad=false;
+robot.JackMissing=true;await Reject(()=>jackService.SubmitJackAsync(user,JackRequest(),default),"Missing jack feedback never treated as idle");robot.JackMissing=false;
+robot.ActiveForeign=true;await Reject(()=>jackService.SubmitJackAsync(user,JackRequest(),default),"Foreign navigation blocks jack");robot.ActiveForeign=false;
+var upRequest=JackRequest();var up=await jackService.SubmitJackAsync(user,upRequest,default);
+Check(up.State=="Accepted"&&robot.JackWrites==1&&robot.JackIntentExisted,"6070 sends once after durable intent, acknowledgment is not completion");
+await jackService.SubmitJackAsync(user,upRequest,default);Check(robot.JackWrites==1,"Repeated jack request id cannot resend");
+await Reject(()=>jackService.SubmitJackAsync(user,JackRequest("Down"),default),"Opposite jack action blocked while moving");
+await Reject(()=>jackService.PreviewAsync(user,query,default),"Navigation blocked while jack moving");
+robot.JackState=1;Check((await jackService.ReadJackAsync(default)).Current?.State=="Completed","Upper endpoint feedback completes lift");
+await Reject(()=>jackService.SubmitJackAsync(user,JackRequest(),default),"Already-raised jack cannot receive repeated lift");
+robot.JackLoad=true;
+Check((await jackService.ReadJackAsync(default)).Ready,"Lowering remains available when lift feedback reports a load");
+var downRequest=JackRequest("Down") with{EmptyLoadConfirmed=false};
+gate.Open=false;
+Check((await jackService.ReadJackAsync(default)).Ready,"Lowering remains available while production recovery gate is held");
+var down=await jackService.SubmitJackAsync(user,downRequest,default);Check(down.State=="Accepted"&&robot.JackWrites==2,"6071 lowers a loaded raised jack without requiring a false empty-load confirmation");
+gate.Open=true;
+robot.JackState=3;Check((await jackService.ReadJackAsync(default)).Current?.State=="Completed","Lower endpoint feedback completes lowering");
+robot.JackLoad=false;
+robot.DropJackReply=true;var lost=await jackService.SubmitJackAsync(user,JackRequest(),default);
+Check(lost.State=="Uncertain"&&robot.JackWrites==3,"Lost jack reply is uncertain and never retried");
+jackService=CreateJack();await jackService.ReadJackAsync(default);Check(robot.JackWrites==3,"Restart only queries jack feedback without resend");
+robot.JackState=1;Check((await jackService.ReadJackAsync(default)).Current?.State is "Completed" or "ObservedTarget","Fresh endpoint feedback reconciles observed physical result");
 Console.WriteLine($"PASS {count} checks; simulation only, no physical motion");
 
 sealed class Tasks:IActiveTaskLookup
@@ -154,7 +189,7 @@ sealed class Gate:IMapExecutionGate
 sealed class Robot:IAsyncDisposable
 {
  readonly TcpListener status=new(IPAddress.Loopback,0),nav=new(IPAddress.Loopback,0),config=new(IPAddress.Loopback,0);readonly CancellationTokenSource stop=new();readonly ConcurrentBag<Task> workers=[];
- public int ConfigPort=>((IPEndPoint)config.LocalEndpoint).Port;public bool DownloadChanged,DownloadWrong;public int Downloads;
+ public int ConfigPort=>((IPEndPoint)config.LocalEndpoint).Port;public bool DownloadChanged,DownloadWrong;public int Downloads;public int JackState=3,JackError,JackWrites;public bool JackEnabled=true,JackEmergency,JackLoad,JackMissing,DropJackReply,JackIntentExisted;public string JackIntentPath="";
  public int StatusPort=>((IPEndPoint)status.LocalEndpoint).Port;public int NavigationPort=>((IPEndPoint)nav.LocalEndpoint).Port;
  public bool Locked,Away,Indirect,ActiveForeign,MissingTasks,ChangedMap,DropReply,IntentExisted,WrappedTasks,EmptyHistoricalId,UnknownStatus;public string IntentPath="",LastSource="",LastTarget="",LastTask="",CancelId="";public int Sends,CancelCount,Status=2;
  public Robot(){status.Start();nav.Start();config.Start();workers.Add(Accept(config,false));workers.Add(Accept(status,false));workers.Add(Accept(nav,true));}
@@ -166,6 +201,11 @@ sealed class Robot:IAsyncDisposable
     case 4011:
      Interlocked.Increment(ref Downloads);result=new{header=new{mapType="2D-Map",mapName=DownloadWrong?"wrong":"test"}};
      if(DownloadChanged)ChangedMap=true;break;
+    case 1027:result=JackMissing?(object)new{}:new{jack_state=JackState,jack_enable=JackEnabled,jack_emc=JackEmergency,jack_error_code=JackError,jack_isFull=JackLoad,jack_height=0.02};break;
+    case 6070:case 6071:
+     if(n!=0||motion)throw new Exception("Jack requests require empty data on other API channel");
+     JackIntentExisted=File.Exists(JackIntentPath);Interlocked.Increment(ref JackWrites);JackState=type==6070?0:2;
+     if(DropJackReply)return;result=new{ret_code=0};break;
     case 1300:result=new{current_map=ChangedMap?"changed":"test",current_map_md5=new string(ChangedMap?'b':'a',32)};break;
     case 1022:result=new{loadmap_status=1};break;
     case 1060:result=new{locked=Locked};break;

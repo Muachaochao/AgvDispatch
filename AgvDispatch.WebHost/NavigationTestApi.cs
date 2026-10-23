@@ -4,6 +4,8 @@ public static class NavigationTestApi
 {
     public static void MapNavigationTestApi(this WebApplication app)
     {
+        app.MapGet("/api/navigation-test/jack",async(DispatchPipe p,CancellationToken ct)=>await p.ReadAsync<JackTestStatus>("GetJackTest",new{},ct));
+        app.MapPost("/api/navigation-test/jack",async(JackTestSubmit q,DispatchPipe p,CancellationToken ct)=>await p.ReadAsync<JackTestRecord>("SubmitJackTest",q,ct));
         app.MapGet("/api/navigation-test",async(DispatchPipe p,CancellationToken ct)=>await p.ReadAsync<NavigationTestStatus>("GetNavigationTest",new{},ct));
         app.MapGet("/api/navigation-test/stations",async(DispatchPipe p,CancellationToken ct)=>await p.ReadAsync<NavigationTestStations>("GetNavigationTestStations",new{},ct));
         app.MapPost("/api/navigation-test/preview",async(NavigationTestQuery q,DispatchPipe p,CancellationToken ct)=>await p.ReadAsync<NavigationTestPreview>("PreviewNavigationTest",q,ct));

@@ -4,6 +4,9 @@ interface RecordRow {taskId:string;vendorTaskId:string;vehicleId:string;sourceSi
 interface Status {ready:boolean;blockReason:string|null;enabled:boolean;vehicleId:string;current:RecordRow|null;message:string}
 interface Preview {previewId:string;expiresAt:string;vehicleId:string;sourceSite:string;targetSite:string;robotMap:string;robotMapMd5:string;route:string[]}
 interface Stations {vehicleId:string;robotMap:string;robotMapMd5:string;stations:{id:string;x:number;y:number}[];suggestedSourceSite:string|null;capturedAt:string}
+interface JackStatus {ready:boolean;blockReason:string|null;vehicleId:string;telemetry:{state:number;enabled:boolean;emergency:boolean;errorCode:number;hasLoad:boolean;height:number|null;observedAt:string}|null;current:{requestId:string;action:string;state:string;message:string;updatedAt:string}|null}
+const jack=ref<JackStatus|null>(null),jackConfirmed=ref(false),jackError=ref('');
+const jackLabels:Record<number,string>={0:'上升中',1:'上升到位',2:'下降中',3:'下降到位',4:'停止',255:'执行失败'};
 const status=ref<Status|null>(null),catalog=ref<Stations|null>(null),preview=ref<Preview|null>(null);
 const source=ref(''),target=ref(''),confirmed=ref(false),busy=ref(false),error=ref(''),readError=ref(''),now=ref(Date.now());
 const labels:Record<string,string>={Accepted:'已接受，等待执行',Waiting:'等待中',Running:'运行中',Suspended:'暂停',Completed:'已完成并核对到点',Failed:'失败',Cancelled:'已取消',CancelRequested:'取消待核实',Uncertain:'结果不确定，禁止重发'};
@@ -14,10 +17,17 @@ const canSubmit=computed(()=>valid.value&&confirmed.value&&!busy.value&&!active.
 let disposed=false,timer:ReturnType<typeof setInterval>|undefined;
 async function api<T>(suffix='',body?:unknown):Promise<T>{const r=await fetch('/api/navigation-test'+suffix,{method:body===undefined?'GET':'POST',headers:body===undefined?{}:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(30000)});const data=await r.json();if(!r.ok)throw new Error(data.detail??data.error??'请求失败');return data;}
 function invalidate(){preview.value=null;confirmed.value=false;}
-async function refresh(){if(busy.value||disposed)return;busy.value=true;try{const s=await api<Status>();if(!disposed){status.value=s;readError.value='';if(!s.ready)invalidate();}}catch(e){if(!disposed){readError.value=String(e);invalidate();}}finally{busy.value=false;}}
+async function refresh(){if(busy.value||disposed)return;busy.value=true;try{const s=await api<Status>();if(!disposed){status.value=s;readError.value='';if(!s.ready)invalidate();try{jack.value=await api<JackStatus>('/jack');jackError.value='';}catch(e){jackError.value=String(e);jack.value=null;}}}catch(e){if(!disposed){readError.value=String(e);invalidate();}}finally{busy.value=false;}}
 async function loadStations(){if(busy.value||active.value||disposed)return;invalidate();busy.value=true;error.value='';const previous=catalog.value;catalog.value=null;try{const c=await api<Stations>('/stations');if(disposed)return;const same=previous?.vehicleId===c.vehicleId&&previous.robotMap===c.robotMap&&previous.robotMapMd5===c.robotMapMd5;catalog.value=c;source.value=c.suggestedSourceSite??(same&&c.stations.some(s=>s.id===source.value)?source.value:'');target.value=same&&c.stations.some(s=>s.id===target.value)?target.value:'';}catch(e){if(!disposed)error.value=String(e);}finally{busy.value=false;}}
 async function inspect(){if(!canInspect.value||!catalog.value)return;invalidate();busy.value=true;error.value='';try{preview.value=await api<Preview>('/preview',{vehicleId:catalog.value.vehicleId,sourceSite:source.value,targetSite:target.value,expectedRobotMap:catalog.value.robotMap,expectedRobotMapMd5:catalog.value.robotMapMd5});}catch(e){error.value=String(e);}finally{busy.value=false;}}
 async function submit(){if(!canSubmit.value||!preview.value)return;const id=preview.value.previewId;invalidate();busy.value=true;error.value='';try{await api('/submit',{previewId:id,siteClearConfirmed:true});}catch(e){error.value=String(e)+'；请先查询原任务，确认未发送并解除阻塞后再重新核验。';}finally{busy.value=false;await refresh();}}
+async function submitJack(action:'Up'|'Down'){
+ if(busy.value||active.value||(action!=='Down'&&!status.value?.ready)||!jack.value?.ready||!jackConfirmed.value||jackError.value)return;
+ busy.value=true;error.value='';jackError.value='';const requestId=crypto.randomUUID();jackConfirmed.value=false;invalidate();
+ try{await api('/jack',{requestId,action,areaClearConfirmed:true,emptyLoadConfirmed:action==='Up'});}
+ catch(e){jackError.value=String(e)+'；请先查询顶升状态，不能重复发送。';}
+ finally{busy.value=false;await refresh();}
+}
 async function cancel(){const r=status.value?.current;if(!r)return;busy.value=true;error.value='';try{await api('/cancel',{taskId:r.taskId});}catch(e){error.value=String(e);}finally{busy.value=false;await refresh();}}
 watch([source,target],invalidate);
 onMounted(async()=>{await refresh();if(!disposed&&status.value?.enabled&&!active.value)await loadStations();if(!disposed)timer=setInterval(()=>{now.value=Date.now();void refresh();},3000);});
@@ -54,6 +64,22 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);});
    <button class="send" :disabled="!canSubmit" @click="submit">发送单次导航</button>
   </div>
  </section>
+ <section class="jack-test">
+  <h3>原地顶升动作测试</h3>
+  <p>独立控制当前测试车的顶升机构，不行驶到其他站点。上升与导航互斥，并仅允许在车端报告无料时执行；下降允许带料，用于卸载已顶升的机构。</p>
+  <button :disabled="busy" @click="refresh">查询顶升状态</button>
+  <p v-if="jackError" role="alert" class="error">{{jackError}}</p>
+  <p v-if="jack?.blockReason" class="notice">当前不能操作：{{jack.blockReason}}</p>
+  <div v-if="jack?.telemetry" class="jack-status">
+   <strong>{{jackLabels[jack.telemetry.state]??'未知状态'}} · 原始码 {{jack.telemetry.state}}</strong>
+   <p>当前高度：{{jack.telemetry.height==null?'未提供':(jack.telemetry.height*1000).toFixed(1)+' mm'}} · {{jack.telemetry.enabled?'机构已启用':'机构未启用'}} · {{jack.telemetry.hasLoad?'报告有料':'报告无料'}}<br/>故障码：{{jack.telemetry.errorCode}} · {{jack.telemetry.emergency?'顶升急停':'无顶升急停'}}<br/>观测时间：{{new Date(jack.telemetry.observedAt).toLocaleString()}}</p>
+  </div>
+  <p v-else>尚未取得可靠顶升反馈；未配置或不支持此接口的车辆不能通过此入口操作。</p>
+  <label class="jack-confirm"><input v-model="jackConfirmed" type="checkbox" :disabled="busy||!jack?.ready||active"/>已现场确认本次动作的上下空间与周边无人无障碍；执行上升时车辆无料</label>
+  <div><button :disabled="busy||active||!status?.ready||!jack?.ready||!jackConfirmed||!!jackError||jack?.telemetry?.hasLoad||jack?.telemetry?.state===1" @click="submitJack('Up')">顶升上升</button><button :disabled="busy||active||!jack?.ready||!jackConfirmed||!!jackError||jack?.telemetry?.state===3" @click="submitJack('Down')">顶升下降</button></div>
+  <p v-if="jack?.current">最近动作：{{jack.current.action==='Up'?'上升':'下降'}} · {{jack.current.state}}<br/>{{jack.current.message}}<br/>请求编号：{{jack.current.requestId}}</p>
+  <p class="notice">发送应答不代表到位；以车端顶升反馈及现场观察核对。连接中断或重启后不自动重发动作。</p>
+ </section>
  <section>
   <h3>本次任务与执行状态</h3><button :disabled="busy" @click="refresh">查询原任务</button>
   <template v-if="status?.current"><h3>{{labels[status.current.state]||status.current.state}}</h3>
@@ -69,5 +95,5 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);});
 </main>
 </template>
 <style scoped>
-.nav-test{max-width:1100px;margin:24px auto;padding:0 20px;color:#d4e5f6}.nav-test section{background:#18263b;border:1px solid #344965;border-radius:8px;padding:24px;margin:20px 0}.nav-test h2{font-size:26px}.nav-test p{line-height:1.7;overflow-wrap:anywhere}.fields{display:flex;gap:24px;flex-wrap:wrap}.fields label{display:grid;gap:8px}.nav-test select{min-width:220px;padding:10px;background:#101b2e;border:1px solid #526d8d;border-radius:5px;color:inherit}.nav-test button{padding:11px 18px;background:#254868;color:#e5f7ff;border:1px solid #5c89ab;border-radius:5px;cursor:pointer;margin:8px 10px 8px 0}.nav-test button:disabled{opacity:.45;cursor:not-allowed}.nav-test .send{display:block;background:#126b8c;margin-top:18px}.preview{border-left:3px solid #53c8df;padding:8px 20px;margin-top:20px}.route{font-size:20px;font-weight:600}.error{color:#ffb2ab;background:#4b252c;padding:16px}.notice{color:#abd0df}
+.nav-test{max-width:1100px;margin:24px auto;padding:0 20px;color:#d4e5f6}.nav-test section{background:#18263b;border:1px solid #344965;border-radius:8px;padding:24px;margin:20px 0}.nav-test h2{font-size:26px}.nav-test p{line-height:1.7;overflow-wrap:anywhere}.fields{display:flex;gap:24px;flex-wrap:wrap}.fields label{display:grid;gap:8px}.nav-test select{min-width:220px;padding:10px;background:#101b2e;border:1px solid #526d8d;border-radius:5px;color:inherit}.nav-test button{padding:11px 18px;background:#254868;color:#e5f7ff;border:1px solid #5c89ab;border-radius:5px;cursor:pointer;margin:8px 10px 8px 0}.nav-test button:disabled{opacity:.45;cursor:not-allowed}.nav-test .send{display:block;background:#126b8c;margin-top:18px}.preview{border-left:3px solid #53c8df;padding:8px 20px;margin-top:20px}.route{font-size:20px;font-weight:600}.error{color:#ffb2ab;background:#4b252c;padding:16px}.notice{color:#abd0df}.jack-status{padding:12px 16px;margin:10px 0;background:#102238;border-left:3px solid #53c8df}.jack-confirm{display:flex;gap:8px;align-items:flex-start;line-height:1.8;margin:16px 0}.jack-confirm input{margin-top:5px}
 </style>

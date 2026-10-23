@@ -9,6 +9,7 @@ public sealed class SingleNavigationTestOptions
     public bool Enabled { get; init; }
     public string VehicleId { get; init; } = "";
     public bool BusinessExecutionDisabled { get; init; }
+    public int OtherApiPort { get; init; } = 19210;
 }
 
 /// <summary>One explicitly confirmed 3051 single-vehicle navigation. Never retries a motion command.
@@ -30,6 +31,7 @@ public sealed partial class SingleNavigationTestService : ISingleNavigationTestS
         AgvConnectionManager connections, IActiveTaskLookup tasks, IMapExecutionGate execution, string path)
     {
         _settings=settings; _options=options; _connections=connections; _tasks=tasks; _execution=execution; _path=path;
+        LoadJackRecord();
         if(File.Exists(path))
         {
             _record=JsonSerializer.Deserialize<NavigationTestRecord>(File.ReadAllText(path))
@@ -92,6 +94,7 @@ public sealed partial class SingleNavigationTestService : ISingleNavigationTestS
         if(new[]{q.SourceSite,q.TargetSite}.Any(s=>string.IsNullOrWhiteSpace(s)||s.Length>128||s.Any(char.IsControl)) || q.SourceSite==q.TargetSite)
             throw new ArgumentException("请选择两个不同的厂家真实站点。");
         var client=await GuardAsync(q.VehicleId,ct);
+        await RequireJackIdleForNavigationAsync(client,ct);
         using var before=await client.RequestAsync(1300,null,ct);
         using var load=await client.RequestAsync(1022,null,ct);
         using var owner=await client.RequestAsync(1060,null,ct);
@@ -208,6 +211,7 @@ public sealed partial class SingleNavigationTestService : ISingleNavigationTestS
                 !_options.Enabled||_options.GetConfigurationError() is not null||string.IsNullOrWhiteSpace(_settings.VehicleId)||
                     !_connections.TryGet(_settings.VehicleId,out _)?"测试车通信配置不可用。":
                 _execution.NewWorkBlockReason;
+            if(block is null&&_jackRecord is not null&&!JackTerminal(_jackRecord.State))block="顶升测试未结束或结果不确定，请先查询顶升状态。";
             return new(enabled,_settings.VehicleId,_record,"单车路径导航，可经过中间站点；速度沿用厂家车端配置。不会启动PLC或自动调度。")
             {Ready=block is null,BlockReason=block};
         }

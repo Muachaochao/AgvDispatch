@@ -36,8 +36,15 @@ public sealed record NavigationTestStatus(bool Enabled, string VehicleId, Naviga
     public bool Ready { get; init; }
     public string? BlockReason { get; init; }
 }
+public sealed record JackTestSubmit(string RequestId,string Action,bool AreaClearConfirmed,bool EmptyLoadConfirmed);
+public sealed record JackTestTelemetry(int State,bool Enabled,bool Emergency,int ErrorCode,bool HasLoad,double? Height,DateTimeOffset ObservedAt);
+public sealed record JackTestRecord(string RequestId,string VehicleId,string Action,string State,string Message,int BeforeState,DateTimeOffset UpdatedAt,string Operator)
+{public bool Acknowledged {get;init;} }
+public sealed record JackTestStatus(bool Ready,string? BlockReason,string VehicleId,JackTestTelemetry? Telemetry,JackTestRecord? Current);
 public interface ISingleNavigationTestService
 {
+    Task<JackTestStatus> ReadJackAsync(CancellationToken ct) => throw new NotSupportedException("顶升测试后台未更新。");
+    Task<JackTestRecord> SubmitJackAsync(TrafficUserContext user,JackTestSubmit request,CancellationToken ct) => throw new NotSupportedException("顶升测试后台未更新。");
     Task<NavigationTestStatus> ReadAsync(CancellationToken ct);
     Task<NavigationTestStations> ReadStationsAsync(CancellationToken ct);
     Task<NavigationTestPreview> PreviewAsync(TrafficUserContext user, NavigationTestQuery query, CancellationToken ct);
