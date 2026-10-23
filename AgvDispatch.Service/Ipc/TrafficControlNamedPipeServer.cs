@@ -32,7 +32,7 @@ public sealed class TrafficControlNamedPipeServer(
     NamedPipeDiagnostics pipeDiagnostics,
     ITrafficGeometryPreviewService? geometry=null,
     IRobokitInspectionService? robokit=null, IRobokitInspectionHistory? robokitHistory=null,IMapTransferLedger? mapTransfers=null, ITaskHandshakeStore? handshakes=null, ITaskDiagnosticArchiveService? diagnosticExports=null, ICommissioningQueryService? commissioning=null,
-    ITrafficWaitingBayDepartureService? waitingBayDeparture=null) : IsolatedBackgroundService
+    ITrafficWaitingBayDepartureService? waitingBayDeparture=null, ISingleNavigationTestService? navigationTest=null) : IsolatedBackgroundService
 {
     private async Task<RobokitInspectionSnapshot> InspectRobokitAsync(TrafficUserContext user,RobokitInspectionQuery query,CancellationToken ct)
     {
@@ -167,6 +167,10 @@ public sealed class TrafficControlNamedPipeServer(
 
         return request.Operation switch
         {
+            "GetNavigationTest" => Success(await (navigationTest??throw new NotSupportedException("请更新单次导航后台。")).ReadAsync(cancellationToken)),
+            "PreviewNavigationTest" => Success(await (navigationTest??throw new NotSupportedException("请更新单次导航后台。")).PreviewAsync(user,Deserialize<NavigationTestQuery>(request.Payload),cancellationToken)),
+            "SubmitNavigationTest" => Success(await (navigationTest??throw new NotSupportedException("请更新单次导航后台。")).SubmitAsync(user,Deserialize<NavigationTestSubmit>(request.Payload),cancellationToken)),
+            "CancelNavigationTest" => Success(await (navigationTest??throw new NotSupportedException("请更新单次导航后台。")).CancelAsync(user,Deserialize<NavigationTestCancel>(request.Payload),cancellationToken)),
             "GetCommissioningReport" => Success(await (commissioning??throw new NotSupportedException("当前后台未提供联调检查，请部署匹配版本。")).ReadAsync(user,Deserialize<CommissioningQuery>(request.Payload),cancellationToken)),
             "GetTaskRuntimeEvents" => Success(await (handshakes??throw new NotSupportedException("后台未配置运行事件查询。")).QueryAsync(Deserialize<TaskRuntimeQuery>(request.Payload),cancellationToken)),
             "ExportTaskDiagnostics" => Success(await (diagnosticExports??throw new NotSupportedException("后台未配置联调诊断导出。")).ExportAsync(Deserialize<TaskDetailRequest>(request.Payload).TaskId,cancellationToken)),

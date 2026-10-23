@@ -98,6 +98,14 @@ builder.Services.AddSingleton<AgvStateCache>();
 builder.Services.AddSingleton<IAgvStateCache>(
     provider => provider.GetRequiredService<AgvStateCache>());
 builder.Services.AddSingleton<AgvConnectionManager>();
+builder.Services.AddSingleton<ISingleNavigationTestService>(p => new SingleNavigationTestService(
+    new SingleNavigationTestOptions {
+        Enabled=builder.Configuration.GetValue("NavigationTest:Enabled",false),
+        VehicleId=builder.Configuration["NavigationTest:VehicleId"]??"",
+        BusinessExecutionDisabled=new[]{"Dispatching:Enabled","AgvCommandOutbox:Enabled","DispatchTaskSteps:Enabled","TaskCreation:Enabled","HandshakeExecution:Enabled"}
+            .All(key=>builder.Configuration.GetValue<bool?>(key)==false)
+    },agvOptions,p.GetRequiredService<AgvConnectionManager>(),p.GetRequiredService<IActiveTaskLookup>(),
+    p.GetRequiredService<IMapExecutionGate>(),Path.Combine(Path.GetDirectoryName(databaseOptions.DatabasePath)!,"navigation-test.json")));
 builder.Services.AddSingleton<IRobokitInspectionService, RobokitInspectionService>();
 builder.Services.AddSingleton<IRobokitInspectionHistory, RobokitInspectionHistory>();
 builder.Services.AddSingleton<IRobokitTaskMapPreflight, RobokitTaskMapPreflight>();

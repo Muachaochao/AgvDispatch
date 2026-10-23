@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
@@ -11,7 +11,7 @@ namespace AgvDispatch.WebHost;
 internal static class WebLocalLauncher
 {
     private sealed record OwnedProcess(int Id,long StartedUtcTicks,string Path);
-    private sealed record Session(string ReleaseId,OwnedProcess Service,OwnedProcess Web);
+    private sealed record Session(string ReleaseId,OwnedProcess Service,OwnedProcess Web,string NavigationTestVehicle="");
     public static async Task<int> RunAsync(string[] args)
     {
         var created=new List<Process>();
@@ -20,6 +20,10 @@ internal static class WebLocalLauncher
             var index=Array.IndexOf(args,"--bundle-root");
             if(index<0||index+1>=args.Length)throw new ArgumentException("Missing --bundle-root.");
             var root=System.IO.Path.GetFullPath(args[index+1]);
+            var navIndex=Array.IndexOf(args,"--navigation-test-vehicle");
+            var navVehicle=navIndex<0?"":navIndex+1<args.Length?args[navIndex+1]:throw new ArgumentException("Missing test vehicle id.");
+            if(navIndex>=0&&(string.IsNullOrWhiteSpace(navVehicle)||navVehicle.Length>32||navVehicle.Any(c=>!char.IsAsciiLetterOrDigit(c)&&c is not '-' and not '_')))
+                throw new ArgumentException("Invalid navigation test vehicle id.");
             using var manifest=JsonDocument.Parse(File.ReadAllText(System.IO.Path.Combine(root,"release-manifest.json")));
             if(manifest.RootElement.GetProperty("schema").GetString()!="agv-commissioning-release")throw new InvalidDataException("Unsupported release manifest.");
             var release=manifest.RootElement.GetProperty("releaseId").GetString()!;
@@ -48,6 +52,7 @@ internal static class WebLocalLauncher
                     {using var process=Process.GetProcessById(owned!.Id);process.Kill(false);await process.WaitForExitAsync();}
                     Console.WriteLine("Stopped only the recorded processes for this release. Browser windows are unchanged.");return 0;
                 }
+                if(serviceAlive&&session!.NavigationTestVehicle!=navVehicle)throw new InvalidOperationException("Running session uses another navigation mode/vehicle. Stop this bundle before changing mode.");
                 if(serviceAlive!=webAlive)throw new InvalidOperationException("Only one recorded component is running. Use Stop-Latest-Web.cmd before restarting; no process was replaced.");
                 var address=$"http://127.0.0.1:{port}";
                 using var http=new HttpClient{BaseAddress=new Uri(address),Timeout=TimeSpan.FromSeconds(3)};
@@ -55,9 +60,9 @@ internal static class WebLocalLauncher
                 {
                     var probe=new TcpListener(IPAddress.Loopback,port);
                     try{probe.Start();}catch(SocketException){throw new InvalidOperationException($"Port {port} is occupied. No existing program was stopped.");}finally{probe.Stop();}
-                    var service=Start(servicePath,[$"--Security:PipeName={pipe}","--Plc:Enabled=false","--Plc:AllowWrites=false","--Agv:Enabled=false","--Agv:AllowCommands=false","--TaskCreation:Enabled=false","--Dispatching:Enabled=false","--AgvCommandOutbox:Enabled=false","--DispatchTaskSteps:Enabled=false","--HandshakeExecution:Enabled=false"]);created.Add(service);
+                    var service=Start(servicePath,[$"--Security:PipeName={pipe}","--Plc:Enabled=false","--Plc:AllowWrites=false","--Agv:Enabled=false",$"--Agv:AllowCommands={(navVehicle.Length>0?"true":"false")}","--TaskCreation:Enabled=false","--Dispatching:Enabled=false","--AgvCommandOutbox:Enabled=false","--DispatchTaskSteps:Enabled=false","--HandshakeExecution:Enabled=false",$"--NavigationTest:Enabled={(navVehicle.Length>0?"true":"false")}",$"--NavigationTest:VehicleId={navVehicle}"]);created.Add(service);
                     var web=Start(webPath,[$"--Web:Port={port}",$"--Web:PipeName={pipe}","--Web:EnableTaskSubmission=false","--Web:EnableRecoveryActions=false",$"--Web:ProjectStorePath={storePath}",$"--Web:StaticPath={System.IO.Path.Combine(root,"Web","wwwroot")}"]);
-                    created.Add(web);session=new(release,Describe(service,servicePath),Describe(web,webPath));
+                    created.Add(web);session=new(release,Describe(service,servicePath),Describe(web,webPath),navVehicle);
                     var pending=statePath+".tmp";File.WriteAllText(pending,JsonSerializer.Serialize(session,new JsonSerializerOptions{WriteIndented=true}));File.Move(pending,statePath,true);
                 }
                 using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(60));
@@ -79,7 +84,7 @@ internal static class WebLocalLauncher
                 foreach(var process in created)process.Dispose();
                 created.Clear(); // Started successfully; a later repeated click reuses the exact recorded processes.
                 Console.WriteLine($"Ready: {address}/ | Release: {release}");
-                if(!args.Contains("--no-browser"))Process.Start(new ProcessStartInfo(address+"/"){UseShellExecute=true});
+                if(!args.Contains("--no-browser"))Process.Start(new ProcessStartInfo(address+(navVehicle.Length>0?"/#/navigation-test":"/")){UseShellExecute=true});
                 return 0;
             }
         }

@@ -51,6 +51,7 @@ app.MapGet("/api/config", () => new { taskSubmissionEnabled = submissions, sourc
     servicePipeName = builder.Configuration["Web:PipeName"] ?? "AgvDispatch.Service" });
 app.MapEditorApi();
 app.MapEngineeringApi();
+app.MapNavigationTestApi();
 app.MapWaitingApi();
 app.MapProjectApi();
 app.MapDiagnosticsApi(builder.Configuration.GetValue("Web:EnableRecoveryActions",false),submissions);

@@ -328,6 +328,12 @@ public sealed class MapValidationService : IMapValidationService
                      GeometrySignature,
                      StringComparer.OrdinalIgnoreCase).Where(group => group.Count() > 1))
         {
+            // Two explicit opposite one-way traversals are not duplicate work.
+            // Keep direction-specific identities/properties from vendor maps.
+            var pair=group.ToArray();
+            if(pair.Length==2 && pair.All(e=>!e.Bidirectional) &&
+                pair[0].From.Equals(pair[1].To,StringComparison.OrdinalIgnoreCase) &&
+                pair[0].To.Equals(pair[1].From,StringComparison.OrdinalIgnoreCase)) continue;
             var ids = group.Select(edge => edge.Id).ToArray();
             Error(
                 issues,

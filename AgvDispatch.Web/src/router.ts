@@ -3,6 +3,7 @@
 const router = createRouter({
   history: createWebHashHistory(),
   routes: [
+    { path: '/navigation-test', name: 'navigation-test', component: () => import('./pages/NavigationTestPage.vue') },
     { path: '/', name: 'overview', component: () => import('./pages/OverviewPage.vue') },
     { path: '/vehicles', name: 'vehicles', component: () => import('./pages/VehicleListPage.vue') },
     { path: '/tasks', name: 'tasks', component: () => import('./pages/TaskListPage.vue') },

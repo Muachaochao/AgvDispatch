@@ -55,8 +55,10 @@ public sealed class Smap2DImportService
                 if(Math.Abs(xy.X-n.X)>.001 || Math.Abs(xy.Y-n.Y)>.001)throw new InvalidDataException("Smap路径内嵌端点与站点坐标不一致。");
             }
             var kind=Text(curve,"className");
-            if(kind is not ("StraightPath" or "BezierPath")){warnings.Add("未转换路径几何，源对象保留："+kind+" / "+Text(curve,"instanceName"));continue;}
-            var controls=kind=="BezierPath"?new[]{Translate(curve.GetProperty("controlPos1")),Translate(curve.GetProperty("controlPos2"))}:null;
+            if(kind is not ("StraightPath" or "BezierPath" or "DegenerateBezier")){warnings.Add("未转换路径几何，源对象保留："+kind+" / "+Text(curve,"instanceName"));continue;}
+            // Keep both directed entries and their actual control points. A degenerate
+            // Bezier is still a cubic; do not infer direction or merge reverse paths.
+            var controls=kind is "BezierPath" or "DegenerateBezier"?new[]{Translate(curve.GetProperty("controlPos1")),Translate(curve.GetProperty("controlPos2"))}:null;
             var edge=new MapEdge("SMAP-PATH-"+edges.Count,from.Id,to.Id,1,1,false,false,[]){GeometryKind=controls is null?MapEdgeGeometryKind.Line:MapEdgeGeometryKind.CubicBezier,ControlPoints=controls};
             if(!MapEdgeGeometry.TryValidate(edge,from,to,out var error))throw new InvalidDataException("Smap路径几何无效："+error);
             edges.Add(edge with{Distance=MapEdgeGeometry.Length(edge,from,to)});

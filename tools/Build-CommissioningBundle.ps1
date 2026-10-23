@@ -47,6 +47,7 @@ foreach($bundleShared in @('AgvDispatch.Application.dll','AgvDispatch.Domain.dll
 New-Item -ItemType Directory -Path (Join-Path $bundleOutput 'Web/licenses') -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $bundleProject 'AgvDispatch.Web/src/vendor/agv-web-visible/LICENSE'),(Join-Path $bundleProject 'AgvDispatch.Web/src/vendor/agv-web-visible/UPSTREAM.md') -Destination (Join-Path $bundleOutput 'Web/licenses')
 New-Item -ItemType Directory -Path (Join-Path $bundleOutput 'Docs') -Force | Out-Null
+Copy-Item -LiteralPath (Join-Path $bundleProject 'docs/commissioning/单次导航测试与DegenerateBezier修复-20261023.md') -Destination (Join-Path $bundleOutput 'Docs/单次导航说明.md')
 Copy-Item -LiteralPath (Join-Path $bundleProject 'docs/architecture/Web地图管理与布局修复-20261019.md') -Destination (Join-Path $bundleOutput 'Docs')
 Copy-Item -LiteralPath (Join-Path $bundleProject 'docs/architecture/六项路线进度与统一候选发布-20261017.md'),(Join-Path $bundleProject 'docs/architecture/单车与异常现场验收记录模板-20261017.md'),(Join-Path $bundleProject 'docs/architecture/Web工程配置方案库与任务地图联动-20261018.md'),(Join-Path $bundleProject 'docs/architecture/Web中央地图联动与取消恢复演练-20261018.md'),(Join-Path $bundleProject 'docs/architecture/Web等待队列筛选与资源定位-20261018.md'),(Join-Path $bundleProject 'docs/architecture/Web阻塞链详情与释放条件-20261018.md'),(Join-Path $bundleProject 'docs/architecture/多车冲突断连与切图组合验证-20261018.md'),(Join-Path $bundleProject 'docs/architecture/地图激活回执丢失与只读复核-20261018.md') -Destination (Join-Path $bundleOutput 'Docs')
 @'
@@ -81,6 +82,8 @@ popd
 3. 页面地址 http://127.0.0.1:$WebPort/ 。WPF仅在需未迁移配置时使用Start-WPF.cmd。
 4. 分组件Start-Service/Start-Web.cmd保留作工程排查，它们需分别管理窗口；不属于一键启动记录。
 
+单次导航现场测试使用显式入口 Start-Navigation-Test.cmd AGV-01；它仅针对指定测试车启用导航发送许可，保留业务任务和PLC执行关闭。默认启动不启用此功能，详见 Docs/单次导航说明.md。页面核验不会发车，须人工确认区域后再点击发送。
+
 三份程序均为Windows x64自带运行时；CMD不调用PowerShell脚本。候选使用独立管道$bundlePipe、独立空数据库、关闭的通信和执行配置；没有导入现场数据。原有服务、WPF、5188预览及配置不会被替换或停止。一键入口强制关闭设备通信、PLC写入、AGV发送、任务创建/派发和新握手，用于安全开发联调；不能通过此入口现场开跑。分组件入口的窗口Ctrl+C停止各自进程。
 
 联调检查出现缺地图、缺车辆、缺点位是当前候选配置为空的真实结果，不会生成示例。配置迁移与现场启用需沿原系统的地图、身份、任务、恢复门禁办理；不能覆盖原data/config后直接视为现场可运行。正式任务提交仍重新核验。
@@ -97,6 +100,16 @@ if errorlevel 1 pause
 "%~dp0Web\host\AgvDispatch.WebHost.exe" --launch-local --stop --bundle-root "%~dp0."
 if errorlevel 1 pause
 '@ | Set-Content -LiteralPath (Join-Path $bundleOutput 'Stop-Latest-Web.cmd') -Encoding ascii
+@'
+@echo off
+if "%~1"=="" (
+  echo Usage: Start-Navigation-Test.cmd AGV-01
+  echo Requires a configured robot and an isolated test area. No task is sent on startup.
+  exit /b 1
+)
+"%~dp0Web\host\AgvDispatch.WebHost.exe" --launch-local --bundle-root "%~dp0." --navigation-test-vehicle "%~1"
+if errorlevel 1 pause
+'@ | Set-Content -LiteralPath (Join-Path $bundleOutput 'Start-Navigation-Test.cmd') -Encoding ascii
 $bundleFiles=@(Get-ChildItem -LiteralPath $bundleOutput -File -Recurse | ForEach-Object {@{path=[IO.Path]::GetRelativePath($bundleOutput,$_.FullName);sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant();bytes=$_.Length}})
 @{schema='agv-commissioning-release';version=1;releaseId=$bundleId;createdAt=(Get-Date).ToString('o');runtime='win-x64 self-contained';pipeName=$bundlePipe;port=$WebPort;files=$bundleFiles;siteConfigurationImported=$false;deviceExecutionEnabled=$false} | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $bundleOutput 'release-manifest.json') -Encoding utf8
 Write-Output "Candidate=$bundleOutput"
