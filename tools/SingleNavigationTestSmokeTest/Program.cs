@@ -12,7 +12,7 @@ using AgvDispatch.Infrastructure.Maps;
 
 var count=0;
 void Check(bool ok,string name){if(!ok)throw new Exception(name);count++;Console.WriteLine("PASS "+name);}
-async Task Reject(Func<Task> run,string name){try{await run();throw new Exception("Did not reject: "+name);}catch(Exception e)when(e is InvalidOperationException or ArgumentException){Check(true,name);}}
+async Task Reject(Func<Task> run,string name){try{await run();throw new Exception("Did not reject: "+name);}catch(Exception e)when(e is InvalidOperationException or ArgumentException or InvalidDataException){Check(true,name);}}
 var fixture=new JsonObject {
  ["header"]=new JsonObject{["mapType"]="2D-Map",["mapName"]="synthetic-test",["version"]="1.0.6",["resolution"]=0.02,["minPos"]=JsonNode.Parse("{\"x\":-2,\"y\":-2}"),["maxPos"]=JsonNode.Parse("{\"x\":5,\"y\":5}")},
  ["advancedPointList"]=JsonNode.Parse("[{\"className\":\"LocationMark\",\"instanceName\":\"LM1\",\"pos\":{\"x\":0,\"y\":0}},{\"className\":\"LocationMark\",\"instanceName\":\"LM2\",\"pos\":{\"x\":1,\"y\":0}}]"),
@@ -53,6 +53,13 @@ var folder=Path.Combine(Path.GetTempPath(),"agv-nav-test-"+Guid.NewGuid().ToStri
 var recordPath=Path.Combine(folder,"navigation-test.json");
 SingleNavigationTestService Create(SingleNavigationTestOptions? s=null)=>new(s??settings,options,connections,active,gate,recordPath);
 var service=Create();var user=TrafficUserContext.LocalOperation("test");var query=new NavigationTestQuery("SIM","LM1","LM2");
+robot.WrappedTasks=true;robot.EmptyHistoricalId=true;
+var nestedPreview=await service.PreviewAsync(user,query,default);
+Check(nestedPreview.Route.SequenceEqual(new[]{"LM1","LM2"})&&robot.Sends==0,"Physical 1110 wrapper with completed empty-id history permits read-only preview");
+robot.ActiveForeign=true;await Reject(()=>service.PreviewAsync(user,query,default),"Wrapped running task still blocks navigation");robot.ActiveForeign=false;
+robot.MissingTasks=true;await Reject(()=>service.PreviewAsync(user,query,default),"Wrapped missing task list is not treated as idle");robot.MissingTasks=false;
+robot.UnknownStatus=true;await Reject(()=>service.PreviewAsync(user,query,default),"Wrapped unknown status is not treated as terminal");robot.UnknownStatus=false;
+robot.WrappedTasks=false;robot.EmptyHistoricalId=false;
 await Reject(()=>Create(new(){VehicleId="SIM",BusinessExecutionDisabled=true}).PreviewAsync(user,query,default),"Default disabled blocks motion preparation");
 options.AllowCommands=false;await Reject(()=>service.PreviewAsync(user,query,default),"Global AGV command switch cannot be bypassed");options.AllowCommands=true;
 await Reject(()=>service.PreviewAsync(user,query with{VehicleId="OTHER"},default),"Unapproved vehicle rejected");
@@ -63,6 +70,7 @@ robot.ActiveForeign=true;await Reject(()=>service.PreviewAsync(user,query,defaul
 robot.MissingTasks=true;await Reject(()=>service.PreviewAsync(user,query,default),"Missing task list rejected");robot.MissingTasks=false;
 active.Busy=true;await Reject(()=>service.PreviewAsync(user,query,default),"Active PLC business task rejected");active.Busy=false;
 var preview=await service.PreviewAsync(user,query,default);Check(robot.Sends==0,"Preview sends no navigation command");
+robot.WrappedTasks=true; // exercise submit, status, cancel, restart with the real envelope
 await Reject(()=>service.SubmitAsync(user,new(preview.PreviewId,false),default),"Explicit site confirmation required");
 preview=await service.PreviewAsync(user,query,default);robot.ChangedMap=true;
 await Reject(()=>service.SubmitAsync(user,new(preview.PreviewId,true),default),"Map changed after preview blocks send");robot.ChangedMap=false;
@@ -96,7 +104,7 @@ sealed class Robot:IAsyncDisposable
 {
  readonly TcpListener status=new(IPAddress.Loopback,0),nav=new(IPAddress.Loopback,0);readonly CancellationTokenSource stop=new();readonly ConcurrentBag<Task> workers=[];
  public int StatusPort=>((IPEndPoint)status.LocalEndpoint).Port;public int NavigationPort=>((IPEndPoint)nav.LocalEndpoint).Port;
- public bool Locked,Away,Indirect,ActiveForeign,MissingTasks,ChangedMap,DropReply,IntentExisted;public string IntentPath="",LastSource="",LastTarget="",LastTask="",CancelId="";public int Sends,CancelCount,Status=2;
+ public bool Locked,Away,Indirect,ActiveForeign,MissingTasks,ChangedMap,DropReply,IntentExisted,WrappedTasks,EmptyHistoricalId,UnknownStatus;public string IntentPath="",LastSource="",LastTarget="",LastTask="",CancelId="";public int Sends,CancelCount,Status=2;
  public Robot(){status.Start();nav.Start();workers.Add(Accept(status,false));workers.Add(Accept(nav,true));}
  async Task Accept(TcpListener listener,bool motion){try{while(!stop.IsCancellationRequested){var c=await listener.AcceptTcpClientAsync(stop.Token);workers.Add(Serve(c,motion));}}catch(OperationCanceledException){}catch(ObjectDisposedException){}}
  async Task Serve(TcpClient client,bool motion)
@@ -112,7 +120,8 @@ sealed class Robot:IAsyncDisposable
     case 1110:
      if(MissingTasks){result=new{};break;}
      var filtered=req.RootElement.TryGetProperty("task_ids",out var ids);
-     result=new{task_status_list=filtered?new[]{new{task_id=ids[0].GetString()!,status=Status}}:ActiveForeign?new[]{new{task_id="foreign",status=2}}:LastTask.Length>0?new[]{new{task_id=LastTask,status=Status}}:Array.Empty<object>()};break;
+     var taskData=new{task_status_list=filtered?new[]{new{task_id=ids[0].GetString()!,status=Status}}:ActiveForeign?new[]{new{task_id="foreign",status=2}}:UnknownStatus?new[]{new{task_id="unknown",status=404}}:LastTask.Length>0?new[]{new{task_id=LastTask,status=Status}}:EmptyHistoricalId?new[]{new{task_id="",status=4}}:Array.Empty<object>()};
+     result=WrappedTasks?new{ret_code=0,task_status_package=(object)taskData}:(object)taskData;break;
     case 3066:
      if(!motion)throw new Exception("Wrong port");var item=req.RootElement.GetProperty("move_task_list")[0];if(item.TryGetProperty("operation",out _))throw new Exception("Unexpected action");
      LastSource=item.GetProperty("source_id").GetString()!;LastTarget=item.GetProperty("id").GetString()!;LastTask=item.GetProperty("task_id").GetString()!;IntentExisted=File.Exists(IntentPath);Status=2;Interlocked.Increment(ref Sends);

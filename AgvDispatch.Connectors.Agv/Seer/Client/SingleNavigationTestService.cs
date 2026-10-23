@@ -61,6 +61,32 @@ public sealed class SingleNavigationTestService : ISingleNavigationTestService
         t.VelocityX is { } vx && Math.Abs(vx)<0.01 && t.VelocityY is { } vy && Math.Abs(vy)<0.01 &&
         t.AngularVelocity is { } w && Math.Abs(w)<0.01 && t.Tasks.All(x=>x.Status is 4 or 5 or 6 or 7);
 
+    private static void RequireIdleTaskList(JsonElement response)
+    {
+        // RBK 3.4 on the physical robot wraps 1110 in task_status_package.
+        // Direct lists remain supported for other documented/fixture responses.
+        var package=response;
+        if(response.ValueKind!=JsonValueKind.Object)throw new InvalidDataException("1110任务响应不是对象。");
+        if(response.TryGetProperty("task_status_package",out var wrapped))
+        {
+            if(wrapped.ValueKind!=JsonValueKind.Object || response.TryGetProperty("task_status_list",out _))
+                throw new InvalidDataException("1110任务列表包装错误或存在两份歧义列表。");
+            package=wrapped;
+        }
+        if(!package.TryGetProperty("task_status_list",out var rows)||rows.ValueKind!=JsonValueKind.Array)
+            throw new InvalidDataException("1110未返回有效任务列表，请检查车端task_status_package.task_status_list。");
+        foreach(var row in rows.EnumerateArray())
+        {
+            if(row.ValueKind!=JsonValueKind.Object || !row.TryGetProperty("status",out var rawStatus) ||
+                rawStatus.ValueKind!=JsonValueKind.Number || !rawStatus.TryGetInt32(out var status) || status is <1 or >7)
+                throw new InvalidDataException("1110含缺失或未知的任务状态，未放行导航。");
+            // The real robot's completed Roboshop navigation can have an empty id.
+            // Accept its terminal state only for the idle check, never as our own task receipt.
+            if(status is 1 or 2 or 3)
+                throw new InvalidOperationException($"车端仍有未结束任务：{Text(row,"task_id")??"编号未知"}，状态码{status}；请先由厂家结束原任务。");
+        }
+    }
+
     private async Task<NavigationTestPreview> ObserveAsync(NavigationTestQuery q,CancellationToken ct)
     {
         if(new[]{q.SourceSite,q.TargetSite}.Any(s=>string.IsNullOrWhiteSpace(s)||s.Length>128||s.Any(char.IsControl)) || q.SourceSite==q.TargetSite)
@@ -88,9 +114,7 @@ public sealed class SingleNavigationTestService : ISingleNavigationTestService
             throw new InvalidOperationException("当前入口只测试一条直接相连的路径；车端寻路结果必须恰好为所选起点和终点。");
         var (telemetry,_)=await client.PollAsync(ct);
         using var taskList=await client.RequestAsync(1110,new{},ct);
-        if(!taskList.RootElement.TryGetProperty("task_status_list",out var taskRows)||taskRows.ValueKind!=JsonValueKind.Array||
-            taskRows.EnumerateArray().Any(r=>r.ValueKind!=JsonValueKind.Object||Int(r,"status") is not (4 or 5 or 6 or 7)))
-            throw new InvalidOperationException("任务列表未知或存在未结束任务。");
+        RequireIdleTaskList(taskList.RootElement);
         if(!Idle(telemetry)||telemetry.LocalizationConfidence is not >=0.5 || telemetry.Charging!=false ||
             telemetry.Alarms.Any(a=>a.Severity is AgvAlarmSeverity.Error or AgvAlarmSeverity.Fatal))
             throw new InvalidOperationException("车辆未确认静止、存在任务/报警、急停阻挡、充电或定位置信度不足。");
@@ -161,8 +185,8 @@ public sealed class SingleNavigationTestService : ISingleNavigationTestService
                     {
                         var (t,_)=await client.PollAsync(ct);
                         using var taskList=await client.RequestAsync(1110,new{},ct);
-                        if(!Idle(t)||!taskList.RootElement.TryGetProperty("task_status_list",out var taskRows)||taskRows.ValueKind!=JsonValueKind.Array||
-                            taskRows.EnumerateArray().Any(r=>r.ValueKind!=JsonValueKind.Object||Int(r,"status") is not (4 or 5 or 6 or 7)))state="Uncertain";
+                        RequireIdleTaskList(taskList.RootElement);
+                        if(!Idle(t))state="Uncertain";
                     }
                     _record=_record with{State=state,Message=task is null?"原任务未找到，不视为未发送；保持阻塞。":$"原任务状态码 {task.Status}；仅终态且车辆静止时结束测试。",UpdatedAt=DateTimeOffset.Now};Persist();
                 }
