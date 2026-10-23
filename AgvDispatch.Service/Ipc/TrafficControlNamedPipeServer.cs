@@ -1,4 +1,4 @@
-﻿using System.Buffers.Binary;
+using System.Buffers.Binary;
 using System.IO.Pipes;
 using System.Security.AccessControl;
 using System.Security.Principal;
@@ -32,7 +32,7 @@ public sealed class TrafficControlNamedPipeServer(
     NamedPipeDiagnostics pipeDiagnostics,
     ITrafficGeometryPreviewService? geometry=null,
     IRobokitInspectionService? robokit=null, IRobokitInspectionHistory? robokitHistory=null,IMapTransferLedger? mapTransfers=null, ITaskHandshakeStore? handshakes=null, ITaskDiagnosticArchiveService? diagnosticExports=null, ICommissioningQueryService? commissioning=null,
-    ITrafficWaitingBayDepartureService? waitingBayDeparture=null, ISingleNavigationTestService? navigationTest=null) : IsolatedBackgroundService
+    ITrafficWaitingBayDepartureService? waitingBayDeparture=null, ISingleNavigationTestService? navigationTest=null, IRobotMapDownloadService? robotMapDownload=null) : IsolatedBackgroundService
 {
     private async Task<RobokitInspectionSnapshot> InspectRobokitAsync(TrafficUserContext user,RobokitInspectionQuery query,CancellationToken ct)
     {
@@ -177,6 +177,7 @@ public sealed class TrafficControlNamedPipeServer(
 
         return request.Operation switch
         {
+            "GetCurrentRobotMapDownload" => Success(await (robotMapDownload??throw new NotSupportedException("请更新车端地图只读下载后台。")).ReadCurrentAsync(Deserialize<RobotMapDownloadQuery>(request.Payload),cancellationToken)),
             "GetNavigationTest" => Success(await (navigationTest??throw new NotSupportedException("请更新单次导航后台。")).ReadAsync(cancellationToken)),
             "PreviewNavigationTest" => Success(await (navigationTest??throw new NotSupportedException("请更新单次导航后台。")).PreviewAsync(user,Deserialize<NavigationTestQuery>(request.Payload),cancellationToken)),
             "SubmitNavigationTest" => Success(await (navigationTest??throw new NotSupportedException("请更新单次导航后台。")).SubmitAsync(user,Deserialize<NavigationTestSubmit>(request.Payload),cancellationToken)),

@@ -55,11 +55,11 @@ public sealed class Smap2DImportService
                 if(Math.Abs(xy.X-n.X)>.001 || Math.Abs(xy.Y-n.Y)>.001)throw new InvalidDataException("Smap路径内嵌端点与站点坐标不一致。");
             }
             var kind=Text(curve,"className");
-            if(kind is not ("StraightPath" or "BezierPath" or "DegenerateBezier")){warnings.Add("未转换路径几何，源对象保留："+kind+" / "+Text(curve,"instanceName"));continue;}
+            if(kind is not ("StraightPath" or "BezierPath" or "DegenerateBezier" or "ArcPath")){warnings.Add("未转换路径几何，源对象保留："+kind+" / "+Text(curve,"instanceName"));continue;}
             // Keep both directed entries and their actual control points. A degenerate
             // Bezier is still a cubic; do not infer direction or merge reverse paths.
-            var controls=kind is "BezierPath" or "DegenerateBezier"?new[]{Translate(curve.GetProperty("controlPos1")),Translate(curve.GetProperty("controlPos2"))}:null;
-            var edge=new MapEdge("SMAP-PATH-"+edges.Count,from.Id,to.Id,1,1,false,false,[]){GeometryKind=controls is null?MapEdgeGeometryKind.Line:MapEdgeGeometryKind.CubicBezier,ControlPoints=controls};
+            var controls=kind=="ArcPath"?new[]{Translate(curve.GetProperty("controlPos1"))}:kind is "BezierPath" or "DegenerateBezier"?new[]{Translate(curve.GetProperty("controlPos1")),Translate(curve.GetProperty("controlPos2"))}:null;
+            var edge=new MapEdge("SMAP-PATH-"+edges.Count,from.Id,to.Id,1,1,false,false,[]){GeometryKind=kind=="ArcPath"?MapEdgeGeometryKind.CircularArc:controls is null?MapEdgeGeometryKind.Line:MapEdgeGeometryKind.CubicBezier,ControlPoints=controls};
             if(!MapEdgeGeometry.TryValidate(edge,from,to,out var error))throw new InvalidDataException("Smap路径几何无效："+error);
             edges.Add(edge with{Distance=MapEdgeGeometry.Length(edge,from,to)});
         }
@@ -83,7 +83,10 @@ public sealed class Smap2DImportService
             for(var i=0;i<points.Length;i++)Line(points[i],points[(i+1)%points.Length],50,120,180);
         }
         if(Items(root,"primitiveList",20000).Length>0)warnings.Add("Primitive图元尚未转换，完整对象保留在源图。");
-        var definition=new MapDefinition(name+"（Smap预览）",retainedSource,"SmapWorldTranslated","m",nodes,edges,[]){EditorSettings=new(width,height,Math.Max(1,width/20),true,false,false)};
+        var repeated=Items(root,"advancedCurveList",20000).GroupBy(c=>Text(c,"instanceName"),StringComparer.Ordinal).Where(g=>g.Count()>1);
+        foreach(var group in repeated)warnings.Add($"源路径名称重复：{group.Key}，共{group.Count()}条；已全部保留，请核对后再发布。");
+        warnings.Add("源路径direction、movestyle、速度及动作属性保留在原始文件，不自动转成调度动作；底图标注不自动作为交通管制资源。");
+        var definition=new MapDefinition(name+"（Smap预览）",retainedSource,"SmapWorldTranslated","m",nodes,edges,[]){ImportWarnings=warnings.ToArray(),EditorSettings=new(width,height,Math.Max(1,width/20),true,false,false)};
         return new(definition,minX,minY,width,height,name,version,Convert.ToHexString(SHA256.HashData(bytes)),Convert.ToHexString(MD5.HashData(bytes)).ToLowerInvariant(),normal,warnings,pixels){ScanPixels=scanPixels,AnnotationPixels=annotationPixels};
     }
     public static void SaveBackground(Result result,string path)
@@ -101,6 +104,7 @@ public sealed class Smap2DImportService
         MapPoint2D RobotPoint(MapPoint2D point)=>new(point.X+preview.OffsetX,point.Y+preview.OffsetY);
         var definition=preview.Definition with {
             Name=preview.OriginalMapName,CoordinateSystem="RobotWorld",
+            ImportWarnings=preview.Definition.ImportWarnings.Where(w=>!w.StartsWith("Smap离线显示转换",StringComparison.Ordinal)).ToArray(),
             Nodes=preview.Definition.Nodes.Select(n=>n with {X=n.X+preview.OffsetX,Y=n.Y+preview.OffsetY,
                 Type=confirmedRoles[n.AgvSiteId!],Enabled=true}).ToArray(),
             Edges=preview.Definition.Edges.Select(e=>e with {Enabled=true,

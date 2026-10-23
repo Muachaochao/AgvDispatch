@@ -98,6 +98,7 @@ builder.Services.AddSingleton<AgvStateCache>();
 builder.Services.AddSingleton<IAgvStateCache>(
     provider => provider.GetRequiredService<AgvStateCache>());
 builder.Services.AddSingleton<AgvConnectionManager>();
+builder.Services.AddSingleton<IRobotMapDownloadService>(p=>new RobotMapDownloadService(agvOptions,p.GetRequiredService<AgvConnectionManager>()));
 builder.Services.AddSingleton<ISingleNavigationTestService>(p => new SingleNavigationTestService(
     new SingleNavigationTestOptions {
         Enabled=builder.Configuration.GetValue("NavigationTest:Enabled",false),

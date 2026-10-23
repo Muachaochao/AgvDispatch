@@ -218,7 +218,7 @@ public sealed class MapImportService : IMapImportService
                 resource.Id.Trim(),
                 resource.Type,
                 resource.Capacity,
-                resource.Boundary?.Select(point => new MapPoint2D(point.X * scale, point.Y * scale)).ToArray()) { LayerId = resource.LayerId }).ToArray()) { Layers = dto.Layers, EditorSettings = dto.EditorSettings };
+                resource.Boundary?.Select(point => new MapPoint2D(point.X * scale, point.Y * scale)).ToArray()) { LayerId = resource.LayerId }).ToArray()) { Layers = dto.Layers, EditorSettings = dto.EditorSettings,ImportWarnings=dto.ImportWarnings };
     }
 
     private static MapEdge WithGeometryDistance(MapEdge edge, IReadOnlyDictionary<string, MapNode> nodes) =>
@@ -435,6 +435,7 @@ public sealed class MapImportService : IMapImportService
 
     private sealed class MapDefinitionDto
     {
+        public List<string> ImportWarnings {get;set;}=[];
         public string Name { get; set; } = string.Empty;
         public string CoordinateSystem { get; set; } = "LocalCartesian";
         public string Unit { get; set; } = "m";

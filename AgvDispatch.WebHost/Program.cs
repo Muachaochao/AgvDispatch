@@ -1,4 +1,4 @@
-﻿using System.Net;
+using System.Net;
 using System.Net.WebSockets;
 using System.Text.Json;
 using AgvDispatch.Application.Abstractions;
@@ -52,6 +52,7 @@ app.MapGet("/api/config", () => new { taskSubmissionEnabled = submissions, sourc
 app.MapEditorApi();
 app.MapEngineeringApi();
 app.MapNavigationTestApi();
+app.MapRobotMapDownloadApi();
 app.MapWaitingApi();
 app.MapProjectApi();
 app.MapDiagnosticsApi(builder.Configuration.GetValue("Web:EnableRecoveryActions",false),submissions);

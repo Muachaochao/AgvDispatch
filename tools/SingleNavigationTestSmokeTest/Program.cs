@@ -50,6 +50,18 @@ Check(new MapValidationService().Validate(imported.Definition with{Edges=[edge,e
 Check(new MapValidationService().Validate(imported.Definition with{Edges=[edge with{Bidirectional=true},imported.Definition.Edges[1]]}).Issues.Any(i=>i.Code=="EDGE_OVERLAP"),"Bidirectional plus reverse duplicate remains blocked");
 var malformed=fixture.DeepClone();malformed["advancedCurveList"]![0]!["controlPos1"]=null;
 try{new Smap2DImportService().Read(JsonSerializer.SerializeToUtf8Bytes(malformed),"synthetic");throw new Exception("Malformed controls accepted");}catch(Exception e)when(e is InvalidOperationException or InvalidDataException){Check(true,"Malformed controls rejected rather than replaced by invented line");}
+var arcFixture=fixture.DeepClone();
+foreach(var curve in arcFixture["advancedCurveList"]!.AsArray()){curve!["className"]="ArcPath";curve["controlPos1"]=new JsonObject{["x"]=0.5,["y"]=0.2};curve.AsObject().Remove("controlPos2");}
+var arcs=new Smap2DImportService().Read(JsonSerializer.SerializeToUtf8Bytes(arcFixture),"synthetic-arc");
+Check(arcs.Definition.Edges.Count==2&&arcs.Definition.Edges.All(e=>e.GeometryKind==MapEdgeGeometryKind.CircularArc&&e.ControlPoints!.Count==1),"ArcPath preserves both directions with one point on circle");
+Check(arcs.Definition.Edges.All(e=>e.Distance>1),"Arc length follows circle rather than straight chord");
+Check(new MapValidationService().Validate(arcs.Definition).IsValid,"Opposite circular arcs pass geometry validation");
+var unsupported=fixture.DeepClone();unsupported["advancedCurveList"]![0]!["className"]="FuturePath";
+var skipped=new Smap2DImportService().Read(JsonSerializer.SerializeToUtf8Bytes(unsupported),"synthetic-unknown");
+Check(skipped.Definition.Edges.Count==1&&skipped.Definition.ImportWarnings.Any(w=>w.Contains("FuturePath")),"Unknown geometry is surfaced in persistent import warnings rather than fabricated");
+if(args.Length>1){var field=new Smap2DImportService().Read(File.ReadAllBytes(args[1]),args[1]);
+Check(field.Definition.Nodes.Count==4&&field.Definition.Edges.Count==11&&field.Definition.Edges.Count(e=>e.GeometryKind==MapEdgeGeometryKind.CircularArc)==2,"Latest field export preserves four nodes, eleven paths and two arcs");
+Check(field.Definition.ImportWarnings.Any(w=>w.Contains("LM3-LM1")),"Duplicate source path name is retained and reported");}
 if(args.Length>0)
 {
  var real=new Smap2DImportService().Read(File.ReadAllBytes(args[0]),args[0]);
@@ -62,6 +74,13 @@ await using var robot=new Robot();
 var options=new AgvOptions{Enabled=true,AllowCommands=true,RequestIntervalMs=100,RequestTimeoutMs=600,ConnectTimeoutMs=600,
  Robots=[new(){VehicleId="SIM",IpAddress="127.0.0.1",Port=robot.StatusPort,NavigationPort=robot.NavigationPort}]};
 await using var connections=new AgvConnectionManager(options);
+var downloader=new RobotMapDownloadService(options,connections,robot.ConfigPort);
+var downloaded=await downloader.ReadCurrentAsync(new("SIM"),default);
+Check(downloaded.MapName=="test"&&downloaded.ContentSha256.Length==64&&downloaded.RobotMapMd5==new string('a',32),"4011 download records device MD5 and distinct saved-content SHA256");
+Check(robot.Downloads==1&&robot.Sends==0&&robot.CancelCount==0,"Readonly download issues no navigation or cancel command");
+robot.DownloadWrong=true;await Reject(()=>downloader.ReadCurrentAsync(new("SIM"),default),"Wrong downloaded map identity rejected");robot.DownloadWrong=false;
+robot.DownloadChanged=true;await Reject(()=>downloader.ReadCurrentAsync(new("SIM"),default),"Robot map changing during download rejects stale snapshot");robot.DownloadChanged=false;robot.ChangedMap=false;
+await Reject(()=>downloader.ReadCurrentAsync(new("MISSING"),default),"Unconfigured vehicle cannot download");
 var active=new Tasks();var gate=new Gate();var settings=new SingleNavigationTestOptions{Enabled=true,VehicleId="SIM",BusinessExecutionDisabled=true};
 var folder=Path.Combine(Path.GetTempPath(),"agv-nav-test-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(folder);
 var recordPath=Path.Combine(folder,"navigation-test.json");
@@ -134,15 +153,19 @@ sealed class Gate:IMapExecutionGate
 {public bool Open=true;public MapExecutionMode Mode=>MapExecutionMode.Running;public bool CanStartNewWork=>Open;public ValueTask<IDisposable?> EnterAsync(MapExecutionOperation op,CancellationToken ct)=>ValueTask.FromResult<IDisposable?>(Open?new Lease():null);public ValueTask<IDisposable> EnterControlAsync(CancellationToken ct)=>ValueTask.FromResult<IDisposable>(new Lease());public void SetMode(MapExecutionMode m){}sealed class Lease:IDisposable{public void Dispose(){}}}
 sealed class Robot:IAsyncDisposable
 {
- readonly TcpListener status=new(IPAddress.Loopback,0),nav=new(IPAddress.Loopback,0);readonly CancellationTokenSource stop=new();readonly ConcurrentBag<Task> workers=[];
+ readonly TcpListener status=new(IPAddress.Loopback,0),nav=new(IPAddress.Loopback,0),config=new(IPAddress.Loopback,0);readonly CancellationTokenSource stop=new();readonly ConcurrentBag<Task> workers=[];
+ public int ConfigPort=>((IPEndPoint)config.LocalEndpoint).Port;public bool DownloadChanged,DownloadWrong;public int Downloads;
  public int StatusPort=>((IPEndPoint)status.LocalEndpoint).Port;public int NavigationPort=>((IPEndPoint)nav.LocalEndpoint).Port;
  public bool Locked,Away,Indirect,ActiveForeign,MissingTasks,ChangedMap,DropReply,IntentExisted,WrappedTasks,EmptyHistoricalId,UnknownStatus;public string IntentPath="",LastSource="",LastTarget="",LastTask="",CancelId="";public int Sends,CancelCount,Status=2;
- public Robot(){status.Start();nav.Start();workers.Add(Accept(status,false));workers.Add(Accept(nav,true));}
+ public Robot(){status.Start();nav.Start();config.Start();workers.Add(Accept(config,false));workers.Add(Accept(status,false));workers.Add(Accept(nav,true));}
  async Task Accept(TcpListener listener,bool motion){try{while(!stop.IsCancellationRequested){var c=await listener.AcceptTcpClientAsync(stop.Token);workers.Add(Serve(c,motion));}}catch(OperationCanceledException){}catch(ObjectDisposedException){}}
  async Task Serve(TcpClient client,bool motion)
  {
   using(client)try{var s=client.GetStream();while(!stop.IsCancellationRequested){var h=new byte[16];await s.ReadExactlyAsync(h,stop.Token);var n=BinaryPrimitives.ReadInt32BigEndian(h.AsSpan(4));var type=BinaryPrimitives.ReadUInt16BigEndian(h.AsSpan(8));var bytes=new byte[n];await s.ReadExactlyAsync(bytes,stop.Token);using var req=JsonDocument.Parse(n==0?"{}":System.Text.Encoding.UTF8.GetString(bytes));object result;
    switch(type){
+    case 4011:
+     Interlocked.Increment(ref Downloads);result=new{header=new{mapType="2D-Map",mapName=DownloadWrong?"wrong":"test"}};
+     if(DownloadChanged)ChangedMap=true;break;
     case 1300:result=new{current_map=ChangedMap?"changed":"test",current_map_md5=new string(ChangedMap?'b':'a',32)};break;
     case 1022:result=new{loadmap_status=1};break;
     case 1060:result=new{locked=Locked};break;
@@ -164,7 +187,7 @@ sealed class Robot:IAsyncDisposable
    var body=JsonSerializer.SerializeToUtf8Bytes(result);var reply=(byte[])h.Clone();BinaryPrimitives.WriteInt32BigEndian(reply.AsSpan(4),body.Length);BinaryPrimitives.WriteUInt16BigEndian(reply.AsSpan(8),(ushort)(type+10000));await s.WriteAsync(reply,stop.Token);await s.WriteAsync(body,stop.Token);
   }}catch(Exception e)when(e is OperationCanceledException or EndOfStreamException or IOException or ObjectDisposedException){}
  }
- public async ValueTask DisposeAsync(){stop.Cancel();status.Stop();nav.Stop();await Task.WhenAll(workers.ToArray());stop.Dispose();}
+ public async ValueTask DisposeAsync(){stop.Cancel();status.Stop();nav.Stop();config.Stop();await Task.WhenAll(workers.ToArray());stop.Dispose();}
 }
 
 sealed class Barrier:IRecoveryBarrier { public bool Open;public bool IsOpen=>Open; }

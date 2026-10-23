@@ -9,6 +9,7 @@ public sealed record MapDefinition(
     IReadOnlyList<MapEdge> Edges,
     IReadOnlyList<TrafficResourceDefinition> Resources)
 {
+    public IReadOnlyList<string> ImportWarnings { get; init; } = [];
     public IReadOnlyList<MapEditorLayer> Layers { get; init; } = [];
     public MapEditorSettings? EditorSettings { get; init; }
     public MapGraph ToGraph() => new(Nodes, Edges, Resources);
