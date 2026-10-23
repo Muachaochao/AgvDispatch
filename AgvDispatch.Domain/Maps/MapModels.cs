@@ -47,6 +47,8 @@ public sealed record MapEdge(
     bool Enabled,
     IReadOnlyList<string> ResourceIds)
 {
+    [System.Text.Json.Serialization.JsonIgnore(Condition=System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public RobokitPathEvidence? VendorPath { get; init; }
     public string LayerId { get; init; } = "navigation";
     public MapEdgeGeometryKind GeometryKind { get; init; } = MapEdgeGeometryKind.Line;
     // CircularArc uses one point on the arc; CubicBezier uses two ordered control points.
