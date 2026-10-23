@@ -136,6 +136,8 @@ public sealed class SingleNavigationTestService : ISingleNavigationTestService
         {
             _preview=null;
             if(_record is not null&&!Terminal(_record.State))throw new InvalidOperationException("原测试未结束或结果不确定，请先查询原任务。");
+            using var lease=await _execution.EnterAsync(MapExecutionOperation.NewWork,ct);
+            if(lease is null)throw new InvalidOperationException("未发送导航："+_execution.NewWorkBlockReason);
             return _preview=await ObserveAsync(query,ct);
         }
         finally{_mutex.Release();}
@@ -150,7 +152,7 @@ public sealed class SingleNavigationTestService : ISingleNavigationTestService
                 throw new InvalidOperationException("核验已失效或未确认测试区域，请重新核验。");
             if(_record is not null&&!Terminal(_record.State))throw new InvalidOperationException("原测试尚未结束。");
             using var lease=await _execution.EnterAsync(MapExecutionOperation.NewWork,ct);
-            if(lease is null)throw new InvalidOperationException("后台处于切图或恢复阻塞状态。");
+            if(lease is null)throw new InvalidOperationException("未发送导航："+_execution.NewWorkBlockReason+"；阻塞解除后请重新核验。");
             var fresh=await ObserveAsync(new(preview.VehicleId,preview.SourceSite,preview.TargetSite),ct);
             if(fresh.RobotMap!=preview.RobotMap||fresh.RobotMapMd5!=preview.RobotMapMd5)throw new InvalidOperationException("地图身份已变化，拒绝沿用旧核验。");
             if(DateTimeOffset.UtcNow>preview.ExpiresAt)throw new InvalidOperationException("发送前核验已过期。");
@@ -192,7 +194,12 @@ public sealed class SingleNavigationTestService : ISingleNavigationTestService
                 }
                 catch(Exception ex)when(!ct.IsCancellationRequested){_record=_record with{State="Uncertain",Message="查询失败，不能重发："+ex.Message,UpdatedAt=DateTimeOffset.Now};Persist();}
             }
-            return new(_settings.Enabled&&_settings.BusinessExecutionDisabled&&_options.AllowCommands,_settings.VehicleId,_record,"现场单车、单段导航；速度沿用厂家车端路径配置。不会启动PLC或自动调度。");
+            var enabled=_settings.Enabled&&_settings.BusinessExecutionDisabled&&_options.AllowCommands;
+            var block=!enabled?"单次导航未启用、AGV动作未启用或业务执行未关闭。":
+                !_options.Enabled||_options.GetConfigurationError() is not null?"测试车通信配置不可用。":
+                _execution.NewWorkBlockReason;
+            return new(enabled,_settings.VehicleId,_record,"现场单车、单段导航；速度沿用厂家车端路径配置。不会启动PLC或自动调度。")
+            {Ready=block is null,BlockReason=block};
         }
         finally{_mutex.Release();}
     }

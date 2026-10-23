@@ -39,6 +39,7 @@ public interface IMapExecutionGate
 {
     MapExecutionMode Mode { get; }
     bool CanStartNewWork { get; }
+    string? NewWorkBlockReason => CanStartNewWork ? null : $"执行门禁未放行（{Mode}），请检查地图切换及现场恢复核对。";
     ValueTask<IDisposable?> EnterAsync(MapExecutionOperation operation, CancellationToken cancellationToken);
     ValueTask<IDisposable> EnterControlAsync(CancellationToken cancellationToken);
     // Called only while holding the control/operation lease.

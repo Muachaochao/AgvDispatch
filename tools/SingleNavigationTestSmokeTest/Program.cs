@@ -66,7 +66,13 @@ var active=new Tasks();var gate=new Gate();var settings=new SingleNavigationTest
 var folder=Path.Combine(Path.GetTempPath(),"agv-nav-test-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(folder);
 var recordPath=Path.Combine(folder,"navigation-test.json");
 SingleNavigationTestService Create(SingleNavigationTestOptions? s=null)=>new(s??settings,options,connections,active,gate,recordPath);
+gate.Open=false;
+Check(!(await Create().ReadAsync(default)).Ready,"Closed execution gate is visible before preview");
 var service=Create();var user=TrafficUserContext.LocalOperation("test");var query=new NavigationTestQuery("SIM","LM1","LM2");
+await Reject(()=>service.PreviewAsync(user,query,default),"Closed gate rejects preview before robot requests");
+Check(robot.Sends==0&&!File.Exists(recordPath),"Blocked preview creates no send intent or navigation command");
+gate.Open=true;
+Check((await service.ReadAsync(default)).Ready,"Readiness recovers when gate opens");
 robot.WrappedTasks=true;robot.EmptyHistoricalId=true;
 var nestedPreview=await service.PreviewAsync(user,query,default);
 Check(nestedPreview.Route.SequenceEqual(new[]{"LM1","LM2"})&&robot.Sends==0,"Physical 1110 wrapper with completed empty-id history permits read-only preview");
@@ -89,7 +95,8 @@ await Reject(()=>service.SubmitAsync(user,new(preview.PreviewId,false),default),
 preview=await service.PreviewAsync(user,query,default);robot.ChangedMap=true;
 await Reject(()=>service.SubmitAsync(user,new(preview.PreviewId,true),default),"Map changed after preview blocks send");robot.ChangedMap=false;
 preview=await service.PreviewAsync(user,query,default);gate.Open=false;
-await Reject(()=>service.SubmitAsync(user,new(preview.PreviewId,true),default),"Execution recovery/map gate respected");gate.Open=true;
+await Reject(()=>service.SubmitAsync(user,new(preview.PreviewId,true),default),"Execution recovery/map gate respected");
+Check(!File.Exists(recordPath)&&robot.Sends==0,"Gate closing after preview rejects submit before persistence/send");gate.Open=true;
 preview=await service.PreviewAsync(user,query,default);
 robot.IntentPath=recordPath;
 var sent=await service.SubmitAsync(user,new(preview.PreviewId,true),default);
@@ -108,6 +115,17 @@ Check(sent.State=="Uncertain"&&robot.Sends==2,"Dropped navigation reply is uncer
 service=Create();read=await service.ReadAsync(default);
 Check(read.Current?.TaskId==sent.TaskId&&read.Current.State=="Running"&&robot.Sends==2,"Restart reconciles persisted original task without resend");
 robot.Status=4;read=await service.ReadAsync(default);Check(read.Current?.State=="Completed","Completion requires terminal original task and stopped vehicle");
+var recovery=new Barrier();var transfer=new TransferBarrier();
+var realGate=new MapExecutionGate(recovery,transfer);
+using(await realGate.EnterControlAsync(default))realGate.SetMode(MapExecutionMode.Running);
+Check(!realGate.CanStartNewWork&&realGate.NewWorkBlockReason!.Contains("启动恢复"),"Running map still explains closed startup recovery barrier");
+Check(await realGate.EnterAsync(MapExecutionOperation.NewWork,default) is null,"Recovery diagnostics do not bypass recovery hold");
+recovery.Open=true;transfer.Open=false;
+Check(realGate.NewWorkBlockReason!.Contains("传输"),"Map transfer hold has its own diagnosis");
+transfer.Open=true;
+using(var lease=await realGate.EnterAsync(MapExecutionOperation.NewWork,default))Check(lease is not null&&realGate.NewWorkBlockReason is null,"All barriers open permits work");
+using(await realGate.EnterControlAsync(default))realGate.SetMode(MapExecutionMode.Held);
+Check(realGate.NewWorkBlockReason!.Contains("地图切换"),"Held map remains blocked independently of recovery");
 Console.WriteLine($"PASS {count} checks; simulation only, no physical motion");
 
 sealed class Tasks:IActiveTaskLookup
@@ -148,3 +166,6 @@ sealed class Robot:IAsyncDisposable
  }
  public async ValueTask DisposeAsync(){stop.Cancel();status.Stop();nav.Stop();await Task.WhenAll(workers.ToArray());stop.Dispose();}
 }
+
+sealed class Barrier:IRecoveryBarrier { public bool Open;public bool IsOpen=>Open; }
+sealed class TransferBarrier:IMapTransferRecoveryBarrier { public bool Open=true;public bool IsOpen=>Open; }

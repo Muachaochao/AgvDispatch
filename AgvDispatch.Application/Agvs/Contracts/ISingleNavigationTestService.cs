@@ -9,7 +9,11 @@ public sealed record NavigationTestRecord(string TaskId, string VendorTaskId, st
     string SourceSite, string TargetSite, string RobotMap, string RobotMapMd5, string State,
     string Message, DateTimeOffset UpdatedAt, string Operator);
 public sealed record NavigationTestStatus(bool Enabled, string VehicleId, NavigationTestRecord? Current,
-    string Message);
+    string Message)
+{
+    public bool Ready { get; init; }
+    public string? BlockReason { get; init; }
+}
 public interface ISingleNavigationTestService
 {
     Task<NavigationTestStatus> ReadAsync(CancellationToken ct);
