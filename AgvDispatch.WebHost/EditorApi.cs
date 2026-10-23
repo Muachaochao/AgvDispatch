@@ -18,7 +18,7 @@ public static class EditorApi
         app.MapGet("/api/maps/{id}/versions", async (string id, DispatchPipe pipe, CancellationToken ct) =>
             await pipe.ReadAsync<MapVersionHistoryItem[]>(TrafficControlOperations.GetMapVersionHistory, new { MapId = id }, ct));
         // User selects a local file. No client-supplied filesystem path is accepted.
-        app.MapPost("/api/maps/import", async (HttpRequest request, DispatchPipe pipe, CancellationToken ct) =>
+        app.MapPost("/api/maps/import", async (HttpRequest request, DispatchPipe pipe,VendorMapSourceArchive archive, CancellationToken ct) =>
         {
             var format = request.Query["format"].ToString();
             if (format is not ("smap" or "json")) return Results.BadRequest(new { error = "仅支持SMAP或规范化JSON。" });
@@ -33,10 +33,20 @@ public static class EditorApi
                 await File.WriteAllBytesAsync(path, bytes.ToArray(), ct);
                 var result = await pipe.ReadAsync<MapImportPreviewResult>(TrafficControlOperations.PreviewMapImport,
                     new PreviewMapImportRequest(path, format == "smap" ? MapImportFormat.RobokitSmap : MapImportFormat.NormalizedJson), ct);
-                // The temporary upload is not a lasting map source or background.
+                if(format=="smap"&&result?.Accepted==true&&result.Definition is not null)
+                {
+                    var sha=await archive.SaveAsync(bytes.ToArray(),ct);
+                    if(result.Definition.RobokitSource?.Sha256!=sha)throw new InvalidDataException("导入解析与原图留存摘要不一致，请更新匹配后台。");
+                }
+                // Do not expose the temporary upload or archive filesystem path to browsers.
                 return Results.Ok(result is null ? null : result with { Definition = result.Definition is null ? null : result.Definition with { Source = "" } });
             }
             finally { File.Delete(path); Directory.Delete(directory); }
+        });
+        app.MapGet("/api/maps/vendor-source/{sha}",async(string sha,VendorMapSourceArchive archive,CancellationToken ct)=>{
+            var bytes=await archive.ReadAsync(sha,ct);
+            return bytes is null?Results.NotFound(new{error="当前Web后台未留存此原图；方案跨电脑转移时需同时保留原SMAP。"}):
+                Results.File(bytes,"application/octet-stream",sha+".smap");
         });
         app.MapGet("/api/vehicles/configuration", async (DispatchPipe pipe, CancellationToken ct) =>
         {

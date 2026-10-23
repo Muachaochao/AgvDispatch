@@ -10,6 +10,8 @@ public sealed record MapDefinition(
     IReadOnlyList<TrafficResourceDefinition> Resources)
 {
     public IReadOnlyList<string> ImportWarnings { get; init; } = [];
+    [System.Text.Json.Serialization.JsonIgnore(Condition=System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public RobokitMapSource? RobokitSource { get; init; }
     public IReadOnlyList<MapEditorLayer> Layers { get; init; } = [];
     public MapEditorSettings? EditorSettings { get; init; }
     public MapGraph ToGraph() => new(Nodes, Edges, Resources);

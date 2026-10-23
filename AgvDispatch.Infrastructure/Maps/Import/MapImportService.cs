@@ -65,7 +65,12 @@ public sealed class MapImportService : IMapImportService
         if(scale!=1)throw new InvalidDataException("Smap使用厂家米制世界坐标，不允许额外缩放；坐标确认须单独核定。");
         if(new FileInfo(path).Length>64*1024*1024)throw new InvalidDataException("Smap文件超过64MB。");
         var bytes=File.ReadAllBytes(path);
-        return Smap3DPackageReader.IsZip(bytes)?new Smap3DPackageReader().Read(bytes,path).Plane.Definition:new Smap2DImportService().Read(bytes,path).Definition;
+        if(Smap3DPackageReader.IsZip(bytes))
+        {
+            var package=new Smap3DPackageReader().Read(bytes,path);
+            return RobokitPathEvidenceReader.Attach(package.PlaneBytes,bytes,package.Plane.Definition);
+        }
+        return RobokitPathEvidenceReader.Attach(bytes,bytes,new Smap2DImportService().Read(bytes,path).Definition);
     }
 
     private static MapDefinition ImportJson(string path, double scale)
@@ -202,7 +207,7 @@ public sealed class MapImportService : IMapImportService
                 edge.Enabled,
                 CleanList(edge.ResourceIds))
             {
-                LayerId = edge.LayerId, GeometryKind = edge.GeometryKind,
+                LayerId = edge.LayerId, GeometryKind = edge.GeometryKind, VendorPath = edge.VendorPath,
                 ControlPoints = edge.ControlPoints?.Select(point => new MapPoint2D(point.X * scale, point.Y * scale)).ToArray()
             };
             return WithGeometryDistance(importedEdge, nodeById);
@@ -218,7 +223,7 @@ public sealed class MapImportService : IMapImportService
                 resource.Id.Trim(),
                 resource.Type,
                 resource.Capacity,
-                resource.Boundary?.Select(point => new MapPoint2D(point.X * scale, point.Y * scale)).ToArray()) { LayerId = resource.LayerId }).ToArray()) { Layers = dto.Layers, EditorSettings = dto.EditorSettings,ImportWarnings=dto.ImportWarnings };
+                resource.Boundary?.Select(point => new MapPoint2D(point.X * scale, point.Y * scale)).ToArray()) { LayerId = resource.LayerId }).ToArray()) { Layers = dto.Layers, EditorSettings = dto.EditorSettings,ImportWarnings=dto.ImportWarnings,RobokitSource=dto.RobokitSource };
     }
 
     private static MapEdge WithGeometryDistance(MapEdge edge, IReadOnlyDictionary<string, MapNode> nodes) =>
@@ -436,6 +441,7 @@ public sealed class MapImportService : IMapImportService
     private sealed class MapDefinitionDto
     {
         public List<string> ImportWarnings {get;set;}=[];
+        public RobokitMapSource? RobokitSource { get; set; }
         public string Name { get; set; } = string.Empty;
         public string CoordinateSystem { get; set; } = "LocalCartesian";
         public string Unit { get; set; } = "m";
@@ -460,6 +466,7 @@ public sealed class MapImportService : IMapImportService
 
     private sealed class MapEdgeDto
     {
+        public RobokitPathEvidence? VendorPath { get; set; }
         public string LayerId { get; set; } = "navigation";
         public string Id { get; set; } = string.Empty;
         public string From { get; set; } = string.Empty;

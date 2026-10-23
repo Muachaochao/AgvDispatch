@@ -16,6 +16,8 @@ public static class MapVersionDiffer
         ArgumentNullException.ThrowIfNull(baseline);
         ArgumentNullException.ThrowIfNull(draft);
         var result = new List<MapDifference>();
+        if(System.Text.Json.JsonSerializer.Serialize(baseline.RobokitSource)!=System.Text.Json.JsonSerializer.Serialize(draft.RobokitSource))
+            result.Add(new("厂家来源","RobokitSource",MapDifferenceKind.Modified,"厂家原图来源或曲线转换范围变化；未证明车端已生效"));
         CompareObjects(baseline.Nodes, draft.Nodes, node => node.Id, NodeFingerprint, "节点", result);
         CompareObjects(baseline.Edges, draft.Edges, edge => edge.Id, EdgeFingerprint, "路段", result);
         CompareObjects(baseline.Resources, draft.Resources, resource => resource.Id, ResourceFingerprint, "交通资源", result);
@@ -50,7 +52,8 @@ public static class MapVersionDiffer
     private static string NodeFingerprint(MapNode node) =>
         $"{node.X:R}|{node.Y:R}|{node.Type}|{node.Enabled}|{node.AgvSiteId}|{Sorted(node.ResourceIds)}";
     private static string EdgeFingerprint(MapEdge edge) =>
-        $"{edge.From}|{edge.To}|{edge.Distance:R}|{edge.SpeedLimit:R}|{edge.Bidirectional}|{edge.Enabled}|{Sorted(edge.ResourceIds)}|{edge.GeometryKind}|{string.Join(';', edge.ControlPoints?.Select(point => $"{point.X:R},{point.Y:R}") ?? [])}";
+        $"{edge.From}|{edge.To}|{edge.Distance:R}|{edge.SpeedLimit:R}|{edge.Bidirectional}|{edge.Enabled}|{Sorted(edge.ResourceIds)}|{edge.GeometryKind}|{string.Join(';', edge.ControlPoints?.Select(point => $"{point.X:R},{point.Y:R}") ?? [])}"+
+        (edge.VendorPath is null?"":"|Robokit:"+System.Text.Json.JsonSerializer.Serialize(edge.VendorPath));
     private static string ResourceFingerprint(TrafficResourceDefinition resource) =>
         $"{resource.Type}|{resource.Capacity}|{string.Join(';', resource.Boundary?.Select(point => $"{point.X:R},{point.Y:R}") ?? [])}";
     private static string Sorted(IEnumerable<string> values) => string.Join(';',

@@ -1,7 +1,8 @@
+import type {VendorPath,VendorSource} from './vendor-path.ts';
 export interface Node { id: string; x: number; y: number; type: string; enabled: boolean; resourceIds: string[]; agvSiteId: string | null; layerId?: string }
-export interface Edge { id: string; from: string; to: string; distance: number; speedLimit: number; enabled: boolean; bidirectional: boolean; resourceIds: string[]; geometryKind: string; controlPoints?: {x:number;y:number}[] | null; layerId?: string }
+export interface Edge { vendorPath?:VendorPath|null; id: string; from: string; to: string; distance: number; speedLimit: number; enabled: boolean; bidirectional: boolean; resourceIds: string[]; geometryKind: string; controlPoints?: {x:number;y:number}[] | null; layerId?: string }
 export interface Resource { id: string; type: string; capacity: number; boundary?: {x:number;y:number}[] | null; layerId?: string }
-export interface Definition { name: string; source: string; coordinateSystem: string; unit: string; nodes: Node[]; edges: Edge[]; resources: Resource[]; [key:string]:unknown }
+export interface Definition { robokitSource?:VendorSource|null; name: string; source: string; coordinateSystem: string; unit: string; nodes: Node[]; edges: Edge[]; resources: Resource[]; [key:string]:unknown }
 export interface SceneItem { id: string; name: string; kind: 'area'|'equipment'|'text'; x:number; y:number; width:number; height:number; color:string; visible:boolean; layerId?:string }
 export interface VehicleConfig { vehicleId:string; displayName:string; ipAddress:string; port:number; navigationPort:number; enabled:boolean }
 export interface Plan { schema:'agv-web-plan'; version:1; id:string; name:string; updatedAt:string; definition:Definition; scene:SceneItem[]; vehicles:VehicleConfig[]; waypoints:string[] }

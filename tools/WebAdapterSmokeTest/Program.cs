@@ -98,6 +98,40 @@ try
         await Task.Delay(200);
     }
     Check(ready, "真实Service.exe → NamedPipe → WebHost → HTTP可用（私有库/独立管道）");
+    if(args.Contains("--vendor-path-only"))
+    {
+        var fixtureIndex=Array.IndexOf(args,"--vendor-map");
+        var fixture=File.ReadAllBytes(args.ElementAtOrDefault(fixtureIndex+1)??throw new ArgumentException("缺少合成SMAP路径"));
+        var sha=Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(fixture)).ToLowerInvariant();
+        using var vendorImportedResponse=await http.PostAsync("/api/maps/import?format=smap",new ByteArrayContent(fixture));
+        vendorImportedResponse.EnsureSuccessStatusCode();var preview=await vendorImportedResponse.Content.ReadFromJsonAsync<MapImportPreviewResult>(WebJson.Options);
+        Check(preview?.Accepted==true&&preview.Definition?.RobokitSource?.Sha256==sha,"真实导入接口携带同源厂家属性与原文件SHA");
+        var importedMap=preview!.Definition!;
+        Check(importedMap.Source==""&&importedMap.Edges.Count==3&&importedMap.Edges.All(e=>e.VendorPath is not null),"Web不暴露临时源路径，三条原方向/平行路径证据完整");
+        using var download=await http.GetAsync("/api/maps/vendor-source/"+sha);
+        Check(download.IsSuccessStatusCode&&(await download.Content.ReadAsByteArrayAsync()).SequenceEqual(fixture),"按SHA下载原SMAP与上传逐字节相同");
+        using var repeated=await http.PostAsync("/api/maps/import?format=smap",new ByteArrayContent(fixture));
+        Check(repeated.IsSuccessStatusCode&&Directory.GetFiles(Path.Combine(root,"vendor-map-sources"),"*.smap").Length==1,"重复导入不会覆盖或重复留存原图");
+        using var absent=await http.GetAsync("/api/maps/vendor-source/"+new string('a',64));
+        Check(absent.StatusCode==HttpStatusCode.NotFound,"另一后台未持有原图时明确404");
+        using var invalid=await http.GetAsync("/api/maps/vendor-source/not-a-sha");Check(invalid.StatusCode==HttpStatusCode.BadRequest,"下载接口拒绝无效摘要");
+        using var created=await http.PostAsJsonAsync("/api/maps/create",new CreateMapRequest("合成厂家路径属性验收","isolated","",importedMap.CoordinateSystem,"m",1),WebJson.Options);
+        var creation=await created.Content.ReadFromJsonAsync<MapOperationResult>(WebJson.Options);var vendorWorkspace=creation?.Workspace??throw new Exception("未创建隔离草稿");
+        using var saved=await http.PostAsJsonAsync("/api/maps/draft",new SaveMapDraftRequest(vendorWorkspace.Project.MapId,vendorWorkspace.Draft.VersionId,
+            importedMap.Name,"synthetic vendor property test","",importedMap.CoordinateSystem,"m",1,importedMap,vendorWorkspace.Draft.EditToken),WebJson.Options);
+        var save=await saved.Content.ReadFromJsonAsync<MapOperationResult>(WebJson.Options);Check(save?.Accepted==true,"带厂家只读证据的正式草稿保存通过");
+        using var loaded=await http.GetAsync("/api/maps/"+vendorWorkspace.Project.MapId+"/workspace");var persisted=await loaded.Content.ReadFromJsonAsync<MapWorkspaceSnapshot>(WebJson.Options);
+        Check(persisted is not null&&persisted.Draft.Definition.Edges[0].VendorPath?.RawPropertiesJson==importedMap.Edges[0].VendorPath!.RawPropertiesJson&&persisted.Draft.Definition.RobokitSource==importedMap.RobokitSource,"正式数据库草稿读回不丢属性、类型和值");
+        using var verify=DatabaseFactory.Create(new(){DatabasePath=databasePath});
+        Check(verify.Queryable<AgvCommandOutboxEntity>().Count()==0&&verify.Queryable<MapProjectEntity>().Single(p=>p.MapId=="MAP-WEB-TEST").IsActive,"导入查看与草稿保存不发车、不切运行图");
+        File.WriteAllText(Path.Combine(root,"vendor-path-api-result.json"),JsonSerializer.Serialize(new{checks,sha,mapId=vendorWorkspace.Project.MapId,scope="actual isolated HTTP/pipe/service; source archive and draft roundtrip; no device commands"},WebJson.Options));
+        if(args.Contains("--hold-ui"))
+        {
+            Console.WriteLine($"UI_READY http://127.0.0.1:{port}/#/planning?mapId={vendorWorkspace.Project.MapId}&tab=map STOP={Path.Combine(root,"stop-ui")}");
+            while(!File.Exists(Path.Combine(root,"stop-ui")))await Task.Delay(200);
+        }
+        Console.WriteLine($"PASS {checks.Count} vendor path API checks. Evidence: {root}");return;
+    }
     if(args.Contains("--waiting-bay-only"))
     {
         var currentMap=snapshot.GetProperty("map");

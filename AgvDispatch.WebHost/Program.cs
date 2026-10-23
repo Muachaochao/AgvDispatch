@@ -16,6 +16,7 @@ builder.Services.AddSingleton(new DispatchPipe(builder.Configuration["Web:PipeNa
 builder.Services.AddSingleton<SnapshotReader>();
 var projectStorePath=Path.GetFullPath(builder.Configuration["Web:ProjectStorePath"]??Path.Combine(builder.Environment.ContentRootPath,"data","projects"));
 builder.Services.AddSingleton(new WebProjectStore(projectStorePath));
+builder.Services.AddSingleton(new VendorMapSourceArchive(Path.Combine(Path.GetDirectoryName(projectStorePath)!,"vendor-map-sources")));
 var app = builder.Build();
 var submissions = builder.Configuration.GetValue("Web:EnableTaskSubmission", false);
 var webRoot = Path.GetFullPath(builder.Configuration["Web:StaticPath"] ?? Path.Combine(app.Environment.ContentRootPath, "..", "AgvDispatch.Web", "dist"));
