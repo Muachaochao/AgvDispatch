@@ -27,10 +27,12 @@ foreach($verifyFile in $verifyManifest.files){
 foreach($verifyActual in Get-ChildItem -LiteralPath $verifyRoot -File -Recurse -Force){
     if($verifyActual.FullName -ne $verifyManifestPath -and !$verifySeen.Contains($verifyActual.FullName)){
         $verifyRelative=[IO.Path]::GetRelativePath($verifyRoot,$verifyActual.FullName).Replace('\','/')
+        $verifyMapArchive=$verifyRelative -match '^Web/(?:host/data/robot-map-downloads|data/vendor-map-sources)/[a-f0-9]{64}\.smap$'
+        if($AllowRuntimeData -and $verifyMapArchive -and ($verifyActual.Length -lt 2 -or $verifyActual.Length -gt 64MB -or (Get-FileHash -LiteralPath $verifyActual.FullName -Algorithm SHA256).Hash -ne $verifyActual.BaseName)){throw '运行地图留存文件的大小或SHA256与名称不符。'}
         $verifyAllowedRuntime=$verifyRelative -match '^Runtime/launcher(?:-session\.json|\.lock)$' -or
             $verifyRelative -match '^(Service|WPF|Web/host)/data/[^/]+\.(?:db|sqlite3?)(?:-wal|-shm|-journal)?$' -or
             $verifyRelative -match '^(Service|WPF|Web/host)/logs/(?:[^/]+/)*[^/]+\.log(?:\.\d+)?$' -or
-            $verifyRelative -match '^Web/data/projects/(?:[^/]+/)*[^/]+\.json$'
+            $verifyRelative -match '^Web/data/projects/(?:[^/]+/)*[^/]+\.json$' -or $verifyMapArchive
         if(!$AllowRuntimeData -or !$verifyAllowedRuntime){throw "存在未列入初始清单的文件：$($verifyActual.FullName)。仅显式允许的运行数据可不在初始包中。"}
         $verifyAncestor=$verifyActual
         while($verifyAncestor.FullName.Length -ge $verifyRoot.Length){
