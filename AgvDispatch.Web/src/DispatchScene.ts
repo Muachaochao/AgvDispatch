@@ -128,7 +128,7 @@ export class DispatchScene {
 
         if(entry.ring)(entry.ring.material as THREE.MeshBasicMaterial).color.set(role==='blocker'?'#ff657e':role==='task'?'#47e4b3':'#d6f5ff');
         if (!entry.group.parent) this.vehicleGroup.add(entry.group);
-        
+
       }
     }
 
@@ -211,7 +211,7 @@ export class DispatchScene {
       const ringZ=label.anchor.clone().add(new THREE.Vector3(0,0,.24)).project(this.camera);
       const gap=Math.max(15,Math.hypot((ringX.x-p.x)*width/2,(ringX.y-p.y)*height/2)+7,
         Math.hypot((ringZ.x-p.x)*width/2,(ringZ.y-p.y)*height/2)+7);
-      const offsets=label.kind==='vehicle' 
+      const offsets=label.kind==='vehicle'
         ? [[-w/2,-h-26],[20,-h/2],[-w-20,-h/2],[-w/2,28],[-w/2,-h-52]]
         : [[gap,gap],[gap,-h-gap],[-w-gap,gap],[-w-gap,-h-gap],[-w/2,gap+15],[-w/2,-h-gap-15],[gap+15,-h/2],[-w-gap-15,-h/2]];
       let chosen:LabelRect|undefined;
