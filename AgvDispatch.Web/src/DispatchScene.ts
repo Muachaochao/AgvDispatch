@@ -1,10 +1,11 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { makePoint, makePathObject, makeWaitingArea, makeLabel } from './vendor/agv-web-visible/MeshUtils';
+import { makePathObject, makeWaitingArea } from './vendor/agv-web-visible/MeshUtils';
 import type { Snapshot, WebMap } from './types';
 import { mayPlot } from './state';
 import { vehicleCategory } from './dashboard';
 import type {TrafficFocus} from './traffic-focus';
+import './scene-labels.css';
 
 const VEHICLE_COLORS: Record<string, string> = {
   running: '#21dca3', waiting: '#eeb85c', idle: '#ad8aeb', charging: '#5aaee8',
@@ -31,7 +32,11 @@ export class DispatchScene {
   private pick = new THREE.Raycaster();
   private onPointer: (event: PointerEvent) => void;
 
-  private vehiclePool = new Map<string, { group: THREE.Group; label: THREE.Object3D; ring: THREE.Mesh | null }>();
+  private vehiclePool = new Map<string, { group: THREE.Group; label: SceneLabel; ring: THREE.Mesh | null }>();
+  private labelLayer=document.createElement('div');
+  private stationLabels:SceneLabel[]=[];
+  private viewportWidth=0;
+  private viewportHeight=0;
   private bodyGeometry = new THREE.BoxGeometry(1.2, 0.6, 0.85);
   private ringGeometry = new THREE.RingGeometry(0.78, 0.85, 32);
   private ringMaterial = new THREE.MeshBasicMaterial({ color: '#d6f5ff', side: THREE.DoubleSide });
@@ -40,6 +45,7 @@ export class DispatchScene {
     this.scene.background = new THREE.Color('#0b1229');
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     container.appendChild(this.renderer.domElement);
+    this.labelLayer.className='scene-label-layer';this.labelLayer.setAttribute('aria-label','车辆与站点标注');container.appendChild(this.labelLayer);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.maxPolarAngle = Math.PI / 2 - 0.03;
@@ -49,7 +55,7 @@ export class DispatchScene {
     this.resizeObserver = new ResizeObserver(() => {
       const { width, height } = container.getBoundingClientRect();
       if (width < 1 || height < 1) return;
-      this.renderer.setSize(width, height); this.camera.aspect = width / Math.max(height, 1); this.camera.updateProjectionMatrix(); if(!this.sized){this.sized=true;this.view(this.mode);}
+      this.viewportWidth=width;this.viewportHeight=height;this.renderer.setSize(width, height); this.camera.aspect = width / Math.max(height, 1); this.camera.updateProjectionMatrix(); if(!this.sized){this.sized=true;this.view(this.mode);}
     });
     this.resizeObserver.observe(container);
     this.onPointer = event => {
@@ -64,7 +70,7 @@ export class DispatchScene {
     };
     this.renderer.domElement.addEventListener('pointerup', this.onPointer);
     this.view('top');
-    const animate = () => { this.frame = requestAnimationFrame(animate); this.controls.update(); this.renderer.render(this.scene, this.camera); };
+    const animate = () => { this.frame = requestAnimationFrame(animate); this.controls.update();this.layoutLabels(); this.renderer.render(this.scene, this.camera); };
     animate();
   }
 
@@ -96,8 +102,7 @@ export class DispatchScene {
           group.add(body);
           const heading = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(0.2, 0.5, 0), 1, '#ffffff', 0.3, 0.2);
           group.add(heading);
-          const label = makeLabel({ name: vehicle.vehicleId, type: 'vehicle', x: 0, y: 0, z: -1.1 });
-          label.scale.multiplyScalar(0.65);
+          const label = this.makeSceneLabel(vehicle.vehicleId,'vehicle');
           entry = { group, label, ring: null };
           this.vehiclePool.set(vehicle.vehicleId, entry);
         }
@@ -107,7 +112,7 @@ export class DispatchScene {
         const body = entry.group.children[0] as THREE.Mesh;
         (body.material as THREE.MeshStandardMaterial).color.set(color);
 
-        entry.label.position.set(vehicle.x!, 0.4, -vehicle.y! - 1.1);
+        entry.label.anchor.set(vehicle.x!,0.9,-vehicle.y!);entry.label.active=true;entry.label.element.style.setProperty('--label-color',color);
 
         const role=focus?.blockers.includes(vehicle.vehicleId)?'blocker':focus?.vehicleId===vehicle.vehicleId?'task':vehicle.vehicleId===selected?'selected':'';
         if (role && !entry.ring) {
@@ -123,14 +128,14 @@ export class DispatchScene {
 
         if(entry.ring)(entry.ring.material as THREE.MeshBasicMaterial).color.set(role==='blocker'?'#ff657e':role==='task'?'#47e4b3':'#d6f5ff');
         if (!entry.group.parent) this.vehicleGroup.add(entry.group);
-        if (!entry.label.parent) this.vehicleGroup.add(entry.label);
+        
       }
     }
 
     for (const [id, entry] of this.vehiclePool) {
       if (!activeIds.has(id)) {
         if (entry.group.parent) this.vehicleGroup.remove(entry.group);
-        if (entry.label.parent) this.vehicleGroup.remove(entry.label);
+        entry.label.active=false;entry.label.element.hidden=true;
       }
     }
   }
@@ -139,9 +144,11 @@ export class DispatchScene {
     this.clearResourceFocus();this.clearGroup(this.mapGroup); this.edges.clear();this.resourceMeshes.clear();
     for (const [, entry] of this.vehiclePool) {
       if (entry.group.parent) this.vehicleGroup.remove(entry.group);
-      if (entry.label.parent) this.vehicleGroup.remove(entry.label);
+      entry.label.active=false;entry.label.element.hidden=true;
     }
+    for(const entry of this.vehiclePool.values())entry.label.element.remove();
     this.vehiclePool.clear();
+    this.stationLabels.forEach(label=>label.element.remove());this.stationLabels=[];
 
     if (!map?.nodes.length) return;
     let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
@@ -162,10 +169,10 @@ export class DispatchScene {
       }
     }
     for (const node of map.nodes) {
-      const markerGroup = makePoint({ name: node.agvSiteId ?? node.id, type: 'station', x: node.x, y: 0, z: -node.y, color: node.enabled ? '#43d9b1' : '#637083' });
-      const marker = markerGroup.children[0] as THREE.Mesh; marker.geometry.dispose(); marker.geometry = new THREE.RingGeometry(0.18, 0.23, 24); marker.rotation.x = -Math.PI / 2;
-      const label = markerGroup.children[1]; label.scale.multiplyScalar(0.65); label.position.z += 0.8;
-      this.mapGroup.add(markerGroup);
+      const marker=new THREE.Mesh(new THREE.RingGeometry(0.18,0.23,32),new THREE.MeshBasicMaterial({color:node.enabled?'#43d9b1':'#637083',side:THREE.DoubleSide}));
+      marker.rotation.x=-Math.PI/2;marker.position.set(node.x,.04,-node.y);this.mapGroup.add(marker);
+      const label=this.makeSceneLabel(node.agvSiteId??node.id,'station');label.anchor.set(node.x,.05,-node.y);
+      label.element.classList.toggle('disabled',!node.enabled);this.stationLabels.push(label);
     }
     for (const resource of map.resources) {
       if (!resource.boundary?.length) continue;
@@ -176,6 +183,47 @@ export class DispatchScene {
     for (const node of map.nodes.filter(n => n.type === 'WaitingPoint' || n.id === 'WAIT'))
       this.mapGroup.add(makeWaitingArea({ name: '', type: 'waiting', x: node.x, y: 0, z: -node.y, width: 2, height: 1.8 }));
     this.view(this.mode);
+  }
+
+  private makeSceneLabel(text:string,kind:'vehicle'|'station'):SceneLabel {
+    const element=document.createElement('div');element.className=`scene-map-label ${kind}`;element.textContent=text;element.title=text;
+    this.labelLayer.appendChild(element);return {element,kind,anchor:new THREE.Vector3(),active:true};
+  }
+
+  private layoutLabels(){
+    const width=this.viewportWidth,height=this.viewportHeight;if(!width||!height)return;
+    this.camera.updateMatrixWorld();const occupied:LabelRect[]=[];
+    for(const entry of this.vehiclePool.values())if(entry.label.active){
+      entry.group.updateMatrixWorld(true);const box=new THREE.Box3().setFromObject(entry.group.children[0]);
+      const corners=[];
+      for(const x of [box.min.x,box.max.x])for(const y of [box.min.y,box.max.y])for(const z of [box.min.z,box.max.z]){
+        const p=new THREE.Vector3(x,y,z).project(this.camera);if(p.z>=-1&&p.z<=1)corners.push({x:(p.x+1)*width/2,y:(1-p.y)*height/2});
+      }
+      if(corners.length)occupied.push({left:Math.min(...corners.map(p=>p.x))-5,top:Math.min(...corners.map(p=>p.y))-5,
+        right:Math.max(...corners.map(p=>p.x))+5,bottom:Math.max(...corners.map(p=>p.y))+5});
+    }
+    for(const label of [...Array.from(this.vehiclePool.values()).map(e=>e.label),...this.stationLabels]){
+      const el=label.element;if(!label.active){el.hidden=true;continue;}
+      const p=label.anchor.clone().project(this.camera);
+      if(p.z<-1||p.z>1||Math.abs(p.x)>1||Math.abs(p.y)>1){el.hidden=true;continue;}
+      el.hidden=false;const w=el.offsetWidth,h=el.offsetHeight,x=(p.x+1)*width/2,y=(1-p.y)*height/2;
+      const ringX=label.anchor.clone().add(new THREE.Vector3(.24,0,0)).project(this.camera);
+      const ringZ=label.anchor.clone().add(new THREE.Vector3(0,0,.24)).project(this.camera);
+      const gap=Math.max(15,Math.hypot((ringX.x-p.x)*width/2,(ringX.y-p.y)*height/2)+7,
+        Math.hypot((ringZ.x-p.x)*width/2,(ringZ.y-p.y)*height/2)+7);
+      const offsets=label.kind==='vehicle' 
+        ? [[-w/2,-h-26],[20,-h/2],[-w-20,-h/2],[-w/2,28],[-w/2,-h-52]]
+        : [[gap,gap],[gap,-h-gap],[-w-gap,gap],[-w-gap,-h-gap],[-w/2,gap+15],[-w/2,-h-gap-15],[gap+15,-h/2],[-w-gap-15,-h/2]];
+      let chosen:LabelRect|undefined;
+      for(const [dx,dy] of offsets){
+        const rect={left:x+dx!,top:y+dy!,right:x+dx!+w,bottom:y+dy!+h};
+        if(rect.left<6||rect.top<6||rect.right>width-6||rect.bottom>height-6)continue;
+        if(occupied.some(r=>rect.left<r.right+6&&rect.right>r.left-6&&rect.top<r.bottom+6&&rect.bottom>r.top-6))continue;
+        chosen=rect;break;
+      }
+      if(!chosen){el.hidden=true;continue;}
+      el.style.transform=`translate3d(${Math.round(chosen.left)}px,${Math.round(chosen.top)}px,0)`;occupied.push(chosen);
+    }
   }
 
   clearResourceFocus(){this.clearGroup(this.resourceFocus);}
@@ -229,5 +277,9 @@ export class DispatchScene {
     this.vehiclePool.clear();
     this.renderer.dispose();
     this.renderer.domElement.remove();
+    this.labelLayer.remove();
   }
 }
+
+interface SceneLabel {element:HTMLDivElement;kind:'vehicle'|'station';anchor:THREE.Vector3;active:boolean}
+interface LabelRect {left:number;top:number;right:number;bottom:number}
