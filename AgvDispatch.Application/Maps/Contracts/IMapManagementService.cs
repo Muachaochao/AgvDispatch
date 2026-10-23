@@ -1,4 +1,4 @@
-﻿using AgvDispatch.Domain.Maps;
+using AgvDispatch.Domain.Maps;
 
 namespace AgvDispatch.Application.Abstractions;
 
@@ -147,8 +147,11 @@ public sealed record MapOperationResult(
     string Message,
     MapWorkspaceSnapshot? Workspace = null);
 
+public sealed record ArchiveMapRequest(string MapId, bool Archived, string ExpectedEditToken);
 public interface IMapManagementService
 {
+    Task<MapOperationResult> ArchiveAsync(TrafficUserContext user, ArchiveMapRequest request, CancellationToken cancellationToken)
+        => throw new NotSupportedException("地图归档服务未更新。");
     Task<IReadOnlyList<MapProjectSummary>> GetMapsAsync(
         TrafficUserContext user,
         CancellationToken cancellationToken);

@@ -476,6 +476,11 @@ public sealed class MapValidationService : IMapValidationService
             {
                 var first = edges[left].Edge;
                 var second = edges[right].Edge;
+                // Two explicit reverse entries describing the very same lane are not a crossing.
+                // Separate overlap checks still reject same-direction and bidirectional duplicates.
+                if(!first.Bidirectional&&!second.Bidirectional &&
+                    first.From.Equals(second.To,StringComparison.OrdinalIgnoreCase)&&first.To.Equals(second.From,StringComparison.OrdinalIgnoreCase)&&
+                    GeometrySignature(first).Equals(GeometrySignature(second),StringComparison.OrdinalIgnoreCase))continue;
                 var sharedPoints = new[] { first.From, first.To }.Intersect(
                         new[] { second.From, second.To }, StringComparer.OrdinalIgnoreCase)
                     .Select(id => new MapPoint2D(nodes[id].X, nodes[id].Y)).ToArray();

@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Application.Maps;
@@ -51,7 +51,7 @@ public sealed partial class MapSwitchService(ISqlSugarClient database, IMapExecu
             row.Status == (int)MapVersionStatus.Published).FirstAsync(cancellationToken);
         var target = await database.Queryable<MapProjectEntity>().Where(row => row.MapId == request.MapId)
             .FirstAsync(cancellationToken);
-        if (version is null || target?.PublishedVersionId != request.VersionId)
+        if (version is null || target is null || target.IsArchived || target.PublishedVersionId != request.VersionId)
             return new(false, "目标不是当前已发布版本。");
         var previous = await database.Queryable<MapProjectEntity>().Where(row => row.IsActive)
             .FirstAsync(cancellationToken);

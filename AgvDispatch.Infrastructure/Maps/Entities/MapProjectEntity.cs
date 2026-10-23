@@ -41,6 +41,8 @@ public sealed class MapProjectEntity
     public int? UnderlayHeight { get; set; }
     [SugarColumn(IsNullable = true)]
     public DateTime? UnderlayGeneratedAt { get; set; }
+    [SugarColumn(DefaultValue = "0")]
+    public bool IsArchived { get; set; }
     public bool IsActive { get; set; }
     [SugarColumn(Length = 64, IsNullable = true)]
     public string? ActiveVersionId { get; set; }

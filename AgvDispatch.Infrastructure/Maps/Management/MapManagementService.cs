@@ -29,6 +29,24 @@ public sealed class MapManagementService(
         Converters = { new JsonStringEnumConverter() }
     };
 
+    public async Task<MapOperationResult> ArchiveAsync(TrafficUserContext user, ArchiveMapRequest request, CancellationToken cancellationToken)
+    {
+        Demand(user, TrafficPermission.ManageMap);
+        using var control=await executionGate.EnterControlAsync(cancellationToken);
+        var project=await database.Queryable<MapProjectEntity>().Where(p=>p.MapId==request.MapId).FirstAsync(cancellationToken);
+        if(project is null)return new(false,"地图项目不存在。");
+        if(project.IsActive||activeMap.Current?.MapId==request.MapId)return new(false,"当前运行地图不能移除。");
+        if(await database.Queryable<MapSwitchEntity>().Where(r=>r.Phase<(int)MapSwitchPhase.Completed &&
+            (r.MapId==request.MapId||r.PreviousMapId==request.MapId)).AnyAsync(cancellationToken))
+            return new(false,"地图仍关联未结束的切换，请先按原记录处理切换。");
+        var draft=await database.Queryable<MapVersionEntity>().Where(v=>v.MapId==request.MapId&&v.Status==(int)MapVersionStatus.Draft).FirstAsync(cancellationToken);
+        if(draft is null||draft.EditToken!=request.ExpectedEditToken)return new(false,"草稿已变化，请重新读取后移除。");
+        await database.Updateable<MapProjectEntity>().SetColumns(p=>new MapProjectEntity{IsArchived=request.Archived,UpdatedAt=DateTime.Now})
+            .Where(p=>p.MapId==request.MapId&&!p.IsActive).ExecuteCommandAsync(cancellationToken);
+        await AuditAsync(user,request.MapId,draft.VersionId,request.Archived?"ArchiveMap":"RestoreMap",true,"从目录移除可恢复；保留版本与切换历史。",cancellationToken);
+        return new(true,request.Archived?"已从地图目录移除，版本与历史保留可恢复。":"地图已恢复到目录。");
+    }
+
     public async Task<IReadOnlyList<MapOperationAuditSnapshot>> GetAuditsAsync(
         TrafficUserContext user,
         string mapId,
@@ -120,7 +138,7 @@ public sealed class MapManagementService(
         var project = await database.Queryable<MapProjectEntity>()
             .Where(item => item.MapId == request.MapId)
             .FirstAsync(cancellationToken);
-        if (project is null) return new(false, "地图项目不存在。");
+        if (project is null || project.IsArchived) return new(false, "地图项目不存在或已移除。");
         var status = request.Version == MapExportVersion.Published
             ? MapVersionStatus.Published
             : MapVersionStatus.Draft;
@@ -161,6 +179,7 @@ public sealed class MapManagementService(
     {
         Demand(user, TrafficPermission.View);
         var rows = await database.Queryable<MapProjectEntity>()
+            .Where(item => !item.IsArchived)
             .OrderByDescending(item => item.UpdatedAt)
             .ToListAsync(cancellationToken);
         return rows.Select(ToSummary).ToArray();
@@ -289,7 +308,7 @@ public sealed class MapManagementService(
         var currentProject = await database.Queryable<MapProjectEntity>()
             .Where(item => item.MapId == request.MapId)
             .FirstAsync(cancellationToken);
-        if (currentProject is null) return new(false, "地图项目不存在。");
+        if (currentProject is null || currentProject.IsArchived) return new(false, "地图项目不存在或已移除。");
         var sourceChanged = !string.Equals(
             currentProject.BackgroundFilePath,
             request.BackgroundFilePath.Trim(),
@@ -357,6 +376,7 @@ public sealed class MapManagementService(
         CancellationToken cancellationToken)
     {
         Demand(user, TrafficPermission.ManageMap);
+        if(await database.Queryable<MapProjectEntity>().Where(p=>p.MapId==request.MapId&&p.IsArchived).AnyAsync(cancellationToken))return new(false,"地图已移除，请先恢复。");
         var draft = await database.Queryable<MapVersionEntity>()
             .Where(item => item.MapId == request.MapId && item.VersionId == request.VersionId &&
                            item.Status == (int)MapVersionStatus.Draft)
@@ -456,7 +476,7 @@ public sealed class MapManagementService(
         var project = await database.Queryable<MapProjectEntity>()
             .Where(item => item.MapId == request.MapId)
             .FirstAsync(cancellationToken);
-        if (project is null) return new(false, "地图项目不存在。");
+        if (project is null || project.IsArchived) return new(false, "地图项目不存在或已移除。");
         var sourcePath = string.IsNullOrWhiteSpace(request.SourcePath)
             ? project.BackgroundFilePath
             : request.SourcePath.Trim();
@@ -526,7 +546,7 @@ public sealed class MapManagementService(
         using var control = await executionGate.EnterControlAsync(cancellationToken);
         var project = await database.Queryable<MapProjectEntity>().Where(item => item.MapId == request.MapId)
             .FirstAsync(cancellationToken);
-        if (project is null) return new(false, "地图项目不存在。");
+        if (project is null || project.IsArchived) return new(false, "地图项目不存在或已移除。");
         if (request.ConfirmationText?.Trim() != $"ACTIVATE {project.Name}")
             return new(false, $"激活确认文本不正确，请输入：ACTIVATE {project.Name}");
         var release = await database.Queryable<MapSwitchEntity>()

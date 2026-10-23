@@ -1,4 +1,4 @@
-﻿using AgvDispatch.Application.Abstractions;
+using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Application.Maps;
 using AgvDispatch.Domain.Maps;
 using AgvDispatch.Domain.Tasks;
@@ -33,6 +33,16 @@ if (args.Length == 2 && (args[0] == "--cad-inspect" || args[0] == "--cad-render"
 }
 await MapGeometrySmokeTests.RunAsync();
 if (args.Contains("--geometry-only", StringComparer.OrdinalIgnoreCase)) return;
+
+var arcA=new MapNode("LM1",1.608,1.538,MapNodeType.WaitingPoint,true,[],"LM1");
+var arcB=new MapNode("LM4",1.608,-1.521,MapNodeType.WaitingPoint,true,[],"LM4");
+var arcForward=new MapEdge("ARC-F","LM1","LM4",3.0941,0.5,false,true,[]){GeometryKind=MapEdgeGeometryKind.CircularArc,ControlPoints=[new(1.4069999999999965,0.009000000000000341)]};
+var arcReverse=arcForward with{Id="ARC-R",From="LM4",To="LM1"};
+var arcMap=new MapDefinition("enabled arc","","RobotWorld","m",[arcA,arcB],[arcForward,arcReverse],[]);
+var arcValidator=new MapValidationService();
+Require(arcValidator.Validate(arcMap).IsValid,"启用后的同路反向圆弧不能被折线采样误报为未保护交叉。");
+Require(arcValidator.Validate(arcMap with{Edges=[arcForward,arcForward with{Id="DUP"}]}).Issues.Any(i=>i.Code=="EDGE_OVERLAP"),"反向圆弧例外不能放过同向重复道路。");
+Require(arcValidator.Validate(arcMap with{Edges=[arcForward with{Bidirectional=true},arcReverse]}).Issues.Any(i=>i.Code=="EDGE_OVERLAP"),"反向圆弧例外不能放过双向加反向重复。");
 
 var resources = new[]
 {
@@ -271,6 +281,18 @@ try
     Require(importPreview.Accepted && importPreview.Definition?.Nodes.Count == 3 &&
             importPreview.Validation?.IsValid == true,
         "地图管理员应能通过Service执行只读导入预览和校验。");
+    var archivedFixture=await mapManager.CreateAsync(mapEditor,new CreateMapRequest("archive-fixture","", "", "LocalCartesian","m",1),default);
+    var archivedWorkspace=archivedFixture.Workspace!;
+    var archivedId=archivedWorkspace.Project.MapId;
+    Require(!(await mapManager.ArchiveAsync(mapEditor,new(archivedId,true,"stale"),default)).Accepted,"过期编辑令牌不能移除地图。");
+    Require((await mapManager.ArchiveAsync(mapEditor,new(archivedId,true,archivedWorkspace.Draft.EditToken),default)).Accepted,"闲置地图可移出目录。");
+    Require(!(await mapManager.GetMapsAsync(mapViewer,default)).Any(m=>m.MapId==archivedId)&&
+        (await mapManager.GetWorkspaceAsync(mapViewer,archivedId,default))!.Draft.VersionId==archivedWorkspace.Draft.VersionId,"移除隐藏目录但完整保留版本。");
+    Require((await mapManager.ArchiveAsync(mapEditor,new(archivedId,false,archivedWorkspace.Draft.EditToken),default)).Accepted,"可恢复已移除地图。");
+    await database.Updateable<AgvDispatch.Infrastructure.Persistence.Entities.MapProjectEntity>().SetColumns(m=>new AgvDispatch.Infrastructure.Persistence.Entities.MapProjectEntity{IsActive=true}).Where(m=>m.MapId==archivedId).ExecuteCommandAsync();
+    Require(!(await mapManager.ArchiveAsync(mapEditor,new(archivedId,true,archivedWorkspace.Draft.EditToken),default)).Accepted,"运行地图禁止移除。");
+    await database.Updateable<AgvDispatch.Infrastructure.Persistence.Entities.MapProjectEntity>().SetColumns(m=>new AgvDispatch.Infrastructure.Persistence.Entities.MapProjectEntity{IsActive=false}).Where(m=>m.MapId==archivedId).ExecuteCommandAsync();
+    await mapManager.ArchiveAsync(mapEditor,new(archivedId,true,archivedWorkspace.Draft.EditToken),default);
     var dwgPath = Environment.GetEnvironmentVariable("AGV_TEST_DWG_PATH");
     if (string.IsNullOrWhiteSpace(dwgPath))
     {

@@ -245,6 +245,7 @@ public sealed class TrafficControlNamedPipeServer(
                     user,
                     Deserialize<AcknowledgeAlarmRequest>(request.Payload),
                     cancellationToken)),
+            "ArchiveMapProject" => Success(await maps.ArchiveAsync(user,Deserialize<ArchiveMapRequest>(request.Payload),cancellationToken)),
             TrafficControlOperations.GetMaps =>
                 Success(await maps.GetMapsAsync(user, cancellationToken)),
             TrafficControlOperations.GetMapWorkspace =>

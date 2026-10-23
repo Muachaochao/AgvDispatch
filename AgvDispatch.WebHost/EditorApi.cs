@@ -9,6 +9,8 @@ public static class EditorApi
     {
         app.MapGet("/api/maps/{id}/workspace", async (string id, DispatchPipe pipe, CancellationToken ct) =>
             await pipe.ReadAsync<MapWorkspaceSnapshot>(TrafficControlOperations.GetMapWorkspace, new { MapId = id }, ct));
+        app.MapPost("/api/maps/archive",async(ArchiveMapRequest request,DispatchPipe pipe,CancellationToken ct)=>
+            await pipe.ReadAsync<MapOperationResult>("ArchiveMapProject",request,ct));
         app.MapPost("/api/maps/create", async (CreateMapRequest request, DispatchPipe pipe, CancellationToken ct) =>
             await pipe.ReadAsync<MapOperationResult>(TrafficControlOperations.CreateMap, request, ct));
         app.MapPost("/api/maps/draft", async (SaveMapDraftRequest request, DispatchPipe pipe, CancellationToken ct) =>
