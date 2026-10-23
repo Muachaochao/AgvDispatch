@@ -1,4 +1,4 @@
-﻿param([string]$OutputDirectory='', [ValidateRange(1024,65535)][int]$WebPort=5198)
+﻿param([string]$OutputDirectory='', [ValidateRange(1024,65535)][int]$WebPort=5199)
 $ErrorActionPreference='Stop'
 $bundleProject=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $bundleStamp=Get-Date -Format yyyyMMdd-HHmmss

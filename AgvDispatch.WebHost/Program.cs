@@ -8,7 +8,7 @@ if(args.Contains("--launch-local")){Environment.ExitCode=await WebLocalLauncher.
 
 var builder = WebApplication.CreateBuilder(args);
 // This first local adapter deliberately has one loopback listener, independent of ASPNETCORE_URLS.
-var port = builder.Configuration.GetValue("Web:Port", 5188);
+var port = builder.Configuration.GetValue("Web:Port", 5199);
 if (port is < 1024 or > 65535) throw new InvalidOperationException("Web:Port 必须为1024至65535。");
 builder.WebHost.UseKestrel(o => { o.Listen(IPAddress.Loopback, port); o.Limits.MaxRequestBodySize = 8 * 1024 * 1024; });
 builder.Services.ConfigureHttpJsonOptions(o => o.SerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter()));
