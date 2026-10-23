@@ -17,7 +17,7 @@ public static class RobokitPathEvidenceReader
         for(var index=0;index<curves.Length;index++)
         {
             var curve=curves[index];var kind=Text(curve,"className");
-            if(kind is not ("StraightPath" or "BezierPath" or "DegenerateBezier"))continue;
+            if(kind is not ("StraightPath" or "BezierPath" or "DegenerateBezier" or "ArcPath"))continue;
             if(next>=result.Length)throw new InvalidDataException("厂家路径证据与已转换道路数量不一致。");
             var edge=result[next];var from=Text(curve.GetProperty("startPos"),"instanceName");var to=Text(curve.GetProperty("endPos"),"instanceName");
             var a=definition.Nodes.Single(n=>n.Id==edge.From);var b=definition.Nodes.Single(n=>n.Id==edge.To);

@@ -8,7 +8,7 @@ var checks=0;var names=new List<string>();void Check(bool pass,string name){if(!
 var root=Path.Combine(Path.GetTempPath(),"AGV-vendor-path-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(root);
 var text="""
 {"header":{"mapType":"2D-Map","mapName":"合成厂家路径属性验证","minPos":{"x":0,"y":0},"maxPos":{"x":4,"y":2},"resolution":0.02,"version":"1.0.6"},"advancedPointList":[{"className":"LocationMark","instanceName":"LM1","pos":{"x":0,"y":0}},{"className":"LocationMark","instanceName":"LM2","pos":{"x":4,"y":0}}],"advancedCurveList":[
-{"className":"ArcPath","instanceName":"UNSUPPORTED","startPos":{"instanceName":"LM1"},"endPos":{"instanceName":"LM2"}},
+{"className":"FuturePath","instanceName":"UNSUPPORTED","startPos":{"instanceName":"LM1"},"endPos":{"instanceName":"LM2"}},
 {"className":"StraightPath","instanceName":"FORWARD","startPos":{"instanceName":"LM1"},"endPos":{"instanceName":"LM2"},"property":[{"key":"direction","type":"int","int32Value":1},{"key":"maxspeed","type":"double","doubleValue":0.3},{"key":"laser","type":"bool","boolValue":false},{"key":"StopAcc","type":"double","doubleValue":0},{"key":"vendorFuture","type":"custom","payload":{"value":"<script>raw</script>"}}]},
 {"className":"StraightPath","instanceName":"REVERSE","startPos":{"instanceName":"LM2"},"endPos":{"instanceName":"LM1"},"property":[{"key":"direction","type":"int","int32Value":0},{"key":"maxspeed","type":"double","doubleValue":0.6},{"key":"reverseOnly","type":"string","stringValue":"reverse-only"}]},
 {"className":"BezierPath","instanceName":"PARALLEL","controlPos1":{"x":1,"y":1},"controlPos2":{"x":3,"y":-1},"startPos":{"instanceName":"LM1"},"endPos":{"instanceName":"LM2"}}]}
@@ -16,6 +16,9 @@ var text="""
 var bytes=Encoding.UTF8.GetPreamble().Concat(Encoding.UTF8.GetBytes(text)).ToArray();var path=Path.Combine(root,"source.smap");File.WriteAllBytes(path,bytes);var importer=new MapImportService();
 var definition=importer.Import(new(path,AgvDispatch.Application.Abstractions.MapImportFormat.RobokitSmap));
 Check(definition.Edges.Count==3&&definition.RobokitSource is {CurveCount:4,ConvertedCurveCount:3},"未转换曲线明确计数，三条定向/平行记录不合并");
+var arcText=text.Replace("\"className\":\"FuturePath\",\"instanceName\":\"UNSUPPORTED\"","\"className\":\"ArcPath\",\"controlPos1\":{\"x\":2,\"y\":1},\"instanceName\":\"ARC\"");
+var arcBytes=Encoding.UTF8.GetBytes(arcText);var arcDefinition=RobokitPathEvidenceReader.Attach(arcBytes,arcBytes,new Smap2DImportService().Read(arcBytes,"arc.smap").Definition);
+Check(arcDefinition.Edges.Count==4&&arcDefinition.Edges[0].VendorPath is {ClassName:"ArcPath",CurveIndex:0,GeometryKind:MapEdgeGeometryKind.CircularArc,ControlPoints.Count:1}&&arcDefinition.Edges[1].VendorPath!.CurveIndex==1,"原生圆弧证据与新导入几何一致，不错配后续道路");
 var forward=definition.Edges[0];var reverse=definition.Edges[1];var missing=definition.Edges[2];
 Check(missing.VendorPath is {GeometryKind:MapEdgeGeometryKind.CubicBezier,ControlPoints.Count:2},"平行贝塞尔道路控制点与原始属性证据分别保留");
 Check(forward.VendorPath!.CurveIndex==1&&forward.VendorPath.InstanceName=="FORWARD","原始曲线索引不与过滤后的调度索引混淆");
