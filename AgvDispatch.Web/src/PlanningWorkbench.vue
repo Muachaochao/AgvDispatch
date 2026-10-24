@@ -146,9 +146,9 @@ onUnmounted(()=>{++epoch;window.removeEventListener('beforeunload',beforeUnload)
     <span class="amber-text">⑤ 激活与安全切换</span> →
     <span class="amber-text">⑥ 大屏显示</span>
   </div>
-  <nav class="workbench-tabs" aria-label="工程模块"><button v-for="item in tabs" :key="item.id" :class="{active:tab===item.id}" @click="tab=item.id"><ActionIcon :name="item.icon"/>{{item.name}}</button><small>{{counts}}</small></nav>
+  <nav class="workbench-tabs" aria-label="工程模块"><button v-for="item in tabs" :key="item.id" :class="{active:tab===item.id}" @click="tab=item.id"><ActionIcon :name="item.icon"/>{{item.name}}</button><small v-if="tab!=='areas'">{{counts}}</small></nav>
   <DisplayAreasEditor v-if="areasOpened" v-show="tab==='areas'" :initial-map-id="workspace?.project.mapId||mapId"/>
-  <p class="workbench-message" role="status">{{message||'厂家激光扫图在RoboShop完成；此处编辑调度导航和场景。编辑稿不会自动影响运行地图。'}}</p>
+  <p v-if="tab!=='areas'" class="workbench-message" role="status">{{message||'厂家激光扫图在RoboShop完成；此处编辑调度导航和场景。编辑稿不会自动影响运行地图。'}}</p>
   <ServerProjects v-if="tab==='plans'" :plan="plan" :available="effectiveSource==='backend'" :map-id="workspace?.project?.mapId" :map-version="workspace?.draft?.versionId" @preview="pending=$event"/>
   <template v-if="tab==='map'||tab==='scene'">
    <div class="editor-toolbar editor-tool-palette" aria-label="地图绘图工具">
