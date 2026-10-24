@@ -16,6 +16,7 @@ builder.Services.AddSingleton(new DispatchPipe(builder.Configuration["Web:PipeNa
 builder.Services.AddSingleton<SnapshotReader>();
 var projectStorePath=Path.GetFullPath(builder.Configuration["Web:ProjectStorePath"]??Path.Combine(builder.Environment.ContentRootPath,"data","projects"));
 builder.Services.AddSingleton(new WebProjectStore(projectStorePath));
+builder.Services.AddSingleton(new DisplayAreaStore(Path.Combine(Path.GetDirectoryName(projectStorePath)!, "display-areas")));
 builder.Services.AddSingleton(new VendorMapSourceArchive(Path.Combine(Path.GetDirectoryName(projectStorePath)!,"vendor-map-sources")));
 var app = builder.Build();
 var submissions = builder.Configuration.GetValue("Web:EnableTaskSubmission", false);
@@ -56,6 +57,7 @@ app.MapNavigationTestApi();
 app.MapRobotMapDownloadApi();
 app.MapWaitingApi();
 app.MapProjectApi();
+app.MapDisplayAreasApi();
 app.MapDiagnosticsApi(builder.Configuration.GetValue("Web:EnableRecoveryActions",false),submissions);
 app.MapGet("/api/snapshot", async (SnapshotReader reader, CancellationToken ct) => await reader.ReadAsync(ct));
 app.MapGet("/api/task-options", async (DispatchPipe pipe, CancellationToken ct) =>

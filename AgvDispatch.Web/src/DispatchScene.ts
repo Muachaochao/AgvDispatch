@@ -6,6 +6,8 @@ import { mayPlot } from './state';
 import { vehicleCategory } from './dashboard';
 import type {TrafficFocus} from './traffic-focus';
 import './scene-labels.css';
+import {DisplayAreasScene} from './DisplayAreasScene';
+import type {DisplayArea} from './display-areas';
 import {annotationLabel} from './area-annotations';
 
 const VEHICLE_COLORS: Record<string, string> = {
@@ -35,6 +37,7 @@ export class DispatchScene {
 
   private vehiclePool = new Map<string, { group: THREE.Group; label: SceneLabel; ring: THREE.Mesh | null }>();
   private labelLayer=document.createElement('div');
+  private displayAreas:DisplayAreasScene;
   private stationLabels:SceneLabel[]=[];
   private viewportWidth=0;
   private viewportHeight=0;
@@ -42,11 +45,12 @@ export class DispatchScene {
   private ringGeometry = new THREE.RingGeometry(0.78, 0.85, 32);
   private ringMaterial = new THREE.MeshBasicMaterial({ color: '#d6f5ff', side: THREE.DoubleSide });
 
-  constructor(private container: HTMLElement, private onSelect: (id: string) => void) {
+  constructor(private container: HTMLElement, private onSelect: (id: string) => void, onAreaSelect:(area:DisplayArea)=>void=()=>{}) {
     this.scene.background = new THREE.Color('#0b1229');
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     container.appendChild(this.renderer.domElement);
     this.labelLayer.className='scene-label-layer';this.labelLayer.setAttribute('aria-label','车辆与站点标注');container.appendChild(this.labelLayer);
+    this.displayAreas=new DisplayAreasScene(this.labelLayer,onAreaSelect);this.scene.add(this.displayAreas.group);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.maxPolarAngle = Math.PI / 2 - 0.03;
@@ -67,13 +71,15 @@ export class DispatchScene {
         let object: THREE.Object3D | null = hit.object;
         while (object && !object.userData.vehicleId) object = object.parent;
         if (object) this.onSelect(object.userData.vehicleId);
-      }
+      } else this.displayAreas.hit(this.pick);
     };
     this.renderer.domElement.addEventListener('pointerup', this.onPointer);
     this.view('top');
-    const animate = () => { this.frame = requestAnimationFrame(animate); this.controls.update();this.layoutLabels(); this.renderer.render(this.scene, this.camera); };
+    const animate = () => { this.frame = requestAnimationFrame(animate); this.controls.update();this.layoutLabels();this.displayAreas.layout(this.camera,this.viewportWidth,this.viewportHeight); this.renderer.render(this.scene, this.camera); };
     animate();
   }
+
+  setDisplayAreas(areas:DisplayArea[],key:string){this.displayAreas.update(areas,key);}
 
   update(snapshot: Snapshot | null, selected = '', selectedEdge = '', focus?:TrafficFocus, now=Date.now()) {
     const map = snapshot?.map;
@@ -287,6 +293,7 @@ export class DispatchScene {
   }
 
   dispose() {
+    this.displayAreas.dispose();
     cancelAnimationFrame(this.frame);
     this.resizeObserver.disconnect();
     this.controls.dispose();

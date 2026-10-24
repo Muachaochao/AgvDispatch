@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import ActionIcon from './components/ActionIcon.vue';
+import DisplayAreasEditor from './components/DisplayAreasEditor.vue';
 import AreaAnnotations from './components/AreaAnnotations.vue';
 import { computed, onMounted, onUnmounted, ref, watch, toRef } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
@@ -27,6 +28,8 @@ const vehicleMessage=ref('');
 const queryTab = computed(() => (currentRoute.query.tab as string) || props.initialTab || 'map');
 const queryMapId = computed(() => currentRoute.query.mapId as string | undefined);
 const tab=ref(queryTab.value);
+const areasOpened=ref(tab.value==='areas');
+watch(tab,value=>{if(value==='areas')areasOpened.value=true;});
 watch(queryTab, v => { if (v) tab.value = v; });
 watch(()=>props.initialTab,v=>{if(v)tab.value=v;});
 const plan=ref<Plan>(emptyPlan()),saved=ref<Plan[]>([]),dirty=ref(false),message=ref(''),busy=ref(false);
@@ -55,7 +58,7 @@ const panelIcons={properties:'properties',batch:'properties',layers:'layers',his
 const editorPanels=[['properties','属性'],['batch','批量'],['layers','图层'],['history','历史']] as const;
 const mapTools=[{id:'select',icon:'select',label:'选择 / 框选'},{id:'pan',icon:'pan',label:'平移'},{id:'node',icon:'locate',label:'节点'},{id:'edge',icon:'line',label:'直线'},{id:'arc',icon:'curve',label:'圆弧'},{id:'bezier',icon:'curve',label:'贝塞尔'},{id:'boundary',icon:'boundary',label:'区域边界'},{id:'brush',icon:'brush',label:'关联刷'},{id:'measure',icon:'measure',label:'测量'}] as const;
 const sceneTools=[{id:'select',icon:'select',label:'选择 / 框选'},{id:'pan',icon:'pan',label:'平移'},{id:'scene',icon:'scene',label:'放置场景'},{id:'measure',icon:'measure',label:'测量'}] as const;
-const tabs=[{id:'map',icon:'map',name:'地图编辑'},{id:'scene',icon:'scene',name:'场景编辑'},{id:'plans',icon:'folder',name:'方案管理'},{id:'vehicles',icon:'vehicle',name:'车辆配置'},{id:'waypoints',icon:'route',name:'航点顺序'}] as const;
+const tabs=[{id:'map',icon:'map',name:'地图编辑'},{id:'areas',icon:'boundary',name:'展示区域'},{id:'scene',icon:'scene',name:'场景编辑'},{id:'plans',icon:'folder',name:'方案管理'},{id:'vehicles',icon:'vehicle',name:'车辆配置'},{id:'waypoints',icon:'route',name:'航点顺序'}] as const;
 const definition=computed(()=>plan.value.definition),issues=computed(()=>validateDefinition(definition.value));
 const route=computed(()=>routePlan(definition.value,plan.value.waypoints));
 const viewBox=computed(()=>ed.viewBox),scale=computed(()=>ed.scale),nodeRadius=computed(()=>ed.scale*.55);
@@ -122,7 +125,7 @@ onUnmounted(()=>{++epoch;window.removeEventListener('beforeunload',beforeUnload)
 
 <template>
  <section class="planning-workbench">
-  <header class="workbench-title">
+  <header v-show="tab!=='areas'" class="workbench-title">
     <button @click="goToMapManagement" class="text-button"><IconArrowLeft :size="14"/>地图管理</button>
     <h2><IconMap :size="21"/>调度工程工作台</h2>
     <input v-model="plan.name" aria-label="方案名称" @change="dirty=true"/>
@@ -134,7 +137,7 @@ onUnmounted(()=>{++epoch;window.removeEventListener('beforeunload',beforeUnload)
     <button v-if="!workspace&&effectiveSource==='backend'&&!issues.length" @click="pushOfflineToBackend"><IconCloudUpload :size="15"/>推送到后台新建</button>
     <input ref="importInput" class="file-picker" type="file" accept=".json,.smap" aria-label="导入地图或方案文件" @change="importFile"/>
   </header>
-  <div class="workflow-guide">
+  <div v-show="tab!=='areas'" class="workflow-guide">
     <b>操作流程：</b>
     <span :class="definition.nodes.length?'green-text':'amber-text'">① 编辑地图</span> →
     <span :class="workspace?'green-text':'amber-text'">② 关联后台</span> →
@@ -144,6 +147,7 @@ onUnmounted(()=>{++epoch;window.removeEventListener('beforeunload',beforeUnload)
     <span class="amber-text">⑥ 大屏显示</span>
   </div>
   <nav class="workbench-tabs" aria-label="工程模块"><button v-for="item in tabs" :key="item.id" :class="{active:tab===item.id}" @click="tab=item.id"><ActionIcon :name="item.icon"/>{{item.name}}</button><small>{{counts}}</small></nav>
+  <DisplayAreasEditor v-if="areasOpened" v-show="tab==='areas'" :initial-map-id="workspace?.project.mapId||mapId"/>
   <p class="workbench-message" role="status">{{message||'厂家激光扫图在RoboShop完成；此处编辑调度导航和场景。编辑稿不会自动影响运行地图。'}}</p>
   <ServerProjects v-if="tab==='plans'" :plan="plan" :available="effectiveSource==='backend'" :map-id="workspace?.project?.mapId" :map-version="workspace?.draft?.versionId" @preview="pending=$event"/>
   <template v-if="tab==='map'||tab==='scene'">
@@ -213,7 +217,7 @@ onUnmounted(()=>{++epoch;window.removeEventListener('beforeunload',beforeUnload)
   </template>
   <div v-else-if="tab==='plans'" class="plan-manager"><div class="workbench-guide"><h3>方案内容与生效范围</h3><p>方案包含地图、场景、车辆配置、航点顺序。保存于此浏览器；导出JSON可备份或跨电脑加载。加载方案只替换编辑稿，不下发小车，不切换运行地图。</p><p>地图JSON仅导出地图定义，可由主工程规范化JSON导入；方案JSON是Web工作台格式，不是厂家SMAP文件。SMAP在连接后台后选择文件，复用主工程解析器。</p><button @click="pending=emptyPlan()"><IconPlus :size="14"/>新建空白方案</button><button @click="edit(()=>{plan.id=uuid();plan.name+=' 副本';});saveLocal()"><IconCopy :size="14"/>另存为副本</button><button @click="exportMap"><ActionIcon name="download"/>导出地图JSON</button></div><div class="plan-cards"><article v-for="p in saved" :key="p.id"><h3>{{p.name}}</h3><p>{{p.definition.name}}</p><small>{{p.updatedAt}}</small><p>{{p.definition.nodes.length}} 航点 / {{p.vehicles.length}} 车辆 / {{p.scene.length}} 场景</p><button @click="pending=clone(p)"><ActionIcon name="preview"/>预览并加载</button><button @click="deleteLocal(p.id)"><ActionIcon name="remove"/>移出列表</button></article><p v-if="!saved.length" class="empty-panel">暂无本机方案。编辑后点击“保存方案”。</p></div></div>
   <div v-else-if="tab==='vehicles'" class="configuration-page"><div class="editor-toolbar"><button class="accent-button" @click="openVehicle()"><IconPlus :size="15"/>新增车辆</button><button :disabled="busy||effectiveSource!=='backend'" @click="readVehicles"><IconRefresh :size="15"/>读取后台车辆配置并替换</button><button :disabled="busy||effectiveSource!=='backend'||!vehicleRevision||!canManage||vehicleErrors.length>0" @click="saveVehicles"><ActionIcon name="save"/>保存车辆配置到后台</button><span>{{plan.vehicles.length}}辆 · {{restart?'后台配置待重启':'配置与在线状态分别管理'}}</span></div><p class="muted-note">新增车辆默认不启用。状态端口19204、导航端口19206按现场厂家配置填写；保存后台受未结束任务、配置版本及权限核验，服务重启后生效。此处不会修改PLC、全局通信开关或自动确认地图坐标绑定。</p><div class="management-table"><table><thead><tr><th>编号</th><th>名称</th><th>控制器IP</th><th>状态端口</th><th>导航端口</th><th>启用配置</th><th>当前观察</th><th>操作</th></tr></thead><tbody><tr v-for="v in plan.vehicles" :key="v.vehicleId"><td>{{v.vehicleId}}</td><td>{{v.displayName}}</td><td>{{v.ipAddress}}</td><td>{{v.port}}</td><td>{{v.navigationPort}}</td><td>{{v.enabled?'已勾选':'不启用'}}</td><td>{{effectiveSnapshot?.status?.agvs.find(a=>a.vehicleId===v.vehicleId)?.connection??'无在线数据'}}</td><td><button @click="openVehicle(v)"><ActionIcon name="edit"/>编辑</button><button @click="edit(()=>plan.vehicles=plan.vehicles.filter(n=>n.vehicleId!==v.vehicleId))"><ActionIcon name="remove"/>移出配置稿</button></td></tr></tbody></table></div><p v-if="!plan.vehicles.length" class="empty-panel">尚未配置车辆。点击新增，或连接后台读取已保存配置。</p><p class="amber-text">{{vehicleErrors.join('；')}}</p></div>
-  <div v-else class="waypoint-editor"><div><h3>航点顺序与路径核对</h3><p class="muted-note">顺序是方案中的导航检查列表。每两个航点之间按启用道路及方向计算最短距离；不包含实时交通预约、厂家可达性或PLC业务条件，不直接生成运动命令。生产任务仍使用现有九步业务流程。</p><div class="editor-toolbar"><select v-model="waypoint" aria-label="选择顺序航点"><option value="">选择航点</option><option v-for="n in definition.nodes.filter(n=>n.enabled)" :key="n.id" :value="n.id">{{n.id}} · {{n.agvSiteId||'未绑定'}}</option></select><button :disabled="!waypoint||plan.waypoints.length>=1000" @click="edit(()=>plan.waypoints.push(waypoint))">追加航点</button><button @click="edit(()=>plan.waypoints.reverse())">反转顺序</button><button @click="edit(()=>plan.waypoints=[])">清空顺序</button></div><ol class="waypoint-list"><li v-for="(id,i) in plan.waypoints" :key="i"><b>{{i+1}}</b><span>{{id}}<small>{{definition.nodes.find(n=>n.id===id)?.agvSiteId||'未绑定厂家站点'}}</small></span><button :disabled="i===0" :aria-label="`上移航点${i+1}`" @click="reorder(i,-1)"><IconArrowUp :size="15"/></button><button :disabled="i===plan.waypoints.length-1" :aria-label="`下移航点${i+1}`" @click="reorder(i,1)"><IconArrowDown :size="15"/></button><button :aria-label="`移除航点${i+1}`" @click="edit(()=>plan.waypoints.splice(i,1))"><IconTrash :size="15"/></button></li></ol></div><aside class="workbench-guide"><h3>核对结果</h3><p v-if="route.error" class="amber-text">{{route.error}}</p><template v-else><p class="green-text">导航图结构可达 · {{route.distance.toFixed(2)}} 米</p><h4>展开航点</h4><p>{{route.nodes.join(' → ')}}</p><h4>道路顺序</h4><p>{{route.edges.join(' → ')||'同一航点，无移动'}}</p><h4>沿途资源</h4><p>{{[...new Set([...route.edges.flatMap(id=>definition.edges.find(e=>e.id===id)?.resourceIds??[]),...route.nodes.flatMap(id=>definition.nodes.find(n=>n.id===id)?.resourceIds??[])])].join('、')||'未关联共享区域'}}</p></template></aside></div>
+  <div v-else-if="tab==='waypoints'" class="waypoint-editor"><div><h3>航点顺序与路径核对</h3><p class="muted-note">顺序是方案中的导航检查列表。每两个航点之间按启用道路及方向计算最短距离；不包含实时交通预约、厂家可达性或PLC业务条件，不直接生成运动命令。生产任务仍使用现有九步业务流程。</p><div class="editor-toolbar"><select v-model="waypoint" aria-label="选择顺序航点"><option value="">选择航点</option><option v-for="n in definition.nodes.filter(n=>n.enabled)" :key="n.id" :value="n.id">{{n.id}} · {{n.agvSiteId||'未绑定'}}</option></select><button :disabled="!waypoint||plan.waypoints.length>=1000" @click="edit(()=>plan.waypoints.push(waypoint))">追加航点</button><button @click="edit(()=>plan.waypoints.reverse())">反转顺序</button><button @click="edit(()=>plan.waypoints=[])">清空顺序</button></div><ol class="waypoint-list"><li v-for="(id,i) in plan.waypoints" :key="i"><b>{{i+1}}</b><span>{{id}}<small>{{definition.nodes.find(n=>n.id===id)?.agvSiteId||'未绑定厂家站点'}}</small></span><button :disabled="i===0" :aria-label="`上移航点${i+1}`" @click="reorder(i,-1)"><IconArrowUp :size="15"/></button><button :disabled="i===plan.waypoints.length-1" :aria-label="`下移航点${i+1}`" @click="reorder(i,1)"><IconArrowDown :size="15"/></button><button :aria-label="`移除航点${i+1}`" @click="edit(()=>plan.waypoints.splice(i,1))"><IconTrash :size="15"/></button></li></ol></div><aside class="workbench-guide"><h3>核对结果</h3><p v-if="route.error" class="amber-text">{{route.error}}</p><template v-else><p class="green-text">导航图结构可达 · {{route.distance.toFixed(2)}} 米</p><h4>展开航点</h4><p>{{route.nodes.join(' → ')}}</p><h4>道路顺序</h4><p>{{route.edges.join(' → ')||'同一航点，无移动'}}</p><h4>沿途资源</h4><p>{{[...new Set([...route.edges.flatMap(id=>definition.edges.find(e=>e.id===id)?.resourceIds??[]),...route.nodes.flatMap(id=>definition.nodes.find(n=>n.id===id)?.resourceIds??[])])].join('、')||'未关联共享区域'}}</p></template></aside></div>
   <details v-if="importWarnings(plan).length" class="muted-note"><summary>导入核对提示（{{importWarnings(plan).length}}）</summary><p v-for="w in importWarnings(plan)" :key="w">{{w}}</p></details>
   <div v-if="robotMapDownload" class="muted-note"><p>最近拉取：{{robotMapDownload.mapName}} · {{robotMapDownload.downloadedAt}} · 车端MD5：{{robotMapDownload.robotMapMd5}}</p><p>保存内容SHA256：{{robotMapDownload.contentSha256}} <a :href="'/api/robots/map/files/'+robotMapDownload.contentSha256" download>保存原生SMAP</a></p><p>读取机器人已保存的当前地图，不含RoboshopPro尚未下发到车端的编辑；不会自动替换运行图。</p></div>
   <ConsoleDialog v-if="pending" title="核对加载内容" @close="pending=null"><h3>{{pending.name}}</h3><p v-for="w in importWarnings(pending)" :key="w" class="amber-text">{{w}}</p><p class="muted-note">{{pending.definition.nodes.length}} 航点 / {{pending.definition.edges.length}} 道路 / {{pending.scene.length}} 场景 / {{pending.vehicles.length}} 车辆 / {{pending.waypoints.length}} 顺序航点</p><p>加载将替换当前编辑稿并解除后台关联。尚未保存的编辑可先取消，再保存或导出；加载不影响后台运行配置。</p><template #footer><button @click="pending=null"><ActionIcon name="close"/>取消</button><button class="accent-button" @click="replace(pending!);pending=null;message='已加载到编辑稿，请按模块核对并保存。'"><ActionIcon name="upload"/>加载到编辑稿</button></template></ConsoleDialog>

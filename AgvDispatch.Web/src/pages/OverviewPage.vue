@@ -19,6 +19,7 @@ import {
 import RingChart from '../RingChart.vue';
 import ConsoleDialog from '../ConsoleDialog.vue';
 import TaskExecutionDetails from '../TaskExecutionDetails.vue';
+import {appliesToMap,type DisplayArea,type DisplayAreaContext} from '../display-areas';
 
 const store = useDispatchStore();
 const router = useRouter();
@@ -36,6 +37,17 @@ const selectedDevice = ref<import('../types').Device | null>(null);
 let scene: DispatchScene | undefined;
 let detailEpoch = 0;
 let autoSelectTask=true;
+const areaContext=ref<DisplayAreaContext|null>(null),areaMessage=ref(''),chosenArea=ref<DisplayArea|null>(null);
+let areaTimer:ReturnType<typeof setInterval>|undefined,areaEpoch=0,areaLoading=false;
+const shownAreas=computed(()=>areaContext.value&&appliesToMap(areaContext.value,store.snapshot?.map??null)?areaContext.value.document?.areas??[]:[]);
+function drawAreas(){scene?.setDisplayAreas(shownAreas.value,JSON.stringify([store.snapshot?.map?.id,store.snapshot?.map?.version,shownAreas.value]));}
+async function readAreas(){
+ if(areaLoading)return;const map=store.snapshot?.map;if(!map?.id||store.demoMode||store.snapshot?.source!=='backend')return;
+ const mine=areaEpoch;areaLoading=true;
+ try{const c=await store.api<DisplayAreaContext>(`/api/maps/${encodeURIComponent(map.id)}/display-areas`);if(mine!==areaEpoch)return;areaContext.value=c;areaMessage.value=c.applicable?'':'展示分区与地图站点不一致，请到工程编辑的“展示区域”核对保存。';if(chosenArea.value)chosenArea.value=shownAreas.value.find(a=>a.id===chosenArea.value!.id)??null;drawAreas();}
+ catch(ex){if(mine===areaEpoch){areaContext.value=null;chosenArea.value=null;areaMessage.value=`展示分区读取失败：${String(ex)}`;drawAreas();}}finally{areaLoading=false;}
+}
+watch(()=>[store.demoMode,store.snapshot?.source,store.snapshot?.map?.id,store.snapshot?.map?.version,store.snapshot?.map?.definitionHash].join('|'),()=>{++areaEpoch;areaContext.value=null;chosenArea.value=null;areaMessage.value='';drawAreas();void readAreas();});
 
 const liveTasks=computed(()=>store.allTasks.map(task=>({task,wait:taskWait(store.snapshot,task,store.now)})));
 const chosenVehicle = computed(() => store.vehicles.find(v => v.vehicleId === selectedVehicle.value));
@@ -73,11 +85,12 @@ function fullscreen() { void mapElement.value?.parentElement?.requestFullscreen(
 
 onMounted(() => {
   try {
-    scene = new DispatchScene(mapElement.value!, id => { selectedVehicle.value = id; });
+    scene = new DispatchScene(mapElement.value!, id => { selectedVehicle.value = id; },area=>{chosenArea.value=area;});
     draw();
+    void readAreas();areaTimer=setInterval(()=>{void readAreas();},5000);
   } catch (ex) { store.sceneError = `三维视图初始化失败：${String(ex)}`; }
 });
-onUnmounted(() => { ++detailEpoch;scene?.dispose(); });
+onUnmounted(() => { ++detailEpoch;++areaEpoch;clearInterval(areaTimer);scene?.dispose(); });
 </script>
 
 <template>
@@ -137,10 +150,13 @@ onUnmounted(() => { ++detailEpoch;scene?.dispose(); });
         <div class="map-caption-bottom"><span>{{ store.snapshot?.map?.nodes.length ?? 0 }} 节点 / {{ store.snapshot?.map?.edges.length ?? 0 }} 道路</span><span>{{ store.mapVehicleCount }} 辆可定位 · {{ mapView === 'top' ? '右键平移 · 滚轮缩放' : '左键旋转 · 右键平移' }}</span></div>
       </div>
       <div class="map-bottom-tools">
+        <label>展示区域<select aria-label="查看展示区域" :value="chosenArea?.id??''" @change="chosenArea=shownAreas.find(a=>a.id===($event.target as HTMLSelectElement).value)??null"><option value="">选择区域查看站点</option><option v-for="a in shownAreas" :key="a.id" :value="a.id">{{a.name}} · {{a.stationIds.length}}站点</option></select></label>
         <label>路段定位<select v-model="selectedEdge" aria-label="选择地图路段"><option value="">选择道路</option><option v-for="edge in store.snapshot?.map?.edges ?? []" :key="edge.id" :value="edge.id">{{ edge.id }} · {{ edge.from }} → {{ edge.to }}</option></select></label>
         <span v-if="selectedRoad">{{ selectedRoad.from }} {{ selectedRoad.bidirectional ? '↔' : '→' }} {{ selectedRoad.to }}</span>
         <span v-else>米制导航图 / {{ store.snapshot?.map?.coordinateSystem ?? '待核定' }}</span>
       </div>
+      <p v-if="chosenArea" class="resource-location"><strong :style="{color:chosenArea.color}">{{chosenArea.name}}</strong> · 包含站点：{{chosenArea.stationIds.map(id=>store.snapshot?.map?.nodes.find(n=>n.id===id)?.agvSiteId||id).join('、')||'未分配站点'}} <button @click="chosenArea=null">关闭区域详情</button></p>
+      <p v-if="areaMessage" role="status" class="inline-warning">{{areaMessage}}</p>
       <section class="traffic-focus" aria-label="当前任务地图联动"><label>联动任务 <select v-model="selectedTask" @change="selectTask(selectedTask)"><option value="">取消联动</option><option v-for="t in store.allTasks" :key="t.taskId" :value="t.taskId">{{t.taskId}} · {{label(t.stage)}}</option></select></label><button :disabled="!selectedTask" @click="showTaskDialog=true"><ActionIcon name="list"/>查看步骤与处置</button>
       <template v-if="focus.taskId"><p>任务车辆 {{focus.vehicleId||'未分配'}} · 原命令路线（绿） {{focus.edgeIds.join('、')||'未提供'}}</p><p>持有资源（橙） {{focus.held.join('、')||'无同图返回'}} · 阻塞资源（红） <button v-for="id in focus.blocked" :key="id" @click="locateResource(id)">定位 {{id}}</button>{{focus.blocked.length?'':'无当前阻塞返回'}}</p><p>阻塞车辆 <button v-for="id in focus.blockers" :key="id" @click="selectedVehicle=id">{{id}}</button>{{focus.blockers.length?'':'无当前阻塞返回'}}</p><p v-if="focus.unplotted.length">未画车体（位置未核定或无效）：{{focus.unplotted.join('、')}}；不使用站点或路线端点代替。</p><p>{{focus.reason}}</p><p v-if="focus.truncated">路权记录已截断，当前列表不代表全场。</p></template><p v-else>{{focus.reason}}</p></section>
       <p class="resource-location" role="status">{{locationMessage}} <button v-if="locatedResource" @click="clearLocation"><ActionIcon name="close"/>清除资源定位</button></p>

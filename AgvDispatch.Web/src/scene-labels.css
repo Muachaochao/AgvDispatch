@@ -6,3 +6,5 @@
 
 .scene-label-leader{position:absolute;left:0;top:0;height:1px;background:#9bcfc9a6;transform-origin:0 50%;pointer-events:none}
 .scene-label-leader[hidden]{display:none}
+.display-area-label{position:absolute;left:0;top:0;pointer-events:auto;max-width:220px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:#0b1229cf;border:1px solid currentColor;border-radius:4px;padding:5px 10px;font:600 15px/1.4 "Microsoft YaHei",sans-serif;cursor:pointer}
+.display-area-label[hidden]{display:none}
