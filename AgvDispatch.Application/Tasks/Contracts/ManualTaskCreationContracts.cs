@@ -38,6 +38,7 @@ public interface IManualTaskCreationService
     Task<ManualTaskRoutePreview> PreviewRoutesAsync(ManualTaskRoutePreviewRequest request,CancellationToken ct)=>throw new NotSupportedException("后台未支持当前任务路线预览。");
     Task<ManualTaskCreationOptions> GetOptionsAsync(CancellationToken ct);
     Task<ManualTaskCreationResult> CreateAsync(TrafficUserContext user, ManualTaskCreationRequest request, CancellationToken ct);
+    // Configuration preparation only; creation/execution separately enforce live write and recovery permission.
     IReadOnlyList<TaskParameterValidationRow> ValidateParameters(TaskParameterConfiguration configuration);
 }
 

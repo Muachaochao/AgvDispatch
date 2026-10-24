@@ -109,6 +109,11 @@ internal static partial class Program
                 "invalid PLC mapping locates step 8: " + invalid);
             var rejected = Complete(service.CreateAsync(user, request, default));
             Require(!rejected.Accepted && rejected.Message.Contains("第 8 步") && Complete(db.Queryable<DispatchTaskEntity>().CountAsync()) == 0, "backend blocks invalid mapping before persistence");
+            plcConfiguration.Options.AllowWrites = false;
+            Require(service.ValidateParameters(initialParameters.Configuration).Any(row => row.Step.Sequence == 8 &&
+                row.Step.ValidationErrors.Any(error => error.Contains("EmptyBoxPlaced"))),
+                "preparation still rejects disabled output, wrong direction, non-Bool or malformed address with writes off");
+            plcConfiguration.Options.AllowWrites = true;
             plcConfiguration.Replace(invalid, requiredPoint);
         }
         plcConfiguration.Signals.Remove(requiredPoint);
@@ -313,6 +318,15 @@ internal static partial class Program
         Complete(db.Updateable<DispatchTaskEntity>().SetColumns(task => task.Stage == (int)DispatchTaskStage.Completed).Where(task => task.TaskId == runningTaskId).ExecuteCommandAsync());
         Complete(vm.LoadTaskParametersAsync());
         Require(vm.SaveTaskParametersCommand.CanExecute(), "completed tasks allow parameter editing save");
+        gate.RecoveryOpen = false; plcConfiguration.Options.AllowWrites = false;
+        var preparationSnapshot = Complete(parameterService.GetAsync(default));
+        Require(preparationSnapshot.CanSave && !gate.CanStartNewWork && preparationSnapshot.Explanation.Contains("不会放行"),
+            "configuration preparation remains available with startup recovery and PLC writes closed");
+        var preparationValidation = Complete(parameterService.ValidateAsync(ParameterRequest(initialParameters.Configuration), default));
+        Require(preparationValidation.Accepted && preparationValidation.Message.Contains("不代表执行许可"),
+            "preparation validates mappings without requiring live write permission");
+        Require(!Complete(service.GetOptionsAsync(default)).Stations.Single().ConfigurationValid,
+            "actual task readiness still requires live PLC write permission");
         vm.WaitingSiteInput = "MISSING"; Complete(vm.ValidateTaskParametersAsync());
         Require(vm.ParameterValidationSteps.Any(row => row.Step.Sequence == 3 && row.Step.ValidationErrors.Count > 0), "candidate route error shown for specific step without applying it");
         Complete(vm.SaveTaskParametersAsync()); Require(!File.Exists(parameterPath) && dispatch.DumperWaitingSite == "WAIT", "invalid candidate cannot persist or apply");
@@ -334,6 +348,17 @@ internal static partial class Program
         var savedParameters = TaskParameterSettingsService.ReadDocument(parameterPath)!;
         Require(proxy.LastParameterRequest!.RequestId == uncertainParameters!.RequestId && savedParameters.Audits.Count == 1 && parameterRuntime.Revision != beforeSaveRevision,
             "same uncertain save request replays without another revision or audit");
+        Require(!gate.RecoveryOpen && !gate.CanStartNewWork && !plcConfiguration.Options.AllowWrites &&
+            Complete(gate.EnterAsync(MapExecutionOperation.NewWork, default).AsTask()) is null,
+            "successful configuration save preserves startup recovery barrier and disabled PLC writes");
+        var taskCountBeforePreparation = Complete(db.Queryable<DispatchTaskEntity>().CountAsync());
+        Require(!Complete(service.CreateAsync(user, Request() with { ParameterRevision = parameterRuntime.Revision }, default)).Accepted &&
+            Complete(db.Queryable<DispatchTaskEntity>().CountAsync()) == taskCountBeforePreparation,
+            "preparation save cannot create a task through the closed recovery barrier");
+        gate.RecoveryOpen = true;
+        Require(!Complete(service.CreateAsync(user, Request() with { ParameterRevision = parameterRuntime.Revision }, default)).Accepted,
+            "after recovery opens, saved preparation still cannot create a task with writes off");
+        plcConfiguration.Options.AllowWrites = true;
         Require(vm.ParameterActions[0].HeightInput == "85" && vm.ParameterActions[0].Recognize is false && vm.ParameterActions[0].UsePgv is true &&
             vm.ParameterActions[0].UseDownPgv is null && vm.ParameterMessage.Contains("生效"), "UI reads applied profile including distinct nullable boolean choices after save receipt");
         var startupDispatch = new DispatchOrchestratorOptions(); var startupCreation = new DispatchTaskCreationOptions();
@@ -352,7 +377,20 @@ internal static partial class Program
         Require(!Complete(parameterService.SaveAsync(user, ParameterRequest(savedParameters.Configuration) with { MapVersionId = "OLD" }, default)).Accepted, "stale map version cannot save profile");
         var duplicates = savedParameters.Configuration with { Pickups = [savedParameters.Configuration.Pickups[0], savedParameters.Configuration.Pickups[0]] };
         Require(!Complete(parameterService.ValidateAsync(ParameterRequest(duplicates), default)).Accepted, "duplicate station mappings rejected");
-        gate.Allowed = false; Require(!Complete(parameterService.SaveAsync(user, ParameterRequest(savedParameters.Configuration), default)).Accepted, "held map gate blocks task parameter save"); gate.Allowed = true;
+        foreach (var mode in new[] { MapExecutionMode.Starting, MapExecutionMode.Draining, MapExecutionMode.Held })
+        {
+            gate.SetMode(mode);
+            var blockedSnapshot = Complete(parameterService.GetAsync(default));
+            var blockedSave = Complete(parameterService.SaveAsync(user, ParameterRequest(savedParameters.Configuration), default));
+            Require(!blockedSnapshot.CanSave && !blockedSave.Accepted && blockedSave.Message.Contains(mode.ToString()) &&
+                parameterRuntime.Revision == savedParameters.Revision && TaskParameterSettingsService.ReadDocument(parameterPath)!.Audits.Count == 1,
+                "real map state blocks parameter replacement without changing revision or file: " + mode);
+        }
+        gate.SetMode(MapExecutionMode.Running);
+        var noMapService = new TaskParameterSettingsService(new(parameterPath), parameterRuntime, service,
+            new DispatchTaskReadRepository(db), new ActiveMapRuntime(), gate);
+        Require(!Complete(noMapService.GetAsync(default)).CanSave && !Complete(noMapService.SaveAsync(user, ParameterRequest(savedParameters.Configuration), default)).Accepted,
+            "configuration cannot save without an active runtime map");
         var failurePath = Path.Combine(Path.GetDirectoryName(parameterPath)!, "directory-target"); Directory.CreateDirectory(failurePath);
         var failureService = new TaskParameterSettingsService(new(failurePath), parameterRuntime, service, new DispatchTaskReadRepository(db), map, gate);
         try { Complete(failureService.SaveAsync(user, ParameterRequest(savedParameters.Configuration), default)); Require(false, "expected file write failure"); }
@@ -610,8 +648,10 @@ public class CreationClient : DispatchProxy
 }
 sealed class FixtureGate : IMapExecutionGate
 {
-    private readonly MapExecutionGate _inner = new();
-    public FixtureGate() => _inner.SetMode(MapExecutionMode.Running);
+    private readonly FixtureRecoveryBarrier _recovery = new();
+    private readonly MapExecutionGate _inner;
+    public FixtureGate() { _inner = new(_recovery); _inner.SetMode(MapExecutionMode.Running); }
+    public bool RecoveryOpen { get => _recovery.IsOpen; set => _recovery.IsOpen = value; }
     public bool Allowed { get => _inner.CanStartNewWork; set => _inner.SetMode(value ? MapExecutionMode.Running : MapExecutionMode.Held); }
     public MapExecutionMode Mode => _inner.Mode;
     public bool CanStartNewWork => _inner.CanStartNewWork;
@@ -619,6 +659,7 @@ sealed class FixtureGate : IMapExecutionGate
     public ValueTask<IDisposable> EnterControlAsync(CancellationToken ct) => _inner.EnterControlAsync(ct);
     public void SetMode(MapExecutionMode mode) => _inner.SetMode(mode);
 }
+sealed class FixtureRecoveryBarrier : IRecoveryBarrier { public bool IsOpen { get; set; } = true; }
 sealed class FixtureStations : IStationStateService
 {
     public bool Allowed = true; public event Action<StationStateChanged>? StationStateChanged { add { } remove { } } public long Version => 1;
@@ -667,6 +708,8 @@ sealed class FixturePlcConfiguration : IPlcConfigurationInspector
     public void Replace(PlcSignalDefinition previous, PlcSignalDefinition replacement) => Signals[Signals.IndexOf(previous)] = replacement;
     public string? GetSignalConfigurationError(string stationId, string variableName, bool write) =>
         PlcTaskConfigurationInspector.Inspect(Options, PlcSignalCatalog.FromSignals(Signals), stationId, variableName, write);
+    public string? GetSignalPreparationError(string stationId, string variableName, bool write) =>
+        PlcTaskConfigurationInspector.InspectForPreparation(Options, PlcSignalCatalog.FromSignals(Signals), stationId, variableName, write);
     public sealed class Preflight : IRobokitTaskMapPreflight
     {
         public bool Accept; public Action? After;

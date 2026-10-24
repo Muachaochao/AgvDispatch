@@ -22,10 +22,11 @@ public sealed class TaskParameterSettingsService(TaskParameterStorageOptions sto
     {
         var active = await tasks.GetActiveTasksAsync(ct);
         var map = maps.Current;
-        var reason = !gate.CanStartNewWork ? "地图切换或恢复期间不能保存任务参数。" : active.Count > 0
-            ? $"存在 {active.Count} 个未结束任务（含故障任务），处理完成后才能保存。" : "保存前逐步骤校验；无未结束任务时保存并立即生效，重启后保留。";
+        // Preparing configuration shares the control mutex with switching, but never opens the send/recovery barrier.
+        var reason = gate.Mode != MapExecutionMode.Running ? $"地图执行模式为 {gate.Mode}，请先完成或取消地图切换，再保存任务参数。" : active.Count > 0
+            ? $"存在 {active.Count} 个未结束任务（含故障任务），处理完成后才能保存。" : "保存前逐步骤校验；无未结束任务时可保存配置，重启后保留。配置保存不会放行启动恢复、PLC 写入或车辆动作。";
         return new(runtime.Revision, runtime.Capture(), map?.MapId, map?.VersionId,
-            gate.CanStartNewWork && active.Count == 0 && map is not null, map is null ? "请先激活运行地图。" : reason, _saved?.Audits ?? []);
+            gate.Mode == MapExecutionMode.Running && active.Count == 0 && map is not null, map is null ? "请先激活运行地图。" : reason, _saved?.Audits ?? []);
     }
     public async Task<TaskParameterSnapshot> GetAsync(CancellationToken ct)
     {
@@ -42,7 +43,7 @@ public sealed class TaskParameterSettingsService(TaskParameterStorageOptions sto
         catch (ArgumentException error) { return new(false, error.Message, []); }
         var preview = validator.ValidateParameters(request.Configuration);
         var errors = preview.SelectMany(row => row.Step.ValidationErrors.Select(error => $"{row.StationId} 第 {row.Step.Sequence} 步（{row.Step.Name}）：{error}")).ToArray();
-        return new(errors.Length == 0, errors.Length == 0 ? "所有工位九步配置校验通过；首段车辆路线和动态路权在创建/执行时检查。" : string.Join("；", errors), preview);
+        return new(errors.Length == 0, errors.Length == 0 ? "所有工位九步配置校验通过；配置通过不代表执行许可。PLC 写入许可、恢复放行、首段车辆路线和动态路权在创建/执行时检查。" : string.Join("；", errors), preview);
     }
     public async Task<TaskParameterResult> ValidateAsync(TaskParameterRequest request, CancellationToken ct)
     {
@@ -79,6 +80,6 @@ public sealed class TaskParameterSettingsService(TaskParameterStorageOptions sto
         }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
         runtime.Apply(saved); _saved = saved;
-        return new(true, "任务参数已保存并立即生效；后台重启后继续使用。", validation.Steps, await SnapshotAsync(ct));
+        return new(true, "任务参数配置已保存并立即生效；后台重启后继续使用。配置保存不会放行启动恢复、PLC 写入或车辆动作。", validation.Steps, await SnapshotAsync(ct));
     }
 }

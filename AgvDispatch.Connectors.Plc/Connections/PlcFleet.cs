@@ -66,6 +66,10 @@ public sealed class PlcFleet : IPlcGateway, IPlcConnectionSupervisor, IPlcConfig
         _stations.TryGetValue(stationId, out var node)
             ? PlcTaskConfigurationInspector.Inspect(node.Options, node.Catalog, stationId, variableName, requiresWrite)
             : "工位未绑定 PLC";
+    public string? GetSignalPreparationError(string stationId, string variableName, bool requiresWrite) =>
+        _stations.TryGetValue(stationId, out var node)
+            ? PlcTaskConfigurationInspector.InspectForPreparation(node.Options, node.Catalog, stationId, variableName, requiresWrite)
+            : "工位未绑定 PLC";
     public Task<DeviceConnectionStatus> GetConnectionStatusAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();

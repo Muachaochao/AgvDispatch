@@ -29,6 +29,14 @@ internal static class NetworkTests
             var csvPath = Path.Combine(directory, "signals.csv"); File.WriteAllText(csvPath, config.ExportSignalCsv());
             var catalog = PlcSignalCatalog.Load(csvPath);
             Check(catalog.Count == 21 && catalog.EnabledCount == 21 && catalog.TryGet("DUMPER-001", "DumperReady", out var ready) && ready.Address == "DB1.DBX610.2", "导出CSV兼容正式点表加载器");
+            Check(catalog.Signals.Where(p => p.StationId is "CNC-001" or "CNC-002").Count() == 16 &&
+                catalog.Signals.Where(p => p.StationId is "CNC-001" or "CNC-002").All(p => p.DeviceType == "ChipRemovalStation"),
+                "导出CNC点使用正式业务工位类型，不能仅采集成功而缺失业务状态");
+            var businessStations = catalog.Signals.Where(p => p.DeviceType == "ChipRemovalStation" && p.VariableName == "FullBoxRequested")
+                .Select(p => p.StationId).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase).ToArray();
+            Check(businessStations.SequenceEqual(new[] { "CNC-001", "CNC-002" }), "正式状态服务的分类与呼叫筛选能注册两个CNC工位");
+            Check(catalog.Signals.Where(p => p.StationId == "DUMPER-001").Count() == 5 &&
+                catalog.Signals.Where(p => p.StationId == "DUMPER-001").All(p => p.DeviceType == "Dumper"), "共享倒料5点不误注册为取箱工位");
             config.DumperStationId = "DUMP-X"; File.WriteAllText(csvPath, config.ExportSignalCsv());
             Check(PlcSignalCatalog.Load(csvPath).ContainsStation("DUMP-X"), "倒料设备编号可配置");
             config = JsonSerializer.Deserialize<NetworkLabConfig>(JsonSerializer.Serialize(config))!; config.Validate();

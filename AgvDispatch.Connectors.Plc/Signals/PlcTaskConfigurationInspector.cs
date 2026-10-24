@@ -2,13 +2,20 @@ namespace AgvDispatch.Connectors.Plc;
 
 public static class PlcTaskConfigurationInspector
 {
-    public static string? Inspect(PlcOptions options, PlcSignalCatalog catalog, string stationId, string variableName, bool requiresWrite)
+    public static string? Inspect(PlcOptions options, PlcSignalCatalog catalog, string stationId, string variableName, bool requiresWrite) =>
+        InspectCore(options, catalog, stationId, variableName, requiresWrite, requireWritePermission: true);
+
+    public static string? InspectForPreparation(PlcOptions options, PlcSignalCatalog catalog, string stationId, string variableName, bool requiresWrite) =>
+        InspectCore(options, catalog, stationId, variableName, requiresWrite, requireWritePermission: false);
+
+    private static string? InspectCore(PlcOptions options, PlcSignalCatalog catalog, string stationId, string variableName,
+        bool requiresWrite, bool requireWritePermission)
     {
         if (!catalog.TryGet(stationId, variableName, out var signal)) return "缺少信号映射";
         if (!signal.Enabled) return "点位未启用";
         if (!options.Enabled) return "所属 PLC 通信未启用";
         if (options.GetConfigurationError() is { } error) return error;
-        if (requiresWrite && !options.AllowWrites) return "所属 PLC 写入开关未开启";
+        if (requiresWrite && requireWritePermission && !options.AllowWrites) return "所属 PLC 写入开关未开启";
         if (requiresWrite && !string.Equals(signal.Access, "Write", StringComparison.OrdinalIgnoreCase)) return "点位没有 Write 权限";
         // The polling service reads enabled outputs too, so Write points can supply handshake readback.
         if (!string.Equals(signal.Access, "Read", StringComparison.OrdinalIgnoreCase) &&

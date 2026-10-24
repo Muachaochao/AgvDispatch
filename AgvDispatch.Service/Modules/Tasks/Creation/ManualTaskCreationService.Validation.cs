@@ -31,10 +31,10 @@ public sealed partial class ManualTaskCreationService
         var candidate = new ManualTaskCreationService(repository, stations, gateway, states, activeMap, gate, tasks,
             candidateCreation, candidateDispatch, steps, mapOptions, plcConfiguration, parameters, robokitMap, handshakeOptions);
         var map = activeMap.Current;
-        return configuration.Pickups.SelectMany(pickup => candidate.ValidateStepPreview(candidate.BuildStepPreview(pickup.StationId, pickup.PickupSite, map), map)
+        return configuration.Pickups.SelectMany(pickup => candidate.ValidateStepPreview(candidate.BuildStepPreview(pickup.StationId, pickup.PickupSite, map), map, preparation: true)
             .Select(step => new TaskParameterValidationRow(pickup.StationId, step))).ToArray();
     }
-    private IReadOnlyList<ManualTaskStepPreview> ValidateStepPreview(IReadOnlyList<ManualTaskStepPreview> preview, ActiveMapRuntimeSnapshot? map)
+    private IReadOnlyList<ManualTaskStepPreview> ValidateStepPreview(IReadOnlyList<ManualTaskStepPreview> preview, ActiveMapRuntimeSnapshot? map, bool preparation = false)
     {
         return preview.Select(step =>
         {
@@ -45,14 +45,17 @@ public sealed partial class ManualTaskCreationService
                 errors.Add(bayError);
             void Signal(string name, bool write = false)
             {
-                if (plcConfiguration.GetSignalConfigurationError(step.PlcStationId, name, write) is { } error)
+                if (SignalError(step.PlcStationId, name, write) is { } error)
                     errors.Add($"PLC {step.PlcStationId}/{name}：{error}");
             }
             void DumperSignal(string name,bool write=false)
             {
-                if(plcConfiguration.GetSignalConfigurationError(creation.DumperStationId,name,write) is {} error)
+                if(SignalError(creation.DumperStationId,name,write) is {} error)
                     errors.Add($"PLC {creation.DumperStationId}/{name}：{error}");
             }
+            string? SignalError(string stationId, string name, bool write) => preparation
+                ? plcConfiguration.GetSignalPreparationError(stationId, name, write)
+                : plcConfiguration.GetSignalConfigurationError(stationId, name, write);
             var transport = step.StepType is DispatchTaskStepType.GoToPickup or DispatchTaskStepType.DeliverFullBoxToDumper or
                 DispatchTaskStepType.EnterDumpingPosition or DispatchTaskStepType.ReturnEmptyBox;
             if (transport)

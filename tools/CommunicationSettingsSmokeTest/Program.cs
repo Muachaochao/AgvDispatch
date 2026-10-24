@@ -26,6 +26,23 @@ bindingOnly.Agvs[0].IpAddress="192.0.2.20";
 Require(!CommunicationSettingsService.OnlyMapBindingsDiffer(settings,bindingOnly),"endpoint changes cannot use map binding-only path");
 using var fleet = new PlcFleet(settings.Plcs.Select(p => CommunicationSettingsService.ToPlcOptions(p, new PlcOptions(), root)).ToArray());
 Require(fleet.Connections.Count == 2 && fleet.Catalog.Count == 2, "multiple PLC connections and identical DB address isolated");
+var preparationCsv = Path.Combine(root, "config", "preparation.csv");
+await File.WriteAllTextAsync(preparationCsv, header +
+    "DB1.DBX0.0,FullBoxRequestAcknowledged,呼叫应答,CNC-PREP,ChipRemovalStation,1,BOOL,Host->PLC,Write,Confirmed,true,,,test\n" +
+    "DB1.DBX0.1,BoxPresent,箱体,CNC-PREP,ChipRemovalStation,1,BOOL,PLC->Host,Read,Confirmed,true,,,test\n");
+var preparationOptions = new PlcOptions { Enabled = true, AllowWrites = false, SignalCsvPath = preparationCsv };
+using (var preparationFleet = new PlcFleet([preparationOptions]))
+{
+    Require(preparationFleet.GetSignalPreparationError("CNC-PREP", "FullBoxRequestAcknowledged", true) is null &&
+        preparationFleet.GetSignalConfigurationError("CNC-PREP", "FullBoxRequestAcknowledged", true)?.Contains("写入开关") == true,
+        "fleet preparation validates output mapping while execution still requires write permission");
+    Require(preparationFleet.GetSignalPreparationError("CNC-PREP", "BoxPresent", true)?.Contains("Write") == true &&
+        preparationFleet.GetSignalPreparationError("CNC-PREP", "Missing", true) is not null &&
+        preparationFleet.GetSignalPreparationError("UNKNOWN", "FullBoxRequestAcknowledged", true)?.Contains("未绑定") == true,
+        "fleet preparation retains output access, missing point and station ownership checks");
+    Require(!preparationOptions.AllowWrites && preparationFleet.Connections.Single().Supervisor.Current.State == ConnectionState.Disconnected,
+        "mapping preparation neither enables writes nor connects a device");
+}
 var cache = new PlcSignalCache(fleet.Catalog);
 cache.ApplyReadings([new("CNC001", "BoxPresent", true, DateTimeOffset.Now), new("CNC002", "BoxPresent", true, DateTimeOffset.Now)]);
 cache.MarkEnabledSignals(SignalQuality.Bad, "PLC-01 failed", new HashSet<string> { "CNC001" });

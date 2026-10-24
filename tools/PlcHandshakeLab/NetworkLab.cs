@@ -78,7 +78,7 @@ public sealed class NetworkLabConfig
         static string Q(string s) => "\"" + s.Replace("\"", "\"\"") + "\"";
         return "address,variableName,chineseName,stationId,deviceType,instanceIndex,dataType,direction,access,addressStatus,enabled,setConditionZh,resetConditionZh,sourceNote\r\n" +
             string.Join("\r\n", Points.Select(p => string.Join(",", new[] { p.Address, names[p.Signal], p.Name, p.Station == Shared ? DumperStationId : p.Station,
-                p.Station == Shared ? "Dumper" : "Station", "1", "Bool", p.Owner == "P" ? "PLC->Host" : "Host->PLC", p.Owner == "P" ? "Read" : "Write",
+                p.Station == Shared ? "Dumper" : "ChipRemovalStation", "1", "Bool", p.Owner == "P" ? "PLC->Host" : "Host->PLC", p.Owner == "P" ? "Read" : "Write",
                 "LabOnly", "true", "按联调条件", "按联调条件", "PLC人工联调模拟点表，非现场核定" }.Select(Q))));
     }
 }
