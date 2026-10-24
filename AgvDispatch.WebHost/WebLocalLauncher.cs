@@ -36,7 +36,7 @@ internal static class WebLocalLauncher
             var servicePath=System.IO.Path.Combine(root,"Service","AgvDispatch.Service.exe");
             var webPath=System.IO.Path.Combine(root,"Web","host","AgvDispatch.WebHost.exe");
             foreach(var pair in new[]{(servicePath,"AgvDispatch.Service.dll"),(webPath,"AgvDispatch.WebHost.dll")})
-                if(!File.Exists(pair.Item1)||FileVersionInfo.GetVersionInfo(System.IO.Path.Combine(System.IO.Path.GetDirectoryName(pair.Item1)!,pair.Item2)).ProductVersion!=release)
+                if(!File.Exists(pair.Item1)||!AdapterBuildIdentity.MatchesRelease(FileVersionInfo.GetVersionInfo(System.IO.Path.Combine(System.IO.Path.GetDirectoryName(pair.Item1)!,pair.Item2)).ProductVersion,release))
                     throw new InvalidDataException("Release components do not match. Rebuild the complete bundle.");
             var stateDir=System.IO.Path.Combine(root,"Runtime");Directory.CreateDirectory(stateDir);
             using var exclusive=new FileStream(System.IO.Path.Combine(stateDir,"launcher.lock"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None);
@@ -73,7 +73,7 @@ internal static class WebLocalLauncher
                     try
                     {
                         using var config=JsonDocument.Parse(await http.GetStringAsync("/api/config",timeout.Token));
-                        if(config.RootElement.GetProperty("adapter").GetProperty("informationalVersion").GetString()!=release||config.RootElement.GetProperty("servicePipeName").GetString()!=pipe||config.RootElement.GetProperty("projectStoreId").GetString()!=storeId)
+                        if(!AdapterBuildIdentity.MatchesRelease(config.RootElement.GetProperty("adapter").GetProperty("informationalVersion").GetString(),release)||config.RootElement.GetProperty("servicePipeName").GetString()!=pipe||config.RootElement.GetProperty("projectStoreId").GetString()!=storeId)
                             throw new InvalidDataException("The web endpoint belongs to a different release.");
                         using var snapshot=JsonDocument.Parse(await http.GetStringAsync("/api/snapshot",timeout.Token));
                         if(snapshot.RootElement.GetProperty("connected").GetBoolean())break;

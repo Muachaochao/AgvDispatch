@@ -4,6 +4,8 @@ var store = new DisplayAreaStore(root);
 var count = 0;
 void Check(bool condition, string name) { if (!condition) throw new Exception(name); Console.WriteLine("PASS " + name); count++; }
 async Task Reject(Func<Task> run, string name) { try { await run(); } catch (Exception e) when (e is ArgumentException or ProjectConflictException) { Check(true, name); return; } throw new Exception("Expected rejection: " + name); }
+Check(AdapterBuildIdentity.MatchesRelease("batch", "batch") && AdapterBuildIdentity.MatchesRelease("batch+"+new string('a',40), "batch"), "launcher accepts exact batch and Git build metadata");
+Check(!AdapterBuildIdentity.MatchesRelease("other+"+new string('a',40), "batch") && !AdapterBuildIdentity.MatchesRelease("batch+unexpected", "batch"), "launcher rejects other batches and malformed metadata");
 var a = new DisplayArea(Guid.NewGuid().ToString(), "上料区", "#42bde0", [new(0,0),new(4,0),new(4,3),new(0,3)], ["LM1","LM2"]);
 var q = new DisplayAreaSave("", "basis", [a]);
 Check(await store.ReadAsync("MAP-A", default) is null, "new map starts empty");
