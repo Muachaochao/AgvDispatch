@@ -53,6 +53,11 @@ public sealed partial class MapSwitchService(ISqlSugarClient database, IMapExecu
             .FirstAsync(cancellationToken);
         if (version is null || target is null || target.IsArchived || target.PublishedVersionId != request.VersionId)
             return new(false, "目标不是当前已发布版本。");
+        var candidate = JsonSerializer.Deserialize<MapDefinition>(version.DefinitionJson, JsonOptions);
+        if (candidate is null || candidate.CoordinateSystem == "SmapWorldTranslated" ||
+            !candidate.Nodes.Any(n => n.Enabled && n.Type is MapNodeType.Station or MapNodeType.WaitingPoint or MapNodeType.ChargingPoint) ||
+            !candidate.Edges.Any(e => e.Enabled && candidate.Nodes.Any(n => n.Enabled && n.Id == e.From) && candidate.Nodes.Any(n => n.Enabled && n.Id == e.To)))
+            return new(false, "目标地图尚未配置为运行图：请在地图编辑中使用‘准备运行地图’，还原车端坐标、确认站点用途并启用道路后，保存并重新发布。尚未开始切换。");
         var previous = await database.Queryable<MapProjectEntity>().Where(row => row.IsActive)
             .FirstAsync(cancellationToken);
         if (previous?.MapId == request.MapId && previous.ActiveVersionId == request.VersionId)
@@ -129,8 +134,9 @@ public sealed partial class MapSwitchService(ISqlSugarClient database, IMapExecu
             runtime.Current?.MapId != expectedMap || runtime.Current?.VersionId != expectedVersion)
             return new(false, "数据库与运行地图不一致，禁止放行；请重启服务后重新核对。");
         var definition = runtime.Current?.Definition ?? await DefinitionAsync(current.VersionId, cancellationToken);
+        var cancelledPreview = cancel && (await DefinitionAsync(current.VersionId, cancellationToken))?.CoordinateSystem == "SmapWorldTranslated";
         // During same-process draining, cancel can preserve ongoing work. After interruption require full quiescence.
-        if (!cancel || gate.Mode != MapExecutionMode.Draining)
+        if (!cancel || cancelledPreview || gate.Mode != MapExecutionMode.Draining)
         {
             if (definition is null) return new(false, "地图定义不存在。");
             // Cancelling a never-committed first activation returns to no map.
@@ -138,7 +144,9 @@ public sealed partial class MapSwitchService(ISqlSugarClient database, IMapExecu
             // Keep all task/lease/command, telemetry, stationary and PLC checks.
             var bootstrapCancel=cancel && current.PreviousMapId is null && current.PreviousVersionId is null &&
                 active is null && runtime.Current is null;
-            var blockers = await GetBlockersCoreAsync(definition, !bootstrapCancel, cancellationToken);
+            // An unused preview is never an executable coordinate reference. Close it only after
+            // full quiescence checks; retain Held so cancelling cannot resume the old-map workflow.
+            var blockers = await GetBlockersCoreAsync(definition, !bootstrapCancel && !cancelledPreview, cancellationToken);
             if (blockers.Count > 0) return new(false, string.Join("；", blockers));
             var committedAt = new DateTimeOffset(current.UpdatedAt);
             if (!cancel && (vehicles.GetAll().Any(vehicle => vehicle.Quality != SignalQuality.Disabled &&
@@ -156,8 +164,8 @@ public sealed partial class MapSwitchService(ISqlSugarClient database, IMapExecu
             }).Where(row => row.ReleaseId == current.ReleaseId && row.Phase == current.Phase)
             .ExecuteCommandAsync(cancellationToken);
         if (changed != 1) return new(false, "切换记录已变化，保持停止派单。");
-        gate.SetMode(MapExecutionMode.Running);
-        return new(true, cancel ? "已取消切换，继续使用原地图。" : "现场与车辆兼容性已确认，恢复派单。");
+        gate.SetMode(cancelledPreview ? MapExecutionMode.Held : MapExecutionMode.Running);
+        return new(true, cancelledPreview ? "已关闭未提交的预览图切换；原运行图保留且执行仍暂停。请配置并发布运行图后重新安全切换。" : cancel ? "已取消切换，继续使用原地图。" : "现场与车辆兼容性已确认，恢复派单。");
     }
 
     public async Task<IReadOnlyList<string>> GetBlockersAsync(MapDefinition definition, CancellationToken cancellationToken)

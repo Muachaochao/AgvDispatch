@@ -116,6 +116,12 @@ async function loadSwitchStatus() {
 
 async function switchAction(action: 'begin' | 'drain' | 'resume' | 'cancel') {
   if(!store.fresh||store.demoMode||storageError.value){toast.warning('请先核对原后台连接及本地复核记录。');return;}
+  if(action==='cancel'&&activationIntent.value){
+    const original=activationIntent.value,ctx=sourceContext.value;
+    try{const fresh=await store.api<ActivationReview>('/api/maps/activation-review',{releaseId:original.releaseId,expectedMapId:original.mapId,expectedVersionId:original.versionId});
+      if(ctx!==sourceContext.value||original!==activationIntent.value||!store.fresh)return;review.value=fresh;
+    }catch(e){toast.warning(`原切换复核失败，未取消：${String(e)}`);return;}
+  }
   if(activationIntent.value&&!(action==='cancel'&&reviewCurrent.value&&review.value?.outcome==='OriginalMapObserved'&&switchStatus.value?.current?.releaseId===activationIntent.value.releaseId)){toast.warning('存在原激活待核对，只能只读复核或在有效原图观察下取消原切换。');return;}
   if (!switchEvidence.value.trim()) { toast.warning('请填写操作依据'); return; }
   busy.value = true;
@@ -272,7 +278,7 @@ const currentPhase = computed(() => switchStatus.value?.current?.phaseText ?? '�
       <button :disabled="busy || activationBlocked || !!switchStatus?.current || !switchTargetMapId" @click="switchAction('begin')"><ActionIcon name="safety"/>开始安全切换</button>
       <button :disabled="busy || activationBlocked || !isMapSwitchPhase(switchStatus?.current?.phase,10) || switchStatus?.mode !== 'Held'" @click="switchAction('drain')"><ActionIcon name="route"/>恢复中断的原任务收尾</button>
       <button :disabled="busy || activationBlocked || !isMapSwitchPhase(switchStatus?.current?.phase,20)" @click="switchAction('resume')"><IconCircleCheck :size="14" />确认放行</button>
-      <button :disabled="busy || !store.fresh || !!storageError || (activationIntent && !(reviewCurrent && review?.outcome==='OriginalMapObserved' && switchStatus?.current?.releaseId===activationIntent.releaseId)) || !switchStatus?.current || isMapSwitchPhase(switchStatus?.current?.phase,90)" @click="switchAction('cancel')"><IconX :size="14" />取消切换</button>
+      <button :disabled="busy || !store.fresh || !!storageError || (activationIntent && !(review?.outcome==='OriginalMapObserved' && switchStatus?.current?.releaseId===activationIntent.releaseId)) || !switchStatus?.current || isMapSwitchPhase(switchStatus?.current?.phase,90)" @click="switchAction('cancel')"><IconX :size="14" />重新核对并取消切换</button>
     </template>
   </ConsoleDialog>
 
@@ -283,7 +289,8 @@ const currentPhase = computed(() => switchStatus.value?.current?.phaseText ?? '�
     <template v-if="review"><h3>{{reviewLabel(review.outcome)}}</h3><p>{{reviewCurrent?'有效观察':'观察已失效，联动禁用'}} · {{shortTime(review.capturedAt)}}</p><p>{{review.message}}</p>
     <dl class="property-list"><dt>持久化阶段</dt><dd>{{review.record?.phaseText||'原记录未找到'}}</dd><dt>数据库活动图</dt><dd>{{review.persistentMapId||'无'}} / {{review.persistentVersionId||'无'}}</dd><dt>运行图</dt><dd>{{review.runtimeMapId||'无'}} / {{review.runtimeVersionId||'无'}}</dd><dt>执行门</dt><dd>{{review.mode}} · 观察到的新任务门 {{review.canStartNewWork?'开（不是放行许可）':'关'}}</dd><dt>本地内容一致</dt><dd>{{review.contentConsistent?'是':'否/未知'}}</dd></dl>
     <details><summary>查看本地内容摘要和证据边界</summary><p style="overflow-wrap:anywhere">数据库SHA256 {{review.persistentDefinitionHash||'未取得'}}<br/>运行图SHA256 {{review.runtimeDefinitionHash||'未取得'}}</p><p v-for="e in review.evidence" :key="e">{{e}}</p></details>
-    <p v-if="review.outcome==='OriginalMapObserved'">未观察到提交不能自动重试。可关闭本窗口进入安全切换；只有有效同编号原图观察时允许人工取消原切换，后台仍核验原门禁。</p>
+    <p v-if="review.outcome==='OriginalMapObserved'">未观察到提交不能自动重试。进入安全切换查看具体阻塞；核对后可人工取消尚未提交的原切换，再编辑修正版。</p>
+    <button v-if="review.outcome==='OriginalMapObserved'" @click="reviewOpen=false;loadSwitchStatus()">查看阻塞并处理原切换</button>
     </template></section>
     <template #footer><button @click="reviewOpen=false"><ActionIcon name="close"/>关闭并保留待核对</button><button :disabled="!mayAcknowledge" @click="acknowledgeActivation"><ActionIcon name="safety"/>已知原结果，转安全流程核对</button></template>
   </ConsoleDialog>

@@ -95,7 +95,12 @@ public sealed record ActivateMapRequest(string MapId, string VersionId, string C
 public sealed record PreviewMapImportRequest(
     string Path,
     MapImportFormat Format = MapImportFormat.Auto,
-    double CoordinateScale = 1.0);
+    double CoordinateScale = 1.0)
+{
+    public IReadOnlyDictionary<string, MapNodeType>? RuntimeRoles { get; init; }
+    public string? ExpectedSourceSha256 { get; init; }
+    public bool RobotCoordinatesConfirmed { get; init; }
+}
 
 public sealed record MapImportPreviewResult(
     bool Accepted,

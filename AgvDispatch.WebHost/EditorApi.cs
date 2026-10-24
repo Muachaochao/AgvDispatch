@@ -7,6 +7,36 @@ public static class EditorApi
 {
     public static void MapEditorApi(this WebApplication app)
     {
+        app.MapPost("/api/maps/prepare-runtime", async (PrepareRuntimeMapRequest request, VendorMapSourceArchive archive, DispatchPipe pipe, CancellationToken ct) =>
+        {
+            if (!request.RobotCoordinatesConfirmed || request.Roles is null || request.Roles.Count is < 1 or > 5000)
+                return Results.BadRequest(new { error = "请逐站确认用途，并确认使用车端原始坐标。" });
+            var bytes = await archive.ReadAsync(request.SourceSha256, ct);
+            if (bytes is null)
+            {
+                // Downloads from earlier builds were kept here before the shared source archive existed.
+                var previous = Path.Combine(app.Environment.ContentRootPath, "data", "robot-map-downloads", request.SourceSha256 + ".smap");
+                if (File.Exists(previous) && new FileInfo(previous).Length <= 8 * 1024 * 1024)
+                {
+                    bytes = await File.ReadAllBytesAsync(previous, ct);
+                    if (await archive.SaveAsync(bytes, ct) != request.SourceSha256)
+                        return Results.BadRequest(new { error = "原下载文件与地图摘要不一致，请重新拉取。" });
+                }
+            }
+            if (bytes is null) return Results.NotFound(new { error = "原始地图未留存，请重新拉取机器人地图或导入原SMAP。" });
+            var directory = Path.Combine(Path.GetTempPath(), "agv-runtime-map", Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            var path = Path.Combine(directory, "source.smap");
+            try
+            {
+                await File.WriteAllBytesAsync(path, bytes, ct);
+                var result = await pipe.ReadAsync<MapImportPreviewResult>(TrafficControlOperations.PreviewMapImport,
+                    new PreviewMapImportRequest(path, MapImportFormat.RobokitSmap) { RuntimeRoles = request.Roles,
+                        ExpectedSourceSha256 = request.SourceSha256, RobotCoordinatesConfirmed = true }, ct);
+                return Results.Ok(result is null ? null : result with { Definition = result.Definition is null ? null : result.Definition with { Source = "" } });
+            }
+            finally { File.Delete(path); Directory.Delete(directory); }
+        });
         app.MapGet("/api/maps/{id}/workspace", async (string id, DispatchPipe pipe, CancellationToken ct) =>
             await pipe.ReadAsync<MapWorkspaceSnapshot>(TrafficControlOperations.GetMapWorkspace, new { MapId = id }, ct));
         app.MapPost("/api/maps/archive",async(ArchiveMapRequest request,DispatchPipe pipe,CancellationToken ct)=>
@@ -87,4 +117,6 @@ public static class EditorApi
             await pipe.ReadAsync<MapSwitchResult>(TrafficControlOperations.CancelMapSwitch, request, ct));
     }
     public sealed record VehicleConfigurationRequest(string ExpectedRevision, AgvConnectionSetting[] Vehicles);
+    public sealed record PrepareRuntimeMapRequest(string SourceSha256,
+        Dictionary<string, AgvDispatch.Domain.Maps.MapNodeType> Roles, bool RobotCoordinatesConfirmed);
 }

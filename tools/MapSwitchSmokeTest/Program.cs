@@ -60,12 +60,37 @@ try
         { ExpectedEditToken = saved.Workspace!.Draft!.EditToken }, ct);
     Check(published.Accepted, "发布不可变候选版本");
     var target = published.Workspace!.Published!;
+    var originalJson = JsonSerializer.Serialize(definition, new JsonSerializerOptions(JsonSerializerDefaults.Web) { Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() } });
+    foreach (var invalidCandidate in new[] { definition with { CoordinateSystem = "SmapWorldTranslated" },
+        definition with { Edges = definition.Edges.Select(e => e with { Enabled = false }).ToArray() },
+        definition with { Nodes = definition.Nodes.Select(n => n with { Type = MapNodeType.Waypoint }).ToArray() } })
+    {
+        var json = JsonSerializer.Serialize(invalidCandidate, new JsonSerializerOptions(JsonSerializerDefaults.Web) { Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() } });
+        await database.Updateable<MapVersionEntity>().SetColumns(v => v.DefinitionJson == json).Where(v => v.VersionId == target.VersionId).ExecuteCommandAsync(ct);
+        Check(!(await switches.BeginAsync(editor, new(target.MapId, target.VersionId), ct)).Accepted &&
+            (await switches.GetAsync(editor, ct)).Current is null && gate.Mode == MapExecutionMode.Running,
+            "未准备的预览/停用道路/无停靠点在进入切换前拒绝，原执行门保持不变");
+    }
+    await database.Updateable<MapVersionEntity>().SetColumns(v => v.DefinitionJson == originalJson).Where(v => v.VersionId == target.VersionId).ExecuteCommandAsync(ct);
     var activate = new ActivateMapRequest(target.MapId, target.VersionId, "ACTIVATE Switch-Test", true, true, "已核对车辆和PLC，原现场仍兼容");
     Check(!(await manager.ActivateAsync(editor, activate, ct)).Accepted, "禁止绕过收尾流程直接激活");
     var denied = false;
     try { await switches.BeginAsync(viewer, new(target.MapId, target.VersionId), ct); }
     catch (UnauthorizedAccessException) { denied = true; }
     Check(denied, "观察员不能开始切换");
+    var previewJson = originalJson.Replace("LocalCartesian", "SmapWorldTranslated");
+    await database.Updateable<MapVersionEntity>().SetColumns(v => v.DefinitionJson == previewJson).Where(v => v.VersionId == target.VersionId).ExecuteCommandAsync(ct);
+    await database.Insertable(new MapSwitchEntity { ReleaseId = "LEGACY-PREVIEW", MapId = target.MapId, VersionId = target.VersionId,
+        Phase = 10, StartedAt = DateTime.Now, UpdatedAt = DateTime.Now }).ExecuteCommandAsync(ct);
+    using (var control = await gate.EnterControlAsync(ct)) gate.SetMode(MapExecutionMode.Held);
+    vehicles.Items[0] = SwitchVehicleCache.Ready() with { VelocityX = .3 };
+    var closePreview = new FinishMapSwitchRequest("LEGACY-PREVIEW", true, true, "人工关闭从未提交的预览切换，不恢复执行");
+    Check(!(await switches.CancelAsync(editor, closePreview, ct)).Accepted, "旧预览切换取消仍检查实车静止");
+    Fresh();
+    Check((await switches.CancelAsync(editor, closePreview, ct)).Accepted && gate.Mode == MapExecutionMode.Held &&
+        (await switches.GetAsync(editor, ct)).Current is null && runtime.Current is null,
+        "旧预览切换可关闭但保留暂停，不因预览坐标解锁执行");
+    await database.Updateable<MapVersionEntity>().SetColumns(v => v.DefinitionJson == originalJson).Where(v => v.VersionId == target.VersionId).ExecuteCommandAsync(ct);
 
     Check((await switches.BeginAsync(editor,new(target.MapId,target.VersionId),ct)).Accepted,"首次未激活切换可建立原编号");
     var bootstrap=(await switches.GetAsync(editor,ct)).Current!;

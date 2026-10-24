@@ -110,6 +110,18 @@ public sealed class MapManagementService(
         {
             var definition = importer.Import(new MapImportRequest(
                 request.Path, request.Format, request.CoordinateScale));
+            if (request.RuntimeRoles is not null)
+            {
+                if (request.Format != MapImportFormat.RobokitSmap || !request.RobotCoordinatesConfirmed ||
+                    definition.RobokitSource?.Sha256 != request.ExpectedSourceSha256)
+                    throw new InvalidDataException("须确认原图摘要及车端坐标，才能准备运行图。");
+                var bytes = await File.ReadAllBytesAsync(request.Path, cancellationToken);
+                var parsed = new Smap2DImportService().Read(bytes, "");
+                definition = RobokitPathEvidenceReader.Attach(bytes, bytes,
+                    Smap2DImportService.PrepareRobotWorldRuntime(parsed, request.RuntimeRoles));
+                if (!definition.Nodes.Any(n => n.Type is MapNodeType.Station or MapNodeType.WaitingPoint or MapNodeType.ChargingPoint))
+                    throw new InvalidDataException("至少需要一个停靠站点或等待位；不能全部设置为途经航点。");
+            }
             var report = validator.Validate(definition);
             var result = new MapImportPreviewResult(
                 true,
