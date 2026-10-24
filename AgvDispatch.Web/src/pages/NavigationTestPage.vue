@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { useDispatchStore } from '../stores/dispatch';
+const dispatch=useDispatchStore();
+const mapReloadNeeded=ref(false),mapNotice=ref('');
 interface RecordRow {taskId:string;vendorTaskId:string;vehicleId:string;sourceSite:string;targetSite:string;robotMap:string;robotMapMd5:string;state:string;message:string;updatedAt:string;route:string[];currentStation:string|null;x:number|null;y:number|null;observedAt:string|null}
 interface Status {ready:boolean;blockReason:string|null;enabled:boolean;vehicleId:string;current:RecordRow|null;message:string}
 interface Preview {previewId:string;expiresAt:string;vehicleId:string;sourceSite:string;targetSite:string;robotMap:string;robotMapMd5:string;route:string[]}
@@ -14,11 +17,12 @@ const active=computed(()=>!!status.value?.current&&!['Completed','Failed','Cance
 const valid=computed(()=>!!preview.value&&Date.parse(preview.value.expiresAt)>now.value);
 const canInspect=computed(()=>!!catalog.value&&!!source.value&&!!target.value&&source.value!==target.value&&!busy.value&&!active.value&&!readError.value&&status.value?.ready);
 const canSubmit=computed(()=>valid.value&&confirmed.value&&!busy.value&&!active.value&&!readError.value&&status.value?.ready);
+let autoReadAttempted=false;
 let disposed=false,timer:ReturnType<typeof setInterval>|undefined;
 async function api<T>(suffix='',body?:unknown):Promise<T>{const r=await fetch('/api/navigation-test'+suffix,{method:body===undefined?'GET':'POST',headers:body===undefined?{}:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(30000)});const data=await r.json();if(!r.ok)throw new Error(data.detail??data.error??'请求失败');return data;}
 function invalidate(){preview.value=null;confirmed.value=false;}
-async function refresh(){if(busy.value||disposed)return;busy.value=true;try{const s=await api<Status>();if(!disposed){status.value=s;readError.value='';if(!s.ready)invalidate();try{jack.value=await api<JackStatus>('/jack');jackError.value='';}catch(e){jackError.value=String(e);jack.value=null;}}}catch(e){if(!disposed){readError.value=String(e);invalidate();}}finally{busy.value=false;}}
-async function loadStations(){if(busy.value||active.value||disposed)return;invalidate();busy.value=true;error.value='';const previous=catalog.value;catalog.value=null;try{const c=await api<Stations>('/stations');if(disposed)return;const same=previous?.vehicleId===c.vehicleId&&previous.robotMap===c.robotMap&&previous.robotMapMd5===c.robotMapMd5;catalog.value=c;source.value=c.suggestedSourceSite??(same&&c.stations.some(s=>s.id===source.value)?source.value:'');target.value=same&&c.stations.some(s=>s.id===target.value)?target.value:'';}catch(e){if(!disposed)error.value=String(e);}finally{busy.value=false;}}
+async function refresh(){if(busy.value||disposed)return;busy.value=true;let reload=false;try{const s=await api<Status>();if(!disposed){const wasEnabled=status.value?.enabled;if(s.ready&&!status.value?.ready)autoReadAttempted=false;status.value=s;readError.value='';if(!s.ready)invalidate();if(!s.enabled&&wasEnabled){catalog.value=null;source.value='';target.value='';}reload=s.ready&&!active.value&&!autoReadAttempted&&(!catalog.value||mapReloadNeeded.value);try{jack.value=await api<JackStatus>('/jack');jackError.value='';}catch(e){jackError.value=String(e);jack.value=null;}}}catch(e){if(!disposed){readError.value=String(e);invalidate();}}finally{busy.value=false;}if(reload&&!disposed)await loadStations();}
+async function loadStations(){if(busy.value||active.value||disposed)return;autoReadAttempted=true;invalidate();busy.value=true;error.value='';const previous=catalog.value;catalog.value=null;const mapIdentity=runtimeMapIdentity.value;try{const c=await api<Stations>('/stations');if(disposed||mapIdentity!==runtimeMapIdentity.value)return;const same=previous?.vehicleId===c.vehicleId&&previous.robotMap===c.robotMap&&previous.robotMapMd5===c.robotMapMd5;catalog.value=c;source.value=c.suggestedSourceSite??(same&&c.stations.some(s=>s.id===source.value)?source.value:'');target.value=same&&c.stations.some(s=>s.id===target.value)?target.value:'';mapReloadNeeded.value=false;mapNotice.value='已读取当前车端地图，请重新选择终点并核验路线。';}catch(e){if(!disposed)error.value=String(e);}finally{busy.value=false;}}
 async function inspect(){if(!canInspect.value||!catalog.value)return;invalidate();busy.value=true;error.value='';try{preview.value=await api<Preview>('/preview',{vehicleId:catalog.value.vehicleId,sourceSite:source.value,targetSite:target.value,expectedRobotMap:catalog.value.robotMap,expectedRobotMapMd5:catalog.value.robotMapMd5});}catch(e){error.value=String(e);}finally{busy.value=false;}}
 async function submit(){if(!canSubmit.value||!preview.value)return;const id=preview.value.previewId;invalidate();busy.value=true;error.value='';try{await api('/submit',{previewId:id,siteClearConfirmed:true});}catch(e){error.value=String(e)+'；请先查询原任务，确认未发送并解除阻塞后再重新核验。';}finally{busy.value=false;await refresh();}}
 async function submitJack(action:'Up'|'Down'){
@@ -30,7 +34,9 @@ async function submitJack(action:'Up'|'Down'){
 }
 async function cancel(){const r=status.value?.current;if(!r)return;busy.value=true;error.value='';try{await api('/cancel',{taskId:r.taskId});}catch(e){error.value=String(e);}finally{busy.value=false;await refresh();}}
 watch([source,target],invalidate);
-onMounted(async()=>{await refresh();if(!disposed&&status.value?.enabled&&!active.value)await loadStations();if(!disposed)timer=setInterval(()=>{now.value=Date.now();void refresh();},3000);});
+const runtimeMapIdentity=computed(()=>{const m=dispatch.snapshot?.map;return m?`${m.id}/${m.version}`:'';});
+watch(runtimeMapIdentity,(next,previous)=>{if(!next||!previous||next===previous)return;invalidate();catalog.value=null;source.value='';target.value='';mapReloadNeeded.value=true;autoReadAttempted=false;mapNotice.value='运行地图已变化，旧起终点和路线核验已清除；切换完成且测试模式就绪后自动读取车端站点。';});
+onMounted(async()=>{await refresh();if(!disposed)timer=setInterval(()=>{now.value=Date.now();void refresh();},3000);});
 onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);});
 </script>
 
@@ -44,6 +50,13 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);});
   <h3>选择车端站点</h3>
   <p>测试车：<strong>{{status?.vehicleId||'尚未指定'}}</strong> · {{status?.enabled?'测试入口已启用':'后台未启用此测试入口'}}</p>
   <p v-if="status?.blockReason" role="alert" class="error">当前不能发送：{{status.blockReason}}</p>
+  <div v-if="status&&!status.enabled" class="preview">
+   <h3>单车测试模式未启用</h3>
+   <p>当前后台未开放单车动作测试；这与地图是否发布、激活是两个独立状态。普通启动或升级重启后不会自动恢复发送许可。</p>
+   <p>恢复步骤：确认没有执行中的动作 → 使用“停止最新版Web.cmd”停止当前实例 → 使用“启动最新版Web.cmd --navigation-test-vehicle AGV-01”启动测试模式 → 回到本页查询状态。实际车辆不同请替换车辆编号。</p>
+   <p>模式恢复后本页自动读取车端站点；每次导航仍需重新选择终点、核验路线并确认发送。</p>
+  </div>
+  <p v-if="mapNotice" role="status" class="notice">{{mapNotice}}</p>
   <button :disabled="busy||active||!status?.enabled" @click="loadStations">重新读取车端站点</button>
   <template v-if="catalog">
    <p>车端地图：{{catalog.robotMap}} · {{catalog.stations.length}} 个站点<br/>读取时间：{{new Date(catalog.capturedAt).toLocaleString()}}</p>
@@ -80,8 +93,9 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);});
   <p class="notice">发送应答不代表到位；以车端顶升反馈及现场观察核对。连接中断或重启后不自动重发动作。</p>
  </section>
  <section>
-  <h3>本次任务与执行状态</h3><button :disabled="busy" @click="refresh">查询原任务</button>
+  <h3>{{status?.current&&!active?'最近一次导航记录（已结束）':'本次任务与执行状态'}}</h3><button :disabled="busy" @click="refresh">查询原任务</button>
   <template v-if="status?.current"><h3>{{labels[status.current.state]||status.current.state}}</h3>
+   <p class="notice">记录所属地图：{{status.current.robotMap}} · {{new Date(status.current.updatedAt).toLocaleString()}}。{{!active?'这是已结束的历史记录，不表示当前地图已经核验，也不代表当前允许发送。':''}}</p>
    <p>{{status.current.sourceSite}} → {{status.current.targetSite}} · {{status.current.vehicleId}}</p>
    <p v-if="status.current.route?.length">核验路线：{{status.current.route.join(' → ')}}</p>
    <p>任务编号：{{status.current.vendorTaskId}}</p><p>{{status.current.message}}</p>
