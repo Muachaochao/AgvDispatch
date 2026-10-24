@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import ActionIcon from './components/ActionIcon.vue';
+import AreaAnnotations from './components/AreaAnnotations.vue';
 import { computed, onMounted, onUnmounted, ref, watch, toRef } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { IconMap, IconDeviceFloppy, IconDownload, IconUpload, IconPlus, IconTrash, IconArrowUp, IconArrowDown, IconCopy, IconRefresh, IconZoomIn, IconZoomOut, IconPlugConnected, IconCloudUpload, IconArrowLeft, IconEye } from '@tabler/icons-vue';
@@ -58,7 +59,9 @@ const tabs=[{id:'map',icon:'map',name:'地图编辑'},{id:'scene',icon:'scene',n
 const definition=computed(()=>plan.value.definition),issues=computed(()=>validateDefinition(definition.value));
 const route=computed(()=>routePlan(definition.value,plan.value.waypoints));
 const viewBox=computed(()=>ed.viewBox),scale=computed(()=>ed.scale),nodeRadius=computed(()=>ed.scale*.55);
-const counts=computed(()=>`${definition.value.nodes.length} 航点 · ${definition.value.edges.length} 道路 · ${definition.value.resources.length} 共享区域`);
+const counts=computed(()=>`${definition.value.nodes.length} 航点 · ${definition.value.edges.length} 道路 · ${definition.value.resources.length} 共享区域 · ${definition.value.areaAnnotations?.length??0} 厂家区域标注`);
+const showVendorAreas=ref(true);
+const visibleVendorAreas=computed(()=>showVendorAreas.value?(definition.value.areaAnnotations??[]).filter(a=>geometry.visible(definition.value,a)):[]);
 const vehicleErrors=computed(()=>validateVehicles(plan.value.vehicles));
 let epoch=0;
 watch(effectiveSource,()=>{++epoch;workspace.value=null;maps.value=[];versions.value=[];vehicleRevision.value='';canManage.value=false;message.value='数据源已切换。编辑稿保留，后台关联已解除，请重新读取目标。';});
@@ -159,12 +162,14 @@ onUnmounted(()=>{++epoch;window.removeEventListener('beforeunload',beforeUnload)
     <template v-if="tool==='boundary'"><button :disabled="ed.draft.length<3" @click="ed.finishBoundary"><ActionIcon name="check"/>完成边界（Enter）</button><button :disabled="!ed.draft.length" @click="ed.draft.pop()"><ActionIcon name="undo"/>撤回顶点</button></template>
     <template v-if="tool==='brush'"><label>共享区域<select v-model="ed.brushResource"><option value="">选择共享区域</option><option v-for="r in definition.resources" :key="r.id" :value="r.id">{{r.id}}</option></select></label><label><input v-model="ed.brushRemove" type="checkbox"/>解除关联</label></template>
    </div>
+   <div v-if="definition.areaAnnotations?.length" class="editor-toolbar"><label><input v-model="showVendorAreas" type="checkbox"/>厂家区域标注（{{definition.areaAnnotations.length}}）</label><span>{{definition.areaAnnotations.map(a=>a.text).join(' · ')}}</span><small>仅作显示，未配置为交通锁</small></div>
    <p class="editor-tool-hint" role="status">{{ed.toolHint}} <strong v-if="ed.measurement!==null">距离 {{ed.measurement.toFixed(3)}} m</strong><span v-if="ed.snapTarget"> · 吸附 {{ed.snapTarget}}</span></p>
    <div class="editor-layout"><aside class="editor-tree"><h3>{{tab==='scene'?'场景对象':'导航对象'}}</h3><template v-if="tab==='map'"><b>航点 {{definition.nodes.length}}</b><button v-for="n in definition.nodes" :key="n.id" :class="{active:ed.isSelected('node',n.id)}" @click="select('node',n.id,$event)">{{n.id}} <small>{{n.agvSiteId||'未绑定厂家站点'}}</small></button><b>道路 {{definition.edges.length}}</b><button v-for="e in definition.edges" :key="e.id" :class="{active:ed.isSelected('edge',e.id)}" @click="select('edge',e.id,$event)">{{e.id}}<small>{{e.from}}{{e.bidirectional?'↔':'→'}}{{e.to}}</small></button><b>共享区域 {{definition.resources.length}}</b><button v-for="r in definition.resources" :key="r.id" @click="select('resource',r.id,$event)">{{r.id}}<small>容量 {{r.capacity}}</small></button></template><template v-else><button @click="ed.addScene({x:0,y:0})"><IconPlus :size="13"/>新增场景对象</button><button v-for="s in plan.scene" :key="s.id" @click="select('scene',s.id,$event)">{{s.name}}<small>{{s.visible?'可见':'已隐藏'}} · {{s.kind}}</small></button><p class="muted-note">场景图形仅用于显示；设备区不会自动成为障碍或交通锁。</p></template></aside>
     <div class="editor-canvas" :class="{'pan-mode':tool==='pan'||ed.space}">
      <svg ref="svg" :viewBox="viewBox" role="application" tabindex="0" aria-label="调度地图编辑画布，支持框选、节点拖动与键盘快捷键" @pointerdown="ed.down" @pointermove="ed.move" @pointerup="ed.up" @pointercancel="ed.cancelGesture" @lostpointercapture="ed.cancelGesture" @contextmenu.prevent @dblclick.prevent="tool==='boundary'&&ed.finishBoundary()" @wheel.prevent="ed.wheel">
       <defs><pattern id="planning-editor-grid" :width="Math.max(.001,Number(ed.gridStep)||1)" :height="Math.max(.001,Number(ed.gridStep)||1)" patternUnits="userSpaceOnUse"><path :d="`M ${Math.max(.001,Number(ed.gridStep)||1)} 0 L 0 0 0 ${Math.max(.001,Number(ed.gridStep)||1)}`" fill="none" stroke="#1a3550" :stroke-width="scale*.04"/></pattern><marker id="planning-editor-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#72bfd2"/></marker></defs>
       <rect v-if="ed.grid" :x="Number(viewBox.split(' ')[0])" :y="Number(viewBox.split(' ')[1])" :width="Number(viewBox.split(' ')[2])" :height="Number(viewBox.split(' ')[3])" fill="url(#planning-editor-grid)" pointer-events="none"/>
+      <AreaAnnotations :areas="visibleVendorAreas" :scale="scale"/>
       <g v-for="s in ed.visibleScene" :key="s.id" data-object="scene" data-kind="scene" :data-id="s.id" :style="ed.layerStyle(s)">
        <rect v-if="s.kind!=='text'" :x="s.x" :y="-s.y-s.height" :width="s.width" :height="s.height" :fill="s.color" fill-opacity=".18" :stroke="ed.isSelected('scene',s.id)?'#e8fbff':s.color" :stroke-width="scale*.12"/><text :x="s.x+scale*.2" :y="-s.y-s.height+scale*1.2" :fill="s.color" :font-size="scale*1.1">{{s.name}}</text>
       </g>

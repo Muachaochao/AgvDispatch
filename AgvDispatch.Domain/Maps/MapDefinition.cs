@@ -9,12 +9,22 @@ public sealed record MapDefinition(
     IReadOnlyList<MapEdge> Edges,
     IReadOnlyList<TrafficResourceDefinition> Resources)
 {
+    [System.Text.Json.Serialization.JsonIgnore(Condition=System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<MapAreaAnnotation>? AreaAnnotations { get; init; }
     public IReadOnlyList<string> ImportWarnings { get; init; } = [];
     [System.Text.Json.Serialization.JsonIgnore(Condition=System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public RobokitMapSource? RobokitSource { get; init; }
     public IReadOnlyList<MapEditorLayer> Layers { get; init; } = [];
     public MapEditorSettings? EditorSettings { get; init; }
     public MapGraph ToGraph() => new(Nodes, Edges, Resources);
+}
+
+// Manufacturer display annotations do not reserve resources or define dispatch actions.
+public sealed record MapAreaAnnotation(string Id, string SourceType, string Text,
+    IReadOnlyList<MapPoint2D> Boundary, string StrokeColor, string FillColor, double FillOpacity)
+{
+    public string LayerId { get; init; } = "vendor-annotations";
+    public string SourceJson { get; init; } = "";
 }
 
 public sealed record MapEditorLayer(string Id, string Name, bool Visible = true)

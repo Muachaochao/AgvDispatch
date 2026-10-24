@@ -13,7 +13,7 @@ public static class WebJson
 
 public sealed record WebMap(string? Id, string? Version, string Name, string Unit, string CoordinateSystem,
     object[] Nodes, object[] Edges, object[] Resources, string[] Warnings)
-{public string DefinitionHash {get;init;}="";}
+{public string DefinitionHash {get;init;}="";public IReadOnlyList<MapAreaAnnotation>? AreaAnnotations {get;init;}}
 
 public sealed record WebSnapshot(DateTimeOffset ReceivedAt, bool Connected, string Source, string? Error,
     SystemStatusSnapshot? Status, WebMap? Map, DeviceMonitoringSnapshot? Devices,
@@ -71,6 +71,6 @@ public sealed class SnapshotReader(DispatchPipe pipe)
         if (definition.Unit != "m") warnings.Add("当前地图非米制，车位不叠加。");
         return new(snapshot.MapId, snapshot.VersionId, definition.Name, definition.Unit, definition.CoordinateSystem,
             definition.Nodes.Select(n => (object)new { n.Id, n.X, n.Y, n.AgvSiteId, n.Enabled, type = n.Type.ToString() }).ToArray(),
-            edges.ToArray(), definition.Resources.Select(r => (object)new { r.Id, r.Capacity, r.Boundary }).ToArray(), warnings.ToArray()){DefinitionHash=Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(JsonSerializer.Serialize(definition,new JsonSerializerOptions(JsonSerializerDefaults.Web)))))};
+            edges.ToArray(), definition.Resources.Select(r => (object)new { r.Id, r.Capacity, r.Boundary }).ToArray(), warnings.ToArray()){AreaAnnotations=definition.AreaAnnotations,DefinitionHash=Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(JsonSerializer.Serialize(definition,new JsonSerializerOptions(JsonSerializerDefaults.Web)))))};
     }
 }

@@ -14,6 +14,17 @@ public sealed class MapValidationService : IMapValidationService
         }
 
         var issues = new List<MapValidationIssue>();
+        if(definition.AreaAnnotations is { } areas)
+        {
+            if(areas.Count>2000)Error(issues,"AREA_ANNOTATION_BUDGET","厂家区域标注超过2000个。",definition.Name);
+            FindDuplicateIds(areas.Select(a=>a.Id),"AREA_ANNOTATION_DUPLICATE","厂家区域标注",issues);
+            foreach(var a in areas)
+            {
+                bool Color(string value)=>value is {Length:7}&&value[0]=='#'&&value.Skip(1).All(Uri.IsHexDigit);
+                if(string.IsNullOrWhiteSpace(a.Id)||a.Text is null||a.Text.Length>2048||a.Boundary is null||a.Boundary.Count is <3 or >10000||a.Boundary.Any(p=>!double.IsFinite(p.X)||!double.IsFinite(p.Y))||!Color(a.StrokeColor)||!Color(a.FillColor)||!double.IsFinite(a.FillOpacity)||a.FillOpacity is <0 or >1)
+                    Error(issues,"AREA_ANNOTATION_INVALID","厂家区域标注边界或显示属性无效。",a.Id);
+            }
+        }
         FindDuplicateIds(definition.Layers.Select(layer => layer.Id), "LAYER_DUPLICATE", "图层", issues);
         foreach (var layer in definition.Layers)
         {

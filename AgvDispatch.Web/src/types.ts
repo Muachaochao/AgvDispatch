@@ -3,7 +3,7 @@ export interface MapNode extends Point { id: string; agvSiteId?: string; enabled
 export interface MapEdge { id: string; from: string; to: string; enabled: boolean; bidirectional: boolean; kind: string; points: Point[] }
 export interface MapResource { id: string; capacity: number; boundary?: Point[] }
 export interface TaskRoute {taskId:string;stepId:string;commandId:string;vehicleId:string;mapId:string;mapVersionId:string;mapDefinitionHash:string;nodeIds:string[];edgeIds:string[];vendorSites:string[];action:string}
-export interface WebMap { definitionHash?:string; id: string; version: string; name: string; unit: string; coordinateSystem: string; nodes: MapNode[]; edges: MapEdge[]; resources: MapResource[]; warnings: string[] }
+export interface WebMap { areaAnnotations?:import('./workbench').AreaAnnotation[]; definitionHash?:string; id: string; version: string; name: string; unit: string; coordinateSystem: string; nodes: MapNode[]; edges: MapEdge[]; resources: MapResource[]; warnings: string[] }
 export interface Vehicle { vehicleId: string; displayName: string; connection: string; quality: string; batteryPercent: number | null; currentStation: string | null;
   navigationState: string | null; x: number | null; y: number | null; angle: number | null; localizationConfidence: number | null;
   mapPositionState: string; mapPositionMessage: string; lastSuccessfulPollAt: string | null; updatedAt: string; blocked: boolean | null; emergencyStopped: boolean | null; charging?: boolean | null }

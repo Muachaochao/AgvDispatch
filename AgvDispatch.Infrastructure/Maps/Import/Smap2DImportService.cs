@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using AgvDispatch.Domain.Maps;
@@ -77,16 +78,26 @@ public sealed class Smap2DImportService
         foreach(var line in Items(root,"normalLineList",100000))Line(line.GetProperty("startPos"),line.GetProperty("endPos"),110,110,110);
         activePixels=annotationPixels;
         foreach(var line in Items(root,"advancedLineList",100000)){var geometry=line.GetProperty("line");Line(geometry.GetProperty("startPos"),geometry.GetProperty("endPos"),205,80,80);}
-        foreach(var area in Items(root,"advancedAreaList",10000))
+        var annotations=new List<MapAreaAnnotation>();
+        foreach(var area in Items(root,"advancedAreaList",2000))
         {
             var points=Items(area,"posGroup",10000);if(points.Length<3)throw new InvalidDataException("Smap区域少于3个顶点。");
             for(var i=0;i<points.Length;i++)Line(points[i],points[(i+1)%points.Length],50,120,180);
+            var sourceType=Text(area,"className");var label=Text(area,"desc");
+            try { label=new UTF8Encoding(false,true).GetString(Convert.FromBase64String(label)); }
+            catch(Exception ex) when(ex is FormatException or DecoderFallbackException) { warnings.Add("区域说明不是有效Base64 UTF-8，保留原文："+Text(area,"instanceName")); }
+            if(label.Length>2048)throw new InvalidDataException("Smap区域说明超过显示预算。");
+            uint Color(string key,uint fallback)=>area.TryGetProperty("attribute",out var attr)&&attr.TryGetProperty(key,out var c)&&c.TryGetUInt32(out var value)?value:fallback;
+            var pen=Color("colorPen",0xffff66dd);var brush=Color("colorBrush",0x20ff66dd);
+            annotations.Add(new("SMAP-AREA-"+annotations.Count,sourceType,string.IsNullOrWhiteSpace(label)?Text(area,"instanceName"):label,
+                points.Select(Translate).ToArray(),$"#{pen&0xffffff:x6}",$"#{brush&0xffffff:x6}",Math.Min(.25,((brush>>24)&255)/255d)) {SourceJson=area.GetRawText()});
+            if(sourceType!="AreaDescription")warnings.Add("高级区域仅显示标注，未启用其厂家行为："+sourceType+" / "+Text(area,"instanceName"));
         }
         if(Items(root,"primitiveList",20000).Length>0)warnings.Add("Primitive图元尚未转换，完整对象保留在源图。");
         var repeated=Items(root,"advancedCurveList",20000).GroupBy(c=>Text(c,"instanceName"),StringComparer.Ordinal).Where(g=>g.Count()>1);
         foreach(var group in repeated)warnings.Add($"源路径名称重复：{group.Key}，共{group.Count()}条；已全部保留，请核对后再发布。");
         warnings.Add("源路径direction、movestyle、速度及动作属性保留在原始文件，不自动转成调度动作；底图标注不自动作为交通管制资源。");
-        var definition=new MapDefinition(name+"（Smap预览）",retainedSource,"SmapWorldTranslated","m",nodes,edges,[]){ImportWarnings=warnings.ToArray(),EditorSettings=new(width,height,Math.Max(1,width/20),true,false,false)};
+        var definition=new MapDefinition(name+"（Smap预览）",retainedSource,"SmapWorldTranslated","m",nodes,edges,[]){AreaAnnotations=annotations,Layers=[new("navigation","导航图层"),new("vendor-annotations","厂家区域标注"){IsLocked=true,IsAllowSelect=false}],ImportWarnings=warnings.ToArray(),EditorSettings=new(width,height,Math.Max(1,width/20),true,false,false)};
         return new(definition,minX,minY,width,height,name,version,Convert.ToHexString(SHA256.HashData(bytes)),Convert.ToHexString(MD5.HashData(bytes)).ToLowerInvariant(),normal,warnings,pixels){ScanPixels=scanPixels,AnnotationPixels=annotationPixels};
     }
     public static void SaveBackground(Result result,string path)
@@ -108,7 +119,8 @@ public sealed class Smap2DImportService
             Nodes=preview.Definition.Nodes.Select(n=>n with {X=n.X+preview.OffsetX,Y=n.Y+preview.OffsetY,
                 Type=confirmedRoles[n.AgvSiteId!],Enabled=true}).ToArray(),
             Edges=preview.Definition.Edges.Select(e=>e with {Enabled=true,
-                ControlPoints=e.ControlPoints?.Select(RobotPoint).ToArray()}).ToArray()
+                ControlPoints=e.ControlPoints?.Select(RobotPoint).ToArray()}).ToArray(),
+            AreaAnnotations=preview.Definition.AreaAnnotations?.Select(a=>a with {Boundary=a.Boundary.Select(RobotPoint).ToArray()}).ToArray()
         };
         var validation=new MapValidationService().Validate(definition);
         if(!validation.IsValid)throw new InvalidDataException("运行图结构校验失败："+string.Join("；",validation.Issues.Where(i=>i.Severity==MapValidationSeverity.Error).Select(i=>i.Message)));

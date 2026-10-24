@@ -10,6 +10,24 @@ using AgvDispatch.Domain.Maps;
 using AgvDispatch.Domain.Tasks;
 using AgvDispatch.Infrastructure.Maps;
 
+if(args.Length==2&&args[0]=="--verify-areas")
+{
+ var bytes=File.ReadAllBytes(args[1]);var fieldPreview=new Smap2DImportService().Read(bytes,args[1]);
+ using var original=JsonDocument.Parse(bytes);var source=original.RootElement.GetProperty("advancedAreaList").EnumerateArray().ToArray();
+ var areas=fieldPreview.Definition.AreaAnnotations??[];
+ if(areas.Count!=source.Length||areas.Count!=5||fieldPreview.Definition.Resources.Count!=0)throw new Exception("Field region count or resource isolation differs");
+ for(var i=0;i<areas.Count;i++){
+   var expected=source[i].GetProperty("posGroup").EnumerateArray().ToArray();
+   for(var j=0;j<expected.Length;j++)if(Math.Abs(areas[i].Boundary[j].X+fieldPreview.OffsetX-expected[j].GetProperty("x").GetDouble())>1e-9||Math.Abs(areas[i].Boundary[j].Y+fieldPreview.OffsetY-expected[j].GetProperty("y").GetDouble())>1e-9)throw new Exception("Field region coordinate mismatch");
+ }
+ var path=Path.Combine(Path.GetTempPath(),Guid.NewGuid()+".json");
+ try { File.WriteAllText(path,JsonSerializer.Serialize(fieldPreview.Definition,new JsonSerializerOptions(JsonSerializerDefaults.Web){Converters={new System.Text.Json.Serialization.JsonStringEnumConverter()}}));
+   var copy=new MapImportService().Import(new(path));if(copy.AreaAnnotations?.Count!=5||copy.AreaAnnotations[0].Text!=areas[0].Text)throw new Exception("Normalized JSON lost areas");
+ } finally {File.Delete(path);}
+ Console.WriteLine("PASS field map: "+fieldPreview.OriginalMapName+"; "+fieldPreview.Definition.Nodes.Count+" stations; "+fieldPreview.Definition.Edges.Count+" paths; five display-only regions with exact coordinates and normalized JSON round-trip");
+ foreach(var fieldArea in areas)Console.WriteLine(fieldArea.Text);return;
+}
+
 if(args.Length==3&&args[0]=="--prepare-runtime")
 {
  var parsed=new Smap2DImportService().Read(File.ReadAllBytes(args[1]),Path.GetFullPath(args[1]));
@@ -35,6 +53,18 @@ foreach(var pair in new[]{("LM1","LM2",0,1),("LM2","LM1",1,0)})((JsonArray)fixtu
  ["controlPos2"]=new JsonObject{["x"]=pair.Item3==0?2.0/3:1.0/3,["y"]=0}
 });
 var imported=new Smap2DImportService().Read(JsonSerializer.SerializeToUtf8Bytes(fixture),"synthetic");
+var areaFixture=fixture.DeepClone();
+areaFixture["advancedAreaList"]=JsonNode.Parse("""[{"className":"AreaDescription","instanceName":"01","desc":"Q05D5bel5L2NQeWMug==","posGroup":[{"x":-1,"y":-1},{"x":2,"y":-1},{"x":2,"y":2},{"x":-1,"y":2}],"attribute":{"colorPen":4294902015,"colorBrush":4294901845}}]""");
+var withAreas=new Smap2DImportService().Read(JsonSerializer.SerializeToUtf8Bytes(areaFixture),"synthetic-area");
+var area=withAreas.Definition.AreaAnnotations!.Single();
+Check(area.Text=="CNC工位A区"&&area.StrokeColor=="#ff00ff"&&area.SourceType=="AreaDescription","SMAP area description decodes Chinese and retains colors/type");
+Check(area.Boundary[0].X+withAreas.OffsetX==-1&&area.SourceJson.Contains("posGroup")&&withAreas.Definition.Resources.Count==0,"Area boundaries translated with stations; source retained without generating traffic locks");
+var areaRuntime=Smap2DImportService.PrepareRobotWorldRuntime(withAreas,withAreas.Definition.Nodes.ToDictionary(n=>n.AgvSiteId!,_=>MapNodeType.WaitingPoint));
+Check(areaRuntime.AreaAnnotations![0].Boundary[0]==new MapPoint2D(-1,-1),"Robot-world preparation transforms area boundaries back with nodes");
+var areaCopy=JsonSerializer.Deserialize<MapDefinition>(JsonSerializer.Serialize(areaRuntime))!;
+Check(areaCopy.AreaAnnotations!.Single().Text==area.Text&&MapVersionDiffer.Compare(imported.Definition,withAreas.Definition).Any(d=>d.ObjectType=="厂家区域标注"),"Area annotations survive serialization and appear in version differences");
+Check(!JsonSerializer.Serialize(imported.Definition with{AreaAnnotations=null}).Contains("AreaAnnotations"),"Legacy maps omit absent annotations, preserving existing serialized fingerprints");
+Check(!new MapValidationService().Validate(withAreas.Definition with{AreaAnnotations=[area with{FillOpacity=2}]}).IsValid,"Malformed area opacity is rejected before save/publish");
 Check(imported.Definition.Nodes.Count==2&&imported.Definition.Edges.Count==2,"DegenerateBezier preserves both directed entries");
 Check(imported.Definition.Edges.All(e=>e.GeometryKind==MapEdgeGeometryKind.CubicBezier&&!e.Enabled&&!e.Bidirectional),"Controls and conservative disabled state retained");
 Check(imported.Definition.Nodes.Single(n=>n.AgvSiteId=="LM1").X+imported.OffsetX==0,"Original robot coordinates recover exactly from display offset");

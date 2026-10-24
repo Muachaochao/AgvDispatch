@@ -21,6 +21,8 @@ public static class MapVersionDiffer
         CompareObjects(baseline.Nodes, draft.Nodes, node => node.Id, NodeFingerprint, "节点", result);
         CompareObjects(baseline.Edges, draft.Edges, edge => edge.Id, EdgeFingerprint, "路段", result);
         CompareObjects(baseline.Resources, draft.Resources, resource => resource.Id, ResourceFingerprint, "交通资源", result);
+        CompareObjects(baseline.AreaAnnotations??[], draft.AreaAnnotations??[], area => area.Id,
+            area => System.Text.Json.JsonSerializer.Serialize(area), "厂家区域标注", result);
         return result.OrderBy(item => item.ObjectType, StringComparer.Ordinal)
             .ThenBy(item => item.ObjectId, StringComparer.OrdinalIgnoreCase)
             .ToArray();

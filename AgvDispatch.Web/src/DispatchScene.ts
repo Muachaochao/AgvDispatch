@@ -6,6 +6,7 @@ import { mayPlot } from './state';
 import { vehicleCategory } from './dashboard';
 import type {TrafficFocus} from './traffic-focus';
 import './scene-labels.css';
+import {annotationLabel} from './area-annotations';
 
 const VEHICLE_COLORS: Record<string, string> = {
   running: '#21dca3', waiting: '#eeb85c', idle: '#ad8aeb', charging: '#5aaee8',
@@ -153,11 +154,22 @@ export class DispatchScene {
     if (!map?.nodes.length) return;
     let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
     const add=(p:{x:number;y:number})=>{if(!Number.isFinite(p.x)||!Number.isFinite(p.y))return;minX=Math.min(minX,p.x);maxX=Math.max(maxX,p.x);minY=Math.min(minY,-p.y);maxY=Math.max(maxY,-p.y);};
-    map.nodes.forEach(add);map.edges.forEach(e=>e.points.forEach(add));map.resources.forEach(r=>r.boundary?.forEach(add));if(!Number.isFinite(minX))return;
+    map.nodes.forEach(add);map.edges.forEach(e=>e.points.forEach(add));map.resources.forEach(r=>r.boundary?.forEach(add));map.areaAnnotations?.forEach(a=>a.boundary.forEach(add));if(!Number.isFinite(minX))return;
     this.center.set((minX + maxX) / 2, 0, (minY + maxY) / 2);
     this.span = Math.max(maxX - minX, maxY - minY, 15);
     const grid = new THREE.GridHelper(Math.ceil(this.span * 1.5), 30, '#294258', '#1b2d40');
     grid.position.copy(this.center); grid.position.y = -0.12; this.mapGroup.add(grid);
+
+    for(const area of map.areaAnnotations??[]){
+      if(area.boundary.length<3)continue;
+      const shape=new THREE.Shape(area.boundary.map(p=>new THREE.Vector2(p.x,p.y)));
+      const mesh=new THREE.Mesh(new THREE.ShapeGeometry(shape),new THREE.MeshBasicMaterial({color:area.fillColor,transparent:true,opacity:area.fillOpacity,side:THREE.DoubleSide,depthWrite:false}));
+      mesh.rotation.x=-Math.PI/2;mesh.position.y=-.08;this.mapGroup.add(mesh);
+      const points=[...area.boundary,area.boundary[0]!].map(p=>new THREE.Vector3(p.x,-.06,-p.y));
+      this.mapGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(points),new THREE.LineBasicMaterial({color:area.strokeColor})));
+      const position=annotationLabel(area),label=this.makeSceneLabel(area.text,'station');
+      label.anchor.set(position.x,.02,-position.y);label.element.style.color=area.strokeColor;label.element.classList.add('vendor-area');this.stationLabels.push(label);
+    }
 
     for (const edge of map.edges) {
       const group = makePathObject(edge.id, edge.points.map(p => ({ x: p.x, y: 0, z: -p.y })), edge.enabled ? 0x3e8da8 : 0x455365);

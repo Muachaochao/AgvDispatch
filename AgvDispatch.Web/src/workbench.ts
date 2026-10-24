@@ -2,7 +2,8 @@ import type {VendorPath,VendorSource} from './vendor-path.ts';
 export interface Node { id: string; x: number; y: number; type: string; enabled: boolean; resourceIds: string[]; agvSiteId: string | null; layerId?: string }
 export interface Edge { vendorPath?:VendorPath|null; id: string; from: string; to: string; distance: number; speedLimit: number; enabled: boolean; bidirectional: boolean; resourceIds: string[]; geometryKind: string; controlPoints?: {x:number;y:number}[] | null; layerId?: string }
 export interface Resource { id: string; type: string; capacity: number; boundary?: {x:number;y:number}[] | null; layerId?: string }
-export interface Definition { robokitSource?:VendorSource|null; name: string; source: string; coordinateSystem: string; unit: string; nodes: Node[]; edges: Edge[]; resources: Resource[]; [key:string]:unknown }
+export interface AreaAnnotation {id:string;sourceType:string;text:string;boundary:{x:number;y:number}[];strokeColor:string;fillColor:string;fillOpacity:number;layerId?:string;sourceJson?:string}
+export interface Definition { areaAnnotations?:AreaAnnotation[]; robokitSource?:VendorSource|null; name: string; source: string; coordinateSystem: string; unit: string; nodes: Node[]; edges: Edge[]; resources: Resource[]; [key:string]:unknown }
 export interface SceneItem { id: string; name: string; kind: 'area'|'equipment'|'text'; x:number; y:number; width:number; height:number; color:string; visible:boolean; layerId?:string }
 export interface VehicleConfig { vehicleId:string; displayName:string; ipAddress:string; port:number; navigationPort:number; enabled:boolean }
 export interface Plan { schema:'agv-web-plan'; version:1; id:string; name:string; updatedAt:string; definition:Definition; scene:SceneItem[]; vehicles:VehicleConfig[]; waypoints:string[] }
@@ -15,6 +16,10 @@ export function validateDefinition(d:Definition):string[] {
   if(!d || !Array.isArray(d.nodes)||!Array.isArray(d.edges)||!Array.isArray(d.resources))return ['缺少nodes、edges或resources数组'];
   if(!name(d.name)||!name(d.coordinateSystem)||d.unit!=='m')errors.push('地图名称、坐标系必填；当前Web编辑使用米制');
   if(d.nodes.length>5000||d.edges.length>10000||d.resources.length>2000)return ['地图超出Web编辑预算'];
+  if(d.areaAnnotations!==undefined){
+    if(!Array.isArray(d.areaAnnotations)||d.areaAnnotations.length>2000)errors.push('厂家区域标注列表无效');
+    else for(const a of d.areaAnnotations)if(!a||!name(a.id)||typeof a.text!=='string'||a.text.length>2048||!Array.isArray(a.boundary)||a.boundary.length<3||a.boundary.length>10000||a.boundary.some(p=>!p||!finite(p.x)||!finite(p.y))||!/^#[0-9a-f]{6}$/i.test(a.strokeColor)||!/^#[0-9a-f]{6}$/i.test(a.fillColor)||!finite(a.fillOpacity)||a.fillOpacity<0||a.fillOpacity>1)errors.push('厂家区域标注边界或显示属性无效');
+  }
   if(d.layers!==undefined){
     if(!Array.isArray(d.layers)||d.layers.length>200)errors.push('图层列表无效或超过200层');
     else {const ids=new Set<string>();for(const layer of d.layers){if(!layer||!name(layer.id)||!name(layer.name)||ids.has(layer.id.toLowerCase())||['visible','isLocked','isAllowSelect'].some(key=>layer[key]!==undefined&&typeof layer[key]!=='boolean')||(layer.alpha!==undefined&&(!finite(layer.alpha)||layer.alpha<0||layer.alpha>1))||(layer.strokeWidth!==undefined&&(!finite(layer.strokeWidth)||layer.strokeWidth<=0)))errors.push('图层编号、名称或显示设置无效');else ids.add(layer.id.toLowerCase());}}
