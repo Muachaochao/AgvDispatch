@@ -38,7 +38,8 @@ public static class Program
         var map=new ActiveMapRuntime();map.Replace(new("MAP","V1",new MapDefinition("test","","world","m",[],[],[]),DateTimeOffset.Now));
         var path=Path.Combine(root,"communication-settings.json");
         File.WriteAllText(path,JsonSerializer.Serialize(new CommunicationSettingsDocument(1,"old",new(){Plcs=config.Plcs,Agvs=config.Agvs},[])));
-        var service=new CommunicationSettingsService(path,root,config,fleet,new Tasks(),NullLogger<CommunicationSettingsService>.Instance,map);
+        var gate=new MapExecutionGate();using(var control=Await(gate.EnterControlAsync(default).AsTask()))gate.SetMode(MapExecutionMode.Running);
+        var service=new CommunicationSettingsService(path,root,config,fleet,new Tasks(),NullLogger<CommunicationSettingsService>.Instance,gate,map);
         var user=TrafficUserContext.LocalOperation("sim-operator");
         var current=Await(service.GetAsync(user,default));
         Check(current.Saved.MapBindings?.Count==1,"旧保存文件缺字段继承原appsettings绑定");

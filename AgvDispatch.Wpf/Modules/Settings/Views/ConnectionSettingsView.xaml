@@ -27,6 +27,7 @@
         </DockPanel>
         <Border Grid.Row="1" Background="{DynamicResource MutedSurfaceBrush}" CornerRadius="6" Padding="12" Margin="0,14,0,12">
             <StackPanel><TextBlock Text="{Binding ApplyStatus}" FontWeight="SemiBold" />
+                <TextBlock Text="保存仅写入连接配置，重启后台后生效；启动恢复尚未放行时也可保存。实际地图切换中或存在未结束业务任务时不能保存。" TextWrapping="Wrap" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,4,0,0" />
                 <TextBlock Text="采集启用不等于允许写入或派车。TCP测试不发送协议报文；实际协议和点位质量请看通信诊断。" TextWrapping="Wrap" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,4,0,0" /></StackPanel>
         </Border>
         <TabControl Grid.Row="2">
@@ -64,6 +65,8 @@
                                 <TextBlock Text="Rack / Slot（留空使用驱动默认值）" Style="{StaticResource SettingLabel}" />
                                 <UniformGrid Columns="2"><TextBox Text="{Binding SelectedPlc.Rack, UpdateSourceTrigger=PropertyChanged, ValidatesOnExceptions=True}" Margin="0,0,5,0" /><TextBox Text="{Binding SelectedPlc.Slot, UpdateSourceTrigger=PropertyChanged, ValidatesOnExceptions=True}" /></UniformGrid>
                                 <TextBlock Text="CSV点表路径（后台config目录）" Style="{StaticResource SettingLabel}" /><TextBox Text="{Binding SelectedPlc.SignalCsvPath, UpdateSourceTrigger=PropertyChanged}" ToolTip="例如 config/plc-signals.csv；多PLC需分别准备点表，工位编号不可重复。" />
+                                <TextBlock Text="启用采集前，需填写后台 config 目录内的“后台用点表 CSV”，例如 config/plc-signals.csv。" TextWrapping="Wrap" Foreground="{DynamicResource TextSecondaryBrush}" FontSize="12" Margin="0,6,0,0" />
+                                <TextBlock Text="模拟 PLC：从联调台“连接与点表”页导出。工具配置 JSON 和“完整会话 CSV”不能作为点表。" TextWrapping="Wrap" Foreground="{DynamicResource TextSecondaryBrush}" FontSize="12" Margin="0,4,0,0" />
                                 <TextBlock Text="轮询周期 ms" Style="{StaticResource SettingLabel}" /><TextBox Text="{Binding SelectedPlc.PollIntervalMs, UpdateSourceTrigger=PropertyChanged, ValidatesOnExceptions=True}" />
                                 <TextBlock Text="连接 / 接收超时 ms" Style="{StaticResource SettingLabel}" />
                                 <UniformGrid Columns="2"><TextBox Text="{Binding SelectedPlc.ConnectTimeoutMs, UpdateSourceTrigger=PropertyChanged, ValidatesOnExceptions=True}" Margin="0,0,5,0" /><TextBox Text="{Binding SelectedPlc.ReceiveTimeoutMs, UpdateSourceTrigger=PropertyChanged, ValidatesOnExceptions=True}" /></UniformGrid>

@@ -5,5 +5,6 @@
     <ProjectReference Include="../../AgvDispatch.Connectors.Plc/AgvDispatch.Connectors.Plc.csproj" />
     <ProjectReference Include="../../AgvDispatch.Connectors.Agv/AgvDispatch.Connectors.Agv.csproj" />
     <Compile Include="../../AgvDispatch.Service/Modules/Settings/CommunicationSettingsService.cs" Link="CommunicationSettingsService.cs" />
+    <Compile Include="../../AgvDispatch.Infrastructure/Maps/Runtime/MapExecutionGate.cs" Link="MapExecutionGate.cs" />
   </ItemGroup>
 </Project>

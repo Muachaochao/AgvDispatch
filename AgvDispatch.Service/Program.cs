@@ -92,7 +92,8 @@ CommunicationSettingsService.ApplyAgv(communicationConfig, agvOptions);
 builder.Services.AddSingleton<ICommunicationSettingsService>(provider => new CommunicationSettingsService(
     communicationSettingsPath, AppContext.BaseDirectory, communicationConfig, plcFleet,
     provider.GetRequiredService<IActiveTaskLookup>(),
-    provider.GetRequiredService<ILogger<CommunicationSettingsService>>(), provider.GetRequiredService<IActiveMapRuntime>()));
+    provider.GetRequiredService<ILogger<CommunicationSettingsService>>(), provider.GetRequiredService<IMapExecutionGate>(),
+    provider.GetRequiredService<IActiveMapRuntime>()));
 builder.Services.AddSingleton(agvOptions);
 builder.Services.AddSingleton<AgvStateCache>();
 builder.Services.AddSingleton<IAgvStateCache>(

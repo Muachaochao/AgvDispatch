@@ -4,6 +4,7 @@ using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
+using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Wpf.Services;
 using AgvDispatch.Wpf.ViewModels;
 using AgvDispatch.Wpf.Views;
@@ -25,11 +26,27 @@ internal static class Program
         Require(vm.CanManage, "connection management permission");
         if (!args.Contains("--after-restart"))
         {
+            var recoveryBeforeTask = client.GetExecutionRecoveryAsync(CancellationToken.None);
+            var mapBeforeTask = client.GetMapSwitchAsync(CancellationToken.None);
+            Pump(() => recoveryBeforeTask.IsCompleted && mapBeforeTask.IsCompleted);
+            var recoveryBefore = recoveryBeforeTask.GetAwaiter().GetResult();
+            var mapBefore = mapBeforeTask.GetAwaiter().GetResult();
+            Require(mapBefore.Mode == MapExecutionMode.Running, "settings fixture is not switching maps");
+            Require(!args.Contains("--recovery-closed") || !recoveryBefore.Released,
+                "--recovery-closed fixture starts with the recovery barrier closed");
             vm.AddPlcCommand.Execute(); vm.SelectedPlc!.DisplayName = "测试第二台PLC";
             vm.AddAgvCommand.Execute(); vm.SelectedAgv!.DisplayName = "测试第六台AGV";
             vm.SaveCommand.Execute(); Pump(() => !vm.IsBusy);
             Require(vm.Snapshot!.RestartRequired && vm.Plcs.Count == 2 && vm.Agvs.Count == 6, "save multiple profiles through API");
             Require(vm.Snapshot.PlcConnections.Count == 1, "save does not change runtime connections");
+            var recoveryAfterTask = client.GetExecutionRecoveryAsync(CancellationToken.None);
+            var mapAfterTask = client.GetMapSwitchAsync(CancellationToken.None);
+            Pump(() => recoveryAfterTask.IsCompleted && mapAfterTask.IsCompleted);
+            var recoveryAfter = recoveryAfterTask.GetAwaiter().GetResult();
+            var mapAfter = mapAfterTask.GetAwaiter().GetResult();
+            Require(recoveryAfter.Released == recoveryBefore.Released && recoveryAfter.SessionId == recoveryBefore.SessionId,
+                "saving configuration preserves recovery release state and session");
+            Require(mapAfter.Mode == MapExecutionMode.Running, "saving configuration preserves running map mode");
         }
         else
         {

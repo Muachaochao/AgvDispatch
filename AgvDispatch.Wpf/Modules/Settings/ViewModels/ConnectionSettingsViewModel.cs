@@ -76,7 +76,7 @@ public sealed partial class ConnectionSettingsViewModel : BindableBase, INavigat
     public bool CanSave => !IsBusy && CanManage && Configuration is not null;
     public string Message { get => _message; private set => SetProperty(ref _message, value); }
     public string ApplyStatus => Snapshot is null ? "尚未连接后台" : Snapshot.RestartRequired
-        ? "已保存待应用：重启 Windows Service 后生效" : "保存配置与当前运行配置一致";
+        ? "已保存待应用：重启当前连接的后台后生效" : "保存配置与当前运行配置一致";
     public bool IsBusy { get => _isBusy; private set { SetProperty(ref _isBusy, value); UpdateCommands(); } }
     public void ReportValidationError()
     {

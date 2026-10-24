@@ -19,7 +19,6 @@ public sealed class TrafficControlNamedPipeServer(
     IAgvTrackStore tracks,
     IMapManagementService maps,
     IMapSwitchService mapSwitches,
-    IMapExecutionGate executionGate,
     IExecutionRecoveryService recovery,
     ISystemStatusSnapshotService systemStatus,
     IDeviceMonitoringService deviceMonitoring,
@@ -45,24 +44,6 @@ public sealed class TrafficControlNamedPipeServer(
         await database.InitializeAsync(cancellationToken);
         if(mapTransfers is not null)await mapTransfers.InitializeAsync(cancellationToken);
         await base.StartAsync(cancellationToken);
-    }
-
-    private async Task<CommunicationSettingsSnapshot> SaveCommunicationSettingsGuardedAsync(
-        TrafficUserContext user, SaveCommunicationSettingsRequest request, CancellationToken cancellationToken)
-    {
-        var current=await communicationSettings.GetAsync(user,cancellationToken);
-        if(CommunicationSettingsService.OnlyMapBindingsDiffer(current.Saved,request.Configuration))
-        {
-            // Persist coordinate evidence while startup execution recovery remains
-            // closed. No device endpoint/switch may change and this does not
-            // update the live bindings or release any execution barrier.
-            using var control=await executionGate.EnterControlAsync(cancellationToken);
-            if(executionGate.Mode!=MapExecutionMode.Running)throw new InvalidOperationException("请先完成原地图切换，再保存地图绑定。");
-            return await communicationSettings.SaveAsync(user,request,cancellationToken);
-        }
-        using var execution = await executionGate.EnterAsync(MapExecutionOperation.NewWork, cancellationToken);
-        if (execution is null) throw new InvalidOperationException("地图切换期间不能修改通信配置。");
-        return await communicationSettings.SaveAsync(user, request, cancellationToken);
     }
 
     // Map drafts can contain hundreds of stations and thousands of edges.
@@ -194,7 +175,7 @@ public sealed class TrafficControlNamedPipeServer(
             "DecideExecutionRecovery" => Success(await recovery.DecideAsync(user, Deserialize<RecoveryDecisionRequest>(request.Payload), cancellationToken)),
             "ReleaseExecutionRecovery" => Success(await recovery.ReleaseAsync(user, Deserialize<RecoveryReleaseRequest>(request.Payload), cancellationToken)),
             TrafficControlOperations.GetCommunicationSettings => Success(await communicationSettings.GetAsync(user, cancellationToken)),
-            TrafficControlOperations.SaveCommunicationSettings => Success(await SaveCommunicationSettingsGuardedAsync(user,
+            TrafficControlOperations.SaveCommunicationSettings => Success(await communicationSettings.SaveAsync(user,
                 Deserialize<SaveCommunicationSettingsRequest>(request.Payload), cancellationToken)),
             TrafficControlOperations.ProbeConnection => Success(await communicationSettings.ProbeAsync(user,
                 Deserialize<ConnectionProbeRequest>(request.Payload), cancellationToken)),

@@ -21,14 +21,16 @@ public sealed class CommunicationSettingsService : ICommunicationSettingsService
     private readonly PlcFleet _fleet;
     private readonly ILogger<CommunicationSettingsService> _logger;
     private readonly IActiveTaskLookup _tasks;
+    private readonly IMapExecutionGate _executionGate;
     private readonly IActiveMapRuntime? _maps;
     private CommunicationSettingsDocument _saved;
 
     public CommunicationSettingsService(string path, string baseDirectory, CommunicationConfiguration active,
-        PlcFleet fleet, IActiveTaskLookup tasks, ILogger<CommunicationSettingsService> logger, IActiveMapRuntime? maps = null)
+        PlcFleet fleet, IActiveTaskLookup tasks, ILogger<CommunicationSettingsService> logger,
+        IMapExecutionGate executionGate, IActiveMapRuntime? maps = null)
     {
         _path = path; _baseDirectory = baseDirectory; _active = active; _fleet = fleet; _logger = logger;
-        _tasks = tasks; _maps=maps;
+        _tasks = tasks; _executionGate = executionGate; _maps=maps;
         _saved = ReadDocument(path) ?? new(1, "initial", active, []);
         _saved.Configuration.MapBindings ??= Clone(active).MapBindings ?? [];
     }
@@ -187,6 +189,16 @@ public sealed class CommunicationSettingsService : ICommunicationSettingsService
     public async Task<CommunicationSettingsSnapshot> SaveAsync(TrafficUserContext user, SaveCommunicationSettingsRequest request, CancellationToken cancellationToken)
     {
         if (!user.Has(TrafficPermission.ManageConnections)) throw new UnauthorizedAccessException("无通信配置管理权限。");
+        // This writes the next-start configuration, not live device settings or new work.
+        // Serialize with map switching without requiring startup execution recovery to open.
+        using var control = await _executionGate.EnterControlAsync(cancellationToken);
+        if (_executionGate.Mode != MapExecutionMode.Running)
+            throw new InvalidOperationException(_executionGate.Mode switch
+            {
+                MapExecutionMode.Starting => "后台地图尚未初始化，暂不能保存通信配置；请等待后台就绪后重试。",
+                MapExecutionMode.Draining => "地图切换正在收尾，暂不能保存通信配置；请先完成原地图切换。",
+                _ => "地图切换保持暂停，暂不能保存通信配置；请在地图管理中复核并完成原切换。"
+            });
         await _gate.WaitAsync(cancellationToken);
         try
         {
