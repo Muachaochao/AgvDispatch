@@ -7,7 +7,7 @@ using AgvDispatch.Domain.Tasks;
 
 namespace AgvDispatch.Service;
 
-public sealed class BusinessRunPort(IManualTaskCreationService manual, ITaskCenterQueryService tasks,
+public sealed partial class BusinessRunPort(IManualTaskCreationService manual, ITaskCenterQueryService tasks,
     IPlcSignalCache signals, IAgvStateCache vehicles, IActiveMapRuntime map, IMapExecutionGate gate,
     TaskParameterRuntime parameters, DispatchTaskCreationOptions creation, DispatchOrchestratorOptions dispatch,
     DispatchTaskStepOptions steps, PlcCycleTestOptions isolated, IAgvGateway gateway,
@@ -230,6 +230,15 @@ public sealed class BusinessRunPort(IManualTaskCreationService manual, ITaskCent
     public async Task SimulatorAsync(BusinessRunRecord run, bool stop, CancellationToken ct)
     {
         if (!simulatorOnly) throw new InvalidOperationException("循环呼叫不能连接正式PLC。");
+        if (!stop)
+        {
+            using var probe = new HttpRequestMessage(HttpMethod.Get, "capabilities");
+            probe.Headers.Add("X-Agv-Lab-Control", "business-run-v1");
+            using var capabilities = await lab.SendAsync(probe, ct);
+            if (!capabilities.IsSuccessStatusCode ||
+                (await capabilities.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>(ct)).GetProperty("boxFeedbackContract").GetString() != "business-box-action-v1")
+                throw new InvalidOperationException("请先启动1.5.1及以上PLC联调台；旧工具没有原动作箱体反馈，未发出循环呼叫。");
+        }
         using var request = new HttpRequestMessage(HttpMethod.Post, "cycle")
         { Content = JsonContent.Create(new { runId = run.RunId, stations = run.Plan.Stations, rounds = run.Plan.Rounds, stop }) };
         request.Headers.Add("X-Agv-Lab-Control", "business-run-v1");

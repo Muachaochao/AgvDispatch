@@ -5,7 +5,7 @@ Push-Location $workspace
 try {
     $commit = (& git rev-parse HEAD).Trim()
     if ($LASTEXITCODE -ne 0) { throw 'Cannot identify source revision.' }
-    $documents = @('28阶段统一执行与联调-20261021.md','PLC测试工具优化与28阶段回归-20261022.md','PLC测试工具会话回看与证据导出-20261022.md','PLC测试工具界面优化-20261024.md')
+    $documents = @('28阶段统一执行与联调-20261021.md','PLC测试工具优化与28阶段回归-20261022.md','PLC测试工具会话回看与证据导出-20261022.md','PLC测试工具界面优化-20261024.md','循环模拟箱体原动作反馈-20261025.md')
     # This self-contained project has no project references. Require its complete source,
     # verification source, packaged docs and inherited build configuration to match HEAD;
     # unrelated main-application edits are not inputs to this independent carrying package.

@@ -88,6 +88,8 @@ public sealed record PointState(PointMapping Mapping, bool Value, DateTimeOffset
     DateTimeOffset? HostAccessedAt = null, string HostAccess = "尚未交换");
 public sealed record StageTestResult(DateTimeOffset Time, string Station, int Round, int Stage, string Outcome,
     string Vehicle, string TaskId, string Note, string Differences, string Snapshot);
+public sealed record CycleTransportFeedback(string RunId, int CallIndex, string Station, string TaskId,
+    string VehicleId, string StepId, string VendorTaskId, string Action, DateTimeOffset ObservedAt);
 public sealed record CommunicationStatus(bool Fresh, string Label)
 {
     public const double MaxAgeSeconds = 3;
@@ -120,6 +122,9 @@ public sealed class NetworkLab : IDisposable
     private bool _callOutstanding;
     private bool _sawRemoved;
     private bool _sawPlaced;
+    private string? _feedbackTask;
+    private string? _feedbackVehicle;
+    private CycleTransportFeedback? _pickupFeedback, _placeFeedback;
     public string CallPlanStatus { get { lock (_gate) return _callRun is null ? "未启动循环呼叫" :
         $"循环呼叫 {_callCompleted}/{_callLimit} 次工位任务 · {(_stopCalls ? "停止新增，等待闭合" : "运行中")}"; } }
 
@@ -154,6 +159,8 @@ public sealed class NetworkLab : IDisposable
             SetAutomatic(true);
             _callRun = runId; _callStations = stations.ToArray(); _callLimit = rounds * stations.Length;
             _callCompleted = 0; _stopCalls = false; _sawRemoved = _sawPlaced = false;
+            _feedbackTask = _feedbackVehicle = null;
+            _pickupFeedback = _placeFeedback = null;
             Record("启动循环呼叫", "", "", "", "", $"{runId}；{string.Join("→", stations)}；{rounds}轮；P箱体反馈为模拟值，非物理证据。");
         }
     }
@@ -165,12 +172,12 @@ public sealed class NetworkLab : IDisposable
         if (Get(station, 10) || !Get(station, 11) || Get(NetworkLabConfig.Shared, 12)) return;
         if (_callOutstanding)
         {
-            if (Get(station, 3)) { _sawRemoved = true; Set(Find(station, 1), false, "循环模拟取箱，非物理反馈"); }
-            if (_sawRemoved && Get(station, 5)) { _sawPlaced = true; Set(Find(station, 1), true, "循环模拟返箱，非物理反馈"); }
             if (!_sawPlaced || !_sawRemoved || Get(station, 0) || _permit ||
                 Config.Points.Any(p => p.Owner == "H" && Get(p.Station, p.Signal)) ||
                 Enumerable.Range(6, 4).Any(s => Get(NetworkLabConfig.Shared, s))) return;
             _callCompleted++; _callOutstanding = false; _sawRemoved = _sawPlaced = false;
+            _feedbackTask = _feedbackVehicle = null;
+            _pickupFeedback = _placeFeedback = null;
             Record("循环握手闭合", station, "", "", "", $"已闭合{_callCompleted}/{_callLimit}；仅PLC侧证据，任务完成由调度核验。");
             return;
         }
@@ -179,6 +186,55 @@ public sealed class NetworkLab : IDisposable
             Config.Points.Any(p => p.Signal == 0 && Get(p.Station, p.Signal)) || _permit ||
             Enumerable.Range(6, 4).Any(s => Get(NetworkLabConfig.Shared, s))) return;
         Set(Find(station, 0), true, "循环产生满箱呼叫"); _callOutstanding = true;
+    }
+
+    public void ApplyTransportFeedback(CycleTransportFeedback feedback)
+    {
+        lock (_gate)
+        {
+            var now = DateTimeOffset.UtcNow;
+            if (feedback.RunId != _callRun || !_callOutstanding || feedback.CallIndex != _callCompleted ||
+                feedback.Station != _callStations[_callCompleted % _callStations.Length] ||
+                !_automatic || !_communicationHealthy || _recoveryReason is not null ||
+                Get(feedback.Station, 10) || !Get(feedback.Station, 11) || Get(NetworkLabConfig.Shared, 12))
+                throw new InvalidOperationException("动作反馈与当前有效循环/工位/次序不符，或存在恢复/联锁门禁。");
+            if (new[] { feedback.TaskId, feedback.VehicleId, feedback.StepId, feedback.VendorTaskId }.Any(s => string.IsNullOrWhiteSpace(s) || s.Length > 160) ||
+                feedback.ObservedAt > now || now - feedback.ObservedAt > TimeSpan.FromSeconds(5) || feedback.Action is not ("Pickup" or "Place"))
+                throw new ArgumentException("动作反馈身份、种类或新鲜度无效。");
+            if (_feedbackTask is not null && (_feedbackTask != feedback.TaskId || _feedbackVehicle != feedback.VehicleId))
+                throw new InvalidOperationException("动作反馈不属于本次呼叫绑定的原任务/车辆。");
+            if (feedback.Action == "Pickup")
+            {
+                if (_sawRemoved)
+                {
+                    if (_pickupFeedback?.StepId != feedback.StepId || _pickupFeedback.VendorTaskId != feedback.VendorTaskId)
+                        throw new InvalidOperationException("取箱重试与原动作身份不符。");
+                    return;
+                }
+                if (Get(feedback.Station, 0) || !Get(feedback.Station, 2) || Get(feedback.Station, 3))
+                    throw new InvalidOperationException("取箱反馈要求本轮已受理且撤呼叫；不接受事后H通知倒推取箱。");
+                _feedbackTask = feedback.TaskId; _feedbackVehicle = feedback.VehicleId;
+                Record("循环动作证据", feedback.Station, "", "", "", System.Text.Json.JsonSerializer.Serialize(feedback));
+                Set(Find(feedback.Station, 1), false, "循环按原取箱动作成功模拟无箱（非传感器反馈）");
+                _sawRemoved = true;
+                _pickupFeedback = feedback;
+            }
+            else
+            {
+                if (!_sawRemoved || _feedbackTask is null || !Get(feedback.Station, 4))
+                    throw new InvalidOperationException("放箱反馈须属于本轮已取箱且仍保持返箱责任的原任务。");
+                if (_sawPlaced)
+                {
+                    if (_placeFeedback?.StepId != feedback.StepId || _placeFeedback.VendorTaskId != feedback.VendorTaskId)
+                        throw new InvalidOperationException("放箱重试与原动作身份不符。");
+                    return;
+                }
+                Record("循环动作证据", feedback.Station, "", "", "", System.Text.Json.JsonSerializer.Serialize(feedback));
+                Set(Find(feedback.Station, 1), true, "循环按原放箱动作成功模拟有箱（非传感器反馈）");
+                _sawPlaced = true;
+                _placeFeedback = feedback;
+            }
+        }
     }
     private bool _permit;
     private long? _dumpSince;

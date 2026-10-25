@@ -168,6 +168,7 @@ Check(!owner.IsRetired(chainId), "existing send chain is never fenced as an unac
 var unacceptedId = Guid.NewGuid().ToString("N");
 var reviewed = await realPort.RetireUnacceptedAsync(pendingRun with { PendingRequestId = unacceptedId }, default);
 Check(reviewed.PendingRequestId is null && owner.IsRetired(unacceptedId), "only absent receipt and absent send chain produce a durable fence");
+checks += FeedbackTests.Run();
 Console.WriteLine($"BusinessRunSmokeTest passed {checks} checks. Fake ports only; no PLC or AGV commands.");
 
 sealed class ReceiptStore : IManualTaskCreationRepository

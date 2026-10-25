@@ -19,6 +19,7 @@ public interface IBusinessRunPort
     Task<string> CreateAsync(BusinessRunRecord run, string station, string requestId, CancellationToken ct);
     Task<string> ReturnAsync(BusinessRunRecord run, CancellationToken ct);
     Task SimulatorAsync(BusinessRunRecord run, bool stop, CancellationToken ct);
+    Task SimulatorFeedbackAsync(BusinessRunRecord run, CancellationToken ct) => Task.CompletedTask;
     Task ReleaseReturnAsync(BusinessRunRecord run, CancellationToken ct);
     Task<BusinessRunRecord> ReconcileAsync(BusinessRunRecord run, CancellationToken ct) => Task.FromResult(run);
     Task<BusinessRunRecord> RetireUnacceptedAsync(BusinessRunRecord run, CancellationToken ct) => Task.FromResult(run);

@@ -26,11 +26,18 @@ public sealed class LabControlServer(NetworkLab lab, int port = 10201) : IAsyncD
             try
             {
                 var request = context.Request;
-                if (request.HttpMethod != "POST" || request.Url?.AbsolutePath != "/cycle" ||
+                var capabilities = request.HttpMethod == "GET" && request.Url?.AbsolutePath == "/capabilities";
+                if ((!capabilities && (request.HttpMethod != "POST" || request.Url?.AbsolutePath is not ("/cycle" or "/cycle-feedback"))) ||
                     request.Headers["X-Agv-Lab-Control"] != "business-run-v1" ||
                     request.Headers["Origin"] is not null || request.RemoteEndPoint is null || !IPAddress.IsLoopback(request.RemoteEndPoint.Address) ||
                     request.ContentLength64 > 4096)
                 { context.Response.StatusCode = 403; continue; }
+                if (capabilities)
+                {
+                    context.Response.ContentType = "application/json";
+                    await context.Response.OutputStream.WriteAsync(System.Text.Encoding.UTF8.GetBytes("{\"boxFeedbackContract\":\"business-box-action-v1\"}"));
+                    continue;
+                }
                 // JsonContent may use chunked transfer. Bound the decoded body too.
                 using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(3));
                 using var body = new MemoryStream();
@@ -41,9 +48,15 @@ public sealed class LabControlServer(NetworkLab lab, int port = 10201) : IAsyncD
                     if (body.Length + count > 4096) throw new ArgumentException("控制参数超过4096字节。");
                     body.Write(buffer, 0, count);
                 }
-                var plan = JsonSerializer.Deserialize<Plan>(body.ToArray(), new JsonSerializerOptions(JsonSerializerDefaults.Web))
-                    ?? throw new ArgumentException("控制参数为空。");
-                lab.ConfigureCalls(plan.RunId, plan.Stations, plan.Rounds, plan.Stop);
+                if (request.Url!.AbsolutePath == "/cycle-feedback")
+                    lab.ApplyTransportFeedback(JsonSerializer.Deserialize<CycleTransportFeedback>(body.ToArray(), new JsonSerializerOptions(JsonSerializerDefaults.Web))
+                        ?? throw new ArgumentException("动作反馈为空。"));
+                else
+                {
+                    var plan = JsonSerializer.Deserialize<Plan>(body.ToArray(), new JsonSerializerOptions(JsonSerializerDefaults.Web))
+                        ?? throw new ArgumentException("控制参数为空。");
+                    lab.ConfigureCalls(plan.RunId, plan.Stations, plan.Rounds, plan.Stop);
+                }
                 context.Response.StatusCode = 200;
             }
             catch (Exception e)

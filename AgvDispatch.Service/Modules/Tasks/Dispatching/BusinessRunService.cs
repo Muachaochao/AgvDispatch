@@ -145,6 +145,7 @@ public sealed class BusinessRunService(IBusinessRunPort port, BusinessRunOwnersh
             {
                 if (o.CurrentTaskState is "Faulted" or "Cancelled" or "CancellationReview" || o.CurrentTaskState is null)
                 { Move("Hold", "原业务任务异常或未找到，不计完成也不启动下一工位。"); return; }
+                if (run.Plan.Mode == "Cycle") await port.SimulatorFeedbackAsync(run, ct);
                 if (o.CurrentTaskState != "Completed" || !o.AllClosed || o.AnyActiveTasks) return;
                 run = run with { CompletedJobs = run.CompletedJobs + 1, TaskId = null, PendingRequestId = null };
                 Move("Waiting", "原工位任务及握手已闭合，检查下一呼叫。");
