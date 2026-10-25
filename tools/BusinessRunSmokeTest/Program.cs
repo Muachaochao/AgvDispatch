@@ -129,7 +129,54 @@ Check(BusinessRunPort.VehicleConfigurationError(badVehicle, "AGV-01")!.Contains(
 Check(BusinessRunPort.VehicleConfigurationError(badVehicle, "MISSING")!.Contains("未配置"), "missing selected vehicle is explicit");
 var ownedVehicle = noCall with { Vehicles = [new("AGV-01", "AGV-01", "LM7", false, "在线空闲，定位正常。")] };
 Check(BusinessRunPort.VehicleConfigurationError(ownedVehicle, "AGV-01") is null, "run ownership is not mistaken for an exit configuration failure during reviewed closure");
+var retirementPath = Path.Combine(root, "retirements.json");
+var owner = new BusinessRunOwnership(); owner.LoadRetirements(retirementPath);
+var pendingId = Guid.NewGuid().ToString("N");
+var pendingRun = new BusinessRunRecord(Guid.NewGuid().ToString("N"), Plan(), "map", "v1", "revision", "operator",
+    "Hold", "rejected", 0, null, pendingId, null, true, DateTimeOffset.UtcNow);
+owner.Retire(pendingRun);
+var restoredOwner = new BusinessRunOwnership(); restoredOwner.LoadRetirements(retirementPath);
+Check(restoredOwner.IsRetired(pendingId), "retired request fence survives a restart");
+restoredOwner.Retire(pendingRun);
+Check(System.Text.Json.JsonSerializer.Deserialize<BusinessRunOwnership.Retirement[]>(File.ReadAllText(retirementPath))!.Length == 1,
+    "review retry does not duplicate or discard original request audit");
+var damaged = Path.Combine(root, "damaged.json"); File.WriteAllText(damaged, "null");
+try { new BusinessRunOwnership().LoadRetirements(damaged); throw new Exception("corrupt fence accepted"); }
+catch (InvalidDataException) { checks++; }
+var retirementGate = new AgvDispatch.Infrastructure.Maps.MapExecutionGate();
+retirementGate.SetMode(MapExecutionMode.Running);
+var receiptStore = new ReceiptStore();
+var chains = new BusinessStandbyChains(Path.Combine(root, "chains"));
+var realPort = new BusinessRunPort(null!, null!, null!, null!, null!, retirementGate, null!, null!, null!, null!, null!,
+    null!, null!, null!, null!, chains, null!, null!, true, receiptStore, owner);
+var acceptedId = Guid.NewGuid().ToString("N");
+var acceptedRun = pendingRun with { PendingRequestId = acceptedId };
+using (var heldGate = await retirementGate.EnterControlAsync(default))
+{
+    var review = realPort.RetireUnacceptedAsync(acceptedRun, default);
+    Check(!review.IsCompleted, "review serializes with in-flight task creation on the execution gate");
+    receiptStore.Receipt = new("task", acceptedId, "CNC-001", "AGV-01", 50, "map", "v1") { ParameterRevision = "revision" };
+    heldGate.Dispose();
+    await Reject(async () => await review, "accepted original must never be retired");
+}
+Check(!owner.IsRetired(acceptedId), "in-flight accepted receipt wins over request retirement");
+receiptStore.Receipt = null;
+var chainId = Guid.NewGuid().ToString("N");
+chains.Save(new("STANDBY-" + chainId, "AGV-01", ["LM1", "LM7"], 1, true));
+await Reject(async () => await realPort.RetireUnacceptedAsync(pendingRun with { PendingRequestId = chainId }, default), "existing standby intent must remain uncertain");
+Check(!owner.IsRetired(chainId), "existing send chain is never fenced as an unaccepted request");
+var unacceptedId = Guid.NewGuid().ToString("N");
+var reviewed = await realPort.RetireUnacceptedAsync(pendingRun with { PendingRequestId = unacceptedId }, default);
+Check(reviewed.PendingRequestId is null && owner.IsRetired(unacceptedId), "only absent receipt and absent send chain produce a durable fence");
 Console.WriteLine($"BusinessRunSmokeTest passed {checks} checks. Fake ports only; no PLC or AGV commands.");
+
+sealed class ReceiptStore : IManualTaskCreationRepository
+{
+    public ManualTaskReceipt? Receipt;
+    public Task<ManualTaskReceipt?> FindRequestAsync(string id, CancellationToken ct) => Task.FromResult(Receipt);
+    public Task<AgvDispatch.Domain.Tasks.TaskCreationResult> TryCreateManualAsync(ManualTaskCreationRequest r, string d, string o, CancellationToken ct)
+        => throw new Exception("retirement must never create tasks");
+}
 
 sealed class Port : IBusinessRunPort
 {

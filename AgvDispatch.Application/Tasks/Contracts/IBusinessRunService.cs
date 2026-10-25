@@ -21,6 +21,7 @@ public interface IBusinessRunPort
     Task SimulatorAsync(BusinessRunRecord run, bool stop, CancellationToken ct);
     Task ReleaseReturnAsync(BusinessRunRecord run, CancellationToken ct);
     Task<BusinessRunRecord> ReconcileAsync(BusinessRunRecord run, CancellationToken ct) => Task.FromResult(run);
+    Task<BusinessRunRecord> RetireUnacceptedAsync(BusinessRunRecord run, CancellationToken ct) => Task.FromResult(run);
 }
 public interface IBusinessRunService
 {

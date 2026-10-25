@@ -77,6 +77,17 @@ internal static partial class Program
         var parameterService = new TaskParameterSettingsService(new(parameterPath), parameterRuntime, service, new DispatchTaskReadRepository(db), map, gate);
         var initialParameters = Complete(parameterService.GetAsync(default));
         var user = TrafficUserContext.LocalOperation("isolated-test");
+        var retiredId = Guid.NewGuid().ToString("N");
+        var retiredOwner = new BusinessRunOwnership();
+        retiredOwner.LoadRetirements(path + ".retired.json");
+        retiredOwner.Retire(new(Guid.NewGuid().ToString("N"), new(Guid.NewGuid().ToString("N"), "Cycle", "AGV-01", ["CNC001"], 1, "HOME", true),
+            "MAP", "VERSION", parameterRuntime.Revision, "isolated-test", "Hold", "rejected", 0, null, retiredId, null, true, DateTimeOffset.UtcNow));
+        var retiredService = new ManualTaskCreationService(repository, station, gateway, states, map, gate, orchestration,
+            creation, dispatch, new(), new(), plcConfiguration, parameterRuntime, businessRun: retiredOwner);
+        var late = Complete(retiredService.CreateAsync(user, new(retiredId, "CNC001", "AGV-01", 20, "MAP", "VERSION")
+            { ParameterRevision = parameterRuntime.Revision }, default));
+        Require(!late.Accepted && late.Message.Contains("注销") && db.Queryable<DispatchTaskEntity>().Count() == 0,
+            "late request after reviewed retirement cannot create a task or outbox");
         var options = Complete(service.GetOptionsAsync(default));
         Require(options.Available && options.Stations.Single().Available && options.Vehicles.Single().Available, "healthy options available");
         dispatch.MaxConcurrentTasks = 2;

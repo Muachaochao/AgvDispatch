@@ -13,6 +13,7 @@ public sealed class BusinessRunService(IBusinessRunPort port, BusinessRunOwnersh
     private BusinessRunRecord? run = Load(path, ownership);
     private static BusinessRunRecord? Load(string path, BusinessRunOwnership ownership)
     {
+        ownership.LoadRetirements(path + ".retired-requests.json");
         if (!File.Exists(path)) return null;
         var row = JsonSerializer.Deserialize<BusinessRunRecord>(File.ReadAllText(path))
             ?? throw new InvalidDataException("业务运行记录损坏。");
@@ -105,13 +106,17 @@ public sealed class BusinessRunService(IBusinessRunPort port, BusinessRunOwnersh
             if (run is null || run.RunId != request.RunId || run.Stage != "Hold")
                 throw new InvalidOperationException("仅能核对并结束指定暂停运行。");
             run = await port.ReconcileAsync(run, ct); Save();
-            if (run.PendingRequestId is not null && run.TaskId is null && run.VendorTaskId is null)
-                throw new InvalidOperationException("原发送意图未取得确定回执，须先核对原请求，不能直接解除占用。");
             var o = await port.ObserveAsync(run, ct);
             if (o.Block is not null || !o.AllClosed || o.AnyActiveTasks || o.Calls.Length != 0 || !o.Stopped ||
                 o.CurrentSite != run.Plan.StandbySite || run.TaskId is not null && o.CurrentTaskState is not ("Completed" or "Cancelled") ||
                 run.VendorTaskId is not null && !o.StandbyCompleted)
                 throw new InvalidOperationException(o.Block ?? "原任务、呼叫、握手或待机停靠尚未核对闭合，不解除占用。");
+            if (run.PendingRequestId is not null && run.TaskId is null && run.VendorTaskId is null)
+            {
+                run = await port.RetireUnacceptedAsync(run, ct); Save();
+                if (run.PendingRequestId is not null)
+                    throw new InvalidOperationException("原发送意图未取得确定回执，须先核对原请求，不能直接解除占用。");
+            }
             await port.ValidateAsync(run.Plan, ct);
             if (run.Plan.Mode == "Cycle") await port.SimulatorAsync(run, true, ct);
             if (run.VendorTaskId is not null) await port.ReleaseReturnAsync(run, ct);
@@ -193,7 +198,7 @@ public sealed class BusinessRunService(IBusinessRunPort port, BusinessRunOwnersh
     }
 }
 
-public sealed class BusinessRunOwnership : IBusinessRunInterlock
+public sealed partial class BusinessRunOwnership : IBusinessRunInterlock
 {
     private string? vehicle;
     public bool Active => Volatile.Read(ref vehicle) is not null;

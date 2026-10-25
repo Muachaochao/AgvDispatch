@@ -173,7 +173,7 @@ builder.Services.AddSingleton<IBusinessRunPort>(p => new BusinessRunPort(
     p.GetRequiredService<IMapExecutionGate>(), taskParameterRuntime, taskCreationOptions, dispatchOrchestratorOptions,
     p.GetRequiredService<DispatchTaskStepOptions>(), plcCycleTestOptions, p.GetRequiredService<IAgvGateway>(),
     p.GetRequiredService<IRoutePlanner>(), p.GetRequiredService<ITrafficResourceManager>(), p.GetRequiredService<IRobokitTaskMapPreflight>(),
-    p.GetRequiredService<BusinessStandbyChains>(), p.GetRequiredService<ITrafficResourceControlService>(), p.GetRequiredService<ISingleNavigationTestService>(), PlcCycleTestPort.AllPlcsAreLoopback(plcConnections), p.GetRequiredService<IManualTaskCreationRepository>()));
+    p.GetRequiredService<BusinessStandbyChains>(), p.GetRequiredService<ITrafficResourceControlService>(), p.GetRequiredService<ISingleNavigationTestService>(), PlcCycleTestPort.AllPlcsAreLoopback(plcConnections), p.GetRequiredService<IManualTaskCreationRepository>(), p.GetRequiredService<BusinessRunOwnership>()));
 builder.Services.AddSingleton(p => new BusinessRunService(p.GetRequiredService<IBusinessRunPort>(), p.GetRequiredService<BusinessRunOwnership>(),
     Path.Combine(Path.GetDirectoryName(databaseOptions.DatabasePath)!, "business-run.json")));
 builder.Services.AddSingleton<IBusinessRunService>(p => p.GetRequiredService<BusinessRunService>());

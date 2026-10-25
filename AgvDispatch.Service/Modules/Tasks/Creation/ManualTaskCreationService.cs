@@ -102,6 +102,8 @@ public sealed partial class ManualTaskCreationService(IManualTaskCreationReposit
                 : new(false, false, null, "请求编号已用于不同参数，请核对任务。");
         using var lease = await gate.EnterAsync(MapExecutionOperation.NewWork, ct);
         if (lease is null) return new(false, false, null, "当前不允许新任务，请等待地图切换或恢复完成。");
+        if (businessRun?.IsRetired(request.RequestId) == true)
+            return new(false, false, null, "原申请已核对注销，禁止重放或迟到创建；请查询原运行。");
         if (businessRun?.Active == true && businessRun.RequestId != request.RequestId)
             return new(false, false, null, "持续运行正在接续呼叫，请先停止新增并收尾，不接受额外手动任务。");
         if (request.ParameterRevision != parameters.Revision)

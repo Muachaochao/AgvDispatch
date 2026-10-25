@@ -13,11 +13,23 @@ public sealed class BusinessRunPort(IManualTaskCreationService manual, ITaskCent
     DispatchTaskStepOptions steps, PlcCycleTestOptions isolated, IAgvGateway gateway,
     IRoutePlanner planner, ITrafficResourceManager resources, IRobokitTaskMapPreflight preflight,
     BusinessStandbyChains chains, ITrafficResourceControlService traffic, ISingleNavigationTestService navigation, bool simulatorOnly,
-    IManualTaskCreationRepository receipts) : IBusinessRunPort
+    IManualTaskCreationRepository receipts, BusinessRunOwnership ownership) : IBusinessRunPort
 {
     private static readonly HttpClient lab = new(new SocketsHttpHandler { UseProxy = false, AllowAutoRedirect = false })
         { Timeout = TimeSpan.FromSeconds(5), BaseAddress = new Uri("http://127.0.0.1:10201/") };
     private static string StandbyId(BusinessRunRecord run) => "STANDBY-" + (run.PendingRequestId ?? run.RunId);
+    public async Task<BusinessRunRecord> RetireUnacceptedAsync(BusinessRunRecord run, CancellationToken ct)
+    {
+        if (run.Stage != "Hold" || run.PendingRequestId is null || run.TaskId is not null || run.VendorTaskId is not null)
+            return run;
+        // Same exclusive gate as manual creation and standby sending. A late create either
+        // commits before this read (and is retained), or sees the durable retirement below.
+        using var lease = await gate.EnterControlAsync(ct);
+        if (await receipts.FindRequestAsync(run.PendingRequestId, ct) is not null || chains.Find(StandbyId(run)) is not null)
+            throw new InvalidOperationException("原申请已有业务任务或车端发送链，请查询原运行后核对，不能注销。");
+        ownership.Retire(run);
+        return run with { PendingRequestId = null };
+    }
     public async Task<BusinessRunRecord> ReconcileAsync(BusinessRunRecord run, CancellationToken ct)
     {
         if (run.PendingRequestId is null || run.TaskId is not null || run.VendorTaskId is not null) return run;
@@ -173,6 +185,8 @@ public sealed class BusinessRunPort(IManualTaskCreationService manual, ITaskCent
     {
         using var lease = await gate.EnterAsync(MapExecutionOperation.NewWork, ct)
             ?? throw new InvalidOperationException(gate.NewWorkBlockReason);
+        if (run.PendingRequestId is { } pending && ownership.IsRetired(pending))
+            throw new InvalidOperationException("原申请已核对注销，禁止迟到的待机导航发送。");
         var observed = await ObserveAsync(run, ct);
         if (observed.Block is not null || observed.AnyActiveTasks || !observed.AllClosed || !observed.Stopped || observed.Calls.Length != 0 ||
             observed.MapId != run.MapId || observed.MapVersionId != run.MapVersionId || observed.ParameterRevision != run.ParameterRevision)
