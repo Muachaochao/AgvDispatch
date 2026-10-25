@@ -17,7 +17,7 @@ public sealed class DispatchTaskOrchestrator(
     MapOptions mapOptions,
     IRoutePlanner routePlanner,
     ITrafficResourceManager trafficResources,
-    IMapExecutionGate executionGate, IRobokitTaskMapPreflight? robokitMap = null, HandshakeExecutionOptions? handshakeOptions = null, PersistentHandshakeExecutor? handshake = null) : IsolatedBackgroundService
+    IMapExecutionGate executionGate, IRobokitTaskMapPreflight? robokitMap = null, HandshakeExecutionOptions? handshakeOptions = null, PersistentHandshakeExecutor? handshake = null, BusinessRunOwnership? businessRun = null) : IsolatedBackgroundService
 {
     private readonly HashSet<string> _missingRouteWarnings =
         new(StringComparer.OrdinalIgnoreCase);
@@ -103,6 +103,7 @@ public sealed class DispatchTaskOrchestrator(
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var vehicles = await agvGateway.GetVehiclesAsync(cancellationToken);
         var idleVehicles = vehicles
+            .Where(vehicle => businessRun?.Returning != true || vehicle.VehicleId != businessRun.Vehicle)
             .Where(vehicle => vehicle.Connection == ConnectionState.Online)
             .Where(vehicle => IsPositionSafeForNewTask(vehicle.VehicleId))
             .Where(vehicle => options.IdleOperatingStates.Contains(

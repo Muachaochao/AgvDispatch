@@ -32,7 +32,7 @@ public sealed class TrafficControlNamedPipeServer(
     ITrafficGeometryPreviewService? geometry=null,
     IRobokitInspectionService? robokit=null, IRobokitInspectionHistory? robokitHistory=null,IMapTransferLedger? mapTransfers=null, ITaskHandshakeStore? handshakes=null, ITaskDiagnosticArchiveService? diagnosticExports=null, ICommissioningQueryService? commissioning=null,
     ITrafficWaitingBayDepartureService? waitingBayDeparture=null, ISingleNavigationTestService? navigationTest=null, IRobotMapDownloadService? robotMapDownload=null,
-    IPlcCycleTestService? plcCycleTest=null) : IsolatedBackgroundService
+    IPlcCycleTestService? plcCycleTest=null, IBusinessRunService? businessRun=null) : IsolatedBackgroundService
 {
     private async Task<RobokitInspectionSnapshot> InspectRobokitAsync(TrafficUserContext user,RobokitInspectionQuery query,CancellationToken ct)
     {
@@ -191,9 +191,16 @@ public sealed class TrafficControlNamedPipeServer(
         if (request.Operation is "SubmitJackTest" or "PreviewNavigationTest" or "SubmitNavigationTest" &&
             plcCycleTest is not null && (await plcCycleTest.ReadAsync(cancellationToken)).Enabled)
             throw new InvalidOperationException("PLC空载联调模式独占测试车辆；手动导航或顶升请先停止该模式并明确切换启动方式。");
+        if (request.Operation is "SubmitJackTest" or "PreviewNavigationTest" or "SubmitNavigationTest" &&
+            businessRun is not null && (await businessRun.ReadAsync(cancellationToken)).Current is { Stage: not "Completed" })
+            throw new InvalidOperationException("业务运行尚未完成待机收尾，不能交叉发送单车导航或顶升动作。");
 
         return request.Operation switch
         {
+            "GetBusinessRun" => Success(await (businessRun??throw new NotSupportedException("后台未更新持续运行入口。")).ReadAsync(cancellationToken)),
+            "StartBusinessRun" => Success(await (businessRun??throw new NotSupportedException("后台未更新持续运行入口。")).StartAsync(user,Deserialize<BusinessRunStart>(request.Payload),cancellationToken)),
+            "StopBusinessRun" => Success(await (businessRun??throw new NotSupportedException("后台未更新持续运行入口。")).StopAsync(user,Deserialize<BusinessRunStop>(request.Payload),cancellationToken)),
+            "CloseReviewedBusinessRun" => Success(await (businessRun??throw new NotSupportedException("后台未更新持续运行入口。")).CloseReviewedAsync(user,Deserialize<BusinessRunStop>(request.Payload),cancellationToken)),
             "GetPlcCycleTest" => Success(await (plcCycleTest??throw new NotSupportedException("PLC空载联调后台未更新。")).ReadAsync(cancellationToken)),
             "ArmPlcCycleTest" => Success(await (plcCycleTest??throw new NotSupportedException("PLC空载联调后台未更新。")).ArmAsync(user,Deserialize<PlcCycleTestArmRequest>(request.Payload),cancellationToken)),
             "StopPlcCycleTest" => Success(await (plcCycleTest??throw new NotSupportedException("PLC空载联调后台未更新。")).StopAsync(user,Deserialize<PlcCycleTestStopRequest>(request.Payload),cancellationToken)),

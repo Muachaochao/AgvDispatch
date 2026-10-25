@@ -3,8 +3,10 @@ namespace AgvDispatch.WebHost;
 // Permissions are selected explicitly for this launch and are never restored from the session file.
 internal sealed record WebLocalLaunchMode(string NavigationVehicle, string PlcCycleVehicle, string PlcCycleStation)
 {
+    public string BusinessVehicle { get; init; } = "";
+    public bool IsBusiness => BusinessVehicle.Length > 0;
     public bool IsPlcCycle => PlcCycleVehicle.Length > 0;
-    public string Page => IsPlcCycle ? "/#/plc-cycle-test" : NavigationVehicle.Length > 0 ? "/#/navigation-test" : "/";
+    public string Page => IsBusiness ? "/#/tasks" : IsPlcCycle ? "/#/plc-cycle-test" : NavigationVehicle.Length > 0 ? "/#/navigation-test" : "/";
 
     public static WebLocalLaunchMode Parse(string[] args)
     {
@@ -21,23 +23,27 @@ internal sealed record WebLocalLaunchMode(string NavigationVehicle, string PlcCy
             return value;
         }
         var navigation = Read("--navigation-test-vehicle");
+        var business = Read("--business-run-vehicle");
         var cycleVehicle = Read("--plc-cycle-test-vehicle");
         var cycleStation = Read("--plc-cycle-test-station");
         if ((cycleVehicle.Length == 0) != (cycleStation.Length == 0))
             throw new ArgumentException("PLC cycle testing requires both a vehicle and a station.");
         if (navigation.Length > 0 && cycleVehicle.Length > 0)
             throw new ArgumentException("Choose either manual navigation or PLC cycle testing for this launch.");
-        return new(cycleVehicle.Length > 0 ? cycleVehicle : navigation, cycleVehicle, cycleStation);
+        if (business.Length > 0 && (navigation.Length > 0 || cycleVehicle.Length > 0))
+            throw new ArgumentException("Business execution cannot share an isolated test launch.");
+        return new(cycleVehicle.Length > 0 ? cycleVehicle : navigation, cycleVehicle, cycleStation) { BusinessVehicle = business };
     }
 
     public string[] ServiceArguments(string pipe) =>
     [
-        $"--Security:PipeName={pipe}", "--Plc:Enabled=false", "--Plc:AllowWrites=false", "--Agv:Enabled=false",
-        $"--Agv:AllowCommands={(NavigationVehicle.Length > 0 ? "true" : "false")}",
-        "--TaskCreation:Enabled=false", "--Dispatching:Enabled=false", "--AgvCommandOutbox:Enabled=false",
-        "--DispatchTaskSteps:Enabled=false", "--HandshakeExecution:Enabled=false",
+        $"--Security:PipeName={pipe}", "--Plc:Enabled=false", $"--Plc:AllowWrites={IsBusiness}", "--Agv:Enabled=false",
+        $"--Agv:AllowCommands={(IsBusiness || NavigationVehicle.Length > 0 ? "true" : "false")}",
+        $"--TaskCreation:Enabled={IsBusiness}", $"--Dispatching:Enabled={IsBusiness}", $"--AgvCommandOutbox:Enabled={IsBusiness}",
+        $"--DispatchTaskSteps:Enabled={IsBusiness}", $"--HandshakeExecution:Enabled={IsBusiness}",
+        "--TaskCreation:AutomaticCreationEnabled=false",
         $"--NavigationTest:Enabled={(NavigationVehicle.Length > 0 ? "true" : "false")}",
-        $"--NavigationTest:VehicleId={NavigationVehicle}",
+        $"--NavigationTest:VehicleId={(IsBusiness ? BusinessVehicle : NavigationVehicle)}",
         $"--PlcCycleTest:Enabled={(IsPlcCycle ? "true" : "false")}",
         $"--PlcCycleTest:VehicleId={PlcCycleVehicle}", $"--PlcCycleTest:StationId={PlcCycleStation}"
     ];

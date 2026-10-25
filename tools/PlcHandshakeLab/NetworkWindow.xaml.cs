@@ -24,6 +24,7 @@ public partial class NetworkWindow : Window
     private readonly DispatcherTimer _refresh = new() { Interval = TimeSpan.FromMilliseconds(250) };
     private NetworkLab? _lab;
     private S7LabServer? _server;
+    private LabControlServer? _control;
     private bool _busy;
     private bool _loading;
     private bool _closing;
@@ -141,6 +142,9 @@ public partial class NetworkWindow : Window
             next.SetAutomatic(AutoMode.SelectedIndex == 1);
             var server = new S7LabServer(next);
             server.Start();
+            var control = new LabControlServer(next);
+            try { control.Start(); } catch { server.DisposeAsync().AsTask().GetAwaiter().GetResult(); throw; }
+            _control = control;
             var previous = _lab; _lab = next; _server = server; next = null;
             try { previous?.Dispose(); } catch (IOException) { /* Previous session files remain on disk. */ }
             _fatal = null; _lastEvent = null;
@@ -169,6 +173,7 @@ public partial class NetworkWindow : Window
         try
         {
             if (server is not null) await server.DisposeAsync();
+            if (_control is not null) { await _control.DisposeAsync(); _control = null; }
             if (server is not null && _lab is not null) _lab.Note("停止", "服务停止；调度连接断开，当前内存仅供回看。再次启动创建新会话并应用初值。");
         }
         catch (Exception ex) { Message.Text = "停止服务：" + ex.Message; }
@@ -246,7 +251,9 @@ public partial class NetworkWindow : Window
         HealthText.Text = health.Label;
         HealthBanner.Background = health.Fresh ? Brushes.Honeydew : Brushes.MistyRose;
         HealthText.Foreground = health.Fresh ? Brushes.DarkGreen : Brushes.DarkRed;
-        AutoState.Text = "模拟周期：" + (_lab?.AutomaticStatus ?? "尚未启动") + "；工位故障仅影响本站撤呼叫，共享倒料由倒料故障点控制。";
+        if (_lab is not null && AutoMode.SelectedIndex != (_lab.Automatic ? 1 : 0))
+        { _loading = true; AutoMode.SelectedIndex = _lab.Automatic ? 1 : 0; _loading = false; }
+        AutoState.Text = "模拟周期：" + (_lab?.AutomaticStatus ?? "尚未启动") + "；" + (_lab?.CallPlanStatus ?? "未启动循环呼叫") + "；模拟反馈不作为物理验收证据。";
         ConnectionStatus.Text = _server is null ? "服务未运行 · 停止后的电平只供回看" : _server.Fault ??
             $"{_lab!.Config.BindAddress}:{_server.Port} · 连接 {_server.Clients} · 最近请求 {(_server.LastRequest is { } last ? last.ToString("HH:mm:ss") + $" / {(DateTimeOffset.Now - last).TotalSeconds:F1}s前" : "尚无")} ";
         if (_server?.Fault is { } fault) Message.Text = fault;

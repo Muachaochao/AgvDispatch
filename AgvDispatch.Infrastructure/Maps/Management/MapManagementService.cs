@@ -21,7 +21,7 @@ public sealed class MapManagementService(
     TrafficResourceCatalog resourceCatalog,
     MapAssetStorageOptions storage,
     IMapExecutionGate executionGate,
-    IMapSwitchService mapSwitches) : IMapManagementService
+    IMapSwitchService mapSwitches, IBusinessRunInterlock? businessRun=null) : IMapManagementService
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -556,6 +556,7 @@ public sealed class MapManagementService(
     {
         Demand(user, TrafficPermission.ManageMap);
         using var control = await executionGate.EnterControlAsync(cancellationToken);
+        if (businessRun?.Active == true) return new(false, "请先停止业务运行并完成待机收尾；原运行待核对时不能激活地图。");
         var project = await database.Queryable<MapProjectEntity>().Where(item => item.MapId == request.MapId)
             .FirstAsync(cancellationToken);
         if (project is null || project.IsArchived) return new(false, "地图项目不存在或已移除。");

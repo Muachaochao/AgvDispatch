@@ -12,7 +12,7 @@ namespace AgvDispatch.Infrastructure.Persistence;
 
 public sealed partial class MapSwitchService(ISqlSugarClient database, IMapExecutionGate gate,
     IActiveMapRuntime runtime, IAgvStateCache vehicles, IPlcSignalCache signals,
-    MapSwitchSafetySettings settings,IMapTransferRecoveryBarrier? mapTransfers=null) : IMapSwitchService
+    MapSwitchSafetySettings settings,IMapTransferRecoveryBarrier? mapTransfers=null, IBusinessRunInterlock? businessRun=null) : IMapSwitchService
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     { Converters = { new JsonStringEnumConverter() } };
@@ -44,6 +44,7 @@ public sealed partial class MapSwitchService(ISqlSugarClient database, IMapExecu
         Demand(user, TrafficPermission.ManageMap);
         using var control = await gate.EnterControlAsync(cancellationToken);
         if (gate.Mode == MapExecutionMode.Starting) return new(false, "运行地图尚未初始化。");
+        if (businessRun?.Active == true) return new(false, "请先停止业务运行并完成待机收尾；原运行待核对时不能切图。");
         var existing = await OpenAsync(cancellationToken);
         if (existing is not null) return new(false, $"已有切换{existing.ReleaseId}，请先完成或取消。");
         var version = await database.Queryable<MapVersionEntity>().Where(row =>

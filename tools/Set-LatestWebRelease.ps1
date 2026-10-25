@@ -30,7 +30,7 @@ foreach($latestName in @('启动最新版Web.cmd','停止最新版Web.cmd','最�
 $latestStartText=@"
 @echo off
 chcp 65001 >nul
-call "%~dp0$latestRelative\Start-Latest-Web.cmd" --project-store-path "%~dp0运行数据\Web工程方案" %*
+call "%~dp0$latestRelative\Start-Latest-Web.cmd" --daily-data --project-store-path "%~dp0运行数据\Web工程方案" %*
 "@
 $latestStopText=@"
 @echo off

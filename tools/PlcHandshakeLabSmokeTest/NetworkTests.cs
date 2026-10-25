@@ -11,6 +11,8 @@ internal static class NetworkTests
 {
     public static async Task RunAsync()
     {
+        CallPlanTests.Run();
+        await ControlTests.RunAsync();
         var checks = 0;
         void Check(bool condition, string message) { if (!condition) throw new Exception(message); checks++; }
         void Reject(Action action, string label) { try { action(); } catch (ArgumentException) { checks++; return; } catch (InvalidOperationException) { checks++; return; } throw new Exception(label); }

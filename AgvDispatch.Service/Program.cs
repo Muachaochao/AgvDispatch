@@ -135,7 +135,9 @@ builder.Services.AddHostedService(p => p.GetRequiredService<PlcCycleTestService>
 builder.Services.AddSingleton<IRobokitInspectionService, RobokitInspectionService>();
 builder.Services.AddSingleton<IRobokitInspectionHistory, RobokitInspectionHistory>();
 builder.Services.AddSingleton<IRobokitTaskMapPreflight, RobokitTaskMapPreflight>();
-builder.Services.AddSingleton<IAgvTransportChainLookup, AgvTransportChainLookup>();
+builder.Services.AddSingleton<AgvTransportChainLookup>();
+builder.Services.AddSingleton(new BusinessStandbyChains(Path.Combine(Path.GetDirectoryName(databaseOptions.DatabasePath)!, "standby-chains")));
+builder.Services.AddSingleton<IAgvTransportChainLookup, BusinessTransportChainLookup>();
 builder.Services.AddSingleton<SeerAgvGateway>();
 builder.Services.AddSingleton<IAgvGateway>(
     provider => provider.GetRequiredService<SeerAgvGateway>());
@@ -163,6 +165,19 @@ var taskParameterPath = Path.Combine(Path.GetDirectoryName(databaseOptions.Datab
 var taskParameterRuntime = new TaskParameterRuntime(dispatchOrchestratorOptions, taskCreationOptions);
 if (TaskParameterSettingsService.ReadDocument(taskParameterPath) is { } taskParameterDocument) taskParameterRuntime.Apply(taskParameterDocument);
 builder.Services.AddSingleton(taskParameterRuntime);
+builder.Services.AddSingleton<BusinessRunOwnership>();
+builder.Services.AddSingleton<IBusinessRunInterlock>(p => p.GetRequiredService<BusinessRunOwnership>());
+builder.Services.AddSingleton<IBusinessRunPort>(p => new BusinessRunPort(
+    p.GetRequiredService<IManualTaskCreationService>(), p.GetRequiredService<ITaskCenterQueryService>(),
+    p.GetRequiredService<IPlcSignalCache>(), p.GetRequiredService<IAgvStateCache>(), p.GetRequiredService<IActiveMapRuntime>(),
+    p.GetRequiredService<IMapExecutionGate>(), taskParameterRuntime, taskCreationOptions, dispatchOrchestratorOptions,
+    p.GetRequiredService<DispatchTaskStepOptions>(), plcCycleTestOptions, p.GetRequiredService<IAgvGateway>(),
+    p.GetRequiredService<IRoutePlanner>(), p.GetRequiredService<ITrafficResourceManager>(), p.GetRequiredService<IRobokitTaskMapPreflight>(),
+    p.GetRequiredService<BusinessStandbyChains>(), p.GetRequiredService<ITrafficResourceControlService>(), p.GetRequiredService<ISingleNavigationTestService>(), PlcCycleTestPort.AllPlcsAreLoopback(plcConnections), p.GetRequiredService<IManualTaskCreationRepository>()));
+builder.Services.AddSingleton(p => new BusinessRunService(p.GetRequiredService<IBusinessRunPort>(), p.GetRequiredService<BusinessRunOwnership>(),
+    Path.Combine(Path.GetDirectoryName(databaseOptions.DatabasePath)!, "business-run.json")));
+builder.Services.AddSingleton<IBusinessRunService>(p => p.GetRequiredService<BusinessRunService>());
+builder.Services.AddHostedService(p => p.GetRequiredService<BusinessRunService>());
 builder.Services.AddSingleton(new TaskParameterStorageOptions(taskParameterPath));
 builder.Services.AddSingleton<ITaskParameterService, TaskParameterSettingsService>();
 var mapOptions = new MapOptions();

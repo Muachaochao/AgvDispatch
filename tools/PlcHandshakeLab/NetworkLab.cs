@@ -112,6 +112,74 @@ public sealed class NetworkLab : IDisposable
     private readonly Dictionary<string, int> _stages = new();
     private readonly Dictionary<string, long> _stageSince = new();
     private bool _automatic;
+    private string? _callRun;
+    private string[] _callStations = [];
+    private int _callLimit;
+    private int _callCompleted;
+    private bool _stopCalls;
+    private bool _callOutstanding;
+    private bool _sawRemoved;
+    private bool _sawPlaced;
+    public string CallPlanStatus { get { lock (_gate) return _callRun is null ? "未启动循环呼叫" :
+        $"循环呼叫 {_callCompleted}/{_callLimit} 次工位任务 · {(_stopCalls ? "停止新增，等待闭合" : "运行中")}"; } }
+
+    // Only P signals are generated here. The scheduler still owns every motion and H output.
+    public void ConfigureCalls(string runId, string[] stations, int rounds, bool stop)
+    {
+        lock (_gate)
+        {
+            if (stop)
+            {
+                if (_callRun is null) return; // A restarted tool has no call producer to stop; never clears P/H.
+                if (_callRun != runId) throw new InvalidOperationException("停止编号不属于本次工具会话。");
+                _stopCalls = true; Record("停止新增呼叫", "", "", "", "", runId); return;
+            }
+            if (!Guid.TryParseExact(runId, "N", out _) || stations is null || stations.Length is < 1 or > 2 ||
+                stations.Distinct().Count() != stations.Length || rounds is < 1 or > 100 ||
+                stations.Any(s => s is not ("CNC-001" or "CNC-002") || !_states.ContainsKey((s, 0))))
+                throw new ArgumentException("循环工位、轮数或运行编号无效。");
+            if (_callRun == runId)
+            {
+                if (!_callStations.SequenceEqual(stations) || _callLimit != rounds * stations.Length)
+                    throw new InvalidOperationException("同一运行编号不能修改顺序或轮数。");
+                return;
+            }
+            if (_callOutstanding || _callRun is not null && !_stopCalls && _callCompleted < _callLimit)
+                throw new InvalidOperationException("原循环仍未结束。");
+            if (!_communicationHealthy || _recoveryReason is not null || _permit ||
+                Config.Points.Any(p => p.Owner == "H" && Get(p.Station, p.Signal)) ||
+                Config.Points.Any(p => p.Signal == 0 && Get(p.Station, p.Signal)) ||
+                Enumerable.Range(6, 4).Any(s => Get(NetworkLabConfig.Shared, s)))
+                throw new InvalidOperationException("须先恢复S7通信并闭合全部呼叫和握手基线。");
+            SetAutomatic(true);
+            _callRun = runId; _callStations = stations.ToArray(); _callLimit = rounds * stations.Length;
+            _callCompleted = 0; _stopCalls = false; _sawRemoved = _sawPlaced = false;
+            Record("启动循环呼叫", "", "", "", "", $"{runId}；{string.Join("→", stations)}；{rounds}轮；P箱体反馈为模拟值，非物理证据。");
+        }
+    }
+
+    private void TickCalls()
+    {
+        if (_callRun is null || _recoveryReason is not null || !_communicationHealthy) return;
+        var station = _callStations[_callCompleted % _callStations.Length];
+        if (Get(station, 10) || !Get(station, 11) || Get(NetworkLabConfig.Shared, 12)) return;
+        if (_callOutstanding)
+        {
+            if (Get(station, 3)) { _sawRemoved = true; Set(Find(station, 1), false, "循环模拟取箱，非物理反馈"); }
+            if (_sawRemoved && Get(station, 5)) { _sawPlaced = true; Set(Find(station, 1), true, "循环模拟返箱，非物理反馈"); }
+            if (!_sawPlaced || !_sawRemoved || Get(station, 0) || _permit ||
+                Config.Points.Any(p => p.Owner == "H" && Get(p.Station, p.Signal)) ||
+                Enumerable.Range(6, 4).Any(s => Get(NetworkLabConfig.Shared, s))) return;
+            _callCompleted++; _callOutstanding = false; _sawRemoved = _sawPlaced = false;
+            Record("循环握手闭合", station, "", "", "", $"已闭合{_callCompleted}/{_callLimit}；仅PLC侧证据，任务完成由调度核验。");
+            return;
+        }
+        if (_stopCalls || _callCompleted >= _callLimit) return;
+        if (!Get(station, 1) || Config.Points.Any(p => p.Owner == "H" && Get(p.Station, p.Signal)) ||
+            Config.Points.Any(p => p.Signal == 0 && Get(p.Station, p.Signal)) || _permit ||
+            Enumerable.Range(6, 4).Any(s => Get(NetworkLabConfig.Shared, s))) return;
+        Set(Find(station, 0), true, "循环产生满箱呼叫"); _callOutstanding = true;
+    }
     private bool _permit;
     private long? _dumpSince;
     private int _autoDone;
@@ -136,6 +204,11 @@ public sealed class NetworkLab : IDisposable
             if (_communicationHealthy == healthy) return;
             Record(healthy ? "通信恢复" : "通信中断", "", "", "", "", healthy ? "收到有效S7数据交换；旧周期仍须按恢复提示核对。" : "暂停自动反馈，保留全部电平。");
             _communicationHealthy = healthy;
+            if (!healthy && _callRun is not null && (_callOutstanding || !_stopCalls && _callCompleted < _callLimit))
+            {
+                _stopCalls = true;
+                RequireRecovery("循环期间通信中断，已停止新增呼叫；原电平保留，请人工核对闭合。");
+            }
             if (!healthy && (_permit || Enumerable.Range(6, 4).Any(s => Get(NetworkLabConfig.Shared, s))))
                 RequireRecovery("活动许可或共享信号期间通信中断；请人工闭合并确认模拟周期。");
         }
@@ -227,6 +300,7 @@ public sealed class NetworkLab : IDisposable
         lock (_gate)
         {
             if (!_automatic || !_communicationHealthy) return;
+            TickCalls();
             foreach (var station in Config.Points.Where(p => p.Signal == 0).Select(p => p.Station))
                 if (Get(station, 0) && Get(station, 2) && !Get(station, 10) && Get(station, 11)) Set(Find(station, 0), false, "自动撤呼叫");
             var shared = NetworkLabConfig.Shared;

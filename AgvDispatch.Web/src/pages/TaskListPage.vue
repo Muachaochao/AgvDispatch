@@ -12,6 +12,7 @@ import type { CreationOptions, RoutePreview, TaskDetail, TaskRow } from '../type
 import { IconListDetails, IconArrowLeft, IconPlus, IconSearch, IconChevronLeft, IconChevronRight } from '@tabler/icons-vue';
 import ConsoleDialog from '../ConsoleDialog.vue';
 import TaskExecutionDetails from '../TaskExecutionDetails.vue';
+import BusinessRunPanel from '../components/BusinessRunPanel.vue';
 
 const store = useDispatchStore();
 const toast = useToastStore();
@@ -31,6 +32,7 @@ let detailEpoch = 0;
 let detailPending = 0;
 
 const formOpen = ref(false);
+const creationMode = ref<'Single'|'Demand'|'Cycle'>('Single');
 const station = ref('');
 const vehicle = ref('');
 const priority = ref(50);
@@ -186,6 +188,13 @@ watch(() => route.query.create, create => {
   </ConsoleDialog>
 
   <ConsoleDialog v-if="formOpen" title="创建调度任务" @close="formOpen = false">
+    <nav class="creation-modes" aria-label="任务运行模式">
+      <button :class="{'accent-button':creationMode==='Single'}" @click="creationMode='Single'">单次业务任务</button>
+      <button :class="{'accent-button':creationMode==='Demand'}" @click="creationMode='Demand'">正常按需运行</button>
+      <button :class="{'accent-button':creationMode==='Cycle'}" @click="creationMode='Cycle'">自动循环测试</button>
+    </nav>
+    <BusinessRunPanel v-if="creationMode!=='Single'" :mode="creationMode" :options="options"/>
+    <template v-else>
     <p class="form-explanation">{{ (options?.explanation ?? actionMessage) || '正在查询后台创建条件…' }}</p>
     <p class="form-explanation">本表创建取满箱、倒料、返空箱任务，需要工位满箱呼叫。可选择工位查看条件和核对路线；满足条件后才能提交。</p>
     <div class="creation-grid">
@@ -194,20 +203,21 @@ watch(() => route.query.create, create => {
       <label>优先级（0–100）<input v-model.number="priority" type="number" min="0" max="100" :disabled="requestUncertain || actionBusy" /></label>
       <label>地图版本<input :value="options?.mapVersionId ?? '—'" readonly /></label>
     </div>
-    <div class="form-explanation" role="status">
+    <details class="form-explanation"><summary>查看工位条件与未满足项</summary><div role="status">
       <p v-for="s in options?.stations ?? []" :key="s.stationId">{{ s.stationId }}：{{ s.explanation }}</p>
       <p v-if="selectedVehicle">车辆：{{ selectedVehicle.explanation }}</p>
       <p v-if="selectedStation && selectedVehicle && !pickupReachable">所选车辆当前站点到取料点没有可执行路径，请检查地图道路和方向。</p>
-    </div>
+    </div></details>
     <p class="form-explanation"><RouterLink class="cyan" to="/engineering-settings" @click="formOpen = false">配置工位、等待点、倒料点及车辆动作</RouterLink>；道路与站点位置在地图编辑中定义。当前业务步骤固定为九步。</p>
     <div class="inline-warning">{{ store.submissionEnabled ? '提交后仍须经过后台核验，成功接收不等于执行完成。' : 'Web提交未启用，可核对条件及路线。' }}</div>
     <div v-if="routePreview" class="route-preview"><b>{{ routePreview.message }}</b><p v-for="leg in routePreview.legs" :key="leg.sequence">{{ leg.sequence }}. {{ leg.name }}：{{ leg.vendorPath || leg.logicalPath }}</p></div>
     <p v-if="actionMessage" class="form-feedback" role="status">{{ actionMessage }}</p>
+    </template>
     <template #footer>
       <button @click="formOpen = false"><ActionIcon name="close"/>取消</button>
       <button :disabled="optionsBusy || actionBusy || requestUncertain || !store.fresh" @click="loadOptions(true)"><ActionIcon name="refresh"/>{{ optionsBusy ? '刷新中…' : '刷新条件' }}</button>
-      <button :disabled="!options || !station || !vehicle || optionsBusy || actionBusy || !store.fresh" @click="previewRoute"><ActionIcon name="route"/>核对四段路线</button>
-      <button class="accent-button" :disabled="!canSubmit" @click="submitTask">{{ actionBusy ? '处理中…' : requestUncertain ? '重试原申请' : '提交后台' }}</button>
+      <button v-if="creationMode==='Single'" :disabled="!options || !station || !vehicle || optionsBusy || actionBusy || !store.fresh" @click="previewRoute"><ActionIcon name="route"/>核对四段路线</button>
+      <button v-if="creationMode==='Single'" class="accent-button" :disabled="!canSubmit" @click="submitTask">{{ actionBusy ? '处理中…' : requestUncertain ? '重试原申请' : '提交后台' }}</button>
     </template>
   </ConsoleDialog>
 </template>

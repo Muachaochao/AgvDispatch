@@ -10,7 +10,7 @@ public sealed partial class ManualTaskCreationService(IManualTaskCreationReposit
     IDispatchOrchestrationRepository tasks, DispatchTaskCreationOptions creation, DispatchOrchestratorOptions dispatch,
     DispatchTaskStepOptions steps, MapOptions mapOptions, IPlcConfigurationInspector plcConfiguration,
     TaskParameterRuntime parameters, IRobokitTaskMapPreflight? robokitMap = null,
-    HandshakeExecutionOptions? handshakeOptions = null) : IManualTaskCreationService
+    HandshakeExecutionOptions? handshakeOptions = null, BusinessRunOwnership? businessRun = null) : IManualTaskCreationService
 {
     public async Task<ManualTaskCreationOptions> GetOptionsAsync(CancellationToken ct)
     {
@@ -21,6 +21,7 @@ public sealed partial class ManualTaskCreationService(IManualTaskCreationReposit
     {
         var map = activeMap.Current;
         var reason = !gate.CanStartNewWork ? "地图切换或恢复期间暂不接受新任务。" :
+            businessRun?.Returning == true ? "车辆正在返回待机或原运行待核对，暂不创建新任务。" :
             !creation.Enabled || !dispatch.Enabled || !steps.Enabled ? "任务创建、调度和步骤执行服务需全部启用。" :
             dispatch.GetConfigurationError() ?? (map is null ? "请先发布并激活运行地图。" :
                 string.IsNullOrWhiteSpace(creation.DumperStationId) ? "尚未配置倒料工位。" : null);
@@ -100,6 +101,8 @@ public sealed partial class ManualTaskCreationService(IManualTaskCreationReposit
                 : new(false, false, null, "请求编号已用于不同参数，请核对任务。");
         using var lease = await gate.EnterAsync(MapExecutionOperation.NewWork, ct);
         if (lease is null) return new(false, false, null, "当前不允许新任务，请等待地图切换或恢复完成。");
+        if (businessRun?.Active == true && businessRun.RequestId != request.RequestId)
+            return new(false, false, null, "持续运行正在接续呼叫，请先停止新增并收尾，不接受额外手动任务。");
         if (request.ParameterRevision != parameters.Revision)
             return new(false, false, null, "任务参数已变化，请刷新创建选项后提交。");
         var options = await GetOptionsCoreAsync(ct);
