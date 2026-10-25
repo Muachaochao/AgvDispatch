@@ -3,6 +3,7 @@
 const router = createRouter({
   history: createWebHashHistory(),
   routes: [
+    { path: '/plc-cycle-test', name: 'plc-cycle-test', component: () => import('./pages/PlcCycleTestPage.vue') },
     { path: '/navigation-test', name: 'navigation-test', component: () => import('./pages/NavigationTestPage.vue') },
     { path: '/', name: 'overview', component: () => import('./pages/OverviewPage.vue') },
     { path: '/vehicles', name: 'vehicles', component: () => import('./pages/VehicleListPage.vue') },

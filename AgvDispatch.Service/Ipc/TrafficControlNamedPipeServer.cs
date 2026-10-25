@@ -31,7 +31,8 @@ public sealed class TrafficControlNamedPipeServer(
     NamedPipeDiagnostics pipeDiagnostics,
     ITrafficGeometryPreviewService? geometry=null,
     IRobokitInspectionService? robokit=null, IRobokitInspectionHistory? robokitHistory=null,IMapTransferLedger? mapTransfers=null, ITaskHandshakeStore? handshakes=null, ITaskDiagnosticArchiveService? diagnosticExports=null, ICommissioningQueryService? commissioning=null,
-    ITrafficWaitingBayDepartureService? waitingBayDeparture=null, ISingleNavigationTestService? navigationTest=null, IRobotMapDownloadService? robotMapDownload=null) : IsolatedBackgroundService
+    ITrafficWaitingBayDepartureService? waitingBayDeparture=null, ISingleNavigationTestService? navigationTest=null, IRobotMapDownloadService? robotMapDownload=null,
+    IPlcCycleTestService? plcCycleTest=null) : IsolatedBackgroundService
 {
     private async Task<RobokitInspectionSnapshot> InspectRobokitAsync(TrafficUserContext user,RobokitInspectionQuery query,CancellationToken ct)
     {
@@ -53,21 +54,21 @@ public sealed class TrafficControlNamedPipeServer(
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         logger.LogInformation("交通控制Named Pipe已启动。Pipe={PipeName}", options.PipeName);
+        // Bound accepted requests and await their disposal at shutdown.
+        await Task.WhenAll(Enumerable.Range(0, 8).Select(_ => AcceptLoopAsync(stoppingToken)));
+    }
+
+    private async Task AcceptLoopAsync(CancellationToken stoppingToken)
+    {
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
                 await using var pipe = CreateServerPipe();
                 await pipe.WaitForConnectionAsync(stoppingToken);
-                pipeDiagnostics.ConnectionOpened();
-                try
-                {
-                    await HandleConnectionAsync(pipe, stoppingToken);
-                }
-                finally
-                {
-                    pipeDiagnostics.ConnectionClosed();
-                }
+                // Accept the next request immediately. A dashboard poll or status read must
+                // never occupy the only pipe instance while an operator submits an action.
+                await HandleAcceptedConnectionAsync(pipe, stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -76,6 +77,31 @@ public sealed class TrafficControlNamedPipeServer(
             catch (Exception exception)
             {
                 logger.LogError(exception, "交通控制Named Pipe连接处理失败：{Error}", exception.Message);
+                await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken);
+            }
+        }
+    }
+
+    private async Task HandleAcceptedConnectionAsync(NamedPipeServerStream pipe, CancellationToken stoppingToken)
+    {
+        await using (pipe)
+        {
+            pipeDiagnostics.ConnectionOpened();
+            try
+            {
+                await HandleConnectionAsync(pipe, stoppingToken);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                // Normal service shutdown.
+            }
+            catch (Exception exception)
+            {
+                logger.LogWarning(exception, "交通控制Named Pipe连接处理失败：{Error}", exception.Message);
+            }
+            finally
+            {
+                pipeDiagnostics.ConnectionClosed();
             }
         }
     }
@@ -83,6 +109,10 @@ public sealed class TrafficControlNamedPipeServer(
     private NamedPipeServerStream CreateServerPipe()
     {
         var security = new PipeSecurity();
+        // Additional instances need CreateNewInstance; ReadWrite alone is insufficient
+        // for a non-administrator service owner.
+        security.AddAccessRule(new PipeAccessRule(WindowsIdentity.GetCurrent().User!,
+            PipeAccessRights.FullControl, AccessControlType.Allow));
         security.AddAccessRule(new PipeAccessRule(
             new SecurityIdentifier(WellKnownSidType.AuthenticatedUserSid, null),
             PipeAccessRights.ReadWrite,
@@ -113,7 +143,9 @@ public sealed class TrafficControlNamedPipeServer(
         TrafficControlPipeResponse response;
         try
         {
-            var request = await ReadAsync<TrafficControlPipeRequest>(pipe, cancellationToken);
+            using var readTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            readTimeout.CancelAfter(TimeSpan.FromSeconds(15));
+            var request = await ReadAsync<TrafficControlPipeRequest>(pipe, readTimeout.Token);
             operation = request.Operation;
             // Windows only exposes the client token after at least one read from the pipe.
             identityName = pipe.GetImpersonationUserName();
@@ -156,8 +188,16 @@ public sealed class TrafficControlNamedPipeServer(
                 $"账号{user.WindowsIdentity}没有交通资源查看权限。");
         }
 
+        if (request.Operation is "SubmitJackTest" or "PreviewNavigationTest" or "SubmitNavigationTest" &&
+            plcCycleTest is not null && (await plcCycleTest.ReadAsync(cancellationToken)).Enabled)
+            throw new InvalidOperationException("PLC空载联调模式独占测试车辆；手动导航或顶升请先停止该模式并明确切换启动方式。");
+
         return request.Operation switch
         {
+            "GetPlcCycleTest" => Success(await (plcCycleTest??throw new NotSupportedException("PLC空载联调后台未更新。")).ReadAsync(cancellationToken)),
+            "ArmPlcCycleTest" => Success(await (plcCycleTest??throw new NotSupportedException("PLC空载联调后台未更新。")).ArmAsync(user,Deserialize<PlcCycleTestArmRequest>(request.Payload),cancellationToken)),
+            "StopPlcCycleTest" => Success(await (plcCycleTest??throw new NotSupportedException("PLC空载联调后台未更新。")).StopAsync(user,Deserialize<PlcCycleTestStopRequest>(request.Payload),cancellationToken)),
+            "ResetPlcCycleTest" => Success(await (plcCycleTest??throw new NotSupportedException("PLC空载联调后台未更新。")).ResetAsync(user,Deserialize<PlcCycleTestResetRequest>(request.Payload),cancellationToken)),
             "GetCurrentRobotMapDownload" => Success(await (robotMapDownload??throw new NotSupportedException("请更新车端地图只读下载后台。")).ReadCurrentAsync(Deserialize<RobotMapDownloadQuery>(request.Payload),cancellationToken)),
             "GetJackTest" => Success(await (navigationTest??throw new NotSupportedException("顶升测试后台未更新。")).ReadJackAsync(cancellationToken)),
             "SubmitJackTest" => Success(await (navigationTest??throw new NotSupportedException("顶升测试后台未更新。")).SubmitJackAsync(user,Deserialize<JackTestSubmit>(request.Payload),cancellationToken)),

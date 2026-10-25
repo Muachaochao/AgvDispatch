@@ -174,6 +174,12 @@ try
         Check(Directory.EnumerateFiles(Path.Combine(candidateRoot,"Web/wwwroot/assets"),"*.js").Any(f=>File.ReadAllText(f).Contains(releaseId!,StringComparison.Ordinal)),"候选包页面内嵌相同批次而不是复用旧静态页面");
     }
     Check(snapshot.GetProperty("connected").GetBoolean() && snapshot.GetProperty("source").GetString() == "backend", "快照明确来自后台而非浏览器演示");
+    var concurrentReads = await Task.WhenAll(Enumerable.Range(0,24).Select(async _ =>
+    {
+        using var response = await http.GetAsync("/api/plc-cycle-test");
+        return response.IsSuccessStatusCode;
+    }));
+    Check(concurrentReads.All(ok => ok), "24个并发管道查询均完成，服务账号能创建后续实例");
     Check(snapshot.GetProperty("map").GetProperty("id").GetString() == "MAP-WEB-TEST", "读取真实后台当前活动地图");
     Check(snapshot.GetProperty("tasks").GetProperty("items").EnumerateArray().Any(t => t.GetProperty("taskId").GetString() == "WEB-ISOLATED-TASK"), "读取私有数据库任务");
     var safety = snapshot.GetProperty("status").GetProperty("safety");

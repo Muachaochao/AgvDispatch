@@ -17,7 +17,10 @@ public sealed class DispatchPipe(string pipeName)
             PipeOptions.Asynchronous | PipeOptions.WriteThrough, TokenImpersonationLevel.Identification);
         using (var connect = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token))
         {
-            connect.CancelAfter(TimeSpan.FromSeconds(2));
+            // The service may still be finishing database and device initialization. A
+            // cancelled half-open connection can occupy the single server pipe instance,
+            // so allow enough time for the observed startup path to settle.
+            connect.CancelAfter(TimeSpan.FromSeconds(10));
             try { await pipe.ConnectAsync(connect.Token); }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             { throw new TimeoutException("无法连接调度后台，请确认主服务已启动及Named Pipe名称一致。"); }

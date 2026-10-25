@@ -31,6 +31,7 @@ const navigation = [
   { path: '/maps', label: '地图管理', icon: IconMap }
 ] as const;
 const engineering = [
+  { path: '/plc-cycle-test', label: 'PLC空载联调', icon: IconRoute },
   { path: '/navigation-test', label: '单次导航测试', icon: IconRoute },
   { path: '/planning', label: '工程编辑', icon: IconRoute },
   { path: '/engineering-settings', label: '工程配置', icon: IconCpu },

@@ -30,7 +30,10 @@ gate.Open=false;
 var catalog=await service.ReadStationsAsync(default);
 Check(catalog.Stations.Select(s=>s.Id).SequenceEqual(new[]{"A","B","C","D"})&&catalog.SuggestedSourceSite=="A","Read real catalog and suggest source from robot-world location while gate held");
 Check(robot.Sends==0&&robot.Cancels==0&&robot.UnexpectedCommands==0,"Catalog sends only read-only requests");
-await Reject(()=>service.PreviewAsync(user,query,default),"Recovery hold blocks preview");gate.Open=true;
+var heldPreview=await service.PreviewAsync(user,query,default);
+Check(heldPreview.Route.Count==3&&robot.Sends==0,"Isolated preview remains read-only while formal recovery is held");
+gate.CurrentMode=MapExecutionMode.Draining;
+await Reject(()=>service.PreviewAsync(user,query,default),"Actual map switch blocks preview");gate.CurrentMode=MapExecutionMode.Running;gate.Open=true;
 robot.DuplicateStation=true;await Reject(()=>service.ReadStationsAsync(default),"Duplicate station ids rejected");robot.DuplicateStation=false;
 robot.InvalidCoordinate=true;await Reject(()=>service.ReadStationsAsync(default),"Missing coordinates rejected");robot.InvalidCoordinate=false;
 robot.ChangeOnStations=true;await Reject(()=>service.ReadStationsAsync(default),"Map changes during catalog read rejected");robot.ChangeOnStations=false;robot.MapChanged=false;
@@ -47,8 +50,8 @@ await Reject(()=>service.SubmitAsync(user,new(preview.PreviewId,true),default),"
 Check(!File.Exists(path)&&robot.Sends==0,"Route rejection creates no durable intent or motion");
 preview=await service.PreviewAsync(user,query,default);await service.ReadStationsAsync(default);
 await Reject(()=>service.SubmitAsync(user,new(preview.PreviewId,true),default),"Reloading station catalog invalidates previous confirmation");
-preview=await service.PreviewAsync(user,query,default);gate.Open=false;
-await Reject(()=>service.SubmitAsync(user,new(preview.PreviewId,true),default),"Gate closing after preview blocks 3051");gate.Open=true;
+preview=await service.PreviewAsync(user,query,default);gate.CurrentMode=MapExecutionMode.Draining;
+await Reject(()=>service.SubmitAsync(user,new(preview.PreviewId,true),default),"Map switching after preview blocks 3051");gate.CurrentMode=MapExecutionMode.Running;
 preview=await service.PreviewAsync(user,query,default);
 var sent=await service.SubmitAsync(user,new(preview.PreviewId,true),default);
 Check(sent.State=="Accepted"&&sent.NavigationApi==3051&&sent.Route.SequenceEqual(new[]{"A","B","C"}),"3051 receipt records confirmed full route");
@@ -100,7 +103,7 @@ sealed class Tasks:IActiveTaskLookup
 {public Task<IReadOnlyList<ActiveDispatchTask>> GetActiveTasksAsync(CancellationToken ct)=>Task.FromResult<IReadOnlyList<ActiveDispatchTask>>([]);}
 sealed class Gate:IMapExecutionGate
 {
-    public bool Open=true;public MapExecutionMode Mode=>MapExecutionMode.Running;public bool CanStartNewWork=>Open;
+    public bool Open=true;public MapExecutionMode CurrentMode=MapExecutionMode.Running;public MapExecutionMode Mode=>CurrentMode;public bool CanStartNewWork=>Open;
     public ValueTask<IDisposable?> EnterAsync(MapExecutionOperation operation,CancellationToken ct)=>ValueTask.FromResult<IDisposable?>(Open?new Lease():null);
     public ValueTask<IDisposable> EnterControlAsync(CancellationToken ct)=>ValueTask.FromResult<IDisposable>(new Lease());
     public void SetMode(MapExecutionMode mode){}

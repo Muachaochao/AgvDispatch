@@ -69,6 +69,7 @@ builder.Services.AddSingleton<IAgvTrackStore, AgvTrackStore>();
 
 var plcOptions = new PlcOptions();
 builder.Configuration.GetSection(PlcOptions.SectionName).Bind(plcOptions);
+if (builder.Configuration.GetValue("PlcCycleTest:Enabled", false)) plcOptions.AllowWrites = false;
 var agvOptions = new AgvOptions();
 builder.Configuration.GetSection(AgvOptions.SectionName).Bind(agvOptions);
 var communicationSettingsPath = Path.Combine(Path.GetDirectoryName(databaseOptions.DatabasePath)!, "communication-settings.json");
@@ -108,6 +109,29 @@ builder.Services.AddSingleton<ISingleNavigationTestService>(p => new SingleNavig
             .All(key=>builder.Configuration.GetValue<bool?>(key)==false)
     },agvOptions,p.GetRequiredService<AgvConnectionManager>(),p.GetRequiredService<IActiveTaskLookup>(),
     p.GetRequiredService<IMapExecutionGate>(),Path.Combine(Path.GetDirectoryName(databaseOptions.DatabasePath)!,"navigation-test.json")));
+var plcCycleTestOptions = new PlcCycleTestOptions();
+builder.Configuration.GetSection("PlcCycleTest").Bind(plcCycleTestOptions);
+builder.Services.AddSingleton(plcCycleTestOptions);
+builder.Services.AddSingleton(p => new PlcCycleSimulatorWriter(plcCycleTestOptions, plcFleet));
+builder.Services.AddSingleton<IPlcCycleTestPort>(p => new PlcCycleTestPort(
+    plcCycleTestOptions,
+    p.GetRequiredService<IPlcSignalCache>(),
+    p.GetRequiredService<IAgvStateCache>(),
+    p.GetRequiredService<IActiveMapRuntime>(),
+    p.GetRequiredService<IMapExecutionGate>(),
+    p.GetRequiredService<PlcCycleSimulatorWriter>(),
+    p.GetRequiredService<ISingleNavigationTestService>(),
+    p.GetRequiredService<IRobokitTaskMapPreflight>(),
+    PlcCycleTestPort.AllPlcsAreLoopback(plcConnections),
+    new[] { "Dispatching", "TaskCreation", "AgvCommandOutbox", "DispatchTaskSteps", "HandshakeExecution" }
+        .All(section => builder.Configuration.GetSection(section).GetValue<bool>("Enabled") == false)));
+builder.Services.AddSingleton(p => new PlcCycleTestService(
+    plcCycleTestOptions,
+    p.GetRequiredService<IPlcCycleTestPort>(),
+    p.GetRequiredService<ISingleNavigationTestService>(),
+    Path.Combine(Path.GetDirectoryName(databaseOptions.DatabasePath)!, "plc-cycle-test.json")));
+builder.Services.AddSingleton<IPlcCycleTestService>(p => p.GetRequiredService<PlcCycleTestService>());
+builder.Services.AddHostedService(p => p.GetRequiredService<PlcCycleTestService>());
 builder.Services.AddSingleton<IRobokitInspectionService, RobokitInspectionService>();
 builder.Services.AddSingleton<IRobokitInspectionHistory, RobokitInspectionHistory>();
 builder.Services.AddSingleton<IRobokitTaskMapPreflight, RobokitTaskMapPreflight>();

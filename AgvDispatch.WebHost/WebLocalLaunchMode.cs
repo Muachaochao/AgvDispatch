@@ -1,0 +1,44 @@
+namespace AgvDispatch.WebHost;
+
+// Permissions are selected explicitly for this launch and are never restored from the session file.
+internal sealed record WebLocalLaunchMode(string NavigationVehicle, string PlcCycleVehicle, string PlcCycleStation)
+{
+    public bool IsPlcCycle => PlcCycleVehicle.Length > 0;
+    public string Page => IsPlcCycle ? "/#/plc-cycle-test" : NavigationVehicle.Length > 0 ? "/#/navigation-test" : "/";
+
+    public static WebLocalLaunchMode Parse(string[] args)
+    {
+        string Read(string name)
+        {
+            var positions = args.Select((value, index) => (value, index)).Where(pair => pair.value == name).ToArray();
+            if (positions.Length == 0) return "";
+            if (positions.Length != 1 || positions[0].index + 1 >= args.Length)
+                throw new ArgumentException($"Missing or repeated {name}.");
+            var value = args[positions[0].index + 1];
+            if (string.IsNullOrWhiteSpace(value) || value.Length > 32 ||
+                value.Any(c => !char.IsAsciiLetterOrDigit(c) && c is not '-' and not '_'))
+                throw new ArgumentException($"Invalid identifier for {name}.");
+            return value;
+        }
+        var navigation = Read("--navigation-test-vehicle");
+        var cycleVehicle = Read("--plc-cycle-test-vehicle");
+        var cycleStation = Read("--plc-cycle-test-station");
+        if ((cycleVehicle.Length == 0) != (cycleStation.Length == 0))
+            throw new ArgumentException("PLC cycle testing requires both a vehicle and a station.");
+        if (navigation.Length > 0 && cycleVehicle.Length > 0)
+            throw new ArgumentException("Choose either manual navigation or PLC cycle testing for this launch.");
+        return new(cycleVehicle.Length > 0 ? cycleVehicle : navigation, cycleVehicle, cycleStation);
+    }
+
+    public string[] ServiceArguments(string pipe) =>
+    [
+        $"--Security:PipeName={pipe}", "--Plc:Enabled=false", "--Plc:AllowWrites=false", "--Agv:Enabled=false",
+        $"--Agv:AllowCommands={(NavigationVehicle.Length > 0 ? "true" : "false")}",
+        "--TaskCreation:Enabled=false", "--Dispatching:Enabled=false", "--AgvCommandOutbox:Enabled=false",
+        "--DispatchTaskSteps:Enabled=false", "--HandshakeExecution:Enabled=false",
+        $"--NavigationTest:Enabled={(NavigationVehicle.Length > 0 ? "true" : "false")}",
+        $"--NavigationTest:VehicleId={NavigationVehicle}",
+        $"--PlcCycleTest:Enabled={(IsPlcCycle ? "true" : "false")}",
+        $"--PlcCycleTest:VehicleId={PlcCycleVehicle}", $"--PlcCycleTest:StationId={PlcCycleStation}"
+    ];
+}

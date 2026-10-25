@@ -54,6 +54,7 @@ app.MapGet("/api/config", () => new { taskSubmissionEnabled = submissions, sourc
 app.MapEditorApi();
 app.MapEngineeringApi();
 app.MapNavigationTestApi();
+app.MapPlcCycleTestApi();
 app.MapRobotMapDownloadApi();
 app.MapWaitingApi();
 app.MapProjectApi();

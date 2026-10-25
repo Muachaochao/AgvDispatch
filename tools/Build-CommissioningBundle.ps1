@@ -49,6 +49,7 @@ Copy-Item -LiteralPath (Join-Path $bundleProject 'AgvDispatch.Web/src/vendor/agv
 New-Item -ItemType Directory -Path (Join-Path $bundleOutput 'Docs') -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $bundleProject 'docs/architecture/Robokit厂家道路属性只读与双向核对-20261023.md') -Destination (Join-Path $bundleOutput 'Docs')
 Copy-Item -LiteralPath (Join-Path $bundleProject 'docs/architecture/车端站点选择与3051单次导航-20261023.md') -Destination (Join-Path $bundleOutput 'Docs/单次导航说明.md')
+Copy-Item -LiteralPath (Join-Path $bundleProject 'docs/architecture/PLC空载联调缺陷修复与操作-20261025.md') -Destination (Join-Path $bundleOutput 'Docs')
 Copy-Item -LiteralPath (Join-Path $bundleProject 'docs/architecture/Web地图管理与布局修复-20261019.md') -Destination (Join-Path $bundleOutput 'Docs')
 Copy-Item -LiteralPath (Join-Path $bundleProject 'docs/architecture/六项路线进度与统一候选发布-20261017.md'),(Join-Path $bundleProject 'docs/architecture/单车与异常现场验收记录模板-20261017.md'),(Join-Path $bundleProject 'docs/architecture/Web工程配置方案库与任务地图联动-20261018.md'),(Join-Path $bundleProject 'docs/architecture/Web中央地图联动与取消恢复演练-20261018.md'),(Join-Path $bundleProject 'docs/architecture/Web等待队列筛选与资源定位-20261018.md'),(Join-Path $bundleProject 'docs/architecture/Web阻塞链详情与释放条件-20261018.md'),(Join-Path $bundleProject 'docs/architecture/多车冲突断连与切图组合验证-20261018.md'),(Join-Path $bundleProject 'docs/architecture/地图激活回执丢失与只读复核-20261018.md') -Destination (Join-Path $bundleOutput 'Docs')
 @'
@@ -85,6 +86,8 @@ popd
 
 单次导航现场测试使用显式入口 Start-Navigation-Test.cmd AGV-01；它仅针对指定测试车启用导航发送许可，保留业务任务和PLC执行关闭。默认启动不启用此功能，详见 Docs/单次导航说明.md。页面核验不会发车，须人工确认区域后再点击发送。
 
+CNC-001 空载 PLC 闭环联调须显式使用 Start-Plc-Cycle-Test.cmd AGV-01 CNC-001。仅允许127.0.0.1:10200的独立模拟PLC及六个固定H输出；正式PLC写、调度、命令队列和新握手保持关闭。结果不计正式28阶段验收。重启和状态失效均不恢复本轮发送许可。日常统一入口传入 --daily-data，沿用发布包/运行数据中的后台5199及Web工程方案。
+
 三份程序均为Windows x64自带运行时；CMD不调用PowerShell脚本。候选使用独立管道$bundlePipe、独立空数据库、关闭的通信和执行配置；没有导入现场数据。原有服务、WPF、5188预览及配置不会被替换或停止。一键入口强制关闭设备通信、PLC写入、AGV发送、任务创建/派发和新握手，用于安全开发联调；不能通过此入口现场开跑。分组件入口的窗口Ctrl+C停止各自进程。
 
 联调检查出现缺地图、缺车辆、缺点位是当前候选配置为空的真实结果，不会生成示例。配置迁移与现场启用需沿原系统的地图、身份、任务、恢复门禁办理；不能覆盖原data/config后直接视为现场可运行。正式任务提交仍重新核验。
@@ -111,6 +114,20 @@ if "%~1"=="" (
 "%~dp0Web\host\AgvDispatch.WebHost.exe" --launch-local --bundle-root "%~dp0." --navigation-test-vehicle "%~1"
 if errorlevel 1 pause
 '@ | Set-Content -LiteralPath (Join-Path $bundleOutput 'Start-Navigation-Test.cmd') -Encoding ascii
+@'
+@echo off
+if "%~1"=="" (
+  echo Usage: Start-Plc-Cycle-Test.cmd AGV-01 CNC-001
+  echo Requires an independent loopback simulator PLC, an empty vehicle and a cleared route.
+  exit /b 1
+)
+if "%~2"=="" (
+  echo Usage: Start-Plc-Cycle-Test.cmd AGV-01 CNC-001
+  exit /b 1
+)
+"%~dp0Web\host\AgvDispatch.WebHost.exe" --launch-local --bundle-root "%~dp0." --plc-cycle-test-vehicle "%~1" --plc-cycle-test-station "%~2"
+if errorlevel 1 pause
+'@ | Set-Content -LiteralPath (Join-Path $bundleOutput 'Start-Plc-Cycle-Test.cmd') -Encoding ascii
 $bundleFiles=@(Get-ChildItem -LiteralPath $bundleOutput -File -Recurse | ForEach-Object {@{path=[IO.Path]::GetRelativePath($bundleOutput,$_.FullName);sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant();bytes=$_.Length}})
 @{schema='agv-commissioning-release';version=1;releaseId=$bundleId;createdAt=(Get-Date).ToString('o');runtime='win-x64 self-contained';pipeName=$bundlePipe;port=$WebPort;files=$bundleFiles;siteConfigurationImported=$false;deviceExecutionEnabled=$false} | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $bundleOutput 'release-manifest.json') -Encoding utf8
 Write-Output "Candidate=$bundleOutput"
