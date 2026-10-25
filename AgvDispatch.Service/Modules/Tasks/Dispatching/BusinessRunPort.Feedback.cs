@@ -52,7 +52,7 @@ public sealed partial class BusinessRunPort
     public static TaskStepDetail? SelectFeedbackStep(BusinessRunRecord run, TaskCenterDetail detail)
     {
         if (run.Plan.Mode != "Cycle" || run.Stage != "Executing" || run.TaskId is null) return null;
-        if (detail.Task.TaskId != run.TaskId || detail.Task.VehicleId != run.Plan.VehicleId ||
+        if (detail.Task.TaskId != run.TaskId || detail.Task.VehicleId is { } assigned && assigned != run.Plan.VehicleId ||
             detail.Task.StationId != run.Plan.Stations[run.CompletedJobs % run.Plan.Stations.Length])
             throw new InvalidOperationException("模拟箱体反馈与本轮任务/原车/工位身份不符。");
         if (detail.Task.Stage is DispatchTaskStage.Completed or DispatchTaskStage.Cancelled or DispatchTaskStage.Faulted or
@@ -64,6 +64,8 @@ public sealed partial class BusinessRunPort
         {
             var waiting = detail.Steps.SingleOrDefault(s => s.StepType == pair.Item2);
             if (waiting?.Status is not (DispatchTaskStepStatus.Ready or DispatchTaskStepStatus.Executing)) continue;
+            if (detail.Task.VehicleId != run.Plan.VehicleId)
+                throw new InvalidOperationException("模拟箱体反馈缺少原任务已绑定车辆的证据。");
             if (detail.Steps.OrderBy(s => s.Sequence).FirstOrDefault(s => s.Status != DispatchTaskStepStatus.Completed)?.StepId != waiting.StepId)
                 throw new InvalidOperationException("模拟箱体反馈所需前序步骤尚未闭合。");
             var transport = detail.Steps.SingleOrDefault(s => s.StepType == pair.Item1);

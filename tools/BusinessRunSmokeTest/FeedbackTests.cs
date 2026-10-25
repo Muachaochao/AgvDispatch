@@ -22,6 +22,13 @@ internal static class FeedbackTests
             "AGV-01", "LM7", "LM2", "vendor-" + i, 0, now.AddSeconds(-10), now.AddSeconds(-1), null)).ToArray();
         var detail = new TaskCenterDetail(new("task", "CNC-001", "AGV-01", DispatchTaskStage.PickingUp, 50, now, now, null), steps, [], [], [], "");
         Check(BusinessRunPort.SelectFeedbackStep(run, detail)?.StepId == "step-0");
+        var unassignedSteps = steps.Select((step, i) => step with {
+            Status = i == 0 ? DispatchTaskStepStatus.Ready : DispatchTaskStepStatus.Pending,
+            VehicleId = null, VendorTaskId = null, StartedAt = null, CompletedAt = null }).ToArray();
+        foreach (var stage in new[] { DispatchTaskStage.Created, DispatchTaskStage.WaitingForVehicle, DispatchTaskStage.SubmittingToAgv })
+            Check(BusinessRunPort.SelectFeedbackStep(run, detail with {
+                Task = detail.Task with { Stage = stage, VehicleId = null }, Steps = unassignedSteps }) is null);
+        Reject(() => BusinessRunPort.SelectFeedbackStep(run, detail with { Task = detail.Task with { VehicleId = null } }));
         Check(BusinessRunPort.SelectFeedbackStep(run with { Plan = run.Plan with { Mode = "Demand" } }, detail) is null);
         Check(BusinessRunPort.SelectFeedbackStep(run with { Stage = "Hold" }, detail) is null);
         foreach (var state in new[] { DispatchTaskStage.Completed, DispatchTaskStage.Cancelled, DispatchTaskStage.CancellationPending, DispatchTaskStage.CancellationReview, DispatchTaskStage.Faulted })
