@@ -152,6 +152,19 @@ try
     signals.Items[0] = signals.Items[0] with { Value = true };
     Check(await Blocked("PLC工位故障"), "PLC故障阻止切换"); Fresh();
 
+    foreach (var direction in new[] { "PLC->Host", " plctohost " })
+    {
+        signals.Items[0] = SwitchSignalCache.Ready() with { Direction = direction };
+        Check(!await Blocked("PLC输入"), $"输入方向 {direction} 识别为已采集输入");
+        signals.Items[0] = signals.Items[0] with { UpdatedAt = DateTimeOffset.Now.AddMinutes(-1) };
+        Check(await Blocked("PLC输入失效"), $"输入方向 {direction} 仍检查新鲜度");
+        signals.Items[0] = SwitchSignalCache.Ready() with { Direction = direction, Value = true };
+        Check(await Blocked("PLC工位故障"), $"输入方向 {direction} 仍检查故障");
+        Fresh();
+    }
+    signals.Items[0] = SwitchSignalCache.Ready() with { Direction = "Host->PLC" };
+    Check(await Blocked("PLC输入状态缺失"), "输出信号不能代替PLC输入状态"); Fresh();
+
     await database.Insertable(new DispatchTaskEntity { TaskId = "QUEUED", StationId = "QUEUE", Stage = (int)DispatchTaskStage.WaitingForVehicle,
         CreatedAt = DateTime.Now, UpdatedAt = DateTime.Now }).ExecuteCommandAsync(ct);
     Check(!await Blocked("任务"), "未分配且未下发的排队任务不阻塞收尾");

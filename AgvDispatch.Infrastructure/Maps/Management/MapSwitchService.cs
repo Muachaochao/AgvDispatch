@@ -153,7 +153,7 @@ public sealed partial class MapSwitchService(ISqlSugarClient database, IMapExecu
             if (!cancel && (vehicles.GetAll().Any(vehicle => vehicle.Quality != SignalQuality.Disabled &&
                     vehicle.LastSuccessfulPollAt < committedAt) ||
                 (settings.CheckPlcSignals && signals.GetAll().Any(signal => signal.Enabled &&
-                    signal.Direction == "PlcToHost" && signal.UpdatedAt < committedAt))))
+                    IsPlcInput(signal) && signal.UpdatedAt < committedAt))))
                 return new(false, "激活后尚未取得新的车辆或PLC状态，请刷新后再放行。");
         }
         var changed = await database.Updateable<MapSwitchEntity>()
@@ -239,7 +239,7 @@ public sealed partial class MapSwitchService(ISqlSugarClient database, IMapExecu
         if (settings.CheckPlcSignals || signals.GetAll().Any(signal =>
                 signal.Quality is SignalQuality.Good or SignalQuality.Stale or SignalQuality.Bad))
         {
-            var enabled = signals.GetAll().Where(signal => signal.Enabled && signal.Direction == "PlcToHost").ToArray();
+            var enabled = signals.GetAll().Where(signal => signal.Enabled && IsPlcInput(signal)).ToArray();
             if (enabled.Length == 0) blockers.Add("PLC输入状态缺失");
             var invalid = enabled.Where(signal => signal.Quality != SignalQuality.Good || signal.Value is null ||
                 signal.UpdatedAt is null || now - signal.UpdatedAt > settings.StateMaxAge ||
@@ -251,6 +251,12 @@ public sealed partial class MapSwitchService(ISqlSugarClient database, IMapExecu
         }
         return blockers;
     }
+
+    // Current CSV point tables use PLC->Host; older catalogs use PlcToHost.
+    // Both must participate in freshness and fault checks, including post-activation checks.
+    private static bool IsPlcInput(PlcSignalSnapshot signal) =>
+        string.Equals(signal.Direction?.Trim(), "PlcToHost", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(signal.Direction?.Trim(), "PLC->Host", StringComparison.OrdinalIgnoreCase);
 
     private bool Stopped(double? value) => value is { } number && double.IsFinite(number) &&
         Math.Abs(number) <= settings.StoppedVelocityTolerance;
