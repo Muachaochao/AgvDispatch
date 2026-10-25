@@ -61,7 +61,8 @@ public sealed partial class ManualTaskCreationService(IManualTaskCreationReposit
         choices = choices.Select(choice => choice with
         { PickupReachableVehicleIds = vehicles.Where(vehicle => CanRoute(map, vehicle.CurrentSite, choice.PickupSite, true, PickupExcludedNodes(map))).Select(vehicle => vehicle.VehicleId).ToArray() }).ToArray();
         reason ??= !choices.Any(station => station.Available) ? "暂无满足 PLC 条件和路径要求的工位。" :
-            !vehicles.Any(vehicle => vehicle.Available) ? "暂无在线空闲且定位正常的车辆。" : null;
+            !vehicles.Any(vehicle => vehicle.Available) ? "暂无可派车辆：" +
+                string.Join("；", vehicles.Select(vehicle => vehicle.VehicleId + "：" + vehicle.Explanation)) : null;
         return new(map?.MapId, map?.VersionId, reason is null, reason ?? "使用当前运行地图创建取满箱、倒料、返空箱九步任务。",
             creation.DumperStationId, dispatch.GetDumperWaitingSite() ?? "", dispatch.DumperDumpingSite, choices, vehicles)
         { ParameterRevision = parameters.Revision, RequiresExplicitVehicle = robokitMap is not null, MapRuntimeId=map?.RuntimeId??"" };

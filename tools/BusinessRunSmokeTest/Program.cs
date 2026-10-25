@@ -124,6 +124,11 @@ Check(BusinessRunPort.ConfigurationError(badOptions, ["CNC-999"])!.Contains("未
 var validPreview = Enumerable.Range(1, 9).Select(i => new ManualTaskStepPreview(i, default, "step", "", "", "", "", "", "", "")).ToArray();
 var noCall = badOptions with { Stations = [new("CNC-001", "LM2", false, "尚无PLC呼叫") { PreviewSteps = validPreview }] };
 Check(BusinessRunPort.ConfigurationError(noCall, ["CNC-001"]) is null, "waiting for a PLC call is not misreported as missing configuration");
+var badVehicle = noCall with { Vehicles = [new("AGV-01", "AGV-01", "LM1", false, "28阶段出区配置：未核定整车载荷包络。")] };
+Check(BusinessRunPort.VehicleConfigurationError(badVehicle, "AGV-01")!.Contains("未核定整车载荷包络"), "vehicle exit configuration is rejected before simulator calls start");
+Check(BusinessRunPort.VehicleConfigurationError(badVehicle, "MISSING")!.Contains("未配置"), "missing selected vehicle is explicit");
+var ownedVehicle = noCall with { Vehicles = [new("AGV-01", "AGV-01", "LM7", false, "在线空闲，定位正常。")] };
+Check(BusinessRunPort.VehicleConfigurationError(ownedVehicle, "AGV-01") is null, "run ownership is not mistaken for an exit configuration failure during reviewed closure");
 Console.WriteLine($"BusinessRunSmokeTest passed {checks} checks. Fake ports only; no PLC or AGV commands.");
 
 sealed class Port : IBusinessRunPort

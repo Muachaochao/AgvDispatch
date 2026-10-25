@@ -18,6 +18,11 @@ const configurationBlocks=computed(()=>{
   return (props.options?.stations??[]).filter(s=>selected.includes(s.stationId)&&s.configurationValid===false);
 });
 const needsExitConfiguration=computed(()=>configurationBlocks.value.some(s=>s.explanation.includes('DumperExit')));
+const selectedVehicleBlock=computed(()=>{
+  const id=current.value?.plan.vehicleId??pending.value?.vehicleId??vehicle.value;
+  const selected=props.options?.vehicles.find(v=>v.vehicleId===id);
+  return selected&&!selected.available?`${id}：${selected.explanation}`:'';
+});
 const labels:Record<string,string>={Preparing:'准备中',Waiting:'等待呼叫 / 待机',Creating:'受理呼叫中',Executing:'业务执行中',ReturnSending:'准备返回待机',Returning:'返回待机中',Hold:'暂停待核对',Completed:'收尾完成，已回待机'};
 let timer:ReturnType<typeof setInterval>|undefined;
 let disposed=false, reading=false;
@@ -33,7 +38,7 @@ async function read(){
   finally{reading=false;}
 }
 async function start(){
-  if(busy.value||active.value||!confirmed.value||!store.submissionEnabled)return;
+  if(busy.value||active.value||!confirmed.value||!store.submissionEnabled||selectedVehicleBlock.value||configurationBlocks.value.length)return;
   busy.value=true;error.value='';
   try{
     pending.value??={requestId:crypto.randomUUID().replaceAll('-',''),mode:props.mode,vehicleId:vehicle.value,
@@ -81,10 +86,11 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);});
       <p v-if="needsExitConfiguration">配置位置：当前发布包 Service/appsettings.json → HandshakeExecution → DumperExit。ResourceIds 对应地图编辑中的共享区域资源ID及已核定边界；BodyProfiles 为实测车辆和最大载箱包络。当前网页暂无这两项编辑表单，修改后需受控重启并重新核对本次启动恢复。</p>
       <p>补齐后点击弹窗底部“刷新条件”，再重试原申请。</p>
     </section>
+    <p v-if="selectedVehicleBlock" class="inline-warning" role="status">车辆不可派发的具体原因：{{selectedVehicleBlock}}</p>
     <label class="confirm"><input v-model="confirmed" type="checkbox" :disabled="(!!active&&current?.stage!=='Hold')||busy"/>{{current?.stage==='Hold'?'已现场核对原运行，申请结束记录；后台仍检查任务、握手及待机停靠':'已核对当前车辆、路线和现场条件，确认启动所选运行模式'}}</label>
     <div class="buttons">
       <button :disabled="busy" @click="read">查询原运行</button>
-      <button class="accent-button" :disabled="busy||!!active||!confirmed||!online||!store.submissionEnabled" @click="start">{{pending?'重试原申请':mode==='Demand'?'启动按需运行':'启动循环测试'}}</button>
+      <button class="accent-button" :disabled="busy||!!active||!confirmed||!online||!store.submissionEnabled||!!selectedVehicleBlock||configurationBlocks.length>0" @click="start">{{pending?'重试原申请':mode==='Demand'?'启动按需运行':'启动循环测试'}}</button>
       <button :disabled="busy||!active||(!!current?.stopRequested&&current?.stage!=='Hold')||!online" @click="stop">停止新增呼叫并收尾</button>
       <button v-if="current?.stage==='Hold'" :disabled="busy||!confirmed||!online" @click="closeReviewed">核对原运行并结束记录</button>
     </div>

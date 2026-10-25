@@ -60,6 +60,8 @@ public sealed class BusinessRunPort(IManualTaskCreationService manual, ITaskCent
         var options = await manual.GetOptionsAsync(ct);
         if (ConfigurationError(options, plan.Stations) is { } configurationError)
             throw new InvalidOperationException(configurationError);
+        if (VehicleConfigurationError(options, plan.VehicleId) is { } vehicleError)
+            throw new InvalidOperationException(vehicleError);
         var standby = Resolve(plan.StandbySite);
         await CheckEmptyAsync(plan.VehicleId, ct);
         var config = parameters.Capture();
@@ -72,6 +74,16 @@ public sealed class BusinessRunPort(IManualTaskCreationService manual, ITaskCent
                 planner.Plan(node.AgvSiteId!, standby.AgvSiteId!, new HashSet<string>()) is null)
                 throw new InvalidOperationException("待机点与工位往返路线不连通：" + pickup.StationId);
         }
+    }
+    public static string? VehicleConfigurationError(ManualTaskCreationOptions options, string vehicleId)
+    {
+        var vehicle = options.Vehicles.SingleOrDefault(v => v.VehicleId == vehicleId);
+        if (vehicle is null) return "所选车辆未配置或未取得状态：" + vehicleId;
+        // Availability also reflects run ownership and the absence of PLC calls. Those
+        // are not configuration failures; the explicit exit/configuration diagnosis is.
+        return vehicle.Explanation.StartsWith("28阶段", StringComparison.Ordinal) ||
+            vehicle.Explanation.StartsWith("握手契约", StringComparison.Ordinal)
+            ? vehicleId + "：" + vehicle.Explanation : null;
     }
     public static string? ConfigurationError(ManualTaskCreationOptions options, IReadOnlyList<string> stations)
     {
