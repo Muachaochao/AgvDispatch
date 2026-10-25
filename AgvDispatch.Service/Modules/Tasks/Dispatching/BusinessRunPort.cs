@@ -58,9 +58,8 @@ public sealed class BusinessRunPort(IManualTaskCreationService manual, ITaskCent
         if (ConfigurationBlock() is { } block) throw new InvalidOperationException(block);
         if (plan.Mode == "Cycle" && !simulatorOnly) throw new InvalidOperationException("循环测试只允许127.0.0.1:10200模拟PLC。");
         var options = await manual.GetOptionsAsync(ct);
-        foreach (var station in plan.Stations)
-            if (options.Stations.SingleOrDefault(s => s.StationId == station) is not { ConfigurationValid: true })
-                throw new InvalidOperationException("工位配置、PLC写许可或业务动作未就绪：" + station);
+        if (ConfigurationError(options, plan.Stations) is { } configurationError)
+            throw new InvalidOperationException(configurationError);
         var standby = Resolve(plan.StandbySite);
         await CheckEmptyAsync(plan.VehicleId, ct);
         var config = parameters.Capture();
@@ -73,6 +72,20 @@ public sealed class BusinessRunPort(IManualTaskCreationService manual, ITaskCent
                 planner.Plan(node.AgvSiteId!, standby.AgvSiteId!, new HashSet<string>()) is null)
                 throw new InvalidOperationException("待机点与工位往返路线不连通：" + pickup.StationId);
         }
+    }
+    public static string? ConfigurationError(ManualTaskCreationOptions options, IReadOnlyList<string> stations)
+    {
+        var errors = stations.Select(id =>
+        {
+            var choice = options.Stations.SingleOrDefault(s => s.StationId == id);
+            return choice is null ? id + "：未配置该工位的取货站点映射。" :
+                choice.ConfigurationValid ? null : id + "：" + choice.Explanation;
+        }).Where(error => error is not null).ToArray();
+        if (errors.Length == 0) return null;
+        var message = "工位配置校验未通过：\n" + string.Join("\n", errors);
+        if (message.Contains("DumperExit", StringComparison.Ordinal))
+            message += "\n配置位置：当前发布包 Service/appsettings.json → HandshakeExecution → DumperExit。ResourceIds 对应地图编辑中的共享区域资源ID和已核定边界；BodyProfiles 填写实测车辆及最大载箱包络。当前网页暂无这两项编辑表单，配置修改后需受控重启并重新完成启动恢复核对。";
+        return message;
     }
     private async Task<bool> HasActiveAsync(CancellationToken ct)
     {

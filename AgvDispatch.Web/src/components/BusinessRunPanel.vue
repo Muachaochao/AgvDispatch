@@ -13,6 +13,11 @@ const key='agv-business-run-start';
 try{pending.value=JSON.parse(sessionStorage.getItem(key)??'null');}catch{error.value='原申请记录无法读取，请先查询后台原运行。';}
 const active=computed(()=>current.value&&current.value.stage!=='Completed');
 const locked=computed(()=>busy.value||!!active.value||!!pending.value);
+const configurationBlocks=computed(()=>{
+  const selected=pending.value?.stations??order.value.split(',');
+  return (props.options?.stations??[]).filter(s=>selected.includes(s.stationId)&&s.configurationValid===false);
+});
+const needsExitConfiguration=computed(()=>configurationBlocks.value.some(s=>s.explanation.includes('DumperExit')));
 const labels:Record<string,string>={Preparing:'准备中',Waiting:'等待呼叫 / 待机',Creating:'受理呼叫中',Executing:'业务执行中',ReturnSending:'准备返回待机',Returning:'返回待机中',Hold:'暂停待核对',Completed:'收尾完成，已回待机'};
 let timer:ReturnType<typeof setInterval>|undefined;
 let disposed=false, reading=false;
@@ -70,6 +75,12 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);});
     <p>无待处理呼叫、返箱责任和倒料占用全部闭合后返回待机点。返途中新增呼叫，到待机点后接续；停止收尾不会取消当前车辆动作。</p>
     <p v-if="mode==='Cycle'">请启动新版 PLC 人工联调台 S7 服务（127.0.0.1:10200）。工具模拟呼叫、箱体和倒料反馈，真实业务动作仍由调度执行，模拟反馈不作为物理验收证据。</p>
     <p v-if="!store.submissionEnabled" class="inline-warning">Web任务提交未启用，请使用业务启动配置。</p>
+    <section v-if="configurationBlocks.length" class="inline-warning" role="status">
+      <strong>启动前需要补齐的配置</strong>
+      <ul><li v-for="s in configurationBlocks" :key="s.stationId"><b>{{s.stationId}}</b><ul><li v-for="(issue,i) in s.explanation.split('；')" :key="i">{{issue}}</li></ul></li></ul>
+      <p v-if="needsExitConfiguration">配置位置：当前发布包 Service/appsettings.json → HandshakeExecution → DumperExit。ResourceIds 对应地图编辑中的共享区域资源ID及已核定边界；BodyProfiles 为实测车辆和最大载箱包络。当前网页暂无这两项编辑表单，修改后需受控重启并重新核对本次启动恢复。</p>
+      <p>补齐后点击弹窗底部“刷新条件”，再重试原申请。</p>
+    </section>
     <label class="confirm"><input v-model="confirmed" type="checkbox" :disabled="(!!active&&current?.stage!=='Hold')||busy"/>{{current?.stage==='Hold'?'已现场核对原运行，申请结束记录；后台仍检查任务、握手及待机停靠':'已核对当前车辆、路线和现场条件，确认启动所选运行模式'}}</label>
     <div class="buttons">
       <button :disabled="busy" @click="read">查询原运行</button>
@@ -77,7 +88,7 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);});
       <button :disabled="busy||!active||(!!current?.stopRequested&&current?.stage!=='Hold')||!online" @click="stop">停止新增呼叫并收尾</button>
       <button v-if="current?.stage==='Hold'" :disabled="busy||!confirmed||!online" @click="closeReviewed">核对原运行并结束记录</button>
     </div>
-    <p v-if="error" class="inline-warning" role="alert">{{error}}</p>
+    <p v-if="error" class="inline-warning" role="alert" style="white-space:pre-line;overflow-wrap:anywhere">{{error}}</p>
     <div v-if="current" class="run-status" role="status">
       <strong>{{labels[current.stage]??current.stage}} {{current.stopRequested?' · 已请求停止新增':''}}</strong>
       <p>{{current.message}}</p>

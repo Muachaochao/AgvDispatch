@@ -113,6 +113,17 @@ Check(business.IsBusiness&&business.ServiceArguments("test").Contains("--TaskCre
 var monitor=AgvDispatch.WebHost.WebLocalLaunchMode.Parse([]);
 Check(!monitor.IsBusiness&&monitor.ServiceArguments("test").Contains("--Plc:AllowWrites=False"),"default launch never restores send permission");
 await Reject(()=>Task.FromResult(AgvDispatch.WebHost.WebLocalLaunchMode.Parse(["--business-run-vehicle","AGV-01","--navigation-test-vehicle","AGV-01"])),"isolated and business mode cannot coexist");
+var badOptions = new ManualTaskCreationOptions("map", "v1", false, "blocked", "DUMPER-001", "LM5", "LM6",
+    [new("CNC-001", "LM2", false, "第7步：缺少 DumperExit.ResourceIds；缺少 DumperExit.BodyProfiles"),
+     new("CNC-002", "LM4", false, "第7步：其他业务动作参数缺失")], []);
+var explanation = BusinessRunPort.ConfigurationError(badOptions, ["CNC-001", "CNC-002"])!;
+Check(explanation.Contains("DumperExit.ResourceIds") && explanation.Contains("DumperExit.BodyProfiles") && explanation.Contains("Service/appsettings.json"), "configuration rejection retains exact missing fields and actual configuration location");
+Check(explanation.Contains("CNC-002：第7步：其他业务动作参数缺失"), "all selected station configuration errors are reported together");
+Check(!BusinessRunPort.ConfigurationError(badOptions, ["CNC-002"])!.Contains("CNC-001"), "unselected station errors are excluded");
+Check(BusinessRunPort.ConfigurationError(badOptions, ["CNC-999"])!.Contains("未配置该工位"), "missing station mapping is explained explicitly");
+var validPreview = Enumerable.Range(1, 9).Select(i => new ManualTaskStepPreview(i, default, "step", "", "", "", "", "", "", "")).ToArray();
+var noCall = badOptions with { Stations = [new("CNC-001", "LM2", false, "尚无PLC呼叫") { PreviewSteps = validPreview }] };
+Check(BusinessRunPort.ConfigurationError(noCall, ["CNC-001"]) is null, "waiting for a PLC call is not misreported as missing configuration");
 Console.WriteLine($"BusinessRunSmokeTest passed {checks} checks. Fake ports only; no PLC or AGV commands.");
 
 sealed class Port : IBusinessRunPort

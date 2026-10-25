@@ -23,7 +23,7 @@ export interface TaskDetail { cancellation?:{requestId:string;reason:string;requ
   plcConditions: { stationId: string; variableName: string; currentValue: boolean | null; expectedValue: boolean; quality: string; satisfied: boolean }[] }
 export interface CreationOptions { available: boolean; explanation: string; mapId: string; mapVersionId: string; parameterRevision: string;
   waitingSite?: string; dumpingSite?: string;
-  stations: { stationId: string; pickupSite: string; available: boolean; explanation: string; pickupReachableVehicleIds?: string[] }[]; vehicles: { vehicleId: string; label: string; available: boolean; explanation: string }[] }
+  stations: { stationId: string; pickupSite: string; available: boolean; configurationValid?: boolean; explanation: string; pickupReachableVehicleIds?: string[] }[]; vehicles: { vehicleId: string; label: string; available: boolean; explanation: string }[] }
 export interface RoutePreview { verified: boolean; message: string; mapIssue: string; legs: { sequence: number; name: string; logicalPath: string; vendorPath: string; message: string }[];
   segments: { edgeId: string; status: string; message: string }[] }
 export interface Alarm { alarmId: string; sourceType: string; sourceId: string; code: string; title: string; message: string; severity: string; status: string; firstOccurredAt: string; lastObservedAt: string; acknowledgedAt: string | null; recoveredAt: string | null }
