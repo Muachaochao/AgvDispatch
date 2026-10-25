@@ -48,6 +48,7 @@ New-Item -ItemType Directory -Path (Join-Path $bundleOutput 'Web/licenses') -For
 Copy-Item -LiteralPath (Join-Path $bundleProject 'AgvDispatch.Web/src/vendor/agv-web-visible/LICENSE'),(Join-Path $bundleProject 'AgvDispatch.Web/src/vendor/agv-web-visible/UPSTREAM.md') -Destination (Join-Path $bundleOutput 'Web/licenses')
 New-Item -ItemType Directory -Path (Join-Path $bundleOutput 'Docs') -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $bundleProject 'docs/architecture/创建任务按需运行与交替循环-20261025.md') -Destination (Join-Path $bundleOutput 'Docs')
+Copy-Item -LiteralPath (Join-Path $bundleProject 'docs/architecture/循环模拟箱体原动作反馈-20261025.md'),(Join-Path $bundleProject 'docs/architecture/循环测试原申请核对收尾-20261025.md') -Destination (Join-Path $bundleOutput 'Docs')
 Copy-Item -LiteralPath (Join-Path $bundleProject 'docs/architecture/Robokit厂家道路属性只读与双向核对-20261023.md') -Destination (Join-Path $bundleOutput 'Docs')
 Copy-Item -LiteralPath (Join-Path $bundleProject 'docs/architecture/车端站点选择与3051单次导航-20261023.md') -Destination (Join-Path $bundleOutput 'Docs/单次导航说明.md')
 Copy-Item -LiteralPath (Join-Path $bundleProject 'docs/architecture/PLC空载联调缺陷修复与操作-20261025.md') -Destination (Join-Path $bundleOutput 'Docs')
