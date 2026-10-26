@@ -52,11 +52,14 @@ try{
  const recoveryShot=await rpc('Page.captureScreenshot',{format:'png'});writeFileSync(resolve(profile,'recovery-review.png'),Buffer.from(recoveryShot.data,'base64'));
  await evaluate(`document.querySelectorAll('.recovery-form input[type=checkbox]')[4].click()`);await click('请求后台核验并放行本批次');await wait(()=>mutations.length===2,'release');
  check('Release targets the original batch',mutations[1].body.sessionId==='original-session');
- await rpc('Page.navigate',{url:base+'/#/tasks'});await wait(()=>evaluate(`document.querySelector('.run-status')?.textContent.includes('original-run')`),'persistent run');
- check('Hold and original task remain visible outside creation dialog',await evaluate(`document.querySelector('.run-status').textContent.includes('暂停待核对')&&document.querySelector('.run-status a').getAttribute('href').includes('TASK-original')&&!document.querySelector('.console-dialog')`));
+ await rpc('Page.navigate',{url:base+'/#/tasks'});await wait(()=>evaluate(`Boolean(document.querySelector('.management-table'))`),'task list');
+ check('Task list stays focused without duplicate run controls',await evaluate(`!document.querySelector('.business-run')&&!document.body.textContent.includes('业务任务执行取箱')`));
  const runShot=await rpc('Page.captureScreenshot',{format:'png',captureBeyondViewport:true});writeFileSync(resolve(profile,'business-hold.png'),Buffer.from(runShot.data,'base64'));
+ await fresh();await click('创建任务');await click('正常按需运行');
+ await wait(()=>evaluate(`document.querySelector('.run-status')?.textContent.includes('original-run')`),'run remains in creation dialog');
+ check('Original Hold and recovery operations remain inside creation dialog',await evaluate(`document.querySelector('.run-status').textContent.includes('暂停待核对')&&document.querySelector('.run-status a').getAttribute('href').includes('TASK-original')`));
  await fresh();await evaluate(`sessionStorage.setItem('agv-web-pending-request',JSON.stringify({requestId:'original-uncertain-request',stationId:'CNC-001',requestedVehicleId:'AGV-01',priority:50,mapId:'M',mapVersionId:'V',parameterRevision:'R'}))`);
- await rpc('Page.reload');await wait(()=>evaluate(`Boolean(document.querySelector('.run-status'))`),'reload');await fresh();await click('创建任务');
+ await rpc('Page.reload');await wait(()=>evaluate(`Boolean(document.querySelector('.management-table'))`),'reload');await fresh();await click('创建任务');
  await click('重试原申请');await wait(()=>mutations.length===3,'original retry');
  check('Reload retries the original creation request ID',mutations[2].body.requestId==='original-uncertain-request');
  const shot=await rpc('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});writeFileSync(resolve(profile,'task-recovery.png'),Buffer.from(shot.data,'base64'));

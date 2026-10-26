@@ -197,8 +197,6 @@ watch(() => route.query.create, create => {
     </footer>
   </section>
 
-  <BusinessRunPanel v-if="!store.demoMode&&(!formOpen||creationMode==='Single')" mode="Demand" :options="options" status-only />
-  <p>业务任务执行取箱、倒料、返箱与 PLC 握手；<RouterLink to="/navigation-test">单车导航调试</RouterLink>仅用于独立站点移动。模式启用及执行条件由后台核验。</p>
   <ConsoleDialog v-if="showTaskDialog" title="任务运行详情 · 九步、条件与执行证据" wide @close="showTaskDialog = false">
     <TaskExecutionDetails v-if="detail" :detail="detail" :fresh="store.fresh" :now="store.now" />
     <p v-else class="empty-panel">{{ store.error || '正在读取任务详情…' }}</p>
