@@ -191,9 +191,15 @@ public sealed class TrafficControlNamedPipeServer(
         if (request.Operation is "SubmitForkTest" or "SubmitJackTest" or "PreviewNavigationTest" or "SubmitNavigationTest" &&
             plcCycleTest is not null && (await plcCycleTest.ReadAsync(cancellationToken)).Enabled)
             throw new InvalidOperationException("PLC空载联调模式独占测试车辆；手动导航或顶升请先停止该模式并明确切换启动方式。");
-        if (request.Operation is "SubmitForkTest" or "SubmitJackTest" or "PreviewNavigationTest" or "SubmitNavigationTest" &&
-            businessRun is not null && (await businessRun.ReadAsync(cancellationToken)).Current is { Stage: not "Completed" })
-            throw new InvalidOperationException("业务运行尚未完成待机收尾，不能交叉发送单车导航或顶升动作。");
+        if (request.Operation is "PreviewNavigationTest" or "SubmitNavigationTest" &&
+            businessRun is not null && (await businessRun.ReadAsync(cancellationToken)).Current is { Stage: not "Completed" } retainedRun)
+        {
+            // Only the explicitly enabled forklift test may coexist with another parked
+            // vehicle's retained responsibility. The service rechecks its owner live;
+            // this does not close the run, release resources or resume business execution.
+            await (navigationTest ?? throw new InvalidOperationException("业务运行尚未完成待机收尾。"))
+                .ValidateRetainedBusinessRunAsync(retainedRun.Plan.VehicleId, cancellationToken);
+        }
 
         return request.Operation switch
         {

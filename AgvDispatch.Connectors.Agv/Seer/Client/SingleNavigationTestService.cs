@@ -56,9 +56,26 @@ public sealed partial class SingleNavigationTestService : ISingleNavigationTestS
             throw new InvalidOperationException("只能操作后台明确指定的单台测试车。");
         if(!_options.Enabled || _options.GetConfigurationError() is { } || !_connections.TryGet(vehicle,out var client))
             throw new InvalidOperationException("测试车通信配置不可用。");
-        if((await _tasks.GetActiveTasksAsync(ct)).Count!=0)
-            throw new InvalidOperationException("存在未结束业务任务，不能进行独立导航测试。");
+        if((await _tasks.GetActiveTasksAsync(ct)).Any(task =>
+            string.Equals(task.VehicleId,vehicle,StringComparison.OrdinalIgnoreCase)))
+            throw new InvalidOperationException("测试车仍有未结束业务任务，不能进行独立导航测试。");
         return client;
+    }
+    public async Task ValidateRetainedBusinessRunAsync(string retainedVehicleId,CancellationToken ct)
+    {
+        if(!_settings.Enabled||!_settings.ForkEnabled||!_settings.BusinessExecutionDisabled)
+            throw new InvalidOperationException("仅在已核定的叉车独立测试入口中，才能保留另一台车的业务责任。");
+        if(string.IsNullOrWhiteSpace(retainedVehicleId)||
+            string.Equals(retainedVehicleId,_settings.VehicleId,StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("原业务运行属于当前测试车，不能交叉测试。");
+        if(!_options.Enabled||_options.GetConfigurationError() is { }||
+            !_connections.TryGet(retainedVehicleId,out var retained))
+            throw new InvalidOperationException("原业务车辆通信不可用，无法确认其当前状态。");
+        var (telemetry,_)=await retained.PollAsync(ct);
+        using var tasks=await retained.RequestAsync(1110,new{},ct);
+        RequireIdleTaskList(tasks.RootElement);
+        if(!Idle(telemetry))
+            throw new InvalidOperationException("原业务车辆未确认静止、无报警且任务终态，暂不能开始叉车测试。");
     }
     private void RequireCommissioningMapRunning()
     {

@@ -56,6 +56,7 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);});
  <h2>单次导航测试</h2>
  <p>从车端地图选择起点和终点，由车辆规划并沿可通行路线行驶，可经过中间站点。速度沿用车端配置，请由厂家先设置测试速度。</p>
  <p class="notice">本页不依赖PLC业务任务，不修改车端地图、不抢占控制权、不启动自动调度。每次只执行一个导航任务。</p>
+ <p v-if="fork?.supported" class="notice">当前为叉车独立测试：{{fork.vehicleId}}。其他车辆的原任务和占用继续保留；测试路线与升降范围须避开原车、载荷及已占用区域。</p>
  <p v-if="error||readError" role="alert" class="error">{{error||readError}}</p>
  <section>
   <h3>选择车端站点</h3>
@@ -84,7 +85,7 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);});
    <p>车端地图：{{preview.robotMap}}<br/>MD5：{{preview.robotMapMd5}}</p>
    <p>以上是核验时车端返回的站点顺序，实际路线由车端规划执行；发送前会再次核验。</p>
    <p>{{valid?'核验有效':'核验已过期，请重新核验'}} · 有效至 {{new Date(preview.expiresAt).toLocaleTimeString()}}</p>
-   <label><input v-model="confirmed" type="checkbox" :disabled="!valid||busy"/>已确认整条测试路线区域空闲、厂家在场，允许这台车执行本次导航</label>
+   <label><input v-model="confirmed" type="checkbox" :disabled="!valid||busy"/>已确认整条测试路线区域空闲、避开其他车及已占用区域，厂家在场，允许这台车执行本次导航</label>
    <button class="send" :disabled="!canSubmit" @click="submit">发送单次导航</button>
   </div>
  </section>

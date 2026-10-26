@@ -60,4 +60,6 @@ public interface ISingleNavigationTestService
     Task<NavigationTestPreview> PreviewAsync(TrafficUserContext user, NavigationTestQuery query, CancellationToken ct);
     Task<NavigationTestRecord> SubmitAsync(TrafficUserContext user, NavigationTestSubmit request, CancellationToken ct);
     Task<NavigationTestRecord> CancelAsync(TrafficUserContext user, NavigationTestCancel request, CancellationToken ct);
+    Task ValidateRetainedBusinessRunAsync(string retainedVehicleId, CancellationToken ct) =>
+        throw new NotSupportedException("独立叉车测试后台未更新。");
 }

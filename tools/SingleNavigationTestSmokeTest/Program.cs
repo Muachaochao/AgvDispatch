@@ -137,7 +137,10 @@ robot.Away=true;await Reject(()=>service.PreviewAsync(user,query,default),"Vehic
 robot.Indirect=true;await Reject(()=>service.PreviewAsync(user,query,default),"Unknown intermediary rejected");robot.Indirect=false;
 robot.ActiveForeign=true;await Reject(()=>service.PreviewAsync(user,query,default),"Foreign running task rejected");robot.ActiveForeign=false;
 robot.MissingTasks=true;await Reject(()=>service.PreviewAsync(user,query,default),"Missing task list rejected");robot.MissingTasks=false;
-active.Busy=true;await Reject(()=>service.PreviewAsync(user,query,default),"Active PLC business task rejected");active.Busy=false;
+active.Busy=true;await Reject(()=>service.PreviewAsync(user,query,default),"Active task owned by test vehicle rejected");
+active.BusyVehicle="OTHER";var otherVehicleBusiness=await service.PreviewAsync(user,query,default);
+Check(otherVehicleBusiness.Route.SequenceEqual(new[]{"LM1","LM2"}),"Parked other vehicle's retained business task does not block isolated test");
+active.Busy=false;
 var preview=await service.PreviewAsync(user,query,default);Check(robot.Sends==0,"Preview sends no navigation command");
 robot.WrappedTasks=true; // exercise submit, status, cancel, restart with the real envelope
 await Reject(()=>service.SubmitAsync(user,new(preview.PreviewId,false),default),"Explicit site confirmation required");
@@ -240,7 +243,13 @@ robot.DropForkReply=false;await forkService.SubmitForkAsync(user,ForkRequest("Do
 Console.WriteLine($"PASS {count} checks; simulation only, no physical motion");
 
 sealed class Tasks:IActiveTaskLookup
-{public bool Busy;public Task<IReadOnlyList<ActiveDispatchTask>> GetActiveTasksAsync(CancellationToken ct)=>Task.FromResult<IReadOnlyList<ActiveDispatchTask>>(Busy?[null!]:[]);}
+{
+    public bool Busy;
+    public string BusyVehicle="SIM";
+    public Task<IReadOnlyList<ActiveDispatchTask>> GetActiveTasksAsync(CancellationToken ct)=>
+        Task.FromResult<IReadOnlyList<ActiveDispatchTask>>(Busy?
+            [new("TASK-SIM","CNC-001",BusyVehicle,null,DispatchTaskStage.WaitingForPlcConfirmation,DateTimeOffset.Now,DateTimeOffset.Now)]:[]);
+}
 sealed class Gate:IMapExecutionGate
 {public bool Open=true;public MapExecutionMode Mode=>MapExecutionMode.Running;public bool CanStartNewWork=>Open;public ValueTask<IDisposable?> EnterAsync(MapExecutionOperation op,CancellationToken ct)=>ValueTask.FromResult<IDisposable?>(Open?new Lease():null);public ValueTask<IDisposable> EnterControlAsync(CancellationToken ct)=>ValueTask.FromResult<IDisposable>(new Lease());public void SetMode(MapExecutionMode m){}sealed class Lease:IDisposable{public void Dispose(){}}}
 sealed class Robot:IAsyncDisposable
