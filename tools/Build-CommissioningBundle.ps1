@@ -1,5 +1,6 @@
 ﻿param([string]$OutputDirectory='', [ValidateRange(1024,65535)][int]$WebPort=5199)
 $ErrorActionPreference='Stop'
+$bundleServiceConfigFiles=@($env:AGV_BUNDLE_SERVICE_CONFIG_FILE -split [IO.Path]::PathSeparator | Where-Object { $_ })
 $bundleProject=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $bundleStamp=Get-Date -Format yyyyMMdd-HHmmss
 $bundleId="commissioning-$bundleStamp"
@@ -29,6 +30,20 @@ foreach($bundlePart in $bundleParts){
     $bundleVersion=[Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $bundleDestination "$($bundlePart.Project).dll")).ProductVersion
     if($bundleVersion -ne $bundleId){throw "组件批次不匹配：$($bundlePart.Project)=$bundleVersion"}
 }
+$bundleSiteConfigurationImported=$false
+$bundleServiceRoot=[IO.Path]::GetFullPath((Join-Path $bundleProject 'AgvDispatch.Service'))
+foreach($bundleRequestedConfig in $bundleServiceConfigFiles){
+    $bundleConfigSource=[IO.Path]::GetFullPath($bundleRequestedConfig)
+    if(!(Test-Path -LiteralPath $bundleConfigSource -PathType Leaf)){throw "指定的服务配置不存在：$bundleConfigSource"}
+    $bundleConfigRelative=[IO.Path]::GetRelativePath($bundleServiceRoot,$bundleConfigSource)
+    if([IO.Path]::IsPathRooted($bundleConfigRelative) -or $bundleConfigRelative -eq '..' -or
+        $bundleConfigRelative.StartsWith('..'+[IO.Path]::DirectorySeparatorChar) -or
+        $bundleConfigRelative -notmatch '^config[\\/][^\\/]+\.csv$'){throw "服务配置必须是 AgvDispatch.Service/config 下的 CSV：$bundleConfigSource"}
+    $bundleConfigTarget=Join-Path (Join-Path $bundleOutput 'Service') $bundleConfigRelative
+    New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($bundleConfigTarget)) -Force | Out-Null
+    Copy-Item -LiteralPath $bundleConfigSource -Destination $bundleConfigTarget
+    $bundleSiteConfigurationImported=$true
+}
 $bundleService=Get-Content -LiteralPath (Join-Path $bundleProject 'AgvDispatch.Service/appsettings.example.json') -Raw | ConvertFrom-Json
 $bundleService.Security.PipeName=$bundlePipe
 $bundleService | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $bundleOutput 'Service/appsettings.json') -Encoding utf8
@@ -49,6 +64,7 @@ Copy-Item -LiteralPath (Join-Path $bundleProject 'AgvDispatch.Web/src/vendor/agv
 New-Item -ItemType Directory -Path (Join-Path $bundleOutput 'Docs') -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $bundleProject 'docs/architecture/创建任务按需运行与交替循环-20261025.md') -Destination (Join-Path $bundleOutput 'Docs')
 Copy-Item -LiteralPath (Join-Path $bundleProject 'docs/architecture/循环模拟箱体原动作反馈-20261025.md'),(Join-Path $bundleProject 'docs/architecture/循环测试原申请核对收尾-20261025.md') -Destination (Join-Path $bundleOutput 'Docs')
+Copy-Item -LiteralPath (Join-Path $bundleProject 'docs/architecture/倒料区慢查询交接修复-20261026.md') -Destination (Join-Path $bundleOutput 'Docs')
 Copy-Item -LiteralPath (Join-Path $bundleProject 'docs/architecture/Robokit厂家道路属性只读与双向核对-20261023.md') -Destination (Join-Path $bundleOutput 'Docs')
 Copy-Item -LiteralPath (Join-Path $bundleProject 'docs/architecture/车端站点选择与3051单次导航-20261023.md') -Destination (Join-Path $bundleOutput 'Docs/单次导航说明.md')
 Copy-Item -LiteralPath (Join-Path $bundleProject 'docs/architecture/PLC空载联调缺陷修复与操作-20261025.md') -Destination (Join-Path $bundleOutput 'Docs')
@@ -131,7 +147,7 @@ if "%~2"=="" (
 if errorlevel 1 pause
 '@ | Set-Content -LiteralPath (Join-Path $bundleOutput 'Start-Plc-Cycle-Test.cmd') -Encoding ascii
 $bundleFiles=@(Get-ChildItem -LiteralPath $bundleOutput -File -Recurse | ForEach-Object {@{path=[IO.Path]::GetRelativePath($bundleOutput,$_.FullName);sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant();bytes=$_.Length}})
-@{schema='agv-commissioning-release';version=1;releaseId=$bundleId;createdAt=(Get-Date).ToString('o');runtime='win-x64 self-contained';pipeName=$bundlePipe;port=$WebPort;files=$bundleFiles;siteConfigurationImported=$false;deviceExecutionEnabled=$false} | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $bundleOutput 'release-manifest.json') -Encoding utf8
+@{schema='agv-commissioning-release';version=1;releaseId=$bundleId;createdAt=(Get-Date).ToString('o');runtime='win-x64 self-contained';pipeName=$bundlePipe;port=$WebPort;files=$bundleFiles;siteConfigurationImported=$bundleSiteConfigurationImported;deviceExecutionEnabled=$false} | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $bundleOutput 'release-manifest.json') -Encoding utf8
 Write-Output "Candidate=$bundleOutput"
 Write-Output "Release=$bundleId"
 Write-Output "Evidence=$bundleEvidence"
