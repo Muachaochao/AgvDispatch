@@ -12,6 +12,8 @@ using AgvDispatch.Infrastructure.Traffic;
 using AgvDispatch.Service;
 using SqlSugar;
 using Microsoft.Extensions.Logging.Abstractions;
+using System.Collections.Concurrent;
+using System.Text.Json;
 
 var checks = 0;
 void Check(bool condition, string name)
@@ -98,6 +100,131 @@ using (var aliases = new Fixture())
     aliases.Vehicles.Set("AGV-1", 10, 0, "LM-PICK-1");
     await aliases.FinishReadyAsync(task, DispatchTaskStepType.CompletePlcHandshake);
     Check((await aliases.TaskAsync(task)).Stage == DispatchTaskStage.Completed, "合法原工位别名的28阶段任务正常收尾，不永久停在返箱确认");
+}
+
+using (var slow = new Fixture())
+{
+    await slow.InitializeAsync();
+    var task = await slow.PrepareReleaseAsync();
+    var original = await slow.CommandAsync(task);
+    slow.Preflight.Delay = TimeSpan.FromMilliseconds(3400);
+    var calls = slow.Preflight.Calls;
+    await using (var polling = new ObservationPulse(() =>
+    {
+        slow.Vehicles.Set("AGV-1", 4, 0, null);
+        slow.Signals.Refresh();
+    }))
+    {
+        await Task.Delay(550);
+        await slow.ExitAsync(task, false);
+    }
+    Check(slow.Preflight.Calls == calls + 1 && await slow.ReturnPhaseAsync(task) == "ExitHandoverComplete",
+        "地图核验超过3秒且定位/PLC每500毫秒更新时，重新取得新鲜双帧并完成本轮交接");
+    var released = await slow.Db.Queryable<TaskRuntimeEventEntity>().Where(e => e.TaskId == task && e.Kind == "EquipmentReleased").SingleAsync();
+    using (var evidence = JsonDocument.Parse(released.EvidenceJson ?? throw new InvalidOperationException("缺少释放事件证据。")))
+    {
+        var proof = evidence.RootElement.GetProperty("Proof").Deserialize<TaskDumperExitProof>()!;
+        Check(proof.First.ObservedAt > slow.Preflight.StartedAt && proof.Second.ObservedAt > proof.First.ObservedAt &&
+            proof.CapturedAt - proof.First.ObservedAt <= TimeSpan.FromSeconds(3) &&
+            proof.CapturedAt - proof.VendorObservedAt <= TimeSpan.FromSeconds(3),
+            "慢查询交接证据使用查询开始后的两次独立新鲜定位，没有放宽3秒有效期或复用旧首帧");
+        Check(proof.PlcSignals.All(s => s.Value == false && s.Quality == "Good" && s.ObservedAt >= slow.Preflight.StartedAt),
+            "慢查询后的原子交接仍保存并复核本轮新鲜PLC闭合证据");
+    }
+    var after = await slow.CommandAsync(task);
+    Check(await slow.EquipmentOwnerAsync() is null && await slow.LeaseCountAsync(task, "DUMP-AREA") == 0 &&
+        await slow.LeaseCountAsync(task, "RETURN-1") == 1 && after.CommandId == original.CommandId &&
+        after.AttemptCount == original.AttemptCount && slow.Agv.Creates == 0,
+        "慢查询恢复仅交接倒料归属及倒料路权，保留返程责任且不重发车辆命令");
+}
+
+using (var stoppedPolling = new Fixture())
+{
+    await stoppedPolling.InitializeAsync();
+    var task = await stoppedPolling.PrepareReleaseAsync();
+    stoppedPolling.Preflight.Delay = TimeSpan.FromMilliseconds(3300);
+    var calls = stoppedPolling.Preflight.Calls;
+    await Task.Delay(120);
+    stoppedPolling.Vehicles.Set("AGV-1", 4, 0, null);
+    await using (var plcPolling = new ObservationPulse(stoppedPolling.Signals.Refresh))
+        await ExpectHold(() => stoppedPolling.ExitAsync(task, false), "慢查询后定位停止更新时，有界等待结束并保持原占用");
+    var checkpoint = await stoppedPolling.ReturnCheckpointAsync(task);
+    Check(stoppedPolling.Preflight.Calls == calls + 1 && checkpoint.Phase == "ReleaseDumper" &&
+        checkpoint.Reason.Contains("两次新鲜出区定位") && await stoppedPolling.EquipmentOwnerAsync() == task &&
+        await stoppedPolling.LeaseCountAsync(task, "DUMP-AREA") > 0 && await stoppedPolling.ReleaseCountAsync(task) == 0,
+        "定位停更保留ReleaseDumper阶段并显示明确原因，不以旧出区记录替代新鲜双帧");
+}
+
+using (var lowConfidence = new Fixture())
+{
+    await lowConfidence.InitializeAsync();
+    var task = await lowConfidence.PrepareReleaseAsync();
+    var confidence = 0.99;
+    lowConfidence.Preflight.Delay = TimeSpan.FromMilliseconds(3300);
+    lowConfidence.Preflight.BeforeCheck = () => Interlocked.Exchange(ref confidence, 0.85);
+    await using (var polling = new ObservationPulse(() =>
+    {
+        lowConfidence.Vehicles.Set("AGV-1", 4, 0, null, confidence: Volatile.Read(ref confidence));
+        lowConfidence.Signals.Refresh();
+    }))
+    {
+        await Task.Delay(550);
+        await ExpectHold(() => lowConfidence.ExitAsync(task, false), "查询期间定位置信度下降时，新取得的双帧仍需满足原门限");
+    }
+    var checkpoint = await lowConfidence.ReturnCheckpointAsync(task);
+    Check(checkpoint.Phase == "ReleaseDumper" && checkpoint.Reason.Contains("定位置信度至少0.9") &&
+        await lowConfidence.EquipmentOwnerAsync() == task && await lowConfidence.LeaseCountAsync(task, "DUMP-AREA") > 0 &&
+        await lowConfidence.ReleaseCountAsync(task) == 0,
+        "低置信度保持倒料设备和区域，记录所需0.9门限而非静默等待");
+}
+
+using (var changedMap = new Fixture())
+{
+    await changedMap.InitializeAsync();
+    var task = await changedMap.PrepareReleaseAsync();
+    var original = changedMap.Map.Current!;
+    changedMap.Preflight.Delay = TimeSpan.FromMilliseconds(200);
+    changedMap.Preflight.BeforeCheck = () => changedMap.Map.Replace(new(original.MapId, "V2", original.Definition, DateTimeOffset.UtcNow));
+    await using (var polling = new ObservationPulse(() =>
+    {
+        changedMap.Vehicles.Set("AGV-1", 4, 0, null);
+        changedMap.Signals.Refresh();
+    }))
+    {
+        await Task.Delay(550);
+        await ExpectHold(() => changedMap.ExitAsync(task, false), "外部查询期间运行地图改变时，不把新图定位拼入原交接证据");
+    }
+    Check((await changedMap.ReturnCheckpointAsync(task)).Reason.Contains("运行地图已变化") &&
+        await changedMap.ReturnPhaseAsync(task) == "ReleaseDumper" && await changedMap.EquipmentOwnerAsync() == task &&
+        await changedMap.LeaseCountAsync(task, "DUMP-AREA") > 0 && await changedMap.ReleaseCountAsync(task) == 0,
+        "地图变化明确保留原阶段、设备归属及倒料路权");
+}
+
+using (var repeatedCycles = new Fixture())
+{
+    await repeatedCycles.InitializeAsync();
+    var completed = new List<string>();
+    for (var round = 1; round <= 3; round++)
+        foreach (var station in new[] { "CNC-001", "CNC-002" })
+        {
+            var task = await repeatedCycles.PrepareReleaseAsync(station, "AGV-1");
+            await repeatedCycles.FinishExitAsync(task);
+            await repeatedCycles.PlaceAsync(task);
+            await repeatedCycles.FinishReadyAsync(task, DispatchTaskStepType.CompletePlcHandshake);
+            completed.Add(task);
+            var steps = await repeatedCycles.Writer.GetStepsAsync(task, default);
+            Check((await repeatedCycles.TaskAsync(task)).Stage == DispatchTaskStage.Completed && steps.Count == 9 &&
+                steps.All(s => s.Status == DispatchTaskStepStatus.Completed),
+                $"同一车辆连续第{round}轮{station}九步任务均完成，下一轮使用独立任务及握手");
+            Check(await repeatedCycles.EquipmentOwnerAsync() is null && await repeatedCycles.LeaseCountAsync(task) == 0 &&
+                await repeatedCycles.ReleaseCountAsync(task) == 1 &&
+                new[] { "FullBoxRequestAcknowledged", "FullBoxRemoved", "EmptyBoxTaskAcknowledged", "EmptyBoxPlaced" }.All(s => !repeatedCycles.Signals.Get(station, s)) &&
+                TaskHandshakeSignals.Dumper.All(s => !repeatedCycles.Signals.Get("DUMPER", s)),
+                $"同一车辆连续第{round}轮{station}设备、路权及PLC输出全部闭合，无上轮占用残留");
+        }
+    Check(completed.Distinct().Count() == 6 && await repeatedCycles.Db.Queryable<TaskEquipmentClaimEntity>().CountAsync() == 0 &&
+        await repeatedCycles.Db.Queryable<TrafficResourceLeaseEntity>().CountAsync() == 0,
+        "连续三轮A/B共六次同车任务结束后，没有共享设备归属或交通租约残留");
 }
 
 using var fixture = new Fixture();
@@ -429,6 +556,12 @@ sealed class Fixture : IDisposable
         var step = (await Writer.GetStepsAsync(task, default)).Single(s => s.StepType == DispatchTaskStepType.ReturnEmptyBox);
         return (await Store.GetAsync(task, step.StepId, default))?.Phase ?? "";
     }
+    public async Task<HandshakeCheckpoint> ReturnCheckpointAsync(string task)
+    {
+        var step = (await Writer.GetStepsAsync(task, default)).Single(s => s.StepType == DispatchTaskStepType.ReturnEmptyBox);
+        return (await Store.GetAsync(task, step.StepId, default))!;
+    }
+    public Task<int> ReleaseCountAsync(string task) => Db.Queryable<TaskRuntimeEventEntity>().Where(e => e.TaskId == task && e.Kind == "EquipmentReleased").CountAsync();
     public async Task TickAsync(string task) { Signals.Refresh(); await Engine.ProcessAsync(await CurrentAsync(task), default); }
     public async Task SetReadyAsync(string task, DispatchTaskStepType type)
     {
@@ -483,11 +616,11 @@ sealed class Fixture : IDisposable
     {
         var current = await CurrentAsync(task);
         if (current.StepType != DispatchTaskStepType.ReturnEmptyBox) throw new Exception("Return step not ready");
-        var vehicle = current.VehicleId!; var index = vehicle[^1].ToString();
-        await Traffic.RecordRouteAsync(new(current.StepId, task, vehicle, "DUMP", "PICK-" + index,
+        var vehicle = current.VehicleId!; var pickup = PickupNode(current.StationId); var index = pickup.Id["PICK-".Length..];
+        await Traffic.RecordRouteAsync(new(current.StepId, task, vehicle, "DUMP", pickup.Id,
             ["DUMP-EXIT", "EXIT-PICK-" + index], ["DUMP-AREA", "RETURN-" + index], false, "isolated frozen return route") { MapId = "MAP", MapVersionId = "V1" }, default);
         if (!(await Traffic.TryAcquireAsync(current.StepId, task, vehicle, ["DUMP-AREA", "RETURN-" + index], default)).Acquired) throw new Exception("Return lease blocked");
-        if (!await Outbox.TryPrepareTransportStepAsync(task, current.StepId, vehicle, ["LM-DUMP", "LM-EXIT", "LM-PICK-" + index], null, default)) throw new Exception("Return outbox not prepared");
+        if (!await Outbox.TryPrepareTransportStepAsync(task, current.StepId, vehicle, ["LM-DUMP", "LM-EXIT", pickup.AgvSiteId!], null, default)) throw new Exception("Return outbox not prepared");
         if (!markSent) return;
         var command = await CommandAsync(task);
         if (await Outbox.TryClaimAsync(command.CommandId, DateTimeOffset.UtcNow, default) is null) throw new Exception("Return outbox not claimed");
@@ -518,11 +651,27 @@ sealed class Fixture : IDisposable
         for (var i = 0; i < 8; i++)
         {
             Vehicles.Set(parent.VehicleId!, 4, 0, null);
-            await ExitAsync(task, false);
+            await ExitAsync(task);
             if (await ReturnPhaseAsync(task) == "ClearDumpingAfterExit") return;
             await Task.Delay(120);
         }
         throw new Exception("Physical exit proof not established: " + await ReturnPhaseAsync(task));
+    }
+    public async Task<string> PrepareReleaseAsync(string station = "CNC-001", string vehicle = "AGV-1")
+    {
+        var task = await CreateAndPickupAsync(station, vehicle);
+        await WaitAndClaimAsync(task);
+        await StartDumpAsync(task);
+        Signals.Set("DUMPER", "DumpingCompletedMayLeave", true);
+        await Task.Delay(2);
+        await FinishReadyAsync(task, DispatchTaskStepType.DumpFullBox);
+        await PrepareReturnAsync(task);
+        await ProveExitAsync(task);
+        await ExitAsync(task, false);
+        Signals.Set("DUMPER", "DumpingCompletedMayLeave", false);
+        await ExitAsync(task, false);
+        if (await ReturnPhaseAsync(task) != "ReleaseDumper") throw new Exception("Fixture did not reach ReleaseDumper");
+        return task;
     }
     public async Task FinishExitAsync(string task)
     {
@@ -542,11 +691,17 @@ sealed class Fixture : IDisposable
         var parent = await TaskAsync(task);
         var returned = (await Writer.GetStepsAsync(task, default)).Single(s => s.StepType == DispatchTaskStepType.ReturnEmptyBox);
         await Orchestrator.CompleteExecutingStepAsync(task, returned.VendorTaskId!, default);
-        var index = parent.VehicleId![^1] - '0';
-        Vehicles.Set(parent.VehicleId, 10, (index - 1) * 5, "LM-PICK-" + index);
+        var pickup = PickupNode(parent.StationId);
+        Vehicles.Set(parent.VehicleId!, pickup.X, pickup.Y, pickup.AgvSiteId);
         await TickAsync(task);
         Signals.Set(parent.StationId, "BoxPresent", true);
         await FinishReadyAsync(task, DispatchTaskStepType.PlaceEmptyBox);
+    }
+    private MapNode PickupNode(string station)
+    {
+        var configured = dispatch.GetPickupSite(station);
+        return Map.Current!.Definition.Nodes.Single(n => string.Equals(n.Id, configured, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(n.AgvSiteId, configured, StringComparison.OrdinalIgnoreCase));
     }
     public async Task DispatchOutboxOnceAsync()
     {
@@ -565,12 +720,12 @@ sealed class Fixture : IDisposable
 sealed record PlcWrite(string Station, string Signal, bool Value);
 sealed class SignalHarness : IPlcSignalCache, IPlcGateway
 {
-    private readonly Dictionary<string, PlcSignalSnapshot> values = [];
+    private readonly ConcurrentDictionary<string, PlcSignalSnapshot> values = new();
     private long version;
     public bool FailAfterNextWrite;
     public List<PlcWrite> Writes { get; } = [];
     public event Action<PlcSignalChanged>? SignalChanged { add { } remove { } }
-    public long Version => version;
+    public long Version => Interlocked.Read(ref version);
     public void Initialize(string station, string dumper)
     {
         foreach (var name in TaskHandshakeSignals.Pickup) Set(station, name, name is "BoxPresent" or "CommunicationOnline");
@@ -578,10 +733,14 @@ sealed class SignalHarness : IPlcSignalCache, IPlcGateway
     }
     public void Set(string station, string name, bool value) => values[station + "/" + name] = new(station, name, name,
         "DB:" + station + ":" + name, "BOOL", "logical", "configured", true, value, SignalQuality.Good,
-        DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, ++version);
+        DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, Interlocked.Increment(ref version));
     public void OverrideAddress(string station, string name, string address) => values[station + "/" + name] =
-        values[station + "/" + name] with { Address = address, UpdatedAt = DateTimeOffset.UtcNow, Version = ++version };
-    public void Refresh() { foreach (var key in values.Keys.ToArray()) values[key] = values[key] with { UpdatedAt = DateTimeOffset.UtcNow, Version = ++version }; }
+        values[station + "/" + name] with { Address = address, UpdatedAt = DateTimeOffset.UtcNow, Version = Interlocked.Increment(ref version) };
+    public void Refresh()
+    {
+        foreach (var (key, prior) in values.ToArray())
+            values.TryUpdate(key, prior with { UpdatedAt = DateTimeOffset.UtcNow, Version = Interlocked.Increment(ref version) }, prior);
+    }
     public bool Get(string station, string name) => values[station + "/" + name].Value == true;
     public IReadOnlyList<PlcSignalSnapshot> GetAll() => values.Values.ToArray();
     public IReadOnlyList<PlcSignalSnapshot> GetStation(string station) => values.Values.Where(v => v.StationId == station).ToArray();
@@ -599,15 +758,16 @@ sealed class SignalHarness : IPlcSignalCache, IPlcGateway
 
 sealed class VehicleHarness : IAgvStateCache
 {
-    private readonly Dictionary<string, AgvRobotSnapshot> values = [];
-    public void Set(string vehicle, double x, double y, string? station, DateTimeOffset? observedAt = null)
+    private readonly ConcurrentDictionary<string, AgvRobotSnapshot> values = new();
+    private long version;
+    public void Set(string vehicle, double x, double y, string? station, DateTimeOffset? observedAt = null, double confidence = 0.99)
     {
         var time = observedAt ?? DateTimeOffset.UtcNow;
         values[vehicle] = new(vehicle, vehicle, "127.0.0.1", 0, ConnectionState.Online, SignalQuality.Good,
-            x, y, 0, 0.99, station, null, 100, false, false, "Running", null, null, null, [], [], time, time, 0, null, null, Version + 1);
+            x, y, 0, confidence, station, null, 100, false, false, "Running", null, null, null, [], [], time, time, 0, null, null, Interlocked.Increment(ref version));
     }
     public event Action<AgvRobotStateChanged>? StateChanged { add { } remove { } }
-    public long Version => values.Count == 0 ? 0 : values.Values.Max(v => v.Version);
+    public long Version => Interlocked.Read(ref version);
     public IReadOnlyList<AgvRobotSnapshot> GetAll() => values.Values.ToArray();
     public bool TryGet(string id, out AgvRobotSnapshot result) => values.TryGetValue(id, out result!);
 }
@@ -642,11 +802,36 @@ sealed class PreflightHarness : IRobokitTaskMapPreflight
     public bool Accepted = true;
     public int Calls;
     public Action? BeforeCheck;
-    public Task<RobokitTaskMapCheck> CheckCurrentMapAsync(string vehicleId, string mapId, string versionId, CancellationToken ct)
+    public TimeSpan Delay;
+    public DateTimeOffset StartedAt;
+    public async Task<RobokitTaskMapCheck> CheckCurrentMapAsync(string vehicleId, string mapId, string versionId, CancellationToken ct)
     {
         Calls++;
+        StartedAt = DateTimeOffset.UtcNow;
         BeforeCheck?.Invoke();
-        return Task.FromResult(new RobokitTaskMapCheck(Accepted && mapId == "MAP" && versionId == "V1", "isolated current-map proof"));
+        if (Delay > TimeSpan.Zero) await Task.Delay(Delay, ct);
+        return new RobokitTaskMapCheck(Accepted && mapId == "MAP" && versionId == "V1", "isolated current-map proof");
     }
     public Task<RobokitTaskMapCheck> CheckAsync(string vehicleId, string currentSite, string pickup, string waiting, string dumping, string mapId, string versionId, CancellationToken ct) => CheckCurrentMapAsync(vehicleId, mapId, versionId, ct);
+}
+
+sealed class ObservationPulse : IAsyncDisposable
+{
+    private readonly CancellationTokenSource stop = new();
+    private readonly Task polling;
+    public ObservationPulse(Action publish)
+    {
+        publish();
+        polling = Task.Run(async () =>
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(500));
+            while (await timer.WaitForNextTickAsync(stop.Token)) publish();
+        });
+    }
+    public async ValueTask DisposeAsync()
+    {
+        stop.Cancel();
+        try { await polling; } catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
+        stop.Dispose();
+    }
 }

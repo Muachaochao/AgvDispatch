@@ -90,6 +90,14 @@ public sealed partial class TaskCenterQueryService(ITaskCenterReadRepository rep
             if(checkpoint.PendingSignal!=null)explanation+=" 原写入结果待人工核对，不自动重发。";
             if(handshakeOptions?.Enabled!=true)explanation+=" 新契约执行未启用，检查点仅供核对。";
         }
+        if(PendingHandover(detail,current) is {} handover)
+        {
+            conditions=PersistedHandshakeConditions.Observe(handover,DispatchTaskStepType.ReturnEmptyBox,task.StationId,options.DumperStationId,signals,
+                (clock??TimeProvider.System).GetUtcNow(),handshakeOptions?.StateMaxAgeSeconds??5).ToList();
+            explanation=$"等待倒料区交接完成，尚未进入放箱通知。原返程交接阶段：{handover.Phase}；修订{handover.Revision}。{handover.Reason}";
+            if(handover.PendingSignal!=null)explanation+=" 原写入结果待人工核对，不自动重发。";
+            explanation+=" 应核对原交接及车辆证据，不应手工置位空箱放到位通知。";
+        }
         if(detail.Handshakes.Count>0&&(handshakeOptions?.Enabled!=true||detail.Handshakes.Any(h=>h.ContractVersion!=handshakeOptions.PlcContractVersion)))
             explanation="原任务契约与当前执行模式/版本不一致，后续PLC与原Outbox保持核对，不降级发送。"+explanation;
         var unmet = conditions.Where(condition => !condition.Satisfied).Select(condition =>
@@ -99,6 +107,14 @@ public sealed partial class TaskCenterQueryService(ITaskCenterReadRepository rep
         var retry = detail.Commands.FirstOrDefault(command => command.StepId == current?.StepId && command.Status == AgvCommandStatus.RetryScheduled);
         if (retry is not null) explanation += $" 命令已尝试 {retry.AttemptCount} 次，下次重试：{retry.NextAttemptAt:MM-dd HH:mm:ss}。";
         return EnrichSteps(detail with { PlcConditions = conditions, WaitingExplanation = explanation }, current?.StepId);
+    }
+
+    private static HandshakeCheckpoint? PendingHandover(TaskCenterDetail detail,TaskStepDetail? step)
+    {
+        if(step?.StepType!=DispatchTaskStepType.PlaceEmptyBox)return null;
+        var returned=detail.Steps.FirstOrDefault(s=>s.StepType==DispatchTaskStepType.ReturnEmptyBox);
+        var checkpoint=detail.Handshakes.FirstOrDefault(h=>h.StepId==returned?.StepId&&h.ContractVersion==HandshakeExecutionOptions.Version);
+        return checkpoint!=null&&(checkpoint.Phase!="ExitHandoverComplete"||checkpoint.PendingSignal!=null)?checkpoint:null;
     }
 
     private TaskCenterDetail EnrichSteps(TaskCenterDetail detail, string? currentStepId)

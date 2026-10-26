@@ -334,6 +334,42 @@ await database.Insertable(new TaskRuntimeEventEntity{TaskId=v2Task,StepId=return
 await database.Updateable<TaskHandshakeEntity>().SetColumns(h=>new TaskHandshakeEntity{Phase="ClearDumpingAfterExit",Revision=h.Revision+1}).Where(h=>h.StepId==returning.StepId).ExecuteCommandAsync();
 v2Detail=(await v2Query.GetDetailAsync(v2Task,token))!;
 Require(v2Detail.Handover!.ExitPhysicallyVerified&&v2Detail.Handover.State=="PhysicalExitVerified","physical exit evidence alone does not claim PLC and equipment handover complete");
+// Reproduce the field stall: return is complete, step 8 is ready, but its prerequisite handover is not.
+var placing=v2Steps.Single(s=>s.StepType==DispatchTaskStepType.PlaceEmptyBox);
+await database.Updateable<DispatchTaskStepEntity>().SetColumns(s=>new DispatchTaskStepEntity{Status=50,CompletedAt=DateTime.Now}).Where(s=>s.StepId==returning.StepId).ExecuteCommandAsync();
+await database.Updateable<DispatchTaskStepEntity>().SetColumns(s=>new DispatchTaskStepEntity{Status=10,StartedAt=DateTime.Now}).Where(s=>s.StepId==placing.StepId).ExecuteCommandAsync();
+await database.Updateable<DispatchTaskEntity>().SetColumns(t=>t.Stage==(int)DispatchTaskStage.WaitingForPlcConfirmation).Where(t=>t.TaskId==v2Task).ExecuteCommandAsync();
+const string exitHoldReason="PLC已闭合，等待新鲜的车辆出区及原任务证据。";
+await database.Updateable<TaskHandshakeEntity>().SetColumns(h=>new TaskHandshakeEntity{Phase="ReleaseDumper",Revision=h.Revision+1,Reason=exitHoldReason}).Where(h=>h.StepId==returning.StepId).ExecuteCommandAsync();
+await database.Insertable(new ExecutionEvidenceEntity{Id="handover-blocked",TaskId=v2Task,StepId=returning.StepId,Kind="DumperExitBlocked",OccurredAt=DateTime.Now,
+    Evidence=JsonSerializer.Serialize(new{Reason="车辆定位首帧已过期。",Context="PRIVATE-DEVICE-CONTEXT"})}).ExecuteCommandAsync();
+var handshakeRowsBefore=await database.Queryable<TaskHandshakeEntity>().Where(h=>h.TaskId==v2Task).CountAsync();
+v2Detail=(await v2Query.GetDetailAsync(v2Task,token))!;
+Require(v2Detail.WaitingExplanation.Contains("ReleaseDumper")&&v2Detail.WaitingExplanation.Contains(exitHoldReason)&&v2Detail.WaitingExplanation.Contains("尚未进入放箱通知"),
+    "ready placement identifies the original handover prerequisite and reason instead of blaming unwritten placed signal");
+Require(v2Detail.Steps[7].ObservedPhase.Contains("等待原返程倒料区交接 ReleaseDumper")&&v2Detail.PlcConditions.All(c=>c.StationId=="DUMPER-001")&&
+    v2Detail.PlcConditions.All(c=>c.VariableName!="EmptyBoxPlaced"&&c.VariableName!="BoxPresent"),
+    "placement phase and conditions show the blocking handover rather than unrelated step-8 PLC targets");
+Require(v2Detail.Handover!.Reason.Contains("ReleaseDumper")&&v2Detail.Handover.Reason.Contains(exitHoldReason),"handover diagnosis retains its exact persisted phase and reason");
+var heldEvent=v2Detail.ExecutionTimeline.Single(e=>e.Id=="handover-blocked");
+Require(heldEvent.Title=="倒料区交接核验未通过"&&heldEvent.Summary.Contains("车辆定位首帧已过期")&&!heldEvent.Summary.Contains("PRIVATE-DEVICE-CONTEXT")&&heldEvent.Summary.Contains("记录时"),
+    "handover timeline exposes the recorded safe reason without leaking context or presenting history as current evidence");
+Require(await database.Queryable<TaskHandshakeEntity>().Where(h=>h.TaskId==v2Task).CountAsync()==handshakeRowsBefore&&
+    !v2Detail.Handshakes.Any(h=>h.StepId==placing.StepId),"diagnostic reads do not create a placement checkpoint or advance handover");
+await database.Updateable<TaskHandshakeEntity>().SetColumns(h=>new TaskHandshakeEntity{Phase="WritePending",Revision=h.Revision+1,PendingSignal="DUMPER-001/AgvAtDumpingPosition",PendingValue=false,NextPhase="AwaitDumperClosed"})
+    .Where(h=>h.StepId==returning.StepId).ExecuteCommandAsync();
+v2Detail=(await v2Query.GetDetailAsync(v2Task,token))!;
+Require(v2Detail.WaitingExplanation.Contains("WritePending")&&v2Detail.WaitingExplanation.Contains("不自动重发")&&
+    v2Detail.PlcConditions.Single().VariableName=="AgvAtDumpingPosition","unknown exit write remains an explicit original handover review prerequisite");
+await database.Updateable<TaskHandshakeEntity>().SetColumns(h=>new TaskHandshakeEntity{Phase="ExitHandoverComplete",Revision=h.Revision+1,PendingSignal=null,PendingValue=null,NextPhase=null})
+    .Where(h=>h.StepId==returning.StepId).ExecuteCommandAsync();
+v2Detail=(await v2Query.GetDetailAsync(v2Task,token))!;
+Require(!v2Detail.WaitingExplanation.Contains("等待倒料区交接完成")&&v2Detail.PlcConditions.Any(c=>c.VariableName=="EmptyBoxPlaced"),
+    "completed handover no longer overrides actual placement diagnostics");
+// Restore the independent execution-time handover fixture for the assertions below.
+await database.Updateable<DispatchTaskStepEntity>().SetColumns(s=>new DispatchTaskStepEntity{Status=40,CompletedAt=null}).Where(s=>s.StepId==returning.StepId).ExecuteCommandAsync();
+await database.Updateable<DispatchTaskStepEntity>().SetColumns(s=>new DispatchTaskStepEntity{Status=0,StartedAt=null}).Where(s=>s.StepId==placing.StepId).ExecuteCommandAsync();
+await database.Updateable<DispatchTaskEntity>().SetColumns(t=>t.Stage==(int)DispatchTaskStage.ReturningEmptyBox).Where(t=>t.TaskId==v2Task).ExecuteCommandAsync();
 await database.Updateable<TaskHandshakeEntity>().SetColumns(h=>new TaskHandshakeEntity{Phase="ExitHandoverComplete",Revision=h.Revision+1}).Where(h=>h.StepId==returning.StepId).ExecuteCommandAsync();
 v2Detail=(await v2Query.GetDetailAsync(v2Task,token))!;
 Require(v2Detail.Handover!.State=="ExitHandoverComplete"&&!v2Detail.Handover.ReturnCommandCompleted,"handover can be recorded while the original return is still running");

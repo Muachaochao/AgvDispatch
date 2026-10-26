@@ -61,6 +61,8 @@ public sealed partial class TaskCenterReadRepository(ISqlSugarClient database) :
         var handover = new TaskHandoverDiagnosis(handedOver?"ExitHandoverComplete":exitChecked?"PhysicalExitVerified":returned?"ReturnCompletedExitUnverified":"ExitUnverified",
             handedOver?"28阶段已持久化实际出区证据、PLC退出闭合及本任务倒料设备/已验证区域交接；返箱责任继续保持，其他道路占用以实际记录为准。":exitChecked?"28阶段已记录实际出区证据，仍需核对PLC周期闭合和设备/区域交接；物理出区本身不等于后车已获准进入。":"尚无28阶段实际出区核对；返回命令准备、接受、完成、通知清零或租期到期均不能单独证明出区交接。",
             returned,exitChecked,leases.Select(l=>l.ResourceId).Concat(equipmentClaims.Select(e=>"设备:"+e.EquipmentId)).Distinct().ToArray(),releaseReasons);
+        if(exit!=null&&!handedOver)
+            handover=handover with {Reason=$"原返程交接阶段：{exit.Phase}；修订{exit.Revision}。{exit.Reason} "+handover.Reason};
 
         return new(ToRow(task), steps.Select(s => new TaskStepDetail(s.StepId, s.Sequence,
                 (DispatchTaskStepType)s.StepType, (DispatchTaskStepStatus)s.Status, s.VehicleId,

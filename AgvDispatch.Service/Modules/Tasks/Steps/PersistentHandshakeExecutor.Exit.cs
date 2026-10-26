@@ -63,11 +63,11 @@ public sealed partial class PersistentHandshakeExecutor
         {
             case "AwaitPhysicalExit":
                 if(!Is(dumper,"AgvAtDumpingPosition",true)||!Is(dumper,"DumpingCompletedMayLeave",true))return;
-                if(await CaptureExitProofAsync(step,returned.VendorTaskId!,ct) is {} proof)
+                if(await CaptureExitProofAsync(checkpoint,step,returned.VendorTaskId!,ct) is {} proof)
                     await store.RecordPhysicalExitAsync(checkpoint,proof,ct);
                 break;
             case "ClearDumpingAfterExit":
-                if(await CaptureExitProofAsync(step,returned.VendorTaskId!,ct) is {} fresh)
+                if(await CaptureExitProofAsync(checkpoint,step,returned.VendorTaskId!,ct) is {} fresh)
                 {
                     await store.ValidatePhysicalExitAsync(checkpoint,fresh,ct);
                     if(!await store.OwnsEquipmentAsync(task.TaskId,dumper,ct)||!Is(dumper,"Faulted",false)||!Is(dumper,"AgvAtDumpingPosition",true)||!Is(dumper,"DumpingCompletedMayLeave",true))return;
@@ -78,7 +78,7 @@ public sealed partial class PersistentHandshakeExecutor
                 if(DumperClosed())await MoveAsync(checkpoint,"ReleaseDumper","PLC已撤销Done且共享输出、Ready均闭合；待原子交接。",ct);
                 break;
             case "ReleaseDumper":
-                if(DumperClosed()&&await CaptureExitProofAsync(step,returned.VendorTaskId!,ct) is {} finalProof)
+                if(DumperClosed()&&await CaptureExitProofAsync(checkpoint,step,returned.VendorTaskId!,ct) is {} finalProof)
                 {
                     if(!DumperClosed()||!Is(dumper,"Faulted",false)||!await store.OwnsEquipmentAsync(task.TaskId,dumper,ct))return;
                     await store.ReleaseDumperAfterExitAsync(checkpoint,dumper,finalProof,ct);
@@ -90,38 +90,103 @@ public sealed partial class PersistentHandshakeExecutor
 
     private bool DumperClosed()=>new[]{"AgvAtDumpingPosition","AgvAtWaitingPosition","DumperReady","DumpingCompletedMayLeave"}.All(v=>Is(creation.DumperStationId,v,false));
 
-    private async Task<TaskDumperExitProof?> CaptureExitProofAsync(DispatchTaskStepWorkItem step,string vendorTaskId,CancellationToken ct)
+    private async Task<TaskDumperExitProof?> CaptureExitProofAsync(HandshakeCheckpoint checkpoint,DispatchTaskStepWorkItem step,string vendorTaskId,CancellationToken ct)
+    {
+        try { return await CaptureExitProofCoreAsync(step,vendorTaskId,ct); }
+        catch(InvalidOperationException exception)
+        {
+            // This only records why evidence collection is waiting. It neither advances
+            // the phase nor acknowledges an uncertain write or releases ownership.
+            var reason="出区核验等待："+exception.Message;
+            if(checkpoint.Reason!=reason)
+                await store.MoveAsync(checkpoint,checkpoint.Phase,reason,null,null,null,ct);
+            throw;
+        }
+    }
+
+    private async Task<TaskDumperExitProof?> CaptureExitProofCoreAsync(DispatchTaskStepWorkItem step,string vendorTaskId,CancellationToken ct)
     {
         ValidateExitConfiguration(step);
         var current=map.Current!;
-        if(step.VehicleId==null||!vehicles.TryGet(step.VehicleId,out var state)||state.X is not {} x||state.Y is not {} y||state.LocalizationConfidence is not {} confidence||state.LastSuccessfulPollAt is not {} observed||state.Blocked is not false||state.EmergencyStopped is not false){_exitSamples.Remove(step.StepId);return null;}
-        var frame=new DumperExitFrame(step.VehicleId,current.MapId,current.VersionId,x,y,confidence,observed,state.Quality,state.Connection==ConnectionState.Online,false,false);
+        var vehicleId=step.VehicleId??throw new InvalidOperationException("原返程未绑定车辆，不能核验出区。");
+        var profile=options.DumperExit.BodyProfiles.Single(p=>p.VehicleId==vehicleId);
+        DumperExitFrame ReadFrame()
+        {
+            if(!ReferenceEquals(current,map.Current))throw new InvalidOperationException("采集出区证据期间运行地图已变化，保持原占用。");
+            if(!vehicles.TryGet(vehicleId,out var state)||state.X is not {} x||state.Y is not {} y||state.LocalizationConfidence is not {} confidence||state.LastSuccessfulPollAt is not {} observed||state.Blocked is null||state.EmergencyStopped is null)
+            {
+                _exitSamples.Remove(step.StepId);
+                throw new InvalidOperationException("车辆定位、采集时间、阻塞或急停状态缺失，不能核验出区。");
+            }
+            return new(vehicleId,current.MapId,current.VersionId,x,y,confidence,observed,state.Quality,state.Connection==ConnectionState.Online,state.Blocked.Value,state.EmergencyStopped.Value);
+        }
+        void RequireVerified(DumperExitFrame? first,DumperExitFrame second,DateTimeOffset now)
+        {
+            var assessed=DumperExitEvaluator.Evaluate(current.Definition,first,second,profile,options.DumperExit.Policy,now);
+            if(!assessed.Verified)throw new InvalidOperationException(assessed.Reason+
+                (first is not null&&(first.LocalizationConfidence<options.DumperExit.MinimumConfidence||second.LocalizationConfidence<options.DumperExit.MinimumConfidence)
+                    ?$" 要求定位置信度至少{options.DumperExit.MinimumConfidence:0.###}。":""));
+        }
+        var frame=ReadFrame();
         var minimum=options.DumperExit.MinimumObservationIntervalSeconds;
         if(!_exitSamples.TryGetValue(step.StepId,out var pair)){_exitSamples[step.StepId]=(null,frame);return null;}
-        if(frame.ObservedAt<pair.Second.ObservedAt||frame.ObservedAt==pair.Second.ObservedAt&&frame!=pair.Second){_exitSamples.Remove(step.StepId);return null;}
+        if(frame.ObservedAt<pair.Second.ObservedAt||frame.ObservedAt==pair.Second.ObservedAt&&frame!=pair.Second)
+        {
+            _exitSamples.Remove(step.StepId);
+            throw new InvalidOperationException("出区定位时间倒退或同一时刻的车辆状态冲突，等待重新采集。");
+        }
         if(frame.ObservedAt>pair.Second.ObservedAt)
         {
             // A newer observation always vetoes reuse of an older outside/outside pair.
             if((frame.ObservedAt-pair.Second.ObservedAt).TotalSeconds<minimum)return null;
             _exitSamples[step.StepId]=pair=(pair.Second,frame);
         }
-        var profile=options.DumperExit.BodyProfiles.Single(p=>p.VehicleId==step.VehicleId);
-        var assessment=DumperExitEvaluator.Evaluate(current.Definition,pair.First,pair.Second,profile,options.DumperExit.Policy,DateTimeOffset.UtcNow);
-        if(!assessment.Verified)return null;
-        var mapCheck=await mapPreflight!.CheckCurrentMapAsync(step.VehicleId,current.MapId,current.VersionId,ct);
+        if(pair.First is null)return null;
+        RequireVerified(pair.First,pair.Second,DateTimeOffset.UtcNow);
+        var mapCheck=await mapPreflight!.CheckCurrentMapAsync(vehicleId,current.MapId,current.VersionId,ct);
         if(!mapCheck.Accepted)throw new InvalidOperationException("实际出区车端地图核验未通过："+mapCheck.Message);
         var vendor=await agvGateway!.GetTransportTaskStatusAsync(vendorTaskId,ct);
         var now=DateTimeOffset.UtcNow;
-        if(vendor==null||vendor.VendorTaskId!=vendorTaskId||vendor.BusinessTaskId!=step.StepId||vendor.VehicleId!=step.VehicleId||
+        if(vendor==null||vendor.VendorTaskId!=vendorTaskId||vendor.BusinessTaskId!=step.StepId||vendor.VehicleId!=vehicleId||
             vendor.State is not (AgvTransportTaskState.GoingToDestination or AgvTransportTaskState.AtDestination or AgvTransportTaskState.Completed)||
             vendor.UpdatedAt>now.AddSeconds(1)||now-vendor.UpdatedAt>TimeSpan.FromSeconds(options.DumperExit.MaximumAgeSeconds))
             throw new InvalidOperationException("原返程任务身份、执行状态或新鲜查询不成立，不能以其他任务/未知状态交接。");
-        if(!ReferenceEquals(current,map.Current)||!vehicles.TryGet(step.VehicleId,out var latest)||latest.X is not {} lx||latest.Y is not {} ly||latest.LocalizationConfidence is not {} lc||latest.LastSuccessfulPollAt is not {} lt||latest.Blocked is not false||latest.EmergencyStopped is not false)return null;
-        var lastFrame=new DumperExitFrame(step.VehicleId,current.MapId,current.VersionId,lx,ly,lc,lt,latest.Quality,latest.Connection==ConnectionState.Online,false,false);
-        if(lt<pair.Second.ObservedAt||lt==pair.Second.ObservedAt&&lastFrame!=pair.Second){_exitSamples.Remove(step.StepId);return null;}
-        if(lt>pair.Second.ObservedAt)pair=(pair.First,lastFrame);
-        if(!DumperExitEvaluator.Evaluate(current.Definition,pair.First,pair.Second,profile,options.DumperExit.Policy,now).Verified)return null;
-        return new(step.TaskId,step.StepId,step.VehicleId,vendorTaskId,current.MapId,current.VersionId,
+        var lastFrame=ReadFrame();
+        if(lastFrame.ObservedAt<pair.Second.ObservedAt||lastFrame.ObservedAt==pair.Second.ObservedAt&&lastFrame!=pair.Second)
+        {
+            _exitSamples.Remove(step.StepId);
+            throw new InvalidOperationException("车端查询期间定位时间倒退或状态冲突，等待重新采集。");
+        }
+        if(lastFrame.ObservedAt>pair.Second.ObservedAt)pair=(pair.Second,lastFrame);
+        // A map inspection can take longer than the position evidence lifetime. Never
+        // keep its pre-query first frame and retry the same doomed pair forever.
+        // Recollect after the queries, without extending the vendor-query deadline.
+        var maximumAge=TimeSpan.FromSeconds(options.DumperExit.MaximumAgeSeconds);
+        if(pair.First is null||now-pair.First.ObservedAt>maximumAge)
+        {
+            var first=lastFrame;
+            _exitSamples[step.StepId]=(null,first);
+            var deadline=vendor.UpdatedAt+maximumAge;
+            while(true)
+            {
+                ct.ThrowIfCancellationRequested();
+                now=DateTimeOffset.UtcNow;
+                if(now>=deadline)throw new InvalidOperationException("车端查询后未在原任务查询有效期内取得两次新鲜出区定位；保持占用，等待采集恢复。");
+                await Task.Delay(TimeSpan.FromMilliseconds(25),ct);
+                var second=ReadFrame();
+                if(second.ObservedAt<first.ObservedAt||second.ObservedAt==first.ObservedAt&&second!=first)
+                    throw new InvalidOperationException("重新采集出区定位时发生时间倒退或状态冲突。");
+                if(second.ObservedAt==first.ObservedAt||(second.ObservedAt-first.ObservedAt).TotalSeconds<minimum)continue;
+                pair=(first,second);
+                break;
+            }
+        }
+        now=DateTimeOffset.UtcNow;
+        _exitSamples[step.StepId]=pair;
+        RequireVerified(pair.First,pair.Second,now);
+        if(vendor.UpdatedAt>now.AddSeconds(1)||now-vendor.UpdatedAt>maximumAge)
+            throw new InvalidOperationException("重新采集定位后原返程查询已过期，保持占用。");
+        return new(step.TaskId,step.StepId,vehicleId,vendorTaskId,current.MapId,current.VersionId,
             TransportRouteSnapshots.Hash(JsonSerializer.Serialize(current.Definition,new JsonSerializerOptions(JsonSerializerDefaults.Web))),pair.First!,pair.Second,profile,
             options.DumperExit.Policy,options.DumperExit.MaximumRouteDeviationMeters,vendor.UpdatedAt,now)
             {PlcSignals=TaskHandshakeSignals.Capture(signals,step.StationId,creation.DumperStationId).Where(s=>s.StationId==creation.DumperStationId).ToArray()};

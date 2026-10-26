@@ -61,6 +61,8 @@ public sealed partial class TaskCenterQueryService
                     ?detail.Handshakes.All(h=>h.ContractVersion==HandshakeExecutionOptions.Version)
                     :detail.HandshakeMode=="PersistentExecution" && detail.HandshakeContractVersion==HandshakeExecutionOptions.Version);
             if(persisted!=null)phase=$"持久化阶段 {persisted.Phase} / r{persisted.Revision}：{persisted.Reason}";
+            if(step.IsCurrent&&PendingHandover(detail,step) is {} handover)
+                phase=$"等待原返程倒料区交接 {handover.Phase} / r{handover.Revision}：{handover.Reason}；尚未进入放箱通知。";
             return step with
             {
                 ProgressConditions = conditions, ObservedPhase = phase,

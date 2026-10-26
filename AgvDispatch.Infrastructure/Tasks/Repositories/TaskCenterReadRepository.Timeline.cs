@@ -25,12 +25,28 @@ public sealed partial class TaskCenterReadRepository
         "PlcWriteAcknowledged" => "PLC写调用已返回成功",
         "AgvSendIntent" => "车辆命令发送意图已记录",
         "AgvSendAcknowledged" => "车辆适配器返回任务身份",
+        "DumperExitBlocked" => "倒料区交接核验未通过",
         _ => kind
     };
 
     private static string Summary(ExecutionEvidenceEntity row)
     {
         // Do not forward arbitrary device payloads, host paths or identity baselines to the browser.
+        if(row.Kind=="DumperExitBlocked")
+        {
+            try
+            {
+                using var doc=JsonDocument.Parse(row.Evidence);
+                if(doc.RootElement.ValueKind==JsonValueKind.Object&&doc.RootElement.TryGetProperty("Reason",out var reason)&&reason.ValueKind==JsonValueKind.String)
+                {
+                    var text=reason.GetString()??"";
+                    text=new string(text.Take(512).Select(c=>char.IsControl(c)?' ':c).ToArray());
+                    return $"当次交接核验未通过：{text}；这是记录时的阻塞原因，当前阶段与新鲜证据需另行核对。";
+                }
+            }
+            catch(JsonException) { }
+            return "当次交接核验未通过，原因格式不可解析；原记录保留在后台，不据此释放占用。";
+        }
         if (row.Kind is "PlcWriteIntent" or "PlcWriteAcknowledged")
         {
             try
