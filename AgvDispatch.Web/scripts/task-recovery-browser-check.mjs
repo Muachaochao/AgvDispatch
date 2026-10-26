@@ -16,6 +16,7 @@ const server=createServer(async(req,res)=>{try{
  if(req.method==='POST'){let raw='';for await(const p of req)raw+=p;mutations.push({path:url.pathname,body:JSON.parse(raw)});if(url.pathname==='/api/recovery/decisions'){recovery={...recovery,items:recovery.items.map(i=>({...i,verified:true,revision:8}))};return json(200,{accepted:true,message:'核对已记录'});}if(url.pathname==='/api/recovery/release'){recovery={...recovery,released:true};return json(200,{accepted:true,message:'后台核验放行'});}if(url.pathname==='/api/tasks')return json(200,{accepted:true,taskId:'TASK-original',message:'原任务已受理'});return json(400,{error:'unexpected mutation'});}
  if(url.pathname==='/api/recovery')return json(200,recovery);
  if(url.pathname==='/api/business-run')return json(200,{current:run});
+ if(url.pathname==='/api/task-options')return json(200,{available:false,mapId:'M',mapVersionId:'V',parameterRevision:'R',waitingSite:'LM5',dumpingSite:'LM6',vehicles:[{vehicleId:'AGV-01',label:'AGV-01',available:false,explanation:'未启用业务执行'}],stations:['CNC-001','CNC-002'].map(stationId=>({stationId,pickupSite:stationId==='CNC-001'?'LM2':'LM4',available:false,configurationValid:false,explanation:`第 1 步（前往取货点）：PLC ${stationId}/Ack：所属 PLC 写入开关未开启；第 9 步（结束 PLC 握手）：PLC ${stationId}/Ack：所属 PLC 写入开关未开启`}))});
  if(url.pathname==='/api/config')return json(200,{taskSubmissionEnabled:true,taskCancellationEnabled:true});
  if(url.pathname.startsWith('/api/'))return json(503,{error:'isolated fixture only'});
  const file=resolve(dist,'.'+(url.pathname==='/'?'/index.html':url.pathname));if(!file.startsWith(dist+sep)||!existsSync(file)){res.writeHead(404);return res.end();}
@@ -58,6 +59,7 @@ try{
  await fresh();await click('创建任务');await click('正常按需运行');
  await wait(()=>evaluate(`document.querySelector('.run-status')?.textContent.includes('original-run')`),'run remains in creation dialog');
  check('Original Hold and recovery operations remain inside creation dialog',await evaluate(`document.querySelector('.run-status').textContent.includes('暂停待核对')&&document.querySelector('.run-status a').getAttribute('href').includes('TASK-original')`));
+ check('Repeated write permission blocks show one reason with collapsed technical details',await evaluate(`document.querySelector('.business-run section[role=status] strong').textContent==='执行权限尚未开启'&&document.querySelectorAll('.business-run section[role=status]>ul>li').length===1&&!document.querySelector('.business-run details').open`));
  await fresh();await evaluate(`sessionStorage.setItem('agv-web-pending-request',JSON.stringify({requestId:'original-uncertain-request',stationId:'CNC-001',requestedVehicleId:'AGV-01',priority:50,mapId:'M',mapVersionId:'V',parameterRevision:'R'}))`);
  await rpc('Page.reload');await wait(()=>evaluate(`Boolean(document.querySelector('.management-table'))`),'reload');await fresh();await click('创建任务');
  await click('重试原申请');await wait(()=>mutations.length===3,'original retry');

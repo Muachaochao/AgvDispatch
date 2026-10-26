@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useDispatchStore } from '../stores/dispatch';
 import type { CreationOptions } from '../types';
+import { summarizeBusinessBlocks } from '../business-blocks';
 const props=defineProps<{mode:'Demand'|'Cycle';options:CreationOptions|null;statusOnly?:boolean}>();
 const store=useDispatchStore();
 type Plan={requestId:string;mode:string;vehicleId:string;stations:string[];rounds:number;standbySite:string;siteConfirmed:boolean};
@@ -37,6 +38,8 @@ const configurationBlocks=computed(()=>{
   return (props.options?.stations??[]).filter(s=>selected.includes(s.stationId)&&s.configurationValid===false);
 });
 const needsExitConfiguration=computed(()=>configurationBlocks.value.some(s=>s.explanation.includes('DumperExit')));
+const blockGroups=computed(()=>summarizeBusinessBlocks(configurationBlocks.value));
+const onlyPermissions=computed(()=>blockGroups.value.length>0&&blockGroups.value.every(g=>g.permission));
 const selectedVehicleBlock=computed(()=>{
   const id=current.value?.plan.vehicleId??pending.value?.vehicleId??vehicle.value;
   const selected=props.options?.vehicles.find(v=>v.vehicleId===id);
@@ -107,12 +110,14 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);});
     </div>
     <p>无待处理呼叫、返箱责任和倒料占用全部闭合后返回待机点。返途中新增呼叫，到待机点后接续；停止收尾不会取消当前车辆动作。</p>
     <p v-if="mode==='Cycle'">请启动新版 PLC 人工联调台 S7 服务（127.0.0.1:10200）。工具模拟呼叫、箱体和倒料反馈，真实业务动作仍由调度执行，模拟反馈不作为物理验收证据。</p>
-    <p v-if="!store.submissionEnabled" class="inline-warning">Web任务提交未启用，请使用业务启动配置。</p>
+    <p v-if="!store.submissionEnabled" class="inline-warning">当前未启用业务执行，暂不能提交任务。启动模式限制不会删除已保存的工位和点位配置。</p>
     <section v-if="configurationBlocks.length" class="inline-warning" role="status">
-      <strong>启动前需要补齐的配置</strong>
-      <ul><li v-for="s in configurationBlocks" :key="s.stationId"><b>{{s.stationId}}</b><ul><li v-for="(issue,i) in s.explanation.split('；')" :key="i">{{issue}}</li></ul></li></ul>
+      <strong>{{onlyPermissions?'执行权限尚未开启':'启动条件未通过'}}</strong>
+      <ul><li v-for="g in blockGroups" :key="g.reason">{{g.reason}}<small> · 涉及 {{g.stations.join('、')}}</small></li></ul>
+      <p v-if="onlyPermissions">这些是同一写入门禁在各业务步骤中的重复检查，不需要逐个重新配置点位。显式切换到业务启动模式后，再刷新条件核对。</p>
+      <details><summary>查看技术明细（{{blockGroups.reduce((sum,g)=>sum+g.count,0)}} 项步骤检查）</summary><p v-for="s in configurationBlocks" :key="s.stationId"><b>{{s.stationId}}</b><br>{{s.explanation}}</p></details>
       <p v-if="needsExitConfiguration">配置位置：当前发布包 Service/appsettings.json → HandshakeExecution → DumperExit。ResourceIds 对应地图编辑中的共享区域资源ID及已核定边界；BodyProfiles 为实测车辆和最大载箱包络。当前网页暂无这两项编辑表单，修改后需受控重启并重新核对本次启动恢复。</p>
-      <p>补齐后点击弹窗底部“刷新条件”，再重试原申请。</p>
+      <p v-if="!onlyPermissions">处理上述条件后，点击弹窗底部“刷新条件”；结果未确认时沿用原申请。</p>
     </section>
     <p v-if="selectedVehicleBlock" class="inline-warning" role="status">车辆不可派发的具体原因：{{selectedVehicleBlock}}</p>
     </template>
