@@ -1,6 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { summarizeBusinessBlocks } from '../src/business-blocks.ts';
+import { businessVehicleBlock, summarizeBusinessBlocks } from '../src/business-blocks.ts';
+test('正常健康说明不当作车辆故障或无呼叫时的业务启动阻塞', () => {
+  assert.equal(businessVehicleBlock({vehicleId:'AGV-01',available:false,explanation:'在线空闲，定位正常。'}),'');
+  assert.match(businessVehicleBlock({vehicleId:'AGV-01',available:false,explanation:'车辆离线'}),/车辆离线/);
+  assert.match(businessVehicleBlock({vehicleId:'AGV-01',available:false,explanation:'28阶段出区配置缺失'}),/出区配置缺失/);
+});
 test('重复写入门禁合并，保留涉及工位与数量', () => {
   const text = (id: string) => `第 1 步（前往取货点）：PLC ${id}/Ack：所属 PLC 写入开关未开启；第 9 步（结束 PLC 握手）：PLC ${id}/Ack：所属 PLC 写入开关未开启`;
   assert.deepEqual(summarizeBusinessBlocks(['CNC-001','CNC-002'].map(stationId=>({stationId,explanation:text(stationId)}))),[

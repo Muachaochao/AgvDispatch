@@ -1,3 +1,7 @@
+export function businessVehicleBlock(vehicle: { vehicleId: string; available: boolean; explanation: string } | undefined) {
+  if (!vehicle || vehicle.available || /^在线空闲，定位正常[。.]?$/.test(vehicle.explanation.trim())) return '';
+  return `${vehicle.vehicleId}：${vehicle.explanation}`;
+}
 export function summarizeBusinessBlocks(stations: { stationId: string; explanation: string }[]) {
   const groups = new Map<string, { reason: string; stations: string[]; count: number; permission: boolean }>();
   for (const station of stations) for (const issue of station.explanation.split('；').map(s => s.trim()).filter(Boolean)) {

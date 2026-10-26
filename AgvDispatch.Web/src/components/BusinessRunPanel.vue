@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useDispatchStore } from '../stores/dispatch';
 import type { CreationOptions } from '../types';
-import { summarizeBusinessBlocks } from '../business-blocks';
+import { businessVehicleBlock, summarizeBusinessBlocks } from '../business-blocks';
 const props=defineProps<{mode:'Demand'|'Cycle';options:CreationOptions|null;statusOnly?:boolean}>();
 const store=useDispatchStore();
 type Plan={requestId:string;mode:string;vehicleId:string;stations:string[];rounds:number;standbySite:string;siteConfirmed:boolean};
@@ -43,7 +43,7 @@ const onlyPermissions=computed(()=>blockGroups.value.length>0&&blockGroups.value
 const selectedVehicleBlock=computed(()=>{
   const id=current.value?.plan.vehicleId??pending.value?.vehicleId??vehicle.value;
   const selected=props.options?.vehicles.find(v=>v.vehicleId===id);
-  return selected&&!selected.available?`${id}：${selected.explanation}`:'';
+  return businessVehicleBlock(selected);
 });
 const labels:Record<string,string>={Preparing:'准备中',Waiting:'等待呼叫 / 待机',Creating:'受理呼叫中',Executing:'业务执行中',ReturnSending:'准备返回待机',Returning:'返回待机中',Hold:'暂停待核对',Completed:'收尾完成，已回待机'};
 let timer:ReturnType<typeof setInterval>|undefined;
