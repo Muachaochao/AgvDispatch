@@ -1,6 +1,7 @@
 ﻿param([string]$OutputDirectory='', [ValidateRange(1024,65535)][int]$WebPort=5199)
 $ErrorActionPreference='Stop'
 $bundleServiceConfigFiles=@($env:AGV_BUNDLE_SERVICE_CONFIG_FILE -split [IO.Path]::PathSeparator | Where-Object { $_ })
+$bundleRequestedServiceSettings=$env:AGV_BUNDLE_SERVICE_SETTINGS_FILE
 $bundleProject=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $bundleStamp=Get-Date -Format yyyyMMdd-HHmmss
 $bundleId="commissioning-$bundleStamp"
@@ -44,7 +45,13 @@ foreach($bundleRequestedConfig in $bundleServiceConfigFiles){
     Copy-Item -LiteralPath $bundleConfigSource -Destination $bundleConfigTarget
     $bundleSiteConfigurationImported=$true
 }
-$bundleService=Get-Content -LiteralPath (Join-Path $bundleProject 'AgvDispatch.Service/appsettings.example.json') -Raw | ConvertFrom-Json
+$bundleServiceSettingsSource=Join-Path $bundleProject 'AgvDispatch.Service/appsettings.example.json'
+if($bundleRequestedServiceSettings){
+    $bundleServiceSettingsSource=[IO.Path]::GetFullPath($bundleRequestedServiceSettings)
+    if(!(Test-Path -LiteralPath $bundleServiceSettingsSource -PathType Leaf)){throw "指定的服务配置文件不存在：$bundleServiceSettingsSource"}
+    $bundleSiteConfigurationImported=$true
+}
+$bundleService=Get-Content -LiteralPath $bundleServiceSettingsSource -Raw | ConvertFrom-Json
 $bundleService.Security.PipeName=$bundlePipe
 $bundleService | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $bundleOutput 'Service/appsettings.json') -Encoding utf8
 @{Service=@{Transport='NamedPipe';PipeName=$bundlePipe}} | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $bundleOutput 'WPF/appsettings.json') -Encoding utf8
