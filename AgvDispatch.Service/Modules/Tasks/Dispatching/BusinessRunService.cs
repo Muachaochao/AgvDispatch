@@ -108,7 +108,7 @@ public sealed class BusinessRunService(IBusinessRunPort port, BusinessRunOwnersh
             run = await port.ReconcileAsync(run, ct); Save();
             var o = await port.ObserveAsync(run, ct);
             if (o.Block is not null || !o.AllClosed || o.AnyActiveTasks || o.Calls.Length != 0 || !o.Stopped ||
-                o.CurrentSite != run.Plan.StandbySite || run.TaskId is not null && o.CurrentTaskState is not ("Completed" or "Cancelled") ||
+                string.IsNullOrWhiteSpace(o.CurrentSite) || run.TaskId is not null && o.CurrentTaskState is not ("Completed" or "Cancelled") ||
                 run.VendorTaskId is not null && !o.StandbyCompleted)
                 throw new InvalidOperationException(o.Block ?? "原任务、呼叫、握手或待机停靠尚未核对闭合，不解除占用。");
             if (run.PendingRequestId is not null && run.TaskId is null && run.VendorTaskId is null)
@@ -120,7 +120,7 @@ public sealed class BusinessRunService(IBusinessRunPort port, BusinessRunOwnersh
             await port.ValidateAsync(run.Plan, ct);
             if (run.Plan.Mode == "Cycle") await port.SimulatorAsync(run, true, ct);
             if (run.VendorTaskId is not null) await port.ReleaseReturnAsync(run, ct);
-            Move("Completed", "人工请求核对结束；原任务及待机停靠已核验，没有自动续跑或重发。");
+            Move("Completed", "人工请求核对结束；原任务、停止状态及安全站点已核验，没有自动续跑或重发。");
             ownership.Set(null); ownership.Returning = false;
             return Status();
         }

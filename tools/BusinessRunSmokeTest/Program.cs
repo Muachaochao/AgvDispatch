@@ -104,6 +104,12 @@ string awaitedId()=>loaded.ReadAsync(default).GetAwaiter().GetResult().Current!.
 frozen.Port.Calls=[];
 await loaded.CloseReviewedAsync(user,new(awaitedId()),default);
 Check((await Row(loaded)).Stage=="Completed"&&!frozen.Ownership.Active,"review only closes quiet verified standby, no resume");
+var reviewedAtSafeSite=Fixture();await reviewedAtSafeSite.Service.StartAsync(user,Plan(),default);
+reviewedAtSafeSite.Port.Block="原任务已安全处置";await reviewedAtSafeSite.Service.TickAsync(default);
+reviewedAtSafeSite.Port.Block=null;reviewedAtSafeSite.Port.Site="LM2";reviewedAtSafeSite.Port.TaskState="Cancelled";
+await reviewedAtSafeSite.Service.CloseReviewedAsync(user,new((await Row(reviewedAtSafeSite.Service)).RunId),default);
+Check((await Row(reviewedAtSafeSite.Service)).Stage=="Completed"&&reviewedAtSafeSite.Port.Returns==0,
+    "manual review closes a quiet terminal run at a safe non-standby station without resending motion");
 var outside=Fixture();await outside.Service.StartAsync(user,Plan() with{Stations=["CNC-001"]},default);
 outside.Port.Site="LM4";outside.Port.Calls=["CNC-002"];await outside.Service.TickAsync(default);
 Check(outside.Port.Returns==0&&outside.Port.Creates==0,"unselected call is retained and does not imply idle");
