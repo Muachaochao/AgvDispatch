@@ -374,11 +374,13 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
         AgvRobotSnapshot? Vehicle, AgvTransportTaskStatus? Vendor, bool AutoSafe, string Reason, string? HardBlock, string Evidence, string Fingerprint, RecoveryIdentityVerification Identity,string? SegmentContinuationBlock=null);
     private string PhysicalFingerprint(Observation observation)
     {
+        static double? RoundedFinite(double? value) => value is { } number && double.IsFinite(number) ? Math.Round(number, 2) : null;
         object Describe(AgvRobotSnapshot v, bool moving) => new { v.VehicleId, v.CurrentStation, v.EmergencyStopped, v.Blocked,
-            X = moving ? (double?)null : Math.Round(v.X ?? double.NaN, 2), Y = moving ? (double?)null : Math.Round(v.Y ?? double.NaN, 2),
+            X = moving ? (double?)null : RoundedFinite(v.X), Y = moving ? (double?)null : RoundedFinite(v.Y),
             Tasks = v.Tasks.OrderBy(t => t.TaskId).Select(t => new { t.TaskId, t.Status }).ToArray() };
         var vehicleData = observation.Task == null && observation.Step == null
-            ? JsonSerializer.Serialize(vehicles.GetAll().OrderBy(v => v.VehicleId).Select(v => Describe(v, v.Tasks.Any(t => t.Status is 1 or 2 or 3))))
+            ? JsonSerializer.Serialize(vehicles.GetAll().Where(v => v.Quality != SignalQuality.Disabled).OrderBy(v => v.VehicleId)
+                .Select(v => Describe(v, v.Tasks.Any(t => t.Status is 1 or 2 or 3))))
             : observation.Vehicle == null ? "no-vehicle" : JsonSerializer.Serialize(Describe(observation.Vehicle, observation.Step?.Status == (int)DispatchTaskStepStatus.Executing));
         var data = JsonSerializer.Serialize(new { Identity = IdentityFingerprint(observation), Vehicle = vehicleData, VendorState = observation.Vendor?.State,
             Plc = (observation.Task == null || observation.Task.CancelRequestId != null ? signals.GetAll() : signals.GetStation(PlcStation(observation.Task, observation.Step)))
@@ -434,7 +436,8 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
             step?.Status == (int)DispatchTaskStepStatus.Executing ? "核对原运输编号、定位和载荷归属后继续；已到站则补记原步骤。" :
             "PLC动作及物料状态需要现场确认；布尔完成位不能证明本次动作已完成。");
         var evidence = JsonSerializer.Serialize(new { CapturedAt = DateTimeOffset.Now, Boot = _started, task, step, commands, leases, vehicle, vendor,
-            Plc = task == null || task.CancelRequestId != null ? signals.GetAll() : signals.GetStation(PlcStation(task, step)), Vehicles = ticket.TaskId == SiteTask ? vehicles.GetAll() : null,
+            Plc = task == null || task.CancelRequestId != null ? signals.GetAll() : signals.GetStation(PlcStation(task, step)),
+            Vehicles = ticket.TaskId == SiteTask ? vehicles.GetAll().Where(v => v.Quality != SignalQuality.Disabled).ToArray() : null,
             MapId = map.Current?.MapId, MapVersion = map.Current?.VersionId, Identity = identity, SegmentReleases=segmentReleases, SegmentCommitResults=segmentCommits, SegmentContinuationBlock=segmentBlock,
             LoadQuality = identity.Vehicle?.Quality.ToString() ?? "Unknown: identity adapter not connected", PlcCycleQuality = identity.State });
         return new(task, step, command, vehicle, vendor, unstarted && hard == null, reason, hard, evidence, await FingerprintAsync(ticket.TaskId, ct), identity,segmentBlock);

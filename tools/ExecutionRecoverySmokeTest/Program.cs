@@ -125,6 +125,18 @@ await using (var f = await Fixture.Create(new MapSwitchSafetySettings { Required
     f.Fresh(); await f.Recovery.InspectAsync(ct);
     Check((await f.Recovery.DecideAsync(admin, await Request(f, "__SITE__"), ct)).Accepted, "新鲜停车证据加人工空载归属确认后允许全场核对");
 }
+await using (var f = await Fixture.Create(new MapSwitchSafetySettings { RequiredVehicleIds = ["AGV-01"] }))
+{
+    await f.Boot(); f.Fresh();
+    f.Vehicles.Items.Add(SwitchVehicleCache.Ready("AGV-02") with
+    {
+        Connection = ConnectionState.Disconnected, Quality = SignalQuality.Disabled,
+        X = double.PositiveInfinity, Y = double.NegativeInfinity
+    });
+    await f.Recovery.InspectAsync(ct);
+    Check((await f.Recovery.DecideAsync(admin, await Request(f, "__SITE__"), ct)).Accepted,
+        "停用车辆的未初始化无穷坐标不破坏活跃车辆的全场恢复指纹");
+}
 await using (var f = await Fixture.Create())
 {
     await f.Boot(); var journal = new ExecutionEvidenceJournal(f.Db); var plc = new CountingPlc();
