@@ -111,6 +111,11 @@ var business=AgvDispatch.WebHost.WebLocalLaunchMode.Parse(["--business-run-vehic
 Check(business.IsBusiness&&business.ServiceArguments("test").Contains("--TaskCreation:Enabled=True")&&
     business.ServiceArguments("test").Contains("--TaskCreation:AutomaticCreationEnabled=false"),"explicit business launch enables one call coordinator");
 var monitor=AgvDispatch.WebHost.WebLocalLaunchMode.Parse([]);
+var forkMode=AgvDispatch.WebHost.WebLocalLaunchMode.Parse(["--forklift-test-vehicle","AGV-02"]);
+Check(forkMode.ForkTest&&forkMode.NavigationVehicle=="AGV-02"&&forkMode.ServiceArguments("fixture").Contains("--NavigationTest:ForkEnabled=True"),"forklift mode explicitly selects isolated navigation and fork profile");
+Check(monitor.ServiceArguments("fixture").Contains("--NavigationTest:ForkEnabled=False"),"ordinary launch never restores fork motion permission");
+await Reject(()=>Task.FromResult(AgvDispatch.WebHost.WebLocalLaunchMode.Parse(["--forklift-test-vehicle","AGV-02","--business-run-vehicle","AGV-01"])),"forklift and business mode cannot coexist");
+await Reject(()=>Task.FromResult(AgvDispatch.WebHost.WebLocalLaunchMode.Parse(["--forklift-test-vehicle","AGV-02","--navigation-test-vehicle","AGV-01"])),"forklift and chassis-jack navigation mode cannot be combined");
 Check(!monitor.IsBusiness&&monitor.ServiceArguments("test").Contains("--Plc:AllowWrites=False"),"default launch never restores send permission");
 await Reject(()=>Task.FromResult(AgvDispatch.WebHost.WebLocalLaunchMode.Parse(["--business-run-vehicle","AGV-01","--navigation-test-vehicle","AGV-01"])),"isolated and business mode cannot coexist");
 var badOptions = new ManualTaskCreationOptions("map", "v1", false, "blocked", "DUMPER-001", "LM5", "LM6",

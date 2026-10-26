@@ -8,6 +8,9 @@ interface Status {ready:boolean;blockReason:string|null;enabled:boolean;vehicleI
 interface Preview {previewId:string;expiresAt:string;vehicleId:string;sourceSite:string;targetSite:string;robotMap:string;robotMapMd5:string;route:string[]}
 interface Stations {vehicleId:string;robotMap:string;robotMapMd5:string;stations:{id:string;x:number;y:number}[];suggestedSourceSite:string|null;capturedAt:string}
 interface JackStatus {ready:boolean;blockReason:string|null;vehicleId:string;telemetry:{state:number;enabled:boolean;emergency:boolean;errorCode:number;hasLoad:boolean;height:number|null;observedAt:string}|null;current:{requestId:string;action:string;state:string;message:string;updatedAt:string}|null}
+interface ForkStatus {supported:boolean;ready:boolean;blockReason:string|null;vehicleId:string;telemetry:{upperLimit:boolean;lowerLimit:boolean;pumpOn:boolean;valveOn:boolean;observedAt:string}|null;current:{requestId:string;action:string;state:string;message:string}|null}
+const fork=ref<ForkStatus|null>(null),forkError=ref(''),forkAreaClear=ref(false),forkEmpty=ref(false),forkStopBusy=ref(false);
+const forkStateLabels:Record<string,string>={Accepted:'已受理，等待反馈',Completed:'已到限位并关闭输出',ObservedTarget:'已观测目标限位',Stopped:'输出已关闭，请现场确认停稳',Rejected:'已拒绝',Uncertain:'结果不确定，禁止重发'};
 const jack=ref<JackStatus|null>(null),jackError=ref('');
 const jackLabels:Record<number,string>={0:'上升中',1:'上升到位',2:'下降中',3:'下降到位',4:'停止',255:'执行失败'};
 const status=ref<Status|null>(null),catalog=ref<Stations|null>(null),preview=ref<Preview|null>(null);
@@ -21,10 +24,18 @@ let autoReadAttempted=false;
 let disposed=false,timer:ReturnType<typeof setInterval>|undefined;
 async function api<T>(suffix='',body?:unknown):Promise<T>{const r=await fetch('/api/navigation-test'+suffix,{method:body===undefined?'GET':'POST',headers:body===undefined?{}:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(30000)});const data=await r.json();if(!r.ok)throw new Error(data.detail??data.error??'请求失败');return data;}
 function invalidate(){preview.value=null;confirmed.value=false;}
-async function refresh(){if(busy.value||disposed)return;busy.value=true;let reload=false;try{const s=await api<Status>();if(!disposed){const wasEnabled=status.value?.enabled;if(s.ready&&!status.value?.ready)autoReadAttempted=false;status.value=s;readError.value='';if(!s.ready)invalidate();if(!s.enabled&&wasEnabled){catalog.value=null;source.value='';target.value='';}reload=s.ready&&!active.value&&!autoReadAttempted&&(!catalog.value||mapReloadNeeded.value);try{jack.value=await api<JackStatus>('/jack');jackError.value='';}catch(e){jackError.value=String(e);jack.value=null;}}}catch(e){if(!disposed){readError.value=String(e);invalidate();}}finally{busy.value=false;}if(reload&&!disposed)await loadStations();}
+async function refresh(){if(busy.value||disposed)return;busy.value=true;let reload=false;try{const s=await api<Status>();if(!disposed){const wasEnabled=status.value?.enabled;if(s.ready&&!status.value?.ready)autoReadAttempted=false;status.value=s;readError.value='';if(!s.ready)invalidate();if(!s.enabled&&wasEnabled){catalog.value=null;source.value='';target.value='';}reload=s.ready&&!active.value&&!autoReadAttempted&&(!catalog.value||mapReloadNeeded.value);try{fork.value=await api<ForkStatus>('/fork');forkError.value='';}catch(e){forkError.value=String(e);fork.value=null;}if(!fork.value?.supported){try{jack.value=await api<JackStatus>('/jack');jackError.value='';}catch(e){jackError.value=String(e);jack.value=null;}}}}catch(e){if(!disposed){readError.value=String(e);invalidate();}}finally{busy.value=false;}if(reload&&!disposed)await loadStations();}
 async function loadStations(){if(busy.value||active.value||disposed)return;autoReadAttempted=true;invalidate();busy.value=true;error.value='';const previous=catalog.value;catalog.value=null;const mapIdentity=runtimeMapIdentity.value;try{const c=await api<Stations>('/stations');if(disposed||mapIdentity!==runtimeMapIdentity.value)return;const same=previous?.vehicleId===c.vehicleId&&previous.robotMap===c.robotMap&&previous.robotMapMd5===c.robotMapMd5;catalog.value=c;source.value=c.suggestedSourceSite??(same&&c.stations.some(s=>s.id===source.value)?source.value:'');target.value=same&&c.stations.some(s=>s.id===target.value)?target.value:'';mapReloadNeeded.value=false;mapNotice.value='已读取当前车端地图，请重新选择终点并核验路线。';}catch(e){if(!disposed)error.value=String(e);}finally{busy.value=false;}}
 async function inspect(){if(!canInspect.value||!catalog.value)return;invalidate();busy.value=true;error.value='';try{preview.value=await api<Preview>('/preview',{vehicleId:catalog.value.vehicleId,sourceSite:source.value,targetSite:target.value,expectedRobotMap:catalog.value.robotMap,expectedRobotMapMd5:catalog.value.robotMapMd5});}catch(e){error.value=String(e);}finally{busy.value=false;}}
 async function submit(){if(!canSubmit.value||!preview.value)return;const id=preview.value.previewId;invalidate();busy.value=true;error.value='';try{await api('/submit',{previewId:id,siteClearConfirmed:true});}catch(e){error.value=String(e)+'；请先查询原任务，确认未发送并解除阻塞后再重新核验。';}finally{busy.value=false;await refresh();}}
+async function submitFork(action:'Up'|'Down'|'Stop'){
+ if(action==='Stop'){if(forkStopBusy.value||!fork.value?.current)return;forkStopBusy.value=true;}
+ else {if(busy.value||active.value||readError.value||!status.value?.ready||!fork.value?.ready||!forkAreaClear.value||!forkEmpty.value||forkError.value)return;busy.value=true;}
+ forkError.value='';invalidate();
+ try{await api('/fork',{requestId:crypto.randomUUID(),action,areaClearConfirmed:forkAreaClear.value,emptyLoadConfirmed:forkEmpty.value});}
+ catch(e){forkError.value=String(e)+'；请查询原动作，禁止反复发送。';}
+ finally{if(action==='Stop')forkStopBusy.value=false;else busy.value=false;await refresh();}
+}
 async function submitJack(action:'Up'|'Down'){
  if(busy.value||active.value||!status.value?.ready||!jack.value?.ready||jackError.value)return;
  busy.value=true;error.value='';jackError.value='';const requestId=crypto.randomUUID();invalidate();
@@ -77,7 +88,27 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);});
    <button class="send" :disabled="!canSubmit" @click="submit">发送单次导航</button>
   </div>
  </section>
- <section class="jack-test">
+ <section v-if="fork?.supported" class="jack-test">
+  <h3>地牛货叉升降 · {{fork.vehicleId}}</h3>
+  <p>上升至上限位、下降至下限位，不提供任意高度设置。与单次导航分开执行，发送应答不代表到位。</p>
+  <button :disabled="busy" @click="refresh">查询原升降及限位</button>
+  <p v-if="forkError" role="alert" class="error">{{forkError}}</p>
+  <p v-if="fork.blockReason" class="notice">当前不能升降：{{fork.blockReason}}</p>
+  <div v-if="fork.telemetry" class="jack-status">
+   <strong>{{fork.telemetry.upperLimit?'上限位到位':fork.telemetry.lowerLimit?'下限位到位':'两个限位均未触发，机构在中间位置'}}</strong>
+   <p>上限位 DI6：{{fork.telemetry.upperLimit?'1':'0'}} · 下限位 DI3：{{fork.telemetry.lowerLimit?'1':'0'}}<br/>上升输出：{{fork.telemetry.pumpOn?'开启':'关闭'}} · 下降输出：{{fork.telemetry.valveOn?'开启':'关闭'}}<br/>观测时间：{{new Date(fork.telemetry.observedAt).toLocaleString()}}</p>
+  </div>
+  <p v-else>限位反馈不可用；请查询并现场核对。</p>
+  <label class="jack-confirm"><input v-model="forkAreaClear" type="checkbox"/>已确认货叉升降范围空闲、现场可操作急停</label>
+  <label class="jack-confirm"><input v-model="forkEmpty" type="checkbox"/>已确认本次为空载测试</label>
+  <button :disabled="busy||active||!!readError||!status?.ready||!fork.ready||!forkAreaClear||!forkEmpty||!!forkError||fork.telemetry?.upperLimit" @click="submitFork('Up')">货叉上升</button>
+  <button :disabled="busy||active||!!readError||!status?.ready||!fork.ready||!forkAreaClear||!forkEmpty||!!forkError||fork.telemetry?.lowerLimit" @click="submitFork('Down')">货叉下降</button>
+  <button class="fork-stop" style="background:#633524;border-color:#dc9467" :disabled="forkStopBusy||!fork.current" @click="submitFork('Stop')">停止货叉</button>
+  <p v-if="fork.current">最近动作：{{fork.current.action==='Up'?'上升':fork.current.action==='Down'?'下降':'停止'}} · {{forkStateLabels[fork.current.state]??fork.current.state}}<br/>{{fork.current.message}}<br/>请求编号：{{fork.current.requestId}}</p>
+  <p class="notice">停止按钮只停止货叉，不是车辆急停。停在中间位置时禁止导航，先核对并下降到位。断线、超时或重启后仅查询，不自动重发。</p>
+ </section>
+ <p v-else-if="forkError" class="notice">货叉测试接口尚不可用：{{forkError}}</p>
+ <section v-if="!fork?.supported" class="jack-test">
   <h3>原地顶升动作测试</h3>
   <p>独立控制当前测试车的顶升机构，不行驶到其他站点。上升、下降与导航互斥；点击按钮即发送本次调试动作，不要求恢复批次或载荷条件。</p>
   <button :disabled="busy" @click="refresh">查询顶升状态</button>

@@ -208,6 +208,35 @@ robot.DropJackReply=true;var lost=await jackService.SubmitJackAsync(user,JackReq
 Check(lost.State=="Uncertain"&&robot.JackWrites==3,"Lost jack reply is uncertain and never retried");
 jackService=CreateJack();await jackService.ReadJackAsync(default);Check(robot.JackWrites==3,"Restart only queries jack feedback without resend");
 robot.JackState=1;Check((await jackService.ReadJackAsync(default)).Current?.State is "Completed" or "ObservedTarget","Fresh endpoint feedback reconciles observed physical result");
+robot.DropJackReply=false;robot.ForkMode=true;robot.ForkPosition=0;robot.LastTask="";robot.Status=4;
+var forkPath=Path.Combine(folder,"fork-test-nav.json");robot.ForkIntentPath=forkPath+".fork.json";
+var forkSettings=new SingleNavigationTestOptions{Enabled=true,VehicleId="SIM",BusinessExecutionDisabled=true,OtherApiPort=robot.ConfigPort,ForkEnabled=true,ForkModelMd5=new string('c',32),ForkRobotId="FORK-SIM"};
+SingleNavigationTestService CreateFork()=>new(forkSettings,options,connections,active,gate,forkPath);
+var forkService=CreateFork();ForkTestSubmit ForkRequest(string action="Up")=>new(Guid.NewGuid().ToString(),action,true,true);
+Check((await forkService.ReadForkAsync(default)).Telemetry?.LowerLimit==true,"Fork lower limit read without commands");
+await Reject(()=>forkService.SubmitForkAsync(user,ForkRequest() with{EmptyLoadConfirmed=false},default),"Fork requires explicit empty-load confirmation");
+robot.ForkModelMismatch=true;await Reject(()=>forkService.SubmitForkAsync(user,ForkRequest(),default),"Changed model blocks fork");robot.ForkModelMismatch=false;
+robot.ForkBadMapping=true;await Reject(()=>forkService.SubmitForkAsync(user,ForkRequest(),default),"Changed byDO mapping blocks fork");robot.ForkBadMapping=false;
+robot.ForkMissingDi=true;await Reject(()=>forkService.SubmitForkAsync(user,ForkRequest(),default),"Missing limit feedback blocks fork");robot.ForkMissingDi=false;
+robot.Locked=true;await Reject(()=>forkService.SubmitForkAsync(user,ForkRequest(),default),"Fork never takes occupied control");robot.Locked=false;
+robot.ActiveForeign=true;await Reject(()=>forkService.SubmitForkAsync(user,ForkRequest(),default),"Foreign task blocks fork");robot.ActiveForeign=false;
+await Reject(()=>forkService.SubmitJackAsync(user,JackRequest(),default),"Fork mode rejects chassis jack commands");
+var forkUp=ForkRequest();await Task.WhenAll(forkService.SubmitForkAsync(user,forkUp,default),forkService.SubmitForkAsync(user,forkUp,default));
+Check(robot.ForkWrites==1&&robot.ForkIntentExisted,"Fork concurrent duplicate id sends once after durable intent");
+await Reject(()=>forkService.SubmitForkAsync(user,ForkRequest("Down"),default),"Moving fork blocks opposite action");
+await Reject(()=>forkService.PreviewAsync(user,query,default),"Moving fork blocks navigation");
+active.Busy=true;var forkStop=ForkRequest("Stop");await forkService.SubmitForkAsync(user,forkStop,default);active.Busy=false;
+Check(robot.ForkStops==1&&(await forkService.ReadForkAsync(default)).Current?.State=="Stopped","Stop remains available despite new-work task block and verifies outputs off");
+await forkService.SubmitForkAsync(user,forkStop,default);Check(robot.ForkStops==1,"Repeated stop id does not resend");
+await Reject(()=>forkService.SubmitForkAsync(user,forkUp,default),"Historical fork request cannot be replayed after stop");
+await Reject(()=>forkService.PreviewAsync(user,query,default),"Mid-position stopped fork blocks navigation");
+var forkDown=ForkRequest("Down");await forkService.SubmitForkAsync(user,forkDown,default);robot.ForkPosition=0;
+Check((await forkService.ReadForkAsync(default)).Current?.State=="Completed","Down completes only at lower limit with outputs off");
+robot.ForkContradictory=true;Check(!(await forkService.ReadForkAsync(default)).Ready,"Contradictory fork limits fail closed");robot.ForkContradictory=false;
+robot.DropForkReply=true;var lostFork=ForkRequest();var forkLost=await forkService.SubmitForkAsync(user,lostFork,default);Check(forkLost.State=="Uncertain"&&robot.ForkWrites==3,"Lost fork response is uncertain without retry");
+forkService=CreateFork();await forkService.ReadForkAsync(default);Check(robot.ForkWrites==3,"Fork restart only reads original feedback");
+robot.ForkPosition=2;Check((await forkService.ReadForkAsync(default)).Current?.State=="ObservedTarget","Fresh endpoint reconciles uncertain fork without claiming acknowledged success");
+robot.DropForkReply=false;await forkService.SubmitForkAsync(user,ForkRequest("Down"),default);robot.ForkPosition=0;await forkService.ReadForkAsync(default);
 Console.WriteLine($"PASS {count} checks; simulation only, no physical motion");
 
 sealed class Tasks:IActiveTaskLookup
@@ -221,11 +250,22 @@ sealed class Robot:IAsyncDisposable
  public int StatusPort=>((IPEndPoint)status.LocalEndpoint).Port;public int NavigationPort=>((IPEndPoint)nav.LocalEndpoint).Port;
  public bool Locked,Away,Indirect,ActiveForeign,MissingTasks,ChangedMap,DropReply,IntentExisted,WrappedTasks,EmptyHistoricalId,UnknownStatus;public string IntentPath="",LastSource="",LastTarget="",LastTask="",CancelId="";public int Sends,CancelCount,Status=2;
  public Robot(){status.Start();nav.Start();config.Start();workers.Add(Accept(config,false));workers.Add(Accept(status,false));workers.Add(Accept(nav,true));}
+ public bool ForkMode,ForkModelMismatch,ForkBadMapping,ForkMissingDi,ForkContradictory,DropForkReply,ForkIntentExisted;
+ public int ForkPosition,ForkWrites,ForkStops;public string ForkIntentPath="";
+ object ForkModel()=>JsonSerializer.Deserialize<JsonElement>("""
+ {"deviceTypes":[{"name":"fork","devices":[{"isEnabled":true,"deviceParams":[{"key":"type","comboParam":{"childKey":"byDO","childParams":[{"key":"byDO","params":[{"key":"pumpDO","int32Value":PUMP},{"key":"leakDO","int32Value":6},{"key":"topDI","int32Value":6},{"key":"bottomDI","int32Value":3}]}]}}]}]}]}
+ """.Replace("PUMP",ForkBadMapping?"8":"5"));
  async Task Accept(TcpListener listener,bool motion){try{while(!stop.IsCancellationRequested){var c=await listener.AcceptTcpClientAsync(stop.Token);workers.Add(Serve(c,motion));}}catch(OperationCanceledException){}catch(ObjectDisposedException){}}
  async Task Serve(TcpClient client,bool motion)
  {
   using(client)try{var s=client.GetStream();while(!stop.IsCancellationRequested){var h=new byte[16];await s.ReadExactlyAsync(h,stop.Token);var n=BinaryPrimitives.ReadInt32BigEndian(h.AsSpan(4));var type=BinaryPrimitives.ReadUInt16BigEndian(h.AsSpan(8));var bytes=new byte[n];await s.ReadExactlyAsync(bytes,stop.Token);using var req=JsonDocument.Parse(n==0?"{}":System.Text.Encoding.UTF8.GetString(bytes));object result;
    switch(type){
+    case 1000:result=new{vehicle_id="FORK-SIM",model_md5=new string(ForkModelMismatch?'d':'c',32)};break;
+    case 1500:result=ForkModel();break;
+    case 6040:
+     if(motion)throw new Exception("Wrong fork port");ForkIntentExisted=File.Exists(ForkIntentPath);ForkWrites++;ForkPosition=req.RootElement.GetProperty("height").GetInt32()==1?1:3;
+     if(DropForkReply)return;result=new{ret_code=0};break;
+    case 6041:ForkStops++;ForkPosition=4;result=new{ret_code=0};break;
     case 4011:
      Interlocked.Increment(ref Downloads);result=new{header=new{mapType="2D-Map",mapName=DownloadWrong?"wrong":"test"}};
      if(DownloadChanged)ChangedMap=true;break;
@@ -239,7 +279,7 @@ sealed class Robot:IAsyncDisposable
     case 1060:result=new{locked=Locked};break;
     case 1301:result=new{stations=new[]{new{id="LM1",x=0d,y=0d},new{id="LM2",x=1d,y=0d}}};break;
     case 1303:result=new{list=Indirect?new[]{"LM1","VIA","LM2"}:new[]{"LM1","LM2"}};break;
-    case 1100:result=new{x=Away?5d:Status==4&&LastTask.Length>0?1d:0d,y=0d,angle=0d,confidence=0.9,battery_level=0.95,blocked=false,emergency=false,charging=false,current_station=Away?"":"LM1",vx=0d,vy=0d,w=0d};break;
+    case 1100:result=ForkMode?(object)new{ret_code=0,vehicle_id="FORK-SIM",model_md5=new string(ForkModelMismatch?'d':'c',32),vx=0d,vy=0d,w=0d,emergency=false,soft_emc=false,charging=false,errors=Array.Empty<object>(),task_status=4,DI=ForkMissingDi?Array.Empty<object>():new object[]{new{id=6,source="normal",status=ForkContradictory||ForkPosition==2,valid=true},new{id=3,source="normal",status=ForkContradictory||ForkPosition==0,valid=true}},DO=new[]{new{id=5,source="normal",status=ForkPosition==1},new{id=6,source="normal",status=ForkPosition==3}}}:(object)new{x=Away?5d:Status==4&&LastTask.Length>0?1d:0d,y=0d,angle=0d,confidence=0.9,battery_level=0.95,blocked=false,emergency=false,charging=false,current_station=Away?"":"LM1",vx=0d,vy=0d,w=0d};break;
     case 1110:
      if(MissingTasks){result=new{};break;}
      var filtered=req.RootElement.TryGetProperty("task_ids",out var ids);

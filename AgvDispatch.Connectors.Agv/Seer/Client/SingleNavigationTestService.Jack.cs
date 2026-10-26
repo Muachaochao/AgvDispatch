@@ -49,6 +49,7 @@ public sealed partial class SingleNavigationTestService
     }
     private async Task RequireJackIdleForNavigationAsync(SeerRobotClient client,CancellationToken ct)
     {
+        if(_settings.ForkEnabled)return;
         if(_jackRecord is null)return;
         if(_jackRecord.VehicleId!=client.Robot.VehicleId)throw new InvalidOperationException("未结束顶升记录属于另一台车，不能混用。");
         var t=await FetchJackAsync(client,ct);ReconcileJack(t);
@@ -80,6 +81,7 @@ public sealed partial class SingleNavigationTestService
     }
     public async Task<JackTestRecord> SubmitJackAsync(TrafficUserContext user,JackTestSubmit request,CancellationToken ct)
     {
+        if(_settings.ForkEnabled)throw new InvalidOperationException("地牛模式只允许货叉接口，禁止混用底盘顶升指令。");
         Authorize(user);await _mutex.WaitAsync(ct);
         try
         {

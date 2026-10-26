@@ -12,6 +12,7 @@ mkdirSync(evidence,{recursive:true});mkdirSync(profile,{recursive:true});
 const binary=process.env.EDITOR_TEST_BROWSER||['C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe','C:/Program Files/Google/Chrome/Application/chrome.exe'].find(existsSync);
 assert.ok(binary,'A Chromium browser is required');
 let ready=false,current=null,submits=0,previews=0,offline=false,seq=0,ws,child;
+let forkMode=false,forkCurrent=null,forkMoving=false,forkDown=true,forkSends=0,forkStops=0;
 const pending=new Map(),errors=[],checks=[];
 const md5='a'.repeat(32),now=()=>new Date().toISOString();
 const catalog={vehicleId:'SIM',robotMap:'fixture',robotMapMd5:md5,stations:[{id:'A',x:0,y:0},{id:'B',x:1,y:0},{id:'C',x:2,y:0}],suggestedSourceSite:'A',capturedAt:now()};
@@ -21,9 +22,18 @@ const server=createServer(async(req,res)=>{
   function json(code,data){res.writeHead(code,{'Content-Type':'application/json'});res.end(JSON.stringify(data));}
   if(url.pathname==='/api/navigation-test')return offline?json(503,{detail:'模拟后台断连'}):json(200,{enabled:true,vehicleId:'SIM',ready,blockReason:ready?null:'启动恢复核对尚未放行',current,message:'synthetic'});
   if(url.pathname==='/api/navigation-test/stations')return json(200,{...catalog,capturedAt:now()});
+  if(url.pathname==='/api/navigation-test/fork'&&req.method==='GET')return json(200,{supported:forkMode,ready:!forkMoving,blockReason:forkMoving?'原升降未结束':null,vehicleId:'SIM',telemetry:{upperLimit:false,lowerLimit:forkDown,pumpOn:forkMoving,valveOn:false,observedAt:now()},current:forkCurrent});
+  if(url.pathname==='/api/navigation-test/jack'&&req.method==='GET')return json(200,{ready:false,vehicleId:'SIM',blockReason:'synthetic jack disabled',telemetry:null,current:null});
   if(url.pathname.startsWith('/api/navigation-test/')){
    let bytes='';for await(const part of req)bytes+=part;
    const body=JSON.parse(bytes);
+   if(url.pathname.endsWith('/fork')){
+    assert.match(body.requestId,/^[0-9a-f-]{36}$/);
+    if(body.action==='Stop'){forkStops++;forkMoving=false;}
+    else {assert.equal(body.areaClearConfirmed,true);assert.equal(body.emptyLoadConfirmed,true);forkSends++;forkMoving=body.action==='Up';forkDown=body.action==='Down';}
+    forkCurrent={requestId:body.requestId,action:body.action,state:body.action==='Stop'?'Stopped':body.action==='Down'?'Completed':'Accepted',message:'synthetic fork feedback'};
+    return json(200,forkCurrent);
+   }
    if(url.pathname.endsWith('/preview')){
     assert.equal(body.vehicleId,'SIM');assert.equal(body.expectedRobotMap,'fixture');assert.equal(body.expectedRobotMapMd5,md5);
     assert.equal(body.sourceSite,'A');assert.equal(body.targetSite,'C');previews++;
@@ -60,6 +70,7 @@ try{
  ws.addEventListener('message',event=>{const r=JSON.parse(event.data);if(r.id){const p=pending.get(r.id);if(p){pending.delete(r.id);r.error?p.no(new Error(JSON.stringify(r.error))):p.ok(r.result);}}else if(r.method==='Runtime.exceptionThrown')errors.push(r.params.exceptionDetails.exception?.description||r.params.exceptionDetails.text);});
  await rpc('Page.enable');await rpc('Runtime.enable');await rpc('Emulation.setDeviceMetricsOverride',{width:1440,height:1100,deviceScaleFactor:1,mobile:false});
  await rpc('Page.navigate',{url:`http://127.0.0.1:${port}/#/navigation-test`});
+ await button('重新读取车端站点');
  await wait(()=>evaluate(`document.querySelectorAll('.nav-test select').length===2`),'Catalog did not load');
  check('Station choices come from robot catalog and current source is suggested',await evaluate(`document.querySelectorAll('.nav-test select')[0].value==='A'&&document.querySelectorAll('.nav-test select')[1].options.length===4`));
  check('Recovery blocker is visible and no motion was requested',await evaluate(`document.querySelector('.nav-test').textContent.includes('启动恢复核对尚未放行')`)&&submits===0);
@@ -89,6 +100,20 @@ try{
  await screenshot('mobile');
  current=null;offline=true;await rpc('Page.reload');await wait(()=>evaluate(`document.querySelector('.nav-test')?.textContent.includes('尚未取得可靠的后台任务状态')`),'Offline task state was not explicit');
  check('Failed status query is never presented as no task sent',await evaluate(`!document.querySelector('.nav-test').textContent.includes('后台当前没有已记录的测试任务')`)&&submits===1);
+ offline=false;current=null;ready=true;forkMode=true;
+ await rpc('Page.navigate',{url:`http://127.0.0.1:${port}/?fork=1#/navigation-test`});
+ await wait(()=>evaluate(`document.querySelector('.nav-test')?.textContent.includes('地牛货叉升降')`),'Fork panel missing');
+ check('Fork mode shows limits and hides chassis jack controls',await evaluate(`document.querySelector('.nav-test').textContent.includes('下限位 DI3')&&!document.querySelector('.nav-test').textContent.includes('原地顶升动作测试')`));
+ check('Fork motion requires both physical confirmations',await evaluate(`[...document.querySelectorAll('.nav-test button')].find(b=>b.textContent.trim()==='货叉上升').disabled`));
+ await evaluate(`document.querySelectorAll('.jack-confirm input').forEach(e=>{e.checked=true;e.dispatchEvent(new Event('change',{bubbles:true}));});`);
+ await button('货叉上升');
+ await wait(()=>forkSends===1,'Fork action not sent');
+ await wait(()=>evaluate(`[...document.querySelectorAll('.nav-test button')].find(b=>b.textContent.trim()==='货叉下降').disabled&&![...document.querySelectorAll('.nav-test button')].find(b=>b.textContent.trim()==='停止货叉').disabled`),'Fork stop unavailable');
+ check('Moving fork disables another motion while stop remains available',true);
+ await button('停止货叉');await wait(()=>forkStops===1,'Fork stop missing');
+ await button('货叉下降');await wait(()=>forkSends===2&&forkDown,'Fork lower missing');
+ check('Fork stop and lower use distinct requests without navigation sends',forkStops===1&&forkSends===2&&submits===1);
+ await screenshot('fork-lower');
  check('No uncaught browser or synthetic server exceptions',errors.length===0);
  writeFileSync(resolve(evidence,'results.json'),JSON.stringify({passed:checks.length,checks,submits,previews,errors},null,2));
  console.log(`PASS ${checks.length} browser checks; synthetic endpoints only`);

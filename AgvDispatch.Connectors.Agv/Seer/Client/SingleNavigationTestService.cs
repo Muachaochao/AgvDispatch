@@ -10,6 +10,9 @@ public sealed class SingleNavigationTestOptions
     public string VehicleId { get; init; } = "";
     public bool BusinessExecutionDisabled { get; init; }
     public int OtherApiPort { get; init; } = 19210;
+    public bool ForkEnabled { get; init; }
+    public string ForkModelMd5 { get; init; } = "";
+    public string ForkRobotId { get; init; } = "";
 }
 
 /// <summary>One explicitly confirmed 3051 single-vehicle navigation. Never retries a motion command.
@@ -32,6 +35,7 @@ public sealed partial class SingleNavigationTestService : ISingleNavigationTestS
     {
         _settings=settings; _options=options; _connections=connections; _tasks=tasks; _execution=execution; _path=path;
         LoadJackRecord();
+        LoadForkRecord();
         if(File.Exists(path))
         {
             _record=JsonSerializer.Deserialize<NavigationTestRecord>(File.ReadAllText(path))
@@ -100,6 +104,7 @@ public sealed partial class SingleNavigationTestService : ISingleNavigationTestS
             throw new ArgumentException("请选择两个不同的厂家真实站点。");
         var client=await GuardAsync(q.VehicleId,ct);
         await RequireJackIdleForNavigationAsync(client,ct);
+        await RequireForkIdleForNavigationAsync(client,ct);
         using var before=await client.RequestAsync(1300,null,ct);
         using var load=await client.RequestAsync(1022,null,ct);
         using var owner=await client.RequestAsync(1060,null,ct);

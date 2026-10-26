@@ -41,8 +41,18 @@ public sealed record JackTestTelemetry(int State,bool Enabled,bool Emergency,int
 public sealed record JackTestRecord(string RequestId,string VehicleId,string Action,string State,string Message,int BeforeState,DateTimeOffset UpdatedAt,string Operator)
 {public bool Acknowledged {get;init;} }
 public sealed record JackTestStatus(bool Ready,string? BlockReason,string VehicleId,JackTestTelemetry? Telemetry,JackTestRecord? Current);
+public sealed record ForkTestSubmit(string RequestId,string Action,bool AreaClearConfirmed,bool EmptyLoadConfirmed);
+public sealed record ForkTestTelemetry(bool UpperLimit,bool LowerLimit,bool PumpOn,bool ValveOn,DateTimeOffset ObservedAt);
+public sealed record ForkTestRecord(string RequestId,string VehicleId,string Action,string State,string Message,DateTimeOffset UpdatedAt)
+{
+    public bool Acknowledged {get;init;}
+    public IReadOnlyList<string> RequestIds {get;init;} = [];
+}
+public sealed record ForkTestStatus(bool Supported,bool Ready,string? BlockReason,string VehicleId,ForkTestTelemetry? Telemetry,ForkTestRecord? Current);
 public interface ISingleNavigationTestService
 {
+    Task<ForkTestStatus> ReadForkAsync(CancellationToken ct) => throw new NotSupportedException("货叉测试后台未更新。");
+    Task<ForkTestRecord> SubmitForkAsync(TrafficUserContext user,ForkTestSubmit request,CancellationToken ct) => throw new NotSupportedException("货叉测试后台未更新。");
     Task<JackTestStatus> ReadJackAsync(CancellationToken ct) => throw new NotSupportedException("顶升测试后台未更新。");
     Task<JackTestRecord> SubmitJackAsync(TrafficUserContext user,JackTestSubmit request,CancellationToken ct) => throw new NotSupportedException("顶升测试后台未更新。");
     Task<NavigationTestStatus> ReadAsync(CancellationToken ct);

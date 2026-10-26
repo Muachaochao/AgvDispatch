@@ -4,6 +4,7 @@ namespace AgvDispatch.WebHost;
 internal sealed record WebLocalLaunchMode(string NavigationVehicle, string PlcCycleVehicle, string PlcCycleStation)
 {
     public string BusinessVehicle { get; init; } = "";
+    public bool ForkTest { get; init; }
     public bool IsBusiness => BusinessVehicle.Length > 0;
     public bool IsPlcCycle => PlcCycleVehicle.Length > 0;
     public string Page => IsBusiness ? "/#/tasks" : IsPlcCycle ? "/#/plc-cycle-test" : NavigationVehicle.Length > 0 ? "/#/navigation-test" : "/";
@@ -23,6 +24,9 @@ internal sealed record WebLocalLaunchMode(string NavigationVehicle, string PlcCy
             return value;
         }
         var navigation = Read("--navigation-test-vehicle");
+        var forklift = Read("--forklift-test-vehicle");
+        if(forklift.Length>0&&navigation.Length>0)throw new ArgumentException("Choose one navigation test vehicle option.");
+        if(forklift.Length>0)navigation=forklift;
         var business = Read("--business-run-vehicle");
         var cycleVehicle = Read("--plc-cycle-test-vehicle");
         var cycleStation = Read("--plc-cycle-test-station");
@@ -32,7 +36,7 @@ internal sealed record WebLocalLaunchMode(string NavigationVehicle, string PlcCy
             throw new ArgumentException("Choose either manual navigation or PLC cycle testing for this launch.");
         if (business.Length > 0 && (navigation.Length > 0 || cycleVehicle.Length > 0))
             throw new ArgumentException("Business execution cannot share an isolated test launch.");
-        return new(cycleVehicle.Length > 0 ? cycleVehicle : navigation, cycleVehicle, cycleStation) { BusinessVehicle = business };
+        return new(cycleVehicle.Length > 0 ? cycleVehicle : navigation, cycleVehicle, cycleStation) { BusinessVehicle = business, ForkTest=forklift.Length>0 };
     }
 
     public string[] ServiceArguments(string pipe) =>
@@ -44,6 +48,7 @@ internal sealed record WebLocalLaunchMode(string NavigationVehicle, string PlcCy
         "--TaskCreation:AutomaticCreationEnabled=false",
         $"--NavigationTest:Enabled={(NavigationVehicle.Length > 0 ? "true" : "false")}",
         $"--NavigationTest:VehicleId={(IsBusiness ? BusinessVehicle : NavigationVehicle)}",
+        $"--NavigationTest:ForkEnabled={ForkTest}",
         $"--PlcCycleTest:Enabled={(IsPlcCycle ? "true" : "false")}",
         $"--PlcCycleTest:VehicleId={PlcCycleVehicle}", $"--PlcCycleTest:StationId={PlcCycleStation}"
     ];

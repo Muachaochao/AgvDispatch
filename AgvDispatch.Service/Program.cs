@@ -105,10 +105,13 @@ builder.Services.AddSingleton<ISingleNavigationTestService>(p => new SingleNavig
     new SingleNavigationTestOptions {
         Enabled=builder.Configuration.GetValue("NavigationTest:Enabled",false),
         VehicleId=builder.Configuration["NavigationTest:VehicleId"]??"",
+        ForkEnabled=builder.Configuration.GetValue("NavigationTest:ForkEnabled",false),
+        ForkModelMd5=builder.Configuration["NavigationTest:ForkModelMd5"]??"",
+        ForkRobotId=builder.Configuration["NavigationTest:ForkRobotId"]??"",
         BusinessExecutionDisabled=new[]{"Dispatching:Enabled","AgvCommandOutbox:Enabled","DispatchTaskSteps:Enabled","TaskCreation:Enabled","HandshakeExecution:Enabled"}
             .All(key=>builder.Configuration.GetValue<bool?>(key)==false)
     },agvOptions,p.GetRequiredService<AgvConnectionManager>(),p.GetRequiredService<IActiveTaskLookup>(),
-    p.GetRequiredService<IMapExecutionGate>(),Path.Combine(Path.GetDirectoryName(databaseOptions.DatabasePath)!,"navigation-test.json")));
+    p.GetRequiredService<IMapExecutionGate>(),Path.Combine(Path.GetDirectoryName(databaseOptions.DatabasePath)!,builder.Configuration.GetValue("NavigationTest:ForkEnabled",false)?"navigation-test.fork.json":"navigation-test.json")));
 var plcCycleTestOptions = new PlcCycleTestOptions();
 builder.Configuration.GetSection("PlcCycleTest").Bind(plcCycleTestOptions);
 builder.Services.AddSingleton(plcCycleTestOptions);

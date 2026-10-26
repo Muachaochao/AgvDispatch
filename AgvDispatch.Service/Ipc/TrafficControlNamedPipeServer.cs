@@ -188,15 +188,18 @@ public sealed class TrafficControlNamedPipeServer(
                 $"账号{user.WindowsIdentity}没有交通资源查看权限。");
         }
 
-        if (request.Operation is "SubmitJackTest" or "PreviewNavigationTest" or "SubmitNavigationTest" &&
+        if (request.Operation is "SubmitForkTest" or "SubmitJackTest" or "PreviewNavigationTest" or "SubmitNavigationTest" &&
             plcCycleTest is not null && (await plcCycleTest.ReadAsync(cancellationToken)).Enabled)
             throw new InvalidOperationException("PLC空载联调模式独占测试车辆；手动导航或顶升请先停止该模式并明确切换启动方式。");
-        if (request.Operation is "SubmitJackTest" or "PreviewNavigationTest" or "SubmitNavigationTest" &&
+        if (request.Operation is "SubmitForkTest" or "SubmitJackTest" or "PreviewNavigationTest" or "SubmitNavigationTest" &&
             businessRun is not null && (await businessRun.ReadAsync(cancellationToken)).Current is { Stage: not "Completed" })
             throw new InvalidOperationException("业务运行尚未完成待机收尾，不能交叉发送单车导航或顶升动作。");
 
         return request.Operation switch
         {
+            "GetForkTest" => Success(await (navigationTest??throw new NotSupportedException("货叉后台未更新。")).ReadForkAsync(cancellationToken)),
+            "SubmitForkTest" => Success(await (navigationTest??throw new NotSupportedException("货叉后台未更新。")).SubmitForkAsync(user,Deserialize<ForkTestSubmit>(request.Payload),cancellationToken)),
+            "StopForkTest" => Success(await (navigationTest??throw new NotSupportedException("货叉后台未更新。")).SubmitForkAsync(user,RequireForkStop(request.Payload),cancellationToken)),
             "GetBusinessRun" => Success(await (businessRun??throw new NotSupportedException("后台未更新持续运行入口。")).ReadAsync(cancellationToken)),
             "StartBusinessRun" => Success(await (businessRun??throw new NotSupportedException("后台未更新持续运行入口。")).StartAsync(user,Deserialize<BusinessRunStart>(request.Payload),cancellationToken)),
             "StopBusinessRun" => Success(await (businessRun??throw new NotSupportedException("后台未更新持续运行入口。")).StopAsync(user,Deserialize<BusinessRunStop>(request.Payload),cancellationToken)),
@@ -364,6 +367,11 @@ public sealed class TrafficControlNamedPipeServer(
         };
     }
 
+    private static ForkTestSubmit RequireForkStop(JsonElement payload)
+    {
+        var request=Deserialize<ForkTestSubmit>(payload);
+        return request.Action=="Stop"?request:throw new ArgumentException("停止接口只接受Stop。");
+    }
     private static T Deserialize<T>(JsonElement payload) =>
         payload.Deserialize<T>(JsonOptions) ??
         throw new InvalidDataException($"请求参数{typeof(T).Name}为空。");
