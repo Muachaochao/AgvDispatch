@@ -66,8 +66,11 @@ public sealed class DispatchTaskStepCoordinator(
 
     private async Task RunCycleAsync(CancellationToken cancellationToken)
     {
+        var assigned = await tasks.GetAssignedTasksAsync(cancellationToken);
+        var exitKeys = assigned.Where(t=>t.Stage is DispatchTaskStage.ReturningEmptyBox or DispatchTaskStage.WaitingForPlcConfirmation).Select(t=>"exit:"+t.TaskId).ToHashSet(StringComparer.Ordinal);
+        foreach(var key in _conditionFingerprints.Keys.Where(k=>k.StartsWith("exit:",StringComparison.Ordinal)&&!exitKeys.Contains(k)).ToArray()) _conditionFingerprints.Remove(key);
         if(handshake?.Enabled==true)
-            foreach(var task in (await tasks.GetAssignedTasksAsync(cancellationToken)).Where(t=>t.Stage is DispatchTaskStage.ReturningEmptyBox or DispatchTaskStage.WaitingForPlcConfirmation))
+            foreach(var task in assigned.Where(t=>t.Stage is DispatchTaskStage.ReturningEmptyBox or DispatchTaskStage.WaitingForPlcConfirmation))
             {
                 try { await handshake.ProcessExitAsync(task,cancellationToken); }
                 catch(OperationCanceledException) when(cancellationToken.IsCancellationRequested){throw;}
@@ -75,11 +78,12 @@ public sealed class DispatchTaskStepCoordinator(
                 {
                     // Retain equipment and road ownership; a failed exit observation never stops other tasks' ready-step polling.
                     var key="exit:"+task.TaskId;
-                    if(!_conditionFingerprints.TryGetValue(key,out var prior)||prior!=exception.Message)
+                    var reason=exception.GetBaseException().Message;
+                    if(!_conditionFingerprints.TryGetValue(key,out var prior)||prior!=reason)
                     {
                         logger.LogWarning(exception,"28阶段实际出区核验未通过，保持原责任。TaskId={TaskId}",task.TaskId);
-                        if(journal!=null)await journal.RecordAsync(task.TaskId,"","DumperExitBlocked",new {Reason=exception.Message},cancellationToken);
-                        _conditionFingerprints[key]=exception.Message;
+                        if(journal!=null)await journal.RecordAsync(task.TaskId,"","DumperExitBlocked",new {Reason=reason,Context=exception.Message},cancellationToken);
+                        _conditionFingerprints[key]=reason;
                     }
                 }
             }

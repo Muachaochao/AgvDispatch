@@ -168,6 +168,7 @@ public static class DumperExitEvaluator
         var radius = profile.RadiusFromReportedReferenceMeters + profile.MaximumPositionUncertaintyMeters +
             policy.SafetyMarginMeters + maximumRouteDeviationMeters;
         var segments = new List<(MapPoint2D From, MapPoint2D To, MapGeometryBounds? CurveBounds)>();
+        var curveCovers = new Dictionary<int, IReadOnlyList<MapGeometryBounds>>();
         for (var i = 0; i < orderedEdgeIds.Count; i++)
         {
             if (!nodes.TryGetValue(orderedNodeIds[i], out var from) || !nodes.TryGetValue(orderedNodeIds[i + 1], out var to) ||
@@ -198,6 +199,9 @@ public static class DumperExitEvaluator
                         return Reject($"冻结返程曲线保守包络可能触碰倒料资源 {resource.Id}，保持占用。");
                 }
                 curveBounds = bounds;
+                var oriented = edge.GeometryKind == MapEdgeGeometryKind.CubicBezier && edge.From != from.Id
+                    ? edge with { ControlPoints = edge.ControlPoints!.Reverse().ToArray() } : edge;
+                curveCovers[i] = MapEdgeGeometry.ConservativeCover(oriented, from, to);
             }
             segments.Add((a, b, curveBounds));
         }
@@ -209,7 +213,7 @@ public static class DumperExitEvaluator
             var (a, b, curveBounds) = segments[i];
             if (curveBounds is {} bounds)
             {
-                if (PointBoundsDistance(point, bounds) <= maximumRouteDeviationMeters + Epsilon)
+                if (curveCovers[i].Any(part => PointBoundsDistance(point, part) <= maximumRouteDeviationMeters + Epsilon))
                     return Reject("当前定位可能处于曲线保守边界内，不能从采样推断已通过曲线，等待区外直线定位。");
                 continue;
             }

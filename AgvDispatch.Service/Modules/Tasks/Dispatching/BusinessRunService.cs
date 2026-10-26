@@ -89,7 +89,7 @@ public sealed class BusinessRunService(IBusinessRunPort port, BusinessRunOwnersh
         {
             if (run is null || run.RunId != request.RunId) throw new ArgumentException("原运行编号不一致。");
             if (run.Stage == "Completed") return Status();
-            run = run with { StopRequested = true }; Save();
+            run = run with { StopRequested = true, UpdatedAt = DateTimeOffset.UtcNow }; Save();
             if (run.Plan.Mode == "Cycle")
                 try { await port.SimulatorAsync(run, true, ct); }
                 catch (Exception e) { Move("Hold", "停止新增呼叫结果待核对，请重试同一停止申请：" + e.Message); throw; }
@@ -122,6 +122,48 @@ public sealed class BusinessRunService(IBusinessRunPort port, BusinessRunOwnersh
             if (run.VendorTaskId is not null) await port.ReleaseReturnAsync(run, ct);
             Move("Completed", "人工请求核对结束；原任务及待机停靠已核验，没有自动续跑或重发。");
             ownership.Set(null); ownership.Returning = false;
+            return Status();
+        }
+        finally { mutex.Release(); }
+    }
+    public async Task<BusinessRunStatus> ResumeAsync(TrafficUserContext user, BusinessRunResume request, CancellationToken ct)
+    {
+        Authorize(user); await mutex.WaitAsync(ct);
+        try
+        {
+            if (run is null || run.RunId != request.RunId) throw new InvalidOperationException("原运行编号不一致。");
+            if (!Guid.TryParseExact(request.RequestId,"N",out _) || !request.SiteConfirmed || string.IsNullOrWhiteSpace(request.Reason) || request.Reason.Trim().Length is < 10 or > 1000)
+                throw new ArgumentException("续接须保留申请编号，填写现场依据并确认现场条件。");
+            if (run.LastResumeRequestId == request.RequestId)
+            {
+                if (run.LastResumeReason != request.Reason.Trim()) throw new ArgumentException("同一续接申请不能修改依据。");
+                return Status();
+            }
+            if (run.Stage != "Hold" || run.UpdatedAt != request.ExpectedUpdatedAt)
+                throw new InvalidOperationException("原运行状态已变化，请刷新后重新核对。");
+            run = await port.ReconcileAsync(run,ct); Save();
+            var o = await port.ObserveAsync(run,ct);
+            if (o.Block is not null) throw new InvalidOperationException(o.Block);
+            if (o.MapId != run.MapId || o.MapVersionId != run.MapVersionId || o.ParameterRevision != run.ParameterRevision)
+                throw new InvalidOperationException("原地图或参数版本已变化，不允许续接。");
+            string stage;
+            if (run.VendorTaskId is not null) stage = "Returning"; // Observe verifies the original vendor identity.
+            else if (run.TaskId is not null)
+            {
+                if (o.CurrentTaskState is null or "Cancelled" or "Faulted" or "CancellationReview" or "CancellationPending")
+                    throw new InvalidOperationException("原任务仍需取消或恢复核对；不能用续接替代原任务处置。");
+                stage = "Executing";
+            }
+            else
+            {
+                if (run.PendingRequestId is not null) throw new InvalidOperationException("原发送结果未确定；仅查询原回执，禁止重发或新建替代任务。");
+                if (!o.AllClosed || o.AnyActiveTasks || !o.Stopped) throw new InvalidOperationException("无原任务可续接，须先核对握手、占用及车辆停稳。");
+                await port.ValidateAsync(run.Plan,ct);
+                stage = "Waiting";
+            }
+            run = run with { LastResumeRequestId=request.RequestId, LastResumeReason=request.Reason.Trim(), Operator=user.WindowsIdentity };
+            Move(stage,"人工核对后续接原运行；保留原任务、发送意图及停止新增标记。依据："+request.Reason.Trim());
+            ownership.Returning=stage=="Returning";
             return Status();
         }
         finally { mutex.Release(); }

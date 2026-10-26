@@ -63,7 +63,7 @@ internal static class WebLocalLauncher
                     var serviceArgs=mode.ServiceArguments(pipe);
                     if(dailyData is not null) serviceArgs=[..serviceArgs,$"--Database:Path={System.IO.Path.Combine(dailyData,"后台5199","agv-dispatch.db")}"];
                     var service=Start(servicePath,serviceArgs);created.Add(service);
-                    var web=Start(webPath,[$"--Web:Port={port}",$"--Web:PipeName={pipe}",$"--Web:EnableTaskSubmission={mode.IsBusiness}","--Web:EnableRecoveryActions=false",$"--Web:ProjectStorePath={storePath}",$"--Web:StaticPath={System.IO.Path.Combine(root,"Web","wwwroot")}"]);
+                    var web=Start(webPath,[$"--Web:Port={port}",$"--Web:PipeName={pipe}",$"--Web:EnableTaskSubmission={mode.IsBusiness}","--Web:EnableRecoveryActions=true","--Web:EnableTaskCancellation=true",$"--Web:ProjectStorePath={storePath}",$"--Web:StaticPath={System.IO.Path.Combine(root,"Web","wwwroot")}"]);
                     created.Add(web);session=new(release,Describe(service,servicePath),Describe(web,webPath),mode.NavigationVehicle,mode.PlcCycleVehicle,mode.PlcCycleStation,mode.BusinessVehicle);
                     var pending=statePath+".tmp";File.WriteAllText(pending,JsonSerializer.Serialize(session,new JsonSerializerOptions{WriteIndented=true}));File.Move(pending,statePath,true);
                 }

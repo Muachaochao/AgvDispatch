@@ -14,6 +14,7 @@ export const useDispatchStore = defineStore('dispatch', () => {
   const sceneError = ref('');
   const now = ref(Date.now());
   const submissionEnabled = ref(false);
+  const cancellationEnabled = ref(false);
   const adapterIdentity = ref<AdapterIdentity | null>(null);
 
   let socket: WebSocket | undefined;
@@ -61,6 +62,7 @@ export const useDispatchStore = defineStore('dispatch', () => {
     ++epoch;
     demoMode.value = true;
     submissionEnabled.value = false;
+    cancellationEnabled.value = false;
     adapterIdentity.value = null;
     previewMap.value = null;
     error.value = '';
@@ -124,13 +126,15 @@ export const useDispatchStore = defineStore('dispatch', () => {
     snapshot.value = null;
     error.value = '';
     submissionEnabled.value = false;
+    cancellationEnabled.value = false;
     adapterIdentity.value = null;
     reconnectDelay = 1000;
 
     try {
-      const config = await api<{ taskSubmissionEnabled: boolean; adapter?: AdapterIdentity }>('/api/config');
+      const config = await api<{ taskSubmissionEnabled: boolean; taskCancellationEnabled?: boolean; adapter?: AdapterIdentity }>('/api/config');
       if (mine !== epoch) return;
       submissionEnabled.value = config.taskSubmissionEnabled;
+      cancellationEnabled.value = config.taskCancellationEnabled === true;
       adapterIdentity.value = config.adapter ?? null;
 
       const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws`);
@@ -203,7 +207,7 @@ export const useDispatchStore = defineStore('dispatch', () => {
   }
 
   return {
-    snapshot, error, sceneError, now, submissionEnabled, adapterIdentity,
+    snapshot, error, sceneError, now, submissionEnabled, cancellationEnabled, adapterIdentity,
     fresh, vehicles, allTasks, equipment, resources, alarms, openAlarms,
     activeCount, vehicleStats, ringSegments, mapVehicleCount,
     api, connectBackend, connectDemo, stopConnection, dispose,

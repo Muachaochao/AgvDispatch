@@ -218,6 +218,27 @@ RouteRefuse("Bezier控制包络可能回穿倒料区时拒绝", futureCurve with
 var futureArc = futureCurve with { Edges = [futureCurve.Edges[0], futureCurve.Edges[1] with
     { GeometryKind = MapEdgeGeometryKind.CircularArc, ControlPoints = [new(9, 1)] }] };
 Check(Route(futureArc).Verified, "未来圆弧全圆保守边界与倒料区分离允许");
+Check(Route(futureArc, first with { X = 5.25, Y = 1 }).Verified,
+    "位于原直线上但远离真实圆弧时不被全圆矩形误阻塞");
+var looseBezier = futureCurve with { Edges = [futureCurve.Edges[0], futureCurve.Edges[1] with
+    { ControlPoints = [new(4, 4), new(8, 4)] }] };
+Check(Route(looseBezier, first with { X = 4.25, Y = 1 }).Verified,
+    "位于原直线上但远离真实Bezier时不被整条控制矩形误阻塞");
+foreach (var curved in new[] { futureCurve, looseBezier, futureArc })
+{
+    var edge=curved.Edges[1]; var from=curved.Nodes[1]; var to=curved.Nodes[2];
+    var cover=MapEdgeGeometry.ConservativeCover(edge,from,to);
+    Check(Enumerable.Range(0,4097).All(i=>
+    {
+        var p=MapEdgeGeometry.PointAt(edge,from,to,i/4096.0);
+        return cover.Any(b=>p.X>=b.MinX&&p.X<=b.MaxX&&p.Y>=b.MinY&&p.Y<=b.MaxY);
+    }), "曲线细分包络覆盖全参数区间的密集回归位置");
+    var near=MapEdgeGeometry.PointAt(edge,from,to,.5);
+    RouteRefuse("真实曲线上位置仍拒绝推断已出曲线",curved,first with { X=near.X,Y=near.Y });
+    var reversed=edge with { From=edge.To,To=edge.From,Bidirectional=true,ControlPoints=edge.GeometryKind==MapEdgeGeometryKind.CubicBezier?edge.ControlPoints!.Reverse().ToArray():edge.ControlPoints };
+    var reverseMap=curved with { Edges=[curved.Edges[0],reversed] };
+    RouteRefuse("反向存储双向曲线仍拒绝真实曲线定位",reverseMap,first with { X=near.X,Y=near.Y });
+}
 RouteRefuse("当前定位可能处于全圆保守边界时拒绝", futureArc, first with { X = 7, Y = 3 });
 RouteRefuse("曲线控制点超出几何核定范围拒绝", futureCurve with { Edges =
     [futureCurve.Edges[0], futureCurve.Edges[1] with { ControlPoints = [new(1e7, 2), new(8, 4)] }] });

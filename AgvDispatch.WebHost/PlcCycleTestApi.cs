@@ -16,6 +16,12 @@ public static class PlcCycleTestApi
         });
         app.MapPost("/api/business-run/stop", async (BusinessRunStop request, DispatchPipe pipe, CancellationToken ct) =>
             await pipe.ReadAsync<BusinessRunStatus>("StopBusinessRun", request, ct));
+        app.MapPost("/api/business-run/resume", async (BusinessRunResume request, DispatchPipe pipe, CancellationToken ct) =>
+        {
+            if (!app.Configuration.GetValue("Web:EnableTaskSubmission",false))
+                return Results.Json(new { error="续接业务运行需要显式启用业务执行模式。" },statusCode:403);
+            return Results.Ok(await pipe.ReadAsync<BusinessRunStatus>("ResumeBusinessRun",request,ct));
+        });
         app.MapPost("/api/business-run/close-reviewed", async (BusinessRunStop request, DispatchPipe pipe, CancellationToken ct) =>
             await pipe.ReadAsync<BusinessRunStatus>("CloseReviewedBusinessRun", request, ct));
         app.MapGet("/api/plc-cycle-test", async (DispatchPipe pipe, CancellationToken ct) =>

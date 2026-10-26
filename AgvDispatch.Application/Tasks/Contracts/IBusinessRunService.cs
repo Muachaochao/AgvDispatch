@@ -3,9 +3,14 @@ namespace AgvDispatch.Application.Abstractions;
 public sealed record BusinessRunStart(string RequestId, string Mode, string VehicleId,
     string[] Stations, int Rounds, string StandbySite, bool SiteConfirmed);
 public sealed record BusinessRunStop(string RunId);
+public sealed record BusinessRunResume(string RunId, string RequestId, DateTimeOffset ExpectedUpdatedAt, string Reason, bool SiteConfirmed);
 public sealed record BusinessRunRecord(string RunId, BusinessRunStart Plan, string MapId, string MapVersionId,
     string ParameterRevision, string Operator, string Stage, string Message, int CompletedJobs,
-    string? TaskId, string? PendingRequestId, string? VendorTaskId, bool StopRequested, DateTimeOffset UpdatedAt);
+    string? TaskId, string? PendingRequestId, string? VendorTaskId, bool StopRequested, DateTimeOffset UpdatedAt)
+{
+    public string? LastResumeRequestId { get; init; }
+    public string? LastResumeReason { get; init; }
+}
 public sealed record BusinessRunStatus(BusinessRunRecord? Current, string Message);
 public sealed record BusinessRunObservation(string MapId, string MapVersionId, string ParameterRevision,
     string? Block, string[] Calls, bool AllClosed, bool AnyActiveTasks, string? CurrentSite,
@@ -30,5 +35,6 @@ public interface IBusinessRunService
     Task<BusinessRunStatus> StartAsync(TrafficUserContext user, BusinessRunStart plan, CancellationToken ct);
     Task<BusinessRunStatus> StopAsync(TrafficUserContext user, BusinessRunStop request, CancellationToken ct);
     Task<BusinessRunStatus> CloseReviewedAsync(TrafficUserContext user, BusinessRunStop request, CancellationToken ct);
+    Task<BusinessRunStatus> ResumeAsync(TrafficUserContext user, BusinessRunResume request, CancellationToken ct);
 }
 public interface IBusinessRunInterlock { bool Active { get; } }

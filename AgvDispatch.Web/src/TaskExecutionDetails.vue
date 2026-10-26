@@ -5,7 +5,6 @@ import WaitingBayDeparturePanel from './WaitingBayDeparturePanel.vue';
 import TaskRouteMap from './TaskRouteMap.vue';
 import {useDispatchStore} from './stores/dispatch';
 const store=useDispatchStore();
-import TaskRecoveryPanel from './TaskRecoveryPanel.vue';
 import TaskCancelDialog from './components/TaskCancelDialog.vue';
 import type { TaskDetail } from './types';
 import { label } from './state';
@@ -29,6 +28,12 @@ const events = computed(() => props.detail.executionTimeline ?? []);
     <p class="muted-note">握手模式：{{ detail.handshakeMode==='PersistentExecution'?'持久化执行':'原执行器＋变化观测' }} · 配置契约：{{ detail.handshakeContractVersion||'未配置新契约' }}</p>
     <p class="muted-note">后台观察：{{ detail.diagnosticsObservedAt ? shortTime(detail.diagnosticsObservedAt) : '旧版后台未提供诊断时间' }} · {{ live ? '诊断连接有效' : '非当前有效观察，请重新连接或等待刷新' }}</p>
     <div class="waiting-callout" role="status">{{ live ? detail.waitingExplanation : '当前诊断已过期或接口未提供诊断时间；以下内容仅供回看，不代表现场当前状态。' }}</div>
+    <div v-if="!store.demoMode" class="execution-actions">
+      <TaskCancelDialog :task-id="detail.task.taskId" :stage="detail.task.stage" :fresh="live" />
+      <RouterLink :to="{path:'/recovery',query:{taskId:detail.task.taskId}}">核对 / 恢复原任务</RouterLink>
+      <a :href="`/api/tasks/${encodeURIComponent(detail.task.taskId)}/diagnostics/export`" download>导出原任务诊断包</a>
+      <p>取消受理 → 查询原任务结束状态 → 现场核对载荷、PLC 和占用 → 恢复批次放行。取消不是急停。</p>
+    </div>
     <TaskRouteMap v-if="step" :detail="detail" :sequence="step.sequence"/>
     <nav class="execution-steps" aria-label="九步业务流程"><button v-for="s in detail.steps" :key="s.sequence" :class="{ selected: step?.sequence===s.sequence, current: s.isCurrent, done:s.status==='Completed' }" :aria-pressed="step?.sequence===s.sequence" @click="selected=s.sequence"><span>{{ s.sequence }}</span><b>{{ label(s.stepType) }}</b><small>{{ s.isCurrent ? '当前 · ' : '' }}{{ stepStatusLabel(s.status,label(s.status)) }}</small></button></nav>
     <section v-if="step" class="execution-inspection">
@@ -54,12 +59,13 @@ const events = computed(() => props.detail.executionTimeline ?? []);
     <ol v-if="events.length" class="execution-events"><li v-for="e in events" :key="e.id"><time>{{ shortTime(e.occurredAt) }}</time><div><b>{{ e.title }}</b><p>{{ e.summary }}</p><small>{{ e.source }}<span v-if="e.stepId"> · 步骤 {{ detail.steps.find(s=>s.stepId===e.stepId)?.sequence ?? e.stepId }}</span></small></div></li></ol><p v-else class="muted-note">尚无执行事件返回，或旧版后台未提供；不生成示例轨迹。</p>
     <section v-if="detail.cancellation" class="execution-boundary cancellation-progress"><h3>取消进度与原占用</h3><p>原请求 {{detail.cancellation.requestId}} · {{detail.cancellation.reason}}</p><p>请求记录 {{shortTime(detail.cancellation.requestedAt)}} · 发送尝试 {{detail.cancellation.sendAttempts}}</p><p>取消发送记录 {{shortTime(detail.cancellation.sentAt)}} · 原运输结束确认 {{shortTime(detail.cancellation.confirmedAt)}}</p><p>发送/接受不等于车辆已停；原运输结束仍须核对箱体、PLC周期及原路权，不自动完成九步或释放占用。</p></section>
     <p v-if="store.demoMode" class="inline-warning">合成演示详情；不访问真实任务历史或恢复接口。操作流程请使用大屏演练面板。</p>
-    <template v-else><TaskCancelDialog :task-id="detail.task.taskId" :stage="detail.task.stage" />
+    <template v-else>
     <TaskRuntimeHistory :task-id="detail.task.taskId" :fresh="live" />
-    <TaskRecoveryPanel :task-id="detail.task.taskId" :fresh="live" :now="now" /></template>
+    </template>
   </div>
 </template>
 
 <style scoped>
+.execution-actions{display:flex;flex-wrap:wrap;gap:16px;align-items:center;margin:12px 0}.execution-actions a{color:#66d1e8}.execution-actions p{width:100%;font-size:12px;color:#b4c7da}
 .execution-steps{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:18px 0}.execution-steps button{display:grid;grid-template-columns:24px 1fr;gap:5px;text-align:left;white-space:normal;padding:12px;min-width:0}.execution-steps small{grid-column:2;color:#97afca}.execution-steps .current{border-color:#35bdd7}.execution-steps .selected{background:#15394d;outline:1px solid #67cee2}.execution-steps .done>span{color:#31d3aa}.execution-inspection{padding:18px;background:#101e35;border:1px solid #2d4564}.execution-inspection h3,.execution-inspection h4{color:#cce1f3;margin:0 0 14px}.execution-inspection h4{margin-top:24px}.execution-inspection dl{display:grid;grid-template-columns:145px 1fr;gap:10px;font-size:12px;line-height:1.8}.execution-inspection dt{color:#8ba6c5}.execution-inspection dd{margin:0;overflow-wrap:anywhere}.execution-boundary{padding:12px;border-left:3px solid #c79c51;background:#2a2630;color:#dfc69d;font-size:12px;line-height:1.8;margin:16px 0}.execution-table{overflow-x:auto}.execution-table table{min-width:620px}.execution-table small{display:block;color:#8ba6c5;font-size:10px;line-height:1.7;margin-top:5px}.execution-table td{overflow-wrap:anywhere}.execution-events{list-style:none;padding:0}.execution-events li{display:grid;grid-template-columns:130px 1fr;gap:14px;padding:14px 0;border-bottom:1px solid #253957;font-size:12px}.execution-events time,.execution-events small{color:#88a6c6}.execution-events p{line-height:1.8;margin:6px 0}.execution-events div{overflow-wrap:anywhere}.execution-resources{font-size:12px;line-height:2;color:#a9c2dd}@media(max-width:650px){.execution-steps{grid-template-columns:1fr 1fr}.execution-inspection{padding:12px}.execution-inspection dl{grid-template-columns:1fr;gap:4px}.execution-inspection dd{margin-bottom:9px}.execution-events li{grid-template-columns:1fr;gap:7px}}
 </style>

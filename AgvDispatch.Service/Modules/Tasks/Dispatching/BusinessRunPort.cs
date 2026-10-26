@@ -150,6 +150,10 @@ public sealed partial class BusinessRunPort(IManualTaskCreationService manual, I
         if (!Value(dumper, "Faulted", false)) block ??= "倒料工位故障。";
         foreach (var name in new[] { "AgvAtWaitingPosition", "AgvAtDumpingPosition", "DumperReady", "DumpingCompletedMayLeave" }) closed &= Value(dumper, name, false);
         TaskCenterDetail? detail = run.TaskId is null ? null : await tasks.GetDetailAsync(run.TaskId, ct);
+        if (run.TaskId is not null && (detail is null || detail.Task.TaskId != run.TaskId ||
+            !run.Plan.Stations.Contains(detail.Task.StationId,StringComparer.Ordinal) ||
+            (detail.Task.VehicleId ?? detail.Task.RequestedVehicleId) != run.Plan.VehicleId))
+            block ??= "原业务任务、工位或车辆身份不一致，保持原运行待核对。";
         if (detail is not null) closed &= detail.Resources.Count == 0 && detail.Commands.All(c => c.Status is AgvCommandStatus.Sent or AgvCommandStatus.Cancelled);
         var occupied = await traffic.GetResourcesAsync(ct);
         closed &= occupied.SelectMany(r => r.Leases).All(l => l.TaskId == StandbyId(run));
@@ -168,7 +172,7 @@ public sealed partial class BusinessRunPort(IManualTaskCreationService manual, I
         if (v is not null && Stopped(v) && site is not null)
         {
             var node = Resolve(site);
-            if (v.X is not { } x || v.Y is not { } y || Math.Sqrt(Math.Pow(x-node.X,2)+Math.Pow(y-node.Y,2)) > .3)
+            if (v.X is not { } x || v.Y is not { } y || !double.IsFinite(x) || !double.IsFinite(y) || Math.Sqrt(Math.Pow(x-node.X,2)+Math.Pow(y-node.Y,2)) > .3)
             { site = null; block ??= "车辆报告站点与实际坐标不符，不能确认安全停靠。"; }
         }
         return new(currentMap?.MapId ?? "", currentMap?.VersionId ?? "", parameters.Revision, block,

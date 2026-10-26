@@ -435,12 +435,16 @@ try
     // A second loopback adapter enables Web operations only against this private Service. Device execution stays disabled.
     using(var controlListener=new TcpListener(IPAddress.Loopback,0)){
         controlListener.Start();var controlPort=((IPEndPoint)controlListener.LocalEndpoint).Port;controlListener.Stop();
-        var controls=bridgeArguments.Select(a=>a.StartsWith("--Web:Port=")?"--Web:Port="+controlPort:a=="--Web:EnableTaskSubmission=false"?"--Web:EnableTaskSubmission=true":a).Append("--Web:EnableRecoveryActions=true").ToArray();
+        var controls=bridgeArguments.Select(a=>a.StartsWith("--Web:Port=")?"--Web:Port="+controlPort:a).Concat(["--Web:EnableRecoveryActions=true","--Web:EnableTaskCancellation=true"]).ToArray();
         using var controlBridge=candidateRoot==null?Launch("dotnet",workspace,[Path.Combine(workspace,"AgvDispatch.WebHost/bin/Debug/net10.0-windows10.0.19041.0/AgvDispatch.WebHost.dll"),..controls]):Launch(Path.Combine(candidateRoot,"Web/host/AgvDispatch.WebHost.exe"),Path.Combine(candidateRoot,"Web"),controls);
         var controlOut=controlBridge.StandardOutput.ReadToEndAsync();var controlErr=controlBridge.StandardError.ReadToEndAsync();
         try{
             using var controlHttp=new HttpClient{BaseAddress=new Uri($"http://127.0.0.1:{controlPort}"),Timeout=TimeSpan.FromSeconds(12)};
             for(var retry=0;retry<60;retry++){try{if((await controlHttp.GetAsync("/health")).IsSuccessStatusCode)break;}catch(HttpRequestException){}await Task.Delay(100);}
+            var capabilities=await controlHttp.GetFromJsonAsync<JsonElement>("/api/config");
+            Check(!capabilities.GetProperty("taskSubmissionEnabled").GetBoolean()&&capabilities.GetProperty("taskCancellationEnabled").GetBoolean()&&capabilities.GetProperty("recoveryActionsEnabled").GetBoolean(),"取消与恢复可独立启用，不开放创建任务");
+            using var deniedResume=await controlHttp.PostAsJsonAsync("/api/business-run/resume",new BusinessRunResume("fixture",Guid.NewGuid().ToString("N"),DateTimeOffset.UtcNow,"隔离测试未启用业务不得续接运行",true),WebJson.Options);
+            Check(deniedResume.StatusCode==HttpStatusCode.Forbidden,"只读业务模式不能续接运行");
             using var missingStage=await controlHttp.PostAsJsonAsync("/api/tasks/WEB-ISOLATED-TASK/cancel",new{requestId=Guid.NewGuid().ToString("N"),taskId="WEB-ISOLATED-TASK",currentStage="PickingUp",reason="隔离测试旧字段不能默认为其他阶段"});
             Check(missingStage.StatusCode==HttpStatusCode.BadRequest,"取消接口拒绝旧currentStage或缺少expectedStage，不能缺省成Created");
             using(var cancelDb=DatabaseFactory.Create(new(){DatabasePath=databasePath})){

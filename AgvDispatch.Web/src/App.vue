@@ -26,13 +26,14 @@ const lastObservation = computed(() => store.snapshot ? `最近采样 ${shortTim
 const navigation = [
   { path: '/', label: '调度大屏', icon: IconLayoutDashboard },
   { path: '/vehicles', label: '车辆列表', icon: IconRobot },
-  { path: '/tasks', label: '任务列表', icon: IconListDetails },
+  { path: '/tasks', label: '业务任务', icon: IconListDetails },
+  { path: '/recovery', label: '异常恢复', icon: IconCircleCheck },
   { path: '/alarms', label: '异常告警', icon: IconBell },
   { path: '/maps', label: '地图管理', icon: IconMap }
 ] as const;
 const engineering = [
   { path: '/plc-cycle-test', label: 'PLC空载联调', icon: IconRoute },
-  { path: '/navigation-test', label: '单次导航测试', icon: IconRoute },
+  { path: '/navigation-test', label: '单车导航调试', icon: IconRoute },
   { path: '/planning', label: '工程编辑', icon: IconRoute },
   { path: '/engineering-settings', label: '工程配置', icon: IconCpu },
   { path: '/commissioning', label: '联调检查', icon: IconCircleCheck }

@@ -9,7 +9,7 @@ public static class DiagnosticsApi
     {
         app.MapPost("/api/tasks/{id}/cancel",async(string id,WebCancelRequest request,DispatchPipe pipe,CancellationToken ct)=>
         {
-            if(!taskOperationsEnabled)return Disabled();
+            if(!taskOperationsEnabled)return Results.Json(new{error="Web任务取消未启用；取消能力与新建任务权限分别配置。"},statusCode:403);
             if(request.ExpectedStage is null)return Results.BadRequest(new{error="必须提供原观察expectedStage；不接受缺省状态。"});
             if(request.TaskId!=id)return Results.BadRequest(new{error="任务身份不一致。"});
             return Results.Ok(await pipe.ReadAsync<TaskCancelResult>("CancelDispatchTask",new TaskCancelRequest(request.RequestId,request.TaskId,request.ExpectedStage.Value,request.Reason),ct));

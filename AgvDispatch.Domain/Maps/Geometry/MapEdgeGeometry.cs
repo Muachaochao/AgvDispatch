@@ -6,6 +6,43 @@ public readonly record struct MapGeometryBounds(double MinX,double MinY,double M
 /// <summary>Map-coordinate geometry shared by rendering, planning and localization.</summary>
 public static class MapEdgeGeometry
 {
+    /// <summary>Analytic outer cover; each box encloses a whole curve interval, never just a sampled chord.</summary>
+    public static IReadOnlyList<MapGeometryBounds> ConservativeCover(MapEdge edge, MapNode from, MapNode to)
+    {
+        Validate(edge, from, to);
+        var result = new List<MapGeometryBounds>();
+        void Add(IReadOnlyList<MapPoint2D> points)
+        {
+            // Include roundoff at the map coordinate scale; callers still add their route tolerance.
+            var padding = 1e-9 * Math.Max(1, points.Max(p => Math.Max(Math.Abs(p.X), Math.Abs(p.Y))));
+            result.Add(new(points.Min(p => p.X)-padding,points.Min(p => p.Y)-padding,
+                points.Max(p => p.X)+padding,points.Max(p => p.Y)+padding));
+        }
+        void Bezier(MapPoint2D a, MapPoint2D b, MapPoint2D c, MapPoint2D d, int depth)
+        {
+            if (depth == 0) { Add([a,b,c,d]); return; }
+            var ab=Lerp(a,b,.5); var bc=Lerp(b,c,.5); var cd=Lerp(c,d,.5);
+            var abc=Lerp(ab,bc,.5); var bcd=Lerp(bc,cd,.5); var mid=Lerp(abc,bcd,.5);
+            Bezier(a,ab,abc,mid,depth-1); Bezier(mid,bcd,cd,d,depth-1);
+        }
+        if (edge.GeometryKind == MapEdgeGeometryKind.CubicBezier)
+            Bezier(Point(from),edge.ControlPoints![0],edge.ControlPoints[1],Point(to),6);
+        else if (edge.GeometryKind == MapEdgeGeometryKind.CircularArc)
+        {
+            var arc=GetArc(edge,from,to);
+            for(var i=0;i<64;i++)
+            {
+                var start=arc.StartAngle+arc.Sweep*i/64; var end=arc.StartAngle+arc.Sweep*(i+1)/64;
+                MapPoint2D At(double angle)=>new(arc.Center.X+arc.Radius*Math.Cos(angle),arc.Center.Y+arc.Radius*Math.Sin(angle));
+                var points=new List<MapPoint2D>{At(start),At(end)};
+                var low=Math.Min(start,end); var high=Math.Max(start,end);
+                for(var k=(int)Math.Ceiling(low/(Math.PI/2));k<=Math.Floor(high/(Math.PI/2));k++) points.Add(At(k*Math.PI/2));
+                Add(points);
+            }
+        }
+        else Add([Point(from),Point(to)]);
+        return result;
+    }
     // Analytic conservative bounds, not a sampled polyline guarantee.
     public static MapGeometryBounds ConservativeBounds(MapEdge edge,MapNode from,MapNode to)
     {

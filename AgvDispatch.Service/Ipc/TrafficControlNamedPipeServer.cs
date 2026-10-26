@@ -200,6 +200,7 @@ public sealed class TrafficControlNamedPipeServer(
             "GetBusinessRun" => Success(await (businessRun??throw new NotSupportedException("后台未更新持续运行入口。")).ReadAsync(cancellationToken)),
             "StartBusinessRun" => Success(await (businessRun??throw new NotSupportedException("后台未更新持续运行入口。")).StartAsync(user,Deserialize<BusinessRunStart>(request.Payload),cancellationToken)),
             "StopBusinessRun" => Success(await (businessRun??throw new NotSupportedException("后台未更新持续运行入口。")).StopAsync(user,Deserialize<BusinessRunStop>(request.Payload),cancellationToken)),
+            "ResumeBusinessRun" => Success(await (businessRun??throw new NotSupportedException("后台未更新持续运行入口。")).ResumeAsync(user,Deserialize<BusinessRunResume>(request.Payload),cancellationToken)),
             "CloseReviewedBusinessRun" => Success(await (businessRun??throw new NotSupportedException("后台未更新持续运行入口。")).CloseReviewedAsync(user,Deserialize<BusinessRunStop>(request.Payload),cancellationToken)),
             "GetPlcCycleTest" => Success(await (plcCycleTest??throw new NotSupportedException("PLC空载联调后台未更新。")).ReadAsync(cancellationToken)),
             "ArmPlcCycleTest" => Success(await (plcCycleTest??throw new NotSupportedException("PLC空载联调后台未更新。")).ArmAsync(user,Deserialize<PlcCycleTestArmRequest>(request.Payload),cancellationToken)),

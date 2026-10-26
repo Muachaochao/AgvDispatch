@@ -2,13 +2,32 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useDispatchStore } from '../stores/dispatch';
 import type { CreationOptions } from '../types';
-const props=defineProps<{mode:'Demand'|'Cycle';options:CreationOptions|null}>();
+const props=defineProps<{mode:'Demand'|'Cycle';options:CreationOptions|null;statusOnly?:boolean}>();
 const store=useDispatchStore();
 type Plan={requestId:string;mode:string;vehicleId:string;stations:string[];rounds:number;standbySite:string;siteConfirmed:boolean};
-type Run={runId:string;plan:Plan;stage:string;message:string;completedJobs:number;taskId:string|null;stopRequested:boolean;updatedAt:string};
+type Run={runId:string;plan:Plan;stage:string;message:string;completedJobs:number;taskId:string|null;stopRequested:boolean;updatedAt:string;lastResumeRequestId?:string};
 const current=ref<Run|null>(null), error=ref(''), busy=ref(false), online=ref(false);
+const readError=ref('');
+const observedAt=ref(0);
+const fresh=computed(()=>online.value&&store.fresh&&store.now-observedAt.value>=-1000&&store.now-observedAt.value<10000);
 const vehicle=ref('AGV-01'), order=ref('CNC-001,CNC-002'), rounds=ref(1), standby=ref('LM7'), confirmed=ref(false);
 const pending=ref<Plan|null>(null);
+const resumeReason=ref('');
+const resumeKey='agv-business-run-resume';
+async function resume(){
+  if(!current.value||busy.value||!fresh.value||!confirmed.value||!store.submissionEnabled||resumeReason.value.trim().length<10)return;
+  epoch++;busy.value=true;error.value='';
+  try{
+    const previous=sessionStorage.getItem(resumeKey);
+    const saved=previous?JSON.parse(previous):null;
+    const request=saved&&saved.expectedUpdatedAt===current.value.updatedAt?saved:{runId:current.value.runId,requestId:crypto.randomUUID().replaceAll('-',''),expectedUpdatedAt:current.value.updatedAt,reason:resumeReason.value.trim(),siteConfirmed:true};
+    if(request.runId!==current.value.runId)throw new Error('保留了其他运行的未确认续接申请，请先核对原运行');
+    sessionStorage.setItem(resumeKey,JSON.stringify(request));
+    current.value=(await store.api<{current:Run|null}>('/api/business-run/resume',request)).current;
+    sessionStorage.removeItem(resumeKey);confirmed.value=false;
+  }catch(e){error.value=String(e)+'。沿用原申请查询；不得清除原任务。';}
+  finally{busy.value=false;}
+}
 const key='agv-business-run-start';
 try{pending.value=JSON.parse(sessionStorage.getItem(key)??'null');}catch{error.value='原申请记录无法读取，请先查询后台原运行。';}
 const active=computed(()=>current.value&&current.value.stage!=='Completed');
@@ -25,20 +44,25 @@ const selectedVehicleBlock=computed(()=>{
 });
 const labels:Record<string,string>={Preparing:'准备中',Waiting:'等待呼叫 / 待机',Creating:'受理呼叫中',Executing:'业务执行中',ReturnSending:'准备返回待机',Returning:'返回待机中',Hold:'暂停待核对',Completed:'收尾完成，已回待机'};
 let timer:ReturnType<typeof setInterval>|undefined;
-let disposed=false, reading=false;
+let disposed=false, reading=false, epoch=0;
 async function read(){
   if(busy.value||reading||disposed)return;
   reading=true;
+  const mine=epoch;
   try{
     const result=await store.api<{current:Run|null}>('/api/business-run');
-    if(disposed)return;
-    current.value=result.current;online.value=true;
+    if(disposed||mine!==epoch)return;
+    if(current.value?.updatedAt!==result.current?.updatedAt)confirmed.value=false;
+    current.value=result.current;online.value=true;observedAt.value=Date.now();readError.value='';
+    const resumeRaw=sessionStorage.getItem(resumeKey);
+    if(resumeRaw&&JSON.parse(resumeRaw).requestId===result.current?.lastResumeRequestId)sessionStorage.removeItem(resumeKey);
     if(result.current?.plan.requestId===pending.value?.requestId){sessionStorage.removeItem(key);pending.value=null;}
-  }catch(e){if(!disposed){online.value=false;error.value=String(e);}}
+  }catch(e){if(!disposed&&mine===epoch){online.value=false;readError.value=String(e);}}
   finally{reading=false;}
 }
 async function start(){
-  if(busy.value||active.value||!confirmed.value||!store.submissionEnabled||selectedVehicleBlock.value||configurationBlocks.value.length)return;
+  if(props.statusOnly||!fresh.value||busy.value||active.value||!confirmed.value||!store.submissionEnabled||selectedVehicleBlock.value||configurationBlocks.value.length)return;
+  epoch++;
   busy.value=true;error.value='';
   try{
     pending.value??={requestId:crypto.randomUUID().replaceAll('-',''),mode:props.mode,vehicleId:vehicle.value,
@@ -50,14 +74,16 @@ async function start(){
   finally{busy.value=false;}
 }
 async function stop(){
-  if(!current.value||busy.value)return;
+  if(!current.value||busy.value||!fresh.value)return;
+  epoch++;
   busy.value=true;error.value='';
   try{current.value=(await store.api<{current:Run|null}>('/api/business-run/stop',{runId:current.value.runId})).current;}
   catch(e){error.value=String(e)+'；请查询原运行，停止结果尚未确认。';}
   finally{busy.value=false;}
 }
 async function closeReviewed(){
-  if(!current.value||busy.value||!confirmed.value)return;
+  if(!current.value||busy.value||!confirmed.value||!fresh.value)return;
+  epoch++;
   busy.value=true;error.value='';
   try{current.value=(await store.api<{current:Run|null}>('/api/business-run/close-reviewed',{runId:current.value.runId})).current;confirmed.value=false;}
   catch(e){error.value=String(e);}
@@ -68,6 +94,8 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);});
 </script>
 <template>
   <section class="business-run">
+    <h3>业务运行与收尾</h3>
+    <template v-if="!statusOnly">
     <p>{{mode==='Demand'?'按真实PLC呼叫接续工位，不主动产生呼叫。':'由本机PLC人工联调台按工位顺序产生模拟呼叫；一轮包含每个所选工位各一次任务。'}}</p>
     <div class="fields">
       <label>车辆<select v-model="vehicle" :disabled="locked"><option v-for="v in options?.vehicles??[]" :key="v.vehicleId" :value="v.vehicleId">{{v.label}}</option></select></label>
@@ -87,20 +115,27 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);});
       <p>补齐后点击弹窗底部“刷新条件”，再重试原申请。</p>
     </section>
     <p v-if="selectedVehicleBlock" class="inline-warning" role="status">车辆不可派发的具体原因：{{selectedVehicleBlock}}</p>
-    <label class="confirm"><input v-model="confirmed" type="checkbox" :disabled="(!!active&&current?.stage!=='Hold')||busy"/>{{current?.stage==='Hold'?'已现场核对原运行，申请结束记录；后台仍检查任务、握手及待机停靠':'已核对当前车辆、路线和现场条件，确认启动所选运行模式'}}</label>
+    </template>
+    <p v-if="!fresh" class="inline-warning">当前运行观察无效或已过期；保存状态不代表车辆实时状态，请查询并恢复后台连接。</p>
+    <p v-if="current?.stage==='Hold'">Hold 保留了原任务责任。先进入异常恢复核对原任务；记录不能直接清空。核对结束记录仍须通过后台的任务、握手、占用和待机停靠检查。</p>
+    <label v-if="current?.stage==='Hold'">续接现场依据（至少10字）<input v-model="resumeReason" maxlength="1000" :disabled="busy"/></label>
+    <label v-if="!statusOnly||current?.stage==='Hold'" class="confirm"><input v-model="confirmed" type="checkbox" :disabled="(!!active&&current?.stage!=='Hold')||busy"/>{{current?.stage==='Hold'?'已现场核对原运行；续接将继续原流程，结束记录仍须核验任务、握手及待机停靠':'已核对当前车辆、路线和现场条件，确认启动所选运行模式'}}</label>
     <div class="buttons">
       <button :disabled="busy" @click="read">查询原运行</button>
-      <button class="accent-button" :disabled="busy||!!active||!confirmed||!online||!store.submissionEnabled||!!selectedVehicleBlock||configurationBlocks.length>0" @click="start">{{pending?'重试原申请':mode==='Demand'?'启动按需运行':'启动循环测试'}}</button>
-      <button :disabled="busy||!active||(!!current?.stopRequested&&current?.stage!=='Hold')||!online" @click="stop">停止新增呼叫并收尾</button>
-      <button v-if="current?.stage==='Hold'" :disabled="busy||!confirmed||!online" @click="closeReviewed">核对原运行并结束记录</button>
+      <button v-if="!statusOnly" class="accent-button" :disabled="busy||!!active||!confirmed||!fresh||!store.submissionEnabled||!!selectedVehicleBlock||configurationBlocks.length>0" @click="start">{{pending?'重试原申请':mode==='Demand'?'启动按需运行':'启动循环测试'}}</button>
+      <button :disabled="busy||!active||(!!current?.stopRequested&&current?.stage!=='Hold')||!fresh" @click="stop">停止新增呼叫并收尾</button>
+      <button v-if="current?.stage==='Hold'" :disabled="busy||!confirmed||!fresh" @click="closeReviewed">核对原运行并结束记录</button>
+      <button v-if="current?.stage==='Hold'" :disabled="busy||!confirmed||!fresh||!store.submissionEnabled||resumeReason.trim().length<10" @click="resume">核对后续接原运行</button>
+      <RouterLink :to="{path:'/recovery',query:{taskId:current?.taskId??undefined}}">异常恢复核对</RouterLink>
     </div>
     <p v-if="error" class="inline-warning" role="alert" style="white-space:pre-line;overflow-wrap:anywhere">{{error}}</p>
+    <p v-if="readError" class="inline-warning" role="alert">查询原运行失败：{{readError}}</p>
     <div v-if="current" class="run-status" role="status">
       <strong>{{labels[current.stage]??current.stage}} {{current.stopRequested?' · 已请求停止新增':''}}</strong>
       <p>{{current.message}}</p>
       <p>{{current.plan.mode==='Cycle'?'循环测试':'按需运行'}} · {{current.plan.vehicleId}} · 已完成 {{current.completedJobs}} 次工位任务<span v-if="current.plan.mode==='Cycle'"> / {{current.plan.rounds*current.plan.stations.length}}（{{Math.floor(current.completedJobs/current.plan.stations.length)}} / {{current.plan.rounds}} 轮）</span></p>
       <p>工位顺序：{{current.plan.stations.join(' → ')}} · 待机 {{current.plan.standbySite}}</p>
-      <p v-if="current.taskId">当前任务：{{current.taskId}}</p>
+      <p v-if="current.taskId">当前任务：<RouterLink :to="`/tasks/${encodeURIComponent(current.taskId)}`">{{current.taskId}}</RouterLink></p>
       <small>运行编号：{{current.runId}} · 更新 {{current.updatedAt}}</small>
     </div>
   </section>

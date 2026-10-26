@@ -20,6 +20,8 @@ builder.Services.AddSingleton(new DisplayAreaStore(Path.Combine(Path.GetDirector
 builder.Services.AddSingleton(new VendorMapSourceArchive(Path.Combine(Path.GetDirectoryName(projectStorePath)!,"vendor-map-sources")));
 var app = builder.Build();
 var submissions = builder.Configuration.GetValue("Web:EnableTaskSubmission", false);
+var recoveryActions = builder.Configuration.GetValue("Web:EnableRecoveryActions", false);
+var cancellations = builder.Configuration.GetValue("Web:EnableTaskCancellation", false);
 var webRoot = Path.GetFullPath(builder.Configuration["Web:StaticPath"] ?? Path.Combine(app.Environment.ContentRootPath, "..", "AgvDispatch.Web", "dist"));
 
 app.Use(async (ctx, next) =>
@@ -47,7 +49,7 @@ app.Use(async (ctx, next) =>
     }
 });
 app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(20) });
-app.MapGet("/api/config", () => new { taskSubmissionEnabled = submissions, source = "backend", loopbackOnly = true,
+app.MapGet("/api/config", () => new { taskSubmissionEnabled = submissions, taskCancellationEnabled = cancellations, recoveryActionsEnabled = recoveryActions, source = "backend", loopbackOnly = true,
     projectStoreId=Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(projectStorePath))),
     adapter = new { informationalVersion=AdapterBuildIdentity.InformationalVersion, sha256=AdapterBuildIdentity.Sha256 },
     servicePipeName = builder.Configuration["Web:PipeName"] ?? "AgvDispatch.Service" });
@@ -59,7 +61,7 @@ app.MapRobotMapDownloadApi();
 app.MapWaitingApi();
 app.MapProjectApi();
 app.MapDisplayAreasApi();
-app.MapDiagnosticsApi(builder.Configuration.GetValue("Web:EnableRecoveryActions",false),submissions);
+app.MapDiagnosticsApi(recoveryActions,cancellations);
 app.MapGet("/api/snapshot", async (SnapshotReader reader, CancellationToken ct) => await reader.ReadAsync(ct));
 app.MapGet("/api/task-options", async (DispatchPipe pipe, CancellationToken ct) =>
     await pipe.ReadAsync<ManualTaskCreationOptions>(TrafficControlOperations.GetTaskCreationOptions, new { }, ct));

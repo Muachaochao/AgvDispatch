@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, watch } from 'vue';
 import { useDispatchStore } from '../stores/dispatch';
 import { useToastStore } from '../stores/toast';
 import { newTaskRequestId } from '../task-request';
 import ConsoleDialog from '../ConsoleDialog.vue';
 import {cancelIntent,type CancelIntent} from '../cancel-intent';
 
-const props = defineProps<{ taskId: string; stage: string }>();
+const props = defineProps<{ taskId: string; stage: string; fresh: boolean }>();
 const emit = defineEmits<{ done: [] }>();
 
 const store = useDispatchStore();
@@ -15,6 +15,7 @@ const toast = useToastStore();
 const open = ref(false);
 const reason = ref('');
 const busy = ref(false);
+watch(() => props.taskId, () => { open.value = false; reason.value = ''; });
 
 function canCancel(stage: string): boolean {
   return ['Executing', 'Running', 'GoingToPickup', 'PickingUp', 'GoingToDumper',
@@ -23,7 +24,7 @@ function canCancel(stage: string): boolean {
 }
 
 async function submit() {
-  if (busy.value || reason.value.trim().length < 10) return;
+  if (busy.value || !props.fresh || !store.fresh || !store.cancellationEnabled || !canCancel(props.stage) || reason.value.trim().length < 10) return;
   busy.value = true;
   try {
     const key='agv-cancel-intent-v1:'+props.taskId;
@@ -49,7 +50,7 @@ async function submit() {
 </script>
 
 <template>
-  <button v-if="canCancel(stage)" class="cancel-task-button" :disabled="!store.fresh || !store.submissionEnabled" @click="open = true; reason = ''">
+  <button v-if="canCancel(stage)" class="cancel-task-button" :disabled="!fresh || !store.fresh || !store.cancellationEnabled" @click="open = true; reason = ''">
     申请取消任务
   </button>
 
@@ -64,10 +65,10 @@ async function submit() {
     <label class="cancel-reason-label">取消原因（至少10字）
       <textarea v-model="reason" rows="3" maxlength="500" :disabled="busy" placeholder="请描述取消原因，例如：现场载荷已人工移走，需取消当前运输任务"></textarea>
     </label>
-    <div class="inline-warning">{{ store.submissionEnabled ? '取消请求经后台核验后执行，不保证立即生效。车辆在途动作需现场核对。' : 'Web任务操作未启用。' }}</div>
+    <div class="inline-warning">{{ store.cancellationEnabled ? '取消请求经后台核验后执行，不保证立即生效。车辆在途动作需现场核对。' : 'Web任务取消未启用；与新建任务权限分别配置。' }}</div>
     <template #footer>
       <button @click="open = false">返回</button>
-      <button class="accent-button" style="border-color:#a03030;background:#3a1520" :disabled="busy || reason.trim().length < 10 || !store.fresh || !store.submissionEnabled" @click="submit">
+      <button class="accent-button" style="border-color:#a03030;background:#3a1520" :disabled="busy || reason.trim().length < 10 || !fresh || !store.fresh || !store.cancellationEnabled" @click="submit">
         {{ busy ? '提交中…' : '确认取消' }}
       </button>
     </template>

@@ -35,6 +35,8 @@ try{
     $launchFirst=Get-Content -LiteralPath $launchStatePath -Raw | ConvertFrom-Json
     $launchSnapshot=Invoke-RestMethod "http://127.0.0.1:$launchPort/api/snapshot"
     Check ($launchSnapshot.connected -and $launchSnapshot.source -eq 'backend') 'Ready page reads the actual private backend, not synthetic fallback'
+    $launchCapabilities=Invoke-RestMethod "http://127.0.0.1:$launchPort/api/config"
+    Check (!$launchCapabilities.taskSubmissionEnabled -and $launchCapabilities.taskCancellationEnabled -and $launchCapabilities.recoveryActionsEnabled) 'Daily Web exposes reviewed cancellation and recovery without enabling new task submission'
     $launchReport=Invoke-RestMethod "http://127.0.0.1:$launchPort/api/commissioning" -Method Post -ContentType application/json -Body '{}'
     Check (!$launchReport.runtime.handshakeEnabled) 'New handshake remains disabled'
     $launchSettings=Get-Content -LiteralPath (Join-Path $launchPrivate 'Service/appsettings.json') -Raw | ConvertFrom-Json

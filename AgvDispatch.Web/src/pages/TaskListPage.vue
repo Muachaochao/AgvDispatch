@@ -25,6 +25,7 @@ const taskPage = ref(1);
 const queriedTasks = ref<{ items: TaskRow[]; totalCount: number; page: number; pageSize: number } | null>(null);
 const queryBusy = ref(false);
 const queryError = ref('');
+let queryEpoch = 0;
 const showTaskDialog = ref(false);
 const selectedTask = ref('');
 const detail = ref<TaskDetail | null>(null);
@@ -41,6 +42,16 @@ const routePreview = ref<RoutePreview | null>(null);
 const actionBusy = ref(false);
 const actionMessage = ref('');
 const requestUncertain = ref(false);
+try {
+  const raw = sessionStorage.getItem('agv-web-pending-request');
+  if (raw) {
+    const original = JSON.parse(raw);
+    if (!original.requestId || !original.stationId || !original.requestedVehicleId) throw new Error('原申请信息不完整');
+    requestUncertain.value = true;
+    station.value = original.stationId; vehicle.value = original.requestedVehicleId; priority.value = original.priority;
+    actionMessage.value = `存在结果未确认的原申请 ${original.requestId}，将沿用原编号核对，不能新建替代任务。`;
+  }
+} catch { requestUncertain.value = true; actionMessage.value = '原申请存储损坏，禁止新建；请先查询原任务核对。'; }
 const optionsBusy = ref(false);
 const selectedStation = computed(() => options.value?.stations.find(s => s.stationId === station.value));
 const selectedVehicle = computed(() => options.value?.vehicles.find(v => v.vehicleId === vehicle.value));
@@ -54,7 +65,7 @@ const pages = computed(() => Math.max(1, Math.ceil((queriedTasks.value?.totalCou
 const tableCount = computed(() => queriedTasks.value?.totalCount ?? store.snapshot?.tasks?.totalCount ?? 0);
 const canSubmit = computed(() => store.fresh && store.submissionEnabled && !actionBusy.value && !optionsBusy.value && (requestUncertain.value || (!!options.value?.available && !!selectedStation.value?.available && !!selectedVehicle.value?.available && pickupReachable.value)));
 
-watch([search, taskFilter], () => { queriedTasks.value = null; taskPage.value = 1; });
+watch([search, taskFilter], () => { queryEpoch++; queryBusy.value = false; queriedTasks.value = null; taskPage.value = 1; });
 watch(() => route.params.id, id => { if (id && typeof id === 'string') openTask(id); }, { immediate: true });
 
 async function loadDetail(id: string) {
@@ -75,22 +86,24 @@ watch(() => store.snapshot?.receivedAt, () => {
   if (selectedTask.value && detailPending === 0) void loadDetail(selectedTask.value);
 });
 watch(showTaskDialog, open => { if (!open) { detailEpoch++; detail.value = null; } });
-onUnmounted(() => { detailEpoch++; });
+onUnmounted(() => { detailEpoch++; queryEpoch++; });
 
 async function queryTasks(page = 1) {
+  const mine = ++queryEpoch;
   queryError.value = ''; taskPage.value = page; queryBusy.value = true;
   try {
     const filter = ({ all: 'All', waiting: 'Waiting', running: 'Running', failed: 'Failed', completed: 'Completed', cancelled: 'Cancelled' } as Record<string, string>)[taskFilter.value];
     const result = await store.api<{ items: TaskRow[]; totalCount: number; page: number; pageSize: number }>(`/api/tasks?filter=${filter}&search=${encodeURIComponent(search.value)}&page=${page}`);
-    queriedTasks.value = result;
-  } catch (ex) { queryError.value = String(ex); }
-  finally { queryBusy.value = false; }
+    if (mine === queryEpoch) queriedTasks.value = result;
+  } catch (ex) { if (mine === queryEpoch) queryError.value = String(ex); }
+  finally { if (mine === queryEpoch) queryBusy.value = false; }
 }
 
-function resetTaskQuery() { search.value = ''; taskFilter.value = 'all'; queriedTasks.value = null; taskPage.value = 1; queryError.value = ''; }
+function resetTaskQuery() { queryEpoch++; queryBusy.value = false; search.value = ''; taskFilter.value = 'all'; queriedTasks.value = null; taskPage.value = 1; queryError.value = ''; }
 
 async function loadOptions(preserveSelection = false) {
-  if (optionsBusy.value || actionBusy.value || requestUncertain.value) return;
+  if (optionsBusy.value || actionBusy.value) return;
+  if (requestUncertain.value) { formOpen.value = true; return; }
   formOpen.value = true; routePreview.value = null; actionMessage.value = '';
   optionsBusy.value = true;
   try {
@@ -119,7 +132,9 @@ async function submitTask() {
   let request: Record<string, unknown>;
   try {
     const stored = sessionStorage.getItem(storageKey);
+    if (requestUncertain.value && !stored) throw new Error('原申请缺失，禁止换编号');
     request = requestUncertain.value && stored ? JSON.parse(stored) : { requestId: newTaskRequestId(), stationId: station.value, requestedVehicleId: vehicle.value, priority: priority.value, mapId: options.value!.mapId, mapVersionId: options.value!.mapVersionId, parameterRevision: options.value!.parameterRevision };
+    if (!request.requestId || !request.stationId || !request.requestedVehicleId) throw new Error('原申请信息不完整');
     sessionStorage.setItem(storageKey, JSON.stringify(request));
   } catch { actionMessage.value = '无法持久保存申请编号，本次未提交。'; return; }
   actionBusy.value = true; actionMessage.value = '正在提交，保持原申请编号。'; requestUncertain.value = true;
@@ -142,7 +157,7 @@ watch(() => route.query.create, create => {
 <template>
   <section class="management-page">
     <header class="management-title">
-      <h2><IconListDetails :size="23" />任务列表</h2>
+      <h2><IconListDetails :size="23" />业务任务</h2>
       <span>{{ queriedTasks ? '查询总数' : '快照总数' }} {{ tableCount }} 条</span>
       <button class="accent-button" @click="loadOptions()"><IconPlus :size="15" />创建任务</button>
       <button @click="router.push('/')"><IconArrowLeft :size="15" />返回大屏</button>
@@ -182,6 +197,8 @@ watch(() => route.query.create, create => {
     </footer>
   </section>
 
+  <BusinessRunPanel v-if="!store.demoMode&&(!formOpen||creationMode==='Single')" mode="Demand" :options="options" status-only />
+  <p>业务任务执行取箱、倒料、返箱与 PLC 握手；<RouterLink to="/navigation-test">单车导航调试</RouterLink>仅用于独立站点移动。模式启用及执行条件由后台核验。</p>
   <ConsoleDialog v-if="showTaskDialog" title="任务运行详情 · 九步、条件与执行证据" wide @close="showTaskDialog = false">
     <TaskExecutionDetails v-if="detail" :detail="detail" :fresh="store.fresh" :now="store.now" />
     <p v-else class="empty-panel">{{ store.error || '正在读取任务详情…' }}</p>

@@ -168,6 +168,28 @@ Check(!owner.IsRetired(chainId), "existing send chain is never fenced as an unac
 var unacceptedId = Guid.NewGuid().ToString("N");
 var reviewed = await realPort.RetireUnacceptedAsync(pendingRun with { PendingRequestId = unacceptedId }, default);
 Check(reviewed.PendingRequestId is null && owner.IsRetired(unacceptedId), "only absent receipt and absent send chain produce a durable fence");
+var resuming=Fixture();await resuming.Service.StartAsync(user,Plan(),default);resuming.Port.Calls=["CNC-001"];await resuming.Service.TickAsync(default);
+resuming.Port.Block="车辆状态过期";await resuming.Service.TickAsync(default);
+var held=await Row(resuming.Service);
+var resumeRequest=new BusinessRunResume(held.RunId,Guid.NewGuid().ToString("N"),held.UpdatedAt,"已现场核对车辆定位和原任务载荷",true);
+await Reject(()=>resuming.Service.ResumeAsync(user,resumeRequest,default),"health block must remain");
+resuming.Port.Block=null;
+await Reject(()=>resuming.Service.ResumeAsync(user,resumeRequest with { ExpectedUpdatedAt=held.UpdatedAt.AddSeconds(-1) },default),"stale resume version");
+resuming.Port.TaskState="CancellationReview";
+await Reject(()=>resuming.Service.ResumeAsync(user,resumeRequest,default),"resume cannot replace cancelled task review");
+resuming.Port.TaskState="Executing";
+var resumed=(await resuming.Service.ResumeAsync(user,resumeRequest,default)).Current!;
+Check(resumed.Stage=="Executing"&&resumed.TaskId==held.TaskId&&resumed.PendingRequestId==held.PendingRequestId&&resuming.Port.Creates==1,"resume only attaches original accepted task");
+await resuming.Service.ResumeAsync(user,resumeRequest,default);
+Check(resuming.Port.Creates==1&&resuming.Port.Returns==0,"same resume request never creates or resends motion");
+await Reject(()=>resuming.Service.ResumeAsync(user,resumeRequest with { Reason="相同编号不允许更换现场核对依据" },default),"mutated resume rejected");
+var uncertainRow=await Row(uncertain.Service);
+await Reject(()=>uncertain.Service.ResumeAsync(user,new(uncertainRow.RunId,Guid.NewGuid().ToString("N"),uncertainRow.UpdatedAt,"已查看原记录但发送结果仍然不明",true),default),"unknown original send remains fenced");
+var resumeStop=Fixture();await resumeStop.Service.StartAsync(user,Plan(),default);resumeStop.Port.Block="offline";await resumeStop.Service.TickAsync(default);
+await resumeStop.Service.StopAsync(user,new((await Row(resumeStop.Service)).RunId),default);resumeStop.Port.Block=null;
+var stoppedHold=await Row(resumeStop.Service);
+var stoppedResume=(await resumeStop.Service.ResumeAsync(user,new(stoppedHold.RunId,Guid.NewGuid().ToString("N"),stoppedHold.UpdatedAt,"已现场确认空闲停靠且只继续收尾",true),default)).Current!;
+Check(stoppedResume.StopRequested&&stoppedResume.Stage=="Waiting","resume preserves stop-new-calls intent");
 checks += FeedbackTests.Run();
 Console.WriteLine($"BusinessRunSmokeTest passed {checks} checks. Fake ports only; no PLC or AGV commands.");
 
