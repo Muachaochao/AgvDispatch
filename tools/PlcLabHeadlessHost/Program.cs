@@ -1,6 +1,12 @@
 using PlcHandshakeLab;
 
-var config = NetworkLabConfig.CreateDefault();
+var configIndex=Array.IndexOf(args,"--config");
+if(configIndex>=0&&(Array.IndexOf(args,"--config")!=args.Count() - 2||!File.Exists(args[configIndex+1])))
+    throw new ArgumentException("--config must be followed by exactly one existing JSON file.");
+var config = configIndex>=0
+    ? System.Text.Json.JsonSerializer.Deserialize<NetworkLabConfig>(File.ReadAllText(args[configIndex+1]))
+        ?? throw new InvalidDataException("PLC lab config is empty.")
+    : NetworkLabConfig.CreateDefault();
 var directory = Path.Combine(
     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
     "AgvDispatch", "PlcHandshakeLab", DateTime.Now.ToString("yyyyMMdd"));
