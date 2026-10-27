@@ -142,7 +142,9 @@ public sealed class FleetTestPort(FleetTestOptions options,IBusinessRunService s
     public async Task LabAsync(FleetTestRun run,string action,string[] stations,CancellationToken ct)
     {
         using var request=new HttpRequestMessage(HttpMethod.Post,"fleet")
-        {Content=JsonContent.Create(new{runId=run.RunId,action,stations,taskId=action=="bind"?run.Calls.Single(c=>c.StationId==stations.Single()).TaskId:null})};
+        {Content=JsonContent.Create(new{runId=run.RunId,action,stations,
+            taskId=action=="bind"?run.Calls.Single(c=>c.StationId==stations.Single()).TaskId:null,
+            recoveryReviewed=action=="check"})};
         request.Headers.Add("X-Agv-Lab-Control","business-run-v1");
         using var response=await lab.SendAsync(request,ct);
         if(!response.IsSuccessStatusCode)

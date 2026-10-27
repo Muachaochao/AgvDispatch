@@ -1,6 +1,6 @@
 namespace PlcHandshakeLab;
 
-public sealed record FleetLabRequest(string RunId,string Action,string[] Stations,string? TaskId=null);
+public sealed record FleetLabRequest(string RunId,string Action,string[] Stations,string? TaskId=null,bool RecoveryReviewed=false);
 public sealed partial class NetworkLab
 {
     private sealed record FleetCall(bool Called=false,string? Task=null,string? Vehicle=null,CycleTransportFeedback? Pickup=null,CycleTransportFeedback? Place=null);
@@ -49,6 +49,11 @@ public sealed partial class NetworkLab
                 if(entry.Task!=null&&entry.Task!=request.TaskId||_fleet.Any(p=>p.Key!=request.Stations[0]&&p.Value.Task==request.TaskId))
                     throw new InvalidOperationException("原任务/工位绑定冲突。");
                 _fleet[request.Stations[0]]=entry with {Task=request.TaskId};
+            }
+            else if(request.Action=="check"&&request.RecoveryReviewed)
+            {
+                if(!_communicationHealthy)throw new InvalidOperationException("模拟PLC通信尚未恢复。");
+                _recoveryReason=null;
             }
             else if(request.Action is not ("start" or "check"))throw new ArgumentException("未知双车操作。");
             Record("双车用例",string.Join(",",request.Stations),"","","",System.Text.Json.JsonSerializer.Serialize(request));

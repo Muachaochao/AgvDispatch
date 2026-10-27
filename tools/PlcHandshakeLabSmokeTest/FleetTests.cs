@@ -19,6 +19,8 @@ internal static class FleetTests
   Reject(()=>lab.ControlFleet(new(id,"bind",["CNC-002"],"T1")),"不串任务");
   Host("CNC-001",2,true);Host("CNC-002",2,true);lab.TickAutomatic();
   Check(!Value("CNC-001",0)&&!Value("CNC-002",0),"两站各自撤呼叫");
+  Host("共享倒料",6,true);lab.UpdateCommunication(false);lab.UpdateCommunication(true);
+  lab.ControlFleet(new(id,"check",[],RecoveryReviewed:true));Host("共享倒料",6,false);
   var f=new CycleTransportFeedback(id,0,"CNC-001","T1","AGV-01","P1","V1","Pickup",DateTimeOffset.UtcNow);
   Reject(()=>lab.ApplyFleetFeedback(f with {TaskId="T2"}),"另一工位任务不能写反馈");
   Reject(()=>lab.ApplyFleetFeedback(f with {ObservedAt=DateTimeOffset.UtcNow.AddSeconds(-10)}),"过期证据拒绝");
