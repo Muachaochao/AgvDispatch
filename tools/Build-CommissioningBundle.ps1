@@ -69,6 +69,7 @@ foreach($bundleShared in @('AgvDispatch.Application.dll','AgvDispatch.Domain.dll
 New-Item -ItemType Directory -Path (Join-Path $bundleOutput 'Web/licenses') -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $bundleProject 'AgvDispatch.Web/src/vendor/agv-web-visible/LICENSE'),(Join-Path $bundleProject 'AgvDispatch.Web/src/vendor/agv-web-visible/UPSTREAM.md') -Destination (Join-Path $bundleOutput 'Web/licenses')
 New-Item -ItemType Directory -Path (Join-Path $bundleOutput 'Docs') -Force | Out-Null
+Copy-Item -LiteralPath (Join-Path $bundleProject 'docs/architecture/双车双工位竞争交接测试-20261027.md') -Destination (Join-Path $bundleOutput 'Docs')
 Copy-Item -LiteralPath (Join-Path $bundleProject 'docs/architecture/创建任务按需运行与交替循环-20261025.md') -Destination (Join-Path $bundleOutput 'Docs')
 Copy-Item -LiteralPath (Join-Path $bundleProject 'docs/architecture/循环模拟箱体原动作反馈-20261025.md'),(Join-Path $bundleProject 'docs/architecture/循环测试原申请核对收尾-20261025.md') -Destination (Join-Path $bundleOutput 'Docs')
 Copy-Item -LiteralPath (Join-Path $bundleProject 'docs/architecture/倒料区慢查询交接修复-20261026.md') -Destination (Join-Path $bundleOutput 'Docs')
@@ -153,6 +154,10 @@ if "%~2"=="" (
 "%~dp0Web\host\AgvDispatch.WebHost.exe" --launch-local --bundle-root "%~dp0." --plc-cycle-test-vehicle "%~1" --plc-cycle-test-station "%~2"
 if errorlevel 1 pause
 '@ | Set-Content -LiteralPath (Join-Path $bundleOutput 'Start-Plc-Cycle-Test.cmd') -Encoding ascii
+@'
+@echo off
+call "%~dp0Start-Latest-Web.cmd" --fleet-test-vehicles AGV-01,AGV-02 %*
+'@ | Set-Content -LiteralPath (Join-Path $bundleOutput 'Start-Fleet-Test.cmd') -Encoding ascii
 $bundleFiles=@(Get-ChildItem -LiteralPath $bundleOutput -File -Recurse | ForEach-Object {@{path=[IO.Path]::GetRelativePath($bundleOutput,$_.FullName);sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant();bytes=$_.Length}})
 @{schema='agv-commissioning-release';version=1;releaseId=$bundleId;createdAt=(Get-Date).ToString('o');runtime='win-x64 self-contained';pipeName=$bundlePipe;port=$WebPort;files=$bundleFiles;siteConfigurationImported=$bundleSiteConfigurationImported;deviceExecutionEnabled=$false} | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $bundleOutput 'release-manifest.json') -Encoding utf8
 Write-Output "Candidate=$bundleOutput"

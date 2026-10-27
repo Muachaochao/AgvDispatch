@@ -10,7 +10,7 @@ public sealed partial class ManualTaskCreationService(IManualTaskCreationReposit
     IDispatchOrchestrationRepository tasks, DispatchTaskCreationOptions creation, DispatchOrchestratorOptions dispatch,
     DispatchTaskStepOptions steps, MapOptions mapOptions, IPlcConfigurationInspector plcConfiguration,
     TaskParameterRuntime parameters, IRobokitTaskMapPreflight? robokitMap = null,
-    HandshakeExecutionOptions? handshakeOptions = null, BusinessRunOwnership? businessRun = null) : IManualTaskCreationService
+    HandshakeExecutionOptions? handshakeOptions = null, BusinessRunOwnership? businessRun = null, FleetTestOptions? fleetOptions=null,FleetTestOwnership? fleetOwnership=null) : IManualTaskCreationService
 {
     public async Task<ManualTaskCreationOptions> GetOptionsAsync(CancellationToken ct)
     {
@@ -88,6 +88,7 @@ public sealed partial class ManualTaskCreationService(IManualTaskCreationReposit
 
     public async Task<ManualTaskCreationResult> CreateAsync(TrafficUserContext user, ManualTaskCreationRequest request, CancellationToken ct)
     {
+        if(fleetOptions?.Enabled==true||fleetOwnership?.Active==true)throw new InvalidOperationException("双车测试模式或原会话尚未闭合，不能另建手工任务。");
         if (!Guid.TryParseExact(request.RequestId, "N", out _) || string.IsNullOrWhiteSpace(request.StationId) ||
             request.StationId.Length > 32 || request.RequestedVehicleId?.Length > 32 || request.Priority is < 0 or > 100 ||
             string.IsNullOrWhiteSpace(request.MapId) || string.IsNullOrWhiteSpace(request.MapVersionId) ||

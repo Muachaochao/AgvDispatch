@@ -13,7 +13,7 @@ public sealed partial class BusinessRunPort(IManualTaskCreationService manual, I
     DispatchTaskStepOptions steps, PlcCycleTestOptions isolated, IAgvGateway gateway,
     IRoutePlanner planner, ITrafficResourceManager resources, IRobokitTaskMapPreflight preflight,
     BusinessStandbyChains chains, ITrafficResourceControlService traffic, ISingleNavigationTestService navigation, bool simulatorOnly,
-    IManualTaskCreationRepository receipts, BusinessRunOwnership ownership) : IBusinessRunPort
+    IManualTaskCreationRepository receipts, BusinessRunOwnership ownership, FleetTestOptions? fleetOptions=null,FleetTestOwnership? fleetOwnership=null) : IBusinessRunPort
 {
     private static readonly HttpClient lab = new(new SocketsHttpHandler { UseProxy = false, AllowAutoRedirect = false })
         { Timeout = TimeSpan.FromSeconds(5), BaseAddress = new Uri("http://127.0.0.1:10201/") };
@@ -55,7 +55,7 @@ public sealed partial class BusinessRunPort(IManualTaskCreationService manual, I
     private static bool Stopped(AgvRobotSnapshot v) => v.VelocityX is { } x && Math.Abs(x) < .01 &&
         v.VelocityY is { } y && Math.Abs(y) < .01 && v.AngularVelocity is { } a && Math.Abs(a) < .01 &&
         v.Tasks.All(t => t.Status is 4 or 5 or 6 or 7);
-    private string? ConfigurationBlock() => isolated.Enabled ? "请退出单工位空载联调模式，使用正式业务启动配置；两种执行器不能同时运行。" :
+    private string? ConfigurationBlock() => fleetOptions?.Enabled==true||fleetOwnership?.Active==true ? "双车测试启动模式或原会话未闭合，不能同时启动单车运行。" : isolated.Enabled ? "请退出单工位空载联调模式，使用正式业务启动配置；两种执行器不能同时运行。" :
         !creation.Enabled || !dispatch.Enabled || !steps.Enabled ? "请在启动配置中启用业务创建、调度及步骤执行；页面不会自动提升许可。" :
         creation.AutomaticCreationEnabled ? "本入口统一接续呼叫，请先在启动配置将 TaskCreation:AutomaticCreationEnabled 设为 false，保留 TaskCreation:Enabled=true。" :
         !gate.CanStartNewWork ? gate.NewWorkBlockReason : dispatch.GetConfigurationError();

@@ -102,7 +102,7 @@ public sealed record CommunicationStatus(bool Fresh, string Label)
 }
 
 /// <summary>单一DB内存；UI只写P，网络只写H；所有访问及日志由同一把锁串行。</summary>
-public sealed class NetworkLab : IDisposable
+public sealed partial class NetworkLab : IDisposable
 {
     private readonly object _gate = new();
     private readonly Dictionary<int, byte[]> _dbs;
@@ -149,7 +149,7 @@ public sealed class NetworkLab : IDisposable
                     throw new InvalidOperationException("同一运行编号不能修改顺序或轮数。");
                 return;
             }
-            if (_callOutstanding || _callRun is not null && !_stopCalls && _callCompleted < _callLimit)
+            if (_fleetRun is not null && !_fleetStopped || _callOutstanding || _callRun is not null && !_stopCalls && _callCompleted < _callLimit)
                 throw new InvalidOperationException("原循环仍未结束。");
             if (!_communicationHealthy || _recoveryReason is not null || _permit ||
                 Config.Points.Any(p => p.Owner == "H" && Get(p.Station, p.Signal)) ||

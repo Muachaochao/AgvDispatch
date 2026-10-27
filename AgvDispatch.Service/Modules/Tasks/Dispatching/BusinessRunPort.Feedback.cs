@@ -15,6 +15,10 @@ public sealed partial class BusinessRunPort
         if (!simulatorOnly || run.Plan.Mode != "Cycle" || run.Stage != "Executing" || run.TaskId is null) return;
         var detail = await tasks.GetDetailAsync(run.TaskId, ct)
             ?? throw new InvalidOperationException("模拟箱体反馈找不到原业务任务。");
+        await ApplySimulatorFeedbackAsync(run,detail,"cycle-feedback",ct);
+    }
+    internal async Task ApplySimulatorFeedbackAsync(BusinessRunRecord run,TaskCenterDetail detail,string endpoint,CancellationToken ct)
+    {
         var step = SelectFeedbackStep(run, detail);
         if (step is null) return;
         var pickup = parameters.Capture().Pickups.Single(p => p.StationId == detail.Task.StationId);
@@ -36,7 +40,7 @@ public sealed partial class BusinessRunPort
         if (original is null || original.VendorTaskId != step.VendorTaskId || original.VehicleId != run.Plan.VehicleId ||
             !Fresh(original.UpdatedAt) || original.State != AgvTransportTaskState.Completed)
             throw new InvalidOperationException("原车端取放动作成功状态或身份未能核对，保留箱体点位。");
-        using var request = new HttpRequestMessage(HttpMethod.Post, "cycle-feedback")
+        using var request = new HttpRequestMessage(HttpMethod.Post, endpoint)
         {
             Content = JsonContent.Create(new { runId = run.RunId, callIndex = run.CompletedJobs,
                 station = detail.Task.StationId, taskId = run.TaskId, vehicleId = run.Plan.VehicleId,

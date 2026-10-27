@@ -6,6 +6,19 @@ public static class PlcCycleTestApi
 {
     public static void MapPlcCycleTestApi(this WebApplication app)
     {
+        app.MapGet("/api/fleet-test",async(DispatchPipe pipe,CancellationToken ct)=>await pipe.ReadAsync<FleetTestStatus>("GetFleetTest",new{},ct));
+        app.MapPost("/api/fleet-test/start",async(FleetTestStart request,DispatchPipe pipe,CancellationToken ct)=>
+        {
+            if(!app.Configuration.GetValue("Web:EnableTaskSubmission",false))return Results.Json(new{error="请使用双车业务测试启动配置。"},statusCode:403);
+            return Results.Ok(await pipe.ReadAsync<FleetTestStatus>("StartFleetTest",request,ct));
+        });
+        app.MapPost("/api/fleet-test/{action}",async(string action,FleetTestControl request,DispatchPipe pipe,CancellationToken ct)=>
+        {
+            var method=action switch {"stop"=>"StopFleetTest","resume"=>"ResumeFleetTest","close"=>"CloseFleetTest",_=>null};
+            if(method==null)return Results.NotFound();
+            if(action=="resume"&&!app.Configuration.GetValue("Web:EnableTaskSubmission",false))return Results.Json(new{error="续接需要业务测试启动配置。"},statusCode:403);
+            return Results.Ok(await pipe.ReadAsync<FleetTestStatus>(method,request,ct));
+        });
         app.MapGet("/api/business-run", async (DispatchPipe pipe, CancellationToken ct) =>
             await pipe.ReadAsync<BusinessRunStatus>("GetBusinessRun", new { }, ct));
         app.MapPost("/api/business-run/start", async (BusinessRunStart request, DispatchPipe pipe, CancellationToken ct) =>

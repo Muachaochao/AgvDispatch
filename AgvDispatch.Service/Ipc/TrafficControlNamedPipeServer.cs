@@ -32,7 +32,7 @@ public sealed class TrafficControlNamedPipeServer(
     ITrafficGeometryPreviewService? geometry=null,
     IRobokitInspectionService? robokit=null, IRobokitInspectionHistory? robokitHistory=null,IMapTransferLedger? mapTransfers=null, ITaskHandshakeStore? handshakes=null, ITaskDiagnosticArchiveService? diagnosticExports=null, ICommissioningQueryService? commissioning=null,
     ITrafficWaitingBayDepartureService? waitingBayDeparture=null, ISingleNavigationTestService? navigationTest=null, IRobotMapDownloadService? robotMapDownload=null,
-    IPlcCycleTestService? plcCycleTest=null, IBusinessRunService? businessRun=null) : IsolatedBackgroundService
+    IPlcCycleTestService? plcCycleTest=null, IBusinessRunService? businessRun=null, IFleetTestService? fleetTest=null) : IsolatedBackgroundService
 {
     private async Task<RobokitInspectionSnapshot> InspectRobokitAsync(TrafficUserContext user,RobokitInspectionQuery query,CancellationToken ct)
     {
@@ -207,6 +207,11 @@ public sealed class TrafficControlNamedPipeServer(
             "SubmitForkTest" => Success(await (navigationTest??throw new NotSupportedException("货叉后台未更新。")).SubmitForkAsync(user,Deserialize<ForkTestSubmit>(request.Payload),cancellationToken)),
             "StopForkTest" => Success(await (navigationTest??throw new NotSupportedException("货叉后台未更新。")).SubmitForkAsync(user,RequireForkStop(request.Payload),cancellationToken)),
             "GetBusinessRun" => Success(await (businessRun??throw new NotSupportedException("后台未更新持续运行入口。")).ReadAsync(cancellationToken)),
+            "GetFleetTest" => Success(await (fleetTest??throw new NotSupportedException("后台未更新双车测试。")).ReadAsync(cancellationToken)),
+            "StartFleetTest" => Success(await (fleetTest??throw new NotSupportedException("后台未更新双车测试。")).StartAsync(user,Deserialize<FleetTestStart>(request.Payload),cancellationToken)),
+            "StopFleetTest" => Success(await (fleetTest??throw new NotSupportedException("后台未更新双车测试。")).ControlAsync(user,"stop",Deserialize<FleetTestControl>(request.Payload),cancellationToken)),
+            "ResumeFleetTest" => Success(await (fleetTest??throw new NotSupportedException("后台未更新双车测试。")).ControlAsync(user,"resume",Deserialize<FleetTestControl>(request.Payload),cancellationToken)),
+            "CloseFleetTest" => Success(await (fleetTest??throw new NotSupportedException("后台未更新双车测试。")).ControlAsync(user,"close",Deserialize<FleetTestControl>(request.Payload),cancellationToken)),
             "StartBusinessRun" => Success(await (businessRun??throw new NotSupportedException("后台未更新持续运行入口。")).StartAsync(user,Deserialize<BusinessRunStart>(request.Payload),cancellationToken)),
             "StopBusinessRun" => Success(await (businessRun??throw new NotSupportedException("后台未更新持续运行入口。")).StopAsync(user,Deserialize<BusinessRunStop>(request.Payload),cancellationToken)),
             "ResumeBusinessRun" => Success(await (businessRun??throw new NotSupportedException("后台未更新持续运行入口。")).ResumeAsync(user,Deserialize<BusinessRunResume>(request.Payload),cancellationToken)),

@@ -27,7 +27,7 @@ public sealed class LabControlServer(NetworkLab lab, int port = 10201) : IAsyncD
             {
                 var request = context.Request;
                 var capabilities = request.HttpMethod == "GET" && request.Url?.AbsolutePath == "/capabilities";
-                if ((!capabilities && (request.HttpMethod != "POST" || request.Url?.AbsolutePath is not ("/cycle" or "/cycle-feedback"))) ||
+                if ((!capabilities && (request.HttpMethod != "POST" || request.Url?.AbsolutePath is not ("/cycle" or "/cycle-feedback" or "/fleet" or "/fleet-feedback"))) ||
                     request.Headers["X-Agv-Lab-Control"] != "business-run-v1" ||
                     request.Headers["Origin"] is not null || request.RemoteEndPoint is null || !IPAddress.IsLoopback(request.RemoteEndPoint.Address) ||
                     request.ContentLength64 > 4096)
@@ -35,7 +35,7 @@ public sealed class LabControlServer(NetworkLab lab, int port = 10201) : IAsyncD
                 if (capabilities)
                 {
                     context.Response.ContentType = "application/json";
-                    await context.Response.OutputStream.WriteAsync(System.Text.Encoding.UTF8.GetBytes("{\"boxFeedbackContract\":\"business-box-action-v1\"}"));
+                    await context.Response.OutputStream.WriteAsync(System.Text.Encoding.UTF8.GetBytes("{\"boxFeedbackContract\":\"business-box-action-v1\",\"fleetContract\":\"fleet-box-action-v1\"}"));
                     continue;
                 }
                 // JsonContent may use chunked transfer. Bound the decoded body too.
@@ -48,7 +48,11 @@ public sealed class LabControlServer(NetworkLab lab, int port = 10201) : IAsyncD
                     if (body.Length + count > 4096) throw new ArgumentException("控制参数超过4096字节。");
                     body.Write(buffer, 0, count);
                 }
-                if (request.Url!.AbsolutePath == "/cycle-feedback")
+                if(request.Url!.AbsolutePath=="/fleet")
+                    lab.ControlFleet(JsonSerializer.Deserialize<FleetLabRequest>(body.ToArray(),new JsonSerializerOptions(JsonSerializerDefaults.Web))??throw new ArgumentException("双车参数为空。"));
+                else if(request.Url.AbsolutePath=="/fleet-feedback")
+                    lab.ApplyFleetFeedback(JsonSerializer.Deserialize<CycleTransportFeedback>(body.ToArray(),new JsonSerializerOptions(JsonSerializerDefaults.Web))??throw new ArgumentException("双车反馈为空。"));
+                else if (request.Url.AbsolutePath == "/cycle-feedback")
                     lab.ApplyTransportFeedback(JsonSerializer.Deserialize<CycleTransportFeedback>(body.ToArray(), new JsonSerializerOptions(JsonSerializerDefaults.Web))
                         ?? throw new ArgumentException("动作反馈为空。"));
                 else

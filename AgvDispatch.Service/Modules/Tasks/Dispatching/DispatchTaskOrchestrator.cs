@@ -17,7 +17,7 @@ public sealed class DispatchTaskOrchestrator(
     MapOptions mapOptions,
     IRoutePlanner routePlanner,
     ITrafficResourceManager trafficResources,
-    IMapExecutionGate executionGate, IRobokitTaskMapPreflight? robokitMap = null, HandshakeExecutionOptions? handshakeOptions = null, PersistentHandshakeExecutor? handshake = null, BusinessRunOwnership? businessRun = null) : IsolatedBackgroundService
+    IMapExecutionGate executionGate, IRobokitTaskMapPreflight? robokitMap = null, HandshakeExecutionOptions? handshakeOptions = null, PersistentHandshakeExecutor? handshake = null, BusinessRunOwnership? businessRun = null, FleetTestOwnership? fleetTest=null) : IsolatedBackgroundService
 {
     private readonly HashSet<string> _missingRouteWarnings =
         new(StringComparer.OrdinalIgnoreCase);
@@ -154,6 +154,7 @@ public sealed class DispatchTaskOrchestrator(
                 cancellationToken);
             var planningMap = activeMap.Current;
             var routeCandidates = idleVehicles
+                .Where(vehicle => fleetTest?.Allows(task.TaskId,vehicle.VehicleId)!=false)
                 .Where(vehicle => TaskVehicleSelection.Accepts(task, vehicle.VehicleId))
                 .Where(vehicle => !selectedVehicles.Contains(vehicle.VehicleId))
                 .Where(vehicle => !string.IsNullOrWhiteSpace(vehicle.CurrentStation))
@@ -190,6 +191,7 @@ public sealed class DispatchTaskOrchestrator(
             foreach (var candidate in routeCandidates)
             {
                 var vehicle = candidate.Vehicle;
+                if(fleetTest?.Allows(task.TaskId,vehicle.VehicleId)==false)continue;
                 var route = candidate.Route!;
                 if(robokitMap is not null)
                 {
@@ -226,6 +228,8 @@ public sealed class DispatchTaskOrchestrator(
                 var commandPrepared = false;
                 try
                 {
+                    if(fleetTest?.Allows(task.TaskId,vehicle.VehicleId)==false)
+                    {await trafficResources.ReleaseStepAsync(readyStep.StepId,cancellationToken);continue;}
                     if(handshake!=null)await handshake.BindBeforeTransportAsync(readyStep with {VehicleId=vehicle.VehicleId},cancellationToken);
                     commandPrepared = await outbox.TryPrepareTransportStepAsync(
                         task.TaskId,

@@ -12,6 +12,7 @@ internal static class NetworkTests
     public static async Task RunAsync()
     {
         CallPlanTests.Run();
+        FleetTests.Run();
         await ControlTests.RunAsync();
         var checks = 0;
         void Check(bool condition, string message) { if (!condition) throw new Exception(message); checks++; }

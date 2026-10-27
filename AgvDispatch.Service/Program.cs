@@ -169,18 +169,32 @@ var taskParameterRuntime = new TaskParameterRuntime(dispatchOrchestratorOptions,
 if (TaskParameterSettingsService.ReadDocument(taskParameterPath) is { } taskParameterDocument) taskParameterRuntime.Apply(taskParameterDocument);
 builder.Services.AddSingleton(taskParameterRuntime);
 builder.Services.AddSingleton<BusinessRunOwnership>();
-builder.Services.AddSingleton<IBusinessRunInterlock>(p => p.GetRequiredService<BusinessRunOwnership>());
+var fleetTestOptions=new FleetTestOptions();
+builder.Configuration.GetSection("FleetTest").Bind(fleetTestOptions);
+fleetTestOptions.VehicleIds=fleetTestOptions.VehicleIds.Where(id=>!string.IsNullOrWhiteSpace(id)).ToArray();
+builder.Services.AddSingleton(fleetTestOptions);
+builder.Services.AddSingleton<FleetTestOwnership>();
+builder.Services.AddSingleton<IBusinessRunInterlock,CommissioningInterlock>();
 builder.Services.AddSingleton<IBusinessRunPort>(p => new BusinessRunPort(
     p.GetRequiredService<IManualTaskCreationService>(), p.GetRequiredService<ITaskCenterQueryService>(),
     p.GetRequiredService<IPlcSignalCache>(), p.GetRequiredService<IAgvStateCache>(), p.GetRequiredService<IActiveMapRuntime>(),
     p.GetRequiredService<IMapExecutionGate>(), taskParameterRuntime, taskCreationOptions, dispatchOrchestratorOptions,
     p.GetRequiredService<DispatchTaskStepOptions>(), plcCycleTestOptions, p.GetRequiredService<IAgvGateway>(),
     p.GetRequiredService<IRoutePlanner>(), p.GetRequiredService<ITrafficResourceManager>(), p.GetRequiredService<IRobokitTaskMapPreflight>(),
-    p.GetRequiredService<BusinessStandbyChains>(), p.GetRequiredService<ITrafficResourceControlService>(), p.GetRequiredService<ISingleNavigationTestService>(), PlcCycleTestPort.AllPlcsAreLoopback(plcConnections), p.GetRequiredService<IManualTaskCreationRepository>(), p.GetRequiredService<BusinessRunOwnership>()));
+    p.GetRequiredService<BusinessStandbyChains>(), p.GetRequiredService<ITrafficResourceControlService>(), p.GetRequiredService<ISingleNavigationTestService>(), PlcCycleTestPort.AllPlcsAreLoopback(plcConnections), p.GetRequiredService<IManualTaskCreationRepository>(), p.GetRequiredService<BusinessRunOwnership>(),fleetTestOptions,p.GetRequiredService<FleetTestOwnership>()));
 builder.Services.AddSingleton(p => new BusinessRunService(p.GetRequiredService<IBusinessRunPort>(), p.GetRequiredService<BusinessRunOwnership>(),
     Path.Combine(Path.GetDirectoryName(databaseOptions.DatabasePath)!, "business-run.json")));
 builder.Services.AddSingleton<IBusinessRunService>(p => p.GetRequiredService<BusinessRunService>());
 builder.Services.AddHostedService(p => p.GetRequiredService<BusinessRunService>());
+builder.Services.AddSingleton<IFleetTestPort>(p=>new FleetTestPort(fleetTestOptions,p.GetRequiredService<IBusinessRunService>(),p.GetRequiredService<IBusinessRunPort>(),
+    p.GetRequiredService<IManualTaskCreationService>(),p.GetRequiredService<ITaskCenterQueryService>(),p.GetRequiredService<IDispatchTaskRepository>(),
+    p.GetRequiredService<IStationStateService>(),p.GetRequiredService<IPlcSignalCache>(),p.GetRequiredService<IPlcGateway>(),p.GetRequiredService<IAgvStateCache>(),
+    p.GetRequiredService<IActiveMapRuntime>(),p.GetRequiredService<IMapExecutionGate>(),taskParameterRuntime,dispatchOrchestratorOptions,taskCreationOptions,
+    p.GetRequiredService<HandshakeExecutionOptions>(),p.GetRequiredService<IRobokitTaskMapPreflight>(),p.GetRequiredService<ITrafficResourceControlService>(),PlcCycleTestPort.AllPlcsAreLoopback(plcConnections)));
+builder.Services.AddSingleton(p=>new FleetTestService(p.GetRequiredService<IFleetTestPort>(),p.GetRequiredService<FleetTestOwnership>(),
+    Path.Combine(Path.GetDirectoryName(databaseOptions.DatabasePath)!,"fleet-test.json")));
+builder.Services.AddSingleton<IFleetTestService>(p=>p.GetRequiredService<FleetTestService>());
+builder.Services.AddHostedService(p=>p.GetRequiredService<FleetTestService>());
 builder.Services.AddSingleton(new TaskParameterStorageOptions(taskParameterPath));
 builder.Services.AddSingleton<ITaskParameterService, TaskParameterSettingsService>();
 var mapOptions = new MapOptions();

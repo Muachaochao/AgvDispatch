@@ -23,7 +23,7 @@ if(Test-Path -LiteralPath $latestOldPointer){
 $latestManifest=Get-Content -LiteralPath (Join-Path $latestBundle 'release-manifest.json') -Raw | ConvertFrom-Json
 if(!(Test-Path -LiteralPath (Join-Path $latestBundle 'Start-Latest-Web.cmd')) -or !(Test-Path -LiteralPath (Join-Path $latestBundle 'Stop-Latest-Web.cmd'))){throw '缺少完整启动器。'}
 $latestBackup=Join-Path $latestRoot ('入口历史/'+(Get-Date -Format yyyyMMdd-HHmmss))
-foreach($latestName in @('启动最新版Web.cmd','停止最新版Web.cmd','最新版Web.json','启动界面修复版Web.cmd','停止界面修复版Web.cmd','先看这里-软件使用说明.md','简明使用说明.md')){
+foreach($latestName in @('启动最新版Web.cmd','停止最新版Web.cmd','最新版Web.json','启动界面修复版Web.cmd','停止界面修复版Web.cmd','启动双车联调Web.cmd','先看这里-软件使用说明.md','简明使用说明.md')){
     $latestOld=Join-Path $latestRoot $latestName
     if(Test-Path -LiteralPath $latestOld){New-Item -ItemType Directory -Path $latestBackup -Force | Out-Null;Copy-Item -LiteralPath $latestOld -Destination $latestBackup}
 }
@@ -43,6 +43,8 @@ foreach($latestEntry in @(@{Name='启动最新版Web.cmd';Text=$latestStartText}
     [IO.File]::WriteAllText((Join-Path $latestRoot $latestEntry.Name),$latestEntryText,[Text.UTF8Encoding]::new($false))
 }
 # Keep the former entry names as forwarders to the single canonical pair.
+ $latestFleetText="@echo off`r`nchcp 65001 >nul`r`ncall `"%~dp0启动最新版Web.cmd`" --fleet-test-vehicles AGV-01,AGV-02 %*`r`n"
+ [IO.File]::WriteAllText((Join-Path $latestRoot '启动双车联调Web.cmd'),$latestFleetText,[Text.UTF8Encoding]::new($false))
 # They must not retain a separately selected release after promotion.
 foreach($latestAlias in @(@{Name='启动界面修复版Web.cmd';Target='启动最新版Web.cmd'},@{Name='停止界面修复版Web.cmd';Target='停止最新版Web.cmd'})){
     $latestAliasText="@echo off`r`nchcp 65001 >nul`r`ncall `"%~dp0$($latestAlias.Target)`" %*`r`n"
@@ -59,6 +61,7 @@ $latestGuide=@"
 3. 原“启动/停止界面修复版Web.cmd”转到上述同一入口，不再维护独立版本指向。
 4. 工程方案目录为“运行数据/Web工程方案”，由根入口传入。现场配置和数据库不自动迁移；本候选入口保持其原有的设备通信与执行门禁。
 5. 本包自带 .NET 运行时。缺配置、地图、设备采样时应按界面提示核对；界面演示不代表实车验收。
+6. 双车竞争测试使用“启动双车联调Web.cmd”，仍为5199；需先停止原模式。启动不会自动发车，在业务任务页展开“双车双工位”核对后启动单组用例。两辆车需独立初始停车位、有效地图与包络配置；本组结束不自动驶向同一个LM7。
 
 具体功能、验证范围见 [$latestRelative/README.md]($latestRelative/README.md) 和该目录 Docs。版本选择以“最新版Web.json”为准。不要直接改指向文件；更新时在主工程运行 tools/Set-LatestWebRelease.ps1，让启动、停止和说明同步更新。
 
