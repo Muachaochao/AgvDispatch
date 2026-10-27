@@ -5,6 +5,10 @@ public static class EngineeringApi
     public sealed record BindingRequest(string ExpectedRevision,AgvMapBindingSetting[] Bindings);
     public static void MapEngineeringApi(this WebApplication app)
     {
+        app.MapGet("/api/communication", async (DispatchPipe p, CancellationToken ct) =>
+            await p.ReadAsync<CommunicationSettingsSnapshot>(TrafficControlOperations.GetCommunicationSettings, new { }, ct));
+        app.MapPost("/api/communication", async (SaveCommunicationSettingsRequest q, DispatchPipe p, CancellationToken ct) =>
+            await p.ReadAsync<CommunicationSettingsSnapshot>(TrafficControlOperations.SaveCommunicationSettings, q, ct));
         app.MapGet("/api/task-parameters",async(DispatchPipe p,CancellationToken ct)=>await p.ReadAsync<TaskParameterSnapshot>(TrafficControlOperations.GetTaskParameters,new{},ct));
         app.MapPost("/api/task-parameters/validate",async(TaskParameterRequest q,DispatchPipe p,CancellationToken ct)=>await p.ReadAsync<TaskParameterResult>(TrafficControlOperations.ValidateTaskParameters,q,ct));
         app.MapPost("/api/task-parameters/save",async(TaskParameterRequest q,DispatchPipe p,CancellationToken ct)=>await p.ReadAsync<TaskParameterResult>(TrafficControlOperations.SaveTaskParameters,q,ct));

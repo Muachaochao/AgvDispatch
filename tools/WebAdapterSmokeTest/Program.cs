@@ -205,6 +205,19 @@ try
     using(var archiveZip=new System.IO.Compression.ZipArchive(new MemoryStream(diagnosticBytes)))Check(archiveZip.GetEntry("manifest.json")!=null&&archiveZip.GetEntry("runtime-events.csv")!=null,"联调包含清单和信号/阶段CSV");
     using var cancelDefault=await http.PostAsJsonAsync("/api/tasks/WEB-ISOLATED-TASK/cancel",new TaskCancelRequest(Guid.NewGuid().ToString("N"),"WEB-ISOLATED-TASK",DispatchTaskStage.Completed,"隔离测试默认取消写入必须拒绝"),WebJson.Options);
     Check(cancelDefault.StatusCode==HttpStatusCode.Forbidden,"Web默认关闭取消写入口，与界面开关一致");
+    var communication = await http.GetFromJsonAsync<JsonElement>("/api/communication");
+    Check(communication.GetProperty("saved").GetProperty("agvEnabled").GetBoolean() == false && communication.GetProperty("revision").GetString()?.Length > 0,
+        "Web通信配置读取私有后台真实修订，不启动AGV");
+    var reviewResources = await http.GetFromJsonAsync<JsonElement>("/api/resource-review");
+    Check(!reviewResources.GetProperty("enabled").GetBoolean() && reviewResources.GetProperty("resources").ValueKind == JsonValueKind.Array && reviewResources.GetProperty("requests").ValueKind == JsonValueKind.Array,
+        "Web原占用与复核读取沿后台权限，写入口默认关闭");
+    using var releaseDisabled = await http.PostAsJsonAsync("/api/resource-review/submit", new SubmitManualReleaseRequest("none", "隔离测试拒绝释放", true, "RELEASE TEST"));
+    using var approveDisabled = await http.PostAsJsonAsync("/api/resource-review/review", new ReviewManualReleaseRequest("none", true, "隔离测试拒绝复核"));
+    Check(releaseDisabled.StatusCode == HttpStatusCode.Forbidden && approveDisabled.StatusCode == HttpStatusCode.Forbidden,
+        "Web资源处置不能绕过恢复入口开关");
+    using var staleCommunication = await http.PostAsJsonAsync("/api/communication", new { expectedRevision = "obsolete", configuration = communication.GetProperty("saved") });
+    Check(!staleCommunication.IsSuccessStatusCode && (await http.GetFromJsonAsync<JsonElement>("/api/communication")).GetProperty("revision").GetString() == communication.GetProperty("revision").GetString(),
+        "旧通信配置修订不能覆盖后台当前配置");
     using var recoveryRead=await http.GetAsync("/api/recovery");
     var recoveryJson=await recoveryRead.Content.ReadFromJsonAsync<JsonElement>();
     Check(recoveryRead.IsSuccessStatusCode&&!recoveryJson.GetProperty("recoveryEnabled").GetBoolean()&&recoveryJson.GetProperty("items").ValueKind==JsonValueKind.Array,"恢复入口可只读查询，写操作默认关闭");

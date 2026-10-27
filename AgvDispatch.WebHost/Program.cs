@@ -3,6 +3,7 @@ using System.Net.WebSockets;
 using System.Text.Json;
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.WebHost;
+using AgvDispatch.WebHost.Engineering;
 
 if(args.Contains("--launch-local")){Environment.ExitCode=await WebLocalLauncher.RunAsync(args);return;}
 
@@ -16,6 +17,9 @@ builder.Services.AddSingleton(new DispatchPipe(builder.Configuration["Web:PipeNa
 builder.Services.AddSingleton<SnapshotReader>();
 var projectStorePath=Path.GetFullPath(builder.Configuration["Web:ProjectStorePath"]??Path.Combine(builder.Environment.ContentRootPath,"data","projects"));
 builder.Services.AddSingleton(new WebProjectStore(projectStorePath));
+var engineeringRoot = Path.GetFullPath(builder.Configuration["Web:EngineeringStorePath"] ?? Path.Combine(Path.GetDirectoryName(projectStorePath)!, "engineering-center"));
+builder.Services.AddSingleton(new EngineeringStore(engineeringRoot));
+var engineeringSimulationOnly = builder.Configuration.GetValue("Web:EngineeringSimulationOnly", false);
 builder.Services.AddSingleton(new DisplayAreaStore(Path.Combine(Path.GetDirectoryName(projectStorePath)!, "display-areas")));
 builder.Services.AddSingleton(new VendorMapSourceArchive(Path.Combine(Path.GetDirectoryName(projectStorePath)!,"vendor-map-sources")));
 var app = builder.Build();
@@ -41,6 +45,10 @@ app.Use(async (ctx, next) =>
     ctx.Response.Headers["X-Content-Type-Options"] = "nosniff";
     ctx.Response.Headers["Referrer-Policy"] = "no-referrer";
     ctx.Response.Headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'";
+    // An isolated engineering instance must never fall through to a real Named Pipe, even by direct API calls.
+    if (engineeringSimulationOnly && ctx.Request.Path.StartsWithSegments("/api") &&
+        !ctx.Request.Path.StartsWithSegments("/api/engineering") && ctx.Request.Path != "/api/config")
+    { ctx.Response.StatusCode = 403; await ctx.Response.WriteAsJsonAsync(new { error = "工程隔离模拟模式禁止访问设备、任务及现场后台接口。" }); return; }
     try { await next(); }
     catch (Exception ex) when (!ctx.RequestAborted.IsCancellationRequested && !ctx.Response.HasStarted)
     {
@@ -49,12 +57,13 @@ app.Use(async (ctx, next) =>
     }
 });
 app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(20) });
-app.MapGet("/api/config", () => new { taskSubmissionEnabled = submissions, taskCancellationEnabled = cancellations, recoveryActionsEnabled = recoveryActions, source = "backend", loopbackOnly = true,
+app.MapGet("/api/config", () => new { taskSubmissionEnabled = !engineeringSimulationOnly && submissions, taskCancellationEnabled = !engineeringSimulationOnly && cancellations, recoveryActionsEnabled = !engineeringSimulationOnly && recoveryActions, engineeringSimulationOnly, source = "backend", loopbackOnly = true,
     projectStoreId=Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(projectStorePath))),
     adapter = new { informationalVersion=AdapterBuildIdentity.InformationalVersion, sha256=AdapterBuildIdentity.Sha256 },
     servicePipeName = builder.Configuration["Web:PipeName"] ?? "AgvDispatch.Service" });
 app.MapEditorApi();
 app.MapEngineeringApi();
+app.MapEngineeringCenterApi();
 app.MapNavigationTestApi();
 app.MapPlcCycleTestApi();
 app.MapRobotMapDownloadApi();
@@ -62,6 +71,7 @@ app.MapWaitingApi();
 app.MapProjectApi();
 app.MapDisplayAreasApi();
 app.MapDiagnosticsApi(recoveryActions,cancellations);
+app.MapResourceReviewApi(recoveryActions);
 app.MapGet("/api/snapshot", async (SnapshotReader reader, CancellationToken ct) => await reader.ReadAsync(ct));
 app.MapGet("/api/task-options", async (DispatchPipe pipe, CancellationToken ct) =>
     await pipe.ReadAsync<ManualTaskCreationOptions>(TrafficControlOperations.GetTaskCreationOptions, new { }, ct));
@@ -84,7 +94,7 @@ app.MapPost("/api/route-preview", async (ManualTaskRoutePreviewRequest request, 
     await pipe.ReadAsync<ManualTaskRoutePreview>(TrafficControlOperations.GetTaskRoutePreview, request, ct));
 app.MapPost("/api/tasks", async (ManualTaskCreationRequest request, DispatchPipe pipe, CancellationToken ct) =>
 {
-    if (!submissions) return Results.Json(new { error = "本接入版未开启任务提交，请在WPF中操作或明确配置 Web:EnableTaskSubmission。" }, statusCode: 403);
+    if (!submissions) return Results.Json(new { error = "Web任务提交未启用；请使用业务启动配置，并在网页核对当前执行条件。" }, statusCode: 403);
     // Existing backend authorization, idempotency, map preflight and execution gate remain authoritative.
     return Results.Ok(await pipe.ReadAsync<ManualTaskCreationResult>(TrafficControlOperations.CreateTask, request, ct));
 });

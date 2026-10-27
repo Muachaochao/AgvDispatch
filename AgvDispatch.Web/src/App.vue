@@ -32,10 +32,12 @@ const navigation = [
   { path: '/maps', label: '地图管理', icon: IconMap }
 ] as const;
 const engineering = [
+  { path: '/engineering', label: '工程配置中心', icon: IconCpu },
+  { path: '/communication', label: 'PLC / AGV通信配置', icon: IconNetwork },
   { path: '/plc-cycle-test', label: 'PLC空载联调', icon: IconRoute },
   { path: '/navigation-test', label: '单车导航调试', icon: IconRoute },
   { path: '/planning', label: '工程编辑', icon: IconRoute },
-  { path: '/engineering-settings', label: '工程配置', icon: IconCpu },
+  { path: '/engineering-settings', label: '现场任务参数与地图绑定', icon: IconCpu },
   { path: '/commissioning', label: '联调检查', icon: IconCircleCheck }
 ] as const;
 function closeMenu(event: Event) {
@@ -90,7 +92,8 @@ onUnmounted(() => {
       <component :is="Component" :snapshot="store.snapshot" :adapter="store.adapterIdentity" />
     </router-view>
 
-    <footer class="equipment-strip">
+    <footer v-if="store.engineeringSimulationOnly" class="engineering-isolated-footer">工程隔离模拟 · 设备、任务与现场恢复接口已禁用 · 不连接真车或PLC · 现场5199未改动</footer>
+    <footer v-else class="equipment-strip">
       <b>设备状态<small>DEVICE STATUS</small></b>
       <button v-for="device in store.equipment.slice(0, 4)" :key="device.id" title="查看设备通信与执行门禁" @click="router.push('/commissioning')">
         <IconCpu :size="19" /><span>{{ device.name }}</span>
