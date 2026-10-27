@@ -107,7 +107,7 @@ public sealed partial class TaskHandshakeStore
         var configuration=context.GetProperty("Exit").Deserialize<DumperExitConfiguration>()??throw new InvalidOperationException("原出区配置缺失。");
         var profiles=configuration.BodyProfiles.Where(p=>p.VehicleId==proof.VehicleId).ToArray();
         if(context.GetProperty("MapId").GetString()!=proof.MapId||context.GetProperty("VersionId").GetString()!=proof.MapVersionId||context.GetProperty("MapHash").GetString()!=hash||context.GetProperty("Vehicle").GetString()!=proof.VehicleId||
-            profiles.Length!=1||profiles[0]!=proof.Body||JsonSerializer.Serialize(configuration.Policy)!=JsonSerializer.Serialize(proof.Policy)||configuration.MaximumRouteDeviationMeters!=proof.MaximumRouteDeviationMeters)
+            profiles.Length!=1||profiles[0]!=proof.Body||!PolicyEvidenceCompatible(configuration,proof.Policy)||configuration.MaximumRouteDeviationMeters!=proof.MaximumRouteDeviationMeters)
             throw new InvalidOperationException("出区证据的地图、区域、包络或阈值不等于原持久化绑定。");
         var equipment=context.GetProperty("Dumper").GetString();
         if(string.IsNullOrWhiteSpace(equipment)||!await OwnsEquipmentAsync(proof.TaskId,equipment,ct))throw new InvalidOperationException("出区原倒料设备归属缺失，不重新认领。");
@@ -115,6 +115,22 @@ public sealed partial class TaskHandshakeStore
         if(!assessed.Verified)throw new InvalidOperationException(assessed.Reason);
         var suffix=DumperExitEvaluator.VerifyReturnRouteAfterExit(map.Definition,route.NodeIds,route.EdgeIds,proof.Second,proof.Body,proof.Policy,proof.MaximumRouteDeviationMeters);
         if(!suffix.Verified)throw new InvalidOperationException(suffix.Reason);
+    }
+
+    private static bool PolicyEvidenceCompatible(DumperExitConfiguration original,DumperExitPolicy proof)
+    {
+        // The reviewed commissioning path may lower only the localization-confidence
+        // gate. All physical identity and safety geometry values must stay identical,
+        // and an existing task may never raise the gate after it has started.
+        if(original.MinimumConfidence<proof.MinimumConfidence||
+            original.MinimumObservationIntervalSeconds!=proof.MinimumObservationIntervalSeconds||
+            original.MaximumAgeSeconds!=proof.MaximumAgeSeconds||
+            original.SafetyMarginMeters!=proof.SafetyMarginMeters||
+            original.ResourceIds.Length!=proof.ResourceIds.Count)
+            return false;
+        var originalResources=original.ResourceIds.Order(StringComparer.OrdinalIgnoreCase).ToArray();
+        var proofResources=proof.ResourceIds.Order(StringComparer.OrdinalIgnoreCase).ToArray();
+        return originalResources.SequenceEqual(proofResources,StringComparer.OrdinalIgnoreCase);
     }
 
     private void ValidateDumperClosed(HandshakeCheckpoint checkpoint,string equipmentId,TaskDumperExitProof proof)
