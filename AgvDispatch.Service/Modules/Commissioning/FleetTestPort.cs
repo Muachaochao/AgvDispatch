@@ -21,9 +21,14 @@ public sealed class FleetTestPort(FleetTestOptions options,IBusinessRunService s
     {
         if(!vehicles.TryGet(id,out var v)||!Fresh(v.LastSuccessfulPollAt)||v.Connection!=ConnectionState.Online||v.Quality!=SignalQuality.Good)
             return id+"通信离线或数据超过3秒未更新。";
-        if(v.Blocked!=false||v.EmergencyStopped!=false||v.LocalizationConfidence is not >=.5||
-            v.Alarms.Any(a=>a.Severity is AgvDispatch.Domain.Agvs.AgvAlarmSeverity.Error or AgvDispatch.Domain.Agvs.AgvAlarmSeverity.Fatal))
-            return id+"定位、急停、阻塞或报警状态未就绪。";
+        var reasons=new List<string>();
+        if(v.Blocked!=false)reasons.Add("车辆当前被阻挡，需现场清除障碍并在车端解除阻挡");
+        if(v.EmergencyStopped!=false)reasons.Add("急停未复位");
+        if(v.LocalizationConfidence is not >=.5)reasons.Add($"定位置信度{(v.LocalizationConfidence?.ToString("0.###")??"缺失")}低于0.5");
+        var alarms=v.Alarms.Where(a=>a.Severity is AgvDispatch.Domain.Agvs.AgvAlarmSeverity.Error or AgvDispatch.Domain.Agvs.AgvAlarmSeverity.Fatal)
+            .Select(a=>string.IsNullOrWhiteSpace(a.Code)?"车端报警":a.Code).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        if(alarms.Length>0)reasons.Add("开放车端报警"+string.Join('、',alarms));
+        if(reasons.Count>0)return id+"："+string.Join("；",reasons)+"。";
         return null;
     }
     public static string? StartingPickupOccupancyConflict(

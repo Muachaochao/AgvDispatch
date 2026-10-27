@@ -123,7 +123,20 @@ public sealed class FleetTestService : IsolatedBackgroundService, IFleetTestServ
         await mutex.WaitAsync(ct);
         try
         {
-            if(run?.Stage!="Running")return;
+            if(run is null||run.Stage=="Completed")return;
+            if(run.Stage=="Hold")
+            {
+                var observed=await port.ObserveAsync(run,ct);
+                var blockers=observed.Vehicles.Where(v=>!v.Fresh).Select(v=>v.Message).Distinct(StringComparer.Ordinal).ToArray();
+                var message=blockers.Length==0?"暂停待核对：原任务和点位保持不变，须由现场确认后续接。":
+                    "暂停待核对："+string.Join("；",blockers);
+                if(run.Message!=message)
+                {
+                    run=run with {Message=message,UpdatedAt=DateTimeOffset.UtcNow};Save();
+                }
+                return;
+            }
+            if(run.Stage!="Running")return;
             try
             {
                 await port.CheckCurrentAsync(run,ct);
