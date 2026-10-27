@@ -50,7 +50,22 @@ public static class MapEdgeGeometry
         if(edge.GeometryKind==MapEdgeGeometryKind.CircularArc)
         {
             var arc=GetArc(edge,from,to);
-            return new(arc.Center.X-arc.Radius,arc.Center.Y-arc.Radius,arc.Center.X+arc.Radius,arc.Center.Y+arc.Radius);
+            var arcPoints=new List<MapPoint2D>
+            {
+                new(arc.Center.X+arc.Radius*Math.Cos(arc.StartAngle),arc.Center.Y+arc.Radius*Math.Sin(arc.StartAngle)),
+                new(arc.Center.X+arc.Radius*Math.Cos(arc.StartAngle+arc.Sweep),arc.Center.Y+arc.Radius*Math.Sin(arc.StartAngle+arc.Sweep))
+            };
+            // A circular arc does not occupy the rest of its circle. Include only
+            // cardinal-angle extrema actually traversed by this sweep.
+            for(var k=0;k<4;k++)
+            {
+                var angle=k*Math.PI/2;
+                var inside=arc.Sweep>=0
+                    ? PositiveAngle(angle-arc.StartAngle)<=arc.Sweep+1e-12
+                    : PositiveAngle(arc.StartAngle-angle)<=-arc.Sweep+1e-12;
+                if(inside)arcPoints.Add(new(arc.Center.X+arc.Radius*Math.Cos(angle),arc.Center.Y+arc.Radius*Math.Sin(angle)));
+            }
+            return new(arcPoints.Min(p=>p.X),arcPoints.Min(p=>p.Y),arcPoints.Max(p=>p.X),arcPoints.Max(p=>p.Y));
         }
         var points=new[]{Point(from),Point(to)}.Concat(edge.ControlPoints??[]).ToArray();
         // Bezier lies inside the convex hull of endpoints and controls.
