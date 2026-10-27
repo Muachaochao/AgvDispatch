@@ -38,7 +38,7 @@ public sealed partial class PersistentHandshakeExecutor
         var step=new DispatchTaskStepWorkItem(task.TaskId,task.StationId,task.VehicleId,task.Stage,returned.StepId,returned.Sequence,returned.StepType,returned.Status,returned.SourceSite,returned.DestinationSite,returned.UpdatedAt);
         var first=steps.FirstOrDefault(s=>s.StepType==DispatchTaskStepType.GoToPickup);
         var binding=first==null?null:await store.GetAsync(task.TaskId,first.StepId,ct);
-        if(binding?.ContractVersion!=HandshakeExecutionOptions.Version||binding.Baseline.FirstOrDefault(s=>s.StationId=="__context")?.Address!=Binding(step))
+        if(binding?.ContractVersion!=HandshakeExecutionOptions.Version||!BindingMatches(binding,step))
             throw new InvalidOperationException("返程原契约与当前地图、出区标定或配置不一致，保持占用。");
         var checkpoint=await store.GetAsync(task.TaskId,returned.StepId,ct);
         if(checkpoint==null)
@@ -50,7 +50,7 @@ public sealed partial class PersistentHandshakeExecutor
                 throw new InvalidOperationException("缺少原倒料完成握手，不能补造出区周期。");
             checkpoint=await store.BeginAsync(step,HandshakeExecutionOptions.Version,"AwaitPhysicalExit",binding.Baseline,ct);
         }
-        if(checkpoint.ContractVersion!=HandshakeExecutionOptions.Version||checkpoint.PendingSignal!=null||checkpoint.Phase=="ReviewRequired"||checkpoint.Baseline.FirstOrDefault(s=>s.StationId=="__context")?.Address!=Binding(step))
+        if(checkpoint.ContractVersion!=HandshakeExecutionOptions.Version||checkpoint.PendingSignal!=null||checkpoint.Phase=="ReviewRequired"||!BindingMatches(checkpoint,step))
             throw new InvalidOperationException("出区原阶段冲突或写入结果未知，需要恢复核对，禁止重发。");
         if(checkpoint.Phase=="ExitHandoverComplete"){_exitSamples.Remove(step.StepId);return;}
         foreach(var original in checkpoint.Baseline.Where(s=>s.StationId!="__context"))

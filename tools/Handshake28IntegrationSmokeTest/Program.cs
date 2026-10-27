@@ -14,6 +14,7 @@ using SqlSugar;
 using Microsoft.Extensions.Logging.Abstractions;
 using System.Collections.Concurrent;
 using System.Text.Json;
+using System.Reflection;
 
 var checks = 0;
 void Check(bool condition, string name)
@@ -446,6 +447,13 @@ var repeated = await fixture.CreateAsync("CNC-001", "AGV-1");
 await fixture.BindAsync(repeated);
 Check(repeated != a && (await fixture.Store.GetAsync(repeated, (await fixture.CurrentAsync(repeated)).StepId, default))?.ContractVersion == HandshakeExecutionOptions.Version,
     "同工位上一轮完成后可受理新任务并建立独立28阶段绑定");
+var policyRoot = await fixture.CurrentAsync(repeated);
+var policyBinding = (await fixture.Store.GetAsync(repeated, policyRoot.StepId, default))!;
+fixture.Options.DumperExit.MinimumConfidence = 0.5;
+var bindingMatches = typeof(PersistentHandshakeExecutor).GetMethod("BindingMatches", BindingFlags.Instance | BindingFlags.NonPublic)!;
+Check((bool)bindingMatches.Invoke(fixture.Engine, [policyBinding, policyRoot])!, "仅降低出区测试置信度时可续接原28阶段绑定");
+Check(!(bool)bindingMatches.Invoke(fixture.Engine, [policyBinding, policyRoot with { VehicleId = "AGV-2" }])!, "置信度兼容不能绕过车辆身份绑定");
+fixture.Options.DumperExit.MinimumConfidence = 0.9;
 // Keep this new task separate from the independent old-contract fixture below.
 await fixture.Db.Updateable<DispatchTaskEntity>().SetColumns(t => new DispatchTaskEntity { Stage = (int)DispatchTaskStage.Cancelled }).Where(t => t.TaskId == repeated).ExecuteCommandAsync();
 var old = await fixture.CreateAsync("CNC-001", "AGV-1");

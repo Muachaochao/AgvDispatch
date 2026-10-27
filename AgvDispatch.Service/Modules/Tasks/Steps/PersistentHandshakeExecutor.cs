@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Domain.Devices;
 using AgvDispatch.Domain.Tasks;
@@ -49,7 +50,7 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
             throw new InvalidOperationException("28阶段首段取箱前需原工位有箱，且取箱通知、返箱责任、放箱通知均为0；保留原命令，禁止带入未闭合周期。");
         var baseline=observed.Concat(new[]{new TaskSignalEvidence("__context","Binding",null,"Context",DateTimeOffset.UtcNow,null,Binding(step))}).ToArray();
         var bound=await store.BeginAsync(step,HandshakeExecutionOptions.Version,"TransportBound",baseline,ct);
-        if(bound.Baseline.FirstOrDefault(b=>b.StationId=="__context")?.Address!=Binding(step))throw new InvalidOperationException("首段原契约绑定与当前配置不一致。");
+        if(!BindingMatches(bound,step))throw new InvalidOperationException("首段原契约绑定与当前配置不一致。");
         foreach(var original in bound.Baseline.Where(b=>b.StationId!="__context"))
             if(!signals.TryGet(original.StationId,original.VariableName,out var current)||current.Address!=original.Address)
                 throw new InvalidOperationException("首段原点表地址已变化，保留原绑定和命令，禁止静默改用新地址发车。");
@@ -64,7 +65,7 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
         var priorType=step.StepType switch {DispatchTaskStepType.DeliverFullBoxToDumper=>DispatchTaskStepType.PickupFullBox,DispatchTaskStepType.EnterDumpingPosition=>DispatchTaskStepType.WaitForDumperReady,DispatchTaskStepType.ReturnEmptyBox=>DispatchTaskStepType.DumpFullBox,_=>throw new InvalidOperationException("不支持的运输阶段。")};
         var prior=(await taskReader.GetStepsAsync(step.TaskId,ct)).FirstOrDefault(s=>s.StepType==priorType);
         var checkpoint=prior==null?null:await store.GetAsync(step.TaskId,prior.StepId,ct);
-        if(checkpoint?.Phase!="ReadyToComplete"||checkpoint.ContractVersion!=HandshakeExecutionOptions.Version||checkpoint.PendingSignal!=null||checkpoint.Baseline.FirstOrDefault(b=>b.StationId=="__context")?.Address!=Binding(step))
+        if(checkpoint?.Phase!="ReadyToComplete"||checkpoint.ContractVersion!=HandshakeExecutionOptions.Version||checkpoint.PendingSignal!=null||!BindingMatches(checkpoint,step))
             throw new InvalidOperationException("前序持久化握手或契约绑定尚未核对，禁止准备新运输。");
         if(!Is(creation.DumperStationId,"Faulted",false))throw new InvalidOperationException("倒料机故障或反馈无效，禁止准备后续运输。");
         if(!Is(step.StationId,"Faulted",false)||!Is(step.StationId,"CommunicationOnline",true)||!Is(step.StationId,"FullBoxRemoved",true)||!Is(step.StationId,"EmptyBoxTaskAcknowledged",true))throw new InvalidOperationException("原工位故障/通讯或取箱、返箱保持责任不成立，禁止后续运输。");
@@ -102,7 +103,7 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
         if(options.PlcContractVersion!=HandshakeExecutionOptions.Version)throw new InvalidOperationException("新握手契约未配置匹配版本，保持等待；禁止借用旧PLC时序。");
         var root=(await taskReader.GetStepsAsync(step.TaskId,ct)).FirstOrDefault(s=>s.StepType==DispatchTaskStepType.GoToPickup);
         var binding=root==null?null:await store.GetAsync(step.TaskId,root.StepId,ct);
-        if(binding?.ContractVersion!=HandshakeExecutionOptions.Version||binding.Baseline.FirstOrDefault(b=>b.StationId=="__context")?.Address!=Binding(step))
+        if(binding?.ContractVersion!=HandshakeExecutionOptions.Version||!BindingMatches(binding,step))
             throw new InvalidOperationException("缺少本任务首段原契约绑定；旧任务禁止自动迁入新握手。");
         if(step.StepType==DispatchTaskStepType.PlaceEmptyBox&&(!await HandoverVerifiedAsync(step.TaskId,ct)||!await ReturnVerifiedAsync(step,ct)))return true;
         // Acquire ownership before interpreting shared signals as this task's initial baseline.
@@ -140,7 +141,7 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
         }
         if(checkpoint.ContractVersion!=HandshakeExecutionOptions.Version||checkpoint.PendingSignal!=null||checkpoint.Phase=="ReviewRequired")
             throw new InvalidOperationException("原握手存在版本冲突、写入结果未知或缺少原始阶段；保留原周期，进入恢复核对，禁止自动重发。");
-        if(checkpoint.Baseline.FirstOrDefault(s=>s.StationId=="__context")?.Address!=Binding(step))
+        if(!BindingMatches(checkpoint,step))
             throw new InvalidOperationException("地图、站点映射或动作参数与原握手绑定不一致，禁止静默迁移。");
         foreach(var original in checkpoint.Baseline.Where(b=>b.StationId!="__context"))
             if(!signals.TryGet(original.StationId,original.VariableName,out var current)||current.Address!=original.Address)
@@ -208,6 +209,41 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
     }
 
     private string Binding(DispatchTaskStepWorkItem step)=>JsonSerializer.Serialize(new {map.Current?.MapId,map.Current?.VersionId,MapHash=map.Current==null?null:TransportRouteSnapshots.Hash(JsonSerializer.Serialize(map.Current.Definition,new JsonSerializerOptions(JsonSerializerDefaults.Web))),Vehicle=step.VehicleId,Pickup=dispatch.GetPickupSite(step.StationId),Waiting=dispatch.GetDumperWaitingSite(),Dump=dispatch.DumperDumpingSite,Dumper=creation.DumperStationId,Exit=options.DumperExit,Actions=dispatch.StepActions.OrderBy(a=>a.Key).ToArray()});
+    private bool BindingMatches(HandshakeCheckpoint checkpoint,DispatchTaskStepWorkItem step)
+    {
+        var recorded=checkpoint.Baseline.FirstOrDefault(s=>s.StationId=="__context")?.Address;
+        var current=Binding(step);
+        if(recorded==current)return true;
+        if(recorded==null)return false;
+        try
+        {
+            var oldRoot=JsonNode.Parse(recorded)?.AsObject();
+            var currentRoot=JsonNode.Parse(current)?.AsObject();
+            var oldExit=oldRoot?["Exit"] as JsonObject;
+            var currentExit=currentRoot?["Exit"] as JsonObject;
+            if(oldRoot==null||currentRoot==null||oldExit==null||currentExit==null)return false;
+            var oldTop=oldExit["MinimumConfidence"]?.GetValue<double>();
+            var currentTop=currentExit["MinimumConfidence"]?.GetValue<double>();
+            var oldPolicy=oldExit["Policy"] as JsonObject;
+            var currentPolicy=currentExit["Policy"] as JsonObject;
+            var oldPolicyValue=oldPolicy?["MinimumConfidence"]?.GetValue<double>();
+            var currentPolicyValue=currentPolicy?["MinimumConfidence"]?.GetValue<double>();
+            if(oldTop is null||currentTop is null||oldPolicyValue is null||currentPolicyValue is null)return false;
+            // A reviewed test-threshold change may alter only the confidence limit.
+            // Map identity, vehicle, routes, resources, body profile and all other
+            // handshake parameters must remain byte-for-byte equivalent.
+            if(oldTop<currentTop||oldPolicyValue<currentPolicyValue)return false;
+            oldExit["MinimumConfidence"]=0;
+            currentExit["MinimumConfidence"]=0;
+            oldPolicy!["MinimumConfidence"]=0;
+            currentPolicy!["MinimumConfidence"]=0;
+            return JsonNode.DeepEquals(oldRoot,currentRoot);
+        }
+        catch(Exception exception)when(exception is JsonException or InvalidOperationException or FormatException)
+        {
+            return false;
+        }
+    }
 
     private async Task<bool> HandoverVerifiedAsync(string taskId,CancellationToken ct)
     {
