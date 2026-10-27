@@ -45,6 +45,14 @@ await stopped.Service.TickAsync(default);
 Check((await stopped.Service.ReadAsync(default)).Current!.Stage=="Running","任务结束但PLC或资源未闭合时继续等待");
 stopped.Port.Closed=true;await stopped.Service.TickAsync(default);
 Check((await stopped.Service.ReadAsync(default)).Current!.Stage=="Completed"&&!stopped.Owner.Active,"确认任务及基线闭合后解除会话保护");
+var closePending=Fixture();await closePending.Service.StartAsync(user,Plan("Staggered"),default);await closePending.Service.TickAsync(default);
+var pendingRun=(await closePending.Service.ReadAsync(default)).Current!;
+await closePending.Service.ControlAsync(user,"stop",new(pendingRun.RunId,"",false),default);
+try{await closePending.Service.ControlAsync(user,"close",new(pendingRun.RunId,"现场已核对但仍不能提前结束",true),default);throw new Exception("未闭合原任务不应允许关闭");}
+catch(FleetClosurePendingException){count++;}
+var closeReason=(await closePending.Service.ReadAsync(default)).Current!.Message;
+await closePending.Service.TickAsync(default);
+Check(closeReason.Contains("still active")&&(await closePending.Service.ReadAsync(default)).Current!.Message==closeReason,"关闭失败原因不会被通用Hold提示覆盖");
 var uncertain=Fixture();uncertain.Port.FailCall=true;await uncertain.Service.StartAsync(user,Plan("Simultaneous"),default);await uncertain.Service.TickAsync(default);
 Check((await uncertain.Service.ReadAsync(default)).Current is {Stage:"Hold"} row&&row.Calls.All(c=>c.Released)&&uncertain.Port.Creates==0,"批次写结果不确定保留意图且不发车");
 await Reject(()=>uncertain.Service.StartAsync(user,Plan("Staggered"),default),"未闭合禁止新会话");

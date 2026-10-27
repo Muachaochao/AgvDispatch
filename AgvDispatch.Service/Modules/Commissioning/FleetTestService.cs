@@ -130,7 +130,10 @@ public sealed class FleetTestService : IsolatedBackgroundService, IFleetTestServ
                 var blockers=observed.Vehicles.Where(v=>!v.Fresh).Select(v=>v.Message).Distinct(StringComparer.Ordinal).ToArray();
                 var message=blockers.Length==0?"暂停待核对：原任务和点位保持不变，须由现场确认后续接。":
                     "暂停待核对："+string.Join("；",blockers);
-                if(run.Message!=message)
+                var replaceMessage=blockers.Length>0||string.IsNullOrWhiteSpace(run.Message)||
+                    run.Message.StartsWith("暂停待核对：",StringComparison.Ordinal)||
+                    run.Message.StartsWith("重启后保留原任务",StringComparison.Ordinal);
+                if(replaceMessage&&run.Message!=message)
                 {
                     run=run with {Message=message,UpdatedAt=DateTimeOffset.UtcNow};Save();
                 }

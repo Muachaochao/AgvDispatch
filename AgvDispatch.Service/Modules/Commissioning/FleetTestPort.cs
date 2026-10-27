@@ -51,14 +51,14 @@ public sealed class FleetTestPort(FleetTestOptions options,IBusinessRunService s
         {var batch=await tasks.QueryAsync(new(TaskListFilter.All,"",page,100),ct);result.AddRange(batch.Items);if(page*100>=batch.TotalCount)return result.ToArray();}
         throw new InvalidOperationException("任务分页未能完整核对。");
     }
-    private void Configuration()
+    private void Configuration(bool requireNewWorkGate=true)
     {
         if(!options.Enabled||options.VehicleIds.Length!=2||options.VehicleIds.Distinct(StringComparer.OrdinalIgnoreCase).Count()!=2)
             throw new InvalidOperationException("请使用双车测试启动配置，并明确两辆参与车辆。");
         if(!simulatorOnly||!creation.Enabled||creation.AutomaticCreationEnabled||!dispatch.Enabled||dispatch.MaxConcurrentTasks!=2||
             !handshake.Enabled||handshake.PlcContractVersion!=HandshakeExecutionOptions.Version)
             throw new InvalidOperationException("双车测试须使用本机模拟PLC、两任务并发、当前28阶段契约，且关闭独立自动建单器。");
-        if(!gate.CanStartNewWork)throw new InvalidOperationException(gate.NewWorkBlockReason??"启动恢复尚未放行。");
+        if(requireNewWorkGate&&!gate.CanStartNewWork)throw new InvalidOperationException(gate.NewWorkBlockReason??"启动恢复尚未放行。");
         if(DumperWaitingBaySafety.GetError(map.Current?.Definition,dispatch,true) is {} error)throw new InvalidOperationException(error);
     }
     private void PlcHealthy()
@@ -104,7 +104,7 @@ public sealed class FleetTestPort(FleetTestOptions options,IBusinessRunService s
         var pickupSites=parameters.Capture().Pickups.Where(p=>plan.StationIds.Contains(p.StationId,StringComparer.OrdinalIgnoreCase))
             .ToDictionary(p=>p.StationId,p=>p.PickupSite,StringComparer.OrdinalIgnoreCase);
         if(StartingPickupOccupancyConflict(vehicleSites,pickupSites) is {} occupied)throw new InvalidOperationException(occupied);
-        await BaselineAsync(ct);
+        await BaselineAsync(true,ct);
         if(!ReferenceEquals(current,map.Current))throw new InvalidOperationException("核验期间地图已改变。");
         return(current.MapId,current.VersionId,parameters.Revision);
     }
@@ -192,14 +192,14 @@ public sealed class FleetTestPort(FleetTestOptions options,IBusinessRunService s
             run.ParameterRevision,"双车测试","Executing","",0,detail.Task.TaskId,null,null,run.StopRequested,run.StartedAt);
         await ((BusinessRunPort)business).ApplySimulatorFeedbackAsync(fake,detail,"fleet-feedback",ct);
     }
-    private async Task BaselineAsync(CancellationToken ct)
+    private async Task BaselineAsync(bool requireStationBoxes,CancellationToken ct)
     {
         PlcHealthy();
         foreach(var station in parameters.Capture().Pickups.Select(p=>p.StationId))
         {
             foreach(var name in new[]{"FullBoxRequested","FullBoxRequestAcknowledged","FullBoxRemoved","EmptyBoxTaskAcknowledged","EmptyBoxPlaced"})
                 if(signals.GetAll().SingleOrDefault(s=>s.StationId==station&&s.VariableName==name)?.Value!=false)throw new InvalidOperationException(station+"旧呼叫/返箱责任未闭合。");
-            if(signals.GetAll().SingleOrDefault(s=>s.StationId==station&&s.VariableName=="BoxPresent")?.Value!=true)
+            if(requireStationBoxes&&signals.GetAll().SingleOrDefault(s=>s.StationId==station&&s.VariableName=="BoxPresent")?.Value!=true)
                 throw new InvalidOperationException(station+"未确认有箱。");
         }
         foreach(var name in new[]{"AgvAtWaitingPosition","AgvAtDumpingPosition","DumperReady","DumpingCompletedMayLeave"})
@@ -209,9 +209,15 @@ public sealed class FleetTestPort(FleetTestOptions options,IBusinessRunService s
     }
     public async Task CheckClosedAsync(FleetTestRun run,CancellationToken ct)
     {
-        await CheckCurrentAsync(run,ct);
+        // Closing an already-stopped run is an existing-work reconciliation. It must
+        // remain possible while the separate new-work recovery gate is still closed.
+        Configuration(requireNewWorkGate:false);PlcHealthy();
+        foreach(var id in run.Plan.VehicleIds)
+            if(Health(id) is {} block)throw new InvalidOperationException(block);
         if((await AllAsync(ct)).Any(t=>t.Stage is not (DispatchTaskStage.Completed or DispatchTaskStage.Cancelled)))throw new InvalidOperationException("原任务尚未全部闭合。");
-        try{await BaselineAsync(ct);}catch(InvalidOperationException e){throw new FleetClosurePendingException(e.Message);}
+        // A stopped/cancelled run no longer requires every station to hold a box.
+        // Closure still requires every handshake cleared and every lease released.
+        try{await BaselineAsync(requireStationBoxes:false,ct);}catch(InvalidOperationException e){throw new FleetClosurePendingException(e.Message);}
         try{await LabAsync(run,"stop",[],ct);}
         catch(FleetLabSessionMissingException)when(run.StopRequested)
         {

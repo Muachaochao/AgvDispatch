@@ -15,6 +15,21 @@ const active=computed(()=>current.value&&current.value.stage!=='Completed');
 const fresh=computed(()=>online.value&&store.fresh&&!!status.value&&store.now-Date.parse(status.value.observedAt)<10000&&store.now-Date.parse(status.value.observedAt)>=-1000);
 const checks=['两车实际参与，任务、工位和反馈对应正确','同一任务未被重复领取，同车未接冲突任务','后车未提前入倒料区，许可归属正确','前车实际出区且PLC闭合后交接，返箱清位未影响后车','候车不挡出口，相遇按路权等待或通行','逐车数据失效时未借用另一车状态推进'];
 const results=ref<string[]>(checks.map(()=> '待核验'));
+function callState(index:number){
+ const run=current.value;if(!run)return'';
+ const call=run.calls[index];if(!call)return'';
+ const task=status.value?.tasks.find(t=>t.task.taskId===call.taskId)?.task;
+ if(task?.stage==='Cancelled')return'任务已取消，本组不会自动重发';
+ if(task?.stage==='Completed')return'任务已完成';
+ if(task)return(task.vehicleId?`${task.vehicleId} 已接单 · ${label(task.stage)}`:`已建单，等待调度分配车辆 · ${label(task.stage)}`);
+ if(call.released)return'呼叫已释放，等待模拟PLC反馈或任务创建';
+ if(run.stopRequested)return'已停止新增呼叫，本工位不再触发';
+ if(run.plan.scenario==='Simultaneous')return'等待同批呼叫';
+ if(index>0&&run.calls[index-1].released)return run.plan.scenario==='Staggered'
+   ?`等待 ${run.calls[index-1].stationId} 完成取箱`
+   :`等待 ${run.calls[index-1].stationId} 进入倒料步骤`;
+ return'等待前一工位条件成立';
+}
 let timer:ReturnType<typeof setInterval>|undefined,disposed=false;
 const startKey='fleet-test-start';
 const pending=ref<Start|null>(null);
@@ -77,7 +92,7 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);});
   <template v-if="current">
    <p role="status"><b>{{names[current.plan.scenario]}} · {{current.stage==='Hold'?'暂停待核对':current.stage==='Completed'?'本组收尾完成':'测试进行中'}}</b> · {{current.message}}</p>
    <small>原运行 {{current.runId}} · {{current.updatedAt}} · 停止新增：{{current.stopRequested?'是':'否'}}</small>
-   <div class="fleet-vehicles"><article v-for="c in current.calls" :key="c.stationId"><b>{{c.stationId}} · {{c.released?'本组已释放呼叫':'尚未触发'}}</b><template v-for="t in status?.tasks.filter(t=>t.task.taskId===c.taskId)??[]" :key="t.task.taskId">
+   <div class="fleet-vehicles"><article v-for="(c,index) in current.calls" :key="c.stationId"><b>{{c.stationId}} · {{c.released?'本组已释放呼叫':'尚未触发'}}</b><p>{{callState(index)}}</p><template v-for="t in status?.tasks.filter(t=>t.task.taskId===c.taskId)??[]" :key="t.task.taskId">
     <p>{{t.task.vehicleId||'等待调度分配'}} · {{label(t.task.stage)}}</p><p>{{t.waitingExplanation}}</p>
     <p>出区交接：{{t.handover?.state==='ExitHandoverComplete'?'已闭合':'尚未闭合'}} · {{t.handover?.reason}}</p>
     <p>持有资源：{{t.resources?.map(r=>r.resourceId+' / '+r.vehicleId).join('、')||'未返回持有记录'}}</p>
