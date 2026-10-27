@@ -80,7 +80,7 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);});
     <p>持有资源：{{t.resources?.map(r=>r.resourceId+' / '+r.vehicleId).join('、')||'未返回持有记录'}}</p>
     <RouterLink :to="'/tasks/'+encodeURIComponent(t.task.taskId)">查看原任务、PLC条件与交接证据</RouterLink>
    </template></article></div>
-   <p>交通等待队列中的“阻塞资源 / 车辆”用于核对谁在等谁；心跳过期不能作为物理出区证据。本组结束后不自动把两车驶向同一个LM7。</p>
+   <p>交通等待队列中的“阻塞资源 / 车辆”用于核对谁在等谁；心跳过期不能作为物理出区证据。本组结束后不自动把两车驶向同一个待机点。</p>
    <template v-if="current.stage==='Hold'">
     <label>现场核对依据<input v-model="reason" maxlength="1000" placeholder="至少10字，核对原任务与现场状态"/></label>
     <div class="fleet-controls"><button :disabled="busy||!fresh||!confirmed||reason.trim().length<10||!store.submissionEnabled" @click="act('resume')">核对后续接原用例</button><button :disabled="busy||!fresh||!confirmed||!current.stopRequested||reason.trim().length<10" @click="act('close')">核对闭合并结束记录</button></div>

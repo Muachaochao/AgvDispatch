@@ -77,6 +77,9 @@ public sealed partial class BusinessRunPort(IManualTaskCreationService manual, I
         var standby = Resolve(plan.StandbySite);
         await CheckEmptyAsync(plan.VehicleId, ct);
         var config = parameters.Capture();
+        if (config.Standbys.Count > 0 && !config.Standbys.Any(b => (b.Site == standby.Id || b.Site == standby.AgvSiteId) &&
+            b.AllowedVehicleIds.Contains(plan.VehicleId, StringComparer.OrdinalIgnoreCase)))
+            throw new InvalidOperationException("所选待机位未配置给当前车辆所属车辆池，请在工程配置中心核对待机位。");
         if (config.WaitingSite == plan.StandbySite || config.DumpingSite == plan.StandbySite || config.Pickups.Any(p => p.PickupSite == plan.StandbySite))
             throw new InvalidOperationException("待机点必须独立于取放箱、倒料及倒料等待点。");
         foreach (var pickup in config.Pickups.Where(p => plan.Stations.Contains(p.StationId)))

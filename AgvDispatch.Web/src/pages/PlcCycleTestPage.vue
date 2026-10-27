@@ -62,12 +62,12 @@ const stageLabels:Record<string,string>={
 };
 const stageLabel=computed(()=>status.value?.current?stageLabels[status.value.current.stage]??status.value.current.stage:'尚未武装');
 const plcHint=computed(()=>({
-  ArmedAwaitCall:'CNC-001 满箱呼叫 DB1.DBX0.0 置1；看到呼叫响应 DB1.DBX0.4=1 后撤呼叫。',
-  AwaitCallCleared:'呼叫已响应：把满箱呼叫 DB1.DBX0.0 清0，随后车辆开始取料位动作。',
-  AwaitDumperReady:'车辆到等待点、等待位申请 DB1.DBX610.0=1：将 Ready DB1.DBX610.2 置1。',
-  AwaitWaitingCleared:'等待位申请 DB1.DBX610.0 已撤销：将 Ready DB1.DBX610.2 清0，车辆才进入倒料点。',
-  AwaitDone:'车辆到倒料点、倒料周期 DB1.DBX610.1=1：现场确认本次模拟完成后，将 Done DB1.DBX610.3 置1。',
-  AwaitDoneCleared:'车辆已返回取料站、倒料周期 DB1.DBX610.1=0：将 Done DB1.DBX610.3 清0，随后自动下降。',
+  ArmedAwaitCall:'当前工位满箱呼叫置1；看到呼叫响应后撤呼叫。信号地址以当前绑定点表为准。',
+  AwaitCallCleared:'呼叫已响应：把满箱呼叫 （当前工位绑定信号） 清0，随后车辆开始取料位动作。',
+  AwaitDumperReady:'车辆到等待点、等待位申请 （等待位申请）=1：将 Ready （Ready） 置1。',
+  AwaitWaitingCleared:'等待位申请 （等待位申请） 已撤销：将 Ready （Ready） 清0，车辆才进入倒料点。',
+  AwaitDone:'车辆到倒料点、倒料周期 （倒料周期）=1：现场确认本次模拟完成后，将 Done （Done） 置1。',
+  AwaitDoneCleared:'车辆已返回取料站、倒料周期 （倒料周期）=0：将 Done （Done） 清0，随后自动下降。',
   Hold:'已冻结。先查询原任务并核对车辆、机构和PLC；不要通过重复置位尝试继续。',
   Completed:'本轮结束。下一轮需重新现场确认并武装；保持满箱呼叫、Ready、Done为0。'
 } as Record<string,string>)[status.value?.current?.stage??'']??'当前等待车辆或后台反馈，请勿提前触发Ready、Done。');
@@ -104,9 +104,9 @@ async function arm(){
   try{
     pendingArm??={
       requestId:crypto.randomUUID().replaceAll('-',''),
-      pickupSite:status.value?.pickupSite||'LM2',
-      waitingSite:status.value?.waitingSite||'LM5',
-      dumpingSite:status.value?.dumpingSite||'LM6',
+      pickupSite:status.value?.pickupSite||'',
+      waitingSite:status.value?.waitingSite||'',
+      dumpingSite:status.value?.dumpingSite||'',
       siteClearConfirmed:siteClear.value,
       emptyVehicleConfirmed:emptyVehicle.value,
       simulatorOnlyConfirmed:simulatorOnly.value
@@ -150,8 +150,8 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);});
 <main class="cycle-page">
   <header>
     <div>
-      <h2>CNC-001 空载 PLC 联调</h2>
-      <p>模拟PLC满箱呼叫触发后，由指定单车自动完成 LM2 取料位顶升、LM5 等待许可、LM6 倒料点和返回 LM2 下降。</p>
+      <h2>{{status?.stationId||'指定工位'}} 空载 PLC 联调</h2>
+      <p>模拟PLC满箱呼叫触发后，由配置车辆完成取料位顶升、等待许可、倒料和返回取料位下降。当前路线见下方配置。</p>
     </div>
     <label class="refresh"><input v-model="autoRefresh" type="checkbox"/>自动刷新</label>
   </header>
@@ -169,8 +169,8 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);});
     <p v-if="status?.current" class="scope"><b>此时PLC怎么按：</b>{{plcHint}}</p>
     <dl>
       <dt>测试车辆</dt><dd>{{status?.vehicleId||'未配置'}}</dd>
-      <dt>PLC工位</dt><dd>{{status?.stationId||'CNC-001'}}</dd>
-      <dt>路线</dt><dd>{{status?.pickupSite||'LM2'}} → {{status?.waitingSite||'LM5'}} → {{status?.dumpingSite||'LM6'}} → {{status?.pickupSite||'LM2'}}</dd>
+      <dt>PLC工位</dt><dd>{{status?.stationId||'未配置'}}</dd>
+      <dt>路线</dt><dd>{{status?.pickupSite||'未配置'}} → {{status?.waitingSite||'未配置'}} → {{status?.dumpingSite||'未配置'}} → {{status?.pickupSite||'未配置'}}</dd>
       <template v-if="status?.current">
         <dt>车端地图</dt><dd>{{status.current.robotMap}} · {{status.current.robotMapMd5}}</dd>
         <dt>联调编号</dt><dd>{{status.current.cycleId}}</dd>
@@ -182,9 +182,9 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);});
 
   <section v-if="!active" class="arm-card">
     <h3>武装一轮</h3>
-    <p>确认后请到PLC人工联调台，将 CNC-001 的 <b>满箱呼叫 0.0</b> 从 0 置 1。后台会写回应答；看到应答后请将呼叫撤为 0。</p>
-    <label><input v-model="siteClear" type="checkbox"/>现场已确认 LM2、LM5、LM6 及整条路线空闲，厂家测试速度已设置</label>
-    <label><input v-model="emptyVehicle" type="checkbox"/>AGV-01 无箱空载，顶升机构下降到位，现场人员在场</label>
+    <p>确认后请到PLC人工联调台，将 {{status?.stationId||'当前工位'}} 的 <b>满箱呼叫（当前点表绑定地址）</b> 从 0 置 1。后台会写回应答；看到应答后请将呼叫撤为 0。</p>
+    <label><input v-model="siteClear" type="checkbox"/>现场已确认当前配置的取料位、等待位、倒料位及整条路线空闲，厂家测试速度已设置</label>
+    <label><input v-model="emptyVehicle" type="checkbox"/>{{status?.vehicleId||'配置车辆'}} 无箱空载，顶升机构下降到位，现场人员在场</label>
     <label><input v-model="simulatorOnly" type="checkbox"/>当前连接的是独立模拟PLC，不是正式生产PLC</label>
     <button class="primary" :disabled="!canArm" @click="arm">武装本轮并等待PLC呼叫</button>
     <p v-if="!status?.enabled" class="warning">当前不是PLC空载联调启动模式，请按页面下方命令重启。</p>
@@ -213,7 +213,7 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);});
     <h3>启动模式</h3>
     <p>停止当前5199实例后，在项目根目录执行。该入口强制关闭正式建单、调度、命令队列和新握手，只开放单车导航与模拟PLC空载联调。</p>
     <pre>&amp; '.\发布包\停止最新版Web.cmd'
-& '.\发布包\启动最新版Web.cmd' --plc-cycle-test-vehicle AGV-01 --plc-cycle-test-station CNC-001 --no-browser</pre>
+& '.\发布包\启动最新版Web.cmd' --plc-cycle-test-vehicle &lt;车辆编号&gt; --plc-cycle-test-station &lt;工位编号&gt; --no-browser</pre>
   </section>
 </main>
 </template>

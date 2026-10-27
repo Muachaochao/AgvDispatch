@@ -201,6 +201,26 @@ await resumeStop.Service.StopAsync(user,new((await Row(resumeStop.Service)).RunI
 var stoppedHold=await Row(resumeStop.Service);
 var stoppedResume=(await resumeStop.Service.ResumeAsync(user,new(stoppedHold.RunId,Guid.NewGuid().ToString("N"),stoppedHold.UpdatedAt,"已现场确认空闲停靠且只继续收尾",true),default)).Current!;
 Check(stoppedResume.StopRequested&&stoppedResume.Stage=="Waiting","resume preserves stop-new-calls intent");
+// Deployment identifiers and station cardinality must come from configuration.
+var custom = Fixture(); custom.Port.Site = "PARK-NORTH";
+string[] customStations = ["LATHE-037", "MILL-WEST", "PRESS-9"];
+var customPlan = Plan("Cycle", 2) with { VehicleId = "CARRIER-007", Stations = customStations, StandbySite = "PARK-NORTH" };
+await custom.Service.StartAsync(user, customPlan, default);
+foreach (var station in customStations.Concat(customStations))
+{
+    custom.Port.Calls = [station]; await custom.Service.TickAsync(default);
+    custom.Port.TaskState = "Completed"; custom.Port.Active = false; custom.Port.Calls = [];
+    await custom.Service.TickAsync(default);
+}
+await custom.Service.TickAsync(default);
+Check(custom.Port.CreatedStations.SequenceEqual(customStations.Concat(customStations)) &&
+    (await Row(custom.Service)).Stage == "Completed", "custom three-station two-round run preserves configured order and standby");
+var scale = Fixture();
+var scalePlan = Plan() with { Stations = Enumerable.Range(1, 300).Select(i => $"LINE-{i:000}").ToArray() };
+await scale.Service.StartAsync(user, scalePlan, default);
+Check((await Row(scale.Service)).Plan.Stations.Length == 300, "300 configured workstations accepted without sample identifiers");
+await Reject(() => Fixture().Service.StartAsync(user, Plan() with { Stations = ["CELL-X", "cell-x"] }, default), "case-insensitive duplicate rejected");
+await Reject(() => Fixture().Service.StartAsync(user, Plan() with { Stations = [" "] }, default), "blank workstation rejected");
 checks += FeedbackTests.Run();
 Console.WriteLine($"BusinessRunSmokeTest passed {checks} checks. Fake ports only; no PLC or AGV commands.");
 

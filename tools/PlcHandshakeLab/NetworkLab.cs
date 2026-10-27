@@ -53,7 +53,7 @@ public sealed class NetworkLabConfig
             throw new ArgumentException("监听IP和允许调度IP必须是IPv4地址。");
         if (Port is < 1 or > 65535 || !double.IsFinite(AutoDoneSeconds) || AutoDoneSeconds < 0.1 || AutoDoneSeconds > 3600)
             throw new ArgumentException("端口应为1至65535，自动Done延时应为0.1至3600秒。");
-        if (Points is null || Points.Count is < 13 or > 1000) throw new ArgumentException("点表必须包含工位和共享倒料点（最多1000项）。");
+        if (Points is null || Points.Count is < 13 or > 8005) throw new ArgumentException("点表必须包含工位和共享倒料点（最多1000个工位、8005项）。");
         if (Points.Any(p => p is null || string.IsNullOrWhiteSpace(p.Station) || p.Signal is < 0 or > 12 || p.Db is < 1 or > 65535 || p.Byte is < 0 or >= 8192 || p.Bit is < 0 or > 7))
             throw new ArgumentException("点表含无效的工位、信号索引、DB、字节（0..8191）或位（0..7）。");
         if (Points.GroupBy(p => (p.Db, p.Byte, p.Bit)).Any(g => g.Count() > 1) || Points.GroupBy(p => (p.Station, p.Signal)).Any(g => g.Count() > 1))
@@ -139,9 +139,9 @@ public sealed partial class NetworkLab : IDisposable
                 if (_callRun != runId) throw new InvalidOperationException("停止编号不属于本次工具会话。");
                 _stopCalls = true; Record("停止新增呼叫", "", "", "", "", runId); return;
             }
-            if (!Guid.TryParseExact(runId, "N", out _) || stations is null || stations.Length is < 1 or > 2 ||
-                stations.Distinct().Count() != stations.Length || rounds is < 1 or > 100 ||
-                stations.Any(s => s is not ("CNC-001" or "CNC-002") || !_states.ContainsKey((s, 0))))
+            if (!Guid.TryParseExact(runId, "N", out _) || stations is null || stations.Length is < 1 or > 1000 ||
+                stations.Distinct(StringComparer.OrdinalIgnoreCase).Count() != stations.Length || rounds is < 1 or > 100 ||
+                stations.Any(s => string.IsNullOrWhiteSpace(s) || s == NetworkLabConfig.Shared || !_states.ContainsKey((s, 0))))
                 throw new ArgumentException("循环工位、轮数或运行编号无效。");
             if (_callRun == runId)
             {

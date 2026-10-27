@@ -11,6 +11,7 @@ public sealed record TaskPickupParameter(string StationId, string PickupSite)
 public sealed record TaskActionParameter(DispatchTaskStepType StepType, string Operation, double? JackHeight,
     bool? Recognize, bool? UsePgv, bool? UseDownPgv);
 public sealed record TaskStepTimeoutParameter(DispatchTaskStepType StepType, int Seconds);
+public sealed record TaskStandbyParameter(string Id, string Site, string VehiclePoolId, IReadOnlyList<string> AllowedVehicleIds, int Priority = 50);
 public sealed record TaskParameterConfiguration(string DumperStationId, string WaitingSite, string DumpingSite,
     IReadOnlyList<TaskPickupParameter> Pickups, IReadOnlyList<TaskActionParameter> Actions)
 {
@@ -18,6 +19,7 @@ public sealed record TaskParameterConfiguration(string DumperStationId, string W
     public IReadOnlyList<TaskStepTimeoutParameter> StepTimeouts { get; init; } =
         Enum.GetValues<DispatchTaskStepType>().Select(type => new TaskStepTimeoutParameter(type, 0)).ToArray();
     public EngineeringRuntimeSource? EngineeringSource { get; init; }
+    public IReadOnlyList<TaskStandbyParameter> Standbys { get; init; } = [];
 }
 public sealed record EngineeringRuntimeSource(string VersionId, string ContentHash, string MapDefinitionHash);
 public sealed record TaskParameterAudit(DateTimeOffset At, string Operator, string Revision);

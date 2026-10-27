@@ -20,7 +20,7 @@ public sealed partial class NetworkLab
                     Enumerable.Range(6,4).Any(s=>Get(NetworkLabConfig.Shared,s)))
                     throw new InvalidOperationException("原运行、通信或握手基线未闭合。");
                 _fleet.Clear();_fleetRun=request.RunId;_fleetStopped=false;SetAutomatic(true);
-                foreach(var station in new[]{"CNC-001","CNC-002"})_fleet.Add(station,new());
+                foreach(var station in Config.Points.Where(p=>p.Signal==0&&p.Station!=NetworkLabConfig.Shared).Select(p=>p.Station))_fleet.Add(station,new());
             }
             if(_fleetRun!=request.RunId)throw new InvalidOperationException("模拟器原双车会话不存在；不得覆盖点位重建。");
             if(request.Action=="stop")_fleetStopped=true;
@@ -28,7 +28,7 @@ public sealed partial class NetworkLab
             {
                 if(_fleetStopped||!_communicationHealthy||_recoveryReason!=null||Get(NetworkLabConfig.Shared,12))
                     throw new InvalidOperationException("已停止新增、通信失效或存在恢复/故障门禁。");
-                if(request.Stations is not {Length:>0 and <=2}||request.Stations.Distinct().Count()!=request.Stations.Length||request.Stations.Any(s=>!_fleet.ContainsKey(s)))
+                if(request.Stations is not {Length:>0 and <=1000}||request.Stations.Distinct(StringComparer.OrdinalIgnoreCase).Count()!=request.Stations.Length||request.Stations.Any(s=>!_fleet.ContainsKey(s)))
                     throw new ArgumentException("呼叫工位无效。");
                 foreach(var station in request.Stations)
                     if(!_fleet[station].Called&&(!Get(station,1)||Get(station,0)||Get(station,10)||!Get(station,11)||Enumerable.Range(2,4).Any(s=>Get(station,s))))

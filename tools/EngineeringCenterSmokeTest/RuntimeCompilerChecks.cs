@@ -30,6 +30,7 @@ internal static class RuntimeCompilerChecks
         var result=Compile();
         check(result.Ready&&result.MapActive,"300工位5车工程可编译为真实九步参数");
         check(result.Configuration!.Pickups.Count==300&&result.Configuration.Pickups.All(p=>p.AllowedVehicleIds!.Count==5),"所有工位保留明确车辆池白名单");
+        check(result.Configuration.Standbys.Count==plan.Standbys.Count && result.Configuration.Standbys.All(b=>b.AllowedVehicleIds.Count==5),"待机位及明确车辆池授权随工程版本编译");
         check(result.Configuration.Actions.SequenceEqual(config.Actions)&&result.Configuration.StepTimeouts.SequenceEqual(config.StepTimeouts),"编译保留当前车辆动作和超时，不从模拟耗时推断动作");
         check(result.Configuration.EngineeringSource?.MapDefinitionHash==EngineeringRuntimeIdentity.MapHash(map),"绑定完整原地图摘要，包含曲线控制点");
         check(workspace.Published!.Definition.Edges[0].GeometryKind==MapEdgeGeometryKind.CubicBezier&&workspace.Published.Definition.Edges[0].ControlPoints![0].Y==2,"编译不覆盖厂家曲线");
@@ -47,6 +48,7 @@ internal static class RuntimeCompilerChecks
         check(!Compile(version with {Plan=split,ContentHash=EngineeringStore.Hash(split)}).Ready,"当前单倒料执行器不得静默合并多个倒料设备");
         var restricted=plan with {Pools=plan.Pools.Select(p=>p with {VehicleIds=[plan.Vehicles[0].Id]}).ToList()};
         var restrictedResult=Compile(version with {Plan=restricted,ContentHash=EngineeringStore.Hash(restricted)});
+        check(restrictedResult.Configuration!.Standbys.All(b=>b.AllowedVehicleIds.SequenceEqual(new[]{plan.Vehicles[0].Id})),"待机授权不越过所配置车辆池");
         // Standby capacity remains sufficient; narrowing a pool must narrow the compiled authorization.
         check(restrictedResult.Ready&&restrictedResult.Configuration!.Pickups.All(p=>p.AllowedVehicleIds!.SequenceEqual(new[]{plan.Vehicles[0].Id})),"池内单车授权不会被展开为全部车辆");
     }

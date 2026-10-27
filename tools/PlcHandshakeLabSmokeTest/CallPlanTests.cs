@@ -50,6 +50,20 @@ internal static class CallPlanTests
         lab.UpdateCommunication(false);lab.UpdateCommunication(true);lab.TickAutomatic();
         Reject(()=>lab.ApplyTransportFeedback(new(interrupted,0,"CNC-001","t","v","s","vendor","Pickup",DateTimeOffset.UtcNow)));
         Check(Value("CNC-001",0)&&!Value("CNC-002",0)&&lab.AutomaticStatus.Contains("暂停"),"reconnection never resumes an interrupted call plan");
+        var configured = NetworkLabConfig.CreateDefault();
+        var pattern = configured.Points.Where(p => p.Station == "CNC-001").Select(p => p.Copy()).ToArray();
+        configured.Points.RemoveAll(p => p.Station != NetworkLabConfig.Shared);
+        var names = Enumerable.Range(1, 300).Select(i => $"WORKCELL-{i:000}").ToArray();
+        for (var i = 0; i < names.Length; i++)
+            foreach (var source in pattern) { var p = source.Copy(); p.Station = names[i]; p.Byte = i; configured.Points.Add(p); }
+        configured.Validate();
+        using var generic = new NetworkLab(configured, Path.Combine(root,"generic.jsonl"));
+        generic.ConfigureCalls(Guid.NewGuid().ToString("N"), names.Reverse().ToArray(), 2, false);
+        generic.TickAutomatic();
+        Check(generic.Snapshot(names[^1]).Single(p => p.Mapping.Station == names[^1] && p.Mapping.Signal == 0).Value,
+            "300 configured stations accept arbitrary identifiers and reverse order");
+        using var unknown = new NetworkLab(configured, Path.Combine(root,"unknown.jsonl"));
+        Reject(() => unknown.ConfigureCalls(Guid.NewGuid().ToString("N"), ["UNCONFIGURED"], 1, false));
         Console.WriteLine("CallPlanTests passed: proof-before-H pickup, action-bound box feedback, stale/wrong identity rejection, alternating two rounds, idempotency, stop drains, reconnect pauses.");
     }
 }

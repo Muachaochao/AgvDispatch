@@ -71,6 +71,8 @@ public static class EngineeringRuntimeCompiler
             configuration = parameters.Configuration with
             {
                 DumperStationId = dumper.Id, WaitingSite = dumper.WaitingNode, DumpingSite = dumper.DumpingNode,
+                Standbys = plan.Standbys.Select(b => new TaskStandbyParameter(b.Id, b.NodeId, b.PoolId,
+                    plan.Pools.Single(p => p.Id == b.PoolId).VehicleIds.Where(id => plan.Vehicles.Any(v => v.Id == id && v.Enabled)).ToArray(), b.Priority)).ToArray(),
                 Pickups = stations.Select(s => new TaskPickupParameter(s.Id, s.PickupNode)
                 {
                     VehiclePoolId = s.PoolId,

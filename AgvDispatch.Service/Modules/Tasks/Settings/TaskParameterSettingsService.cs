@@ -46,11 +46,21 @@ public sealed class TaskParameterSettingsService(TaskParameterStorageOptions sto
         var current = runtime.Capture();
         if (current.EngineeringSource is { } bound && request.Configuration.EngineeringSource?.VersionId == bound.VersionId &&
             (request.Configuration.EngineeringSource != bound ||
-             JsonSerializer.Serialize(new { current.DumperStationId, current.WaitingSite, current.DumpingSite, current.Pickups }) !=
-             JsonSerializer.Serialize(new { request.Configuration.DumperStationId, request.Configuration.WaitingSite, request.Configuration.DumpingSite, request.Configuration.Pickups })))
-            return new(false, "同一工程版本的工位、倒料及车辆池绑定不可改写；请发布并应用新工程版本。", []);
+             JsonSerializer.Serialize(new { current.DumperStationId, current.WaitingSite, current.DumpingSite, current.Pickups, current.Standbys }) !=
+             JsonSerializer.Serialize(new { request.Configuration.DumperStationId, request.Configuration.WaitingSite, request.Configuration.DumpingSite, request.Configuration.Pickups, request.Configuration.Standbys })))
+            return new(false, "同一工程版本的工位、倒料、待机位及车辆池绑定不可改写；请发布并应用新工程版本。", []);
         if (request.Configuration.EngineeringSource is { } source && source.MapDefinitionHash != EngineeringRuntimeIdentity.MapHash(map.Definition))
             return new(false, "工程绑定的地图内容摘要已变化，未应用参数。", []);
+        foreach (var standby in request.Configuration.Standbys)
+        {
+            var nodes = map.Definition.Nodes.Where(n => n.Enabled && (n.Id == standby.Site || n.AgvSiteId == standby.Site)).ToArray();
+            if (nodes.Length != 1 || nodes[0].Type is not (AgvDispatch.Domain.Maps.MapNodeType.Station or AgvDispatch.Domain.Maps.MapNodeType.WaitingPoint))
+                return new(false, $"待机位 {standby.Id} 未绑定唯一启用的停靠站点。", []);
+            var businessSites = request.Configuration.Pickups.Select(p => p.PickupSite)
+                .Concat(new[] { request.Configuration.WaitingSite, request.Configuration.DumpingSite });
+            if (businessSites.Any(site => site == nodes[0].Id || site == nodes[0].AgvSiteId))
+                return new(false, $"待机位 {standby.Id} 与业务取放箱或倒料站点重叠。", []);
+        }
         var preview = validator.ValidateParameters(request.Configuration);
         var errors = preview.SelectMany(row => row.Step.ValidationErrors.Select(error => $"{row.StationId} 第 {row.Step.Sequence} 步（{row.Step.Name}）：{error}")).ToArray();
         return new(errors.Length == 0, errors.Length == 0 ? "所有工位九步配置校验通过；配置通过不代表执行许可。PLC 写入许可、恢复放行、首段车辆路线和动态路权在创建/执行时检查。" : string.Join("；", errors), preview);

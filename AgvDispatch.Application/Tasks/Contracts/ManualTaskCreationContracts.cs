@@ -4,6 +4,8 @@ public sealed record ManualTaskStationChoice(string StationId, string PickupSite
 {
     public IReadOnlyList<ManualTaskStepPreview> PreviewSteps { get; init; } = [];
     public IReadOnlyList<string> PickupReachableVehicleIds { get; init; } = [];
+    public string? VehiclePoolId { get; init; }
+    public IReadOnlyList<string>? AllowedVehicleIds { get; init; }
     public bool ConfigurationValid => PreviewSteps.Count == 9 && PreviewSteps.All(step => step.ValidationErrors.Count == 0);
 }
 public sealed record ManualTaskStepPreview(int Sequence, AgvDispatch.Domain.Tasks.DispatchTaskStepType StepType,
@@ -20,6 +22,7 @@ public sealed record ManualTaskCreationOptions(string? MapId, string? MapVersion
     public string MapRuntimeId {get;init;}="";
     public bool RequiresExplicitVehicle { get; init; }
     public string ParameterRevision { get; init; } = "initial";
+    public IReadOnlyList<TaskStandbyParameter> Standbys { get; init; } = [];
 }
 public sealed record ManualTaskCreationRequest(string RequestId, string StationId, string? RequestedVehicleId,
     int Priority, string MapId, string MapVersionId)

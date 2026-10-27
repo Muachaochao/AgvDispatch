@@ -2,13 +2,22 @@
 import { computed, nextTick, onMounted, onBeforeUnmount, ref, watch } from 'vue';
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router';
 import { useDispatchStore } from '../stores/dispatch';
+import OrderedStationPicker from '../components/OrderedStationPicker.vue';
 import { sections, newPlan, newRow, csvRows, exportCsv, importDiff, type Section, type EngineeringPlan, type EngineeringRow, type Field } from '../engineering-center';
 const store=useDispatchStore(),route=useRoute(),router=useRouter();
 const plan=ref<EngineeringPlan>(newPlan()),revision=ref(''),savedText=ref(''),ready=ref(false),busy=ref(false),message=ref(''),error=ref('');
 const search=ref(''),page=ref(1),selected=ref<EngineeringRow|null>(null),checked=ref<string[]>([]);
 const validation=ref<any>(null),versions=ref<any[]>([]),versionId=ref(''),publishNote=ref(''),report=ref<any>(null);
 const importPreview=ref<ReturnType<typeof importDiff>|null>(null),importSection=ref<Section>('stations');
-const sampleStations=ref(300),sampleVehicles=ref(5),callRounds=ref(1),offline=ref(''),blockedResources=ref('');
+const sampleStations=ref(300),sampleVehicles=ref(5),callRounds=ref(1),callInterval=ref(60);
+const frozenPlan=ref<EngineeringPlan|null>(null),versionLoading=ref(false),callStations=ref<string[]>([]),offline=ref<string[]>([]),blockedResources=ref<string[]>([]);
+const simulationStations=computed(()=>(frozenPlan.value?.stations??[]).filter(s=>s.enabled).map(s=>({id:String(s.id),label:`${s.name} · ${s.id} · ${s.pickupNode} · ${s.poolId} · ${s.dumperId}`})));
+watch(versionId,async id=>{
+ frozenPlan.value=null;callStations.value=[];offline.value=[];blockedResources.value=[];report.value=null;
+ if(!id){versionLoading.value=false;return;}versionLoading.value=true;
+ try{const v:any=await store.api('/api/engineering/versions/'+id);if(versionId.value!==id)return;frozenPlan.value=v.plan;callStations.value=v.plan.stations.filter((s:any)=>s.enabled).map((s:any)=>s.id);}
+ catch(e){if(versionId.value===id)error.value=String(e);}finally{if(versionId.value===id)versionLoading.value=false;}
+});
 const mapCatalog=ref<any[]>([]),targetMapId=ref('');
 const batchField=ref('poolId'),batchValue=ref('');const reportPage=ref(1);
 const tabs=[{id:'overview',label:'工程总览'},...Object.entries(sections).map(([id,s])=>({id,label:s.label})),{id:'validation',label:'校验与诊断'},{id:'versions',label:'发布与版本'},{id:'simulation',label:'模拟测试'}];
@@ -38,11 +47,12 @@ async function validate(){await action(async()=>{validation.value=await store.ap
 async function sample(){if(!discardAllowed())return;await action(async()=>{plan.value=await store.api(`/api/engineering/sample?stations=${sampleStations.value}&vehicles=${sampleVehicles.value}`);validation.value=null;selected.value=null;message.value='示例已载入编辑区，尚未保存。所有地址与数值都是模拟数据。';});}
 async function publish(){await action(async()=>{if(dirty.value)throw new Error('请先保存当前修改，再发布同一修订。');const v:any=await store.api('/api/engineering/publish',{expectedRevision:revision.value,note:publishNote.value});versions.value=await store.api('/api/engineering/versions');versionId.value=v.id;message.value='工程版本已发布并冻结；不会自动激活现场地图。可以模拟测试或进入工程执行接入。';});}
 async function simulate(){await action(async()=>{
- if(!versionId.value)throw new Error('请先选择已发布版本。');
- const v:any=await store.api('/api/engineering/versions/'+versionId.value);const active=v.plan.stations.filter((s:any)=>s.enabled);
- if(callRounds.value<1||callRounds.value>10||!Number.isInteger(callRounds.value)||active.length*callRounds.value>3000)throw new Error('轮数需1–10，呼叫总数最多3000。');
- const calls=Array.from({length:callRounds.value},(_,r)=>active.map((s:any)=>({requestId:`CALL-${r+1}-${s.id}`,stationId:s.id,atSeconds:r*60}))).flat();
- report.value=await store.api('/api/engineering/simulations',{versionId:versionId.value,calls,offlineVehicles:split(offline.value),blockedResources:split(blockedResources.value)});reportPage.value=1;message.value='模拟已完成；结果已保存到后台工程报告。没有连接任何设备。';
+ if(!versionId.value||!frozenPlan.value||versionLoading.value)throw new Error('请先读取已发布版本。');
+ if(!callStations.value.length||callStations.value.some(id=>!simulationStations.value.some(s=>s.id===id)))throw new Error('请选择当前版本的启用工位。');
+ if(callRounds.value<1||callRounds.value>100||!Number.isInteger(callRounds.value)||callStations.value.length*callRounds.value>3000)throw new Error('轮数需1–100，呼叫总数最多3000。');
+ if(!Number.isFinite(callInterval.value)||callInterval.value<0||(callRounds.value-1)*callInterval.value>86400)throw new Error('呼叫间隔必须为非负数，总呼叫时间不得超过86400秒。');
+ const calls=Array.from({length:callRounds.value},(_,r)=>callStations.value.map(id=>({requestId:`CALL-${r+1}-${id}`,stationId:id,atSeconds:r*callInterval.value}))).flat();
+ report.value=await store.api('/api/engineering/simulations',{versionId:versionId.value,calls,offlineVehicles:offline.value,blockedResources:blockedResources.value});reportPage.value=1;message.value='模拟已完成；结果已保存到后台工程报告。没有连接任何设备。';
 });}
 const split=(v:string)=>v.split(';').map(x=>x.trim()).filter(Boolean);
 function value(row:EngineeringRow,f:Field){const v=row[f.key];return Array.isArray(v)?v.join(';'):v;}
@@ -124,7 +134,22 @@ onMounted(load);
   <ul class="engineering-versions"><li v-for="v in versions" :key="v.id"><label><input v-model="versionId" type="radio" :value="v.id"/>{{v.name}} · {{v.stations}}工位／{{v.vehicles}}车</label><p>{{v.note}} · {{new Date(v.publishedAt).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'})}}</p><small>{{v.id}} · SHA256 {{v.contentHash}}</small></li></ul><div class="engineering-toolbar"><button :disabled="!versionId||busy" @click="versionToDraft">所选版本载入编辑区</button><button :disabled="!versionId" @click="navigate('simulation')">测试所选版本</button><RouterLink v-if="versionId" :to="{path:'/engineering-runtime',query:{version:versionId}}">所选版本接入执行器</RouterLink></div>
  </template>
  <template v-else-if="tab==='simulation'">
-  <h3>配置与调度预约模拟</h3><p>根据已发布版本生成呼叫，模拟车辆池选车、九步阶段、资源容量预约与返回待机。测试不会访问PLC、机器人或现场后台。</p><div class="engineering-form"><label>工程版本<select v-model="versionId"><option value="">请选择已发布版本</option><option v-for="v in versions" :key="v.id" :value="v.id">{{v.name}} · {{v.id.slice(0,8)}} · {{v.note}}</option></select></label><label>每工位呼叫轮数<input v-model.number="callRounds" type="number" min="1" max="10"/></label><label>模拟离线车辆<input v-model="offline" placeholder="AGV-01;AGV-02"/></label><label>模拟封锁资源<input v-model="blockedResources" placeholder="DUMP-AREA"/></label></div><p v-if="selectedVersion">所选版本{{selectedVersion.stations}}工位／{{selectedVersion.vehicles}}车 · 使用冻结配置，不使用未保存编辑。</p><button class="accent-button" :disabled="busy||!versionId" @click="simulate">运行隔离模拟</button>
+  <h3>配置与调度预约模拟</h3><p>工位、车辆池、倒料设备、待机位和交通资源均读取所选版本。配置多少就显示多少；模拟不会访问PLC、机器人或现场后台。</p>
+  <div class="engineering-form">
+   <label>工程版本<select v-model="versionId" :disabled="busy"><option value="">请选择已发布版本</option><option v-for="v in versions" :key="v.id" :value="v.id">{{v.name}} · {{v.id.slice(0,8)}} · {{v.note}}</option></select></label>
+   <label>每工位呼叫轮数<input v-model.number="callRounds" type="number" min="1" max="100" :disabled="busy"/></label>
+   <label>轮次呼叫间隔（秒）<input v-model.number="callInterval" type="number" min="0" :disabled="busy"/></label>
+   <label>模拟离线车辆（可多选）<select v-model="offline" multiple :disabled="busy||versionLoading"><option v-for="v in frozenPlan?.vehicles.filter(v=>v.enabled)??[]" :key="String(v.id)" :value="v.id">{{v.name}} · {{v.id}}</option></select></label>
+   <label>模拟封锁资源（可多选）<select v-model="blockedResources" multiple :disabled="busy||versionLoading"><option v-for="r in frozenPlan?.resources??[]" :key="String(r.id)" :value="r.id">{{r.name}} · {{r.id}} · 容量{{r.capacity}}</option></select></label>
+  </div>
+  <p v-if="versionLoading">正在读取版本配置…</p>
+  <template v-if="frozenPlan">
+   <p>所选版本 {{frozenPlan.stations.filter(s=>s.enabled).length}} 个启用工位／{{frozenPlan.vehicles.filter(v=>v.enabled).length}} 台启用车辆／{{frozenPlan.pools.length}} 个车辆池／{{frozenPlan.dumpers.length}} 个倒料设备／{{frozenPlan.standbys.length}} 个待机位；使用冻结版本。</p>
+   <p>同轮呼叫同时进入模拟队列，按配置优先级、车辆池及资源可用情况派发；工位列表顺序不代表车辆固定执行顺序。</p>
+   <OrderedStationPicker title="参与模拟工位" v-model="callStations" :choices="simulationStations" :disabled="busy||versionLoading"/>
+   <details><summary>查看本次配置的车辆池与设备绑定</summary><p v-for="pool in frozenPlan.pools" :key="String(pool.id)">{{pool.name}}（{{pool.id}}）：{{(pool.vehicleIds as string[]).join('、')}} · 参与工位 {{frozenPlan.stations.filter(s=>s.poolId===pool.id&&callStations.includes(String(s.id))).length}} 个</p><p v-for="d in frozenPlan.dumpers" :key="String(d.id)">{{d.name}}（{{d.id}}）：等待 {{d.waitingNode}} → 倒料 {{d.dumpingNode}}</p></details>
+  </template>
+  <button class="accent-button" :disabled="busy||versionLoading||!frozenPlan||!callStations.length" @click="simulate">运行隔离模拟</button>
   <template v-if="report"><div class="engineering-stats"><div><b>{{report.tasks.length}} / {{report.requestedCalls}}</b><span>建模完成 / 呼叫数</span></div><div><b>{{report.blocked.length}}</b><span>阻塞呼叫</span></div><div><b>{{report.peakVehicles}}</b><span>模型峰值并行车数</span></div><div><b>{{Math.round(report.durationSeconds)}}</b><span>模型完成时间（秒）</span></div></div><p>去重呼叫{{report.duplicateCalls}} · 报告{{report.id}}</p><p class="engineering-boundary">{{report.evidenceBoundary}}</p><button @click="download('simulation-'+report.id+'.json',JSON.stringify(report,null,2))">下载完整模拟报告</button>
   <h4>最终位置</h4><p v-for="(node,id) in report.finalPositions" :key="id">{{id}} → {{node}}</p><ul class="engineering-issues"><li v-for="(b,i) in report.blocked.slice(0,100)" :key="i">{{b.stationId}}：{{b.reason}} <RouterLink :to="b.link">检查配置</RouterLink></li></ul>
   <div class="engineering-table-scroll"><table class="engineering-table"><thead><tr><th>呼叫 / 工位</th><th>车辆</th><th>开始–结束（秒）</th><th>步骤</th><th>路线</th></tr></thead><tbody><tr v-for="t in reportTasks" :key="t.taskId"><td>{{t.callId}}<br/>{{t.stationId}}</td><td>{{t.vehicleId}}</td><td>{{Math.round(t.start)}}–{{Math.round(t.end)}}</td><td>{{t.steps.length}}步</td><td><details><summary>查看路线与阶段</summary><p>{{t.route.join(' → ')}}</p><ol><li v-for="s in t.steps" :key="s">{{s}}</li></ol></details></td></tr></tbody></table></div><div class="engineering-toolbar"><button :disabled="reportPage<=1" @click="reportPage--">上一页</button><span>第{{reportPage}}页</span><button :disabled="reportPage*25>=report.tasks.length" @click="reportPage++">下一页</button></div>

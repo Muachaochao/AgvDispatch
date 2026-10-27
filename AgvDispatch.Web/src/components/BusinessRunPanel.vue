@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import OrderedStationPicker from './OrderedStationPicker.vue';
+import { businessChoices, standbyChoices } from '../business-run-options';
 import { useDispatchStore } from '../stores/dispatch';
 import type { CreationOptions } from '../types';
 import { businessVehicleBlock, summarizeBusinessBlocks } from '../business-blocks';
@@ -11,7 +13,7 @@ const current=ref<Run|null>(null), error=ref(''), busy=ref(false), online=ref(fa
 const readError=ref('');
 const observedAt=ref(0);
 const fresh=computed(()=>online.value&&store.fresh&&store.now-observedAt.value>=-1000&&store.now-observedAt.value<10000);
-const vehicle=ref('AGV-01'), order=ref('CNC-001,CNC-002'), rounds=ref(1), standby=ref('LM7'), confirmed=ref(false);
+const vehicle=ref(''), order=ref<string[]>([]), rounds=ref(1), standby=ref(''), confirmed=ref(false);
 const pending=ref<Plan|null>(null);
 const resumeReason=ref('');
 const resumeKey='agv-business-run-resume';
@@ -33,8 +35,22 @@ const key='agv-business-run-start';
 try{pending.value=JSON.parse(sessionStorage.getItem(key)??'null');}catch{error.value='原申请记录无法读取，请先查询后台原运行。';}
 const active=computed(()=>current.value&&current.value.stage!=='Completed');
 const locked=computed(()=>busy.value||!!active.value||!!pending.value);
+const choices=computed(()=>businessChoices(props.options,order.value));
+const standbyOptions=computed(()=>standbyChoices(props.options,vehicle.value));
+const stationChoices=computed(()=>(props.options?.stations??[]).map(s=>({id:s.stationId,label:s.stationId+' · '+s.pickupSite+(s.vehiclePoolId?' · '+s.vehiclePoolId:'')})));
+const selectionError=computed(()=>!choices.value.valid?'请从当前配置选择参与工位。':
+ !choices.value.vehicles.some(v=>v.vehicleId===vehicle.value)?'所选工位没有共同允许的车辆，请调整工位组或车辆池配置。':
+ !standby.value?'请配置并选择当前车辆的待机点。':
+ props.options?.standbys?.length&&!standbyOptions.value.some(s=>s.site===standby.value)?'所选待机点不适用于当前车辆。':'');
+watch(()=>JSON.stringify([props.options?.mapId,props.options?.mapVersionId,props.options?.parameterRevision,
+ props.options?.stations.map(s=>[s.stationId,s.pickupSite,s.allowedVehicleIds]),props.options?.vehicles.map(v=>v.vehicleId),props.options?.standbys]),()=>{
+ if(locked.value)return;confirmed.value=false;order.value=(props.options?.stations??[]).map(s=>s.stationId);
+ vehicle.value=choices.value.vehicles.find(v=>v.available)?.vehicleId??choices.value.vehicles[0]?.vehicleId??'';
+ standby.value=standbyOptions.value[0]?.site??'';
+},{immediate:true});
+watch([order,vehicle,standby,rounds],()=>{confirmed.value=false;},{deep:true});
 const configurationBlocks=computed(()=>{
-  const selected=pending.value?.stations??order.value.split(',');
+  const selected=pending.value?.stations??order.value;
   return (props.options?.stations??[]).filter(s=>selected.includes(s.stationId)&&s.configurationValid===false);
 });
 const needsExitConfiguration=computed(()=>configurationBlocks.value.some(s=>s.explanation.includes('DumperExit')));
@@ -57,6 +73,8 @@ async function read(){
     if(disposed||mine!==epoch)return;
     if(current.value?.updatedAt!==result.current?.updatedAt)confirmed.value=false;
     current.value=result.current;online.value=true;observedAt.value=Date.now();readError.value='';
+    const original=current.value&&current.value.stage!=='Completed'?current.value.plan:pending.value;
+    if(original){vehicle.value=original.vehicleId;if(JSON.stringify(order.value)!==JSON.stringify(original.stations))order.value=[...original.stations];standby.value=original.standbySite;rounds.value=original.rounds;}
     const resumeRaw=sessionStorage.getItem(resumeKey);
     if(resumeRaw&&JSON.parse(resumeRaw).requestId===result.current?.lastResumeRequestId)sessionStorage.removeItem(resumeKey);
     if(result.current?.plan.requestId===pending.value?.requestId){sessionStorage.removeItem(key);pending.value=null;}
@@ -64,12 +82,12 @@ async function read(){
   finally{reading=false;}
 }
 async function start(){
-  if(props.statusOnly||!fresh.value||busy.value||active.value||!confirmed.value||!store.submissionEnabled||selectedVehicleBlock.value||configurationBlocks.value.length)return;
+  if(props.statusOnly||!fresh.value||busy.value||active.value||!confirmed.value||!store.submissionEnabled||selectedVehicleBlock.value||configurationBlocks.value.length||(!pending.value&&selectionError.value))return;
   epoch++;
   busy.value=true;error.value='';
   try{
     pending.value??={requestId:crypto.randomUUID().replaceAll('-',''),mode:props.mode,vehicleId:vehicle.value,
-      stations:order.value.split(','),rounds:rounds.value,standbySite:standby.value,siteConfirmed:true};
+      stations:[...order.value],rounds:rounds.value,standbySite:standby.value,siteConfirmed:true};
     sessionStorage.setItem(key,JSON.stringify(pending.value));
     const result=await store.api<{current:Run|null}>('/api/business-run/start',pending.value);
     current.value=result.current;sessionStorage.removeItem(key);pending.value=null;confirmed.value=false;
@@ -101,15 +119,18 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);});
     <template v-if="!statusOnly">
     <p>{{mode==='Demand'?'按真实PLC呼叫接续工位，不主动产生呼叫。':'由本机PLC人工联调台按工位顺序产生模拟呼叫；一轮包含每个所选工位各一次任务。'}}</p>
     <div class="fields">
-      <label>车辆<select v-model="vehicle" :disabled="locked"><option v-for="v in options?.vehicles??[]" :key="v.vehicleId" :value="v.vehicleId">{{v.label}}</option></select></label>
-      <label>参与工位 / 接续顺序<select v-model="order" :disabled="locked"><option value="CNC-001,CNC-002">A → B（LM2 → LM4）</option><option value="CNC-002,CNC-001">B → A（LM4 → LM2）</option><option value="CNC-001">仅 A / LM2</option><option value="CNC-002">仅 B / LM4</option></select></label>
+      <label>本次运行车辆<select v-model="vehicle" :disabled="locked"><option value="" disabled>请选择车辆</option><option v-for="v in choices.vehicles" :key="v.vehicleId" :value="v.vehicleId">{{v.label}}</option></select><small>从所选工位车辆池的共同允许车辆中选择，共 {{choices.vehicles.length}} 台。</small></label>
       <label v-if="mode==='Cycle'">测试轮数<input v-model.number="rounds" type="number" min="1" max="100" :disabled="locked"/></label>
-      <label>倒料等待位<input :value="options?.waitingSite||'LM5'" readonly/></label>
-      <label>倒料位<input :value="options?.dumpingSite||'LM6'" readonly/></label>
-      <label>待机点<input v-model="standby" :disabled="locked"/></label>
+      <label>倒料等待位<input :value="options?.waitingSite||'未配置'" readonly/></label>
+      <label>倒料位<input :value="options?.dumpingSite||'未配置'" readonly/></label>
+      <label v-if="options?.standbys?.length">待机点<select v-model="standby" :disabled="locked"><option value="" disabled>请选择适用待机位</option><option v-for="s in standbyOptions" :key="s.id" :value="s.site">{{s.id}} · {{s.site}} · {{s.vehiclePoolId}}</option></select></label>
+      <label v-else>待机点（旧配置未绑定待机位）<input v-model="standby" :disabled="locked" placeholder="填写已核对的地图站点"/><small>可在工程配置中心设置待机位和适用车辆池后应用。</small></label>
     </div>
+    <OrderedStationPicker v-model="order" :choices="stationChoices" :disabled="locked"/>
+    <p v-if="selectionError&&!active&&!pending" class="inline-warning">{{selectionError}}</p>
+    <RouterLink to="/engineering">配置工位、车辆池、倒料设备及待机位</RouterLink>
     <p>无待处理呼叫、返箱责任和倒料占用全部闭合后返回待机点。返途中新增呼叫，到待机点后接续；停止收尾不会取消当前车辆动作。</p>
-    <p v-if="mode==='Cycle'">请启动新版 PLC 人工联调台 S7 服务（127.0.0.1:10200）。工具模拟呼叫、箱体和倒料反馈，真实业务动作仍由调度执行，模拟反馈不作为物理验收证据。</p>
+    <p v-if="mode==='Cycle'">请按当前后台连接配置启动对应的 PLC 模拟服务。工具模拟呼叫、箱体和倒料反馈，真实业务动作仍由调度执行，模拟反馈不作为物理验收证据。</p>
     <p v-if="!store.submissionEnabled" class="inline-warning">当前未启用业务执行，暂不能提交任务。启动模式限制不会删除已保存的工位和点位配置。</p>
     <section v-if="configurationBlocks.length" class="inline-warning" role="status">
       <strong>{{onlyPermissions?'执行权限尚未开启':'启动条件未通过'}}</strong>
@@ -127,7 +148,7 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);});
     <label v-if="!statusOnly||current?.stage==='Hold'" class="confirm"><input v-model="confirmed" type="checkbox" :disabled="(!!active&&current?.stage!=='Hold')||busy"/>{{current?.stage==='Hold'?'已现场核对原运行；续接将继续原流程，结束记录仍须核验任务、握手及待机停靠':'已核对当前车辆、路线和现场条件，确认启动所选运行模式'}}</label>
     <div class="buttons">
       <button :disabled="busy" @click="read">查询原运行</button>
-      <button v-if="!statusOnly" class="accent-button" :disabled="busy||!!active||!confirmed||!fresh||!store.submissionEnabled||!!selectedVehicleBlock||configurationBlocks.length>0" @click="start">{{pending?'重试原申请':mode==='Demand'?'启动按需运行':'启动循环测试'}}</button>
+      <button v-if="!statusOnly" class="accent-button" :disabled="busy||!!active||!confirmed||!fresh||!store.submissionEnabled||!!selectedVehicleBlock||configurationBlocks.length>0||(!pending&&!!selectionError)" @click="start">{{pending?'重试原申请':mode==='Demand'?'启动按需运行':'启动循环测试'}}</button>
       <button :disabled="busy||!active||(!!current?.stopRequested&&current?.stage!=='Hold')||!fresh" @click="stop">停止新增呼叫并收尾</button>
       <button v-if="current?.stage==='Hold'" :disabled="busy||!confirmed||!fresh" @click="closeReviewed">核对原运行并结束记录</button>
       <button v-if="current?.stage==='Hold'" :disabled="busy||!confirmed||!fresh||!store.submissionEnabled||resumeReason.trim().length<10" @click="resume">核对后续接原运行</button>

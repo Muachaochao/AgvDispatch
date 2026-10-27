@@ -57,9 +57,9 @@ public sealed class BusinessRunService(IBusinessRunPort port, BusinessRunOwnersh
                     if (JsonSerializer.Deserialize<BusinessRunRecord>(File.ReadAllText(file))?.Plan.RequestId == plan.RequestId)
                         throw new InvalidOperationException("原申请已经归档，不能重放为新运行。");
             if (!Guid.TryParseExact(plan.RequestId, "N", out _) || !plan.SiteConfirmed ||
-                plan.Mode is not ("Demand" or "Cycle") || plan.Stations is null || plan.Stations.Length is < 1 or > 2 ||
+                plan.Mode is not ("Demand" or "Cycle") || plan.Stations is null || plan.Stations.Length is < 1 or > 1000 ||
                 plan.Stations.Distinct(StringComparer.OrdinalIgnoreCase).Count() != plan.Stations.Length ||
-                plan.Stations.Any(s => s is not ("CNC-001" or "CNC-002")) || plan.Rounds is < 1 or > 100 ||
+                plan.Stations.Any(s => string.IsNullOrWhiteSpace(s) || s.Length > 32 || s != s.Trim() || s.Any(char.IsControl)) || plan.Rounds is < 1 or > 100 ||
                 string.IsNullOrWhiteSpace(plan.VehicleId) || string.IsNullOrWhiteSpace(plan.StandbySite))
                 throw new ArgumentException("请核对模式、车辆、工位顺序、轮数及现场确认。");
             await port.ValidateAsync(plan, ct);

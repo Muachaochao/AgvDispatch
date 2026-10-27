@@ -30,6 +30,7 @@ public sealed partial class ManualTaskCreationService(IManualTaskCreationReposit
         reason ??= DumperWaitingBaySafety.GetError(map?.Definition, dispatch,
             handshakeOptions is { Enabled: true, PlcContractVersion: HandshakeExecutionOptions.Version });
         reason ??= dispatch.EngineeringMapError(map);
+        var configured = parameters.Capture();
         var choices = dispatch.StationPickupSites.Select(pair =>
         {
             var preview = ValidateStepPreview(BuildStepPreview(pair.Key, pair.Value, map), map);
@@ -40,7 +41,8 @@ public sealed partial class ManualTaskCreationService(IManualTaskCreationReposit
                 !CanRoute(map, dispatch.GetDumperWaitingSite(), dispatch.DumperDumpingSite) ||
                 !CanRoute(map, dispatch.DumperDumpingSite, pair.Value) ? "取货、倒料和返程路径未连通。" : null;
             return new ManualTaskStationChoice(pair.Key, pair.Value, block is null && reason is null, block ?? "PLC条件满足，路径已连通。")
-            { PreviewSteps = preview };
+            { PreviewSteps = preview, VehiclePoolId = configured.Pickups.SingleOrDefault(p => p.StationId == pair.Key)?.VehiclePoolId,
+                AllowedVehicleIds = configured.Pickups.SingleOrDefault(p => p.StationId == pair.Key)?.AllowedVehicleIds };
         }).OrderBy(choice => choice.StationId).ToArray();
         var occupied = (await tasks.GetAssignedTasksAsync(ct)).Concat(await tasks.GetSubmittingTasksAsync(ct))
             .Where(task => task.VehicleId is not null).Select(task => task.VehicleId!).ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -66,7 +68,7 @@ public sealed partial class ManualTaskCreationService(IManualTaskCreationReposit
                 string.Join("；", vehicles.Select(vehicle => vehicle.VehicleId + "：" + vehicle.Explanation)) : null;
         return new(map?.MapId, map?.VersionId, reason is null, reason ?? "使用当前运行地图创建取满箱、倒料、返空箱九步任务。",
             creation.DumperStationId, dispatch.GetDumperWaitingSite() ?? "", dispatch.DumperDumpingSite, choices, vehicles)
-        { ParameterRevision = parameters.Revision, RequiresExplicitVehicle = robokitMap is not null, MapRuntimeId=map?.RuntimeId??"" };
+        { ParameterRevision = parameters.Revision, RequiresExplicitVehicle = robokitMap is not null, MapRuntimeId=map?.RuntimeId??"", Standbys = configured.Standbys };
     }
 
     private IReadOnlySet<string> PickupExcludedNodes(ActiveMapRuntimeSnapshot? map) => map is null ? new HashSet<string>() :

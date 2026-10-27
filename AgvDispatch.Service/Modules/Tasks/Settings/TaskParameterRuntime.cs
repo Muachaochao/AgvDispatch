@@ -57,6 +57,18 @@ public sealed class TaskParameterRuntime(DispatchOrchestratorOptions dispatch, D
         }
         if (configuration.Pickups.Select(pickup => pickup.StationId).Distinct(StringComparer.OrdinalIgnoreCase).Count() != configuration.Pickups.Count)
             throw new ArgumentException("取货 PLC 工位编号不能重复。");
+        if (configuration.Standbys is null || configuration.Standbys.Count > 1000 ||
+            configuration.Standbys.Any(b => b is null) ||
+            configuration.Standbys.Select(b => b.Id).Distinct(StringComparer.OrdinalIgnoreCase).Count() != configuration.Standbys.Count)
+            throw new ArgumentException("待机位列表无效或编号重复（最多1000项）。");
+        foreach (var standby in configuration.Standbys)
+        {
+            Id(standby.Id, 64, "待机位编号"); Id(standby.Site, 128, "待机站点"); Id(standby.VehiclePoolId, 64, "待机车辆池");
+            if (standby.Priority is < 0 or > 100 || standby.AllowedVehicleIds is null || standby.AllowedVehicleIds.Count is < 1 or > 100 ||
+                standby.AllowedVehicleIds.Distinct(StringComparer.OrdinalIgnoreCase).Count() != standby.AllowedVehicleIds.Count)
+                throw new ArgumentException("待机位优先级或适用车辆列表无效。");
+            foreach (var vehicle in standby.AllowedVehicleIds) Id(vehicle, 32, "待机车辆编号");
+        }
         if (configuration.Actions.Any(action => action is null) ||
             !configuration.Actions.Select(action => action.StepType).Order().SequenceEqual(TransportSteps.Order()))
             throw new ArgumentException("四个运输步骤必须各配置一次。");
