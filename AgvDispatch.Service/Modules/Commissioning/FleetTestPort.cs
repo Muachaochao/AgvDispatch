@@ -19,8 +19,10 @@ public sealed class FleetTestPort(FleetTestOptions options,IBusinessRunService s
     private static bool Fresh(DateTimeOffset? at)=>at is {} t&&t<=DateTimeOffset.UtcNow.AddSeconds(1)&&DateTimeOffset.UtcNow-t<TimeSpan.FromSeconds(3);
     private string? Health(string id)
     {
-        if(!vehicles.TryGet(id,out var v)||!Fresh(v.LastSuccessfulPollAt)||v.Connection!=ConnectionState.Online||v.Quality!=SignalQuality.Good)
-            return id+"通信离线或数据超过3秒未更新。";
+        if(!vehicles.TryGet(id,out var v))return id+"尚未取得车辆状态。";
+        var sample=$"连接={v.Connection}，质量={v.Quality}，最近成功采集={v.LastSuccessfulPollAt:O}，阻挡={v.Blocked}，急停={v.EmergencyStopped}，置信度={v.LocalizationConfidence:0.###}";
+        if(!Fresh(v.LastSuccessfulPollAt)||v.Connection!=ConnectionState.Online||v.Quality!=SignalQuality.Good)
+            return id+"通信离线、采集质量无效或数据超过3秒未更新。"+sample;
         var reasons=new List<string>();
         if(v.Blocked!=false)reasons.Add("车辆当前被阻挡，需现场清除障碍并在车端解除阻挡");
         if(v.EmergencyStopped!=false)reasons.Add("急停未复位");
@@ -28,7 +30,7 @@ public sealed class FleetTestPort(FleetTestOptions options,IBusinessRunService s
         var alarms=v.Alarms.Where(a=>a.Severity is AgvDispatch.Domain.Agvs.AgvAlarmSeverity.Error or AgvDispatch.Domain.Agvs.AgvAlarmSeverity.Fatal)
             .Select(a=>string.IsNullOrWhiteSpace(a.Code)?"车端报警":a.Code).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         if(alarms.Length>0)reasons.Add("开放车端报警"+string.Join('、',alarms));
-        if(reasons.Count>0)return id+"："+string.Join("；",reasons)+"。";
+        if(reasons.Count>0)return id+"："+string.Join("；",reasons)+"。"+sample;
         return null;
     }
     public static string? StartingPickupOccupancyConflict(
@@ -136,7 +138,7 @@ public sealed class FleetTestPort(FleetTestOptions options,IBusinessRunService s
         if(run!=null)foreach(var call in run.Calls.Where(c=>c.TaskId!=null))
             if(await tasks.GetDetailAsync(call.TaskId!,ct) is {} detail)details.Add(detail);
         return new(options.Enabled,options.VehicleIds,run,options.VehicleIds.Select(id=>
-        {vehicles.TryGet(id,out var v);return new FleetTestVehicle(id,v?.CurrentStation,Health(id)==null,Health(id)??"状态数据有效");}).ToArray(),details.ToArray(),DateTimeOffset.UtcNow)
+        {vehicles.TryGet(id,out var v);var health=Health(id);return new FleetTestVehicle(id,v?.CurrentStation,health==null,health??"状态数据有效");}).ToArray(),details.ToArray(),DateTimeOffset.UtcNow)
         {ConfiguredStations=parameters.Capture().Pickups.Select(p=>p.StationId).ToArray()};
     }
     public async Task LabAsync(FleetTestRun run,string action,string[] stations,CancellationToken ct)

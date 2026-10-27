@@ -193,7 +193,7 @@ builder.Services.AddSingleton<IFleetTestPort>(p=>new FleetTestPort(fleetTestOpti
     p.GetRequiredService<IActiveMapRuntime>(),p.GetRequiredService<IMapExecutionGate>(),taskParameterRuntime,dispatchOrchestratorOptions,taskCreationOptions,
     p.GetRequiredService<HandshakeExecutionOptions>(),p.GetRequiredService<IRobokitTaskMapPreflight>(),p.GetRequiredService<ITrafficResourceControlService>(),PlcCycleTestPort.AllPlcsAreLoopback(plcConnections)));
 builder.Services.AddSingleton(p=>new FleetTestService(p.GetRequiredService<IFleetTestPort>(),p.GetRequiredService<FleetTestOwnership>(),
-    Path.Combine(Path.GetDirectoryName(databaseOptions.DatabasePath)!,"fleet-test.json")));
+    Path.Combine(Path.GetDirectoryName(databaseOptions.DatabasePath)!,"fleet-test.json"),p.GetRequiredService<ILogger<FleetTestService>>()));
 builder.Services.AddSingleton<IFleetTestService>(p=>p.GetRequiredService<FleetTestService>());
 builder.Services.AddHostedService(p=>p.GetRequiredService<FleetTestService>());
 builder.Services.AddSingleton(new TaskParameterStorageOptions(taskParameterPath));

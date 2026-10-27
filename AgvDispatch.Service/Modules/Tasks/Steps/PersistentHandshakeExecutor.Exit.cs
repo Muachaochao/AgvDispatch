@@ -187,7 +187,7 @@ public sealed partial class PersistentHandshakeExecutor
         if(vendor.UpdatedAt>now.AddSeconds(1)||now-vendor.UpdatedAt>maximumAge)
             throw new InvalidOperationException("重新采集定位后原返程查询已过期，保持占用。");
         vehicles.TryGet(vehicleId,out var endpointVehicle);
-        var endpointStopped=endpointVehicle?.CurrentStation==step.DestinationSite&&
+        var endpointStopped=endpointVehicle is not null&&endpointVehicle.CurrentStation==step.DestinationSite&&
             endpointVehicle.VelocityX is {} vx&&endpointVehicle.VelocityY is {} vy&&endpointVehicle.AngularVelocity is {} va&&
             Math.Abs(vx)<=.02&&Math.Abs(vy)<=.02&&Math.Abs(va)<=.02;
         return new(step.TaskId,step.StepId,vehicleId,vendorTaskId,current.MapId,current.VersionId,

@@ -2,6 +2,7 @@ using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Domain.Tasks;
 using AgvDispatch.Service;
 using AgvDispatch.WebHost;
+using Microsoft.Extensions.Logging;
 
 var root=Path.Combine(Path.GetTempPath(),"fleet-test-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(root);
 var count=0;
@@ -9,8 +10,8 @@ void Check(bool condition,string text){if(!condition)throw new Exception(text);c
 async Task Reject(Func<Task> operation,string text){try{await operation();}catch(InvalidOperationException){count++;return;}catch(ArgumentException){count++;return;}throw new Exception(text);}
 var user=TrafficUserContext.LocalOperation("fleet-test");
 FleetTestStart Plan(string scenario)=>new(Guid.NewGuid().ToString("N"),scenario,["AGV-01","AGV-02"],true);
-(FleetTestService Service,Port Port,FleetTestOwnership Owner,string Path) Fixture(bool enabled=true)
-{var p=new Port();var o=new FleetTestOwnership(new(){Enabled=enabled,VehicleIds=["AGV-01","AGV-02"]});var path=Path.Combine(root,Guid.NewGuid().ToString("N")+".json");return(new(p,o,path),p,o,path);}
+(FleetTestService Service,Port Port,FleetTestOwnership Owner,string Path,RecordingLogger Logger) Fixture(bool enabled=true)
+{var p=new Port();var o=new FleetTestOwnership(new(){Enabled=enabled,VehicleIds=["AGV-01","AGV-02"]});var path=Path.Combine(root,Guid.NewGuid().ToString("N")+".json");var logger=new RecordingLogger();return(new(p,o,path,logger),p,o,path,logger);}
 foreach(var scenario in new[]{"Staggered","Simultaneous","Handover"})
 {
  var f=Fixture();var plan=Plan(scenario);await f.Service.StartAsync(user,plan,default);await f.Service.StartAsync(user,plan,default);
@@ -29,12 +30,25 @@ foreach(var scenario in new[]{"Staggered","Simultaneous","Handover"})
  await f.Service.TickAsync(default);Check(f.Port.Creates==2,"重复轮询无重复建单");
  f.Port.Bad=true;await f.Service.TickAsync(default);Check((await f.Service.ReadAsync(default)).Current!.Stage=="Hold"&&!f.Owner.Allows(state.Calls[0].TaskId!,"AGV-01"),"任一车数据失效暂停新增与派车");
  var before=f.Port.Calls.Count;await f.Service.TickAsync(default);Check(f.Port.Calls.Count==before,"暂停不增呼叫");
- f.Port.Bad=false;var held=(await f.Service.ReadAsync(default)).Current!;
+ var trigger=(await f.Service.ReadAsync(default)).Current!;
+ Check(f.Logger.Messages.Any(m=>m.Contains(trigger.RunId)&&m.Contains("AGV-02 stale")),"暂停日志含原运行编号及触发原因");
+ Check(trigger.Holds.Length==1&&trigger.Holds[0].Reason.Contains("AGV-02 stale"),"暂停原因及时间持久化");
+ f.Port.Bad=false;await f.Service.TickAsync(default);
+ Check((await f.Service.ReadAsync(default)).Current!.Message==trigger.Message,"状态恢复不能覆盖最初暂停原因");
+ Check((await f.Service.ReadAsync(default)).Current!.UpdatedAt==trigger.UpdatedAt,"Hold轮询不伪造状态更新时间");
+ var held=(await f.Service.ReadAsync(default)).Current!;
  await f.Service.ControlAsync(user,"resume",new(held.RunId,"已核对两台原车原任务与点位状态",true),default);
- Check((await f.Service.ReadAsync(default)).Current!.Stage=="Running","显式现场确认续接");
+ Check((await f.Service.ReadAsync(default)).Current is {Stage:"Running",Holds.Length:1},"显式现场确认续接并保留暂停历史");
  var restartOwner=new FleetTestOwnership(new(){Enabled=false});var restarted=new FleetTestService(f.Port,restartOwner,f.Path);
  Check((await restarted.ReadAsync(default)).Current!.Stage=="Hold"&&restartOwner.Active&&!restartOwner.Allows(state.Calls[0].TaskId!,"AGV-01"),"切普通模式重启仍保留暂停保护");
  var created=f.Port.Creates;await restarted.TickAsync(default);Check(f.Port.Creates==created,"重启不自动创建");
+}
+var controls=Fixture();await controls.Service.StartAsync(user,Plan("Simultaneous"),default);
+var original=(await controls.Service.ReadAsync(default)).Current!;
+foreach(var action in new[]{"resume","close","unknown"})
+{
+ await Reject(()=>controls.Service.ControlAsync(user,action,new(original.RunId,"现场核对依据有效但操作状态不符",true),default),"非法控制须拒绝");
+ Check((await controls.Service.ReadAsync(default)).Current==original,"非法控制不得暂停原运行或添加虚假核对记录");
 }
 var stopped=Fixture();await stopped.Service.StartAsync(user,Plan("Staggered"),default);await stopped.Service.TickAsync(default);
 var run=(await stopped.Service.ReadAsync(default)).Current!;
@@ -45,6 +59,9 @@ await stopped.Service.TickAsync(default);
 Check((await stopped.Service.ReadAsync(default)).Current!.Stage=="Running","任务结束但PLC或资源未闭合时继续等待");
 stopped.Port.Closed=true;await stopped.Service.TickAsync(default);
 Check((await stopped.Service.ReadAsync(default)).Current!.Stage=="Completed"&&!stopped.Owner.Active,"确认任务及基线闭合后解除会话保护");
+var completed=(await stopped.Service.ReadAsync(default)).Current!;
+await Reject(()=>stopped.Service.ControlAsync(user,"stop",new(completed.RunId,"",false),default),"已完成记录不允许再次停止");
+Check((await stopped.Service.ReadAsync(default)).Current==completed,"已完成记录保持不可变");
 var closePending=Fixture();await closePending.Service.StartAsync(user,Plan("Staggered"),default);await closePending.Service.TickAsync(default);
 var pendingRun=(await closePending.Service.ReadAsync(default)).Current!;
 await closePending.Service.ControlAsync(user,"stop",new(pendingRun.RunId,"",false),default);
@@ -55,6 +72,9 @@ await closePending.Service.TickAsync(default);
 Check(closeReason.Contains("still active")&&(await closePending.Service.ReadAsync(default)).Current!.Message==closeReason,"关闭失败原因不会被通用Hold提示覆盖");
 var uncertain=Fixture();uncertain.Port.FailCall=true;await uncertain.Service.StartAsync(user,Plan("Simultaneous"),default);await uncertain.Service.TickAsync(default);
 Check((await uncertain.Service.ReadAsync(default)).Current is {Stage:"Hold"} row&&row.Calls.All(c=>c.Released)&&uncertain.Port.Creates==0,"批次写结果不确定保留意图且不发车");
+var persisted=new FleetTestService(uncertain.Port,new FleetTestOwnership(new(){Enabled=true}),uncertain.Path);
+var reloaded=(await persisted.ReadAsync(default)).Current!;
+Check(reloaded.Holds.Length==2&&reloaded.Holds[0].Reason.Contains("timeout after write"),"重启保留原暂停历史并追加重启原因");
 await Reject(()=>uncertain.Service.StartAsync(user,Plan("Staggered"),default),"未闭合禁止新会话");
 foreach(var scenario in new[]{"Staggered","Simultaneous","Handover"})
 {
@@ -102,4 +122,12 @@ sealed class Port:IFleetTestPort
  public Task CheckCurrentAsync(FleetTestRun r,CancellationToken ct){if(Bad)throw new InvalidOperationException("AGV-02 stale");return Task.CompletedTask;}
  public Task CheckClosedAsync(FleetTestRun r,CancellationToken ct)=>Closed?Task.CompletedTask:throw new FleetClosurePendingException("still active");
  public void Milestone(DispatchTaskStepType step)=>Details[0]=Details[0] with {Steps=[new("s",2,step,DispatchTaskStepStatus.Completed,"AGV-01",null,null,null,0,null,DateTimeOffset.UtcNow,null)]};
+}
+
+sealed class RecordingLogger:ILogger<FleetTestService>
+{
+ public List<string> Messages=[];
+ public IDisposable? BeginScope<TState>(TState state) where TState:notnull=>null;
+ public bool IsEnabled(LogLevel level)=>true;
+ public void Log<TState>(LogLevel level,EventId id,TState state,Exception? exception,Func<TState,Exception?,string> format)=>Messages.Add(format(state,exception));
 }

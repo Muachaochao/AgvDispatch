@@ -25,13 +25,15 @@ public sealed class FleetTestService : IsolatedBackgroundService, IFleetTestServ
     private readonly string path;
     private readonly SemaphoreSlim mutex=new(1,1);
     private FleetTestRun? run;
-    public FleetTestService(IFleetTestPort port,FleetTestOwnership ownership,string path)
+    private readonly ILogger<FleetTestService> logger;
+    public FleetTestService(IFleetTestPort port,FleetTestOwnership ownership,string path,ILogger<FleetTestService>? logger=null)
     {
         this.port=port;this.ownership=ownership;this.path=path;
+        this.logger=logger??Microsoft.Extensions.Logging.Abstractions.NullLogger<FleetTestService>.Instance;
         if(File.Exists(path))
         {
             run=JsonSerializer.Deserialize<FleetTestRun>(File.ReadAllText(path))??throw new InvalidDataException("双车测试记录损坏。");
-            if(run.Stage!="Completed") run=run with {Stage="Hold",Message="重启后保留原任务；须核对后续接，禁止自动发新呼叫。"};
+            if(run.Stage!="Completed") Hold("重启后保留原任务；须核对后续接，禁止自动发新呼叫。原状态："+run.Message);
         }
         Protect();
     }
@@ -44,7 +46,13 @@ public sealed class FleetTestService : IsolatedBackgroundService, IFleetTestServ
         File.Move(path+".tmp",path,true);Protect();
     }
     private void Hold(string message)
-    {run=run! with {Stage="Hold",Message=message,UpdatedAt=DateTimeOffset.UtcNow};ownership.Set(true,false,[]);Save();}
+    {
+        var now=DateTimeOffset.UtcNow;
+        run=run! with {Stage="Hold",Message=message,UpdatedAt=now,Holds=[..run.Holds,new(now,message)]};
+        ownership.Set(true,false,[]);Save();
+        logger.LogWarning("双车测试暂停。RunId={RunId}, Reason={Reason}, TaskIds={TaskIds}",
+            run.RunId,message,string.Join(',',run.Calls.Where(c=>c.TaskId!=null).Select(c=>c.TaskId)));
+    }
     private static void Authorize(TrafficUserContext user)
     {if(!user.Has(TrafficPermission.Administer))throw new UnauthorizedAccessException("需要管理员权限。");}
     public async Task<FleetTestStatus> ReadAsync(CancellationToken ct)
@@ -83,10 +91,19 @@ public sealed class FleetTestService : IsolatedBackgroundService, IFleetTestServ
     public async Task<FleetTestStatus> ControlAsync(TrafficUserContext user,string action,FleetTestControl request,CancellationToken ct)
     {
         Authorize(user);await mutex.WaitAsync(ct);
+        var executing=false;
         try
         {
             if(run==null||run.RunId!=request.RunId)throw new ArgumentException("原运行编号不符。");
             if(request.Reason?.Length>1000)throw new ArgumentException("核对依据不能超过1000字。");
+            // Reject invalid requests before changing the original run or calling the PLC lab.
+            if(action is not ("stop" or "resume" or "close"))throw new ArgumentException("未知操作。");
+            if(run.Stage=="Completed")throw new InvalidOperationException("原测试已完成，不能再次控制该记录。");
+            if(action!="stop"&&(!request.SiteConfirmed||string.IsNullOrWhiteSpace(request.Reason)||request.Reason.Trim().Length<10))
+                throw new ArgumentException("须确认现场并填写至少10字核对依据。");
+            if(action=="resume"&&run.Stage!="Hold")throw new InvalidOperationException("仅暂停记录可以续接。");
+            if(action=="close"&&!run.StopRequested)throw new InvalidOperationException("先停止新增呼叫，再核对结束记录。");
+            executing=true;
             run=run with {Reviews=[..run.Reviews,new(DateTimeOffset.UtcNow,action,user.WindowsIdentity,request.Reason??"")]};
             if(action=="stop")
             {
@@ -114,8 +131,10 @@ public sealed class FleetTestService : IsolatedBackgroundService, IFleetTestServ
                 }
                 else throw new ArgumentException("未知操作。");
             }
+            logger.LogInformation("双车测试控制完成。RunId={RunId}, Action={Action}, Operator={Operator}, Reason={Reason}, Stage={Stage}",
+                run.RunId,action,user.WindowsIdentity,request.Reason,run.Stage);
             return await port.ObserveAsync(run,ct);
-        }catch(Exception e){if(run is {Stage:not "Completed"})Hold("控制结果待核对："+e.Message);throw;}
+        }catch(Exception e){if(executing&&run is {Stage:not "Completed"})Hold("控制结果待核对："+e.Message);throw;}
         finally{mutex.Release();}
     }
     public async Task TickAsync(CancellationToken ct)
@@ -124,21 +143,9 @@ public sealed class FleetTestService : IsolatedBackgroundService, IFleetTestServ
         try
         {
             if(run is null||run.Stage=="Completed")return;
-            if(run.Stage=="Hold")
-            {
-                var observed=await port.ObserveAsync(run,ct);
-                var blockers=observed.Vehicles.Where(v=>!v.Fresh).Select(v=>v.Message).Distinct(StringComparer.Ordinal).ToArray();
-                var message=blockers.Length==0?"暂停待核对：原任务和点位保持不变，须由现场确认后续接。":
-                    "暂停待核对："+string.Join("；",blockers);
-                var replaceMessage=blockers.Length>0||string.IsNullOrWhiteSpace(run.Message)||
-                    run.Message.StartsWith("暂停待核对：",StringComparison.Ordinal)||
-                    run.Message.StartsWith("重启后保留原任务",StringComparison.Ordinal);
-                if(replaceMessage&&run.Message!=message)
-                {
-                    run=run with {Message=message,UpdatedAt=DateTimeOffset.UtcNow};Save();
-                }
-                return;
-            }
+            // Current vehicle health is returned separately by ObserveAsync. Never overwrite
+            // the latched trigger: a recovered sample does not explain why the run stopped.
+            if(run.Stage=="Hold")return;
             if(run.Stage!="Running")return;
             try
             {

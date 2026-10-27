@@ -12,7 +12,9 @@ public sealed record FleetTestRun(string RunId, FleetTestStart Plan, string MapI
 {
     public string Operator { get; init; }="";
     public FleetTestReview[] Reviews { get; init; }=[];
+    public FleetTestHold[] Holds { get; init; }=[];
 }
+public sealed record FleetTestHold(DateTimeOffset Time,string Reason);
 public sealed record FleetTestReview(DateTimeOffset Time,string Operation,string Operator,string Reason);
 public sealed record FleetTestVehicle(string VehicleId, string? Site, bool Fresh, string Message);
 public sealed record FleetTestStatus(bool Enabled, string[] AllowedVehicles, FleetTestRun? Current,

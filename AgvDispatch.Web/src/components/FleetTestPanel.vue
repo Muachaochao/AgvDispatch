@@ -4,7 +4,7 @@ import { useDispatchStore } from '../stores/dispatch';
 import type { TaskDetail } from '../types';
 import { label } from '../state';
 type Start={requestId:string;scenario:string;vehicleIds:string[];siteConfirmed:boolean;stationIds?:string[]};
-type Run={runId:string;plan:Start;stage:string;message:string;stopRequested:boolean;updatedAt:string;calls:{stationId:string;released:boolean;taskId:string|null}[]};
+type Run={runId:string;plan:Start;stage:string;message:string;stopRequested:boolean;updatedAt:string;holds?:{time:string;reason:string}[];calls:{stationId:string;released:boolean;taskId:string|null}[]};
 type Status={enabled:boolean;allowedVehicles:string[];configuredStations:string[];current:Run|null;vehicles:{vehicleId:string;site:string|null;fresh:boolean;message:string}[];tasks:TaskDetail[];observedAt:string};
 const store=useDispatchStore(),status=ref<Status|null>(null),error=ref(''),busy=ref(false),reading=ref(false),online=ref(false);
 const scenario=ref('Staggered'),confirmed=ref(false),reason=ref('');
@@ -92,6 +92,8 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);});
   <div class="fleet-vehicles"><article v-for="v in status?.vehicles??[]" :key="v.vehicleId" :class="{stale:!v.fresh||!fresh}"><b>{{v.vehicleId}} · {{v.site||'站点未知'}}</b><p>{{v.message}}</p></article></div>
   <template v-if="current">
    <p role="status"><b>{{names[current.plan.scenario]}} · {{current.stage==='Hold'?'暂停待核对':current.stage==='Completed'?'本组收尾完成':'测试进行中'}}</b> · {{current.message}}</p>
+   <p v-if="current.stage==='Hold'" class="inline-warning">上述为暂停触发原因，车辆状态恢复后仍保留；请结合下方当前车辆状态核对，再续接原记录。</p>
+   <details v-if="current.holds?.length"><summary>暂停历史（{{current.holds.length}} 次）</summary><p v-for="(h,index) in current.holds" :key="index">{{new Date(h.time).toLocaleString()}} · {{h.reason}}</p></details>
    <small>原运行 {{current.runId}} · {{current.updatedAt}} · 停止新增：{{current.stopRequested?'是':'否'}}</small>
    <div class="fleet-vehicles"><article v-for="(c,index) in current.calls" :key="c.stationId"><b>{{c.stationId}} · {{c.released?'本组已释放呼叫':'尚未触发'}}</b><p>{{callState(index)}}</p><template v-for="t in status?.tasks.filter(t=>t.task.taskId===c.taskId)??[]" :key="t.task.taskId">
     <p>{{t.task.vehicleId||'等待调度分配'}} · {{label(t.task.stage)}}</p><p>{{t.waitingExplanation}}</p>
