@@ -13,7 +13,6 @@ import { IconListDetails, IconArrowLeft, IconPlus, IconSearch, IconChevronLeft, 
 import ConsoleDialog from '../ConsoleDialog.vue';
 import TaskExecutionDetails from '../TaskExecutionDetails.vue';
 import BusinessRunPanel from '../components/BusinessRunPanel.vue';
-import FleetTestPanel from '../components/FleetTestPanel.vue';
 
 const store = useDispatchStore();
 const toast = useToastStore();
@@ -161,9 +160,9 @@ watch(() => route.query.create, create => {
       <h2><IconListDetails :size="23" />业务任务</h2>
       <span>{{ queriedTasks ? '查询总数' : '快照总数' }} {{ tableCount }} 条</span>
       <button class="accent-button" @click="loadOptions()"><IconPlus :size="15" />创建任务</button>
+      <button @click="router.push('/engineering-tests')">工程测试</button>
       <button @click="router.push('/')"><IconArrowLeft :size="15" />返回大屏</button>
     </header>
-    <FleetTestPanel/>
     <div class="query-bar">
       <label>任务 / 工位 / 车辆<input v-model="search" placeholder="输入关键词" aria-label="搜索任务" @keydown.enter="queryTasks(1)" /></label>
       <label>任务状态<select v-model="taskFilter" aria-label="筛选任务状态"><option value="all">全部</option><option value="waiting">等待</option><option value="running">执行中</option><option value="completed">已完成</option><option value="failed">异常</option><option value="cancelled">已取消</option></select></label>

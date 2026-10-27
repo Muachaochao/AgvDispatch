@@ -41,8 +41,6 @@ export class DispatchScene {
   private stationLabels:SceneLabel[]=[];
   private viewportWidth=0;
   private viewportHeight=0;
-  private bodyGeometry = new THREE.BoxGeometry(1.2, 0.6, 0.85);
-  private ringGeometry = new THREE.RingGeometry(0.78, 0.85, 32);
   private ringMaterial = new THREE.MeshBasicMaterial({ color: '#d6f5ff', side: THREE.DoubleSide });
 
   constructor(private container: HTMLElement, private onSelect: (id: string) => void, onAreaSelect:(area:DisplayArea)=>void=()=>{}) {
@@ -105,27 +103,39 @@ export class DispatchScene {
           const group = new THREE.Group();
           group.userData.vehicleId = vehicle.vehicleId;
           const material = new THREE.MeshStandardMaterial({ color, roughness: 0.4 });
-          const body = new THREE.Mesh(this.bodyGeometry, material);
-          group.add(body);
-          const heading = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(0.2, 0.5, 0), 1, '#ffffff', 0.3, 0.2);
+          const deckMaterial = new THREE.MeshStandardMaterial({ color, roughness: 0.3, metalness: 0.12 });
+          const platformMaterial = new THREE.MeshStandardMaterial({ color: '#d8eef7', roughness: 0.35, metalness: 0.25 });
+          const chassis = new THREE.Mesh(new THREE.BoxGeometry(0.94, 0.2, 0.64), material);
+          chassis.position.y = 0.11; chassis.userData.vehiclePaint = true;
+          const deck = new THREE.Mesh(new THREE.BoxGeometry(0.78, 0.08, 0.54), deckMaterial);
+          deck.position.y = 0.25; deck.userData.vehiclePaint = true;
+          const liftingPlatform = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.045, 0.4), platformMaterial);
+          liftingPlatform.position.y = 0.31;
+          const forkLeft = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.035, 0.07), platformMaterial);
+          forkLeft.position.set(0.18, 0.325, 0.18);
+          const forkRight = forkLeft.clone(); forkRight.position.z = -0.18;
+          group.add(chassis, deck, liftingPlatform, forkLeft, forkRight);
+          const heading = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(0.48, 0.23, 0), 0.42, '#ffffff', 0.16, 0.1);
           group.add(heading);
           const label = this.makeSceneLabel(vehicle.vehicleId,'vehicle');
           entry = { group, label, ring: null };
           this.vehiclePool.set(vehicle.vehicleId, entry);
         }
 
-        entry.group.position.set(vehicle.x!, 0.4, -vehicle.y!);
+        entry.group.position.set(vehicle.x!, 0.13, -vehicle.y!);
         entry.group.rotation.y = vehicle.angle ?? 0;
-        const body = entry.group.children[0] as THREE.Mesh;
-        (body.material as THREE.MeshStandardMaterial).color.set(color);
+        entry.group.traverse(object => {
+          if (object instanceof THREE.Mesh && object.userData.vehiclePaint)
+            (object.material as THREE.MeshStandardMaterial).color.set(color);
+        });
 
-        entry.label.anchor.set(vehicle.x!,0.9,-vehicle.y!);entry.label.active=true;entry.label.element.style.setProperty('--label-color',color);
+        entry.label.anchor.set(vehicle.x!,0.68,-vehicle.y!);entry.label.active=true;entry.label.element.style.setProperty('--label-color',color);
 
         const role=focus?.blockers.includes(vehicle.vehicleId)?'blocker':focus?.vehicleId===vehicle.vehicleId?'task':vehicle.vehicleId===selected?'selected':'';
         if (role && !entry.ring) {
-          const ring = new THREE.Mesh(this.ringGeometry, this.ringMaterial.clone());
+          const ring = new THREE.Mesh(new THREE.RingGeometry(0.5, 0.55, 40), this.ringMaterial.clone());
           ring.rotation.x = -Math.PI / 2;
-          ring.position.y = -0.29;
+          ring.position.y = -0.11;
           entry.group.add(ring);
           entry.ring = ring;
         } else if (!role && entry.ring) {
@@ -169,7 +179,7 @@ export class DispatchScene {
     for(const area of map.areaAnnotations??[]){
       if(area.boundary.length<3)continue;
       const shape=new THREE.Shape(area.boundary.map(p=>new THREE.Vector2(p.x,p.y)));
-      const mesh=new THREE.Mesh(new THREE.ShapeGeometry(shape),new THREE.MeshBasicMaterial({color:area.fillColor,transparent:true,opacity:area.fillOpacity,side:THREE.DoubleSide,depthWrite:false}));
+      const mesh=new THREE.Mesh(new THREE.ShapeGeometry(shape),new THREE.MeshBasicMaterial({color:area.fillColor,transparent:true,opacity:Math.min(area.fillOpacity,.12),side:THREE.DoubleSide,depthWrite:false}));
       mesh.rotation.x=-Math.PI/2;mesh.position.y=-.08;this.mapGroup.add(mesh);
       const points=[...area.boundary,area.boundary[0]!].map(p=>new THREE.Vector3(p.x,-.06,-p.y));
       this.mapGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(points),new THREE.LineBasicMaterial({color:area.strokeColor})));
@@ -195,11 +205,11 @@ export class DispatchScene {
     for (const resource of map.resources) {
       if (!resource.boundary?.length) continue;
       const shape = new THREE.Shape(resource.boundary.map(p => new THREE.Vector2(p.x, p.y)));
-      const mesh = new THREE.Mesh(new THREE.ShapeGeometry(shape), new THREE.MeshBasicMaterial({ color: '#e4aa4f', transparent: true, opacity: 0.12, side: THREE.DoubleSide }));
+      const mesh = new THREE.Mesh(new THREE.ShapeGeometry(shape), new THREE.MeshBasicMaterial({ color: '#e4aa4f', transparent: true, opacity: 0.09, side: THREE.DoubleSide }));
       mesh.rotation.x = -Math.PI / 2; mesh.position.y = -0.03; this.mapGroup.add(mesh);this.resourceMeshes.set(resource.id,mesh);
     }
     for (const node of map.nodes.filter(n => n.type === 'WaitingPoint' || n.id === 'WAIT'))
-      this.mapGroup.add(makeWaitingArea({ name: '', type: 'waiting', x: node.x, y: 0, z: -node.y, width: 2, height: 1.8 }));
+      this.mapGroup.add(makeWaitingArea({ name: '', type: 'waiting', x: node.x, y: 0, z: -node.y, width: 1.15, height: 0.9 }));
     this.view(this.mode);
   }
 
@@ -300,13 +310,7 @@ export class DispatchScene {
     this.renderer.domElement.removeEventListener('pointerup', this.onPointer);
     this.clearGroup(this.mapGroup);
     this.clearGroup(this.vehicleGroup);this.clearResourceFocus();
-    this.bodyGeometry.dispose();
-    this.ringGeometry.dispose();
     this.ringMaterial.dispose();
-    for (const [, entry] of this.vehiclePool) {
-      const body = entry.group.children[0] as THREE.Mesh;
-      (body.material as THREE.Material).dispose();
-    }
     this.vehiclePool.clear();
     this.renderer.dispose();
     this.renderer.domElement.remove();
