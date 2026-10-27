@@ -113,7 +113,12 @@ public sealed class FleetTestPort(FleetTestOptions options,IBusinessRunService s
         Configuration();PlcHealthy();
         if(map.Current?.MapId!=run.MapId||map.Current.VersionId!=run.MapVersionId||parameters.Revision!=run.ParameterRevision)
             throw new InvalidOperationException("地图或参数与原测试记录不符。");
-        foreach(var id in run.Plan.VehicleIds)if(Health(id) is {} block)throw new InvalidOperationException(block);
+        foreach(var id in run.Plan.VehicleIds)
+        {
+            if(Health(id) is {} block)throw new InvalidOperationException(block);
+            var mapCheck=await preflight.CheckCurrentMapAsync(id,run.MapId,run.MapVersionId,ct);
+            if(!mapCheck.Accepted)throw new InvalidOperationException(id+"车端地图已变化，不能按原测试记录继续："+mapCheck.Message);
+        }
         var rows=await AllAsync(ct);
         foreach(var row in rows.Where(t=>t.Stage is not (DispatchTaskStage.Completed or DispatchTaskStage.Cancelled)))
         {
