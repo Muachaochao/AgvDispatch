@@ -24,13 +24,18 @@ public sealed class CommunicationSettingsService : ICommunicationSettingsService
     private readonly IMapExecutionGate _executionGate;
     private readonly IActiveMapRuntime? _maps;
     private CommunicationSettingsDocument _saved;
+    private readonly AgvConnectionManager? _agvConnections;
+    private readonly AgvStateCache? _agvStates;
+    private readonly AgvOptions? _agvOptions;
 
     public CommunicationSettingsService(string path, string baseDirectory, CommunicationConfiguration active,
         PlcFleet fleet, IActiveTaskLookup tasks, ILogger<CommunicationSettingsService> logger,
-        IMapExecutionGate executionGate, IActiveMapRuntime? maps = null)
+        IMapExecutionGate executionGate, IActiveMapRuntime? maps = null,
+        AgvConnectionManager? agvConnections = null, AgvStateCache? agvStates = null, AgvOptions? agvOptions = null)
     {
         _path = path; _baseDirectory = baseDirectory; _active = active; _fleet = fleet; _logger = logger;
         _tasks = tasks; _executionGate = executionGate; _maps=maps;
+        _agvConnections=agvConnections; _agvStates=agvStates; _agvOptions=agvOptions;
         _saved = ReadDocument(path) ?? new(1, "initial", active, []);
         _saved.Configuration.MapBindings ??= Clone(active).MapBindings ?? [];
     }
@@ -136,7 +141,6 @@ public sealed class CommunicationSettingsService : ICommunicationSettingsService
                 if(!keys.Add(b.VehicleId+"/"+b.LocalMapId+"/"+b.LocalMapVersion))throw new ArgumentException("同车同地图版本的绑定重复。");
             }
         }
-        if (c.AgvEnabled && !c.Agvs.Any(a => a.Enabled)) throw new ArgumentException("启用AGV采集前至少选择一台车。");
         if (c.AgvProtocolVersion is not (1 or 2) || c.AgvPollIntervalMs is < 200 or > 60000 ||
             c.AgvConnectTimeoutMs is < 500 or > 60000 || c.AgvRequestTimeoutMs is < 500 or > 60000 ||
             c.AgvReconnectDelayMs is < 500 or > 60000 || c.AgvStaleAfterMs < c.AgvPollIntervalMs || c.AgvStaleAfterMs > 300000)
@@ -180,6 +184,58 @@ public sealed class CommunicationSettingsService : ICommunicationSettingsService
         user.Has(TrafficPermission.ManageConnections), _fleet.Connections.Select(c => c.Supervisor.Current).ToArray(), _saved.Audits) {RuntimeMapId=_maps?.Current?.MapId,RuntimeMapVersion=_maps?.Current?.VersionId};
     private static CommunicationConfiguration Clone(CommunicationConfiguration value) =>
         JsonSerializer.Deserialize<CommunicationConfiguration>(JsonSerializer.Serialize(value))!;
+    public async Task<CommunicationSettingsSnapshot> SetVehicleConnectionAsync(TrafficUserContext user,
+        SetVehicleConnectionRequest request, CancellationToken ct)
+    {
+        if (!user.Has(TrafficPermission.ManageConnections)) throw new UnauthorizedAccessException("无车辆连接管理权限。");
+        using var control = await _executionGate.EnterControlAsync(ct);
+        if (_executionGate.Mode != MapExecutionMode.Running) throw new InvalidOperationException("地图切换期间不能改变车辆通信。");
+        await _gate.WaitAsync(ct);
+        try
+        {
+            if (_saved.Revision != request.ExpectedRevision) throw new InvalidOperationException("配置已变化，请刷新车辆列表。");
+            if (JsonSerializer.Serialize(_saved.Configuration) != JsonSerializer.Serialize(_active))
+                throw new InvalidOperationException("已有待重启配置，请先受控重启；不能对旧地址操作。");
+            if (_agvConnections is null || _agvStates is null || _agvOptions is null || !_active.AgvEnabled ||
+                !_agvConnections.TryGetConfigured(request.VehicleId, out var client))
+                throw new InvalidOperationException("车辆尚未加载或AGV总采集关闭；请先保存车辆配置并受控重启。");
+            var vehicle = _active.Agvs.Single(v => v.VehicleId.Equals(request.VehicleId, StringComparison.OrdinalIgnoreCase));
+            if (vehicle.Enabled == request.Enabled) return Snapshot(user);
+            var activeTasks=await _tasks.GetActiveTasksAsync(ct);
+            if (activeTasks.Any(t => t.VehicleId is null || t.VehicleId.Equals(request.VehicleId,StringComparison.OrdinalIgnoreCase)))
+                throw new InvalidOperationException("该车有未结束任务或存在待派任务，请先核对原任务；断开通信不能替代取消或急停。");
+            if (!request.Enabled && _agvStates.TryGet(request.VehicleId,out var state) &&
+                state.Connection==AgvDispatch.Domain.Devices.ConnectionState.Online)
+            {
+                // Query the original task list and motion immediately before disconnecting.
+                var (live, _) = await client.PollAsync(ct);
+                if (live.VelocityX is not {} vx || live.VelocityY is not {} vy || live.AngularVelocity is not {} va ||
+                    Math.Abs(vx)>=.01 || Math.Abs(vy)>=.01 || Math.Abs(va)>=.01 || live.Tasks.Any(t=>t.Status is not (4 or 5 or 6 or 7)))
+                    throw new InvalidOperationException("车辆仍在运动、存在车端任务或停稳状态不明确，暂不能断开。");
+            }
+            var next=Clone(_saved.Configuration);
+            next.Agvs.Single(v=>v.VehicleId.Equals(request.VehicleId,StringComparison.OrdinalIgnoreCase)).Enabled=request.Enabled;
+            Validate(next,_baseDirectory);
+            if (request.Enabled && _agvOptions.AllowCommands &&
+                _agvOptions.NavigationCommandMode.Equals("GotargetCommissioning",StringComparison.OrdinalIgnoreCase) &&
+                next.Agvs.Count(v=>v.Enabled)>1)
+                throw new InvalidOperationException("当前3051独立测试模式仅允许连接一台车辆，请先切换运行模式。");
+            var audit=new CommunicationSettingsAudit(DateTimeOffset.Now,user.WindowsIdentity,
+                $"车辆{request.VehicleId}通信{(request.Enabled?"连接":"断开")}，即时生效；保留连接参数与原任务记录。");
+            var document=new CommunicationSettingsDocument(1,Guid.NewGuid().ToString("N"),next,_saved.Audits.Prepend(audit).Take(100).ToArray());
+            var temp=_path+"."+Guid.NewGuid().ToString("N")+".tmp";
+            try { await File.WriteAllTextAsync(temp,JsonSerializer.Serialize(document,JsonOptions),ct); ct.ThrowIfCancellationRequested(); File.Move(temp,_path,true); }
+            finally { if(File.Exists(temp))File.Delete(temp); }
+            // Once saved, finish applying even if the HTTP caller disconnects.
+            _agvStates.SetCommunicationEnabled(request.VehicleId,request.Enabled);
+            await client.SetCommunicationEnabledAsync(request.Enabled);
+            vehicle.Enabled=request.Enabled;
+            _saved=document;
+            _logger.LogInformation("车辆通信切换。VehicleId={VehicleId}, Enabled={Enabled}, Operator={Operator}",request.VehicleId,request.Enabled,user.WindowsIdentity);
+            return Snapshot(user);
+        }
+        finally { _gate.Release(); }
+    }
     public async Task<CommunicationSettingsSnapshot> GetAsync(TrafficUserContext user, CancellationToken cancellationToken)
     {
         if (!user.Has(TrafficPermission.View)) throw new UnauthorizedAccessException("无通信配置查看权限。");

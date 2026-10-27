@@ -15,6 +15,7 @@ internal sealed class SeerTcpChannel(string ipAddress, int port, AgvOptions opti
     private int _sequence;
     private long _lastRequest;
     private bool _disposed;
+    private volatile bool _enabled = true;
     public bool IsConnected => _client?.Connected == true && _stream is not null;
     public async Task<JsonDocument> RequestAsync(ushort messageType, object? payload, CancellationToken cancellationToken)
     {
@@ -23,6 +24,7 @@ internal sealed class SeerTcpChannel(string ipAddress, int port, AgvOptions opti
         try
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
+            if (!_enabled) throw new InvalidOperationException("车辆通信已由操作员断开。");
             if (_lastRequest != 0)
             {
                 var wait = _options.RequestIntervalMs - Stopwatch.GetElapsedTime(_lastRequest).TotalMilliseconds;
@@ -128,6 +130,14 @@ internal sealed class SeerTcpChannel(string ipAddress, int port, AgvOptions opti
     public void Disconnect()
     {
         _stream?.Dispose(); _client?.Dispose(); _stream = null; _client = null;
+    }
+    public async Task SetEnabledAsync(bool enabled)
+    {
+        // Reject queued requests before draining the current request and closing its socket.
+        if (!enabled) _enabled = false;
+        await _requestLock.WaitAsync();
+        try { if (!enabled) Disconnect(); _enabled = enabled; }
+        finally { _requestLock.Release(); }
     }
     public async ValueTask DisposeAsync()
     {

@@ -188,6 +188,20 @@ public sealed class TrafficControlNamedPipeServer(
                 $"账号{user.WindowsIdentity}没有交通资源查看权限。");
         }
 
+        if (request.Operation == "SetVehicleConnection")
+        {
+            var q=Deserialize<SetVehicleConnectionRequest>(request.Payload);
+            if (!user.Has(TrafficPermission.ManageConnections)) throw new UnauthorizedAccessException("无车辆连接管理权限。");
+            if (navigationTest is not null && (await navigationTest.ReadAsync(cancellationToken)) is { Enabled:true } n &&
+                n.VehicleId.Equals(q.VehicleId,StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("该车处于独立导航或升降测试模式，请先结束原测试并退出该模式，再改变连接。");
+            if (businessRun is not null && (await businessRun.ReadAsync(cancellationToken)).Current is { Stage:not "Completed" } b &&
+                b.Plan.VehicleId.Equals(q.VehicleId,StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("该车原业务运行尚未闭合，请先停止新增并核对收尾。");
+            if (fleetTest is not null && (await fleetTest.ReadAsync(cancellationToken)) is { Current: { Stage:not "Completed" } f } &&
+                f.Plan.VehicleIds.Contains(q.VehicleId,StringComparer.OrdinalIgnoreCase))
+                throw new InvalidOperationException("该车参与的双车测试尚未闭合，请先停止新增并核对原记录。");
+        }
         if (request.Operation is "SubmitForkTest" or "SubmitJackTest" or "PreviewNavigationTest" or "SubmitNavigationTest" &&
             plcCycleTest is not null && (await plcCycleTest.ReadAsync(cancellationToken)).Enabled)
             throw new InvalidOperationException("PLC空载联调模式独占测试车辆；手动导航或顶升请先停止该模式并明确切换启动方式。");
@@ -236,6 +250,8 @@ public sealed class TrafficControlNamedPipeServer(
             "GetExecutionRecovery" => Success(await recovery.GetAsync(cancellationToken)),
             "DecideExecutionRecovery" => Success(await recovery.DecideAsync(user, Deserialize<RecoveryDecisionRequest>(request.Payload), cancellationToken)),
             "ReleaseExecutionRecovery" => Success(await recovery.ReleaseAsync(user, Deserialize<RecoveryReleaseRequest>(request.Payload), cancellationToken)),
+            "SetVehicleConnection" => Success(await communicationSettings.SetVehicleConnectionAsync(user,
+                Deserialize<SetVehicleConnectionRequest>(request.Payload), cancellationToken)),
             TrafficControlOperations.GetCommunicationSettings => Success(await communicationSettings.GetAsync(user, cancellationToken)),
             TrafficControlOperations.SaveCommunicationSettings => Success(await communicationSettings.SaveAsync(user,
                 Deserialize<SaveCommunicationSettingsRequest>(request.Payload), cancellationToken)),

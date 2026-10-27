@@ -44,10 +44,6 @@ public sealed class AgvOptions
         }
 
         var enabled = Robots.Where(robot => robot.Enabled).ToArray();
-        if (enabled.Length == 0)
-        {
-            return "启用AGV采集前至少需要配置一台启用的机器人。";
-        }
 
         var duplicate = enabled.GroupBy(robot => robot.VehicleId, StringComparer.OrdinalIgnoreCase)
             .FirstOrDefault(group => group.Count() > 1);
@@ -75,7 +71,7 @@ public sealed class AgvOptions
             }
 
             if (string.Equals(NavigationCommandMode, "GotargetCommissioning", StringComparison.OrdinalIgnoreCase) &&
-                enabled.Length != 1)
+                enabled.Length > 1)
             {
                 return "3051 GotargetCommissioning模式只允许启用一台AGV。";
             }

@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Sockets;
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Connectors.Plc;
+using AgvDispatch.Connectors.Agv;
 using AgvDispatch.Domain.Devices;
 using AgvDispatch.Domain.Tasks;
 using AgvDispatch.Infrastructure.Maps;
@@ -126,7 +127,31 @@ var accepted = listener.AcceptTcpClientAsync();
 var probe = await service.ProbeAsync(manager, new("127.0.0.1", ((IPEndPoint)listener.LocalEndpoint).Port), default);
 using var socket = await accepted;
 Require(probe.Reachable && socket.Available == 0, "TCP probe sends no protocol data");
-Console.WriteLine("PASS: multi PLC catalog/routing, validation, permissions, atomic save, recovery isolation, real map-switch guards, revision, active-task guard and TCP-only probe");
+var liveConfig=new CommunicationConfiguration { AgvEnabled=true,
+    Plcs=[new(){DeviceId="PLC-01"}],
+    Agvs=[new(){VehicleId="LIVE-01",IpAddress="127.0.0.1",Enabled=false},new(){VehicleId="LIVE-02",IpAddress="127.0.0.2",Enabled=false}],MapBindings=[] };
+var agvOptions=new AgvOptions();CommunicationSettingsService.ApplyAgv(liveConfig,agvOptions);
+await using var connections=new AgvConnectionManager(agvOptions);
+var agvCache=new AgvStateCache(agvOptions);
+var liveTasks=new TestTasks();
+var liveService=new CommunicationSettingsService(Path.Combine(root,"live.json"),root,liveConfig,fleet,liveTasks,
+    NullLogger<CommunicationSettingsService>.Instance,gate,null,connections,agvCache,agvOptions);
+var current=await liveService.GetAsync(manager,default);
+try {await liveService.SetVehicleConnectionAsync(viewer,new("LIVE-01",true,current.Revision),default);Require(false,"viewer denied live toggle");}catch(UnauthorizedAccessException){}
+var connected=await liveService.SetVehicleConnectionAsync(manager,new("LIVE-01",true,current.Revision),default);
+Require(!connected.RestartRequired&&connected.Active.Agvs[0].Enabled&&connections.TryGet("LIVE-01",out _),"connect applies only target without restart");
+Require(!connected.Active.Agvs[1].Enabled&&!connections.TryGet("LIVE-02",out _),"other vehicle remains disconnected");
+try {await liveService.SetVehicleConnectionAsync(manager,new("LIVE-01",false,current.Revision),default);Require(false,"stale live revision denied");}catch(InvalidOperationException){}
+liveTasks.HasTask=true;
+try {await liveService.SetVehicleConnectionAsync(manager,new("LIVE-01",false,connected.Revision),default);Require(false,"pending task prevents disconnect");}catch(InvalidOperationException){}
+liveTasks.HasTask=false;
+var disconnected=await liveService.SetVehicleConnectionAsync(manager,new("LIVE-01",false,connected.Revision),default);
+Require(!disconnected.RestartRequired&&!connections.TryGet("LIVE-01",out _)&&agvCache.GetAll().All(s=>s.Quality==SignalQuality.Disabled),"disconnect disables lookup and cache");
+Require(!CommunicationSettingsService.ReadDocument(Path.Combine(root,"live.json"))!.Configuration.Agvs[0].Enabled&&
+    agvOptions.GetConfigurationError()==null,"all cars can remain disconnected across restart");
+agvCache.MarkConnecting("LIVE-01");
+Require(agvCache.GetAll().Single(s=>s.VehicleId=="LIVE-01").Quality==SignalQuality.Disabled,"late polling cannot revive disconnected cache");
+Console.WriteLine("PASS: communication persistence, live per-vehicle toggle, permissions, revisions, task protection and disabled-cache isolation");
 Console.WriteLine(root);
 
 static void Reject(Action operation, string name)

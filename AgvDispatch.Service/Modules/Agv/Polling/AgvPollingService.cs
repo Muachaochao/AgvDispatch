@@ -31,7 +31,7 @@ public sealed class AgvPollingService(
             options.PollIntervalMs,
             options.ProtocolVersion);
 
-        var workers = connections.Clients
+        var workers = connections.AllClients
             .Select(client => PollRobotAsync(client, stoppingToken))
             .ToArray();
         await Task.WhenAll(workers);
@@ -44,6 +44,11 @@ public sealed class AgvPollingService(
         var vehicleId = client.Robot.VehicleId;
         while (!cancellationToken.IsCancellationRequested)
         {
+            if (!client.CommunicationEnabled)
+            {
+                await Task.Delay(250, cancellationToken);
+                continue;
+            }
             try
             {
                 if (!client.IsConnected)
@@ -54,7 +59,7 @@ public sealed class AgvPollingService(
                 var (telemetry, responseTime) = await client.PollAsync(cancellationToken);
                 var wasOnline = stateCache.TryGet(vehicleId, out var previous) &&
                     previous.Connection == Domain.Devices.ConnectionState.Online;
-                stateCache.ApplyTelemetry(vehicleId, telemetry, responseTime);
+                if (client.CommunicationEnabled) stateCache.ApplyTelemetry(vehicleId, telemetry, responseTime);
                 if (!wasOnline)
                 {
                     logger.LogInformation(
@@ -69,6 +74,7 @@ public sealed class AgvPollingService(
             }
             catch (Exception exception)
             {
+                if (!client.CommunicationEnabled) continue;
                 // A transport failure resets only its own channel inside SeerTcpChannel.
                 // Do not interrupt an independent navigation request when status polling fails.
                 stateCache.MarkFailure(

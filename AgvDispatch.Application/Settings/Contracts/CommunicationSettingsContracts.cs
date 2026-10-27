@@ -119,10 +119,13 @@ public sealed record CommunicationSettingsSnapshot(string Revision, Communicatio
     public string? RuntimeMapVersion {get;init;}
 }
 public sealed record SaveCommunicationSettingsRequest(string ExpectedRevision, CommunicationConfiguration Configuration);
+public sealed record SetVehicleConnectionRequest(string VehicleId, bool Enabled, string ExpectedRevision);
 public sealed record ConnectionProbeRequest(string IpAddress, int Port);
 public sealed record ConnectionProbeResult(bool Reachable, double ElapsedMs, string Message);
 public interface ICommunicationSettingsService
 {
+    Task<CommunicationSettingsSnapshot> SetVehicleConnectionAsync(TrafficUserContext user, SetVehicleConnectionRequest request, CancellationToken ct)
+        => throw new NotSupportedException("后台尚未支持车辆即时连接管理。");
     Task<CommunicationSettingsSnapshot> GetAsync(TrafficUserContext user, CancellationToken cancellationToken);
     Task<CommunicationSettingsSnapshot> SaveAsync(TrafficUserContext user, SaveCommunicationSettingsRequest request, CancellationToken cancellationToken);
     Task<ConnectionProbeResult> ProbeAsync(TrafficUserContext user, ConnectionProbeRequest request, CancellationToken cancellationToken);

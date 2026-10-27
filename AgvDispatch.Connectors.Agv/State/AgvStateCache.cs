@@ -9,9 +9,23 @@ public sealed class AgvStateCache : IAgvStateCache
     private readonly object _sync = new();
     private readonly Dictionary<string, AgvRobotSnapshot> _snapshots;
     private long _version;
+    private readonly HashSet<string> _disconnected = new(StringComparer.OrdinalIgnoreCase);
+
+    public void SetCommunicationEnabled(string vehicleId, bool enabled)
+    {
+        lock (_sync)
+        {
+            if (enabled) _disconnected.Remove(vehicleId);
+            else if (!_disconnected.Add(vehicleId)) return;
+        }
+        Update(vehicleId, p => p with { Connection = ConnectionState.Disconnected,
+            Quality = enabled ? SignalQuality.Unknown : SignalQuality.Disabled,
+            LastSuccessfulPollAt = null, ErrorMessage = enabled ? "等待重新采集。" : "操作员已断开通信。" }, true);
+    }
 
     public AgvStateCache(AgvOptions options)
     {
+        foreach (var robot in options.Robots.Where(r=>!options.Enabled||!r.Enabled)) _disconnected.Add(robot.VehicleId);
         var now = DateTimeOffset.Now;
         _snapshots = options.Robots.ToDictionary(
             robot => robot.VehicleId,
@@ -112,13 +126,14 @@ public sealed class AgvStateCache : IAgvStateCache
         });
     }
 
-    private void Update(string vehicleId, Func<AgvRobotSnapshot, AgvRobotSnapshot> change)
+    private void Update(string vehicleId, Func<AgvRobotSnapshot, AgvRobotSnapshot> change, bool allowDisconnected = false)
     {
         AgvRobotSnapshot previous;
         AgvRobotSnapshot current;
         var now = DateTimeOffset.Now;
         lock (_sync)
         {
+            if (!allowDisconnected && _disconnected.Contains(vehicleId)) return;
             if (!_snapshots.TryGetValue(vehicleId, out previous!))
             {
                 return;

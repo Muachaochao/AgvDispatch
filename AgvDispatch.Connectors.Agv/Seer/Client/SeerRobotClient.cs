@@ -17,10 +17,12 @@ public sealed class SeerRobotClient : IAsyncDisposable
     private readonly SeerTcpChannel _status;
     private readonly SeerTcpChannel _navigation;
     private bool _disposed;
+    private volatile bool _communicationEnabled;
 
     public SeerRobotClient(AgvRobotOptions robot, AgvOptions options)
     {
         Robot = robot;
+        _communicationEnabled = robot.Enabled;
         _options = options;
         _status = new(robot.IpAddress, robot.Port, options);
         _navigation = robot.NavigationPort == robot.Port ? _status : new(robot.IpAddress, robot.NavigationPort, options);
@@ -28,6 +30,15 @@ public sealed class SeerRobotClient : IAsyncDisposable
 
     public AgvRobotOptions Robot { get; }
     public bool IsConnected => _status.IsConnected;
+    public bool CommunicationEnabled => _communicationEnabled;
+    public async Task SetCommunicationEnabledAsync(bool enabled)
+    {
+        _communicationEnabled = false;
+        await _status.SetEnabledAsync(enabled);
+        if (!ReferenceEquals(_status, _navigation)) await _navigation.SetEnabledAsync(enabled);
+        Robot.Enabled = enabled;
+        _communicationEnabled = enabled;
+    }
 
     public async Task<(AgvRobotTelemetry Telemetry, TimeSpan ResponseTime)> PollAsync(
         CancellationToken cancellationToken)
@@ -132,6 +143,7 @@ public sealed class SeerRobotClient : IAsyncDisposable
     internal async Task<JsonDocument> RequestAsync(ushort messageType, object? payload, CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        if (!_communicationEnabled) throw new InvalidOperationException("车辆通信未启用，请在车辆管理中连接。");
         var channel = messageType switch
         {
             >= 1000 and < 2000 => _status,

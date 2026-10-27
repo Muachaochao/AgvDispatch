@@ -43,7 +43,14 @@ foreach($latestEntry in @(@{Name='启动最新版Web.cmd';Text=$latestStartText}
     [IO.File]::WriteAllText((Join-Path $latestRoot $latestEntry.Name),$latestEntryText,[Text.UTF8Encoding]::new($false))
 }
 # Keep the former entry names as forwarders to the single canonical pair.
- $latestFleetText="@echo off`r`nchcp 65001 >nul`r`ncall `"%~dp0启动最新版Web.cmd`" --fleet-test-vehicles AGV-01,AGV-02 %*`r`n"
+ # Preserve the site's selected pair when promoting a release; AGV-02 may be a forklift.
+ $latestFleetPair='AGV-01,AGV-02'
+ $latestFleetEntry=Join-Path $latestRoot '启动双车联调Web.cmd'
+ if(Test-Path -LiteralPath $latestFleetEntry){
+     $latestPairMatch=[regex]::Match([IO.File]::ReadAllText($latestFleetEntry),'--fleet-test-vehicles\s+([A-Za-z0-9_-]{1,32}),([A-Za-z0-9_-]{1,32})(?=\s|$)')
+     if($latestPairMatch.Success -and $latestPairMatch.Groups[1].Value -ine $latestPairMatch.Groups[2].Value){$latestFleetPair=$latestPairMatch.Groups[1].Value+','+$latestPairMatch.Groups[2].Value}
+ }
+ $latestFleetText="@echo off`r`nchcp 65001 >nul`r`ncall `"%~dp0启动最新版Web.cmd`" --fleet-test-vehicles $latestFleetPair %*`r`n"
  [IO.File]::WriteAllText((Join-Path $latestRoot '启动双车联调Web.cmd'),$latestFleetText,[Text.UTF8Encoding]::new($false))
 # They must not retain a separately selected release after promotion.
 foreach($latestAlias in @(@{Name='启动界面修复版Web.cmd';Target='启动最新版Web.cmd'},@{Name='停止界面修复版Web.cmd';Target='停止最新版Web.cmd'})){

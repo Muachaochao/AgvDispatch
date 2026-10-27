@@ -80,10 +80,16 @@ public static class EditorApi
             return bytes is null?Results.NotFound(new{error="当前Web后台未留存此原图；方案跨电脑转移时需同时保留原SMAP。"}):
                 Results.File(bytes,"application/octet-stream",sha+".smap");
         });
+        app.MapPost("/api/vehicles/connection", async (SetVehicleConnectionRequest request, DispatchPipe pipe, CancellationToken ct) =>
+        {
+            var settings=await pipe.ReadAsync<CommunicationSettingsSnapshot>("SetVehicleConnection",request,ct);
+            return Results.Ok(new { settings!.Revision, Vehicles=settings.Saved.Agvs, ActiveVehicles=settings.Active.Agvs,
+                settings.RestartRequired, settings.CanManage });
+        });
         app.MapGet("/api/vehicles/configuration", async (DispatchPipe pipe, CancellationToken ct) =>
         {
             var settings = await pipe.ReadAsync<CommunicationSettingsSnapshot>(TrafficControlOperations.GetCommunicationSettings, new { }, ct);
-            return settings is null ? null : new { settings.Revision, Vehicles = settings.Saved.Agvs, settings.RestartRequired, settings.CanManage };
+            return settings is null ? null : new { settings.Revision, Vehicles = settings.Saved.Agvs, ActiveVehicles=settings.Active.Agvs, settings.RestartRequired, settings.CanManage };
         });
         app.MapPost("/api/vehicles/configuration", async (VehicleConfigurationRequest request, DispatchPipe pipe, CancellationToken ct) =>
         {

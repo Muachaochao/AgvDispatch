@@ -16,6 +16,14 @@ if (robot.NavigationConnections!=2 || robot.Accepted.Count!=2 || !robot.Accepted
     throw new Exception("Wrong port, stale socket reused, or duplicated control request");
 Console.WriteLine("PASS 状态端口仍在线时识别导航端口已到达的FIN，发车前建立新连接");
 Console.WriteLine("PASS 两条原3066各接收一次，状态端口没有控制写入");
+await client.SetCommunicationEnabledAsync(false);
+if(client.IsConnected||client.CommunicationEnabled)throw new Exception("Disconnect must close status channel");
+try {await client.GoToTargetAsync("MUST-NOT-SEND",["A","B"],null,true,default);throw new Exception("Disabled navigation accepted");}
+catch(InvalidOperationException){}
+await client.SetCommunicationEnabledAsync(true);
+if((await client.QueryTaskAsync("READ-ONLY-RECONNECT",default))?.Status!=404||robot.Accepted.Count!=2)
+    throw new Exception("Reconnecting must not replay navigation");
+Console.WriteLine("PASS 手动断开后拒绝控制报文；重连仅查询且不重发原导航");
 
 sealed class SplitRobot : IAsyncDisposable
 {

@@ -7,19 +7,20 @@ public sealed class AgvConnectionManager : IAsyncDisposable
     public AgvConnectionManager(AgvOptions options)
     {
         _clients = options.Robots
-            .Where(robot => robot.Enabled)
             .ToDictionary(
                 robot => robot.VehicleId,
                 robot => new SeerRobotClient(robot, options),
                 StringComparer.OrdinalIgnoreCase);
     }
 
-    public IReadOnlyList<SeerRobotClient> Clients => _clients.Values
+    public IReadOnlyList<SeerRobotClient> AllClients => _clients.Values
         .OrderBy(client => client.Robot.VehicleId, StringComparer.OrdinalIgnoreCase)
         .ToArray();
+    public IReadOnlyList<SeerRobotClient> Clients => AllClients.Where(c => c.CommunicationEnabled).ToArray();
+    public bool TryGetConfigured(string vehicleId, out SeerRobotClient client) => _clients.TryGetValue(vehicleId, out client!);
 
     public bool TryGet(string vehicleId, out SeerRobotClient client) =>
-        _clients.TryGetValue(vehicleId, out client!);
+        _clients.TryGetValue(vehicleId, out client!) && client.CommunicationEnabled;
 
     public async ValueTask DisposeAsync()
     {
