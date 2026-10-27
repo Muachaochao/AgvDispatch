@@ -124,7 +124,7 @@ public static class DumperExitEvaluator
     public static DumperExitAssessment VerifyReturnRouteAfterExit(
         MapDefinition map, IReadOnlyList<string> orderedNodeIds, IReadOnlyList<string> orderedEdgeIds,
         DumperExitFrame frame, DumperExitBodyProfile profile, DumperExitPolicy policy,
-        double maximumRouteDeviationMeters = 0.5)
+        double maximumRouteDeviationMeters = 0.5,bool endpointArrivalConfirmed = false)
     {
         static DumperExitAssessment Reject(string reason) => new(false, reason, []);
         if (map is null || frame is null || profile is null || policy is null || map.Unit != "m" ||
@@ -208,12 +208,17 @@ public static class DumperExitEvaluator
 
         var point = new MapPoint2D(frame.X, frame.Y);
         var candidates = new List<(int Index, double EarliestT)>();
+        var finalNode=nodes[orderedNodeIds[^1]];
+        var finalPoint=new MapPoint2D(finalNode.X,finalNode.Y);
+        var endpointConfirmed=endpointArrivalConfirmed&&Distance(point,finalPoint,finalPoint)<=maximumRouteDeviationMeters+Epsilon;
+        if(endpointConfirmed)
+            candidates.Add((segments.Count,1));
         for (var i = 0; i < segments.Count; i++)
         {
             var (a, b, curveBounds) = segments[i];
             if (curveBounds is {} bounds)
             {
-                if (curveCovers[i].Any(part => PointBoundsDistance(point, part) <= maximumRouteDeviationMeters + Epsilon))
+                    if (!endpointConfirmed&&curveCovers[i].Any(part => PointBoundsDistance(point, part) <= maximumRouteDeviationMeters + Epsilon))
                     return Reject("当前定位可能处于曲线保守边界内，不能从采样推断已通过曲线，等待区外直线定位。");
                 continue;
             }

@@ -218,6 +218,14 @@ RouteRefuse("Bezier控制包络可能回穿倒料区时拒绝", futureCurve with
 var futureArc = futureCurve with { Edges = [futureCurve.Edges[0], futureCurve.Edges[1] with
     { GeometryKind = MapEdgeGeometryKind.CircularArc, ControlPoints = [new(9, 1)] }] };
 Check(Route(futureArc).Verified, "未来圆弧全圆保守边界与倒料区分离允许");
+var endpointBase=ReturnMap(("D",1,1),("EXIT",4,1),("HOME",6,4));
+var endpointArc=endpointBase with { Edges =
+    [endpointBase.Edges[0],
+     endpointBase.Edges[1] with
+        { GeometryKind=MapEdgeGeometryKind.CircularArc,ControlPoints=[new(6,1)] }] };
+Check(DumperExitEvaluator.VerifyReturnRouteAfterExit(endpointArc,endpointArc.Nodes.Select(n=>n.Id).ToArray(),
+    endpointArc.Edges.Select(e=>e.Id).ToArray(),first with{X=6,Y=4},profile,policy,0.1,true).Verified,
+    "厂家任务完成且车辆静止在原终点时允许以终点闭合圆弧进度");
 Check(Route(futureArc, first with { X = 5.25, Y = 1 }).Verified,
     "位于原直线上但远离真实圆弧时不被全圆矩形误阻塞");
 var looseBezier = futureCurve with { Edges = [futureCurve.Edges[0], futureCurve.Edges[1] with

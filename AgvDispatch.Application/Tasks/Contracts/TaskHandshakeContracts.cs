@@ -88,4 +88,5 @@ public sealed record TaskDumperExitProof(string TaskId, string StepId, string Ve
     DateTimeOffset VendorObservedAt, DateTimeOffset CapturedAt)
 {
     public IReadOnlyList<TaskSignalEvidence> PlcSignals { get; init; } = [];
+    public bool EndpointArrivalConfirmed { get; init; }
 }

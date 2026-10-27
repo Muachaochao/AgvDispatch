@@ -113,7 +113,8 @@ public sealed partial class TaskHandshakeStore
         if(string.IsNullOrWhiteSpace(equipment)||!await OwnsEquipmentAsync(proof.TaskId,equipment,ct))throw new InvalidOperationException("出区原倒料设备归属缺失，不重新认领。");
         var assessed=DumperExitEvaluator.Evaluate(map.Definition,proof.First,proof.Second,proof.Body,proof.Policy,now);
         if(!assessed.Verified)throw new InvalidOperationException(assessed.Reason);
-        var suffix=DumperExitEvaluator.VerifyReturnRouteAfterExit(map.Definition,route.NodeIds,route.EdgeIds,proof.Second,proof.Body,proof.Policy,proof.MaximumRouteDeviationMeters);
+        var suffix=DumperExitEvaluator.VerifyReturnRouteAfterExit(map.Definition,route.NodeIds,route.EdgeIds,proof.Second,proof.Body,proof.Policy,
+            proof.MaximumRouteDeviationMeters,proof.EndpointArrivalConfirmed);
         if(!suffix.Verified)throw new InvalidOperationException(suffix.Reason);
     }
 
