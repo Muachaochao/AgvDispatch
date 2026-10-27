@@ -450,10 +450,12 @@ Check(repeated != a && (await fixture.Store.GetAsync(repeated, (await fixture.Cu
 var policyRoot = await fixture.CurrentAsync(repeated);
 var policyBinding = (await fixture.Store.GetAsync(repeated, policyRoot.StepId, default))!;
 fixture.Options.DumperExit.MinimumConfidence = 0.5;
+fixture.Options.DumperExit.MaximumRouteDeviationMeters = 0.1;
 var bindingMatches = typeof(PersistentHandshakeExecutor).GetMethod("BindingMatches", BindingFlags.Instance | BindingFlags.NonPublic)!;
 Check((bool)bindingMatches.Invoke(fixture.Engine, [policyBinding, policyRoot])!, "仅降低出区测试置信度时可续接原28阶段绑定");
 Check(!(bool)bindingMatches.Invoke(fixture.Engine, [policyBinding, policyRoot with { VehicleId = "AGV-2" }])!, "置信度兼容不能绕过车辆身份绑定");
 fixture.Options.DumperExit.MinimumConfidence = 0.9;
+fixture.Options.DumperExit.MaximumRouteDeviationMeters = 0.25;
 // Keep this new task separate from the independent old-contract fixture below.
 await fixture.Db.Updateable<DispatchTaskEntity>().SetColumns(t => new DispatchTaskEntity { Stage = (int)DispatchTaskStage.Cancelled }).Where(t => t.TaskId == repeated).ExecuteCommandAsync();
 var old = await fixture.CreateAsync("CNC-001", "AGV-1");

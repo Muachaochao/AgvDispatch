@@ -228,15 +228,21 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
             var currentPolicy=currentExit["Policy"] as JsonObject;
             var oldPolicyValue=oldPolicy?["MinimumConfidence"]?.GetValue<double>();
             var currentPolicyValue=currentPolicy?["MinimumConfidence"]?.GetValue<double>();
-            if(oldTop is null||currentTop is null||oldPolicyValue is null||currentPolicyValue is null)return false;
-            // A reviewed test-threshold change may alter only the confidence limit.
+            var oldDeviation=oldExit["MaximumRouteDeviationMeters"]?.GetValue<double>();
+            var currentDeviation=currentExit["MaximumRouteDeviationMeters"]?.GetValue<double>();
+            if(oldTop is null||currentTop is null||oldPolicyValue is null||currentPolicyValue is null||
+                oldDeviation is null||currentDeviation is null)return false;
+            // A reviewed test-threshold change may alter only the confidence limit
+            // and the route-deviation allowance.
             // Map identity, vehicle, routes, resources, body profile and all other
             // handshake parameters must remain byte-for-byte equivalent.
-            if(oldTop<currentTop||oldPolicyValue<currentPolicyValue)return false;
+            if(oldTop<currentTop||oldPolicyValue<currentPolicyValue||oldDeviation<currentDeviation)return false;
             oldExit["MinimumConfidence"]=0;
             currentExit["MinimumConfidence"]=0;
             oldPolicy!["MinimumConfidence"]=0;
             currentPolicy!["MinimumConfidence"]=0;
+            oldExit["MaximumRouteDeviationMeters"]=0;
+            currentExit["MaximumRouteDeviationMeters"]=0;
             return JsonNode.DeepEquals(oldRoot,currentRoot);
         }
         catch(Exception exception)when(exception is JsonException or InvalidOperationException or FormatException)

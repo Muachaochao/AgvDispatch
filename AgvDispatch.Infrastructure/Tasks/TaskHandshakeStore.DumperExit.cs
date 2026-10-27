@@ -107,7 +107,7 @@ public sealed partial class TaskHandshakeStore
         var configuration=context.GetProperty("Exit").Deserialize<DumperExitConfiguration>()??throw new InvalidOperationException("原出区配置缺失。");
         var profiles=configuration.BodyProfiles.Where(p=>p.VehicleId==proof.VehicleId).ToArray();
         if(context.GetProperty("MapId").GetString()!=proof.MapId||context.GetProperty("VersionId").GetString()!=proof.MapVersionId||context.GetProperty("MapHash").GetString()!=hash||context.GetProperty("Vehicle").GetString()!=proof.VehicleId||
-            profiles.Length!=1||profiles[0]!=proof.Body||!PolicyEvidenceCompatible(configuration,proof.Policy)||configuration.MaximumRouteDeviationMeters!=proof.MaximumRouteDeviationMeters)
+            profiles.Length!=1||profiles[0]!=proof.Body||!PolicyEvidenceCompatible(configuration,proof.Policy,proof.MaximumRouteDeviationMeters))
             throw new InvalidOperationException("出区证据的地图、区域、包络或阈值不等于原持久化绑定。");
         var equipment=context.GetProperty("Dumper").GetString();
         if(string.IsNullOrWhiteSpace(equipment)||!await OwnsEquipmentAsync(proof.TaskId,equipment,ct))throw new InvalidOperationException("出区原倒料设备归属缺失，不重新认领。");
@@ -117,7 +117,7 @@ public sealed partial class TaskHandshakeStore
         if(!suffix.Verified)throw new InvalidOperationException(suffix.Reason);
     }
 
-    private static bool PolicyEvidenceCompatible(DumperExitConfiguration original,DumperExitPolicy proof)
+    private static bool PolicyEvidenceCompatible(DumperExitConfiguration original,DumperExitPolicy proof,double proofMaximumRouteDeviationMeters)
     {
         // The reviewed commissioning path may lower only the localization-confidence
         // gate. All physical identity and safety geometry values must stay identical,
@@ -126,6 +126,7 @@ public sealed partial class TaskHandshakeStore
             original.MinimumObservationIntervalSeconds!=proof.MinimumObservationIntervalSeconds||
             original.MaximumAgeSeconds!=proof.MaximumAgeSeconds||
             original.SafetyMarginMeters!=proof.SafetyMarginMeters||
+            original.MaximumRouteDeviationMeters<proofMaximumRouteDeviationMeters||
             original.ResourceIds.Length!=proof.ResourceIds.Count)
             return false;
         var originalResources=original.ResourceIds.Order(StringComparer.OrdinalIgnoreCase).ToArray();
