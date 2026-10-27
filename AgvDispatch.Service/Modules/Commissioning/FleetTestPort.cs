@@ -26,6 +26,19 @@ public sealed class FleetTestPort(FleetTestOptions options,IBusinessRunService s
             return id+"定位、急停、阻塞或报警状态未就绪。";
         return null;
     }
+    public static string? StartingPickupOccupancyConflict(
+        IReadOnlyDictionary<string,string> vehicleSites,
+        IReadOnlyDictionary<string,string> selectedPickupSites)
+    {
+        foreach(var pickup in selectedPickupSites)
+        {
+            var occupants=vehicleSites.Where(v=>string.Equals(v.Value,pickup.Value,StringComparison.OrdinalIgnoreCase))
+                .Select(v=>v.Key).Order(StringComparer.OrdinalIgnoreCase).ToArray();
+            if(occupants.Length>0)
+                return $"{pickup.Key}的取货点{pickup.Value}已被参与车辆{string.Join('、',occupants)}占用。请先把两车移到不同且不占用所选取货点、等待位或倒料位的位置（建议LM7和LM8）后再启动。";
+        }
+        return null;
+    }
     private async Task<TaskCenterRow[]> AllAsync(CancellationToken ct)
     {
         var result=new List<TaskCenterRow>();
@@ -82,6 +95,10 @@ public sealed class FleetTestPort(FleetTestOptions options,IBusinessRunService s
                 if(!check.Accepted)throw new InvalidOperationException(id+"车端地图/路线核验失败："+check.Message);
             }
         }
+        var vehicleSites=plan.VehicleIds.ToDictionary(id=>id,id=>choices.Vehicles.Single(v=>v.VehicleId==id).CurrentSite!,StringComparer.OrdinalIgnoreCase);
+        var pickupSites=parameters.Capture().Pickups.Where(p=>plan.StationIds.Contains(p.StationId,StringComparer.OrdinalIgnoreCase))
+            .ToDictionary(p=>p.StationId,p=>p.PickupSite,StringComparer.OrdinalIgnoreCase);
+        if(StartingPickupOccupancyConflict(vehicleSites,pickupSites) is {} occupied)throw new InvalidOperationException(occupied);
         await BaselineAsync(ct);
         if(!ReferenceEquals(current,map.Current))throw new InvalidOperationException("核验期间地图已改变。");
         return(current.MapId,current.VersionId,parameters.Revision);

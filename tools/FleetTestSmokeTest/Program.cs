@@ -66,6 +66,14 @@ foreach(var scenario in new[]{"Staggered","Simultaneous","Handover"})
 }
 var invalid=Fixture();await Reject(()=>invalid.Service.StartAsync(user,Plan("Staggered") with {StationIds=["CNC-001","cnc-001"]},default),"拒绝重复工位");
 await Reject(()=>invalid.Service.StartAsync(user,Plan("Staggered") with {StationIds=[]},default),"拒绝空工位列表");
+Check(FleetTestPort.StartingPickupOccupancyConflict(
+    new Dictionary<string,string>{["AGV-01"]="LM1",["AGV-03"]="LM2"},
+    new Dictionary<string,string>{["CNC-001"]="LM2",["CNC-002"]="LM4"})?.Contains("LM2已被参与车辆AGV-03占用")==true,
+    "拒绝把取货任务发往另一辆参与车辆当前占用的站点");
+Check(FleetTestPort.StartingPickupOccupancyConflict(
+    new Dictionary<string,string>{["AGV-01"]="LM7",["AGV-03"]="LM8"},
+    new Dictionary<string,string>{["CNC-001"]="LM2",["CNC-002"]="LM4"}) is null,
+    "两车独立待机点且不占业务取货点时可启动");
 var mode=WebLocalLaunchMode.Parse(["--fleet-test-vehicles","AGV-01,AGV-02"]);
 Check(mode.IsBusiness&&mode.ServiceArguments("test").Contains("--Dispatching:MaxConcurrentTasks=2")&&mode.ServiceArguments("test").Contains("--TaskCreation:AutomaticCreationEnabled=false"),"专用双车启动且无独立自动建单器");
 await Reject(()=>Task.FromResult(WebLocalLaunchMode.Parse(["--fleet-test-vehicles","AGV-01,AGV-01"])),"同车不能冒充双车");
