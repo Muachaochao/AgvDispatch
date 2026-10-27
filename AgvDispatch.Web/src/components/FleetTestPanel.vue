@@ -87,7 +87,8 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);});
   </div>
   <div class="fleet-controls"><label v-for="id in status?.configuredStations??[]" :key="id" class="confirm"><input v-model="selectedStations" type="checkbox" :value="id" :disabled="busy||!!active||!!pending"/>{{id}}</label></div>
   <p>{{scenario==='Staggered'?'按所选工位列表顺序，前一工位取箱确认完成后，再呼叫下一工位。':scenario==='Simultaneous'?'所选工位在模拟PLC内同批置呼叫，任务由两车调度分配。':'前一工位任务进入倒料执行步骤后，再呼叫下一工位；后车能否到等待位由路权决定。'}}</p>
-  <label class="confirm"><input v-model="confirmed" type="checkbox" :disabled="busy"/>已核对两车停靠位置、无载初态、所选工位箱体、路线及倒料区域；两车初始停车点独立，现场允许执行</label>
+  <p class="muted-note">空箱场地测试不要求每个工位有实物箱：开始呼叫时由模拟PLC注入本轮“箱体在位”假信号，取箱后模拟无箱，返箱后模拟有箱；这些反馈不证明真实机械动作。</p>
+  <label class="confirm"><input v-model="confirmed" type="checkbox" :disabled="busy"/>已核对两车停靠位置、空载初态、空箱模拟规则、路线及倒料区域；两车初始停车点独立，现场允许执行</label>
   <div class="fleet-vehicles"><article v-for="v in status?.vehicles??[]" :key="v.vehicleId" :class="{stale:!v.fresh||!fresh}"><b>{{v.vehicleId}} · {{v.site||'站点未知'}}</b><p>{{v.message}}</p></article></div>
   <template v-if="current">
    <p role="status"><b>{{names[current.plan.scenario]}} · {{current.stage==='Hold'?'暂停待核对':current.stage==='Completed'?'本组收尾完成':'测试进行中'}}</b> · {{current.message}}</p>

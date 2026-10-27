@@ -31,12 +31,14 @@ public sealed partial class NetworkLab
                 if(request.Stations is not {Length:>0 and <=1000}||request.Stations.Distinct(StringComparer.OrdinalIgnoreCase).Count()!=request.Stations.Length||request.Stations.Any(s=>!_fleet.ContainsKey(s)))
                     throw new ArgumentException("呼叫工位无效。");
                 foreach(var station in request.Stations)
-                    if(!_fleet[station].Called&&(!Get(station,1)||Get(station,0)||Get(station,10)||!Get(station,11)||Enumerable.Range(2,4).Any(s=>Get(station,s))))
-                        throw new InvalidOperationException(station+"未满足初始有箱和握手基线。");
+                    if(!_fleet[station].Called&&(Get(station,0)||Get(station,10)||!Get(station,11)||Enumerable.Range(2,4).Any(s=>Get(station,s))))
+                        throw new InvalidOperationException(station+"未满足握手基线。");
                 // The complete batch is atomic with respect to S7 reads.
                 foreach(var station in request.Stations)
                 {
                     var entry=_fleet[station];if(entry.Called)continue;
+                    if(!Get(station,1))
+                        Set(Find(station,1),true,"双车空载模拟：注入本轮满箱在位假信号；非物理箱体证据");
                     _fleet[station]=entry with {Called=true};Set(Find(station,0),true,"双车用例模拟满箱呼叫");
                 }
             }

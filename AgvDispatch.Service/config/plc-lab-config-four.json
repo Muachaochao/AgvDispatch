@@ -1,0 +1,305 @@
+{
+  "AllowedClient": "127.0.0.1",
+  "Port": 10200,
+  "DumperStationId": "DUMPER-001",
+  "Points": [
+    {
+      "Initial": false,
+      "Db": 1,
+      "Bit": 0,
+      "Byte": 0,
+      "Signal": 0,
+      "Station": "CNC-001"
+    },
+    {
+      "Initial": true,
+      "Db": 1,
+      "Bit": 1,
+      "Byte": 0,
+      "Signal": 1,
+      "Station": "CNC-001"
+    },
+    {
+      "Initial": false,
+      "Db": 1,
+      "Bit": 4,
+      "Byte": 0,
+      "Signal": 2,
+      "Station": "CNC-001"
+    },
+    {
+      "Initial": false,
+      "Db": 1,
+      "Bit": 5,
+      "Byte": 0,
+      "Signal": 3,
+      "Station": "CNC-001"
+    },
+    {
+      "Initial": false,
+      "Db": 1,
+      "Bit": 6,
+      "Byte": 0,
+      "Signal": 4,
+      "Station": "CNC-001"
+    },
+    {
+      "Initial": false,
+      "Db": 1,
+      "Bit": 7,
+      "Byte": 0,
+      "Signal": 5,
+      "Station": "CNC-001"
+    },
+    {
+      "Initial": false,
+      "Db": 1,
+      "Bit": 2,
+      "Byte": 0,
+      "Signal": 10,
+      "Station": "CNC-001"
+    },
+    {
+      "Initial": true,
+      "Db": 1,
+      "Bit": 3,
+      "Byte": 0,
+      "Signal": 11,
+      "Station": "CNC-001"
+    },
+    {
+      "Initial": false,
+      "Db": 1,
+      "Bit": 0,
+      "Byte": 2,
+      "Signal": 0,
+      "Station": "CNC-002"
+    },
+    {
+      "Initial": true,
+      "Db": 1,
+      "Bit": 1,
+      "Byte": 2,
+      "Signal": 1,
+      "Station": "CNC-002"
+    },
+    {
+      "Initial": false,
+      "Db": 1,
+      "Bit": 4,
+      "Byte": 2,
+      "Signal": 2,
+      "Station": "CNC-002"
+    },
+    {
+      "Initial": false,
+      "Db": 1,
+      "Bit": 5,
+      "Byte": 2,
+      "Signal": 3,
+      "Station": "CNC-002"
+    },
+    {
+      "Initial": false,
+      "Db": 1,
+      "Bit": 6,
+      "Byte": 2,
+      "Signal": 4,
+      "Station": "CNC-002"
+    },
+    {
+      "Initial": false,
+      "Db": 1,
+      "Bit": 7,
+      "Byte": 2,
+      "Signal": 5,
+      "Station": "CNC-002"
+    },
+    {
+      "Initial": false,
+      "Db": 1,
+      "Bit": 2,
+      "Byte": 2,
+      "Signal": 10,
+      "Station": "CNC-002"
+    },
+    {
+      "Initial": true,
+      "Db": 1,
+      "Bit": 3,
+      "Byte": 2,
+      "Signal": 11,
+      "Station": "CNC-002"
+    },
+    {
+      "Initial": false,
+      "Db": 1,
+      "Bit": 0,
+      "Byte": 4,
+      "Signal": 0,
+      "Station": "CNC-003"
+    },
+    {
+      "Initial": true,
+      "Db": 1,
+      "Bit": 1,
+      "Byte": 4,
+      "Signal": 1,
+      "Station": "CNC-003"
+    },
+    {
+      "Initial": false,
+      "Db": 1,
+      "Bit": 4,
+      "Byte": 4,
+      "Signal": 2,
+      "Station": "CNC-003"
+    },
+    {
+      "Initial": false,
+      "Db": 1,
+      "Bit": 5,
+      "Byte": 4,
+      "Signal": 3,
+      "Station": "CNC-003"
+    },
+    {
+      "Initial": false,
+      "Db": 1,
+      "Bit": 6,
+      "Byte": 4,
+      "Signal": 4,
+      "Station": "CNC-003"
+    },
+    {
+      "Initial": false,
+      "Db": 1,
+      "Bit": 7,
+      "Byte": 4,
+      "Signal": 5,
+      "Station": "CNC-003"
+    },
+    {
+      "Initial": false,
+      "Db": 1,
+      "Bit": 2,
+      "Byte": 4,
+      "Signal": 10,
+      "Station": "CNC-003"
+    },
+    {
+      "Initial": true,
+      "Db": 1,
+      "Bit": 3,
+      "Byte": 4,
+      "Signal": 11,
+      "Station": "CNC-003"
+    },
+    {
+      "Initial": false,
+      "Db": 1,
+      "Bit": 0,
+      "Byte": 6,
+      "Signal": 0,
+      "Station": "CNC-004"
+    },
+    {
+      "Initial": true,
+      "Db": 1,
+      "Bit": 1,
+      "Byte": 6,
+      "Signal": 1,
+      "Station": "CNC-004"
+    },
+    {
+      "Initial": false,
+      "Db": 1,
+      "Bit": 4,
+      "Byte": 6,
+      "Signal": 2,
+      "Station": "CNC-004"
+    },
+    {
+      "Initial": false,
+      "Db": 1,
+      "Bit": 5,
+      "Byte": 6,
+      "Signal": 3,
+      "Station": "CNC-004"
+    },
+    {
+      "Initial": false,
+      "Db": 1,
+      "Bit": 6,
+      "Byte": 6,
+      "Signal": 4,
+      "Station": "CNC-004"
+    },
+    {
+      "Initial": false,
+      "Db": 1,
+      "Bit": 7,
+      "Byte": 6,
+      "Signal": 5,
+      "Station": "CNC-004"
+    },
+    {
+      "Initial": false,
+      "Db": 1,
+      "Bit": 2,
+      "Byte": 6,
+      "Signal": 10,
+      "Station": "CNC-004"
+    },
+    {
+      "Initial": true,
+      "Db": 1,
+      "Bit": 3,
+      "Byte": 6,
+      "Signal": 11,
+      "Station": "CNC-004"
+    },
+    {
+      "Initial": false,
+      "Db": 1,
+      "Bit": 0,
+      "Byte": 610,
+      "Signal": 6,
+      "Station": "共享倒料"
+    },
+    {
+      "Initial": false,
+      "Db": 1,
+      "Bit": 1,
+      "Byte": 610,
+      "Signal": 7,
+      "Station": "共享倒料"
+    },
+    {
+      "Initial": false,
+      "Db": 1,
+      "Bit": 2,
+      "Byte": 610,
+      "Signal": 8,
+      "Station": "共享倒料"
+    },
+    {
+      "Initial": false,
+      "Db": 1,
+      "Bit": 3,
+      "Byte": 610,
+      "Signal": 9,
+      "Station": "共享倒料"
+    },
+    {
+      "Initial": false,
+      "Db": 1,
+      "Bit": 4,
+      "Byte": 610,
+      "Signal": 12,
+      "Station": "共享倒料"
+    }
+  ],
+  "AutoDoneSeconds": 5,
+  "BindAddress": "127.0.0.1"
+}

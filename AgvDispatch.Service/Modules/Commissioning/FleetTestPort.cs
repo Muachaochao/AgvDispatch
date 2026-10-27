@@ -104,7 +104,7 @@ public sealed class FleetTestPort(FleetTestOptions options,IBusinessRunService s
         var pickupSites=parameters.Capture().Pickups.Where(p=>plan.StationIds.Contains(p.StationId,StringComparer.OrdinalIgnoreCase))
             .ToDictionary(p=>p.StationId,p=>p.PickupSite,StringComparer.OrdinalIgnoreCase);
         if(StartingPickupOccupancyConflict(vehicleSites,pickupSites) is {} occupied)throw new InvalidOperationException(occupied);
-        await BaselineAsync(true,ct);
+        await BaselineAsync(plan.StationIds,true,ct);
         if(!ReferenceEquals(current,map.Current))throw new InvalidOperationException("核验期间地图已改变。");
         return(current.MapId,current.VersionId,parameters.Revision);
     }
@@ -192,14 +192,20 @@ public sealed class FleetTestPort(FleetTestOptions options,IBusinessRunService s
             run.ParameterRevision,"双车测试","Executing","",0,detail.Task.TaskId,null,null,run.StopRequested,run.StartedAt);
         await ((BusinessRunPort)business).ApplySimulatorFeedbackAsync(fake,detail,"fleet-feedback",ct);
     }
-    private async Task BaselineAsync(bool requireStationBoxes,CancellationToken ct)
+    private async Task BaselineAsync(IEnumerable<string> requiredStationIds,bool requireStationBoxes,CancellationToken ct)
     {
         PlcHealthy();
+        var required=requiredStationIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach(var station in parameters.Capture().Pickups.Select(p=>p.StationId))
         {
             foreach(var name in new[]{"FullBoxRequested","FullBoxRequestAcknowledged","FullBoxRemoved","EmptyBoxTaskAcknowledged","EmptyBoxPlaced"})
                 if(signals.GetAll().SingleOrDefault(s=>s.StationId==station&&s.VariableName==name)?.Value!=false)throw new InvalidOperationException(station+"旧呼叫/返箱责任未闭合。");
-            if(requireStationBoxes&&signals.GetAll().SingleOrDefault(s=>s.StationId==station&&s.VariableName=="BoxPresent")?.Value!=true)
+            // FleetTest is simulator-only. A low BoxPresent is an initial state signal,
+            // not proof of a missing physical box. The reviewed simulator injects the
+            // simulated box before raising the call; a later Pickup/Place feedback owns
+            // the high/low transitions.
+            if(!simulatorOnly&&requireStationBoxes&&required.Contains(station)&&
+                signals.GetAll().SingleOrDefault(s=>s.StationId==station&&s.VariableName=="BoxPresent")?.Value!=true)
                 throw new InvalidOperationException(station+"未确认有箱。");
         }
         foreach(var name in new[]{"AgvAtWaitingPosition","AgvAtDumpingPosition","DumperReady","DumpingCompletedMayLeave"})
@@ -217,7 +223,8 @@ public sealed class FleetTestPort(FleetTestOptions options,IBusinessRunService s
         if((await AllAsync(ct)).Any(t=>t.Stage is not (DispatchTaskStage.Completed or DispatchTaskStage.Cancelled)))throw new InvalidOperationException("原任务尚未全部闭合。");
         // A stopped/cancelled run no longer requires every station to hold a box.
         // Closure still requires every handshake cleared and every lease released.
-        try{await BaselineAsync(requireStationBoxes:false,ct);}catch(InvalidOperationException e){throw new FleetClosurePendingException(e.Message);}
+        try{await BaselineAsync(parameters.Capture().Pickups.Select(p=>p.StationId),requireStationBoxes:false,ct);}
+        catch(InvalidOperationException e){throw new FleetClosurePendingException(e.Message);}
         try{await LabAsync(run,"stop",[],ct);}
         catch(FleetLabSessionMissingException)when(run.StopRequested)
         {

@@ -21,9 +21,14 @@ Console.CancelKeyPress += (_, args) =>
     args.Cancel = true;
     stop.Cancel();
 };
+var automatic = Task.Run(async () =>
+{
+    using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(250));
+    while (await timer.WaitForNextTickAsync(stop.Token)) lab.TickAutomatic();
+}, stop.Token);
 try
 {
-    await Task.Delay(Timeout.InfiniteTimeSpan, stop.Token);
+    await automatic;
 }
 catch (OperationCanceledException) when (stop.IsCancellationRequested)
 {

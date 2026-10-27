@@ -8,10 +8,11 @@ internal static class FleetTests
   void Reject(Action action,string text){try{action();}catch(InvalidOperationException){checks++;return;}throw new Exception(text);}
   using var lab=new NetworkLab(NetworkLabConfig.CreateDefault(),Path.Combine(Path.GetTempPath(),"fleet-lab-"+Guid.NewGuid().ToString("N"),"session.jsonl"));
   var id=Guid.NewGuid().ToString("N");lab.UpdateCommunication(true);lab.ControlFleet(new(id,"start",[]));
+  Host("CNC-001",1,false);Host("CNC-002",1,false);
   lab.ControlFleet(new(id,"call",["CNC-001","CNC-002"]));
   bool Value(string station,int signal)=>lab.Snapshot(station).Single(p=>p.Mapping.Station==station&&p.Mapping.Signal==signal).Value;
   void Host(string station,int signal,bool value){var p=lab.Config.Points.Single(p=>p.Station==station&&p.Signal==signal);lab.WriteHost(p.Db,p.Byte,p.Bit,[value?(byte)1:(byte)0],true,"fleet-test");}
-  Check(Value("CNC-001",0)&&Value("CNC-002",0),"双工位同批呼叫");
+  Check(Value("CNC-001",1)&&Value("CNC-002",1)&&Value("CNC-001",0)&&Value("CNC-002",0),"空箱场地由模拟器注入本轮箱体并建立双工位同批呼叫");
   lab.ControlFleet(new(id,"call",["CNC-001","CNC-002"]));
   Reject(()=>lab.ConfigureCalls(Guid.NewGuid().ToString("N"),["CNC-001"],1,false),"阻止同时运行单车循环");
   lab.ControlFleet(new(id,"bind",["CNC-001"],"T1"));lab.ControlFleet(new(id,"bind",["CNC-002"],"T2"));
