@@ -62,7 +62,9 @@ public sealed class FleetTestService : IsolatedBackgroundService, IFleetTestServ
             if(run is {Stage:not "Completed"})throw new InvalidOperationException("原双车测试未闭合，请核对原记录。");
             if(!Guid.TryParseExact(request.RequestId,"N",out _)||!request.SiteConfirmed||
                 request.Scenario is not ("Staggered" or "Simultaneous" or "Handover")||request.VehicleIds is not {Length:2}||
-                request.VehicleIds.Any(string.IsNullOrWhiteSpace)||request.VehicleIds.Distinct(StringComparer.OrdinalIgnoreCase).Count()!=2)
+                request.VehicleIds.Any(string.IsNullOrWhiteSpace)||request.VehicleIds.Distinct(StringComparer.OrdinalIgnoreCase).Count()!=2||
+                request.StationIds is not {Length:>=2 and <=1000}||request.StationIds.Any(string.IsNullOrWhiteSpace)||
+                request.StationIds.Distinct(StringComparer.OrdinalIgnoreCase).Count()!=request.StationIds.Length)
                 throw new ArgumentException("请选择两辆不同车辆、测试用例并确认现场。");
             if(Directory.Exists(Path.GetDirectoryName(Path.GetFullPath(path))))
                 foreach(var file in Directory.EnumerateFiles(Path.GetDirectoryName(Path.GetFullPath(path))!,Path.GetFileName(path)+".*.history"))
@@ -72,7 +74,7 @@ public sealed class FleetTestService : IsolatedBackgroundService, IFleetTestServ
             if(run!=null)File.Copy(path,path+"."+run.RunId+".history",false);
             var now=DateTimeOffset.UtcNow;
             run=new(Guid.NewGuid().ToString("N"),request,identity.MapId,identity.Version,identity.Revision,"Running",
-                "准备按用例产生模拟P呼叫；车辆由调度分配。",false,now,now,[new("CNC-001",false,null),new("CNC-002",false,null)]){Operator=user.WindowsIdentity};
+                "准备按用例产生模拟P呼叫；车辆由调度分配。",false,now,now,request.StationIds.Select(id=>new FleetTestCall(id,false,null)).ToArray()){Operator=user.WindowsIdentity};
             Save();
             try{await port.LabAsync(run,"start",[],ct);}catch(Exception e){Hold("模拟器启动结果待核对："+e.Message);throw;}
             return await port.ObserveAsync(run,ct);
@@ -127,11 +129,15 @@ public sealed class FleetTestService : IsolatedBackgroundService, IFleetTestServ
                 await port.CheckCurrentAsync(run,ct);
                 var observed=await port.ObserveAsync(run,ct);
                 foreach(var detail in observed.Tasks)await port.FeedbackAsync(run,detail,ct);
-                var first=observed.Tasks.SingleOrDefault(t=>t.Task.TaskId==run.Calls[0].TaskId);
-                var secondDue=run.Plan.Scenario=="Simultaneous"||first!=null&&(
-                    run.Plan.Scenario=="Staggered"?first.Steps.Any(s=>s.StepType==DispatchTaskStepType.PickupFullBox&&s.Status==DispatchTaskStepStatus.Completed):
-                    first.Steps.Any(s=>s.StepType==DispatchTaskStepType.DumpFullBox&&s.Status is DispatchTaskStepStatus.Executing or DispatchTaskStepStatus.Completed));
-                var due=run.StopRequested?[]:run.Calls.Where((c,i)=>!c.Released&&(i==0||secondDue)).Select(c=>c.StationId).ToArray();
+                bool Due(int index)
+                {
+                    if(index==0||run.Plan.Scenario=="Simultaneous")return true;
+                    var previous=observed.Tasks.SingleOrDefault(t=>t.Task.TaskId==run.Calls[index-1].TaskId);
+                    return previous!=null&&(run.Plan.Scenario=="Staggered"
+                        ?previous.Steps.Any(s=>s.StepType==DispatchTaskStepType.PickupFullBox&&s.Status==DispatchTaskStepStatus.Completed)
+                        :previous.Steps.Any(s=>s.StepType==DispatchTaskStepType.DumpFullBox&&s.Status is DispatchTaskStepStatus.Executing or DispatchTaskStepStatus.Completed));
+                }
+                var due=run.StopRequested?[]:run.Calls.Where((c,i)=>!c.Released&&Due(i)).Select(c=>c.StationId).ToArray();
                 if(due.Length>0)
                 {
                     // Persist intent before the batch write. An uncertain write is held, never regenerated as a new run.

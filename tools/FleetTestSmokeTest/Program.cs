@@ -48,6 +48,24 @@ Check((await stopped.Service.ReadAsync(default)).Current!.Stage=="Completed"&&!s
 var uncertain=Fixture();uncertain.Port.FailCall=true;await uncertain.Service.StartAsync(user,Plan("Simultaneous"),default);await uncertain.Service.TickAsync(default);
 Check((await uncertain.Service.ReadAsync(default)).Current is {Stage:"Hold"} row&&row.Calls.All(c=>c.Released)&&uncertain.Port.Creates==0,"批次写结果不确定保留意图且不发车");
 await Reject(()=>uncertain.Service.StartAsync(user,Plan("Staggered"),default),"未闭合禁止新会话");
+foreach(var scenario in new[]{"Staggered","Simultaneous","Handover"})
+{
+ var f=Fixture();var plan=Plan(scenario) with {StationIds=["CNC-001","CNC-003","CNC-004","CNC-002"]};
+ await f.Service.StartAsync(user,plan,default);await f.Service.TickAsync(default);
+ Check(f.Port.Calls.Count==(scenario=="Simultaneous"?4:1),"四工位首批数量与用例一致");
+ if(scenario!="Simultaneous")for(var index=0;index<3;index++)
+ {
+  await f.Service.TickAsync(default);Check(f.Port.Calls.Count==index+1,"四工位不能沿用首工位里程碑提前释放后续呼叫");
+  var detail=f.Port.Details[index];
+  f.Port.Details[index]=detail with {Steps=[new("s"+index,2,scenario=="Staggered"?DispatchTaskStepType.PickupFullBox:DispatchTaskStepType.DumpFullBox,DispatchTaskStepStatus.Completed,"AGV-01",null,null,null,0,null,DateTimeOffset.UtcNow,null)]};
+  await f.Service.TickAsync(default);Check(f.Port.Calls.Count==index+2,"四工位逐个按前一工位里程碑释放");
+ }
+ Check(f.Port.Calls.SequenceEqual(plan.StationIds)&&f.Port.Creates==4,"四工位顺序保留且各建单一次");
+ await f.Service.TickAsync(default);Check(f.Port.Creates==4,"四工位重复轮询不重复建单");
+ await Reject(()=>f.Service.StartAsync(user,plan with {StationIds=["CNC-001","CNC-002"]},default),"原申请不得更换工位列表");
+}
+var invalid=Fixture();await Reject(()=>invalid.Service.StartAsync(user,Plan("Staggered") with {StationIds=["CNC-001","cnc-001"]},default),"拒绝重复工位");
+await Reject(()=>invalid.Service.StartAsync(user,Plan("Staggered") with {StationIds=[]},default),"拒绝空工位列表");
 var mode=WebLocalLaunchMode.Parse(["--fleet-test-vehicles","AGV-01,AGV-02"]);
 Check(mode.IsBusiness&&mode.ServiceArguments("test").Contains("--Dispatching:MaxConcurrentTasks=2")&&mode.ServiceArguments("test").Contains("--TaskCreation:AutomaticCreationEnabled=false"),"专用双车启动且无独立自动建单器");
 await Reject(()=>Task.FromResult(WebLocalLaunchMode.Parse(["--fleet-test-vehicles","AGV-01,AGV-01"])),"同车不能冒充双车");

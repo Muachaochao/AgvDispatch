@@ -3,11 +3,12 @@ import { computed,onMounted,onUnmounted,ref } from 'vue';
 import { useDispatchStore } from '../stores/dispatch';
 import type { TaskDetail } from '../types';
 import { label } from '../state';
-type Start={requestId:string;scenario:string;vehicleIds:string[];siteConfirmed:boolean};
+type Start={requestId:string;scenario:string;vehicleIds:string[];siteConfirmed:boolean;stationIds?:string[]};
 type Run={runId:string;plan:Start;stage:string;message:string;stopRequested:boolean;updatedAt:string;calls:{stationId:string;released:boolean;taskId:string|null}[]};
-type Status={enabled:boolean;allowedVehicles:string[];current:Run|null;vehicles:{vehicleId:string;site:string|null;fresh:boolean;message:string}[];tasks:TaskDetail[];observedAt:string};
+type Status={enabled:boolean;allowedVehicles:string[];configuredStations:string[];current:Run|null;vehicles:{vehicleId:string;site:string|null;fresh:boolean;message:string}[];tasks:TaskDetail[];observedAt:string};
 const store=useDispatchStore(),status=ref<Status|null>(null),error=ref(''),busy=ref(false),reading=ref(false),online=ref(false);
 const scenario=ref('Staggered'),confirmed=ref(false),reason=ref('');
+const selectedStations=ref<string[]>([]);
 const names:Record<string,string>={Staggered:'① 错峰呼叫',Simultaneous:'② 同时呼叫',Handover:'③ 前后交接'};
 const current=computed(()=>status.value?.current);
 const active=computed(()=>current.value&&current.value.stage!=='Completed');
@@ -27,6 +28,7 @@ async function read(){
   }
   if(current.value?.updatedAt!==next.current?.updatedAt)confirmed.value=false;
   status.value=next;online.value=true;
+  if(!selectedStations.value.length)selectedStations.value=[...(pending.value?.stationIds??next.configuredStations??[])];
   if(next.current&&pending.value?.requestId===next.current.plan.requestId){sessionStorage.removeItem(startKey);pending.value=null;}
  }catch(e){online.value=false;error.value='双车测试查询失败：'+String(e);}finally{reading.value=false;}
 }
@@ -36,7 +38,7 @@ async function act(action:string){
  try{
   let payload:unknown;
   if(action==='start'){
-   pending.value??={requestId:crypto.randomUUID().replaceAll('-',''),scenario:scenario.value,vehicleIds:status.value?.allowedVehicles??[],siteConfirmed:confirmed.value};
+   pending.value??={requestId:crypto.randomUUID().replaceAll('-',''),scenario:scenario.value,vehicleIds:status.value?.allowedVehicles??[],siteConfirmed:confirmed.value,stationIds:[...selectedStations.value]};
    payload=pending.value;
    sessionStorage.setItem(startKey,JSON.stringify(payload));
   }else payload={runId:current.value?.runId,reason:reason.value,siteConfirmed:confirmed.value};
@@ -58,18 +60,19 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);});
 </script>
 <template>
  <details class="fleet-panel" :open="status?.enabled||!!active">
-  <summary>双车双工位 · 竞争与交接测试 <span>{{status?.enabled?'双车启动模式':'需使用双车测试启动脚本'}}</span></summary>
+  <summary>双车多工位 · 竞争与交接测试 <span>{{status?.enabled?'双车启动模式':'需使用双车测试启动脚本'}}</span></summary>
   <p>每次只测试一组、每个工位一次呼叫。由调度按车辆状态、路线及规则分配；不要求一车固定一个工位。</p>
   <p v-if="!fresh" class="inline-warning" role="alert">观察已断开或过期，以下保留值不能作为当前现场状态。</p>
   <div class="fleet-controls">
    <label>本组用例<select v-model="scenario" :disabled="busy||!!active||!!pending"><option v-for="(name,key) in names" :key="key" :value="key">{{name}}</option></select></label>
    <button :disabled="busy||reading" @click="read">查询原记录</button>
-   <button :disabled="busy||!fresh||!status?.enabled||!!active||!confirmed||!store.submissionEnabled" @click="act('start')">{{pending?'重试原申请':'启动本组测试'}}</button>
+   <button :disabled="busy||!fresh||!status?.enabled||!!active||!confirmed||(!pending&&selectedStations.length<2)||!store.submissionEnabled" @click="act('start')">{{pending?'重试原申请':'启动本组测试'}}</button>
    <button :disabled="busy||!fresh||!active||current?.stopRequested" @click="act('stop')">停止新增呼叫并收尾</button>
    <button :disabled="!status" @click="exportEvidence">导出本组观察与核验记录</button>
   </div>
-  <p>{{scenario==='Staggered'?'工位一取箱确认完成后，再呼叫工位二。':scenario==='Simultaneous'?'两工位在模拟PLC内同批置呼叫，任务由调度分配。':'第一笔任务进入倒料执行步骤后，再呼叫工位二；后车能否到等待位由路权决定。'}}</p>
-  <label class="confirm"><input v-model="confirmed" type="checkbox" :disabled="busy"/>已核对两车停靠位置、无载初态、两工位箱体、路线及倒料区域；两车初始停车点独立，现场允许执行</label>
+  <div class="fleet-controls"><label v-for="id in status?.configuredStations??[]" :key="id" class="confirm"><input v-model="selectedStations" type="checkbox" :value="id" :disabled="busy||!!active||!!pending"/>{{id}}</label></div>
+  <p>{{scenario==='Staggered'?'按所选工位列表顺序，前一工位取箱确认完成后，再呼叫下一工位。':scenario==='Simultaneous'?'所选工位在模拟PLC内同批置呼叫，任务由两车调度分配。':'前一工位任务进入倒料执行步骤后，再呼叫下一工位；后车能否到等待位由路权决定。'}}</p>
+  <label class="confirm"><input v-model="confirmed" type="checkbox" :disabled="busy"/>已核对两车停靠位置、无载初态、所选工位箱体、路线及倒料区域；两车初始停车点独立，现场允许执行</label>
   <div class="fleet-vehicles"><article v-for="v in status?.vehicles??[]" :key="v.vehicleId" :class="{stale:!v.fresh||!fresh}"><b>{{v.vehicleId}} · {{v.site||'站点未知'}}</b><p>{{v.message}}</p></article></div>
   <template v-if="current">
    <p role="status"><b>{{names[current.plan.scenario]}} · {{current.stage==='Hold'?'暂停待核对':current.stage==='Completed'?'本组收尾完成':'测试进行中'}}</b> · {{current.message}}</p>

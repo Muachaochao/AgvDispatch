@@ -33,7 +33,7 @@ public sealed class NetworkLabConfig
     public static NetworkLabConfig CreateDefault()
     {
         var config = new NetworkLabConfig();
-        foreach (var (station, offset) in new[] { ("CNC-001", 0), ("CNC-002", 2) })
+        foreach (var (station, offset) in new[] { ("CNC-001", 0), ("CNC-002", 2), ("CNC-003", 4), ("CNC-004", 6) })
         {
             for (var signal = 0; signal < 6; signal++)
                 config.Points.Add(new() { Station = station, Signal = signal, Byte = offset, Bit = signal < 2 ? signal : signal + 2, Initial = signal == 1 });

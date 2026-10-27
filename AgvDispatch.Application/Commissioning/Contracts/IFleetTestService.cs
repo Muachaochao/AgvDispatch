@@ -1,6 +1,9 @@
 namespace AgvDispatch.Application.Abstractions;
 
-public sealed record FleetTestStart(string RequestId, string Scenario, string[] VehicleIds, bool SiteConfirmed);
+public sealed record FleetTestStart(string RequestId, string Scenario, string[] VehicleIds, bool SiteConfirmed)
+{
+    public string[] StationIds { get; init; } = ["CNC-001", "CNC-002"];
+}
 public sealed record FleetTestControl(string RunId, string Reason, bool SiteConfirmed);
 public sealed record FleetTestCall(string StationId, bool Released, string? TaskId);
 public sealed record FleetTestRun(string RunId, FleetTestStart Plan, string MapId, string MapVersionId,
@@ -13,7 +16,10 @@ public sealed record FleetTestRun(string RunId, FleetTestStart Plan, string MapI
 public sealed record FleetTestReview(DateTimeOffset Time,string Operation,string Operator,string Reason);
 public sealed record FleetTestVehicle(string VehicleId, string? Site, bool Fresh, string Message);
 public sealed record FleetTestStatus(bool Enabled, string[] AllowedVehicles, FleetTestRun? Current,
-    FleetTestVehicle[] Vehicles, TaskCenterDetail[] Tasks, DateTimeOffset ObservedAt);
+    FleetTestVehicle[] Vehicles, TaskCenterDetail[] Tasks, DateTimeOffset ObservedAt)
+{
+    public string[] ConfiguredStations { get; init; } = [];
+}
 public interface IFleetTestService
 {
     Task<FleetTestStatus> ReadAsync(CancellationToken ct);

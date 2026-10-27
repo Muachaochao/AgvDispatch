@@ -156,7 +156,7 @@ if errorlevel 1 pause
 '@ | Set-Content -LiteralPath (Join-Path $bundleOutput 'Start-Plc-Cycle-Test.cmd') -Encoding ascii
 @'
 @echo off
-call "%~dp0Start-Latest-Web.cmd" --fleet-test-vehicles AGV-01,AGV-02 %*
+call "%~dp0Start-Latest-Web.cmd" --fleet-test-vehicles AGV-01,AGV-03 %*
 '@ | Set-Content -LiteralPath (Join-Path $bundleOutput 'Start-Fleet-Test.cmd') -Encoding ascii
 $bundleFiles=@(Get-ChildItem -LiteralPath $bundleOutput -File -Recurse | ForEach-Object {@{path=[IO.Path]::GetRelativePath($bundleOutput,$_.FullName);sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant();bytes=$_.Length}})
 @{schema='agv-commissioning-release';version=1;releaseId=$bundleId;createdAt=(Get-Date).ToString('o');runtime='win-x64 self-contained';pipeName=$bundlePipe;port=$WebPort;files=$bundleFiles;siteConfigurationImported=$bundleSiteConfigurationImported;deviceExecutionEnabled=$false} | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $bundleOutput 'release-manifest.json') -Encoding utf8

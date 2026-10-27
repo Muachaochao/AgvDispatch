@@ -46,7 +46,7 @@ public sealed class FleetTestPort(FleetTestOptions options,IBusinessRunService s
     private void PlcHealthy()
     {
         var rows=signals.GetAll();
-        foreach(var station in new[]{"CNC-001","CNC-002",parameters.Capture().DumperStationId})
+        foreach(var station in parameters.Capture().Pickups.Select(p=>p.StationId).Append(parameters.Capture().DumperStationId))
         {
             var group=rows.Where(r=>r.StationId==station).ToArray();
             if(group.Length==0||group.Any(r=>r.Quality!=SignalQuality.Good||!Fresh(r.UpdatedAt)||r.Value==null)||
@@ -63,7 +63,9 @@ public sealed class FleetTestPort(FleetTestOptions options,IBusinessRunService s
         if((await AllAsync(ct)).Any(t=>t.Stage is not (DispatchTaskStage.Completed or DispatchTaskStage.Cancelled)))
             throw new InvalidOperationException("启动前须处理原业务任务。");
         var choices=await manual.GetOptionsAsync(ct);
-        if(BusinessRunPort.ConfigurationError(choices,["CNC-001","CNC-002"]) is {} error)throw new InvalidOperationException(error);
+        var configured=parameters.Capture().Pickups.Select(p=>p.StationId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if(plan.StationIds.Any(id=>!configured.Contains(id)))throw new InvalidOperationException("所选工位未配置取箱站点，请重新读取工位列表。");
+        if(BusinessRunPort.ConfigurationError(choices,plan.StationIds) is {} error)throw new InvalidOperationException(error);
         var sites=new HashSet<string>(StringComparer.Ordinal);
         var current=map.Current??throw new InvalidOperationException("运行地图不存在。");
         foreach(var id in plan.VehicleIds)
@@ -74,7 +76,7 @@ public sealed class FleetTestPort(FleetTestOptions options,IBusinessRunService s
             vehicles.TryGet(id,out var state);
             if(state!.VelocityX is not {} vx||state.VelocityY is not {} vy||state.AngularVelocity is not {} va||Math.Abs(vx)>=.01||Math.Abs(vy)>=.01||Math.Abs(va)>=.01||state.Tasks.Any(t=>t.Status is not (4 or 5 or 6 or 7)))
                 throw new InvalidOperationException(id+"尚未停稳或仍有车端任务。");
-            foreach(var pickup in parameters.Capture().Pickups)
+            foreach(var pickup in parameters.Capture().Pickups.Where(p=>plan.StationIds.Contains(p.StationId,StringComparer.OrdinalIgnoreCase)))
             {
                 var check=await preflight.CheckAsync(id,choice.CurrentSite,pickup.PickupSite,dispatch.GetDumperWaitingSite()!,dispatch.DumperDumpingSite,current.MapId,current.VersionId,ct);
                 if(!check.Accepted)throw new InvalidOperationException(id+"车端地图/路线核验失败："+check.Message);
@@ -107,7 +109,8 @@ public sealed class FleetTestPort(FleetTestOptions options,IBusinessRunService s
         if(run!=null)foreach(var call in run.Calls.Where(c=>c.TaskId!=null))
             if(await tasks.GetDetailAsync(call.TaskId!,ct) is {} detail)details.Add(detail);
         return new(options.Enabled,options.VehicleIds,run,options.VehicleIds.Select(id=>
-        {vehicles.TryGet(id,out var v);return new FleetTestVehicle(id,v?.CurrentStation,Health(id)==null,Health(id)??"状态数据有效");}).ToArray(),details.ToArray(),DateTimeOffset.UtcNow);
+        {vehicles.TryGet(id,out var v);return new FleetTestVehicle(id,v?.CurrentStation,Health(id)==null,Health(id)??"状态数据有效");}).ToArray(),details.ToArray(),DateTimeOffset.UtcNow)
+        {ConfiguredStations=parameters.Capture().Pickups.Select(p=>p.StationId).ToArray()};
     }
     public async Task LabAsync(FleetTestRun run,string action,string[] stations,CancellationToken ct)
     {
@@ -165,7 +168,7 @@ public sealed class FleetTestPort(FleetTestOptions options,IBusinessRunService s
     private async Task BaselineAsync(CancellationToken ct)
     {
         PlcHealthy();
-        foreach(var station in new[]{"CNC-001","CNC-002"})
+        foreach(var station in parameters.Capture().Pickups.Select(p=>p.StationId))
         {
             foreach(var name in new[]{"FullBoxRequested","FullBoxRequestAcknowledged","FullBoxRemoved","EmptyBoxTaskAcknowledged","EmptyBoxPlaced"})
                 if(signals.GetAll().SingleOrDefault(s=>s.StationId==station&&s.VariableName==name)?.Value!=false)throw new InvalidOperationException(station+"旧呼叫/返箱责任未闭合。");
