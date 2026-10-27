@@ -9,6 +9,7 @@ const search=ref(''),page=ref(1),selected=ref<EngineeringRow|null>(null),checked
 const validation=ref<any>(null),versions=ref<any[]>([]),versionId=ref(''),publishNote=ref(''),report=ref<any>(null);
 const importPreview=ref<ReturnType<typeof importDiff>|null>(null),importSection=ref<Section>('stations');
 const sampleStations=ref(300),sampleVehicles=ref(5),callRounds=ref(1),offline=ref(''),blockedResources=ref('');
+const mapCatalog=ref<any[]>([]),targetMapId=ref('');
 const batchField=ref('poolId'),batchValue=ref('');const reportPage=ref(1);
 const tabs=[{id:'overview',label:'工程总览'},...Object.entries(sections).map(([id,s])=>({id,label:s.label})),{id:'validation',label:'校验与诊断'},{id:'versions',label:'发布与版本'},{id:'simulation',label:'模拟测试'}];
 const tab=computed(()=>tabs.some(t=>t.id===route.query.tab)?String(route.query.tab):'overview');
@@ -33,9 +34,9 @@ function focusObject(){if(section.value&&typeof route.query.object==='string'){s
 async function action(fn:()=>Promise<void>){if(busy.value)return;busy.value=true;error.value='';message.value='';try{await fn();}catch(e){error.value=e instanceof Error?e.message:String(e);}finally{busy.value=false;}}
 async function load(){if(!discardAllowed())return;await action(async()=>{const d:any=await store.api('/api/engineering/draft');plan.value=d.plan;revision.value=d.revision;savedText.value=JSON.stringify(d.plan);ready.value=true;validation.value=null;selected.value=null;versions.value=await store.api('/api/engineering/versions');focusObject();message.value='已读取工程草稿。工程草稿可独立保存，不依赖车辆在线或现场恢复放行。';});}
 async function save(){await action(async()=>{const d:any=await store.api('/api/engineering/draft',{expectedRevision:revision.value,plan:plan.value});revision.value=d.revision;savedText.value=JSON.stringify(d.plan);message.value='工程草稿已保存；未改变现场运行配置、未发送设备动作。';});}
-async function validate(){await action(async()=>{validation.value=await store.api('/api/engineering/validate',plan.value);navigate('validation');message.value=validation.value.valid?'配置静态校验通过，可发布模拟工程版本。':'发现配置缺项，请点击问题跳转修改。';});}
+async function validate(){await action(async()=>{validation.value=await store.api('/api/engineering/validate',plan.value);navigate('validation');message.value=validation.value.valid?'配置静态校验通过，可发布工程版本。':'发现配置缺项，请点击问题跳转修改。';});}
 async function sample(){if(!discardAllowed())return;await action(async()=>{plan.value=await store.api(`/api/engineering/sample?stations=${sampleStations.value}&vehicles=${sampleVehicles.value}`);validation.value=null;selected.value=null;message.value='示例已载入编辑区，尚未保存。所有地址与数值都是模拟数据。';});}
-async function publish(){await action(async()=>{if(dirty.value)throw new Error('请先保存当前修改，再发布同一修订。');const v:any=await store.api('/api/engineering/publish',{expectedRevision:revision.value,note:publishNote.value});versions.value=await store.api('/api/engineering/versions');versionId.value=v.id;message.value='模拟工程版本已发布并冻结；不会激活现场地图。可以进入模拟测试。';});}
+async function publish(){await action(async()=>{if(dirty.value)throw new Error('请先保存当前修改，再发布同一修订。');const v:any=await store.api('/api/engineering/publish',{expectedRevision:revision.value,note:publishNote.value});versions.value=await store.api('/api/engineering/versions');versionId.value=v.id;message.value='工程版本已发布并冻结；不会自动激活现场地图。可以模拟测试或进入工程执行接入。';});}
 async function simulate(){await action(async()=>{
  if(!versionId.value)throw new Error('请先选择已发布版本。');
  const v:any=await store.api('/api/engineering/versions/'+versionId.value);const active=v.plan.stations.filter((s:any)=>s.enabled);
@@ -60,18 +61,27 @@ async function importFile(event:Event){const input=event.target as HTMLInputElem
 function applyImport(){if(!importPreview.value||section.value!==importSection.value)return;plan.value[importSection.value]=importPreview.value.merged;message.value='已合并到编辑区，未列出的原对象保留。请校验并保存。';importPreview.value=null;selected.value=null;validation.value=null;}
 async function importProject(event:Event){const input=event.target as HTMLInputElement;const file=input.files?.[0];input.value='';if(!file||!discardAllowed())return;await action(async()=>{if(file.size>4*1024*1024)throw new Error('工程文件最多4MiB。');const imported=JSON.parse(await file.text());const p=imported.plan??imported;await store.api('/api/engineering/validate',p);plan.value=p;selected.value=null;validation.value=null;message.value='工程已载入编辑区；请检查差异后保存。';});}
 async function versionToDraft(){if(!discardAllowed())return;await action(async()=>{const v:any=await store.api('/api/engineering/versions/'+versionId.value);plan.value=v.plan;message.value='版本内容已载入编辑区；保存会创建新的草稿修订，保留原版本。';});}
-async function importMap(){await action(async()=>{
- const current:any=await store.api('/api/snapshot');if(!current.connected||!current.map)throw new Error('未读取到当前运行地图。');const m=current.map;
- // Resolve exact lengths and limits from authoritative workspace, never infer them from a screenshot.
- const workspace:any=await store.api(`/api/maps/${encodeURIComponent(m.id)}/workspace`);
- const source=[workspace.draft,workspace.published].find(v=>v?.versionId===m.version);
- const d=source?.definition;
- if(!d?.edges||!d?.resources)throw new Error('后台未返回地图道路定义；请从地图编辑导出后核对导入。');
- plan.value.mapId=m.id;plan.value.mapVersion=m.version;
- plan.value.nodes=m.nodes.map((n:any)=>({id:n.id,vendorSite:n.agvSiteId??'',x:n.x,y:n.y,enabled:n.enabled}));
+function copyMap(id:string,version:string,d:any){
+ if(!d?.nodes||!d?.edges||!d?.resources)throw new Error('后台未返回完整发布地图定义。');
+ plan.value.mapId=id;plan.value.mapVersion=version;
+ plan.value.nodes=d.nodes.map((n:any)=>({id:n.id,vendorSite:n.agvSiteId??'',x:n.x,y:n.y,enabled:n.enabled}));
  plan.value.edges=d.edges.map((e:any)=>({id:e.id,from:e.from,to:e.to,distance:e.distance,speed:e.speedLimit,resourceIds:e.resourceIds??[],bidirectional:e.bidirectional,enabled:e.enabled}));
  plan.value.resources=d.resources.map((r:any)=>({id:r.id,name:r.id,kind:r.type==='NarrowAisle'||r.type==='SingleLane'?'NarrowAisle':r.type==='Intersection'?'Intersection':'Station',capacity:r.capacity}));
- message.value='已复制运行地图拓扑到工程编辑区；请重新核对工位和资源绑定。没有修改现场地图。';
+ validation.value=null;selected.value=null;
+ message.value='已复制准确地图拓扑到工程编辑区；请重新核对工位和资源绑定。没有修改或激活现场地图。';
+}
+async function loadMapCatalog(){if(store.engineeringSimulationOnly)return;await action(async()=>{mapCatalog.value=await store.api('/api/maps');});}
+async function importPublishedMap(){if(!targetMapId.value||store.engineeringSimulationOnly)return;await action(async()=>{
+ const w:any=await store.api(`/api/maps/${encodeURIComponent(targetMapId.value)}/workspace`);const v=w.published;
+ if(!v||v.status!=='Published')throw new Error('目标地图尚无已发布版本，请先去地图编辑发布。');
+ copyMap(w.project.mapId,v.versionId,v.definition);
+});}
+async function importMap(){if(store.engineeringSimulationOnly)return;await action(async()=>{
+ const current:any=await store.api('/api/snapshot');if(!current.connected||!current.map)throw new Error('未读取到当前运行地图。');const m=current.map;
+ const workspace:any=await store.api(`/api/maps/${encodeURIComponent(m.id)}/workspace`);
+ const source=[workspace.draft,workspace.published].find(v=>v?.versionId===m.version);
+ if(!source)throw new Error('当前运行版本不在工作区，请选择明确的已发布地图。');
+ copyMap(m.id,m.version,source.definition);
 });}
 onMounted(load);
 </script>
@@ -80,7 +90,7 @@ onMounted(load);
 <section class="engineering-center management-page">
  <header class="management-title"><div><h2>工程配置中心</h2><p>统一维护工位、车辆池与资源 · 配置 → 校验 → 版本 → 模拟</p></div><span class="mode-badge">工程规划 / 无设备动作</span></header>
  <div class="engineering-toolbar"><button :disabled="busy" @click="load">重新读取</button><button class="accent-button" :disabled="busy||!ready||!dirty" @click="save">保存工程草稿</button><button :disabled="busy||!ready" @click="validate">统一校验</button><button :disabled="!ready" @click="download('engineering-plan.json',JSON.stringify(plan,null,2))">导出工程</button><label class="file-button">导入工程<input type="file" accept=".json" :disabled="busy" @change="importProject"/></label><span>{{dirty?'有未保存修改':'草稿已保存'}} · {{revision?revision.slice(0,8):'未建稿'}}</span></div>
- <p class="engineering-boundary">本中心发布的是配置规划与模拟版本，不会替换5199现场运行图或启用PLC／车辆。实际运行配置和恢复仍可通过下方Web入口维护，无需打开WPF。</p>
+ <p class="engineering-boundary">发布工程版本后，可进入“工程执行接入”核对准确地图、现行通信与车辆池，再应用到九步执行器。隔离模拟实例只做规划验证。</p>
  <p v-if="error" class="inline-warning" role="alert">{{error}}</p><p v-if="message" class="engineering-message" role="status">{{message}}</p>
  <div class="engineering-layout">
  <nav class="engineering-sidebar" aria-label="工程配置分类"><button v-for="item in tabs" :key="item.id" :class="{active:tab===item.id}" :aria-current="tab===item.id?'page':undefined" @click="navigate(item.id)">{{item.label}}<small v-if="item.id in sections">{{plan[item.id as Section].length}}</small></button></nav>
@@ -89,7 +99,8 @@ onMounted(load);
   <h3>工程概况</h3><div class="engineering-form"><label>工程名称<input v-model="plan.name"/></label><label>地图编号<input v-model="plan.mapId"/></label><label>地图版本<input v-model="plan.mapVersion"/></label></div>
   <div class="engineering-stats"><div v-for="key in (['stations','vehicles','pools','dumpers'] as Section[])" :key="key"><b>{{plan[key].length}}</b><span>{{sections[key].label}}</span></div></div>
   <h3>载入隔离示例</h3><p>示例会替换当前编辑区。先导出或保存已有修改。示例使用虚构地址，不读取或连接现场设备。</p><div class="engineering-form"><label>工位数量<input v-model.number="sampleStations" type="number" min="1" max="1000"/></label><label>车辆数量<input v-model.number="sampleVehicles" type="number" min="1" max="20"/></label><button :disabled="busy" @click="sample">载入示例到编辑区</button></div>
-  <h3>现场Web入口</h3><div class="engineering-links"><RouterLink to="/communication">PLC／AGV通信配置</RouterLink><RouterLink to="/engineering-settings">现行九步参数与地图绑定</RouterLink><RouterLink to="/planning">地图编辑与交通资源</RouterLink><RouterLink to="/maps">地图版本与安全切换</RouterLink><RouterLink to="/recovery">任务取消与启动恢复</RouterLink><RouterLink to="/commissioning">运行条件与通信诊断</RouterLink></div><button :disabled="busy" @click="importMap">复制当前运行地图到工程草稿</button>
+  <h3>现场Web入口</h3><div class="engineering-links"><RouterLink to="/communication">PLC／AGV通信配置</RouterLink><RouterLink to="/engineering-settings">现行九步参数与地图绑定</RouterLink><RouterLink to="/planning">地图编辑与交通资源</RouterLink><RouterLink to="/maps">地图版本与安全切换</RouterLink><RouterLink to="/recovery">任务取消与启动恢复</RouterLink><RouterLink to="/commissioning">运行条件与通信诊断</RouterLink></div><button :disabled="busy||store.engineeringSimulationOnly" @click="importMap">复制当前运行地图到工程草稿</button>
+  <div class="engineering-form"><button :disabled="busy||store.engineeringSimulationOnly" @click="loadMapCatalog">读取已发布地图目录</button><label>目标地图<select v-model="targetMapId"><option value="">请选择</option><option v-for="m in mapCatalog" :key="m.mapId" :value="m.mapId">{{m.name}} · {{m.publishedVersionId||'未发布'}}</option></select></label><button :disabled="busy||!targetMapId||store.engineeringSimulationOnly" @click="importPublishedMap">复制所选发布地图到工程草稿</button></div><p>可以先绑定尚未激活的新地图；发布工程后再进入工程执行接入完成地图切换。</p>
  </template>
  <template v-else-if="section">
   <h3>{{sections[section].label}}</h3><p>{{sections[section].description}}</p>
@@ -109,8 +120,8 @@ onMounted(load);
   <p>静态通过不证明地图坐标对齐、实车包络核定或PLC现场动作完成。现场任务阻塞请进入 <RouterLink to="/recovery">异常恢复</RouterLink> 或 <RouterLink to="/commissioning">联调检查</RouterLink>。</p>
  </template>
  <template v-else-if="tab==='versions'">
-  <h3>发布模拟工程版本</h3><p>版本包含当前地图拓扑、工位、PLC点表、车辆、模板与资源，保存后冻结内容和摘要。现场运行版本保持独立。</p><label class="engineering-note">发布说明<textarea v-model="publishNote" maxlength="1024" placeholder="说明本次新增工位、绑定及资源调整"/></label><button :disabled="busy||dirty||!revision||!publishNote.trim()" @click="publish">校验并发布模拟版本</button><p v-if="dirty" class="inline-warning">当前编辑尚未保存，请先点击“保存工程草稿”。</p>
-  <ul class="engineering-versions"><li v-for="v in versions" :key="v.id"><label><input v-model="versionId" type="radio" :value="v.id"/>{{v.name}} · {{v.stations}}工位／{{v.vehicles}}车</label><p>{{v.note}} · {{new Date(v.publishedAt).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'})}}</p><small>{{v.id}} · SHA256 {{v.contentHash}}</small></li></ul><div class="engineering-toolbar"><button :disabled="!versionId||busy" @click="versionToDraft">所选版本载入编辑区</button><button :disabled="!versionId" @click="navigate('simulation')">测试所选版本</button></div>
+  <h3>发布工程版本</h3><p>版本包含当前地图拓扑、工位、PLC点表、车辆、模板与资源，保存后冻结内容和摘要。现场运行版本保持独立。</p><label class="engineering-note">发布说明<textarea v-model="publishNote" maxlength="1024" placeholder="说明本次新增工位、绑定及资源调整"/></label><button :disabled="busy||dirty||!revision||!publishNote.trim()" @click="publish">校验并发布工程版本</button><p v-if="dirty" class="inline-warning">当前编辑尚未保存，请先点击“保存工程草稿”。</p>
+  <ul class="engineering-versions"><li v-for="v in versions" :key="v.id"><label><input v-model="versionId" type="radio" :value="v.id"/>{{v.name}} · {{v.stations}}工位／{{v.vehicles}}车</label><p>{{v.note}} · {{new Date(v.publishedAt).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'})}}</p><small>{{v.id}} · SHA256 {{v.contentHash}}</small></li></ul><div class="engineering-toolbar"><button :disabled="!versionId||busy" @click="versionToDraft">所选版本载入编辑区</button><button :disabled="!versionId" @click="navigate('simulation')">测试所选版本</button><RouterLink v-if="versionId" :to="{path:'/engineering-runtime',query:{version:versionId}}">所选版本接入执行器</RouterLink></div>
  </template>
  <template v-else-if="tab==='simulation'">
   <h3>配置与调度预约模拟</h3><p>根据已发布版本生成呼叫，模拟车辆池选车、九步阶段、资源容量预约与返回待机。测试不会访问PLC、机器人或现场后台。</p><div class="engineering-form"><label>工程版本<select v-model="versionId"><option value="">请选择已发布版本</option><option v-for="v in versions" :key="v.id" :value="v.id">{{v.name}} · {{v.id.slice(0,8)}} · {{v.note}}</option></select></label><label>每工位呼叫轮数<input v-model.number="callRounds" type="number" min="1" max="10"/></label><label>模拟离线车辆<input v-model="offline" placeholder="AGV-01;AGV-02"/></label><label>模拟封锁资源<input v-model="blockedResources" placeholder="DUMP-AREA"/></label></div><p v-if="selectedVersion">所选版本{{selectedVersion.stations}}工位／{{selectedVersion.vehicles}}车 · 使用冻结配置，不使用未保存编辑。</p><button class="accent-button" :disabled="busy||!versionId" @click="simulate">运行隔离模拟</button>

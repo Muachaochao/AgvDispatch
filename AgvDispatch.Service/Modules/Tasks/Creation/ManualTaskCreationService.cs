@@ -29,6 +29,7 @@ public sealed partial class ManualTaskCreationService(IManualTaskCreationReposit
             reason="握手契约不是当前28阶段版本，禁止创建新任务。";
         reason ??= DumperWaitingBaySafety.GetError(map?.Definition, dispatch,
             handshakeOptions is { Enabled: true, PlcContractVersion: HandshakeExecutionOptions.Version });
+        reason ??= dispatch.EngineeringMapError(map);
         var choices = dispatch.StationPickupSites.Select(pair =>
         {
             var preview = ValidateStepPreview(BuildStepPreview(pair.Key, pair.Value, map), map);
@@ -59,7 +60,7 @@ public sealed partial class ManualTaskCreationService(IManualTaskCreationReposit
                 vehicle.CurrentStation ?? "", block is null && reason is null, block ?? "在线空闲，定位正常。");
         }).OrderBy(vehicle => vehicle.VehicleId).ToArray();
         choices = choices.Select(choice => choice with
-        { PickupReachableVehicleIds = vehicles.Where(vehicle => CanRoute(map, vehicle.CurrentSite, choice.PickupSite, true, PickupExcludedNodes(map))).Select(vehicle => vehicle.VehicleId).ToArray() }).ToArray();
+        { PickupReachableVehicleIds = vehicles.Where(vehicle => dispatch.AllowsVehicle(choice.StationId, vehicle.VehicleId) && CanRoute(map, vehicle.CurrentSite, choice.PickupSite, true, PickupExcludedNodes(map))).Select(vehicle => vehicle.VehicleId).ToArray() }).ToArray();
         reason ??= !choices.Any(station => station.Available) ? "暂无满足 PLC 条件和路径要求的工位。" :
             !vehicles.Any(vehicle => vehicle.Available) ? "暂无可派车辆：" +
                 string.Join("；", vehicles.Select(vehicle => vehicle.VehicleId + "：" + vehicle.Explanation)) : null;
@@ -116,7 +117,9 @@ public sealed partial class ManualTaskCreationService(IManualTaskCreationReposit
         if (station is { ConfigurationValid: false }) return new(false, false, null, station.Explanation);
         if (!options.Available) return new(false, false, null, options.Explanation);
         if (station is not { Available: true }) return new(false, false, null, station?.Explanation ?? "工位不在当前调度配置中。");
-        var vehicles = options.Vehicles.Where(vehicle => vehicle.Available && CanRoute(activeMap.Current, vehicle.CurrentSite, station.PickupSite, true, PickupExcludedNodes(activeMap.Current)));
+        if (request.RequestedVehicleId is { } requested && !dispatch.AllowsVehicle(request.StationId, requested))
+            return new(false, false, null, $"工位 {request.StationId} 的车辆池不包含 {requested}，未创建任务。");
+        var vehicles = options.Vehicles.Where(vehicle => vehicle.Available && dispatch.AllowsVehicle(request.StationId, vehicle.VehicleId) && CanRoute(activeMap.Current, vehicle.CurrentSite, station.PickupSite, true, PickupExcludedNodes(activeMap.Current)));
         if (request.RequestedVehicleId is not null) vehicles = vehicles.Where(vehicle => vehicle.VehicleId == request.RequestedVehicleId);
         if (!vehicles.Any()) return new(false, false, null, options.Vehicles.FirstOrDefault(v=>v.VehicleId==request.RequestedVehicleId&& !v.Available)?.Explanation??"第 1 步（前往取货点）：所选车辆当前不可用或无可执行路径；车辆已在取货点时必须配置避开等待/倒料节点的真实已启用进出闭合路线，不能用同点空路径代替取箱动作。");
         if (robokitMap is not null)

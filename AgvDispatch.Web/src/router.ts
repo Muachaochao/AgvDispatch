@@ -4,6 +4,7 @@ const router = createRouter({
   history: createWebHashHistory(),
   routes: [
     { path: '/resource-review', name: 'resource-review', component: () => import('./pages/ResourceReviewPage.vue') },
+    { path: '/engineering-runtime', name: 'engineering-runtime', component: () => import('./pages/EngineeringRuntimePage.vue') },
     { path: '/engineering', name: 'engineering-center', component: () => import('./pages/EngineeringCenterPage.vue') },
     { path: '/communication', name: 'communication', component: () => import('./pages/CommunicationPage.vue') },
     { path: '/recovery', name: 'recovery', component: () => import('./pages/RecoveryPage.vue') },

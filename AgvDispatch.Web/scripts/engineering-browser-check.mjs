@@ -10,8 +10,8 @@ assert.equal(new URL(base).hostname,'127.0.0.1');assert.notEqual(new URL(base).p
 const config=await (await fetch(base+'/api/config')).json();assert.equal(config.engineeringSimulationOnly,true,'Requires isolated engineering instance');
 const evidence=resolve(root,'.artifacts','engineering-browser-'+Date.now());mkdirSync(evidence,{recursive:true});
 const checks=[],errors=[];function check(label,pass){assert.ok(pass,label);checks.push(label);console.log('PASS '+label);}
-for(const path of ['/api/snapshot','/api/communication','/api/resource-review','/api/recovery','/api/ws'])check('isolated GET blocked '+path,(await fetch(base+path)).status===403);
-for(const path of ['/api/communication','/api/resource-review/submit','/api/navigation-test/submit','/api/tasks','/api/recovery/release'])check('isolated POST blocked '+path,(await fetch(base+path,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})).status===403);
+for(const path of ['/api/snapshot','/api/communication','/api/resource-review','/api/recovery','/api/ws','/api/engineering-runtime/state'])check('isolated GET blocked '+path,(await fetch(base+path)).status===403);
+for(const path of ['/api/communication','/api/resource-review/submit','/api/navigation-test/submit','/api/tasks','/api/recovery/release','/api/engineering-runtime/preview','/api/engineering-runtime/apply'])check('isolated POST blocked '+path,(await fetch(base+path,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})).status===403);
 check('cross-origin write rejected',(await fetch(base+'/api/engineering/validate',{method:'POST',headers:{Origin:'https://invalid.example','Content-Type':'application/json'},body:'{}'})).status===403);
 const binary=['C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe','C:/Program Files/Google/Chrome/Application/chrome.exe'].find(existsSync);assert.ok(binary);
 const profile=resolve(evidence,'profile');mkdirSync(profile);
@@ -45,7 +45,7 @@ try{
  await button('保存工程草稿');await wait(()=>evaluate(`document.querySelector('.engineering-message')?.textContent.includes('草稿已保存')`),'merged save');
  const merged=await (await fetch(base+'/api/engineering/draft')).json();check('CSV applies two changes and preserves remaining 298',merged.plan.stations.length===300&&merged.plan.stations.filter(s=>s.name.startsWith('批量导入')).length===2);
  await button('统一校验');await wait(()=>evaluate(`document.querySelector('.engineering-content').textContent.includes('静态配置通过')`),'validation');await shot('02-validation');
- await tab('versions');await evaluate(`(()=>{const e=document.querySelector('.engineering-note textarea');e.value='浏览器验收：300工位、5车，无设备';e.dispatchEvent(new Event('input',{bubbles:true}));})()`);await button('校验并发布模拟版本');
+ await tab('versions');await evaluate(`(()=>{const e=document.querySelector('.engineering-note textarea');e.value='浏览器验收：300工位、5车，无设备';e.dispatchEvent(new Event('input',{bubbles:true}));})()`);await button('校验并发布工程版本');
  await wait(()=>evaluate(`document.querySelector('.engineering-message')?.textContent.includes('版本已发布')`),'publish');await button('测试所选版本');await button('运行隔离模拟');
  await wait(()=>evaluate(`document.querySelector('.engineering-message')?.textContent.includes('模拟已完成')`),'simulate',45000);await shot('03-simulation');
  check('browser shows 300 completed model tasks',await evaluate(`document.querySelector('.engineering-stats').textContent.includes('300 / 300')`));
@@ -57,6 +57,8 @@ try{
  check('blocked dump resource explains why no task assigned',await evaluate(`document.querySelector('.engineering-content').textContent.includes('倒料区域或等待位已封锁')`));await shot('04-blocked');
  await tab('stations');await rpc('Emulation.setDeviceMetricsOverride',{width:900,height:1100,deviceScaleFactor:1,mobile:false});await shot('05-narrow-layout');
  check('narrow layout keeps engineering panel within viewport',await evaluate(`document.querySelector('.engineering-content').getBoundingClientRect().right<=innerWidth+2`));
+ await evaluate(`location.hash='/engineering-runtime?version=${version.id}'`);await wait(()=>evaluate(`document.querySelector('.runtime-page')`),'runtime page');await sleep(300);await shot('06-runtime-isolation');
+ check('runtime integration page explains isolated mode',await evaluate(`document.querySelector('.runtime-page').textContent.includes('隔离')`));
  const requests=await evaluate(`performance.getEntriesByType('resource').filter(e=>e.name.includes('/api/')).map(e=>new URL(e.name).pathname)`);
  check('Vue engineering flow only used engineering and config APIs',requests.every(p=>p==='/api/config'||p.startsWith('/api/engineering/')));
  assert.deepEqual(errors,[]);check('no browser runtime exceptions',true);

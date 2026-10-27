@@ -26,7 +26,7 @@ public sealed class TaskParameterSettingsService(TaskParameterStorageOptions sto
         var reason = gate.Mode != MapExecutionMode.Running ? $"地图执行模式为 {gate.Mode}，请先完成或取消地图切换，再保存任务参数。" : active.Count > 0
             ? $"存在 {active.Count} 个未结束任务（含故障任务），处理完成后才能保存。" : "保存前逐步骤校验；无未结束任务时可保存配置，重启后保留。配置保存不会放行启动恢复、PLC 写入或车辆动作。";
         return new(runtime.Revision, runtime.Capture(), map?.MapId, map?.VersionId,
-            gate.Mode == MapExecutionMode.Running && active.Count == 0 && map is not null, map is null ? "请先激活运行地图。" : reason, _saved?.Audits ?? []);
+            gate.Mode == MapExecutionMode.Running && active.Count == 0 && map is not null, map is null ? "请先激活运行地图。" : reason, _saved?.Audits ?? []) { SavedRequestId = _saved?.RequestId };
     }
     public async Task<TaskParameterSnapshot> GetAsync(CancellationToken ct)
     {
@@ -41,6 +41,16 @@ public sealed class TaskParameterSettingsService(TaskParameterStorageOptions sto
             return new(false, "运行地图已变化或未激活，请重新加载参数。", []);
         try { TaskParameterRuntime.CheckStructure(request.Configuration); }
         catch (ArgumentException error) { return new(false, error.Message, []); }
+        if (runtime.Capture().EngineeringSource is not null && request.Configuration.EngineeringSource is null)
+            return new(false, "当前任务参数已绑定工程版本，不能移除工程来源和车辆池；请通过工程执行接入应用新版本。", []);
+        var current = runtime.Capture();
+        if (current.EngineeringSource is { } bound && request.Configuration.EngineeringSource?.VersionId == bound.VersionId &&
+            (request.Configuration.EngineeringSource != bound ||
+             JsonSerializer.Serialize(new { current.DumperStationId, current.WaitingSite, current.DumpingSite, current.Pickups }) !=
+             JsonSerializer.Serialize(new { request.Configuration.DumperStationId, request.Configuration.WaitingSite, request.Configuration.DumpingSite, request.Configuration.Pickups })))
+            return new(false, "同一工程版本的工位、倒料及车辆池绑定不可改写；请发布并应用新工程版本。", []);
+        if (request.Configuration.EngineeringSource is { } source && source.MapDefinitionHash != EngineeringRuntimeIdentity.MapHash(map.Definition))
+            return new(false, "工程绑定的地图内容摘要已变化，未应用参数。", []);
         var preview = validator.ValidateParameters(request.Configuration);
         var errors = preview.SelectMany(row => row.Step.ValidationErrors.Select(error => $"{row.StationId} 第 {row.Step.Sequence} 步（{row.Step.Name}）：{error}")).ToArray();
         return new(errors.Length == 0, errors.Length == 0 ? "所有工位九步配置校验通过；配置通过不代表执行许可。PLC 写入许可、恢复放行、首段车辆路线和动态路权在创建/执行时检查。" : string.Join("；", errors), preview);

@@ -80,6 +80,7 @@ public sealed class DispatchTaskOrchestrator(
             await trafficResources.RenewTaskAsync(activeTask.TaskId, cancellationToken);
         }
         if (!executionGate.CanStartNewWork) return;
+        if (options.EngineeringMapError(activeMap.Current) is not null) return;
         var bayError = DumperWaitingBaySafety.GetError(activeMap.Current?.Definition, options,
             handshakeOptions is { Enabled: true, PlcContractVersion: HandshakeExecutionOptions.Version });
         if (bayError is not null)
@@ -154,6 +155,7 @@ public sealed class DispatchTaskOrchestrator(
                 cancellationToken);
             var planningMap = activeMap.Current;
             var routeCandidates = idleVehicles
+                .Where(vehicle => options.AllowsVehicle(task.StationId, vehicle.VehicleId))
                 .Where(vehicle => fleetTest?.Allows(task.TaskId,vehicle.VehicleId)!=false)
                 .Where(vehicle => TaskVehicleSelection.Accepts(task, vehicle.VehicleId))
                 .Where(vehicle => !selectedVehicles.Contains(vehicle.VehicleId))
@@ -169,7 +171,7 @@ public sealed class DispatchTaskOrchestrator(
                 .ToArray();
             if (routeCandidates.Length == 0)
             {
-                var diagnostic = idleVehicles.Where(v => TaskVehicleSelection.Accepts(task, v.VehicleId) && !selectedVehicles.Contains(v.VehicleId) && !string.IsNullOrWhiteSpace(v.CurrentStation)).Select(v => new
+                var diagnostic = idleVehicles.Where(v => options.AllowsVehicle(task.StationId, v.VehicleId) && fleetTest?.Allows(task.TaskId,v.VehicleId)!=false && TaskVehicleSelection.Accepts(task, v.VehicleId) && !selectedVehicles.Contains(v.VehicleId) && !string.IsNullOrWhiteSpace(v.CurrentStation)).Select(v => new
                 { Vehicle = v, Source = v.CurrentStation!, Route = routePlanner.Plan(v.CurrentStation!, pickupSite, new HashSet<string>()) })
                     .OrderBy(v => v.Route?.Cost ?? double.MaxValue).FirstOrDefault();
                 if (diagnostic != null) await trafficResources.RecordRouteAsync(new(readyStep.StepId, task.TaskId, diagnostic.Vehicle.VehicleId,

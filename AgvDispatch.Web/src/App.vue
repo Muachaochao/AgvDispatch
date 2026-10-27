@@ -33,6 +33,7 @@ const navigation = [
 ] as const;
 const engineering = [
   { path: '/engineering', label: '工程配置中心', icon: IconCpu },
+  { path: '/engineering-runtime', label: '工程执行接入', icon: IconCpu },
   { path: '/communication', label: 'PLC / AGV通信配置', icon: IconNetwork },
   { path: '/plc-cycle-test', label: 'PLC空载联调', icon: IconRoute },
   { path: '/navigation-test', label: '单车导航调试', icon: IconRoute },

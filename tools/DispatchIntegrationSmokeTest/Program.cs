@@ -69,7 +69,8 @@ internal static class Program
         map.Replace(new("MAP-INTEGRATION","V1",definition,DateTimeOffset.Now));
         var outbox=new AgvCommandOutboxRepository(db,map);
         var gate=new MapExecutionGate(); gate.SetMode(MapExecutionMode.Running);
-        var dispatch=new DispatchOrchestratorOptions { Enabled=true,MaxConcurrentTasks=2,DumperWaitingSite="WAIT",DumperDumpingSite="DUMP",
+        var engineeringOnly=Environment.GetCommandLineArgs().Contains("--engineering-runtime-only");
+        var dispatch=new DispatchOrchestratorOptions { Enabled=true,MaxConcurrentTasks=engineeringOnly?1:2,DumperWaitingSite="WAIT",DumperDumpingSite="DUMP",
             StationPickupSites=new() { ["CNC001"]="PICK1",["CNC002"]="PICK2" } };
         foreach(var (step,action) in new[]{("GoToPickup","JackLoad"),("DeliverFullBoxToDumper","Wait"),("EnterDumpingPosition","Wait"),("ReturnEmptyBox","JackUnload")}) dispatch.StepActions[step]=new(){Operation=action};
         var creation=new DispatchTaskCreationOptions(); var parameters=new TaskParameterRuntime(dispatch,creation);
@@ -109,6 +110,62 @@ internal static class Program
         try
         {
             Await(server.StartAsync(default)); Poll();
+            if(engineeringOnly)
+            {
+            var profile=parameters.Capture() with
+            {
+                EngineeringSource=new(Guid.NewGuid().ToString("N"),new string('A',64),EngineeringRuntimeIdentity.MapHash(definition)),
+                Pickups=[new("CNC001","PICK1"){VehiclePoolId="POOL-A",AllowedVehicleIds=["AGV-01"]},new("CNC002","PICK2"){VehiclePoolId="POOL-B",AllowedVehicleIds=["AGV-02"]}]
+            };
+            var profileRequest=new TaskParameterRequest(Guid.NewGuid().ToString("N"),parameters.Revision,"MAP-INTEGRATION","V1",profile);
+            var applied=Await(settings.SaveAsync(TrafficUserContext.LocalOperation("isolated-engineering"),profileRequest,default));
+            Check(applied.Accepted&&applied.Snapshot?.SavedRequestId==profileRequest.RequestId,"工程参数通过真实九步校验并保存原申请回执："+applied.Message);
+            Check(Await(settings.SaveAsync(TrafficUserContext.LocalOperation("isolated-engineering"),profileRequest,default)).Accepted&&applied.Snapshot!.Revision==parameters.Revision,"原编号重试不更改修订或重复应用");
+            var restoredOptions=new DispatchOrchestratorOptions();var restored=new TaskParameterRuntime(restoredOptions,new());restored.Apply(TaskParameterSettingsService.ReadDocument(Path.Combine(root,"parameters.json"))!);
+            Check(restoredOptions.AllowsVehicle("CNC001","AGV-01")&&!restoredOptions.AllowsVehicle("CNC001","AGV-02")&&restored.Capture().EngineeringSource==profile.EngineeringSource,"真实持久化重载保留工程来源和车辆池");
+            var stripped=profile with {EngineeringSource=null,Pickups=profile.Pickups.Select(p=>new TaskPickupParameter(p.StationId,p.PickupSite)).ToArray()};
+            Check(!Await(settings.SaveAsync(TrafficUserContext.LocalOperation("isolated-engineering"),new(Guid.NewGuid().ToString("N"),parameters.Revision,"MAP-INTEGRATION","V1",stripped),default)).Accepted,"旧客户端不能静默移除工程和池限制");
+            var modifiedPool=profile with {Pickups=[profile.Pickups[0] with {AllowedVehicleIds=["AGV-02"]},profile.Pickups[1]]};
+            Check(!Await(settings.SaveAsync(TrafficUserContext.LocalOperation("isolated-engineering"),new(Guid.NewGuid().ToString("N"),parameters.Revision,"MAP-INTEGRATION","V1",modifiedPool),default)).Accepted,"同一冻结工程版本不能在参数页改写车辆池");
+            var wrongHash=profile with {EngineeringSource=profile.EngineeringSource! with {MapDefinitionHash=new string('0',64)}};
+            Check(!Await(settings.SaveAsync(TrafficUserContext.LocalOperation("isolated-engineering"),new(Guid.NewGuid().ToString("N"),parameters.Revision,"MAP-INTEGRATION","V1",wrongHash),default)).Accepted,"地图内容摘要不同的工程参数不能保存");
+            var wrongVehicle=Await(manual.CreateAsync(TrafficUserContext.LocalOperation("isolated-engineering"),new(Guid.NewGuid().ToString("N"),"CNC001","AGV-02",50,"MAP-INTEGRATION","V1"){ParameterRevision=parameters.Revision},default));
+            Check(!wrongVehicle.Accepted&&wrongVehicle.Message.Contains("车辆池"),"手动指定池外车辆在持久化任务前被拦截");
+            var first=Await(client.CreateTaskAsync(new(Guid.NewGuid().ToString("N"),"CNC001","AGV-01",80,"MAP-INTEGRATION","V1"){ParameterRevision=parameters.Revision},default));
+            var secondRuntime=Await(client.CreateTaskAsync(new(Guid.NewGuid().ToString("N"),"CNC002","AGV-02",20,"MAP-INTEGRATION","V1"){ParameterRevision=parameters.Revision},default));
+            Check(first.Accepted&&secondRuntime.Accepted,"工程绑定经真实管道创建两个工位任务");
+            Cycle(ack,"ProcessPendingAcknowledgementsAsync");plc.Scan();
+            dispatch.EngineeringMapVersion="OTHER";Cycle(orchestrator,"RunCycleAsync");
+            Check(db.Queryable<AgvCommandOutboxEntity>().Count()==0,"地图版本变化阻止真实调度器派发");
+            dispatch.EngineeringMapVersion="V1";
+            dispatch.StationVehiclePools["CNC001"]=["AGV-NOT-AUTHORIZED"];dispatch.StationVehiclePools["CNC002"]=["AGV-NOT-AUTHORIZED"];
+            Cycle(orchestrator,"RunCycleAsync");
+            Check(db.Queryable<AgvCommandOutboxEntity>().Count()==0,"在线车辆仍不能越过工程车辆池");
+            dispatch.StationVehiclePools["CNC001"]=["AGV-01"];dispatch.StationVehiclePools["CNC002"]=["AGV-02"];
+            foreach(var item in new[]{(Id:first.TaskId!,Robot:robot1,Station:"CNC001"),(Id:secondRuntime.TaskId!,Robot:robot2,Station:"CNC002")})
+            {
+                Cycle(orchestrator,"RunCycleAsync");
+                Move(0);plc.Set(item.Station,"BoxPresent",false);HandshakeRuntime();Move(2);
+                plc.Set("DUMPER-001","DumperReady",true);HandshakeRuntime();Move(4);
+                plc.Set("DUMPER-001","DumpingCompletedMayLeave",true);HandshakeRuntime();Move(6);
+                plc.Set(item.Station,"BoxPresent",true);HandshakeRuntime();HandshakeRuntime();
+                var detail=Await(client.GetTaskDetailAsync(item.Id,default))!;
+                Check(detail.Task.Stage==DispatchTaskStage.Completed&&detail.Steps.All(s=>s.Status==DispatchTaskStepStatus.Completed),"真实九步执行器完成工程任务 "+item.Station);
+                Check(detail.Commands.Count==4&&detail.Commands.All(c=>c.AttemptCount==1),"四段真实 Robokit 回环命令各发送一次 "+item.Station);
+                void HandshakeRuntime() {for(int j=0;j<3;j++){Cycle(steps,"RunCycleAsync");plc.Scan();}}
+                void Move(int index)
+                {
+                    Cycle(steps,"RunCycleAsync");Cycle(sender,"DispatchDueCommandsAsync");Poll();
+                    var step=Await(tasks.GetStepsAsync(item.Id,default))[index];
+                    Check(step.Status==DispatchTaskStepStatus.Executing&&item.Robot.Commands.ContainsKey(step.StepId),"工程车辆池对应车辆实际收到运输命令 "+item.Station+"/"+index);
+                    item.Robot.Complete(step.StepId);Poll();Cycle(orchestrator,"RunCycleAsync");
+                    Check(Await(tasks.GetStepsAsync(item.Id,default))[index].Status==DispatchTaskStepStatus.Completed,"回环完成反馈推进原运输步骤 "+index);
+                }
+            }
+            Check(db.Queryable<TrafficResourceLeaseEntity>().Count()==0,"工程任务正常结束无残留路权");
+            File.WriteAllText(Path.Combine(root,"engineering-runtime-result.json"),JsonSerializer.Serialize(new{Checks=checks,First=first.TaskId,Second=secondRuntime.TaskId,Profile=profile,Robot1=robot1.Commands,Robot2=robot2.Commands,Scope="Actual service + SQLite + Named Pipe + loopback TCP; serial tasks; no field devices"},new JsonSerializerOptions{WriteIndented=true}));
+            return;
+            }
             var app=new AgvDispatch.Wpf.App(); app.InitializeComponent();
             vm=new TaskCenterViewModel(client); ViewModelLocationProvider.SetDefaultViewModelFactory(_=>vm);
             vm.OnNavigatedTo(null!); Pump(()=>!vm.IsBusy); Await(vm.LoadCreationOptionsAsync());
@@ -129,10 +186,11 @@ internal static class Program
             vm.CreationPriorityInput="80"; Await(vm.SubmitTaskAsync());
             Check(vm.Detail?.Task.StationId=="CNC001" && vm.Detail.Task.Priority==80,"前端提交命令经真实管道创建任务并读回详情");
             var a=vm.Detail!.Task.TaskId;
-            var second=Await(client.CreateTaskAsync(new(Guid.NewGuid().ToString("N"),"CNC002","AGV-02",20,"MAP-INTEGRATION","V1"),default));
+            var second=Await(client.CreateTaskAsync(new(Guid.NewGuid().ToString("N"),"CNC002","AGV-02",20,"MAP-INTEGRATION","V1"){ParameterRevision=parameters.Revision},default));
             Check(second.Accepted,"客户端经真实管道创建第二个独立工位任务");
             var b=second.TaskId!; vm.Search="";
-            Cycle(ack,"ProcessPendingAcknowledgementsAsync"); plc.Scan(); Cycle(orchestrator,"RunCycleAsync"); Cycle(sender,"DispatchDueCommandsAsync"); Poll();
+            Cycle(ack,"ProcessPendingAcknowledgementsAsync"); plc.Scan();
+            Cycle(orchestrator,"RunCycleAsync"); Cycle(sender,"DispatchDueCommandsAsync"); Poll();
             Check(robot1.Commands.Count==1 && robot2.Commands.Count==0,"高优先级任务取得共享资源后仅向第一辆模拟车下发");
             var waiting=Await(client.GetTrafficWaitingAsync(new(),default));
             Check(waiting.Items.Count==1 && waiting.Items[0].TaskId==b && waiting.Items[0].Blockers.Any(x=>x.TaskId==a && x.VehicleId=="AGV-01"),"第二辆车等待队列明确关联阻塞任务、车辆和共享资源");

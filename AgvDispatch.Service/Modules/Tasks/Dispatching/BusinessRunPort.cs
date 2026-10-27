@@ -81,6 +81,8 @@ public sealed partial class BusinessRunPort(IManualTaskCreationService manual, I
             throw new InvalidOperationException("待机点必须独立于取放箱、倒料及倒料等待点。");
         foreach (var pickup in config.Pickups.Where(p => plan.Stations.Contains(p.StationId)))
         {
+            if (!dispatch.AllowsVehicle(pickup.StationId, plan.VehicleId))
+                throw new InvalidOperationException($"工位 {pickup.StationId} 的车辆池不允许车辆 {plan.VehicleId}。");
             var node = Resolve(pickup.PickupSite);
             if (planner.Plan(standby.AgvSiteId!, node.AgvSiteId!, new HashSet<string>()) is null ||
                 planner.Plan(node.AgvSiteId!, standby.AgvSiteId!, new HashSet<string>()) is null)

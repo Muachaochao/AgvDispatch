@@ -57,13 +57,14 @@ app.Use(async (ctx, next) =>
     }
 });
 app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(20) });
-app.MapGet("/api/config", () => new { taskSubmissionEnabled = !engineeringSimulationOnly && submissions, taskCancellationEnabled = !engineeringSimulationOnly && cancellations, recoveryActionsEnabled = !engineeringSimulationOnly && recoveryActions, engineeringSimulationOnly, source = "backend", loopbackOnly = true,
+app.MapGet("/api/config", () => new { taskSubmissionEnabled = !engineeringSimulationOnly && submissions, taskCancellationEnabled = !engineeringSimulationOnly && cancellations, recoveryActionsEnabled = !engineeringSimulationOnly && recoveryActions, engineeringSimulationOnly, engineeringRuntimeApplyEnabled = !engineeringSimulationOnly && builder.Configuration.GetValue("Web:EnableEngineeringRuntimeApply", false), source = "backend", loopbackOnly = true,
     projectStoreId=Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(projectStorePath))),
     adapter = new { informationalVersion=AdapterBuildIdentity.InformationalVersion, sha256=AdapterBuildIdentity.Sha256 },
     servicePipeName = builder.Configuration["Web:PipeName"] ?? "AgvDispatch.Service" });
 app.MapEditorApi();
 app.MapEngineeringApi();
 app.MapEngineeringCenterApi();
+app.MapEngineeringRuntimeApi(!engineeringSimulationOnly && builder.Configuration.GetValue("Web:EnableEngineeringRuntimeApply", false));
 app.MapNavigationTestApi();
 app.MapPlcCycleTestApi();
 app.MapRobotMapDownloadApi();

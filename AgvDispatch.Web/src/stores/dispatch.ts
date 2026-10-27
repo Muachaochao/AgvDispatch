@@ -16,6 +16,7 @@ export const useDispatchStore = defineStore('dispatch', () => {
   const submissionEnabled = ref(false);
   const cancellationEnabled = ref(false);
   const engineeringSimulationOnly = ref(false);
+  const engineeringRuntimeApplyEnabled = ref(false);
   const adapterIdentity = ref<AdapterIdentity | null>(null);
 
   let socket: WebSocket | undefined;
@@ -132,12 +133,13 @@ export const useDispatchStore = defineStore('dispatch', () => {
     reconnectDelay = 1000;
 
     try {
-      const config = await api<{ taskSubmissionEnabled: boolean; taskCancellationEnabled?: boolean; adapter?: AdapterIdentity;engineeringSimulationOnly?:boolean }>('/api/config');
+      const config = await api<{ taskSubmissionEnabled: boolean; taskCancellationEnabled?: boolean; adapter?: AdapterIdentity;engineeringSimulationOnly?:boolean;engineeringRuntimeApplyEnabled?:boolean }>('/api/config');
       if (mine !== epoch) return;
       submissionEnabled.value = config.taskSubmissionEnabled;
       cancellationEnabled.value = config.taskCancellationEnabled === true;
       adapterIdentity.value = config.adapter ?? null;
       engineeringSimulationOnly.value=config.engineeringSimulationOnly===true;
+      engineeringRuntimeApplyEnabled.value=config.engineeringRuntimeApplyEnabled===true;
       if(engineeringSimulationOnly.value){error.value='工程隔离模拟：设备通信已禁用';return;}
 
       const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws`);
@@ -210,7 +212,7 @@ export const useDispatchStore = defineStore('dispatch', () => {
   }
 
   return {
-    snapshot, error, sceneError, now, submissionEnabled, cancellationEnabled, adapterIdentity,engineeringSimulationOnly,
+    snapshot, error, sceneError, now, submissionEnabled, cancellationEnabled, adapterIdentity,engineeringSimulationOnly,engineeringRuntimeApplyEnabled,
     fresh, vehicles, allTasks, equipment, resources, alarms, openAlarms,
     activeCount, vehicleStats, ringSegments, mapVehicleCount,
     api, connectBackend, connectDemo, stopConnection, dispose,

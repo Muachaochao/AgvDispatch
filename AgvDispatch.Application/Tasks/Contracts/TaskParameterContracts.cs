@@ -2,7 +2,12 @@
 
 namespace AgvDispatch.Application.Abstractions;
 
-public sealed record TaskPickupParameter(string StationId, string PickupSite);
+public sealed record TaskPickupParameter(string StationId, string PickupSite)
+{
+    // Null retains legacy unrestricted selection. An explicit list is a strict whitelist.
+    public string? VehiclePoolId { get; init; }
+    public IReadOnlyList<string>? AllowedVehicleIds { get; init; }
+}
 public sealed record TaskActionParameter(DispatchTaskStepType StepType, string Operation, double? JackHeight,
     bool? Recognize, bool? UsePgv, bool? UseDownPgv);
 public sealed record TaskStepTimeoutParameter(DispatchTaskStepType StepType, int Seconds);
@@ -12,10 +17,15 @@ public sealed record TaskParameterConfiguration(string DumperStationId, string W
     // Older saved profiles omit this property and keep timeout prompts disabled.
     public IReadOnlyList<TaskStepTimeoutParameter> StepTimeouts { get; init; } =
         Enum.GetValues<DispatchTaskStepType>().Select(type => new TaskStepTimeoutParameter(type, 0)).ToArray();
+    public EngineeringRuntimeSource? EngineeringSource { get; init; }
 }
+public sealed record EngineeringRuntimeSource(string VersionId, string ContentHash, string MapDefinitionHash);
 public sealed record TaskParameterAudit(DateTimeOffset At, string Operator, string Revision);
 public sealed record TaskParameterSnapshot(string Revision, TaskParameterConfiguration Configuration,
-    string? MapId, string? MapVersionId, bool CanSave, string Explanation, IReadOnlyList<TaskParameterAudit> Audits);
+    string? MapId, string? MapVersionId, bool CanSave, string Explanation, IReadOnlyList<TaskParameterAudit> Audits)
+{
+    public string? SavedRequestId { get; init; }
+}
 public sealed record TaskParameterRequest(string RequestId, string ExpectedRevision, string MapId, string MapVersionId,
     TaskParameterConfiguration Configuration);
 public sealed record TaskParameterValidationRow(string StationId, ManualTaskStepPreview Step);

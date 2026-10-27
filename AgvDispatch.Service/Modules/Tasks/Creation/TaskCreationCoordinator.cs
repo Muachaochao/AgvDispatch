@@ -14,7 +14,8 @@ public sealed class TaskCreationCoordinator(
     IPlcGateway plcGateway,
     IMapExecutionGate executionGate,
     TaskParameterRuntime parameters,
-    IExecutionEvidenceJournal? journal = null, BusinessRunOwnership? businessRun = null,FleetTestOwnership? fleetOwnership=null) : IsolatedBackgroundService
+    IExecutionEvidenceJournal? journal = null, BusinessRunOwnership? businessRun = null,FleetTestOwnership? fleetOwnership=null,
+    IActiveMapRuntime? activeMap = null, DispatchOrchestratorOptions? dispatchOptions = null) : IsolatedBackgroundService
 {
     private readonly Channel<string> _eligibleStations = Channel.CreateUnbounded<string>(
         new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
@@ -103,6 +104,7 @@ public sealed class TaskCreationCoordinator(
     {
         using var execution = await executionGate.EnterAsync(MapExecutionOperation.NewWork, cancellationToken);
         if (execution is null) return;
+        if (dispatchOptions?.EngineeringMapError(activeMap?.Current) is not null) return;
         if (businessRun?.Active == true||fleetOwnership?.Active==true) return;
         if (parameters.Revision != "initial" && !parameters.Capture().Pickups.Any(pickup =>
             string.Equals(pickup.StationId, stationId, StringComparison.OrdinalIgnoreCase))) return;

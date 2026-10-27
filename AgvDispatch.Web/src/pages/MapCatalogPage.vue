@@ -2,7 +2,7 @@
 import ActionIcon from '../components/ActionIcon.vue';
 import { computed, ref, watch, onUnmounted } from 'vue';
 import {activationIntentKey,parseActivationIntent,reviewMatches,acknowledgeReview,reviewLabel,type ActivationIntent,type ActivationReview} from '../map-activation-review';
-import { useRouter } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import { useDispatchStore } from '../stores/dispatch';
 import { useToastStore } from '../stores/toast';
 import { shortTime } from '../dashboard';
@@ -15,6 +15,7 @@ import MapPublishDialog from '../MapPublishDialog.vue';
 const store = useDispatchStore();
 const toast = useToastStore();
 const router = useRouter();
+const route = useRoute();
 const catalog = ref<MapSummary[]>([]);
 const catalogError = ref('');
 const selectedMap = ref<MapSummary | null>(null);
@@ -161,6 +162,7 @@ const currentPhase = computed(() => switchStatus.value?.current?.phaseText ?? '�
       <button @click="router.push('/')"><IconArrowLeft :size="15" />返回大屏</button>
     </header>
     <div class="map-workflow"><b>地图使用流程</b><span>工程编辑保存草稿 → 本页发布 → 激活与安全切换 → 大屏显示当前运行图</span></div>
+    <p v-if="route.query.engineeringVersion" class="inline-warning">工程接入目标：{{route.query.mapId||'请返回预检取得地图编号'}} / {{route.query.mapVersion||'请返回预检取得准确版本'}}。请核对卡片的发布版本；版本不同应重新绑定工程，不能用相似地图代替。激活及安全切换完成后，<RouterLink :to="{path:'/engineering-runtime',query:{version:route.query.engineeringVersion}}">返回工程执行接入重新预检</RouterLink>。</p>
     <div class="map-catalog-note">本页统一管理地图发布、版本与激活。发布是生成后台版本，车辆上传尚未开放。大屏只显示后台当前运行地图；现场条件或地图兼容未核定时，激活保持禁用。</div>
     <p v-if="storageError" class="inline-warning">本地激活复核记录不可读，地图写操作保持禁用：{{storageError}}</p>
     <p v-if="activationIntent" class="inline-warning activation-pending">存在原激活结果待核对：{{activationIntent.releaseId}} · {{activationIntent.mapId}} / {{activationIntent.versionId}}。禁止重复激活和直接放行。<button @click="loadActivationReview"><ActionIcon name="search"/>只读复核原激活</button></p>

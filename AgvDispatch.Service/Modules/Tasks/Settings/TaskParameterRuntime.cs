@@ -15,7 +15,8 @@ public sealed class TaskParameterRuntime(DispatchOrchestratorOptions dispatch, D
         .Select(type => new TaskStepTimeoutParameter(type, 0)).ToArray();
     public IReadOnlyList<TaskStepTimeoutParameter> StepTimeouts => _stepTimeouts;
     public string Revision { get; private set; } = "initial";
-    public TaskParameterConfiguration Capture() => new(creation.DumperStationId, dispatch.GetDumperWaitingSite() ?? "", dispatch.DumperDumpingSite,
+    private TaskParameterConfiguration? _configuration;
+    public TaskParameterConfiguration Capture() => _configuration is not null ? Clone(_configuration) : new(creation.DumperStationId, dispatch.GetDumperWaitingSite() ?? "", dispatch.DumperDumpingSite,
         dispatch.StationPickupSites.OrderBy(pair => pair.Key).Select(pair => new TaskPickupParameter(pair.Key, pair.Value)).ToArray(),
         TransportSteps.Select(type => dispatch.GetAction(type) is { } action
             ? new TaskActionParameter(type, action.Operation, action.JackHeight, action.Recognize, action.UsePgv, action.UseDownPgv)
@@ -26,8 +27,11 @@ public sealed class TaskParameterRuntime(DispatchOrchestratorOptions dispatch, D
     public static void CheckStructure(TaskParameterConfiguration configuration)
     {
         if (configuration is null || configuration.Pickups is null || configuration.Actions is null ||
-            configuration.Pickups.Count is < 1 or > 100 || configuration.Actions.Count != 4)
-            throw new ArgumentException("需配置 1–100 个取货工位和四个运输动作。");
+            configuration.Pickups.Count is < 1 or > 1000 || configuration.Actions.Count != 4)
+            throw new ArgumentException("需配置 1–1000 个取货工位和四个运输动作。");
+        if (configuration.EngineeringSource is { } source &&
+            (!Guid.TryParseExact(source.VersionId, "N", out _) || !IsHash(source.ContentHash) || !IsHash(source.MapDefinitionHash)))
+            throw new ArgumentException("工程来源版本或摘要无效。");
         if (configuration.StepTimeouts is null || configuration.StepTimeouts.Count != 9 ||
             configuration.StepTimeouts.Any(row => row is null || row.Seconds is < 0 or > 604800) ||
             !configuration.StepTimeouts.Select(row => row.StepType).Order().SequenceEqual(Enum.GetValues<DispatchTaskStepType>().Order()))
@@ -42,6 +46,14 @@ public sealed class TaskParameterRuntime(DispatchOrchestratorOptions dispatch, D
         {
             if (pickup is null) throw new ArgumentException("取货工位项不能为空。");
             Id(pickup.StationId, 32, "取货 PLC 工位"); Id(pickup.PickupSite, 128, "取货 AGV 站点");
+            if (pickup.AllowedVehicleIds is { } vehicles)
+            {
+                Id(pickup.VehiclePoolId, 64, "车辆池");
+                if (vehicles.Count is < 1 or > 100 || vehicles.Distinct(StringComparer.OrdinalIgnoreCase).Count() != vehicles.Count)
+                    throw new ArgumentException("车辆池需包含 1–100 个不重复的车辆编号。");
+                foreach (var vehicle in vehicles) Id(vehicle, 32, "车辆编号");
+            }
+            else if (configuration.EngineeringSource is not null) throw new ArgumentException("工程工位必须绑定明确车辆池，不能退回无限制派车。");
         }
         if (configuration.Pickups.Select(pickup => pickup.StationId).Distinct(StringComparer.OrdinalIgnoreCase).Count() != configuration.Pickups.Count)
             throw new ArgumentException("取货 PLC 工位编号不能重复。");
@@ -64,6 +76,8 @@ public sealed class TaskParameterRuntime(DispatchOrchestratorOptions dispatch, D
         var actions = configuration.Actions.ToDictionary(row => row.StepType.ToString(), row => new AgvStepActionOptions
         { Operation = row.Operation, JackHeight = row.JackHeight, Recognize = row.Recognize, UsePgv = row.UsePgv, UseDownPgv = row.UseDownPgv }, StringComparer.OrdinalIgnoreCase);
         target.StationPickupSites = pickups; target.StepActions = actions;
+        target.StationVehiclePools = configuration.Pickups.Where(p => p.AllowedVehicleIds is not null)
+            .ToDictionary(p => p.StationId, p => p.AllowedVehicleIds!.ToArray(), StringComparer.OrdinalIgnoreCase);
         target.DumperWaitingSite = configuration.WaitingSite; target.DumperDumpingSite = configuration.DumpingSite;
         creationTarget.DumperStationId = configuration.DumperStationId;
     }
@@ -72,7 +86,12 @@ public sealed class TaskParameterRuntime(DispatchOrchestratorOptions dispatch, D
         CheckStructure(document.Configuration);
         ApplyConfiguration(document.Configuration, dispatch, creation);
         _stepTimeouts = document.Configuration.StepTimeouts.ToArray();
+        _configuration = Clone(document.Configuration);
+        dispatch.EngineeringMapId = document.Configuration.EngineeringSource is null ? null : document.MapId;
+        dispatch.EngineeringMapVersion = document.Configuration.EngineeringSource is null ? null : document.MapVersionId;
+        dispatch.EngineeringMapHash = document.Configuration.EngineeringSource?.MapDefinitionHash;
         Revision = document.Revision;
     }
     public static T Clone<T>(T value) => JsonSerializer.Deserialize<T>(JsonSerializer.Serialize(value))!;
+    private static bool IsHash(string? value) => value is { Length: 64 } && value.All(Uri.IsHexDigit);
 }

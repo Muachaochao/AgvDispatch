@@ -14,6 +14,7 @@ using AgvDispatch.Infrastructure.Traffic;
 using AgvDispatch.Application.Maps;
 using AgvDispatch.Infrastructure.Persistence.Entities;
 using AgvDispatch.WebHost;
+using AgvDispatch.WebHost.Engineering;
 
 var checks = new List<string>();
 void Check(bool pass, string name) { if (!pass) throw new Exception(name); checks.Add(name); Console.WriteLine("PASS " + name); }
@@ -81,7 +82,8 @@ using var service = Launch(Path.Combine(deploy, "AgvDispatch.Service.exe"), depl
     "--TaskCreation:Enabled=false", "--Dispatching:Enabled=false", "--AgvCommandOutbox:Enabled=false", "--DispatchTaskSteps:Enabled=false", "--ExecutionIdentityAcquisition:Enabled=false", "--Map:Enabled=false"]);
 var serviceOut = service.StandardOutput.ReadToEndAsync(); var serviceErr = service.StandardError.ReadToEndAsync();
 using var listener = new TcpListener(IPAddress.Loopback, 0); listener.Start(); var port = ((IPEndPoint)listener.LocalEndpoint).Port; listener.Stop();
-var bridgeArguments=new[]{"--Web:Port=" + port, "--Web:PipeName=" + pipeName,"--Web:EnableTaskSubmission=false","--Web:ProjectStorePath="+Path.Combine(root,"projects"),"--Web:StaticPath="+(candidateRoot==null?Path.Combine(workspace,"AgvDispatch.Web/dist"):Path.Combine(candidateRoot,"Web/wwwroot"))};
+var engineeringEnabled=args.Contains("--engineering-enabled-guards");
+var bridgeArguments=new[]{"--Web:EnableEngineeringRuntimeApply="+engineeringEnabled,"--Web:Port=" + port, "--Web:PipeName=" + pipeName,"--Web:EnableTaskSubmission=false","--Web:ProjectStorePath="+Path.Combine(root,"projects"),"--Web:StaticPath="+(candidateRoot==null?Path.Combine(workspace,"AgvDispatch.Web/dist"):Path.Combine(candidateRoot,"Web/wwwroot"))};
 using var bridge = candidateRoot==null?Launch("dotnet",workspace,[Path.Combine(workspace,"AgvDispatch.WebHost/bin/Debug/net10.0-windows10.0.19041.0/AgvDispatch.WebHost.dll"),..bridgeArguments]):
     Launch(Path.Combine(candidateRoot,"Web/host/AgvDispatch.WebHost.exe"),Path.Combine(candidateRoot,"Web"),bridgeArguments);
 var bridgeOut = bridge.StandardOutput.ReadToEndAsync(); var bridgeErr = bridge.StandardError.ReadToEndAsync();
@@ -98,6 +100,29 @@ try
         await Task.Delay(200);
     }
     Check(ready, "真实Service.exe → NamedPipe → WebHost → HTTP可用（私有库/独立管道）");
+    var runtimeConfig=await http.GetFromJsonAsync<JsonElement>("/api/config");
+    Check(runtimeConfig.GetProperty("engineeringRuntimeApplyEnabled").GetBoolean()==engineeringEnabled,"工程执行应用按独立许可开放，默认关闭");
+    using(var blockedApply=await http.PostAsJsonAsync("/api/engineering-runtime/apply",new {VersionId="",RequestId=Guid.NewGuid().ToString("N"),ExpectedRevision="",ExpectedCommunicationRevision="",ExpectedContentHash="",ExpectedMapHash="",ConfirmationText="",ActionsReviewed=false}))
+        Check(engineeringEnabled ? blockedApply.IsSuccessStatusCode&&!(await blockedApply.Content.ReadFromJsonAsync<TaskParameterResult>(WebJson.Options))!.Accepted : blockedApply.StatusCode==HttpStatusCode.Forbidden,"HTTP 工程应用拒绝缺少明确确认的请求");
+    var runtimeState=await http.GetFromJsonAsync<JsonElement>("/api/engineering-runtime/state");
+    Check(runtimeState.TryGetProperty("savedRequestId",out _)&&runtimeState.TryGetProperty("configuration",out _),"HTTP 可经真实管道只读查询参数及原申请回执");
+    if(engineeringEnabled)
+    {
+        var runtimePlan=EngineeringSample.Create(2,1) with {MapId="MAP-WEB-TEST",MapVersion="V1"};
+        var runtimeDraft=await http.GetFromJsonAsync<EngineeringDraft>("/api/engineering/draft",WebJson.Options);
+        var savedResponse=await http.PostAsJsonAsync("/api/engineering/draft",new EngineeringSave(runtimeDraft!.Revision,runtimePlan),WebJson.Options);savedResponse.EnsureSuccessStatusCode();
+        var saved=await savedResponse.Content.ReadFromJsonAsync<EngineeringDraft>(WebJson.Options);
+        var publishedResponse=await http.PostAsJsonAsync("/api/engineering/publish",new EngineeringPublish(saved!.Revision,"isolated runtime guard"),WebJson.Options);publishedResponse.EnsureSuccessStatusCode();
+        var version=await publishedResponse.Content.ReadFromJsonAsync<EngineeringVersion>(WebJson.Options);
+        var previewResponse=await http.PostAsJsonAsync("/api/engineering-runtime/preview",new EngineeringRuntimeApi.PreviewRequest(version!.Id),WebJson.Options);previewResponse.EnsureSuccessStatusCode();
+        var preview=await previewResponse.Content.ReadFromJsonAsync<EngineeringRuntimePreview>(WebJson.Options);
+        Check(preview is {Ready:false}&&preview.Blockers.Any(b=>b.Contains("RobotWorld")),"HTTP 预检经真实管道读取地图并拒绝非运行坐标系");
+        var applyResponse=await http.PostAsJsonAsync("/api/engineering-runtime/apply",new EngineeringRuntimeApi.ApplyRequest(version.Id,Guid.NewGuid().ToString("N"),"initial","",version.ContentHash,preview!.MapDefinitionHash,"APPLY "+version.Id,true),WebJson.Options);applyResponse.EnsureSuccessStatusCode();
+        var rejected=await applyResponse.Content.ReadFromJsonAsync<TaskParameterResult>(WebJson.Options);
+        Check(rejected is {Accepted:false}&&rejected.Message.Contains("未应用"),"确定预检拒绝返回未应用结果，不误留为发送未知");
+        var after=await http.GetFromJsonAsync<JsonElement>("/api/engineering-runtime/state");
+        Check(after.GetProperty("savedRequestId").ValueKind==JsonValueKind.Null,"预检失败没有落库或改写原参数申请回执");
+    }
     if(args.Contains("--vendor-path-only"))
     {
         var fixtureIndex=Array.IndexOf(args,"--vendor-map");
