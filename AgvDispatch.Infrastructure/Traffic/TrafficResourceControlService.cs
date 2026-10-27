@@ -104,4 +104,25 @@ public sealed partial class TrafficResourceControlService(
             new DateTimeOffset(audit.ReleasedAt))).ToArray();
     }
 
+    public async Task<TrafficDispatchDiagnosis?> GetDispatchDiagnosisAsync(
+        string taskId,
+        string stepId,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(taskId) || string.IsNullOrWhiteSpace(stepId))
+            return null;
+        var row = await database.Queryable<TrafficRequestEntity>()
+            .Where(request => request.TaskId == taskId && request.StepId == stepId)
+            .FirstAsync(cancellationToken);
+        return row is null ? null : new TrafficDispatchDiagnosis(
+            row.TaskId,
+            row.StepId,
+            row.VehicleId,
+            row.Source,
+            row.Destination,
+            row.State,
+            row.Reason,
+            new DateTimeOffset(row.UpdatedAt));
+    }
+
 }

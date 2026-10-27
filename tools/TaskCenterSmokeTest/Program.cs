@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Security.Cryptography;
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Domain.Devices;
+using AgvDispatch.Domain.Maps;
 using AgvDispatch.Domain.Tasks;
 using AgvDispatch.Infrastructure.Persistence;
 using AgvDispatch.Infrastructure.Persistence.Entities;
@@ -43,6 +44,25 @@ Require(await reader.GetDetailAsync("missing", token) is null, "unknown task");
 var detail = (await service.GetDetailAsync(a.Task.TaskId, token))!;
 Require(detail.Steps.Count == 9 && detail.Steps[0].Sequence < detail.Steps[8].Sequence, "ordered nine steps");
 Require(detail.PlcConditions.Single().Quality == SignalQuality.Unknown && !detail.PlcConditions.Single().Satisfied, "missing signal not satisfied");
+await database.Updateable<DispatchTaskEntity>().SetColumns(task => task.Stage == (int)DispatchTaskStage.WaitingForVehicle)
+    .Where(task => task.TaskId == a.Task.TaskId).ExecuteCommandAsync();
+await database.Insertable(new TrafficRequestEntity
+{
+    StepId = detail.Steps[0].StepId, TaskId = a.Task.TaskId, VehicleId = "AGV-01",
+    Source = "LM8", Destination = "PICK", EdgeIds = "[]", ResourceIds = "[]",
+    State = "Requested", Reason = "派车前准备失败，未发送：车端地图核验未通过",
+    WaitingCategory = "Route", RequestedAt = DateTime.Now, UpdatedAt = DateTime.Now
+}).ExecuteCommandAsync();
+var diagnosticService = new TaskCenterQueryService(reader, cache, creation, parameters, clock,
+    trafficControl: new TrafficResourceControlService(database, new TrafficResourceCatalog([])));
+var dispatchDetail = (await diagnosticService.GetDetailAsync(a.Task.TaskId, token))!;
+Require(dispatchDetail.WaitingExplanation.Contains("AGV-01") &&
+    dispatchDetail.WaitingExplanation.Contains("LM8→PICK") &&
+    dispatchDetail.WaitingExplanation.Contains("车端地图核验未通过"),
+    "待派车任务显示候选车辆、已规划路线和最近发送前失败原因");
+await database.Deleteable<TrafficRequestEntity>().Where(request => request.TaskId == a.Task.TaskId).ExecuteCommandAsync();
+await database.Updateable<DispatchTaskEntity>().SetColumns(task => task.Stage == (int)DispatchTaskStage.Created)
+    .Where(task => task.TaskId == a.Task.TaskId).ExecuteCommandAsync();
 cache.Set("CNC001", "FullBoxRequestAcknowledged", true, SignalQuality.Stale);
 Require(!(await service.GetDetailAsync(a.Task.TaskId, token))!.PlcConditions.Single().Satisfied, "stale true not satisfied");
 cache.Set("CNC001", "FullBoxRequestAcknowledged", true, SignalQuality.Good);

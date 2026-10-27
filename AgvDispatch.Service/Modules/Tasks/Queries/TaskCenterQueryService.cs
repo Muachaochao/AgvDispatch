@@ -5,7 +5,9 @@ using AgvDispatch.Domain.Tasks;
 namespace AgvDispatch.Service;
 
 public sealed partial class TaskCenterQueryService(ITaskCenterReadRepository repository,
-    IPlcSignalCache signals, DispatchTaskCreationOptions options, TaskParameterRuntime? parameters = null, TimeProvider? clock = null, HandshakeExecutionOptions? handshakeOptions = null) : ITaskCenterQueryService
+    IPlcSignalCache signals, DispatchTaskCreationOptions options, TaskParameterRuntime? parameters = null,
+    TimeProvider? clock = null, HandshakeExecutionOptions? handshakeOptions = null,
+    ITrafficResourceControlService? trafficControl = null) : ITaskCenterQueryService
 {
     public Task<TaskListPage> QueryAsync(TaskListQuery query, CancellationToken cancellationToken) =>
         repository.QueryAsync(query, cancellationToken);
@@ -38,7 +40,14 @@ public sealed partial class TaskCenterQueryService(ITaskCenterReadRepository rep
             explanation = "等待满箱呼叫应答写入并校验，成功后进入待派车。";
         }
         else if (task.Stage == DispatchTaskStage.WaitingForVehicle)
-            explanation = "等待可用车辆、工位映射、可行路径和交通资源；此处不代表已诊断出具体阻塞原因。";
+        {
+            var dispatch = current is null || trafficControl is null ? null :
+                await trafficControl.GetDispatchDiagnosisAsync(task.TaskId, current.StepId, cancellationToken);
+            explanation = dispatch is null
+                ? "等待可用车辆、工位映射、可行路径和交通资源；尚未形成候选派车记录。"
+                : $"{dispatch.VehicleId} 已作为候选，已规划 {dispatch.Source}→{dispatch.Destination}；" +
+                  $"派车状态 {dispatch.State}：{dispatch.Reason}";
+        }
         else if (current?.Status == DispatchTaskStepStatus.Ready)
         {
             conditions.AddRange(TaskStepProgressRules.Observe(current.StepType, task.StationId, options.DumperStationId, signals));

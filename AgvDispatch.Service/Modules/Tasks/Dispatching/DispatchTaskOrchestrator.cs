@@ -202,8 +202,14 @@ public sealed class DispatchTaskOrchestrator(
                             planningMap.MapId,planningMap.VersionId,cancellationToken);
                     if(!checkedMap.Accepted || !ReferenceEquals(planningMap,activeMap.Current))
                     {
+                        var reason = !ReferenceEquals(planningMap, activeMap.Current)
+                            ? "车端核验期间运行地图已变化，本候选不发送。"
+                            : checkedMap.Message;
                         await trafficResources.RecordRouteAsync(new(readyStep.StepId,task.TaskId,vehicle.VehicleId,vehicle.CurrentStation!,pickupSite,
-                            route.EdgeIds,route.ResourceIds,true,checkedMap.Message){MapId=planningMap?.MapId,MapVersionId=planningMap?.VersionId},cancellationToken);
+                            route.EdgeIds,route.ResourceIds,true,"派车前车端地图/路线核验未通过："+reason){MapId=planningMap?.MapId,MapVersionId=planningMap?.VersionId},cancellationToken);
+                        logger.LogWarning(
+                            "派车前车端地图/路线核验未通过。TaskId={TaskId}, VehicleId={VehicleId}, From={Source}, To={Destination}, Reason={Reason}",
+                            task.TaskId, vehicle.VehicleId, vehicle.CurrentStation, pickupSite, reason);
                         continue;
                     }
                 }
@@ -245,6 +251,13 @@ public sealed class DispatchTaskOrchestrator(
                         await trafficResources.ReleaseStepAsync(
                             readyStep.StepId,
                             cancellationToken);
+                        await trafficResources.RecordRouteAsync(new(readyStep.StepId, task.TaskId,
+                            vehicle.VehicleId, vehicle.CurrentStation!, pickupSite, route.EdgeIds, route.ResourceIds,
+                            false, "首段车端命令未能登记，未发送；请核对任务、步骤和命令队列。")
+                            { MapId = planningMap?.MapId, MapVersionId = planningMap?.VersionId }, cancellationToken);
+                        logger.LogWarning(
+                            "首段车端命令未能登记。TaskId={TaskId}, VehicleId={VehicleId}, From={Source}, To={Destination}",
+                            task.TaskId, vehicle.VehicleId, vehicle.CurrentStation, pickupSite);
                         break;
                     }
 
@@ -253,13 +266,25 @@ public sealed class DispatchTaskOrchestrator(
                         readyStep.StepId,
                         cancellationToken);
                 }
-                catch
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception exception)
                 {
                     if (!commandPrepared)
                     {
                         await trafficResources.ReleaseStepAsync(
                             readyStep.StepId,
                             cancellationToken);
+                        await trafficResources.RecordRouteAsync(new(readyStep.StepId, task.TaskId,
+                            vehicle.VehicleId, vehicle.CurrentStation!, pickupSite, route.EdgeIds, route.ResourceIds,
+                            false, "派车前准备失败，未发送：" + exception.Message)
+                            { MapId = planningMap?.MapId, MapVersionId = planningMap?.VersionId }, cancellationToken);
+                        logger.LogWarning(exception,
+                            "派车前准备失败，未发送。TaskId={TaskId}, VehicleId={VehicleId}, From={Source}, To={Destination}",
+                            task.TaskId, vehicle.VehicleId, vehicle.CurrentStation, pickupSite);
+                        continue;
                     }
                     throw;
                 }

@@ -35,6 +35,16 @@ public sealed record TrafficResourceReleaseAuditSnapshot(
     bool HeartbeatExpired,
     DateTimeOffset ReleasedAt);
 
+public sealed record TrafficDispatchDiagnosis(
+    string TaskId,
+    string StepId,
+    string VehicleId,
+    string Source,
+    string Destination,
+    string State,
+    string Reason,
+    DateTimeOffset UpdatedAt);
+
 public interface ITrafficResourceControlService
 {
     Task<TrafficBlockingDetails> GetBlockingAsync(TrafficBlockingQuery query,CancellationToken ct)=>throw new NotSupportedException("后台未支持阻塞链详情。");
@@ -47,4 +57,8 @@ public interface ITrafficResourceControlService
     Task<IReadOnlyList<TrafficResourceReleaseAuditSnapshot>> GetRecentAuditsAsync(
         int maximumCount,
         CancellationToken cancellationToken);
+    Task<TrafficDispatchDiagnosis?> GetDispatchDiagnosisAsync(
+        string taskId,
+        string stepId,
+        CancellationToken cancellationToken) => Task.FromResult<TrafficDispatchDiagnosis?>(null);
 }
