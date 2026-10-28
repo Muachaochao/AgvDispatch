@@ -147,7 +147,7 @@ public sealed partial class MapSwitchService(ISqlSugarClient database, IMapExecu
                 active is null && runtime.Current is null;
             // An unused preview is never an executable coordinate reference. Close it only after
             // full quiescence checks; retain Held so cancelling cannot resume the old-map workflow.
-            var blockers = await GetBlockersCoreAsync(definition, !bootstrapCancel && !cancelledPreview, cancellationToken);
+            var blockers = await GetBlockersCoreAsync(definition, !bootstrapCancel && !cancelledPreview, true, cancellationToken);
             if (blockers.Count > 0) return new(false, string.Join("；", blockers));
             var committedAt = new DateTimeOffset(current.UpdatedAt);
             if (!cancel && (vehicles.GetAll().Any(vehicle => vehicle.Quality != SignalQuality.Disabled &&
@@ -169,10 +169,12 @@ public sealed partial class MapSwitchService(ISqlSugarClient database, IMapExecu
         return new(true, cancelledPreview ? "已关闭未提交的预览图切换；原运行图保留且执行仍暂停。请配置并发布运行图后重新安全切换。" : cancel ? "已取消切换，继续使用原地图。" : "现场与车辆兼容性已确认，恢复派单。");
     }
 
-    public async Task<IReadOnlyList<string>> GetBlockersAsync(MapDefinition definition, CancellationToken cancellationToken)
-        => await GetBlockersCoreAsync(definition,true,cancellationToken);
+    public async Task<IReadOnlyList<string>> GetBlockersAsync(MapDefinition definition, CancellationToken cancellationToken,
+        bool requireStoppedStation = true)
+        => await GetBlockersCoreAsync(definition,true,requireStoppedStation,cancellationToken);
 
-    private async Task<IReadOnlyList<string>> GetBlockersCoreAsync(MapDefinition definition,bool checkTargetMap,CancellationToken cancellationToken)
+    private async Task<IReadOnlyList<string>> GetBlockersCoreAsync(MapDefinition definition,bool checkTargetMap,
+        bool requireStoppedStation,CancellationToken cancellationToken)
     {
         var blockers = new List<string>();
         if(mapTransfers?.IsOpen==false)blockers.Add("存在未处置的地图传输不确定记录，不能解除执行屏障。");
@@ -195,11 +197,12 @@ public sealed partial class MapSwitchService(ISqlSugarClient database, IMapExecu
             row.Status == (int)DispatchTaskStepStatus.ManualIntervention || row.Status == (int)DispatchTaskStepStatus.Failed)
             .CountAsync(cancellationToken);
         if (steps > 0) blockers.Add($"执行或异常未确认步骤{steps}条");
-        blockers.AddRange(GetPhysicalBlockers(definition, false,checkTargetMap));
+        blockers.AddRange(GetPhysicalBlockers(definition, false,checkTargetMap,requireStoppedStation));
         return blockers;
     }
 
-    private IReadOnlyList<string> GetPhysicalBlockers(MapDefinition definition, bool allowExecution,bool checkTargetMap=true)
+    private IReadOnlyList<string> GetPhysicalBlockers(MapDefinition definition, bool allowExecution,
+        bool checkTargetMap=true,bool requireStoppedStation=true)
     {
         var blockers = new List<string>();
         var now = DateTimeOffset.Now;
@@ -232,7 +235,7 @@ public sealed partial class MapSwitchService(ISqlSugarClient database, IMapExecu
             var station = definition.Nodes.FirstOrDefault(node => node.Enabled &&
                 node.Type is MapNodeType.Station or MapNodeType.WaitingPoint or MapNodeType.ChargingPoint &&
                 string.Equals(node.AgvSiteId, vehicle.CurrentStation, StringComparison.OrdinalIgnoreCase));
-            if (!allowExecution && (station is null || vehicle.X is null || vehicle.Y is null ||
+            if (!allowExecution && requireStoppedStation && (station is null || vehicle.X is null || vehicle.Y is null ||
                 Math.Sqrt(Math.Pow(station.X - vehicle.X.Value, 2) + Math.Pow(station.Y - vehicle.Y.Value, 2)) >
                 settings.MaximumStationDeviationMeters)) blockers.Add($"{id}未在目标地图的有效站点安全停靠");
         }

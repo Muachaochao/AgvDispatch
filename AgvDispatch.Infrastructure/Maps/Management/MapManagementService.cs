@@ -580,12 +580,26 @@ public sealed class MapManagementService(
             return new(false, "发布指针已变化，请取消此次切换后重新开始。");
         var definition = Deserialize<MapDefinition>(version.DefinitionJson);
         if (!validator.Validate(definition).IsValid) return new(false, "已发布版本校验失败。");
+        var previous = await database.Queryable<MapProjectEntity>().Where(item => item.IsActive).FirstAsync(cancellationToken);
+        MapDefinition? previousDefinition = null;
+        if (previous?.ActiveVersionId is { } previousVersionId)
+        {
+            var previousVersion = await database.Queryable<MapVersionEntity>()
+                .Where(item => item.MapId == previous.MapId && item.VersionId == previousVersionId)
+                .FirstAsync(cancellationToken);
+            if (previousVersion is not null) previousDefinition = Deserialize<MapDefinition>(previousVersion.DefinitionJson);
+        }
+        var compatibleGeometryUpdate = request.StoppedOffStationGeometryUpdateConfirmed &&
+            previous?.MapId == request.MapId && previousDefinition is not null &&
+            SameRuntimeTopology(previousDefinition, definition);
+        if (request.StoppedOffStationGeometryUpdateConfirmed && !compatibleGeometryUpdate)
+            return new(false, "同图几何更新确认只适用于节点、道路端点和站点角色均未改变的当前地图版本。");
         // Construct the complete snapshot before committing, so graph construction cannot fail after the DB write.
         var now = DateTime.Now;
         var snapshot = new ActiveMapRuntimeSnapshot(request.MapId, request.VersionId, definition, new DateTimeOffset(now));
-        var blockers = await mapSwitches.GetBlockersAsync(definition, cancellationToken);
+        var blockers = await mapSwitches.GetBlockersAsync(definition, cancellationToken,
+            requireStoppedStation: !compatibleGeometryUpdate);
         if (blockers.Count > 0) return new(false, "禁止切换：" + string.Join("；", blockers));
-        var previous = await database.Queryable<MapProjectEntity>().Where(item => item.IsActive).FirstAsync(cancellationToken);
         if (previous?.MapId != release.PreviousMapId || previous?.ActiveVersionId != release.PreviousVersionId ||
             activeMap.Current?.MapId != release.PreviousMapId || activeMap.Current?.VersionId != release.PreviousVersionId)
             return new(false, "原地图指针与切换记录不一致，禁止切换。");
@@ -611,7 +625,8 @@ public sealed class MapManagementService(
         var transaction = await database.Ado.UseTranAsync(async () =>
         {
             // The common gate excludes all task/command/PLC mutations; recheck DB evidence inside the transaction.
-            var finalBlockers = await mapSwitches.GetBlockersAsync(definition, cancellationToken);
+            var finalBlockers = await mapSwitches.GetBlockersAsync(definition, cancellationToken,
+                requireStoppedStation: !compatibleGeometryUpdate);
             if (finalBlockers.Count > 0) throw new InvalidOperationException(string.Join("；", finalBlockers));
             await database.Updateable<MapProjectEntity>()
                 .SetColumns(item => new MapProjectEntity { IsActive = false, ActiveVersionId = null, UpdatedAt = now })
@@ -640,6 +655,24 @@ public sealed class MapManagementService(
         resourceCatalog.Replace(snapshot.Definition.Resources);
         return new(true, $"地图V{version.VersionNumber}已激活，派单仍暂停；重新核对现场后点击确认放行。",
             responseWorkspace);
+    }
+
+    private static bool SameRuntimeTopology(MapDefinition current, MapDefinition next)
+    {
+        static string NodeKey(MapNode node) =>
+            $"{node.Id}\u001f{node.Enabled}\u001f{node.Type}\u001f{node.AgvSiteId}\u001f{string.Join(',', node.ResourceIds.Order(StringComparer.OrdinalIgnoreCase))}";
+        static string EdgeKey(MapEdge edge) =>
+            $"{edge.Id}\u001f{edge.Enabled}\u001f{edge.From}\u001f{edge.To}\u001f{edge.Bidirectional}\u001f{string.Join(',', edge.ResourceIds.Order(StringComparer.OrdinalIgnoreCase))}";
+        static string ResourceKey(TrafficResourceDefinition resource) =>
+            $"{resource.Id}\u001f{resource.Type}\u001f{resource.Capacity}";
+        return current.CoordinateSystem == next.CoordinateSystem &&
+            current.Unit == next.Unit &&
+            current.Nodes.Select(NodeKey).Order(StringComparer.Ordinal)
+                .SequenceEqual(next.Nodes.Select(NodeKey).Order(StringComparer.Ordinal)) &&
+            current.Edges.Select(EdgeKey).Order(StringComparer.Ordinal)
+                .SequenceEqual(next.Edges.Select(EdgeKey).Order(StringComparer.Ordinal)) &&
+            current.Resources.Select(ResourceKey).Order(StringComparer.Ordinal)
+                .SequenceEqual(next.Resources.Select(ResourceKey).Order(StringComparer.Ordinal));
     }
 
     private static string? ValidateMetadata(

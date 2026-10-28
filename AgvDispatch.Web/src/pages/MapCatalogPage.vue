@@ -52,6 +52,7 @@ const activateConfirmation = ref('');
 const activateEvidence=ref('');
 const activateSafetyConfirmed = ref(false);
 const activateVehicleConfirmed = ref(false);
+const activateGeometryUpdateConfirmed = ref(false);
 
 const versionsOpen = ref(false);
 const versionsMapId = ref('');
@@ -77,7 +78,7 @@ function openEditDraft(mapId: string) {
 function openActivate(map: MapSummary) {
   if(activationBlocked.value)return;
   activateMap.value = map; activateOpen.value = true;
-  activateConfirmation.value = ''; activateEvidence.value=''; activateSafetyConfirmed.value = false; activateVehicleConfirmed.value = false;
+  activateConfirmation.value = ''; activateEvidence.value=''; activateSafetyConfirmed.value = false; activateVehicleConfirmed.value = false; activateGeometryUpdateConfirmed.value = false;
 }
 
 async function doActivate() {
@@ -97,6 +98,7 @@ async function doActivate() {
       confirmationText: activateConfirmation.value.trim(),
       siteSafetyConfirmed: activateSafetyConfirmed.value,
       vehicleMapCompatibilityConfirmed: activateVehicleConfirmed.value,
+      stoppedOffStationGeometryUpdateConfirmed: activateGeometryUpdateConfirmed.value,
       evidence: activateEvidence.value.trim()
     });
     if(typeof result.accepted!=='boolean')throw new Error('激活回执格式无效，结果待核对。');
@@ -236,6 +238,7 @@ const currentPhase = computed(() => switchStatus.value?.current?.phaseText ?? '�
       <label>激活依据<input v-model="activateEvidence" maxlength="1500" placeholder="填写本次现场与地图核对依据" /></label>
       <label style="display:flex;gap:8px;font-size:12px;color:#8da5c9;margin:8px 0"><input v-model="activateSafetyConfirmed" type="checkbox" />已确认现场安全条件</label>
       <label style="display:flex;gap:8px;font-size:12px;color:#8da5c9;margin:8px 0"><input v-model="activateVehicleConfirmed" type="checkbox" />已确认车辆地图兼容</label>
+      <label style="display:flex;gap:8px;font-size:12px;color:#dfbd83;margin:8px 0"><input v-model="activateGeometryUpdateConfirmed" type="checkbox" />同一地图仅更新几何：车辆已停稳且定位正常，虽不在正式站点，允许本次安全切换</label>
     </template>
     <template #footer>
       <button @click="activateOpen = false"><ActionIcon name="close"/>取消</button>

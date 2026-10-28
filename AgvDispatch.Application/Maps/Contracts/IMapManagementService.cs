@@ -90,7 +90,10 @@ public sealed record SaveMapCalibrationRequest(
 
 public sealed record ActivateMapRequest(string MapId, string VersionId, string ConfirmationText,
     bool SiteSafetyConfirmed = false, bool VehicleMapCompatibilityConfirmed = false, string Evidence = "")
-{ public string? ExpectedReleaseId { get; init; } }
+{
+    public string? ExpectedReleaseId { get; init; }
+    public bool StoppedOffStationGeometryUpdateConfirmed { get; init; }
+}
 
 public sealed record PreviewMapImportRequest(
     string Path,

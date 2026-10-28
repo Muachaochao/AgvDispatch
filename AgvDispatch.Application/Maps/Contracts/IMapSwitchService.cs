@@ -56,7 +56,8 @@ public interface IMapSwitchService
     Task<MapSwitchResult> ResumeAsync(TrafficUserContext user, FinishMapSwitchRequest request, CancellationToken cancellationToken);
     Task<MapSwitchResult> CancelAsync(TrafficUserContext user, FinishMapSwitchRequest request, CancellationToken cancellationToken);
     // Activation calls this while holding the common control lease.
-    Task<IReadOnlyList<string>> GetBlockersAsync(MapDefinition definition, CancellationToken cancellationToken);
+    Task<IReadOnlyList<string>> GetBlockersAsync(MapDefinition definition, CancellationToken cancellationToken,
+        bool requireStoppedStation = true);
 }
 
 public sealed record MapActivationReviewQuery(string ReleaseId, string ExpectedMapId, string ExpectedVersionId);
