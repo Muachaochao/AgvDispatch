@@ -181,7 +181,7 @@ public static class DumperExitEvaluator
             var b = new MapPoint2D(to.X, to.Y);
             if (Distance(a, b, b) <= Epsilon) return Reject("冻结返程包含零长度路段。");
             MapGeometryBounds? curveBounds = null;
-            if (edge.GeometryKind != MapEdgeGeometryKind.Line)
+            if (edge.GeometryKind != MapEdgeGeometryKind.Line && !IsStraightDegenerateBezier(edge, from, to))
             {
                 // Bezier stays inside its control hull; an arc stays inside the full-circle
                 // box. These are analytic outer bounds, never an unverified sampled chord.
@@ -190,14 +190,6 @@ public static class DumperExitEvaluator
                     !FiniteCoordinate(bounds.MaxX) || !FiniteCoordinate(bounds.MaxY) ||
                     bounds.MinX > bounds.MaxX || bounds.MinY > bounds.MaxY)
                     return Reject("冻结返程曲线保守边界无效。");
-                foreach (var resource in boundaries)
-                {
-                    var polygon = resource.Boundary!;
-                    var resourceBounds = new MapGeometryBounds(polygon.Min(p => p.X), polygon.Min(p => p.Y),
-                        polygon.Max(p => p.X), polygon.Max(p => p.Y));
-                    if (BoundsDistance(bounds, resourceBounds) <= radius + Epsilon)
-                        return Reject($"冻结返程曲线保守包络可能触碰倒料资源 {resource.Id}，保持占用。");
-                }
                 curveBounds = bounds;
                 var oriented = edge.GeometryKind == MapEdgeGeometryKind.CubicBezier && edge.From != from.Id
                     ? edge with { ControlPoints = edge.ControlPoints!.Reverse().ToArray() } : edge;
@@ -251,10 +243,16 @@ public static class DumperExitEvaluator
                 for (var i = candidate.Index; i < segments.Count; i++)
                 {
                     var (a, b, curveBounds) = segments[i];
-                    if (curveBounds is not null) continue; // Complete curve box already proved disjoint.
                     if (i == candidate.Index)
                         a = new(a.X + (b.X - a.X) * candidate.EarliestT, a.Y + (b.Y - a.Y) * candidate.EarliestT);
-                    if (!SegmentEnvelopeOutside(a, b, radius, polygon))
+                    if (curveBounds is { } bounds)
+                    {
+                        var resourceBounds = new MapGeometryBounds(polygon.Min(p => p.X), polygon.Min(p => p.Y),
+                            polygon.Max(p => p.X), polygon.Max(p => p.Y));
+                        if (BoundsDistance(bounds, resourceBounds) <= radius + Epsilon)
+                            return Reject($"冻结返程后续曲线保守包络可能触碰倒料资源 {resource.Id}，保持占用。");
+                    }
+                    else if (!SegmentEnvelopeOutside(a, b, radius, polygon))
                         return Reject($"冻结返程可能位置尚未通过倒料资源 {resource.Id} 的最后一次使用，或后续会重新触碰该区域。");
                 }
         }
@@ -263,6 +261,34 @@ public static class DumperExitEvaluator
     }
 
     private static bool FiniteCoordinate(double value) => double.IsFinite(value) && Math.Abs(value) <= 1e6;
+
+    // SEER imports geometrically straight cubic paths as DegenerateBezier. Treat only
+    // this vendor-verified, collinear form as a straight route; arbitrary Bezier curves
+    // retain the conservative curve-boundary gate.
+    private static bool IsStraightDegenerateBezier(MapEdge edge, MapNode from, MapNode to)
+    {
+        if (edge.GeometryKind != MapEdgeGeometryKind.CubicBezier ||
+            !string.Equals(edge.VendorPath?.ClassName, "DegenerateBezier", StringComparison.OrdinalIgnoreCase) ||
+            edge.ControlPoints is not { Count: 2 } controls)
+            return false;
+        var dx = to.X - from.X;
+        var dy = to.Y - from.Y;
+        var length = Math.Sqrt(dx * dx + dy * dy);
+        if (length <= Epsilon) return false;
+        var parameters = new double[2];
+        for (var i = 0; i < controls.Count; i++)
+        {
+            var point = controls[i];
+            parameters[i] = ((point.X - from.X) * dx + (point.Y - from.Y) * dy) / (length * length);
+            // SMAP decimal serialization rounds control points independently from the
+            // endpoint slope. Two millimetres remains far below vehicle/route tolerances
+            // while still excluding a materially curved path.
+            if (Distance(point, new MapPoint2D(from.X, from.Y), new MapPoint2D(to.X, to.Y)) > 0.002 ||
+                !double.IsFinite(parameters[i]) || parameters[i] < -Epsilon || parameters[i] > 1 + Epsilon)
+                return false;
+        }
+        return parameters[0] <= parameters[1] + Epsilon || parameters[0] + Epsilon >= parameters[1];
+    }
 
     private static double BoundsDistance(MapGeometryBounds a, MapGeometryBounds b)
     {

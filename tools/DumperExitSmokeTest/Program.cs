@@ -246,6 +246,44 @@ Check(DumperExitEvaluator.VerifyReturnRouteAfterExit(endpointArc,endpointArc.Nod
     "厂家任务完成且车辆静止在原终点时允许以终点闭合圆弧进度");
 Check(Route(futureArc, first with { X = 5.25, Y = 1 }).Verified,
     "位于原直线上但远离真实圆弧时不被全圆矩形误阻塞");
+var degenerateEvidence = new RobokitPathEvidence(1, "source", "plane", 0, "D-EXIT",
+    "DegenerateBezier", "D", "EXIT", true, null, "E0", "D", "EXIT",
+    1, 1, 4, 1, MapEdgeGeometryKind.CubicBezier, [new(2.001, 1.0001), new(3.001, 1.0001)]);
+var pastDegenerateCurve = ReturnMap(("D",1,1),("EXIT",4,1),("HOME",6,4)) with
+{
+    Edges =
+    [
+        ReturnMap(("D",1,1),("EXIT",4,1)).Edges[0] with
+        {
+            GeometryKind = MapEdgeGeometryKind.CubicBezier,
+            ControlPoints = [new(2.001, 1.0001), new(3.001, 1.0001)],
+            VendorPath = degenerateEvidence
+        },
+        ReturnMap(("EXIT",4,1),("HOME",6,4)).Edges[0] with { Id = "E1" }
+    ]
+};
+var pastDegenerateResult=Route(pastDegenerateCurve, first with { X = 6, Y = 4 }, endpointConfirmed: true);
+Check(pastDegenerateResult.Verified,
+    "厂家DegenerateBezier已走过的区内共线边不阻断终点出区交接："+pastDegenerateResult.Reason);
+var futureDegenerateReentry = ReturnMap(("D",1,1),("EXIT",5,1),("REENTER",-3,1)) with
+{
+    Edges =
+    [
+        ReturnMap(("D",1,1),("EXIT",5,1)).Edges[0],
+        ReturnMap(("EXIT",5,1),("REENTER",-3,1)).Edges[0] with
+        {
+            Id = "E1",
+            GeometryKind = MapEdgeGeometryKind.CubicBezier,
+            ControlPoints = [new(3, 1), new(1, 1)],
+            VendorPath = degenerateEvidence with
+            {
+                FromSite = "EXIT", ToSite = "REENTER", ImportedFrom = "EXIT", ImportedTo = "REENTER",
+                FromX = 5, ToX = -3, ControlPoints = [new(3, 1), new(1, 1)]
+            }
+        }
+    ]
+};
+RouteRefuse("厂家共线DegenerateBezier后续重新入区仍拒绝", futureDegenerateReentry);
 var looseBezier = futureCurve with { Edges = [futureCurve.Edges[0], futureCurve.Edges[1] with
     { ControlPoints = [new(4, 4), new(8, 4)] }] };
 Check(Route(looseBezier, first with { X = 4.25, Y = 1 }).Verified,
