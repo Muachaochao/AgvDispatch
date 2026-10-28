@@ -9,6 +9,7 @@ public sealed class FleetTestOptions
     public bool Enabled { get; set; }
     public string[] VehicleIds { get; set; } = [];
     public double BlockedHoldSeconds { get; set; } = 3;
+    public bool ReturnToStandby { get; set; } = true;
 
     public string? ConfigurationError(int maxConcurrentTasks) =>
         !Enabled ? "请使用多车联调启动配置。" :

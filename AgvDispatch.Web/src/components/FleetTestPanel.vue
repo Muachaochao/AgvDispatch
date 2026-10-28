@@ -5,7 +5,8 @@ import type { TaskDetail } from '../types';
 import { label } from '../state';
 import { fleetSelectionStatus, moveFleetStation, reconcileFleetSelection, retireUnacceptedFleetStart, selectVisibleFleetOptions } from '../fleet-test-options';
 type Start={requestId:string;scenario:string;vehicleIds:string[];siteConfirmed:boolean;stationIds?:string[]};
-type Run={runId:string;plan:Start;stage:string;message:string;stopRequested:boolean;updatedAt:string;holds?:{time:string;reason:string}[];calls:{stationId:string;released:boolean;taskId:string|null}[]};
+type StandbyReturn={vehicleId:string;standbyId:string;site:string;state:string;message:string;vendorTaskId:string|null;route:string[];updatedAt:string};
+type Run={runId:string;plan:Start;stage:string;message:string;stopRequested:boolean;updatedAt:string;holds?:{time:string;reason:string}[];calls:{stationId:string;released:boolean;taskId:string|null}[];standbyReturns?:StandbyReturn[]};
 type Status={enabled:boolean;allowedVehicles:string[];configuredStations:string[];maxConcurrentTasks:number;current:Run|null;vehicles:{vehicleId:string;site:string|null;fresh:boolean;message:string}[];tasks:TaskDetail[];observedAt:string};
 const store=useDispatchStore(),status=ref<Status|null>(null),error=ref(''),busy=ref(false),reading=ref(false),online=ref(false);
 const scenario=ref('Staggered'),confirmed=ref(false),reason=ref('');
@@ -154,7 +155,7 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);});
   <label class="confirm"><input v-model="confirmed" type="checkbox" :disabled="busy"/>已核对所选车辆停靠位置、空载初态、空箱模拟规则、路线及倒料区域；各车初始停车点独立，现场允许执行</label>
   <div class="fleet-vehicles"><article v-for="v in status?.vehicles??[]" :key="v.vehicleId" :class="{stale:!v.fresh||!fresh}"><b>{{v.vehicleId}} · {{v.site||'站点未知'}} · {{selectedVehicles.includes(v.vehicleId)?'本组参与':'未选入本组'}}</b><p>{{v.message}}</p></article></div>
   <template v-if="current">
-   <p role="status"><b>{{names[current.plan.scenario]}} · {{current.stage==='Hold'?'暂停待核对':current.stage==='Completed'?'本组收尾完成':'测试进行中'}}</b> · {{current.message}}</p>
+   <p role="status"><b>{{names[current.plan.scenario]}} · {{current.stage==='Hold'?'暂停待核对':current.stage==='ReturningStandby'?'返回待机中':current.stage==='Completed'?'本组收尾完成':'测试进行中'}}</b> · {{current.message}}</p>
    <p v-if="current.stage==='Hold'" class="inline-warning">上述为暂停触发原因，车辆状态恢复后仍保留；请结合下方当前车辆状态核对，再续接原记录。</p>
    <details v-if="current.holds?.length"><summary>暂停历史（{{current.holds.length}} 次）</summary><p v-for="(h,index) in current.holds" :key="index">{{new Date(h.time).toLocaleString()}} · {{h.reason}}</p></details>
    <small>原运行 {{current.runId}} · {{current.updatedAt}} · 停止新增：{{current.stopRequested?'是':'否'}}</small>
@@ -164,7 +165,14 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);});
     <p>持有资源：{{t.resources?.map(r=>r.resourceId+' / '+r.vehicleId).join('、')||'未返回持有记录'}}</p>
     <RouterLink :to="'/tasks/'+encodeURIComponent(t.task.taskId)">查看原任务、PLC条件与交接证据</RouterLink>
    </template></article></div>
-   <p>交通等待队列中的“阻塞资源 / 车辆”用于核对谁在等谁；心跳过期不能作为物理出区证据。本组结束不自动发送回待机动作，各车需使用独立配置的可用待机位。</p>
+   <div v-if="current.standbyReturns?.length" class="fleet-vehicles standby-returns">
+    <article v-for="r in current.standbyReturns" :key="r.vehicleId">
+     <b>{{r.vehicleId}} → {{r.standbyId}} · {{r.site}}</b>
+     <p>{{r.state==='Completed'?'已停稳在待机位':r.state==='Returning'?'返回待机中':r.state==='Uncertain'?'发送结果不确定，禁止重发':r.state==='Sending'?'正在发送':r.state==='Assigned'?'已分配待机位':'状态待核对'}} · {{r.message}}</p>
+     <small>{{r.route.length?r.route.join(' → '):'待机路线尚未发送'}}</small>
+    </article>
+   </div>
+   <p>交通等待队列中的“阻塞资源 / 车辆”用于核对谁在等谁；心跳过期不能作为物理出区证据。业务任务与PLC闭合后，系统按车辆分配唯一待机位；全部车辆实际停稳后本组才标记完成。</p>
    <template v-if="current.stage==='Hold'">
     <label>现场核对依据<input v-model="reason" maxlength="1000" placeholder="至少10字，核对原任务与现场状态"/></label>
     <div class="fleet-controls"><button :disabled="busy||!fresh||!confirmed||reason.trim().length<10||!store.submissionEnabled" @click="act('resume')">核对后续接原用例</button><button :disabled="busy||!fresh||!confirmed||!current.stopRequested||reason.trim().length<10" @click="act('close')">核对闭合并结束记录</button></div>

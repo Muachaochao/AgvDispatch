@@ -16,6 +16,12 @@ public interface IFleetTestPort
     Task FeedbackAsync(FleetTestRun run,TaskCenterDetail task,CancellationToken ct);
     Task CheckCurrentAsync(FleetTestRun run,CancellationToken ct);
     Task CheckClosedAsync(FleetTestRun run,CancellationToken ct);
+    Task<FleetTestStandbyReturn[]> PlanStandbyReturnsAsync(FleetTestRun run,CancellationToken ct);
+    Task<FleetTestStandbyReturn?> TrySendStandbyReturnAsync(FleetTestRun run,FleetTestStandbyReturn[] returns,
+        FleetTestStandbyReturn assignment,CancellationToken ct);
+    Task<FleetTestStandbyReturn> ObserveStandbyReturnAsync(FleetTestRun run,FleetTestStandbyReturn assignment,
+        CancellationToken ct);
+    Task ReleaseStandbyReturnAsync(FleetTestStandbyReturn assignment,CancellationToken ct);
 }
 
 public sealed partial class FleetTestService : IsolatedBackgroundService, IFleetTestService
@@ -23,12 +29,15 @@ public sealed partial class FleetTestService : IsolatedBackgroundService, IFleet
     private readonly IFleetTestPort port;
     private readonly FleetTestOwnership ownership;
     private readonly string path;
+    private readonly bool returnToStandby;
     private readonly SemaphoreSlim mutex=new(1,1);
     private FleetTestRun? run;
     private readonly ILogger<FleetTestService> logger;
-    public FleetTestService(IFleetTestPort port,FleetTestOwnership ownership,string path,ILogger<FleetTestService>? logger=null)
+    public FleetTestService(IFleetTestPort port,FleetTestOwnership ownership,string path,ILogger<FleetTestService>? logger=null,
+        FleetTestOptions? options=null)
     {
         this.port=port;this.ownership=ownership;this.path=path;
+        returnToStandby=options?.ReturnToStandby??true;
         this.logger=logger??Microsoft.Extensions.Logging.Abstractions.NullLogger<FleetTestService>.Instance;
         LoadStartRetirements();
         if(File.Exists(path))
@@ -53,6 +62,110 @@ public sealed partial class FleetTestService : IsolatedBackgroundService, IFleet
         ownership.Set(true,false,[]);Save();
         logger.LogWarning("多车测试暂停。RunId={RunId}, Reason={Reason}, TaskIds={TaskIds}",
             run.RunId,message,string.Join(',',run.Calls.Where(c=>c.TaskId!=null).Select(c=>c.TaskId)));
+    }
+    private void UpdateStandbyReturn(string vehicleId,FleetTestStandbyReturn updated)
+    {
+        run=run! with
+        {
+            StandbyReturns=run.StandbyReturns.Select(r=>r.VehicleId==vehicleId?updated:r).ToArray(),
+            UpdatedAt=DateTimeOffset.UtcNow
+        };
+    }
+    private async Task BeginStandbyReturnsAsync(CancellationToken ct)
+    {
+        var returns=await port.PlanStandbyReturnsAsync(run!,ct);
+        if(returns.Length==0)
+        {
+            run=run! with
+            {
+                Stage="Completed",
+                Message="本组任务及PLC闭合；未配置可用的唯一待机位，因此未发送车辆。",
+                UpdatedAt=DateTimeOffset.UtcNow
+            };
+            Save();
+            return;
+        }
+        run=run! with
+        {
+            Stage="ReturningStandby",
+            Message="业务任务及PLC已闭合；正在返回各自独立待机位。",
+            StandbyReturns=returns,
+            UpdatedAt=DateTimeOffset.UtcNow
+        };
+        Save();
+        await AdvanceStandbyReturnsAsync(ct);
+    }
+    private async Task AdvanceStandbyReturnsAsync(CancellationToken ct)
+    {
+        foreach(var assignment in run!.StandbyReturns.Where(r=>r.State==FleetTestStandbyReturnStates.Assigned).ToArray())
+        {
+            var sending=assignment with
+            {
+                State=FleetTestStandbyReturnStates.Sending,
+                Message="正在核验待机路线并发送车辆。",
+                UpdatedAt=DateTimeOffset.UtcNow
+            };
+            UpdateStandbyReturn(assignment.VehicleId,sending);Save();
+            try
+            {
+                var sent=await port.TrySendStandbyReturnAsync(run,run.StandbyReturns,sending,ct);
+                if(sent is null)
+                {
+                    UpdateStandbyReturn(assignment.VehicleId,assignment with
+                    {
+                        Message="待机路线或交通资源暂不可用，保持原位等待。",
+                        UpdatedAt=DateTimeOffset.UtcNow
+                    });
+                }
+                else
+                {
+                    UpdateStandbyReturn(assignment.VehicleId,sent);
+                }
+                Save();
+            }
+            catch(FleetStandbySendUncertainException e)
+            {
+                UpdateStandbyReturn(assignment.VehicleId,sending with
+                {
+                    State=FleetTestStandbyReturnStates.Uncertain,
+                    Message=e.Message,
+                    UpdatedAt=DateTimeOffset.UtcNow
+                });
+                Save();
+                throw;
+            }
+            catch
+            {
+                UpdateStandbyReturn(assignment.VehicleId,assignment with
+                {
+                    Message="待机发送前核验失败，车辆未发送。",
+                    UpdatedAt=DateTimeOffset.UtcNow
+                });
+                Save();
+                throw;
+            }
+        }
+        foreach(var assignment in run.StandbyReturns
+            .Where(r=>r.State==FleetTestStandbyReturnStates.Returning).ToArray())
+        {
+            var observed=await port.ObserveStandbyReturnAsync(run,assignment,ct);
+            UpdateStandbyReturn(assignment.VehicleId,observed);
+            if(observed.State==FleetTestStandbyReturnStates.Completed)
+                await port.ReleaseStandbyReturnAsync(observed,ct);
+            Save();
+        }
+        if(run.StandbyReturns.All(r=>r.State==FleetTestStandbyReturnStates.Completed))
+        {
+            run=run with
+            {
+                Stage="Completed",
+                Message="本组任务、PLC握手及全部车辆待机停靠均已闭合。",
+                UpdatedAt=DateTimeOffset.UtcNow
+            };
+            Save();
+            logger.LogInformation("多车测试及待机收尾完成。RunId={RunId}, Returns={Returns}",
+                run.RunId,string.Join(',',run.StandbyReturns.Select(r=>r.VehicleId+"->"+r.Site+"/"+r.State)));
+        }
     }
     private static void Authorize(TrafficUserContext user)
     {if(!user.Has(TrafficPermission.Administer))throw new UnauthorizedAccessException("需要管理员权限。");}
@@ -121,10 +234,19 @@ public sealed partial class FleetTestService : IsolatedBackgroundService, IFleet
                 {
                     if(run.Stage!="Hold")throw new InvalidOperationException("仅暂停记录可以续接。");
                     await port.CheckCurrentAsync(run,ct);
-                    await port.LabAsync(run,"check",[],ct);
-                    var pending=run.Calls.Where(c=>c.Released&&c.TaskId==null).Select(c=>c.StationId).ToArray();
-                    if(pending.Length>0&&!run.StopRequested)await port.LabAsync(run,"call",pending,ct);
-                    run=run with {Stage="Running",Message="现场核对后续接原任务："+request.Reason,UpdatedAt=DateTimeOffset.UtcNow};Save();
+                    if(run.StandbyReturns.Length>0)
+                    {
+                        if(run.StandbyReturns.Any(r=>r.State is FleetTestStandbyReturnStates.Sending or FleetTestStandbyReturnStates.Uncertain))
+                            throw new InvalidOperationException("待机导航发送结果不确定，须先核对原车端任务，不能自动重发。");
+                        run=run with {Stage="ReturningStandby",Message="现场核对后续接原待机返回："+request.Reason,UpdatedAt=DateTimeOffset.UtcNow};Save();
+                    }
+                    else
+                    {
+                        await port.LabAsync(run,"check",[],ct);
+                        var pending=run.Calls.Where(c=>c.Released&&c.TaskId==null).Select(c=>c.StationId).ToArray();
+                        if(pending.Length>0&&!run.StopRequested)await port.LabAsync(run,"call",pending,ct);
+                        run=run with {Stage="Running",Message="现场核对后续接原任务："+request.Reason,UpdatedAt=DateTimeOffset.UtcNow};Save();
+                    }
                 }
                 else if(action=="close")
                 {
@@ -149,6 +271,11 @@ public sealed partial class FleetTestService : IsolatedBackgroundService, IFleet
             // Current vehicle health is returned separately by ObserveAsync. Never overwrite
             // the latched trigger: a recovered sample does not explain why the run stopped.
             if(run.Stage=="Hold")return;
+            if(run.Stage=="ReturningStandby")
+            {
+                await AdvanceStandbyReturnsAsync(ct);
+                return;
+            }
             if(run.Stage!="Running")return;
             try
             {
@@ -183,7 +310,14 @@ public sealed partial class FleetTestService : IsolatedBackgroundService, IFleet
                 {
                     try{await port.CheckClosedAsync(run,ct);}
                     catch(FleetClosurePendingException){return;}
-                    run=run with {Stage="Completed",Message="本组任务及PLC闭合；竞争、道路通行和现场安全结果仍须核验。未发送统一回待机命令。",UpdatedAt=DateTimeOffset.UtcNow};Save();
+                    if(returnToStandby)
+                    {
+                        await BeginStandbyReturnsAsync(ct);
+                    }
+                    else
+                    {
+                        run=run with {Stage="Completed",Message="本组任务及PLC闭合；自动回待机已关闭。",UpdatedAt=DateTimeOffset.UtcNow};Save();
+                    }
                 }
             }catch(OperationCanceledException)when(ct.IsCancellationRequested){throw;}
             catch(Exception e){Hold("保留原任务和点位待核对："+e.Message);}

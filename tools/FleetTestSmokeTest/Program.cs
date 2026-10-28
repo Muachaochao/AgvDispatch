@@ -63,6 +63,17 @@ Check((await stopped.Service.ReadAsync(default)).Current!.Stage=="Completed"&&!s
 var completed=(await stopped.Service.ReadAsync(default)).Current!;
 await Reject(()=>stopped.Service.ControlAsync(user,"stop",new(completed.RunId,"",false),default),"已完成记录不允许再次停止");
 Check((await stopped.Service.ReadAsync(default)).Current==completed,"已完成记录保持不可变");
+var autoReturn=Fixture();autoReturn.Port.ReturnAlreadyComplete=false;
+await autoReturn.Service.StartAsync(user,Plan("Simultaneous"),default);await autoReturn.Service.TickAsync(default);
+autoReturn.Port.Closed=true;
+for(var i=0;i<autoReturn.Port.Details.Count;i++)
+    autoReturn.Port.Details[i]=autoReturn.Port.Details[i] with {Task=autoReturn.Port.Details[i].Task with {Stage=DispatchTaskStage.Completed}};
+await autoReturn.Service.TickAsync(default);
+var returned=(await autoReturn.Service.ReadAsync(default)).Current!;
+Check(returned.Stage=="Completed"&&autoReturn.Port.ReturnSends==2&&
+    returned.StandbyReturns.Length==2&&returned.StandbyReturns.All(r=>r.State==FleetTestStandbyReturnStates.Completed),
+    "业务与PLC闭合后每车发送一次独立待机导航并核对停靠");
+Check(!autoReturn.Owner.Active,"全部车辆到待机位后才解除多车会话保护");
 var closePending=Fixture();await closePending.Service.StartAsync(user,Plan("Staggered"),default);await closePending.Service.TickAsync(default);
 var pendingRun=(await closePending.Service.ReadAsync(default)).Current!;
 await closePending.Service.ControlAsync(user,"stop",new(pendingRun.RunId,"",false),default);
@@ -229,7 +240,9 @@ Console.WriteLine($"PASS {count} 多车多工位、车辆池范围、身份、�
 
 sealed class Port:IFleetTestPort
 {
- public int Starts,Creates;public bool Bad,FailCall,Closed,FailValidate;public List<string> Calls=[];public List<TaskCenterDetail> Details=[];
+ public int Starts,Creates,ReturnSends;public bool Bad,FailCall,Closed,FailValidate;
+ public bool ReturnAlreadyComplete=true,ReturnObserveComplete=true;
+ public List<string> Calls=[];public List<TaskCenterDetail> Details=[];
  public TaskCompletionSource? ValidationStarted,ValidationGate;
  public async Task<(string,string,string)> ValidateAsync(FleetTestStart p,CancellationToken ct)
  {ValidationStarted?.TrySetResult();if(ValidationGate!=null)await ValidationGate.Task.WaitAsync(ct);if(FailValidate)throw new InvalidOperationException("configuration rejected before acceptance");return("M","V","R");}
@@ -242,6 +255,19 @@ sealed class Port:IFleetTestPort
  public Task FeedbackAsync(FleetTestRun r,TaskCenterDetail d,CancellationToken ct)=>Task.CompletedTask;
  public Task CheckCurrentAsync(FleetTestRun r,CancellationToken ct){if(Bad)throw new InvalidOperationException("AGV-02 stale");return Task.CompletedTask;}
  public Task CheckClosedAsync(FleetTestRun r,CancellationToken ct)=>Closed?Task.CompletedTask:throw new FleetClosurePendingException("still active");
+ public Task<FleetTestStandbyReturn[]> PlanStandbyReturnsAsync(FleetTestRun r,CancellationToken ct)=>
+  Task.FromResult(r.Plan.VehicleIds.Select((id,i)=>new FleetTestStandbyReturn(id,"B-"+i,"LM"+(29+i),
+   ReturnAlreadyComplete?FleetTestStandbyReturnStates.Completed:FleetTestStandbyReturnStates.Assigned,
+   ReturnAlreadyComplete?"already home":"assigned",null,DateTimeOffset.UtcNow)).ToArray());
+ public Task<FleetTestStandbyReturn?> TrySendStandbyReturnAsync(FleetTestRun r,FleetTestStandbyReturn[] returns,
+  FleetTestStandbyReturn assignment,CancellationToken ct)
+ {ReturnSends++;return Task.FromResult<FleetTestStandbyReturn?>(assignment with
+  {State=FleetTestStandbyReturnStates.Returning,Message="returning",VendorTaskId="V-"+assignment.VehicleId,
+   UpdatedAt=DateTimeOffset.UtcNow});}
+ public Task<FleetTestStandbyReturn> ObserveStandbyReturnAsync(FleetTestRun r,FleetTestStandbyReturn assignment,
+  CancellationToken ct)=>Task.FromResult(ReturnObserveComplete?assignment with
+  {State=FleetTestStandbyReturnStates.Completed,Message="arrived",UpdatedAt=DateTimeOffset.UtcNow}:assignment);
+ public Task ReleaseStandbyReturnAsync(FleetTestStandbyReturn assignment,CancellationToken ct)=>Task.CompletedTask;
  public void Milestone(DispatchTaskStepType step)=>Details[0]=Details[0] with {Steps=[new("s",2,step,DispatchTaskStepStatus.Completed,"AGV-01",null,null,null,0,null,DateTimeOffset.UtcNow,null)]};
 }
 

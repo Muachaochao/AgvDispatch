@@ -11,6 +11,7 @@
     <Compile Include="../../AgvDispatch.Service/Modules/Tasks/Steps/TaskStepProgressRules.cs" Link="TaskStepProgressRules.cs" />
     <Compile Include="../../AgvDispatch.Service/Modules/Tasks/Creation/TaskCreationOptions.cs" Link="TaskCreationOptions.cs" />
     <Compile Include="../../AgvDispatch.Service/Modules/Tasks/Settings/TaskParameterRuntime.cs" Link="TaskParameterRuntime.cs" />
+    <Compile Include="../../AgvDispatch.Service/Modules/Traffic/DumperWaitingSiteDiscovery.cs" Link="DumperWaitingSiteDiscovery.cs" />
     <Compile Include="../../AgvDispatch.Service/Modules/Tasks/Dispatching/DispatchOrchestratorOptions.cs" Link="DispatchOrchestratorOptions.cs" />
   </ItemGroup>
 </Project>

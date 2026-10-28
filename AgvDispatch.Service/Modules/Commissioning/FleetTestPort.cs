@@ -7,13 +7,15 @@ using AgvDispatch.Domain.Tasks;
 namespace AgvDispatch.Service;
 
 public sealed class FleetLabSessionMissingException(string message):InvalidOperationException(message);
+public sealed class FleetStandbySendUncertainException(string message):InvalidOperationException(message);
 
-public sealed class FleetTestPort(FleetTestOptions options,IBusinessRunService single,IBusinessRunPort business,
+public sealed partial class FleetTestPort(FleetTestOptions options,IBusinessRunService single,IBusinessRunPort business,
     IManualTaskCreationService manual,ITaskCenterQueryService tasks,IDispatchTaskRepository repository,
     IStationStateService stations,IPlcSignalCache signals,IPlcGateway plc,IAgvStateCache vehicles,
     IActiveMapRuntime map,IMapExecutionGate gate,TaskParameterRuntime parameters,DispatchOrchestratorOptions dispatch,
     DispatchTaskCreationOptions creation,HandshakeExecutionOptions handshake,IRobokitTaskMapPreflight preflight,
-    ITrafficResourceControlService traffic,bool simulatorOnly) : IFleetTestPort
+    ITrafficResourceControlService traffic,IRoutePlanner planner,ITrafficResourceManager resources,
+    IAgvGateway gateway,bool simulatorOnly) : IFleetTestPort
 {
     private static readonly HttpClient lab=new(new SocketsHttpHandler{UseProxy=false,AllowAutoRedirect=false})
         {BaseAddress=new Uri("http://127.0.0.1:10201/"),Timeout=TimeSpan.FromSeconds(5)};
