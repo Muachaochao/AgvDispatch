@@ -313,6 +313,7 @@ var outboxOptions = new AgvCommandOutboxOptions();
 builder.Configuration.GetSection(AgvCommandOutboxOptions.SectionName).Bind(outboxOptions);
 builder.Services.AddSingleton(outboxOptions);
 builder.Services.AddHostedService<AgvCommandOutboxDispatcher>();
+builder.Services.AddHostedService<WaitingBayDepartureReleaseWorker>();
 var taskStepOptions = new DispatchTaskStepOptions();
 builder.Configuration.GetSection(DispatchTaskStepOptions.SectionName).Bind(taskStepOptions);
 builder.Services.AddSingleton(taskStepOptions);

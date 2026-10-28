@@ -83,6 +83,54 @@ public sealed partial class TrafficResourceManager
             Kind = state, Reason = reason, ResourceIds = ids, WaitingSinceUtc = row.WaitingSinceUtc, WaitingStartKnown = row.WaitingStartKnown, OccurredAt = DateTime.Now
         }).ExecuteCommandAsync(ct);
     }
+    /// <summary>
+    /// Releases only independent waiting-bay leases after the vehicle has physically
+    /// arrived at the dumping station. The dumping resource and every other task
+    /// lease remain owned until their normal closure.
+    /// </summary>
+    public async Task<int> ReleaseDepartedWaitingBaysAsync(
+        string taskId,
+        IReadOnlySet<string> waitingBayResources,
+        string reason,
+        CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(taskId);
+        ArgumentNullException.ThrowIfNull(waitingBayResources);
+        if (waitingBayResources.Count == 0) return 0;
+        ct.ThrowIfCancellationRequested();
+        var released = 0;
+        var transaction = await database.Ado.UseTranAsync(async () =>
+        {
+            var leases = await database.Queryable<TrafficResourceLeaseEntity>()
+                .Where(l => l.TaskId == taskId && waitingBayResources.Contains(l.ResourceId))
+                .ToListAsync(ct);
+            if (leases.Count == 0) return;
+            var ids = leases.Select(l => l.LeaseId).ToArray();
+            await database.Deleteable<TrafficResourceLeaseEntity>()
+                .Where(l => ids.Contains(l.LeaseId))
+                .ExecuteCommandAsync(ct);
+            foreach (var group in leases.GroupBy(l => l.OwnerStepId))
+            {
+                var lease = group.First();
+                var remaining = await database.Queryable<TrafficResourceLeaseEntity>()
+                    .Where(l => l.OwnerStepId == group.Key && l.TaskId == taskId)
+                    .ToListAsync(ct);
+                await WriteStateAsync(
+                    group.Key,
+                    taskId,
+                    lease.VehicleId,
+                    remaining.Count == 0 ? "Released" : "Held",
+                    reason,
+                    remaining.Select(l => l.ResourceId).ToArray(),
+                    ct);
+            }
+            released = leases.Count;
+        });
+        if (!transaction.IsSuccess)
+            throw new InvalidOperationException("候车位离位释放事务失败，原占用保持不变。", transaction.ErrorException);
+        return released;
+    }
+
     private async Task ReleaseAsync(string? task, string? step, bool except, string reason, CancellationToken ct)
     {
         var result = await database.Ado.UseTranAsync(async () =>

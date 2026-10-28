@@ -121,6 +121,15 @@ refused=false;
 try { await managerAfterRestart.TryAcquireAsync(savedA! with{WaitingSite="WAIT2",ResourceId="BAY2"},["BAY2"],default); }
 catch(InvalidOperationException){refused=true;}
 Check(refused&&await managerAfterRestart.GetAsync(ma.TaskId,default)==savedA,"禁止原任务改绑候车点，事务失败不改变原绑定");
+Check((await managerAfterRestart.TryAcquireAsync(ma.StepId,ma.TaskId,ma.VehicleId!,["DUMPER"],default)).Acquired,
+    "离位释放夹具同时持有后续倒料资源");
+var departed=await managerAfterRestart.ReleaseDepartedWaitingBaysAsync(ma.TaskId,new HashSet<string>(["BAY","BAY2"]),
+    "车辆已到达倒料点，只释放候车位",default);
+Check(departed==1&&
+    db.Queryable<TrafficResourceLeaseEntity>().Where(l=>l.TaskId==ma.TaskId&&(l.ResourceId=="BAY"||l.ResourceId=="BAY2")).Count()==0&&
+    db.Queryable<TrafficResourceLeaseEntity>().Where(l=>l.TaskId==ma.TaskId&&l.ResourceId=="DUMPER").Count()==1,
+    "候车位离位后仅释放独立候车资源，后续倒料资源继续保留");
+Check(await managerAfterRestart.GetAsync(ma.TaskId,default)==savedA,"提前释放候车租约不删除原任务候车位绑定");
 catalog.Replace(multiMap.Resources.Append(new("ATOMIC-BAY",TrafficResourceType.Station)));
 var atomicA=await MultiStep("ATOMIC-A","VEHICLE-A");var atomicB=await MultiStep("ATOMIC-B","VEHICLE-B");
 foreach(var step in new[]{atomicA,atomicB})
