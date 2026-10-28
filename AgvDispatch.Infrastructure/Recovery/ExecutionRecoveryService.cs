@@ -294,11 +294,21 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
         ExecutionRecoveryTicketEntity ticket, Observation observed, CancellationToken ct)
     {
         var task = observed.Task;
-        if (task == null || (task.Stage != (int)DispatchTaskStage.CancellationReview && task.Stage != (int)DispatchTaskStage.Cancelled) || task.CancelRequestId == null || task.CancelConfirmedAt == null)
+        var legacyTerminalCancelled = task?.Stage == (int)DispatchTaskStage.Cancelled &&
+            task.CancelRequestId == null && task.CancelConfirmedAt == null;
+        if (task == null || (task.Stage != (int)DispatchTaskStage.CancellationReview && task.Stage != (int)DispatchTaskStage.Cancelled) ||
+            !legacyTerminalCancelled && (task.CancelRequestId == null || task.CancelConfirmedAt == null))
             return await RejectAsync(user, ticket.TicketId, "须先完成车辆取消/结束确认，才能关闭取消任务。", ct);
         if (await database.Queryable<TrafficResourceLeaseEntity>().Where(l => l.TaskId == task.TaskId).AnyAsync(ct))
             return await RejectAsync(user, ticket.TicketId, "原路权仍占用，请通过交通管制人工释放流程核查并处置；本操作不会自动释放。", ct);
-        if (task.CancelVehicleId != null)
+        if (legacyTerminalCancelled)
+        {
+            var vehicleBlock = VehicleBlock(observed.Vehicle, true);
+            if (vehicleBlock != null) return await RejectAsync(user, ticket.TicketId, vehicleBlock, ct);
+            if (observed.Vehicle!.Tasks.Any(t => t.Status is 1 or 2 or 3))
+                return await RejectAsync(user, ticket.TicketId, "车辆仍有活动任务，不能关闭历史取消记录。", ct);
+        }
+        else if (task.CancelVehicleId != null)
         {
             var vehicleBlock = VehicleBlock(observed.Vehicle, true);
             if (vehicleBlock != null) return await RejectAsync(user, ticket.TicketId, vehicleBlock, ct);
