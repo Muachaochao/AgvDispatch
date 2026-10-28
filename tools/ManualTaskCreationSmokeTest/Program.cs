@@ -48,6 +48,7 @@ internal static partial class Program
     private static void Run()
     {
         CheckLegacyMigration();
+        CheckReadOnly28Preparation();
         var path = Path.Combine(Path.GetTempPath(), "agv-manual-task-" + Guid.NewGuid().ToString("N") + ".db");
         using var db = DatabaseFactory.Create(new DatabaseOptions { DatabasePath = path });
         Complete(new DatabaseInitializer(db).InitializeAsync(default));

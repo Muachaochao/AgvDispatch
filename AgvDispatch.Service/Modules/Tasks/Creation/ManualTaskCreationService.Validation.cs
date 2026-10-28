@@ -7,6 +7,12 @@ namespace AgvDispatch.Service;
 
 public sealed partial class ManualTaskCreationService
 {
+    // Preparation validates the selected contract without enabling its executor.
+    // Live creation/execution still requires both the configured version and Enabled.
+    private bool Uses28Contract(bool preparation = false) =>
+        handshakeOptions?.PlcContractVersion == HandshakeExecutionOptions.Version &&
+        (preparation || handshakeOptions.Enabled);
+
     private string? VehicleExitConfigurationError(string vehicleId,ActiveMapRuntimeSnapshot? map)
     {
         if(handshakeOptions?.Enabled!=true)return null;
@@ -31,17 +37,18 @@ public sealed partial class ManualTaskCreationService
         var candidate = new ManualTaskCreationService(repository, stations, gateway, states, activeMap, gate, tasks,
             candidateCreation, candidateDispatch, steps, mapOptions, plcConfiguration, parameters, robokitMap, handshakeOptions);
         var map = activeMap.Current;
-        return configuration.Pickups.SelectMany(pickup => candidate.ValidateStepPreview(candidate.BuildStepPreview(pickup.StationId, pickup.PickupSite, map), map, preparation: true)
+        return configuration.Pickups.SelectMany(pickup => candidate.ValidateStepPreview(candidate.BuildStepPreview(pickup.StationId, pickup.PickupSite, map, preparation: true), map, preparation: true)
             .Select(step => new TaskParameterValidationRow(pickup.StationId, step))).ToArray();
     }
     private IReadOnlyList<ManualTaskStepPreview> ValidateStepPreview(IReadOnlyList<ManualTaskStepPreview> preview, ActiveMapRuntimeSnapshot? map, bool preparation = false)
     {
+        var contract28 = Uses28Contract(preparation);
         return preview.Select(step =>
         {
             var errors = new List<string>();
             if (step.StepType == DispatchTaskStepType.DeliverFullBoxToDumper &&
                 DumperWaitingBaySafety.GetError(map?.Definition, dispatch,
-                    handshakeOptions is { Enabled: true, PlcContractVersion: HandshakeExecutionOptions.Version }) is { } bayError)
+                    contract28) is { } bayError)
                 errors.Add(bayError);
             if (step.StepType is DispatchTaskStepType.DeliverFullBoxToDumper or DispatchTaskStepType.EnterDumpingPosition)
                 foreach(var site in dispatch.GetDumperWaitingSites())
@@ -91,7 +98,7 @@ public sealed partial class ManualTaskCreationService
                     break;
                 case DispatchTaskStepType.WaitForDumperReady:
                     Signal("Faulted"); Signal("DumperReady"); Signal("AgvAtWaitingPosition", true);
-                    if(handshakeOptions is { Enabled:true }&&handshakeOptions.PlcContractVersion==HandshakeExecutionOptions.Version){DumperSignal("AgvAtDumpingPosition");DumperSignal("DumpingCompletedMayLeave");}
+                    if(contract28){DumperSignal("AgvAtDumpingPosition");DumperSignal("DumpingCompletedMayLeave");}
                     break;
                 case DispatchTaskStepType.DumpFullBox:
                     Signal("Faulted"); Signal("DumpingCompletedMayLeave"); Signal("AgvAtDumpingPosition", true);
@@ -103,10 +110,10 @@ public sealed partial class ManualTaskCreationService
                     foreach (var name in new[] { "EmptyBoxTaskAcknowledged", "EmptyBoxPlaced", "FullBoxRequestAcknowledged", "FullBoxRemoved" }) Signal(name, true);
                     Signal("BoxPresent");
                     break;
-                case DispatchTaskStepType.ReturnEmptyBox when handshakeOptions is { Enabled:true }&&handshakeOptions.PlcContractVersion==HandshakeExecutionOptions.Version:
+                case DispatchTaskStepType.ReturnEmptyBox when contract28:
                     foreach(var name in new[]{"Faulted","AgvAtWaitingPosition","DumperReady","DumpingCompletedMayLeave"})DumperSignal(name);
                     DumperSignal("AgvAtDumpingPosition",true);
-                    var exit=handshakeOptions.DumperExit;
+                    var exit=handshakeOptions!.DumperExit;
                     if(exit.ResourceIds is not {Length:>0}||exit.ResourceIds.Any(string.IsNullOrWhiteSpace))errors.Add("28阶段实际出区必须配置DumperExit.ResourceIds，并核定倒料区域边界");
                     if(exit.BodyProfiles is not {Count:>0})errors.Add("28阶段实际出区必须配置DumperExit.BodyProfiles，包含车辆及最大约定载箱包络");
                     if(!double.IsFinite(exit.MinimumObservationIntervalSeconds)||exit.MinimumObservationIntervalSeconds<=0||
