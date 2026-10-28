@@ -301,6 +301,7 @@ builder.Services.AddSingleton<IMapTransferRecoveryBarrier,MapTransferRecoveryBar
 builder.Services.AddSingleton<IMapTransferLedger,MapTransferLedger>();
 builder.Services.AddSingleton<IMapManagementService, MapManagementService>();
 builder.Services.AddHostedService<ActiveMapLoader>();
+builder.Services.AddHostedService<DumperWaitingSiteAutoDiscoveryService>();
 builder.Services.AddHostedService<ExecutionRecoveryWorker>();
 builder.Services.AddHostedService<TrafficControlNamedPipeServer>();
 builder.Services.AddHostedService<CadDetailNamedPipeServer>();

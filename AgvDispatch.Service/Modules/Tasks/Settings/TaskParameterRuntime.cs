@@ -114,6 +114,27 @@ public sealed class TaskParameterRuntime(DispatchOrchestratorOptions dispatch, D
         dispatch.EngineeringMapHash = document.Configuration.EngineeringSource?.MapDefinitionHash;
         Revision = document.Revision;
     }
+    /// <summary>
+    /// Enriches an editable single-bay profile from map-declared dumper waiting
+    /// resources. Explicit engineering profiles and single-car dispatch remain
+    /// unchanged. Existing task bindings are never rewritten.
+    /// </summary>
+    public bool ExpandWaitingSitesFromMap(AgvDispatch.Domain.Maps.MapDefinition map)
+    {
+        if (dispatch.MaxConcurrentTasks <= 1 || _configuration is null || _configuration.EngineeringSource is not null)
+            return false;
+        var current = _configuration.WaitingSites.Count > 0
+            ? _configuration.WaitingSites
+            : [_configuration.WaitingSite];
+        var sites = DumperWaitingSiteDiscovery.Combine(current, map);
+        if (sites.Count <= current.Count && sites.SequenceEqual(current, StringComparer.OrdinalIgnoreCase))
+            return false;
+        var next = _configuration with { WaitingSite = sites[0], WaitingSites = sites };
+        CheckStructure(next);
+        ApplyConfiguration(next, dispatch, creation);
+        _configuration = Clone(next);
+        return true;
+    }
     public static T Clone<T>(T value) => JsonSerializer.Deserialize<T>(JsonSerializer.Serialize(value))!;
     private static bool IsHash(string? value) => value is { Length: 64 } && value.All(Uri.IsHexDigit);
 }

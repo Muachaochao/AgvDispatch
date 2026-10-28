@@ -1,4 +1,5 @@
 using AgvDispatch.Application.Abstractions;
+using AgvDispatch.Domain.Maps;
 using AgvDispatch.Domain.Tasks;
 using AgvDispatch.Service;
 using AgvDispatch.WebHost;
@@ -180,6 +181,42 @@ await Reject(()=>racingRetire,"在途启动先受理时注销必须拒绝");
 Check(racing.Port.Starts==1&&!File.Exists(racing.Path+".retired"),"并发控制不产生接受与注销的矛盾回执");
 var receiptJson=System.Text.Json.JsonSerializer.Serialize(receipt,new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
 Check(receiptJson.Contains("\"requestId\"")&&receiptJson.Contains("\"retired\":true"),"Web回执字段符合前端原申请清除契约");
+var autoDispatch=new DispatchOrchestratorOptions{MaxConcurrentTasks=3,DumperWaitingSite="LM35",DumperWaitingSites=["LM35"],DumperDumpingSite="LM39"};
+var autoParameters=new TaskParameterRuntime(autoDispatch,new DispatchTaskCreationOptions{DumperStationId="DUMPER-001"});
+var autoProfile=autoParameters.Capture() with
+{
+    DumperStationId="DUMPER-001",WaitingSite="LM35",DumpingSite="LM39",WaitingSites=["LM35"],
+    Pickups=[new TaskPickupParameter("CNC-001","LM1")],
+    Actions=
+    [
+        new(DispatchTaskStepType.GoToPickup,"JackLoad",null,null,null,null),
+        new(DispatchTaskStepType.DeliverFullBoxToDumper,"Wait",null,null,null,null),
+        new(DispatchTaskStepType.EnterDumpingPosition,"Wait",null,null,null,null),
+        new(DispatchTaskStepType.ReturnEmptyBox,"JackUnload",null,null,null,null)
+    ]
+};
+autoParameters.Apply(new(1,Guid.NewGuid().ToString("N"),Guid.NewGuid().ToString("N"),"MAP","V1",autoProfile,[]));
+var autoMap=new MapDefinition("waiting-bays","","RobotWorld","m",
+[
+    new("BUS-LM35",0,0,MapNodeType.WaitingPoint,true,["DUMPER-WAIT-LM35"],"LM35"),
+    new("BUS-LM36",1,0,MapNodeType.WaitingPoint,true,["DUMPER-WAIT-LM36"],"LM36"),
+    new("OTHER-WAIT",2,0,MapNodeType.WaitingPoint,true,["GENERAL-WAIT"],"LM37"),
+    new("DUP-A",3,0,MapNodeType.WaitingPoint,true,["DUMPER-WAIT-DUP"],"LM38A"),
+    new("DUP-B",4,0,MapNodeType.WaitingPoint,true,["DUMPER-WAIT-DUP"],"LM38B"),
+    new("BUS-LM39",5,0,MapNodeType.Station,true,["DUMPER-AREA-001"],"LM39")
+],
+[],
+[
+    new("DUMPER-WAIT-LM35",TrafficResourceType.Station,1),
+    new("DUMPER-WAIT-LM36",TrafficResourceType.Station,1),
+    new("GENERAL-WAIT",TrafficResourceType.Station,1),
+    new("DUMPER-WAIT-DUP",TrafficResourceType.Station,1),
+    new("DUMPER-AREA-001",TrafficResourceType.Station,1)
+]);
+Check(autoParameters.ExpandWaitingSitesFromMap(autoMap),"多车模式从地图补齐倒料候车位");
+Check(autoDispatch.GetDumperWaitingSites().SequenceEqual(["LM35","LM36"]),"仅加入唯一映射且命名明确的 DUMPER-WAIT 容量1站点");
+Check(autoParameters.Capture().WaitingSites.SequenceEqual(["LM35","LM36"]),"动态补齐结果同步到运行时任务参数");
+Check(!autoParameters.ExpandWaitingSitesFromMap(autoMap),"候车位自动发现幂等");
 Console.WriteLine($"PASS {count} 多车多工位、车辆池范围、身份、断连、停止、重启及幂等检查；无现场通信。");
 
 sealed class Port:IFleetTestPort
