@@ -69,6 +69,7 @@ autoReturn.Port.Closed=true;
 for(var i=0;i<autoReturn.Port.Details.Count;i++)
     autoReturn.Port.Details[i]=autoReturn.Port.Details[i] with {Task=autoReturn.Port.Details[i].Task with {Stage=DispatchTaskStage.Completed}};
 await autoReturn.Service.TickAsync(default);
+await autoReturn.Service.TickAsync(default);
 var returned=(await autoReturn.Service.ReadAsync(default)).Current!;
 Check(returned.Stage=="Completed"&&autoReturn.Port.ReturnSends==2&&
     returned.StandbyReturns.Length==2&&returned.StandbyReturns.All(r=>r.State==FleetTestStandbyReturnStates.Completed),
@@ -83,6 +84,12 @@ await returnHold.Service.TickAsync(default);
 var heldReturn=(await returnHold.Service.ReadAsync(default)).Current!;
 Check(heldReturn.Stage=="Hold"&&heldReturn.StandbyReturns.All(r=>r.State==FleetTestStandbyReturnStates.Assigned),
     "待机发送前异常转为Hold，不退出后台且保留原分配");
+returnHold.Port.FailStandbySend=false;
+await returnHold.Service.ControlAsync(user,"reconcile",
+    new(heldReturn.RunId,"现场已核对原待机导航及车辆实际停靠",true),default);
+var reconciled=(await returnHold.Service.ReadAsync(default)).Current!;
+Check(reconciled.Stage=="Completed"&&reconciled.StandbyReturns.All(r=>r.State==FleetTestStandbyReturnStates.Completed),
+    "核对待机路权按原记录闭合且不重发业务任务");
 var closePending=Fixture();await closePending.Service.StartAsync(user,Plan("Staggered"),default);await closePending.Service.TickAsync(default);
 var pendingRun=(await closePending.Service.ReadAsync(default)).Current!;
 await closePending.Service.ControlAsync(user,"stop",new(pendingRun.RunId,"",false),default);
@@ -279,6 +286,9 @@ sealed class Port:IFleetTestPort
   CancellationToken ct)=>Task.FromResult(ReturnObserveComplete?assignment with
   {State=FleetTestStandbyReturnStates.Completed,Message="arrived",UpdatedAt=DateTimeOffset.UtcNow}:assignment);
  public Task ReleaseStandbyReturnAsync(FleetTestStandbyReturn assignment,CancellationToken ct)=>Task.CompletedTask;
+ public Task<FleetTestStandbyReturn[]> ReconcileStandbyReturnsAsync(FleetTestRun r,CancellationToken ct)=>
+  Task.FromResult(r.StandbyReturns.Select(a=>a with
+   {State=FleetTestStandbyReturnStates.Completed,Message="reconciled",UpdatedAt=DateTimeOffset.UtcNow}).ToArray());
  public void Milestone(DispatchTaskStepType step)=>Details[0]=Details[0] with {Steps=[new("s",2,step,DispatchTaskStepStatus.Completed,"AGV-01",null,null,null,0,null,DateTimeOffset.UtcNow,null)]};
 }
 

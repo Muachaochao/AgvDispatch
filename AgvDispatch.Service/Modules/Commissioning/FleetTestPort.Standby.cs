@@ -63,7 +63,7 @@ public sealed partial class FleetTestPort
                 DateTimeOffset.UtcNow)
             {
                 Route=alreadyThere?[vehicle.CurrentStation]:[],
-                ResourceTaskId="FLEET-STANDBY-"+run.RunId+"-"+vehicleId
+                ResourceTaskId=""
             });
         }
         return Task.FromResult(assignments.ToArray());
@@ -83,53 +83,37 @@ public sealed partial class FleetTestPort
         if(vehicle.Blocked==true)return null;
         var source=StandbyNode(vehicle.CurrentStation);
         var target=StandbyNode(assignment.Site);
-        var unavailable=await resources.GetUnavailableResourceIdsAsync(assignment.ResourceTaskId,ct);
-        var route=planner.Plan(source.AgvSiteId!,target.AgvSiteId!,unavailable);
-        if(route is null)
-        {
-            if(planner.Plan(source.AgvSiteId!,target.AgvSiteId!,new HashSet<string>()) is null)
-                throw new InvalidOperationException(assignment.VehicleId+"到待机位"+assignment.Site+"没有可达路线。");
-            return null;
-        }
+        var route=planner.Plan(source.AgvSiteId!,target.AgvSiteId!,new HashSet<string>());
+        if(route is null)throw new InvalidOperationException(assignment.VehicleId+"到待机位"+assignment.Site+"没有可达路线。");
         var path=route.Nodes.Select(id=>StandbyNode(id).AgvSiteId!).ToArray();
-        var acquisition=await resources.TryAcquireAsync(
-            assignment.ResourceTaskId,assignment.ResourceTaskId,assignment.VehicleId,route.ResourceIds,ct);
-        if(!acquisition.Acquired)return null;
-        var acquired=true;
+        var checkedMap=await preflight.CheckCurrentMapAsync(assignment.VehicleId,run.MapId,run.MapVersionId,ct);
+        var checkedRoute=await preflight.CheckRouteAsync(assignment.VehicleId,path,ct);
+        if(!checkedMap.Accepted||!checkedRoute.Accepted||!ReferenceEquals(current,map.Current))
+            return null;
+        var latest=vehicles.TryGet(assignment.VehicleId,out var latestVehicle)?latestVehicle:null;
+        if(latest is null||!StandbyStopped(latest)||latest.Blocked==true||
+           !string.Equals(latest.CurrentStation,vehicle.CurrentStation,StringComparison.OrdinalIgnoreCase))
+            return null;
+        // Standby returns are sent one vehicle at a time after all business tasks have
+        // closed. Avoid synthetic traffic leases because there is no DispatchTask row to
+        // reconcile them after a service restart.
         try
         {
-            var checkedMap=await preflight.CheckCurrentMapAsync(assignment.VehicleId,run.MapId,run.MapVersionId,ct);
-            var checkedRoute=await preflight.CheckRouteAsync(assignment.VehicleId,path,ct);
-            if(!checkedMap.Accepted||!checkedRoute.Accepted||!ReferenceEquals(current,map.Current))
-                return null;
-            var latest=vehicles.TryGet(assignment.VehicleId,out var latestVehicle)?latestVehicle:null;
-            if(latest is null||!StandbyStopped(latest)||
-               !string.Equals(latest.CurrentStation,vehicle.CurrentStation,StringComparison.OrdinalIgnoreCase))
-                throw new InvalidOperationException("发送前车辆站点或停车状态变化，车辆未发送。");
-            // Keep the resource reservation on an uncertain gateway result. The persisted
-            // run is moved to Hold and this intent must be reconciled before another send.
-            try
+            var vendorTaskId=await gateway.CreateTransportTaskAsync(
+                "FLEET-STANDBY-"+run.RunId+"-"+assignment.VehicleId,assignment.VehicleId,path,
+                new AgvTransportAction("Wait"),ct);
+            return assignment with
             {
-                var vendorTaskId=await gateway.CreateTransportTaskAsync(
-                    assignment.ResourceTaskId,assignment.VehicleId,path,new AgvTransportAction("Wait"),ct);
-                acquired=false;
-                return assignment with
-                {
-                    State=FleetTestStandbyReturnStates.Returning,
-                    Message="已发送待机导航，车辆返回中。",
-                    VendorTaskId=vendorTaskId,
-                    Route=path,
-                    UpdatedAt=DateTimeOffset.UtcNow
-                };
-            }
-            catch(Exception e) when(e is not OperationCanceledException||!ct.IsCancellationRequested)
-            {
-                throw new FleetStandbySendUncertainException("待机导航发送结果不确定，车辆可能已收到；禁止自动重发，须核对原车端任务。");
-            }
+                State=FleetTestStandbyReturnStates.Returning,
+                Message="已发送待机导航，车辆返回中。",
+                VendorTaskId=vendorTaskId,
+                Route=path,
+                UpdatedAt=DateTimeOffset.UtcNow
+            };
         }
-        finally
+        catch(Exception e) when(e is not OperationCanceledException||!ct.IsCancellationRequested)
         {
-            if(acquired)await resources.ReleaseTaskAsync(assignment.ResourceTaskId,ct);
+            throw new FleetStandbySendUncertainException("待机导航发送结果不确定，车辆可能已收到；禁止自动重发，须核对原车端任务。");
         }
     }
 
@@ -138,17 +122,20 @@ public sealed partial class FleetTestPort
     {
         if(string.IsNullOrWhiteSpace(assignment.VendorTaskId))
             throw new InvalidOperationException("原待机导航缺少厂家任务编号。");
-        await resources.RenewTaskAsync(assignment.ResourceTaskId,ct);
+        if(!string.IsNullOrWhiteSpace(assignment.ResourceTaskId))
+            await resources.RenewTaskAsync(assignment.ResourceTaskId,ct);
         var original=await gateway.GetTransportTaskStatusAsync(assignment.VendorTaskId,ct);
         if(original is null||original.VendorTaskId!=assignment.VendorTaskId||
            original.VehicleId!=assignment.VehicleId||!Fresh(original.UpdatedAt))
         {
-            await resources.ReleaseTaskAsync(assignment.ResourceTaskId,ct);
+            if(!string.IsNullOrWhiteSpace(assignment.ResourceTaskId))
+                await resources.ReleaseTaskAsync(assignment.ResourceTaskId,ct);
             throw new InvalidOperationException(assignment.VehicleId+"原待机导航身份或状态不可核对。");
         }
         if(original.State is AgvTransportTaskState.Failed or AgvTransportTaskState.Cancelled or AgvTransportTaskState.Suspended)
         {
-            await resources.ReleaseTaskAsync(assignment.ResourceTaskId,ct);
+            if(!string.IsNullOrWhiteSpace(assignment.ResourceTaskId))
+                await resources.ReleaseTaskAsync(assignment.ResourceTaskId,ct);
             throw new InvalidOperationException(assignment.VehicleId+"待机导航未正常完成："+original.State);
         }
         if(original.State!=AgvTransportTaskState.Completed)
@@ -181,5 +168,43 @@ public sealed partial class FleetTestPort
     }
 
     public Task ReleaseStandbyReturnAsync(FleetTestStandbyReturn assignment,CancellationToken ct) =>
-        resources.ReleaseTaskAsync(assignment.ResourceTaskId,ct);
+        string.IsNullOrWhiteSpace(assignment.ResourceTaskId)
+            ?Task.CompletedTask
+            :resources.ReleaseTaskAsync(assignment.ResourceTaskId,ct);
+
+    public async Task<FleetTestStandbyReturn[]> ReconcileStandbyReturnsAsync(
+        FleetTestRun run,CancellationToken ct)
+    {
+        var updated=new List<FleetTestStandbyReturn>();
+        foreach(var assignment in run.StandbyReturns)
+        {
+            if(string.IsNullOrWhiteSpace(assignment.VendorTaskId))
+            {
+                updated.Add(assignment);
+                continue;
+            }
+            var original=await gateway.GetTransportTaskStatusAsync(assignment.VendorTaskId,ct);
+            if(original is null||original.VendorTaskId!=assignment.VendorTaskId||
+               original.VehicleId!=assignment.VehicleId||!Fresh(original.UpdatedAt)||
+               original.State!=AgvTransportTaskState.Completed)
+            {
+                updated.Add(assignment with
+                {
+                    State=FleetTestStandbyReturnStates.Returning,
+                    Message="原待机导航尚未确认完成，保留路权和记录。",
+                    UpdatedAt=DateTimeOffset.UtcNow
+                });
+                continue;
+            }
+            var observed=await ObserveStandbyReturnAsync(run,assignment with
+            {
+                State=FleetTestStandbyReturnStates.Returning
+            },ct);
+            if(observed.State==FleetTestStandbyReturnStates.Completed&&
+               !string.IsNullOrWhiteSpace(assignment.ResourceTaskId))
+                await resources.ReleaseTaskAsync(assignment.ResourceTaskId,ct);
+            updated.Add(observed);
+        }
+        return updated.ToArray();
+    }
 }

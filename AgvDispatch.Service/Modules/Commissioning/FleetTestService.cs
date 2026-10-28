@@ -22,6 +22,7 @@ public interface IFleetTestPort
     Task<FleetTestStandbyReturn> ObserveStandbyReturnAsync(FleetTestRun run,FleetTestStandbyReturn assignment,
         CancellationToken ct);
     Task ReleaseStandbyReturnAsync(FleetTestStandbyReturn assignment,CancellationToken ct);
+    Task<FleetTestStandbyReturn[]> ReconcileStandbyReturnsAsync(FleetTestRun run,CancellationToken ct);
 }
 
 public sealed partial class FleetTestService : IsolatedBackgroundService, IFleetTestService
@@ -97,21 +98,22 @@ public sealed partial class FleetTestService : IsolatedBackgroundService, IFleet
     }
     private async Task AdvanceStandbyReturnsAsync(CancellationToken ct)
     {
-        foreach(var assignment in run!.StandbyReturns.Where(r=>r.State==FleetTestStandbyReturnStates.Assigned).ToArray())
+        var nextReturn=run!.StandbyReturns.FirstOrDefault(r=>r.State==FleetTestStandbyReturnStates.Assigned);
+        if(nextReturn is not null&&!run.StandbyReturns.Any(r=>r.State==FleetTestStandbyReturnStates.Returning))
         {
-            var sending=assignment with
+            var sending=nextReturn with
             {
                 State=FleetTestStandbyReturnStates.Sending,
                 Message="正在核验待机路线并发送车辆。",
                 UpdatedAt=DateTimeOffset.UtcNow
             };
-            UpdateStandbyReturn(assignment.VehicleId,sending);Save();
+            UpdateStandbyReturn(nextReturn.VehicleId,sending);Save();
             try
             {
                 var sent=await port.TrySendStandbyReturnAsync(run,run.StandbyReturns,sending,ct);
                 if(sent is null)
                 {
-                    UpdateStandbyReturn(assignment.VehicleId,assignment with
+                    UpdateStandbyReturn(nextReturn.VehicleId,nextReturn with
                     {
                         Message="待机路线或交通资源暂不可用，保持原位等待。",
                         UpdatedAt=DateTimeOffset.UtcNow
@@ -119,13 +121,13 @@ public sealed partial class FleetTestService : IsolatedBackgroundService, IFleet
                 }
                 else
                 {
-                    UpdateStandbyReturn(assignment.VehicleId,sent);
+                    UpdateStandbyReturn(nextReturn.VehicleId,sent);
                 }
                 Save();
             }
             catch(FleetStandbySendUncertainException e)
             {
-                UpdateStandbyReturn(assignment.VehicleId,sending with
+                UpdateStandbyReturn(nextReturn.VehicleId,sending with
                 {
                     State=FleetTestStandbyReturnStates.Uncertain,
                     Message=e.Message,
@@ -136,7 +138,7 @@ public sealed partial class FleetTestService : IsolatedBackgroundService, IFleet
             }
             catch
             {
-                UpdateStandbyReturn(assignment.VehicleId,assignment with
+                UpdateStandbyReturn(nextReturn.VehicleId,nextReturn with
                 {
                     Message="待机发送前核验失败，车辆未发送。",
                     UpdatedAt=DateTimeOffset.UtcNow
@@ -213,11 +215,11 @@ public sealed partial class FleetTestService : IsolatedBackgroundService, IFleet
             if(run==null||run.RunId!=request.RunId)throw new ArgumentException("原运行编号不符。");
             if(request.Reason?.Length>1000)throw new ArgumentException("核对依据不能超过1000字。");
             // Reject invalid requests before changing the original run or calling the PLC lab.
-            if(action is not ("stop" or "resume" or "close"))throw new ArgumentException("未知操作。");
+            if(action is not ("stop" or "resume" or "close" or "reconcile"))throw new ArgumentException("未知操作。");
             if(run.Stage=="Completed")throw new InvalidOperationException("原测试已完成，不能再次控制该记录。");
             if(action!="stop"&&(!request.SiteConfirmed||string.IsNullOrWhiteSpace(request.Reason)||request.Reason.Trim().Length<10))
                 throw new ArgumentException("须确认现场并填写至少10字核对依据。");
-            if(action=="resume"&&run.Stage!="Hold")throw new InvalidOperationException("仅暂停记录可以续接。");
+            if((action is "resume" or "reconcile")&&run.Stage!="Hold")throw new InvalidOperationException("仅暂停记录可以续接或核对待机路权。");
             if(action=="close"&&!run.StopRequested)throw new InvalidOperationException("先停止新增呼叫，再核对结束记录。");
             executing=true;
             run=run with {Reviews=[..run.Reviews,new(DateTimeOffset.UtcNow,action,user.WindowsIdentity,request.Reason??"")]};
@@ -230,7 +232,22 @@ public sealed partial class FleetTestService : IsolatedBackgroundService, IFleet
             {
                 if(!request.SiteConfirmed||string.IsNullOrWhiteSpace(request.Reason)||request.Reason.Trim().Length<10)
                     throw new ArgumentException("须确认现场并填写至少10字核对依据。");
-                if(action=="resume")
+                if(action=="reconcile")
+                {
+                    if(run.StandbyReturns.Length==0)throw new InvalidOperationException("原运行没有待机返回记录。");
+                    var reconciled=await port.ReconcileStandbyReturnsAsync(run,ct);
+                    run=run with
+                    {
+                        StandbyReturns=reconciled,
+                        Stage=reconciled.All(r=>r.State==FleetTestStandbyReturnStates.Completed)?"Completed":"ReturningStandby",
+                        Message=reconciled.All(r=>r.State==FleetTestStandbyReturnStates.Completed)
+                            ?"待机导航及车辆停靠已核对闭合。"
+                            :"已核对并释放已完成车辆的孤立待机路权，继续原待机返回。",
+                        UpdatedAt=DateTimeOffset.UtcNow
+                    };
+                    Save();
+                }
+                else if(action=="resume")
                 {
                     if(run.Stage!="Hold")throw new InvalidOperationException("仅暂停记录可以续接。");
                     await port.CheckCurrentAsync(run,ct);

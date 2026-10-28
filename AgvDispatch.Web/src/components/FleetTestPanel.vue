@@ -175,7 +175,7 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);});
    <p>交通等待队列中的“阻塞资源 / 车辆”用于核对谁在等谁；心跳过期不能作为物理出区证据。业务任务与PLC闭合后，系统按车辆分配唯一待机位；全部车辆实际停稳后本组才标记完成。</p>
    <template v-if="current.stage==='Hold'">
     <label>现场核对依据<input v-model="reason" maxlength="1000" placeholder="至少10字，核对原任务与现场状态"/></label>
-    <div class="fleet-controls"><button :disabled="busy||!fresh||!confirmed||reason.trim().length<10||!store.submissionEnabled" @click="act('resume')">核对后续接原用例</button><button :disabled="busy||!fresh||!confirmed||!current.stopRequested||reason.trim().length<10" @click="act('close')">核对闭合并结束记录</button></div>
+    <div class="fleet-controls"><button :disabled="busy||!fresh||!confirmed||reason.trim().length<10||!store.submissionEnabled" @click="act('resume')">核对后续接原用例</button><button v-if="current.standbyReturns?.some(r=>r.vendorTaskId)" :disabled="busy||!fresh||!confirmed||reason.trim().length<10||!store.submissionEnabled" @click="act('reconcile')">核对待机路权</button><button :disabled="busy||!fresh||!confirmed||!current.stopRequested||reason.trim().length<10" @click="act('close')">核对闭合并结束记录</button></div>
    </template>
    <details><summary>现场验收项目（人工核验，独立于任务完成）</summary><label v-for="(item,i) in checks" :key="item" class="review-item">{{item}}<select v-model="results[i]" @change="saveReview"><option>待核验</option><option>通过</option><option>失败</option><option>本组未覆盖</option></select></label></details>
   </template>
