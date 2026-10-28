@@ -74,6 +74,15 @@ Check(returned.Stage=="Completed"&&autoReturn.Port.ReturnSends==2&&
     returned.StandbyReturns.Length==2&&returned.StandbyReturns.All(r=>r.State==FleetTestStandbyReturnStates.Completed),
     "业务与PLC闭合后每车发送一次独立待机导航并核对停靠");
 Check(!autoReturn.Owner.Active,"全部车辆到待机位后才解除多车会话保护");
+var returnHold=Fixture();returnHold.Port.ReturnAlreadyComplete=false;returnHold.Port.FailStandbySend=true;
+await returnHold.Service.StartAsync(user,Plan("Simultaneous"),default);await returnHold.Service.TickAsync(default);
+returnHold.Port.Closed=true;
+for(var i=0;i<returnHold.Port.Details.Count;i++)
+    returnHold.Port.Details[i]=returnHold.Port.Details[i] with {Task=returnHold.Port.Details[i].Task with {Stage=DispatchTaskStage.Completed}};
+await returnHold.Service.TickAsync(default);
+var heldReturn=(await returnHold.Service.ReadAsync(default)).Current!;
+Check(heldReturn.Stage=="Hold"&&heldReturn.StandbyReturns.All(r=>r.State==FleetTestStandbyReturnStates.Assigned),
+    "待机发送前异常转为Hold，不退出后台且保留原分配");
 var closePending=Fixture();await closePending.Service.StartAsync(user,Plan("Staggered"),default);await closePending.Service.TickAsync(default);
 var pendingRun=(await closePending.Service.ReadAsync(default)).Current!;
 await closePending.Service.ControlAsync(user,"stop",new(pendingRun.RunId,"",false),default);
@@ -236,12 +245,14 @@ Check(blockedTracker.Observe("AGV-X",true,false,blockedStart.AddSeconds(3)),"静
 Check(!blockedTracker.Observe("AGV-X",true,true,blockedStart.AddSeconds(4)),"避让中的移动车辆不暂停");
 Check(!blockedTracker.Observe("AGV-X",true,false,blockedStart.AddSeconds(4.2)),"移动后阻挡计时重新开始");
 Check(!blockedTracker.Observe("AGV-X",false,false,blockedStart.AddSeconds(4.4)),"阻挡清除后立即复位");
+Check(FleetTestPort.IsLocalTrafficObstacleAlarm("52200","blocked by another vehicle")&&
+    !FleetTestPort.IsLocalTrafficObstacleAlarm("E-STOP","emergency stop"),"车辆局部阻挡仅由车端处理，其他故障仍暂停全组");
 Console.WriteLine($"PASS {count} 多车多工位、车辆池范围、身份、断连、停止、重启及幂等检查；无现场通信。");
 
 sealed class Port:IFleetTestPort
 {
  public int Starts,Creates,ReturnSends;public bool Bad,FailCall,Closed,FailValidate;
- public bool ReturnAlreadyComplete=true,ReturnObserveComplete=true;
+ public bool ReturnAlreadyComplete=true,ReturnObserveComplete=true,FailStandbySend;
  public List<string> Calls=[];public List<TaskCenterDetail> Details=[];
  public TaskCompletionSource? ValidationStarted,ValidationGate;
  public async Task<(string,string,string)> ValidateAsync(FleetTestStart p,CancellationToken ct)
@@ -261,7 +272,7 @@ sealed class Port:IFleetTestPort
    ReturnAlreadyComplete?"already home":"assigned",null,DateTimeOffset.UtcNow)).ToArray());
  public Task<FleetTestStandbyReturn?> TrySendStandbyReturnAsync(FleetTestRun r,FleetTestStandbyReturn[] returns,
   FleetTestStandbyReturn assignment,CancellationToken ct)
- {ReturnSends++;return Task.FromResult<FleetTestStandbyReturn?>(assignment with
+ {if(FailStandbySend)throw new InvalidOperationException("standby route unavailable");ReturnSends++;return Task.FromResult<FleetTestStandbyReturn?>(assignment with
   {State=FleetTestStandbyReturnStates.Returning,Message="returning",VendorTaskId="V-"+assignment.VehicleId,
    UpdatedAt=DateTimeOffset.UtcNow});}
  public Task<FleetTestStandbyReturn> ObserveStandbyReturnAsync(FleetTestRun r,FleetTestStandbyReturn assignment,

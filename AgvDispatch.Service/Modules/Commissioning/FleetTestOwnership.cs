@@ -8,7 +8,6 @@ public sealed class FleetTestOptions
 {
     public bool Enabled { get; set; }
     public string[] VehicleIds { get; set; } = [];
-    public double BlockedHoldSeconds { get; set; } = 3;
     public bool ReturnToStandby { get; set; } = true;
 
     public string? ConfigurationError(int maxConcurrentTasks) =>
@@ -16,8 +15,6 @@ public sealed class FleetTestOptions
         VehicleIds is not { Length: >= 2 and <= 1000 } || VehicleIds.Any(string.IsNullOrWhiteSpace) ||
         VehicleIds.Distinct(StringComparer.OrdinalIgnoreCase).Count() != VehicleIds.Length
             ? "多车联调须配置至少两辆编号不同的车辆。" :
-        !double.IsFinite(BlockedHoldSeconds) || BlockedHoldSeconds is < 1 or > 30
-            ? "多车阻挡确认时间须为1至30秒。" :
         maxConcurrentTasks < 1 || maxConcurrentTasks > VehicleIds.Length
             ? $"调度并发上限须在1至配置车辆数{VehicleIds.Length}之间。" : null;
 }

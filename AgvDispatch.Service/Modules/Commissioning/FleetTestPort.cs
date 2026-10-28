@@ -19,24 +19,26 @@ public sealed partial class FleetTestPort(FleetTestOptions options,IBusinessRunS
 {
     private static readonly HttpClient lab=new(new SocketsHttpHandler{UseProxy=false,AllowAutoRedirect=false})
         {BaseAddress=new Uri("http://127.0.0.1:10201/"),Timeout=TimeSpan.FromSeconds(5)};
-    private readonly BlockedObservationTracker blockedObservations=new(TimeSpan.FromSeconds(options.BlockedHoldSeconds));
     private static bool Fresh(DateTimeOffset? at)=>at is {} t&&t<=DateTimeOffset.UtcNow.AddSeconds(1)&&DateTimeOffset.UtcNow-t<TimeSpan.FromSeconds(3);
-    private string? Health(string id)
+    public static bool IsLocalTrafficObstacleAlarm(string? code,string? message)=>
+        (code?.Contains("52200",StringComparison.OrdinalIgnoreCase)??false)||
+        (message?.Contains("block",StringComparison.OrdinalIgnoreCase)??false);
+    private string? Health(string id,bool allowLocalTrafficWait=false)
     {
         if(!vehicles.TryGet(id,out var v))return id+"尚未取得车辆状态。";
         var sample=$"连接={v.Connection}，质量={v.Quality}，最近成功采集={v.LastSuccessfulPollAt:O}，阻挡={v.Blocked}，急停={v.EmergencyStopped}，置信度={v.LocalizationConfidence:0.###}";
         if(!Fresh(v.LastSuccessfulPollAt)||v.Connection!=ConnectionState.Online||v.Quality!=SignalQuality.Good)
             return id+"通信离线、采集质量无效或数据超过3秒未更新。"+sample;
         var reasons=new List<string>();
-        var moving=Math.Abs(v.VelocityX??0)>=.05||Math.Abs(v.VelocityY??0)>=.05||Math.Abs(v.AngularVelocity??0)>=.05;
-        var persistentBlock=blockedObservations.Observe(id,v.Blocked==true,moving);
-        var transientBlock=v.Blocked==true&&!persistentBlock;
-        if(persistentBlock)reasons.Add("车辆静止且连续被阻挡超过"+options.BlockedHoldSeconds.ToString("0.#")+"秒，需现场清除障碍");
+        // 52200/Blocked is the vehicle's local obstacle-avoidance state. During a
+        // multi-vehicle run, freezing the whole group also freezes simulated PLC
+        // feedback and unrelated vehicles. Startup validation still rejects a blocked
+        // vehicle; active work waits locally until that vehicle can proceed.
+        if(v.Blocked==true&&!allowLocalTrafficWait)reasons.Add("车辆当前被阻挡，需现场清除障碍");
         if(v.EmergencyStopped!=false)reasons.Add("急停未复位");
         if(v.LocalizationConfidence is not >=.5)reasons.Add($"定位置信度{(v.LocalizationConfidence?.ToString("0.###")??"缺失")}低于0.5");
         var alarms=v.Alarms.Where(a=>a.Severity is AgvDispatch.Domain.Agvs.AgvAlarmSeverity.Error or AgvDispatch.Domain.Agvs.AgvAlarmSeverity.Fatal)
-            .Where(a=>!transientBlock||!(a.Code.Contains("52200",StringComparison.OrdinalIgnoreCase)||
-                (a.Message?.Contains("block",StringComparison.OrdinalIgnoreCase)??false)))
+            .Where(a=>!(allowLocalTrafficWait&&IsLocalTrafficObstacleAlarm(a.Code,a.Message)))
             .Select(a=>string.IsNullOrWhiteSpace(a.Code)?"车端报警":a.Code).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         if(alarms.Length>0)reasons.Add("开放车端报警"+string.Join('、',alarms));
         if(reasons.Count>0)return id+"："+string.Join("；",reasons)+"。"+sample;
@@ -143,7 +145,7 @@ public sealed partial class FleetTestPort(FleetTestOptions options,IBusinessRunS
             throw new InvalidOperationException("地图或参数与原测试记录不符。");
         foreach(var id in run.Plan.VehicleIds)
         {
-            if(Health(id) is {} block)throw new InvalidOperationException(block);
+            if(Health(id,allowLocalTrafficWait:true) is {} block)throw new InvalidOperationException(block);
             var mapCheck=await preflight.CheckCurrentMapAsync(id,run.MapId,run.MapVersionId,ct);
             if(!mapCheck.Accepted)throw new InvalidOperationException(id+"车端地图已变化，不能按原测试记录继续："+mapCheck.Message);
         }
@@ -164,7 +166,7 @@ public sealed partial class FleetTestPort(FleetTestOptions options,IBusinessRunS
         if(run!=null)foreach(var call in run.Calls.Where(c=>c.TaskId!=null))
             if(await tasks.GetDetailAsync(call.TaskId!,ct) is {} detail)details.Add(detail);
         return new(options.Enabled,options.VehicleIds,run,options.VehicleIds.Select(id=>
-        {vehicles.TryGet(id,out var v);var health=Health(id);return new FleetTestVehicle(id,v?.CurrentStation,health==null,health??"状态数据有效");}).ToArray(),details.ToArray(),DateTimeOffset.UtcNow)
+        {vehicles.TryGet(id,out var v);var health=Health(id,allowLocalTrafficWait:true);var message=health??(v?.Blocked==true?"临时避让中；由该车车端处理，不暂停其他车辆。":"状态数据有效");return new FleetTestVehicle(id,v?.CurrentStation,health==null,message);}).ToArray(),details.ToArray(),DateTimeOffset.UtcNow)
         {ConfiguredStations=parameters.Capture().Pickups.Select(p=>p.StationId).ToArray(),MaxConcurrentTasks=dispatch.MaxConcurrentTasks};
     }
     public async Task LabAsync(FleetTestRun run,string action,string[] stations,CancellationToken ct)
@@ -249,7 +251,7 @@ public sealed partial class FleetTestPort(FleetTestOptions options,IBusinessRunS
         // remain possible while the separate new-work recovery gate is still closed.
         Configuration(requireNewWorkGate:false);PlcHealthy();
         foreach(var id in run.Plan.VehicleIds)
-            if(Health(id) is {} block)throw new InvalidOperationException(block);
+            if(Health(id,allowLocalTrafficWait:true) is {} block)throw new InvalidOperationException(block);
         if((await AllAsync(ct)).Any(t=>t.Stage is not (DispatchTaskStage.Completed or DispatchTaskStage.Cancelled)))throw new InvalidOperationException("原任务尚未全部闭合。");
         // A stopped/cancelled run no longer requires every station to hold a box.
         // Closure still requires every handshake cleared and every lease released.

@@ -273,7 +273,15 @@ public sealed partial class FleetTestService : IsolatedBackgroundService, IFleet
             if(run.Stage=="Hold")return;
             if(run.Stage=="ReturningStandby")
             {
-                await AdvanceStandbyReturnsAsync(ct);
+                try
+                {
+                    await AdvanceStandbyReturnsAsync(ct);
+                }
+                catch(OperationCanceledException)when(ct.IsCancellationRequested){throw;}
+                catch(Exception e)
+                {
+                    Hold("保留原任务和待机发送记录待核对："+e.Message);
+                }
                 return;
             }
             if(run.Stage!="Running")return;

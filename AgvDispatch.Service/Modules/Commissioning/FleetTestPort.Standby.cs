@@ -37,7 +37,7 @@ public sealed partial class FleetTestPort
         var assignments=new List<FleetTestStandbyReturn>();
         foreach(var vehicleId in run.Plan.VehicleIds)
         {
-            if(Health(vehicleId) is {} health)throw new InvalidOperationException(health);
+            if(Health(vehicleId,allowLocalTrafficWait:true) is {} health)throw new InvalidOperationException(health);
             if(!vehicles.TryGet(vehicleId,out var vehicle)||string.IsNullOrWhiteSpace(vehicle.CurrentStation)||!StandbyStopped(vehicle))
                 throw new InvalidOperationException(vehicleId+"未停稳或当前站点不明，不能规划待机返回。");
             var source=StandbyNode(vehicle.CurrentStation);
@@ -77,9 +77,10 @@ public sealed partial class FleetTestPort
         var current=map.Current??throw new InvalidOperationException("运行地图不存在。");
         if(current.MapId!=run.MapId||current.VersionId!=run.MapVersionId)
             throw new InvalidOperationException("原测试地图已变化，不能发送待机导航。");
-        if(Health(assignment.VehicleId) is {} health)throw new InvalidOperationException(health);
+        if(Health(assignment.VehicleId,allowLocalTrafficWait:true) is not null)return null;
         if(!vehicles.TryGet(assignment.VehicleId,out var vehicle)||string.IsNullOrWhiteSpace(vehicle.CurrentStation)||!StandbyStopped(vehicle))
             return null;
+        if(vehicle.Blocked==true)return null;
         var source=StandbyNode(vehicle.CurrentStation);
         var target=StandbyNode(assignment.Site);
         var unavailable=await resources.GetUnavailableResourceIdsAsync(assignment.ResourceTaskId,ct);
@@ -100,7 +101,7 @@ public sealed partial class FleetTestPort
             var checkedMap=await preflight.CheckCurrentMapAsync(assignment.VehicleId,run.MapId,run.MapVersionId,ct);
             var checkedRoute=await preflight.CheckRouteAsync(assignment.VehicleId,path,ct);
             if(!checkedMap.Accepted||!checkedRoute.Accepted||!ReferenceEquals(current,map.Current))
-                throw new InvalidOperationException("待机路线车端核验失败："+checkedMap.Message+checkedRoute.Message);
+                return null;
             var latest=vehicles.TryGet(assignment.VehicleId,out var latestVehicle)?latestVehicle:null;
             if(latest is null||!StandbyStopped(latest)||
                !string.Equals(latest.CurrentStation,vehicle.CurrentStation,StringComparison.OrdinalIgnoreCase))
