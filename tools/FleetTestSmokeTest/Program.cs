@@ -217,6 +217,14 @@ Check(autoParameters.ExpandWaitingSitesFromMap(autoMap),"多车模式从地图�
 Check(autoDispatch.GetDumperWaitingSites().SequenceEqual(["LM35","LM36"]),"仅加入唯一映射且命名明确的 DUMPER-WAIT 容量1站点");
 Check(autoParameters.Capture().WaitingSites.SequenceEqual(["LM35","LM36"]),"动态补齐结果同步到运行时任务参数");
 Check(!autoParameters.ExpandWaitingSitesFromMap(autoMap),"候车位自动发现幂等");
+var blockedStart=DateTimeOffset.UtcNow;
+var blockedTracker=new BlockedObservationTracker(TimeSpan.FromSeconds(3));
+Check(!blockedTracker.Observe("AGV-X",true,false,blockedStart),"瞬时阻挡不立即暂停");
+Check(!blockedTracker.Observe("AGV-X",true,false,blockedStart.AddSeconds(2)),"阻挡未满阈值继续观察");
+Check(blockedTracker.Observe("AGV-X",true,false,blockedStart.AddSeconds(3)),"静止持续阻挡达到阈值才暂停");
+Check(!blockedTracker.Observe("AGV-X",true,true,blockedStart.AddSeconds(4)),"避让中的移动车辆不暂停");
+Check(!blockedTracker.Observe("AGV-X",true,false,blockedStart.AddSeconds(4.2)),"移动后阻挡计时重新开始");
+Check(!blockedTracker.Observe("AGV-X",false,false,blockedStart.AddSeconds(4.4)),"阻挡清除后立即复位");
 Console.WriteLine($"PASS {count} 多车多工位、车辆池范围、身份、断连、停止、重启及幂等检查；无现场通信。");
 
 sealed class Port:IFleetTestPort

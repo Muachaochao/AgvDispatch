@@ -17,6 +17,7 @@ public sealed class FleetTestPort(FleetTestOptions options,IBusinessRunService s
 {
     private static readonly HttpClient lab=new(new SocketsHttpHandler{UseProxy=false,AllowAutoRedirect=false})
         {BaseAddress=new Uri("http://127.0.0.1:10201/"),Timeout=TimeSpan.FromSeconds(5)};
+    private readonly BlockedObservationTracker blockedObservations=new(TimeSpan.FromSeconds(options.BlockedHoldSeconds));
     private static bool Fresh(DateTimeOffset? at)=>at is {} t&&t<=DateTimeOffset.UtcNow.AddSeconds(1)&&DateTimeOffset.UtcNow-t<TimeSpan.FromSeconds(3);
     private string? Health(string id)
     {
@@ -25,10 +26,15 @@ public sealed class FleetTestPort(FleetTestOptions options,IBusinessRunService s
         if(!Fresh(v.LastSuccessfulPollAt)||v.Connection!=ConnectionState.Online||v.Quality!=SignalQuality.Good)
             return id+"通信离线、采集质量无效或数据超过3秒未更新。"+sample;
         var reasons=new List<string>();
-        if(v.Blocked!=false)reasons.Add("车辆当前被阻挡，需现场清除障碍并在车端解除阻挡");
+        var moving=Math.Abs(v.VelocityX??0)>=.05||Math.Abs(v.VelocityY??0)>=.05||Math.Abs(v.AngularVelocity??0)>=.05;
+        var persistentBlock=blockedObservations.Observe(id,v.Blocked==true,moving);
+        var transientBlock=v.Blocked==true&&!persistentBlock;
+        if(persistentBlock)reasons.Add("车辆静止且连续被阻挡超过"+options.BlockedHoldSeconds.ToString("0.#")+"秒，需现场清除障碍");
         if(v.EmergencyStopped!=false)reasons.Add("急停未复位");
         if(v.LocalizationConfidence is not >=.5)reasons.Add($"定位置信度{(v.LocalizationConfidence?.ToString("0.###")??"缺失")}低于0.5");
         var alarms=v.Alarms.Where(a=>a.Severity is AgvDispatch.Domain.Agvs.AgvAlarmSeverity.Error or AgvDispatch.Domain.Agvs.AgvAlarmSeverity.Fatal)
+            .Where(a=>!transientBlock||!(a.Code.Contains("52200",StringComparison.OrdinalIgnoreCase)||
+                (a.Message?.Contains("block",StringComparison.OrdinalIgnoreCase)??false)))
             .Select(a=>string.IsNullOrWhiteSpace(a.Code)?"车端报警":a.Code).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         if(alarms.Length>0)reasons.Add("开放车端报警"+string.Join('、',alarms));
         if(reasons.Count>0)return id+"："+string.Join("；",reasons)+"。"+sample;
