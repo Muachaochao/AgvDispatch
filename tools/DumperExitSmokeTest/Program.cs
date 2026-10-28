@@ -166,20 +166,38 @@ MapDefinition ReturnMap(params (string Id, double X, double Y)[] coordinates)
     return map with { Nodes = routeNodes, Edges = routeEdges };
 }
 DumperExitAssessment Route(MapDefinition routeMap, DumperExitFrame? position = null,
-    IReadOnlyList<string>? nodeIds = null, IReadOnlyList<string>? edgeIds = null, double deviation = 0.5) =>
+    IReadOnlyList<string>? nodeIds = null, IReadOnlyList<string>? edgeIds = null, double deviation = 0.5,
+    bool endpointConfirmed = false) =>
     DumperExitEvaluator.VerifyReturnRouteAfterExit(routeMap,
         nodeIds ?? routeMap.Nodes.Select(n => n.Id).ToArray(), edgeIds ?? routeMap.Edges.Select(e => e.Id).ToArray(),
-        position ?? first, profile, policy, deviation);
+        position ?? first, profile, policy, deviation, endpointConfirmed);
 void RouteRefuse(string name, MapDefinition routeMap, DumperExitFrame? position = null,
-    IReadOnlyList<string>? nodeIds = null, IReadOnlyList<string>? edgeIds = null, double deviation = 0.5)
+    IReadOnlyList<string>? nodeIds = null, IReadOnlyList<string>? edgeIds = null, double deviation = 0.5,
+    bool endpointConfirmed = false)
 {
-    var result = Route(routeMap, position, nodeIds, edgeIds, deviation);
+    var result = Route(routeMap, position, nodeIds, edgeIds, deviation, endpointConfirmed);
     Check(!result.Verified && result.ResourceIds.Count == 0, name);
 }
 var straightReturn = ReturnMap(("D", 1, 1), ("EXIT", 5, 1), ("HOME", 8, 1));
 Check(Route(straightReturn).Verified, "原冻结返程后续直线路径不再进入倒料区允许");
 Check(Route(straightReturn, first with { X = 5 }).Verified, "相邻路段共有端点的两种可能进度均安全允许");
 Check(Route(straightReturn, first with { X = 8 }).Verified, "冻结返程终点外且全部未来位置安全允许");
+Check(Route(ReturnMap(("D", 1, 1), ("HOME", 8, 1)), first with { X = 8 }, endpointConfirmed: true).Verified,
+    "单一直线确认到达终点时末段和终点候选按冻结顺序相邻允许");
+Check(Route(straightReturn, first with { X = 8 }, endpointConfirmed: true).Verified,
+    "多段直线确认到达终点时末段和终点候选相邻允许");
+Check(Route(ReturnMap(("D", 1, 1), ("EXIT", 5, 1), ("TURN", 5, 5), ("HOME", 8, 5)),
+    first with { X = 8, Y = 5 }, endpointConfirmed: true).Verified,
+    "多段折线确认终点且已通过倒料区最后一次使用允许");
+RouteRefuse("确认终点不消除终点与更早非相邻路段重合歧义",
+    ReturnMap(("D", 1, 1), ("A", 8, 1), ("B", 8, 5), ("C", 5, 5), ("HOME", 5, 1)),
+    first with { X = 5 }, endpointConfirmed: true);
+RouteRefuse("回环终点与原途经点重合时确认到达仍拒绝",
+    ReturnMap(("D", 1, 1), ("A", 5, 1), ("B", 5, 5), ("C", 8, 5), ("HOME", 5, 1)),
+    first with { X = 5 }, endpointConfirmed: true);
+RouteRefuse("确认到达标记不能替代距离核验或抹掉未来回入区",
+    ReturnMap(("D", 1, 1), ("EXIT", 5, 1), ("REENTER", 1, 1), ("HOME", 8, 1)),
+    endpointConfirmed: true);
 RouteRefuse("中心出区但路线偏离范围与车体仍可能触边拒绝", straightReturn, first with { X = 3.5 });
 RouteRefuse("定位不在原冻结返程拒绝", straightReturn, first with { X = 4, Y = 4 });
 RouteRefuse("原冻结返程后续重新进入倒料区拒绝",

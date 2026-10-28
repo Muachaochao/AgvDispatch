@@ -22,8 +22,11 @@ public sealed partial class TrafficResourceControlService
             var leases = await database.Queryable<TrafficResourceLeaseEntity>().ToListAsync(ct);
             var now = (clock ?? TimeProvider.System).GetUtcNow();
             var byTask = tasks.ToDictionary(t => t.TaskId);
+            var cycles = TrafficCycleRiskDetector.Find(requests, byTask, pending, leases, catalog, DateTime.Now);
             var waiting = requests.Where(r => pending.TryGetValue(r.StepId, out var step) && step.TaskId == r.TaskId)
                 .Select(r => ProjectRequest(r, leases, byTask, DateTime.Now, now)).Where(r => r.State == "Waiting").ToArray();
+            waiting = waiting.Select(r => cycles.FirstOrDefault(c => c.TaskIds.Contains(r.TaskId, StringComparer.OrdinalIgnoreCase)) is { } cycle
+                ? r with { Reason = r.Reason + " " + cycle.Message } : r).ToArray();
             var resource = query.BlockingResourceId?.Trim();
             var filtered = waiting.Where(r => (query.MinimumPriority == null || r.Priority >= query.MinimumPriority) &&
                 (string.IsNullOrWhiteSpace(resource) || r.Blockers.Any(b => string.Equals(b.ResourceId, resource, StringComparison.OrdinalIgnoreCase)))).ToArray();
@@ -32,7 +35,8 @@ public sealed partial class TrafficResourceControlService
                 filtered.OrderByDescending(r => r.WaitingSeconds ?? -1).ThenByDescending(r => r.Priority ?? int.MinValue).ThenBy(r => r.StepId, StringComparer.Ordinal);
             page = new(now, waiting.Length, filtered.Length, query.PageNumber, query.PageSize,
                 ordered.Skip((query.PageNumber - 1) * query.PageSize).Take(query.PageSize).ToArray(),
-                waiting.SelectMany(r => r.Blockers).Select(b => b.ResourceId).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(id => id, StringComparer.OrdinalIgnoreCase).ToArray());
+                waiting.SelectMany(r => r.Blockers).Select(b => b.ResourceId).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(id => id, StringComparer.OrdinalIgnoreCase).ToArray())
+                { CycleRisks = cycles };
         });
         if (!transaction.IsSuccess) throw new InvalidOperationException("读取等待队列失败。", transaction.ErrorException);
         return page!;

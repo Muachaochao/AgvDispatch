@@ -223,6 +223,7 @@ public sealed class TrafficControlNamedPipeServer(
             "GetBusinessRun" => Success(await (businessRun??throw new NotSupportedException("后台未更新持续运行入口。")).ReadAsync(cancellationToken)),
             "GetFleetTest" => Success(await (fleetTest??throw new NotSupportedException("后台未更新双车测试。")).ReadAsync(cancellationToken)),
             "StartFleetTest" => Success(await (fleetTest??throw new NotSupportedException("后台未更新双车测试。")).StartAsync(user,Deserialize<FleetTestStart>(request.Payload),cancellationToken)),
+            "RetireFleetTestStart" => Success(await (fleetTest??throw new NotSupportedException("后台未更新多车测试。")).RetireStartAsync(user,Deserialize<FleetTestStartRetirement>(request.Payload),cancellationToken)),
             "StopFleetTest" => Success(await (fleetTest??throw new NotSupportedException("后台未更新双车测试。")).ControlAsync(user,"stop",Deserialize<FleetTestControl>(request.Payload),cancellationToken)),
             "ResumeFleetTest" => Success(await (fleetTest??throw new NotSupportedException("后台未更新双车测试。")).ControlAsync(user,"resume",Deserialize<FleetTestControl>(request.Payload),cancellationToken)),
             "CloseFleetTest" => Success(await (fleetTest??throw new NotSupportedException("后台未更新双车测试。")).ControlAsync(user,"close",Deserialize<FleetTestControl>(request.Payload),cancellationToken)),

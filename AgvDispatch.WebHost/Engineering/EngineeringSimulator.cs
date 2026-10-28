@@ -30,15 +30,10 @@ public static class EngineeringSimulator
         var freeAt = p.Vehicles.ToDictionary(v => v.Id, _ => 0d, StringComparer.OrdinalIgnoreCase);
         var reservations = new List<EngineeringReservation>(); var byResource = new Dictionary<string, List<EngineeringReservation>>(StringComparer.OrdinalIgnoreCase);
         var tasks = new List<EngineeringSimTask>(); var failures = new List<EngineeringRejectedCall>();
-        var homes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase); var homeUsage = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        foreach (var v in p.Vehicles.Where(v => v.Enabled).OrderBy(v => v.Id, StringComparer.Ordinal))
-        {
-            var poolIds = p.Pools.Where(x => x.VehicleIds.Contains(v.Id, StringComparer.OrdinalIgnoreCase)).Select(x => x.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            var bay = p.Standbys.Where(b => poolIds.Contains(b.PoolId) && !blocked.Contains(b.ResourceId) && homeUsage.GetValueOrDefault(b.ResourceId) < resources[b.ResourceId].Capacity && graph.Find(v.StartNode, b.NodeId, blocked) != null)
-                .OrderByDescending(b => b.Priority).ThenBy(b => graph.Find(v.StartNode, b.NodeId, blocked)!.Seconds).ThenBy(b => b.Id, StringComparer.Ordinal).FirstOrDefault();
-            if (bay == null) continue;
-            homes[v.Id] = bay.NodeId; homeUsage[bay.ResourceId] = homeUsage.GetValueOrDefault(bay.ResourceId) + 1;
-        }
+        // Initial nodes remain reserved to their original vehicles, including those never selected.
+        // The model schedules business routes only; it has no independent fleet repositioning phase.
+        var standbyAllocation = EngineeringStandbyAllocator.Allocate(p, graph, offline, blocked);
+        var homes = standbyAllocation.Assignments.ToDictionary(a => a.Key, a => a.Value.NodeId, StringComparer.OrdinalIgnoreCase);
         int Capacity(string resource) => resource.StartsWith("@pickup:", StringComparison.Ordinal) ? 1 : resources[resource].Capacity;
         // Return the first time capacity is exceeded, and the next release at that instant.
         double? Conflict(string resource, double start, double end)
@@ -70,7 +65,7 @@ public static class EngineeringSimulator
                 if (!v.Enabled || offline.Contains(v.Id)) { reasons.Add(v.Id + "：未启用或模拟离线"); continue; }
                 if (v.Battery < v.MinimumBattery) { reasons.Add(v.Id + "：电量低于阈值"); continue; }
                 if (v.Capability != template.Capability) { reasons.Add(v.Id + "：车型能力不匹配"); continue; }
-                if (!homes.TryGetValue(v.Id, out var home)) { reasons.Add(v.Id + "：没有可分配的待机容量"); continue; }
+                if (!homes.TryGetValue(v.Id, out var home)) { reasons.Add(v.Id + "：" + standbyAllocation.Unassigned.GetValueOrDefault(v.Id, "没有可分配的待机容量")); continue; }
                 var stops = new[] { positions[v.Id], station.PickupNode, dumper.WaitingNode, dumper.DumpingNode, station.PickupNode, home };
                 var legs = Enumerable.Range(0, 5).Select(i => graph.Find(stops[i], stops[i + 1], blocked)).ToArray();
                 if (legs.Any(x => x == null)) { reasons.Add(v.Id + "：路线被封锁或不可达"); continue; }
@@ -119,6 +114,6 @@ public static class EngineeringSimulator
         foreach (var e in tasks.SelectMany(t => new[] { (At: t.Start, Delta: 1), (At: t.End, Delta: -1) }).OrderBy(e => e.At).ThenBy(e => e.Delta)) { active += e.Delta; peak = Math.Max(peak, active); }
         return new(Guid.NewGuid().ToString("N"), version.Id, DateTimeOffset.UtcNow, q.Calls.Count, q.Calls.Count - seen.Count, tasks, failures, reservations, positions,
             tasks.Count == 0 ? 0 : tasks.Max(t => t.End), peak,
-            "纯配置与离散预约模拟，无设备通信。九步为模型阶段，PLC反馈以固定耗时建模；未运行实车九步执行器。路线使用配置距离/速度，不做车体碰撞、制动、PLC电气时序、运行中掉线恢复或现场安全验收。未配置交通资源的道路不推断互斥。");
+            "纯配置与离散预约模拟，无设备通信。九步为模型阶段，PLC反馈以固定耗时建模；未运行实车九步执行器。所有车辆初始停车节点及对应待机容量保留给原车；未建模独立调位，不能借用其他车辆的原停车点。路线使用配置距离/速度，不做车体碰撞、制动、PLC电气时序、运行中掉线恢复或现场安全验收。未配置交通资源的道路不推断互斥。");
     }
 }

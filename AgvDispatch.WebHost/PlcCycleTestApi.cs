@@ -9,9 +9,11 @@ public static class PlcCycleTestApi
         app.MapGet("/api/fleet-test",async(DispatchPipe pipe,CancellationToken ct)=>await pipe.ReadAsync<FleetTestStatus>("GetFleetTest",new{},ct));
         app.MapPost("/api/fleet-test/start",async(FleetTestStart request,DispatchPipe pipe,CancellationToken ct)=>
         {
-            if(!app.Configuration.GetValue("Web:EnableTaskSubmission",false))return Results.Json(new{error="请使用双车业务测试启动配置。"},statusCode:403);
+            if(!app.Configuration.GetValue("Web:EnableTaskSubmission",false))return Results.Json(new{error="请使用多车业务测试启动配置。"},statusCode:403);
             return Results.Ok(await pipe.ReadAsync<FleetTestStatus>("StartFleetTest",request,ct));
         });
+        app.MapPost("/api/fleet-test/retire-start",async(FleetTestStartRetirement request,DispatchPipe pipe,CancellationToken ct)=>
+            Results.Ok(await pipe.ReadAsync<FleetTestStartRetirementReceipt>("RetireFleetTestStart",request,ct)));
         app.MapPost("/api/fleet-test/{action}",async(string action,FleetTestControl request,DispatchPipe pipe,CancellationToken ct)=>
         {
             var method=action switch {"stop"=>"StopFleetTest","resume"=>"ResumeFleetTest","close"=>"CloseFleetTest",_=>null};

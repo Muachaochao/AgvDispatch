@@ -44,7 +44,9 @@ export interface TrafficRequest {taskId:string;stepId:string;vehicleId:string;ma
 export interface TrafficObservation {capturedAt:string;requests:TrafficRequest[];requestsTruncated:boolean}
 
 export interface WaitingQuery {blockingResourceId:string|null;minimumPriority:number|null;sort:'LongestWait'|'PriorityThenWait';pageNumber:number;pageSize:number}
-export interface WaitingPage {page:{capturedAt:string;totalWaiting:number;totalMatched:number;pageNumber:number;pageSize:number;items:TrafficRequest[];blockingResources:string[]};mapId:string|null;mapVersion:string|null;mapDefinitionHash:string|null}
+export interface TrafficCycleLink {waitingTaskId:string;waitingStepId:string;waitingVehicleId:string;holdingTaskId:string;holdingStepId:string;holdingVehicleId:string;resourceId:string;heartbeatExpired:boolean;mapId:string|null;mapVersionId:string|null}
+export interface TrafficCycleRisk {cycleId:string;taskIds:string[];vehicleIds:string[];resourceIds:string[];links:TrafficCycleLink[];message:string}
+export interface WaitingPage {page:{capturedAt:string;totalWaiting:number;totalMatched:number;pageNumber:number;pageSize:number;items:TrafficRequest[];blockingResources:string[];cycleRisks?:TrafficCycleRisk[];cycleAnalysisMessage?:string};mapId:string|null;mapVersion:string|null;mapDefinitionHash:string|null}
 
 export interface ReleaseRequirement {id:string;state:string;text:string;evidence:string}
 export interface BlockingNode {taskId:string;stepId:string;vehicleId:string;mapId:string|null;mapVersionId:string|null;state:string;reason:string;taskStage:string|null;stepStatus:string|null;commandStatus:string|null;missingEvidence:boolean;releaseRequirements:ReleaseRequirement[]}

@@ -18,7 +18,7 @@ public interface IFleetTestPort
     Task CheckClosedAsync(FleetTestRun run,CancellationToken ct);
 }
 
-public sealed class FleetTestService : IsolatedBackgroundService, IFleetTestService
+public sealed partial class FleetTestService : IsolatedBackgroundService, IFleetTestService
 {
     private readonly IFleetTestPort port;
     private readonly FleetTestOwnership ownership;
@@ -30,14 +30,15 @@ public sealed class FleetTestService : IsolatedBackgroundService, IFleetTestServ
     {
         this.port=port;this.ownership=ownership;this.path=path;
         this.logger=logger??Microsoft.Extensions.Logging.Abstractions.NullLogger<FleetTestService>.Instance;
+        LoadStartRetirements();
         if(File.Exists(path))
         {
-            run=JsonSerializer.Deserialize<FleetTestRun>(File.ReadAllText(path))??throw new InvalidDataException("双车测试记录损坏。");
+            run=JsonSerializer.Deserialize<FleetTestRun>(File.ReadAllText(path))??throw new InvalidDataException("多车测试记录损坏。");
             if(run.Stage!="Completed") Hold("重启后保留原任务；须核对后续接，禁止自动发新呼叫。原状态："+run.Message);
         }
         Protect();
     }
-    private void Protect()=>ownership.Set(run is {Stage:not "Completed"},run?.Stage=="Running",run?.Calls.Where(c=>c.TaskId!=null).Select(c=>c.TaskId!)??[]);
+    private void Protect()=>ownership.Set(run is {Stage:not "Completed"},run?.Stage=="Running",run?.Calls.Where(c=>c.TaskId!=null).Select(c=>c.TaskId!)??[],run?.Plan.VehicleIds);
     private void Save()
     {
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
@@ -50,7 +51,7 @@ public sealed class FleetTestService : IsolatedBackgroundService, IFleetTestServ
         var now=DateTimeOffset.UtcNow;
         run=run! with {Stage="Hold",Message=message,UpdatedAt=now,Holds=[..run.Holds,new(now,message)]};
         ownership.Set(true,false,[]);Save();
-        logger.LogWarning("双车测试暂停。RunId={RunId}, Reason={Reason}, TaskIds={TaskIds}",
+        logger.LogWarning("多车测试暂停。RunId={RunId}, Reason={Reason}, TaskIds={TaskIds}",
             run.RunId,message,string.Join(',',run.Calls.Where(c=>c.TaskId!=null).Select(c=>c.TaskId)));
     }
     private static void Authorize(TrafficUserContext user)
@@ -62,21 +63,23 @@ public sealed class FleetTestService : IsolatedBackgroundService, IFleetTestServ
         Authorize(user);await mutex.WaitAsync(ct);
         try
         {
-            if(run?.Plan.RequestId==request.RequestId)
+            if(startRetirements.Any(r=>string.Equals(r.RequestId,request.RequestId,StringComparison.OrdinalIgnoreCase)))
+                throw new InvalidOperationException("该原申请已核对注销，禁止迟到或重放；请使用新的申请编号。");
+            if(run!=null&&string.Equals(run.Plan.RequestId,request.RequestId,StringComparison.OrdinalIgnoreCase))
             {
                 if(JsonSerializer.Serialize(run.Plan)!=JsonSerializer.Serialize(request))throw new ArgumentException("同一申请不能修改参数。");
                 return await port.ObserveAsync(run,ct);
             }
-            if(run is {Stage:not "Completed"})throw new InvalidOperationException("原双车测试未闭合，请核对原记录。");
+            if(run is {Stage:not "Completed"})throw new InvalidOperationException("原多车测试未闭合，请核对原记录。");
             if(!Guid.TryParseExact(request.RequestId,"N",out _)||!request.SiteConfirmed||
-                request.Scenario is not ("Staggered" or "Simultaneous" or "Handover")||request.VehicleIds is not {Length:2}||
-                request.VehicleIds.Any(string.IsNullOrWhiteSpace)||request.VehicleIds.Distinct(StringComparer.OrdinalIgnoreCase).Count()!=2||
+                request.Scenario is not ("Staggered" or "Simultaneous" or "Handover")||request.VehicleIds is not {Length:>=2 and <=1000}||
+                request.VehicleIds.Any(string.IsNullOrWhiteSpace)||request.VehicleIds.Distinct(StringComparer.OrdinalIgnoreCase).Count()!=request.VehicleIds.Length||
                 request.StationIds is not {Length:>=2 and <=1000}||request.StationIds.Any(string.IsNullOrWhiteSpace)||
                 request.StationIds.Distinct(StringComparer.OrdinalIgnoreCase).Count()!=request.StationIds.Length)
-                throw new ArgumentException("请选择两辆不同车辆、测试用例并确认现场。");
+                throw new ArgumentException("请选择至少两辆不同车辆、至少两个工位及测试用例，并确认现场。");
             if(Directory.Exists(Path.GetDirectoryName(Path.GetFullPath(path))))
                 foreach(var file in Directory.EnumerateFiles(Path.GetDirectoryName(Path.GetFullPath(path))!,Path.GetFileName(path)+".*.history"))
-                    if(JsonSerializer.Deserialize<FleetTestRun>(File.ReadAllText(file))?.Plan.RequestId==request.RequestId)
+                    if(string.Equals(JsonSerializer.Deserialize<FleetTestRun>(File.ReadAllText(file))?.Plan.RequestId,request.RequestId,StringComparison.OrdinalIgnoreCase))
                         throw new InvalidOperationException("原申请已归档，禁止重放。");
             var identity=await port.ValidateAsync(request,ct);
             if(run!=null)File.Copy(path,path+"."+run.RunId+".history",false);
@@ -131,7 +134,7 @@ public sealed class FleetTestService : IsolatedBackgroundService, IFleetTestServ
                 }
                 else throw new ArgumentException("未知操作。");
             }
-            logger.LogInformation("双车测试控制完成。RunId={RunId}, Action={Action}, Operator={Operator}, Reason={Reason}, Stage={Stage}",
+            logger.LogInformation("多车测试控制完成。RunId={RunId}, Action={Action}, Operator={Operator}, Reason={Reason}, Stage={Stage}",
                 run.RunId,action,user.WindowsIdentity,request.Reason,run.Stage);
             return await port.ObserveAsync(run,ct);
         }catch(Exception e){if(executing&&run is {Stage:not "Completed"})Hold("控制结果待核对："+e.Message);throw;}

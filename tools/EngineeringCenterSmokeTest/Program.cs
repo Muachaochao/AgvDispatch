@@ -99,6 +99,7 @@ var multiV = Version(multi); var multiR = EngineeringSimulator.Run(multiV, Calls
 Assert(multiR.Tasks.All(t => t.VehicleId == (int.Parse(t.StationId[4..]) % 2 == 1 ? "AGV-01" : "AGV-02")), "车辆不跨未授权车辆池");
 Assert(multiR.Reservations.Any(r => r.ResourceId == "DUMP-AREA-B"), "B倒料设备参与预约");
 RuntimeCompilerChecks.Run(Assert);
+StandbyAllocationChecks.Run(Assert);
 timer.Stop();
 await File.WriteAllTextAsync(Path.Combine(output, "verification.json"), JsonSerializer.Serialize(new { checks, elapsedSeconds = timer.Elapsed.TotalSeconds, stations = 300, vehicles = 5, tasks = report.Tasks.Count, report.PeakVehicles, report.DurationSeconds, baselineReport = report.Id, evidenceBoundary = report.EvidenceBoundary }, new JsonSerializerOptions { WriteIndented = true }));
 Console.WriteLine($"PASS {checks} assertions; 300 stations / 5 vehicles / {report.Tasks.Count} tasks; peak {report.PeakVehicles}; {timer.Elapsed.TotalSeconds:F2}s. Artifacts: {output}");

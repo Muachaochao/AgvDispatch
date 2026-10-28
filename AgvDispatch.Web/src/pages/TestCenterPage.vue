@@ -43,8 +43,8 @@ const tools = [
     <section class="test-stage" aria-labelledby="fleet-test-heading">
       <header>
         <div>
-          <h3 id="fleet-test-heading">双车多工位测试</h3>
-          <p>错峰、同时呼叫和前后交接测试保留原有查询、启动、停止、恢复及证据导出逻辑。</p>
+          <h3 id="fleet-test-heading">多车多工位测试</h3>
+          <p>从当前工程配置选择参与车辆和工位，验证错峰、同时呼叫、资源竞争和前后交接；查询、停止及恢复均沿用原运行记录。</p>
         </div>
         <button @click="router.push('/tasks')"><IconListDetails :size="15" />查看原任务</button>
       </header>

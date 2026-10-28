@@ -111,6 +111,8 @@ public static partial class EngineeringValidator
             if (!double.IsFinite(v.Battery) || !double.IsFinite(v.MinimumBattery) || v.Battery is < 0 or > 100 || v.MinimumBattery is < 0 or > 100)
                 Error("vehicles", v.Id, "battery", "电量和派车阈值必须在0–100之间。");
         }
+        foreach (var g in p.Vehicles.GroupBy(v => v.StartNode, StringComparer.OrdinalIgnoreCase).Where(g => g.Count() > 1))
+            Error("vehicles", g.First().Id, "startNode", $"初始停车节点 {g.Key} 被车辆 {string.Join('、', g.Select(v => v.Id))} 重复占用；模型不假定车辆已经调位。");
         foreach (var t in p.Templates)
             if (string.IsNullOrWhiteSpace(t.Capability) || new[] { t.PickupSeconds, t.DumpSeconds, t.ReturnSeconds }.Any(x => !double.IsFinite(x) || x <= 0 || x > 3600))
                 Error("templates", t.Id, "capability", "任务模板能力或模拟动作耗时无效。");
@@ -136,12 +138,11 @@ public static partial class EngineeringValidator
             if (resources.GetValueOrDefault(b.ResourceId)?.Kind != "Standby") Error("standbys", b.Id, "resourceId", "待机位必须绑定Standby类型资源。");
         }
         foreach (var g in p.Standbys.GroupBy(x => x.NodeId, StringComparer.OrdinalIgnoreCase).Where(g => g.Count() > 1))
-            Error("standbys", g.First().Id, "nodeId", "同一物理待机点重复配置；请用一个资源容量表达。");
-        foreach (var pool in p.Pools)
-        {
-            var capacity = p.Standbys.Where(b => b.PoolId == pool.Id).Select(b => b.ResourceId).Distinct().Sum(id => resources.GetValueOrDefault(id)?.Capacity ?? 0);
-            if (capacity < pool.VehicleIds.Count(id => vehicles.GetValueOrDefault(id)?.Enabled == true)) Error("pools", pool.Id, "vehicleIds", "待机位总容量小于已启用车辆数。");
-        }
+            Error("standbys", g.First().Id, "nodeId", "同一物理待机点重复配置；每个节点只允许一辆车，增加停车数量还需配置独立节点。");
+        foreach (var g in p.Vehicles.Select(v => new { Vehicle = v, Bay = p.Standbys.FirstOrDefault(b => b.NodeId.Equals(v.StartNode, StringComparison.OrdinalIgnoreCase)) })
+                     .Where(x => x.Bay != null).GroupBy(x => x.Bay!.ResourceId, StringComparer.OrdinalIgnoreCase))
+            if (resources.TryGetValue(g.Key, out var resource) && g.Count() > resource.Capacity)
+                Error("resources", resource.Id, "capacity", $"车辆 {string.Join('、', g.Select(x => x.Vehicle.Id))} 初始停车已超过共享待机容量 {resource.Capacity}；不能假定未派车的车辆已离开。");
         var graph = new EngineeringGraph(p);
         foreach (var s in p.Stations.Where(s => s.Enabled))
         {
@@ -160,6 +161,18 @@ public static partial class EngineeringValidator
         }
         foreach (var g in p.Stations.Where(s => s.Enabled).GroupBy(s => s.PickupNode).Where(g => g.Count() > 1))
             Warn("stations", g.First().Id, "pickupNode", "多个工位共用取放点；模拟按取放点互斥，现场仍需核定物理容量。");
+        // Validate the same physical-node / shared-resource matching that the model uses.
+        // Do not invoke the matcher against malformed graph, vehicle, pool or resource references.
+        if (!issues.Any(i => i.Severity == "Error" && i.Section is "nodes" or "edges" or "resources" or "vehicles" or "pools" or "standbys"))
+        {
+            var allocation = EngineeringStandbyAllocator.Allocate(p, graph, new(StringComparer.OrdinalIgnoreCase), new(StringComparer.OrdinalIgnoreCase));
+            foreach (var vehicle in p.Vehicles.Where(v => v.Enabled && p.Pools.Any(pool => pool.VehicleIds.Contains(v.Id, StringComparer.OrdinalIgnoreCase))))
+                if (allocation.Unassigned.TryGetValue(vehicle.Id, out var reason))
+                {
+                    var pool = p.Pools.First(pool => pool.VehicleIds.Contains(vehicle.Id, StringComparer.OrdinalIgnoreCase));
+                    Error("pools", pool.Id, "vehicleIds", $"待机位容量或授权路线不足，车辆 {vehicle.Id} 未分配：{reason}");
+                }
+        }
         return new(issues);
     }
 }

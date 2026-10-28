@@ -6,6 +6,7 @@ internal sealed record WebLocalLaunchMode(string NavigationVehicle, string PlcCy
     public string BusinessVehicle { get; init; } = "";
     public bool ForkTest { get; init; }
     public string[] FleetVehicles { get; init; }=[];
+    public int FleetMaxConcurrentTasks { get; init; }
     public bool IsBusiness => BusinessVehicle.Length > 0 || FleetVehicles.Length>0;
     public bool IsPlcCycle => PlcCycleVehicle.Length > 0;
     public string Page => IsBusiness ? "/#/tasks" : IsPlcCycle ? "/#/plc-cycle-test" : NavigationVehicle.Length > 0 ? "/#/navigation-test" : "/";
@@ -33,10 +34,18 @@ internal sealed record WebLocalLaunchMode(string NavigationVehicle, string PlcCy
         string[] fleet=[];
         if(fleetIndex>=0)
         {
-            if(args.Count(a=>a=="--fleet-test-vehicles")!=1||fleetIndex+1>=args.Length)throw new ArgumentException("Specify exactly two fleet vehicles.");
+            if(args.Count(a=>a=="--fleet-test-vehicles")!=1||fleetIndex+1>=args.Length)throw new ArgumentException("Specify the configured fleet vehicle list.");
             fleet=args[fleetIndex+1].Split(',');
-            if(fleet.Length!=2||fleet.Distinct(StringComparer.OrdinalIgnoreCase).Count()!=2||fleet.Any(v=>v.Length is <1 or >32||v.Any(c=>!char.IsAsciiLetterOrDigit(c)&&c is not '-' and not '_')))
-                throw new ArgumentException("Specify two different valid fleet vehicle IDs.");
+            if(fleet.Length is <2 or >1000||fleet.Distinct(StringComparer.OrdinalIgnoreCase).Count()!=fleet.Length||fleet.Any(v=>v.Length is <1 or >32||v.Any(c=>!char.IsAsciiLetterOrDigit(c)&&c is not '-' and not '_')))
+                throw new ArgumentException("Specify at least two different valid fleet vehicle IDs.");
+        }
+        var fleetConcurrency=fleet.Length;
+        var concurrencyIndex=Array.IndexOf(args,"--fleet-test-max-concurrent");
+        if(concurrencyIndex>=0)
+        {
+            if(fleet.Length==0||args.Count(a=>a=="--fleet-test-max-concurrent")!=1||concurrencyIndex+1>=args.Length||
+                !int.TryParse(args[concurrencyIndex+1],out fleetConcurrency)||fleetConcurrency<1||fleetConcurrency>fleet.Length)
+                throw new ArgumentException("Fleet concurrency must be between 1 and the configured fleet size.");
         }
         var cycleVehicle = Read("--plc-cycle-test-vehicle");
         var cycleStation = Read("--plc-cycle-test-station");
@@ -47,7 +56,7 @@ internal sealed record WebLocalLaunchMode(string NavigationVehicle, string PlcCy
         if (business.Length > 0 && (navigation.Length > 0 || cycleVehicle.Length > 0))
             throw new ArgumentException("Business execution cannot share an isolated test launch.");
         if(fleet.Length>0&&(business.Length>0||navigation.Length>0||cycleVehicle.Length>0))throw new ArgumentException("Fleet testing requires an exclusive launch mode.");
-        return new(cycleVehicle.Length > 0 ? cycleVehicle : navigation, cycleVehicle, cycleStation) { BusinessVehicle = business, ForkTest=forklift.Length>0,FleetVehicles=fleet };
+        return new(cycleVehicle.Length > 0 ? cycleVehicle : navigation, cycleVehicle, cycleStation) { BusinessVehicle = business, ForkTest=forklift.Length>0,FleetVehicles=fleet,FleetMaxConcurrentTasks=fleetConcurrency };
     }
 
     public string[] ServiceArguments(string pipe) =>
@@ -57,10 +66,9 @@ internal sealed record WebLocalLaunchMode(string NavigationVehicle, string PlcCy
         $"--TaskCreation:Enabled={IsBusiness}", $"--Dispatching:Enabled={IsBusiness}", $"--AgvCommandOutbox:Enabled={IsBusiness}",
         $"--DispatchTaskSteps:Enabled={IsBusiness}", $"--HandshakeExecution:Enabled={IsBusiness}",
         "--TaskCreation:AutomaticCreationEnabled=false",
-        $"--FleetTest:Enabled={FleetVehicles.Length==2}",
-        $"--FleetTest:VehicleIds:0={FleetVehicles.ElementAtOrDefault(0)??""}",
-        $"--FleetTest:VehicleIds:1={FleetVehicles.ElementAtOrDefault(1)??""}",
-        $"--Dispatching:MaxConcurrentTasks={(FleetVehicles.Length==2?2:1)}",
+        $"--FleetTest:Enabled={FleetVehicles.Length>=2}",
+        ..(FleetVehicles.Length>0?FleetVehicles:["",""]).Select((id,index)=>$"--FleetTest:VehicleIds:{index}={id}"),
+        $"--Dispatching:MaxConcurrentTasks={(FleetVehicles.Length>0?FleetMaxConcurrentTasks:1)}",
         $"--NavigationTest:Enabled={(NavigationVehicle.Length > 0 ? "true" : "false")}",
         $"--NavigationTest:VehicleId={(IsBusiness ? BusinessVehicle : NavigationVehicle)}",
         $"--NavigationTest:ForkEnabled={ForkTest}",

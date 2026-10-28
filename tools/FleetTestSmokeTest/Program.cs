@@ -9,9 +9,9 @@ var count=0;
 void Check(bool condition,string text){if(!condition)throw new Exception(text);count++;}
 async Task Reject(Func<Task> operation,string text){try{await operation();}catch(InvalidOperationException){count++;return;}catch(ArgumentException){count++;return;}throw new Exception(text);}
 var user=TrafficUserContext.LocalOperation("fleet-test");
-FleetTestStart Plan(string scenario)=>new(Guid.NewGuid().ToString("N"),scenario,["AGV-01","AGV-02"],true);
-(FleetTestService Service,Port Port,FleetTestOwnership Owner,string Path,RecordingLogger Logger) Fixture(bool enabled=true)
-{var p=new Port();var o=new FleetTestOwnership(new(){Enabled=enabled,VehicleIds=["AGV-01","AGV-02"]});var path=Path.Combine(root,Guid.NewGuid().ToString("N")+".json");var logger=new RecordingLogger();return(new(p,o,path,logger),p,o,path,logger);}
+FleetTestStart Plan(string scenario)=>new(Guid.NewGuid().ToString("N"),scenario,["AGV-01","AGV-02"],true){StationIds=["CNC-001","CNC-002"]};
+(FleetTestService Service,Port Port,FleetTestOwnership Owner,string Path,RecordingLogger Logger) Fixture(bool enabled=true,string[]? vehicleIds=null)
+{var p=new Port();var o=new FleetTestOwnership(new(){Enabled=enabled,VehicleIds=vehicleIds??["AGV-01","AGV-02"]});var path=Path.Combine(root,Guid.NewGuid().ToString("N")+".json");var logger=new RecordingLogger();return(new(p,o,path,logger),p,o,path,logger);}
 foreach(var scenario in new[]{"Staggered","Simultaneous","Handover"})
 {
  var f=Fixture();var plan=Plan(scenario);await f.Service.StartAsync(user,plan,default);await f.Service.StartAsync(user,plan,default);
@@ -106,12 +106,88 @@ var mode=WebLocalLaunchMode.Parse(["--fleet-test-vehicles","AGV-01,AGV-02"]);
 Check(mode.IsBusiness&&mode.ServiceArguments("test").Contains("--Dispatching:MaxConcurrentTasks=2")&&mode.ServiceArguments("test").Contains("--TaskCreation:AutomaticCreationEnabled=false"),"专用双车启动且无独立自动建单器");
 await Reject(()=>Task.FromResult(WebLocalLaunchMode.Parse(["--fleet-test-vehicles","AGV-01,AGV-01"])),"同车不能冒充双车");
 await Reject(()=>Task.FromResult(WebLocalLaunchMode.Parse(["--fleet-test-vehicles","AGV-01,AGV-02","--business-run-vehicle","AGV-01"])),"两种运行模式互斥");
-Console.WriteLine($"PASS {count} 双车用例、身份、断连、停止、重启及幂等检查；无现场通信。");
+// Arbitrary identifiers and fleet sizes exercise the same persistent state machine.
+foreach(var size in new[]{3,5,7})
+{
+ var ids=Enumerable.Range(1,size+1).Select(i=>"MOVER-"+i).ToArray();
+ var f=Fixture(vehicleIds:ids);
+ var plan=new FleetTestStart(Guid.NewGuid().ToString("N"),"Simultaneous",ids[..size],true)
+ {StationIds=Enumerable.Range(1,size*3).Select(i=>"CELL-"+i).ToArray()};
+ await f.Service.StartAsync(user,plan,default);await f.Service.TickAsync(default);await f.Service.TickAsync(default);
+ var state=(await f.Service.ReadAsync(default)).Current!;
+ Check(f.Port.Creates==size*3&&state.Calls.All(c=>c.TaskId!=null),$"{size}车非固定编号工位各建一单");
+ Check(plan.VehicleIds.All(id=>f.Owner.Allows(state.Calls[0].TaskId!,id))&&!f.Owner.Allows(state.Calls[0].TaskId!,ids[^1]),"配置车辆清单其余车辆不能领取本轮任务");
+ f.Port.Closed=true;
+ for(var i=0;i<f.Port.Details.Count;i++)f.Port.Details[i]=f.Port.Details[i] with {Task=f.Port.Details[i].Task with {Stage=DispatchTaskStage.Completed}};
+ await f.Service.TickAsync(default);
+ Check((await f.Service.ReadAsync(default)).Current!.Stage=="Completed",$"{size}车任务及握手闭合后完成");
+ await f.Service.StartAsync(user,plan,default);
+ Check(f.Port.Creates==size*3&&f.Port.Starts==1,"多车完成记录幂等不重放");
+}
+var configuredVehicles=new[]{"CART-A","CART-B","CART-C","CART-D"};
+var selected=new FleetTestStart(Guid.NewGuid().ToString("N"),"Simultaneous",["CART-A","CART-C"],true){StationIds=["LINE-X","LINE-Z"]};
+var pools=new Dictionary<string,string[]>(StringComparer.OrdinalIgnoreCase){["LINE-X"]=["CART-A","CART-B"],["LINE-Z"]=["CART-C","CART-D"]};
+Check(FleetTestPort.SelectionError(selected,configuredVehicles,pools)==null,"多个车辆池允许本轮选取各池子集");
+Check(FleetTestPort.SelectionError(selected with {VehicleIds=["CART-A","OUTSIDE"]},configuredVehicles,pools)?.Contains("超出")==true,"拒绝启动配置外车辆");
+Check(FleetTestPort.SelectionError(selected with {VehicleIds=["CART-A","CART-B"]},configuredVehicles,pools)?.Contains("LINE-Z")==true,"列出无可服务车辆的具体工位");
+Check(FleetTestPort.SelectionError(selected with {VehicleIds=["CART-A","CART-C","CART-D"]},configuredVehicles,pools)==null,"一站允许多辆候选车");
+Check(FleetTestPort.SelectionError(selected with {VehicleIds=["CART-A","CART-C","CART-B"],StationIds=["LINE-Z"]},configuredVehicles,pools)?.Contains("CART-A")==true,"拒绝不能服务任一所选工位的参与车辆");
+foreach(var max in new[]{1,2,4})Check(new FleetTestOptions{Enabled=true,VehicleIds=configuredVehicles}.ConfigurationError(max)==null,"并发上限按配置允许，不固定为车数或2");
+Check(new FleetTestOptions{Enabled=true,VehicleIds=configuredVehicles}.ConfigurationError(5)!=null,"拒绝超过配置车辆数的并发");
+var genericMode=WebLocalLaunchMode.Parse(["--fleet-test-vehicles",string.Join(',',configuredVehicles),"--fleet-test-max-concurrent","3"]);
+Check(genericMode.FleetVehicles.Length==4&&genericMode.FleetMaxConcurrentTasks==3&&genericMode.ServiceArguments("test").Contains("--FleetTest:VehicleIds:3=CART-D")&&genericMode.ServiceArguments("test").Contains("--Dispatching:MaxConcurrentTasks=3"),"启动参数包含全部车辆并支持独立并发配置");
+Check(WebLocalLaunchMode.Parse(["--fleet-test-vehicles",string.Join(',',configuredVehicles)]).FleetMaxConcurrentTasks==4,"未指定并发时默认配置车辆数");
+foreach(var value in new[]{"0","5","text"})await Reject(()=>Task.FromResult(WebLocalLaunchMode.Parse(["--fleet-test-vehicles",string.Join(',',configuredVehicles),"--fleet-test-max-concurrent",value])),"拒绝无效并发参数");
+await Reject(()=>Task.FromResult(WebLocalLaunchMode.Parse(["--fleet-test-max-concurrent","2"])),"并发参数不能脱离多车启动模式");
+Check(new FleetTestStart("","",[],false).StationIds.Length==0,"协议不再自动注入固定工位编号");
+Check(FleetTestPort.SelectionError(selected with {VehicleIds=["cart-a","cart-c"],StationIds=["line-x","line-z"]},configuredVehicles,pools)==null,"车辆池和参与车辆比较忽略编号大小写");
+var retirement=Fixture();var rejectedPlan=Plan("Simultaneous");retirement.Port.FailValidate=true;
+await Reject(()=>retirement.Service.StartAsync(user,rejectedPlan,default),"启动校验失败不得创建原运行");
+Check((await retirement.Service.ReadAsync(default)).Current==null&&retirement.Port.Starts==0,"拒绝申请无运行、PLC启动或呼叫");
+var retireRequest=new FleetTestStartRetirement(rejectedPlan.RequestId,"已查询原申请并核对现场无设备动作",true);
+var receipt=await retirement.Service.RetireStartAsync(user,retireRequest,default);
+Check(receipt.Retired&&receipt.RequestId==rejectedPlan.RequestId&&File.Exists(retirement.Path+".retired"),"未受理原申请保存明确注销回执");
+var repeatedReceipt=await retirement.Service.RetireStartAsync(user,retireRequest,default);
+Check(repeatedReceipt.RetiredAt==receipt.RetiredAt,"重复注销幂等保留原回执时间");
+retirement.Port.FailValidate=false;
+await Reject(()=>retirement.Service.StartAsync(user,rejectedPlan,default),"注销后迟到启动必须拒绝");
+await Reject(()=>retirement.Service.StartAsync(user,rejectedPlan with {RequestId=rejectedPlan.RequestId.ToUpperInvariant()},default),"编号大小写不能绕过注销墓碑");
+var retirementRestart=new FleetTestService(retirement.Port,new FleetTestOwnership(new(){Enabled=true}),retirement.Path);
+await Reject(()=>retirementRestart.StartAsync(user,rejectedPlan,default),"重启后注销请求仍拒绝");
+Check(retirement.Port.Starts==0&&retirement.Port.Creates==0&&!retirement.Owner.Active,"注销不会发送动作或产生原占用");
+var invalidRetirement=Fixture();
+foreach(var badRetirement in new[]{retireRequest with {SiteConfirmed=false},retireRequest with {Reason="短"},retireRequest with {RequestId="invalid"},retireRequest with {Reason=new string('x',1001)}})
+ await Reject(()=>invalidRetirement.Service.RetireStartAsync(user,badRetirement,default),"未现场确认或依据无效不能注销");
+try{await invalidRetirement.Service.RetireStartAsync(new("viewer","viewer",TrafficPermission.View),retireRequest,default);throw new Exception("只读用户不能注销");}
+catch(UnauthorizedAccessException){count++;}
+Check(!File.Exists(invalidRetirement.Path+".retired"),"不合法注销不写入持久化文件");
+var accepted=Fixture();var acceptedPlan=Plan("Simultaneous");await accepted.Service.StartAsync(user,acceptedPlan,default);
+var acceptedRun=(await accepted.Service.ReadAsync(default)).Current!;
+await Reject(()=>accepted.Service.RetireStartAsync(user,new(acceptedPlan.RequestId,"已接受申请必须查询原运行而不能注销",true),default),"已接受当前运行不得注销");
+Check((await accepted.Service.ReadAsync(default)).Current==acceptedRun&&accepted.Owner.Active&&!File.Exists(accepted.Path+".retired"),"退休冲突不改当前运行或占用");
+await accepted.Service.TickAsync(default);accepted.Port.Closed=true;
+for(var i=0;i<accepted.Port.Details.Count;i++)accepted.Port.Details[i]=accepted.Port.Details[i] with {Task=accepted.Port.Details[i].Task with {Stage=DispatchTaskStage.Completed}};
+await accepted.Service.TickAsync(default);await accepted.Service.StartAsync(user,Plan("Staggered"),default);
+await Reject(()=>accepted.Service.RetireStartAsync(user,new(acceptedPlan.RequestId,"原接受申请已经归档仍不得注销重放",true),default),"历史原运行不得注销");
+var racing=Fixture();var racingPlan=Plan("Simultaneous");
+racing.Port.ValidationStarted=new(TaskCreationOptions.RunContinuationsAsynchronously);racing.Port.ValidationGate=new(TaskCreationOptions.RunContinuationsAsynchronously);
+var startInFlight=racing.Service.StartAsync(user,racingPlan,default);
+await racing.Port.ValidationStarted.Task;
+var racingRetire=racing.Service.RetireStartAsync(user,new(racingPlan.RequestId,"核对时原启动仍在执行应等待明确结果",true),default);
+Check(!racingRetire.IsCompleted,"注销等待原启动排他锁，不能边校验边清除");
+racing.Port.ValidationGate.SetResult();await startInFlight;
+await Reject(()=>racingRetire,"在途启动先受理时注销必须拒绝");
+Check(racing.Port.Starts==1&&!File.Exists(racing.Path+".retired"),"并发控制不产生接受与注销的矛盾回执");
+var receiptJson=System.Text.Json.JsonSerializer.Serialize(receipt,new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
+Check(receiptJson.Contains("\"requestId\"")&&receiptJson.Contains("\"retired\":true"),"Web回执字段符合前端原申请清除契约");
+Console.WriteLine($"PASS {count} 多车多工位、车辆池范围、身份、断连、停止、重启及幂等检查；无现场通信。");
 
 sealed class Port:IFleetTestPort
 {
- public int Starts,Creates;public bool Bad,FailCall,Closed;public List<string> Calls=[];public List<TaskCenterDetail> Details=[];
- public Task<(string,string,string)> ValidateAsync(FleetTestStart p,CancellationToken ct)=>Task.FromResult(("M","V","R"));
+ public int Starts,Creates;public bool Bad,FailCall,Closed,FailValidate;public List<string> Calls=[];public List<TaskCenterDetail> Details=[];
+ public TaskCompletionSource? ValidationStarted,ValidationGate;
+ public async Task<(string,string,string)> ValidateAsync(FleetTestStart p,CancellationToken ct)
+ {ValidationStarted?.TrySetResult();if(ValidationGate!=null)await ValidationGate.Task.WaitAsync(ct);if(FailValidate)throw new InvalidOperationException("configuration rejected before acceptance");return("M","V","R");}
  public Task<FleetTestStatus> ObserveAsync(FleetTestRun? run,CancellationToken ct)=>Task.FromResult(new FleetTestStatus(true,["AGV-01","AGV-02"],run,[],Details.ToArray(),DateTimeOffset.UtcNow));
  public Task LabAsync(FleetTestRun r,string action,string[] stations,CancellationToken ct)
  {if(action=="start")Starts++;if(action=="call"){if(FailCall)throw new InvalidOperationException("timeout after write");Calls.AddRange(stations);}return Task.CompletedTask;}

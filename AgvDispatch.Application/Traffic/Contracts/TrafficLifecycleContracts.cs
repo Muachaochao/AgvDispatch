@@ -49,4 +49,15 @@ public enum TrafficWaitingSort { LongestWait = 0, PriorityThenWait = 10 }
 public sealed record TrafficWaitingQuery(string? BlockingResourceId = null, int? MinimumPriority = null,
     TrafficWaitingSort Sort = TrafficWaitingSort.LongestWait, int PageNumber = 1, int PageSize = 50);
 public sealed record TrafficWaitingPage(DateTimeOffset CapturedAt, int TotalWaiting, int TotalMatched,
-    int PageNumber, int PageSize, IReadOnlyList<TrafficRequestSnapshot> Items, IReadOnlyList<string> BlockingResources);
+    int PageNumber, int PageSize, IReadOnlyList<TrafficRequestSnapshot> Items, IReadOnlyList<string> BlockingResources)
+{
+    // Computed from the complete read snapshot, independently of filtering and pagination.
+    public IReadOnlyList<TrafficCycleRisk> CycleRisks { get; init; } = [];
+    public string CycleAnalysisMessage { get; init; } = "仅观察持久化任务等待和资源占用，不证明物理死锁，也不授予释放许可。";
+}
+public sealed record TrafficCycleRiskLink(string WaitingTaskId, string WaitingStepId, string WaitingVehicleId,
+    string HoldingTaskId, string HoldingStepId, string HoldingVehicleId, string ResourceId,
+    bool HeartbeatExpired, string? MapId, string? MapVersionId);
+public sealed record TrafficCycleRisk(string CycleId, IReadOnlyList<string> TaskIds,
+    IReadOnlyList<string> VehicleIds, IReadOnlyList<string> ResourceIds,
+    IReadOnlyList<TrafficCycleRiskLink> Links, string Message);

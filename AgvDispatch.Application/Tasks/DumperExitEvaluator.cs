@@ -211,8 +211,6 @@ public static class DumperExitEvaluator
         var finalNode=nodes[orderedNodeIds[^1]];
         var finalPoint=new MapPoint2D(finalNode.X,finalNode.Y);
         var endpointConfirmed=endpointArrivalConfirmed&&Distance(point,finalPoint,finalPoint)<=maximumRouteDeviationMeters+Epsilon;
-        if(endpointConfirmed)
-            candidates.Add((segments.Count,1));
         for (var i = 0; i < segments.Count; i++)
         {
             var (a, b, curveBounds) = segments[i];
@@ -233,6 +231,11 @@ public static class DumperExitEvaluator
                 perpendicularX * perpendicularX - perpendicularY * perpendicularY) / lengthSquared);
             candidates.Add((i, Math.Clamp(projection - halfInterval, 0, 1)));
         }
+        // The confirmed endpoint follows the last edge in frozen-route order. Keep
+        // all earlier geometric matches: arrival cannot erase a nonadjacent overlap
+        // or prove that an earlier possible position has passed its final area use.
+        if(endpointConfirmed)
+            candidates.Add((segments.Count,1));
         if (candidates.Count == 0) return Reject("当前定位偏离原冻结返程，无法确定后续路径。");
         if (candidates.Count > 2 || candidates.Count == 2 && candidates[1].Index != candidates[0].Index + 1)
             return Reject("定位同时对应冻结返程的多个非相邻位置，路径进度有歧义。");

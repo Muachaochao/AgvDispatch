@@ -1,5 +1,6 @@
 ﻿param([string]$OutputDirectory='', [ValidateRange(1024,65535)][int]$WebPort=5199)
 $ErrorActionPreference='Stop'
+. (Join-Path $PSScriptRoot 'FleetLaunchConfiguration.ps1')
 $bundleServiceConfigFiles=@($env:AGV_BUNDLE_SERVICE_CONFIG_FILE -split [IO.Path]::PathSeparator | Where-Object { $_ })
 $bundleRequestedServiceSettings=$env:AGV_BUNDLE_SERVICE_SETTINGS_FILE
 $bundleProject=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -154,10 +155,8 @@ if "%~2"=="" (
 "%~dp0Web\host\AgvDispatch.WebHost.exe" --launch-local --bundle-root "%~dp0." --plc-cycle-test-vehicle "%~1" --plc-cycle-test-station "%~2"
 if errorlevel 1 pause
 '@ | Set-Content -LiteralPath (Join-Path $bundleOutput 'Start-Plc-Cycle-Test.cmd') -Encoding ascii
-@'
-@echo off
-call "%~dp0Start-Latest-Web.cmd" --fleet-test-vehicles AGV-01,AGV-03 %*
-'@ | Set-Content -LiteralPath (Join-Path $bundleOutput 'Start-Fleet-Test.cmd') -Encoding ascii
+$bundleFleetText=New-FleetLaunchEntryText -Selection ([pscustomobject]@{VehicleIds=@();MaxConcurrentTasks=0}) -LauncherEntryName 'Start-Latest-Web.cmd' -EntryName 'Start-Fleet-Test.cmd'
+[IO.File]::WriteAllText((Join-Path $bundleOutput 'Start-Fleet-Test.cmd'),$bundleFleetText,[Text.UTF8Encoding]::new($false))
 $bundleFiles=@(Get-ChildItem -LiteralPath $bundleOutput -File -Recurse | ForEach-Object {@{path=[IO.Path]::GetRelativePath($bundleOutput,$_.FullName);sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant();bytes=$_.Length}})
 @{schema='agv-commissioning-release';version=1;releaseId=$bundleId;createdAt=(Get-Date).ToString('o');runtime='win-x64 self-contained';pipeName=$bundlePipe;port=$WebPort;files=$bundleFiles;siteConfigurationImported=$bundleSiteConfigurationImported;deviceExecutionEnabled=$false} | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $bundleOutput 'release-manifest.json') -Encoding utf8
 Write-Output "Candidate=$bundleOutput"
