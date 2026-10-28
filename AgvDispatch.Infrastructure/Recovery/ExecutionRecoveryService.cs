@@ -102,7 +102,7 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
             ticket.Evidence = observation.Evidence;
             if (!ticket.Verified)
             {
-                ticket.Reason = observation.AutoSafe ? "已核对：任务尚未开始，且不存在发送记录或占用。" : observation.Reason;
+                ticket.Reason = observation.AutoSafe ? "已核对：原任务已结束或无需执行，且不存在发送记录和路权占用。" : observation.Reason;
                 if (observation.AutoSafe)
                 {
                     ticket.Verified = true;
@@ -423,7 +423,13 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
             catch (Exception e) { hard = "厂家任务查询失败：" + e.Message; }
         }
-        var unstarted = task != null && task.Stage is 0 or 10 && task.VehicleId == null && commands.Count == 0 && leases.Count == 0 &&
+        // FleetTest standby navigation is a direct AGV transport task rather than a
+        // DispatchTask. Once its custom lease has been reconciled and released, the
+        // remaining BootHold ticket is verified as a closed no-resource intent. Other
+        // orphan task IDs remain hard-blocked.
+        var releasedFleetStandby=task==null&&commands.Count==0&&leases.Count==0&&
+            ticket.TaskId.StartsWith("FLEET-STANDBY-",StringComparison.OrdinalIgnoreCase);
+        var unstarted = releasedFleetStandby || task != null && task.Stage is 0 or 10 && task.VehicleId == null && commands.Count == 0 && leases.Count == 0 &&
                         step?.StepType == (int)DispatchTaskStepType.GoToPickup && (step.Status == (int)DispatchTaskStepStatus.Ready || step.Status == (int)DispatchTaskStepStatus.Pending) &&
                         !(await database.Queryable<ExecutionEvidenceEntity>().Where(e => e.TaskId == ticket.TaskId && (e.Kind == "PlcWriteIntent" || e.Kind == "AgvSendIntent")).AnyAsync(ct));
         var identity = await ObserveIdentityAsync(task, step, command, unstarted, ct);
