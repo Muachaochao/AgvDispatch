@@ -74,7 +74,11 @@ public sealed class TrafficWaitingBayDepartureInspector(ISqlSugarClient database
         if(step is null||step.StepType!=(int)DispatchTaskStepType.EnterDumpingPosition)
             throw new InvalidDataException("须选择原进入倒料位运输步骤，送到等待位或返程不是离位证据。");
         var route=await contextReader.ReadGeometryContextAsync(query.StepId,ct);
-        var waiting=Resolve(route.Context.Map,configuration.WaitingSite);var dumping=Resolve(route.Context.Map,configuration.DumpingSite);
+        var selected=await database.Queryable<TaskWaitingBayEntity>().Where(b=>b.TaskId==step.TaskId).FirstAsync(ct);
+        if(selected is not null && (selected.VehicleId!=route.Context.VehicleId || selected.MapId!=route.Context.MapId ||
+            selected.MapVersionId!=route.Context.MapVersionId || selected.ResourceId!=query.ResourceId))
+            throw new InvalidDataException("原任务候车位绑定与地图、车辆或所查资源不符。");
+        var waiting=Resolve(route.Context.Map,selected?.WaitingSite??configuration.WaitingSite);var dumping=Resolve(route.Context.Map,configuration.DumpingSite);
         var resource=route.Context.Map.Resources.Where(r=>r.Id==query.ResourceId).ToArray();
         if(resource.Length!=1||resource[0].Capacity!=1||waiting.Id==dumping.Id||
             !waiting.ResourceIds.Contains(query.ResourceId,StringComparer.OrdinalIgnoreCase)||dumping.ResourceIds.Contains(query.ResourceId,StringComparer.OrdinalIgnoreCase))

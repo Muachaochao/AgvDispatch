@@ -20,7 +20,7 @@ public sealed class TaskParameterRuntime(DispatchOrchestratorOptions dispatch, D
         dispatch.StationPickupSites.OrderBy(pair => pair.Key).Select(pair => new TaskPickupParameter(pair.Key, pair.Value)).ToArray(),
         TransportSteps.Select(type => dispatch.GetAction(type) is { } action
             ? new TaskActionParameter(type, action.Operation, action.JackHeight, action.Recognize, action.UsePgv, action.UseDownPgv)
-            : new TaskActionParameter(type, "", null, null, null, null)).ToArray()) { StepTimeouts = _stepTimeouts.ToArray() };
+            : new TaskActionParameter(type, "", null, null, null, null)).ToArray()) { StepTimeouts = _stepTimeouts.ToArray(), WaitingSites = dispatch.DumperWaitingSites.ToArray() };
     public static readonly DispatchTaskStepType[] TransportSteps = [DispatchTaskStepType.GoToPickup, DispatchTaskStepType.DeliverFullBoxToDumper,
         DispatchTaskStepType.EnterDumpingPosition, DispatchTaskStepType.ReturnEmptyBox];
 
@@ -42,6 +42,14 @@ public sealed class TaskParameterRuntime(DispatchOrchestratorOptions dispatch, D
                 throw new ArgumentException($"{name}不能为空、带前后空格或控制字符，最长 {length} 字符。");
         }
         Id(configuration.DumperStationId, 32, "倒料 PLC 工位"); Id(configuration.WaitingSite, 128, "倒料等待站点"); Id(configuration.DumpingSite, 128, "倒料站点");
+        if (configuration.WaitingSites is null || configuration.WaitingSites.Count > 1000 ||
+            configuration.WaitingSites.Distinct(StringComparer.OrdinalIgnoreCase).Count() != configuration.WaitingSites.Count)
+            throw new ArgumentException("候车位列表不能重复或超过1000项。");
+        foreach (var site in configuration.WaitingSites) Id(site, 128, "候车站点");
+        if (configuration.WaitingSites.Count > 0 && configuration.WaitingSites[0] != configuration.WaitingSite)
+            throw new ArgumentException("默认候车位必须是候车位列表第一项。");
+        if (configuration.WaitingSites.Append(configuration.WaitingSite).Any(s => s.Equals(configuration.DumpingSite, StringComparison.OrdinalIgnoreCase)))
+            throw new ArgumentException("候车位不能与倒料点重叠。");
         foreach (var pickup in configuration.Pickups)
         {
             if (pickup is null) throw new ArgumentException("取货工位项不能为空。");
@@ -91,6 +99,8 @@ public sealed class TaskParameterRuntime(DispatchOrchestratorOptions dispatch, D
         target.StationVehiclePools = configuration.Pickups.Where(p => p.AllowedVehicleIds is not null)
             .ToDictionary(p => p.StationId, p => p.AllowedVehicleIds!.ToArray(), StringComparer.OrdinalIgnoreCase);
         target.DumperWaitingSite = configuration.WaitingSite; target.DumperDumpingSite = configuration.DumpingSite;
+        target.DumperWaitingSites = configuration.WaitingSites.ToArray();
+        target.StandbySites = configuration.Standbys.Select(s => s.Site).ToArray();
         creationTarget.DumperStationId = configuration.DumperStationId;
     }
     public void Apply(TaskParameterDocument document)

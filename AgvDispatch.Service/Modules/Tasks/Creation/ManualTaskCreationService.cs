@@ -68,11 +68,11 @@ public sealed partial class ManualTaskCreationService(IManualTaskCreationReposit
                 string.Join("；", vehicles.Select(vehicle => vehicle.VehicleId + "：" + vehicle.Explanation)) : null;
         return new(map?.MapId, map?.VersionId, reason is null, reason ?? "使用当前运行地图创建取满箱、倒料、返空箱九步任务。",
             creation.DumperStationId, dispatch.GetDumperWaitingSite() ?? "", dispatch.DumperDumpingSite, choices, vehicles)
-        { ParameterRevision = parameters.Revision, RequiresExplicitVehicle = robokitMap is not null, MapRuntimeId=map?.RuntimeId??"", Standbys = configured.Standbys };
+        { ParameterRevision = parameters.Revision, RequiresExplicitVehicle = robokitMap is not null, MapRuntimeId=map?.RuntimeId??"", Standbys = configured.Standbys, WaitingSites = dispatch.GetDumperWaitingSites() };
     }
 
     private IReadOnlySet<string> PickupExcludedNodes(ActiveMapRuntimeSnapshot? map) => map is null ? new HashSet<string>() :
-        new[] { dispatch.GetDumperWaitingSite(), dispatch.DumperDumpingSite }.Where(site => !string.IsNullOrWhiteSpace(site))
+        dispatch.GetDumperWaitingSites().Append(dispatch.DumperDumpingSite).Concat(dispatch.StandbySites).Where(site => !string.IsNullOrWhiteSpace(site))
             .Select(site => MapRouteSiteMapper.ResolveLogicalNodeId(map.Definition, site!)).ToHashSet(StringComparer.OrdinalIgnoreCase);
 
     private static bool CanRoute(ActiveMapRuntimeSnapshot? map, string? from, string? to, bool requireTransport = false, IReadOnlySet<string>? forbiddenNodes = null)

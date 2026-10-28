@@ -22,7 +22,7 @@ export interface TaskDetail { cancellation?:{requestId:string;reason:string;requ
   resources?: {resourceId:string;vehicleId:string;expiresAt:string;heartbeatExpired:boolean}[];
   plcConditions: { stationId: string; variableName: string; currentValue: boolean | null; expectedValue: boolean; quality: string; satisfied: boolean }[] }
 export interface CreationOptions { available: boolean; explanation: string; mapId: string; mapVersionId: string; parameterRevision: string;
-  waitingSite?: string; dumpingSite?: string;
+  waitingSite?: string; waitingSites?: string[]; dumpingSite?: string;
     standbys?: {id:string;site:string;vehiclePoolId:string;allowedVehicleIds:string[];priority:number}[];
     stations: { stationId: string; pickupSite: string; available: boolean; configurationValid?: boolean; explanation: string; pickupReachableVehicleIds?: string[];vehiclePoolId?:string;allowedVehicleIds?:string[]|null }[]; vehicles: { vehicleId: string; label: string; available: boolean; explanation: string }[] }
 export interface RoutePreview { verified: boolean; message: string; mapIssue: string; legs: { sequence: number; name: string; logicalPath: string; vendorPath: string; message: string }[];

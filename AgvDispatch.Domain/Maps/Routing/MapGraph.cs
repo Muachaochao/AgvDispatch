@@ -91,7 +91,9 @@ public sealed class MapGraph
         IReadOnlySet<string>? forbiddenIntermediateNodes = null)
     {
         if (!string.Equals(source, destination, StringComparison.OrdinalIgnoreCase))
-            return FindShortestRoute(source, destination, unavailableResources, edgePenalties);
+            return FindShortestRoute(source, destination, unavailableResources, edgePenalties,
+                forbiddenIntermediateNodes?.Where(id => !id.Equals(source, StringComparison.OrdinalIgnoreCase) &&
+                    !id.Equals(destination, StringComparison.OrdinalIgnoreCase)).ToHashSet(StringComparer.OrdinalIgnoreCase));
         if (!_nodes.TryGetValue(source, out var origin) || !origin.Enabled ||
             forbiddenIntermediateNodes?.Contains(origin.Id) == true ||
             origin.ResourceIds.Any(id => unavailableResources?.Contains(id) == true)) return null;

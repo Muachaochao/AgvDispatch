@@ -173,6 +173,29 @@ public sealed class DispatchTaskStepCoordinator(
         var pickupSite = dispatchOptions.GetPickupSite(step.StationId) ??
             throw new InvalidOperationException($"工位{step.StationId}未配置AGV地图站点。");
         var waitingSite = dispatchOptions.GetDumperWaitingSite()!;
+        AgvDispatch.Domain.Maps.RoutePlan? selectedPlan = null;
+        if (dispatchOptions.GetDumperWaitingSites().Count > 1)
+        {
+            var allocator = trafficResources as ITaskWaitingBayAllocator ??
+                throw new InvalidOperationException("多候车位缺少持久化分配器。");
+            var current = activeMap?.Current ?? throw new InvalidOperationException("候车选位缺少运行地图。");
+            if (step.StepType == DispatchTaskStepType.DeliverFullBoxToDumper)
+            {
+                var chosen = await TaskWaitingBayRouter.AcquireAsync(step, pickupSite, dispatchOptions, current,
+                    routePlanner, trafficResources, allocator, cancellationToken);
+                if (chosen is null) return;
+                waitingSite = chosen.Value.Site;
+                selectedPlan = chosen.Value.Plan;
+            }
+            else
+            {
+                var chosen = await allocator.GetAsync(step.TaskId, cancellationToken) ??
+                    throw new InvalidOperationException("原任务缺少已保存的候车位，不按默认点继续。");
+                if (chosen.VehicleId != step.VehicleId || chosen.MapId != current.MapId || chosen.MapVersionId != current.VersionId)
+                    throw new InvalidOperationException("原任务候车位车辆或地图不一致。");
+                waitingSite = chosen.WaitingSite;
+            }
+        }
         var dumpingSite = dispatchOptions.DumperDumpingSite;
         var route = step.StepType switch
         {
@@ -186,7 +209,7 @@ public sealed class DispatchTaskStepCoordinator(
         var unavailable = await trafficResources.GetUnavailableResourceIdsAsync(
             step.TaskId,
             cancellationToken);
-        var plan = routePlanner.Plan(route.Item1, route.Item2, unavailable);
+        var plan = selectedPlan ?? routePlanner.Plan(route.Item1, route.Item2, unavailable);
         if (plan == null)
         {
             var diagnostic = routePlanner.Plan(route.Item1, route.Item2, new HashSet<string>());

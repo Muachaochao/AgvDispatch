@@ -12,6 +12,8 @@ public sealed class DispatchOrchestratorOptions
     public int MaxConcurrentTasks { get; set; } = 1;
     public string DumperSite { get; set; } = string.Empty;
     public string DumperWaitingSite { get; set; } = string.Empty;
+    public string[] DumperWaitingSites { get; set; } = [];
+    public string[] StandbySites { get; set; } = [];
     public string DumperDumpingSite { get; set; } = string.Empty;
     public string[] IdleOperatingStates { get; set; } = ["Idle", "空闲"];
     public bool AllowUnconfiguredDirectRoutes { get; set; }
@@ -42,6 +44,9 @@ public sealed class DispatchOrchestratorOptions
         !string.IsNullOrWhiteSpace(DumperWaitingSite)
             ? DumperWaitingSite
             : !string.IsNullOrWhiteSpace(DumperSite) ? DumperSite : null;
+
+    public IReadOnlyList<string> GetDumperWaitingSites() => DumperWaitingSites.Length > 0
+        ? DumperWaitingSites : GetDumperWaitingSite() is { } site ? [site] : [];
 
     public IReadOnlyList<string>? GetRoute(string source, string destination)
     {

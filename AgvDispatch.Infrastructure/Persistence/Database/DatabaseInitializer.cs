@@ -77,6 +77,9 @@ public sealed class DatabaseInitializer : IDatabaseInitializer
         _database.Ado.ExecuteCommand("CREATE INDEX IF NOT EXISTS ix_traffic_lifecycle_time ON traffic_lifecycle_event(OccurredAt DESC)");
         _database.CodeFirst.InitTables<ExecutionRecoverySessionEntity, ExecutionRecoveryTicketEntity, ExecutionEvidenceEntity>();
         _database.CodeFirst.InitTables<TaskHandshakeEntity, TaskRuntimeEventEntity, TaskSignalLastEntity, TaskEquipmentClaimEntity>();
+        _database.CodeFirst.InitTables<TaskWaitingBayEntity>();
+        _database.Ado.ExecuteCommand("CREATE TRIGGER IF NOT EXISTS guard_task_waiting_bay_update BEFORE UPDATE ON task_waiting_bay BEGIN SELECT RAISE(ABORT,'task waiting bay is immutable'); END;");
+        _database.Ado.ExecuteCommand("CREATE TRIGGER IF NOT EXISTS guard_task_waiting_bay_delete BEFORE DELETE ON task_waiting_bay BEGIN SELECT RAISE(ABORT,'task waiting bay audit is immutable'); END;");
         _database.Ado.ExecuteCommand("CREATE INDEX IF NOT EXISTS ix_runtime_event_task_sequence ON task_runtime_event(TaskId,Sequence)");
         _database.Ado.ExecuteCommand("CREATE TRIGGER IF NOT EXISTS guard_runtime_event_delete BEFORE DELETE ON task_runtime_event BEGIN SELECT RAISE(ABORT,'runtime event is immutable'); END;");
         _database.Ado.ExecuteCommand("CREATE TRIGGER IF NOT EXISTS guard_runtime_event_update BEFORE UPDATE ON task_runtime_event BEGIN SELECT RAISE(ABORT,'runtime event is immutable'); END;");

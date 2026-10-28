@@ -197,9 +197,14 @@ public sealed class DispatchTaskOrchestrator(
                 var route = candidate.Route!;
                 if(robokitMap is not null)
                 {
-                    var checkedMap=planningMap is null ? new RobokitTaskMapCheck(false,"运行地图不存在。") :
-                        await robokitMap.CheckAsync(vehicle.VehicleId,vehicle.CurrentStation!,pickupSite,options.GetDumperWaitingSite()!,options.DumperDumpingSite,
-                            planningMap.MapId,planningMap.VersionId,cancellationToken);
+                    var checkedMap=new RobokitTaskMapCheck(planningMap is not null,"运行地图不存在。");
+                    if(planningMap is not null)
+                        foreach(var waiting in options.GetDumperWaitingSites())
+                        {
+                            checkedMap=await robokitMap.CheckAsync(vehicle.VehicleId,vehicle.CurrentStation!,pickupSite,waiting,options.DumperDumpingSite,
+                                planningMap.MapId,planningMap.VersionId,cancellationToken);
+                            if(!checkedMap.Accepted)break;
+                        }
                     if(!checkedMap.Accepted || !ReferenceEquals(planningMap,activeMap.Current))
                     {
                         var reason = !ReferenceEquals(planningMap, activeMap.Current)

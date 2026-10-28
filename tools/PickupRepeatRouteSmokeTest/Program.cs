@@ -45,6 +45,12 @@ var flow = new EmptyFlow();
 var planner = new ConfiguredRoutePlanner(new MapDefinitionProvider(new(), new MapImportService(), new MapValidationService()), runtime, dispatch, flow);
 Check(planner.Plan("LM-PICK", "PICK", new HashSet<string>())!.Nodes.SequenceEqual(new[] { "LM-PICK", "LM-EXIT", "LM-PICK" }), "dispatch planner resolves mixed logical/vendor IDs into actual nonzero vendor path");
 Check(planner.Plan("LM-PICK", "PICK", new HashSet<string> { "R" }) is null, "dispatch planner cannot use unpermitted waiting/dumping shortcut when pickup exit is occupied");
+var withParking=definition with { Nodes=definition.Nodes.Append(Node("PARK",1,1)).ToArray(),
+    Edges=definition.Edges.Concat([Edge("PS","PICK","PARK",.1,true),Edge("SX","PARK","EXIT",.1,true)]).ToArray() };
+runtime.Replace(new("MAP","V1",withParking,DateTimeOffset.Now));dispatch.StandbySites=["LM-PARK"];
+Check(planner.Plan("LM-PICK","LM-EXIT",new HashSet<string>())!.Nodes.SequenceEqual(["LM-PICK","LM-EXIT"]),"ordinary transport avoids a shorter shortcut through a configured standby bay");
+Check(planner.Plan("LM-PARK","LM-EXIT",new HashSet<string>()) is { Nodes.Count:>=2 },"standby protection still permits departure from the actual parked bay");
+runtime.Replace(new("MAP","V1",definition,DateTimeOffset.Now));dispatch.StandbySites=[];
 using var db = DatabaseFactory.Create(new() { DatabasePath = Path.Combine(Path.GetTempPath(), "agv-pickup-repeat-" + Guid.NewGuid().ToString("N") + ".db") });
 var catalog = new TrafficResourceCatalog(resources); await new DatabaseInitializer(db, catalog).InitializeAsync(default);
 var tasks = new DispatchTaskRepository(db); var orchestration = new DispatchOrchestrationRepository(db); var outbox = new AgvCommandOutboxRepository(db, runtime);

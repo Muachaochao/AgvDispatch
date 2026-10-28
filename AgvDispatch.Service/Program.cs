@@ -247,7 +247,9 @@ builder.Services.AddSingleton<ITrafficFlowMonitor>(
 builder.Services.AddSingleton<IHostedService>(
     provider => provider.GetRequiredService<TrafficFlowMonitor>());
 builder.Services.AddSingleton<IRoutePlanner, ConfiguredRoutePlanner>();
-builder.Services.AddSingleton<ITrafficResourceManager, TrafficResourceManager>();
+builder.Services.AddSingleton<TrafficResourceManager>();
+builder.Services.AddSingleton<ITrafficResourceManager>(p=>p.GetRequiredService<TrafficResourceManager>());
+builder.Services.AddSingleton<ITaskWaitingBayAllocator>(p=>p.GetRequiredService<TrafficResourceManager>());
 var waitingAlerts = new TrafficWaitingAlertOptions();
 builder.Configuration.GetSection("TrafficWaitingAlerts").Bind(waitingAlerts); waitingAlerts.Validate();
 builder.Services.AddSingleton(waitingAlerts);

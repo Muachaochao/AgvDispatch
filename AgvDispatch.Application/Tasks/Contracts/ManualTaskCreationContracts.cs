@@ -22,6 +22,7 @@ public sealed record ManualTaskCreationOptions(string? MapId, string? MapVersion
     public string MapRuntimeId {get;init;}="";
     public bool RequiresExplicitVehicle { get; init; }
     public string ParameterRevision { get; init; } = "initial";
+    public IReadOnlyList<string> WaitingSites { get; init; } = [];
     public IReadOnlyList<TaskStandbyParameter> Standbys { get; init; } = [];
 }
 public sealed record ManualTaskCreationRequest(string RequestId, string StationId, string? RequestedVehicleId,

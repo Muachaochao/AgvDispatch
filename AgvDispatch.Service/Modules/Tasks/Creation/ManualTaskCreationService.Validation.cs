@@ -43,6 +43,12 @@ public sealed partial class ManualTaskCreationService
                 DumperWaitingBaySafety.GetError(map?.Definition, dispatch,
                     handshakeOptions is { Enabled: true, PlcContractVersion: HandshakeExecutionOptions.Version }) is { } bayError)
                 errors.Add(bayError);
+            if (step.StepType is DispatchTaskStepType.DeliverFullBoxToDumper or DispatchTaskStepType.EnterDumpingPosition)
+                foreach(var site in dispatch.GetDumperWaitingSites())
+                    if(RouteConfigurationError(map,
+                        step.StepType==DispatchTaskStepType.DeliverFullBoxToDumper ? step.SourceSite : site,
+                        step.StepType==DispatchTaskStepType.DeliverFullBoxToDumper ? site : step.DestinationSite) is {} bayRouteError)
+                        errors.Add("候车位 "+site+"："+bayRouteError);
             void Signal(string name, bool write = false)
             {
                 if (SignalError(step.PlcStationId, name, write) is { } error)

@@ -106,15 +106,16 @@ public sealed class FleetTestPort(FleetTestOptions options,IBusinessRunService s
             if(Health(id) is {} block)throw new InvalidOperationException(block);
             var choice=choices.Vehicles.SingleOrDefault(v=>string.Equals(v.VehicleId,id,StringComparison.OrdinalIgnoreCase));
             if(choice is not {Available:true}||!sites.Add(MapRouteSiteMapper.ResolveLogicalNodeId(current.Definition,choice.CurrentSite)))throw new InvalidOperationException(id+"不可派发或参与车辆共用同一初始停车点："+choice?.Explanation);
-            if(new[]{dispatch.GetDumperWaitingSite(),dispatch.DumperDumpingSite}.Any(site=>
+            if(dispatch.GetDumperWaitingSites().Append(dispatch.DumperDumpingSite).Any(site=>
                 site is not null&&MapRouteSiteMapper.ResolveLogicalNodeId(current.Definition,site)==MapRouteSiteMapper.ResolveLogicalNodeId(current.Definition,choice.CurrentSite)))
                 throw new InvalidOperationException(id+"初始停车点占用倒料等待位或倒料位，请移至独立配置停车点。");
             vehicles.TryGet(id,out var state);
             if(state!.VelocityX is not {} vx||state.VelocityY is not {} vy||state.AngularVelocity is not {} va||Math.Abs(vx)>=.01||Math.Abs(vy)>=.01||Math.Abs(va)>=.01||state.Tasks.Any(t=>t.Status is not (4 or 5 or 6 or 7)))
                 throw new InvalidOperationException(id+"尚未停稳或仍有车端任务。");
             foreach(var pickup in parameters.Capture().Pickups.Where(p=>plan.StationIds.Contains(p.StationId,StringComparer.OrdinalIgnoreCase)&&dispatch.AllowsVehicle(p.StationId,id)))
+            foreach(var waiting in dispatch.GetDumperWaitingSites())
             {
-                var check=await preflight.CheckAsync(id,choice.CurrentSite,pickup.PickupSite,dispatch.GetDumperWaitingSite()!,dispatch.DumperDumpingSite,current.MapId,current.VersionId,ct);
+                var check=await preflight.CheckAsync(id,choice.CurrentSite,pickup.PickupSite,waiting,dispatch.DumperDumpingSite,current.MapId,current.VersionId,ct);
                 if(!check.Accepted)throw new InvalidOperationException(id+"车端地图/路线核验失败："+check.Message);
             }
         }

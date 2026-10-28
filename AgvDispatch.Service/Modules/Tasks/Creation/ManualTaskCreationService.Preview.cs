@@ -67,7 +67,9 @@ public sealed partial class ManualTaskCreationService
                 DispatchTaskStepType.CompletePlcHandshake=>"持续核对本任务出区交接、原返程及原站有箱；清返箱责任前要求本轮呼叫0，依次清FullBoxRemoved→EmptyBoxPlaced→EmptyBoxTaskAcknowledged（最后）；之后保留新呼叫并回读原站闭合，不操作后车共享位",
                 _=>step.PlcHandshake
             },
-            ConfigurationNote=step.ConfigurationNote+"；契约 "+HandshakeExecutionOptions.Version+"；"+TaskStepProgressRules.Boundary28(step.StepType)
+            ConfigurationNote=step.ConfigurationNote+"；契约 "+HandshakeExecutionOptions.Version+"；"+TaskStepProgressRules.Boundary28(step.StepType)+
+                (dispatch.GetDumperWaitingSites().Count>1 && step.StepType is DispatchTaskStepType.DeliverFullBoxToDumper or DispatchTaskStepType.WaitForDumperReady or DispatchTaskStepType.EnterDumpingPosition
+                    ? "；预览显示默认候车点；执行时从 "+string.Join("、",dispatch.GetDumperWaitingSites())+" 选取空位并持久绑定，同一任务重试不换位" : "")
         }).ToArray();
     }
 }

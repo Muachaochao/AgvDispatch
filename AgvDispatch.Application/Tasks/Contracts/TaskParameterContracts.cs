@@ -15,6 +15,8 @@ public sealed record TaskStandbyParameter(string Id, string Site, string Vehicle
 public sealed record TaskParameterConfiguration(string DumperStationId, string WaitingSite, string DumpingSite,
     IReadOnlyList<TaskPickupParameter> Pickups, IReadOnlyList<TaskActionParameter> Actions)
 {
+    // Empty preserves the historic single-bay configuration. WaitingSite is the first/default bay.
+    public IReadOnlyList<string> WaitingSites { get; init; } = [];
     // Older saved profiles omit this property and keep timeout prompts disabled.
     public IReadOnlyList<TaskStepTimeoutParameter> StepTimeouts { get; init; } =
         Enum.GetValues<DispatchTaskStepType>().Select(type => new TaskStepTimeoutParameter(type, 0)).ToArray();

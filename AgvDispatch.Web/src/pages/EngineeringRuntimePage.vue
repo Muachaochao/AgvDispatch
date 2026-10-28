@@ -3,6 +3,7 @@ import {computed,onMounted,onUnmounted,ref,watch} from 'vue';
 import {useRoute} from 'vue-router';
 import {useDispatchStore} from '../stores/dispatch';
 import {taskStepName} from '../task-step-labels';
+import {effectiveWaitingSites} from '../waiting-sites';
 const store=useDispatchStore(),route=useRoute();
 const versions=ref<any[]>([]),version=ref(String(route.query.version??'')),preview=ref<any>(null),state=ref<any>(null);
 const busy=ref(false),message=ref(''),confirmation=ref(''),reviewed=ref(false),pending=ref<any>(null);
@@ -37,7 +38,7 @@ onMounted(()=>run(async n=>{const v:any=await store.api('/api/engineering/versio
  <ul v-if="preview?.blockers.length" role="alert"><li v-for="b in preview.blockers" :key="b">{{b}}</li></ul>
  </article>
  <article><h3>3. 核对执行参数并应用</h3><p>当前支持一组倒料设备和共用四段动作；多倒料设备、多动作模板工程会明确拦截。工程的候选包络、模拟耗时、PLC地址和待机策略不会在此自动替换现场配置。</p>
- <template v-if="preview?.configuration"><p>倒料 {{preview.configuration.dumperStationId}} · 等待 {{preview.configuration.waitingSite}} · 倒料点 {{preview.configuration.dumpingSite}}</p><details><summary>{{preview.configuration.pickups.length}}个工位及实际授权车辆</summary><table><thead><tr><th>工位</th><th>站点</th><th>车辆池</th><th>授权车辆</th></tr></thead><tbody><tr v-for="p in preview.configuration.pickups" :key="p.stationId"><td>{{p.stationId}}</td><td>{{p.pickupSite}}</td><td>{{p.vehiclePoolId}}</td><td>{{p.allowedVehicleIds.join('、')}}</td></tr></tbody></table></details><ul><li v-for="a in preview.configuration.actions" :key="a.stepType">{{taskStepName(a.stepType)}}：{{a.operation}} · 高度 {{a.jackHeight??'未指定'}} · PGV {{a.usePgv??'未指定'}}</li></ul></template>
+ <template v-if="preview?.configuration"><p>倒料 {{preview.configuration.dumperStationId}} · 候车 {{effectiveWaitingSites(preview.configuration).join('、')}} · 倒料点 {{preview.configuration.dumpingSite}}</p><details><summary>{{preview.configuration.pickups.length}}个工位及实际授权车辆</summary><table><thead><tr><th>工位</th><th>站点</th><th>车辆池</th><th>授权车辆</th></tr></thead><tbody><tr v-for="p in preview.configuration.pickups" :key="p.stationId"><td>{{p.stationId}}</td><td>{{p.pickupSite}}</td><td>{{p.vehiclePoolId}}</td><td>{{p.allowedVehicleIds.join('、')}}</td></tr></tbody></table></details><ul><li v-for="a in preview.configuration.actions" :key="a.stepType">{{taskStepName(a.stepType)}}：{{a.operation}} · 高度 {{a.jackHeight??'未指定'}} · PGV {{a.usePgv??'未指定'}}</li></ul></template>
  <ul v-if="preview"><li v-for="n in preview.notes" :key="n">{{n}}</li></ul>
  <p v-if="!store.engineeringRuntimeApplyEnabled" class="inline-warning">当前实例未启用工程执行参数应用。受控部署需启用 Web:EnableEngineeringRuntimeApply；这不等于开放车辆动作许可。</p>
  <label class="check"><input v-model="reviewed" type="checkbox" :disabled="!preview||busy||!!pending"/>已核对本次工位、车辆池及保留的四段车辆动作</label><label>输入 APPLY {{version||'工程版本编号'}}<input v-model="confirmation" :disabled="busy||!!pending" autocomplete="off"/></label><button :disabled="busy||!canApply" @click="apply">应用工程执行参数（不启动任务）</button>

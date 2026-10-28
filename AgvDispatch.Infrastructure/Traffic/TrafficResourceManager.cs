@@ -13,7 +13,7 @@ namespace AgvDispatch.Infrastructure.Persistence;
 public sealed partial class TrafficResourceManager(
     ISqlSugarClient database,
     TrafficResourceCatalog catalog,
-    TrafficControlSettings settings, TimeProvider? clock = null) : ITrafficResourceManager
+    TrafficControlSettings settings, TimeProvider? clock = null) : ITrafficResourceManager, ITaskWaitingBayAllocator
 {
     public async Task<IReadOnlySet<string>> GetUnavailableResourceIdsAsync(
         string requestingTaskId,
@@ -35,12 +35,30 @@ public sealed partial class TrafficResourceManager(
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
 
-    public async Task<TrafficReservationResult> TryAcquireAsync(
+    public Task<TrafficReservationResult> TryAcquireAsync(
         string ownerStepId,
         string taskId,
         string vehicleId,
         IReadOnlyCollection<string> resourceIds,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken) => AcquireCoreAsync(ownerStepId, taskId, vehicleId, resourceIds, cancellationToken);
+
+    public async Task<TaskWaitingBayBinding?> GetAsync(string taskId, CancellationToken ct)
+    {
+        var row = await database.Queryable<TaskWaitingBayEntity>().Where(b => b.TaskId == taskId).FirstAsync(ct);
+        return row is null ? null : new(row.TaskId,row.VehicleId,row.StepId,row.MapId,row.MapVersionId,row.WaitingSite,row.ResourceId);
+    }
+
+    public Task<TrafficReservationResult> TryAcquireAsync(TaskWaitingBayBinding binding,
+        IReadOnlyCollection<string> routeResources, CancellationToken ct)
+    {
+        if (new[] { binding.TaskId,binding.StepId,binding.VehicleId,binding.MapId,binding.MapVersionId,binding.WaitingSite,binding.ResourceId }.Any(string.IsNullOrWhiteSpace) ||
+            !routeResources.Contains(binding.ResourceId,StringComparer.OrdinalIgnoreCase))
+            throw new ArgumentException("候车位绑定及独立资源不完整。");
+        return AcquireCoreAsync(binding.StepId,binding.TaskId,binding.VehicleId,routeResources,ct,binding);
+    }
+
+    private async Task<TrafficReservationResult> AcquireCoreAsync(string ownerStepId,string taskId,string vehicleId,
+        IReadOnlyCollection<string> resourceIds,CancellationToken cancellationToken,TaskWaitingBayBinding? binding=null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(ownerStepId);
         ArgumentException.ThrowIfNullOrWhiteSpace(taskId);
@@ -76,6 +94,17 @@ public sealed partial class TrafficResourceManager(
         var transaction = await database.Ado.UseTranAsync(async () =>
         {
             var context = await database.Queryable<TrafficRequestEntity>().Where(r => r.StepId == ownerStepId).FirstAsync(cancellationToken);
+            if(binding is not null)
+            {
+                var selected=await GetAsync(taskId,cancellationToken);
+                if(selected is not null && selected!=binding) throw new InvalidOperationException("原任务候车位已绑定，禁止在重试或恢复时更换位置。");
+                var step=await database.Queryable<DispatchTaskStepEntity>().Where(s=>s.StepId==ownerStepId&&s.TaskId==taskId).FirstAsync(cancellationToken);
+                var task=await database.Queryable<DispatchTaskEntity>().Where(t=>t.TaskId==taskId).FirstAsync(cancellationToken);
+                if(context is null || context.MapId!=binding.MapId || context.MapVersionId!=binding.MapVersionId ||
+                    step is null || step.StepType!=(int)DispatchTaskStepType.DeliverFullBoxToDumper || step.Status!=(int)DispatchTaskStepStatus.Ready ||
+                    task is null || task.VehicleId!=vehicleId || task.Stage!=(int)DispatchTaskStage.PickingUp)
+                    throw new InvalidOperationException("候车选位的原任务、车辆、送箱步骤或地图版本发生变化。");
+            }
             foreach (var resourceId in requested)
             {
                 var resource = catalog.TryGet(resourceId, out var definition)
@@ -140,6 +169,10 @@ public sealed partial class TrafficResourceManager(
                     ExpiresAt = now.Add(settings.LeaseDuration)
                 }).ExecuteCommandAsync(cancellationToken);
             }
+            if(binding is not null && await GetAsync(taskId,cancellationToken) is null)
+                await database.Insertable(new TaskWaitingBayEntity{TaskId=taskId,VehicleId=vehicleId,StepId=ownerStepId,
+                    MapId=binding.MapId,MapVersionId=binding.MapVersionId,WaitingSite=binding.WaitingSite,ResourceId=binding.ResourceId,
+                    SelectedAt=now}).ExecuteCommandAsync(cancellationToken);
             var previous = await database.Queryable<TrafficRequestEntity>().Where(r => r.StepId == ownerStepId).FirstAsync(cancellationToken);
             await WriteStateAsync(ownerStepId, taskId, vehicleId, previous?.State == "Held" ? "Held" : "Acquired", "已取得路权；心跳过期仍保留占用，等待正常交接或任务完成。", requested, cancellationToken);
         });

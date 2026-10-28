@@ -5,6 +5,7 @@ import { businessChoices, standbyChoices } from '../business-run-options';
 import { useDispatchStore } from '../stores/dispatch';
 import type { CreationOptions } from '../types';
 import { businessVehicleBlock, summarizeBusinessBlocks } from '../business-blocks';
+import { effectiveWaitingSites } from '../waiting-sites';
 const props=defineProps<{mode:'Demand'|'Cycle';options:CreationOptions|null;statusOnly?:boolean}>();
 const store=useDispatchStore();
 type Plan={requestId:string;mode:string;vehicleId:string;stations:string[];rounds:number;standbySite:string;siteConfirmed:boolean};
@@ -121,7 +122,7 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);});
     <div class="fields">
       <label>本次运行车辆<select v-model="vehicle" :disabled="locked"><option value="" disabled>请选择车辆</option><option v-for="v in choices.vehicles" :key="v.vehicleId" :value="v.vehicleId">{{v.label}}</option></select><small>从所选工位车辆池的共同允许车辆中选择，共 {{choices.vehicles.length}} 台。</small></label>
       <label v-if="mode==='Cycle'">测试轮数<input v-model.number="rounds" type="number" min="1" max="100" :disabled="locked"/></label>
-      <label>倒料等待位<input :value="options?.waitingSite||'未配置'" readonly/></label>
+      <label>倒料候车位<input :value="effectiveWaitingSites(options).join('、')||'未配置'" readonly/></label>
       <label>倒料位<input :value="options?.dumpingSite||'未配置'" readonly/></label>
       <label v-if="options?.standbys?.length">待机点<select v-model="standby" :disabled="locked"><option value="" disabled>请选择适用待机位</option><option v-for="s in standbyOptions" :key="s.id" :value="s.site">{{s.id}} · {{s.site}} · {{s.vehiclePoolId}}</option></select></label>
       <label v-else>待机点（旧配置未绑定待机位）<input v-model="standby" :disabled="locked" placeholder="填写已核对的地图站点"/><small>可在工程配置中心设置待机位和适用车辆池后应用。</small></label>

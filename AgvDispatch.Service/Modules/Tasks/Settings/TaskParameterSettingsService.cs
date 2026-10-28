@@ -46,8 +46,8 @@ public sealed class TaskParameterSettingsService(TaskParameterStorageOptions sto
         var current = runtime.Capture();
         if (current.EngineeringSource is { } bound && request.Configuration.EngineeringSource?.VersionId == bound.VersionId &&
             (request.Configuration.EngineeringSource != bound ||
-             JsonSerializer.Serialize(new { current.DumperStationId, current.WaitingSite, current.DumpingSite, current.Pickups, current.Standbys }) !=
-             JsonSerializer.Serialize(new { request.Configuration.DumperStationId, request.Configuration.WaitingSite, request.Configuration.DumpingSite, request.Configuration.Pickups, request.Configuration.Standbys })))
+             JsonSerializer.Serialize(new { current.DumperStationId, current.WaitingSite, current.WaitingSites, current.DumpingSite, current.Pickups, current.Standbys }) !=
+             JsonSerializer.Serialize(new { request.Configuration.DumperStationId, request.Configuration.WaitingSite, request.Configuration.WaitingSites, request.Configuration.DumpingSite, request.Configuration.Pickups, request.Configuration.Standbys })))
             return new(false, "同一工程版本的工位、倒料、待机位及车辆池绑定不可改写；请发布并应用新工程版本。", []);
         if (request.Configuration.EngineeringSource is { } source && source.MapDefinitionHash != EngineeringRuntimeIdentity.MapHash(map.Definition))
             return new(false, "工程绑定的地图内容摘要已变化，未应用参数。", []);
@@ -57,7 +57,7 @@ public sealed class TaskParameterSettingsService(TaskParameterStorageOptions sto
             if (nodes.Length != 1 || nodes[0].Type is not (AgvDispatch.Domain.Maps.MapNodeType.Station or AgvDispatch.Domain.Maps.MapNodeType.WaitingPoint))
                 return new(false, $"待机位 {standby.Id} 未绑定唯一启用的停靠站点。", []);
             var businessSites = request.Configuration.Pickups.Select(p => p.PickupSite)
-                .Concat(new[] { request.Configuration.WaitingSite, request.Configuration.DumpingSite });
+                .Concat(request.Configuration.WaitingSites).Concat(new[] { request.Configuration.WaitingSite, request.Configuration.DumpingSite });
             if (businessSites.Any(site => site == nodes[0].Id || site == nodes[0].AgvSiteId))
                 return new(false, $"待机位 {standby.Id} 与业务取放箱或倒料站点重叠。", []);
         }

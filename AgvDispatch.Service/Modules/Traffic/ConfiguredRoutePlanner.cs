@@ -65,7 +65,7 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
     {
         var logicalSource = MapRouteSiteMapper.ResolveLogicalNodeId(definition, source);
         var logicalDestination = MapRouteSiteMapper.ResolveLogicalNodeId(definition, destination);
-        var protectedNodes = new[] { _legacyOptions.GetDumperWaitingSite(), _legacyOptions.DumperDumpingSite }
+        var protectedNodes = _legacyOptions.GetDumperWaitingSites().Append(_legacyOptions.DumperDumpingSite).Concat(_legacyOptions.StandbySites)
             .Where(site => !string.IsNullOrWhiteSpace(site))
             .Select(site => MapRouteSiteMapper.ResolveLogicalNodeId(definition, site!))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);

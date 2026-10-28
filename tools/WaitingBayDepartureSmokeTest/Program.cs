@@ -13,6 +13,7 @@ var now=DateTimeOffset.UtcNow;
 var root=Path.Combine(Path.GetTempPath(),"AGV-bay-departure-"+Guid.NewGuid().ToString("N"));
 var db=DatabaseFactory.Create(new DatabaseOptions{DatabasePath=Path.Combine(root,"test.db")});
 db.CodeFirst.InitTables<DispatchTaskEntity,DispatchTaskStepEntity,AgvCommandOutboxEntity,TrafficRequestEntity,TrafficResourceLeaseEntity>();
+db.CodeFirst.InitTables<TaskWaitingBayEntity>();
 var map=new MapDefinition("synthetic departure","","LocalCartesian","m",
  [new("A",0,0,MapNodeType.Waypoint,true,["BAY"]){AgvSiteId="WAIT"},new("B",2,0,MapNodeType.Waypoint,true,[]){AgvSiteId="MID"},new("C",4,0,MapNodeType.Station,true,["DUMP"]){AgvSiteId="DUMP-SITE"}],
  [new("AB","A","B",2,1,true,true,[]),new("BC","B","C",2,1,true,true,[])],

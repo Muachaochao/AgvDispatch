@@ -82,6 +82,12 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
         var original=(await taskReader.GetStepsAsync(taskId,ct)).Single(s=>s.StepId==stepId);
         if(task.VehicleId!=vehicleId||original.VehicleId!=vehicleId||original.Status is not (DispatchTaskStepStatus.CommandPending or DispatchTaskStepStatus.RetryScheduled))throw new InvalidOperationException("待发命令车辆或原步骤状态不一致。");
         var step=new DispatchTaskStepWorkItem(taskId,task.StationId,vehicleId,task.Stage,stepId,original.Sequence,original.StepType,original.Status,original.SourceSite,original.DestinationSite,original.UpdatedAt);
+        if(dispatch.GetDumperWaitingSites().Count>1 && original.StepType is DispatchTaskStepType.DeliverFullBoxToDumper or DispatchTaskStepType.EnterDumpingPosition)
+        {
+            var waiting=await WaitingSiteAsync(step,ct);
+            if((original.StepType==DispatchTaskStepType.DeliverFullBoxToDumper ? original.DestinationSite : original.SourceSite)!=waiting)
+                throw new InvalidOperationException("待发命令与原任务持久候车位不一致，禁止发送。");
+        }
         if(original.StepType==DispatchTaskStepType.GoToPickup)await BindBeforeTransportAsync(step,ct);
         else await ValidateTransportAsync(step,ct);
     }
@@ -113,7 +119,7 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
             if(!Is(creation.DumperStationId,"Faulted",false))throw new InvalidOperationException("倒料设备故障或反馈无效，保持等待。");
             var owner=await store.TryClaimEquipmentAsync(step.TaskId,step.StepId,creation.DumperStationId,ct);
             var reason=owner!=null ? "倒料机由任务"+owner+"持有，当前任务不消费共享许可。" : "本任务已取得倒料设备归属；PLC就绪握手及实际入站另行核验。";
-            await traffic.RecordRouteAsync(new(step.StepId,step.TaskId,step.VehicleId??"",dispatch.GetDumperWaitingSite()??"",dispatch.DumperDumpingSite,
+            await traffic.RecordRouteAsync(new(step.StepId,step.TaskId,step.VehicleId??"",await WaitingSiteAsync(step,ct),dispatch.DumperDumpingSite,
                 [],options.DumperExit.ResourceIds,owner!=null,reason)
                 {MapId=map.Current?.MapId,MapVersionId=map.Current?.VersionId,WaitingCategory="Equipment"},ct);
             if(owner!=null)throw new InvalidOperationException(reason);
@@ -208,7 +214,23 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
         return true;
     }
 
-    private string Binding(DispatchTaskStepWorkItem step)=>JsonSerializer.Serialize(new {map.Current?.MapId,map.Current?.VersionId,MapHash=map.Current==null?null:TransportRouteSnapshots.Hash(JsonSerializer.Serialize(map.Current.Definition,new JsonSerializerOptions(JsonSerializerDefaults.Web))),Vehicle=step.VehicleId,Pickup=dispatch.GetPickupSite(step.StationId),Waiting=dispatch.GetDumperWaitingSite(),Dump=dispatch.DumperDumpingSite,Dumper=creation.DumperStationId,Exit=options.DumperExit,Actions=dispatch.StepActions.OrderBy(a=>a.Key).ToArray()});
+    private async Task<string> WaitingSiteAsync(DispatchTaskStepWorkItem step,CancellationToken ct)
+    {
+        if(dispatch.GetDumperWaitingSites().Count<=1)return dispatch.GetDumperWaitingSite()??"";
+        var selected=traffic is ITaskWaitingBayAllocator allocator ? await allocator.GetAsync(step.TaskId,ct) : null;
+        if(selected is null || selected.VehicleId!=step.VehicleId || selected.MapId!=map.Current?.MapId ||
+            selected.MapVersionId!=map.Current?.VersionId || !dispatch.GetDumperWaitingSites().Contains(selected.WaitingSite,StringComparer.OrdinalIgnoreCase))
+            throw new InvalidOperationException("原任务持久候车位缺失或绑定不一致，不能用默认点继续握手。");
+        return selected.WaitingSite;
+    }
+    private string Binding(DispatchTaskStepWorkItem step)
+    {
+        var binding=JsonSerializer.Serialize(new {map.Current?.MapId,map.Current?.VersionId,MapHash=map.Current==null?null:TransportRouteSnapshots.Hash(JsonSerializer.Serialize(map.Current.Definition,new JsonSerializerOptions(JsonSerializerDefaults.Web))),Vehicle=step.VehicleId,Pickup=dispatch.GetPickupSite(step.StationId),Waiting=dispatch.GetDumperWaitingSite(),Dump=dispatch.DumperDumpingSite,Dumper=creation.DumperStationId,Exit=options.DumperExit,Actions=dispatch.StepActions.OrderBy(a=>a.Key).ToArray()});
+        if(dispatch.GetDumperWaitingSites().Count<=1)return binding;
+        var node=JsonNode.Parse(binding)!.AsObject();
+        node["WaitingSites"]=JsonSerializer.SerializeToNode(dispatch.GetDumperWaitingSites());
+        return node.ToJsonString();
+    }
     private bool BindingMatches(HandshakeCheckpoint checkpoint,DispatchTaskStepWorkItem step)
     {
         var recorded=checkpoint.Baseline.FirstOrDefault(s=>s.StationId=="__context")?.Address;
