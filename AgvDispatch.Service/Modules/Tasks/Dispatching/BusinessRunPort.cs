@@ -17,6 +17,7 @@ public sealed partial class BusinessRunPort(IManualTaskCreationService manual, I
 {
     private static readonly HttpClient lab = new(new SocketsHttpHandler { UseProxy = false, AllowAutoRedirect = false })
         { Timeout = TimeSpan.FromSeconds(5), BaseAddress = new Uri("http://127.0.0.1:10201/") };
+    private readonly BlockedObservationTracker lowLocalizationWait = new(TimeSpan.FromSeconds(3));
     private static string StandbyId(BusinessRunRecord run) => "STANDBY-" + (run.PendingRequestId ?? run.RunId);
     public async Task<BusinessRunRecord> RetireUnacceptedAsync(BusinessRunRecord run, CancellationToken ct)
     {
@@ -132,7 +133,7 @@ public sealed partial class BusinessRunPort(IManualTaskCreationService manual, I
         string? block = ConfigurationBlock();
         vehicles.TryGet(run.Plan.VehicleId, out var v);
         if (v is null || !Fresh(v.LastSuccessfulPollAt) || v.Connection != ConnectionState.Online ||
-            v.Quality != SignalQuality.Good || v.EmergencyStopped is not false || v.LocalizationConfidence is not >= .5)
+            v.Quality != SignalQuality.Good || v.EmergencyStopped is not false)
             block ??= "车辆实时状态、定位或健康状态未就绪。";
         else
         {
@@ -143,6 +144,9 @@ public sealed partial class BusinessRunPort(IManualTaskCreationService manual, I
             var failures = repeated.Where(a => !IsLocalTrafficObstacle(a)).ToArray();
             if (failures.Length > 0)
                 block ??= "车辆存在未恢复报警：" + string.Join("、", failures.Select(a => a.Code).Distinct());
+            if (v.LocalizationConfidence is >= .5) lowLocalizationWait.Clear(v.VehicleId);
+            else if (lowLocalizationWait.Observe(v.VehicleId, true, false))
+                block ??= "车辆定位置信度连续低于0.5，需现场核对定位。";
         }
         var rows = signals.GetAll();
         bool Value(string station, string name, bool expected)
