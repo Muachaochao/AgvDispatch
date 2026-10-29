@@ -5,14 +5,31 @@ namespace AgvDispatch.Application.Abstractions;
 
 public enum TaskListFilter { All, Waiting, Running, Failed, Completed, Cancelled }
 public sealed record TaskListQuery(TaskListFilter Filter = TaskListFilter.All,
-    string Search = "", int Page = 1, int PageSize = 50);
+    string Search = "", int Page = 1, int PageSize = 50,
+    DateTimeOffset? From = null, DateTimeOffset? To = null);
+public static class TaskListQueryValidation
+{
+    public static void Validate(TaskListQuery query)
+    {
+        if (!Enum.IsDefined(query.Filter) || query.Page is < 1 or > 100000 ||
+            query.PageSize is < 1 or > 200 || (query.Search?.Length ?? 0) > 128)
+            throw new ArgumentException("任务查询参数无效：每页1～200条，搜索词最多128字符。");
+        if (query.From is { } from && query.To is { } to && from >= to)
+            throw new ArgumentException("创建时间范围无效：开始时间必须早于结束时间。");
+    }
+}
 public sealed record TaskCenterRow(string TaskId, string StationId, string? VehicleId,
     DispatchTaskStage Stage, int Priority, DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt, string? ErrorMessage)
 {
     public string? RequestedVehicleId { get; init; }
 }
-public sealed record TaskListPage(IReadOnlyList<TaskCenterRow> Items, int TotalCount, int Page, int PageSize);
+public sealed record TaskListSummary(int Total, int Running, int Waiting, int Completed, int Cancelled, int Failed, int Other);
+public sealed record TaskListPage(IReadOnlyList<TaskCenterRow> Items, int TotalCount, int Page, int PageSize)
+{
+    // Aggregated from all matches before pagination. Null keeps older adapters explicit.
+    public TaskListSummary? Summary { get; init; }
+}
 public sealed record TaskStepDetail(string StepId, int Sequence, DispatchTaskStepType StepType,
     DispatchTaskStepStatus Status, string? VehicleId, string? SourceSite, string? DestinationSite,
     string? VendorTaskId, int RetryCount, DateTimeOffset? StartedAt,

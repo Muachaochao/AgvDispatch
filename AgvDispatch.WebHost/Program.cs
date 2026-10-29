@@ -76,11 +76,15 @@ app.MapResourceReviewApi(recoveryActions);
 app.MapGet("/api/snapshot", async (SnapshotReader reader, CancellationToken ct) => await reader.ReadAsync(ct));
 app.MapGet("/api/task-options", async (DispatchPipe pipe, CancellationToken ct) =>
     await pipe.ReadAsync<ManualTaskCreationOptions>(TrafficControlOperations.GetTaskCreationOptions, new { }, ct));
-app.MapGet("/api/tasks", async (string? filter, string? search, int? page, DispatchPipe pipe, CancellationToken ct) =>
+app.MapGet("/api/tasks", async (string? filter, string? search, int? page, int? pageSize,
+    DateTimeOffset? from, DateTimeOffset? to, DispatchPipe pipe, CancellationToken ct) =>
 {
-    if (!Enum.TryParse<TaskListFilter>(filter ?? "All", true, out var parsed) || !Enum.IsDefined(parsed) ||
-        page is < 1 or > 10000 || (search?.Length ?? 0) > 128) return Results.BadRequest(new { error = "任务筛选或页码无效。" });
-    return Results.Ok(await pipe.ReadAsync<TaskListPage>(TrafficControlOperations.GetTasks, new TaskListQuery(parsed, search ?? "", page ?? 1, 50), ct));
+    if (!Enum.TryParse<TaskListFilter>(filter ?? "All", true, out var parsed) || !Enum.IsDefined(parsed))
+        return Results.BadRequest(new { error = "任务状态筛选无效。" });
+    var query = new TaskListQuery(parsed, search ?? "", page ?? 1, pageSize ?? 50, from, to);
+    try { TaskListQueryValidation.Validate(query); }
+    catch (ArgumentException error) { return Results.BadRequest(new { error = error.Message }); }
+    return Results.Ok(await pipe.ReadAsync<TaskListPage>(TrafficControlOperations.GetTasks, query, ct));
 });
 app.MapGet("/api/maps", async (DispatchPipe pipe, CancellationToken ct) =>
 {

@@ -31,6 +31,7 @@ const locatedResource=ref(''),locationMessage=ref('');
 const detail = ref<import('../types').TaskDetail | null>(null);
 const mapElement = ref<HTMLElement>();
 const mapView = ref<'top' | 'isometric'>('top');
+const mapLabels = ref<'auto'|'all'|'none'>('auto');
 const showTaskDialog = ref(false);
 const selectedAlarm = ref<import('../types').Alarm | null>(null);
 const selectedDevice = ref<import('../types').Device | null>(null);
@@ -49,7 +50,7 @@ async function readAreas(){
 }
 watch(()=>[store.demoMode,store.snapshot?.source,store.snapshot?.map?.id,store.snapshot?.map?.version,store.snapshot?.map?.definitionHash].join('|'),()=>{++areaEpoch;areaContext.value=null;chosenArea.value=null;areaMessage.value='';drawAreas();void readAreas();});
 
-const liveTasks=computed(()=>store.allTasks.map(task=>({task,wait:taskWait(store.snapshot,task,store.now)})));
+const liveTasks=computed(()=>store.allTasks.filter(task=>!['Completed','Cancelled'].includes(task.stage)).map(task=>({task,wait:taskWait(store.snapshot,task,store.now)})));
 const chosenVehicle = computed(() => store.vehicles.find(v => v.vehicleId === selectedVehicle.value));
 const selectedRoad = computed(() => store.snapshot?.map?.edges.find(edge => edge.id === selectedEdge.value));
 
@@ -139,7 +140,7 @@ onUnmounted(() => { ++detailEpoch;++areaEpoch;clearInterval(areaTimer);scene?.di
     <section class="control-panel map-control">
       <header class="section-heading map-heading">
         <div><h2>{{ store.snapshot?.map?.name ?? '当前运行地图' }}</h2><small>{{ store.snapshot?.map?.id ?? (store.fresh ? '未激活' : '未连接') }} · {{ store.snapshot?.map?.version ?? '—' }}</small></div>
-        <div class="map-toolbar"><button :class="{ active: mapView === 'top' }" @click="setMapView('top')">2D</button><button :class="{ active: mapView === 'isometric' }" @click="setMapView('isometric')">3D</button><button class="icon-button" aria-label="全屏地图" @click="fullscreen"><IconArrowsMaximize :size="15" /></button></div>
+        <div class="map-toolbar"><select v-model="mapLabels" aria-label="站点标签" title="密集时自动收起部分标签；悬停节点查看" @change="scene?.setLabelMode(mapLabels)"><option value="auto">标签 · 自动</option><option value="all">全部站点</option><option value="none">隐藏站点</option></select><button :class="{ active: mapView === 'top' }" @click="setMapView('top')">2D</button><button :class="{ active: mapView === 'isometric' }" @click="setMapView('isometric')">3D</button><button class="icon-button" aria-label="全屏地图" @click="fullscreen"><IconArrowsMaximize :size="15" /></button></div>
       </header>
       <div class="map-viewport">
         <div ref="mapElement" class="scene-container" aria-label="可交互的运行地图"></div>
@@ -166,9 +167,9 @@ onUnmounted(() => { ++detailEpoch;++areaEpoch;clearInterval(areaTimer);scene?.di
     <aside class="right-column">
       <section class="control-panel distribution-panel">
         <header class="section-heading"><h2>任务业务阶段分布 <small>TASK STAGES</small></h2></header>
-        <RingChart :segments="store.ringSegments" :total="store.allTasks.length" />
+        <RingChart :segments="store.ringSegments" :total="store.taskSummary?.total ?? 0" :available="!!store.taskSummary" :caption="store.demoMode ? '示例任务总数' : '全部任务总数'" />
         <div class="ring-legend"><span v-for="segment in store.ringSegments" :key="segment.label"><i class="status-dot" :style="{ background: segment.color }"></i>{{ segment.label }}<b>{{ segment.value }}</b></span></div>
-        <p class="panel-footnote">按业务阶段统计，实时等待见任务卡片；当前快照最多50条</p>
+        <p class="panel-footnote">{{ store.taskSummary ? (store.demoMode ? '浏览器示例统计。' : '后台全量统计，包含历史任务；已取消单独统计。') : '后台全量统计暂不可用；当前加载记录不代表全部任务。' }}<RouterLink to="/tasks">按时间查询历史</RouterLink></p>
       </section>
 
       <section class="control-panel live-tasks">
@@ -179,7 +180,7 @@ onUnmounted(() => { ++detailEpoch;++areaEpoch;clearInterval(areaTimer);scene?.di
           <p>{{ task.stationId }}<span>{{ task.vehicleId ?? '待分配' }}</span></p>
           <small>{{ wait?.reason || task.errorMessage || '点击查看步骤及PLC条件' }}</small>
         </button>
-        <p v-if="!store.allTasks.length" class="empty-panel">暂无任务数据</p>
+        <p v-if="!liveTasks.length" class="empty-panel">当前没有未结束任务，历史任务可按时间查询。</p>
       </section>
 
       <section class="control-panel shared-panel">
@@ -221,3 +222,11 @@ onUnmounted(() => { ++detailEpoch;++areaEpoch;clearInterval(areaTimer);scene?.di
 </template>
 
 <style scoped>.overview-page{flex:1;min-height:0;overflow:auto;padding-bottom:12px}.overview-page .control-grid{height:max(780px,calc(100dvh - 205px));flex:none;min-height:780px}.live-tasks,.shared-panel{overflow:auto}.live-tasks{min-height:290px}.right-column{min-height:760px}.distribution-panel>.panel-footnote{flex-shrink:0}.live-tasks>header,.live-tasks>.current-task-counts,.live-task{flex-shrink:0}.live-task>div{flex-wrap:wrap;gap:6px}.live-task b{overflow-wrap:anywhere;min-width:0;white-space:normal;flex:1 1 120px}.live-task small{white-space:normal;overflow-wrap:anywhere;display:block;-webkit-line-clamp:unset;overflow:visible}.shared-resource details{grid-column:1/-1;min-width:0;font-size:11px;overflow-wrap:anywhere}.shared-resource summary{cursor:pointer}.traffic-focus{padding:12px 16px;border-top:1px solid #2c4563;font-size:12px;line-height:1.8}.traffic-focus select{max-width:100%}.traffic-focus button{margin:4px}.resource-location{padding:0 16px;font-size:12px;line-height:1.8;color:#c5dbec}.traffic-focus p{overflow-wrap:anywhere;margin:5px 0}@media(min-width:901px){.overview-page .control-grid{height:max(820px,calc(100dvh - 205px));min-height:820px}}</style>
+<style scoped>
+.right-column{grid-template-rows:310px minmax(180px,1fr) auto}
+.ring-legend{grid-template-columns:repeat(3,minmax(0,1fr));gap:8px 5px}
+.distribution-panel>.panel-footnote{line-height:1.6;font-size:10px;width:100%}
+.distribution-panel>.panel-footnote a{display:inline-block;margin-left:6px;color:var(--cyan,#3dcce9)}
+.map-toolbar{flex-shrink:0;align-items:center}.map-toolbar select{max-width:110px;padding:4px 6px;font-size:11px;min-height:27px}
+@media(max-width:900px){.right-column{grid-template-rows:auto auto auto}}
+</style>

@@ -38,8 +38,9 @@ Require((await reader.QueryAsync(new(Search: "' OR 1=1 --"), token)).TotalCount 
 var page1 = await reader.QueryAsync(new(PageSize: 1), token);
 var page2 = await reader.QueryAsync(new(Page: 2, PageSize: 1), token);
 Require(page1.TotalCount == 3 && page1.Items.Single().TaskId != page2.Items.Single().TaskId, "stable paging");
-try { await reader.QueryAsync(new(PageSize: 101), token); Require(false, "limit rejected"); }
+try { await reader.QueryAsync(new(PageSize: 201), token); Require(false, "limit rejected"); }
 catch (ArgumentException) { }
+await TaskListRangeChecks.RunAsync(Require);
 Require(await reader.GetDetailAsync("missing", token) is null, "unknown task");
 var detail = (await service.GetDetailAsync(a.Task.TaskId, token))!;
 Require(detail.Steps.Count == 9 && detail.Steps[0].Sequence < detail.Steps[8].Sequence, "ordered nine steps");

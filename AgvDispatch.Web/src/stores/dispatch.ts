@@ -7,6 +7,7 @@ import { vehicleCategory, type VehicleCategory } from '../dashboard';
 import { useToastStore } from './toast';
 import { demoSnapshot,demoDetail } from '../demo';
 import {rehearsalSnapshot,rehearsalDetail} from '../traffic-rehearsal';
+import { completeTaskSummary, taskStageSegments } from '../task-history';
 
 export const useDispatchStore = defineStore('dispatch', () => {
   const snapshot = shallowRef<Snapshot | null>(null);
@@ -33,7 +34,8 @@ export const useDispatchStore = defineStore('dispatch', () => {
   const resources = computed(() => snapshot.value?.resources ?? []);
   const alarms = computed(() => snapshot.value?.alarms ?? []);
   const openAlarms = computed(() => alarms.value.filter(a => a.status === 'Open'));
-  const activeCount = computed(() => allTasks.value.filter(task => !['Completed', 'Cancelled'].includes(task.stage)).length);
+  const taskSummary = computed(() => completeTaskSummary(snapshot.value?.tasks));
+  const activeCount = computed(() => taskSummary.value ? taskSummary.value.total - taskSummary.value.completed - taskSummary.value.cancelled : allTasks.value.filter(task => !['Completed', 'Cancelled'].includes(task.stage)).length);
 
   const vehicleCategories: VehicleCategory[] = ['running', 'waiting', 'idle', 'charging', 'fault', 'offline', 'unknown'];
   const vehicleStats = computed(() => vehicleCategories.map(key => ({
@@ -41,12 +43,7 @@ export const useDispatchStore = defineStore('dispatch', () => {
     count: vehicles.value.filter(v => vehicleCategory(v, allTasks.value, fresh.value) === key).length
   })));
 
-  const ringSegments = computed(() => [
-    { label: '执行', value: allTasks.value.filter(t => isRunningStage(t.stage)).length, color: '#31c6e6' },
-    { label: '等待', value: allTasks.value.filter(t => ['Created', 'WaitingForVehicle'].includes(t.stage)).length, color: '#e9b34f' },
-    { label: '完成', value: allTasks.value.filter(t => t.stage === 'Completed').length, color: '#25d3a4' },
-    { label: '异常/其他', value: allTasks.value.filter(t => !isRunningStage(t.stage) && !['Created', 'WaitingForVehicle', 'Completed'].includes(t.stage)).length, color: '#ee668b' }
-  ]);
+  const ringSegments = computed(() => taskStageSegments(taskSummary.value));
 
   const mapVehicleCount = computed(() => snapshot.value ? vehicles.value.filter(v => mayPlot(snapshot.value!, v, now.value)).length : 0);
 
@@ -214,7 +211,7 @@ export const useDispatchStore = defineStore('dispatch', () => {
   return {
     snapshot, error, sceneError, now, submissionEnabled, cancellationEnabled, adapterIdentity,engineeringSimulationOnly,engineeringRuntimeApplyEnabled,
     fresh, vehicles, allTasks, equipment, resources, alarms, openAlarms,
-    activeCount, vehicleStats, ringSegments, mapVehicleCount,
+    activeCount, vehicleStats, ringSegments, taskSummary, mapVehicleCount,
     api, connectBackend, connectDemo, stopConnection, dispose,
     startNowTimer, stopNowTimer, previewMap, demoMode,rehearsalPhase,setRehearsal,demoTaskDetail
   };

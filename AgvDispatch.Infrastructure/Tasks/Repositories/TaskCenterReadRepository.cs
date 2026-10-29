@@ -9,9 +9,7 @@ public sealed partial class TaskCenterReadRepository(ISqlSugarClient database) :
 {
     public async Task<TaskListPage> QueryAsync(TaskListQuery query, CancellationToken cancellationToken)
     {
-        if (!Enum.IsDefined(query.Filter) || query.Page < 1 || query.Page > 100000 ||
-            query.PageSize < 1 || query.PageSize > 100 || (query.Search?.Length ?? 0) > 128)
-            throw new ArgumentException("任务查询参数无效：每页1~100条，搜索词最多128字符。");
+        TaskListQueryValidation.Validate(query);
         var search = query.Search?.Trim() ?? "";
         var source = database.Queryable<DispatchTaskEntity>();
         source = query.Filter switch
@@ -26,11 +24,35 @@ public sealed partial class TaskCenterReadRepository(ISqlSugarClient database) :
         if (search.Length > 0)
             source = source.Where(t => t.TaskId.Contains(search) || t.StationId.Contains(search) ||
                 (t.VehicleId != null && t.VehicleId.Contains(search)));
-        var count = await source.Clone().CountAsync(cancellationToken);
+        // Dispatch timestamps are stored as local DateTime by the existing writer.
+        // Convert offset-bearing browser input to that same frame, including UTC input.
+        if (query.From is { } from)
+        {
+            var localFrom = from.LocalDateTime;
+            source = source.Where(t => t.CreatedAt >= localFrom);
+        }
+        if (query.To is { } to)
+        {
+            var localTo = to.LocalDateTime;
+            source = source.Where(t => t.CreatedAt < localTo);
+        }
+        var stages = await source.Clone().GroupBy(t => t.Stage)
+            .Select(t => new { t.Stage, Count = SqlFunc.AggregateCount(t.TaskId) }).ToListAsync(cancellationToken);
+        var count = stages.Sum(t => t.Count);
+        int Sum(Func<int, bool> matches) => stages.Where(t => matches(t.Stage)).Sum(t => t.Count);
+        var waiting = Sum(s => s is 0 or 10);
+        var running = Sum(s => s is >= 15 and <= 80);
+        var completed = Sum(s => s == 90);
+        var cancelled = Sum(s => s == 110);
+        var failed = Sum(s => s is 100 or 120 or 130);
         var rows = await source.OrderBy(t => t.CreatedAt, OrderByType.Desc)
             .OrderBy(t => t.TaskId).Skip((query.Page - 1) * query.PageSize)
             .Take(query.PageSize).ToListAsync(cancellationToken);
-        return new(rows.Select(ToRow).ToArray(), count, query.Page, query.PageSize);
+        return new(rows.Select(ToRow).ToArray(), count, query.Page, query.PageSize)
+        {
+            Summary = new(count, running, waiting, completed, cancelled, failed,
+                count - running - waiting - completed - cancelled - failed)
+        };
     }
 
     public Task<TaskCenterDetail?> GetDetailAsync(string taskId, CancellationToken cancellationToken) => GetDetailAsync(new TaskDetailRequest(taskId), cancellationToken);

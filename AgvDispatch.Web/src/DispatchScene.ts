@@ -9,6 +9,7 @@ import './scene-labels.css';
 import {DisplayAreasScene} from './DisplayAreasScene';
 import type {DisplayArea} from './display-areas';
 import {annotationLabel} from './area-annotations';
+import {placeMapLabels,type LabelRect,type MapLabelInput,type MapLabelMode} from './map-label-layout';
 
 const VEHICLE_COLORS: Record<string, string> = {
   running: '#21dca3', waiting: '#eeb85c', idle: '#ad8aeb', charging: '#5aaee8',
@@ -34,6 +35,11 @@ export class DispatchScene {
   private mode: 'top' | 'isometric' = 'top';
   private pick = new THREE.Raycaster();
   private onPointer: (event: PointerEvent) => void;
+  private onHover: (event: PointerEvent) => void;
+  private onLeave = () => { this.hoveredStation=''; };
+  private hoveredStation='';
+  private labelMode:MapLabelMode='auto';
+
 
   private vehiclePool = new Map<string, { group: THREE.Group; label: SceneLabel; ring: THREE.Mesh | null }>();
   private labelLayer=document.createElement('div');
@@ -72,12 +78,28 @@ export class DispatchScene {
       } else this.displayAreas.hit(this.pick);
     };
     this.renderer.domElement.addEventListener('pointerup', this.onPointer);
+    this.onHover=event=>{
+      if(event.buttons)return;
+      const rect=this.renderer.domElement.getBoundingClientRect();
+      const x=event.clientX-rect.left,y=event.clientY-rect.top;
+      let nearest=14;this.hoveredStation='';
+      for(const label of this.stationLabels){
+        if(label.area)continue;
+        const p=label.anchor.clone().project(this.camera);
+        if(p.z<-1||p.z>1)continue;
+        const distance=Math.hypot((p.x+1)*rect.width/2-x,(1-p.y)*rect.height/2-y);
+        if(distance<nearest){nearest=distance;this.hoveredStation=label.id;}
+      }
+    };
+    this.renderer.domElement.addEventListener('pointermove',this.onHover);
+    this.renderer.domElement.addEventListener('pointerleave',this.onLeave);
     this.view('top');
     const animate = () => { this.frame = requestAnimationFrame(animate); this.controls.update();this.layoutLabels();this.displayAreas.layout(this.camera,this.viewportWidth,this.viewportHeight); this.renderer.render(this.scene, this.camera); };
     animate();
   }
 
   setDisplayAreas(areas:DisplayArea[],key:string){this.displayAreas.update(areas,key);}
+  setLabelMode(mode:MapLabelMode){this.labelMode=mode;this.layoutLabels();}
 
   update(snapshot: Snapshot | null, selected = '', selectedEdge = '', focus?:TrafficFocus, now=Date.now()) {
     const map = snapshot?.map;
@@ -165,7 +187,7 @@ export class DispatchScene {
     }
     for(const entry of this.vehiclePool.values()){entry.label.element.remove();entry.label.leader.remove();}
     this.vehiclePool.clear();
-    this.stationLabels.forEach(label=>{label.element.remove();label.leader.remove();});this.stationLabels=[];
+    this.stationLabels.forEach(label=>{label.element.remove();label.leader.remove();});this.stationLabels=[];this.hoveredStation='';
 
     if (!map?.nodes.length) return;
     let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
@@ -184,7 +206,7 @@ export class DispatchScene {
       const points=[...area.boundary,area.boundary[0]!].map(p=>new THREE.Vector3(p.x,-.06,-p.y));
       this.mapGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(points),new THREE.LineBasicMaterial({color:area.strokeColor})));
       const position=annotationLabel(area),label=this.makeSceneLabel(area.text,'station');
-      label.anchor.set(position.x,.02,-position.y);label.element.style.color=area.strokeColor;label.element.classList.add('vendor-area');this.stationLabels.push(label);
+      label.id='area:'+area.id;label.anchor.set(position.x,.02,-position.y);label.area=true;label.element.style.color=area.strokeColor;label.element.classList.add('vendor-area');this.stationLabels.push(label);
     }
 
     for (const edge of map.edges) {
@@ -200,6 +222,8 @@ export class DispatchScene {
       const marker=new THREE.Mesh(new THREE.RingGeometry(0.18,0.23,32),new THREE.MeshBasicMaterial({color:node.enabled?'#43d9b1':'#637083',side:THREE.DoubleSide}));
       marker.rotation.x=-Math.PI/2;marker.position.set(node.x,.04,-node.y);this.mapGroup.add(marker);
       const label=this.makeSceneLabel(node.agvSiteId??node.id,'station');label.anchor.set(node.x,.05,-node.y);
+      label.id=node.id;label.priority=node.type==='Station'||node.type==='WaitingPoint'?20:10;
+
       label.element.classList.toggle('disabled',!node.enabled);this.stationLabels.push(label);
     }
     for (const resource of map.resources) {
@@ -215,7 +239,7 @@ export class DispatchScene {
 
   private makeSceneLabel(text:string,kind:'vehicle'|'station'):SceneLabel {
     const element=document.createElement('div');element.className=`scene-map-label ${kind}`;element.textContent=text;element.title=text;
-    const leader=document.createElement('div');leader.className='scene-label-leader';this.labelLayer.append(leader,element);return {element,leader,kind,anchor:new THREE.Vector3(),active:true};
+    const leader=document.createElement('div');leader.className='scene-label-leader';this.labelLayer.append(leader,element);return {id:kind+':'+text,priority:kind==='vehicle'?100:5,element,leader,kind,anchor:new THREE.Vector3(),active:true};
   }
 
   private layoutLabels(){
@@ -230,41 +254,32 @@ export class DispatchScene {
       if(corners.length)occupied.push({left:Math.min(...corners.map(p=>p.x))-5,top:Math.min(...corners.map(p=>p.y))-5,
         right:Math.max(...corners.map(p=>p.x))+5,bottom:Math.max(...corners.map(p=>p.y))+5});
     }
-    for(const label of [...Array.from(this.vehiclePool.values()).map(e=>e.label),...this.stationLabels]){
-      const el=label.element;label.leader.hidden=true;if(!label.active){el.hidden=true;continue;}
+    const labels=[...Array.from(this.vehiclePool.values()).map(e=>e.label),...this.stationLabels];
+    const inputs:MapLabelInput[]=[];
+    const byId=new Map<string,SceneLabel>();
+    for(const label of labels){
+      const el=label.element;label.leader.hidden=true;
+      if(!label.active){el.hidden=true;continue;}
       const p=label.anchor.clone().project(this.camera);
       if(p.z<-1||p.z>1||Math.abs(p.x)>1||Math.abs(p.y)>1){el.hidden=true;continue;}
-      el.hidden=false;const w=el.offsetWidth,h=el.offsetHeight,x=(p.x+1)*width/2,y=(1-p.y)*height/2;
-      const ringX=label.anchor.clone().add(new THREE.Vector3(.24,0,0)).project(this.camera);
-      const ringZ=label.anchor.clone().add(new THREE.Vector3(0,0,.24)).project(this.camera);
-      const gap=Math.max(15,Math.hypot((ringX.x-p.x)*width/2,(ringX.y-p.y)*height/2)+7,
-        Math.hypot((ringZ.x-p.x)*width/2,(ringZ.y-p.y)*height/2)+7);
-      const offsets=label.kind==='vehicle'
-        ? [[-w/2,-h-26],[20,-h/2],[-w-20,-h/2],[-w/2,28],[-w/2,-h-52]]
-        : [[gap,gap],[gap,-h-gap],[-w-gap,gap],[-w-gap,-h-gap],[-w/2,gap+15],[-w/2,-h-gap-15],[gap+15,-h/2],[-w-gap-15,-h/2]];
-      // Expand the search beyond the body instead of dropping a station hidden by a parked vehicle.
-      for(const radius of [24,48,80,120,180,260,360]){
-        for(const [dx,dy] of [[-w/2,-h-gap-radius],[gap+radius,-h/2],[-w/2,gap+radius],[-w-gap-radius,-h/2],
-          [gap+radius,gap+radius],[-w-gap-radius,-h-gap-radius]])offsets.push([dx!,dy!]);
+      // Reveal only for measurement. Placement either shows it near its node or
+      // hides it for this zoom level; no distant edge-of-viewport fallback.
+      el.hidden=false;
+      const focused=label.id===this.hoveredStation;
+      el.classList.toggle('focused',focused);
+      const x=(p.x+1)*width/2,y=(1-p.y)*height/2;
+      inputs.push({id:label.id,x,y,width:el.offsetWidth,height:el.offsetHeight,
+        kind:label.area?'area':label.kind,priority:label.priority,focused});
+      byId.set(label.id,label);el.hidden=true;
+    }
+    for(const placed of placeMapLabels(inputs,width,height,occupied,this.labelMode)){
+      const label=byId.get(placed.id)!;
+      label.element.hidden=false;
+      label.element.style.transform=`translate3d(${Math.round(placed.rect.left)}px,${Math.round(placed.rect.top)}px,0)`;
+      if(placed.leader){
+        label.leader.hidden=false;label.leader.style.width=`${placed.leader.length}px`;
+        label.leader.style.transform=`translate3d(${placed.leader.x}px,${placed.leader.y}px,0) rotate(${placed.leader.angle}rad)`;
       }
-      let chosen:LabelRect|undefined;
-      for(const [dx,dy] of offsets){
-        const rect={left:x+dx!,top:y+dy!,right:x+dx!+w,bottom:y+dy!+h};
-        if(rect.left<6||rect.top<6||rect.right>width-6||rect.bottom>height-6)continue;
-        if(occupied.some(r=>rect.left<r.right+6&&rect.right>r.left-6&&rect.top<r.bottom+6&&rect.bottom>r.top-6))continue;
-        chosen=rect;break;
-      }
-      if(!chosen){
-        // Last resort keeps the identifier visible at the viewport edge, even if the view is crowded.
-        const left=Math.max(6,Math.min(width-w-6,x+gap)),top=Math.max(6,Math.min(height-h-6,y+gap));
-        chosen={left,top,right:left+w,bottom:top+h};
-      }
-      el.style.transform=`translate3d(${Math.round(chosen.left)}px,${Math.round(chosen.top)}px,0)`;occupied.push(chosen);
-      const endX=Math.max(chosen.left,Math.min(chosen.right,x)),endY=Math.max(chosen.top,Math.min(chosen.bottom,y));
-      const lineLength=Math.hypot(endX-x,endY-y);
-      if(lineLength>32){label.leader.hidden=false;label.leader.style.width=`${lineLength}px`;
-        label.leader.style.transform=`translate3d(${x}px,${y}px,0) rotate(${Math.atan2(endY-y,endX-x)}rad)`;}
-
     }
   }
 
@@ -308,6 +323,8 @@ export class DispatchScene {
     this.resizeObserver.disconnect();
     this.controls.dispose();
     this.renderer.domElement.removeEventListener('pointerup', this.onPointer);
+    this.renderer.domElement.removeEventListener('pointermove',this.onHover);
+    this.renderer.domElement.removeEventListener('pointerleave',this.onLeave);
     this.clearGroup(this.mapGroup);
     this.clearGroup(this.vehicleGroup);this.clearResourceFocus();
     this.ringMaterial.dispose();
@@ -318,5 +335,4 @@ export class DispatchScene {
   }
 }
 
-interface SceneLabel {element:HTMLDivElement;leader:HTMLDivElement;kind:'vehicle'|'station';anchor:THREE.Vector3;active:boolean}
-interface LabelRect {left:number;top:number;right:number;bottom:number}
+interface SceneLabel {id:string;priority:number;area?:boolean;element:HTMLDivElement;leader:HTMLDivElement;kind:'vehicle'|'station';anchor:THREE.Vector3;active:boolean}

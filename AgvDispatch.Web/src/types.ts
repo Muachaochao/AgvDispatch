@@ -8,13 +8,15 @@ export interface Vehicle { vehicleId: string; displayName: string; connection: s
   navigationState: string | null; x: number | null; y: number | null; angle: number | null; localizationConfidence: number | null;
   mapPositionState: string; mapPositionMessage: string; lastSuccessfulPollAt: string | null; updatedAt: string; blocked: boolean | null; emergencyStopped: boolean | null; charging?: boolean | null }
 export interface TaskRow { taskId: string; stationId: string; vehicleId: string | null; stage: string; priority: number; createdAt: string; updatedAt: string; errorMessage?: string }
+export interface TaskListSummary { total: number; running: number; waiting: number; completed: number; cancelled: number; failed: number; other: number }
+export interface TaskPage { items: TaskRow[]; totalCount: number; page: number; pageSize: number; summary?: TaskListSummary | null }
 export interface DeviceField { name: string; value: string; quality: string; address: string; updatedAt: string }
 export interface Device { id: string; name: string; status: string; quality: string; summary: string; fields: DeviceField[] }
 export interface Snapshot { receivedAt: string; connected: boolean; source: 'demo' | 'backend'; error: string | null; map: WebMap | null;
   traffic?: TrafficObservation | null;
   alarms?: Alarm[];
   positionedVehicleIds: string[]; status: { service?:{version:string;startedAt:string};execution?:import('./commissioning').BackendExecution; generatedAt: string; agvs: Vehicle[]; safety: { dispatchingEnabled: boolean; plcWritesAllowed: boolean; agvCommandsAllowed: boolean }; plc: { state: string; goodSignals: number; totalSignals: number } } | null;
-  tasks: { items: TaskRow[]; totalCount: number } | null; devices: { equipment: Device[] } | null;
+  tasks: { items: TaskRow[]; totalCount: number; summary?: TaskListSummary | null } | null; devices: { equipment: Device[] } | null;
   resources: { resourceId: string; capacity: number; occupiedCount: number; leases: { vehicleId: string; taskId: string }[] }[] | null }
 export interface TaskDetail { cancellation?:{requestId:string;reason:string;requestedAt?:string;sendAttempts:number;sentAt?:string;confirmedAt?:string}; handshakeMode?:string; handshakeContractVersion?:string; handshakes?:HandshakeCheckpoint[]; handover?:HandoverDiagnosis; task: TaskRow; waitingExplanation: string; steps: { stepId?:string; observedPhase?:string; completionRequirement?:string; evidenceBoundary?:string; commandStateExplanation?:string; progressConditions?:ProgressCondition[]; sequence: number; stepType: string; status: string; isCurrent: boolean; waitingExplanation: string; vendorTaskId?: string; sourceSite?:string; destinationSite?:string; elapsedText?:string; timeoutText?:string; errorMessage?:string }[];
   diagnosticsObservedAt?:string; executionTimelineTotal?:number; executionTimeline?:ExecutionEvent[];
