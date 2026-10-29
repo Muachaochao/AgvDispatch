@@ -170,31 +170,24 @@ watch(() => route.query.create, create => {
 </script>
 
 <template>
-  <section class="management-page">
-    <header class="management-title">
-      <h2><IconListDetails :size="23" />业务任务</h2>
-      <span>{{ queriedTasks ? `查询共 ${tableCount} 条` : '正在读取任务记录' }}</span>
-      <button class="accent-button" @click="loadOptions()"><IconPlus :size="15" />创建任务</button>
-      <button @click="router.push('/engineering-tests')">工程测试</button>
-      <button @click="router.push('/')"><IconArrowLeft :size="15" />返回大屏</button>
+  <section class="management-page task-history-page">
+    <header class="task-page-header">
+      <div class="task-page-title"><IconListDetails :size="22" /><div><h2>业务任务</h2><small>历史、运行与完成记录</small></div></div>
+      <div class="task-page-actions"><span>{{ queriedTasks ? `${tableCount} 条记录` : '正在读取' }}</span><button class="accent-button" @click="loadOptions()"><IconPlus :size="15" />创建任务</button><button @click="router.push('/engineering-tests')">工程测试</button><button class="quiet-button" @click="router.push('/')"><IconArrowLeft :size="15" />大屏</button></div>
     </header>
-    <form class="query-bar task-history-query" @submit.prevent="queryTasks(1, true)">
-      <div class="history-main-filters">
-        <label>任务 / 工位 / 车辆<input v-model="search" maxlength="128" placeholder="输入关键词" aria-label="搜索任务" :disabled="queryBusy" /></label>
-        <label>任务状态<select v-model="taskFilter" aria-label="筛选任务状态" :disabled="queryBusy"><option value="all">全部</option><option value="waiting">待派车</option><option value="running">执行中</option><option value="completed">已完成</option><option value="failed">异常</option><option value="cancelled">已取消</option></select></label>
-        <button type="submit" class="accent-button" :disabled="queryBusy || !store.fresh"><IconSearch :size="15" />{{ queryBusy ? '查询中' : '查询' }}</button>
-        <button type="button" :disabled="queryBusy" @click="resetTaskQuery"><ActionIcon name="refresh"/>重置</button>
-      </div>
-      <div class="history-time-filters">
-        <span class="history-time-title">创建时间</span>
-        <label><span class="sr-only">创建时间从</span><input v-model="createdFrom" type="datetime-local" aria-label="创建时间从" :disabled="queryBusy" /></label>
-        <span>至</span>
-        <label><span class="sr-only">创建时间至</span><input v-model="createdTo" type="datetime-local" aria-label="创建时间至" :disabled="queryBusy" /></label>
-        <div class="history-presets" aria-label="快捷时间范围"><button v-for="item in ([['today', '今天'], ['yesterday', '昨天'], ['week', '近7天'], ['all', '全部时间']] as const)" :key="item[0]" type="button" :disabled="queryBusy || !store.fresh" @click="chooseTimeRange(item[0])">{{ item[1] }}</button></div>
-      </div>
-      <small>按本机时间查询创建记录；结束时刻不计入。可查询任意历史日期。</small>
+    <form class="task-query-toolbar" @submit.prevent="queryTasks(1, true)">
+      <label class="query-search"><IconSearch :size="14" /><input v-model="search" maxlength="128" placeholder="任务、工位或车辆" aria-label="搜索任务" :disabled="queryBusy" /></label>
+      <select v-model="taskFilter" aria-label="筛选任务状态" :disabled="queryBusy"><option value="all">全部状态</option><option value="waiting">待派车</option><option value="running">执行中</option><option value="completed">已完成</option><option value="failed">异常</option><option value="cancelled">已取消</option></select>
+      <div class="query-date-range"><input v-model="createdFrom" type="datetime-local" aria-label="创建时间从" :disabled="queryBusy" /><span>至</span><input v-model="createdTo" type="datetime-local" aria-label="创建时间至" :disabled="queryBusy" /></div>
+      <div class="history-presets" aria-label="快捷时间范围"><button v-for="item in ([['today', '今天'], ['yesterday', '昨天'], ['week', '近7天'], ['all', '全部时间']] as const)" :key="item[0]" type="button" :disabled="queryBusy || !store.fresh" @click="chooseTimeRange(item[0])">{{ item[1] }}</button></div>
+      <button type="submit" class="accent-button query-submit" :disabled="queryBusy || !store.fresh">{{ queryBusy ? '查询中' : '查询' }}</button>
+      <button type="button" class="quiet-button reset-submit" :disabled="queryBusy" @click="resetTaskQuery">重置</button>
     </form>
-    <div class="history-result-bar" role="status"><span>{{ store.demoMode ? '浏览器示例' : '后台历史记录' }} · {{ rangeText }}<span v-if="queriedAt"> · 查询于 {{ shortTime(queriedAt) }}</span></span><span v-if="queryChanged" class="pending-filter">条件已修改，点击查询应用；翻页沿用当前结果条件。</span></div>
+    <div class="task-result-head">
+      <span>{{ store.demoMode ? '示例记录' : '后台历史' }} · {{ rangeText }}<template v-if="queriedAt"> · {{ shortTime(queriedAt) }}</template></span>
+      <span v-if="queryChanged" class="pending-filter">条件有变化，请点击查询</span>
+      <span v-else class="task-time-note">本机时间 · 结束时刻不计入</span>
+    </div>
     <p v-if="queryError" class="inline-warning">{{ queryError }}</p>
     <div class="management-table">
       <table>
@@ -215,12 +208,12 @@ watch(() => route.query.create, create => {
       </table>
       <p v-if="!visibleTasks.length" class="empty-panel">{{ queryBusy ? '正在查询任务记录…' : queryError && !queriedTasks ? '读取失败，请重新查询。' : '当前条件下没有任务，可调整创建时间或状态。' }}</p>
     </div>
-    <footer class="pagination">
-      <span>共 {{ tableCount }} 条 · 当前 {{ pageStart }}–{{ tableCount ? pageStart + visibleTasks.length - 1 : 0 }} 条</span>
+    <footer class="task-result-footer">
+      <span>共 {{ tableCount }} 条 · 当前 {{ pageStart }}–{{ tableCount ? pageStart + visibleTasks.length - 1 : 0 }}</span>
       <label>每页<select v-model.number="pageSize" aria-label="每页任务条数" :disabled="queryBusy" @change="queryTasks(1, true)"><option :value="20">20条</option><option :value="50">50条</option><option :value="100">100条</option><option :value="200">200条</option></select></label>
-      <button :disabled="taskPage <= 1 || queryBusy" @click="queryTasks(taskPage - 1)"><IconChevronLeft :size="14" />上一页</button>
+      <button class="quiet-button" :disabled="taskPage <= 1 || queryBusy" @click="queryTasks(taskPage - 1)"><IconChevronLeft :size="14" />上一页</button>
       <b>{{ taskPage }} / {{ pages }}</b>
-      <button :disabled="taskPage >= pages || queryBusy" @click="queryTasks(taskPage + 1)">下一页<IconChevronRight :size="14" /></button>
+      <button class="quiet-button" :disabled="taskPage >= pages || queryBusy" @click="queryTasks(taskPage + 1)">下一页<IconChevronRight :size="14" /></button>
     </footer>
   </section>
 
@@ -264,14 +257,7 @@ watch(() => route.query.create, create => {
   </ConsoleDialog>
 </template>
 <style scoped>
-.task-history-query{display:flex;flex-direction:column;align-items:stretch;gap:12px}
-.history-main-filters,.history-time-filters{display:flex;flex-wrap:wrap;align-items:center;gap:12px}
-.history-main-filters label,.history-time-filters label{display:flex;align-items:center;gap:8px}
-.history-main-filters input{width:240px}.history-time-filters input{width:205px;color-scheme:dark}
-.history-time-title{min-width:64px;color:var(--text-secondary)}
-.history-presets{display:flex;flex-wrap:wrap;gap:6px}.history-presets button{padding:6px 10px;font-size:12px}
-.history-result-bar{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;padding:0 4px 10px;font-size:12px;color:var(--text-secondary)}
-.pending-filter{color:#e9b34f}.pagination{flex-wrap:wrap;gap:12px}.pagination label{display:flex;align-items:center;gap:7px}.pagination select{padding:6px 10px}
-.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
-@media(max-width:800px){.history-main-filters label{flex:1 1 200px}.history-main-filters input{width:100%;min-width:100px}.history-time-filters{gap:8px}.history-time-filters input{width:180px}.history-presets{width:100%}}
+.task-history-page{gap:8px}.task-page-header{display:flex;align-items:center;justify-content:space-between;gap:18px;min-height:52px;padding:2px 2px 7px;border-bottom:1px solid #243858}.task-page-title{display:flex;align-items:center;gap:10px;color:#54cadf}.task-page-title h2{color:#d9eafb;font-size:19px;letter-spacing:.8px}.task-page-title small{display:block;margin-top:4px;color:#7089aa;font-size:10px}.task-page-actions{display:flex;align-items:center;gap:7px}.task-page-actions>span{margin-right:6px;color:#6f9fba;font-size:11px}.task-query-toolbar{display:grid;grid-template-columns:minmax(170px,1.25fr) minmax(110px,.55fr) minmax(300px,1.3fr) auto auto auto;align-items:center;gap:7px;padding:8px 10px;border:1px solid #233a5d;border-radius:5px;background:#0e1932}.task-query-toolbar input,.task-query-toolbar select,.task-query-toolbar button{min-height:31px;height:31px}.query-search{display:flex;align-items:center;gap:7px;min-width:0;padding-left:9px;border:1px solid #2b4168;border-radius:3px;background:#0a1530;color:#667f9f}.query-search input{width:100%;padding:4px 7px;border:0;background:transparent}.query-date-range{display:flex;align-items:center;gap:6px;min-width:0}.query-date-range input{width:100%;min-width:126px;padding:4px 7px;color-scheme:dark}.query-date-range>span{color:#7088a8;font-size:10px}.history-presets{display:flex;gap:2px}.history-presets button{height:31px;min-height:31px;padding:4px 8px;border-color:transparent;background:transparent;color:#7f99ba;font-size:10px}.history-presets button:hover{border-color:#2f6081;background:#132947}.query-submit,.reset-submit{padding:4px 12px}.quiet-button{border-color:transparent;background:transparent}.task-result-head{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:26px;padding:2px 4px 0;color:#7890af;font-size:10px}.task-time-note{color:#5e789b}.pending-filter{color:#e9b34f}.management-table{min-height:260px}.task-result-footer{display:flex;align-items:center;justify-content:flex-end;gap:9px;min-height:35px;padding:2px 2px 4px;color:#7890ae;font-size:10px}.task-result-footer>span{margin-right:auto}.task-result-footer label{display:flex;align-items:center;gap:6px}.task-result-footer select{min-height:28px;padding:3px 7px}.task-result-footer button{min-height:28px;padding:4px 8px}.task-result-footer b{font-weight:400;font-size:10px;color:#9cb2cb}.task-history-page>.inline-warning{margin:0}
+@media(max-width:1200px){.task-query-toolbar{grid-template-columns:minmax(170px,1fr) 125px minmax(280px,1.3fr) auto auto}.history-presets{grid-column:1/-1;justify-self:end}.reset-submit{display:none}}
+@media(max-width:780px){.task-page-header{align-items:flex-start;flex-wrap:wrap}.task-page-actions{width:100%;flex-wrap:wrap}.task-page-actions>span{margin-right:auto}.task-query-toolbar{grid-template-columns:1fr 1fr}.query-search,.query-date-range{grid-column:1/-1}.history-presets{grid-column:1/-1;justify-self:start}.query-submit{grid-column:2}.task-result-head{flex-wrap:wrap}.task-result-footer{flex-wrap:wrap}.task-result-footer>span{width:100%}}
 </style>
