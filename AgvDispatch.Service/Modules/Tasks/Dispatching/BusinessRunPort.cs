@@ -131,9 +131,19 @@ public sealed partial class BusinessRunPort(IManualTaskCreationService manual, I
         var currentMap = map.Current;
         string? block = ConfigurationBlock();
         vehicles.TryGet(run.Plan.VehicleId, out var v);
-        if (v is null || !Fresh(v.LastSuccessfulPollAt) || v.Connection != ConnectionState.Online || v.Quality != SignalQuality.Good ||
-            v.Blocked is not false || v.EmergencyStopped is not false || v.LocalizationConfidence is not >= .5 ||
-            v.Alarms.Any(a => a.Severity is AgvAlarmSeverity.Error or AgvAlarmSeverity.Fatal)) block ??= "车辆实时状态、定位或健康状态未就绪。";
+        if (v is null || !Fresh(v.LastSuccessfulPollAt) || v.Connection != ConnectionState.Online ||
+            v.Quality != SignalQuality.Good || v.EmergencyStopped is not false || v.LocalizationConfidence is not >= .5)
+            block ??= "车辆实时状态、定位或健康状态未就绪。";
+        else
+        {
+            var repeated = v.Alarms.Where(a => a.Severity is AgvAlarmSeverity.Error or AgvAlarmSeverity.Fatal).ToArray();
+            // 52200 is the vehicle's local obstacle-avoidance state. The original
+            // vendor task owns that waiting behavior; it must not freeze the business
+            // session or start a second motion command. Genuine failures still block.
+            var failures = repeated.Where(a => !IsLocalTrafficObstacle(a)).ToArray();
+            if (failures.Length > 0)
+                block ??= "车辆存在未恢复报警：" + string.Join("、", failures.Select(a => a.Code).Distinct());
+        }
         var rows = signals.GetAll();
         bool Value(string station, string name, bool expected)
         {
@@ -185,11 +195,26 @@ public sealed partial class BusinessRunPort(IManualTaskCreationService manual, I
     }
     public async Task<string> CreateAsync(BusinessRunRecord run, string station, string requestId, CancellationToken ct)
     {
-        var result = await manual.CreateAsync(TrafficUserContext.LocalOperation(run.Operator),
-            new(requestId, station, run.Plan.VehicleId, 50, run.MapId, run.MapVersionId) { ParameterRevision = run.ParameterRevision }, ct);
-        if (!result.Accepted || result.TaskId is null) throw new InvalidOperationException(result.Message);
-        return result.TaskId;
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(12);
+        while (true)
+        {
+            var result = await manual.CreateAsync(TrafficUserContext.LocalOperation(run.Operator),
+                new(requestId, station, run.Plan.VehicleId, 50, run.MapId, run.MapVersionId) { ParameterRevision = run.ParameterRevision }, ct);
+            if (result.Accepted && result.TaskId is not null) return result.TaskId;
+            if (!IsRetryableCreationBlock(result.Message) || DateTimeOffset.UtcNow >= deadline)
+                throw new InvalidOperationException(result.Message);
+            // No vehicle command exists before task creation. Reuse the same durable
+            // request id while the station-state poll catches up with the next PLC call.
+            await Task.Delay(250, ct);
+        }
     }
+
+    public static bool IsRetryableCreationBlock(string? message) =>
+        message?.Contains("暂无满足 PLC 条件和路径要求", StringComparison.Ordinal) == true ||
+        message?.Contains("PLC条件尚未满足", StringComparison.Ordinal) == true;
+
+    public static bool IsLocalTrafficObstacle(AgvAlarmSnapshot alarm) =>
+        string.Equals(alarm.Code?.Trim(), "52200", StringComparison.Ordinal);
     public async Task<string> ReturnAsync(BusinessRunRecord run, CancellationToken ct)
     {
         using var lease = await gate.EnterAsync(MapExecutionOperation.NewWork, ct)

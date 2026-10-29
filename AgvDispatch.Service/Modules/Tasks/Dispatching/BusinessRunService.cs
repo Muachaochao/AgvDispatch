@@ -206,6 +206,10 @@ public sealed class BusinessRunService(IBusinessRunPort port, BusinessRunOwnersh
             var next = run.Plan.Stations.FirstOrDefault(s => o.Calls.Contains(s));
             if (next is null && o.Calls.Length > 0)
             { run = run with { Message = "有未参与工位呼叫，保留呼叫等待处理，不宣告无任务返回待机。" }; Save(); return; }
+            if (next is null && !run.StopRequested && run.Plan.Mode == "Cycle" &&
+                run.CompletedJobs < run.Plan.Rounds * run.Plan.Stations.Length &&
+                DateTimeOffset.UtcNow - run.UpdatedAt < TimeSpan.FromSeconds(10))
+                return; // The PLC tool raises the first simulated call just after the run is armed.
             if (next is not null)
             {
                 if (o.AnyActiveTasks || !o.Stopped) return;

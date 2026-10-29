@@ -75,7 +75,7 @@ public sealed partial class BusinessRunPort
             var transport = detail.Steps.SingleOrDefault(s => s.StepType == pair.Item1);
             if (transport is not { Status: DispatchTaskStepStatus.Completed, StartedAt: { }, CompletedAt: { } } ||
                 transport.VehicleId != run.Plan.VehicleId || string.IsNullOrWhiteSpace(transport.VendorTaskId) ||
-                transport.CompletedAt < transport.StartedAt || transport.CompletedAt < run.UpdatedAt ||
+                transport.CompletedAt < transport.StartedAt || transport.CompletedAt < detail.Task.CreatedAt ||
                 transport.CompletedAt > DateTimeOffset.UtcNow)
                 throw new InvalidOperationException("模拟箱体反馈缺少本轮原运输步骤完成证据。");
             return transport;

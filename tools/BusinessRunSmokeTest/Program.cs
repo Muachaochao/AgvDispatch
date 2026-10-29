@@ -51,6 +51,11 @@ await Reject(() => demand.Service.StartAsync(user, plan with { Rounds = 2 }, def
 
 var cycle = Fixture(); await cycle.Service.StartAsync(user, Plan("Cycle"), default);
 Check(cycle.Port.SimulatorStarts == 1, "cycle asks PLC tool to generate calls");
+cycle.Port.Site = "LM4";
+await cycle.Service.TickAsync(default);
+Check(cycle.Port.Returns == 0 && (await Row(cycle.Service)).Stage == "Waiting",
+    "cycle waits briefly for the first simulated call before returning to standby");
+cycle.Port.Site = "LM7";
 foreach (var station in new[]{"CNC-001","CNC-002"})
 {
     cycle.Port.Calls = [station]; await cycle.Service.TickAsync(default);
@@ -59,6 +64,12 @@ foreach (var station in new[]{"CNC-001","CNC-002"})
 }
 await cycle.Service.TickAsync(default);
 Check((await Row(cycle.Service)).Stage == "Completed" && cycle.Port.Creates == 2 && cycle.Port.SimulatorStops == 1 && !cycle.Ownership.Active, "one round is A+B and closes at standby");
+var betweenCalls = Fixture(); await betweenCalls.Service.StartAsync(user, Plan("Cycle", 2) with { Stations = ["CNC-001"] }, default);
+betweenCalls.Port.Calls = ["CNC-001"]; await betweenCalls.Service.TickAsync(default);
+betweenCalls.Port.TaskState = "Completed"; betweenCalls.Port.Active = false; betweenCalls.Port.Calls = [];
+await betweenCalls.Service.TickAsync(default);
+Check((await Row(betweenCalls.Service)).Stage == "Waiting" && betweenCalls.Port.Creates == 1,
+    "cycle leaves a brief second-call window before deciding no work remains");
 var old = (await Row(cycle.Service)).Plan;
 await cycle.Service.StartAsync(user, Plan("Cycle"), default);
 await Reject(() => cycle.Service.StartAsync(user, old, default), "old request replay while current active");
@@ -140,6 +151,13 @@ Check(BusinessRunPort.VehicleConfigurationError(badVehicle, "AGV-01")!.Contains(
 Check(BusinessRunPort.VehicleConfigurationError(badVehicle, "MISSING")!.Contains("未配置"), "missing selected vehicle is explicit");
 var ownedVehicle = noCall with { Vehicles = [new("AGV-01", "AGV-01", "LM7", false, "在线空闲，定位正常。")] };
 Check(BusinessRunPort.VehicleConfigurationError(ownedVehicle, "AGV-01") is null, "run ownership is not mistaken for an exit configuration failure during reviewed closure");
+Check(BusinessRunPort.IsRetryableCreationBlock("暂无满足 PLC 条件和路径要求的工位") &&
+    BusinessRunPort.IsRetryableCreationBlock("PLC条件尚未满足。") &&
+    !BusinessRunPort.IsRetryableCreationBlock("工位故障或通讯无效：CNC-001"),
+    "only transient station-state readiness blocks are retried before task creation");
+Check(BusinessRunPort.IsLocalTrafficObstacle(new("52200", AgvDispatch.Domain.Agvs.AgvAlarmSeverity.Error, "robot is blocked")) &&
+    !BusinessRunPort.IsLocalTrafficObstacle(new("51001", AgvDispatch.Domain.Agvs.AgvAlarmSeverity.Error, "motor fault")),
+    "local obstacle alarms are debounced without hiding unrelated vehicle faults");
 var retirementPath = Path.Combine(root, "retirements.json");
 var owner = new BusinessRunOwnership(); owner.LoadRetirements(retirementPath);
 var pendingId = Guid.NewGuid().ToString("N");

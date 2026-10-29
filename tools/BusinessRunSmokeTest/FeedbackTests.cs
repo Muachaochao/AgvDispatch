@@ -20,8 +20,9 @@ internal static class FeedbackTests
         var steps = types.Select((type, i) => new TaskStepDetail("step-" + i, i + 1, type,
             i == 0 ? DispatchTaskStepStatus.Completed : i == 1 ? DispatchTaskStepStatus.Ready : DispatchTaskStepStatus.Pending,
             "AGV-01", "LM7", "LM2", "vendor-" + i, 0, now.AddSeconds(-10), now.AddSeconds(-1), null)).ToArray();
-        var detail = new TaskCenterDetail(new("task", "CNC-001", "AGV-01", DispatchTaskStage.PickingUp, 50, now, now, null), steps, [], [], [], "");
+        var detail = new TaskCenterDetail(new("task", "CNC-001", "AGV-01", DispatchTaskStage.PickingUp, 50, now.AddMinutes(-1), now, null), steps, [], [], [], "");
         Check(BusinessRunPort.SelectFeedbackStep(run, detail)?.StepId == "step-0");
+        Check(BusinessRunPort.SelectFeedbackStep(run with { UpdatedAt = now.AddSeconds(1) }, detail)?.StepId == "step-0");
         var unassignedSteps = steps.Select((step, i) => step with {
             Status = i == 0 ? DispatchTaskStepStatus.Ready : DispatchTaskStepStatus.Pending,
             VehicleId = null, VendorTaskId = null, StartedAt = null, CompletedAt = null }).ToArray();
