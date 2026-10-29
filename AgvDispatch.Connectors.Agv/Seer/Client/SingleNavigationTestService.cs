@@ -25,15 +25,16 @@ public sealed partial class SingleNavigationTestService : ISingleNavigationTestS
     private readonly IActiveTaskLookup _tasks;
     private readonly IMapExecutionGate _execution;
     private readonly string _path;
+    private readonly IChargingDispatchGuard? _charging;
     private readonly SemaphoreSlim _mutex = new(1, 1);
     private NavigationTestPreview? _preview;
     private NavigationTestRecord? _record;
     private static bool Terminal(string? state) => state is "Completed" or "Failed" or "Cancelled";
 
     public SingleNavigationTestService(SingleNavigationTestOptions settings, AgvOptions options,
-        AgvConnectionManager connections, IActiveTaskLookup tasks, IMapExecutionGate execution, string path)
+        AgvConnectionManager connections, IActiveTaskLookup tasks, IMapExecutionGate execution, string path, IChargingDispatchGuard? charging=null)
     {
-        _settings=settings; _options=options; _connections=connections; _tasks=tasks; _execution=execution; _path=path;
+        _settings=settings; _options=options; _connections=connections; _tasks=tasks; _execution=execution; _path=path; _charging=charging;
         LoadJackRecord();
         LoadForkRecord();
         if(File.Exists(path))
@@ -50,6 +51,8 @@ public sealed partial class SingleNavigationTestService : ISingleNavigationTestS
     }
     private async Task<SeerRobotClient> GuardAsync(string vehicle, CancellationToken ct)
     {
+        if (_charging?.OwnsVehicle(vehicle) == true)
+            throw new InvalidOperationException("车辆仍有未闭合充电会话，不能执行独立导航或升降测试。");
         if(!_settings.Enabled || !_settings.BusinessExecutionDisabled || !_options.AllowCommands)
             throw new InvalidOperationException("单次导航或AGV动作未启用，或业务执行未关闭；不能混用自动调度。");
         if(string.IsNullOrWhiteSpace(_settings.VehicleId) || vehicle!=_settings.VehicleId)

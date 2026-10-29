@@ -95,8 +95,35 @@ builder.Services.AddSingleton<ICommunicationSettingsService>(provider => new Com
     provider.GetRequiredService<IActiveTaskLookup>(),
     provider.GetRequiredService<ILogger<CommunicationSettingsService>>(), provider.GetRequiredService<IMapExecutionGate>(),
     provider.GetRequiredService<IActiveMapRuntime>(), provider.GetRequiredService<AgvConnectionManager>(),
-    provider.GetRequiredService<AgvStateCache>(), agvOptions));
+    provider.GetRequiredService<AgvStateCache>(), agvOptions,provider.GetRequiredService<IChargingDispatchGuard>()));
 builder.Services.AddSingleton(agvOptions);
+var chargingOptions = new ChargingOptions();
+builder.Configuration.GetSection("Charging").Bind(chargingOptions);
+builder.Services.AddSingleton(chargingOptions);
+var chargingRobotOptions = new RobokitChargingRobotControlOptions();
+builder.Configuration.GetSection(RobokitChargingRobotControlOptions.SectionName).Bind(chargingRobotOptions);
+builder.Services.AddSingleton(chargingRobotOptions);
+builder.Services.AddSingleton<IChargingRobotControl, RobokitChargingRobotControl>();
+var chargingPath = Path.Combine(Path.GetDirectoryName(databaseOptions.DatabasePath)!, "charging-sessions.json");
+builder.Services.AddSingleton<IChargingRecoveryEvidence>(new ChargingSessionStore(chargingPath));
+builder.Services.AddSingleton<IChargingBusinessSafety, ChargingBusinessSafety>();
+builder.Services.AddSingleton<IChargingRuntimePort>(p => new ChargingRuntimePort(chargingOptions,
+    p.GetRequiredService<IAgvStateCache>(), p.GetRequiredService<IActiveTaskLookup>(), p.GetRequiredService<IActiveMapRuntime>(),
+    p.GetRequiredService<IMapExecutionGate>(), p.GetRequiredService<IRoutePlanner>(), p.GetRequiredService<ITrafficResourceManager>(),
+    p.GetRequiredService<ITrafficResourceControlService>(), p.GetRequiredService<IAgvGateway>(), p.GetRequiredService<IRobokitTaskMapPreflight>(),
+    () => p.GetRequiredService<FleetTestOwnership>().Active
+        ? "联调会话尚未闭合，等待原箱体循环安全结束。"
+        : builder.Configuration.GetValue("NavigationTest:Enabled",false) || builder.Configuration.GetValue("PlcCycleTest:Enabled",false) || builder.Configuration.GetValue("FleetTest:Enabled",false)
+            ? "独立导航或联调启动模式禁止自动充电，请核对原测试并切换正式运行模式。"
+            : !chargingRobotOptions.RelayControlConfirmed ? "厂家充电继电器及充电桩对接尚未现场核定，自动充电保持排队。" : null,
+    businessSafety:p.GetRequiredService<IChargingBusinessSafety>(),
+    vehicleBlock:id => p.GetRequiredService<BusinessRunOwnership>() is {Active:true} owner &&
+        string.Equals(owner.Vehicle,id,StringComparison.OrdinalIgnoreCase) ? "当前车辆业务运行尚未安全交接，等待整轮箱体循环结束。" : null));
+builder.Services.AddSingleton(p => new ChargingService(chargingOptions, p.GetRequiredService<IChargingRuntimePort>(),
+    p.GetRequiredService<IChargingRobotControl>(), chargingPath, p.GetRequiredService<ILogger<ChargingService>>()));
+builder.Services.AddSingleton<IChargingService>(p => p.GetRequiredService<ChargingService>());
+builder.Services.AddSingleton<IChargingDispatchGuard>(p => p.GetRequiredService<ChargingService>());
+builder.Services.AddHostedService(p => p.GetRequiredService<ChargingService>());
 builder.Services.AddSingleton<AgvStateCache>();
 builder.Services.AddSingleton<IAgvStateCache>(
     provider => provider.GetRequiredService<AgvStateCache>());
@@ -112,7 +139,7 @@ builder.Services.AddSingleton<ISingleNavigationTestService>(p => new SingleNavig
         BusinessExecutionDisabled=new[]{"Dispatching:Enabled","AgvCommandOutbox:Enabled","DispatchTaskSteps:Enabled","TaskCreation:Enabled","HandshakeExecution:Enabled"}
             .All(key=>builder.Configuration.GetValue<bool?>(key)==false)
     },agvOptions,p.GetRequiredService<AgvConnectionManager>(),p.GetRequiredService<IActiveTaskLookup>(),
-    p.GetRequiredService<IMapExecutionGate>(),Path.Combine(Path.GetDirectoryName(databaseOptions.DatabasePath)!,builder.Configuration.GetValue("NavigationTest:ForkEnabled",false)?"navigation-test.fork.json":"navigation-test.json")));
+    p.GetRequiredService<IMapExecutionGate>(),Path.Combine(Path.GetDirectoryName(databaseOptions.DatabasePath)!,builder.Configuration.GetValue("NavigationTest:ForkEnabled",false)?"navigation-test.fork.json":"navigation-test.json"),p.GetRequiredService<IChargingDispatchGuard>()));
 var plcCycleTestOptions = new PlcCycleTestOptions();
 builder.Configuration.GetSection("PlcCycleTest").Bind(plcCycleTestOptions);
 builder.Services.AddSingleton(plcCycleTestOptions);
@@ -141,7 +168,9 @@ builder.Services.AddSingleton<IRobokitInspectionHistory, RobokitInspectionHistor
 builder.Services.AddSingleton<IRobokitTaskMapPreflight, RobokitTaskMapPreflight>();
 builder.Services.AddSingleton<AgvTransportChainLookup>();
 builder.Services.AddSingleton(new BusinessStandbyChains(Path.Combine(Path.GetDirectoryName(databaseOptions.DatabasePath)!, "standby-chains")));
-builder.Services.AddSingleton<IAgvTransportChainLookup, BusinessTransportChainLookup>();
+builder.Services.AddSingleton<IAgvTransportChainLookup>(p => new BusinessTransportChainLookup(
+    p.GetRequiredService<AgvTransportChainLookup>(),p.GetRequiredService<BusinessStandbyChains>(),
+    id => p.GetRequiredService<ChargingService>().FindChain(id)));
 builder.Services.AddSingleton<SeerAgvGateway>();
 builder.Services.AddSingleton<IAgvGateway>(
     provider => provider.GetRequiredService<SeerAgvGateway>());
@@ -182,9 +211,9 @@ builder.Services.AddSingleton<IBusinessRunPort>(p => new BusinessRunPort(
     p.GetRequiredService<IMapExecutionGate>(), taskParameterRuntime, taskCreationOptions, dispatchOrchestratorOptions,
     p.GetRequiredService<DispatchTaskStepOptions>(), plcCycleTestOptions, p.GetRequiredService<IAgvGateway>(),
     p.GetRequiredService<IRoutePlanner>(), p.GetRequiredService<ITrafficResourceManager>(), p.GetRequiredService<IRobokitTaskMapPreflight>(),
-    p.GetRequiredService<BusinessStandbyChains>(), p.GetRequiredService<ITrafficResourceControlService>(), p.GetRequiredService<ISingleNavigationTestService>(), PlcCycleTestPort.AllPlcsAreLoopback(plcConnections), p.GetRequiredService<IManualTaskCreationRepository>(), p.GetRequiredService<BusinessRunOwnership>(),fleetTestOptions,p.GetRequiredService<FleetTestOwnership>()));
+    p.GetRequiredService<BusinessStandbyChains>(), p.GetRequiredService<ITrafficResourceControlService>(), p.GetRequiredService<ISingleNavigationTestService>(), PlcCycleTestPort.AllPlcsAreLoopback(plcConnections), p.GetRequiredService<IManualTaskCreationRepository>(), p.GetRequiredService<BusinessRunOwnership>(),fleetTestOptions,p.GetRequiredService<FleetTestOwnership>(),p.GetRequiredService<IChargingDispatchGuard>()));
 builder.Services.AddSingleton(p => new BusinessRunService(p.GetRequiredService<IBusinessRunPort>(), p.GetRequiredService<BusinessRunOwnership>(),
-    Path.Combine(Path.GetDirectoryName(databaseOptions.DatabasePath)!, "business-run.json")));
+    Path.Combine(Path.GetDirectoryName(databaseOptions.DatabasePath)!, "business-run.json"),p.GetRequiredService<IChargingDispatchGuard>()));
 builder.Services.AddSingleton<IBusinessRunService>(p => p.GetRequiredService<BusinessRunService>());
 builder.Services.AddHostedService(p => p.GetRequiredService<BusinessRunService>());
 builder.Services.AddSingleton<IFleetTestPort>(p=>new FleetTestPort(fleetTestOptions,p.GetRequiredService<IBusinessRunService>(),p.GetRequiredService<IBusinessRunPort>(),
@@ -193,7 +222,7 @@ builder.Services.AddSingleton<IFleetTestPort>(p=>new FleetTestPort(fleetTestOpti
     p.GetRequiredService<IActiveMapRuntime>(),p.GetRequiredService<IMapExecutionGate>(),taskParameterRuntime,dispatchOrchestratorOptions,taskCreationOptions,
     p.GetRequiredService<HandshakeExecutionOptions>(),p.GetRequiredService<IRobokitTaskMapPreflight>(),p.GetRequiredService<ITrafficResourceControlService>(),
     p.GetRequiredService<IRoutePlanner>(),p.GetRequiredService<ITrafficResourceManager>(),p.GetRequiredService<IAgvGateway>(),
-    PlcCycleTestPort.AllPlcsAreLoopback(plcConnections)));
+    PlcCycleTestPort.AllPlcsAreLoopback(plcConnections),p.GetRequiredService<IChargingDispatchGuard>()));
 builder.Services.AddSingleton(p=>new FleetTestService(p.GetRequiredService<IFleetTestPort>(),p.GetRequiredService<FleetTestOwnership>(),
     Path.Combine(Path.GetDirectoryName(databaseOptions.DatabasePath)!,"fleet-test.json"),p.GetRequiredService<ILogger<FleetTestService>>(),fleetTestOptions));
 builder.Services.AddSingleton<IFleetTestService>(p=>p.GetRequiredService<FleetTestService>());

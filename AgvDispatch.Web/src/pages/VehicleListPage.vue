@@ -64,6 +64,7 @@ const filteredVehicles = computed(() => store.vehicles.filter(v =>
     <header class="management-title">
       <h2><IconRobot :size="23" />车辆列表</h2>
       <span>共 {{ store.vehicles.length }} 辆</span>
+      <button @click="router.push('/charging')">充电管理</button>
       <button class="accent-button" @click="router.push({ name: 'planning', query: { tab: 'vehicles' } })"><ActionIcon name="vehicle"/>新增 / 配置车辆</button>
       <button @click="router.push('/')"><IconArrowLeft :size="15" />返回大屏</button>
     </header>

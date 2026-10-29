@@ -16,7 +16,7 @@ public sealed partial class FleetTestPort(FleetTestOptions options,IBusinessRunS
     IActiveMapRuntime map,IMapExecutionGate gate,TaskParameterRuntime parameters,DispatchOrchestratorOptions dispatch,
     DispatchTaskCreationOptions creation,HandshakeExecutionOptions handshake,IRobokitTaskMapPreflight preflight,
     ITrafficResourceControlService traffic,IRoutePlanner planner,ITrafficResourceManager resources,
-    IAgvGateway gateway,bool simulatorOnly) : IFleetTestPort
+    IAgvGateway gateway,bool simulatorOnly,IChargingDispatchGuard? charging=null) : IFleetTestPort
 {
     private static readonly HttpClient lab=new(new SocketsHttpHandler{UseProxy=false,AllowAutoRedirect=false})
         {BaseAddress=new Uri("http://127.0.0.1:10201/"),Timeout=TimeSpan.FromSeconds(5)};
@@ -102,6 +102,8 @@ public sealed partial class FleetTestPort(FleetTestOptions options,IBusinessRunS
     }
     public async Task<(string MapId,string Version,string Revision)> ValidateAsync(FleetTestStart plan,CancellationToken ct)
     {
+        if (charging?.HasActiveSessions == true || plan.VehicleIds.Any(id=>charging?.AllowsNewBusiness(id)==false))
+            throw new InvalidOperationException("存在充电会话或参与车辆电量过低，不能启动新的联调用例。");
         Configuration();PlcHealthy();
         if(SelectionError(plan,options.VehicleIds,dispatch.StationVehiclePools) is {} selectionError)throw new InvalidOperationException(selectionError);
         if((await single.ReadAsync(ct)).Current is {Stage:not "Completed"})throw new InvalidOperationException("单车原运行尚未闭合。");

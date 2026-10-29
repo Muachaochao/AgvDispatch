@@ -32,7 +32,7 @@ public sealed class TrafficControlNamedPipeServer(
     ITrafficGeometryPreviewService? geometry=null,
     IRobokitInspectionService? robokit=null, IRobokitInspectionHistory? robokitHistory=null,IMapTransferLedger? mapTransfers=null, ITaskHandshakeStore? handshakes=null, ITaskDiagnosticArchiveService? diagnosticExports=null, ICommissioningQueryService? commissioning=null,
     ITrafficWaitingBayDepartureService? waitingBayDeparture=null, ISingleNavigationTestService? navigationTest=null, IRobotMapDownloadService? robotMapDownload=null,
-    IPlcCycleTestService? plcCycleTest=null, IBusinessRunService? businessRun=null, IFleetTestService? fleetTest=null) : IsolatedBackgroundService
+    IPlcCycleTestService? plcCycleTest=null, IBusinessRunService? businessRun=null, IFleetTestService? fleetTest=null, IChargingService? charging=null) : IsolatedBackgroundService
 {
     private async Task<RobokitInspectionSnapshot> InspectRobokitAsync(TrafficUserContext user,RobokitInspectionQuery query,CancellationToken ct)
     {
@@ -191,6 +191,8 @@ public sealed class TrafficControlNamedPipeServer(
         if (request.Operation == "SetVehicleConnection")
         {
             var q=Deserialize<SetVehicleConnectionRequest>(request.Payload);
+            if (charging?.OwnsVehicle(q.VehicleId) == true)
+                throw new InvalidOperationException("车辆充电会话尚未闭合，请先停止充电并核对离位后再更改连接。");
             if (!user.Has(TrafficPermission.ManageConnections)) throw new UnauthorizedAccessException("无车辆连接管理权限。");
             if (navigationTest is not null && (await navigationTest.ReadAsync(cancellationToken)) is { Enabled:true } n &&
                 n.VehicleId.Equals(q.VehicleId,StringComparison.OrdinalIgnoreCase))
@@ -217,6 +219,9 @@ public sealed class TrafficControlNamedPipeServer(
 
         return request.Operation switch
         {
+            "GetCharging" => Success(await (charging??throw new NotSupportedException("后台未更新充电调度。")).ReadAsync(cancellationToken)),
+            "StopCharging" => Success(await (charging??throw new NotSupportedException("后台未更新充电调度。")).RequestStopAsync(user,Deserialize<ChargingStopRequest>(request.Payload),cancellationToken)),
+            "ResolveCharging" => Success(await (charging??throw new NotSupportedException("后台未更新充电调度。")).ResolveHoldAsync(user,Deserialize<ChargingResolveRequest>(request.Payload),cancellationToken)),
             "GetForkTest" => Success(await (navigationTest??throw new NotSupportedException("货叉后台未更新。")).ReadForkAsync(cancellationToken)),
             "SubmitForkTest" => Success(await (navigationTest??throw new NotSupportedException("货叉后台未更新。")).SubmitForkAsync(user,Deserialize<ForkTestSubmit>(request.Payload),cancellationToken)),
             "StopForkTest" => Success(await (navigationTest??throw new NotSupportedException("货叉后台未更新。")).SubmitForkAsync(user,RequireForkStop(request.Payload),cancellationToken)),

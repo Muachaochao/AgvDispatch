@@ -6,7 +6,7 @@ namespace AgvDispatch.Service;
 
 // A durable session, not a second task executor. Nine-step tasks retain their own
 // outbox, handshake and cancellation rules. Uncertain sends never auto retry.
-public sealed class BusinessRunService(IBusinessRunPort port, BusinessRunOwnership ownership, string path)
+public sealed class BusinessRunService(IBusinessRunPort port, BusinessRunOwnership ownership, string path, IChargingDispatchGuard? charging=null)
     : IsolatedBackgroundService, IBusinessRunService
 {
     private readonly SemaphoreSlim mutex = new(1, 1);
@@ -45,6 +45,7 @@ public sealed class BusinessRunService(IBusinessRunPort port, BusinessRunOwnersh
         Authorize(user); await mutex.WaitAsync(ct);
         try
         {
+            using var chargingLease = charging is null ? null : await charging.EnterBusinessAsync(ct);
             if (run?.Plan.RequestId == plan.RequestId)
             {
                 if (JsonSerializer.Serialize(run.Plan) != JsonSerializer.Serialize(plan)) throw new ArgumentException("同一请求编号不能修改参数。");
@@ -62,6 +63,8 @@ public sealed class BusinessRunService(IBusinessRunPort port, BusinessRunOwnersh
                 plan.Stations.Any(s => string.IsNullOrWhiteSpace(s) || s.Length > 32 || s != s.Trim() || s.Any(char.IsControl)) || plan.Rounds is < 1 or > 100 ||
                 string.IsNullOrWhiteSpace(plan.VehicleId) || string.IsNullOrWhiteSpace(plan.StandbySite))
                 throw new ArgumentException("请核对模式、车辆、工位顺序、轮数及现场确认。");
+            if (charging?.AllowsNewBusiness(plan.VehicleId) == false)
+                throw new InvalidOperationException("车辆低电量或存在未闭合充电会话，不能启动新业务运行。");
             await port.ValidateAsync(plan, ct);
             var initial = new BusinessRunRecord(Guid.NewGuid().ToString("N"), plan, "", "", "", user.WindowsIdentity,
                 "Preparing", "准备运行", 0, null, null, null, false, DateTimeOffset.UtcNow);
@@ -202,6 +205,16 @@ public sealed class BusinessRunService(IBusinessRunPort port, BusinessRunOwnersh
                 return;
             }
             if (run.Stage != "Waiting") { Move("Hold", "存在未确定的发送意图，禁止自动重发。"); return; }
+            if (charging?.AllowsNewBusiness(run.Plan.VehicleId) == false)
+            {
+                // Finish the entire box cycle before handing the vehicle to charging.
+                // Pending P calls stay latched for a different vehicle or a later run.
+                if (!o.AllClosed || o.AnyActiveTasks || !o.Stopped) return;
+                if (run.Plan.Mode == "Cycle") await port.SimulatorAsync(run, true, ct);
+                Move("Completed", "电量达到充电门限：原箱体循环及设备握手已闭合，停止接新业务，车辆原位交给充电调度；未清除工位呼叫。");
+                ownership.Set(null); ownership.Returning = false;
+                return;
+            }
             var finished = run.Plan.Mode == "Cycle" && run.CompletedJobs >= run.Plan.Rounds * run.Plan.Stations.Length;
             var next = run.Plan.Stations.FirstOrDefault(s => o.Calls.Contains(s));
             if (next is null && o.Calls.Length > 0)

@@ -30,8 +30,9 @@ public sealed class BusinessStandbyChains(string directory)
     }
 }
 public sealed class BusinessTransportChainLookup(AgvDispatch.Infrastructure.Persistence.AgvTransportChainLookup normal,
-    BusinessStandbyChains standby) : IAgvTransportChainLookup
+    BusinessStandbyChains standby, Func<string,AgvTransportChain?>? charging=null) : IAgvTransportChainLookup
 {
     public Task<AgvTransportChain?> FindAsync(string id, CancellationToken ct) =>
+        id.StartsWith("CHARGE-", StringComparison.Ordinal) ? Task.FromResult(charging?.Invoke(id)) :
         id.StartsWith("STANDBY-", StringComparison.Ordinal) ? Task.FromResult(standby.Find(id)) : normal.FindAsync(id, ct);
 }

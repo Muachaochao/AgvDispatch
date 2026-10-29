@@ -70,6 +70,7 @@ foreach($bundleShared in @('AgvDispatch.Application.dll','AgvDispatch.Domain.dll
 New-Item -ItemType Directory -Path (Join-Path $bundleOutput 'Web/licenses') -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $bundleProject 'AgvDispatch.Web/src/vendor/agv-web-visible/LICENSE'),(Join-Path $bundleProject 'AgvDispatch.Web/src/vendor/agv-web-visible/UPSTREAM.md') -Destination (Join-Path $bundleOutput 'Web/licenses')
 New-Item -ItemType Directory -Path (Join-Path $bundleOutput 'Docs') -Force | Out-Null
+Copy-Item -LiteralPath (Join-Path $bundleProject 'docs/commissioning/自动充电调度与验收边界-20261030.md') -Destination (Join-Path $bundleOutput 'Docs')
 Copy-Item -LiteralPath (Join-Path $bundleProject 'docs/architecture/双车双工位竞争交接测试-20261027.md') -Destination (Join-Path $bundleOutput 'Docs')
 Copy-Item -LiteralPath (Join-Path $bundleProject 'docs/architecture/创建任务按需运行与交替循环-20261025.md') -Destination (Join-Path $bundleOutput 'Docs')
 Copy-Item -LiteralPath (Join-Path $bundleProject 'docs/architecture/循环模拟箱体原动作反馈-20261025.md'),(Join-Path $bundleProject 'docs/architecture/循环测试原申请核对收尾-20261025.md') -Destination (Join-Path $bundleOutput 'Docs')

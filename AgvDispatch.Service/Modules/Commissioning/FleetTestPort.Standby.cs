@@ -73,6 +73,8 @@ public sealed partial class FleetTestPort
         FleetTestRun run,FleetTestStandbyReturn[] returns,FleetTestStandbyReturn assignment,
         Action<FleetTestStandbyReturn> persistSendIntent,CancellationToken ct)
     {
+        using var chargingLease = charging is null ? null : await charging.EnterBusinessAsync(ct);
+        if (charging?.OwnsVehicle(assignment.VehicleId) == true) return null;
         using var lease=await gate.EnterAsync(MapExecutionOperation.NewWork,ct);
         if(lease is null)return null;
         var current=map.Current??throw new InvalidOperationException("运行地图不存在。");

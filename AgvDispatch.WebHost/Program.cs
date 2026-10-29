@@ -66,6 +66,7 @@ app.MapEngineeringApi();
 app.MapEngineeringCenterApi();
 app.MapEngineeringRuntimeApi(!engineeringSimulationOnly && builder.Configuration.GetValue("Web:EnableEngineeringRuntimeApply", false));
 app.MapNavigationTestApi();
+app.MapChargingApi();
 app.MapPlcCycleTestApi();
 app.MapRobotMapDownloadApi();
 app.MapWaitingApi();

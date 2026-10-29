@@ -3,6 +3,7 @@
 const router = createRouter({
   history: createWebHashHistory(),
   routes: [
+    { path: '/charging', name: 'charging', component: () => import('./pages/ChargingPage.vue') },
     { path: '/resource-review', name: 'resource-review', component: () => import('./pages/ResourceReviewPage.vue') },
     { path: '/engineering-runtime', name: 'engineering-runtime', component: () => import('./pages/EngineeringRuntimePage.vue') },
     { path: '/engineering', name: 'engineering-center', component: () => import('./pages/EngineeringCenterPage.vue') },

@@ -30,7 +30,8 @@ public sealed record RecoveryAudit(string Id, string SessionId, string TaskId, s
     public string DecisionText => Decision switch
     {
         "CloseCancelled" => "核对后关闭取消", "RuntimeReview" => "运行中现场核对", "BootHold" => "启动冻结", "Release" => "恢复放行", "ContinueOriginal" => "原节点续接", "RecordPhysicalCompletion" => "到站补记",
-        "VerifiedUnstarted" => "未开始请求已核对", "VerificationRevoked" => "撤销过期确认", "RecoveryWaiting" => "等待现场核对", "RecoveryRejected" => "拒绝恢复请求", _ => Decision
+        "VerifiedUnstarted" => "未开始请求已核对", "ChargingBootOwnership" => "充电启动归属快照", "VerifiedChargingClosed" => "充电现场关闭已核对",
+        "VerificationRevoked" => "撤销过期确认", "RecoveryWaiting" => "等待现场核对", "RecoveryRejected" => "拒绝恢复请求", _ => Decision
     };
 }
 public sealed record RecoveryStatus(string SessionId, bool Released, string Message,

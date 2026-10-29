@@ -13,7 +13,7 @@ public sealed partial class BusinessRunPort(IManualTaskCreationService manual, I
     DispatchTaskStepOptions steps, PlcCycleTestOptions isolated, IAgvGateway gateway,
     IRoutePlanner planner, ITrafficResourceManager resources, IRobokitTaskMapPreflight preflight,
     BusinessStandbyChains chains, ITrafficResourceControlService traffic, ISingleNavigationTestService navigation, bool simulatorOnly,
-    IManualTaskCreationRepository receipts, BusinessRunOwnership ownership, FleetTestOptions? fleetOptions=null,FleetTestOwnership? fleetOwnership=null) : IBusinessRunPort
+    IManualTaskCreationRepository receipts, BusinessRunOwnership ownership, FleetTestOptions? fleetOptions=null,FleetTestOwnership? fleetOwnership=null, IChargingDispatchGuard? charging=null) : IBusinessRunPort
 {
     private static readonly HttpClient lab = new(new SocketsHttpHandler { UseProxy = false, AllowAutoRedirect = false })
         { Timeout = TimeSpan.FromSeconds(5), BaseAddress = new Uri("http://127.0.0.1:10201/") };
@@ -222,6 +222,9 @@ public sealed partial class BusinessRunPort(IManualTaskCreationService manual, I
         AgvObstaclePolicy.IsLocalObstacle(alarm);
     public async Task<string> ReturnAsync(BusinessRunRecord run, CancellationToken ct)
     {
+        using var chargingLease = charging is null ? null : await charging.EnterBusinessAsync(ct);
+        if (charging?.OwnsVehicle(run.Plan.VehicleId) == true)
+            throw new InvalidOperationException("车辆充电会话尚未闭合，不能发送待机任务。");
         using var lease = await gate.EnterAsync(MapExecutionOperation.NewWork, ct)
             ?? throw new InvalidOperationException(gate.NewWorkBlockReason);
         if (run.PendingRequestId is { } pending && ownership.IsRetired(pending))

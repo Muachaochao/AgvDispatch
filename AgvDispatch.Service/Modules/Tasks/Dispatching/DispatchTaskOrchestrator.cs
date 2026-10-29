@@ -17,7 +17,7 @@ public sealed class DispatchTaskOrchestrator(
     MapOptions mapOptions,
     IRoutePlanner routePlanner,
     ITrafficResourceManager trafficResources,
-    IMapExecutionGate executionGate, IRobokitTaskMapPreflight? robokitMap = null, HandshakeExecutionOptions? handshakeOptions = null, PersistentHandshakeExecutor? handshake = null, BusinessRunOwnership? businessRun = null, FleetTestOwnership? fleetTest=null) : IsolatedBackgroundService
+    IMapExecutionGate executionGate, IRobokitTaskMapPreflight? robokitMap = null, HandshakeExecutionOptions? handshakeOptions = null, PersistentHandshakeExecutor? handshake = null, BusinessRunOwnership? businessRun = null, FleetTestOwnership? fleetTest=null, IChargingDispatchGuard? charging=null) : IsolatedBackgroundService
 {
     private readonly HashSet<string> _missingRouteWarnings =
         new(StringComparer.OrdinalIgnoreCase);
@@ -64,6 +64,7 @@ public sealed class DispatchTaskOrchestrator(
 
     private async Task RunCycleAsync(CancellationToken cancellationToken)
     {
+        using var chargingLease = charging is null ? null : await charging.EnterBusinessAsync(cancellationToken);
         using var execution = await executionGate.EnterAsync(MapExecutionOperation.ExistingWork, cancellationToken);
         if (execution is null) return;
         var connection = await agvGateway.GetConnectionStatusAsync(cancellationToken);
@@ -104,6 +105,7 @@ public sealed class DispatchTaskOrchestrator(
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var vehicles = await agvGateway.GetVehiclesAsync(cancellationToken);
         var idleVehicles = vehicles
+            .Where(vehicle => charging?.AllowsNewBusiness(vehicle.VehicleId) != false)
             .Where(vehicle => businessRun?.Returning != true || vehicle.VehicleId != businessRun.Vehicle)
             .Where(vehicle => vehicle.Connection == ConnectionState.Online)
             .Where(vehicle => IsPositionSafeForNewTask(vehicle.VehicleId))

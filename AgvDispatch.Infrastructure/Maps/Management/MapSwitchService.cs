@@ -12,7 +12,7 @@ namespace AgvDispatch.Infrastructure.Persistence;
 
 public sealed partial class MapSwitchService(ISqlSugarClient database, IMapExecutionGate gate,
     IActiveMapRuntime runtime, IAgvStateCache vehicles, IPlcSignalCache signals,
-    MapSwitchSafetySettings settings,IMapTransferRecoveryBarrier? mapTransfers=null, IBusinessRunInterlock? businessRun=null) : IMapSwitchService
+    MapSwitchSafetySettings settings,IMapTransferRecoveryBarrier? mapTransfers=null, IBusinessRunInterlock? businessRun=null, IChargingDispatchGuard? charging=null) : IMapSwitchService
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     { Converters = { new JsonStringEnumConverter() } };
@@ -45,6 +45,7 @@ public sealed partial class MapSwitchService(ISqlSugarClient database, IMapExecu
         using var control = await gate.EnterControlAsync(cancellationToken);
         if (gate.Mode == MapExecutionMode.Starting) return new(false, "运行地图尚未初始化。");
         if (businessRun?.Active == true) return new(false, "请先停止业务运行并完成待机收尾；原运行待核对时不能切图。");
+        if (charging?.HasReservedSessions == true) return new(false, "充电会话尚未闭合，须核对停止充电、离位及资源释放后再切图。");
         var existing = await OpenAsync(cancellationToken);
         if (existing is not null) return new(false, $"已有切换{existing.ReleaseId}，请先完成或取消。");
         var version = await database.Queryable<MapVersionEntity>().Where(row =>
@@ -177,6 +178,7 @@ public sealed partial class MapSwitchService(ISqlSugarClient database, IMapExecu
         bool requireStoppedStation,CancellationToken cancellationToken)
     {
         var blockers = new List<string>();
+        if (charging?.HasReservedSessions == true) blockers.Add("充电会话尚未闭合，保留原地图及充电资源。");
         if(mapTransfers?.IsOpen==false)blockers.Add("存在未处置的地图传输不确定记录，不能解除执行屏障。");
         var tasks = await database.Queryable<DispatchTaskEntity>().Where(row =>
             row.Stage != (int)DispatchTaskStage.Completed && row.Stage != (int)DispatchTaskStage.Faulted &&

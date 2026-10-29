@@ -22,7 +22,8 @@ public sealed class RecoveryBarrier : IRecoveryBarrier
 // Recovery never calls CreateTransportTask, writes PLC outputs, or releases traffic leases.
 public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, RecoveryBarrier barrier,
     IMapExecutionGate gate, IAgvGateway gateway, IAgvStateCache vehicles, IPlcSignalCache signals,
-    MapSwitchSafetySettings settings, IActiveMapRuntime map, IExecutionIdentityCache? identities = null, RecoveryIdentityOptions? identityOptions = null) : IExecutionRecoveryService
+    MapSwitchSafetySettings settings, IActiveMapRuntime map, IExecutionIdentityCache? identities = null, RecoveryIdentityOptions? identityOptions = null,
+    IChargingRecoveryEvidence? chargingRecovery = null) : IExecutionRecoveryService
 {
     private string _sessionId = "";
     private DateTimeOffset _started;
@@ -44,8 +45,14 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
         var commandOwners = await database.Queryable<AgvCommandOutboxEntity>()
             .Where(c => c.Status != (int)AgvCommandStatus.Sent && c.Status != (int)AgvCommandStatus.Cancelled)
             .Select(c => c.TaskId).ToListAsync(ct);
-        var leaseOwners = await database.Queryable<TrafficResourceLeaseEntity>().Select(l => l.TaskId).ToListAsync(ct);
+        var bootLeases = await database.Queryable<TrafficResourceLeaseEntity>().ToListAsync(ct);
+        var leaseOwners = bootLeases.Select(l => l.TaskId).ToList();
         var owners = active.Select(t => t.TaskId).Concat(commandOwners).Concat(leaseOwners).Distinct().ToList();
+        var chargingSnapshots = new List<ChargingBootOwnership>();
+        if (chargingRecovery is not null)
+            foreach (var owner in owners)
+                if (await chargingRecovery.ReadRecoverySessionAsync(owner, ct) is { } charging)
+                    chargingSnapshots.Add(new(charging, bootLeases.Where(l => l.TaskId == owner).ToArray()));
         if (settings.RequiredVehicleIds.Count > 0 || settings.CheckPlcSignals) owners.Add(SiteTask);
         var transaction = await database.Ado.UseTranAsync(async () =>
         {
@@ -58,6 +65,10 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
                     Reason = "启动恢复：等待现场核对；保留命令、任务和路权。", Revision = 1
                 }).ExecuteCommandAsync(ct);
             }
+            foreach (var charging in chargingSnapshots)
+                await AuditAsync(charging.Session.SessionId, "", "service", "ChargingBootOwnership",
+                    "启动保留充电会话与原租约归属；须由充电恢复入口核对停止并实际离位后关闭。",
+                    JsonSerializer.Serialize(charging), ct);
             await AuditAsync("", "", "service", "BootHold", "每次启动重新核对，上一启动的人工确认不作为本次放行依据。",
                 JsonSerializer.Serialize(new { active, Commands = commandOwners, Leases = leaseOwners, MapId = map.Current?.MapId, MapVersion = map.Current?.VersionId }), ct);
             if (owners.Count == 0)
@@ -102,12 +113,12 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
             ticket.Evidence = observation.Evidence;
             if (!ticket.Verified)
             {
-                ticket.Reason = observation.AutoSafe ? "已核对：原任务已结束或无需执行，且不存在发送记录和路权占用。" : observation.Reason;
+                ticket.Reason = observation.AutoSafe && observation.Identity.State != "ChargingClosed" ? "已核对：原任务已结束或无需执行，且不存在发送记录和路权占用。" : observation.Reason;
                 if (observation.AutoSafe)
                 {
                     ticket.Verified = true;
                     ticket.Revision++;
-                    await AuditAsync(ticket.TaskId, ticket.StepId, "service", "VerifiedUnstarted", ticket.Reason, ticket.Evidence, ct);
+                    await AuditAsync(ticket.TaskId, ticket.StepId, "service", observation.Identity.State == "ChargingClosed" ? "VerifiedChargingClosed" : "VerifiedUnstarted", ticket.Reason, ticket.Evidence, ct);
                 }
                 else if (before != ticket.Reason || fingerprint != ticket.Fingerprint) ticket.Revision++;
                 if (!observation.AutoSafe && (before != ticket.Reason || fingerprint != ticket.Fingerprint))
@@ -119,7 +130,7 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
         var tickets = await TicketsAsync(ct);
         if (tickets.Count > 0 && tickets.All(t => t.Verified && t.MaterialReference == null))
         {
-            var result = await database.Ado.UseTranAsync(() => MarkReleasedAsync("service", "所有遗留请求均未开始，无物理动作需要恢复。", ct));
+            var result = await database.Ado.UseTranAsync(() => MarkReleasedAsync("service", "遗留请求均未开始或已按专项现场核对关闭，无待续接动作及资源占用。", ct));
             if (!result.IsSuccess) throw result.ErrorException;
             barrier.Set(true);
         }
@@ -133,7 +144,8 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
         {
             var task = await database.Queryable<DispatchTaskEntity>().Where(t => t.TaskId == ticket.TaskId).FirstAsync(ct);
             var step = await CurrentStepAsync(ticket.TaskId, ct);
-            var vehicleId = step?.VehicleId ?? task?.VehicleId;
+            var charging = task is null && chargingRecovery is not null ? await chargingRecovery.ReadRecoverySessionAsync(ticket.TaskId, ct) : null;
+            var vehicleId = step?.VehicleId ?? task?.VehicleId ?? charging?.VehicleId;
             vehicles.TryGet(vehicleId ?? "", out var vehicle);
             var leases = await database.Queryable<TrafficResourceLeaseEntity>().Where(l => l.TaskId == ticket.TaskId).ToListAsync(ct);
             var segmentReleases=await database.Queryable<TrafficSegmentCommitLeaseEntity>().Where(a=>a.TaskId==ticket.TaskId).ToListAsync(ct);
@@ -141,7 +153,7 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
             var plcRows = task == null ? signals.GetAll() : signals.GetAll().Where(s => s.StationId == task.StationId || s.StationId == dumper?.SourceSite).ToArray();
             var identity = StoredIdentity(ticket.Evidence);
             items.Add(new(ticket.TicketId, ticket.TaskId, ticket.StepId, task?.StationId ?? "全场核对",
-                step?.VehicleId ?? task?.VehicleId, step == null ? "无执行步骤" : ((DispatchTaskStepType)step.StepType).ToString(),
+                vehicleId, charging is not null ? "充电会话核对" : step == null ? "无执行步骤" : ((DispatchTaskStepType)step.StepType).ToString(),
                 ticket.Verified ? "已核对" : "等待核对", ticket.Reason, ticket.Evidence, ticket.Verified, ticket.MaterialReference, ticket.Revision) { TaskStage = task?.Stage, IdentitySummary = identity.Summary, IdentityState = identity.State,
                 IdentityBlocksRecovery = identity.BlockReason != null,
                 MachineContainerSummary = identity.Vehicle == null ? "设备容器身份未接入。" : identity.Vehicle.LoadState == ContainerLoadState.Loaded ?
@@ -404,6 +416,8 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
         var commands = await database.Queryable<AgvCommandOutboxEntity>().Where(c => c.TaskId == ticket.TaskId).ToListAsync(ct);
         var command = commands.FirstOrDefault(c => c.StepId == step?.StepId);
         var leases = await database.Queryable<TrafficResourceLeaseEntity>().Where(l => l.TaskId == ticket.TaskId).ToListAsync(ct);
+        if (task is null && chargingRecovery is not null && await chargingRecovery.ReadRecoverySessionAsync(ticket.TaskId, ct) is { } charging)
+            return await ObserveChargingAsync(ticket, charging, commands, leases, ct);
         var segmentReleases=await database.Queryable<TrafficSegmentCommitLeaseEntity>().Where(a=>a.TaskId==ticket.TaskId).ToListAsync(ct);
         var segmentRequestIds=segmentReleases.Select(a=>a.RequestId).Distinct().ToArray();
         var segmentCommits=segmentRequestIds.Length==0?[]:await database.Queryable<TrafficSegmentCommitEntity>().Where(c=>segmentRequestIds.Contains(c.RequestId)).ToListAsync(ct);

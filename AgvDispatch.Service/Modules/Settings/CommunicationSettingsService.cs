@@ -27,15 +27,17 @@ public sealed class CommunicationSettingsService : ICommunicationSettingsService
     private readonly AgvConnectionManager? _agvConnections;
     private readonly AgvStateCache? _agvStates;
     private readonly AgvOptions? _agvOptions;
+    private readonly IChargingDispatchGuard? _charging;
 
     public CommunicationSettingsService(string path, string baseDirectory, CommunicationConfiguration active,
         PlcFleet fleet, IActiveTaskLookup tasks, ILogger<CommunicationSettingsService> logger,
         IMapExecutionGate executionGate, IActiveMapRuntime? maps = null,
-        AgvConnectionManager? agvConnections = null, AgvStateCache? agvStates = null, AgvOptions? agvOptions = null)
+        AgvConnectionManager? agvConnections = null, AgvStateCache? agvStates = null, AgvOptions? agvOptions = null, IChargingDispatchGuard? charging=null)
     {
         _path = path; _baseDirectory = baseDirectory; _active = active; _fleet = fleet; _logger = logger;
         _tasks = tasks; _executionGate = executionGate; _maps=maps;
         _agvConnections=agvConnections; _agvStates=agvStates; _agvOptions=agvOptions;
+        _charging=charging;
         _saved = ReadDocument(path) ?? new(1, "initial", active, []);
         _saved.Configuration.MapBindings ??= Clone(active).MapBindings ?? [];
     }
@@ -189,6 +191,7 @@ public sealed class CommunicationSettingsService : ICommunicationSettingsService
     {
         if (!user.Has(TrafficPermission.ManageConnections)) throw new UnauthorizedAccessException("无车辆连接管理权限。");
         using var control = await _executionGate.EnterControlAsync(ct);
+        if (_charging?.OwnsVehicle(request.VehicleId) == true) throw new InvalidOperationException("车辆充电会话尚未闭合，不能改变连接。");
         if (_executionGate.Mode != MapExecutionMode.Running) throw new InvalidOperationException("地图切换期间不能改变车辆通信。");
         await _gate.WaitAsync(ct);
         try
@@ -248,6 +251,7 @@ public sealed class CommunicationSettingsService : ICommunicationSettingsService
         // This writes the next-start configuration, not live device settings or new work.
         // Serialize with map switching without requiring startup execution recovery to open.
         using var control = await _executionGate.EnterControlAsync(cancellationToken);
+        if (_charging?.HasReservedSessions == true) throw new InvalidOperationException("充电会话尚未闭合，不能更改车辆、PLC或地图绑定配置。");
         if (_executionGate.Mode != MapExecutionMode.Running)
             throw new InvalidOperationException(_executionGate.Mode switch
             {
