@@ -122,7 +122,10 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
             await traffic.RecordRouteAsync(new(step.StepId,step.TaskId,step.VehicleId??"",await WaitingSiteAsync(step,ct),dispatch.DumperDumpingSite,
                 [],options.DumperExit.ResourceIds,owner!=null,reason)
                 {MapId=map.Current?.MapId,MapVersionId=map.Current?.VersionId,WaitingCategory="Equipment"},ct);
-            if(owner!=null)throw new InvalidOperationException(reason);
+            // Another task's valid claim is normal queueing. The recorded traffic
+            // wait identifies its owner; do not turn it into a failed step or
+            // interpret the owner's shared PLC signals as this task's baseline.
+            if(owner!=null)return true;
         }
         if(step.StepType==DispatchTaskStepType.DumpFullBox&&!await store.OwnsEquipmentAsync(step.TaskId,creation.DumperStationId,ct))throw new InvalidOperationException("本轮倒料设备归属缺失，禁止重新认领并开启周期。");
         var checkpoint=await store.GetAsync(step.TaskId,step.StepId,ct);

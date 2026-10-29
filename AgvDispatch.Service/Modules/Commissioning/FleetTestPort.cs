@@ -7,7 +7,7 @@ using AgvDispatch.Domain.Tasks;
 namespace AgvDispatch.Service;
 
 public sealed class FleetLabSessionMissingException(string message):InvalidOperationException(message);
-public sealed class FleetStandbySendUncertainException(string message):InvalidOperationException(message);
+public sealed class FleetStandbySendUncertainException(string message,Exception? inner=null):InvalidOperationException(message,inner);
 
 public sealed partial class FleetTestPort(FleetTestOptions options,IBusinessRunService single,IBusinessRunPort business,
     IManualTaskCreationService manual,ITaskCenterQueryService tasks,IDispatchTaskRepository repository,
@@ -20,9 +20,10 @@ public sealed partial class FleetTestPort(FleetTestOptions options,IBusinessRunS
     private static readonly HttpClient lab=new(new SocketsHttpHandler{UseProxy=false,AllowAutoRedirect=false})
         {BaseAddress=new Uri("http://127.0.0.1:10201/"),Timeout=TimeSpan.FromSeconds(5)};
     private static bool Fresh(DateTimeOffset? at)=>at is {} t&&t<=DateTimeOffset.UtcNow.AddSeconds(1)&&DateTimeOffset.UtcNow-t<TimeSpan.FromSeconds(3);
+    // Only the verified manufacturer code is local traffic waiting. Descriptions
+    // such as "motor blocked" must not suppress an unrelated error or fatal alarm.
     public static bool IsLocalTrafficObstacleAlarm(string? code,string? message)=>
-        (code?.Contains("52200",StringComparison.OrdinalIgnoreCase)??false)||
-        (message?.Contains("block",StringComparison.OrdinalIgnoreCase)??false);
+        string.Equals(code?.Trim(),"52200",StringComparison.Ordinal);
     private string? Health(string id,bool allowLocalTrafficWait=false)
     {
         if(!vehicles.TryGet(id,out var v))return id+"尚未取得车辆状态。";
@@ -38,7 +39,7 @@ public sealed partial class FleetTestPort(FleetTestOptions options,IBusinessRunS
         if(v.EmergencyStopped!=false)reasons.Add("急停未复位");
         if(v.LocalizationConfidence is not >=.5)reasons.Add($"定位置信度{(v.LocalizationConfidence?.ToString("0.###")??"缺失")}低于0.5");
         var alarms=v.Alarms.Where(a=>a.Severity is AgvDispatch.Domain.Agvs.AgvAlarmSeverity.Error or AgvDispatch.Domain.Agvs.AgvAlarmSeverity.Fatal)
-            .Where(a=>!(allowLocalTrafficWait&&IsLocalTrafficObstacleAlarm(a.Code,a.Message)))
+            .Where(a=>!(allowLocalTrafficWait&&a.Severity!=AgvDispatch.Domain.Agvs.AgvAlarmSeverity.Fatal&&IsLocalTrafficObstacleAlarm(a.Code,a.Message)))
             .Select(a=>string.IsNullOrWhiteSpace(a.Code)?"车端报警":a.Code).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         if(alarms.Length>0)reasons.Add("开放车端报警"+string.Join('、',alarms));
         if(reasons.Count>0)return id+"："+string.Join("；",reasons)+"。"+sample;

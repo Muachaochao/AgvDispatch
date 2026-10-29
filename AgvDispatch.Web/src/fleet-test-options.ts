@@ -64,3 +64,19 @@ export async function retireUnacceptedFleetStart(pending: { requestId: string },
   if (!fleetStartRetirementConfirmed(pending.requestId, receipt))
     throw new Error('未取得原申请持久化注销回执，保留原参数并继续核对');
 }
+
+export type FleetStartIntent = {
+  requestId: string; scenario: string; vehicleIds: string[]; siteConfirmed: boolean; stationIds?: string[];
+};
+
+// A read can acknowledge an uncertain start only when it identifies the original
+// request and its complete plan. A different run or no run never proves rejection.
+export function observeFleetStart(pending: FleetStartIntent, response: unknown): 'Accepted' | 'Mismatch' | 'Unresolved' {
+  if (!response || typeof response !== 'object') return 'Unresolved';
+  const current = (response as { current?: { plan?: FleetStartIntent } }).current;
+  const plan = current?.plan;
+  if (!plan || typeof plan.requestId !== 'string' || key(plan.requestId) !== key(pending.requestId)) return 'Unresolved';
+  const same = (a: unknown, b: string[]) => Array.isArray(a) && a.length === b.length && a.every((id, i) => id === b[i]);
+  return plan.scenario === pending.scenario && plan.siteConfirmed === pending.siteConfirmed &&
+    same(plan.vehicleIds, pending.vehicleIds) && same(plan.stationIds ?? [], pending.stationIds ?? []) ? 'Accepted' : 'Mismatch';
+}

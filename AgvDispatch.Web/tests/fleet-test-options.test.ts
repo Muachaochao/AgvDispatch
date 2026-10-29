@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { fleetSelectionStatus, fleetStartRetirementConfirmed, moveFleetStation, reconcileFleetSelection, selectVisibleFleetOptions, retireUnacceptedFleetStart } from '../src/fleet-test-options.ts';
+import { fleetSelectionStatus, fleetStartRetirementConfirmed, moveFleetStation, observeFleetStart, reconcileFleetSelection, selectVisibleFleetOptions, retireUnacceptedFleetStart } from '../src/fleet-test-options.ts';
 
 const options = {
   allowedVehicles: Array.from({ length: 7 }, (_, i) => `CARRIER-${i + 1}`),
@@ -61,4 +61,13 @@ test('retirement failure retains the frozen pending plan for the next inquiry', 
   await assert.rejects(retireUnacceptedFleetStart(pending, async () => ({ requestId: pending.requestId, retired: false })), /保留原参数/);
   await retireUnacceptedFleetStart(pending, async id => ({ requestId: id, retired: true }));
   assert.deepEqual(pending.stationIds, ['NORTH', 'SOUTH']);
+});
+
+test('lost start reply is accepted only after the original complete plan is observed', () => {
+  const pending = { requestId: 'original', scenario: 'Simultaneous', vehicleIds: ['A', 'B'], siteConfirmed: true, stationIds: ['NORTH', 'SOUTH'] };
+  for (const response of [null, {}, { current: null }, { current: { plan: { ...pending, requestId: 'another' } } }])
+    assert.equal(observeFleetStart(pending, response), 'Unresolved');
+  for (const change of [{ scenario: 'Staggered' }, { vehicleIds: ['B', 'A'] }, { stationIds: ['SOUTH', 'NORTH'] }, { siteConfirmed: false }])
+    assert.equal(observeFleetStart(pending, { current: { plan: { ...pending, ...change } } }), 'Mismatch');
+  assert.equal(observeFleetStart(pending, { current: { plan: { ...pending, requestId: 'ORIGINAL' } } }), 'Accepted');
 });

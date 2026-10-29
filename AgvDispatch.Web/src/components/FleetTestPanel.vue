@@ -3,12 +3,12 @@ import { computed,onMounted,onUnmounted,ref } from 'vue';
 import { useDispatchStore } from '../stores/dispatch';
 import type { TaskDetail } from '../types';
 import { label } from '../state';
-import { fleetSelectionStatus, moveFleetStation, reconcileFleetSelection, retireUnacceptedFleetStart, selectVisibleFleetOptions } from '../fleet-test-options';
+import { fleetSelectionStatus, moveFleetStation, observeFleetStart, reconcileFleetSelection, retireUnacceptedFleetStart, selectVisibleFleetOptions } from '../fleet-test-options';
 type Start={requestId:string;scenario:string;vehicleIds:string[];siteConfirmed:boolean;stationIds?:string[]};
 type StandbyReturn={vehicleId:string;standbyId:string;site:string;state:string;message:string;vendorTaskId:string|null;route:string[];updatedAt:string};
 type Run={runId:string;plan:Start;stage:string;message:string;stopRequested:boolean;updatedAt:string;holds?:{time:string;reason:string}[];calls:{stationId:string;released:boolean;taskId:string|null}[];standbyReturns?:StandbyReturn[]};
 type Status={enabled:boolean;allowedVehicles:string[];configuredStations:string[];maxConcurrentTasks:number;current:Run|null;vehicles:{vehicleId:string;site:string|null;fresh:boolean;message:string}[];tasks:TaskDetail[];observedAt:string};
-const store=useDispatchStore(),status=ref<Status|null>(null),error=ref(''),busy=ref(false),reading=ref(false),online=ref(false);
+const store=useDispatchStore(),status=ref<Status|null>(null),error=ref(''),queryError=ref(''),busy=ref(false),reading=ref(false),online=ref(false);
 const scenario=ref('Staggered'),confirmed=ref(false),reason=ref('');
 const selectedStations=ref<string[]>([]);
 const selectedVehicles=ref<string[]>([]),vehicleSearch=ref(''),stationSearch=ref(''),selectionNotice=ref('');
@@ -59,12 +59,18 @@ async function read(){
    selectionNotice.value=`配置已变化：${[...vehicleChoice.missing,...stationChoice.missing].join('、')} 已不在当前可选范围。${original?'原申请参数保持不变，请核对原记录。':'已移除失效选择，请重新核对本组范围。'}`;
    confirmed.value=false;
   }
-  status.value=next;online.value=true;
-  if(next.current&&pending.value?.requestId===next.current.plan.requestId){sessionStorage.removeItem(startKey);pending.value=null;}
- }catch(e){online.value=false;error.value='多车测试查询失败：'+String(e);}finally{reading.value=false;}
+  status.value=next;online.value=true;queryError.value='';
+  if(pending.value){
+   const acceptance=observeFleetStart(pending.value,next);
+   if(acceptance==='Accepted'){
+    sessionStorage.removeItem(startKey);pending.value=null;error.value='';
+    selectionNotice.value=`已查询到原申请受理记录 ${next.current!.runId}，请查看当前运行状态。`;
+   }else if(acceptance==='Mismatch')error.value='原申请编号对应的后台参数与本机记录不同，请核对原记录；本机申请继续保留。';
+  }
+ }catch(e){online.value=false;queryError.value='多车测试查询失败：'+String(e);}finally{reading.value=false;}
 }
 async function act(action:string){
- if(busy.value||!fresh.value)return;
+ if(busy.value||reading.value||!fresh.value)return;
  busy.value=true;error.value='';
  try{
   let payload:unknown;
@@ -79,7 +85,10 @@ async function act(action:string){
   if(current.value?.runId!==previousRun)results.value=checks.map(()=> '待核验');
   if(action==='start'){sessionStorage.removeItem(startKey);pending.value=null;}
   confirmed.value=false;
- }catch(e){error.value=String(e)+'；先查询原记录，不重复建单。';}finally{busy.value=false;}
+ }catch(e){error.value=String(e)+'；正在查询原记录，不重复建单。';}finally{busy.value=false;}
+ // The POST reply can be lost after the backend persists the run. Reconcile by
+ // reading only; never create another request or automatically resend a command.
+ await read();
 }
 async function retirePending(){
  const original=pending.value;
@@ -122,8 +131,8 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);});
   <div class="fleet-controls">
    <label>本组用例<select v-model="scenario" :disabled="busy||!!active||!!pending" @change="confirmed=false"><option v-for="(name,key) in names" :key="key" :value="key">{{name}}</option></select></label>
    <button :disabled="busy||reading" @click="read">查询原记录</button>
-   <button :disabled="busy||!fresh||!status?.enabled||!!active||!confirmed||(!pending&&!selection.valid)||!store.submissionEnabled" @click="act('start')">{{pending?'重试原申请':'启动本组测试'}}</button>
-   <button :disabled="busy||!fresh||!active||current?.stopRequested" @click="act('stop')">停止新增呼叫并收尾</button>
+   <button :disabled="busy||reading||!fresh||!status?.enabled||!!active||!confirmed||(!pending&&!selection.valid)||!store.submissionEnabled" @click="act('start')">{{pending?'重试原申请':'启动本组测试'}}</button>
+   <button :disabled="busy||reading||!fresh||!active||current?.stopRequested" @click="act('stop')">停止新增呼叫并收尾</button>
    <button :disabled="!status" @click="exportEvidence">导出本组观察与核验记录</button>
   </div>
   <div class="fleet-selection-grid">
@@ -179,7 +188,7 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);});
    </template>
    <details><summary>现场验收项目（人工核验，独立于任务完成）</summary><label v-for="(item,i) in checks" :key="item" class="review-item">{{item}}<select v-model="results[i]" @change="saveReview"><option>待核验</option><option>通过</option><option>失败</option><option>本组未覆盖</option></select></label></details>
   </template>
-  <p v-if="error" class="inline-warning" role="alert">{{error}}</p>
+  <p v-if="queryError||error" class="inline-warning" role="alert">{{queryError||error}}</p>
  </details>
 </template>
 <style scoped>

@@ -87,15 +87,20 @@ public sealed class WaitingBayDepartureReleaseWorker(
         if (vehicle.Blocked != false || vehicle.EmergencyStopped != false ||
             vehicle.Alarms.Any(alarm => alarm.Severity is AgvAlarmSeverity.Error or AgvAlarmSeverity.Fatal))
             return Fail("车辆阻挡、急停或存在活动报警", out reason);
-        if (vehicle.CurrentStation is null ||
+        if (string.IsNullOrWhiteSpace(vehicle.CurrentStation) ||
             MapRouteSiteMapper.ResolveLogicalNodeId(current.Definition, vehicle.CurrentStation) !=
             MapRouteSiteMapper.ResolveLogicalNodeId(current.Definition, dispatch.DumperDumpingSite))
             return Fail("车辆尚未停到倒料点", out reason);
         if (vehicle.X is not { } x || vehicle.Y is not { } y ||
             vehicle.VelocityX is not { } vx || vehicle.VelocityY is not { } vy ||
             vehicle.AngularVelocity is not { } va ||
+            !double.IsFinite(x) || !double.IsFinite(y) ||
+            !double.IsFinite(vx) || !double.IsFinite(vy) || !double.IsFinite(va) ||
             Math.Abs(vx) > .02 || Math.Abs(vy) > .02 || Math.Abs(va) > .02)
             return Fail("车辆位置或静止状态无效", out reason);
+        if (vehicle.LocalizationConfidence is not { } confidence || !double.IsFinite(confidence) ||
+            confidence < mapOptions.MinimumLocalizationConfidence || confidence > 1)
+            return Fail("车辆定位置信度无效或低于地图核验门槛", out reason);
         var dumping = Resolve(current.Definition, dispatch.DumperDumpingSite);
         if (dumping is null || Math.Sqrt(Math.Pow(x - dumping.X, 2) + Math.Pow(y - dumping.Y, 2)) > .3)
             return Fail("车辆坐标未落在倒料点核验范围", out reason);

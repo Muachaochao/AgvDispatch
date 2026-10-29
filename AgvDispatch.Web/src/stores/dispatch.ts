@@ -85,7 +85,7 @@ export const useDispatchStore = defineStore('dispatch', () => {
   async function api<T>(path: string, payload?: unknown): Promise<T> {
     const controller = new AbortController();
     controllers.add(controller);
-    const timeout = setTimeout(() => controller.abort(), 35000);
+    const timeout = setTimeout(() => controller.abort(), payload !== undefined && path === '/api/fleet-test/start' ? 130000 : 35000);
     try {
       const response = await fetch(path, {
         method: payload === undefined ? 'GET' : 'POST',

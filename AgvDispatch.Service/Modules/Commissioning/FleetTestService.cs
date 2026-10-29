@@ -18,7 +18,7 @@ public interface IFleetTestPort
     Task CheckClosedAsync(FleetTestRun run,CancellationToken ct);
     Task<FleetTestStandbyReturn[]> PlanStandbyReturnsAsync(FleetTestRun run,CancellationToken ct);
     Task<FleetTestStandbyReturn?> TrySendStandbyReturnAsync(FleetTestRun run,FleetTestStandbyReturn[] returns,
-        FleetTestStandbyReturn assignment,CancellationToken ct);
+        FleetTestStandbyReturn assignment,Action<FleetTestStandbyReturn> persistSendIntent,CancellationToken ct);
     Task<FleetTestStandbyReturn> ObserveStandbyReturnAsync(FleetTestRun run,FleetTestStandbyReturn assignment,
         CancellationToken ct);
     Task ReleaseStandbyReturnAsync(FleetTestStandbyReturn assignment,CancellationToken ct);
@@ -110,7 +110,11 @@ public sealed partial class FleetTestService : IsolatedBackgroundService, IFleet
             UpdateStandbyReturn(nextReturn.VehicleId,sending);Save();
             try
             {
-                var sent=await port.TrySendStandbyReturnAsync(run,run.StandbyReturns,sending,ct);
+                var sent=await port.TrySendStandbyReturnAsync(run,run.StandbyReturns,sending,intent=>
+                {
+                    sending=intent;
+                    UpdateStandbyReturn(nextReturn.VehicleId,intent);Save();
+                },ct);
                 if(sent is null)
                 {
                     UpdateStandbyReturn(nextReturn.VehicleId,nextReturn with
@@ -138,9 +142,14 @@ public sealed partial class FleetTestService : IsolatedBackgroundService, IFleet
             }
             catch
             {
-                UpdateStandbyReturn(nextReturn.VehicleId,nextReturn with
+                // This also catches persistence failures after a successful send.
+                // Once an intent exists, an exception cannot prove that no bytes
+                // reached the vehicle. Never restore Assigned in that case.
+                var hasIntent=!string.IsNullOrWhiteSpace(sending.VendorTaskId);
+                UpdateStandbyReturn(nextReturn.VehicleId,(hasIntent?sending:nextReturn) with
                 {
-                    Message="待机发送前核验失败，车辆未发送。",
+                    State=hasIntent?FleetTestStandbyReturnStates.Uncertain:nextReturn.State,
+                    Message=hasIntent?"待机发送或结果保存未完成，保留原命令身份；禁止自动重发，请查询原记录。":"待机发送前核验失败，车辆未发送。",
                     UpdatedAt=DateTimeOffset.UtcNow
                 });
                 Save();
@@ -151,9 +160,11 @@ public sealed partial class FleetTestService : IsolatedBackgroundService, IFleet
             .Where(r=>r.State==FleetTestStandbyReturnStates.Returning).ToArray())
         {
             var observed=await port.ObserveStandbyReturnAsync(run,assignment,ct);
-            UpdateStandbyReturn(assignment.VehicleId,observed);
             if(observed.State==FleetTestStandbyReturnStates.Completed)
                 await port.ReleaseStandbyReturnAsync(observed,ct);
+            // Completion includes resource release. If release fails, retain Returning
+            // so the original navigation and its lease can be reconciled after restart.
+            UpdateStandbyReturn(assignment.VehicleId,observed);
             Save();
         }
         if(run.StandbyReturns.All(r=>r.State==FleetTestStandbyReturnStates.Completed))
@@ -236,12 +247,14 @@ public sealed partial class FleetTestService : IsolatedBackgroundService, IFleet
                 {
                     if(run.StandbyReturns.Length==0)throw new InvalidOperationException("原运行没有待机返回记录。");
                     var reconciled=await port.ReconcileStandbyReturnsAsync(run,ct);
+                    var uncertain=reconciled.Any(r=>r.State is FleetTestStandbyReturnStates.Sending or FleetTestStandbyReturnStates.Uncertain);
                     run=run with
                     {
                         StandbyReturns=reconciled,
-                        Stage=reconciled.All(r=>r.State==FleetTestStandbyReturnStates.Completed)?"Completed":"ReturningStandby",
+                        Stage=uncertain?"Hold":reconciled.All(r=>r.State==FleetTestStandbyReturnStates.Completed)?"Completed":"ReturningStandby",
                         Message=reconciled.All(r=>r.State==FleetTestStandbyReturnStates.Completed)
                             ?"待机导航及车辆停靠已核对闭合。"
+                            :uncertain?"原待机导航身份或结果仍不确定，继续保留暂停，禁止自动重发。"
                             :"已核对并释放已完成车辆的孤立待机路权，继续原待机返回。",
                         UpdatedAt=DateTimeOffset.UtcNow
                     };
@@ -269,6 +282,13 @@ public sealed partial class FleetTestService : IsolatedBackgroundService, IFleet
                 {
                     if(!run.StopRequested)throw new InvalidOperationException("先停止新增呼叫，再核对结束记录。");
                     await port.CheckClosedAsync(run,ct);
+                    if(run.StandbyReturns.Length>0)
+                    {
+                        var reconciled=await port.ReconcileStandbyReturnsAsync(run,ct);
+                        run=run with {StandbyReturns=reconciled};Save();
+                        if(reconciled.Any(r=>r.State!=FleetTestStandbyReturnStates.Completed))
+                            throw new FleetClosurePendingException("原待机导航或车辆实际停靠尚未闭合，保留原记录及车辆保护；请先核对原待机任务。");
+                    }
                     run=run with {Stage="Completed",Message="现场核对后结束测试记录："+request.Reason,UpdatedAt=DateTimeOffset.UtcNow};Save();
                 }
                 else throw new ArgumentException("未知操作。");

@@ -283,7 +283,13 @@ for (var i = 0; i < 8 && await fixture.PhaseAsync(a) != "AwaitReady"; i++) await
 Check(await fixture.EquipmentOwnerAsync() == a, "首任务实际取得倒料设备独占归属");
 var b = await fixture.CreateAndPickupAsync("CNC-002", "AGV-2");
 await fixture.SetReadyAsync(b, DispatchTaskStepType.WaitForDumperReady);
-await ExpectHold(() => fixture.TickAsync(b), "第二任务不能消费第一任务倒料许可");
+var writesBeforeEquipmentWait = fixture.Signals.Writes.Count;
+var waitingStep = await fixture.CurrentAsync(b);
+for (var i = 0; i < 3; i++) await fixture.TickAsync(b);
+Check(fixture.Signals.Writes.Count == writesBeforeEquipmentWait &&
+    (await fixture.CurrentAsync(b)).StepId == waitingStep.StepId &&
+    await fixture.EquipmentOwnerAsync() == a,
+    "第二任务重复轮询正常等待原设备归属，不抛步骤失败、不写PLC或越过当前步骤");
 var equipmentWait = await fixture.Db.Queryable<TrafficRequestEntity>().Where(r => r.TaskId == b && r.State == "Waiting").SingleAsync();
 Check(equipmentWait.WaitingCategory == "Equipment" && equipmentWait.Reason.Contains(a), "设备归属等待进入正式等待记录，保留占用方及类别而非仅写异常文字");
 Check(fixture.Signals.Get("DUMPER", "AgvAtWaitingPosition") &&
@@ -291,7 +297,13 @@ Check(fixture.Signals.Get("DUMPER", "AgvAtWaitingPosition") &&
     "前车等待申请为高时后车先查原归属，不误建ReviewRequired检查点");
 var c = await fixture.CreateAndPickupAsync("CNC-003", "AGV-3");
 await fixture.SetReadyAsync(c, DispatchTaskStepType.WaitForDumperReady);
-await ExpectHold(() => fixture.TickAsync(c), "第三任务等待同一倒料设备");
+await fixture.TickAsync(c);
+Check(await fixture.EquipmentOwnerAsync() == a &&
+    await fixture.Store.GetAsync(c, (await fixture.CurrentAsync(c)).StepId, default) is null,
+    "第三任务正常等待同一设备，未取得归属前不创建共享握手基线");
+fixture.Signals.Set("DUMPER", "Faulted", true);
+await ExpectHold(() => fixture.TickAsync(c), "排队期间真实倒料设备故障仍拒绝推进");
+fixture.Signals.Set("DUMPER", "Faulted", false);
 await fixture.WaitAndClaimAsync(a);
 
 await fixture.StartDumpAsync(a);
@@ -384,7 +396,11 @@ Check(await fixture.EquipmentOwnerAsync() == b, "第一车返程未完成，第�
 await fixture.StartDumpAsync(b);
 var bDumpLease = await fixture.LeaseCountAsync(b, "DUMP-AREA");
 Check(bDumpLease > 0 && fixture.Signals.Get("DUMPER", "AgvAtDumpingPosition"), "第二车建立自己的倒料周期及路权");
-await ExpectHold(() => fixture.TickAsync(c), "第三任务继续等待第二车归属");
+var thirdWaitingWrites = fixture.Signals.Writes.Count;
+await fixture.TickAsync(c);
+Check(fixture.Signals.Writes.Count == thirdWaitingWrites && await fixture.EquipmentOwnerAsync() == b &&
+    await fixture.Store.GetAsync(c, (await fixture.CurrentAsync(c)).StepId, default) is null,
+    "第三任务继续正常等待第二车归属，不消费后车周期或产生新PLC写入");
 var sharedWriteCount = fixture.Signals.Writes.Count(w => w.Station == "DUMPER");
 await fixture.PlaceAsync(a);
 fixture.Signals.Set("CNC-001", "FullBoxRequested", true);

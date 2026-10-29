@@ -145,6 +145,7 @@ var atomic=await Task.WhenAll(new[]{atomicA,atomicB}.Select(step=>Task.Run(async
 })));
 Check(atomic.Count(success=>success)==1&&db.Queryable<TaskWaitingBayEntity>().Where(b=>b.ResourceId=="ATOMIC-BAY").Count()==1&&
     db.Queryable<TrafficResourceLeaseEntity>().Where(l=>l.ResourceId=="ATOMIC-BAY").Count()==1,"双连接并发选同一候车位只提交一个绑定及一个占用，无失败方残留");
+DepartureReleaseChecks.Run(Check);
 Console.WriteLine($"PASS {checks} waiting-bay/route/equipment checks. Evidence: {root}");
 
 sealed class BayPlanner(MapDefinition map):IRoutePlanner

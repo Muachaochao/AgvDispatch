@@ -12,7 +12,9 @@ public sealed class DispatchPipe(string pipeName)
     public async Task<T?> ReadAsync<T>(string operation, object payload, CancellationToken cancellationToken)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromSeconds(25));
+        // Fleet start verifies each selected vehicle and its routes before it
+        // acknowledges the persisted run. Ordinary reads remain bounded at 25s.
+        timeout.CancelAfter(TimeSpan.FromSeconds(operation == "StartFleetTest" ? 120 : 25));
         await using var pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut,
             PipeOptions.Asynchronous | PipeOptions.WriteThrough, TokenImpersonationLevel.Identification);
         using (var connect = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token))
@@ -29,21 +31,30 @@ public sealed class DispatchPipe(string pipeName)
             JsonSerializer.SerializeToElement(payload, WebJson.Options)), WebJson.Options);
         var header = new byte[4];
         BinaryPrimitives.WriteInt32LittleEndian(header, bytes.Length);
-        await pipe.WriteAsync(header, timeout.Token);
-        await pipe.WriteAsync(bytes, timeout.Token);
-        await pipe.FlushAsync(timeout.Token);
-        await pipe.ReadExactlyAsync(header, timeout.Token);
-        var length = BinaryPrimitives.ReadInt32LittleEndian(header);
-        if (length is <= 0 or > 16 * 1024 * 1024) throw new InvalidDataException("后台帧大小超出限制。");
-        var body = new byte[length];
-        await pipe.ReadExactlyAsync(body, timeout.Token);
-        var result = JsonSerializer.Deserialize<TrafficControlPipeResponse>(body, WebJson.Options)
-            ?? throw new InvalidDataException("后台返回空响应。");
-        if (!result.Success)
+        try
         {
-            if (result.ErrorCode == "Unauthorized") throw new UnauthorizedAccessException(result.Error);
-            throw new InvalidOperationException(result.Error ?? "后台拒绝请求。");
+            await pipe.WriteAsync(header, timeout.Token);
+            await pipe.WriteAsync(bytes, timeout.Token);
+            await pipe.FlushAsync(timeout.Token);
+            await pipe.ReadExactlyAsync(header, timeout.Token);
+            var length = BinaryPrimitives.ReadInt32LittleEndian(header);
+            if (length is <= 0 or > 16 * 1024 * 1024) throw new InvalidDataException("后台帧大小超出限制。");
+            var body = new byte[length];
+            await pipe.ReadExactlyAsync(body, timeout.Token);
+            var result = JsonSerializer.Deserialize<TrafficControlPipeResponse>(body, WebJson.Options)
+                ?? throw new InvalidDataException("后台返回空响应。");
+            if (!result.Success)
+            {
+                if (result.ErrorCode == "Unauthorized") throw new UnauthorizedAccessException(result.Error);
+                throw new InvalidOperationException(result.Error ?? "后台拒绝请求。");
+            }
+            return result.Payload.Deserialize<T>(WebJson.Options);
         }
-        return result.Payload.Deserialize<T>(WebJson.Options);
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            // A lost reply cannot establish whether the service has persisted or
+            // executed the request. Preserve the intent and query its original ID.
+            throw new TimeoutException("调度后台回执超时，处理结果尚未确认；请先查询原记录，不要重复提交。");
+        }
     }
 }

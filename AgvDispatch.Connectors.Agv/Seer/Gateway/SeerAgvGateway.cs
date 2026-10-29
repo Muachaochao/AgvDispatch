@@ -163,6 +163,29 @@ public sealed class SeerAgvGateway(
         return (client,rows,ids);
     }
 
+    public async Task<AgvTransportTaskStatus?> GetTransportTaskStatusAsync(string vendorTaskId,string vehicleId,
+        IReadOnlyList<string> originalPath,CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(vendorTaskId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(vehicleId);
+        if(originalPath.Count<2||originalPath.Any(string.IsNullOrWhiteSpace))
+            throw new ArgumentException("原导航路线须包含至少两个有效站点。");
+        if(!connections.TryGet(vehicleId,out var client))
+            throw new InvalidOperationException("原导航车辆未配置，不能扫描其他车辆替代。");
+        var ids=string.Equals(options.NavigationCommandMode,"SpecifiedPath",StringComparison.OrdinalIgnoreCase)
+            ?AgvTransportSegmentIds.For(vendorTaskId,originalPath.Count):new[]{vendorTaskId};
+        var rows=await client.QueryTasksAsync(ids,cancellationToken);
+        var complete=rows.Count==ids.Count&&rows.All(r=>r.Status is >=1 and <=7);
+        var allTerminal=complete&&rows.All(r=>r.Status is 4 or 5 or 6 or 7);
+        var state=!complete?AgvTransportTaskState.Unknown:
+            allTerminal?rows.Any(r=>r.Status is 5 or 7)?AgvTransportTaskState.Failed:
+                rows.Any(r=>r.Status==6)?AgvTransportTaskState.Cancelled:AgvTransportTaskState.Completed:
+            rows.Any(r=>r.Status is 5 or 6 or 7)?AgvTransportTaskState.Unknown:
+            rows.Any(r=>r.Status==3)?AgvTransportTaskState.Suspended:AgvTransportTaskState.GoingToDestination;
+        return new(vendorTaskId,vendorTaskId,state,client.Robot.VehicleId,DateTimeOffset.Now,
+            $"原车导航全链：{rows.Count}/{ids.Count}段有记录；状态{string.Join(',',rows.Select(r=>$"{r.TaskId}={r.Status}"))}；缺失或仍运行不确认结束。");
+    }
+
     public async Task<AgvTransportTaskStatus?> GetTransportTaskStatusAsync(
         string vendorTaskId,
         CancellationToken cancellationToken)

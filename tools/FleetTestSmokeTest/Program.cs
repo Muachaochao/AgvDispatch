@@ -75,6 +75,19 @@ Check(returned.Stage=="Completed"&&autoReturn.Port.ReturnSends==2&&
     returned.StandbyReturns.Length==2&&returned.StandbyReturns.All(r=>r.State==FleetTestStandbyReturnStates.Completed),
     "业务与PLC闭合后每车发送一次独立待机导航并核对停靠");
 Check(!autoReturn.Owner.Active,"全部车辆到待机位后才解除多车会话保护");
+var incompleteReturn=Fixture();incompleteReturn.Port.ReturnAlreadyComplete=false;incompleteReturn.Port.ReturnObserveComplete=false;
+await incompleteReturn.Service.StartAsync(user,Plan("Simultaneous"),default);await incompleteReturn.Service.TickAsync(default);
+incompleteReturn.Port.Closed=true;
+for(var i=0;i<incompleteReturn.Port.Details.Count;i++)
+    incompleteReturn.Port.Details[i]=incompleteReturn.Port.Details[i] with {Task=incompleteReturn.Port.Details[i].Task with {Stage=DispatchTaskStage.Completed}};
+await incompleteReturn.Service.TickAsync(default);
+var movingReturn=(await incompleteReturn.Service.ReadAsync(default)).Current!;
+await incompleteReturn.Service.ControlAsync(user,"stop",new(movingReturn.RunId,"",false),default);
+try{await incompleteReturn.Service.ControlAsync(user,"close",new(movingReturn.RunId,"现场核对业务已闭合但待机车辆还在运动",true),default);throw new Exception("待机还在运动不能关闭");}
+catch(FleetClosurePendingException){count++;}
+Check((await incompleteReturn.Service.ReadAsync(default)).Current is {Stage:"Hold"}&&incompleteReturn.Owner.Active,
+    "业务闭合不能提前关闭仍在执行的待机导航或解除车辆保护");
+Check(incompleteReturn.Port.ReturnSends==1,"关闭核对只查询原待机记录不再次发送");
 var returnHold=Fixture();returnHold.Port.ReturnAlreadyComplete=false;returnHold.Port.FailStandbySend=true;
 await returnHold.Service.StartAsync(user,Plan("Simultaneous"),default);await returnHold.Service.TickAsync(default);
 returnHold.Port.Closed=true;
@@ -90,6 +103,32 @@ await returnHold.Service.ControlAsync(user,"reconcile",
 var reconciled=(await returnHold.Service.ReadAsync(default)).Current!;
 Check(reconciled.Stage=="Completed"&&reconciled.StandbyReturns.All(r=>r.State==FleetTestStandbyReturnStates.Completed),
     "核对待机路权按原记录闭合且不重发业务任务");
+var interruptedReturn=Fixture();interruptedReturn.Port.ReturnAlreadyComplete=false;interruptedReturn.Port.FailStandbyAfterIntent=true;
+await interruptedReturn.Service.StartAsync(user,Plan("Simultaneous"),default);await interruptedReturn.Service.TickAsync(default);
+interruptedReturn.Port.Closed=true;
+for(var i=0;i<interruptedReturn.Port.Details.Count;i++)
+    interruptedReturn.Port.Details[i]=interruptedReturn.Port.Details[i] with {Task=interruptedReturn.Port.Details[i].Task with {Stage=DispatchTaskStage.Completed}};
+await interruptedReturn.Service.TickAsync(default);
+var uncertainReturn=(await interruptedReturn.Service.ReadAsync(default)).Current!;
+Check(uncertainReturn.Stage=="Hold"&&uncertainReturn.StandbyReturns[0] is {State:FleetTestStandbyReturnStates.Uncertain,VendorTaskId:not null}&&
+    uncertainReturn.StandbyReturns[0].Route.Count==2,"发送中断后持久化Uncertain及原厂家编号路线，不复位为Assigned");
+var interruptedRestart=new FleetTestService(interruptedReturn.Port,new FleetTestOwnership(new(){Enabled=true}),interruptedReturn.Path);
+await Reject(()=>interruptedRestart.ControlAsync(user,"resume",new(uncertainReturn.RunId,"现场核对车端原任务发送结果仍需只读核验",true),default),"重启后不能续接重发结果不确定的原导航");
+Check(interruptedReturn.Port.ReturnSends==1,"发送中断及重启核对不重复发送");
+await interruptedRestart.ControlAsync(user,"reconcile",new(uncertainReturn.RunId,"已核对原任务完成并实际停靠在各自待机位置",true),default);
+Check((await interruptedRestart.ReadAsync(default)).Current!.Stage=="Completed"&&interruptedReturn.Port.ReturnSends==1,
+    "结果不确定的待机命令按原记录核对闭合且不重发");
+var failedResult=Fixture();failedResult.Port.ReturnAlreadyComplete=false;failedResult.Port.FailStandbyGenericAfterIntent=true;
+await failedResult.Service.StartAsync(user,Plan("Simultaneous"),default);await failedResult.Service.TickAsync(default);
+failedResult.Port.Closed=true;
+for(var i=0;i<failedResult.Port.Details.Count;i++)
+    failedResult.Port.Details[i]=failedResult.Port.Details[i] with {Task=failedResult.Port.Details[i].Task with {Stage=DispatchTaskStage.Completed}};
+await failedResult.Service.TickAsync(default);
+var failedResultRun=(await failedResult.Service.ReadAsync(default)).Current!;
+Check(failedResultRun.Stage=="Hold"&&failedResultRun.StandbyReturns[0] is {State:FleetTestStandbyReturnStates.Uncertain,VendorTaskId:not null},
+    "发送意图落盘后普通异常不能将原导航复位为Assigned");
+await failedResult.Service.TickAsync(default);
+Check(failedResult.Port.ReturnSends==1,"结果处理异常后重复轮询仍不重发待机命令");
 var closePending=Fixture();await closePending.Service.StartAsync(user,Plan("Staggered"),default);await closePending.Service.TickAsync(default);
 var pendingRun=(await closePending.Service.ReadAsync(default)).Current!;
 await closePending.Service.ControlAsync(user,"stop",new(pendingRun.RunId,"",false),default);
@@ -254,12 +293,16 @@ Check(!blockedTracker.Observe("AGV-X",true,false,blockedStart.AddSeconds(4.2)),"
 Check(!blockedTracker.Observe("AGV-X",false,false,blockedStart.AddSeconds(4.4)),"阻挡清除后立即复位");
 Check(FleetTestPort.IsLocalTrafficObstacleAlarm("52200","blocked by another vehicle")&&
     !FleetTestPort.IsLocalTrafficObstacleAlarm("E-STOP","emergency stop"),"车辆局部阻挡仅由车端处理，其他故障仍暂停全组");
+foreach(var code in new[]{"E-STOP","52100","152200","UNKNOWN",null})
+    Check(!FleetTestPort.IsLocalTrafficObstacleAlarm(code,"motor blocked"),"非52200故障不因描述包含blocked而被忽略");
+await StandbySendChecks.RunAsync(Check);
+await StandbyChainChecks.RunAsync(Check);
 Console.WriteLine($"PASS {count} 多车多工位、车辆池范围、身份、断连、停止、重启及幂等检查；无现场通信。");
 
 sealed class Port:IFleetTestPort
 {
  public int Starts,Creates,ReturnSends;public bool Bad,FailCall,Closed,FailValidate;
- public bool ReturnAlreadyComplete=true,ReturnObserveComplete=true,FailStandbySend;
+ public bool ReturnAlreadyComplete=true,ReturnObserveComplete=true,FailStandbySend,FailStandbyAfterIntent,FailStandbyGenericAfterIntent;
  public List<string> Calls=[];public List<TaskCenterDetail> Details=[];
  public TaskCompletionSource? ValidationStarted,ValidationGate;
  public async Task<(string,string,string)> ValidateAsync(FleetTestStart p,CancellationToken ct)
@@ -278,8 +321,13 @@ sealed class Port:IFleetTestPort
    ReturnAlreadyComplete?FleetTestStandbyReturnStates.Completed:FleetTestStandbyReturnStates.Assigned,
    ReturnAlreadyComplete?"already home":"assigned",null,DateTimeOffset.UtcNow)).ToArray());
  public Task<FleetTestStandbyReturn?> TrySendStandbyReturnAsync(FleetTestRun r,FleetTestStandbyReturn[] returns,
-  FleetTestStandbyReturn assignment,CancellationToken ct)
- {if(FailStandbySend)throw new InvalidOperationException("standby route unavailable");ReturnSends++;return Task.FromResult<FleetTestStandbyReturn?>(assignment with
+  FleetTestStandbyReturn assignment,Action<FleetTestStandbyReturn> persistSendIntent,CancellationToken ct)
+ {if(FailStandbySend)throw new InvalidOperationException("standby route unavailable");ReturnSends++;
+  if(FailStandbyAfterIntent)
+  {persistSendIntent(assignment with {VendorTaskId="V-"+assignment.VehicleId,Route=["PICKUP",assignment.Site]});throw new FleetStandbySendUncertainException("cancelled after send",new OperationCanceledException());}
+  if(FailStandbyGenericAfterIntent)
+  {persistSendIntent(assignment with {VendorTaskId="V-"+assignment.VehicleId,Route=["PICKUP",assignment.Site]});throw new IOException("result persistence failed after send");}
+  return Task.FromResult<FleetTestStandbyReturn?>(assignment with
   {State=FleetTestStandbyReturnStates.Returning,Message="returning",VendorTaskId="V-"+assignment.VehicleId,
    UpdatedAt=DateTimeOffset.UtcNow});}
  public Task<FleetTestStandbyReturn> ObserveStandbyReturnAsync(FleetTestRun r,FleetTestStandbyReturn assignment,
@@ -288,7 +336,7 @@ sealed class Port:IFleetTestPort
  public Task ReleaseStandbyReturnAsync(FleetTestStandbyReturn assignment,CancellationToken ct)=>Task.CompletedTask;
  public Task<FleetTestStandbyReturn[]> ReconcileStandbyReturnsAsync(FleetTestRun r,CancellationToken ct)=>
   Task.FromResult(r.StandbyReturns.Select(a=>a with
-   {State=FleetTestStandbyReturnStates.Completed,Message="reconciled",UpdatedAt=DateTimeOffset.UtcNow}).ToArray());
+   {State=ReturnObserveComplete?FleetTestStandbyReturnStates.Completed:a.State,Message="reconciled",UpdatedAt=DateTimeOffset.UtcNow}).ToArray());
  public void Milestone(DispatchTaskStepType step)=>Details[0]=Details[0] with {Steps=[new("s",2,step,DispatchTaskStepStatus.Completed,"AGV-01",null,null,null,0,null,DateTimeOffset.UtcNow,null)]};
 }
 

@@ -70,14 +70,16 @@ public sealed partial class FleetTestPort
     }
 
     public async Task<FleetTestStandbyReturn?> TrySendStandbyReturnAsync(
-        FleetTestRun run,FleetTestStandbyReturn[] returns,FleetTestStandbyReturn assignment,CancellationToken ct)
+        FleetTestRun run,FleetTestStandbyReturn[] returns,FleetTestStandbyReturn assignment,
+        Action<FleetTestStandbyReturn> persistSendIntent,CancellationToken ct)
     {
         using var lease=await gate.EnterAsync(MapExecutionOperation.NewWork,ct);
         if(lease is null)return null;
         var current=map.Current??throw new InvalidOperationException("运行地图不存在。");
         if(current.MapId!=run.MapId||current.VersionId!=run.MapVersionId)
             throw new InvalidOperationException("原测试地图已变化，不能发送待机导航。");
-        if(Health(assignment.VehicleId,allowLocalTrafficWait:true) is not null)return null;
+        if(Health(assignment.VehicleId,allowLocalTrafficWait:true) is {} health)
+            throw new InvalidOperationException(health);
         if(!vehicles.TryGet(assignment.VehicleId,out var vehicle)||string.IsNullOrWhiteSpace(vehicle.CurrentStation)||!StandbyStopped(vehicle))
             return null;
         if(vehicle.Blocked==true)return null;
@@ -90,17 +92,28 @@ public sealed partial class FleetTestPort
         var checkedRoute=await preflight.CheckRouteAsync(assignment.VehicleId,path,ct);
         if(!checkedMap.Accepted||!checkedRoute.Accepted||!ReferenceEquals(current,map.Current))
             return null;
+        if(Health(assignment.VehicleId,allowLocalTrafficWait:true) is {} latestHealth)
+            throw new InvalidOperationException(latestHealth);
         var latest=vehicles.TryGet(assignment.VehicleId,out var latestVehicle)?latestVehicle:null;
         if(latest is null||!StandbyStopped(latest)||latest.Blocked==true||
            !string.Equals(latest.CurrentStation,vehicle.CurrentStation,StringComparison.OrdinalIgnoreCase))
             return null;
+        // Save the stable vendor identity and every path segment before entering the
+        // gateway. A timeout/restart must leave enough evidence to query the original.
+        var intent=assignment with
+        {
+            VendorTaskId="FLEET-STANDBY-"+run.RunId+"-"+assignment.VehicleId,
+            Route=path,
+            UpdatedAt=DateTimeOffset.UtcNow
+        };
+        persistSendIntent(intent);
         // Standby returns are sent one vehicle at a time after all business tasks have
         // closed. Avoid synthetic traffic leases because there is no DispatchTask row to
         // reconcile them after a service restart.
         try
         {
             var vendorTaskId=await gateway.CreateTransportTaskAsync(
-                "FLEET-STANDBY-"+run.RunId+"-"+assignment.VehicleId,assignment.VehicleId,path,
+                intent.VendorTaskId!,assignment.VehicleId,path,
                 new AgvTransportAction("Wait"),ct);
             return assignment with
             {
@@ -111,33 +124,38 @@ public sealed partial class FleetTestPort
                 UpdatedAt=DateTimeOffset.UtcNow
             };
         }
-        catch(Exception e) when(e is not OperationCanceledException||!ct.IsCancellationRequested)
+        catch(Exception e)
         {
-            throw new FleetStandbySendUncertainException("待机导航发送结果不确定，车辆可能已收到；禁止自动重发，须核对原车端任务。");
+            // Cancellation can arrive after the vehicle accepted the bytes. Once the
+            // gateway send has started it is never evidence that nothing was sent.
+            throw new FleetStandbySendUncertainException("待机导航发送结果不确定，车辆可能已收到；禁止自动重发，须核对原车端任务。",e);
         }
     }
 
     public async Task<FleetTestStandbyReturn> ObserveStandbyReturnAsync(
         FleetTestRun run,FleetTestStandbyReturn assignment,CancellationToken ct)
     {
+        if(map.Current?.MapId!=run.MapId||map.Current.VersionId!=run.MapVersionId||
+           parameters.Revision!=run.ParameterRevision)
+            throw new InvalidOperationException("地图或参数与原待机返回记录不符。");
+        if(Health(assignment.VehicleId,allowLocalTrafficWait:true) is {} health)
+            throw new InvalidOperationException(health);
         if(string.IsNullOrWhiteSpace(assignment.VendorTaskId))
             throw new InvalidOperationException("原待机导航缺少厂家任务编号。");
         if(!string.IsNullOrWhiteSpace(assignment.ResourceTaskId))
             await resources.RenewTaskAsync(assignment.ResourceTaskId,ct);
-        var original=await gateway.GetTransportTaskStatusAsync(assignment.VendorTaskId,ct);
+        var original=await gateway.GetTransportTaskStatusAsync(assignment.VendorTaskId,assignment.VehicleId,assignment.Route,ct);
         if(original is null||original.VendorTaskId!=assignment.VendorTaskId||
            original.VehicleId!=assignment.VehicleId||!Fresh(original.UpdatedAt))
         {
-            if(!string.IsNullOrWhiteSpace(assignment.ResourceTaskId))
-                await resources.ReleaseTaskAsync(assignment.ResourceTaskId,ct);
             throw new InvalidOperationException(assignment.VehicleId+"原待机导航身份或状态不可核对。");
         }
         if(original.State is AgvTransportTaskState.Failed or AgvTransportTaskState.Cancelled or AgvTransportTaskState.Suspended)
         {
-            if(!string.IsNullOrWhiteSpace(assignment.ResourceTaskId))
-                await resources.ReleaseTaskAsync(assignment.ResourceTaskId,ct);
             throw new InvalidOperationException(assignment.VehicleId+"待机导航未正常完成："+original.State);
         }
+        if(original.State==AgvTransportTaskState.Unknown)
+            throw new InvalidOperationException(assignment.VehicleId+"原待机导航全链状态未知，保留路权及发送记录待核对。");
         if(original.State!=AgvTransportTaskState.Completed)
             return assignment with
             {
@@ -180,20 +198,9 @@ public sealed partial class FleetTestPort
         {
             if(string.IsNullOrWhiteSpace(assignment.VendorTaskId))
             {
+                if(assignment.State is FleetTestStandbyReturnStates.Sending or FleetTestStandbyReturnStates.Uncertain)
+                    throw new InvalidOperationException(assignment.VehicleId+"原待机发送记录缺少厂家任务编号，不能推断原命令或重新发送；请先核对车端任务。");
                 updated.Add(assignment);
-                continue;
-            }
-            var original=await gateway.GetTransportTaskStatusAsync(assignment.VendorTaskId,ct);
-            if(original is null||original.VendorTaskId!=assignment.VendorTaskId||
-               original.VehicleId!=assignment.VehicleId||!Fresh(original.UpdatedAt)||
-               original.State!=AgvTransportTaskState.Completed)
-            {
-                updated.Add(assignment with
-                {
-                    State=FleetTestStandbyReturnStates.Returning,
-                    Message="原待机导航尚未确认完成，保留路权和记录。",
-                    UpdatedAt=DateTimeOffset.UtcNow
-                });
                 continue;
             }
             var observed=await ObserveStandbyReturnAsync(run,assignment with
