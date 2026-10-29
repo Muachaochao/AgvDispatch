@@ -4,7 +4,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useDispatchStore } from '../stores/dispatch';
 import { useToastStore } from '../stores/toast';
-import { isRunningStage, label } from '../state';
+import { isWaitingStage, label } from '../state';
 import {taskWait} from '../traffic-display';
 import { shortTime } from '../dashboard';
 import { newTaskRequestId } from '../task-request';
@@ -72,6 +72,7 @@ const tableCount = computed(() => queriedTasks.value?.totalCount ?? 0);
 const pageStart = computed(() => tableCount.value ? (taskPage.value - 1) * (queriedTasks.value?.pageSize ?? appliedQuery.value.pageSize) + 1 : 0);
 const rangeText = computed(() => appliedQuery.value.from || appliedQuery.value.to ? `${appliedQuery.value.from.replace('T', ' ') || '不限开始'} 至 ${appliedQuery.value.to.replace('T', ' ') || '不限结束'}（不含结束时刻）` : '全部时间');
 const canSubmit = computed(() => store.fresh && store.submissionEnabled && !actionBusy.value && !optionsBusy.value && (requestUncertain.value || (!!options.value?.available && !!selectedStation.value?.available && !!selectedVehicle.value?.available && pickupReachable.value)));
+const taskStatusTone=(stage:string,waiting=false)=>stage==='Faulted'?'fault':['Cancelled','CancellationPending','CancellationReview'].includes(stage)?'cancelled':stage==='Completed'?'completed':waiting||isWaitingStage(stage)?'waiting':'running';
 
 watch(() => route.params.id, id => { if (id && typeof id === 'string') openTask(id); }, { immediate: true });
 watch(() => store.fresh, value => { if (value && !queryStarted) void queryTasks(1, true); });
@@ -198,7 +199,7 @@ watch(() => route.query.create, create => {
             <td class="cyan mono" :title="task.taskId">{{ task.taskId }}</td>
             <td>{{ task.stationId }}</td>
             <td>{{ task.vehicleId ?? '待分配' }}</td>
-            <td><span class="state-label" :class="['Faulted','CancellationReview'].includes(task.stage) ? 'fault' : task.stage === 'Completed' ? 'completed' : task.stage === 'Cancelled' ? 'cancelled' : taskWait(store.snapshot,task,store.now) ? 'waiting' : 'running'">{{ taskWait(store.snapshot,task,store.now)?.label ?? label(task.stage) }}</span><small v-if="taskWait(store.snapshot,task,store.now)" style="display:block;max-width:300px;white-space:normal">业务阶段：{{label(task.stage)}} · {{taskWait(store.snapshot,task,store.now)?.reason}}</small></td>
+            <td><span class="state-label" :class="taskStatusTone(task.stage,!!taskWait(store.snapshot,task,store.now))">{{ taskWait(store.snapshot,task,store.now)?.label ?? label(task.stage) }}</span><small v-if="taskWait(store.snapshot,task,store.now)" style="display:block;max-width:300px;white-space:normal">业务阶段：{{label(task.stage)}} · {{taskWait(store.snapshot,task,store.now)?.reason}}</small></td>
             <td>{{ task.priority }}</td>
             <td>{{ shortTime(task.createdAt) }}</td>
             <td>{{ shortTime(task.updatedAt) }}</td>

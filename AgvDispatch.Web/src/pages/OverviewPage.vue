@@ -9,7 +9,7 @@ import TrafficRehearsal from '../TrafficRehearsal.vue';
 import TrafficWaitingPanel from '../TrafficWaitingPanel.vue';
 import {resourceView} from '../waiting';
 import {taskWait,leaseOwners} from '../traffic-display';
-import { isFresh, isRunningStage, label, mayPlot } from '../state';
+import { isFresh, isWaitingStage, label, mayPlot } from '../state';
 import { vehicleCategory, categoryLabels, shortTime, type VehicleCategory } from '../dashboard';
 import type { Snapshot } from '../types';
 import {
@@ -55,6 +55,7 @@ const chosenVehicle = computed(() => store.vehicles.find(v => v.vehicleId === se
 const selectedRoad = computed(() => store.snapshot?.map?.edges.find(edge => edge.id === selectedEdge.value));
 
 const focus=computed(()=>trafficFocus(store.snapshot,detail.value,store.now,store.demoMode));
+const taskStatusTone=(stage:string,waiting=false)=>stage==='Faulted'?'fault':['Cancelled','CancellationPending','CancellationReview'].includes(stage)?'cancelled':stage==='Completed'?'completed':waiting||isWaitingStage(stage)?'waiting':'running';
 function draw() { scene?.update(store.snapshot, selectedVehicle.value, selectedEdge.value,focus.value,store.now); }
 watch([focus,()=>store.now],draw);
 
@@ -166,17 +167,16 @@ onUnmounted(() => { ++detailEpoch;++areaEpoch;clearInterval(areaTimer);scene?.di
 
     <aside class="right-column">
       <section class="control-panel distribution-panel">
-        <header class="section-heading"><h2>任务业务阶段分布 <small>TASK STAGES</small></h2></header>
-        <RingChart :segments="store.ringSegments" :total="store.taskSummary?.total ?? 0" :available="!!store.taskSummary" :caption="store.demoMode ? '示例任务总数' : '全部任务总数'" />
-        <div class="ring-legend"><span v-for="segment in store.ringSegments" :key="segment.label"><i class="status-dot" :style="{ background: segment.color }"></i>{{ segment.label }}<b>{{ segment.value }}</b></span></div>
-        <p class="panel-footnote">{{ store.taskSummary ? (store.demoMode ? '浏览器示例统计。' : '后台全量统计，包含历史任务；已取消单独统计。') : '后台全量统计暂不可用；当前加载记录不代表全部任务。' }}<RouterLink to="/tasks">按时间查询历史</RouterLink></p>
+        <header class="section-heading"><h2>任务业务阶段分布</h2><button class="chart-history" @click="router.push('/tasks')">查询历史</button></header>
+        <RingChart :segments="store.ringSegments" :total="store.taskSummary?.total ?? 0" :available="!!store.taskSummary" caption="任务总数" />
+        <div class="ring-legend"><span v-for="segment in store.ringSegments" :key="segment.label"><i :style="{ background: segment.color }"></i><em>{{ segment.label }}</em><b>{{ segment.value }}</b></span></div>
       </section>
 
       <section class="control-panel live-tasks">
         <header class="section-heading"><h2>当前任务 <small>LIVE TASKS</small></h2><button class="text-button" @click="router.push('/tasks')"><ActionIcon name="list"/>全部</button></header>
         <div class="current-task-counts"><span>执行阶段 <b>{{ store.ringSegments[0].value }}</b></span><span>待派车 <b>{{ store.ringSegments[1].value }}</b></span></div>
         <button v-for="{task,wait} in liveTasks.slice(0, 6)" :key="task.taskId" class="live-task" @click="openTask(task.taskId)">
-          <div><b>{{ task.taskId }}</b><span class="state-label" :class="task.stage === 'Faulted' ? 'fault' : wait ? 'waiting' : isRunningStage(task.stage) ? 'running' : 'waiting'">{{ wait?.label ?? label(task.stage) }}</span></div><small v-if="wait">业务阶段：{{label(task.stage)}} · {{wait.count}}项等待{{wait.truncated?'（观察已截断）':''}}</small>
+          <div><b>{{ task.taskId }}</b><span class="state-label" :class="taskStatusTone(task.stage, !!wait)">{{ wait?.label ?? label(task.stage) }}</span></div><small v-if="wait">业务阶段：{{label(task.stage)}} · {{wait.count}}项等待{{wait.truncated?'（观察已截断）':''}}</small>
           <p>{{ task.stationId }}<span>{{ task.vehicleId ?? '待分配' }}</span></p>
           <small>{{ wait?.reason || task.errorMessage || '点击查看步骤及PLC条件' }}</small>
         </button>
@@ -223,10 +223,15 @@ onUnmounted(() => { ++detailEpoch;++areaEpoch;clearInterval(areaTimer);scene?.di
 
 <style scoped>.overview-page{flex:1;min-height:0;overflow:auto;padding-bottom:12px}.overview-page .control-grid{height:max(780px,calc(100dvh - 205px));flex:none;min-height:780px}.live-tasks,.shared-panel{overflow:auto}.live-tasks{min-height:290px}.right-column{min-height:760px}.distribution-panel>.panel-footnote{flex-shrink:0}.live-tasks>header,.live-tasks>.current-task-counts,.live-task{flex-shrink:0}.live-task>div{flex-wrap:wrap;gap:6px}.live-task b{overflow-wrap:anywhere;min-width:0;white-space:normal;flex:1 1 120px}.live-task small{white-space:normal;overflow-wrap:anywhere;display:block;-webkit-line-clamp:unset;overflow:visible}.shared-resource details{grid-column:1/-1;min-width:0;font-size:11px;overflow-wrap:anywhere}.shared-resource summary{cursor:pointer}.traffic-focus{padding:12px 16px;border-top:1px solid #2c4563;font-size:12px;line-height:1.8}.traffic-focus select{max-width:100%}.traffic-focus button{margin:4px}.resource-location{padding:0 16px;font-size:12px;line-height:1.8;color:#c5dbec}.traffic-focus p{overflow-wrap:anywhere;margin:5px 0}@media(min-width:901px){.overview-page .control-grid{height:max(820px,calc(100dvh - 205px));min-height:820px}}</style>
 <style scoped>
-.right-column{grid-template-rows:310px minmax(180px,1fr) auto}
-.ring-legend{grid-template-columns:repeat(3,minmax(0,1fr));gap:8px 5px}
-.distribution-panel>.panel-footnote{line-height:1.6;font-size:10px;width:100%}
-.distribution-panel>.panel-footnote a{display:inline-block;margin-left:6px;color:var(--cyan,#3dcce9)}
+.right-column{grid-template-rows:326px minmax(180px,1fr) auto}
+.distribution-panel{position:relative;align-items:stretch}
+.distribution-panel::after{content:"";position:absolute;left:46px;right:46px;bottom:5px;height:1px;background:linear-gradient(90deg,transparent,rgba(63,133,186,.32),transparent);pointer-events:none}
+.chart-history{min-height:26px;padding:3px 9px;font-size:11px;color:#77d8ee;border-color:#285a7d;background:#102a43}
+.ring-legend{grid-template-columns:repeat(3,minmax(0,1fr));gap:7px 6px;padding:10px 12px 0}
+.ring-legend>span{min-width:0;justify-content:flex-start;padding:6px;border:1px solid rgba(66,91,132,.34);border-radius:6px;background:rgba(17,31,61,.64);font-size:10px;color:#a9bdd8}
+.ring-legend>span i{width:7px;height:7px;border-radius:50%;box-shadow:0 0 8px currentColor}
+.ring-legend>span em{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-style:normal}
+.ring-legend>span b{margin-left:auto;color:#eef7ff;font:600 12px Consolas,monospace}
 .map-toolbar{flex-shrink:0;align-items:center}.map-toolbar select{max-width:110px;padding:4px 6px;font-size:11px;min-height:27px}
 @media(max-width:900px){.right-column{grid-template-rows:auto auto auto}}
 </style>

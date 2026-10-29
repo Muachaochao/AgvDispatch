@@ -33,3 +33,6 @@ export const label = (value: string | null | undefined) => value ? (stages[value
 
 export const isRunningStage = (stage: string) => ['Executing', 'Running', 'GoingToPickup', 'PickingUp', 'GoingToDumper',
   'WaitingForDumper', 'Dumping', 'ReturningEmptyBox', 'WaitingForPlcConfirmation', 'SubmittingToAgv'].includes(stage);
+
+export const isWaitingStage = (stage: string) => ['Created', 'WaitingForVehicle', 'WaitingForDumper',
+  'WaitingForPlcConfirmation', 'RetryScheduled'].includes(stage);

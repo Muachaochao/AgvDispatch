@@ -1,0 +1,88 @@
+.status-dot.running {
+  background: #35c9e9;
+  box-shadow: 0 0 7px rgba(53, 201, 233, .5);
+}
+
+.status-dot.completed {
+  background: #25d3a4;
+}
+
+.status-dot.cancelled {
+  background: #6f89aa;
+}
+
+.status-dot.waiting {
+  background: #f0bd58;
+}
+
+.state-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: rgba(130, 151, 184, .08);
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.state-label::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 7px currentColor;
+}
+
+.state-label.running {
+  color: #50d2ec;
+  border-color: rgba(53, 201, 233, .24);
+  background: rgba(53, 201, 233, .1);
+}
+
+.state-label.waiting {
+  color: #f0bd58;
+  border-color: rgba(240, 189, 88, .24);
+  background: rgba(240, 189, 88, .1);
+}
+
+.state-label.completed {
+  color: #45dfae;
+  border-color: rgba(37, 211, 164, .24);
+  background: rgba(37, 211, 164, .1);
+}
+
+.state-label.cancelled {
+  color: #94aac6;
+  border-color: rgba(111, 137, 170, .28);
+  background: rgba(111, 137, 170, .12);
+}
+
+.state-label.idle {
+  color: #b48ae8;
+  border-color: rgba(180, 138, 232, .24);
+  background: rgba(180, 138, 232, .1);
+}
+
+.state-label.charging {
+  color: #62bdf0;
+  border-color: rgba(77, 178, 237, .24);
+  background: rgba(77, 178, 237, .1);
+}
+
+.state-label.fault {
+  color: #f07896;
+  border-color: rgba(239, 102, 136, .25);
+  background: rgba(239, 102, 136, .1);
+}
+
+.state-label.offline,
+.state-label.unknown {
+  color: #94a8c2;
+  border-color: rgba(130, 151, 184, .22);
+  background: rgba(130, 151, 184, .1);
+}

@@ -1,24 +1,121 @@
 <script setup lang="ts">
-import { onMounted, ref, watch, onUnmounted } from 'vue';
-const props = withDefaults(defineProps<{ segments: { label: string; value: number; color: string }[]; total: number; caption?: string; available?: boolean }>(), { caption: '任务总数', available: true });
-const canvas = ref<HTMLCanvasElement>();
-function paint() {
-  if (!canvas.value) return;
-  const ratio = Math.min(devicePixelRatio, 2), side = 180;
-  canvas.value.width = side * ratio; canvas.value.height = side * ratio;
-  const ctx = canvas.value.getContext('2d'); if (!ctx) return;
-  ctx.scale(ratio, ratio); ctx.clearRect(0, 0, side, side);
-  ctx.lineWidth = 13; ctx.strokeStyle = '#263251'; ctx.beginPath(); ctx.arc(90, 90, 65, 0, Math.PI * 2); ctx.stroke();
-  let angle = -Math.PI / 2;
-  for (const segment of props.segments) {
-    if (!props.total || !segment.value) continue;
-    const end = angle + segment.value / props.total * Math.PI * 2;
-    ctx.strokeStyle = segment.color; ctx.beginPath(); ctx.arc(90, 90, 65, angle + 0.025, end - 0.025); ctx.stroke(); angle = end;
-  }
-  ctx.textAlign = 'center'; ctx.fillStyle = '#e8f5ff'; ctx.font = '600 29px Consolas, monospace'; ctx.fillText(props.available ? String(props.total) : '—', 90, 91);
-  ctx.fillStyle = '#8b9cba'; ctx.font = '11px Microsoft YaHei, sans-serif'; ctx.fillText(props.available ? props.caption : '统计待更新', 90, 113);
-}
-onMounted(paint); watch(() => [props.total, props.segments, props.available, props.caption], paint, { deep: true });
-onUnmounted(() => { /* no animation loop or owned observers */ });
+import { computed } from 'vue';
+
+const props = withDefaults(defineProps<{
+  segments: { label: string; value: number; color: string }[];
+  total: number;
+  caption?: string;
+  available?: boolean;
+}>(), { caption: '任务总数', available: true });
+
+const radius = 78;
+const circumference = 2 * Math.PI * radius;
+const activeSegments = computed(() => props.total > 0 ? props.segments.filter(segment => segment.value > 0) : []);
+const renderedSegments = computed(() => {
+  let start = 0;
+  return activeSegments.value.map((segment, index) => {
+    const rawLength = segment.value / props.total * circumference;
+    const gap = activeSegments.value.length === 1 ? 0 : Math.min(8, rawLength * 0.24);
+    const visibleLength = Math.max(1, rawLength - gap);
+    const result = {
+      ...segment,
+      index,
+      dasharray: `${visibleLength} ${circumference - visibleLength}`,
+      dashoffset: -start
+    };
+    start += rawLength;
+    return result;
+  });
+});
 </script>
-<template><canvas ref="canvas" class="ring-chart" role="img" :aria-label="available ? `任务分布，总计${total}条：${segments.map(s => `${s.label}${s.value}条`).join('，')}` : '后台全量任务统计暂不可用'"></canvas></template>
+
+<template>
+  <div class="ring-chart" role="img" :aria-label="available ? `任务分布，总计${total}条：${segments.map(s => `${s.label}${s.value}条`).join('，')}` : '后台全量任务统计暂不可用'">
+    <svg viewBox="0 0 208 208" aria-hidden="true">
+      <circle class="ring-track" cx="104" cy="104" :r="radius" />
+      <circle
+        v-for="segment in renderedSegments"
+        :key="`${segment.label}-${segment.index}`"
+        class="ring-segment"
+        cx="104"
+        cy="104"
+        :r="radius"
+        :stroke="segment.color"
+        :stroke-dasharray="segment.dasharray"
+        :stroke-dashoffset="segment.dashoffset"
+      />
+    </svg>
+    <div class="ring-center">
+      <strong>{{ available ? total : '—' }}</strong>
+      <span>{{ available ? caption : '统计待更新' }}</span>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.ring-chart {
+  position: relative;
+  width: 194px;
+  height: 194px;
+  margin: 2px auto 0;
+  display: grid;
+  place-items: center;
+}
+
+.ring-chart::before {
+  content: "";
+  position: absolute;
+  inset: 29px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(42, 117, 156, .14), rgba(12, 26, 52, .02) 68%);
+}
+
+svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.ring-track,
+.ring-segment {
+  fill: none;
+  stroke-width: 18;
+}
+
+.ring-track {
+  stroke: #223354;
+}
+
+.ring-segment {
+  stroke-linecap: round;
+  transform: rotate(-90deg);
+  transform-origin: 104px 104px;
+}
+
+.ring-center {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  pointer-events: none;
+}
+
+.ring-center strong {
+  color: #eff8ff;
+  font: 700 38px/1 Consolas, "Segoe UI", monospace;
+  letter-spacing: 1px;
+  text-shadow: 0 0 18px rgba(81, 198, 230, .18);
+}
+
+.ring-center span {
+  color: #9cb4d3;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: .5px;
+}
+</style>
