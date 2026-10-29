@@ -6,7 +6,10 @@ export interface TaskRoute {taskId:string;stepId:string;commandId:string;vehicle
 export interface WebMap { areaAnnotations?:import('./workbench').AreaAnnotation[]; definitionHash?:string; id: string; version: string; name: string; unit: string; coordinateSystem: string; nodes: MapNode[]; edges: MapEdge[]; resources: MapResource[]; warnings: string[] }
 export interface Vehicle { vehicleId: string; displayName: string; connection: string; quality: string; batteryPercent: number | null; currentStation: string | null;
   navigationState: string | null; x: number | null; y: number | null; angle: number | null; localizationConfidence: number | null;
-  mapPositionState: string; mapPositionMessage: string; lastSuccessfulPollAt: string | null; updatedAt: string; blocked: boolean | null; emergencyStopped: boolean | null; charging?: boolean | null }
+  mapPositionState: string; mapPositionMessage: string; lastSuccessfulPollAt: string | null; updatedAt: string; blocked: boolean | null; emergencyStopped: boolean | null; charging?: boolean | null;
+  obstacle?: VehicleObstacle | null }
+export interface VehicleObstacle { state: 'Clear' | 'Blocked' | 'Prolonged' | 'SafetyStop' | 'Unknown'; since: string | null; durationSeconds: number | null;
+  lastClearedAt: string | null; source: string; message: string; navigationPolicy: string; localDetourEvidence: string }
 export interface TaskRow { taskId: string; stationId: string; vehicleId: string | null; stage: string; priority: number; createdAt: string; updatedAt: string; errorMessage?: string }
 export interface TaskListSummary { total: number; running: number; waiting: number; completed: number; cancelled: number; failed: number; other: number }
 export interface TaskPage { items: TaskRow[]; totalCount: number; page: number; pageSize: number; summary?: TaskListSummary | null }

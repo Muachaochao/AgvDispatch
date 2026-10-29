@@ -82,7 +82,7 @@ public sealed partial class FleetTestPort
             throw new InvalidOperationException(health);
         if(!vehicles.TryGet(assignment.VehicleId,out var vehicle)||string.IsNullOrWhiteSpace(vehicle.CurrentStation)||!StandbyStopped(vehicle))
             return null;
-        if(vehicle.Blocked==true)return null;
+        if(vehicle.Blocked!=false||AgvObstaclePolicy.IsBlocked(vehicle))return null;
         var source=StandbyNode(vehicle.CurrentStation);
         var target=StandbyNode(assignment.Site);
         var route=planner.Plan(source.AgvSiteId!,target.AgvSiteId!,new HashSet<string>());
@@ -95,7 +95,7 @@ public sealed partial class FleetTestPort
         if(Health(assignment.VehicleId,allowLocalTrafficWait:true) is {} latestHealth)
             throw new InvalidOperationException(latestHealth);
         var latest=vehicles.TryGet(assignment.VehicleId,out var latestVehicle)?latestVehicle:null;
-        if(latest is null||!StandbyStopped(latest)||latest.Blocked==true||
+        if(latest is null||!StandbyStopped(latest)||latest.Blocked!=false||AgvObstaclePolicy.IsBlocked(latest)||
            !string.Equals(latest.CurrentStation,vehicle.CurrentStation,StringComparison.OrdinalIgnoreCase))
             return null;
         // Save the stable vendor identity and every path segment before entering the

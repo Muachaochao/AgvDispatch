@@ -36,6 +36,9 @@ public sealed record AgvRobotSnapshot(
     string? ErrorMessage,
     long Version)
 {
+    // Continuous, valid telemetry observations only; unknown/disconnected gaps reset the start.
+    public DateTimeOffset? ObstacleSince { get; init; }
+    public DateTimeOffset? LastObstacleClearedAt { get; init; }
     public double? VelocityX { get; init; }
     public double? VelocityY { get; init; }
     public double? AngularVelocity { get; init; }

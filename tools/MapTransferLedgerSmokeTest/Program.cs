@@ -19,7 +19,7 @@ var definition=new MapDefinition("test",source,"world","m",[new("N1",0,0,MapNode
 await db.Insertable(new MapProjectEntity{MapId="MAP",Name="test",PublishedVersionId="V1",ActiveVersionId="V1",IsActive=true,CreatedAt=DateTime.UtcNow,UpdatedAt=DateTime.UtcNow}).ExecuteCommandAsync();
 await db.Insertable(new MapVersionEntity{VersionId="V1",MapId="MAP",Status=(int)MapVersionStatus.Published,DefinitionJson=JsonSerializer.Serialize(definition,json),ValidationJson="{}",CreatedAt=DateTime.UtcNow,UpdatedAt=DateTime.UtcNow}).ExecuteCommandAsync();
 var barrier=new MapTransferRecoveryBarrier(db);var gate=new MapExecutionGate(null,barrier);var runtime=new ActiveMapRuntime();runtime.Replace(new("MAP","V1",definition,DateTimeOffset.Now));
-var options=new AgvOptions{Robots=[new(){VehicleId="SIM",IpAddress="127.0.0.1"}]};var cache=new AgvStateCache(options);
+var options=new AgvOptions{Enabled=true,Robots=[new(){VehicleId="SIM",IpAddress="127.0.0.1"}]};var cache=new AgvStateCache(options);
 AgvRobotTelemetry Telemetry()=>new(0,0,0,1,"LM1",null,80,false,false,"0",null,null,null,[],[],DateTimeOffset.Now){VelocityX=0,VelocityY=0,AngularVelocity=0};
 void Fresh()=>cache.ApplyTelemetry("SIM",Telemetry(),TimeSpan.Zero);Fresh();
 var switches=new MapSwitchService(db,gate,runtime,cache,new SwitchSignalCache(),new(),barrier);await switches.InitializeAsync(default);

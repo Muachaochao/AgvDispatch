@@ -15,6 +15,8 @@
   background: #f0bd58;
 }
 
+.status-dot.blocked { background: #f0a64d; }
+
 .state-label {
   display: inline-flex;
   align-items: center;
@@ -48,6 +50,12 @@
   color: #f0bd58;
   border-color: rgba(240, 189, 88, .24);
   background: rgba(240, 189, 88, .1);
+}
+
+.state-label.blocked {
+  color: #f0b36c;
+  border-color: rgba(240, 166, 77, .3);
+  background: rgba(240, 166, 77, .12);
 }
 
 .state-label.completed {

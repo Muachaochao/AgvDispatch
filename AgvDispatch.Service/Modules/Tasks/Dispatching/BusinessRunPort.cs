@@ -53,7 +53,8 @@ public sealed partial class BusinessRunPort(IManualTaskCreationService manual, I
         return run;
     }
     private static bool Fresh(DateTimeOffset? time) => time is { } t && t <= DateTimeOffset.UtcNow.AddSeconds(1) && DateTimeOffset.UtcNow - t < TimeSpan.FromSeconds(5);
-    private static bool Stopped(AgvRobotSnapshot v) => v.VelocityX is { } x && Math.Abs(x) < .01 &&
+    private static bool Stopped(AgvRobotSnapshot v) => v.Blocked == false && !AgvObstaclePolicy.IsBlocked(v) &&
+        v.EmergencyStopped == false && !AgvObstaclePolicy.HasBlockingAlarm(v) && v.VelocityX is { } x && Math.Abs(x) < .01 &&
         v.VelocityY is { } y && Math.Abs(y) < .01 && v.AngularVelocity is { } a && Math.Abs(a) < .01 &&
         v.Tasks.All(t => t.Status is 4 or 5 or 6 or 7);
     private string? ConfigurationBlock() => fleetOptions?.Enabled==true||fleetOwnership?.Active==true ? "双车测试启动模式或原会话未闭合，不能同时启动单车运行。" : isolated.Enabled ? "请退出单工位空载联调模式，使用正式业务启动配置；两种执行器不能同时运行。" :
@@ -218,7 +219,7 @@ public sealed partial class BusinessRunPort(IManualTaskCreationService manual, I
         message?.Contains("PLC条件尚未满足", StringComparison.Ordinal) == true;
 
     public static bool IsLocalTrafficObstacle(AgvAlarmSnapshot alarm) =>
-        string.Equals(alarm.Code?.Trim(), "52200", StringComparison.Ordinal);
+        AgvObstaclePolicy.IsLocalObstacle(alarm);
     public async Task<string> ReturnAsync(BusinessRunRecord run, CancellationToken ct)
     {
         using var lease = await gate.EnterAsync(MapExecutionOperation.NewWork, ct)

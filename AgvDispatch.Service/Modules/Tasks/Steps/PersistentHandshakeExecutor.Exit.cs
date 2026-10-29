@@ -118,7 +118,12 @@ public sealed partial class PersistentHandshakeExecutor
                 _exitSamples.Remove(step.StepId);
                 throw new InvalidOperationException("车辆定位、采集时间、阻塞或急停状态缺失，不能核验出区。");
             }
-            return new(vehicleId,current.MapId,current.VersionId,x,y,confidence,observed,state.Quality,state.Connection==ConnectionState.Online,state.Blocked.Value,state.EmergencyStopped.Value);
+            if(AgvObstaclePolicy.HasBlockingAlarm(state))
+            {
+                _exitSamples.Remove(step.StepId);
+                throw new InvalidOperationException("车辆存在严重报警，保持设备与路权，不能核验出区。");
+            }
+            return new(vehicleId,current.MapId,current.VersionId,x,y,confidence,observed,state.Quality,state.Connection==ConnectionState.Online,AgvObstaclePolicy.IsBlocked(state),state.EmergencyStopped.Value);
         }
         void RequireVerified(DumperExitFrame? first,DumperExitFrame second,DateTimeOffset now)
         {

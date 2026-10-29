@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using AgvDispatch.Application.Abstractions;
+using AgvDispatch.Domain.Agvs;
 using AgvDispatch.Domain.Devices;
 using AgvDispatch.Domain.Tasks;
 using AgvDispatch.Infrastructure.Traffic;
@@ -299,7 +300,8 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
         var node=pickupNodes[0];
         var vendorSite=string.IsNullOrWhiteSpace(node.AgvSiteId)?node.Id:node.AgvSiteId;
         if(definition.Nodes.Count(n=>n.Enabled&&string.Equals(string.IsNullOrWhiteSpace(n.AgvSiteId)?n.Id:n.AgvSiteId,vendorSite,StringComparison.OrdinalIgnoreCase))!=1||
-            !string.Equals(vehicle.CurrentStation,vendorSite,StringComparison.OrdinalIgnoreCase)||vehicle.EmergencyStopped!=false||vehicle.Blocked!=false)return null;
+            !string.Equals(vehicle.CurrentStation,vendorSite,StringComparison.OrdinalIgnoreCase)||vehicle.EmergencyStopped!=false||vehicle.Blocked!=false||
+            AgvObstaclePolicy.IsBlocked(vehicle)||AgvObstaclePolicy.HasBlockingAlarm(vehicle))return null;
         return new(step.TaskId,step.StepId,step.VehicleId,returned.StepId,returned.VendorTaskId!,vendorSite,node.Id,map.Current!.MapId,map.Current.VersionId,time,DateTimeOffset.UtcNow);
     }
 

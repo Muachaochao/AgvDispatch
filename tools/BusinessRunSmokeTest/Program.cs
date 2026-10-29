@@ -156,6 +156,7 @@ Check(BusinessRunPort.IsRetryableCreationBlock("暂无满足 PLC 条件和路径
     !BusinessRunPort.IsRetryableCreationBlock("工位故障或通讯无效：CNC-001"),
     "only transient station-state readiness blocks are retried before task creation");
 Check(BusinessRunPort.IsLocalTrafficObstacle(new("52200", AgvDispatch.Domain.Agvs.AgvAlarmSeverity.Error, "robot is blocked")) &&
+    !BusinessRunPort.IsLocalTrafficObstacle(new("52200", AgvDispatch.Domain.Agvs.AgvAlarmSeverity.Fatal, "fatal blocked")) &&
     !BusinessRunPort.IsLocalTrafficObstacle(new("51001", AgvDispatch.Domain.Agvs.AgvAlarmSeverity.Error, "motor fault")),
     "local obstacle alarms are debounced without hiding unrelated vehicle faults");
 var retirementPath = Path.Combine(root, "retirements.json");

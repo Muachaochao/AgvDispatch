@@ -116,7 +116,8 @@ public sealed class SystemStatusSnapshotService(
                     VelocityX = agv.VelocityX, VelocityY = agv.VelocityY,
                     AngularVelocity = agv.AngularVelocity, Charging = agv.Charging,
                     BatteryVoltage = agv.BatteryVoltage, BatteryCurrent = agv.BatteryCurrent,
-                    BatteryTemperature = agv.BatteryTemperature
+                    BatteryTemperature = agv.BatteryTemperature,
+                    Obstacle = AgvObstacleDiagnostics.Analyze(agv, now, TimeSpan.FromMilliseconds(agvOptions.StaleAfterMs))
                 };
             }).ToArray(),
             BuildTaskDiagnostic(activeTasks),

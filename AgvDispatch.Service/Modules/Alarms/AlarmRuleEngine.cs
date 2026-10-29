@@ -209,13 +209,20 @@ public sealed class AlarmRuleEngine(
                     "AGV_EMERGENCY_STOP", $"{agv.DisplayName}急停触发",
                     "AGV上报急停状态，禁止继续派发动作。", AlarmSeverity.Critical));
             }
-            if (agv.Blocked == true)
+            var obstacle = AgvObstacleDiagnostics.Analyze(agv, DateTimeOffset.UtcNow,
+                TimeSpan.FromMilliseconds(agvOptions.StaleAfterMs));
+            if (obstacle.State is "Blocked" or "Prolonged")
             {
                 result.Add(new AlarmCandidate(
                     $"AGV:{agv.VehicleId}:BLOCKED", "AGV", agv.VehicleId,
                     "AGV_BLOCKED", $"{agv.DisplayName}运行受阻",
-                    $"当前位置={agv.CurrentStation ?? "未知"}，导航状态={agv.NavigationState ?? "未知"}。",
+                    $"当前位置={agv.CurrentStation ?? "未知"}，来源={obstacle.Source}。{obstacle.Message}",
                     AlarmSeverity.Warning));
+                if (obstacle.State == "Prolonged")
+                    result.Add(new AlarmCandidate(
+                        $"AGV:{agv.VehicleId}:BLOCKED_PROLONGED", "AGV", agv.VehicleId,
+                        "AGV_BLOCKED_PROLONGED", $"{agv.DisplayName}持续受阻超过30秒",
+                        $"本段连续观察时长={obstacle.DurationSeconds:F0}秒。{obstacle.Message}", AlarmSeverity.Warning));
             }
             foreach (var alarm in agv.Alarms)
             {

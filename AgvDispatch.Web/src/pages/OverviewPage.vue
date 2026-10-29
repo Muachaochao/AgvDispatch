@@ -10,7 +10,9 @@ import TrafficWaitingPanel from '../TrafficWaitingPanel.vue';
 import {resourceView} from '../waiting';
 import {taskWait,leaseOwners} from '../traffic-display';
 import { isFresh, isWaitingStage, label, mayPlot } from '../state';
-import { vehicleCategory, categoryLabels, shortTime, type VehicleCategory } from '../dashboard';
+import { vehicleCategory, categoryLabels, shortTime } from '../dashboard';
+import { vehicleObstacle } from '../obstacles';
+import VehicleObstacleDetails from '../components/VehicleObstacleDetails.vue';
 import type { Snapshot } from '../types';
 import {
   IconRobot, IconRoute, IconCircleCheck, IconArrowsMaximize, IconPlus,
@@ -35,6 +37,7 @@ const mapLabels = ref<'auto'|'all'|'none'>('auto');
 const showTaskDialog = ref(false);
 const selectedAlarm = ref<import('../types').Alarm | null>(null);
 const selectedDevice = ref<import('../types').Device | null>(null);
+const showObstacleDialog = ref(false);
 let scene: DispatchScene | undefined;
 let detailEpoch = 0;
 let autoSelectTask=true;
@@ -52,6 +55,7 @@ watch(()=>[store.demoMode,store.snapshot?.source,store.snapshot?.map?.id,store.s
 
 const liveTasks=computed(()=>store.allTasks.filter(task=>!['Completed','Cancelled'].includes(task.stage)).map(task=>({task,wait:taskWait(store.snapshot,task,store.now)})));
 const chosenVehicle = computed(() => store.vehicles.find(v => v.vehicleId === selectedVehicle.value));
+const chosenObstacle = computed(() => chosenVehicle.value ? vehicleObstacle(chosenVehicle.value, store.fresh, store.now) : null);
 const selectedRoad = computed(() => store.snapshot?.map?.edges.find(edge => edge.id === selectedEdge.value));
 
 const focus=computed(()=>trafficFocus(store.snapshot,detail.value,store.now,store.demoMode));
@@ -112,15 +116,17 @@ onUnmounted(() => { ++detailEpoch;++areaEpoch;clearInterval(areaTimer);scene?.di
       <section class="control-panel vehicle-focus">
         <header class="section-heading"><h2>车辆详情 <small>VEHICLE</small></h2><button class="text-button" @click="router.push('/vehicles')"><ActionIcon name="list"/>列表</button></header>
         <template v-if="chosenVehicle">
-          <div class="focus-vehicle"><IconRobot :size="35" stroke="1.2" /><div><b>{{ chosenVehicle.vehicleId }}</b><small>{{ chosenVehicle.displayName }}</small></div><span class="state-label" :class="vehicleCategory(chosenVehicle, store.allTasks, store.fresh)">{{ categoryLabels[vehicleCategory(chosenVehicle, store.allTasks, store.fresh)] }}</span></div>
+          <div class="focus-vehicle"><IconRobot :size="35" stroke="1.2" /><div><b>{{ chosenVehicle.vehicleId }}</b><small>{{ chosenVehicle.displayName }}</small></div><span class="state-label" :class="vehicleCategory(chosenVehicle, store.allTasks, store.fresh, store.now)">{{ categoryLabels[vehicleCategory(chosenVehicle, store.allTasks, store.fresh, store.now)] }}</span></div>
           <div class="battery-line"><span>电量</span><progress max="100" :value="chosenVehicle.batteryPercent ?? 0"></progress><b>{{ chosenVehicle.batteryPercent ?? '—' }}%</b></div>
           <dl class="property-list">
             <dt>当前站点</dt><dd>{{ chosenVehicle.currentStation ?? '未知' }}</dd>
             <dt>导航状态</dt><dd>{{ chosenVehicle.navigationState ?? '未知' }}</dd>
+            <dt>障碍状态</dt><dd>{{ chosenObstacle?.label }}<template v-if="chosenObstacle?.tone === 'blocked'"> · {{ chosenObstacle.duration }}</template></dd>
             <dt>原始坐标</dt><dd>{{ chosenVehicle.x?.toFixed(2) ?? '—' }} / {{ chosenVehicle.y?.toFixed(2) ?? '—' }}</dd>
             <dt>定位质量</dt><dd>{{ label(chosenVehicle.quality) }} / {{ chosenVehicle.localizationConfidence ?? '—' }}</dd>
             <dt>地图叠加</dt><dd>{{ store.snapshot && mayPlot(store.snapshot, chosenVehicle, store.now) ? '已核定且有效' : '待核对 / 不显示' }}</dd>
           </dl>
+          <button class="text-button obstacle-link" @click="showObstacleDialog = true">查看障碍处置与绕行证据</button>
         </template>
         <p v-else class="empty-panel">连接后台后选择车辆</p>
         <div class="vehicle-picker"><button v-for="v in store.vehicles" :key="v.vehicleId" :class="{ selected: v.vehicleId === selectedVehicle }" @click="selectedVehicle = v.vehicleId">{{ v.vehicleId }}</button></div>
@@ -146,7 +152,7 @@ onUnmounted(() => { ++detailEpoch;++areaEpoch;clearInterval(areaTimer);scene?.di
       <div class="map-viewport">
         <div ref="mapElement" class="scene-container" aria-label="可交互的运行地图"></div>
         <div v-if="store.sceneError || !store.snapshot?.map" class="scene-empty">{{ store.sceneError || '尚未取得后台运行地图。请确认C#主服务已启动、管道名称一致且已激活运行地图。' }}</div>
-        <div class="map-status-legend"><span><i class="status-dot running"></i>执行</span><span><i class="status-dot waiting"></i>等待</span><span><i class="status-dot fault"></i>故障</span><span><i class="status-dot offline"></i>离线</span></div>
+        <div class="map-status-legend"><span><i class="status-dot running"></i>执行</span><span><i class="status-dot waiting"></i>等待</span><span><i class="status-dot blocked"></i>受阻</span><span><i class="status-dot fault"></i>故障</span><span><i class="status-dot offline"></i>离线</span></div>
         <div class="map-navigation"><IconRoute :size="15" /><span>厂家站点与导航道路</span><small>显示不作为执行放行依据</small></div>
         <div class="map-zoom"><button aria-label="缩小" @click="scene?.zoom(1.2)"><IconZoomOut :size="16" /></button><button @click="scene?.view(mapView)"><ActionIcon name="fit"/>复位</button><button aria-label="放大" @click="scene?.zoom(0.8)"><IconZoomIn :size="16" /></button></div>
         <div class="map-caption-bottom"><span>{{ store.snapshot?.map?.nodes.length ?? 0 }} 节点 / {{ store.snapshot?.map?.edges.length ?? 0 }} 道路</span><span>{{ store.mapVehicleCount }} 辆可定位 · {{ mapView === 'top' ? '右键平移 · 滚轮缩放' : '左键旋转 · 右键平移' }}</span></div>
@@ -201,6 +207,10 @@ onUnmounted(() => { ++detailEpoch;++areaEpoch;clearInterval(areaTimer);scene?.di
     <p v-else class="empty-panel">{{ store.error || '正在读取任务详情…' }}</p>
   </ConsoleDialog>
 
+  <ConsoleDialog v-if="showObstacleDialog && chosenVehicle" :title="chosenVehicle.vehicleId + ' · 障碍状态与处置'" @close="showObstacleDialog = false">
+    <VehicleObstacleDetails :vehicle="chosenVehicle" :current="store.fresh" :now="store.now" />
+  </ConsoleDialog>
+
   <ConsoleDialog v-if="selectedAlarm" title="告警详情" @close="selectedAlarm = null">
     <div class="detail-summary">
       <div><span>告警编号</span><b>{{ selectedAlarm.alarmId }}</b></div>
@@ -223,6 +233,7 @@ onUnmounted(() => { ++detailEpoch;++areaEpoch;clearInterval(areaTimer);scene?.di
 
 <style scoped>.overview-page{flex:1;min-height:0;overflow:auto;padding-bottom:12px}.overview-page .control-grid{height:max(780px,calc(100dvh - 205px));flex:none;min-height:780px}.live-tasks,.shared-panel{overflow:auto}.live-tasks{min-height:290px}.right-column{min-height:760px}.distribution-panel>.panel-footnote{flex-shrink:0}.live-tasks>header,.live-tasks>.current-task-counts,.live-task{flex-shrink:0}.live-task>div{flex-wrap:wrap;gap:6px}.live-task b{overflow-wrap:anywhere;min-width:0;white-space:normal;flex:1 1 120px}.live-task small{white-space:normal;overflow-wrap:anywhere;display:block;-webkit-line-clamp:unset;overflow:visible}.shared-resource details{grid-column:1/-1;min-width:0;font-size:11px;overflow-wrap:anywhere}.shared-resource summary{cursor:pointer}.traffic-focus{padding:12px 16px;border-top:1px solid #2c4563;font-size:12px;line-height:1.8}.traffic-focus select{max-width:100%}.traffic-focus button{margin:4px}.resource-location{padding:0 16px;font-size:12px;line-height:1.8;color:#c5dbec}.traffic-focus p{overflow-wrap:anywhere;margin:5px 0}@media(min-width:901px){.overview-page .control-grid{height:max(820px,calc(100dvh - 205px));min-height:820px}}</style>
 <style scoped>
+.obstacle-link{align-self:flex-start;margin:0 14px 12px}
 .right-column{grid-template-rows:326px minmax(180px,1fr) auto}
 .distribution-panel{position:relative;align-items:stretch}
 .distribution-panel::after{content:"";position:absolute;left:46px;right:46px;bottom:5px;height:1px;background:linear-gradient(90deg,transparent,rgba(63,133,186,.32),transparent);pointer-events:none}

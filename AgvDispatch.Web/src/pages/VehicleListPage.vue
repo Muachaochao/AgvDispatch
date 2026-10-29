@@ -1,16 +1,22 @@
 <script setup lang="ts">
 import ActionIcon from '../components/ActionIcon.vue';
 import { computed, ref, onMounted, onUnmounted } from 'vue';
-import { useRouter } from 'vue-router';
+import { useRouter, useRoute } from 'vue-router';
 import { useDispatchStore } from '../stores/dispatch';
-import { vehicleCategory, categoryLabels, shortTime, type VehicleCategory } from '../dashboard';
+import { vehicleCategory, categoryLabels, shortTime } from '../dashboard';
+import { vehicleObstacle } from '../obstacles';
+import ConsoleDialog from '../ConsoleDialog.vue';
+import VehicleObstacleDetails from '../components/VehicleObstacleDetails.vue';
 import { label } from '../state';
 import { IconRobot, IconArrowLeft } from '@tabler/icons-vue';
 
 const store = useDispatchStore();
 const router = useRouter();
-const vehicleFilter = ref('all');
+const route = useRoute();
+const vehicleFilter = ref(typeof route.query.filter === 'string' && route.query.filter in categoryLabels ? route.query.filter : 'all');
 const vehicleSearch = ref('');
+const obstacleVehicleId = ref('');
+const obstacleVehicle = computed(() => store.vehicles.find(v => v.vehicleId === obstacleVehicleId.value));
 type ConnectionSetting = { vehicleId: string; enabled: boolean; ipAddress: string; port: number; navigationPort: number };
 type ConnectionSettings = { revision: string; vehicles: ConnectionSetting[]; activeVehicles: ConnectionSetting[];
   restartRequired: boolean; canManage: boolean };
@@ -48,7 +54,7 @@ onMounted(() => { void loadConnections(); connectionTimer = setInterval(() => { 
 onUnmounted(() => clearInterval(connectionTimer));
 
 const filteredVehicles = computed(() => store.vehicles.filter(v =>
-  (vehicleFilter.value === 'all' || vehicleCategory(v, store.allTasks, store.fresh) === vehicleFilter.value) &&
+  (vehicleFilter.value === 'all' || vehicleCategory(v, store.allTasks, store.fresh, store.now) === vehicleFilter.value) &&
   `${v.vehicleId} ${v.displayName} ${v.currentStation ?? ''}`.toLowerCase().includes(vehicleSearch.value.toLowerCase())
 ));
 </script>
@@ -75,12 +81,15 @@ const filteredVehicles = computed(() => store.vehicles.filter(v =>
     </div>
     <div class="management-table">
       <table>
-        <thead><tr><th>车辆编号</th><th>名称</th><th>状态</th><th>当前站点</th><th>原始坐标 X / Y</th><th>电量</th><th>定位置信度</th><th>数据质量</th><th>最近采集</th><th>操作</th></tr></thead>
+        <thead><tr><th>车辆编号</th><th>名称</th><th>状态</th><th>障碍状态 / 已观察时长</th><th>当前站点</th><th>原始坐标 X / Y</th><th>电量</th><th>定位置信度</th><th>数据质量</th><th>最近采集</th><th>操作</th></tr></thead>
         <tbody>
           <tr v-for="v in filteredVehicles" :key="v.vehicleId">
             <td class="mono cyan">{{ v.vehicleId }}</td>
             <td>{{ v.displayName }}</td>
-            <td><span class="state-label" :class="vehicleCategory(v, store.allTasks, store.fresh)">{{ categoryLabels[vehicleCategory(v, store.allTasks, store.fresh)] }}</span></td>
+            <td><span class="state-label" :class="vehicleCategory(v, store.allTasks, store.fresh, store.now)">{{ categoryLabels[vehicleCategory(v, store.allTasks, store.fresh, store.now)] }}</span></td>
+            <td><button class="table-button obstacle-summary" @click="obstacleVehicleId = v.vehicleId" :aria-label="v.vehicleId + ' 障碍状态及处置依据'">
+              <span>{{ vehicleObstacle(v, store.fresh, store.now).label }}</span><small>{{ vehicleObstacle(v, store.fresh, store.now).duration }} · 查看依据</small>
+            </button></td>
             <td>{{ v.currentStation ?? '—' }}</td>
             <td class="mono">{{ v.x?.toFixed(2) ?? '—' }} / {{ v.y?.toFixed(2) ?? '—' }}</td>
             <td class="green-text">{{ v.batteryPercent ?? '—' }}%</td>
@@ -99,5 +108,10 @@ const filteredVehicles = computed(() => store.vehicles.filter(v =>
       </table>
       <p v-if="!filteredVehicles.length" class="empty-panel">没有匹配车辆</p>
     </div>
+    <ConsoleDialog v-if="obstacleVehicle" :title="obstacleVehicle.vehicleId + ' · 障碍状态与处置'" @close="obstacleVehicleId = ''">
+      <VehicleObstacleDetails :vehicle="obstacleVehicle" :current="store.fresh" :now="store.now" />
+    </ConsoleDialog>
   </section>
 </template>
+
+<style scoped>.obstacle-summary{display:flex;flex-direction:column;align-items:flex-start;gap:5px;line-height:1.5;white-space:normal;text-align:left}.obstacle-summary small{color:#8baacb;font-size:10px}</style>

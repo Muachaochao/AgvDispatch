@@ -8,6 +8,8 @@ public sealed class AgvStateCache : IAgvStateCache
 {
     private readonly object _sync = new();
     private readonly Dictionary<string, AgvRobotSnapshot> _snapshots;
+    private readonly TimeSpan _staleAfter;
+    private readonly TimeProvider _clock;
     private long _version;
     private readonly HashSet<string> _disconnected = new(StringComparer.OrdinalIgnoreCase);
 
@@ -20,13 +22,16 @@ public sealed class AgvStateCache : IAgvStateCache
         }
         Update(vehicleId, p => p with { Connection = ConnectionState.Disconnected,
             Quality = enabled ? SignalQuality.Unknown : SignalQuality.Disabled,
+            ObstacleSince = null,
             LastSuccessfulPollAt = null, ErrorMessage = enabled ? "等待重新采集。" : "操作员已断开通信。" }, true);
     }
 
-    public AgvStateCache(AgvOptions options)
+    public AgvStateCache(AgvOptions options, TimeProvider? clock = null)
     {
+        _clock = clock ?? TimeProvider.System;
+        _staleAfter = TimeSpan.FromMilliseconds(Math.Max(1, options.StaleAfterMs));
         foreach (var robot in options.Robots.Where(r=>!options.Enabled||!r.Enabled)) _disconnected.Add(robot.VehicleId);
-        var now = DateTimeOffset.Now;
+        var now = _clock.GetUtcNow();
         _snapshots = options.Robots.ToDictionary(
             robot => robot.VehicleId,
             robot => new AgvRobotSnapshot(
@@ -70,39 +75,57 @@ public sealed class AgvStateCache : IAgvStateCache
 
     public void ApplyTelemetry(string vehicleId, AgvRobotTelemetry telemetry, TimeSpan responseTime)
     {
-        Update(vehicleId, previous => previous with
+        Update(vehicleId, previous =>
         {
-            Connection = ConnectionState.Online,
-            Quality = SignalQuality.Good,
-            X = telemetry.X,
-            Y = telemetry.Y,
-            Angle = telemetry.Angle,
-            LocalizationConfidence = telemetry.LocalizationConfidence,
-            CurrentStation = telemetry.CurrentStation,
-            LastStation = telemetry.LastStation,
-            BatteryPercent = telemetry.BatteryPercent,
-            Blocked = telemetry.Blocked,
-            EmergencyStopped = telemetry.EmergencyStopped,
-            NavigationState = telemetry.NavigationState,
-            VelocityX = telemetry.VelocityX, VelocityY = telemetry.VelocityY,
-            AngularVelocity = telemetry.AngularVelocity, Charging = telemetry.Charging,
-            BatteryVoltage = telemetry.BatteryVoltage, BatteryCurrent = telemetry.BatteryCurrent,
-            BatteryTemperature = telemetry.BatteryTemperature,
-            SourceStation = telemetry.SourceStation,
-            TargetStation = telemetry.TargetStation,
-            PathPercentage = telemetry.PathPercentage,
-            Tasks = telemetry.Tasks,
-            Alarms = telemetry.Alarms,
-            LastSuccessfulPollAt = telemetry.ReadAt,
-            ConsecutiveFailures = 0,
-            LastResponseTimeMs = responseTime.TotalMilliseconds,
-            ErrorMessage = null
+            // Duplicate/out-of-order samples cannot extend or prove the end of a blockage.
+            if (previous.LastSuccessfulPollAt is { } last && telemetry.ReadAt <= last)
+                return previous with { ObstacleSince = null, Quality = SignalQuality.Stale,
+                    ErrorMessage = "AGV采样时间重复或倒退，等待新的有效采集。" };
+            var now = _clock.GetUtcNow();
+            var valid = telemetry.ReadAt <= now && now - telemetry.ReadAt < _staleAfter;
+            var consecutive = valid && previous.Connection == ConnectionState.Online &&
+                previous.Quality == SignalQuality.Good && previous.LastSuccessfulPollAt is { } observed &&
+                telemetry.ReadAt - observed < _staleAfter;
+            var blocked = telemetry.Blocked == true || telemetry.Alarms.Any(AgvObstaclePolicy.IsLocalObstacle);
+            var cleared = valid && telemetry.Blocked == false && !blocked;
+            return previous with
+            {
+                Connection = ConnectionState.Online,
+                Quality = valid ? SignalQuality.Good : SignalQuality.Stale,
+                ObstacleSince = valid && blocked ? consecutive ? previous.ObstacleSince ?? telemetry.ReadAt : telemetry.ReadAt : null,
+                LastObstacleClearedAt = consecutive && previous.ObstacleSince is not null && cleared
+                    ? telemetry.ReadAt : previous.LastObstacleClearedAt,
+                X = telemetry.X,
+                Y = telemetry.Y,
+                Angle = telemetry.Angle,
+                LocalizationConfidence = telemetry.LocalizationConfidence,
+                CurrentStation = telemetry.CurrentStation,
+                LastStation = telemetry.LastStation,
+                BatteryPercent = telemetry.BatteryPercent,
+                Blocked = telemetry.Blocked,
+                EmergencyStopped = telemetry.EmergencyStopped,
+                NavigationState = telemetry.NavigationState,
+                VelocityX = telemetry.VelocityX, VelocityY = telemetry.VelocityY,
+                AngularVelocity = telemetry.AngularVelocity, Charging = telemetry.Charging,
+                BatteryVoltage = telemetry.BatteryVoltage, BatteryCurrent = telemetry.BatteryCurrent,
+                BatteryTemperature = telemetry.BatteryTemperature,
+                SourceStation = telemetry.SourceStation,
+                TargetStation = telemetry.TargetStation,
+                PathPercentage = telemetry.PathPercentage,
+                Tasks = telemetry.Tasks,
+                Alarms = telemetry.Alarms,
+                LastSuccessfulPollAt = telemetry.ReadAt,
+                ConsecutiveFailures = 0,
+                LastResponseTimeMs = responseTime.TotalMilliseconds,
+                ErrorMessage = null
+            };
         });
     }
 
     public void MarkConnecting(string vehicleId) => Update(vehicleId, previous => previous with
     {
         Connection = ConnectionState.Connecting,
+        ObstacleSince = null,
         Quality = previous.LastSuccessfulPollAt.HasValue
             ? SignalQuality.Stale
             : SignalQuality.Unknown,
@@ -115,10 +138,11 @@ public sealed class AgvStateCache : IAgvStateCache
         {
             var failures = previous.ConsecutiveFailures + 1;
             var stale = previous.LastSuccessfulPollAt.HasValue &&
-                DateTimeOffset.Now - previous.LastSuccessfulPollAt.Value >= staleAfter;
+                _clock.GetUtcNow() - previous.LastSuccessfulPollAt.Value >= staleAfter;
             return previous with
             {
                 Connection = failures >= 3 ? ConnectionState.Interrupted : ConnectionState.Degraded,
+                ObstacleSince = null,
                 Quality = stale ? SignalQuality.Stale : SignalQuality.Bad,
                 ConsecutiveFailures = failures,
                 ErrorMessage = exception.Message
@@ -130,7 +154,7 @@ public sealed class AgvStateCache : IAgvStateCache
     {
         AgvRobotSnapshot previous;
         AgvRobotSnapshot current;
-        var now = DateTimeOffset.Now;
+        var now = _clock.GetUtcNow();
         lock (_sync)
         {
             if (!allowDisconnected && _disconnected.Contains(vehicleId)) return;

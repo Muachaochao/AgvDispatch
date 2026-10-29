@@ -1,6 +1,7 @@
 using System.Net.Http.Json;
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Domain.Devices;
+using AgvDispatch.Domain.Agvs;
 using AgvDispatch.Domain.Maps;
 using AgvDispatch.Domain.Tasks;
 
@@ -23,7 +24,7 @@ public sealed partial class FleetTestPort(FleetTestOptions options,IBusinessRunS
     // Only the verified manufacturer code is local traffic waiting. Descriptions
     // such as "motor blocked" must not suppress an unrelated error or fatal alarm.
     public static bool IsLocalTrafficObstacleAlarm(string? code,string? message)=>
-        string.Equals(code?.Trim(),"52200",StringComparison.Ordinal);
+        AgvObstaclePolicy.IsObstacleCode(code);
     private string? Health(string id,bool allowLocalTrafficWait=false)
     {
         if(!vehicles.TryGet(id,out var v))return id+"尚未取得车辆状态。";
@@ -35,11 +36,11 @@ public sealed partial class FleetTestPort(FleetTestOptions options,IBusinessRunS
         // multi-vehicle run, freezing the whole group also freezes simulated PLC
         // feedback and unrelated vehicles. Startup validation still rejects a blocked
         // vehicle; active work waits locally until that vehicle can proceed.
-        if(v.Blocked==true&&!allowLocalTrafficWait)reasons.Add("车辆当前被阻挡，需现场清除障碍");
+        if((AgvObstaclePolicy.IsBlocked(v)||v.Blocked is null)&&!allowLocalTrafficWait)reasons.Add("车辆受阻或阻挡状态未知，需现场核对");
         if(v.EmergencyStopped!=false)reasons.Add("急停未复位");
         if(v.LocalizationConfidence is not >=.5)reasons.Add($"定位置信度{(v.LocalizationConfidence?.ToString("0.###")??"缺失")}低于0.5");
         var alarms=v.Alarms.Where(a=>a.Severity is AgvDispatch.Domain.Agvs.AgvAlarmSeverity.Error or AgvDispatch.Domain.Agvs.AgvAlarmSeverity.Fatal)
-            .Where(a=>!(allowLocalTrafficWait&&a.Severity!=AgvDispatch.Domain.Agvs.AgvAlarmSeverity.Fatal&&IsLocalTrafficObstacleAlarm(a.Code,a.Message)))
+            .Where(a=>!(allowLocalTrafficWait&&AgvObstaclePolicy.IsLocalObstacle(a)))
             .Select(a=>string.IsNullOrWhiteSpace(a.Code)?"车端报警":a.Code).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         if(alarms.Length>0)reasons.Add("开放车端报警"+string.Join('、',alarms));
         if(reasons.Count>0)return id+"："+string.Join("；",reasons)+"。"+sample;
@@ -167,7 +168,7 @@ public sealed partial class FleetTestPort(FleetTestOptions options,IBusinessRunS
         if(run!=null)foreach(var call in run.Calls.Where(c=>c.TaskId!=null))
             if(await tasks.GetDetailAsync(call.TaskId!,ct) is {} detail)details.Add(detail);
         return new(options.Enabled,options.VehicleIds,run,options.VehicleIds.Select(id=>
-        {vehicles.TryGet(id,out var v);var health=Health(id,allowLocalTrafficWait:true);var message=health??(v?.Blocked==true?"临时避让中；由该车车端处理，不暂停其他车辆。":"状态数据有效");return new FleetTestVehicle(id,v?.CurrentStation,health==null,message);}).ToArray(),details.ToArray(),DateTimeOffset.UtcNow)
+        {vehicles.TryGet(id,out var v);var health=Health(id,allowLocalTrafficWait:true);var message=health??(v?.Blocked is null?"阻挡状态未知，等待有效采集核对；不作为新任务或完成依据。":v is not null&&AgvObstaclePolicy.IsBlocked(v)?"受阻等待；保留原任务，由该车车端处理，不暂停其他车辆，未验证自主绕障。":"状态数据有效");return new FleetTestVehicle(id,v?.CurrentStation,health==null,message);}).ToArray(),details.ToArray(),DateTimeOffset.UtcNow)
         {ConfiguredStations=parameters.Capture().Pickups.Select(p=>p.StationId).ToArray(),MaxConcurrentTasks=dispatch.MaxConcurrentTasks};
     }
     public async Task LabAsync(FleetTestRun run,string action,string[] stations,CancellationToken ct)

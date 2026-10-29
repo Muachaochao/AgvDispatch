@@ -344,11 +344,14 @@ public sealed class SeerAgvGateway(
             throw new InvalidOperationException($"AGV {vehicleId}通信状态或数据质量不允许下发命令。");
         }
 
-        if (robot.EmergencyStopped == true || robot.Alarms.Any(
+        if (robot.EmergencyStopped != false || robot.Alarms.Any(
                 alarm => alarm.Severity >= AgvAlarmSeverity.Error))
         {
             throw new InvalidOperationException($"AGV {vehicleId}处于急停或故障状态。");
         }
+
+        if (robot.Blocked != false || AgvObstaclePolicy.IsBlocked(robot))
+            throw new InvalidOperationException($"AGV {vehicleId}受阻或避障状态未知，保持原任务等待，禁止追加新运输命令。");
 
         if (string.IsNullOrWhiteSpace(robot.CurrentStation) ||
             !string.Equals(robot.CurrentStation, path[0], StringComparison.OrdinalIgnoreCase))
@@ -371,11 +374,16 @@ public sealed class SeerAgvGateway(
 
     private static string GetOperatingState(AgvRobotSnapshot robot)
     {
-        if (robot.EmergencyStopped == true || robot.Alarms.Any(
-                alarm => alarm.Severity >= AgvAlarmSeverity.Error))
+        if (robot.Connection != ConnectionState.Online) return "Offline";
+        if (robot.Quality != SignalQuality.Good) return "Unknown";
+        if (robot.EmergencyStopped == true || AgvObstaclePolicy.HasBlockingAlarm(robot))
         {
             return "Faulted";
         }
+
+        if (robot.EmergencyStopped is null) return "Unknown";
+        if (AgvObstaclePolicy.IsBlocked(robot)) return "Blocked";
+        if (robot.Blocked is null) return "Unknown";
 
         if (robot.Tasks.Any(task => task.Status is 1 or 2 or 3))
         {

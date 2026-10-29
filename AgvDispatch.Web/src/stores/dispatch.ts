@@ -3,7 +3,7 @@ import { computed, ref, shallowRef } from 'vue';
 import type { Alarm, CreationOptions, Device, MapSummary, RoutePreview, Snapshot, TaskDetail, TaskRow } from '../types';
 import type { AdapterIdentity } from '../release-state';
 import { isFresh, isRunningStage, mayPlot } from '../state';
-import { vehicleCategory, type VehicleCategory } from '../dashboard';
+import { vehicleCategory, categoryLabels, type VehicleCategory } from '../dashboard';
 import { useToastStore } from './toast';
 import { demoSnapshot,demoDetail } from '../demo';
 import {rehearsalSnapshot,rehearsalDetail} from '../traffic-rehearsal';
@@ -37,10 +37,10 @@ export const useDispatchStore = defineStore('dispatch', () => {
   const taskSummary = computed(() => completeTaskSummary(snapshot.value?.tasks));
   const activeCount = computed(() => taskSummary.value ? taskSummary.value.total - taskSummary.value.completed - taskSummary.value.cancelled : allTasks.value.filter(task => !['Completed', 'Cancelled'].includes(task.stage)).length);
 
-  const vehicleCategories: VehicleCategory[] = ['running', 'waiting', 'idle', 'charging', 'fault', 'offline', 'unknown'];
+  const vehicleCategories: VehicleCategory[] = ['running', 'waiting', 'blocked', 'idle', 'charging', 'fault', 'offline', 'unknown'];
   const vehicleStats = computed(() => vehicleCategories.map(key => ({
-    key, label: ({ running: '执行中', waiting: '等待中', idle: '空闲', charging: '充电中', fault: '故障', offline: '离线 / 过期', unknown: '待核对' } as Record<VehicleCategory, string>)[key],
-    count: vehicles.value.filter(v => vehicleCategory(v, allTasks.value, fresh.value) === key).length
+    key, label: categoryLabels[key],
+    count: vehicles.value.filter(v => vehicleCategory(v, allTasks.value, fresh.value, now.value) === key).length
   })));
 
   const ringSegments = computed(() => taskStageSegments(taskSummary.value));

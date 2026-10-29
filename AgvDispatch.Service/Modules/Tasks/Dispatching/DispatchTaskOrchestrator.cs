@@ -354,6 +354,18 @@ public sealed class DispatchTaskOrchestrator(
 
                 if (status.State == AgvTransportTaskState.Completed)
                 {
+                    // 1110 and the safety telemetry are separate observations. A cached
+                    // terminal row must not finish/release work while this vehicle is blocked.
+                    if (string.IsNullOrWhiteSpace(task.VehicleId) ||
+                        !string.Equals(task.VehicleId, status.VehicleId, StringComparison.OrdinalIgnoreCase) ||
+                        !agvStates.TryGet(task.VehicleId, out var robot) ||
+                        robot.Connection != ConnectionState.Online || robot.Quality != SignalQuality.Good ||
+                        robot.LastSuccessfulPollAt is not { } observed ||
+                        observed > DateTimeOffset.UtcNow.AddSeconds(1) ||
+                        DateTimeOffset.UtcNow - observed >= TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds) ||
+                        robot.Blocked != false || robot.EmergencyStopped != false ||
+                        AgvObstaclePolicy.IsBlocked(robot) || AgvObstaclePolicy.HasBlockingAlarm(robot))
+                        continue;
                     await tasks.CompleteExecutingStepAsync(
                         task.TaskId,
                         task.VendorTaskId,

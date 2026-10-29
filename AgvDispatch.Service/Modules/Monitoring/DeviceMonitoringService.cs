@@ -3,6 +3,7 @@ using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Connectors.Agv;
 using AgvDispatch.Connectors.Plc;
 using AgvDispatch.Domain.Devices;
+using AgvDispatch.Domain.Agvs;
 using AgvDispatch.Domain.Stations;
 
 namespace AgvDispatch.Service;
@@ -20,6 +21,7 @@ public sealed class DeviceMonitoringService(IAgvStateCache vehicles, AgvOptions 
             cachedVehicles.TryGetValue(robot.VehicleId, out var v);
             var enabled = options.Enabled && robot.Enabled;
             var quality = Effective(v?.Quality ?? SignalQuality.Unknown, v?.LastSuccessfulPollAt, enabled, now, options.StaleAfterMs);
+            var obstacle = v is null ? null : AgvObstacleDiagnostics.Analyze(v, now, TimeSpan.FromMilliseconds(options.StaleAfterMs));
             var fields = new List<MonitoringField>();
             void Add(string name, object? value) => fields.Add(new(name, Format(value), Quality(quality), "—", Time(v?.LastSuccessfulPollAt)));
             Add("当前位置 X / Y（米）", v?.X is { } x && v.Y is { } y ? $"{x:F3} / {y:F3}" : null);
@@ -31,6 +33,8 @@ public sealed class DeviceMonitoringService(IAgvStateCache vehicles, AgvOptions 
             Add("电压 / 电流 / 温度", v is null ? null : $"{Format(v.BatteryVoltage)} V / {Format(v.BatteryCurrent)} A / {Format(v.BatteryTemperature)} °C");
             Add("速度 X / Y / 角速度", v is null ? null : $"{Format(v.VelocityX)} / {Format(v.VelocityY)} / {Format(v.AngularVelocity)}");
             Add("阻挡", v?.Blocked); Add("急停", v?.EmergencyStopped);
+            Add("障碍状态", obstacle?.State); Add("连续受阻秒数", obstacle?.DurationSeconds);
+            Add("导航策略", obstacle?.NavigationPolicy); Add("局部绕行证据", obstacle?.LocalDetourEvidence);
             fields.Add(new("状态 / 导航端口", $"{robot.Port} / {robot.NavigationPort}", "配置", "—", Time(now)));
             Add("连续失败次数", v?.ConsecutiveFailures); Add("轮询耗时（ms）", v?.LastResponseTimeMs);
             fields.Add(new("通信状态", enabled && v is not null ? Connection(v.Connection) : "通信未启用", "诊断", "—", Time(v?.UpdatedAt)));
@@ -42,8 +46,8 @@ public sealed class DeviceMonitoringService(IAgvStateCache vehicles, AgvOptions 
                 foreach (var alarm in v.Alarms) Add($"报警 {alarm.Code} / {alarm.Severity}", alarm.Message);
             }
             return new MonitoredDevice(robot.VehicleId, robot.DisplayName, "AGV", $"{robot.IpAddress}:{robot.Port}",
-                !enabled ? "通信未启用" : quality != SignalQuality.Good ? Quality(quality) : v?.EmergencyStopped == true ? "急停" : v?.Alarms.Any(a => a.Severity >= AgvDispatch.Domain.Agvs.AgvAlarmSeverity.Error) == true ? "车辆报警" : v?.Blocked == true ? "受阻" : Format(v?.NavigationState),
-                Quality(quality), Time(v?.LastSuccessfulPollAt), v?.ErrorMessage ?? "仅显示后台缓存；厂家任务状态码保留原值。", fields);
+                !enabled ? "通信未启用" : quality != SignalQuality.Good ? Quality(quality) : v?.EmergencyStopped == true ? "急停" : v is not null && AgvObstaclePolicy.HasBlockingAlarm(v) ? "车辆报警" : obstacle?.State == "Prolonged" ? "持续受阻" : obstacle?.State == "Blocked" ? "受阻等待" : obstacle?.State == "Unknown" ? "状态待核对" : Format(v?.NavigationState),
+                Quality(quality), Time(v?.LastSuccessfulPollAt), v?.ErrorMessage ?? obstacle?.Message ?? "仅显示后台缓存；厂家任务状态码保留原值。", fields);
         }).ToArray();
         var stationStates = stations.GetAll().ToDictionary(s => s.StationId, StringComparer.OrdinalIgnoreCase);
         var equipment = new List<MonitoredDevice>();

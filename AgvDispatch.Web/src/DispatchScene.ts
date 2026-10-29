@@ -12,7 +12,7 @@ import {annotationLabel} from './area-annotations';
 import {placeMapLabels,type LabelRect,type MapLabelInput,type MapLabelMode} from './map-label-layout';
 
 const VEHICLE_COLORS: Record<string, string> = {
-  running: '#21dca3', waiting: '#eeb85c', idle: '#ad8aeb', charging: '#5aaee8',
+  running: '#21dca3', waiting: '#eeb85c', blocked: '#f0a64d', idle: '#ad8aeb', charging: '#5aaee8',
   fault: '#f05c7e', offline: '#6c7d9d', unknown: '#8398b8'
 };
 
@@ -117,7 +117,7 @@ export class DispatchScene {
       for (const vehicle of snapshot.status?.agvs ?? []) {
         if (!mayPlot(snapshot, vehicle, now)) continue;
         activeIds.add(vehicle.vehicleId);
-        const category = vehicleCategory(vehicle, snapshot.tasks?.items ?? [], true);
+        const category = vehicleCategory(vehicle, snapshot.tasks?.items ?? [], true, now);
         const color = VEHICLE_COLORS[category] ?? VEHICLE_COLORS.unknown;
 
         let entry = this.vehiclePool.get(vehicle.vehicleId);

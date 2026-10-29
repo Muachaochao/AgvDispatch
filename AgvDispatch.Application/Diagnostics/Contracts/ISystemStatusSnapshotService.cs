@@ -67,7 +67,18 @@ public sealed record AgvDiagnostic(
     public double? BatteryVoltage { get; init; }
     public double? BatteryCurrent { get; init; }
     public double? BatteryTemperature { get; init; }
+    public AgvObstacleDiagnostic? Obstacle { get; init; }
 }
+
+public sealed record AgvObstacleDiagnostic(
+    string State,
+    DateTimeOffset? Since,
+    double? DurationSeconds,
+    DateTimeOffset? LastClearedAt,
+    string Source,
+    string Message,
+    string NavigationPolicy,
+    string LocalDetourEvidence);
 
 public enum AgvMapPositionState
 {
