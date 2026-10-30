@@ -84,5 +84,16 @@ export const detourStateLabels: Record<string, string> = {
   CancelIntent: '已记录结束原导航的意图', CancelRequested: '等待原导航终结',
   AwaitingOriginalTerminal: '等待原导航终结与停稳核验', Ready: '停稳核验通过，等待确认执行',
   ReviewHold: '等待人工复核', SendIntent: '已记录改道发送意图', Executing: '查询改道导航执行状态',
+  Uncertain: '改道状态不确定，等待查询原任务',
   Completed: '改道导航已结束并核对到点', Failed: '改道导航失败', Cancelled: '改道导航已取消'
+};
+
+export const autoDetourStateLabels: Record<string, string> = {
+  WaitingForBlock: '等待连续阻挡证据', Planning: '正在规划备用路线', Unavailable: '没有执行自动改道',
+  CancelIntent: '已生成候选，准备结束原导航', CancellationRequested: '等待原导航终结',
+  CancelRequested: '取消待核实，继续查询原任务', CancelBlocked: '结束原导航前核验未通过',
+  AwaitingOriginalTerminal: '等待原导航终结与停稳核验', ReadyToSend: '停稳核验通过，准备发送备选路线',
+  Executing: '查询备选导航执行状态', SendBlocked: '发送前核验未通过', ReviewHold: '等待人工复核',
+  Uncertain: '状态不确定，继续查询原任务', Completed: '已完成并核对到点', Failed: '导航失败，等待现场核对',
+  Cancelled: '已取消并核对停稳'
 };

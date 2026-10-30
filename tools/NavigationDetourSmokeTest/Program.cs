@@ -112,9 +112,20 @@ preview=await service.PreviewDetourAsync(user,new(sent.TaskId),default);
 await service.ConfirmDetourAsync(user,new(sent.TaskId,preview.PreviewId,true),default);
 await service.ReadAsync(default);await Task.Delay(550);await service.ReadAsync(default);
 robot.DropDetourReply=true;rerouted=await service.ContinueDetourAsync(user,new(sent.TaskId,preview.PreviewId,true),default);robot.DropDetourReply=false;
-Check(rerouted.State=="Uncertain"&&robot.Detours==2,"Lost replacement reply leaves the durable chain uncertain without retry");
+Check(rerouted.State=="Uncertain"&&rerouted.Detour?.State=="Uncertain"&&robot.Detours==2,"Lost replacement reply leaves every durable chain status uncertain without retry");
 service=Create();status=await service.ReadAsync(default);
 Check(status.Current?.State=="Running"&&robot.Detours==2&&robot.Cancels==2,"Restart reconciles the exact replacement chain after lost reply without cancel or navigation retransmission");
+robot.CancelLastOnly=true;
+await service.CancelAsync(user,new(sent.TaskId),default);status=await service.ReadAsync(default);
+Check(status.Current?.State=="CancelRequested"&&status.Current.Detour?.State=="CancelRequested"&&
+    status.Current.Message.Contains("仍有活动分段",StringComparison.Ordinal),
+    "A partially cancelled 3066 chain remains cancellation-pending instead of appearing to execute normally");
+var partialCancels=robot.Cancels;var partialDetours=robot.Detours;
+await Reject(()=>service.CancelAsync(user,new(sent.TaskId),default),"Partial chain cancellation cannot be retried or broadened");
+await service.ReadAsync(default);
+Check(robot.Cancels==partialCancels&&robot.Detours==partialDetours,
+    "Partial cancellation stays read-only until every original segment is terminal");
+robot.CancelLastOnly=false;
 
 // Explicit automatic mode: the same planner and one-shot motion gates are
 // driven without operator clicks, but only after continuous block evidence.
@@ -147,6 +158,18 @@ Check(robot.Detours==detoursBefore+1&&robot.Segments.Length==2,
 autoStatus=await auto.ReadAsync(default);
 Check(autoStatus.Current?.AutoDetour?.State=="Executing",
     "Automatic execution remains auditable and is not reported complete on send acknowledgement");
+robot.ReadFailure=true;autoStatus=await auto.ReadAsync(default);await auto.AdvanceAutoDetourAsync(default);
+Check(autoStatus.Current?.State=="Uncertain"&&autoStatus.Current.Detour?.State=="Uncertain"&&
+    autoStatus.Current.AutoDetour?.State=="Uncertain"&&
+    autoStatus.Current.AutoDetour.CandidateRoute.SequenceEqual(new[]{"B","D","C"}),
+    "Lost robot queries make every detour status uncertain while preserving the original candidate and task IDs");
+auto=AutoCreate();autoStatus=await auto.ReadAsync(default);await auto.AdvanceAutoDetourAsync(default);
+Check(autoStatus.Current?.AutoDetour?.State=="Uncertain"&&robot.Detours==detoursBefore+1&&robot.Cancels==cancelsBefore+1,
+    "Restart during query loss does not display an executing detour or resend motion");
+robot.ReadFailure=false;autoStatus=await auto.ReadAsync(default);await auto.AdvanceAutoDetourAsync(default);
+Check(autoStatus.Current?.State=="Running"&&autoStatus.Current.Detour?.State=="Executing"&&
+    autoStatus.Current.AutoDetour?.State=="Executing"&&robot.Detours==detoursBefore+1,
+    "A fresh successful query reconciles the same detour chain after communication recovers");
 robot.NewTerminal=true;robot.Blocked=false;robot.X=2;robot.Station="C";
 await auto.ReadAsync(default);await auto.AdvanceAutoDetourAsync(default);autoStatus=await auto.ReadAsync(default);
 Check(autoStatus.Current?.State=="Completed"&&autoStatus.Current.AutoDetour?.State=="Completed"&&
@@ -192,7 +215,7 @@ sealed class Robot:IAsyncDisposable
     readonly ConcurrentDictionary<string,int> tasks=new();
     public int StatusPort=>((IPEndPoint)status.LocalEndpoint).Port;public int NavigationPort=>((IPEndPoint)navigation.LocalEndpoint).Port;
     public string IntentPath="",Station="A",OriginalId="",CancelId="";public double X;
-    public bool Blocked,UnknownBlocked,MapChanged,Foreign,Emergency,Fatal,DropCancelReply,DropDetourReply,UnknownOriginal,Indirect,NewTerminal,PartialNewHistory,OriginalReappears;
+    public bool Blocked,UnknownBlocked,MapChanged,Foreign,Emergency,Fatal,DropCancelReply,DropDetourReply,UnknownOriginal,Indirect,NewTerminal,PartialNewHistory,OriginalReappears,ReadFailure,CancelLastOnly;
     public bool CancelDurable,DetourDurable,InitialSendHeld;public Func<bool>? ClosureGateHeld;public int DirectNavigations,Detours,Cancels,Unexpected;public JsonElement[] Segments=[];
     public Robot(){status.Start();navigation.Start();workers.Add(Accept(status,false));workers.Add(Accept(navigation,true));}
     public void Reset(){tasks.Clear();OriginalId="";X=0;Station="A";Blocked=false;NewTerminal=false;}
@@ -222,6 +245,7 @@ sealed class Robot:IAsyncDisposable
                     case 1100:response=new{x=X,y=0d,confidence=0.9,current_station=Station,emergency=Emergency,blocked=UnknownBlocked?(bool?)null:Blocked,charging=false,vx=0d,vy=0d,w=0d,
                         fatals=Fatal?new[]{new{code=52200,description="fatal fixture"}}:[]};break;
                     case 1110:
+                        if(ReadFailure)return;
                         var ids=request.TryGetProperty("task_ids",out var filter)?filter.EnumerateArray().Select(x=>x.GetString()!).ToArray():tasks.Keys.ToArray();
                         var rows=ids.Select(id=>new{task_id=id,status=id==OriginalId?(UnknownOriginal?404:OriginalReappears?2:tasks.GetValueOrDefault(id,404)):
                             PartialNewHistory&&id.EndsWith("-01",StringComparison.Ordinal)?404:tasks.TryGetValue(id,out var value)?NewTerminal?4:value:404}).ToList();
@@ -233,7 +257,8 @@ sealed class Robot:IAsyncDisposable
                     case 3003:
                         if(!motion)throw new InvalidDataException("wrong port");CancelId=request.GetProperty("taskId").GetString()!;
                         using(var saved=JsonDocument.Parse(File.ReadAllText(IntentPath)))CancelDurable=saved.RootElement.GetProperty("Detour").GetProperty("CancelTargetId").GetString()==CancelId;
-                        tasks[CancelId]=6;Interlocked.Increment(ref Cancels);if(DropCancelReply)return;response=new{ret_code=0};break;
+                        var cancelledId=CancelLastOnly?Segments[^1].GetProperty("task_id").GetString()!:CancelId;
+                        tasks[cancelledId]=6;Interlocked.Increment(ref Cancels);if(DropCancelReply)return;response=new{ret_code=0};break;
                     case 3066:
                         if(!motion)throw new InvalidDataException("wrong port");Segments=request.GetProperty("move_task_list").EnumerateArray().Select(x=>x.Clone()).ToArray();
                         using(var saved=JsonDocument.Parse(File.ReadAllText(IntentPath)))DetourDurable=saved.RootElement.GetProperty("Detour").GetProperty("NewVendorTaskIds").GetArrayLength()==Segments.Length;

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { useDispatchStore } from '../stores/dispatch';
-import { detourCanContinue, detourPreviewCurrent, detourStateLabels,
+import { autoDetourStateLabels, detourCanContinue, detourPreviewCurrent, detourStateLabels,
   type NavigationDetourCurrent, type NavigationDetourPreview } from '../navigation-detour';
 
 const props = defineProps<{ current: NavigationDetourCurrent; enabled: boolean; readCurrent: boolean; busy: boolean; now: number;
@@ -23,12 +23,6 @@ const previewCurrent = computed(() => props.readCurrent && store.fresh &&
   detourPreviewCurrent(candidate.value, props.current, store.snapshot?.map, props.now));
 const canConfirm = computed(() => available.value && previewCurrent.value && candidate.value?.plan.available && cancelConfirmed.value);
 const canContinue = computed(() => available.value && !candidate.value && executeConfirmed.value && detourCanContinue(props.current, store.snapshot?.map));
-const autoStateLabels: Record<string, string> = {
-  WaitingForBlock: '等待连续阻挡证据', Planning: '正在规划备用路线', Unavailable: '没有执行自动改道',
-  CancelIntent: '已生成候选，准备结束原导航', CancellationRequested: '等待原导航终结',
-  AwaitingOriginalTerminal: '等待原导航终结与停稳核验', ReadyToSend: '停稳核验通过，准备发送备选路线',
-  Executing: '查询备选导航执行状态', SendBlocked: '发送前核验未通过', ReviewHold: '等待人工复核'
-};
 let epoch = 0;
 function invalidate() { ++epoch; candidate.value = null; cancelConfirmed.value = false; executeConfirmed.value = false; }
 async function run(action: () => Promise<void>) {
@@ -74,7 +68,7 @@ watch(() => props.current.detour?.state, () => { cancelConfirmed.value = false; 
     <p v-if="error" role="alert" class="detour-error">{{ error }}</p>
     <p v-if="!readCurrent" role="status">原任务状态尚未取得或已失效，请先查询原任务。</p>
     <div v-if="current.autoDetour" class="detour-candidate detour-auto-record">
-      <h4>{{ autoStateLabels[current.autoDetour.state] || current.autoDetour.state }}</h4>
+      <h4>{{ autoDetourStateLabels[current.autoDetour.state] || current.autoDetour.state }}</h4>
       <p>{{ current.autoDetour.message }}</p>
       <p v-if="current.autoDetour.sourceSite">实际接入点：{{ current.autoDetour.sourceSite }} · 推断受阻下一站：{{ current.autoDetour.blockedToSite || '待核对' }}</p>
       <p v-if="current.autoDetour.blockedEdgeIds.length">推断受阻道路：{{ current.autoDetour.blockedEdgeIds.join('、') }}</p>

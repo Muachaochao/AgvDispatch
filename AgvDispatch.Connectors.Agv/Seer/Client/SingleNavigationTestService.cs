@@ -54,6 +54,9 @@ public sealed partial class SingleNavigationTestService : ISingleNavigationTestS
                 _record=_record with {State="Uncertain",BlockedSince=null,Message="后台重启：只读查询原任务，不自动重发。"};
                 if(_record.Detour is {SendAttemptedAt:null} detour)
                     _record=_record with {State="ReviewHold",Detour=detour with {State="ReviewHold",StoppedObservedAt=null,Message="后台重启：未发送改道进入人工复核，不自动续发取消或导航。"}};
+                SynchronizeSentDetourStatus();
+                if(_record.State=="ReviewHold"&&_record.AutoDetour is {} auto)
+                    _record=_record with {AutoDetour=auto with {State="ReviewHold",Message=_record.Message,UpdatedAt=DateTimeOffset.UtcNow}};
             }
         }
     }
@@ -243,6 +246,11 @@ public sealed partial class SingleNavigationTestService : ISingleNavigationTestS
                     var known=rows.Count==ids.Count&&rows.All(x=>x.Status is >=1 and <=7);
                     var state=!known?"Uncertain":rows.Any(x=>x.Status==2)?"Running":rows.Any(x=>x.Status==3)?"Suspended":rows.Any(x=>x.Status==1)?"Waiting":rows.Any(x=>x.Status is 5 or 7)?"Failed":rows.Any(x=>x.Status==6)?"Cancelled":"Completed";
                     var message=!known?"原任务链未全部找到或含未知状态，不视为未发送；保持阻塞。":$"原任务链状态 {string.Join(",",rows.Select(x=>$"{x.TaskId}={x.Status}"))}；仅全部终态且车辆静止时结束测试。";
+                    if(known&&!Terminal(state)&&_record.CancellationAttemptedAt is not null)
+                    {
+                        state="CancelRequested";
+                        message=$"已请求取消 {_record.CancellationVendorTaskId}，原任务链仍有活动分段：{string.Join(",",rows.Where(x=>x.Status is 1 or 2 or 3).Select(x=>$"{x.TaskId}={x.Status}"))}；取消尚未核实，只查询原编号，不重复取消或发送导航。";
+                    }
                     var (t,_)=await client.PollAsync(ct);
                     ObservePosition(t);
                     if(Terminal(state))
@@ -258,7 +266,7 @@ public sealed partial class SingleNavigationTestService : ISingleNavigationTestS
                         }
                     }
                     _record=_record with{State=state,Message=message,UpdatedAt=DateTimeOffset.Now};
-                    if(_record.Detour is {} detour)_record=_record with {Detour=detour with {State=Terminal(state)?state:"Executing",Message=message}};
+                    SynchronizeSentDetourStatus();
                     Persist();
                 }
                 catch(Exception ex)when(!ct.IsCancellationRequested)
@@ -266,6 +274,7 @@ public sealed partial class SingleNavigationTestService : ISingleNavigationTestS
                     _record=_record with{State="Uncertain",BlockedSince=null,Message="查询失败，不能重发："+ex.Message,UpdatedAt=DateTimeOffset.Now};
                     if(_record.Detour is {SendAttemptedAt:null} pending)
                         _record=_record with {Detour=pending with {StoppedObservedAt=null,State=pending.State=="ReviewHold"?"ReviewHold":"AwaitingOriginalTerminal",Message=_record.Message}};
+                    SynchronizeSentDetourStatus();
                     Persist();
                 }
             }
@@ -306,6 +315,7 @@ public sealed partial class SingleNavigationTestService : ISingleNavigationTestS
             _record=_record with{State="Uncertain",Message="已记录原任务取消意图；尚未确认取消结果。",CancellationAttemptedAt=DateTimeOffset.UtcNow,CancellationVendorTaskId=task.TaskId,UpdatedAt=DateTimeOffset.Now};Persist();
             try{await client.CancelNavigationAsync(task.TaskId,false,ct);_record=_record with{State="CancelRequested",Message="取消已应答，请继续查询至取消终态；不是急停。"};}
             catch(Exception ex){_record=_record with{Message="取消结果不确定，请查询原任务："+ex.Message};}
+            SynchronizeSentDetourStatus();
             Persist();return _record;
         }
         finally{_mutex.Release();}

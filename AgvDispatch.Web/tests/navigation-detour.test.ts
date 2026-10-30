@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { detourCanContinue, detourPreviewCurrent, type NavigationDetourCurrent, type NavigationDetourPlan,
+import { autoDetourStateLabels, detourStateLabels, detourCanContinue, detourPreviewCurrent, type NavigationDetourCurrent, type NavigationDetourPlan,
   type NavigationDetourPreview, type NavigationDetourRecord } from '../src/navigation-detour.ts';
 import type { WebMap } from '../src/types.ts';
 
@@ -36,10 +36,19 @@ test('未发送阶段可重新核验，已尝试发送后旧预览不能重新�
 });
 
 test('取消应答、未停稳、重启复核及未知发送都不允许执行备选路线', () => {
-  for (const state of ['CancelIntent', 'CancelRequested', 'AwaitingOriginalTerminal', 'ReviewHold', 'SendIntent', 'Executing', 'unknown'])
+  for (const state of ['CancelIntent', 'CancelRequested', 'AwaitingOriginalTerminal', 'ReviewHold', 'SendIntent', 'Executing', 'Uncertain', 'unknown'])
     assert.equal(detourCanContinue({ ...current, state: 'DetourReady', detour: { ...record, state } }, map), false);
   assert.equal(detourCanContinue({ ...current, detour: record }, map), false);
   assert.equal(detourCanContinue({ ...current, state: 'DetourReady', detour: { ...record, sendAttemptedAt: new Date(now).toISOString() } }, map), false);
+});
+
+test('自动改道的取消待核实、未知及终态都有明确的中文提示', () => {
+  assert.match(autoDetourStateLabels.CancelRequested!, /取消待核实/);
+  assert.match(autoDetourStateLabels.Uncertain!, /不确定/);
+  assert.match(detourStateLabels.Uncertain!, /不确定/);
+  assert.match(autoDetourStateLabels.Completed!, /核对到点/);
+  assert.match(autoDetourStateLabels.Cancelled!, /核对停稳/);
+  assert.match(autoDetourStateLabels.Failed!, /核对/);
 });
 
 test('无备选道路或异图候选保留等待，不能由确认按钮越过', () => {

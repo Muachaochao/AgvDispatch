@@ -9,6 +9,15 @@ public sealed partial class SingleNavigationTestService
         record.VendorTaskIds.Count>0?record.VendorTaskIds:
         record.NavigationApi==3066&&record.Route.Count>=2?AgvTransportSegmentIds.For(record.VendorTaskId,record.Route.Count):[record.VendorTaskId];
 
+    private void SynchronizeSentDetourStatus()
+    {
+        if(_record?.Detour is not {SendAttemptedAt:not null} detour)return;
+        var state=Terminal(_record.State)||_record.State is "Uncertain" or "CancelRequested"?_record.State:"Executing";
+        _record=_record with {Detour=detour with {State=state,Message=_record.Message}};
+        if(_record.AutoDetour is {} auto)
+            _record=_record with {AutoDetour=auto with {State=state,Message=_record.Message,UpdatedAt=_record.UpdatedAt.ToUniversalTime()}};
+    }
+
     private static bool LocalBlocked(AgvRobotTelemetry t) => t.Blocked==true||t.Alarms.Any(AgvObstaclePolicy.IsLocalObstacle);
     private static bool SafeStopped(AgvRobotTelemetry t) => t.EmergencyStopped==false&&t.Charging==false&&
         (t.Blocked is not null||t.Alarms.Any(AgvObstaclePolicy.IsLocalObstacle))&&
@@ -250,7 +259,8 @@ public sealed partial class SingleNavigationTestService
                     "候选3066所有分段均已接受；不代表到点完成。":"候选应答后整条任务链尚未全部确认；只查询原新编号，不重发。"}};
             }
             catch(Exception ex){_record=_record with {State="Uncertain",Detour=send with {State="Executing",Message="候选下发结果不确定；保留原新编号，只读查询，禁止重发："+ex.Message}};}
-            _record=_record with {Message=_record.Detour!.Message,UpdatedAt=DateTimeOffset.Now};Persist();return _record;
+            _record=_record with {Message=_record.Detour!.Message,UpdatedAt=DateTimeOffset.Now};
+            SynchronizeSentDetourStatus();Persist();return _record;
         }
         finally{_mutex.Release();}
     }
@@ -279,6 +289,11 @@ public sealed partial class SingleNavigationTestService
             if(Terminal(snapshot.State))
             {
                 auditState=snapshot.State;
+                auditMessage=snapshot.Message;
+            }
+            else if(snapshot.State=="Uncertain"||snapshot.CancellationAttemptedAt is not null)
+            {
+                auditState=snapshot.State=="Uncertain"?"Uncertain":"CancelRequested";
                 auditMessage=snapshot.Message;
             }
             else if(snapshot.Detour is { } detour)
@@ -338,8 +353,9 @@ public sealed partial class SingleNavigationTestService
             await AuditAutoDetourAsync(user,auditState!,auditMessage!,snapshot!);
             try
             {
-                await ContinueDetourAsync(user,continuation,ct);
-                await AuditAutoDetourAsync(user,"Executing","备选3066任务链已按一次发送规则处理；后续只查询原新车端任务编号。",_record);
+                var continued=await ContinueDetourAsync(user,continuation,ct);
+                await AuditAutoDetourAsync(user,continued.State=="Uncertain"?"Uncertain":"Executing",
+                    continued.Message,continued);
             }
             catch(Exception ex)
             {
