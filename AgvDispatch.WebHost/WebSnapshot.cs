@@ -1,6 +1,7 @@
 ﻿using System.Text.Json;
 using System.Text.Json.Serialization;
 using AgvDispatch.Application.Abstractions;
+using AgvDispatch.Domain.Devices;
 using AgvDispatch.Domain.Maps;
 
 namespace AgvDispatch.WebHost;
@@ -41,13 +42,36 @@ public sealed class SnapshotReader(DispatchPipe pipe)
         if (map?.MapId != status.Safety.ActiveMapId || map?.VersionId != status.Safety.ActiveMapVersionId ||
             settings?.RuntimeMapId != map?.MapId || settings?.RuntimeMapVersion != map?.VersionId)
             throw new InvalidOperationException("采集期间运行地图已变化，请等待下一次完整观察。");
-        var positioned = settings?.Active.MapBindings?.Where(b => b.CoordinatesVerified &&
+        var boundPositions = settings?.Active.MapBindings?.Where(b => b.CoordinatesVerified &&
             b.LocalMapId == map?.MapId && b.LocalMapVersion == map?.VersionId &&
-            !string.IsNullOrWhiteSpace(b.ConfirmationNote)).Select(b => b.VehicleId).Distinct().ToArray() ?? [];
+            !string.IsNullOrWhiteSpace(b.ConfirmationNote)).Select(b => b.VehicleId) ?? [];
+        var positioned = ResolvePositionedVehicleIds(
+            map?.Definition is { CoordinateSystem: "RobotWorld", Unit: "m" },
+            map?.Definition?.Nodes.Where(node => node.Enabled)
+                .Select(node => node.AgvSiteId).Where(site => !string.IsNullOrWhiteSpace(site))
+                .Cast<string>().ToHashSet(StringComparer.OrdinalIgnoreCase) ?? [],
+            boundPositions, status.Agvs);
         // Imported translated SMAP currently has no transform in the IPC contract. Do not put raw robot XY on it.
         if (map?.Definition?.CoordinateSystem == "SmapWorldTranslated") positioned = [];
         return new(DateTimeOffset.UtcNow, true, "backend", null, status, ProjectMap(map), devices, tasks, resources, positioned)
         { Alarms = alarms ?? [], Traffic = traffic };
+    }
+
+    public static string[] ResolvePositionedVehicleIds(bool robotWorldMeters,
+        IReadOnlySet<string> mapStations, IEnumerable<string> businessBound,
+        IEnumerable<AgvDiagnostic> agvs)
+    {
+        // A robot-world runtime map imported from the robot already carries the
+        // matching coordinates; an additional business-map binding is not required.
+        // Keep the safety gate tied to a live observation: online, good quality,
+        // normal route position, and a reported station that exists in this map.
+        var robotWorldPositions = robotWorldMeters
+            ? agvs.Where(agv => agv.Connection == ConnectionState.Online && agv.Quality == SignalQuality.Good &&
+                agv.MapPositionState == AgvMapPositionState.Normal && !string.IsNullOrWhiteSpace(agv.CurrentStation) &&
+                mapStations.Contains(agv.CurrentStation)).Select(agv => agv.VehicleId)
+            : [];
+        return businessBound.Concat(robotWorldPositions)
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
     }
 
     public static WebMap? ProjectMap(TrafficMapSnapshot? snapshot)

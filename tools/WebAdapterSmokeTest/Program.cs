@@ -7,6 +7,7 @@ using System.Text;
 using System.Text.Json;
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Domain.Maps;
+using AgvDispatch.Domain.Devices;
 using AgvDispatch.Domain.Tasks;
 using AgvDispatch.Infrastructure.Persistence;
 using AgvDispatch.Infrastructure.Maps;
@@ -36,6 +37,29 @@ Check(projectionJson.GetProperty("edges")[0].GetProperty("points")[16].GetProper
 Check(!projectionJson.ToString().Contains("synthetic"), "Web地图不暴露后台源文件路径");
 Check(SnapshotReader.ProjectMap(new(DateTimeOffset.UtcNow, null, null, null, [])) == null, "没有运行地图就返回空，不生成假图");
 Check(SnapshotReader.ProjectMap(new(DateTimeOffset.UtcNow, "M", "V", definition with { CoordinateSystem = "SmapWorldTranslated" }, []))!.Warnings.Length > 0, "平移Smap明确说明车位变换限制");
+var positionStations = new HashSet<string>(["LM1"], StringComparer.OrdinalIgnoreCase);
+AgvDiagnostic PositionVehicle(string id, ConnectionState connection, SignalQuality quality,
+    AgvMapPositionState position, string? station) => new(id, id, "127.0.0.1:19204", connection, quality,
+    80, station, "1", 0, 0, false, false, 1, 2, 0, .9, position, .04, "E1",
+    "定位正常", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, 0, 10, null);
+var robotWorldPositions = SnapshotReader.ResolvePositionedVehicleIds(true, positionStations, [],
+    [PositionVehicle("FORK", ConnectionState.Online, SignalQuality.Good, AgvMapPositionState.Normal, "lm1")]);
+Check(robotWorldPositions.SequenceEqual(["FORK"]), "机器人坐标图在线且站点匹配时无需业务地图绑定即可画车");
+Check(SnapshotReader.ResolvePositionedVehicleIds(true, positionStations, [],
+    [PositionVehicle("FORK", ConnectionState.Disconnected, SignalQuality.Good, AgvMapPositionState.Normal, "LM1")]).Length == 0,
+    "断连车辆不因坐标碰巧落在道路上而画车");
+Check(SnapshotReader.ResolvePositionedVehicleIds(true, positionStations, [],
+    [PositionVehicle("FORK", ConnectionState.Online, SignalQuality.Good, AgvMapPositionState.LowConfidence, "LM1")]).Length == 0,
+    "定位低置信或偏离道路时不画车");
+Check(SnapshotReader.ResolvePositionedVehicleIds(true, positionStations, [],
+    [PositionVehicle("FORK", ConnectionState.Online, SignalQuality.Good, AgvMapPositionState.Normal, "LM3")]).Length == 0,
+    "上报站点不属于当前运行图时不画车");
+Check(SnapshotReader.ResolvePositionedVehicleIds(false, positionStations, [],
+    [PositionVehicle("FORK", ConnectionState.Online, SignalQuality.Good, AgvMapPositionState.Normal, "LM1")]).Length == 0,
+    "非机器人坐标图仍要求业务地图坐标核定");
+Check(SnapshotReader.ResolvePositionedVehicleIds(false, positionStations, ["MAPPED"],
+    [PositionVehicle("FORK", ConnectionState.Online, SignalQuality.Good, AgvMapPositionState.Normal, "LM1")]).SequenceEqual(["MAPPED"]),
+    "已核定业务地图绑定沿用原画车资格");
 
 using (var db = DatabaseFactory.Create(new() { DatabasePath = databasePath }))
 {
