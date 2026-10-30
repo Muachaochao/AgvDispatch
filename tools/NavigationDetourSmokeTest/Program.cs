@@ -147,6 +147,11 @@ Check(robot.Detours==detoursBefore+1&&robot.Segments.Length==2,
 autoStatus=await auto.ReadAsync(default);
 Check(autoStatus.Current?.AutoDetour?.State=="Executing",
     "Automatic execution remains auditable and is not reported complete on send acknowledgement");
+robot.NewTerminal=true;robot.Blocked=false;robot.X=2;robot.Station="C";
+await auto.ReadAsync(default);await auto.AdvanceAutoDetourAsync(default);autoStatus=await auto.ReadAsync(default);
+Check(autoStatus.Current?.State=="Completed"&&autoStatus.Current.AutoDetour?.State=="Completed"&&
+    autoStatus.Current.AutoDetour.CandidateRoute.SequenceEqual(new[]{"B","D","C"}),
+    "Automatic terminal audit records completion without losing the candidate route");
 Console.WriteLine($"PASS {checks} checks; loopback only, no real vehicle");
 
 sealed class Planner:INavigationTestDetourPlanner

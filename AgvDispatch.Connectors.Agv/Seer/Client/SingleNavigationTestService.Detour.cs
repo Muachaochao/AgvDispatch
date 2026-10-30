@@ -275,8 +275,13 @@ public sealed partial class SingleNavigationTestService
         try
         {
             snapshot=_record;
-            if(snapshot is null||Terminal(snapshot.State))return;
-            if(snapshot.Detour is { } detour)
+            if(snapshot is null)return;
+            if(Terminal(snapshot.State))
+            {
+                auditState=snapshot.State;
+                auditMessage=snapshot.Message;
+            }
+            else if(snapshot.Detour is { } detour)
             {
                 if(detour.SendAttemptedAt is not null)
                 {
@@ -400,16 +405,25 @@ public sealed partial class SingleNavigationTestService
         {
             var record=_record;
             if(record is null)return;
-            if(record.AutoDetour is { } current&&current.State==state&&current.Message==message)return;
+            if(record.AutoDetour is { } current&&current.State==state&&current.Message==message&&
+                (record.Detour?.Plan is null||current.CandidateRoute.Count>0))return;
+            var previous=record.AutoDetour;
+            var detourPlan=plan??record.Detour?.Plan;
+            var resolvedSource=sourceSite??detourPlan?.SourceSite??previous?.SourceSite;
+            var originalRoute=record.Detour?.OriginalRoute??[];
+            var sourceIndex=originalRoute.Select((site,index)=>(site,index))
+                .FirstOrDefault(row=>string.Equals(row.site,resolvedSource,StringComparison.Ordinal));
+            var resolvedBlockedTo=blockedToSite??previous?.BlockedToSite??
+                (sourceIndex.site is not null&&sourceIndex.index+1<originalRoute.Count?originalRoute[sourceIndex.index+1]:null);
             var next=new NavigationTestAutoDetourRecord(state,message,DateTimeOffset.UtcNow,user.WindowsIdentity)
             {
-                BlockedSince=record.BlockedSince??snapshot?.BlockedSince,
-                SourceSite=sourceSite??plan?.SourceSite,
-                BlockedToSite=blockedToSite,
-                PreviewId=previewId,
-                PlanMessage=plan?.Message,
-                CandidateRoute=plan?.Route.ToArray()??[],
-                BlockedEdgeIds=plan?.BlockedEdgeIds.ToArray()??[]
+                BlockedSince=record.BlockedSince??snapshot?.BlockedSince??previous?.BlockedSince,
+                SourceSite=resolvedSource,
+                BlockedToSite=resolvedBlockedTo,
+                PreviewId=previewId??record.Detour?.PreviewId??previous?.PreviewId,
+                PlanMessage=detourPlan?.Message??previous?.PlanMessage,
+                CandidateRoute=detourPlan?.Route.ToArray()??previous?.CandidateRoute??[],
+                BlockedEdgeIds=detourPlan?.BlockedEdgeIds.ToArray()??previous?.BlockedEdgeIds??[]
             };
             _record=record with {AutoDetour=next};Persist();
         }
