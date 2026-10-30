@@ -22,7 +22,12 @@ public sealed record DumperExitPolicy(
     double MinimumConfidence = 0.8,
     double SafetyMarginMeters = 0.1);
 
-public sealed record DumperExitAssessment(bool Verified, string Reason, IReadOnlyList<string> ResourceIds);
+public sealed record DumperExitAssessment(bool Verified, string Reason, IReadOnlyList<string> ResourceIds)
+{
+    // Only valid, fresh observations whose full envelope still touches the area are
+    // ordinary physical-exit waiting. Invalid configuration or evidence is never waiting.
+    public bool WaitingForPhysicalExit { get; init; }
+}
 
 /// <summary>
 /// Pure geometric exit evidence; never writes a PLC bit or releases a lease. The caller must
@@ -105,7 +110,7 @@ public static class DumperExitEvaluator
             if (!resources.TryGetValue(id, out var resource) || resource.Capacity < 1 || !ValidBoundary(resource.Boundary))
                 return Reject($"倒料资源 {id} 缺少有效简单多边形边界，不能推断已出区。");
             if (!EntireEnvelopeOutside(first, radius, resource.Boundary!) || !EntireEnvelopeOutside(second, radius, resource.Boundary!))
-                return Reject($"两次观测的整车、载荷、定位误差及安全裕量尚未全部离开倒料资源 {id}。");
+                return Reject($"两次观测的整车、载荷、定位误差及安全裕量尚未全部离开倒料资源 {id}。") with { WaitingForPhysicalExit = true };
             verified.Add(resource.Id);
         }
         return new(true, "两次新鲜同车同图定位均确认整车及最大载荷包络完全在全部指定倒料边界外；尚未执行任何信号或资源交接。", verified);

@@ -138,8 +138,10 @@ public sealed class TrafficControlNamedPipeServer(
 
     private async Task HandleConnectionAsync(NamedPipeServerStream pipe, CancellationToken cancellationToken)
     {
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
         var identityName = "(unresolved)";
         string? operation = null;
+        string? requestId = null;
         TrafficControlPipeResponse response;
         try
         {
@@ -147,29 +149,44 @@ public sealed class TrafficControlNamedPipeServer(
             readTimeout.CancelAfter(TimeSpan.FromSeconds(15));
             var request = await ReadAsync<TrafficControlPipeRequest>(pipe, readTimeout.Token);
             operation = request.Operation;
+            if (request.Payload.ValueKind == JsonValueKind.Object &&
+                (request.Payload.TryGetProperty("requestId", out var id) || request.Payload.TryGetProperty("RequestId", out id)) &&
+                id.ValueKind == JsonValueKind.String && Guid.TryParse(id.GetString(), out var parsedId))
+                requestId = parsedId.ToString("N");
             // Windows only exposes the client token after at least one read from the pipe.
             identityName = pipe.GetImpersonationUserName();
             // No software login or role separation. Keep the OS identity only for operation auditing.
             var user = TrafficUserContext.LocalOperation(identityName);
+            if (!operation.StartsWith("Get", StringComparison.Ordinal))
+                logger.LogInformation("交通控制请求开始。Identity={Identity}, Operation={Operation}, RequestId={RequestId}",
+                    identityName, operation, requestId);
             response = await DispatchAsync(user, request, cancellationToken);
             // Snapshot polling is not a business operation and must not fill the log.
             var logLevel = !response.Success ? LogLevel.Warning
                 : request.Operation.StartsWith("Get", StringComparison.Ordinal) ? LogLevel.Debug
                 : LogLevel.Information;
             logger.Log(logLevel,
-                "交通控制请求完成。Identity={Identity}, Operation={Operation}, Success={Success}",
-                identityName, request.Operation, response.Success);
+                "交通控制请求处理完成，等待写回回执。Identity={Identity}, Operation={Operation}, RequestId={RequestId}, Success={Success}, ElapsedMs={ElapsedMs}",
+                identityName, request.Operation, requestId, response.Success, elapsed.Elapsed.TotalMilliseconds);
         }
         catch (Exception exception)
         {
-            logger.LogWarning(exception, "拒绝或处理交通控制请求失败。Identity={Identity}", identityName);
+            logger.LogWarning(exception, "拒绝或处理交通控制请求失败。Identity={Identity}, Operation={Operation}, RequestId={RequestId}, ElapsedMs={ElapsedMs}",
+                identityName, operation, requestId, elapsed.Elapsed.TotalMilliseconds);
             response = Failure(exception is UnauthorizedAccessException
                 ? exception.Message
                 : $"后台处理失败：{exception.Message}");
             if (exception is UnauthorizedAccessException) response = response with { ErrorCode = "Unauthorized" };
         }
         pipeDiagnostics.RecordRequest(identityName, operation, response.Success);
-        await WriteAsync(pipe, response, cancellationToken);
+        try { await WriteAsync(pipe, response, cancellationToken); }
+        catch (Exception exception) when (exception is IOException or OperationCanceledException)
+        {
+            logger.LogWarning(exception,
+                "交通控制回执未送达，不代表后台处理已撤销；先查询原申请，不重复提交。Identity={Identity}, Operation={Operation}, RequestId={RequestId}, ProcessingSuccess={Success}, ElapsedMs={ElapsedMs}",
+                identityName, operation, requestId, response.Success, elapsed.Elapsed.TotalMilliseconds);
+            throw;
+        }
     }
 
     private async Task<TrafficControlPipeResponse> DispatchAsync(

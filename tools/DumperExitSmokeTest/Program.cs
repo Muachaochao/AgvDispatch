@@ -33,6 +33,19 @@ void Refuse(string name, MapDefinition? m = null, DumperExitFrame? a = null, Dum
 
 var valid = Evaluate();
 Check(valid.Verified && valid.ResourceIds.SequenceEqual(["DUMP"]), "同车两次新鲜外区观测和核定整车载荷包络通过");
+Check(!valid.WaitingForPhysicalExit, "已确认出区不标记为物理等待");
+var waiting = Evaluate(a: first with { X = 1 });
+Check(!waiting.Verified && waiting.WaitingForPhysicalExit && waiting.ResourceIds.Count == 0,
+    "有效定位但完整包络尚未离开只标记物理等待，仍不提供交接资源");
+Check(!Evaluate(a: first with { X = 1, LocalizationConfidence = 0.1 }).WaitingForPhysicalExit &&
+      !Evaluate(a: first with { X = 1, Quality = SignalQuality.Stale }).WaitingForPhysicalExit &&
+      !Evaluate(a: first with { X = 1, Blocked = true }).WaitingForPhysicalExit &&
+      !Evaluate(a: first with { X = 1, EmergencyStopped = true }).WaitingForPhysicalExit,
+    "区内叠加低置信度、失效采样、受阻或急停均为无效证据，不能降为正常等待");
+Check(!Evaluate(a: first with { X = 1 }, p: policy with { ResourceIds = ["MISSING"] }).WaitingForPhysicalExit &&
+      !Evaluate(a: first with { X = 1 }, body: profile with { CalibrationVerified = false }).WaitingForPhysicalExit &&
+      !Evaluate(a: first with { X = 1 }, b: second with { VehicleId = "AGV-2" }).WaitingForPhysicalExit,
+    "缺区域、未标定及身份冲突仍为异常，不能因物理位置在区内而隐藏");
 Check(DumperExitEvaluator.ValidateConfiguration(map, "AGV-1", profile, policy).Verified, "首段绑定可独立验证核定配置，不构造虚拟位置");
 Check(!DumperExitEvaluator.ValidateConfiguration(map, "AGV-2", profile, policy).Verified, "配置验证拒绝其他车辆包络");
 Check(!DumperExitEvaluator.ValidateConfiguration(map with { Resources = [map.Resources[0] with { Boundary = null }] }, "AGV-1", profile, policy).Verified,

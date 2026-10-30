@@ -8,6 +8,9 @@ using AgvDispatch.Infrastructure.Traffic;
 
 namespace AgvDispatch.Service;
 
+/// <summary>Valid observations retain ownership while the vehicle's full envelope leaves the area.</summary>
+public sealed class DumperExitPendingException(string message) : InvalidOperationException(message);
+
 public sealed partial class PersistentHandshakeExecutor
 {
     private readonly Dictionary<string,(DumperExitFrame? First,DumperExitFrame Second)> _exitSamples=new(StringComparer.Ordinal);
@@ -128,6 +131,7 @@ public sealed partial class PersistentHandshakeExecutor
         void RequireVerified(DumperExitFrame? first,DumperExitFrame second,DateTimeOffset now)
         {
             var assessed=DumperExitEvaluator.Evaluate(current.Definition,first,second,profile,options.DumperExit.Policy,now);
+            if(assessed.WaitingForPhysicalExit)throw new DumperExitPendingException(assessed.Reason);
             if(!assessed.Verified)throw new InvalidOperationException(assessed.Reason+
                 (first is not null&&(first.LocalizationConfidence<options.DumperExit.MinimumConfidence||second.LocalizationConfidence<options.DumperExit.MinimumConfidence)
                     ?$" 要求定位置信度至少{options.DumperExit.MinimumConfidence:0.###}。":""));

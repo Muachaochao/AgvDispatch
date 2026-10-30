@@ -17,7 +17,7 @@ public sealed partial class BusinessRunPort(IManualTaskCreationService manual, I
 {
     private static readonly HttpClient lab = new(new SocketsHttpHandler { UseProxy = false, AllowAutoRedirect = false })
         { Timeout = TimeSpan.FromSeconds(5), BaseAddress = new Uri("http://127.0.0.1:10201/") };
-    private readonly BlockedObservationTracker lowLocalizationWait = new(TimeSpan.FromSeconds(3));
+    private readonly LocalizationConfidenceObservation localization = new(TimeSpan.FromSeconds(3));
     private static string StandbyId(BusinessRunRecord run) => "STANDBY-" + (run.PendingRequestId ?? run.RunId);
     public async Task<BusinessRunRecord> RetireUnacceptedAsync(BusinessRunRecord run, CancellationToken ct)
     {
@@ -53,7 +53,10 @@ public sealed partial class BusinessRunPort(IManualTaskCreationService manual, I
         return run;
     }
     private static bool Fresh(DateTimeOffset? time) => time is { } t && t <= DateTimeOffset.UtcNow.AddSeconds(1) && DateTimeOffset.UtcNow - t < TimeSpan.FromSeconds(5);
-    private static bool Stopped(AgvRobotSnapshot v) => v.Blocked == false && !AgvObstaclePolicy.IsBlocked(v) &&
+    private static bool Stopped(AgvRobotSnapshot v) => Fresh(v.LastSuccessfulPollAt) &&
+        v.Connection == ConnectionState.Online && v.Quality == SignalQuality.Good && v.ConsecutiveFailures == 0 &&
+        LocalizationConfidenceObservation.IsReady(v) &&
+        v.Blocked == false && !AgvObstaclePolicy.IsBlocked(v) &&
         v.EmergencyStopped == false && !AgvObstaclePolicy.HasBlockingAlarm(v) && v.VelocityX is { } x && Math.Abs(x) < .01 &&
         v.VelocityY is { } y && Math.Abs(y) < .01 && v.AngularVelocity is { } a && Math.Abs(a) < .01 &&
         v.Tasks.All(t => t.Status is 4 or 5 or 6 or 7);
@@ -128,27 +131,32 @@ public sealed partial class BusinessRunPort(IManualTaskCreationService manual, I
             if (page >= 10000) throw new InvalidOperationException("任务总量过大，无法证明无未完成任务。");
         }
     }
+    private string? ObserveVehicle(BusinessRunRecord run, out AgvRobotSnapshot? vehicle)
+    {
+        vehicles.TryGet(run.Plan.VehicleId, out var current);
+        vehicle = current;
+        if (current is null) localization.Clear(run.Plan.VehicleId);
+        var state = localization.Observe(current, TimeSpan.FromSeconds(5));
+        if (current is null || !Fresh(current.LastSuccessfulPollAt) || current.Connection != ConnectionState.Online ||
+            current.Quality != SignalQuality.Good || current.EmergencyStopped is not false)
+            return "车辆实时状态、定位或健康状态未就绪。";
+        var failures = current.Alarms.Where(a => a.Severity is AgvAlarmSeverity.Error or AgvAlarmSeverity.Fatal)
+            .Where(a => !IsLocalTrafficObstacle(a)).ToArray();
+        if (failures.Length > 0)
+            return "车辆存在未恢复报警：" + string.Join("、", failures.Select(a => a.Code).Distinct());
+        if (state == LocalizationObservationState.Invalid)
+            return "车辆定位采样缺失、无效或不新鲜，需核对定位。";
+        if (state == LocalizationObservationState.PersistentLow ||
+            state == LocalizationObservationState.TransientLow && run.Stage is not ("Executing" or "Returning" or "Waiting"))
+            return "车辆定位置信度低于0.5，需现场核对定位。";
+        return null;
+    }
     public async Task<BusinessRunObservation> ObserveAsync(BusinessRunRecord run, CancellationToken ct)
     {
         var currentMap = map.Current;
         string? block = ConfigurationBlock();
-        vehicles.TryGet(run.Plan.VehicleId, out var v);
-        if (v is null || !Fresh(v.LastSuccessfulPollAt) || v.Connection != ConnectionState.Online ||
-            v.Quality != SignalQuality.Good || v.EmergencyStopped is not false)
-            block ??= "车辆实时状态、定位或健康状态未就绪。";
-        else
-        {
-            var repeated = v.Alarms.Where(a => a.Severity is AgvAlarmSeverity.Error or AgvAlarmSeverity.Fatal).ToArray();
-            // 52200 is the vehicle's local obstacle-avoidance state. The original
-            // vendor task owns that waiting behavior; it must not freeze the business
-            // session or start a second motion command. Genuine failures still block.
-            var failures = repeated.Where(a => !IsLocalTrafficObstacle(a)).ToArray();
-            if (failures.Length > 0)
-                block ??= "车辆存在未恢复报警：" + string.Join("、", failures.Select(a => a.Code).Distinct());
-            if (v.LocalizationConfidence is >= .5) lowLocalizationWait.Clear(v.VehicleId);
-            else if (lowLocalizationWait.Observe(v.VehicleId, true, false))
-                block ??= "车辆定位置信度连续低于0.5，需现场核对定位。";
-        }
+        var vehicleBlock = ObserveVehicle(run, out var v);
+        block ??= vehicleBlock;
         var rows = signals.GetAll();
         bool Value(string station, string name, bool expected)
         {
@@ -188,6 +196,11 @@ public sealed partial class BusinessRunPort(IManualTaskCreationService manual, I
                 block ??= "原待机导航未正常完成：" + original.State;
             else returned = original.State == AgvTransportTaskState.Completed;
         }
+        // A task/status/database query can outlast the sample checked above. Arrival
+        // and resource release must use the latest same-vehicle safety observation.
+        var anyActive = await HasActiveAsync(ct);
+        vehicleBlock = ObserveVehicle(run, out v);
+        block ??= vehicleBlock;
         var site = v?.CurrentStation;
         if (v is not null && Stopped(v) && site is not null)
         {
@@ -195,8 +208,9 @@ public sealed partial class BusinessRunPort(IManualTaskCreationService manual, I
             if (v.X is not { } x || v.Y is not { } y || !double.IsFinite(x) || !double.IsFinite(y) || Math.Sqrt(Math.Pow(x-node.X,2)+Math.Pow(y-node.Y,2)) > .3)
             { site = null; block ??= "车辆报告站点与实际坐标不符，不能确认安全停靠。"; }
         }
+        var stopped = v is not null && Stopped(v) && !string.IsNullOrWhiteSpace(site);
         return new(currentMap?.MapId ?? "", currentMap?.VersionId ?? "", parameters.Revision, block,
-            calls, closed, await HasActiveAsync(ct), site, v is not null && Stopped(v), detail?.Task.Stage.ToString(), returned);
+            calls, closed, anyActive, site, stopped, detail?.Task.Stage.ToString(), returned && stopped);
     }
     public async Task<string> CreateAsync(BusinessRunRecord run, string station, string requestId, CancellationToken ct)
     {

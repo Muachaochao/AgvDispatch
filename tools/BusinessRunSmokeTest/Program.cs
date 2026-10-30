@@ -241,6 +241,19 @@ Check((await Row(scale.Service)).Plan.Stations.Length == 300, "300 configured wo
 await Reject(() => Fixture().Service.StartAsync(user, Plan() with { Stations = ["CELL-X", "cell-x"] }, default), "case-insensitive duplicate rejected");
 await Reject(() => Fixture().Service.StartAsync(user, Plan() with { Stations = [" "] }, default), "blank workstation rejected");
 checks += FeedbackTests.Run();
+LocalizationChecks.Run(Check);
+await ObservationChecks.RunAsync(Check);
+var lowAtCompletion = Fixture();
+await lowAtCompletion.Service.StartAsync(user, Plan("Cycle"), default);
+lowAtCompletion.Port.Calls = ["CNC-001"]; await lowAtCompletion.Service.TickAsync(default);
+lowAtCompletion.Port.TaskState = "Completed"; lowAtCompletion.Port.Active = false;
+lowAtCompletion.Port.Calls = []; lowAtCompletion.Port.Stopped = false;
+await lowAtCompletion.Service.TickAsync(default); await lowAtCompletion.Service.TickAsync(default);
+Check((await Row(lowAtCompletion.Service)) is { Stage: "Executing", CompletedJobs: 0 },
+    "completion with unverified localization/standstill waits without counting or holding the run");
+lowAtCompletion.Port.Stopped = true; await lowAtCompletion.Service.TickAsync(default);
+Check((await Row(lowAtCompletion.Service)) is { Stage: "Waiting", CompletedJobs: 1 },
+    "fresh verified standstill permits original completion without manual recovery");
 Console.WriteLine($"BusinessRunSmokeTest passed {checks} checks. Fake ports only; no PLC or AGV commands.");
 
 sealed class ReceiptStore : IManualTaskCreationRepository

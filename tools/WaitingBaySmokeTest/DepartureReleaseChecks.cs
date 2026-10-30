@@ -40,6 +40,10 @@ internal static class DepartureReleaseChecks
             { VelocityX = 0, VelocityY = 0, AngularVelocity = 0 };
         bool Assess(AgvRobotTelemetry telemetry, out string reason)
         {
+            // Each scenario is a new successful poll. Reusing basis.ReadAt would
+            // correctly be rejected by the cache as duplicate telemetry, masking
+            // the station/coordinate/velocity condition this scenario exercises.
+            if (telemetry.ReadAt == basis.ReadAt) telemetry = telemetry with { ReadAt = DateTimeOffset.UtcNow };
             cache.ApplyTelemetry("CAR", telemetry, TimeSpan.FromMilliseconds(1));
             object?[] args = [task, runtime, new HashSet<string> { "WAIT" }, null];
             var result = (bool)method.Invoke(worker, args)!;

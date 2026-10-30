@@ -32,14 +32,17 @@ public sealed partial class BusinessRunPort
             route.VehicleId != run.Plan.VehicleId || route.MapId != run.MapId || route.MapVersionId != run.MapVersionId ||
             route.Action != action || route.VendorSites.LastOrDefault() != node.AgvSiteId)
             throw new InvalidOperationException("模拟箱体反馈缺少原车端取放动作及路线证据；纯导航不能代替取放箱。");
-        if (!vehicles.TryGet(run.Plan.VehicleId, out var vehicle) || !Fresh(vehicle.LastSuccessfulPollAt) ||
-            vehicle.Connection != ConnectionState.Online || vehicle.Quality != SignalQuality.Good || !Stopped(vehicle) ||
-            vehicle.CurrentStation != node.AgvSiteId || vehicle.X is not { } x || vehicle.Y is not { } y ||
-            Math.Sqrt(Math.Pow(x - node.X, 2) + Math.Pow(y - node.Y, 2)) > .3) return;
+        bool AtOriginalStation() => vehicles.TryGet(run.Plan.VehicleId, out var vehicle) &&
+            Fresh(vehicle.LastSuccessfulPollAt) && vehicle.Connection == ConnectionState.Online &&
+            vehicle.Quality == SignalQuality.Good && Stopped(vehicle) && vehicle.CurrentStation == node.AgvSiteId &&
+            vehicle.X is { } x && vehicle.Y is { } y && double.IsFinite(x) && double.IsFinite(y) &&
+            Math.Sqrt(Math.Pow(x - node.X, 2) + Math.Pow(y - node.Y, 2)) <= .3;
+        if (!AtOriginalStation()) return;
         var original = await gateway.GetTransportTaskStatusAsync(step.VendorTaskId!, ct);
         if (original is null || original.VendorTaskId != step.VendorTaskId || original.VehicleId != run.Plan.VehicleId ||
             !Fresh(original.UpdatedAt) || original.State != AgvTransportTaskState.Completed)
             throw new InvalidOperationException("原车端取放动作成功状态或身份未能核对，保留箱体点位。");
+        if (!AtOriginalStation()) return;
         using var request = new HttpRequestMessage(HttpMethod.Post, endpoint)
         {
             Content = JsonContent.Create(new { runId = run.RunId, callIndex = run.CompletedJobs,

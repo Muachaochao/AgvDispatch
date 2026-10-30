@@ -12,6 +12,7 @@ using AgvDispatch.Infrastructure.Traffic;
 using AgvDispatch.Service;
 using SqlSugar;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
 using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Reflection;
@@ -28,6 +29,63 @@ async Task ExpectHold(Func<Task> action, string name)
     var held = false;
     try { await action(); } catch (InvalidOperationException) { held = true; }
     Check(held, name);
+}
+
+using (var waitingExit = new Fixture())
+{
+    await waitingExit.InitializeAsync();
+    var task = await waitingExit.CreateAndPickupAsync("CNC-001", "AGV-1");
+    await waitingExit.WaitAndClaimAsync(task);
+    await waitingExit.StartDumpAsync(task);
+    waitingExit.Signals.Set("DUMPER", "DumpingCompletedMayLeave", true);
+    await waitingExit.FinishReadyAsync(task, DispatchTaskStepType.DumpFullBox);
+    await waitingExit.PrepareReturnAsync(task);
+    var other = await waitingExit.CreateAsync("CNC-002", "AGV-2");
+    var logger = new ExitLoggerHarness();
+    var journal = new ExitJournalHarness();
+    using var coordinator = waitingExit.Coordinator(logger, journal);
+    var writes = waitingExit.Signals.Writes.Count;
+    var leases = await waitingExit.LeaseCountAsync(task);
+    await waitingExit.CoordinateAsync(coordinator);
+    for (var i = 0; i < 2; i++)
+    {
+        await Task.Delay(120);
+        waitingExit.Vehicles.Set("AGV-1", 0, 0, "LM-DUMP");
+        waitingExit.Signals.Refresh();
+        await waitingExit.CoordinateAsync(coordinator);
+    }
+    Check(logger.Entries.Count(e => e.Level == LogLevel.Information && e.Message.Contains("等待整车完全离开")) == 1 &&
+        logger.Entries.All(e => e.Level < LogLevel.Warning && e.Exception is null) &&
+        journal.Entries.Count(e => e.TaskId == task && e.Kind == "DumperExitWaiting") == 1,
+        "完整车体尚在区内是一次去重的信息等待，不再输出Warning异常栈");
+    var checkpoint = await waitingExit.ReturnCheckpointAsync(task);
+    Check(checkpoint.Phase == "AwaitPhysicalExit" && checkpoint.Reason.Contains("尚未全部离开") &&
+        waitingExit.Signals.Writes.Count == writes && await waitingExit.EquipmentOwnerAsync() == task &&
+        await waitingExit.LeaseCountAsync(task) == leases && await waitingExit.ReleaseCountAsync(task) == 0 && waitingExit.Agv.Creates == 0,
+        "正常出区等待仍保留原阶段、PLC输出、设备及全部路权，不放行、不重发");
+    Check(journal.Entries.Any(e => e.TaskId == other && e.Kind == "StepObservation"),
+        "一车正常出区等待后仍继续检查另一任务的可执行步骤");
+    await Task.Delay(120);
+    waitingExit.Vehicles.Set("AGV-1", 0, 0, "LM-DUMP", confidence: 0.1);
+    waitingExit.Signals.Refresh();
+    await waitingExit.CoordinateAsync(coordinator);
+    Check(logger.Entries.Any(e => e.Level == LogLevel.Warning && e.Exception is not null) &&
+        journal.Entries.Any(e => e.TaskId == task && e.Kind == "DumperExitBlocked") &&
+        await waitingExit.EquipmentOwnerAsync() == task && await waitingExit.ReleaseCountAsync(task) == 0,
+        "区内叠加低置信度仍输出异常警告并保留占用，不被正常等待分类掩盖");
+    waitingExit.Options.DumperExit.ResourceIds = [];
+    var warnings = logger.Entries.Count(e => e.Level == LogLevel.Warning);
+    await waitingExit.CoordinateAsync(coordinator);
+    Check(logger.Entries.Count(e => e.Level == LogLevel.Warning) == warnings + 1 &&
+        await waitingExit.ReleaseCountAsync(task) == 0,
+        "出区配置或原绑定失效仍有独立警告，不降为正常等待");
+    await waitingExit.Db.Updateable<DispatchTaskEntity>().SetColumns(t => new DispatchTaskEntity { Stage = (int)DispatchTaskStage.Cancelled })
+        .Where(t => t.TaskId == task || t.TaskId == other).ExecuteCommandAsync();
+    await waitingExit.CoordinateAsync(coordinator);
+    var fingerprints = (Dictionary<string, string>)typeof(DispatchTaskStepCoordinator)
+        .GetField("_conditionFingerprints", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(coordinator)!;
+    Check(!fingerprints.Keys.Any(k => k.StartsWith("exit:", StringComparison.Ordinal)),
+        "任务离开出区核验范围后清除出区去重状态，避免长期积累");
 }
 
 using (var sending = new Fixture())
@@ -544,6 +602,12 @@ sealed class Fixture : IDisposable
         RestartEngine();
     }
     public void RestartEngine() => Engine = new(Store, Signals, Signals, Orchestrator, Writer, Traffic, creation, dispatch, Options, Vehicles, Map, Agv, Preflight);
+    public DispatchTaskStepCoordinator Coordinator(ILogger<DispatchTaskStepCoordinator> logger, IExecutionEvidenceJournal journal) =>
+        new(logger, new(), dispatch, creation, Orchestrator, Outbox, Signals, Signals, null!, Traffic,
+            new MapExecutionGate(), journal, Vehicles, Map, Engine);
+    public Task CoordinateAsync(DispatchTaskStepCoordinator coordinator) =>
+        (Task)typeof(DispatchTaskStepCoordinator).GetMethod("RunCycleAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(coordinator, [CancellationToken.None])!;
     public void SetPickupSite(string station,string site) => dispatch.StationPickupSites[station] = site;
     public async Task<TaskExitEvidence?> InspectReturnEvidenceAsync(string task)
     {
@@ -744,6 +808,23 @@ sealed class Fixture : IDisposable
 }
 
 sealed record PlcWrite(string Station, string Signal, bool Value);
+sealed class ExitLoggerHarness : ILogger<DispatchTaskStepCoordinator>
+{
+    public List<(LogLevel Level, string Message, Exception? Exception)> Entries { get; } = [];
+    public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+    public bool IsEnabled(LogLevel level) => true;
+    public void Log<TState>(LogLevel level, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter) =>
+        Entries.Add((level, formatter(state, exception), exception));
+}
+sealed class ExitJournalHarness : IExecutionEvidenceJournal, IDisposable
+{
+    public List<(string TaskId, string Kind)> Entries { get; } = [];
+    public IDisposable BeginScope(string taskId, string stepId) => this;
+    public Task RecordAsync(string taskId, string stepId, string kind, object evidence, CancellationToken ct)
+    { Entries.Add((taskId, kind)); return Task.CompletedTask; }
+    public Task RecordCurrentAsync(string kind, object evidence, CancellationToken ct) => Task.CompletedTask;
+    public void Dispose() { }
+}
 sealed class SignalHarness : IPlcSignalCache, IPlcGateway
 {
     private readonly ConcurrentDictionary<string, PlcSignalSnapshot> values = new();

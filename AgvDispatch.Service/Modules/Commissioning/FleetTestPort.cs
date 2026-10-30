@@ -16,8 +16,9 @@ public sealed partial class FleetTestPort(FleetTestOptions options,IBusinessRunS
     IActiveMapRuntime map,IMapExecutionGate gate,TaskParameterRuntime parameters,DispatchOrchestratorOptions dispatch,
     DispatchTaskCreationOptions creation,HandshakeExecutionOptions handshake,IRobokitTaskMapPreflight preflight,
     ITrafficResourceControlService traffic,IRoutePlanner planner,ITrafficResourceManager resources,
-    IAgvGateway gateway,bool simulatorOnly,IChargingDispatchGuard? charging=null) : IFleetTestPort
+    IAgvGateway gateway,bool simulatorOnly,IChargingDispatchGuard? charging=null,TimeProvider? localizationClock=null) : IFleetTestPort
 {
+    private readonly LocalizationConfidenceObservation localizationObservation=new(TimeSpan.FromSeconds(3),localizationClock);
     private static readonly HttpClient lab=new(new SocketsHttpHandler{UseProxy=false,AllowAutoRedirect=false})
         {BaseAddress=new Uri("http://127.0.0.1:10201/"),Timeout=TimeSpan.FromSeconds(5)};
     private static bool Fresh(DateTimeOffset? at)=>at is {} t&&t<=DateTimeOffset.UtcNow.AddSeconds(1)&&DateTimeOffset.UtcNow-t<TimeSpan.FromSeconds(3);
@@ -25,9 +26,12 @@ public sealed partial class FleetTestPort(FleetTestOptions options,IBusinessRunS
     // such as "motor blocked" must not suppress an unrelated error or fatal alarm.
     public static bool IsLocalTrafficObstacleAlarm(string? code,string? message)=>
         AgvObstaclePolicy.IsObstacleCode(code);
+    private static bool LocalizationReady(AgvRobotSnapshot vehicle)=>LocalizationConfidenceObservation.IsReady(vehicle);
     private string? Health(string id,bool allowLocalTrafficWait=false)
     {
-        if(!vehicles.TryGet(id,out var v))return id+"尚未取得车辆状态。";
+        if(!vehicles.TryGet(id,out var v))
+        {localizationObservation.Clear(id);return id+"尚未取得车辆状态。";}
+        var localization=localizationObservation.Observe(v,TimeSpan.FromSeconds(3));
         var sample=$"连接={v.Connection}，质量={v.Quality}，最近成功采集={v.LastSuccessfulPollAt:O}，阻挡={v.Blocked}，急停={v.EmergencyStopped}，置信度={v.LocalizationConfidence:0.###}";
         if(!Fresh(v.LastSuccessfulPollAt)||v.Connection!=ConnectionState.Online||v.Quality!=SignalQuality.Good)
             return id+"通信离线、采集质量无效或数据超过3秒未更新。"+sample;
@@ -38,7 +42,11 @@ public sealed partial class FleetTestPort(FleetTestOptions options,IBusinessRunS
         // vehicle; active work waits locally until that vehicle can proceed.
         if((AgvObstaclePolicy.IsBlocked(v)||v.Blocked is null)&&!allowLocalTrafficWait)reasons.Add("车辆受阻或阻挡状态未知，需现场核对");
         if(v.EmergencyStopped!=false)reasons.Add("急停未复位");
-        if(v.LocalizationConfidence is not >=.5)reasons.Add($"定位置信度{(v.LocalizationConfidence?.ToString("0.###")??"缺失")}低于0.5");
+        if(localization==LocalizationObservationState.Invalid||
+           !LocalizationReady(v)&&!(allowLocalTrafficWait&&localization==LocalizationObservationState.TransientLow))
+            reasons.Add(localization==LocalizationObservationState.Invalid?"定位置信度或采样无效，需重新核对定位":
+                $"定位置信度{(v.LocalizationConfidence?.ToString("0.###")??"缺失")}低于0.5"+
+                (allowLocalTrafficWait?"且连续有效低值已达到3秒，需现场核对定位":""));
         var alarms=v.Alarms.Where(a=>a.Severity is AgvDispatch.Domain.Agvs.AgvAlarmSeverity.Error or AgvDispatch.Domain.Agvs.AgvAlarmSeverity.Fatal)
             .Where(a=>!(allowLocalTrafficWait&&AgvObstaclePolicy.IsLocalObstacle(a)))
             .Select(a=>string.IsNullOrWhiteSpace(a.Code)?"车端报警":a.Code).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
@@ -124,7 +132,9 @@ public sealed partial class FleetTestPort(FleetTestOptions options,IBusinessRunS
                 site is not null&&MapRouteSiteMapper.ResolveLogicalNodeId(current.Definition,site)==MapRouteSiteMapper.ResolveLogicalNodeId(current.Definition,choice.CurrentSite)))
                 throw new InvalidOperationException(id+"初始停车点占用倒料等待位或倒料位，请移至独立配置停车点。");
             vehicles.TryGet(id,out var state);
-            if(state!.VelocityX is not {} vx||state.VelocityY is not {} vy||state.AngularVelocity is not {} va||Math.Abs(vx)>=.01||Math.Abs(vy)>=.01||Math.Abs(va)>=.01||state.Tasks.Any(t=>t.Status is not (4 or 5 or 6 or 7)))
+            if(state!.VelocityX is not {} vx||state.VelocityY is not {} vy||state.AngularVelocity is not {} va||
+               !double.IsFinite(vx)||!double.IsFinite(vy)||!double.IsFinite(va)||
+               Math.Abs(vx)>=.01||Math.Abs(vy)>=.01||Math.Abs(va)>=.01||state.Tasks.Any(t=>t.Status is not (4 or 5 or 6 or 7)))
                 throw new InvalidOperationException(id+"尚未停稳或仍有车端任务。");
             foreach(var pickup in parameters.Capture().Pickups.Where(p=>plan.StationIds.Contains(p.StationId,StringComparer.OrdinalIgnoreCase)&&dispatch.AllowsVehicle(p.StationId,id)))
             foreach(var waiting in dispatch.GetDumperWaitingSites())
@@ -170,7 +180,14 @@ public sealed partial class FleetTestPort(FleetTestOptions options,IBusinessRunS
         if(run!=null)foreach(var call in run.Calls.Where(c=>c.TaskId!=null))
             if(await tasks.GetDetailAsync(call.TaskId!,ct) is {} detail)details.Add(detail);
         return new(options.Enabled,options.VehicleIds,run,options.VehicleIds.Select(id=>
-        {vehicles.TryGet(id,out var v);var health=Health(id,allowLocalTrafficWait:true);var message=health??(v?.Blocked is null?"阻挡状态未知，等待有效采集核对；不作为新任务或完成依据。":v is not null&&AgvObstaclePolicy.IsBlocked(v)?"受阻等待；保留原任务，由该车车端处理，不暂停其他车辆，未验证自主绕障。":"状态数据有效");return new FleetTestVehicle(id,v?.CurrentStation,health==null,message);}).ToArray(),details.ToArray(),DateTimeOffset.UtcNow)
+        {
+            vehicles.TryGet(id,out var v);var health=Health(id,allowLocalTrafficWait:true);
+            var localizationReady=v is not null&&LocalizationReady(v);
+            var message=health??(!localizationReady?"定位置信度短暂低于0.5，正在观察有效采样；保留原任务，不发送新导航或确认完成。":
+                v?.Blocked is null?"阻挡状态未知，等待有效采集核对；不作为新任务或完成依据。":
+                AgvObstaclePolicy.IsBlocked(v)?"受阻等待；保留原任务，由该车车端处理，不暂停其他车辆，未验证自主绕障。":"状态数据有效");
+            return new FleetTestVehicle(id,v?.CurrentStation,health==null&&localizationReady,message);
+        }).ToArray(),details.ToArray(),DateTimeOffset.UtcNow)
         {ConfiguredStations=parameters.Capture().Pickups.Select(p=>p.StationId).ToArray(),MaxConcurrentTasks=dispatch.MaxConcurrentTasks};
     }
     public async Task LabAsync(FleetTestRun run,string action,string[] stations,CancellationToken ct)

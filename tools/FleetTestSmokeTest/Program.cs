@@ -75,6 +75,17 @@ Check(returned.Stage=="Completed"&&autoReturn.Port.ReturnSends==2&&
     returned.StandbyReturns.Length==2&&returned.StandbyReturns.All(r=>r.State==FleetTestStandbyReturnStates.Completed),
     "业务与PLC闭合后每车发送一次独立待机导航并核对停靠");
 Check(!autoReturn.Owner.Active,"全部车辆到待机位后才解除多车会话保护");
+var localizationPending=Fixture();localizationPending.Port.PlanPending=true;
+await localizationPending.Service.StartAsync(user,Plan("Simultaneous"),default);await localizationPending.Service.TickAsync(default);
+localizationPending.Port.Closed=true;
+for(var i=0;i<localizationPending.Port.Details.Count;i++)
+    localizationPending.Port.Details[i]=localizationPending.Port.Details[i] with {Task=localizationPending.Port.Details[i].Task with {Stage=DispatchTaskStage.Completed}};
+await localizationPending.Service.TickAsync(default);
+Check((await localizationPending.Service.ReadAsync(default)).Current is {Stage:"Running",Holds.Length:0,StandbyReturns.Length:0}&&localizationPending.Owner.Active,
+    "待机规划遇到短暂定位观察时保留Running，不误完成或进入Hold");
+localizationPending.Port.PlanPending=false;await localizationPending.Service.TickAsync(default);
+Check((await localizationPending.Service.ReadAsync(default)).Current is {Stage:"Completed",Holds.Length:0},
+    "待机规划条件恢复后自动推进原组，不需人工续接");
 var incompleteReturn=Fixture();incompleteReturn.Port.ReturnAlreadyComplete=false;incompleteReturn.Port.ReturnObserveComplete=false;
 await incompleteReturn.Service.StartAsync(user,Plan("Simultaneous"),default);await incompleteReturn.Service.TickAsync(default);
 incompleteReturn.Port.Closed=true;
@@ -297,12 +308,13 @@ foreach(var code in new[]{"E-STOP","52100","152200","UNKNOWN",null})
     Check(!FleetTestPort.IsLocalTrafficObstacleAlarm(code,"motor blocked"),"非52200故障不因描述包含blocked而被忽略");
 await StandbySendChecks.RunAsync(Check);
 await StandbyChainChecks.RunAsync(Check);
+await LocalizationChecks.RunAsync(Check);
 Console.WriteLine($"PASS {count} 多车多工位、车辆池范围、身份、断连、停止、重启及幂等检查；无现场通信。");
 
 sealed class Port:IFleetTestPort
 {
  public int Starts,Creates,ReturnSends;public bool Bad,FailCall,Closed,FailValidate;
- public bool ReturnAlreadyComplete=true,ReturnObserveComplete=true,FailStandbySend,FailStandbyAfterIntent,FailStandbyGenericAfterIntent;
+ public bool ReturnAlreadyComplete=true,ReturnObserveComplete=true,FailStandbySend,FailStandbyAfterIntent,FailStandbyGenericAfterIntent,PlanPending;
  public List<string> Calls=[];public List<TaskCenterDetail> Details=[];
  public TaskCompletionSource? ValidationStarted,ValidationGate;
  public async Task<(string,string,string)> ValidateAsync(FleetTestStart p,CancellationToken ct)
@@ -317,6 +329,7 @@ sealed class Port:IFleetTestPort
  public Task CheckCurrentAsync(FleetTestRun r,CancellationToken ct){if(Bad)throw new InvalidOperationException("AGV-02 stale");return Task.CompletedTask;}
  public Task CheckClosedAsync(FleetTestRun r,CancellationToken ct)=>Closed?Task.CompletedTask:throw new FleetClosurePendingException("still active");
  public Task<FleetTestStandbyReturn[]> PlanStandbyReturnsAsync(FleetTestRun r,CancellationToken ct)=>
+  PlanPending?Task.FromException<FleetTestStandbyReturn[]>(new FleetClosurePendingException("localization observation pending")):
   Task.FromResult(r.Plan.VehicleIds.Select((id,i)=>new FleetTestStandbyReturn(id,"B-"+i,"LM"+(29+i),
    ReturnAlreadyComplete?FleetTestStandbyReturnStates.Completed:FleetTestStandbyReturnStates.Assigned,
    ReturnAlreadyComplete?"already home":"assigned",null,DateTimeOffset.UtcNow)).ToArray());

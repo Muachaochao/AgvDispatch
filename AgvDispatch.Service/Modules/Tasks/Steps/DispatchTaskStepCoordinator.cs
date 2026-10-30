@@ -74,16 +74,28 @@ public sealed class DispatchTaskStepCoordinator(
             {
                 try { await handshake.ProcessExitAsync(task,cancellationToken); }
                 catch(OperationCanceledException) when(cancellationToken.IsCancellationRequested){throw;}
+                catch(DumperExitPendingException pending)
+                {
+                    var key="exit:"+task.TaskId;
+                    var fingerprint="waiting:"+pending.Message;
+                    if(!_conditionFingerprints.TryGetValue(key,out var prior)||prior!=fingerprint)
+                    {
+                        logger.LogInformation("等待整车完全离开倒料区，保持原设备及路权。TaskId={TaskId}, Reason={Reason}",task.TaskId,pending.Message);
+                        if(journal!=null)await journal.RecordAsync(task.TaskId,"","DumperExitWaiting",new {Reason=pending.Message},cancellationToken);
+                        _conditionFingerprints[key]=fingerprint;
+                    }
+                }
                 catch(Exception exception)
                 {
                     // Retain equipment and road ownership; a failed exit observation never stops other tasks' ready-step polling.
                     var key="exit:"+task.TaskId;
                     var reason=exception.GetBaseException().Message;
-                    if(!_conditionFingerprints.TryGetValue(key,out var prior)||prior!=reason)
+                    var fingerprint="blocked:"+reason;
+                    if(!_conditionFingerprints.TryGetValue(key,out var prior)||prior!=fingerprint)
                     {
                         logger.LogWarning(exception,"28阶段实际出区核验未通过，保持原责任。TaskId={TaskId}",task.TaskId);
                         if(journal!=null)await journal.RecordAsync(task.TaskId,"","DumperExitBlocked",new {Reason=reason,Context=exception.Message},cancellationToken);
-                        _conditionFingerprints[key]=reason;
+                        _conditionFingerprints[key]=fingerprint;
                     }
                 }
             }

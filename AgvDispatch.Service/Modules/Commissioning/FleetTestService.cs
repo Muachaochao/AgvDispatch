@@ -357,7 +357,8 @@ public sealed partial class FleetTestService : IsolatedBackgroundService, IFleet
                     catch(FleetClosurePendingException){return;}
                     if(returnToStandby)
                     {
-                        await BeginStandbyReturnsAsync(ct);
+                        try{await BeginStandbyReturnsAsync(ct);}
+                        catch(FleetClosurePendingException){return;}
                     }
                     else
                     {
