@@ -36,6 +36,20 @@ export interface NavigationDetourRecord {
   newVendorTaskIds: string[];
 }
 
+export interface NavigationAutoDetourRecord {
+  state: string;
+  message: string;
+  updatedAt: string;
+  operator: string;
+  blockedSince: string | null;
+  sourceSite: string | null;
+  blockedToSite: string | null;
+  previewId: string | null;
+  planMessage: string | null;
+  candidateRoute: string[];
+  blockedEdgeIds: string[];
+}
+
 export interface NavigationDetourCurrent {
   taskId: string;
   vehicleId: string;
@@ -44,6 +58,7 @@ export interface NavigationDetourCurrent {
   robotMapMd5: string;
   state: string;
   detour?: NavigationDetourRecord | null;
+  autoDetour?: NavigationAutoDetourRecord | null;
 }
 
 export function detourMapMatches(plan: NavigationDetourPlan, map: WebMap | null | undefined): boolean {

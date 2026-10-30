@@ -1,4 +1,5 @@
-﻿param([Parameter(Mandatory=$true)][string]$BundleDirectory,[string[]]$FleetVehicleIds=@(),[int]$FleetMaxConcurrentTasks=0)
+param([Parameter(Mandatory=$true)][string]$BundleDirectory,[string[]]$FleetVehicleIds=@(),
+    [int]$FleetMaxConcurrentTasks=0,[string]$NavigationTestVehicle='',[switch]$AutoNavigationDetour)
 $ErrorActionPreference='Stop'
 $latestRoot=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../发布包'))
 $latestBundle=[IO.Path]::GetFullPath($BundleDirectory).TrimEnd('\','/')
@@ -6,6 +7,13 @@ if(!$latestBundle.StartsWith($latestRoot+'\',[StringComparison]::OrdinalIgnoreCa
 $latestRelative=[IO.Path]::GetRelativePath($latestRoot,$latestBundle)
 if($latestRelative -match '[%"!&|<>^\r\n]'){throw '目录包含不适合CMD入口的字符。'}
 . (Join-Path $PSScriptRoot 'FleetLaunchConfiguration.ps1')
+if($AutoNavigationDetour -and [string]::IsNullOrWhiteSpace($NavigationTestVehicle)){
+    throw 'Automatic detour requires an explicit navigation test vehicle.'
+}
+if($NavigationTestVehicle -and ($NavigationTestVehicle.Length -gt 32 -or
+    $NavigationTestVehicle -notmatch '^[A-Za-z0-9_-]+$')){
+    throw 'Navigation test vehicle contains an invalid character.'
+}
 # Validate before changing any entry or pointer. Preserve explicit site selection only.
 $latestFleetSelection=Resolve-FleetLaunchSelection -Root $latestRoot -VehicleIds $FleetVehicleIds -MaxConcurrentTasks $FleetMaxConcurrentTasks
 $latestOldPointer=Join-Path $latestRoot '最新版Web.json'
@@ -30,10 +38,13 @@ foreach($latestName in @('启动最新版Web.cmd','停止最新版Web.cmd','最�
     $latestOld=Join-Path $latestRoot $latestName
     if(Test-Path -LiteralPath $latestOld){New-Item -ItemType Directory -Path $latestBackup -Force | Out-Null;Copy-Item -LiteralPath $latestOld -Destination $latestBackup}
 }
+$latestNavigationArguments=''
+if($NavigationTestVehicle){$latestNavigationArguments+=" --navigation-test-vehicle `"$NavigationTestVehicle`""}
+if($AutoNavigationDetour){$latestNavigationArguments+=' --auto-navigation-detour'}
 $latestStartText=@"
 @echo off
 chcp 65001 >nul
-call "%~dp0$latestRelative\Start-Latest-Web.cmd" --daily-data --project-store-path "%~dp0运行数据\Web工程方案" %*
+call "%~dp0$latestRelative\Start-Latest-Web.cmd" --daily-data --project-store-path "%~dp0运行数据\Web工程方案"$latestNavigationArguments %*
 "@
 $latestStopText=@"
 @echo off
@@ -46,9 +57,9 @@ foreach($latestEntry in @(@{Name='启动最新版Web.cmd';Text=$latestStartText}
     [IO.File]::WriteAllText((Join-Path $latestRoot $latestEntry.Name),$latestEntryText,[Text.UTF8Encoding]::new($false))
 }
 # Keep the former entry names as forwarders to the single canonical pair.
- $latestFleetText=New-FleetLaunchEntryText -Selection $latestFleetSelection
- [IO.File]::WriteAllText((Join-Path $latestRoot '启动多车联调Web.cmd'),$latestFleetText,[Text.UTF8Encoding]::new($false))
- [IO.File]::WriteAllText((Join-Path $latestRoot '启动双车联调Web.cmd'),"@echo off`r`nchcp 65001 >nul`r`ncall `"%~dp0启动多车联调Web.cmd`" %*`r`n",[Text.UTF8Encoding]::new($false))
+$latestFleetText=New-FleetLaunchEntryText -Selection $latestFleetSelection
+[IO.File]::WriteAllText((Join-Path $latestRoot '启动多车联调Web.cmd'),$latestFleetText,[Text.UTF8Encoding]::new($false))
+[IO.File]::WriteAllText((Join-Path $latestRoot '启动双车联调Web.cmd'),"@echo off`r`nchcp 65001 >nul`r`ncall `"%~dp0启动多车联调Web.cmd`" %*`r`n",[Text.UTF8Encoding]::new($false))
 # They must not retain a separately selected release after promotion.
 foreach($latestAlias in @(@{Name='启动界面修复版Web.cmd';Target='启动最新版Web.cmd'},@{Name='停止界面修复版Web.cmd';Target='停止最新版Web.cmd'})){
     $latestAliasText="@echo off`r`nchcp 65001 >nul`r`ncall `"%~dp0$($latestAlias.Target)`" %*`r`n"
@@ -66,6 +77,7 @@ $latestGuide=@"
 4. 工程方案目录为“运行数据/Web工程方案”，由根入口传入。现场配置和数据库不自动迁移；本候选入口保持其原有的设备通信与执行门禁。
 5. 本包自带 .NET 运行时。缺配置、地图、设备采样时应按界面提示核对；界面演示不代表实车验收。
 6. 多车竞争测试使用“启动多车联调Web.cmd”，仍为5199；需先停止原模式。入口保留此前明确配置的车辆清单和并发上限，没有清单时必须传入配置车辆编号；旧“启动双车联调Web.cmd”转入同一入口。可在CMD运行“启动多车联调Web.cmd VEHICLE-A,VEHICLE-B,VEHICLE-C 2”选择车辆和可选并发上限，其后可继续传入启动器选项，带空格的路径须加双引号；有已保留清单时也可直接追加选项。示例编号须换成工程配置实际编号。启动不会自动发车，在工程测试中心选择本组车辆、工位及用例后启动；车辆需独立初始停车位、有效地图与包络配置，不会统一驶向同一个待机点。
+7. 本次固定入口$(if($NavigationTestVehicle){"已显式选择单车 $NavigationTestVehicle"}else{"未选择单车测试车"})$(if($AutoNavigationDetour){"，并启用自动受阻改道"}else{"，自动受阻改道关闭"})。该许可只在业务执行、PLC写入和派发关闭的单车测试模式有效；启动本身不会发车。
 
 具体功能、验证范围见 [$latestRelative/README.md]($latestRelative/README.md) 和该目录 Docs。版本选择以“最新版Web.json”为准。不要直接改指向文件；更新时在主工程运行 tools/Set-LatestWebRelease.ps1，让启动、停止和说明同步更新。
 

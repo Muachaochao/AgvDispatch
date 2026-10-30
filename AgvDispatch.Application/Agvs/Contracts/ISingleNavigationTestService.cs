@@ -33,6 +33,7 @@ public sealed record NavigationTestRecord(string TaskId, string VendorTaskId, st
     public DateTimeOffset? BlockedSince { get; init; }
     public IReadOnlyList<string> VendorTaskIds { get; init; } = [];
     public NavigationTestDetourRecord? Detour { get; init; }
+    public NavigationTestAutoDetourRecord? AutoDetour { get; init; }
     public DateTimeOffset? CancellationAttemptedAt { get; init; }
     public string? CancellationVendorTaskId { get; init; }
     public DateTimeOffset? ResumeAttemptedAt { get; init; }
@@ -43,6 +44,8 @@ public sealed record NavigationTestStatus(bool Enabled, string VehicleId, Naviga
 {
     public bool Ready { get; init; }
     public string? BlockReason { get; init; }
+    public bool AutoDetourEnabled { get; init; }
+    public int AutoDetourWaitSeconds { get; init; }
 }
 public sealed record JackTestSubmit(string RequestId,string Action,bool AreaClearConfirmed,bool EmptyLoadConfirmed);
 public sealed record JackTestTelemetry(int State,bool Enabled,bool Emergency,int ErrorCode,bool HasLoad,double? Height,DateTimeOffset ObservedAt);
@@ -62,6 +65,9 @@ public interface ISingleNavigationTestService
     Task<NavigationTestDetourPreview> PreviewDetourAsync(TrafficUserContext user, NavigationTestDetourQuery request, CancellationToken ct) => throw new NotSupportedException("受控改道后台未更新。");
     Task<NavigationTestRecord> ConfirmDetourAsync(TrafficUserContext user, NavigationTestDetourConfirm request, CancellationToken ct) => throw new NotSupportedException("受控改道后台未更新。");
     Task<NavigationTestRecord> ContinueDetourAsync(TrafficUserContext user, NavigationTestDetourContinue request, CancellationToken ct) => throw new NotSupportedException("受控改道后台未更新。");
+    /// <summary>Advances only the explicitly enabled single-vehicle automatic
+    /// detour state machine. It performs no work unless AutoDetourEnabled.</summary>
+    Task AdvanceAutoDetourAsync(CancellationToken ct) => Task.CompletedTask;
     Task<ForkTestStatus> ReadForkAsync(CancellationToken ct) => throw new NotSupportedException("货叉测试后台未更新。");
     Task<ForkTestRecord> SubmitForkAsync(TrafficUserContext user,ForkTestSubmit request,CancellationToken ct) => throw new NotSupportedException("货叉测试后台未更新。");
     Task<JackTestStatus> ReadJackAsync(CancellationToken ct) => throw new NotSupportedException("顶升测试后台未更新。");

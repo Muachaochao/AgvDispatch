@@ -129,17 +129,24 @@ builder.Services.AddSingleton<IAgvStateCache>(
     provider => provider.GetRequiredService<AgvStateCache>());
 builder.Services.AddSingleton<AgvConnectionManager>();
 builder.Services.AddSingleton<IRobotMapDownloadService>(p=>new RobotMapDownloadService(agvOptions,p.GetRequiredService<AgvConnectionManager>()));
+var singleNavigationTestOptions = new SingleNavigationTestOptions
+{
+    Enabled=builder.Configuration.GetValue("NavigationTest:Enabled",false),
+    VehicleId=builder.Configuration["NavigationTest:VehicleId"]??"",
+    ForkEnabled=builder.Configuration.GetValue("NavigationTest:ForkEnabled",false),
+    ForkModelMd5=builder.Configuration["NavigationTest:ForkModelMd5"]??"",
+    ForkRobotId=builder.Configuration["NavigationTest:ForkRobotId"]??"",
+    DetourWaitSeconds=builder.Configuration.GetValue("NavigationTest:DetourWaitSeconds",5),
+    AutoDetourEnabled=builder.Configuration.GetValue("NavigationTest:AutoDetourEnabled",false),
+    AutoDetourWaitSeconds=builder.Configuration.GetValue("NavigationTest:AutoDetourWaitSeconds",10),
+    BusinessExecutionDisabled=new[]{"Dispatching:Enabled","AgvCommandOutbox:Enabled","DispatchTaskSteps:Enabled","TaskCreation:Enabled","HandshakeExecution:Enabled"}
+        .All(key=>builder.Configuration.GetValue<bool?>(key)==false)
+};
+builder.Services.AddSingleton(singleNavigationTestOptions);
 builder.Services.AddSingleton<ISingleNavigationTestService>(p => new SingleNavigationTestService(
-    new SingleNavigationTestOptions {
-        Enabled=builder.Configuration.GetValue("NavigationTest:Enabled",false),
-        VehicleId=builder.Configuration["NavigationTest:VehicleId"]??"",
-        ForkEnabled=builder.Configuration.GetValue("NavigationTest:ForkEnabled",false),
-        ForkModelMd5=builder.Configuration["NavigationTest:ForkModelMd5"]??"",
-        ForkRobotId=builder.Configuration["NavigationTest:ForkRobotId"]??"",
-        BusinessExecutionDisabled=new[]{"Dispatching:Enabled","AgvCommandOutbox:Enabled","DispatchTaskSteps:Enabled","TaskCreation:Enabled","HandshakeExecution:Enabled"}
-            .All(key=>builder.Configuration.GetValue<bool?>(key)==false)
-    },agvOptions,p.GetRequiredService<AgvConnectionManager>(),p.GetRequiredService<IActiveTaskLookup>(),
+    singleNavigationTestOptions,agvOptions,p.GetRequiredService<AgvConnectionManager>(),p.GetRequiredService<IActiveTaskLookup>(),
     p.GetRequiredService<IMapExecutionGate>(),Path.Combine(Path.GetDirectoryName(databaseOptions.DatabasePath)!,builder.Configuration.GetValue("NavigationTest:ForkEnabled",false)?"navigation-test.fork.json":"navigation-test.json"),p.GetRequiredService<IChargingDispatchGuard>(),p.GetRequiredService<INavigationTestDetourPlanner>(),p.GetRequiredService<IRoadClosureService>()));
+builder.Services.AddHostedService<NavigationTestAutoDetourWorker>();
 var plcCycleTestOptions = new PlcCycleTestOptions();
 builder.Configuration.GetSection("PlcCycleTest").Bind(plcCycleTestOptions);
 builder.Services.AddSingleton(plcCycleTestOptions);

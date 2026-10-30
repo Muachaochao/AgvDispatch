@@ -5,6 +5,7 @@ internal sealed record WebLocalLaunchMode(string NavigationVehicle, string PlcCy
 {
     public string BusinessVehicle { get; init; } = "";
     public bool ForkTest { get; init; }
+    public bool AutoNavigationDetour { get; init; }
     public string[] FleetVehicles { get; init; }=[];
     public int FleetMaxConcurrentTasks { get; init; }
     public bool IsBusiness => BusinessVehicle.Length > 0 || FleetVehicles.Length>0;
@@ -29,6 +30,9 @@ internal sealed record WebLocalLaunchMode(string NavigationVehicle, string PlcCy
         var forklift = Read("--forklift-test-vehicle");
         if(forklift.Length>0&&navigation.Length>0)throw new ArgumentException("Choose one navigation test vehicle option.");
         if(forklift.Length>0)navigation=forklift;
+        if(args.Count(value=>value=="--auto-navigation-detour")>1)
+            throw new ArgumentException("Repeated --auto-navigation-detour.");
+        var autoDetour=args.Contains("--auto-navigation-detour");
         var business = Read("--business-run-vehicle");
         var fleetIndex=Array.IndexOf(args,"--fleet-test-vehicles");
         string[] fleet=[];
@@ -56,7 +60,11 @@ internal sealed record WebLocalLaunchMode(string NavigationVehicle, string PlcCy
         if (business.Length > 0 && (navigation.Length > 0 || cycleVehicle.Length > 0))
             throw new ArgumentException("Business execution cannot share an isolated test launch.");
         if(fleet.Length>0&&(business.Length>0||navigation.Length>0||cycleVehicle.Length>0))throw new ArgumentException("Fleet testing requires an exclusive launch mode.");
-        return new(cycleVehicle.Length > 0 ? cycleVehicle : navigation, cycleVehicle, cycleStation) { BusinessVehicle = business, ForkTest=forklift.Length>0,FleetVehicles=fleet,FleetMaxConcurrentTasks=fleetConcurrency };
+        if(autoDetour&&navigation.Length==0)
+            throw new ArgumentException("Automatic detour requires an explicit single navigation test vehicle.");
+        return new(cycleVehicle.Length > 0 ? cycleVehicle : navigation, cycleVehicle, cycleStation)
+            { BusinessVehicle=business, ForkTest=forklift.Length>0, AutoNavigationDetour=autoDetour,
+              FleetVehicles=fleet, FleetMaxConcurrentTasks=fleetConcurrency };
     }
 
     public string[] ServiceArguments(string pipe) =>
@@ -72,6 +80,7 @@ internal sealed record WebLocalLaunchMode(string NavigationVehicle, string PlcCy
         $"--NavigationTest:Enabled={(NavigationVehicle.Length > 0 ? "true" : "false")}",
         $"--NavigationTest:VehicleId={(IsBusiness ? BusinessVehicle : NavigationVehicle)}",
         $"--NavigationTest:ForkEnabled={ForkTest}",
+        $"--NavigationTest:AutoDetourEnabled={AutoNavigationDetour}",
         $"--PlcCycleTest:Enabled={(IsPlcCycle ? "true" : "false")}",
         $"--PlcCycleTest:VehicleId={PlcCycleVehicle}", $"--PlcCycleTest:StationId={PlcCycleStation}"
     ];

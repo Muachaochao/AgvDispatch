@@ -46,3 +46,19 @@ public sealed record NavigationTestDetourRecord(string PreviewId, string State, 
     public DateTimeOffset? SendAttemptedAt { get; init; }
     public IReadOnlyList<string> NewVendorTaskIds { get; init; } = [];
 }
+
+/// <summary>
+/// Automatic commissioning safety state. It records why a detour has not
+/// started without changing the original navigation record or task identity.
+/// </summary>
+public sealed record NavigationTestAutoDetourRecord(string State, string Message,
+    DateTimeOffset UpdatedAt, string Operator)
+{
+    public DateTimeOffset? BlockedSince { get; init; }
+    public string? SourceSite { get; init; }
+    public string? BlockedToSite { get; init; }
+    public string? PreviewId { get; init; }
+    public string? PlanMessage { get; init; }
+    public IReadOnlyList<string> CandidateRoute { get; init; } = [];
+    public IReadOnlyList<string> BlockedEdgeIds { get; init; } = [];
+}

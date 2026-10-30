@@ -129,8 +129,15 @@ Check(business.IsBusiness&&business.ServiceArguments("test").Contains("--TaskCre
     business.ServiceArguments("test").Contains("--TaskCreation:AutomaticCreationEnabled=false"),"explicit business launch enables one call coordinator");
 var monitor=AgvDispatch.WebHost.WebLocalLaunchMode.Parse([]);
 var forkMode=AgvDispatch.WebHost.WebLocalLaunchMode.Parse(["--forklift-test-vehicle","AGV-02"]);
+var autoDetour=AgvDispatch.WebHost.WebLocalLaunchMode.Parse(["--navigation-test-vehicle","AGV-02","--auto-navigation-detour"]);
 Check(forkMode.ForkTest&&forkMode.NavigationVehicle=="AGV-02"&&forkMode.ServiceArguments("fixture").Contains("--NavigationTest:ForkEnabled=True"),"forklift mode explicitly selects isolated navigation and fork profile");
 Check(monitor.ServiceArguments("fixture").Contains("--NavigationTest:ForkEnabled=False"),"ordinary launch never restores fork motion permission");
+Check(autoDetour.AutoNavigationDetour&&autoDetour.ServiceArguments("fixture").Contains("--NavigationTest:AutoDetourEnabled=True"),
+    "automatic detour permission requires and records the explicit single-vehicle launch flag");
+Check(!monitor.AutoNavigationDetour&&monitor.ServiceArguments("fixture").Contains("--NavigationTest:AutoDetourEnabled=False"),
+    "ordinary launch never restores automatic cancellation or detour permission");
+await Reject(()=>Task.FromResult(AgvDispatch.WebHost.WebLocalLaunchMode.Parse(["--auto-navigation-detour"])),
+    "automatic detour cannot run without an explicit test vehicle");
 await Reject(()=>Task.FromResult(AgvDispatch.WebHost.WebLocalLaunchMode.Parse(["--forklift-test-vehicle","AGV-02","--business-run-vehicle","AGV-01"])),"forklift and business mode cannot coexist");
 await Reject(()=>Task.FromResult(AgvDispatch.WebHost.WebLocalLaunchMode.Parse(["--forklift-test-vehicle","AGV-02","--navigation-test-vehicle","AGV-01"])),"forklift and chassis-jack navigation mode cannot be combined");
 Check(!monitor.IsBusiness&&monitor.ServiceArguments("test").Contains("--Plc:AllowWrites=False"),"default launch never restores send permission");

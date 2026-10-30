@@ -254,4 +254,165 @@ public sealed partial class SingleNavigationTestService
         }
         finally{_mutex.Release();}
     }
+
+    /// <summary>
+    /// Test-only automatic detour driver. The explicit launch flag is the only
+    /// authorization for cancellation. Every motion and cancellation still
+    /// passes through the same map, task, stop, and one-shot checks as the
+    /// operator-confirmed path above.
+    /// </summary>
+    public async Task AdvanceAutoDetourAsync(CancellationToken ct)
+    {
+        if(!_settings.AutoDetourEnabled)return;
+        var user=TrafficUserContext.LocalOperation("auto-navigation-detour");
+        NavigationTestRecord? snapshot=null;
+        NavigationTestDetourContinue? continuation=null;
+        string? previewTaskId=null;
+        string? auditState=null;
+        string? auditMessage=null;
+
+        await _mutex.WaitAsync(ct);
+        try
+        {
+            snapshot=_record;
+            if(snapshot is null||Terminal(snapshot.State))return;
+            if(snapshot.Detour is { } detour)
+            {
+                if(detour.SendAttemptedAt is not null)
+                {
+                    auditState="Executing";auditMessage=detour.Message;
+                }
+                else if(detour.State=="Ready")
+                {
+                    continuation=new(snapshot.TaskId,detour.PreviewId,true);
+                    auditState="ReadyToSend";
+                    auditMessage="原厂家任务已全部终态，车辆连续停稳；自动发送一次备选3066任务链。";
+                }
+                else if(detour.State=="ReviewHold")
+                {
+                    auditState="ReviewHold";
+                    auditMessage="后台重启后的未发送候选保持人工复核，不自动续发。";
+                }
+                else
+                {
+                    auditState="AwaitingOriginalTerminal";
+                    auditMessage=detour.Message;
+                }
+            }
+            else if(snapshot.State is not ("Accepted" or "Waiting" or "Running" or "Suspended")||
+                snapshot.CancellationAttemptedAt is not null||snapshot.ResumeAttemptedAt is not null)
+            {
+                auditState="Unavailable";
+                auditMessage="原任务不是可安全自动改道的活动状态；保持只读核对。";
+            }
+            else
+            {
+                var wait=TimeSpan.FromSeconds(Math.Max(1,Math.Max(_settings.AutoDetourWaitSeconds,_settings.DetourWaitSeconds)));
+                if(snapshot.BlockedSince is not { } since)
+                {
+                    auditState="WaitingForBlock";
+                    auditMessage="尚未形成连续阻挡证据；继续查询原任务，不取消或改道。";
+                }
+                else if(DateTimeOffset.UtcNow-since<wait)
+                {
+                    auditState="WaitingForBlock";
+                    auditMessage=$"自动改道等待：连续受阻 {Math.Max(0,(DateTimeOffset.UtcNow-since).TotalSeconds):0.0}/{wait.TotalSeconds:0} 秒。";
+                }
+                else
+                {
+                    previewTaskId=snapshot.TaskId;
+                    auditState="Planning";
+                    auditMessage="连续受阻达到门槛，正在按当前站点、原任务下一站和车端地图规划备选路线。";
+                }
+            }
+        }
+        finally{_mutex.Release();}
+
+        if(continuation is not null)
+        {
+            await AuditAutoDetourAsync(user,auditState!,auditMessage!,snapshot!);
+            try
+            {
+                await ContinueDetourAsync(user,continuation,ct);
+                await AuditAutoDetourAsync(user,"Executing","备选3066任务链已按一次发送规则处理；后续只查询原新车端任务编号。",_record);
+            }
+            catch(Exception ex)
+            {
+                await AuditAutoDetourAsync(user,"SendBlocked","备选路线执行前核验未通过，保持原新任务编号并只读查询："+ex.Message,_record);
+            }
+            return;
+        }
+
+        if(previewTaskId is null)
+        {
+            if(auditState is not null)await AuditAutoDetourAsync(user,auditState,auditMessage!,snapshot);
+            return;
+        }
+
+        await AuditAutoDetourAsync(user,"Planning",auditMessage!,snapshot);
+        NavigationTestDetourPreview preview;
+        try
+        {
+            preview=await PreviewDetourAsync(user,new(previewTaskId),ct);
+        }
+        catch(Exception ex)
+        {
+            await AuditAutoDetourAsync(user,"Unavailable","自动改道未启动，原任务保持不变："+ex.Message,_record);
+            return;
+        }
+
+        var original=_record??snapshot!;
+        var sourceIndex=original.Route.Select((site,index)=>(site,index))
+            .FirstOrDefault(row=>string.Equals(row.site,preview.Plan.SourceSite,StringComparison.Ordinal));
+        var blockedTo=sourceIndex.site is not null&&sourceIndex.index+1<original.Route.Count
+            ? original.Route[sourceIndex.index+1]:null;
+        var planMessage="已生成并核验候选："+string.Join(" → ",preview.Plan.Route)+"；自动取消前仍会重新核对障碍、地图和原任务。";
+        if(!preview.Plan.Available)
+        {
+            await AuditAutoDetourAsync(user,"Unavailable",preview.Plan.Message,original,preview.Plan,
+                preview.PreviewId,preview.Plan.SourceSite,blockedTo);
+            return;
+        }
+
+        await AuditAutoDetourAsync(user,"CancelIntent",planMessage,original,preview.Plan,
+            preview.PreviewId,preview.Plan.SourceSite,blockedTo);
+        try
+        {
+            var cancelled=await ConfirmDetourAsync(user,
+                new(preview.TaskId,preview.PreviewId,true),ct);
+            await AuditAutoDetourAsync(user,"CancellationRequested",
+                cancelled.Detour?.Message??"已提交精确取消意图；等待原厂家任务终态。",cancelled,
+                preview.Plan,preview.PreviewId,preview.Plan.SourceSite,blockedTo);
+        }
+        catch(Exception ex)
+        {
+            await AuditAutoDetourAsync(user,"CancelBlocked","自动取消前核验未通过或结果不确定；不重发取消："+ex.Message,_record,
+                preview.Plan,preview.PreviewId,preview.Plan.SourceSite,blockedTo);
+        }
+    }
+
+    private async Task AuditAutoDetourAsync(TrafficUserContext user,string state,string message,
+        NavigationTestRecord? snapshot,NavigationTestDetourPlan? plan=null,string? previewId=null,
+        string? sourceSite=null,string? blockedToSite=null)
+    {
+        await _mutex.WaitAsync();
+        try
+        {
+            var record=_record;
+            if(record is null)return;
+            if(record.AutoDetour is { } current&&current.State==state&&current.Message==message)return;
+            var next=new NavigationTestAutoDetourRecord(state,message,DateTimeOffset.UtcNow,user.WindowsIdentity)
+            {
+                BlockedSince=record.BlockedSince??snapshot?.BlockedSince,
+                SourceSite=sourceSite??plan?.SourceSite,
+                BlockedToSite=blockedToSite,
+                PreviewId=previewId,
+                PlanMessage=plan?.Message,
+                CandidateRoute=plan?.Route.ToArray()??[],
+                BlockedEdgeIds=plan?.BlockedEdgeIds.ToArray()??[]
+            };
+            _record=record with {AutoDetour=next};Persist();
+        }
+        finally{_mutex.Release();}
+    }
 }

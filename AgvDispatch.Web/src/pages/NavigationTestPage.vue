@@ -2,11 +2,11 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useDispatchStore } from '../stores/dispatch';
 import NavigationDetourPanel from '../components/NavigationDetourPanel.vue';
-import type { NavigationDetourRecord } from '../navigation-detour';
+import type { NavigationAutoDetourRecord, NavigationDetourRecord } from '../navigation-detour';
 const dispatch=useDispatchStore();
 const mapReloadNeeded=ref(false),mapNotice=ref('');
-interface RecordRow {taskId:string;vendorTaskId:string;vehicleId:string;sourceSite:string;targetSite:string;robotMap:string;robotMapMd5:string;state:string;message:string;updatedAt:string;route:string[];currentStation:string|null;x:number|null;y:number|null;observedAt:string|null;detour?:NavigationDetourRecord|null}
-interface Status {ready:boolean;blockReason:string|null;enabled:boolean;vehicleId:string;current:RecordRow|null;message:string}
+interface RecordRow {taskId:string;vendorTaskId:string;vehicleId:string;sourceSite:string;targetSite:string;robotMap:string;robotMapMd5:string;state:string;message:string;updatedAt:string;route:string[];currentStation:string|null;x:number|null;y:number|null;observedAt:string|null;detour?:NavigationDetourRecord|null;autoDetour?:NavigationAutoDetourRecord|null}
+interface Status {ready:boolean;blockReason:string|null;enabled:boolean;vehicleId:string;current:RecordRow|null;message:string;autoDetourEnabled:boolean;autoDetourWaitSeconds:number}
 interface Preview {previewId:string;expiresAt:string;vehicleId:string;sourceSite:string;targetSite:string;robotMap:string;robotMapMd5:string;route:string[]}
 interface Stations {vehicleId:string;robotMap:string;robotMapMd5:string;stations:{id:string;x:number;y:number}[];suggestedSourceSite:string|null;capturedAt:string}
 interface JackStatus {ready:boolean;blockReason:string|null;vehicleId:string;telemetry:{state:number;enabled:boolean;emergency:boolean;errorCode:number;hasLoad:boolean;height:number|null;observedAt:string}|null;current:{requestId:string;action:string;state:string;message:string;updatedAt:string}|null}
@@ -146,7 +146,7 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);});
   </template><p v-else-if="!status||readError">尚未取得可靠的后台任务状态，请先查询原任务。</p><p v-else>后台当前没有已记录的测试任务。</p>
   <p>收到应答不代表到点完成。只有原任务完成、车辆静止且位置核对到终点，才显示完成。取消不是急停；异常时由现场人员使用车辆急停。断线、超时或后台重启后，只查询原任务，不自动重发。</p>
  </section>
- <NavigationDetourPanel v-if="status?.current" :current="status.current" :enabled="status.enabled" :read-current="readCurrent" :busy="busy" :now="now" @busy="busy = $event" @changed="refresh"/>
+ <NavigationDetourPanel v-if="status?.current" :current="status.current" :enabled="status.enabled" :read-current="readCurrent" :busy="busy" :now="now" :auto-detour-enabled="status.autoDetourEnabled" :auto-detour-wait-seconds="status.autoDetourWaitSeconds" @busy="busy = $event" @changed="refresh"/>
 </main>
 </template>
 <style scoped>

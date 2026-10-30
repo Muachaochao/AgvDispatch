@@ -4,7 +4,8 @@ import { useDispatchStore } from '../stores/dispatch';
 import { detourCanContinue, detourPreviewCurrent, detourStateLabels,
   type NavigationDetourCurrent, type NavigationDetourPreview } from '../navigation-detour';
 
-const props = defineProps<{ current: NavigationDetourCurrent; enabled: boolean; readCurrent: boolean; busy: boolean; now: number }>();
+const props = defineProps<{ current: NavigationDetourCurrent; enabled: boolean; readCurrent: boolean; busy: boolean; now: number;
+  autoDetourEnabled: boolean; autoDetourWaitSeconds: number }>();
 const emit = defineEmits<{ busy: [value: boolean]; changed: [] }>();
 const store = useDispatchStore();
 const candidate = ref<NavigationDetourPreview | null>(null), error = ref('');
@@ -12,7 +13,7 @@ const cancelConfirmed = ref(false), executeConfirmed = ref(false), pending = ref
 const context = computed(() => [props.current.taskId, props.current.vehicleId, props.current.robotMap,
   props.current.robotMapMd5, store.snapshot?.map?.id, store.snapshot?.map?.version,
   store.snapshot?.map?.definitionHash, store.demoMode].join('|'));
-const available = computed(() => props.enabled && props.readCurrent && !props.busy && !pending.value &&
+const available = computed(() => !props.autoDetourEnabled && props.enabled && props.readCurrent && !props.busy && !pending.value &&
   !store.demoMode && !store.engineeringSimulationOnly && store.fresh);
 const canRepreview = computed(() => !!props.current.detour && !props.current.detour.sendAttemptedAt &&
   ['ReviewHold', 'Ready'].includes(props.current.detour.state));
@@ -22,6 +23,12 @@ const previewCurrent = computed(() => props.readCurrent && store.fresh &&
   detourPreviewCurrent(candidate.value, props.current, store.snapshot?.map, props.now));
 const canConfirm = computed(() => available.value && previewCurrent.value && candidate.value?.plan.available && cancelConfirmed.value);
 const canContinue = computed(() => available.value && !candidate.value && executeConfirmed.value && detourCanContinue(props.current, store.snapshot?.map));
+const autoStateLabels: Record<string, string> = {
+  WaitingForBlock: '等待连续阻挡证据', Planning: '正在规划备用路线', Unavailable: '没有执行自动改道',
+  CancelIntent: '已生成候选，准备结束原导航', CancellationRequested: '等待原导航终结',
+  AwaitingOriginalTerminal: '等待原导航终结与停稳核验', ReadyToSend: '停稳核验通过，准备发送备选路线',
+  Executing: '查询备选导航执行状态', SendBlocked: '发送前核验未通过', ReviewHold: '等待人工复核'
+};
 let epoch = 0;
 function invalidate() { ++epoch; candidate.value = null; cancelConfirmed.value = false; executeConfirmed.value = false; }
 async function run(action: () => Promise<void>) {
@@ -59,12 +66,23 @@ watch(() => props.current.detour?.state, () => { cancelConfirmed.value = false; 
 <template>
   <section class="navigation-detour" aria-label="单车受控改道">
     <h3>受阻后的受控改道</h3>
+    <p v-if="autoDetourEnabled" class="detour-auto"><strong>自动改道已启用</strong> · 连续受阻 {{ autoDetourWaitSeconds }} 秒后自动规划；确认障碍仍在、存在不同路线且所有安全条件通过后，自动取消原导航并发送一次备用站点链。</p>
+    <p v-else>自动改道未启用。当前入口只做只读预览，需要逐项确认后才会操作车辆。</p>
     <p>短时障碍先等待车端恢复；持续受阻后，系统会按原任务路线和车辆实际站点自动推断受阻路段。无法唯一判断时，再到总览核对并封锁受影响通道。</p>
     <p class="detour-note">按车辆实际停稳的站点接入候选。车辆停在站点之间时，当前入口保持等待，不能冒用最近站点作为新起点。</p>
     <RouterLink to="/">前往总览核对道路封锁</RouterLink>
     <p v-if="error" role="alert" class="detour-error">{{ error }}</p>
     <p v-if="!readCurrent" role="status">原任务状态尚未取得或已失效，请先查询原任务。</p>
-    <button v-if="!current.detour || canRepreview" :disabled="!canPreview" @click="preview">{{ current.detour ? '重新核验实际接入点与候选' : '核验实际接入点并预览改道' }}</button>
+    <div v-if="current.autoDetour" class="detour-candidate detour-auto-record">
+      <h4>{{ autoStateLabels[current.autoDetour.state] || current.autoDetour.state }}</h4>
+      <p>{{ current.autoDetour.message }}</p>
+      <p v-if="current.autoDetour.sourceSite">实际接入点：{{ current.autoDetour.sourceSite }} · 推断受阻下一站：{{ current.autoDetour.blockedToSite || '待核对' }}</p>
+      <p v-if="current.autoDetour.blockedEdgeIds.length">推断受阻道路：{{ current.autoDetour.blockedEdgeIds.join('、') }}</p>
+      <p v-if="current.autoDetour.candidateRoute.length" class="detour-route">{{ current.autoDetour.candidateRoute.join(' → ') }}</p>
+      <p v-if="current.autoDetour.planMessage">{{ current.autoDetour.planMessage }}</p>
+      <p>最近自动判定：{{ new Date(current.autoDetour.updatedAt).toLocaleString() }}</p>
+    </div>
+    <button v-if="!autoDetourEnabled && (!current.detour || canRepreview)" :disabled="!canPreview" @click="preview">{{ current.detour ? '重新核验实际接入点与候选' : '核验实际接入点并预览改道' }}</button>
       <div v-if="candidate" class="detour-candidate">
         <h4>{{ !previewCurrent ? '候选已失效，请重新核验' : candidate.plan.available ? current.detour ? '已重新核验候选 · 等待明确确认' : '已找到备选路线 · 尚未结束原导航' : '无可执行的备选路线 · 保持原任务等待' }}</h4>
         <p>{{ candidate.plan.message }}</p>
@@ -86,10 +104,10 @@ watch(() => props.current.detour?.state, () => { cancelConfirmed.value = false; 
       </template>
       <p v-else-if="current.detour.state === 'ReviewHold'" class="detour-note">后台重启后保持复核。原导航终结、实际站点和停稳核验通过后，可重新预览并明确确认候选；不会自动续发。</p>
     </div>
-    <p class="detour-note">改道沿用本次测试任务，原导航与新导航编号均保留。取消应答不代表原导航结束；无路、位置不明或发送结果不确定时保持等待，不自动倒车或重发。</p>
+    <p class="detour-note">改道沿用本次测试任务，原导航与新导航编号均保留。取消应答不代表原导航结束；无路、位置不明、急停或严重报警时保持等待，不自动倒车或重发。</p>
   </section>
 </template>
 
 <style scoped>
-.navigation-detour{background:#18263b;border:1px solid #344965;border-radius:8px;padding:24px;margin:20px 0;font-size:13px;line-height:1.8}.navigation-detour h3{font-size:17px;margin-bottom:12px}.navigation-detour p{margin:12px 0;overflow-wrap:anywhere}.navigation-detour a{color:#79d5eb}.navigation-detour button{padding:11px 18px;background:#254868;color:#e5f7ff;border:1px solid #5c89ab;border-radius:5px;cursor:pointer;margin:8px 10px 8px 0;white-space:normal}.navigation-detour button:disabled{opacity:.45;cursor:not-allowed}.detour-note{color:#abd0df}.detour-error{color:#ffb2ab;background:#4b252c;padding:14px}.detour-candidate{border-left:3px solid #53c8df;padding:8px 18px;margin-top:18px;background:#102238}.detour-candidate h4{font-size:14px;color:#b2e6ef}.detour-route{font-size:19px;color:#d4f5f7}.detour-check{display:flex;align-items:flex-start;gap:9px;margin:14px 0}.detour-check input{margin-top:4px}@media(max-width:600px){.navigation-detour{padding:16px}.detour-candidate{padding:8px 12px}}
+.navigation-detour{background:#18263b;border:1px solid #344965;border-radius:8px;padding:24px;margin:20px 0;font-size:13px;line-height:1.8}.navigation-detour h3{font-size:17px;margin-bottom:12px}.navigation-detour p{margin:12px 0;overflow-wrap:anywhere}.navigation-detour a{color:#79d5eb}.navigation-detour button{padding:11px 18px;background:#254868;color:#e5f7ff;border:1px solid #5c89ab;border-radius:5px;cursor:pointer;margin:8px 10px 8px 0;white-space:normal}.navigation-detour button:disabled{opacity:.45;cursor:not-allowed}.detour-note{color:#abd0df}.detour-auto{color:#b8f0d7;background:#15362f;border-left:3px solid #4fd7a8;padding:12px 14px}.detour-error{color:#ffb2ab;background:#4b252c;padding:14px}.detour-candidate{border-left:3px solid #53c8df;padding:8px 18px;margin-top:18px;background:#102238}.detour-auto-record{border-left-color:#4fd7a8}.detour-candidate h4{font-size:14px;color:#b2e6ef}.detour-route{font-size:19px;color:#d4f5f7}.detour-check{display:flex;align-items:flex-start;gap:9px;margin:14px 0}.detour-check input{margin-top:4px}@media(max-width:600px){.navigation-detour{padding:16px}.detour-candidate{padding:8px 12px}}
 </style>

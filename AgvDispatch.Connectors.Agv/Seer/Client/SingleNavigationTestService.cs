@@ -14,6 +14,8 @@ public sealed class SingleNavigationTestOptions
     public string ForkModelMd5 { get; init; } = "";
     public string ForkRobotId { get; init; } = "";
     public int DetourWaitSeconds { get; init; } = 5;
+    public bool AutoDetourEnabled { get; init; }
+    public int AutoDetourWaitSeconds { get; init; } = 10;
 }
 
 /// <summary>Explicitly confirmed single-vehicle navigation; controlled replacements use a verified
@@ -280,7 +282,12 @@ public sealed partial class SingleNavigationTestService : ISingleNavigationTestS
                 _execution.Mode!=MapExecutionMode.Running?"地图切换尚未完成，单次调试暂不能发送。":null;
             if(block is null&&_jackRecord is not null&&!JackTerminal(_jackRecord.State))block="顶升测试未结束或结果不确定，请先查询顶升状态。";
             return new(enabled,_settings.VehicleId,_record,"单车路径导航，可经过中间站点；速度沿用厂家车端配置。不会启动PLC或自动调度。")
-            {Ready=block is null,BlockReason=block};
+            {
+                Ready=block is null,
+                BlockReason=block,
+                AutoDetourEnabled=_settings.AutoDetourEnabled,
+                AutoDetourWaitSeconds=Math.Max(1,_settings.AutoDetourWaitSeconds)
+            };
     }
     public async Task<NavigationTestRecord> CancelAsync(TrafficUserContext user,NavigationTestCancel request,CancellationToken ct)
     {

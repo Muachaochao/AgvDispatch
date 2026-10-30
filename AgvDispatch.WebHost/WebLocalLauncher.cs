@@ -12,7 +12,8 @@ internal static class WebLocalLauncher
 {
     private sealed record OwnedProcess(int Id,long StartedUtcTicks,string Path);
     private sealed record Session(string ReleaseId,OwnedProcess Service,OwnedProcess Web,string NavigationTestVehicle="",
-        string PlcCycleTestVehicle="",string PlcCycleTestStation="",string BusinessRunVehicle="",bool ForkTest=false,string FleetVehicles="",int FleetMaxConcurrentTasks=0);
+        string PlcCycleTestVehicle="",string PlcCycleTestStation="",string BusinessRunVehicle="",bool ForkTest=false,
+        bool AutoNavigationDetour=false,string FleetVehicles="",int FleetMaxConcurrentTasks=0);
     public static async Task<int> RunAsync(string[] args)
     {
         var created=new List<Process>();
@@ -52,6 +53,7 @@ internal static class WebLocalLauncher
                     Console.WriteLine("Stopped only the recorded processes for this release. Browser windows are unchanged.");return 0;
                 }
                 if(serviceAlive&&(session!.NavigationTestVehicle!=mode.NavigationVehicle||session.PlcCycleTestVehicle!=mode.PlcCycleVehicle||session.PlcCycleTestStation!=mode.PlcCycleStation||session.BusinessRunVehicle!=mode.BusinessVehicle||session.ForkTest!=mode.ForkTest||session.FleetVehicles!=string.Join(",",mode.FleetVehicles)||
+                    session.AutoNavigationDetour!=mode.AutoNavigationDetour||
                     (session.FleetMaxConcurrentTasks>0?session.FleetMaxConcurrentTasks:string.IsNullOrEmpty(session.FleetVehicles)?0:session.FleetVehicles.Split(',').Length)!=mode.FleetMaxConcurrentTasks))
                     throw new InvalidOperationException("Running session uses another test mode/vehicle/station. Stop this bundle before changing mode.");
                 if(serviceAlive!=webAlive)throw new InvalidOperationException("Only one recorded component is running. Use Stop-Latest-Web.cmd before restarting; no process was replaced.");
@@ -65,7 +67,7 @@ internal static class WebLocalLauncher
                     if(dailyData is not null) serviceArgs=[..serviceArgs,$"--Database:Path={System.IO.Path.Combine(dailyData,"后台5199","agv-dispatch.db")}"];
                     var service=Start(servicePath,serviceArgs);created.Add(service);
                     var web=Start(webPath,[$"--Web:Port={port}",$"--Web:PipeName={pipe}",$"--Web:EnableTaskSubmission={mode.IsBusiness}","--Web:EnableRecoveryActions=true","--Web:EnableTaskCancellation=true",$"--Web:ProjectStorePath={storePath}",$"--Web:StaticPath={System.IO.Path.Combine(root,"Web","wwwroot")}"]);
-                    created.Add(web);session=new(release,Describe(service,servicePath),Describe(web,webPath),mode.NavigationVehicle,mode.PlcCycleVehicle,mode.PlcCycleStation,mode.BusinessVehicle,mode.ForkTest,string.Join(",",mode.FleetVehicles),mode.FleetMaxConcurrentTasks);
+                    created.Add(web);session=new(release,Describe(service,servicePath),Describe(web,webPath),mode.NavigationVehicle,mode.PlcCycleVehicle,mode.PlcCycleStation,mode.BusinessVehicle,mode.ForkTest,mode.AutoNavigationDetour,string.Join(",",mode.FleetVehicles),mode.FleetMaxConcurrentTasks);
                     var pending=statePath+".tmp";File.WriteAllText(pending,JsonSerializer.Serialize(session,new JsonSerializerOptions{WriteIndented=true}));File.Move(pending,statePath,true);
                 }
                 using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(60));

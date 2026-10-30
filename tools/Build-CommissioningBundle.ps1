@@ -113,7 +113,7 @@ popd
 3. 页面地址 http://127.0.0.1:$WebPort/ 。WPF仅在需未迁移配置时使用Start-WPF.cmd。
 4. 分组件Start-Service/Start-Web.cmd保留作工程排查，它们需分别管理窗口；不属于一键启动记录。
 
-单次导航现场测试使用显式入口 Start-Navigation-Test.cmd AGV-01；它仅针对指定测试车启用导航发送许可，保留业务任务和PLC执行关闭。默认启动不启用此功能，详见 Docs/单次导航说明.md。页面核验不会发车，须人工确认区域后再点击发送。
+单次导航现场测试使用显式入口 Start-Navigation-Test.cmd AGV-01；它仅针对指定测试车启用导航发送许可，保留业务任务和PLC执行关闭。需要验证自动受阻改道时再明确追加 --auto-navigation-detour；路径规划、精确取消、原任务终态、连续停稳和一次性3066发送仍由后台重新核验。默认启动不启用此功能，详见 Docs/道路封锁与叉车受控改道-20261030.md。启动本身不会发车。
 
 CNC-001 空载 PLC 闭环联调须显式使用 Start-Plc-Cycle-Test.cmd AGV-01 CNC-001。仅允许127.0.0.1:10200的独立模拟PLC及六个固定H输出；正式PLC写、调度、命令队列和新握手保持关闭。结果不计正式28阶段验收。重启和状态失效均不恢复本轮发送许可。日常统一入口传入 --daily-data，沿用发布包/运行数据中的后台5199及Web工程方案。
 
@@ -137,10 +137,13 @@ if errorlevel 1 pause
 @echo off
 if "%~1"=="" (
   echo Usage: Start-Navigation-Test.cmd AGV-01
+  echo Optional: Start-Navigation-Test.cmd AGV-01 --auto-navigation-detour
   echo Requires a configured robot and an isolated test area. No task is sent on startup.
   exit /b 1
 )
-"%~dp0Web\host\AgvDispatch.WebHost.exe" --launch-local --bundle-root "%~dp0." --navigation-test-vehicle "%~1"
+set "AUTO_DETOUR="
+if /I "%~2"=="--auto-navigation-detour" set "AUTO_DETOUR=--auto-navigation-detour"
+"%~dp0Web\host\AgvDispatch.WebHost.exe" --launch-local --bundle-root "%~dp0." --navigation-test-vehicle "%~1" %AUTO_DETOUR%
 if errorlevel 1 pause
 '@ | Set-Content -LiteralPath (Join-Path $bundleOutput 'Start-Navigation-Test.cmd') -Encoding ascii
 @'

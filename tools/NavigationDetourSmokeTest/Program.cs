@@ -115,6 +115,38 @@ robot.DropDetourReply=true;rerouted=await service.ContinueDetourAsync(user,new(s
 Check(rerouted.State=="Uncertain"&&robot.Detours==2,"Lost replacement reply leaves the durable chain uncertain without retry");
 service=Create();status=await service.ReadAsync(default);
 Check(status.Current?.State=="Running"&&robot.Detours==2&&robot.Cancels==2,"Restart reconciles the exact replacement chain after lost reply without cancel or navigation retransmission");
+
+// Explicit automatic mode: the same planner and one-shot motion gates are
+// driven without operator clicks, but only after continuous block evidence.
+var autoPath=Path.Combine(folder,"navigation-auto.json");robot.IntentPath=autoPath;robot.Reset();planner.Available=true;
+var autoSettings=new SingleNavigationTestOptions{Enabled=true,VehicleId="SIM",BusinessExecutionDisabled=true,
+    DetourWaitSeconds=1,AutoDetourEnabled=true,AutoDetourWaitSeconds=1};
+SingleNavigationTestService AutoCreate()=>new(autoSettings,options,connections,new Tasks(),new Gate(),autoPath,
+    detourPlanner:planner,roadClosures:roads);
+var auto=AutoCreate();
+normal=await auto.PreviewAsync(user,new("SIM","A","C"),default);sent=await auto.SubmitAsync(user,new(normal.PreviewId,true),default);
+var cancelsBefore=robot.Cancels;var detoursBefore=robot.Detours;
+robot.X=.5;robot.Station="A";robot.Blocked=true;await auto.ReadAsync(default);await Task.Delay(1100);
+await auto.ReadAsync(default);await auto.AdvanceAutoDetourAsync(default);
+var autoStatus=await auto.ReadAsync(default);
+Check(robot.Cancels==cancelsBefore&&robot.Detours==detoursBefore&&autoStatus.Current?.AutoDetour?.State=="Unavailable",
+    "Automatic detour refuses a mid-edge pose without borrowing the old station");
+robot.X=1;robot.Station="B";planner.Available=false;await auto.ReadAsync(default);await auto.AdvanceAutoDetourAsync(default);
+autoStatus=await auto.ReadAsync(default);
+Check(robot.Cancels==cancelsBefore&&autoStatus.Current?.AutoDetour?.State=="Unavailable",
+    "Automatic detour keeps the original task when no alternate route exists");
+planner.Available=true;await auto.ReadAsync(default);await auto.AdvanceAutoDetourAsync(default);
+Check(robot.Cancels==cancelsBefore+1&&robot.CancelId==sent.VendorTaskId&&robot.Detours==detoursBefore,
+    "Persistent physical block automatically creates a verified candidate and cancels only the exact original vendor task");
+autoStatus=await auto.ReadAsync(default);
+Check(autoStatus.Current?.AutoDetour?.CandidateRoute.SequenceEqual(new[]{"B","D","C"})==true,
+    "Automatic audit exposes the alternate station chain before replacement execution");
+await auto.ReadAsync(default);await Task.Delay(650);await auto.ReadAsync(default);await auto.AdvanceAutoDetourAsync(default);
+Check(robot.Detours==detoursBefore+1&&robot.Segments.Length==2,
+    "Terminal original task plus two stopped observations automatically sends the replacement chain once");
+autoStatus=await auto.ReadAsync(default);
+Check(autoStatus.Current?.AutoDetour?.State=="Executing",
+    "Automatic execution remains auditable and is not reported complete on send acknowledgement");
 Console.WriteLine($"PASS {checks} checks; loopback only, no real vehicle");
 
 sealed class Planner:INavigationTestDetourPlanner
