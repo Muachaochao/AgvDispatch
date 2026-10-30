@@ -113,7 +113,9 @@ public sealed partial class SingleNavigationTestService
                 record.RobotMap,record.RobotMapMd5,stations,record.Route),ct);
             if(plan.Available)RequirePlan(plan,record,source.Id,stations);
             Persist();
-            return _detourPreview=new(Guid.NewGuid().ToString("N"),DateTimeOffset.UtcNow.AddSeconds(30),record.TaskId,record.VehicleId,_record?.BlockedSince,plan);
+            // A two-minute review window is practical for checking the physical route.
+            // Confirmation still re-reads every safety, task, map and closure condition.
+            return _detourPreview=new(Guid.NewGuid().ToString("N"),DateTimeOffset.UtcNow.AddMinutes(2),record.TaskId,record.VehicleId,_record?.BlockedSince,plan);
         }
         finally{_mutex.Release();}
     }
