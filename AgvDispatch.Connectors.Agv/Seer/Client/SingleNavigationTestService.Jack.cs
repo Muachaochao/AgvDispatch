@@ -50,7 +50,9 @@ public sealed partial class SingleNavigationTestService
     private async Task RequireJackIdleForNavigationAsync(SeerRobotClient client,CancellationToken ct)
     {
         if(_settings.ForkEnabled)return;
-        if(_jackRecord is null)return;
+        // Keep terminal history for display, but never let another vehicle's completed
+        // jack record block this vehicle's navigation. Only unresolved work is a lock.
+        if(_jackRecord is null||JackTerminal(_jackRecord.State))return;
         if(_jackRecord.VehicleId!=client.Robot.VehicleId)throw new InvalidOperationException("未结束顶升记录属于另一台车，不能混用。");
         var t=await FetchJackAsync(client,ct);ReconcileJack(t);
         if(!JackTerminal(_jackRecord!.State)||JackHealth(t) is not null)throw new InvalidOperationException("顶升尚未到位或状态异常，不能同时导航。");

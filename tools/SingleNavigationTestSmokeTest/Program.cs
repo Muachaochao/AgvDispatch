@@ -207,6 +207,14 @@ Check((await jackService.ReadJackAsync(default)).Ready,"Lowering remains availab
 var down=await jackService.SubmitJackAsync(user,downRequest,default);Check(down.State=="Accepted"&&robot.JackWrites==2,"6071 lowers a loaded raised jack without requiring a false empty-load confirmation");
 robot.JackState=3;Check((await jackService.ReadJackAsync(default)).Current?.State=="Completed","Lower endpoint feedback completes lowering");
 robot.JackLoad=false;
+var completedForeignJackPath=Path.Combine(folder,"foreign-terminal-jack-nav.json");
+File.WriteAllText(completedForeignJackPath+".jack.json",JsonSerializer.Serialize(
+    new JackTestRecord(Guid.NewGuid().ToString("N"),"OTHER","Down","Completed","历史顶升已完成",1,DateTimeOffset.Now,"test")
+    {Acknowledged=true}));
+var completedForeignJackService=new SingleNavigationTestService(jackSettings,options,connections,active,gate,completedForeignJackPath);
+var completedForeignJackPreview=await completedForeignJackService.PreviewAsync(user,query,default);
+Check(completedForeignJackPreview.Route.SequenceEqual(new[]{"LM1","LM2"})&&robot.JackWrites==2,
+    "Terminal jack history from another vehicle remains visible without blocking navigation or sending a command");
 robot.DropJackReply=true;var lost=await jackService.SubmitJackAsync(user,JackRequest(),default);
 Check(lost.State=="Uncertain"&&robot.JackWrites==3,"Lost jack reply is uncertain and never retried");
 jackService=CreateJack();await jackService.ReadJackAsync(default);Check(robot.JackWrites==3,"Restart only queries jack feedback without resend");
