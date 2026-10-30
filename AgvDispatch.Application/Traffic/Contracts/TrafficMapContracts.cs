@@ -6,7 +6,11 @@ public sealed record TrafficMapVehicle(string VehicleId, double? X, double? Y, d
     ConnectionState Connection, SignalQuality Quality, DateTimeOffset? LastSuccessfulPollAt);
 public sealed record TrafficMapSnapshot(DateTimeOffset CapturedAt, string? MapId, string? VersionId,
     MapDefinition? Definition, IReadOnlyList<TrafficMapVehicle> Vehicles, double PositionMaxAgeSeconds = 5,
-    double MinimumLocalizationConfidence = 0.5, double MaximumRouteDeviationMeters = 0.75);
+    double MinimumLocalizationConfidence = 0.5, double MaximumRouteDeviationMeters = 0.75)
+{
+    /// <summary>Authoritative hash calculated beside the live runtime definition before IPC serialization.</summary>
+    public string DefinitionHash { get; init; } = "";
+}
 
 public sealed class TrafficMapDisplayOptions
 {

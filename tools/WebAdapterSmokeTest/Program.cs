@@ -31,6 +31,8 @@ var nodes = new MapNode[] { new("A", 0, 0, MapNodeType.Station, true, [], "LM1")
 var edge = new MapEdge("CURVE", "A", "B", 12, 1, true, true, []) { GeometryKind = MapEdgeGeometryKind.CubicBezier, ControlPoints = [new(2, 4), new(8, 4)] };
 var definition = new MapDefinition("隔离测试地图", "synthetic", "TestCartesian", "m", nodes, [edge], [new("NARROW",TrafficResourceType.NarrowAisle,1,[new(4,-1),new(6,-1),new(6,3),new(4,3)]),new("HELD",TrafficResourceType.Station,1,[new(-1,-1),new(1,-1),new(1,1),new(-1,1)])]);
 var projected = SnapshotReader.ProjectMap(new(DateTimeOffset.UtcNow, "MAP-WEB-TEST", "V1", definition, []))!;
+Check(projected.DefinitionHash == EngineeringRuntimeIdentity.MapHash(definition),
+    "Web snapshot and backend runtime use the same canonical map hash for enabled editing and routing");
 var projectionJson = JsonSerializer.SerializeToElement(projected, WebJson.Options);
 Check(projectionJson.GetProperty("edges")[0].GetProperty("points").GetArrayLength() == 33, "曲线使用Domain统一采样33点，不退化为直线");
 Check(projectionJson.GetProperty("edges")[0].GetProperty("points")[16].GetProperty("y").GetDouble() > 0, "Bezier中间几何保持弯曲");
@@ -494,7 +496,11 @@ try
     Check(priorityPage.GetProperty("page").GetProperty("totalMatched").GetInt32()==9&&priorityPage.GetProperty("page").GetProperty("items").EnumerateArray().All(x=>x.GetProperty("priority").GetInt32()>=51),"最低优先级和排序沿后台查询，不修改任务优先级");
     var missingResource=await Waiting(new(BlockingResourceId:"NOT-HELD"));var narrowWaiting=await Waiting(new(BlockingResourceId:"narrow"));
     Check(missingResource.GetProperty("page").GetProperty("totalMatched").GetInt32()==0&&narrowWaiting.GetProperty("page").GetProperty("totalMatched").GetInt32()==28,"阻塞资源精确筛选且编号忽略大小写，空结果不生成假记录");
-    Check(waitingPage.GetProperty("mapId").GetString()=="MAP-WEB-TEST"&&waitingPage.GetProperty("mapDefinitionHash").GetString()==projected.DefinitionHash,"等待查询返回稳定活动图与摘要，供只读定位核对");
+    var activeMap=trafficSnapshot.GetProperty("map");
+    var activeMapDefinitionHash=activeMap.GetProperty("definitionHash").GetString();
+    var waitingHash=waitingPage.GetProperty("mapDefinitionHash").GetString();
+    Check(waitingPage.GetProperty("mapId").GetString()==activeMap.GetProperty("id").GetString()&&waitingHash==activeMapDefinitionHash,
+        $"等待查询返回稳定活动图与摘要，供只读定位核对；Web快照={activeMapDefinitionHash}，等待查询={waitingHash}");
     using var invalidWaiting=await http.PostAsJsonAsync("/api/traffic/waiting",new TrafficWaitingQuery(MinimumPriority:101),WebJson.Options);using var overWaiting=await http.PostAsJsonAsync("/api/traffic/waiting",new TrafficWaitingQuery(PageSize:51),WebJson.Options);
     Check(invalidWaiting.StatusCode==HttpStatusCode.BadRequest&&overWaiting.StatusCode==HttpStatusCode.BadRequest,"等待接口拒绝无效优先级和超50条页面预算");
     using var activeDiagnostic = await http.GetAsync("/api/tasks/WEB-ISOLATED-TASK");
@@ -511,7 +517,7 @@ try
         chainDb.Insertable(new TrafficResourceReleaseAuditEntity{AuditId="OLD-MANUAL-AUDIT",LeaseId="OLD-LEASE",ResourceId="NARROW",OwnerStepId="BLOCK-STEP",TaskId="BLOCK-TASK",VehicleId="BLOCKER",Operator="isolated",Reason="历史人工处置示例，不解除当前占用",AcquiredAt=DateTime.Now,RenewedAt=DateTime.Now,ExpiresAt=DateTime.Now,ReleasedAt=DateTime.Now}).ExecuteCommand();
         chainDb.Insertable(new TrafficLifecycleEventEntity{EventId="UNRELATED-EVENT",TaskId="UNRELATED",StepId="UNRELATED",VehicleId="OTHER",Kind="Unrelated",Reason="同名资源不属于原链",ResourceIds="[\"NARROW\"]",OccurredAt=DateTime.Now.AddMinutes(1)}).ExecuteCommand();
     }
-    object Blocking(string task="WEB-ISOLATED-TASK",string step="WEB-STEP-2",string hash="")=>new{taskId=task,stepId=step,expectedMapId="MAP-WEB-TEST",expectedMapVersion="V1",expectedMapDefinitionHash=hash==""?projected.DefinitionHash:hash};
+    object Blocking(string task="WEB-ISOLATED-TASK",string step="WEB-STEP-2",string hash="")=>new{taskId=task,stepId=step,expectedMapId="MAP-WEB-TEST",expectedMapVersion="V1",expectedMapDefinitionHash=hash==""?activeMapDefinitionHash:hash};
     using var blockingResponse=await http.PostAsJsonAsync("/api/traffic/blocking",Blocking());blockingResponse.EnsureSuccessStatusCode();var blocking=await blockingResponse.Content.ReadFromJsonAsync<JsonElement>();var chain=blocking.GetProperty("detail");
     Check(chain.GetProperty("cycleObserved").GetBoolean()&&chain.GetProperty("nodes").GetArrayLength()==4&&chain.GetProperty("links").GetArrayLength()==4,"HTTP经真实Named Pipe读取多步骤阻塞循环，区分资源边和同任务等待边");
     Check(chain.GetProperty("events").EnumerateArray().Any(e=>e.GetProperty("kind").GetString()=="ManualReleaseAudit")&&!chain.GetProperty("events").EnumerateArray().Any(e=>e.GetProperty("kind").GetString()=="Unrelated"),"仅展示关联路权与人工审计事件，不借全场同名资源补历史");

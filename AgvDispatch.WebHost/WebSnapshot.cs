@@ -95,6 +95,12 @@ public sealed class SnapshotReader(DispatchPipe pipe)
         if (definition.Unit != "m") warnings.Add("当前地图非米制，车位不叠加。");
         return new(snapshot.MapId, snapshot.VersionId, definition.Name, definition.Unit, definition.CoordinateSystem,
             definition.Nodes.Select(n => (object)new { n.Id, n.X, n.Y, n.AgvSiteId, n.Enabled, type = n.Type.ToString() }).ToArray(),
-            edges.ToArray(), definition.Resources.Select(r => (object)new { r.Id, r.Capacity, r.Boundary }).ToArray(), warnings.ToArray()){AreaAnnotations=definition.AreaAnnotations,DefinitionHash=Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(JsonSerializer.Serialize(definition,new JsonSerializerOptions(JsonSerializerDefaults.Web)))))};
+            edges.ToArray(), definition.Resources.Select(r => (object)new { r.Id, r.Capacity, r.Boundary }).ToArray(), warnings.ToArray())
+        {
+            AreaAnnotations = definition.AreaAnnotations,
+            DefinitionHash = string.IsNullOrWhiteSpace(snapshot.DefinitionHash)
+                ? EngineeringRuntimeIdentity.MapHash(definition)
+                : snapshot.DefinitionHash
+        };
     }
 }

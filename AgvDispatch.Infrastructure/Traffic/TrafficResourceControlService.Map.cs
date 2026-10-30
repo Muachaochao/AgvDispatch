@@ -11,6 +11,9 @@ public sealed partial class TrafficResourceControlService
             unchanged ? null : map?.Definition, (vehicleStates?.GetAll() ?? []).Select(v => new TrafficMapVehicle(v.VehicleId,
                 v.X, v.Y, v.LocalizationConfidence, v.Connection, v.Quality, v.LastSuccessfulPollAt)).ToArray(),
             mapOptions?.PositionMaxAgeSeconds ?? 5, mapOptions?.MinimumLocalizationConfidence ?? 0.5,
-            mapOptions?.MaximumRouteDeviationMeters ?? 0.75));
+            mapOptions?.MaximumRouteDeviationMeters ?? 0.75)
+        {
+            DefinitionHash = map is null ? "" : EngineeringRuntimeIdentity.MapHash(map.Definition)
+        });
     }
 }
