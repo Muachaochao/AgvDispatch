@@ -44,6 +44,28 @@ var resumed = db.Queryable<AgvCommandOutboxEntity>().Where(c => c.StepId == ids[
 Check(resumed.CommandId == held.CommandId && resumed.StepId == held.StepId && resumed.AttemptCount == 1 && resumed.Status == (int)AgvCommandStatus.Sent,
     "离线车恢复后沿用原命令及原步骤，第一次发送仍计一次");
 Check(gateway.Sends.Count == 2 && gateway.Sends.Distinct().Count() == 2, "两车各发送一次，不重复派发");
+var roadMap = new MapDefinition("isolated road", "synthetic", "RobotWorld", "m",
+    [new("A",0,0,MapNodeType.Waypoint,true,[],"A"),new("B",1,0,MapNodeType.Waypoint,true,[],"B")],
+    [new("AB","A","B",1,1,true,true,[])],[]);
+var runtime = new ActiveMapRuntime(); runtime.Replace(new("ROAD-MAP","V1",roadMap,DateTimeOffset.UtcNow));
+var roads = new RoadClosureService(db,runtime,gate); await roads.InitializeAsync(default);
+var roadUser = TrafficUserContext.LocalOperation("isolated-outbox");
+var sealedRoad = await roads.CreateAsync(roadUser,new("outbox-seal","ROAD-MAP","V1",EngineeringRuntimeIdentity.MapHash(roadMap),
+    "AB","A","B",true,"synthetic obstacle"),default);
+var queuedTask = await tasks.TryCreateAsync("ROAD-CLOSED-ORIGIN","DUMPER",0,default);
+await tasks.MarkAcknowledgedAsync(queuedTask.Task.TaskId,default);
+var queuedStep=(await tasks.GetStepsAsync(queuedTask.Task.TaskId,default))[0];
+await outbox.TryPrepareTransportStepAsync(queuedTask.Task.TaskId,queuedStep.StepId,"CAR-ONLINE",["A","B"],new("Wait"),default);
+using var roadSender = new AgvCommandOutboxDispatcher(NullLogger<AgvCommandOutboxDispatcher>.Instance,new(),outbox,gateway,gate,roadClosures:roads);
+for(var i=0;i<8;i++)await (Task)method.Invoke(roadSender,[CancellationToken.None])!;
+var roadHeld = db.Queryable<AgvCommandOutboxEntity>().Single(c=>c.StepId==queuedStep.StepId);
+Check(roadHeld.Status==(int)AgvCommandStatus.Pending&&roadHeld.AttemptCount==0&&gateway.Sends.Count==2,
+    "已排队旧路线遇到封锁八轮不领取、不消耗尝试、不发送");
+await roads.ReleaseAsync(roadUser,new("outbox-clear",sealedRoad.Closure!.ClosureId,sealedRoad.Revision,"synthetic clear",true),default);
+await (Task)method.Invoke(roadSender,[CancellationToken.None])!;
+var roadResumed = db.Queryable<AgvCommandOutboxEntity>().Single(c=>c.StepId==queuedStep.StepId);
+Check(roadResumed.CommandId==roadHeld.CommandId&&roadResumed.Status==(int)AgvCommandStatus.Sent&&roadResumed.AttemptCount==1&&gateway.Sends.Count==3,
+    "人工解封后同一Outbox首次发送一次，未重建业务步骤");
 Console.WriteLine("Evidence: " + root);
 
 sealed class Fleet : IAgvGateway

@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useDispatchStore } from '../stores/dispatch';
+import NavigationDetourPanel from '../components/NavigationDetourPanel.vue';
+import type { NavigationDetourRecord } from '../navigation-detour';
 const dispatch=useDispatchStore();
 const mapReloadNeeded=ref(false),mapNotice=ref('');
-interface RecordRow {taskId:string;vendorTaskId:string;vehicleId:string;sourceSite:string;targetSite:string;robotMap:string;robotMapMd5:string;state:string;message:string;updatedAt:string;route:string[];currentStation:string|null;x:number|null;y:number|null;observedAt:string|null}
+interface RecordRow {taskId:string;vendorTaskId:string;vehicleId:string;sourceSite:string;targetSite:string;robotMap:string;robotMapMd5:string;state:string;message:string;updatedAt:string;route:string[];currentStation:string|null;x:number|null;y:number|null;observedAt:string|null;detour?:NavigationDetourRecord|null}
 interface Status {ready:boolean;blockReason:string|null;enabled:boolean;vehicleId:string;current:RecordRow|null;message:string}
 interface Preview {previewId:string;expiresAt:string;vehicleId:string;sourceSite:string;targetSite:string;robotMap:string;robotMapMd5:string;route:string[]}
 interface Stations {vehicleId:string;robotMap:string;robotMapMd5:string;stations:{id:string;x:number;y:number}[];suggestedSourceSite:string|null;capturedAt:string}
@@ -15,7 +17,8 @@ const jack=ref<JackStatus|null>(null),jackError=ref('');
 const jackLabels:Record<number,string>={0:'上升中',1:'上升到位',2:'下降中',3:'下降到位',4:'停止',255:'执行失败'};
 const status=ref<Status|null>(null),catalog=ref<Stations|null>(null),preview=ref<Preview|null>(null);
 const source=ref(''),target=ref(''),confirmed=ref(false),busy=ref(false),error=ref(''),readError=ref(''),now=ref(Date.now());
-const labels:Record<string,string>={Accepted:'已接受，等待执行',Waiting:'等待中',Running:'运行中',Suspended:'暂停',Completed:'已完成并核对到点',Failed:'失败',Cancelled:'已取消',CancelRequested:'取消待核实',Uncertain:'结果不确定，禁止重发'};
+const lastReadAt=ref(0),readCurrent=computed(()=>!readError.value&&lastReadAt.value>0&&now.value-lastReadAt.value<=10000);
+const labels:Record<string,string>={Accepted:'已接受，等待执行',Waiting:'等待中',Running:'运行中',Suspended:'暂停',Completed:'已完成并核对到点',Failed:'失败',Cancelled:'已取消',CancelRequested:'取消待核实',Uncertain:'结果不确定，禁止重发',DetourCancelRequested:'改道等待原导航终结',DetourReady:'改道停稳核验通过',ReviewHold:'改道等待人工复核'};
 const active=computed(()=>!!status.value?.current&&!['Completed','Failed','Cancelled'].includes(status.value.current.state));
 const valid=computed(()=>!!preview.value&&Date.parse(preview.value.expiresAt)>now.value);
 const canInspect=computed(()=>!!catalog.value&&!!source.value&&!!target.value&&source.value!==target.value&&!busy.value&&!active.value&&!readError.value&&status.value?.ready);
@@ -24,7 +27,7 @@ let autoReadAttempted=false;
 let disposed=false,timer:ReturnType<typeof setInterval>|undefined;
 async function api<T>(suffix='',body?:unknown):Promise<T>{const r=await fetch('/api/navigation-test'+suffix,{method:body===undefined?'GET':'POST',headers:body===undefined?{}:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(30000)});const data=await r.json();if(!r.ok)throw new Error(data.detail??data.error??'请求失败');return data;}
 function invalidate(){preview.value=null;confirmed.value=false;}
-async function refresh(){if(busy.value||disposed)return;busy.value=true;let reload=false;try{const s=await api<Status>();if(!disposed){const wasEnabled=status.value?.enabled;if(s.ready&&!status.value?.ready)autoReadAttempted=false;status.value=s;readError.value='';if(!s.ready)invalidate();if(!s.enabled&&wasEnabled){catalog.value=null;source.value='';target.value='';}reload=s.ready&&!active.value&&!autoReadAttempted&&(!catalog.value||mapReloadNeeded.value);try{fork.value=await api<ForkStatus>('/fork');forkError.value='';}catch(e){forkError.value=String(e);fork.value=null;}if(!fork.value?.supported){try{jack.value=await api<JackStatus>('/jack');jackError.value='';}catch(e){jackError.value=String(e);jack.value=null;}}}}catch(e){if(!disposed){readError.value=String(e);invalidate();}}finally{busy.value=false;}if(reload&&!disposed)await loadStations();}
+async function refresh(){if(busy.value||disposed)return;busy.value=true;let reload=false;try{const s=await api<Status>();if(!disposed){const wasEnabled=status.value?.enabled;if(s.ready&&!status.value?.ready)autoReadAttempted=false;status.value=s;lastReadAt.value=Date.now();readError.value='';if(!s.ready)invalidate();if(!s.enabled&&wasEnabled){catalog.value=null;source.value='';target.value='';}reload=s.ready&&!active.value&&!autoReadAttempted&&(!catalog.value||mapReloadNeeded.value);try{fork.value=await api<ForkStatus>('/fork');forkError.value='';}catch(e){forkError.value=String(e);fork.value=null;}if(!fork.value?.supported){try{jack.value=await api<JackStatus>('/jack');jackError.value='';}catch(e){jackError.value=String(e);jack.value=null;}}}}catch(e){if(!disposed){readError.value=String(e);invalidate();}}finally{busy.value=false;}if(reload&&!disposed)await loadStations();}
 async function loadStations(){if(busy.value||active.value||disposed)return;autoReadAttempted=true;invalidate();busy.value=true;error.value='';const previous=catalog.value;catalog.value=null;const mapIdentity=runtimeMapIdentity.value;try{const c=await api<Stations>('/stations');if(disposed||mapIdentity!==runtimeMapIdentity.value)return;const same=previous?.vehicleId===c.vehicleId&&previous.robotMap===c.robotMap&&previous.robotMapMd5===c.robotMapMd5;catalog.value=c;source.value=c.suggestedSourceSite??(same&&c.stations.some(s=>s.id===source.value)?source.value:'');target.value=same&&c.stations.some(s=>s.id===target.value)?target.value:'';mapReloadNeeded.value=false;mapNotice.value='已读取当前车端地图，请重新选择终点并核验路线。';}catch(e){if(!disposed)error.value=String(e);}finally{busy.value=false;}}
 async function inspect(){if(!canInspect.value||!catalog.value)return;invalidate();busy.value=true;error.value='';try{preview.value=await api<Preview>('/preview',{vehicleId:catalog.value.vehicleId,sourceSite:source.value,targetSite:target.value,expectedRobotMap:catalog.value.robotMap,expectedRobotMapMd5:catalog.value.robotMapMd5});}catch(e){error.value=String(e);}finally{busy.value=false;}}
 async function submit(){if(!canSubmit.value||!preview.value)return;const id=preview.value.previewId;invalidate();busy.value=true;error.value='';try{await api('/submit',{previewId:id,siteClearConfirmed:true});}catch(e){error.value=String(e)+'；请先查询原任务，确认未发送并解除阻塞后再重新核验。';}finally{busy.value=false;await refresh();}}
@@ -133,10 +136,11 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);});
    <p>任务编号：{{status.current.vendorTaskId}}</p><p>{{status.current.message}}</p>
    <p v-if="status.current.observedAt">最近车辆观测：{{new Date(status.current.observedAt).toLocaleString()}}<br/>当前站点：{{status.current.currentStation||'站点之间或未知'}} · 坐标：{{status.current.x?.toFixed(3)??'未知'}}，{{status.current.y?.toFixed(3)??'未知'}}</p>
    <p>最近查询：{{new Date(status.current.updatedAt).toLocaleString()}}</p>
-   <button :disabled="busy||!active||!status.enabled" @click="cancel">取消本次导航</button>
+   <button :disabled="busy||!active||!status.enabled||(!!status.current.detour&&!status.current.detour.sendAttemptedAt)" @click="cancel">取消本次导航</button>
   </template><p v-else-if="!status||readError">尚未取得可靠的后台任务状态，请先查询原任务。</p><p v-else>后台当前没有已记录的测试任务。</p>
   <p>收到应答不代表到点完成。只有原任务完成、车辆静止且位置核对到终点，才显示完成。取消不是急停；异常时由现场人员使用车辆急停。断线、超时或后台重启后，只查询原任务，不自动重发。</p>
  </section>
+ <NavigationDetourPanel v-if="status?.current" :current="status.current" :enabled="status.enabled" :read-current="readCurrent" :busy="busy" :now="now" @busy="busy = $event" @changed="refresh"/>
 </main>
 </template>
 <style scoped>

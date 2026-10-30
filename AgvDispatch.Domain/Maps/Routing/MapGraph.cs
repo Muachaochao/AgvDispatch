@@ -88,12 +88,13 @@ public sealed class MapGraph
         string destination,
         IReadOnlySet<string>? unavailableResources = null,
         IReadOnlyDictionary<string, double>? edgePenalties = null,
-        IReadOnlySet<string>? forbiddenIntermediateNodes = null)
+        IReadOnlySet<string>? forbiddenIntermediateNodes = null,
+        IReadOnlyCollection<MapDirectedTraversal>? unavailableTraversals = null)
     {
         if (!string.Equals(source, destination, StringComparison.OrdinalIgnoreCase))
             return FindShortestRoute(source, destination, unavailableResources, edgePenalties,
                 forbiddenIntermediateNodes?.Where(id => !id.Equals(source, StringComparison.OrdinalIgnoreCase) &&
-                    !id.Equals(destination, StringComparison.OrdinalIgnoreCase)).ToHashSet(StringComparer.OrdinalIgnoreCase));
+                    !id.Equals(destination, StringComparison.OrdinalIgnoreCase)).ToHashSet(StringComparer.OrdinalIgnoreCase), unavailableTraversals);
         if (!_nodes.TryGetValue(source, out var origin) || !origin.Enabled ||
             forbiddenIntermediateNodes?.Contains(origin.Id) == true ||
             origin.ResourceIds.Any(id => unavailableResources?.Contains(id) == true)) return null;
@@ -105,10 +106,11 @@ public sealed class MapGraph
             // A same-node edge is not an established Robokit movement. A real exit
             // and return, including an explicitly bidirectional edge, is required.
             if (!first.Edge.Enabled || !_nodes[first.To].Enabled || forbiddenIntermediateNodes?.Contains(first.To) == true ||
+                unavailableTraversals?.Any(t => t.Matches(first.Edge.Id, first.From, first.To)) == true ||
                 string.Equals(first.To, origin.Id, StringComparison.OrdinalIgnoreCase) ||
                 first.Edge.ResourceIds.Concat(_nodes[first.To].ResourceIds)
                     .Any(id => unavailableResources?.Contains(id) == true)) continue;
-            var back = FindShortestRoute(first.To, origin.Id, unavailableResources, edgePenalties, forbiddenIntermediateNodes);
+            var back = FindShortestRoute(first.To, origin.Id, unavailableResources, edgePenalties, forbiddenIntermediateNodes, unavailableTraversals);
             if (back is not { Nodes.Count: >= 2 }) continue;
             var penalty = edgePenalties is not null && edgePenalties.TryGetValue(first.Edge.Id, out var configured) &&
                           double.IsFinite(configured) ? Math.Max(0, configured) : 0;
@@ -127,7 +129,8 @@ public sealed class MapGraph
         string destination,
         IReadOnlySet<string>? unavailableResources = null,
         IReadOnlyDictionary<string, double>? edgePenalties = null,
-        IReadOnlySet<string>? unavailableNodes = null)
+        IReadOnlySet<string>? unavailableNodes = null,
+        IReadOnlyCollection<MapDirectedTraversal>? unavailableTraversals = null)
     {
         if (!_nodes.TryGetValue(source, out var sourceNode) || !sourceNode.Enabled ||
             !_nodes.TryGetValue(destination, out var destinationNode) || !destinationNode.Enabled ||
@@ -170,7 +173,8 @@ public sealed class MapGraph
 
             foreach (var traversal in _outgoing[current])
             {
-                if (!traversal.Edge.Enabled || !_nodes[traversal.To].Enabled || unavailableNodes?.Contains(traversal.To) == true)
+                if (!traversal.Edge.Enabled || !_nodes[traversal.To].Enabled || unavailableNodes?.Contains(traversal.To) == true ||
+                    unavailableTraversals?.Any(t => t.Matches(traversal.Edge.Id, traversal.From, traversal.To)) == true)
                 {
                     continue;
                 }

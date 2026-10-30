@@ -29,6 +29,11 @@ public sealed record NavigationTestRecord(string TaskId, string VendorTaskId, st
     public double? X { get; init; }
     public double? Y { get; init; }
     public DateTimeOffset? ObservedAt { get; init; }
+    public DateTimeOffset? BlockedSince { get; init; }
+    public IReadOnlyList<string> VendorTaskIds { get; init; } = [];
+    public NavigationTestDetourRecord? Detour { get; init; }
+    public DateTimeOffset? CancellationAttemptedAt { get; init; }
+    public string? CancellationVendorTaskId { get; init; }
 }
 public sealed record NavigationTestStatus(bool Enabled, string VehicleId, NavigationTestRecord? Current,
     string Message)
@@ -51,6 +56,9 @@ public sealed record ForkTestRecord(string RequestId,string VehicleId,string Act
 public sealed record ForkTestStatus(bool Supported,bool Ready,string? BlockReason,string VehicleId,ForkTestTelemetry? Telemetry,ForkTestRecord? Current);
 public interface ISingleNavigationTestService
 {
+    Task<NavigationTestDetourPreview> PreviewDetourAsync(TrafficUserContext user, NavigationTestDetourQuery request, CancellationToken ct) => throw new NotSupportedException("受控改道后台未更新。");
+    Task<NavigationTestRecord> ConfirmDetourAsync(TrafficUserContext user, NavigationTestDetourConfirm request, CancellationToken ct) => throw new NotSupportedException("受控改道后台未更新。");
+    Task<NavigationTestRecord> ContinueDetourAsync(TrafficUserContext user, NavigationTestDetourContinue request, CancellationToken ct) => throw new NotSupportedException("受控改道后台未更新。");
     Task<ForkTestStatus> ReadForkAsync(CancellationToken ct) => throw new NotSupportedException("货叉测试后台未更新。");
     Task<ForkTestRecord> SubmitForkAsync(TrafficUserContext user,ForkTestSubmit request,CancellationToken ct) => throw new NotSupportedException("货叉测试后台未更新。");
     Task<JackTestStatus> ReadJackAsync(CancellationToken ct) => throw new NotSupportedException("顶升测试后台未更新。");

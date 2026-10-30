@@ -44,6 +44,8 @@ internal static class Program
         Check(initial.Vehicles.All(v => v.Status == "通信未启用"), "disabled not online");
         Check(initial.Vehicles[0].Fields.First(f => f.Name == "电量（%）").Value == "—", "unknown battery not zero");
         options.Enabled = true;
+        cache.SetCommunicationEnabled("AGV-01", true);
+        cache.SetCommunicationEnabled("AGV-02", true);
         var unknown = service.GetSnapshotAsync(default).GetAwaiter().GetResult();
         // Cache initially disabled stays disabled until a first valid telemetry observation.
         Check(unknown.Vehicles[0].Quality != "正常", "no fabricated first reading");
@@ -51,7 +53,9 @@ internal static class Program
         cache.ApplyTelemetry("AGV-01", new(1.2, 3.4, 0.5, 0.99, "LM-01", null, 80, false, true,
             "IDLE", null, null, null, [new("STEP-1", 2, 1)], [new("E001", AgvAlarmSeverity.Error, "测试报警")], now), TimeSpan.FromMilliseconds(25));
         var live = service.GetSnapshotAsync(default).GetAwaiter().GetResult();
-        Check(live.Vehicles[0].Status == "急停" && live.Vehicles[0].Quality == "正常", "fault state separate from signal quality");
+        Check(live.Vehicles[0].Status == "急停" && live.Vehicles[0].Quality == "正常",
+            $"fault state separate from signal quality (status={live.Vehicles[0].Status}, quality={live.Vehicles[0].Quality}, " +
+            $"collection={options.Enabled}, vehicle={options.Robots[0].Enabled})");
         Check(live.Vehicles[0].Fields.Any(f => f.Name.Contains("STEP-1")), "manufacturer task details");
         Check(live.Vehicles[0].Fields.Any(f => f.Name.Contains("E001")), "alarm details");
         Check(live.Vehicles[0].Fields.Any(f => f.Value.Contains("BUSINESS-1")), "bound business task");

@@ -32,7 +32,8 @@ public sealed class TrafficControlNamedPipeServer(
     ITrafficGeometryPreviewService? geometry=null,
     IRobokitInspectionService? robokit=null, IRobokitInspectionHistory? robokitHistory=null,IMapTransferLedger? mapTransfers=null, ITaskHandshakeStore? handshakes=null, ITaskDiagnosticArchiveService? diagnosticExports=null, ICommissioningQueryService? commissioning=null,
     ITrafficWaitingBayDepartureService? waitingBayDeparture=null, ISingleNavigationTestService? navigationTest=null, IRobotMapDownloadService? robotMapDownload=null,
-    IPlcCycleTestService? plcCycleTest=null, IBusinessRunService? businessRun=null, IFleetTestService? fleetTest=null, IChargingService? charging=null) : IsolatedBackgroundService
+    IPlcCycleTestService? plcCycleTest=null, IBusinessRunService? businessRun=null, IFleetTestService? fleetTest=null, IChargingService? charging=null,
+    IRoadClosureService? roadClosures=null) : IsolatedBackgroundService
 {
     private async Task<RobokitInspectionSnapshot> InspectRobokitAsync(TrafficUserContext user,RobokitInspectionQuery query,CancellationToken ct)
     {
@@ -43,6 +44,7 @@ public sealed class TrafficControlNamedPipeServer(
     public override async Task StartAsync(CancellationToken cancellationToken)
     {
         await database.InitializeAsync(cancellationToken);
+        if(roadClosures is not null) await roadClosures.InitializeAsync(cancellationToken);
         if(mapTransfers is not null)await mapTransfers.InitializeAsync(cancellationToken);
         await base.StartAsync(cancellationToken);
     }
@@ -221,10 +223,10 @@ public sealed class TrafficControlNamedPipeServer(
                 f.Plan.VehicleIds.Contains(q.VehicleId,StringComparer.OrdinalIgnoreCase))
                 throw new InvalidOperationException("该车参与的双车测试尚未闭合，请先停止新增并核对原记录。");
         }
-        if (request.Operation is "SubmitForkTest" or "SubmitJackTest" or "PreviewNavigationTest" or "SubmitNavigationTest" &&
+        if (request.Operation is "SubmitForkTest" or "SubmitJackTest" or "PreviewNavigationTest" or "SubmitNavigationTest" or "PreviewNavigationTestDetour" or "ConfirmNavigationTestDetour" or "ContinueNavigationTestDetour" &&
             plcCycleTest is not null && (await plcCycleTest.ReadAsync(cancellationToken)).Enabled)
             throw new InvalidOperationException("PLC空载联调模式独占测试车辆；手动导航或顶升请先停止该模式并明确切换启动方式。");
-        if (request.Operation is "PreviewNavigationTest" or "SubmitNavigationTest" &&
+        if (request.Operation is "PreviewNavigationTest" or "SubmitNavigationTest" or "PreviewNavigationTestDetour" or "ConfirmNavigationTestDetour" or "ContinueNavigationTestDetour" &&
             businessRun is not null && (await businessRun.ReadAsync(cancellationToken)).Current is { Stage: not "Completed" } retainedRun)
         {
             // Only the explicitly enabled forklift test may coexist with another parked
@@ -236,6 +238,13 @@ public sealed class TrafficControlNamedPipeServer(
 
         return request.Operation switch
         {
+            "GetRoadClosures" => Success(await (roadClosures??throw new NotSupportedException("后台未更新道路封锁管理。")).ListAsync(cancellationToken)),
+            "CreateRoadClosure" => Success(await (roadClosures??throw new NotSupportedException("后台未更新道路封锁管理。")).CreateAsync(user,Deserialize<RoadClosureCreateRequest>(request.Payload),cancellationToken)),
+            "ReleaseRoadClosure" => Success(await (roadClosures??throw new NotSupportedException("后台未更新道路封锁管理。")).ReleaseAsync(user,Deserialize<RoadClosureReleaseRequest>(request.Payload),cancellationToken)),
+            "PreviewRoadClosureRoute" => Success(await (roadClosures??throw new NotSupportedException("后台未更新道路封锁管理。")).PreviewAsync(Deserialize<RoadClosurePreviewRequest>(request.Payload),cancellationToken)),
+            "PreviewNavigationTestDetour" => Success(await (navigationTest??throw new NotSupportedException("后台未更新受控改道。")).PreviewDetourAsync(user,Deserialize<NavigationTestDetourQuery>(request.Payload),cancellationToken)),
+            "ConfirmNavigationTestDetour" => Success(await (navigationTest??throw new NotSupportedException("后台未更新受控改道。")).ConfirmDetourAsync(user,Deserialize<NavigationTestDetourConfirm>(request.Payload),cancellationToken)),
+            "ContinueNavigationTestDetour" => Success(await (navigationTest??throw new NotSupportedException("后台未更新受控改道。")).ContinueDetourAsync(user,Deserialize<NavigationTestDetourContinue>(request.Payload),cancellationToken)),
             "GetCharging" => Success(await (charging??throw new NotSupportedException("后台未更新充电调度。")).ReadAsync(cancellationToken)),
             "StopCharging" => Success(await (charging??throw new NotSupportedException("后台未更新充电调度。")).RequestStopAsync(user,Deserialize<ChargingStopRequest>(request.Payload),cancellationToken)),
             "ResolveCharging" => Success(await (charging??throw new NotSupportedException("后台未更新充电调度。")).ResolveHoldAsync(user,Deserialize<ChargingResolveRequest>(request.Payload),cancellationToken)),

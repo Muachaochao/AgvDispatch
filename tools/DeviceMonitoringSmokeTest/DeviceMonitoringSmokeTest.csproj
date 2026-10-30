@@ -5,5 +5,6 @@
   <ProjectReference Include="../../AgvDispatch.Connectors.Plc/AgvDispatch.Connectors.Plc.csproj"/>
   <ProjectReference Include="../../AgvDispatch.Connectors.Agv/AgvDispatch.Connectors.Agv.csproj"/>
   <Compile Include="../../AgvDispatch.Service/Modules/Monitoring/DeviceMonitoringService.cs" Link="DeviceMonitoringService.cs"/>
+  <Compile Include="../../AgvDispatch.Service/Modules/Diagnostics/AgvObstacleDiagnostics.cs" Link="AgvObstacleDiagnostics.cs"/>
  </ItemGroup>
 </Project>

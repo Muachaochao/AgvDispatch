@@ -4,6 +4,9 @@ public static class NavigationTestApi
 {
     public static void MapNavigationTestApi(this WebApplication app)
     {
+        app.MapPost("/api/navigation-test/detour/preview",async(NavigationTestDetourQuery q,DispatchPipe p,CancellationToken ct)=>await p.ReadAsync<NavigationTestDetourPreview>("PreviewNavigationTestDetour",q,ct));
+        app.MapPost("/api/navigation-test/detour/confirm",async(NavigationTestDetourConfirm q,DispatchPipe p,CancellationToken ct)=>await p.ReadAsync<NavigationTestRecord>("ConfirmNavigationTestDetour",q,ct));
+        app.MapPost("/api/navigation-test/detour/continue",async(NavigationTestDetourContinue q,DispatchPipe p,CancellationToken ct)=>await p.ReadAsync<NavigationTestRecord>("ContinueNavigationTestDetour",q,ct));
         app.MapGet("/api/navigation-test/fork",async(DispatchPipe p,CancellationToken ct)=>await p.ReadAsync<ForkTestStatus>("GetForkTest",new{},ct));
         app.MapPost("/api/navigation-test/fork",async(ForkTestSubmit q,DispatchPipe p,CancellationToken ct)=>await p.ReadAsync<ForkTestRecord>(q.Action=="Stop"?"StopForkTest":"SubmitForkTest",q,ct));
         app.MapGet("/api/navigation-test/jack",async(DispatchPipe p,CancellationToken ct)=>await p.ReadAsync<JackTestStatus>("GetJackTest",new{},ct));

@@ -13,9 +13,11 @@ public sealed class SingleNavigationTestOptions
     public bool ForkEnabled { get; init; }
     public string ForkModelMd5 { get; init; } = "";
     public string ForkRobotId { get; init; } = "";
+    public int DetourWaitSeconds { get; init; } = 5;
 }
 
-/// <summary>One explicitly confirmed 3051 single-vehicle navigation. Never retries a motion command.
+/// <summary>Explicitly confirmed single-vehicle navigation; controlled replacements use a verified
+/// 3066 station chain. Never retries a motion command.
 /// Independent of PLC business tasks; uses fresh robot-world coordinates, never editor coordinates.</summary>
 public sealed partial class SingleNavigationTestService : ISingleNavigationTestService
 {
@@ -26,22 +28,31 @@ public sealed partial class SingleNavigationTestService : ISingleNavigationTestS
     private readonly IMapExecutionGate _execution;
     private readonly string _path;
     private readonly IChargingDispatchGuard? _charging;
+    private readonly INavigationTestDetourPlanner? _detourPlanner;
+    private readonly IRoadClosureService? _roadClosures;
     private readonly SemaphoreSlim _mutex = new(1, 1);
     private NavigationTestPreview? _preview;
     private NavigationTestRecord? _record;
+    private NavigationTestDetourPreview? _detourPreview;
     private static bool Terminal(string? state) => state is "Completed" or "Failed" or "Cancelled";
 
     public SingleNavigationTestService(SingleNavigationTestOptions settings, AgvOptions options,
-        AgvConnectionManager connections, IActiveTaskLookup tasks, IMapExecutionGate execution, string path, IChargingDispatchGuard? charging=null)
+        AgvConnectionManager connections, IActiveTaskLookup tasks, IMapExecutionGate execution, string path, IChargingDispatchGuard? charging=null,
+        INavigationTestDetourPlanner? detourPlanner=null, IRoadClosureService? roadClosures=null)
     {
-        _settings=settings; _options=options; _connections=connections; _tasks=tasks; _execution=execution; _path=path; _charging=charging;
+        _settings=settings; _options=options; _connections=connections; _tasks=tasks; _execution=execution; _path=path; _charging=charging; _detourPlanner=detourPlanner; _roadClosures=roadClosures;
         LoadJackRecord();
         LoadForkRecord();
         if(File.Exists(path))
         {
             _record=JsonSerializer.Deserialize<NavigationTestRecord>(File.ReadAllText(path))
                 ?? throw new InvalidDataException("单次导航记录损坏，拒绝启动。");
-            if(!Terminal(_record.State)) _record=_record with {State="Uncertain",Message="后台重启：只读查询原任务，不自动重发。"};
+            if(!Terminal(_record.State))
+            {
+                _record=_record with {State="Uncertain",BlockedSince=null,Message="后台重启：只读查询原任务，不自动重发。"};
+                if(_record.Detour is {SendAttemptedAt:null} detour)
+                    _record=_record with {State="ReviewHold",Detour=detour with {State="ReviewHold",StoppedObservedAt=null,Message="后台重启：未发送改道进入人工复核，不自动续发取消或导航。"}};
+            }
         }
     }
 
@@ -89,6 +100,7 @@ public sealed partial class SingleNavigationTestService : ISingleNavigationTestS
     private static int? Int(JsonElement root,string key)=>root.TryGetProperty(key,out var p)&&p.ValueKind==JsonValueKind.Number&&p.TryGetInt32(out var n)?n:null;
     private static double? Number(JsonElement root,string key)=>root.TryGetProperty(key,out var p)&&p.ValueKind==JsonValueKind.Number&&p.TryGetDouble(out var n)&&double.IsFinite(n)?n:null;
     private static bool Idle(AgvRobotTelemetry t)=>t.EmergencyStopped==false && t.Blocked==false &&
+        !t.Alarms.Any(a=>a.Severity is AgvAlarmSeverity.Error or AgvAlarmSeverity.Fatal) &&
         t.VelocityX is { } vx && Math.Abs(vx)<0.01 && t.VelocityY is { } vy && Math.Abs(vy)<0.01 &&
         t.AngularVelocity is { } w && Math.Abs(w)<0.01 && t.Tasks.All(x=>x.Status is 4 or 5 or 6 or 7);
 
@@ -120,6 +132,7 @@ public sealed partial class SingleNavigationTestService : ISingleNavigationTestS
 
     private async Task<NavigationTestPreview> ObserveAsync(NavigationTestQuery q,CancellationToken ct)
     {
+        RequireNoInitialClosures();
         if(new[]{q.SourceSite,q.TargetSite}.Any(s=>string.IsNullOrWhiteSpace(s)||s.Length>128||s.Any(char.IsControl)) || q.SourceSite==q.TargetSite)
             throw new ArgumentException("请选择两个不同的厂家真实站点。");
         var client=await GuardAsync(q.VehicleId,ct);
@@ -166,6 +179,7 @@ public sealed partial class SingleNavigationTestService : ISingleNavigationTestS
         try
         {
             _preview=null;
+            _detourPreview=null;
             if(_record is not null&&!Terminal(_record.State))throw new InvalidOperationException("原测试未结束或结果不确定，请先查询原任务。");
             using var lease=await _execution.EnterControlAsync(ct);
             RequireCommissioningMapRunning();
@@ -190,10 +204,12 @@ public sealed partial class SingleNavigationTestService : ISingleNavigationTestS
                 throw new InvalidOperationException("车端规划路线或终点坐标已变化，请重新核验并确认。");
             if(DateTimeOffset.UtcNow>preview.ExpiresAt)throw new InvalidOperationException("发送前核验已过期。");
             var client=await GuardAsync(preview.VehicleId,ct);
+            using var closureGate=_roadClosures is null?null:await _roadClosures.EnterRouteSendAsync(preview.Route,ct);
+            RequireNoInitialClosures();
             var id="NAVTEST-"+Guid.NewGuid().ToString("N");
             var vendor=AgvTransportSegmentIds.For(id,2).Single();
             _record=new(id,vendor,preview.VehicleId,preview.SourceSite,preview.TargetSite,preview.RobotMap,preview.RobotMapMd5,"Uncertain","已记录发送意图；未确认车端接受，禁止自动重发。",DateTimeOffset.Now,user.WindowsIdentity)
-            {NavigationApi=3051,Route=preview.Route.ToArray(),TargetX=preview.TargetX,TargetY=preview.TargetY};
+            {NavigationApi=3051,Route=preview.Route.ToArray(),VendorTaskIds=[vendor],TargetX=preview.TargetX,TargetY=preview.TargetY};
             Persist(); // write intent durably before any motion bytes
             try
             {
@@ -215,11 +231,18 @@ public sealed partial class SingleNavigationTestService : ISingleNavigationTestS
             {
                 try
                 {
-                    var task=(await client.QueryTasksAsync([_record.VendorTaskId],ct)).SingleOrDefault();
-                    var state=task?.Status switch{1=>"Waiting",2=>"Running",3=>"Suspended",4=>"Completed",5 or 7=>"Failed",6=>"Cancelled",_=>"Uncertain"};
-                    var message=task is null?"原任务未找到，不视为未发送；保持阻塞。":$"原任务状态码 {task.Status}；仅终态且车辆静止时结束测试。";
+                    if(_record.Detour is {SendAttemptedAt:null})
+                    {
+                        await ObserveDetourCancellationAsync(client,ct);
+                        return BuildStatus();
+                    }
+                    var ids=CurrentVendorIds(_record);
+                    var rows=await client.QueryTasksAsync(ids,ct);
+                    var known=rows.Count==ids.Count&&rows.All(x=>x.Status is >=1 and <=7);
+                    var state=!known?"Uncertain":rows.Any(x=>x.Status==2)?"Running":rows.Any(x=>x.Status==3)?"Suspended":rows.Any(x=>x.Status==1)?"Waiting":rows.Any(x=>x.Status is 5 or 7)?"Failed":rows.Any(x=>x.Status==6)?"Cancelled":"Completed";
+                    var message=!known?"原任务链未全部找到或含未知状态，不视为未发送；保持阻塞。":$"原任务链状态 {string.Join(",",rows.Select(x=>$"{x.TaskId}={x.Status}"))}；仅全部终态且车辆静止时结束测试。";
                     var (t,_)=await client.PollAsync(ct);
-                    _record=_record with{CurrentStation=t.CurrentStation,X=t.X,Y=t.Y,ObservedAt=t.ReadAt};
+                    ObservePosition(t);
                     if(Terminal(state))
                     {
                         using var taskList=await client.RequestAsync(1110,new{},ct);
@@ -232,10 +255,24 @@ public sealed partial class SingleNavigationTestService : ISingleNavigationTestS
                             else message="原任务已完成，车端地图一致，车辆已在所选终点静止。";
                         }
                     }
-                    _record=_record with{State=state,Message=message,UpdatedAt=DateTimeOffset.Now};Persist();
+                    _record=_record with{State=state,Message=message,UpdatedAt=DateTimeOffset.Now};
+                    if(_record.Detour is {} detour)_record=_record with {Detour=detour with {State=Terminal(state)?state:"Executing",Message=message}};
+                    Persist();
                 }
-                catch(Exception ex)when(!ct.IsCancellationRequested){_record=_record with{State="Uncertain",Message="查询失败，不能重发："+ex.Message,UpdatedAt=DateTimeOffset.Now};Persist();}
+                catch(Exception ex)when(!ct.IsCancellationRequested)
+                {
+                    _record=_record with{State="Uncertain",BlockedSince=null,Message="查询失败，不能重发："+ex.Message,UpdatedAt=DateTimeOffset.Now};
+                    if(_record.Detour is {SendAttemptedAt:null} pending)
+                        _record=_record with {Detour=pending with {StoppedObservedAt=null,State=pending.State=="ReviewHold"?"ReviewHold":"AwaitingOriginalTerminal",Message=_record.Message}};
+                    Persist();
+                }
             }
+            return BuildStatus();
+        }
+        finally{_mutex.Release();}
+    }
+    private NavigationTestStatus BuildStatus()
+    {
             var enabled=_settings.Enabled&&_settings.BusinessExecutionDisabled&&_options.AllowCommands;
             var block=!enabled?"单次导航未启用、AGV动作未启用或业务执行未关闭。":
                 !_options.Enabled||_options.GetConfigurationError() is not null||string.IsNullOrWhiteSpace(_settings.VehicleId)||
@@ -244,8 +281,6 @@ public sealed partial class SingleNavigationTestService : ISingleNavigationTestS
             if(block is null&&_jackRecord is not null&&!JackTerminal(_jackRecord.State))block="顶升测试未结束或结果不确定，请先查询顶升状态。";
             return new(enabled,_settings.VehicleId,_record,"单车路径导航，可经过中间站点；速度沿用厂家车端配置。不会启动PLC或自动调度。")
             {Ready=block is null,BlockReason=block};
-        }
-        finally{_mutex.Release();}
     }
     public async Task<NavigationTestRecord> CancelAsync(TrafficUserContext user,NavigationTestCancel request,CancellationToken ct)
     {
@@ -253,11 +288,16 @@ public sealed partial class SingleNavigationTestService : ISingleNavigationTestS
         try
         {
             if(_record is null||_record.TaskId!=request.TaskId||Terminal(_record.State))throw new InvalidOperationException("没有匹配的未结束测试任务。");
+            if(_record.Detour is {SendAttemptedAt:null})throw new InvalidOperationException("原任务正在受控改道核对中，不能另发取消。");
+            if(_record.CancellationAttemptedAt is not null)throw new InvalidOperationException("当前任务已记录取消尝试，只能查询原编号，不能重复取消。");
             var client=await GuardAsync(_record.VehicleId,ct);
-            var task=(await client.QueryTasksAsync([_record.VendorTaskId],ct)).SingleOrDefault();
+            var ids=CurrentVendorIds(_record);
+            var rows=await client.QueryTasksAsync(ids,ct);
+            if(rows.Count!=ids.Count||rows.Any(x=>x.Status is <1 or >7))throw new InvalidOperationException("任务链证据不完整，不能推测取消范围。");
+            var task=ids.Select(id=>rows.Single(x=>x.TaskId==id)).FirstOrDefault(x=>x.Status is 1 or 2 or 3);
             if(task?.Status is not (1 or 2 or 3))throw new InvalidOperationException("原任务不是可取消状态；不能发送无范围取消。");
-            _record=_record with{State="Uncertain",Message="已记录原任务取消意图；尚未确认取消结果。",UpdatedAt=DateTimeOffset.Now};Persist();
-            try{await client.CancelNavigationAsync(_record.VendorTaskId,false,ct);_record=_record with{State="CancelRequested",Message="取消已应答，请继续查询至取消终态；不是急停。"};}
+            _record=_record with{State="Uncertain",Message="已记录原任务取消意图；尚未确认取消结果。",CancellationAttemptedAt=DateTimeOffset.UtcNow,CancellationVendorTaskId=task.TaskId,UpdatedAt=DateTimeOffset.Now};Persist();
+            try{await client.CancelNavigationAsync(task.TaskId,false,ct);_record=_record with{State="CancelRequested",Message="取消已应答，请继续查询至取消终态；不是急停。"};}
             catch(Exception ex){_record=_record with{Message="取消结果不确定，请查询原任务："+ex.Message};}
             Persist();return _record;
         }
@@ -269,5 +309,12 @@ public sealed partial class SingleNavigationTestService : ISingleNavigationTestS
         using(var file=new FileStream(temp,FileMode.Create,FileAccess.Write,FileShare.None))
         {JsonSerializer.Serialize(file,_record);file.Flush(true);}
         File.Move(temp,_path,true);
+    }
+    private void RequireNoInitialClosures()
+    {
+        if(_roadClosures is null)return;
+        var snapshot=_roadClosures.GetSnapshot();
+        if(!snapshot.Ready||snapshot.IdentityConflict||snapshot.Closures.Any(c=>c.Active&&c.MapId==snapshot.MapId&&c.VersionId==snapshot.VersionId))
+            throw new InvalidOperationException("当前地图存在封锁或封路状态尚未就绪；普通3051可能自行选择封锁路段，禁止发送。请处理封路后重新核验，执行中的测试使用受控改道。");
     }
 }

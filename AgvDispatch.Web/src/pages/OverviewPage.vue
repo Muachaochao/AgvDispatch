@@ -7,6 +7,7 @@ import { DispatchScene } from '../DispatchScene';
 import {trafficFocus} from '../traffic-focus';
 import TrafficRehearsal from '../TrafficRehearsal.vue';
 import TrafficWaitingPanel from '../TrafficWaitingPanel.vue';
+import TrafficClosuresPanel from '../TrafficClosuresPanel.vue';
 import {resourceView} from '../waiting';
 import {taskWait,leaseOwners} from '../traffic-display';
 import { isFresh, isWaitingStage, label, mayPlot } from '../state';
@@ -201,6 +202,7 @@ onUnmounted(() => { ++detailEpoch;++areaEpoch;clearInterval(areaTimer);scene?.di
     </aside>
   </div>
 
+  <TrafficClosuresPanel/>
   <TrafficWaitingPanel @locate="locateResource" @task="openTask"/>
   <ConsoleDialog v-if="showTaskDialog" title="任务运行详情 · 九步、条件与执行证据" wide @close="showTaskDialog = false">
     <TaskExecutionDetails v-if="detail" :detail="detail" :fresh="store.fresh" :now="store.now" />

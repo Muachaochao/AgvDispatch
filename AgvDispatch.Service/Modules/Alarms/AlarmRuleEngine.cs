@@ -22,7 +22,7 @@ public sealed class AlarmRuleEngine(
     IActiveTaskLookup activeTasks,
     ITrafficResourceControlService trafficResources,
     ITrafficFlowMonitor trafficFlow,
-    IAlarmService alarms) : IsolatedBackgroundService
+    IAlarmService alarms, IRoadClosureService? roadClosures = null) : IsolatedBackgroundService
 {
     private readonly Dictionary<string, DateTimeOffset> _offRouteSince =
         new(StringComparer.OrdinalIgnoreCase);
@@ -76,6 +76,14 @@ public sealed class AlarmRuleEngine(
         CancellationToken cancellationToken)
     {
         var result = new List<AlarmCandidate>();
+        if (roadClosures is not null)
+        {
+            var roads = roadClosures.GetSnapshot();
+            foreach (var road in roads.Closures.Where(c => c.Active && c.MapId == roads.MapId && c.VersionId == roads.VersionId))
+                result.Add(new AlarmCandidate($"ROAD:{road.ClosureId}:CLOSED", "Traffic", road.ClosureId,
+                    "ROAD_CLOSED", "道路临时封锁", $"{road.FromNodeId} → {road.ToNodeId}；原因：{road.Reason}。现场核对通道恢复后人工解封。",
+                    AlarmSeverity.Warning));
+        }
         if (plcFleet.Enabled)
         {
             AddPlcAlarms(result);

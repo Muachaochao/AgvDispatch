@@ -10,16 +10,19 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
     private readonly IActiveMapRuntime _activeMap;
     private readonly DispatchOrchestratorOptions _legacyOptions;
     private readonly ITrafficFlowMonitor _trafficFlow;
+    private readonly IRoadClosureService? _roadClosures;
 
     public ConfiguredRoutePlanner(
         MapDefinitionProvider map,
         IActiveMapRuntime activeMap,
         DispatchOrchestratorOptions legacyOptions,
-        ITrafficFlowMonitor trafficFlow)
+        ITrafficFlowMonitor trafficFlow,
+        IRoadClosureService? roadClosures = null)
     {
         _legacyOptions = legacyOptions;
         _activeMap = activeMap;
         _trafficFlow = trafficFlow;
+        _roadClosures = roadClosures;
         if (map.Definition is not null)
         {
             _configuredDefinition = map.Definition;
@@ -33,18 +36,28 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
         IReadOnlySet<string> unavailableResourceIds)
     {
         var snapshot = _activeMap.Current;
+        var closures = _roadClosures?.GetSnapshot();
+        if (closures is { Ready: false } || closures?.IdentityConflict == true) return null;
         var activeGraph = snapshot?.Graph;
         var activeDefinition = snapshot?.Definition;
         if (activeGraph is not null && activeDefinition is not null)
         {
+            if (closures is not null && (closures.MapId != snapshot!.MapId || closures.VersionId != snapshot.VersionId ||
+                !string.Equals(closures.DefinitionHash, EngineeringRuntimeIdentity.MapHash(activeDefinition), StringComparison.OrdinalIgnoreCase)))
+                return null;
             return PlanAndMap(activeGraph, activeDefinition, source, destination,
-                unavailableResourceIds, _trafficFlow.GetEdgePenalties());
+                unavailableResourceIds, _trafficFlow.GetEdgePenalties(), closures?.BlockedTraversals);
         }
         if (_configuredGraph is not null)
         {
+            // A persisted closure is bound to a published map identity. A startup
+            // configuration graph cannot silently stand in for that identity.
+            if (closures?.Closures.Any(c => c.Active) == true) return null;
             return PlanAndMap(_configuredGraph, _configuredDefinition!, source, destination,
                 unavailableResourceIds, _trafficFlow.GetEdgePenalties());
         }
+
+        if (closures?.Closures.Any(c => c.Active) == true) return null;
 
         // A repeat pickup must be backed by actual enabled graph edges, not a
         // legacy direct-route fallback such as [PICK, PICK].
@@ -61,7 +74,8 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
         string source,
         string destination,
         IReadOnlySet<string> unavailableResourceIds,
-        IReadOnlyDictionary<string, double> edgePenalties)
+        IReadOnlyDictionary<string, double> edgePenalties,
+        IReadOnlyCollection<MapDirectedTraversal>? unavailableTraversals = null)
     {
         var logicalSource = MapRouteSiteMapper.ResolveLogicalNodeId(definition, source);
         var logicalDestination = MapRouteSiteMapper.ResolveLogicalNodeId(definition, destination);
@@ -70,7 +84,7 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
             .Select(site => MapRouteSiteMapper.ResolveLogicalNodeId(definition, site!))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var plan = graph.FindShortestTransportRoute(
-            logicalSource, logicalDestination, unavailableResourceIds, edgePenalties, protectedNodes);
+            logicalSource, logicalDestination, unavailableResourceIds, edgePenalties, protectedNodes, unavailableTraversals);
         return plan is null ? null : MapRouteSiteMapper.ToAgvSitePlan(definition, plan);
     }
 

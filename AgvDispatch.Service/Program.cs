@@ -139,7 +139,7 @@ builder.Services.AddSingleton<ISingleNavigationTestService>(p => new SingleNavig
         BusinessExecutionDisabled=new[]{"Dispatching:Enabled","AgvCommandOutbox:Enabled","DispatchTaskSteps:Enabled","TaskCreation:Enabled","HandshakeExecution:Enabled"}
             .All(key=>builder.Configuration.GetValue<bool?>(key)==false)
     },agvOptions,p.GetRequiredService<AgvConnectionManager>(),p.GetRequiredService<IActiveTaskLookup>(),
-    p.GetRequiredService<IMapExecutionGate>(),Path.Combine(Path.GetDirectoryName(databaseOptions.DatabasePath)!,builder.Configuration.GetValue("NavigationTest:ForkEnabled",false)?"navigation-test.fork.json":"navigation-test.json"),p.GetRequiredService<IChargingDispatchGuard>()));
+    p.GetRequiredService<IMapExecutionGate>(),Path.Combine(Path.GetDirectoryName(databaseOptions.DatabasePath)!,builder.Configuration.GetValue("NavigationTest:ForkEnabled",false)?"navigation-test.fork.json":"navigation-test.json"),p.GetRequiredService<IChargingDispatchGuard>(),p.GetRequiredService<INavigationTestDetourPlanner>(),p.GetRequiredService<IRoadClosureService>()));
 var plcCycleTestOptions = new PlcCycleTestOptions();
 builder.Configuration.GetSection("PlcCycleTest").Bind(plcCycleTestOptions);
 builder.Services.AddSingleton(plcCycleTestOptions);
@@ -270,6 +270,14 @@ builder.Services.AddSingleton(provider => new TrafficResourceCatalog(
     provider.GetRequiredService<MapDefinitionProvider>().Definition?.Resources ?? []));
 builder.Services.AddSingleton<ActiveMapRuntime>();
 builder.Services.AddSingleton<IActiveMapRuntime>(provider => provider.GetRequiredService<ActiveMapRuntime>());
+builder.Services.AddSingleton(new RoadClosureRoutingOptions
+{
+    ProtectedTransitSites = dispatchOrchestratorOptions.GetDumperWaitingSites()
+        .Append(dispatchOrchestratorOptions.DumperDumpingSite).Concat(dispatchOrchestratorOptions.StandbySites)
+        .Where(site => !string.IsNullOrWhiteSpace(site)).Select(site => site!).ToArray()
+});
+builder.Services.AddSingleton<IRoadClosureService, RoadClosureService>();
+builder.Services.AddSingleton<INavigationTestDetourPlanner, NavigationTestDetourPlanner>();
 builder.Services.AddSingleton(new TrafficControlSettings(
     TimeSpan.FromSeconds(mapOptions.LeaseDurationSeconds)));
 builder.Services.AddSingleton<TrafficFlowMonitor>();

@@ -157,6 +157,39 @@ try
         }
         Console.WriteLine($"PASS {checks.Count} vendor path API checks. Evidence: {root}");return;
     }
+    if(args.Contains("--road-closures-only"))
+    {
+        var roads = await http.GetFromJsonAsync<RoadClosureSnapshot>("/api/road-closures", WebJson.Options);
+        Check(roads is { Ready:true, MapId:"MAP-WEB-TEST", VersionId:"V1", Revision:0 }, "封锁列表HTTP→IPC→实际隔离后台返回当前地图身份");
+        var roadCreate = new RoadClosureCreateRequest("http-seal", roads!.MapId!, roads.VersionId!, roads.DefinitionHash!, "CURVE", "A", "B", true, "HTTP isolated obstacle");
+        using var sealedResponse = await http.PostAsJsonAsync("/api/road-closures", roadCreate, WebJson.Options);
+        var sealedRoad = await sealedResponse.Content.ReadFromJsonAsync<RoadClosureResult>(WebJson.Options);
+        Check(sealedResponse.IsSuccessStatusCode && sealedRoad is { Accepted:true, Revision:1, Closure.Active:true }, "封锁请求经真实后台持久化");
+        using var previewResponse = await http.PostAsJsonAsync("/api/road-closures/preview", new RoadClosurePreviewRequest(
+            roads.MapId!, roads.VersionId!, roads.DefinitionHash!, sealedRoad!.Revision, "LM1", "LM2"), WebJson.Options);
+        var roadPreview = await previewResponse.Content.ReadFromJsonAsync<RoadClosurePreview>(WebJson.Options);
+        Check(previewResponse.IsSuccessStatusCode && roadPreview is { Available:false, Route:null }, "唯一道路封锁后返回无路，预览不生成车辆命令");
+        using var unconfirmed = await http.PostAsJsonAsync("/api/road-closures/release", new RoadClosureReleaseRequest("http-clear-denied",
+            sealedRoad.Closure!.ClosureId, sealedRoad.Revision, "not cleared", false), WebJson.Options);
+        Check((await unconfirmed.Content.ReadFromJsonAsync<RoadClosureResult>(WebJson.Options)) is { Accepted:false }, "HTTP解封必须确认现场通道已清理");
+        using var release = await http.PostAsJsonAsync("/api/road-closures/release", new RoadClosureReleaseRequest("http-clear",
+            sealedRoad.Closure.ClosureId, sealedRoad.Revision, "verified cleared", true), WebJson.Options);
+        Check((await release.Content.ReadFromJsonAsync<RoadClosureResult>(WebJson.Options)) is { Accepted:true, Closure.Active:false }, "HTTP人工解封保留已解除记录");
+        foreach(var operation in new[]{"preview","confirm","continue"})
+        {
+            using var denied = await http.PostAsJsonAsync("/api/navigation-test/detour/"+operation,
+                new { taskId="NONEXISTENT", previewId="NONE", cancelOriginalConfirmed=true, executeDetourConfirmed=true });
+            Check(denied.StatusCode==HttpStatusCode.ServiceUnavailable, "受控改道端点"+operation+"受真实后台导航许可门禁保护");
+        }
+        using var hostile = new HttpRequestMessage(HttpMethod.Post,"/api/road-closures") { Content=JsonContent.Create(roadCreate, options:WebJson.Options) };
+        hostile.Headers.Add("Origin","https://example.invalid"); using var crossOrigin = await http.SendAsync(hostile);
+        Check(crossOrigin.StatusCode==HttpStatusCode.Forbidden, "新增封路写接口保持同源保护");
+        using var verification = DatabaseFactory.Create(new() { DatabasePath=databasePath });
+        Check(verification.Queryable<RoadClosureEntity>().Count()==1 && verification.Queryable<RoadClosureEventEntity>().Count()==2 &&
+            verification.Queryable<AgvCommandOutboxEntity>().Count()==0 && verification.Queryable<TrafficResourceLeaseEntity>().Count()==0,
+            "封路与改道拒绝没有创建车令或释放路权，审计仅创建和解封两条");
+        Console.WriteLine($"PASS {checks.Count} road closure adapter checks. Evidence: {root}"); return;
+    }
     if(args.Contains("--waiting-bay-only"))
     {
         var currentMap=snapshot.GetProperty("map");

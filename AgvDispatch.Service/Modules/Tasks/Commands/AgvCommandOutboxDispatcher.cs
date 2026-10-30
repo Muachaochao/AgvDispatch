@@ -11,7 +11,8 @@ public sealed class AgvCommandOutboxDispatcher(
     IAgvCommandOutboxRepository outbox,
     IAgvGateway agvGateway,
     IMapExecutionGate executionGate,
-    IExecutionEvidenceJournal? journal = null, ITaskHandshakeStore? handshakes = null, IDispatchTaskRepository? taskReader = null, HandshakeExecutionOptions? handshakeOptions = null,PersistentHandshakeExecutor? handshake = null) : IsolatedBackgroundService
+    IExecutionEvidenceJournal? journal = null, ITaskHandshakeStore? handshakes = null, IDispatchTaskRepository? taskReader = null, HandshakeExecutionOptions? handshakeOptions = null,PersistentHandshakeExecutor? handshake = null,
+    IRoadClosureService? roadClosures = null) : IsolatedBackgroundService
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly Dictionary<string,string> _blockedReasons=new(StringComparer.Ordinal);
@@ -91,6 +92,27 @@ public sealed class AgvCommandOutboxDispatcher(
             if (vehicle?.Connection != ConnectionState.Online)
             {
                 continue;
+            }
+            if (roadClosures is not null && candidate.AttemptCount == 0)
+            {
+                try
+                {
+                    var payload = JsonSerializer.Deserialize<AgvTransportCommandPayload>(candidate.PayloadJson, JsonOptions)
+                        ?? throw new InvalidOperationException("待发送路径为空。");
+                    // Do not consume an attempt for a known closed route. The gateway
+                    // independently holds the same road gate during the actual send.
+                    using var check = await roadClosures.EnterRouteSendAsync(payload.Path, cancellationToken);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                catch (Exception ex)
+                {
+                    if (!_blockedReasons.TryGetValue(candidate.CommandId, out var previous) || previous != ex.Message)
+                    {
+                        logger.LogWarning("道路封锁核验未通过，保留原Outbox，不领取、不发送。CommandId={CommandId}, Reason={Reason}", candidate.CommandId, ex.Message);
+                        _blockedReasons[candidate.CommandId] = ex.Message;
+                    }
+                    continue;
+                }
             }
             if(handshakes!=null&&taskReader!=null)
             {

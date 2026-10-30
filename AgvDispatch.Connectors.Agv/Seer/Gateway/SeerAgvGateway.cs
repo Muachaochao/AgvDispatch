@@ -9,7 +9,8 @@ namespace AgvDispatch.Connectors.Agv;
 public sealed class SeerAgvGateway(
     IAgvStateCache stateCache,
     AgvConnectionManager connections,
-    AgvOptions options, IAgvTransportChainLookup? chains = null, IRobokitTaskMapPreflight? routeGuard = null) : IAgvGateway
+    AgvOptions options, IAgvTransportChainLookup? chains = null, IRobokitTaskMapPreflight? routeGuard = null,
+    IRoadClosureService? roadClosures = null) : IAgvGateway
 {
     public Task<DeviceConnectionStatus> GetConnectionStatusAsync(CancellationToken cancellationToken)
     {
@@ -77,6 +78,13 @@ public sealed class SeerAgvGateway(
             if(!check.Accepted)throw new InvalidOperationException(check.Message);
             EnsureVehicleCanAcceptCommand(preferredVehicleId,path);
         }
+        // Reconcile previously accepted IDs first. A newly closed road must stop a
+        // new send without hiding the receipt of a command already on the robot.
+        using var roadLease = roadClosures is null ? null :
+            await roadClosures.EnterRouteSendAsync(path, cancellationToken);
+        if (!useSpecifiedPath && roadClosures?.GetSnapshot().BlockedTraversals.Count > 0)
+            throw new InvalidOperationException("当前地图有道路封锁，3051无法约束车端中间路线；请使用已核验的指定路径导航。");
+        EnsureVehicleCanAcceptCommand(preferredVehicleId, path);
         try
         {
             await client.GoToTargetAsync(
