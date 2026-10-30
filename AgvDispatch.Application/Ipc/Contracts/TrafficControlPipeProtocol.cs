@@ -41,6 +41,7 @@ public static class TrafficControlOperations
     public const string GetDeviceMonitoring = "GetDeviceMonitoring";
     public const string GetAgvTrack = "GetAgvTrack";
     public const string GetAlarms = "GetAlarms";
+    public const string GetAlarmPage = "GetAlarmPage";
     public const string AcknowledgeAlarm = "AcknowledgeAlarm";
     public const string GetMaps = "GetMaps";
     public const string GetMapWorkspace = "GetMapWorkspace";

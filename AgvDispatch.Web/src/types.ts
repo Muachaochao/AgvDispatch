@@ -32,7 +32,9 @@ export interface CreationOptions { available: boolean; explanation: string; mapI
     stations: { stationId: string; pickupSite: string; available: boolean; configurationValid?: boolean; explanation: string; pickupReachableVehicleIds?: string[];vehiclePoolId?:string;allowedVehicleIds?:string[]|null }[]; vehicles: { vehicleId: string; label: string; available: boolean; explanation: string }[] }
 export interface RoutePreview { verified: boolean; message: string; mapIssue: string; legs: { sequence: number; name: string; logicalPath: string; vendorPath: string; message: string }[];
   segments: { edgeId: string; status: string; message: string }[] }
-export interface Alarm { alarmId: string; sourceType: string; sourceId: string; code: string; title: string; message: string; severity: string; status: string; firstOccurredAt: string; lastObservedAt: string; acknowledgedAt: string | null; recoveredAt: string | null }
+export interface Alarm { alarmId: string; ruleKey?: string; sourceType: string; sourceId: string; code: string; title: string; message: string; severity: string; status: string; firstOccurredAt: string; lastObservedAt: string; acknowledgedBy?: string | null; acknowledgedAt: string | null; acknowledgeComment?: string | null; recoveredAt: string | null; recoveryMessage?: string | null }
+export interface AlarmListSummary { total: number; open: number; acknowledged: number; recovered: number; critical: number }
+export interface AlarmPage { items: Alarm[]; totalCount: number; page: number; pageSize: number; summary: AlarmListSummary }
 export interface MapSummary { mapId: string; name: string; description: string; coordinateSystem: string; unit: string; isActive: boolean; activeVersionId: string | null; publishedVersionId: string | null; updatedAt: string }
 
 export interface ProgressCondition { ruleId:string; name:string; stationId:string; variableName:string; address:string; expectedValue:boolean; currentValue:boolean|null; quality:string; satisfied:boolean; result:string; reason:string; observedAt:string|null; signalVersion:number|null; role:string }

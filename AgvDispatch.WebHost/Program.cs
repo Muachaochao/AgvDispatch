@@ -76,6 +76,22 @@ app.MapDisplayAreasApi();
 app.MapDiagnosticsApi(recoveryActions,cancellations);
 app.MapResourceReviewApi(recoveryActions);
 app.MapGet("/api/snapshot", async (SnapshotReader reader, CancellationToken ct) => await reader.ReadAsync(ct));
+app.MapGet("/api/alarms", async (string? search, string? status, string? severity,
+    DateTimeOffset? from, DateTimeOffset? to, int? page, int? pageSize,
+    DispatchPipe pipe, CancellationToken ct) =>
+{
+    try
+    {
+        return Results.Ok(await pipe.ReadAsync<AlarmListPage>(
+            TrafficControlOperations.GetAlarmPage,
+            new AlarmListQuery(search, status, severity, from, to, page ?? 1, pageSize ?? 50),
+            ct));
+    }
+    catch (ArgumentException error)
+    {
+        return Results.BadRequest(new { error = error.Message });
+    }
+});
 app.MapGet("/api/task-options", async (DispatchPipe pipe, CancellationToken ct) =>
     await pipe.ReadAsync<ManualTaskCreationOptions>(TrafficControlOperations.GetTaskCreationOptions, new { }, ct));
 app.MapGet("/api/tasks", async (string? filter, string? search, int? page, int? pageSize,

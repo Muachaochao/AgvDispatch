@@ -335,6 +335,11 @@ public sealed class TrafficControlNamedPipeServer(
                     Deserialize<AgvTrackQueryRequest>(request.Payload), cancellationToken)),
             TrafficControlOperations.GetAlarms =>
                 Success(await GetAlarmsAsync(request.Payload, cancellationToken)),
+            TrafficControlOperations.GetAlarmPage =>
+                Success(await alarms.GetPageAsync(
+                    user,
+                    Deserialize<AlarmListQuery>(request.Payload),
+                    cancellationToken)),
             TrafficControlOperations.AcknowledgeAlarm =>
                 Success(await alarms.AcknowledgeAsync(
                     user,

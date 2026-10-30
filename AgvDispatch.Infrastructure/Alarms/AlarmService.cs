@@ -117,6 +117,69 @@ public sealed class AlarmService(ISqlSugarClient database) : IAlarmService
         return rows.Select(ToSnapshot).ToArray();
     }
 
+    public async Task<AlarmListPage> GetPageAsync(
+        TrafficUserContext user,
+        AlarmListQuery query,
+        CancellationToken cancellationToken)
+    {
+        if (!user.Has(TrafficPermission.View))
+            throw new UnauthorizedAccessException("当前软件账号没有查看报警记录的权限。");
+        var search = query.Search?.Trim() ?? "";
+        if (search.Length > 128)
+            throw new ArgumentException("报警搜索关键词最多128个字符。");
+        if (query.Page is < 1 or > 100000 || query.PageSize is not (20 or 50 or 100 or 200))
+            throw new ArgumentException("报警页码或每页条数无效。请使用每页20、50、100或200条。");
+        if (query.From is { } from && query.To is { } to && from >= to)
+            throw new ArgumentException("报警开始时间必须早于结束时间。");
+
+        AlarmLifecycleStatus? status = query.Status?.Trim().ToLowerInvariant() switch
+        {
+            null or "" or "all" => null,
+            "open" => AlarmLifecycleStatus.Open,
+            "acknowledged" => AlarmLifecycleStatus.Acknowledged,
+            "recovered" => AlarmLifecycleStatus.Recovered,
+            _ => throw new ArgumentException("报警状态筛选无效。")
+        };
+        AlarmSeverity? severity = query.Severity?.Trim().ToLowerInvariant() switch
+        {
+            null or "" or "all" => null,
+            "info" => AlarmSeverity.Info,
+            "warning" => AlarmSeverity.Warning,
+            "error" => AlarmSeverity.Error,
+            "critical" => AlarmSeverity.Critical,
+            _ => throw new ArgumentException("报警级别筛选无效。")
+        };
+
+        var fromAt = query.From?.LocalDateTime;
+        var toAt = query.To?.LocalDateTime;
+        ISugarQueryable<AlarmRecordEntity> Filtered() => database.Queryable<AlarmRecordEntity>()
+            .WhereIF(search.Length > 0, item => item.AlarmId.Contains(search) ||
+                item.RuleKey.Contains(search) ||
+                item.SourceId.Contains(search) ||
+                item.Code.Contains(search) ||
+                item.Title.Contains(search) ||
+                item.Message.Contains(search))
+            .WhereIF(fromAt.HasValue, item => item.FirstOccurredAt >= fromAt!.Value)
+            .WhereIF(toAt.HasValue, item => item.FirstOccurredAt < toAt!.Value);
+
+        cancellationToken.ThrowIfCancellationRequested();
+        var total = await Filtered().CountAsync(cancellationToken);
+        var open = await Filtered().Where(item => item.Status == (int)AlarmLifecycleStatus.Open).CountAsync(cancellationToken);
+        var acknowledged = await Filtered().Where(item => item.Status == (int)AlarmLifecycleStatus.Acknowledged).CountAsync(cancellationToken);
+        var recovered = await Filtered().Where(item => item.Status == (int)AlarmLifecycleStatus.Recovered).CountAsync(cancellationToken);
+        var critical = await Filtered().Where(item => item.Severity == (int)AlarmSeverity.Critical).CountAsync(cancellationToken);
+        var rows = await Filtered()
+            .WhereIF(status.HasValue, item => item.Status == (int)status!.Value)
+            .WhereIF(severity.HasValue, item => item.Severity == (int)severity!.Value)
+            .OrderByDescending(item => item.LastObservedAt)
+            .OrderByDescending(item => item.Severity)
+            .Skip((query.Page - 1) * query.PageSize)
+            .Take(query.PageSize)
+            .ToListAsync(cancellationToken);
+        return new(rows.Select(ToSnapshot).ToArray(), total, query.Page, query.PageSize,
+            new(total, open, acknowledged, recovered, critical));
+    }
+
     public async Task<AlarmOperationResult> AcknowledgeAsync(
         TrafficUserContext user,
         AcknowledgeAlarmRequest request,

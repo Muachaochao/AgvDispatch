@@ -665,12 +665,48 @@ try
         "测试AGV连接中断",
         "用于验证报警发生、确认和恢复闭环。",
         AlarmSeverity.Critical);
-    await alarmService.SynchronizeAsync([alarmCandidate], DateTimeOffset.Now, CancellationToken.None);
-    await alarmService.SynchronizeAsync([alarmCandidate], DateTimeOffset.Now, CancellationToken.None);
+    var secondAlarmCandidate = new AlarmCandidate(
+        "PLC:PLC-TEST:QUALITY",
+        "PLC",
+        "PLC-TEST",
+        "PLC_QUALITY",
+        "测试PLC质量异常",
+        "用于验证告警查询的级别、状态和时间筛选。",
+        AlarmSeverity.Warning);
+    var alarmOperator = new TrafficUserContext(
+        @"FACTORY\alarm-operator", "报警处置员",
+        TrafficPermission.View | TrafficPermission.AcknowledgeAlarm);
+    var alarmObservedAt = DateTimeOffset.Now;
+    await alarmService.SynchronizeAsync([alarmCandidate, secondAlarmCandidate], alarmObservedAt, CancellationToken.None);
+    await alarmService.SynchronizeAsync([alarmCandidate, secondAlarmCandidate], alarmObservedAt, CancellationToken.None);
     var activeAlarms = await alarmService.GetRecentAsync(10, true, CancellationToken.None);
-    Require(activeAlarms.Count == 1 && activeAlarms[0].Status == AlarmLifecycleStatus.Open,
-        "同一报警规则连续命中必须去重为一条活动报警。");
-    var alarmId = activeAlarms[0].AlarmId;
+    Require(activeAlarms.Count == 2 && activeAlarms.All(item => item.Status == AlarmLifecycleStatus.Open),
+        "不同报警规则应分别存在，同一规则连续命中必须去重为一条活动报警。");
+    var alarmId = activeAlarms.Single(item => item.RuleKey == alarmCandidate.RuleKey).AlarmId;
+    var alarmQuery = await alarmService.GetPageAsync(
+        alarmOperator,
+        new AlarmListQuery(
+            "AGV-99",
+            "all",
+            "all",
+            alarmObservedAt.AddHours(-1),
+            alarmObservedAt.AddHours(1),
+            1,
+            20),
+        CancellationToken.None);
+    Require(alarmQuery.TotalCount == 1 &&
+            alarmQuery.Items.Single().AlarmId == alarmId &&
+            alarmQuery.Summary is { Total: 1, Open: 1, Acknowledged: 0, Recovered: 0, Critical: 1 },
+        "报警分页查询必须应用关键词、首次发生时间并返回全量摘要。");
+    var criticalOpenQuery = await alarmService.GetPageAsync(
+        alarmOperator,
+        new AlarmListQuery("AGV", "open", "critical", null, null, 1, 20),
+        CancellationToken.None);
+    Require(criticalOpenQuery.TotalCount == 1 &&
+            criticalOpenQuery.Items.Single().AlarmId == alarmId &&
+            criticalOpenQuery.Summary.Total == 1 &&
+            criticalOpenQuery.Summary.Open == 1,
+        "报警分页查询必须组合状态和严重级别筛选，且摘要不受列表筛选影响。");
     var alarmUnauthorized = false;
     try
     {
@@ -684,24 +720,29 @@ try
         alarmUnauthorized = true;
     }
     Require(alarmUnauthorized, "无报警确认权限的账号必须被拒绝。");
-    var alarmOperator = new TrafficUserContext(
-        @"FACTORY\alarm-operator", "报警处置员",
-        TrafficPermission.View | TrafficPermission.AcknowledgeAlarm);
     var acknowledged = await alarmService.AcknowledgeAsync(
         alarmOperator,
         new AcknowledgeAlarmRequest(alarmId, "已经联系现场处理"),
         CancellationToken.None);
     Require(acknowledged.Accepted, "有权限的账号应能确认开放报警。");
-    await alarmService.SynchronizeAsync([alarmCandidate], DateTimeOffset.Now, CancellationToken.None);
+    await alarmService.SynchronizeAsync([alarmCandidate, secondAlarmCandidate], alarmObservedAt.AddMinutes(1), CancellationToken.None);
     activeAlarms = await alarmService.GetRecentAsync(10, true, CancellationToken.None);
-    Require(activeAlarms.Single().Status == AlarmLifecycleStatus.Acknowledged,
+    Require(activeAlarms.Single(item => item.AlarmId == alarmId).Status == AlarmLifecycleStatus.Acknowledged,
         "报警条件仍存在时确认状态必须保持，不能伪装成已恢复。");
-    await alarmService.SynchronizeAsync([], DateTimeOffset.Now, CancellationToken.None);
-    Require((await alarmService.GetRecentAsync(10, true, CancellationToken.None)).Count == 0,
-        "报警条件消失后活动列表应为空。");
+    await alarmService.SynchronizeAsync([secondAlarmCandidate], alarmObservedAt.AddMinutes(2), CancellationToken.None);
+    Require((await alarmService.GetRecentAsync(10, true, CancellationToken.None)).Count == 1,
+        "单个报警条件消失时只应恢复对应规则，其他活动报警保持。");
     var alarmHistory = await alarmService.GetRecentAsync(10, false, CancellationToken.None);
     Require(alarmHistory.Single(item => item.AlarmId == alarmId).Status == AlarmLifecycleStatus.Recovered,
         "报警条件消失后历史记录必须标记为Recovered。");
+    var recoveredQuery = await alarmService.GetPageAsync(
+        alarmOperator,
+        new AlarmListQuery("AGV-99", "recovered", "critical", null, null, 1, 20),
+        CancellationToken.None);
+    Require(recoveredQuery.TotalCount == 1 &&
+            recoveredQuery.Items.Single().AlarmId == alarmId &&
+            recoveredQuery.Summary is { Total: 1, Open: 0, Acknowledged: 0, Recovered: 1, Critical: 1 },
+        "已恢复报警应可通过组合筛选查询，摘要应反映恢复后的生命周期状态。");
 
     var trackStore = new AgvTrackStore(database);
     var trackNow = DateTimeOffset.Now;
