@@ -158,7 +158,11 @@ if errorlevel 1 pause
 '@ | Set-Content -LiteralPath (Join-Path $bundleOutput 'Start-Plc-Cycle-Test.cmd') -Encoding ascii
 $bundleFleetText=New-FleetLaunchEntryText -Selection ([pscustomobject]@{VehicleIds=@();MaxConcurrentTasks=0}) -LauncherEntryName 'Start-Latest-Web.cmd' -EntryName 'Start-Fleet-Test.cmd'
 [IO.File]::WriteAllText((Join-Path $bundleOutput 'Start-Fleet-Test.cmd'),$bundleFleetText,[Text.UTF8Encoding]::new($false))
-$bundleFiles=@(Get-ChildItem -LiteralPath $bundleOutput -File -Recurse | ForEach-Object {@{path=[IO.Path]::GetRelativePath($bundleOutput,$_.FullName);sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant();bytes=$_.Length}})
+$bundleFiles=@(Get-ChildItem -LiteralPath $bundleOutput -File -Recurse | Where-Object {
+    # A service probe can create logs before the final manifest is written. They
+    # remain runtime evidence and cannot be hashed as immutable program files.
+    [IO.Path]::GetRelativePath($bundleOutput,$_.FullName).Replace('\','/') -notmatch '^(Service|WPF|Web/host)/logs/'
+} | ForEach-Object {@{path=[IO.Path]::GetRelativePath($bundleOutput,$_.FullName);sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant();bytes=$_.Length}})
 @{schema='agv-commissioning-release';version=1;releaseId=$bundleId;createdAt=(Get-Date).ToString('o');runtime='win-x64 self-contained';pipeName=$bundlePipe;port=$WebPort;files=$bundleFiles;siteConfigurationImported=$bundleSiteConfigurationImported;deviceExecutionEnabled=$false} | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $bundleOutput 'release-manifest.json') -Encoding utf8
 Write-Output "Candidate=$bundleOutput"
 Write-Output "Release=$bundleId"
