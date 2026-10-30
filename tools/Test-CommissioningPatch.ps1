@@ -1,4 +1,7 @@
 $ErrorActionPreference='Stop'
+# Tests only use newly created fixtures. Never inspect or stop site processes.
+$global:AGVPatchTestProcesses=@()
+function Get-Process { param($Name) foreach($item in $global:AGVPatchTestProcesses){$item} }
 $fixtureRoot=Join-Path ([IO.Path]::GetTempPath()) ('agv-patch-test-'+[guid]::NewGuid().ToString('N'))
 $bundle=Join-Path $fixtureRoot 'bundle'
 $patchDir=Join-Path $fixtureRoot 'patch'
@@ -30,10 +33,15 @@ try{& (Join-Path $PSScriptRoot 'Apply-CommissioningPatch.ps1') -PatchDirectory $
 if(!$rejected){throw '重复安装或基线变化必须拒绝。'}
 $originalManifestHash=(Get-FileHash -LiteralPath (Join-Path $bundle 'release-manifest.json')).Hash
 $entry=@{path='Web/wwwroot/index.html';bytes=(Get-Item -LiteralPath (Join-Path $bundle 'Web/wwwroot/index.html')).Length;sha256=$patch.files[0].afterSha256}
-@{schema='agv-commissioning-release';releaseId='test-base';files=@($entry,@{path='Web\wwwroot\index.html';bytes=$entry.bytes;sha256=$entry.sha256})} | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $patchDir 'payload/release-manifest.json')
+@{schema='agv-commissioning-release';version=1;releaseId='test-base';files=@($entry,@{path='Web\wwwroot\index.html';bytes=$entry.bytes;sha256=$entry.sha256})} | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $patchDir 'payload/release-manifest.json')
 $patch.files=@(@{path='release-manifest.json';beforeSha256=$originalManifestHash;afterSha256=(Get-FileHash -LiteralPath (Join-Path $patchDir 'payload/release-manifest.json')).Hash})
 $patch | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $patchDir 'patch.json')
 $rejected=$false
 try{& (Join-Path $PSScriptRoot 'Apply-CommissioningPatch.ps1') -PatchDirectory $patchDir -BundleDirectory $bundle}catch{if($_.Exception.Message.Contains('重复')){$rejected=$true}else{throw}}
 if(!$rejected -or (Get-FileHash -LiteralPath (Join-Path $bundle 'release-manifest.json')).Hash -ne $originalManifestHash){throw '不同路径分隔符的同文件重复登记必须在写入前拒绝。'}
-Write-Output 'PASS: 损坏补丁写入前拒绝、差量更新、新增资源、原程序与数据备份、重复安装拒绝、发布清单路径别名重复拒绝；未连接现场。'
+$global:AGVPatchTestProcesses=@([pscustomobject]@{Id=999999;Path=$null})
+$rejected=$false
+try{& (Join-Path $PSScriptRoot 'Apply-CommissioningPatch.ps1') -PatchDirectory $patchDir -BundleDirectory $bundle}catch{if($_.Exception.Message.Contains('无法核实进程')){$rejected=$true}else{throw}}
+if(!$rejected){throw '无法核实归属的进程不能被跳过。'}
+$global:AGVPatchTestProcesses=@()
+Write-Output 'PASS: 损坏补丁写入前拒绝、差量更新、新增资源、原程序与数据备份、重复安装拒绝、发布清单路径别名重复拒绝、未知归属进程阻止安装；未连接现场。'

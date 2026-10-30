@@ -136,6 +136,21 @@ Check(autoDetour.AutoNavigationDetour&&autoDetour.ServiceArguments("fixture").Co
     "automatic detour permission requires and records the explicit single-vehicle launch flag");
 Check(!monitor.AutoNavigationDetour&&monitor.ServiceArguments("fixture").Contains("--NavigationTest:AutoDetourEnabled=False"),
     "ordinary launch never restores automatic cancellation or detour permission");
+string[] dailyDefaults=["--default-navigation-test-vehicle","AGV-02","--default-auto-navigation-detour"];
+var daily=AgvDispatch.WebHost.WebLocalLaunchMode.Parse(dailyDefaults);
+Check(daily.NavigationVehicle=="AGV-02"&&daily.AutoNavigationDetour,"daily single-vehicle selection is preserved when no mode is explicitly selected");
+var dailyFleet=AgvDispatch.WebHost.WebLocalLaunchMode.Parse([..dailyDefaults,"--fleet-test-vehicles","AGV-01,AGV-03"]);
+Check(dailyFleet.FleetVehicles.SequenceEqual(new[]{"AGV-01","AGV-03"})&&!dailyFleet.AutoNavigationDetour&&dailyFleet.NavigationVehicle.Length==0,
+    "fleet entry replaces daily navigation defaults without inheriting automatic detour permission");
+var dailyBusiness=AgvDispatch.WebHost.WebLocalLaunchMode.Parse([..dailyDefaults,"--business-run-vehicle","AGV-01"]);
+Check(dailyBusiness.IsBusiness&&!dailyBusiness.AutoNavigationDetour&&dailyBusiness.NavigationVehicle.Length==0,"business entry replaces daily test defaults");
+var dailyCycle=AgvDispatch.WebHost.WebLocalLaunchMode.Parse([..dailyDefaults,"--plc-cycle-test-vehicle","AGV-03","--plc-cycle-test-station","CNC-001"]);
+Check(dailyCycle.IsPlcCycle&&dailyCycle.NavigationVehicle=="AGV-03"&&!dailyCycle.AutoNavigationDetour,"PLC cycle entry replaces daily navigation defaults");
+var dailyOther=AgvDispatch.WebHost.WebLocalLaunchMode.Parse([..dailyDefaults,"--forklift-test-vehicle","AGV-03"]);
+Check(dailyOther.ForkTest&&dailyOther.NavigationVehicle=="AGV-03"&&!dailyOther.AutoNavigationDetour,"explicit forklift selection never inherits default automatic detour");
+var dailyManual=AgvDispatch.WebHost.WebLocalLaunchMode.Parse([..dailyDefaults,"--navigation-test-vehicle","AGV-01"]);
+Check(dailyManual.NavigationVehicle=="AGV-01"&&!dailyManual.AutoNavigationDetour,"explicit manual navigation replaces default vehicle and automatic permission");
+await Reject(()=>Task.FromResult(AgvDispatch.WebHost.WebLocalLaunchMode.Parse(["--default-auto-navigation-detour"])),"orphan default automatic flag must be rejected");
 await Reject(()=>Task.FromResult(AgvDispatch.WebHost.WebLocalLaunchMode.Parse(["--auto-navigation-detour"])),
     "automatic detour cannot run without an explicit test vehicle");
 await Reject(()=>Task.FromResult(AgvDispatch.WebHost.WebLocalLaunchMode.Parse(["--forklift-test-vehicle","AGV-02","--business-run-vehicle","AGV-01"])),"forklift and business mode cannot coexist");

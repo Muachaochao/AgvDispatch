@@ -39,8 +39,8 @@ foreach($latestName in @('启动最新版Web.cmd','停止最新版Web.cmd','最�
     if(Test-Path -LiteralPath $latestOld){New-Item -ItemType Directory -Path $latestBackup -Force | Out-Null;Copy-Item -LiteralPath $latestOld -Destination $latestBackup}
 }
 $latestNavigationArguments=''
-if($NavigationTestVehicle){$latestNavigationArguments+=" --navigation-test-vehicle `"$NavigationTestVehicle`""}
-if($AutoNavigationDetour){$latestNavigationArguments+=' --auto-navigation-detour'}
+if($NavigationTestVehicle){$latestNavigationArguments+=" --default-navigation-test-vehicle `"$NavigationTestVehicle`""}
+if($AutoNavigationDetour){$latestNavigationArguments+=' --default-auto-navigation-detour'}
 $latestStartText=@"
 @echo off
 chcp 65001 >nul
@@ -77,7 +77,7 @@ $latestGuide=@"
 4. 工程方案目录为“运行数据/Web工程方案”，由根入口传入。现场配置和数据库不自动迁移；本候选入口保持其原有的设备通信与执行门禁。
 5. 本包自带 .NET 运行时。缺配置、地图、设备采样时应按界面提示核对；界面演示不代表实车验收。
 6. 多车竞争测试使用“启动多车联调Web.cmd”，仍为5199；需先停止原模式。入口保留此前明确配置的车辆清单和并发上限，没有清单时必须传入配置车辆编号；旧“启动双车联调Web.cmd”转入同一入口。可在CMD运行“启动多车联调Web.cmd VEHICLE-A,VEHICLE-B,VEHICLE-C 2”选择车辆和可选并发上限，其后可继续传入启动器选项，带空格的路径须加双引号；有已保留清单时也可直接追加选项。示例编号须换成工程配置实际编号。启动不会自动发车，在工程测试中心选择本组车辆、工位及用例后启动；车辆需独立初始停车位、有效地图与包络配置，不会统一驶向同一个待机点。
-7. 本次固定入口$(if($NavigationTestVehicle){"已显式选择单车 $NavigationTestVehicle"}else{"未选择单车测试车"})$(if($AutoNavigationDetour){"，并启用自动受阻改道"}else{"，自动受阻改道关闭"})。该许可只在业务执行、PLC写入和派发关闭的单车测试模式有效；启动本身不会发车。
+7. 本次固定入口$(if($NavigationTestVehicle){"默认选择单车 $NavigationTestVehicle"}else{"未选择单车测试车"})$(if($AutoNavigationDetour){"，并启用自动受阻改道"}else{"，自动受阻改道关闭"})。明确选择多车、业务、PLC或其他单车模式时替换此默认模式，不叠加权限。该许可只在业务执行、PLC写入和派发关闭的单车测试模式有效；启动本身不会发车。
 
 具体功能、验证范围见 [$latestRelative/README.md]($latestRelative/README.md) 和该目录 Docs。版本选择以“最新版Web.json”为准。不要直接改指向文件；更新时在主工程运行 tools/Set-LatestWebRelease.ps1，让启动、停止和说明同步更新。
 

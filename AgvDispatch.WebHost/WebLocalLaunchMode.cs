@@ -53,6 +53,19 @@ internal sealed record WebLocalLaunchMode(string NavigationVehicle, string PlcCy
         }
         var cycleVehicle = Read("--plc-cycle-test-vehicle");
         var cycleStation = Read("--plc-cycle-test-station");
+        // The daily entry can preserve a selected test mode, while the fleet,
+        // business and other explicit entries must be able to replace it.
+        var defaultNavigation = Read("--default-navigation-test-vehicle");
+        if(args.Count(value=>value=="--default-auto-navigation-detour")>1)
+            throw new ArgumentException("Repeated --default-auto-navigation-detour.");
+        var defaultAutoDetour=args.Contains("--default-auto-navigation-detour");
+        if(defaultAutoDetour&&defaultNavigation.Length==0)
+            throw new ArgumentException("Default automatic detour requires a default test vehicle.");
+        if(navigation.Length==0&&business.Length==0&&fleet.Length==0&&cycleVehicle.Length==0&&cycleStation.Length==0)
+        {
+            navigation=defaultNavigation;
+            autoDetour|=defaultAutoDetour;
+        }
         if ((cycleVehicle.Length == 0) != (cycleStation.Length == 0))
             throw new ArgumentException("PLC cycle testing requires both a vehicle and a station.");
         if (navigation.Length > 0 && cycleVehicle.Length > 0)
