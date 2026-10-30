@@ -26,10 +26,23 @@ public sealed class NavigationTestDetourPlanner(IActiveMapRuntime runtime, IRoad
             !string.Equals(snapshot.DefinitionHash, EngineeringRuntimeIdentity.MapHash(map.Definition), StringComparison.OrdinalIgnoreCase) ||
             map.Definition.CoordinateSystem != "RobotWorld" || map.Definition.Unit != "m")
             return Refuse("当前运行地图或道路封锁状态不可核对，不能生成可执行改道。");
-        if (snapshot.BlockedTraversals.Count == 0)
-            return Refuse("尚未确认受影响道路；请先在道路封锁面板明确选择通道。");
         if (request.Stations.Count == 0 || request.Stations.GroupBy(s => s.Id, StringComparer.Ordinal).Any(g => g.Count() != 1))
             return Refuse("车端站点证据缺失或重复。");
+        var blocked=snapshot.BlockedTraversals.ToList();
+        foreach(var pair in request.SuggestedBlockedPairs.Distinct())
+        {
+            var from=MapRouteSiteMapper.ResolveLogicalNodeId(map.Definition,pair.FromSite);
+            var to=MapRouteSiteMapper.ResolveLogicalNodeId(map.Definition,pair.ToSite);
+            blocked.AddRange(map.Definition.Edges.Where(edge=>edge.Enabled&&(
+                string.Equals(edge.From,from,StringComparison.OrdinalIgnoreCase)&&string.Equals(edge.To,to,StringComparison.OrdinalIgnoreCase)||
+                edge.Bidirectional&&string.Equals(edge.From,to,StringComparison.OrdinalIgnoreCase)&&string.Equals(edge.To,from,StringComparison.OrdinalIgnoreCase)))
+                .Select(edge=>new MapDirectedTraversal(edge.Id,
+                    edge.Bidirectional&&string.Equals(edge.From,to,StringComparison.OrdinalIgnoreCase)?to:from,
+                    edge.Bidirectional&&string.Equals(edge.From,to,StringComparison.OrdinalIgnoreCase)?from:to)));
+        }
+        blocked=blocked.Distinct().ToList();
+        if (blocked.Count == 0)
+            return Refuse("无法从当前原路线唯一推断受阻道路；请核对车辆站点后重试，或由现场明确封锁通道。");
         try
         {
             // The independent forklift test need not have a production business-map
@@ -49,13 +62,15 @@ public sealed class NavigationTestDetourPlanner(IActiveMapRuntime runtime, IRoad
             };
             if (!TopologyMatches(map.Definition, robotMap, request.Stations))
                 return Refuse("运行图的站点坐标或有向道路与当前车端导出不一致，请核对测试地图后再改道。");
-            var result = await closures.PreviewAsync(new(map.MapId, map.VersionId, snapshot.DefinitionHash!,
-                snapshot.Revision, request.SourceSite, request.TargetSite), ct);
-            if (!result.Available || result.Route is null) return Refuse(result.Message);
+            var sourceNode=MapRouteSiteMapper.ResolveLogicalNodeId(map.Definition,request.SourceSite);
+            var targetNode=MapRouteSiteMapper.ResolveLogicalNodeId(map.Definition,request.TargetSite);
+            var route=map.Graph.FindShortestTransportRoute(sourceNode,targetNode,new HashSet<string>(),null,null,blocked);
+            if(route is null)return Refuse("自动推断受阻道路后没有可用备选路线，保持原任务等待。");
+            var result=MapRouteSiteMapper.ToAgvSitePlan(map.Definition,route);
             var plan = new NavigationTestDetourPlan(true, "已按当前车端地图核对候选站点链；尚未取消或发送导航。",
-                result.Revision, map.MapId, map.VersionId, result.DefinitionHash!, request.RobotMap,
-                request.RobotMapMd5, request.SourceSite, request.TargetSite, result.Route.Nodes.ToArray())
-            { BlockedEdgeIds = result.BlockedTraversals.Select(t => t.EdgeId).Distinct().ToArray() };
+                snapshot.Revision, map.MapId, map.VersionId, snapshot.DefinitionHash!, request.RobotMap,
+                request.RobotMapMd5, request.SourceSite, request.TargetSite, result.Nodes.ToArray())
+            { BlockedEdgeIds = blocked.Select(t => t.EdgeId).Distinct().ToArray() };
             if (plan.Route.Count < 2 || plan.Route[0] != request.SourceSite || plan.Route[^1] != request.TargetSite)
                 return Refuse("候选路线未映射到准确的厂家起终点。");
             if (!ReferenceEquals(map, runtime.Current) || closures.GetSnapshot().Revision != snapshot.Revision)
@@ -76,6 +91,15 @@ public sealed class NavigationTestDetourPlanner(IActiveMapRuntime runtime, IRoad
             !string.Equals(snapshot.DefinitionHash, plan.DefinitionHash, StringComparison.OrdinalIgnoreCase) ||
             snapshot.Revision != plan.ClosureRevision)
             throw new InvalidOperationException("改道核验已失效：地图、封锁版本变化或后台重启，请保留原任务并重新预览。");
+        var map=runtime.Current??throw new InvalidOperationException("运行地图已移除，无法核验改道。");
+        var blocked=plan.BlockedEdgeIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if(plan.Route.Zip(plan.Route.Skip(1)).Any(pair=>map.Definition.Edges.Any(edge=>
+            blocked.Contains(edge.Id)&&
+            (string.Equals(edge.From,MapRouteSiteMapper.ResolveLogicalNodeId(map.Definition,pair.First),StringComparison.OrdinalIgnoreCase)&&
+             string.Equals(edge.To,MapRouteSiteMapper.ResolveLogicalNodeId(map.Definition,pair.Second),StringComparison.OrdinalIgnoreCase)||
+             edge.Bidirectional&&string.Equals(edge.From,MapRouteSiteMapper.ResolveLogicalNodeId(map.Definition,pair.Second),StringComparison.OrdinalIgnoreCase)&&
+             string.Equals(edge.To,MapRouteSiteMapper.ResolveLogicalNodeId(map.Definition,pair.First),StringComparison.OrdinalIgnoreCase)))))
+            throw new InvalidOperationException("候选路线仍包含自动推断的受阻道路，禁止发送。");
         return Task.CompletedTask;
     }
 

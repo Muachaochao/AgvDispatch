@@ -48,6 +48,8 @@ Check(!unavailable.Plan.Available&&robot.Cancels==0,"No alternate route is a rea
 await Reject(()=>service.ConfirmDetourAsync(user,new(sent.TaskId,unavailable.PreviewId,true),default),"Unavailable route cannot cancel the original task");planner.Available=true;
 var preview=await service.PreviewDetourAsync(user,new(sent.TaskId),default);
 Check(preview.Plan.SourceSite=="B"&&preview.Plan.Route.SequenceEqual(new[]{"B","D","C"})&&robot.Cancels==0,"Candidate starts at the actual reached station, preserving the original target");
+Check(planner.LastRequest?.SuggestedBlockedPairs.SequenceEqual(new[]{new NavigationTestSitePair("B","C")})==true,
+    "Current route leg is supplied as an automatically inferred obstruction candidate for exact map validation");
 Check(preview.ExpiresAt-DateTimeOffset.UtcNow>TimeSpan.FromSeconds(100),
     "Candidate allows a two-minute physical review window while confirmation revalidates all safety conditions");
 planner.Revision++;
@@ -117,9 +119,9 @@ Console.WriteLine($"PASS {checks} checks; loopback only, no real vehicle");
 
 sealed class Planner:INavigationTestDetourPlanner
 {
-    public long Revision=3;public bool Available=true;
-    public Task<NavigationTestDetourPlan> PreviewAsync(NavigationTestDetourPlanRequest r,CancellationToken ct)=>
-        Task.FromResult(new NavigationTestDetourPlan(Available,Available?"candidate":"no route",Revision,"map","version","hash",r.RobotMap,r.RobotMapMd5,r.SourceSite,r.TargetSite,[r.SourceSite,"D",r.TargetSite]){BlockedEdgeIds=["B-C"]});
+    public long Revision=3;public bool Available=true;public NavigationTestDetourPlanRequest? LastRequest;
+    public Task<NavigationTestDetourPlan> PreviewAsync(NavigationTestDetourPlanRequest r,CancellationToken ct)
+    {LastRequest=r;return Task.FromResult(new NavigationTestDetourPlan(Available,Available?"candidate":"no route",Revision,"map","version","hash",r.RobotMap,r.RobotMapMd5,r.SourceSite,r.TargetSite,[r.SourceSite,"D",r.TargetSite]){BlockedEdgeIds=["B-C"]});}
     public Task ValidateAsync(NavigationTestDetourPlan p,CancellationToken ct)
     {if(p.ClosureRevision!=Revision)throw new InvalidOperationException("stale closure");return Task.CompletedTask;}
     public async ValueTask<IDisposable> EnterSendAsync(NavigationTestDetourPlan p,CancellationToken ct){await ValidateAsync(p,ct);return new Lease();}

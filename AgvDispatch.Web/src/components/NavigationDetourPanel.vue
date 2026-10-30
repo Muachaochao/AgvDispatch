@@ -59,8 +59,8 @@ watch(() => props.current.detour?.state, () => { cancelConfirmed.value = false; 
 <template>
   <section class="navigation-detour" aria-label="单车受控改道">
     <h3>受阻后的受控改道</h3>
-    <p>短时障碍先等待车端恢复；持续受阻后，先在总览“道路封锁与绕行”核对并封锁受影响通道，再检查备选路线。</p>
-    <p class="detour-note">按车辆实际停稳的站点接入候选。车辆已驶离 LM1、停在站点之间时，当前入口保持等待，不能冒用 LM1 或最近站点作为新起点。</p>
+    <p>短时障碍先等待车端恢复；持续受阻后，系统会按原任务路线和车辆实际站点自动推断受阻路段。无法唯一判断时，再到总览核对并封锁受影响通道。</p>
+    <p class="detour-note">按车辆实际停稳的站点接入候选。车辆停在站点之间时，当前入口保持等待，不能冒用最近站点作为新起点。</p>
     <RouterLink to="/">前往总览核对道路封锁</RouterLink>
     <p v-if="error" role="alert" class="detour-error">{{ error }}</p>
     <p v-if="!readCurrent" role="status">原任务状态尚未取得或已失效，请先查询原任务。</p>
@@ -69,6 +69,7 @@ watch(() => props.current.detour?.state, () => { cancelConfirmed.value = false; 
         <h4>{{ !previewCurrent ? '候选已失效，请重新核验' : candidate.plan.available ? current.detour ? '已重新核验候选 · 等待明确确认' : '已找到备选路线 · 尚未结束原导航' : '无可执行的备选路线 · 保持原任务等待' }}</h4>
         <p>{{ candidate.plan.message }}</p>
         <p v-if="candidate.plan.route.length" class="detour-route">{{ candidate.plan.route.join(' → ') }}</p>
+        <p v-if="candidate.plan.blockedEdgeIds.length">自动推断受阻道路：{{ candidate.plan.blockedEdgeIds.join('、') }}</p>
         <p>实际接入点：{{ candidate.plan.sourceSite }} · 原终点：{{ candidate.plan.targetSite }}<br/>运行地图：{{ candidate.plan.mapId }} / {{ candidate.plan.versionId }} · 封锁修订：{{ candidate.plan.closureRevision }}<br/>车端地图：{{ candidate.plan.robotMap }} · {{ candidate.plan.robotMapMd5 }}</p>
         <p>候选有效至 {{ new Date(candidate.expiresAt).toLocaleTimeString() }}。路线存在不代表已经改道。</p>
         <label class="detour-check"><input v-model="cancelConfirmed" type="checkbox" :disabled="!previewCurrent || !candidate.plan.available || busy"/>{{ current.detour ? '已核对新候选及现场条件，重新确认本次改道；原导航终态由后台核验' : '已核对候选路线及现场条件，允许结束这次原导航并进入改道核验' }}</label>

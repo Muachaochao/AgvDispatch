@@ -109,8 +109,13 @@ public sealed partial class SingleNavigationTestService
             if(original.Count!=originalIds.Count||original.Any(x=>x.Status is <1 or >7)||
                 (refreshing?original.Any(x=>x.Status is not (4 or 5 or 6 or 7)):!original.Any(x=>x.Status is 1 or 2 or 3)))
                 throw new InvalidOperationException(refreshing?"刷新候选必须先核对原所有厂家任务均已终态；缺失或仍活动时保持只读等待。":"原任务链缺失、未知或已全部终态，不能启动受控替换。");
+            var sourceIndex=record.Route.Select((site,index)=>(site,index))
+                .FirstOrDefault(row=>string.Equals(row.site,source.Id,StringComparison.Ordinal));
+            var suggested=sourceIndex.site is not null&&sourceIndex.index+1<record.Route.Count
+                ? new[]{new NavigationTestSitePair(source.Id,record.Route[sourceIndex.index+1])}
+                : [];
             var plan=await _detourPlanner.PreviewAsync(new(record.TaskId,record.VehicleId,source.Id,record.TargetSite,
-                record.RobotMap,record.RobotMapMd5,stations,record.Route),ct);
+                record.RobotMap,record.RobotMapMd5,stations,record.Route){SuggestedBlockedPairs=suggested},ct);
             if(plan.Available)RequirePlan(plan,record,source.Id,stations);
             Persist();
             // A two-minute review window is practical for checking the physical route.

@@ -13,7 +13,14 @@ public interface INavigationTestDetourPlanner
 
 public sealed record NavigationTestDetourPlanRequest(string TaskId, string VehicleId,
     string SourceSite, string TargetSite, string RobotMap, string RobotMapMd5,
-    IReadOnlyList<NavigationTestStation> Stations, IReadOnlyList<string> OriginalRoute);
+    IReadOnlyList<NavigationTestStation> Stations, IReadOnlyList<string> OriginalRoute)
+{
+    /// <summary>Current route leg inferred from the actual robot station. The planner
+    /// still validates this pair against the exact active and downloaded maps.</summary>
+    public IReadOnlyList<NavigationTestSitePair> SuggestedBlockedPairs { get; init; } = [];
+}
+
+public sealed record NavigationTestSitePair(string FromSite, string ToSite);
 
 public sealed record NavigationTestDetourPlan(bool Available, string Message, long ClosureRevision,
     string MapId, string VersionId, string DefinitionHash, string RobotMap, string RobotMapMd5,

@@ -33,6 +33,14 @@ try
     Check(!(await planner.PreviewAsync(request, default)).Available && robot.Reads == 0,
         "without explicit closure preview sends no robot request and invents no blocked road");
     var direct = definition.Edges.Single(e => e.From == "BUS-LM1" && e.To == "BUS-LM3");
+    var inferredRequest=request with { SuggestedBlockedPairs=[new NavigationTestSitePair("LM1","LM3")] };
+    var inferredPlan=await planner.PreviewAsync(inferredRequest, default);
+    Check(inferredPlan.Available&&inferredPlan.Route.SequenceEqual(["LM1","LM2","LM3"])&&
+        inferredPlan.BlockedEdgeIds.SequenceEqual([direct.Id]),
+        "actual station and original route automatically infer the blocked leg and produce an alternate route");
+    await planner.ValidateAsync(inferredPlan, default);
+    using(await planner.EnterSendAsync(inferredPlan,default))
+        Check(true,"automatically inferred candidate obtains the exact send gate without a persisted manual closure");
     var closed = await closures.CreateAsync(user, new("seal", "MAP", "V1", EngineeringRuntimeIdentity.MapHash(definition),
         direct.Id, direct.From, direct.To, true, "synthetic test obstacle"), default);
     Check(closed.Accepted, "seal exact synthetic direct corridor");
