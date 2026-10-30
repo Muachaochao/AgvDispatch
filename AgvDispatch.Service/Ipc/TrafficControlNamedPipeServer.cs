@@ -223,10 +223,10 @@ public sealed class TrafficControlNamedPipeServer(
                 f.Plan.VehicleIds.Contains(q.VehicleId,StringComparer.OrdinalIgnoreCase))
                 throw new InvalidOperationException("该车参与的双车测试尚未闭合，请先停止新增并核对原记录。");
         }
-        if (request.Operation is "SubmitForkTest" or "SubmitJackTest" or "PreviewNavigationTest" or "SubmitNavigationTest" or "PreviewNavigationTestDetour" or "ConfirmNavigationTestDetour" or "ContinueNavigationTestDetour" &&
+        if (request.Operation is "SubmitForkTest" or "SubmitJackTest" or "PreviewNavigationTest" or "SubmitNavigationTest" or "ResumeNavigationTest" or "PreviewNavigationTestDetour" or "ConfirmNavigationTestDetour" or "ContinueNavigationTestDetour" &&
             plcCycleTest is not null && (await plcCycleTest.ReadAsync(cancellationToken)).Enabled)
             throw new InvalidOperationException("PLC空载联调模式独占测试车辆；手动导航或顶升请先停止该模式并明确切换启动方式。");
-        if (request.Operation is "PreviewNavigationTest" or "SubmitNavigationTest" or "PreviewNavigationTestDetour" or "ConfirmNavigationTestDetour" or "ContinueNavigationTestDetour" &&
+        if (request.Operation is "PreviewNavigationTest" or "SubmitNavigationTest" or "ResumeNavigationTest" or "PreviewNavigationTestDetour" or "ConfirmNavigationTestDetour" or "ContinueNavigationTestDetour" &&
             businessRun is not null && (await businessRun.ReadAsync(cancellationToken)).Current is { Stage: not "Completed" } retainedRun)
         {
             // Only the explicitly enabled forklift test may coexist with another parked
@@ -275,6 +275,7 @@ public sealed class TrafficControlNamedPipeServer(
             "PreviewNavigationTest" => Success(await (navigationTest??throw new NotSupportedException("请更新单次导航后台。")).PreviewAsync(user,Deserialize<NavigationTestQuery>(request.Payload),cancellationToken)),
             "SubmitNavigationTest" => Success(await (navigationTest??throw new NotSupportedException("请更新单次导航后台。")).SubmitAsync(user,Deserialize<NavigationTestSubmit>(request.Payload),cancellationToken)),
             "CancelNavigationTest" => Success(await (navigationTest??throw new NotSupportedException("请更新单次导航后台。")).CancelAsync(user,Deserialize<NavigationTestCancel>(request.Payload),cancellationToken)),
+            "ResumeNavigationTest" => Success(await (navigationTest??throw new NotSupportedException("请更新单次导航后台。")).ResumeAsync(user,Deserialize<NavigationTestResume>(request.Payload),cancellationToken)),
             "GetCommissioningReport" => Success(await (commissioning??throw new NotSupportedException("当前后台未提供联调检查，请部署匹配版本。")).ReadAsync(user,Deserialize<CommissioningQuery>(request.Payload),cancellationToken)),
             "GetTaskRuntimeEvents" => Success(await (handshakes??throw new NotSupportedException("后台未配置运行事件查询。")).QueryAsync(Deserialize<TaskRuntimeQuery>(request.Payload),cancellationToken)),
             "ExportTaskDiagnostics" => Success(await (diagnosticExports??throw new NotSupportedException("后台未配置联调诊断导出。")).ExportAsync(Deserialize<TaskDetailRequest>(request.Payload).TaskId,cancellationToken)),

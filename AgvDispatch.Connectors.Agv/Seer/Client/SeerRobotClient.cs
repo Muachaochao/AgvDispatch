@@ -9,6 +9,7 @@ public sealed class SeerRobotClient : IAsyncDisposable
 {
     private const ushort QueryAllStatus = 1100;
     private const ushort QueryTaskStatus = 1110;
+    private const ushort ResumeTask = 3002;
     private const ushort CancelTask = 3003;
     private const ushort GoToTarget = 3051;
     private const ushort GoToTargetList = 3066;
@@ -138,6 +139,11 @@ public sealed class SeerRobotClient : IAsyncDisposable
             CancelTask,
             new { smartCancel, taskId },
             cancellationToken);
+    }
+
+    public async Task ResumeNavigationAsync(CancellationToken cancellationToken)
+    {
+        using var response = await RequestAsync(ResumeTask, null, cancellationToken);
     }
 
     internal async Task<JsonDocument> RequestAsync(ushort messageType, object? payload, CancellationToken cancellationToken)

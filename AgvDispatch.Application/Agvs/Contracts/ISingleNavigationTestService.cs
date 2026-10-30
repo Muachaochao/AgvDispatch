@@ -10,6 +10,7 @@ public sealed record NavigationTestStations(string VehicleId, string RobotMap, s
     IReadOnlyList<NavigationTestStation> Stations, string? SuggestedSourceSite, DateTimeOffset CapturedAt);
 public sealed record NavigationTestSubmit(string PreviewId, bool SiteClearConfirmed);
 public sealed record NavigationTestCancel(string TaskId);
+public sealed record NavigationTestResume(string TaskId);
 public sealed record NavigationTestPreview(string PreviewId, DateTimeOffset ExpiresAt, string VehicleId,
     string SourceSite, string TargetSite, string RobotMap, string RobotMapMd5, IReadOnlyList<string> Route)
 {
@@ -34,6 +35,8 @@ public sealed record NavigationTestRecord(string TaskId, string VendorTaskId, st
     public NavigationTestDetourRecord? Detour { get; init; }
     public DateTimeOffset? CancellationAttemptedAt { get; init; }
     public string? CancellationVendorTaskId { get; init; }
+    public DateTimeOffset? ResumeAttemptedAt { get; init; }
+    public string? ResumeVendorTaskId { get; init; }
 }
 public sealed record NavigationTestStatus(bool Enabled, string VehicleId, NavigationTestRecord? Current,
     string Message)
@@ -68,6 +71,7 @@ public interface ISingleNavigationTestService
     Task<NavigationTestPreview> PreviewAsync(TrafficUserContext user, NavigationTestQuery query, CancellationToken ct);
     Task<NavigationTestRecord> SubmitAsync(TrafficUserContext user, NavigationTestSubmit request, CancellationToken ct);
     Task<NavigationTestRecord> CancelAsync(TrafficUserContext user, NavigationTestCancel request, CancellationToken ct);
+    Task<NavigationTestRecord> ResumeAsync(TrafficUserContext user, NavigationTestResume request, CancellationToken ct) => throw new NotSupportedException("后台尚未支持继续暂停的原导航。");
     Task ValidateRetainedBusinessRunAsync(string retainedVehicleId, CancellationToken ct) =>
         throw new NotSupportedException("独立叉车测试后台未更新。");
 }

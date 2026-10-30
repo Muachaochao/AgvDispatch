@@ -23,6 +23,10 @@ const active=computed(()=>!!status.value?.current&&!['Completed','Failed','Cance
 const valid=computed(()=>!!preview.value&&Date.parse(preview.value.expiresAt)>now.value);
 const canInspect=computed(()=>!!catalog.value&&!!source.value&&!!target.value&&source.value!==target.value&&!busy.value&&!active.value&&!readError.value&&status.value?.ready);
 const canSubmit=computed(()=>valid.value&&confirmed.value&&!busy.value&&!active.value&&!readError.value&&status.value?.ready);
+const resumeVehicle=computed(()=>dispatch.snapshot?.status?.agvs.find(v=>v.vehicleId===status.value?.current?.vehicleId));
+const canResume=computed(()=>active.value&&status.value?.current?.state==='Suspended'&&busy.value===false&&
+  !readError.value&&dispatch.fresh&&resumeVehicle.value?.connection==='Online'&&resumeVehicle.value?.quality==='Good'&&
+  resumeVehicle.value?.blocked===false&&resumeVehicle.value?.obstacle?.state==='Clear');
 let autoReadAttempted=false;
 let disposed=false,timer:ReturnType<typeof setInterval>|undefined;
 async function api<T>(suffix='',body?:unknown):Promise<T>{const r=await fetch('/api/navigation-test'+suffix,{method:body===undefined?'GET':'POST',headers:body===undefined?{}:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(30000)});const data=await r.json();if(!r.ok)throw new Error(data.detail??data.error??'请求失败');return data;}
@@ -47,6 +51,7 @@ async function submitJack(action:'Up'|'Down'){
  finally{busy.value=false;await refresh();}
 }
 async function cancel(){const r=status.value?.current;if(!r)return;busy.value=true;error.value='';try{await api('/cancel',{taskId:r.taskId});}catch(e){error.value=String(e);}finally{busy.value=false;await refresh();}}
+async function resume(){const r=status.value?.current;if(!r||!canResume.value)return;busy.value=true;error.value='';try{await api('/resume',{taskId:r.taskId});}catch(e){error.value=String(e)+'；请继续查询原任务，不能重复发送继续命令。';}finally{busy.value=false;await refresh();}}
 watch([source,target],invalidate);
 const runtimeMapIdentity=computed(()=>{const m=dispatch.snapshot?.map;return m?`${m.id}/${m.version}`:'';});
 watch(runtimeMapIdentity,(next,previous)=>{if(!next||!previous||next===previous)return;invalidate();catalog.value=null;source.value='';target.value='';mapReloadNeeded.value=true;autoReadAttempted=false;mapNotice.value='运行地图已变化，旧起终点和路线核验已清除；切换完成且测试模式就绪后自动读取车端站点。';});
@@ -136,6 +141,7 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);});
    <p>任务编号：{{status.current.vendorTaskId}}</p><p>{{status.current.message}}</p>
    <p v-if="status.current.observedAt">最近车辆观测：{{new Date(status.current.observedAt).toLocaleString()}}<br/>当前站点：{{status.current.currentStation||'站点之间或未知'}} · 坐标：{{status.current.x?.toFixed(3)??'未知'}}，{{status.current.y?.toFixed(3)??'未知'}}</p>
    <p>最近查询：{{new Date(status.current.updatedAt).toLocaleString()}}</p>
+   <button v-if="status.current.state==='Suspended'" :disabled="!canResume" @click="resume">继续暂停的原导航</button>
    <button :disabled="busy||!active||!status.enabled||(!!status.current.detour&&!status.current.detour.sendAttemptedAt)" @click="cancel">取消本次导航</button>
   </template><p v-else-if="!status||readError">尚未取得可靠的后台任务状态，请先查询原任务。</p><p v-else>后台当前没有已记录的测试任务。</p>
   <p>收到应答不代表到点完成。只有原任务完成、车辆静止且位置核对到终点，才显示完成。取消不是急停；异常时由现场人员使用车辆急停。断线、超时或后台重启后，只查询原任务，不自动重发。</p>
