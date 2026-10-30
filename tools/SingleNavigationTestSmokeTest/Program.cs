@@ -212,7 +212,9 @@ Check(lost.State=="Uncertain"&&robot.JackWrites==3,"Lost jack reply is uncertain
 jackService=CreateJack();await jackService.ReadJackAsync(default);Check(robot.JackWrites==3,"Restart only queries jack feedback without resend");
 robot.JackState=1;Check((await jackService.ReadJackAsync(default)).Current?.State is "Completed" or "ObservedTarget","Fresh endpoint feedback reconciles observed physical result");
 robot.DropJackReply=false;robot.ForkMode=true;robot.ForkPosition=0;robot.LastTask="";robot.Status=4;
-var forkPath=Path.Combine(folder,"fork-test-nav.json");robot.ForkIntentPath=forkPath+".fork.json";
+var forkPath=Path.Combine(folder,"fork-test-nav.json");
+robot.ForkIntentPath=forkPath+".fork-"+Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+    System.Text.Encoding.UTF8.GetBytes("FORK-SIM"))).ToLowerInvariant()[..12]+".json";
 var forkSettings=new SingleNavigationTestOptions{Enabled=true,VehicleId="SIM",BusinessExecutionDisabled=true,OtherApiPort=robot.ConfigPort,ForkEnabled=true,ForkModelMd5=new string('c',32),ForkRobotId="FORK-SIM"};
 SingleNavigationTestService CreateFork()=>new(forkSettings,options,connections,active,gate,forkPath);
 var forkService=CreateFork();ForkTestSubmit ForkRequest(string action="Up")=>new(Guid.NewGuid().ToString(),action,true,true);

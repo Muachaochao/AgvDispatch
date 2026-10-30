@@ -1,4 +1,6 @@
 using System.Text.Json;
+using System.Security.Cryptography;
+using System.Text;
 using AgvDispatch.Application.Abstractions;
 namespace AgvDispatch.Connectors.Agv;
 
@@ -6,12 +8,20 @@ namespace AgvDispatch.Connectors.Agv;
 public sealed partial class SingleNavigationTestService
 {
     private ForkTestRecord? _forkRecord;
-    private string ForkPath=>_path+".fork.json";
+    private string ForkPath=>_path+".fork-"+Convert.ToHexString(SHA256.HashData(
+        Encoding.UTF8.GetBytes(_settings.ForkRobotId))).ToLowerInvariant()[..12]+".json";
+    private string LegacyForkPath=>_path+".fork.json";
     private static bool ForkTerminal(string state)=>state is "Completed" or "ObservedTarget" or "Stopped" or "Rejected";
     private void LoadForkRecord()
     {
-        if(!File.Exists(ForkPath))return;
-        _forkRecord=JsonSerializer.Deserialize<ForkTestRecord>(File.ReadAllText(ForkPath))??throw new InvalidDataException("货叉记录损坏。");
+        var path=File.Exists(ForkPath)?ForkPath:LegacyForkPath;
+        if(!File.Exists(path))return;
+        var record=JsonSerializer.Deserialize<ForkTestRecord>(File.ReadAllText(path))??throw new InvalidDataException("货叉记录损坏。");
+        // The former shared filename cannot authorize a different vehicle. A
+        // same-vehicle legacy record is retained; another vehicle's history is
+        // left untouched and cannot block this vehicle's test.
+        if(path==LegacyForkPath&&!string.Equals(record.VehicleId,_settings.ForkRobotId,StringComparison.Ordinal))return;
+        _forkRecord=record;
         if(!Guid.TryParse(_forkRecord.RequestId,out _)||_forkRecord.Action is not ("Up" or "Down" or "Stop")||string.IsNullOrWhiteSpace(_forkRecord.VehicleId))throw new InvalidDataException("货叉记录字段无效。");
         if(!ForkTerminal(_forkRecord.State))_forkRecord=_forkRecord with{State="Uncertain",Message="后台重启：仅查询原动作反馈，不自动重发。"};
     }
