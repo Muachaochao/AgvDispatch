@@ -18,8 +18,10 @@ from rbk import BasicModule, MoveStatus
   "distance_m": {"value": 0.10, "type": "float", "unit": "m"},
   "lateral_m": {"value": 0.0, "type": "float", "unit": "m"},
   "yaw_delta_rad": {"value": 0.0, "type": "float", "unit": "rad"},
+  "obstacle_stop_dist_m": {"value": 0.05, "type": "float", "unit": "m"},
   "reach_dist_m": {"value": 0.001, "type": "float", "unit": "m"},
   "max_speed_mps": {"value": 0.01, "type": "float", "unit": "m/s"},
+  "motion_mode": {"value": "path", "default_value": ["path", "open_speed"], "type": "complex"},
   "expected_x": {"value": 0.0, "type": "float", "unit": "m"},
   "expected_y": {"value": 0.0, "type": "float", "unit": "m"},
   "expected_angle": {"value": 0.0, "type": "float", "unit": "rad"},
@@ -52,8 +54,11 @@ class Module(BasicModule):
         self.distance_m = 0.10
         self.lateral_m = 0.0
         self.yaw_delta_rad = 0.0
+        self.obstacle_stop_dist_m = 0.05
         self.reach_dist_m = 0.001
         self.max_speed_mps = 0.01
+        self.motion_mode = "path"
+        self.open_speed_started = None
         self.timeout_s = 30.0
         self.expected = None
         self.run_id = ""
@@ -83,6 +88,10 @@ class Module(BasicModule):
                 args.get("yaw_delta_rad", self.yaw_delta_rad))
             if not -0.10 <= self.yaw_delta_rad <= 0.10:
                 raise ValueError("yaw_delta_rad must be between -0.10 and 0.10 rad")
+            self.obstacle_stop_dist_m = finite_number(
+                args.get("obstacle_stop_dist_m", self.obstacle_stop_dist_m))
+            if not 0.0 <= self.obstacle_stop_dist_m <= 0.10:
+                raise ValueError("obstacle_stop_dist_m must be between 0 and 0.10 m")
             if self.distance_m == 0.0 and self.lateral_m == 0.0:
                 if self.yaw_delta_rad == 0.0:
                     raise ValueError("distance_m, lateral_m and yaw_delta_rad cannot all be zero")
@@ -92,6 +101,14 @@ class Module(BasicModule):
             self.max_speed_mps = finite_number(args.get("max_speed_mps", self.max_speed_mps))
             if not 0.002 <= self.max_speed_mps <= 0.02:
                 raise ValueError("max_speed_mps must be between 0.002 and 0.02 m/s")
+            self.motion_mode = args.get("motion_mode", self.motion_mode)
+            if self.motion_mode not in ("path", "open_speed"):
+                raise ValueError("motion_mode must be path or open_speed")
+            if self.motion_mode == "open_speed" and (
+                    self.distance_m <= 0 or self.distance_m > 0.01
+                    or self.lateral_m != 0 or self.yaw_delta_rad != 0):
+                raise ValueError(
+                    "open_speed mode only permits 0 < distance_m <= 0.01 without lateral/yaw")
             self.timeout_s = finite_number(args.get("timeout_s", self.timeout_s))
             if not 10.0 <= self.timeout_s <= 45.0:
                 raise ValueError("timeout_s must be between 10 and 45 seconds")
@@ -127,8 +144,10 @@ class Module(BasicModule):
             "distance_m": self.distance_m,
             "lateral_m": self.lateral_m,
             "yaw_delta_rad": self.yaw_delta_rad,
+            "obstacle_stop_dist_m": self.obstacle_stop_dist_m,
             "reach_dist_m": self.reach_dist_m,
             "max_speed_mps": self.max_speed_mps,
+            "motion_mode": self.motion_mode,
             "expected_start": self.expected,
             "start_pose": self.start_pose,
             "robot_world": robot,
@@ -168,6 +187,12 @@ class Module(BasicModule):
         if angle_error > 0.08:
             raise ValueError("robot heading is more than 0.08 rad from the expected start pose")
         self.start_pose = start
+        r.setObsStopDist(self.obstacle_stop_dist_m)
+        if self.motion_mode == "open_speed":
+            self.open_speed_started = time.monotonic()
+            self.motion_commanded = True
+            self.phase = "open_speed"
+            return
         r.resetPath()
         r.setPathReachDist(self.reach_dist_m)
         r.setPathReachAngle(0.01)
@@ -191,6 +216,16 @@ class Module(BasicModule):
         try:
             if self.phase == "initializing":
                 self.prepare(r)
+            elif self.phase == "open_speed":
+                elapsed = time.monotonic() - self.open_speed_started
+                duration = abs(self.distance_m) / self.max_speed_mps
+                if elapsed >= duration:
+                    r.openSpeed(0.0, 0.0, 0.0)
+                    r.stopRobot(False)
+                    self.final_pose = self.pose(r)
+                    return self.finish(r, "completed", MoveStatus.FINISHED)
+                direction = 1.0 if self.distance_m > 0 else -1.0
+                r.openSpeed(direction * self.max_speed_mps, 0.0, 0.0)
             elif self.phase == "advancing":
                 r.goPath({})
                 if r.isPathReached():

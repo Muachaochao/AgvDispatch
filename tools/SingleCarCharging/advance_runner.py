@@ -127,6 +127,8 @@ def run_advance(client, args, run_id):
         "expected_station": args.expected_station, "relative_path": relative_path,
         "source_sha256": digest, "distance_m": args.distance_m,
         "lateral_m": args.lateral_m, "yaw_delta_rad": args.yaw_delta_rad,
+        "obstacle_stop_dist_m": args.obstacle_stop_dist_m,
+        "motion_mode": args.motion_mode,
         "reach_dist_m": args.reach_dist_m, "max_speed_mps": args.max_speed, "start": start,
         "contact_and_charging_enabled": False,
     })
@@ -168,6 +170,8 @@ def run_advance(client, args, run_id):
         "script_args": {
             "operation": "AdvanceByDistance", "distance_m": args.distance_m,
             "lateral_m": args.lateral_m, "yaw_delta_rad": args.yaw_delta_rad,
+            "obstacle_stop_dist_m": args.obstacle_stop_dist_m,
+            "motion_mode": args.motion_mode,
             "reach_dist_m": args.reach_dist_m, "max_speed_mps": args.max_speed,
             "expected_x": start["x"], "expected_y": start["y"],
             "expected_angle": start["angle"], "timeout_s": args.script_timeout,
@@ -193,6 +197,8 @@ def main(argv=None):
                         help="positive is robot-left and negative is robot-right")
     parser.add_argument("--yaw-delta-rad", type=float, default=0.0,
                         help="positive rotates robot-left in wheel/odometry convention")
+    parser.add_argument("--obstacle-stop-dist-m", type=float, default=0.05)
+    parser.add_argument("--motion-mode", choices=("path", "open_speed"), default="path")
     parser.add_argument("--reach-dist-m", type=float, default=0.001)
     parser.add_argument("--max-speed", type=float, default=0.01)
     parser.add_argument("--script-timeout", type=float, default=30.0)
@@ -205,8 +211,14 @@ def main(argv=None):
         parser.error("--lateral-m must be between -0.02 and 0.02")
     if not -0.10 <= args.yaw_delta_rad <= 0.10:
         parser.error("--yaw-delta-rad must be between -0.10 and 0.10")
+    if not 0.0 <= args.obstacle_stop_dist_m <= 0.10:
+        parser.error("--obstacle-stop-dist-m must be between 0 and 0.10")
     if args.distance_m == 0.0 and args.lateral_m == 0.0 and args.yaw_delta_rad == 0.0:
         parser.error("distance, lateral and yaw adjustments cannot all be zero")
+    if args.motion_mode == "open_speed" and (
+            args.distance_m <= 0 or args.distance_m > 0.01
+            or args.lateral_m != 0 or args.yaw_delta_rad != 0):
+        parser.error("open_speed mode only permits 0 < distance-m <= 0.01 without lateral/yaw")
     if not 0.001 <= args.reach_dist_m <= 0.01:
         parser.error("--reach-dist-m must be between 0.001 and 0.01")
     if not 0.002 <= args.max_speed <= 0.02:

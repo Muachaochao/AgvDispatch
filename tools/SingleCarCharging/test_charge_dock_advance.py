@@ -83,6 +83,12 @@ class FakeRobot:
     def setPathOnRobot(self, x, y, angle):
         self.calls.append(("setPathOnRobot", x, y, angle))
 
+    def setObsStopDist(self, value):
+        self.calls.append(("setObsStopDist", value))
+
+    def openSpeed(self, vx, vy, vw):
+        self.calls.append(("openSpeed", vx, vy, vw))
+
     def goPath(self, param):
         self.calls.append(("goPath", param))
         self.path_calls += 1
@@ -202,6 +208,29 @@ class AdvanceTests(unittest.TestCase):
         self.assertEqual(MoveStatus.FINISHED, module.status)
         call = next(call for call in robot.calls if call[0] == "setPathOnRobot")
         self.assertAlmostEqual(1.526 + 0.029, call[3])
+
+    def test_final_insertion_can_reduce_obstacle_stop_to_ten_millimetres(self):
+        robot = FakeRobot()
+        module = self.drive(robot, self.args(
+            distance_m=0.002, obstacle_stop_dist_m=0.01))
+        self.assertEqual(MoveStatus.FINISHED, module.status)
+        self.assertIn(("setObsStopDist", 0.01), robot.calls)
+
+    def test_mechanical_insertion_accepts_zero_obstacle_stop(self):
+        robot = FakeRobot()
+        module = self.drive(robot, self.args(
+            distance_m=0.005, obstacle_stop_dist_m=0.0))
+        self.assertEqual(MoveStatus.FINISHED, module.status)
+        self.assertIn(("setObsStopDist", 0.0), robot.calls)
+
+    def test_open_speed_fallback_is_time_bounded_and_stops(self):
+        robot = FakeRobot()
+        module = self.drive(robot, self.args(
+            distance_m=0.005, max_speed_mps=0.002, motion_mode="open_speed"))
+        self.assertEqual(MoveStatus.FINISHED, module.status)
+        self.assertIn(("openSpeed", 0.002, 0.0, 0.0), robot.calls)
+        self.assertIn(("openSpeed", 0.0, 0.0, 0.0), robot.calls)
+        self.assertIn(("stopRobot", False), robot.calls)
 
     def test_unexpected_pose_is_refused_before_motion(self):
         robot = FakeRobot()
