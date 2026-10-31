@@ -23,3 +23,17 @@ python .\tools\SingleCarCharging\probe_runner.py probe --robot 192.168.98.66 --e
 后续对接需单独标定识别参考系到车辆停靠中心的偏移，包括车辆触点位置、桩侧触点缩回位置与伸缩行程。地图上的当前站点名称、车体外形的前伸长度及识别返回距离均不能替代该偏移。接近点与最终对接点应分别配置，核定前保留现有业务站点。
 
 本工具没有充电桩应用协议适配器。参考脚本向桩发送的 `1001 input/status` 含充电控制参数，不能当作只读状态查询；机器人 `6005` 断开继电器也不证明桩已停止输出或刷板已缩回。启用实际充电前，应取得当前桩适用的握手、接触确认、停止和回缩状态定义，以及有效的电池充电上限。`1007` 中 `max_charge_voltage/current` 的 `-1` 表示不支持，当前本地文档未定义 `0/-0.0` 的业务含义，不能将其解释为不限值或用参考脚本默认值补齐。
+
+## 粗接近测试
+
+`charge_dock_approach.py` 只执行一次“从当前 LM52 粗接近到桩前约 0.875 m”的移动阶段。车辆先完成三次稳定识别，再校验当前中心距必须在 0.95～1.80 m、横向偏差不超过 0.45 m、朝向误差不超过 0.35 rad、单次前进不超过 0.60 m。以当前现场识别值约 1.274 m 计算，第一段预计移动约 0.48 m，速度上限 0.03 m/s；到位后再次识别并停在粗接近位置。脚本不接触、不控制充电继电器、不向充电桩发送应用数据。
+
+执行前应确认现场人员位于急停按钮旁，并能观察双触点。命令必须显式填写车辆和当前站点，不能由脚本猜车：
+
+```powershell
+python .\tools\SingleCarCharging\approach_runner.py --robot 192.168.98.66 --expected-id 1ccbd798eee24ccc --expected-station LM52 --evidence-dir .\artifacts\single-car-approach --stage-only
+
+python .\tools\SingleCarCharging\approach_runner.py --robot 192.168.98.66 --expected-id 1ccbd798eee24ccc --expected-station LM52 --evidence-dir .\artifacts\single-car-approach
+```
+
+第一条命令只上传并回读校验脚本，不下发导航；第二条才执行一次粗接近。出现未知结果时只保留证据，不自动重发。第一段完成后核对桩侧缩回触点与车侧自动触点间隙，再决定是否进行第二段 0.20 m 接近和最终 0.14 m 接触段；不能把本次约 0.875 m 粗接近记为充电通过。
