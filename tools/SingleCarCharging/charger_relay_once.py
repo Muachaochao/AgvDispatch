@@ -14,6 +14,7 @@ from probe_runner import Evidence, Refused, ResultUnknown, Robokit, ipv4, utc_no
 RELAY_API = 6001
 RELAY_PORT = 19210
 RELAY_DO_ID = 7
+MAX_EVIDENCE_GAP_SECONDS = 5.0
 
 
 def snapshot(client):
@@ -42,6 +43,66 @@ def successful_relay_response(value):
             and value["ret_code"] == 0)
 
 
+def finite_current(sample):
+    value = sample.get("battery", {}).get("current")
+    return value if type(value) in (int, float) and math.isfinite(value) else None
+
+
+def observation_safe(sample):
+    state, battery = sample.get("state", {}), sample.get("battery", {})
+    return (state.get("is_stop") is True and state.get("chassisIsStop") is True
+            and state.get("blocked") is False and state.get("emergency") is False
+            and state.get("errors") == [] and state.get("fatals") == []
+            and state.get("manual_charge") is False
+            and battery.get("manual_charge") is False)
+
+
+def positive_charge(sample):
+    current = finite_current(sample)
+    return (observation_safe(sample) and sample.get("do7") is True
+            and sample["state"].get("charging") is True
+            and sample["battery"].get("charging") is True
+            and current is not None and current > 0.1)
+
+
+def current_stopped(sample):
+    current = finite_current(sample)
+    return (observation_safe(sample) and sample.get("do7") is False
+            and sample["state"].get("charging") is False
+            and sample["battery"].get("charging") is False
+            and current is not None and current <= 0.1)
+
+
+def fresh_pair(first, second, allow_equal=False):
+    try:
+        earlier = dt.datetime.fromisoformat(first["host_utc"])
+        later = dt.datetime.fromisoformat(second["host_utc"])
+        if earlier.tzinfo is None or later.tzinfo is None:
+            return False
+        elapsed = (later - earlier).total_seconds()
+        return ((elapsed >= 0 if allow_equal else elapsed > 0)
+                and elapsed <= MAX_EVIDENCE_GAP_SECONDS)
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def relay_observation_result(observations, final, enabled):
+    if any(not observation_safe(sample) for sample in [*observations, final]):
+        return "relay_attention_required", False
+    if enabled:
+        confirmed = (len(observations) >= 2
+                     and positive_charge(observations[-2])
+                     and positive_charge(observations[-1])
+                     and fresh_pair(observations[-2], observations[-1])
+                     and positive_charge(final)
+                     and fresh_pair(observations[-1], final, allow_equal=True))
+        return ("charging_current_confirmed" if confirmed else "relay_on_current_not_observed", confirmed)
+    stopped = (bool(observations) and current_stopped(observations[-1])
+               and current_stopped(final)
+               and fresh_pair(observations[-1], final, allow_equal=True))
+    return ("relay_off_current_stopped" if stopped else "relay_off_current_not_confirmed", False)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--robot", required=True, type=ipv4)
@@ -62,6 +123,7 @@ def main(argv=None):
     result = {
         "outcome": "not_sent", "run_id": run_id, "robot": args.robot,
         "requested_relay": args.enable, "charging_test_passed": False,
+        "full_docking_cycle_verified": False,
     }
     try:
         info = client.request(1000, 19204, {})
@@ -105,60 +167,31 @@ def main(argv=None):
                 raise Refused("6001 did not return an explicit successful ret_code")
             result["relay_response"] = response
             observations = []
-            previous = None
-            charging_seen = False
-            stopped_seen = False
-            attention = False
             deadline = time.monotonic() + args.observe_seconds
             while time.monotonic() < deadline:
                 current_state, current_battery = snapshot(client)
                 sample = summary(current_state, current_battery)
                 sample["host_utc"] = utc_now()
-                key = (
-                    sample["do7"], sample["battery"]["charging"], sample["battery"]["current"],
-                    sample["battery"]["voltage"], sample["state"]["blocked"],
-                    sample["state"]["emergency"], tuple(sample["state"]["errors"] or []),
-                    tuple(sample["state"]["fatals"] or []),
-                )
-                if key != previous:
-                    observations.append(sample)
-                    previous = key
-                current = sample["battery"].get("current")
-                if isinstance(current, (int, float)) and current > 0.1:
-                    charging_seen = True
-                if (current is not None and current <= 0.1
-                        and sample["battery"].get("charging") is False):
-                    stopped_seen = True
-                if (sample["state"].get("blocked") is True
-                        or sample["state"].get("emergency") is True
-                        or sample["state"].get("errors")
-                        or sample["state"].get("fatals")):
-                    attention = True
+                # Preserve repeated equal readings: two distinct received samples
+                # are evidence, while one transient positive spike is not.
+                observations.append(sample)
+                if not observation_safe(sample):
                     break
-                if args.enable and charging_seen:
-                    # Confirm charging with a second positive-current sample.
-                    time.sleep(1.0)
-                    state2, battery2 = snapshot(client)
-                    current2 = battery2.get("current")
-                    if isinstance(current2, (int, float)) and current2 > 0.1:
-                        observations.append({"host_utc": utc_now(), **summary(state2, battery2)})
-                        break
-                if not args.enable and stopped_seen:
+                if (args.enable and len(observations) >= 2
+                        and positive_charge(observations[-2]) and positive_charge(sample)
+                        and fresh_pair(observations[-2], sample)):
+                    break
+                if not args.enable and current_stopped(sample):
                     break
                 time.sleep(1.0)
             evidence.write_json("observations.json", observations)
             result["observations"] = observations
             final_state, final_battery = snapshot(client)
-            result["final"] = summary(final_state, final_battery)
-            if attention:
-                result["outcome"] = "relay_attention_required"
-            elif args.enable:
-                result["outcome"] = "charging_current_confirmed" if charging_seen else "relay_on_current_not_observed"
-            else:
-                result["outcome"] = "relay_off_current_stopped" if stopped_seen else "relay_off_current_not_confirmed"
-            result["charging_test_passed"] = bool(args.enable and charging_seen and not attention)
+            result["final"] = {"host_utc": utc_now(), **summary(final_state, final_battery)}
+            result["outcome"], result["charging_test_passed"] = relay_observation_result(
+                observations, result["final"], args.enable)
             result["message"] = (
-                "DO7 was commanded once. Positive current confirms electrical charging."
+                "DO7 was commanded once. Two consecutive fresh positive-current and charging-state observations, plus a final check, confirm electrical charging."
                 if result["outcome"] == "charging_current_confirmed" else
                 "Relay command was sent once; inspect the preserved response and observations before any retry."
             )
@@ -166,7 +199,7 @@ def main(argv=None):
         result.update({"outcome": "unknown", "error": str(exc),
                        "automatic_resend_attempted": False})
     except Exception as exc:
-        result.update({"outcome": "refused_or_failed", "error": str(exc),
+        result.update({"outcome": "unknown" if "relay_response" in result else "refused_or_failed", "error": str(exc),
                        "automatic_resend_attempted": False})
     result["evidence_directory"] = str(evidence.directory)
     result["host_utc"] = utc_now()

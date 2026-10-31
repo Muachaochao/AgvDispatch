@@ -80,7 +80,16 @@ def track_advance(client, task_id, run_id, timeout_s):
                 outcome = "advance_task_failed"
                 break
             if task_status == 4 and report is not None:
-                if (report.get("phase") == "completed" and report.get("status") == 3
+                if (report.get("motion_mode") == "open_speed"
+                        and report.get("phase") in ("completed", "stopped_unverified")
+                        and report.get("status") == 3 and report.get("error") is None
+                        and report.get("charging_commanded") is False):
+                    # Older scripts also reported "completed" solely on a timer.
+                    # Never promote either form to measured-distance completion.
+                    outcome = "open_speed_stopped_distance_unverified"
+                    break
+                if (report.get("motion_mode") == "path"
+                        and report.get("phase") == "completed" and report.get("status") == 3
                         and report.get("error") is None
                         and report.get("charging_commanded") is False):
                     outcome = "advance_completed"
@@ -103,7 +112,11 @@ def track_advance(client, task_id, run_id, timeout_s):
         "last_runtime": runtime_summary(state) if state else None,
         "tracking_errors": errors,
         "charging_test_passed": False,
-        "message": ("Bounded advance completed and stopped; contact and charging were not commanded."
+        "distance_verified": False if outcome == "open_speed_stopped_distance_unverified" else None,
+        "message": ("Timed speed probe stopped; travel distance and contact remain unverified. "
+                    "Do not repeat it automatically. Inspect the preserved start/end observations."
+                    if outcome == "open_speed_stopped_distance_unverified" else
+                    "Bounded odometry path reached its SDK goal and stopped; contact and charging were not commanded."
                     if outcome == "advance_completed" else
                     "Inspect evidence and robot state. This runner does not resend uncertain motion."),
     }

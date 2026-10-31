@@ -35,6 +35,12 @@ advance = importlib.util.module_from_spec(_spec)
 with mock.patch.dict(sys.modules, {"rbk": _rbk}):
     _spec.loader.exec_module(advance)
 
+_runner_spec = importlib.util.spec_from_file_location(
+    "advance_runner_under_test", Path(__file__).with_name("advance_runner.py"))
+runner = importlib.util.module_from_spec(_runner_spec)
+with mock.patch.object(sys, "path", [str(Path(__file__).parent), *sys.path]):
+    _runner_spec.loader.exec_module(runner)
+
 
 class FakeClock:
     def __init__(self):
@@ -150,6 +156,8 @@ class AdvanceTests(unittest.TestCase):
         self.assertEqual(("setPathMaxSpeed", 0.01),
                          next(call for call in robot.calls if call[0] == "setPathMaxSpeed"))
         self.assertIn(("stopRobot", False), robot.calls)
+        self.assertEqual("completed", robot.report["phase"])
+        self.assertEqual("vendor_odometry_path_reached", robot.report["completion_basis"])
         self.assertNotIn(("stopRobot", True), robot.calls)
         self.assertIs(False, robot.report["charging_commanded"])
         self.assertFalse(any(call[0] in {"setDO", "battery"} for call in robot.calls))
@@ -231,6 +239,25 @@ class AdvanceTests(unittest.TestCase):
         self.assertIn(("openSpeed", 0.002, 0.0, 0.0), robot.calls)
         self.assertIn(("openSpeed", 0.0, 0.0, 0.0), robot.calls)
         self.assertIn(("stopRobot", False), robot.calls)
+        self.assertEqual("stopped_unverified", robot.report["phase"])
+        self.assertEqual("elapsed_time_only", robot.report["completion_basis"])
+        self.assertIs(False, robot.report["distance_verified"])
+        self.assertEqual({"x": 0.0, "y": 0.0, "angle": 0.0},
+                         robot.report["observed_world_delta"])
+        self.assertEqual(robot.report["start_pose"], robot.report["final_pose"])
+
+    def test_changed_localization_does_not_verify_timed_insertion(self):
+        robot = FakeRobot()
+        args = self.args(distance_m=0.005, max_speed_mps=0.002, motion_mode="open_speed")
+        module = advance.Module(robot, args)
+        module.run(robot, args)
+        robot.pose["y"] += 0.005
+        self.clock.advance(2.6)
+        module.run(robot, args)
+        self.assertEqual(MoveStatus.FINISHED, module.status)
+        self.assertEqual("stopped_unverified", robot.report["phase"])
+        self.assertIs(False, robot.report["distance_verified"])
+        self.assertAlmostEqual(0.005, robot.report["observed_world_delta"]["y"])
 
     def test_unexpected_pose_is_refused_before_motion(self):
         robot = FakeRobot()
@@ -251,6 +278,55 @@ class AdvanceTests(unittest.TestCase):
             self.clock.advance(0.1)
         self.assertEqual(MoveStatus.FAILED, module.status)
         self.assertIn(("stopRobot", False), robot.calls)
+
+
+class RunnerResultTests(unittest.TestCase):
+    def track(self, mode, phase):
+        report = {
+            "advance": runner.ADVANCE_MARKER, "run_id": "offline-run",
+            "motion_mode": mode, "phase": phase, "status": 3,
+            "error": None, "charging_commanded": False,
+        }
+
+        class Evidence:
+            def write_json(self, name, value):
+                pass
+
+        class Client:
+            evidence = Evidence()
+
+            def request(self, api, port, payload, deadline):
+                if api == 1110:
+                    return {"task_status_list": [{"task_id": "offline-task", "status": 4}]}
+                if api == 1100:
+                    return {"move_status_info": report}
+                raise AssertionError("unexpected API " + str(api))
+
+        clock = FakeClock()
+        with mock.patch.object(runner.time, "monotonic", clock), \
+                mock.patch.object(runner.time, "sleep", clock.advance), \
+                mock.patch.object(runner.Robokit, "request", side_effect=AssertionError("real transport forbidden")):
+            return runner.track_advance(Client(), "offline-task", "offline-run", 0.01)
+
+    def test_new_timed_probe_report_is_not_completed_distance(self):
+        result = self.track("open_speed", "stopped_unverified")
+        self.assertEqual("open_speed_stopped_distance_unverified", result["outcome"])
+        self.assertIs(False, result["distance_verified"])
+        self.assertIs(False, result["charging_test_passed"])
+
+    def test_legacy_timed_completed_report_is_not_promoted(self):
+        result = self.track("open_speed", "completed")
+        self.assertEqual("open_speed_stopped_distance_unverified", result["outcome"])
+        self.assertIs(False, result["distance_verified"])
+
+    def test_sdk_path_reached_still_completes_normal_advance(self):
+        result = self.track("path", "completed")
+        self.assertEqual("advance_completed", result["outcome"])
+        self.assertIs(False, result["charging_test_passed"])
+
+    def test_unknown_motion_mode_cannot_claim_a_completed_path(self):
+        result = self.track(None, "completed")
+        self.assertEqual("unknown", result["outcome"])
 
 
 if __name__ == "__main__":

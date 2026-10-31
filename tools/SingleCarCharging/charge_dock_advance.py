@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 """Guarded relative advance for the final charging-dock approach.
 
-This module performs one short odometry path, then stops. It does not perform
-recognition, relay control, charger communication, or any lateral correction.
+Path mode performs one bounded odometry path, including the configured lateral
+and heading correction, then stops. The optional open-speed mode is only a
+timed diagnostic: elapsed time never verifies travel distance or contact.
+Neither mode performs recognition, relay control or charger communication.
 """
 import json
 import math
@@ -64,6 +66,7 @@ class Module(BasicModule):
         self.run_id = ""
         self.start_pose = None
         self.final_pose = None
+        self.completion_basis = None
         self.motion_commanded = False
         self.charging_commanded = False
         self.error = None
@@ -150,6 +153,14 @@ class Module(BasicModule):
             "motion_mode": self.motion_mode,
             "expected_start": self.expected,
             "start_pose": self.start_pose,
+            "final_pose": self.final_pose,
+            "observed_world_delta": ({
+                "x": self.final_pose["x"] - self.start_pose["x"],
+                "y": self.final_pose["y"] - self.start_pose["y"],
+                "angle": normalize(self.final_pose["angle"] - self.start_pose["angle"]),
+            } if self.start_pose is not None and self.final_pose is not None else None),
+            "completion_basis": self.completion_basis,
+            "distance_verified": (False if self.motion_mode == "open_speed" else None),
             "robot_world": robot,
             "motion_commanded": self.motion_commanded,
             "charging_commanded": self.charging_commanded,
@@ -223,7 +234,11 @@ class Module(BasicModule):
                     r.openSpeed(0.0, 0.0, 0.0)
                     r.stopRobot(False)
                     self.final_pose = self.pose(r)
-                    return self.finish(r, "completed", MoveStatus.FINISHED)
+                    self.completion_basis = "elapsed_time_only"
+                    # loc() is a localization observation, not an independent
+                    # millimetre travel/contact sensor. Even a changed loc()
+                    # value cannot establish precise insertion by timed speed.
+                    return self.finish(r, "stopped_unverified", MoveStatus.FINISHED)
                 direction = 1.0 if self.distance_m > 0 else -1.0
                 r.openSpeed(direction * self.max_speed_mps, 0.0, 0.0)
             elif self.phase == "advancing":
@@ -232,6 +247,7 @@ class Module(BasicModule):
                     r.stopRobot(False)
                     r.resetPath()
                     self.final_pose = self.pose(r)
+                    self.completion_basis = "vendor_odometry_path_reached"
                     return self.finish(r, "completed", MoveStatus.FINISHED)
             else:
                 raise ValueError("unknown advance phase " + str(self.phase))

@@ -17,6 +17,7 @@ from probe_runner import Evidence, Refused, ResultUnknown, Robokit, ipv4, utc_no
 
 HEADER = struct.Struct("!BBHLH6s")
 REQUEST_API = 1001
+RESPONSE_API = REQUEST_API + 10000
 MAX_RESPONSE_BYTES = 1024 * 1024
 SOCKET_TIMEOUT = 5.0
 
@@ -78,17 +79,122 @@ def exchange(address, port, packet, evidence, label):
     return record
 
 
+def classify_exchange(record, require_auto_status=False):
+    """Interpret only observed reply fields; never infer contact or charging.
+
+    Port 20207 has returned a small acknowledgement without station status.
+    Port 20204 has returned the station snapshot. Unknown enum values such as
+    state/state_machine are retained as diagnostics, not guessed into success.
+    """
+    unknown = []
+    attention = []
+    response = record.get("response")
+    if record.get("error") or record.get("read_error"):
+        unknown.append(str(record.get("error") or record.get("read_error")))
+    if (type(record.get("response_api")) is not int
+            or record["response_api"] != RESPONSE_API
+            or type(record.get("response_sequence")) is not int
+            or record["response_sequence"] != 1):
+        unknown.append("response API or sequence does not match the one-shot request")
+    if not isinstance(response, dict):
+        unknown.append("no complete JSON object response was received")
+        response = {}
+    code = response.get("ret_code")
+    if type(code) is not int:
+        unknown.append("response has no explicit integer ret_code")
+    elif code != 0:
+        attention.append("station rejected the request with ret_code=" + str(code))
+    if "ret" in response:
+        if response["ret"] is False:
+            attention.append("station returned ret=false")
+        elif response["ret"] is not True:
+            unknown.append("station acknowledgement ret is not boolean")
+    alarms = response.get("alarms")
+    if alarms is not None:
+        if not isinstance(alarms, dict):
+            unknown.append("station alarms have an unknown shape")
+        else:
+            for key in ("errors", "fatals"):
+                if key not in alarms:
+                    continue
+                if not isinstance(alarms[key], list):
+                    unknown.append("station alarms." + key + " is not an array")
+                elif alarms[key]:
+                    attention.append("station alarms." + key + " is not empty")
+    # A known rejection/alarm need not include the success-only status
+    # snapshot. Retain that diagnosis rather than labelling it a timeout.
+    require_auto_status = require_auto_status and not attention
+    status = response.get("status")
+    if isinstance(status, dict):
+        if status.get("is_emc") is True:
+            attention.append("station reports its emergency input active")
+        if status.get("is_manual") is True:
+            attention.append("station reports manual mode")
+        if "is_auto" in status and status["is_auto"] is False:
+            attention.append("station snapshot does not confirm automatic mode")
+        elif require_auto_status and not attention and status.get("is_auto") is not True:
+            unknown.append("station snapshot has no explicit is_auto=true")
+    elif require_auto_status:
+        unknown.append("station status snapshot is missing or malformed")
+    return {
+        "outcome": "unknown" if unknown else "attention_required" if attention else "acknowledged",
+        "unknown_reasons": unknown,
+        "attention_reasons": attention,
+        "station_state": response.get("state"),
+        "station_status": status,
+        "station_alarms": alarms,
+        "charging_test_passed": False,
+    }
+
+
+def send_handshake_once(address, packet, evidence):
+    exchanges = []
+    assessments = []
+    for port in (20207, 20204):
+        record = exchange(address, port, packet, evidence, "port_" + str(port))
+        exchanges.append(record)
+        assessment = classify_exchange(record, require_auto_status=port == 20204)
+        assessments.append({"port": port, **assessment})
+        if assessment["outcome"] != "acknowledged":
+            # An unknown/rejected first send must not be followed by another
+            # application command on the second port. No retries or cleanup
+            # writes are implied by returning this result.
+            return {
+                "outcome": ("unknown" if assessment["outcome"] == "unknown"
+                            else "handshake_attention_required"),
+                "exchanges": exchanges, "exchange_assessments": assessments,
+                "automatic_resend_attempted": False,
+                "message": "Station handshake not confirmed; preserve the original responses and do not resend. "
+                           + "; ".join(assessment["unknown_reasons"] + assessment["attention_reasons"]),
+            }
+    return {
+        "outcome": "handshake_acknowledged", "exchanges": exchanges,
+        "exchange_assessments": assessments, "automatic_resend_attempted": False,
+        "message": "Both one-shot replies were acknowledged and the station snapshot reports automatic mode. "
+                   "Contact, brush extension and electrical charging remain unverified; DO7 was not commanded.",
+    }
+
+
 def battery_snapshot(client):
     state = client.request(1100, 19204, {})
     battery = client.request(1007, 19204, {})
     return state, battery
 
 
+def do7_is_confirmed_off(state):
+    outputs = state.get("DO")
+    if not isinstance(outputs, list):
+        return False
+    matching = [row for row in outputs if isinstance(row, dict)
+                and type(row.get("id")) is int and row["id"] == 7]
+    return len(matching) == 1 and matching[0].get("status") is False
+
+
 def state_summary(state):
     return {key: state.get(key) for key in (
         "x", "y", "angle", "confidence", "task_status", "task_id", "script_status",
         "unfinished_path", "is_stop", "chassisIsStop", "charging", "manual_charge",
-        "auto_charge", "blocked", "emergency", "errors", "fatals", "current_lock")}
+        "auto_charge", "blocked", "emergency", "errors", "fatals", "current_lock", "DO")}
 
 
 def battery_summary(battery):
@@ -163,10 +269,13 @@ def main(argv=None):
         if str(info.get("id", "")).casefold() != args.expected_id.casefold():
             raise Refused("robot hardware ID mismatch")
         state, battery = battery_snapshot(client)
+        result["before"] = {"state": state_summary(state), "battery": battery_summary(battery)}
         blockers = []
+        if not do7_is_confirmed_off(state):
+            blockers.append("DO7 is not uniquely confirmed off before station handshake")
         if state.get("is_stop") is not True or state.get("chassisIsStop") is not True:
             blockers.append("vehicle is not confirmed stopped")
-        if state.get("manual_charge") is not False:
+        if state.get("manual_charge") is not False or battery.get("manual_charge") is not False:
             blockers.append("manual charger signal is not false")
         if state.get("charging") is not False or battery.get("charging") is not False:
             blockers.append("vehicle charging state is not false")
@@ -193,62 +302,58 @@ def main(argv=None):
             result.update({"outcome": "handshake_staged",
                            "message": "Request built; no charger connection or application data was sent."})
         else:
-            # Both ports receive the same one-shot request in the vendor reference.
-            first = exchange(args.charger, 20207, packet, evidence, "port_20207")
-            second = exchange(args.charger, 20204, packet, evidence, "port_20204")
-            result["exchanges"] = [first, second]
-            result["outcome"] = "handshake_sent"
-            observations = []
-            previous = None
-            deadline = time.monotonic() + args.observe_seconds
-            while time.monotonic() < deadline:
-                current_state, current_battery = battery_snapshot(client)
-                sample = {
-                    "host_utc": utc_now(),
-                    "battery_level": current_battery.get("battery_level"),
-                    "battery_temp": current_battery.get("battery_temp"),
-                    "charging": current_battery.get("charging"),
-                    "manual_charge": current_battery.get("manual_charge"),
-                    "auto_charge": current_battery.get("auto_charge"),
-                    "current": current_battery.get("current"),
-                    "voltage": current_battery.get("voltage"),
-                    "blocked": current_state.get("blocked"),
-                    "emergency": current_state.get("emergency"),
-                    "errors": current_state.get("errors"),
-                    "fatals": current_state.get("fatals"),
+            result.update(send_handshake_once(args.charger, packet, evidence))
+            if result["outcome"] == "handshake_acknowledged":
+                observations = []
+                previous = None
+                deadline = time.monotonic() + args.observe_seconds
+                while time.monotonic() < deadline:
+                    current_state, current_battery = battery_snapshot(client)
+                    sample = {
+                        "host_utc": utc_now(),
+                        "battery_level": current_battery.get("battery_level"),
+                        "battery_temp": current_battery.get("battery_temp"),
+                        "charging": current_battery.get("charging"),
+                        "manual_charge": current_battery.get("manual_charge"),
+                        "auto_charge": current_battery.get("auto_charge"),
+                        "current": current_battery.get("current"),
+                        "voltage": current_battery.get("voltage"),
+                        "blocked": current_state.get("blocked"),
+                        "emergency": current_state.get("emergency"),
+                        "errors": current_state.get("errors"),
+                        "fatals": current_state.get("fatals"),
+                    }
+                    key = tuple(sample[k] for k in
+                                ("charging", "manual_charge", "auto_charge", "current", "voltage",
+                                 "blocked", "emergency"))
+                    if key != previous:
+                        observations.append(sample)
+                        previous = key
+                    time.sleep(1.0)
+                evidence.write_json("observations.json", observations)
+                result["observations"] = observations
+                final_state, final_battery = battery_snapshot(client)
+                result["final"] = {
+                    "state": state_summary(final_state),
+                    "battery": battery_summary(final_battery),
                 }
-                key = tuple(sample[k] for k in
-                            ("charging", "manual_charge", "auto_charge", "current", "voltage",
-                             "blocked", "emergency"))
-                if key != previous:
-                    observations.append(sample)
-                    previous = key
-                time.sleep(1.0)
-            evidence.write_json("observations.json", observations)
-            result["observations"] = observations
-            final_state, final_battery = battery_snapshot(client)
-            result["final"] = {
-                "state": state_summary(final_state),
-                "battery": battery_summary(final_battery),
-            }
-            if any((sample.get("emergency") is True or sample.get("blocked") is True
-                    or sample.get("errors") or sample.get("fatals"))
-                   for sample in observations):
-                result["outcome"] = "handshake_attention_required"
-            result["message"] = (
-                "Handshake sent once to both observed ports; DO7 was not commanded. "
-                "Inspect station UI for automatic mode, connection and brush extension.")
+                if any((sample.get("emergency") is True or sample.get("blocked") is True
+                        or sample.get("errors") or sample.get("fatals"))
+                       for sample in observations):
+                    result["outcome"] = "handshake_attention_required"
+                    result["message"] = "Robot protection or error was observed after the handshake; charging is not verified."
     except ResultUnknown as exc:
         result.update({"outcome": "unknown", "error": str(exc),
                        "automatic_resend_attempted": False})
     except Exception as exc:
-        result.update({"outcome": "refused_or_failed", "error": str(exc),
+        result.update({"outcome": ("unknown" if result["outcome"] == "handshake_acknowledged"
+                                   else "refused_or_failed"), "error": str(exc),
                        "automatic_resend_attempted": False})
     result["evidence_directory"] = str(evidence.directory)
     result["host_utc"] = utc_now()
     evidence.write_json("result.json", result)
     print(json.dumps(result, ensure_ascii=True, indent=2, allow_nan=False))
-    return 0 if result["outcome"] in ("handshake_staged", "handshake_sent") else (
+    return 0 if result["outcome"] in ("handshake_staged", "handshake_acknowledged") else (
         3 if result["outcome"] == "unknown" else 2)
 
 
