@@ -250,21 +250,23 @@ class ProbeRunnerTests(unittest.TestCase):
         self.assertEqual(observed["matched_report_source"], "move_status_info")
 
     def test_previous_own_terminal_probe_requires_fresh_same_status(self):
-        task_id = "charge-recognition-previous-run"
-        for status in (5, 6, 7):
-            with self.subTest(status=status):
-                state = dict(self.idle, task_status=status, task_id=task_id)
-                response = {"task_status_package": {"task_status_list": [{"task_id": task_id, "status": status}]}}
-                client = StateClient(state, task_response=response)
-                result = runner.preflight(client, "expected-hardware")
-                self.assertEqual(result["confirmed_prior_probe"], {"task_id": task_id, "status": status})
-                self.assertEqual([call[0] for call in client.calls], [1000, 1100, 1110])
-                self.assertEqual(client.calls[-1][2], {"task_ids": [task_id]})
+        for task_id in ("charge-recognition-previous-run",
+                        "charge-approach-previous-run",
+                        "charge-advance-previous-run"):
+            for status in (4, 5, 6, 7):
+                with self.subTest(task_id=task_id, status=status):
+                    state = dict(self.idle, task_status=status, task_id=task_id)
+                    response = {"task_status_package": {"task_status_list": [{"task_id": task_id, "status": status}]}}
+                    client = StateClient(state, task_response=response)
+                    result = runner.preflight(client, "expected-hardware")
+                    self.assertEqual(result["confirmed_prior_probe"], {"task_id": task_id, "status": status})
+                    self.assertEqual([call[0] for call in client.calls], [1000, 1100, 1110])
+                    self.assertEqual(client.calls[-1][2], {"task_ids": [task_id]})
 
     def test_business_failed_active_or_unidentified_probe_is_never_admitted(self):
         cases = ((5, "business-job"), (6, ""), (7, "charge-recognition-"),
                  (2, "charge-recognition-active"), (0, "charge-recognition-old"),
-                 (4, "charge-recognition-old"), (None, "charge-recognition-unknown"))
+                 (None, "charge-recognition-unknown"))
         for status, task_id in cases:
             with self.subTest(status=status, task_id=task_id):
                 client = StateClient(dict(self.idle, task_status=status, task_id=task_id))

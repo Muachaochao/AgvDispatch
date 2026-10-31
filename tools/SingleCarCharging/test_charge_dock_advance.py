@@ -148,9 +148,9 @@ class AdvanceTests(unittest.TestCase):
         self.assertIs(False, robot.report["charging_commanded"])
         self.assertFalse(any(call[0] in {"setDO", "battery"} for call in robot.calls))
 
-    def test_distance_above_ten_centimetres_is_refused(self):
+    def test_distance_above_fifteen_centimetres_is_refused(self):
         robot = FakeRobot()
-        module = self.drive(robot, self.args(distance_m=0.11))
+        module = self.drive(robot, self.args(distance_m=0.16))
         self.assertEqual(MoveStatus.FAILED, module.status)
         self.assertIn("distance_m", robot.report["error"])
         self.assertEqual(0, robot.count("setPathOnRobot"))
@@ -174,6 +174,34 @@ class AdvanceTests(unittest.TestCase):
             robot, self.args(distance_m=0.002, reach_dist_m=0.001, max_speed_mps=0.002))
         self.assertEqual(MoveStatus.FINISHED, module.status)
         self.assertIn(("setPathMaxSpeed", 0.002), robot.calls)
+
+    def test_pure_lateral_alignment_moves_left_without_forward_motion(self):
+        robot = FakeRobot()
+        module = self.drive(robot, self.args(distance_m=0.0, lateral_m=0.005))
+        self.assertEqual(MoveStatus.FINISHED, module.status)
+        call = next(call for call in robot.calls if call[0] == "setPathOnRobot")
+        self.assertEqual((0.0, 0.0), tuple(call[1]))
+        self.assertEqual((0.0, 0.005), tuple(call[2]))
+
+    def test_reverse_releases_contact_using_back_mode(self):
+        robot = FakeRobot()
+        module = self.drive(robot, self.args(distance_m=-0.01))
+        self.assertEqual(MoveStatus.FINISHED, module.status)
+        self.assertIn(("setPathBackMode", True), robot.calls)
+
+    def test_long_retreat_to_recognition_zone_is_bounded(self):
+        robot = FakeRobot()
+        module = self.drive(robot, self.args(distance_m=-0.25, max_speed_mps=0.02))
+        self.assertEqual(MoveStatus.FINISHED, module.status)
+        self.assertIn(("setPathBackMode", True), robot.calls)
+
+    def test_combined_path_carries_lateral_and_heading_correction(self):
+        robot = FakeRobot()
+        module = self.drive(robot, self.args(
+            distance_m=0.104, lateral_m=0.013, yaw_delta_rad=0.029))
+        self.assertEqual(MoveStatus.FINISHED, module.status)
+        call = next(call for call in robot.calls if call[0] == "setPathOnRobot")
+        self.assertAlmostEqual(1.526 + 0.029, call[3])
 
     def test_unexpected_pose_is_refused_before_motion(self):
         robot = FakeRobot()

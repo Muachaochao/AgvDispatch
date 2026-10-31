@@ -184,10 +184,12 @@ def preflight(client, expected_id):
     state = client.request(1100, STATUS_PORT, {})
     reasons = []
     status, task_id = state.get("task_status"), state.get("task_id")
-    prior_terminal_probe = (type(status) is int and status in (5, 6, 7)
-                            and isinstance(task_id, str)
-                            and task_id.startswith("charge-recognition-")
-                            and len(task_id) > len("charge-recognition-"))
+    terminal_prefixes = ("charge-recognition-", "charge-approach-", "charge-advance-")
+    prior_terminal_probe = (
+        type(status) is int and status in (4, 5, 6, 7)
+        and isinstance(task_id, str)
+        and any(task_id.startswith(prefix) and len(task_id) > len(prefix)
+                for prefix in terminal_prefixes))
     if (type(status) is not int or status not in (0, 4)) and not prior_terminal_probe:
         reasons.append("task_status must be idle/completed or a confirmed terminal recognition probe")
     if type(state.get("script_status")) is not int or state["script_status"] != 0:

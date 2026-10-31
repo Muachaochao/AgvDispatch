@@ -16,6 +16,8 @@ from rbk import BasicModule, MoveStatus
 {
   "operation": {"value": "AdvanceByDistance", "default_value": ["AdvanceByDistance"], "type": "complex"},
   "distance_m": {"value": 0.10, "type": "float", "unit": "m"},
+  "lateral_m": {"value": 0.0, "type": "float", "unit": "m"},
+  "yaw_delta_rad": {"value": 0.0, "type": "float", "unit": "rad"},
   "reach_dist_m": {"value": 0.001, "type": "float", "unit": "m"},
   "max_speed_mps": {"value": 0.01, "type": "float", "unit": "m/s"},
   "expected_x": {"value": 0.0, "type": "float", "unit": "m"},
@@ -48,6 +50,8 @@ class Module(BasicModule):
         self.phase = "initializing"
         self.started = time.monotonic()
         self.distance_m = 0.10
+        self.lateral_m = 0.0
+        self.yaw_delta_rad = 0.0
         self.reach_dist_m = 0.001
         self.max_speed_mps = 0.01
         self.timeout_s = 30.0
@@ -70,8 +74,18 @@ class Module(BasicModule):
             if not isinstance(self.run_id, str) or not self.run_id or len(self.run_id) > 128:
                 raise ValueError("run_id must be a non-empty string of at most 128 characters")
             self.distance_m = finite_number(args.get("distance_m", self.distance_m))
-            if not 0.001 <= self.distance_m <= 0.10:
-                raise ValueError("distance_m must be between 0.001 and 0.10 m")
+            if not -0.30 <= self.distance_m <= 0.15:
+                raise ValueError("distance_m must be between -0.30 and 0.15 m")
+            self.lateral_m = finite_number(args.get("lateral_m", self.lateral_m))
+            if not -0.02 <= self.lateral_m <= 0.02:
+                raise ValueError("lateral_m must be between -0.02 and 0.02 m")
+            self.yaw_delta_rad = finite_number(
+                args.get("yaw_delta_rad", self.yaw_delta_rad))
+            if not -0.10 <= self.yaw_delta_rad <= 0.10:
+                raise ValueError("yaw_delta_rad must be between -0.10 and 0.10 rad")
+            if self.distance_m == 0.0 and self.lateral_m == 0.0:
+                if self.yaw_delta_rad == 0.0:
+                    raise ValueError("distance_m, lateral_m and yaw_delta_rad cannot all be zero")
             self.reach_dist_m = finite_number(args.get("reach_dist_m", self.reach_dist_m))
             if not 0.001 <= self.reach_dist_m <= 0.01:
                 raise ValueError("reach_dist_m must be between 0.001 and 0.01 m")
@@ -111,6 +125,8 @@ class Module(BasicModule):
             "phase": self.phase,
             "status": int(self.status),
             "distance_m": self.distance_m,
+            "lateral_m": self.lateral_m,
+            "yaw_delta_rad": self.yaw_delta_rad,
             "reach_dist_m": self.reach_dist_m,
             "max_speed_mps": self.max_speed_mps,
             "expected_start": self.expected,
@@ -156,10 +172,11 @@ class Module(BasicModule):
         r.setPathReachDist(self.reach_dist_m)
         r.setPathReachAngle(0.01)
         r.setPathUseOdo(True)
-        r.setPathBackMode(False)
+        r.setPathBackMode(self.distance_m < 0.0)
         r.setPathMaxSpeed(self.max_speed_mps)
         r.setPathMaxRot(0.02)
-        r.setPathOnRobot([0.0, self.distance_m], [0.0, 0.0], start["angle"])
+        goal_angle = normalize(start["angle"] + self.yaw_delta_rad)
+        r.setPathOnRobot([0.0, self.distance_m], [0.0, self.lateral_m], goal_angle)
         self.motion_commanded = True
         self.phase = "advancing"
 
