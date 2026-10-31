@@ -175,6 +175,26 @@ class ProbeRunnerTests(unittest.TestCase):
             runner.preflight(client, "expected-hardware")
         self.assertEqual([call[0] for call in client.calls], [1000])
 
+    def test_only_low_battery_trigger_is_deferred_for_charging(self):
+        self.assertEqual(
+            [],
+            runner.blocking_vehicle_errors([
+                {"code": 52503, "desc": "Battery is at errorPercentage level"},
+            ]),
+        )
+        unexpected = {"code": 5214, "desc": "Other safety fault"}
+        self.assertEqual(
+            [unexpected],
+            runner.blocking_vehicle_errors([
+                {"code": 52503, "desc": "Battery is at errorPercentage level"},
+                unexpected,
+            ]),
+        )
+        self.assertEqual(
+            ["not-an-error-object"],
+            runner.blocking_vehicle_errors(["not-an-error-object"]),
+        )
+
     def test_active_or_missing_critical_state_refuses_preflight(self):
         active = (("task_status", 2), ("script_status", 1), ("task_id", "another-job"),
                   ("unfinished_path", ["LM2"]), ("is_stop", False), ("charging", True),
@@ -262,6 +282,28 @@ class ProbeRunnerTests(unittest.TestCase):
                     self.assertEqual(result["confirmed_prior_probe"], {"task_id": task_id, "status": status})
                     self.assertEqual([call[0] for call in client.calls], [1000, 1100, 1110])
                     self.assertEqual(client.calls[-1][2], {"task_ids": [task_id]})
+
+    def test_completed_navigation_id_requires_fresh_same_completed_status(self):
+        task_id = "NAVTEST-completed-navigation"
+        state = dict(self.idle, task_status=4, task_id=task_id)
+        response = {"task_status_package": {
+            "task_status_list": [{"task_id": task_id, "status": 4}]
+        }}
+        client = StateClient(state, task_response=response)
+        result = runner.preflight(client, "expected-hardware")
+        self.assertEqual(result["confirmed_prior_probe"],
+                         {"task_id": task_id, "status": 4})
+        self.assertEqual([call[0] for call in client.calls],
+                         [1000, 1100, 1110])
+        for rows in ([], [{"task_id": task_id, "status": 2}],
+                     [{"task_id": "different", "status": 4}],
+                     [{"task_id": task_id, "status": 4}] * 2):
+            with self.subTest(rows=rows):
+                client = StateClient(state, task_response={
+                    "task_status_package": {"task_status_list": rows}
+                })
+                with self.assertRaisesRegex(runner.Refused, "not confirmed"):
+                    runner.preflight(client, "expected-hardware")
 
     def test_business_failed_active_or_unidentified_probe_is_never_admitted(self):
         cases = ((5, "business-job"), (6, ""), (7, "charge-recognition-"),

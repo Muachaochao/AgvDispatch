@@ -4,6 +4,7 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import math
 from pathlib import Path
 import sys
 import time
@@ -17,9 +18,12 @@ from probe_runner import (
     Refused,
     ResultUnknown,
     Robokit,
+    blocking_vehicle_errors,
     identity_summary,
     ipv4,
     runtime_summary,
+    stopped_runtime,
+    unique_task_status,
     utc_now,
 )
 
@@ -30,11 +34,18 @@ NAV_TASK_PREFIX = "charge-approach-"
 
 def prior_terminal_approach(state):
     status, task_id = state.get("task_status"), state.get("task_id")
-    prefixes = ("charge-recognition-", NAV_TASK_PREFIX, "charge-advance-")
-    return (type(status) is int and status in (4, 5, 6, 7)
-            and isinstance(task_id, str)
-            and any(task_id.startswith(prefix) and len(task_id) > len(prefix)
-                    for prefix in prefixes))
+    prefixes = (
+        "charge-recognition-", NAV_TASK_PREFIX, "charge-advance-",
+    )
+    return (
+        type(status) is int and status in (4, 6)
+        and isinstance(task_id, str) and bool(task_id.strip())
+    ) or (
+        type(status) is int and status in (5, 6, 7)
+        and isinstance(task_id, str)
+        and any(task_id.startswith(prefix) and len(task_id) > len(prefix)
+                for prefix in prefixes)
+    )
 
 
 def prior_completed_recognition(state):
@@ -53,14 +64,20 @@ def preflight(client, expected_id, expected_station):
     old_recognition = prior_completed_recognition(state)
     known_prior = old_approach or old_recognition
     status = state.get("task_status")
-    if (type(status) is not int or status not in (0, 4)) and not old_approach:
+    cancelled_idle = (
+        status == 6
+        and state.get("task_id") == ""
+        and state.get("unfinished_path") == []
+    )
+    if ((type(status) is not int or status not in (0, 4))
+            and not old_approach and not cancelled_idle):
         reasons.append("task_status must be idle/completed or a confirmed terminal approach task")
     if expected_station is not None:
         if state.get("current_station") != expected_station:
             reasons.append("current_station must match --expected-station")
     elif state.get("current_station") not in ("", None):
         reasons.append("current_station must be empty when --expected-station is omitted")
-    if state.get("script_status") != 0:
+    if type(state.get("script_status")) is not int or state["script_status"] != 0:
         reasons.append("script_status must be idle(0)")
     if state.get("unfinished_path") != []:
         reasons.append("unfinished_path must be an empty array")
@@ -70,18 +87,28 @@ def preflight(client, expected_id, expected_station):
         reasons.append("is_stop must explicitly be true")
     if state.get("chassisIsStop") is not True:
         reasons.append("chassisIsStop must explicitly be true")
-    for key in ("charging", "manual_charge", "emergency"):
+    if not stopped_runtime(state):
+        reasons.append("fresh stop flags and measured velocities must agree")
+    for key in ("charging", "manual_charge", "emergency", "blocked"):
         if state.get(key) is not False:
             reasons.append(key + " must explicitly be false")
+    if "soft_emc" in state and state["soft_emc"] is not False:
+        reasons.append("soft_emc must be false when returned")
+    for key in ("x", "y", "angle", "confidence"):
+        if type(state.get(key)) not in (int, float) or not math.isfinite(state[key]):
+            reasons.append(key + " must be a finite number")
+    if type(state.get("confidence")) in (int, float) and not 0.5 <= state["confidence"] <= 1.0:
+        reasons.append("localization confidence must be at least 0.5")
     if "auto_charge" in state and state["auto_charge"] is not False:
         reasons.append("auto_charge must explicitly be false")
-    for key in ("errors", "fatals"):
-        if key in state and state[key] != []:
-            reasons.append(key + " must be empty")
+    if not isinstance(state.get("errors"), list) or blocking_vehicle_errors(state["errors"]):
+        reasons.append("errors must be empty except for low-battery charging trigger 52503")
+    if state.get("fatals") != []:
+        reasons.append("fatals must be empty")
     lock = state.get("current_lock")
     if not isinstance(lock, dict) or lock.get("locked") is not False:
         reasons.append("control ownership must explicitly be released by its current owner")
-    if state.get("dispatch_mode") != 0:
+    if type(state.get("dispatch_mode")) is not int or state["dispatch_mode"] != 0:
         reasons.append("dispatch_mode must explicitly be standalone(0)")
     if reasons:
         raise Refused("approach preflight refused: " + "; ".join(reasons))
@@ -89,11 +116,7 @@ def preflight(client, expected_id, expected_station):
     if known_prior:
         task_id = state["task_id"]
         response = client.request(1110, STATUS_PORT, {"task_ids": [task_id]})
-        package = response.get("task_status_package", response)
-        rows = package.get("task_status_list", []) if isinstance(package, dict) else []
-        matches = [row for row in rows if isinstance(row, dict) and row.get("task_id") == task_id]
-        if (len(matches) != 1 or type(matches[0].get("status")) is not int
-                or matches[0]["status"] != status):
+        if unique_task_status(response, task_id) != status:
             raise Refused("prior charging task terminal state was not confirmed by fresh 1110")
         confirmed_prior = {
             "task_id": task_id,
@@ -137,13 +160,10 @@ def track_approach(client, task_id, run_id, timeout_s):
     errors = []
     outcome = "unknown"
     while time.monotonic() < deadline:
+        task_status, latest_report, latest_source = None, None, None
         try:
             package = client.request(1110, STATUS_PORT, {"task_ids": [task_id]}, deadline=deadline)
-            package = package.get("task_status_package", package)
-            rows = package.get("task_status_list", [])
-            matches = [row for row in rows if isinstance(row, dict) and row.get("task_id") == task_id]
-            if len(matches) == 1 and type(matches[0].get("status")) is int:
-                task_status = matches[0]["status"]
+            task_status = unique_task_status(package, task_id)
             latest_state = client.request(1100, STATUS_PORT, {}, deadline=deadline)
             source, report = report_from_runtime(latest_state, run_id)
             if report is not None:
@@ -163,7 +183,11 @@ def track_approach(client, task_id, run_id, timeout_s):
                 if (latest_report.get("phase") == "completed"
                         and latest_report.get("status") == 3
                         and latest_report.get("error") is None
-                        and latest_report.get("charging_commanded") is False):
+                        and latest_report.get("charging_commanded") is False
+                        and stopped_runtime(latest_state)
+                        and latest_state.get("blocked") is False
+                        and latest_state.get("emergency") is False
+                        and latest_state.get("charging") is False):
                     outcome = "approach_completed"
                     break
                 if latest_report.get("phase") in ("failed", "cancelled", "suspended"):
@@ -200,7 +224,9 @@ def run_approach(client, args, run_id):
         "run_id": run_id, "robot": args.robot, "expected_id": args.expected_id,
         "expected_station": args.expected_station, "relative_path": relative_path,
         "source_sha256": digest, "approach_standoff_m": args.standoff_m,
-        "max_speed_mps": args.max_speed, "contact_and_charging_enabled": False,
+        "max_speed_mps": args.max_speed,
+        "stability_angle_deg": args.stability_angle_deg,
+        "contact_and_charging_enabled": False,
     })
     before = preflight(client, args.expected_id, args.expected_station)
     client.evidence.write_json("preflight_before_upload.json", before)
@@ -249,6 +275,7 @@ def run_approach(client, args, run_id):
             "recognition_file": "charger/c0001.charger",
             "approach_standoff_m": args.standoff_m,
             "max_speed_mps": args.max_speed,
+            "stability_angle_deg": args.stability_angle_deg,
             "timeout_s": args.script_timeout,
             "run_id": run_id,
         },
@@ -274,6 +301,7 @@ def main(argv=None):
     parser.add_argument("--evidence-dir", required=True, type=Path)
     parser.add_argument("--standoff-m", type=float, default=0.875)
     parser.add_argument("--max-speed", type=float, default=0.03)
+    parser.add_argument("--stability-angle-deg", type=float, default=2.0)
     parser.add_argument("--script-timeout", type=float, default=75.0)
     parser.add_argument("--track-timeout", type=float, default=90.0)
     parser.add_argument("--stage-only", action="store_true",
@@ -283,6 +311,8 @@ def main(argv=None):
         parser.error("--standoff-m must be between 0.65 and 1.00")
     if not 0.01 <= args.max_speed <= 0.05:
         parser.error("--max-speed must be between 0.01 and 0.05")
+    if not 1.0 <= args.stability_angle_deg <= 2.0:
+        parser.error("--stability-angle-deg must be between 1 and 2; unstable recognition cannot be relaxed")
     if not 20.0 <= args.script_timeout <= 120.0:
         parser.error("--script-timeout must be between 20 and 120")
     if not 20.0 <= args.track_timeout <= 130.0:

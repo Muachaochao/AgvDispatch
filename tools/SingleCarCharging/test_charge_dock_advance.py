@@ -189,13 +189,11 @@ class AdvanceTests(unittest.TestCase):
         self.assertEqual(MoveStatus.FINISHED, module.status)
         self.assertIn(("setPathMaxSpeed", 0.002), robot.calls)
 
-    def test_pure_lateral_alignment_moves_left_without_forward_motion(self):
+    def test_unverified_pure_lateral_alignment_is_refused_before_motion(self):
         robot = FakeRobot()
         module = self.drive(robot, self.args(distance_m=0.0, lateral_m=0.005))
-        self.assertEqual(MoveStatus.FINISHED, module.status)
-        call = next(call for call in robot.calls if call[0] == "setPathOnRobot")
-        self.assertEqual((0.0, 0.0), tuple(call[1]))
-        self.assertEqual((0.0, 0.005), tuple(call[2]))
+        self.assertEqual(MoveStatus.FAILED, module.status)
+        self.assertEqual(0, robot.count("setPathOnRobot"))
 
     def test_reverse_releases_contact_using_back_mode(self):
         robot = FakeRobot()
@@ -209,27 +207,28 @@ class AdvanceTests(unittest.TestCase):
         self.assertEqual(MoveStatus.FINISHED, module.status)
         self.assertIn(("setPathBackMode", True), robot.calls)
 
-    def test_combined_path_carries_lateral_and_heading_correction(self):
+    def test_unverified_compound_alignment_is_refused_before_motion(self):
         robot = FakeRobot()
         module = self.drive(robot, self.args(
             distance_m=0.104, lateral_m=0.013, yaw_delta_rad=0.029))
-        self.assertEqual(MoveStatus.FINISHED, module.status)
-        call = next(call for call in robot.calls if call[0] == "setPathOnRobot")
-        self.assertAlmostEqual(1.526 + 0.029, call[3])
+        self.assertEqual(MoveStatus.FAILED, module.status)
+        self.assertEqual(0, robot.count("setPathOnRobot"))
 
-    def test_final_insertion_can_reduce_obstacle_stop_to_ten_millimetres(self):
+    def test_final_insertion_cannot_reduce_obstacle_stop_below_default(self):
         robot = FakeRobot()
         module = self.drive(robot, self.args(
             distance_m=0.002, obstacle_stop_dist_m=0.01))
-        self.assertEqual(MoveStatus.FINISHED, module.status)
-        self.assertIn(("setObsStopDist", 0.01), robot.calls)
+        self.assertEqual(MoveStatus.FAILED, module.status)
+        self.assertEqual(0, robot.count("setPathOnRobot"))
+        self.assertNotIn(("setObsStopDist", 0.01), robot.calls)
 
-    def test_mechanical_insertion_accepts_zero_obstacle_stop(self):
+    def test_mechanical_insertion_cannot_disable_obstacle_stop(self):
         robot = FakeRobot()
         module = self.drive(robot, self.args(
             distance_m=0.005, obstacle_stop_dist_m=0.0))
-        self.assertEqual(MoveStatus.FINISHED, module.status)
-        self.assertIn(("setObsStopDist", 0.0), robot.calls)
+        self.assertEqual(MoveStatus.FAILED, module.status)
+        self.assertEqual(0, robot.count("setPathOnRobot"))
+        self.assertNotIn(("setObsStopDist", 0.0), robot.calls)
 
     def test_open_speed_fallback_is_time_bounded_and_stops(self):
         robot = FakeRobot()
@@ -299,7 +298,8 @@ class RunnerResultTests(unittest.TestCase):
                 if api == 1110:
                     return {"task_status_list": [{"task_id": "offline-task", "status": 4}]}
                 if api == 1100:
-                    return {"move_status_info": report}
+                    return {"move_status_info": report, "is_stop": True, "chassisIsStop": True,
+                            "blocked": False, "emergency": False, "charging": False}
                 raise AssertionError("unexpected API " + str(api))
 
         clock = FakeClock()

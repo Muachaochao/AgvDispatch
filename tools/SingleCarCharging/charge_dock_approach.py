@@ -19,6 +19,7 @@ from rbk import BasicModule, MoveStatus
   "recognition_file": {"value": "charger/c0001.charger", "type": "str"},
   "approach_standoff_m": {"value": 0.875, "type": "float", "unit": "m"},
   "max_speed_mps": {"value": 0.03, "type": "float", "unit": "m/s"},
+  "stability_angle_deg": {"value": 2.0, "type": "float", "unit": "deg"},
   "timeout_s": {"value": 75.0, "type": "float", "unit": "s"}
 }
 ####END DEFAULT ARGS####
@@ -100,6 +101,7 @@ class Module(BasicModule):
         self.recognition_file = "charger/c0001.charger"
         self.standoff_m = 0.875
         self.max_speed_mps = 0.03
+        self.stability_angle_rad = math.radians(2.0)
         self.run_id = ""
         self.recognition_started = False
         self.initial_samples = []
@@ -134,6 +136,11 @@ class Module(BasicModule):
             self.max_speed_mps = finite_number(args.get("max_speed_mps", self.max_speed_mps))
             if not 0.01 <= self.max_speed_mps <= 0.05:
                 raise ValueError("max_speed_mps must be between 0.01 and 0.05 m/s")
+            stability_angle_deg = finite_number(
+                args.get("stability_angle_deg", 2.0))
+            if not 1.0 <= stability_angle_deg <= 2.0:
+                raise ValueError("stability_angle_deg must be between 1 and 2; unstable recognition cannot be relaxed")
+            self.stability_angle_rad = math.radians(stability_angle_deg)
             self.timeout_s = finite_number(args.get("timeout_s", self.timeout_s))
             if not 20.0 <= self.timeout_s <= 120.0:
                 raise ValueError("timeout_s must be between 20 and 120 seconds")
@@ -209,12 +216,24 @@ class Module(BasicModule):
 
     def stable_target(self):
         targets = [sample["target_world"] for sample in self.initial_samples]
+        if len(targets) != 3:
+            raise ValueError("exactly three fresh recognition samples are required")
         for i, first in enumerate(targets):
             for second in targets[i + 1:]:
                 if (math.hypot(first["x"] - second["x"], first["y"] - second["y"]) > 0.02
-                        or abs(normalize(first["angle"] - second["angle"])) > math.radians(2)):
-                    raise ValueError("recognition samples are unstable (20 mm / 2 degrees)")
-        return targets[-1]
+                        or abs(normalize(first["angle"] - second["angle"])) > self.stability_angle_rad):
+                    raise ValueError(
+                        "recognition samples are unstable (20 mm / %.1f degrees)"
+                        % math.degrees(self.stability_angle_rad))
+        # Use the median of three observations so one noisy direction sample
+        # cannot become the commanded docking target.
+        anchor = targets[0]["angle"]
+        angles = sorted(anchor + normalize(t["angle"] - anchor) for t in targets)
+        return {
+            "x": sorted(t["x"] for t in targets)[len(targets) // 2],
+            "y": sorted(t["y"] for t in targets)[len(targets) // 2],
+            "angle": normalize(angles[len(angles) // 2]),
+        }
 
     def start_after_initial_recognition(self, r):
         target = self.stable_target()

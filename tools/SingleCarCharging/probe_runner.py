@@ -5,6 +5,7 @@ import datetime as dt
 import hashlib
 import ipaddress
 import json
+import math
 from pathlib import Path
 import socket
 import struct
@@ -19,6 +20,7 @@ SOCKET_TIMEOUT = 3.0
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 PROBE_MARKER = "charge_dock_probe_v1"
 RECOGNITION_FILE = "charger/c0001.charger"
+CHARGING_TRIGGER_ERROR_CODES = frozenset({52503})
 
 
 class Refused(RuntimeError):
@@ -64,6 +66,18 @@ class Evidence:
 
     def write_json(self, name, value):
         self.write(name, json_bytes(value))
+
+    def replace_json(self, name, value):
+        if self.directory is None:
+            return
+        target = self.directory / name
+        temporary = self.directory / (name + ".tmp")
+        with temporary.open("wb") as stream:
+            stream.write(json_bytes(value))
+            stream.flush()
+            import os
+            os.fsync(stream.fileno())
+        temporary.replace(target)
 
     def begin(self, api, port, packet, payload, mutation):
         self.index += 1
@@ -159,14 +173,53 @@ RUNTIME_KEYS = (
     "current_ip", "current_map", "current_map_md5", "current_station", "x", "y", "angle",
     "confidence", "task_status", "task_id", "unfinished_path", "script_status", "script_res",
     "move_status_info",
-    "is_stop", "chassisIsStop", "charging", "manual_charge", "emergency", "soft_emc",
-    "blocked", "errors", "fatals", "current_lock",
+    "is_stop", "chassisIsStop", "vx", "vy", "w", "charging", "manual_charge", "auto_charge",
+    "emergency", "soft_emc", "blocked", "errors", "fatals", "warnings", "current_lock", "DO",
     "dispatch_mode",
 )
 
 
 def runtime_summary(runtime):
     return {key: runtime[key] for key in RUNTIME_KEYS if key in runtime}
+
+
+def unique_task_status(response, task_id):
+    """Read only this response; never reuse a previous poll's terminal state."""
+    package = response.get("task_status_package", response)
+    rows = package.get("task_status_list") if isinstance(package, dict) else None
+    if (not isinstance(rows, list) or len(rows) != 1
+            or not isinstance(rows[0], dict) or rows[0].get("task_id") != task_id
+            or type(rows[0].get("status")) is not int):
+        raise ValueError("fresh task response must contain exactly the requested task")
+    return rows[0]["status"]
+
+
+def stopped_runtime(state):
+    """A stop flag cannot override a contradictory measured velocity."""
+    if state.get("is_stop") is not True or state.get("chassisIsStop") is not True:
+        return False
+    return all(type(state[key]) in (int, float) and math.isfinite(state[key])
+               and abs(state[key]) < 0.01
+               for key in ("vx", "vy", "w") if key in state)
+
+
+def blocking_vehicle_errors(errors):
+    """Return vehicle errors that must block charging motion.
+
+    Code 52503 means the vehicle reached its configured low-battery trigger.
+    That condition is the reason to travel to the charger, not a reason to
+    refuse charging. Malformed entries and every other code remain blocking.
+    """
+    if not isinstance(errors, list):
+        return errors
+    return [
+        item for item in errors
+        if not (
+            isinstance(item, dict)
+            and type(item.get("code")) is int
+            and item["code"] in CHARGING_TRIGGER_ERROR_CODES
+        )
+    ]
 
 
 def identity_summary(info):
@@ -184,12 +237,22 @@ def preflight(client, expected_id):
     state = client.request(1100, STATUS_PORT, {})
     reasons = []
     status, task_id = state.get("task_status"), state.get("task_id")
-    terminal_prefixes = ("charge-recognition-", "charge-approach-", "charge-advance-")
+    terminal_prefixes = (
+        "charge-recognition-", "charge-approach-", "charge-advance-",
+    )
+    # Robokit can retain the ID of a completed navigation task. Accept a
+    # generic ID only at completed(4)/cancelled(6), confirmed again by 1110.
+    # This admits a stopped vehicle, without clearing any backend business
+    # record. Failed tasks remain limited to this tool's retained task prefixes.
     prior_terminal_probe = (
-        type(status) is int and status in (4, 5, 6, 7)
+        type(status) is int and status in (4, 6)
+        and isinstance(task_id, str) and bool(task_id.strip())
+    ) or (
+        type(status) is int and status in (5, 6, 7)
         and isinstance(task_id, str)
         and any(task_id.startswith(prefix) and len(task_id) > len(prefix)
-                for prefix in terminal_prefixes))
+                for prefix in terminal_prefixes)
+    )
     if (type(status) is not int or status not in (0, 4)) and not prior_terminal_probe:
         reasons.append("task_status must be idle/completed or a confirmed terminal recognition probe")
     if type(state.get("script_status")) is not int or state["script_status"] != 0:
@@ -208,6 +271,10 @@ def preflight(client, expected_id):
             reasons.append(key + " is active or invalid")
     if "chassisIsStop" in state and state["chassisIsStop"] is not True:
         reasons.append("chassisIsStop is not true")
+    for key in ("vx", "vy", "w"):
+        if key in state and (type(state[key]) not in (int, float)
+                             or not math.isfinite(state[key]) or abs(state[key]) >= 0.01):
+            reasons.append(key + " contradicts the stopped state")
     for key in ("errors", "fatals"):
         if key in state and state[key] != []:
             reasons.append(key + " is not empty")
@@ -304,13 +371,10 @@ def track_probe(client, task_id, run_id):
     errors = []
     outcome = "unknown"
     while time.monotonic() < deadline:
+        task_status, latest_report, latest_report_source = None, None, None
         try:
             package = client.request(1110, STATUS_PORT, {"task_ids": [task_id]}, deadline=deadline)
-            package = package.get("task_status_package", package)
-            rows = package.get("task_status_list", [])
-            matches = [row for row in rows if isinstance(row, dict) and row.get("task_id") == task_id]
-            if len(matches) == 1 and type(matches[0].get("status")) is int:
-                task_status = matches[0]["status"]
+            task_status = unique_task_status(package, task_id)
             if time.monotonic() >= deadline:
                 break
             latest_state = client.request(1100, STATUS_PORT, {}, deadline=deadline)

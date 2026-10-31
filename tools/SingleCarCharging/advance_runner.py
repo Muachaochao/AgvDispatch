@@ -4,6 +4,7 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import math
 from pathlib import Path
 import sys
 import time
@@ -20,6 +21,8 @@ from probe_runner import (
     Robokit,
     ipv4,
     runtime_summary,
+    stopped_runtime,
+    unique_task_status,
     utc_now,
 )
 
@@ -58,13 +61,10 @@ def track_advance(client, task_id, run_id, timeout_s):
     errors = []
     outcome = "unknown"
     while time.monotonic() < deadline:
+        task_status, report, source = None, None, None
         try:
             package = client.request(1110, STATUS_PORT, {"task_ids": [task_id]}, deadline=deadline)
-            package = package.get("task_status_package", package)
-            rows = package.get("task_status_list", [])
-            matches = [row for row in rows if isinstance(row, dict) and row.get("task_id") == task_id]
-            if len(matches) == 1 and type(matches[0].get("status")) is int:
-                task_status = matches[0]["status"]
+            task_status = unique_task_status(package, task_id)
             state = client.request(1100, STATUS_PORT, {}, deadline=deadline)
             current_source, current_report = report_from_runtime(state, run_id)
             if current_report is not None:
@@ -79,7 +79,9 @@ def track_advance(client, task_id, run_id, timeout_s):
             if task_status in (5, 6, 7):
                 outcome = "advance_task_failed"
                 break
-            if task_status == 4 and report is not None:
+            if (task_status == 4 and report is not None and stopped_runtime(state)
+                    and state.get("blocked") is False and state.get("emergency") is False
+                    and state.get("charging") is False):
                 if (report.get("motion_mode") == "open_speed"
                         and report.get("phase") in ("completed", "stopped_unverified")
                         and report.get("status") == 3 and report.get("error") is None
@@ -132,7 +134,7 @@ def run_advance(client, args, run_id):
     start = {
         "x": state.get("x"), "y": state.get("y"), "angle": state.get("angle"),
     }
-    if any(type(start[key]) not in (int, float) for key in start):
+    if any(type(start[key]) not in (int, float) or not math.isfinite(start[key]) for key in start):
         raise Refused("robot pose is missing or non-numeric")
     client.evidence.write_json("preflight_before_upload.json", before)
     client.evidence.write_json("run.json", {
@@ -175,6 +177,8 @@ def run_advance(client, args, run_id):
             "message": "Advance script uploaded and byte-verified; no navigation task was sent.",
         }
     fresh = preflight(client, args.expected_id, args.expected_station)
+    # Bind the command to the final preflight, not to a pose read before upload.
+    start = {key: fresh["runtime"].get(key) for key in ("x", "y", "angle")}
     client.evidence.write_json("preflight_before_execute.json", fresh)
     task_id = NAV_TASK_PREFIX + run_id
     client.request(3066, NAV_PORT, {"move_task_list": [{
@@ -224,8 +228,10 @@ def main(argv=None):
         parser.error("--lateral-m must be between -0.02 and 0.02")
     if not -0.10 <= args.yaw_delta_rad <= 0.10:
         parser.error("--yaw-delta-rad must be between -0.10 and 0.10")
-    if not 0.0 <= args.obstacle_stop_dist_m <= 0.10:
-        parser.error("--obstacle-stop-dist-m must be between 0 and 0.10")
+    if args.lateral_m != 0.0 or args.yaw_delta_rad != 0.0:
+        parser.error("final insertion permits axial travel only; return to recognition for lateral/heading alignment")
+    if not 0.05 <= args.obstacle_stop_dist_m <= 0.10:
+        parser.error("--obstacle-stop-dist-m must be between 0.05 and 0.10; protection cannot be disabled")
     if args.distance_m == 0.0 and args.lateral_m == 0.0 and args.yaw_delta_rad == 0.0:
         parser.error("distance, lateral and yaw adjustments cannot all be zero")
     if args.motion_mode == "open_speed" and (

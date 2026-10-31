@@ -8,7 +8,7 @@ import sys
 import time
 import uuid
 
-from probe_runner import Evidence, Refused, ResultUnknown, Robokit, ipv4, utc_now
+from probe_runner import Evidence, Refused, ResultUnknown, Robokit, ipv4, stopped_runtime, utc_now
 
 
 RELAY_API = 6001
@@ -24,12 +24,16 @@ def snapshot(client):
 
 
 def summary(state, battery):
-    do7 = next((row.get("status") for row in state.get("DO", [])
-                if isinstance(row, dict) and row.get("id") == 7), None)
+    outputs = state.get("DO")
+    matches = ([row for row in outputs if isinstance(row, dict)
+                and type(row.get("id")) is int and row["id"] == 7]
+               if isinstance(outputs, list) else [])
+    do7 = matches[0].get("status") if len(matches) == 1 else None
     return {
         "state": {key: state.get(key) for key in (
             "is_stop", "chassisIsStop", "charging", "manual_charge",
-            "auto_charge", "blocked", "emergency", "errors", "fatals")},
+            "auto_charge", "blocked", "emergency", "soft_emc", "errors", "fatals",
+            "vx", "vy", "w") if key in state},
         "do7": do7,
         "battery": {key: battery.get(key) for key in (
             "battery_level", "battery_temp", "charging", "manual_charge",
@@ -50,8 +54,9 @@ def finite_current(sample):
 
 def observation_safe(sample):
     state, battery = sample.get("state", {}), sample.get("battery", {})
-    return (state.get("is_stop") is True and state.get("chassisIsStop") is True
+    return (stopped_runtime(state)
             and state.get("blocked") is False and state.get("emergency") is False
+            and state.get("soft_emc", False) is False
             and state.get("errors") == [] and state.get("fatals") == []
             and state.get("manual_charge") is False
             and battery.get("manual_charge") is False)
@@ -133,13 +138,14 @@ def main(argv=None):
         before = summary(state, battery)
         blockers = []
         if args.enable:
-            if state.get("is_stop") is not True or state.get("chassisIsStop") is not True:
+            if not stopped_runtime(state):
                 blockers.append("vehicle is not confirmed stopped")
             if state.get("manual_charge") is not False:
                 blockers.append("manual charge signal is active")
             if state.get("charging") is not False or battery.get("charging") is not False:
                 blockers.append("vehicle is already charging")
-            if state.get("blocked") is not False or state.get("emergency") is not False:
+            if (state.get("blocked") is not False or state.get("emergency") is not False
+                    or state.get("soft_emc", False) is not False):
                 blockers.append("vehicle is blocked or in emergency")
             if state.get("errors") != [] or state.get("fatals") != []:
                 blockers.append("vehicle reports errors")

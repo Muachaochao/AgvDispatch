@@ -75,6 +75,12 @@ class PacketTests(unittest.TestCase):
             handshake.effective_limits(
                 {"max_charge_voltage": -0.0, "max_charge_current": -0.0})
 
+    def test_requested_limits_must_be_positive_finite_numbers(self):
+        battery = {"max_charge_voltage": 58.4, "max_charge_current": 20.0}
+        for value in (0, -1, True, "10", float("nan"), float("inf")):
+            with self.subTest(value=value), self.assertRaises(handshake.Refused):
+                handshake.effective_limits(battery, requested_current=value)
+
 
 def reply(response=None, **fields):
     return {"response_api": 11001, "response_sequence": 1,
@@ -83,6 +89,11 @@ def reply(response=None, **fields):
 
 
 class ResponseTests(unittest.TestCase):
+    def test_station_warning_is_attention_instead_of_ignored(self):
+        result = handshake.classify_exchange(reply({"ret_code": 0, "status": {"is_auto": True},
+                                                    "alarms": {"warnings": [{"code": 5201}]}}))
+        self.assertEqual("attention_required", result["outcome"])
+
     def test_small_ack_is_not_proof_of_automatic_mode_or_charging(self):
         assessment = handshake.classify_exchange(reply())
         self.assertEqual("acknowledged", assessment["outcome"])

@@ -48,6 +48,16 @@ class RelayTests(unittest.TestCase):
         self.assertEqual(6001, relay.RELAY_API)
         self.assertEqual(7, relay.RELAY_DO_ID)
 
+    def test_duplicate_or_missing_do7_feedback_is_unknown(self):
+        for outputs in (None, [], [{"id": 7, "status": False}] * 2):
+            self.assertIsNone(relay.summary({"DO": outputs}, {})["do7"])
+
+    def test_stop_flag_cannot_override_velocity_or_soft_emergency(self):
+        for key, value in (("vx", 0.1), ("w", float("nan")), ("soft_emc", True)):
+            sample = observation(1)
+            sample["state"][key] = value
+            self.assertFalse(relay.observation_safe(sample))
+
     def test_two_distinct_fresh_charging_readings_and_final_check_confirm(self):
         self.assertEqual(("charging_current_confirmed", True),
                          relay.relay_observation_result(

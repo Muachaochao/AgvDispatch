@@ -12,7 +12,7 @@ import sys
 import time
 import uuid
 
-from probe_runner import Evidence, Refused, ResultUnknown, Robokit, ipv4, utc_now
+from probe_runner import Evidence, Refused, ResultUnknown, Robokit, ipv4, stopped_runtime, utc_now
 
 
 HEADER = struct.Struct("!BBHLH6s")
@@ -114,7 +114,7 @@ def classify_exchange(record, require_auto_status=False):
         if not isinstance(alarms, dict):
             unknown.append("station alarms have an unknown shape")
         else:
-            for key in ("errors", "fatals"):
+            for key in ("errors", "fatals", "warnings"):
                 if key not in alarms:
                     continue
                 if not isinstance(alarms[key], list):
@@ -231,8 +231,11 @@ def effective_limits(battery, requested_voltage=None, requested_current=None):
         bms = float(bms)
         if not math.isfinite(bms) or bms <= 0:
             raise Refused("BMS " + key + " is not a positive finite limit")
-        if requested is not None and requested > bms:
-            raise Refused("requested charge %s exceeds BMS limit %.3f" % (label, bms))
+        if requested is not None:
+            if type(requested) not in (int, float) or not math.isfinite(requested) or requested <= 0:
+                raise Refused("requested charge " + label + " must be a positive finite number")
+            if requested > bms:
+                raise Refused("requested charge %s exceeds BMS limit %.3f" % (label, bms))
         values.append(requested if requested is not None else bms)
     return values[0], values[1]
 
@@ -273,7 +276,7 @@ def main(argv=None):
         blockers = []
         if not do7_is_confirmed_off(state):
             blockers.append("DO7 is not uniquely confirmed off before station handshake")
-        if state.get("is_stop") is not True or state.get("chassisIsStop") is not True:
+        if not stopped_runtime(state):
             blockers.append("vehicle is not confirmed stopped")
         if state.get("manual_charge") is not False or battery.get("manual_charge") is not False:
             blockers.append("manual charger signal is not false")
@@ -281,7 +284,8 @@ def main(argv=None):
             blockers.append("vehicle charging state is not false")
         if state.get("auto_charge") is not False or battery.get("auto_charge") is not False:
             blockers.append("auto-charge state is not false before the handshake")
-        if state.get("blocked") is not False or state.get("emergency") is not False:
+        if (state.get("blocked") is not False or state.get("emergency") is not False
+                or state.get("soft_emc", False) is not False):
             blockers.append("vehicle is blocked or in emergency")
         if state.get("errors") != [] or state.get("fatals") != []:
             blockers.append("vehicle reports errors")

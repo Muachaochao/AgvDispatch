@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """Guarded relative advance for the final charging-dock approach.
 
-Path mode performs one bounded odometry path, including the configured lateral
-and heading correction, then stops. The optional open-speed mode is only a
+Path mode performs one bounded axial odometry path, then stops. Uncalibrated
+lateral/heading corrections are refused. The optional open-speed mode is only a
 timed diagnostic: elapsed time never verifies travel distance or contact.
 Neither mode performs recognition, relay control or charger communication.
 """
@@ -91,10 +91,12 @@ class Module(BasicModule):
                 args.get("yaw_delta_rad", self.yaw_delta_rad))
             if not -0.10 <= self.yaw_delta_rad <= 0.10:
                 raise ValueError("yaw_delta_rad must be between -0.10 and 0.10 rad")
+            if self.lateral_m != 0.0 or self.yaw_delta_rad != 0.0:
+                raise ValueError("final insertion permits axial travel only; return to recognition for lateral/heading alignment")
             self.obstacle_stop_dist_m = finite_number(
                 args.get("obstacle_stop_dist_m", self.obstacle_stop_dist_m))
-            if not 0.0 <= self.obstacle_stop_dist_m <= 0.10:
-                raise ValueError("obstacle_stop_dist_m must be between 0 and 0.10 m")
+            if not 0.05 <= self.obstacle_stop_dist_m <= 0.10:
+                raise ValueError("obstacle_stop_dist_m must be between 0.05 and 0.10 m; protection cannot be disabled")
             if self.distance_m == 0.0 and self.lateral_m == 0.0:
                 if self.yaw_delta_rad == 0.0:
                     raise ValueError("distance_m, lateral_m and yaw_delta_rad cannot all be zero")

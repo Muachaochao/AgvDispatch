@@ -201,6 +201,27 @@ class ApproachTests(unittest.TestCase):
         self.assertIn("heading", robot.report["error"])
         self.assertEqual(0, robot.count("setPathOnRobot"))
 
+    def test_unstable_recognition_cannot_be_relaxed_to_five_degrees(self):
+        robot = FakeRobot()
+        module = self.drive(robot, {"run_id": "unstable", "stability_angle_deg": 5.0})
+        self.assertEqual(MoveStatus.FAILED, module.status)
+        self.assertEqual(0, robot.count("setPathOnRobot"))
+
+    def test_angle_median_handles_pi_wrap_without_reversing_docking_axis(self):
+        module = approach.Module(FakeRobot(), {"run_id": "wrapped"})
+        angles = [math.pi - 0.005, -math.pi + 0.002, math.pi - 0.001]
+        module.initial_samples = [{"target_world": {"x": 1.0, "y": 6.0, "angle": a}}
+                                  for a in angles]
+        target = module.stable_target()
+        self.assertAlmostEqual(math.pi - 0.001, target["angle"])
+
+    def test_twenty_mm_and_two_degree_spread_still_rejects_unstable_samples(self):
+        module = approach.Module(FakeRobot(), {"run_id": "spread"})
+        module.initial_samples = [{"target_world": {"x": 1.0, "y": 6.0, "angle": a}}
+                                  for a in [0.0, 0.01, 0.04]]
+        with self.assertRaisesRegex(ValueError, "unstable"):
+            module.stable_target()
+
     def test_bad_coordinate_profile_is_refused_before_motion(self):
         robot = FakeRobot()
         robot.getRecFile = lambda name: {
