@@ -62,6 +62,19 @@ class PacketTests(unittest.TestCase):
         self.assertEqual(22.0, payload["input"]["max_charge_current"])
         self.assertEqual(-0.83, payload["status"]["battery_current"])
 
+    def test_bms_limits_are_required_and_cannot_be_exceeded(self):
+        battery = {"max_charge_voltage": 54.95, "max_charge_current": 20.0}
+        self.assertEqual((54.95, 20.0), handshake.effective_limits(battery))
+        with self.assertRaises(handshake.Refused):
+            handshake.effective_limits(battery, 58.8, 20.0)
+        with self.assertRaises(handshake.Refused):
+            handshake.effective_limits(battery, 54.9, 22.0)
+
+    def test_missing_bms_limits_are_refused(self):
+        with self.assertRaises(handshake.Refused):
+            handshake.effective_limits(
+                {"max_charge_voltage": -0.0, "max_charge_current": -0.0})
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -4,6 +4,7 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import math
 from pathlib import Path
 import socket
 import struct
@@ -113,21 +114,38 @@ def build_payload(battery, voltage, current):
     }
 
 
+def effective_limits(battery, requested_voltage=None, requested_current=None):
+    values = []
+    for key, requested, label in (
+            ("max_charge_voltage", requested_voltage, "voltage"),
+            ("max_charge_current", requested_current, "current")):
+        bms = battery.get(key)
+        if isinstance(bms, bool) or not isinstance(bms, (int, float)):
+            raise Refused("BMS " + key + " is missing or non-numeric")
+        bms = float(bms)
+        if not math.isfinite(bms) or bms <= 0:
+            raise Refused("BMS " + key + " is not a positive finite limit")
+        if requested is not None and requested > bms:
+            raise Refused("requested charge %s exceeds BMS limit %.3f" % (label, bms))
+        values.append(requested if requested is not None else bms)
+    return values[0], values[1]
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--robot", required=True, type=ipv4)
     parser.add_argument("--expected-id", required=True)
     parser.add_argument("--charger", type=ipv4, default="192.168.98.11")
     parser.add_argument("--evidence-dir", required=True, type=Path)
-    parser.add_argument("--max-voltage", type=float, default=58.8)
-    parser.add_argument("--max-current", type=float, default=22.0)
+    parser.add_argument("--max-voltage", type=float)
+    parser.add_argument("--max-current", type=float)
     parser.add_argument("--observe-seconds", type=int, default=20)
     parser.add_argument("--execute", action="store_true",
                         help="send the one-shot request; without this flag only build evidence")
     args = parser.parse_args(argv)
-    if not 50.0 <= args.max_voltage <= 60.0:
+    if args.max_voltage is not None and not 50.0 <= args.max_voltage <= 60.0:
         parser.error("--max-voltage must be between 50 and 60 V")
-    if not 1.0 <= args.max_current <= 30.0:
+    if args.max_current is not None and not 1.0 <= args.max_current <= 30.0:
         parser.error("--max-current must be between 1 and 30 A")
     if not 5 <= args.observe_seconds <= 30:
         parser.error("--observe-seconds must be between 5 and 30")
@@ -160,12 +178,15 @@ def main(argv=None):
             blockers.append("vehicle reports errors")
         if blockers:
             raise Refused("; ".join(blockers))
-        payload = build_payload(battery, args.max_voltage, args.max_current)
+        voltage, current = effective_limits(
+            battery, args.max_voltage, args.max_current)
+        payload = build_payload(battery, voltage, current)
         packet = request_packet(payload)
         evidence.write_json("request.json", payload)
         evidence.write("request.bin", packet)
         result.update({
             "before": {"state": state_summary(state), "battery": battery_summary(battery)},
+            "effective_limits": {"max_voltage": voltage, "max_current": current},
             "request": payload, "request_sha256": hashlib.sha256(packet).hexdigest(),
         })
         if not args.execute:

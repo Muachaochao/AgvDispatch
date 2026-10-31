@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Perform one guarded 6005 charging-relay transition and observe the robot."""
+"""Perform one guarded DO7 transition and observe the robot."""
 import argparse
 import datetime as dt
 import math
@@ -11,8 +11,9 @@ import uuid
 from probe_runner import Evidence, Refused, ResultUnknown, Robokit, ipv4, utc_now
 
 
-RELAY_API = 6005
+RELAY_API = 6001
 RELAY_PORT = 19210
+RELAY_DO_ID = 7
 
 
 def snapshot(client):
@@ -96,10 +97,12 @@ def main(argv=None):
                 "message": "Relay request staged; no robot command was sent.",
             })
         else:
-            response = client.request(
-                RELAY_API, RELAY_PORT, {"status": args.enable}, mutation=True)
+            response = client.request(RELAY_API, RELAY_PORT, {
+                "id": RELAY_DO_ID,
+                "status": args.enable,
+            }, mutation=True)
             if not successful_relay_response(response):
-                raise Refused("6005 did not return an explicit successful ret_code")
+                raise Refused("6001 did not return an explicit successful ret_code")
             result["relay_response"] = response
             observations = []
             previous = None

@@ -32,6 +32,10 @@ class RelayTests(unittest.TestCase):
         self.assertIs(True, result["do7"])
         self.assertEqual(22.2, result["battery"]["current"])
 
+    def test_targets_the_documented_do_api_and_output(self):
+        self.assertEqual(6001, relay.RELAY_API)
+        self.assertEqual(7, relay.RELAY_DO_ID)
+
 
 if __name__ == "__main__":
     unittest.main()

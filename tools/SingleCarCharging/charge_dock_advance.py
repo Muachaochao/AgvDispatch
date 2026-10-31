@@ -16,6 +16,7 @@ from rbk import BasicModule, MoveStatus
 {
   "operation": {"value": "AdvanceByDistance", "default_value": ["AdvanceByDistance"], "type": "complex"},
   "distance_m": {"value": 0.10, "type": "float", "unit": "m"},
+  "reach_dist_m": {"value": 0.001, "type": "float", "unit": "m"},
   "max_speed_mps": {"value": 0.01, "type": "float", "unit": "m/s"},
   "expected_x": {"value": 0.0, "type": "float", "unit": "m"},
   "expected_y": {"value": 0.0, "type": "float", "unit": "m"},
@@ -47,6 +48,7 @@ class Module(BasicModule):
         self.phase = "initializing"
         self.started = time.monotonic()
         self.distance_m = 0.10
+        self.reach_dist_m = 0.001
         self.max_speed_mps = 0.01
         self.timeout_s = 30.0
         self.expected = None
@@ -68,8 +70,11 @@ class Module(BasicModule):
             if not isinstance(self.run_id, str) or not self.run_id or len(self.run_id) > 128:
                 raise ValueError("run_id must be a non-empty string of at most 128 characters")
             self.distance_m = finite_number(args.get("distance_m", self.distance_m))
-            if not 0.01 <= self.distance_m <= 0.10:
-                raise ValueError("distance_m must be between 0.01 and 0.10 m")
+            if not 0.005 <= self.distance_m <= 0.10:
+                raise ValueError("distance_m must be between 0.005 and 0.10 m")
+            self.reach_dist_m = finite_number(args.get("reach_dist_m", self.reach_dist_m))
+            if not 0.001 <= self.reach_dist_m <= 0.01:
+                raise ValueError("reach_dist_m must be between 0.001 and 0.01 m")
             self.max_speed_mps = finite_number(args.get("max_speed_mps", self.max_speed_mps))
             if not 0.005 <= self.max_speed_mps <= 0.02:
                 raise ValueError("max_speed_mps must be between 0.005 and 0.02 m/s")
@@ -106,6 +111,7 @@ class Module(BasicModule):
             "phase": self.phase,
             "status": int(self.status),
             "distance_m": self.distance_m,
+            "reach_dist_m": self.reach_dist_m,
             "max_speed_mps": self.max_speed_mps,
             "expected_start": self.expected,
             "start_pose": self.start_pose,
@@ -147,7 +153,7 @@ class Module(BasicModule):
             raise ValueError("robot heading is more than 0.08 rad from the expected start pose")
         self.start_pose = start
         r.resetPath()
-        r.setPathReachDist(0.01)
+        r.setPathReachDist(self.reach_dist_m)
         r.setPathReachAngle(0.01)
         r.setPathUseOdo(True)
         r.setPathBackMode(False)

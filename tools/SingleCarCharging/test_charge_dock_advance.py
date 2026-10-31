@@ -155,6 +155,19 @@ class AdvanceTests(unittest.TestCase):
         self.assertIn("distance_m", robot.report["error"])
         self.assertEqual(0, robot.count("setPathOnRobot"))
 
+    def test_reach_tolerance_must_be_at_most_one_centimetre(self):
+        robot = FakeRobot()
+        module = self.drive(robot, self.args(reach_dist_m=0.011))
+        self.assertEqual(MoveStatus.FAILED, module.status)
+        self.assertIn("reach_dist_m", robot.report["error"])
+        self.assertEqual(0, robot.count("setPathOnRobot"))
+
+    def test_fine_advance_uses_one_millimetre_reach_tolerance(self):
+        robot = FakeRobot()
+        module = self.drive(robot, self.args(distance_m=0.01, reach_dist_m=0.001))
+        self.assertEqual(MoveStatus.FINISHED, module.status)
+        self.assertIn(("setPathReachDist", 0.001), robot.calls)
+
     def test_unexpected_pose_is_refused_before_motion(self):
         robot = FakeRobot()
         module = self.drive(robot, self.args(expected_x=0.9))
