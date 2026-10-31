@@ -31,7 +31,8 @@ NAV_TASK_PREFIX = "charge-approach-"
 def prior_terminal_approach(state):
     status, task_id = state.get("task_status"), state.get("task_id")
     return (type(status) is int and status in (4, 5, 6, 7)
-            and isinstance(task_id, str) and task_id.startswith(NAV_TASK_PREFIX)
+            and isinstance(task_id, str)
+            and task_id.startswith((NAV_TASK_PREFIX, "charge-advance-"))
             and len(task_id) > len(NAV_TASK_PREFIX))
 
 

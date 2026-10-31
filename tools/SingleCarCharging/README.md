@@ -2,6 +2,8 @@
 
 此工具只验证 `charger/c0001.charger` 的识别结果。不会导航到充电桩、控制电机或 DO、启动充电、抢占控制权、取消其他任务，不能将探测完成记为自动充电通过。
 
+当前现场充电站参数、双触点观察和继续条件见[现场参数与对接观察](../../docs/commissioning/Kinco充电站现场参数与对接观察-20261031.md)。
+
 需要 Python 3，仅使用标准库。默认 `inspect` 只查询机器人身份、状态、电池、机构脚本列表和充电识别文件目录。指定 `--charger` 仅建立并关闭 20207、20204 的 TCP 连接，不发送充电桩应用数据；端口连通不证明协议兼容。
 
 ```powershell
@@ -39,3 +41,13 @@ python .\tools\SingleCarCharging\approach_runner.py --robot 192.168.98.66 --expe
 ```
 
 第一条命令只上传并回读校验脚本，不下发导航；第二条才执行一次粗接近。出现未知结果时只保留证据，不自动重发。第一段完成后核对桩侧缩回触点与车侧自动触点间隙，再决定是否进行第二段 0.20 m 接近和最终 0.14 m 接触段；不能把本次约 0.875 m 粗接近记为充电通过。
+
+完成粗接近后可执行一次不超过 0.10 m 的末端微进。`advance_runner.py` 会先核对车辆当前坐标和朝向，只允许沿当前车头方向前进，速度不得超过 0.01 m/s，并在路径到点后停止；它不识别、不横移、不控制充电继电器，也不与充电桩通信。
+
+```powershell
+python .\tools\SingleCarCharging\advance_runner.py --robot 192.168.98.66 --expected-id 1ccbd798eee24ccc --evidence-dir .\artifacts\single-car-advance --distance-m 0.10 --max-speed 0.01 --stage-only
+
+python .\tools\SingleCarCharging\advance_runner.py --robot 192.168.98.66 --expected-id 1ccbd798eee24ccc --evidence-dir .\artifacts\single-car-advance --distance-m 0.10 --max-speed 0.01
+```
+
+第二条命令会移动车辆，只在现场已确认桩头缩回、路径无人且急停可操作后执行。同一位置不可自动连续补发多个 0.10 m 分段。
