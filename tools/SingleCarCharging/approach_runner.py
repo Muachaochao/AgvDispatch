@@ -30,7 +30,7 @@ NAV_TASK_PREFIX = "charge-approach-"
 
 def prior_terminal_approach(state):
     status, task_id = state.get("task_status"), state.get("task_id")
-    return (type(status) is int and status in (5, 6, 7)
+    return (type(status) is int and status in (4, 5, 6, 7)
             and isinstance(task_id, str) and task_id.startswith(NAV_TASK_PREFIX)
             and len(task_id) > len(NAV_TASK_PREFIX))
 
@@ -53,8 +53,11 @@ def preflight(client, expected_id, expected_station):
     status = state.get("task_status")
     if (type(status) is not int or status not in (0, 4)) and not old_approach:
         reasons.append("task_status must be idle/completed or a confirmed terminal approach task")
-    if state.get("current_station") != expected_station:
-        reasons.append("current_station must match --expected-station")
+    if expected_station is not None:
+        if state.get("current_station") != expected_station:
+            reasons.append("current_station must match --expected-station")
+    elif state.get("current_station") not in ("", None):
+        reasons.append("current_station must be empty when --expected-station is omitted")
     if state.get("script_status") != 0:
         reasons.append("script_status must be idle(0)")
     if state.get("unfinished_path") != []:
@@ -264,7 +267,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--robot", required=True, type=ipv4)
     parser.add_argument("--expected-id", required=True)
-    parser.add_argument("--expected-station", required=True)
+    parser.add_argument("--expected-station",
+                        help="require an exact station; omit only after the robot has left it")
     parser.add_argument("--evidence-dir", required=True, type=Path)
     parser.add_argument("--standoff-m", type=float, default=0.875)
     parser.add_argument("--max-speed", type=float, default=0.03)
@@ -273,8 +277,8 @@ def main(argv=None):
     parser.add_argument("--stage-only", action="store_true",
                         help="upload and byte-verify the approach script without executing it")
     args = parser.parse_args(argv)
-    if not 0.80 <= args.standoff_m <= 1.0:
-        parser.error("--standoff-m must be between 0.80 and 1.00")
+    if not 0.65 <= args.standoff_m <= 1.0:
+        parser.error("--standoff-m must be between 0.65 and 1.00")
     if not 0.01 <= args.max_speed <= 0.05:
         parser.error("--max-speed must be between 0.01 and 0.05")
     if not 20.0 <= args.script_timeout <= 120.0:

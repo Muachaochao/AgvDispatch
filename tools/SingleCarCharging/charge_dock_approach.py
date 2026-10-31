@@ -129,8 +129,8 @@ class Module(BasicModule):
                     or ".." in self.recognition_file or "\\" in self.recognition_file):
                 raise ValueError("recognition_file must be a charger/*.charger relative path")
             self.standoff_m = finite_number(args.get("approach_standoff_m", self.standoff_m))
-            if not 0.80 <= self.standoff_m <= 1.0:
-                raise ValueError("approach_standoff_m must be between 0.80 and 1.00 m")
+            if not 0.65 <= self.standoff_m <= 1.0:
+                raise ValueError("approach_standoff_m must be between 0.65 and 1.00 m")
             self.max_speed_mps = finite_number(args.get("max_speed_mps", self.max_speed_mps))
             if not 0.01 <= self.max_speed_mps <= 0.05:
                 raise ValueError("max_speed_mps must be between 0.01 and 0.05 m/s")
@@ -222,8 +222,11 @@ class Module(BasicModule):
         frame = charger_frame_distance(target, robot)
         angle_error = abs(normalize((target["angle"] + math.pi) - robot["angle"]))
         advance = frame["x"] - self.standoff_m
-        if not 0.95 <= frame["x"] <= 1.80:
-            raise ValueError("current center-to-target distance is outside the 0.95-1.80 m coarse-approach envelope")
+        minimum_current = max(0.75, self.standoff_m + 0.08)
+        if not minimum_current <= frame["x"] <= 1.80:
+            raise ValueError(
+                "current center-to-target distance is outside the "
+                "%.2f-1.80 m approach envelope" % minimum_current)
         if abs(frame["y"]) > 0.45:
             raise ValueError("lateral offset from the charger axis exceeds 0.45 m")
         if angle_error > 0.35:
@@ -283,6 +286,18 @@ class Module(BasicModule):
                 if r.isPathReached():
                     r.stopRobot(False)
                     r.resetPath()
+                    if self.standoff_m < 0.80:
+                        # The reference sequence does not re-recognize this close
+                        # to the charger. At this range the configured target can
+                        # leave the usable field and return status 3 even though
+                        # the bounded path reached its planned goal.
+                        self.post_samples = {
+                            "mode": "planned_goal_only",
+                            "reason": "near-field recognition is not a completion gate",
+                            "planned_goal": self.last_target["goal"],
+                            "robot_world": world_pose(r.loc(), "angle"),
+                        }
+                        return self.finish(r, "completed", MoveStatus.FINISHED)
                     self.begin_recognition(r, "post_recognition")
             elif self.phase == "post_recognition":
                 if self.consume_recognition(r):

@@ -185,6 +185,15 @@ class ApproachTests(unittest.TestCase):
         self.assertIn("lateral offset", robot.report["error"])
         self.assertEqual(0, robot.count("setPathOnRobot"))
 
+    def test_near_field_stage_uses_planned_goal_without_post_recognition(self):
+        robot = FakeRobot(robot={"x": 0.75, "y": 4.75, "angle": math.pi / 2})
+        module = self.drive(robot, {"run_id": "near", "approach_standoff_m": 0.675})
+        self.assertEqual(MoveStatus.FINISHED, module.status)
+        self.assertEqual(1, robot.count("setPathOnRobot"))
+        self.assertEqual(3, robot.count("getRecResult"))
+        self.assertEqual("planned_goal_only", robot.report["post_check"]["mode"])
+        self.assertIn("completed", robot.report["phase"])
+
     def test_heading_error_is_refused(self):
         robot = FakeRobot(robot={"x": 0.75, "y": 4.7, "angle": 0.0})
         module = self.drive(robot, {"run_id": "heading"})
