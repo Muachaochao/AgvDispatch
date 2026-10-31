@@ -70,14 +70,14 @@ class Module(BasicModule):
             if not isinstance(self.run_id, str) or not self.run_id or len(self.run_id) > 128:
                 raise ValueError("run_id must be a non-empty string of at most 128 characters")
             self.distance_m = finite_number(args.get("distance_m", self.distance_m))
-            if not 0.005 <= self.distance_m <= 0.10:
-                raise ValueError("distance_m must be between 0.005 and 0.10 m")
+            if not 0.001 <= self.distance_m <= 0.10:
+                raise ValueError("distance_m must be between 0.001 and 0.10 m")
             self.reach_dist_m = finite_number(args.get("reach_dist_m", self.reach_dist_m))
             if not 0.001 <= self.reach_dist_m <= 0.01:
                 raise ValueError("reach_dist_m must be between 0.001 and 0.01 m")
             self.max_speed_mps = finite_number(args.get("max_speed_mps", self.max_speed_mps))
-            if not 0.005 <= self.max_speed_mps <= 0.02:
-                raise ValueError("max_speed_mps must be between 0.005 and 0.02 m/s")
+            if not 0.002 <= self.max_speed_mps <= 0.02:
+                raise ValueError("max_speed_mps must be between 0.002 and 0.02 m/s")
             self.timeout_s = finite_number(args.get("timeout_s", self.timeout_s))
             if not 10.0 <= self.timeout_s <= 45.0:
                 raise ValueError("timeout_s must be between 10 and 45 seconds")

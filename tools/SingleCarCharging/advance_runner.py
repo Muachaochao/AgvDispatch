@@ -193,12 +193,12 @@ def main(argv=None):
     parser.add_argument("--track-timeout", type=float, default=45.0)
     parser.add_argument("--stage-only", action="store_true")
     args = parser.parse_args(argv)
-    if not 0.005 <= args.distance_m <= 0.10:
-        parser.error("--distance-m must be between 0.005 and 0.10")
+    if not 0.001 <= args.distance_m <= 0.10:
+        parser.error("--distance-m must be between 0.001 and 0.10")
     if not 0.001 <= args.reach_dist_m <= 0.01:
         parser.error("--reach-dist-m must be between 0.001 and 0.01")
-    if not 0.005 <= args.max_speed <= 0.02:
-        parser.error("--max-speed must be between 0.005 and 0.02")
+    if not 0.002 <= args.max_speed <= 0.02:
+        parser.error("--max-speed must be between 0.002 and 0.02")
     if not 10.0 <= args.script_timeout <= 45.0:
         parser.error("--script-timeout must be between 10 and 45")
     if not 10.0 <= args.track_timeout <= 60.0:
