@@ -24,6 +24,7 @@ from rbk import BasicModule, MoveStatus
   "reach_dist_m": {"value": 0.001, "type": "float", "unit": "m"},
   "max_speed_mps": {"value": 0.01, "type": "float", "unit": "m/s"},
   "motion_mode": {"value": "path", "default_value": ["path", "open_speed"], "type": "complex"},
+  "alignment_stage": {"value": false, "type": "bool"},
   "expected_x": {"value": 0.0, "type": "float", "unit": "m"},
   "expected_y": {"value": 0.0, "type": "float", "unit": "m"},
   "expected_angle": {"value": 0.0, "type": "float", "unit": "rad"},
@@ -60,6 +61,7 @@ class Module(BasicModule):
         self.reach_dist_m = 0.001
         self.max_speed_mps = 0.01
         self.motion_mode = "path"
+        self.alignment_stage = False
         self.open_speed_started = None
         self.timeout_s = 30.0
         self.expected = None
@@ -91,7 +93,10 @@ class Module(BasicModule):
                 args.get("yaw_delta_rad", self.yaw_delta_rad))
             if not -0.10 <= self.yaw_delta_rad <= 0.10:
                 raise ValueError("yaw_delta_rad must be between -0.10 and 0.10 rad")
-            if self.lateral_m != 0.0 or self.yaw_delta_rad != 0.0:
+            self.alignment_stage = args.get("alignment_stage", False)
+            if not isinstance(self.alignment_stage, bool):
+                raise ValueError("alignment_stage must be boolean")
+            if (self.lateral_m != 0.0 or self.yaw_delta_rad != 0.0) and not self.alignment_stage:
                 raise ValueError("final insertion permits axial travel only; return to recognition for lateral/heading alignment")
             self.obstacle_stop_dist_m = finite_number(
                 args.get("obstacle_stop_dist_m", self.obstacle_stop_dist_m))
@@ -114,6 +119,14 @@ class Module(BasicModule):
                     or self.lateral_m != 0 or self.yaw_delta_rad != 0):
                 raise ValueError(
                     "open_speed mode only permits 0 < distance_m <= 0.01 without lateral/yaw")
+            if self.alignment_stage and (
+                    abs(self.distance_m) > 0.12
+                    or abs(self.yaw_delta_rad) > 0.08
+                    or self.max_speed_mps > 0.005
+                    or self.motion_mode != "path"):
+                raise ValueError(
+                    "alignment_stage limits travel to 0.12 m, yaw to 0.08 rad, "
+                    "speed to 0.005 m/s and requires path mode")
             self.timeout_s = finite_number(args.get("timeout_s", self.timeout_s))
             if not 10.0 <= self.timeout_s <= 45.0:
                 raise ValueError("timeout_s must be between 10 and 45 seconds")
@@ -153,6 +166,7 @@ class Module(BasicModule):
             "reach_dist_m": self.reach_dist_m,
             "max_speed_mps": self.max_speed_mps,
             "motion_mode": self.motion_mode,
+            "alignment_stage": self.alignment_stage,
             "expected_start": self.expected,
             "start_pose": self.start_pose,
             "final_pose": self.final_pose,

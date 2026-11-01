@@ -231,11 +231,24 @@ def session_limits(battery, args):
     return effective_limits(battery, args.max_voltage, args.max_current), "bms"
 
 
-def ensure_electrical_limits(battery, limits):
+def ensure_electrical_limits(battery, limits, tolerances=(0.0, 0.0)):
     voltage, current = battery.get("voltage"), battery.get("current")
     if not finite_number(voltage) or not finite_number(current):
         raise ResultUnknown("battery electrical feedback is missing or non-finite")
-    if float(voltage) > limits[0] or float(current) > limits[1]:
+    bms_voltage = battery.get("max_charge_voltage")
+    bms_current = battery.get("max_charge_current")
+    if not finite_number(bms_voltage) or not finite_number(bms_current):
+        raise Refused("BMS charge limits are missing or non-finite")
+    voltage_tolerance, current_tolerance = tolerances
+    # A lower explicit request may tolerate charger control overshoot, but the
+    # allowance is always clamped by the live BMS hard limit.
+    allowed_voltage = min(
+        float(limits[0]) + max(0.0, float(voltage_tolerance)),
+        float(bms_voltage))
+    allowed_current = min(
+        float(limits[1]) + max(0.0, float(current_tolerance)),
+        float(bms_current))
+    if float(voltage) > allowed_voltage or float(current) > allowed_current:
         raise Refused("measured battery voltage/current exceeds active BMS/request limit")
 
 
@@ -285,6 +298,26 @@ def station_output_stopped(response):
             and isinstance(response.get("output"), dict)
             and finite_number(response["output"].get("current"))
             and abs(float(response["output"]["current"])) <= 0.1)
+
+
+def enforce_station_requested_limits(response, payload, tolerances=(0.0, 0.0)):
+    output = response.get("output") if isinstance(response, dict) else None
+    requested = payload.get("input") if isinstance(payload, dict) else None
+    if not isinstance(output, dict) or not isinstance(requested, dict):
+        raise Refused("station status is missing requested-limit evidence")
+    checks = (
+        ("max_voltage", "max_charge_voltage", tolerances[0]),
+        ("max_current", "max_charge_current", tolerances[1]),
+    )
+    for output_key, request_key, tolerance in checks:
+        configured = output.get(output_key)
+        requested_value = requested.get(request_key)
+        if not finite_number(configured) or not finite_number(requested_value):
+            raise Refused("station requested-limit evidence is missing or non-finite")
+        if float(configured) > float(requested_value) + max(0.0, float(tolerance)):
+            raise Refused(
+                "station did not apply requested %s: requested %.3f, configured %.3f"
+                % (request_key, float(requested_value), float(configured)))
 
 
 class Freshness:
@@ -433,7 +466,10 @@ def run_session(client, args, run_id, evidence):
         raise Refused("; ".join(blockers))
 
     (voltage, current), limits_source = session_limits(battery, args)
-    ensure_electrical_limits(battery, (voltage, current))
+    ensure_electrical_limits(
+        battery,
+        (voltage, current),
+        (args.limit_voltage_tolerance, args.limit_current_tolerance))
     payload = build_payload(battery, voltage, current)
     result = {
         "outcome": "not_started",
@@ -499,6 +535,12 @@ def run_session(client, args, run_id, evidence):
             problem = station_problem(response, require_status=name == "status")
             if problem:
                 raise Refused(name + ": " + problem)
+            if name == "status":
+                enforce_station_requested_limits(
+                    response,
+                    active_payload,
+                    (args.limit_voltage_tolerance,
+                     args.limit_current_tolerance))
             freshness.check("station_" + name, response)
         return responses["ack"], responses["status"]
 
@@ -543,7 +585,10 @@ def run_session(client, args, run_id, evidence):
                 or battery.get("charging") is not False):
             raise Refused("relay/charging state changed before enable")
         (latest_voltage, latest_current), _ = session_limits(battery, args)
-        ensure_electrical_limits(battery, (latest_voltage, latest_current))
+        ensure_electrical_limits(
+            battery,
+            (latest_voltage, latest_current),
+            (args.limit_voltage_tolerance, args.limit_current_tolerance))
         if (payload["input"]["max_charge_voltage"] > latest_voltage
                 or payload["input"]["max_charge_current"] > latest_current):
             raise Refused("BMS limits fell after the last station heartbeat")
@@ -559,6 +604,9 @@ def run_session(client, args, run_id, evidence):
 
         started = time.monotonic()
         deadline = started + args.duration_seconds
+        connection_deadline = started + args.connection_confirm_seconds
+        connection_established = False
+        connection_lost_at = None
         next_heartbeat = started
         last_station = status
         station_at = time.monotonic()
@@ -570,8 +618,35 @@ def run_session(client, args, run_id, evidence):
             observations.append(sample)
             ensure_safe(state, battery)
             active_limits, _ = session_limits(battery, args)
-            ensure_electrical_limits(battery, active_limits)
-            if not interval.observe(time.monotonic(), positive_charge(state, battery)):
+            ensure_electrical_limits(
+                battery,
+                active_limits,
+                (args.limit_voltage_tolerance, args.limit_current_tolerance))
+            charging_now = positive_charge(state, battery)
+            sampled_at = time.monotonic()
+            if not connection_established and sampled_at > connection_deadline:
+                result["connection_aborted_after_seconds"] = round(sampled_at - started, 3)
+                raise Refused("charging connection was not established within %.1f seconds; "
+                              "stop output and realign the vehicle" % args.connection_confirm_seconds)
+            if charging_now:
+                if not connection_established:
+                    result["connection_confirmed_after_seconds"] = round(sampled_at - started, 3)
+                connection_established = True
+                connection_lost_at = None
+            elif not connection_established and time.monotonic() >= connection_deadline:
+                result["connection_aborted_after_seconds"] = round(
+                    time.monotonic() - started, 3)
+                raise Refused(
+                    "charging connection was not established within %.1f seconds; "
+                    "stop output and realign the vehicle" %
+                    args.connection_confirm_seconds)
+            elif connection_established:
+                if connection_lost_at is None:
+                    connection_lost_at = sampled_at
+                if sampled_at - connection_lost_at >= args.connection_confirm_seconds:
+                    result["connection_lost_for_seconds"] = round(sampled_at - connection_lost_at, 3)
+                    raise Refused("charging current was lost continuously; stop output and inspect docking")
+            if not interval.observe(time.monotonic(), charging_now):
                 raise ResultUnknown("vehicle sampling gap exceeded freshness limit")
 
             now = time.monotonic()
@@ -674,7 +749,11 @@ def main(argv=None):
     parser.add_argument("--auto-wait-seconds", type=float, default=12.0)
     parser.add_argument("--confirm-samples", type=int, default=3)
     parser.add_argument("--minimum-positive-seconds", type=float, default=60.0)
+    parser.add_argument("--connection-confirm-seconds", type=float, default=5.0,
+                        help="stop and realign if charging current does not start by this deadline")
     parser.add_argument("--max-temperature", type=float, default=45.0)
+    parser.add_argument("--limit-voltage-tolerance", type=float, default=0.5)
+    parser.add_argument("--limit-current-tolerance", type=float, default=0.75)
     parser.add_argument("--allow-configured-limits", action="store_true",
                         help="deprecated: never substitutes for unknown BMS limits")
     parser.add_argument("--max-voltage", type=float)
@@ -693,8 +772,14 @@ def main(argv=None):
         parser.error("--confirm-samples must be between 1 and 10")
     if not 1.0 <= args.minimum_positive_seconds <= args.duration_seconds:
         parser.error("--minimum-positive-seconds must be between 1 and duration")
+    if not 1.0 <= args.connection_confirm_seconds <= min(30.0, args.duration_seconds):
+        parser.error("--connection-confirm-seconds must be between 1 and 30 seconds and must not exceed duration")
     if not 20.0 <= args.max_temperature <= 60.0:
         parser.error("--max-temperature must be between 20 and 60")
+    if not 0.0 <= args.limit_voltage_tolerance <= 1.0:
+        parser.error("--limit-voltage-tolerance must be between 0 and 1 V")
+    if not 0.0 <= args.limit_current_tolerance <= 2.0:
+        parser.error("--limit-current-tolerance must be between 0 and 2 A")
     if args.max_voltage is not None and not 50.0 <= args.max_voltage <= 60.0:
         parser.error("--max-voltage must be between 50 and 60")
     if args.max_current is not None and not 1.0 <= args.max_current <= 30.0:

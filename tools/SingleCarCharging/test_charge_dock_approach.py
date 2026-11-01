@@ -222,6 +222,17 @@ class ApproachTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unstable"):
             module.stable_target()
 
+    def test_one_clear_angle_outlier_requires_a_new_stable_triplet(self):
+        module = approach.Module(FakeRobot(), {"run_id": "outlier"})
+        module.initial_samples = [
+            {"target_world": {"x": 1.02778, "y": 6.86236, "angle": -1.54404}},
+            {"target_world": {"x": 1.02909, "y": 6.87636, "angle": -1.59414}},
+            {"target_world": {"x": 1.02778, "y": 6.86246, "angle": -1.52765}},
+        ]
+        with self.assertRaisesRegex(ValueError, "unstable"):
+            module.stable_target()
+        self.assertFalse(module.motion_commanded)
+
     def test_bad_coordinate_profile_is_refused_before_motion(self):
         robot = FakeRobot()
         robot.getRecFile = lambda name: {

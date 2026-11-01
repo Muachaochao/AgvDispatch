@@ -108,6 +108,7 @@ class Module(BasicModule):
         self.current_result = None
         self.post_sample = None
         self.post_samples = None
+        self.stability_evidence = None
         self.motion_commanded = False
         self.charging_commanded = False
         self.error = None
@@ -162,6 +163,7 @@ class Module(BasicModule):
             "approach_standoff_m": self.standoff_m,
             "max_speed_mps": self.max_speed_mps,
             "initial_samples": self.initial_samples,
+            "stability_evidence": self.stability_evidence,
             "post_sample": self.post_sample,
             "post_check": self.post_samples,
             "robot_world": robot,
@@ -218,22 +220,32 @@ class Module(BasicModule):
         targets = [sample["target_world"] for sample in self.initial_samples]
         if len(targets) != 3:
             raise ValueError("exactly three fresh recognition samples are required")
-        for i, first in enumerate(targets):
-            for second in targets[i + 1:]:
-                if (math.hypot(first["x"] - second["x"], first["y"] - second["y"]) > 0.02
-                        or abs(normalize(first["angle"] - second["angle"])) > self.stability_angle_rad):
-                    raise ValueError(
-                        "recognition samples are unstable (20 mm / %.1f degrees)"
-                        % math.degrees(self.stability_angle_rad))
-        # Use the median of three observations so one noisy direction sample
-        # cannot become the commanded docking target.
-        anchor = targets[0]["angle"]
-        angles = sorted(anchor + normalize(t["angle"] - anchor) for t in targets)
-        return {
-            "x": sorted(t["x"] for t in targets)[len(targets) // 2],
-            "y": sorted(t["y"] for t in targets)[len(targets) // 2],
-            "angle": normalize(angles[len(angles) // 2]),
-        }
+
+        def stable(first, second):
+            return (math.hypot(first["x"] - second["x"], first["y"] - second["y"]) <= 0.02
+                    and abs(normalize(first["angle"] - second["angle"]))
+                    <= self.stability_angle_rad)
+
+        def median_target(selected):
+            anchor = selected[0]["angle"]
+            angles = sorted(anchor + normalize(t["angle"] - anchor) for t in selected)
+            return {
+                "x": sorted(t["x"] for t in selected)[len(selected) // 2],
+                "y": sorted(t["y"] for t in selected)[len(selected) // 2],
+                "angle": normalize(angles[len(angles) // 2]),
+            }
+
+        if all(stable(first, second)
+               for i, first in enumerate(targets)
+               for second in targets[i + 1:]):
+            self.stability_evidence = "three_samples_within_position_and_angle_limits"
+            return median_target(targets)
+
+        # An outlier is evidence of an unstable target, not permission to
+        # steer from two samples. Acquire a new stable triplet before motion.
+        raise ValueError(
+            "recognition samples are unstable (20 mm / %.1f degrees)"
+            % math.degrees(self.stability_angle_rad))
 
     def start_after_initial_recognition(self, r):
         target = self.stable_target()

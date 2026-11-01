@@ -26,7 +26,11 @@ def snapshot(enabled=False):
 def station_status(auto=True, current=20.0):
     return {"ret_code": 0, "alarms": {"errors": []},
             "status": {"is_auto": auto, "is_emc": False, "is_manual": False},
-            "output": {"current": current}}
+            "output": {
+                "current": current,
+                "max_voltage": 58.4,
+                "max_current": 20.0,
+            }}
 
 
 class Clock:
@@ -92,6 +96,8 @@ def args():
                            heartbeat_seconds=0.5, poll_seconds=0.25,
                            auto_wait_seconds=1.0, confirm_samples=3,
                            minimum_positive_seconds=1.0, max_temperature=45,
+                           connection_confirm_seconds=1.0,
+                           limit_voltage_tolerance=0.0, limit_current_tolerance=0.0,
                            max_voltage=None, max_current=None,
                            allow_configured_limits=False)
 
@@ -179,6 +185,19 @@ class HelpersTests(unittest.TestCase):
         self.assertFalse(session.station_output_stopped({"ret_code": 0}))
         self.assertTrue(session.station_output_stopped(station_status(False, 0)))
 
+    def test_station_must_apply_lower_requested_limits(self):
+        payload = {"input": {
+            "max_charge_voltage": 56.0,
+            "max_charge_current": 10.0,
+        }}
+        response = {
+            "output": {"max_voltage": 56.0, "max_current": 10.0},
+        }
+        session.enforce_station_requested_limits(response, payload)
+        response["output"]["max_current"] = 20.0
+        with self.assertRaisesRegex(session.Refused, "did not apply"):
+            session.enforce_station_requested_limits(response, payload)
+
     def test_freshness_compares_source_progress_not_host_clock_offset(self):
         freshness = session.Freshness()
         freshness.check("station", {"create_on": "2026-08-13T00:00:00+08:00"})
@@ -209,6 +228,24 @@ class HelpersTests(unittest.TestCase):
             with self.subTest(field=field, value=value), self.assertRaises(
                     (session.Refused, session.ResultUnknown)):
                 session.ensure_electrical_limits(changed, (58.4, 20.0))
+
+    def test_lower_request_tolerance_is_bounded_by_live_bms_limit(self):
+        _, battery = snapshot(True)
+        battery["voltage"] = 53.43
+        battery["current"] = 8.67
+        session.ensure_electrical_limits(
+            battery, (56.0, 8.0), (0.5, 0.75))
+        battery["current"] = 8.76
+        with self.assertRaises(session.Refused):
+            session.ensure_electrical_limits(
+                battery, (56.0, 8.0), (0.5, 0.75))
+        battery["current"] = 11.9
+        session.ensure_electrical_limits(
+            battery, (56.0, 10.0), (0.5, 2.0))
+        battery["current"] = 20.5
+        with self.assertRaises(session.Refused):
+            session.ensure_electrical_limits(
+                battery, (56.0, 20.0), (0.5, 0.75))
 
     def test_station_exchange_records_intent_before_send_and_matches_sequence(self):
         evidence = Evidence()
@@ -245,7 +282,7 @@ class HelpersTests(unittest.TestCase):
             with self.subTest(sequence=sequence), self.assertRaises((ValueError, ConnectionError)):
                 session.exchange_on_open(FramedStream(), {}, 9, Evidence(), "bad")
 class SessionTests(unittest.TestCase):
-    def run_fake(self, client=None, exchange=None, read=None):
+    def run_fake(self, client=None, exchange=None, read=None, options=None):
         client = client or Client()
         clock = Clock()
         streams = (Stream("ack"), Stream("status"))
@@ -268,7 +305,7 @@ class SessionTests(unittest.TestCase):
                 patch.object(session, "connect_charger", return_value=streams), \
                 patch.object(session, "exchange_on_open", side_effect=default_exchange), \
                 patch.object(session, "battery_snapshot", side_effect=default_read):
-            result = session.run_session(client, args(), "offline-run", evidence)
+            result = session.run_session(client, options or args(), "offline-run", evidence)
         self.assertTrue(all(stream.closed for stream in streams))
         return result, client, commands
 
@@ -289,6 +326,50 @@ class SessionTests(unittest.TestCase):
         self.assertTrue(result["charging_interval_verified"])
         self.assertFalse(result["charging_test_passed"])
         self.assertEqual("shutdown_not_confirmed", result["outcome"])
+
+    def test_connection_time_records_first_positive_sample_only(self):
+        result, _, _ = self.run_fake()
+        self.assertEqual(0.0, result["connection_confirmed_after_seconds"])
+        self.assertGreater(result["continuous_positive_seconds"], 1.0)
+
+    def test_positive_sample_after_connection_deadline_is_not_accepted(self):
+        def read(values, client, clock):
+            if client.enabled:
+                clock.sleep(1.25)
+            return values
+        result, client, _ = self.run_fake(read=read)
+        self.assertNotIn("connection_confirmed_after_seconds", result)
+        self.assertIn("not established", result["error"])
+        self.assertFalse(client.enabled)
+        self.assertTrue(result["shutdown"]["verified"])
+
+    def test_continuous_current_loss_stops_before_session_duration(self):
+        options = args()
+        options.duration_seconds = 10.0
+        def read(values, client, clock):
+            if client.enabled and clock.now >= 0.5:
+                values[0]["charging"] = False
+                values[1]["charging"] = False
+                values[1]["current"] = -0.8
+            return values
+        result, client, _ = self.run_fake(read=read, options=options)
+        self.assertIn("lost continuously", result["error"])
+        self.assertEqual(1.0, result["connection_lost_for_seconds"])
+        self.assertFalse(result["charging_test_passed"])
+        self.assertTrue(result["shutdown"]["verified"])
+        self.assertFalse(client.enabled)
+
+    def test_short_current_dip_resets_interval_and_can_recover(self):
+        options = args()
+        options.duration_seconds = 3.0
+        def read(values, client, clock):
+            if client.enabled and 0.5 <= clock.now < 0.75:
+                values[1]["current"] = -0.8
+            return values
+        result, _, _ = self.run_fake(read=read, options=options)
+        self.assertTrue(result["charging_test_passed"])
+        self.assertEqual(0.0, result["connection_confirmed_after_seconds"])
+        self.assertLess(result["continuous_positive_seconds"], 2.25)
 
     def test_unknown_enable_still_sends_off_once_and_preserves_original_error(self):
         client = Client()
@@ -376,6 +457,22 @@ class SessionTests(unittest.TestCase):
         result, _, _ = self.run_fake(exchange=exchange)
         self.assertIn("ack", result["error"])
         self.assertFalse(result["charging_test_passed"])
+
+    def test_no_connection_aborts_before_full_duration_and_stops_output(self):
+        def read(values, client, clock):
+            if client.enabled:
+                values[0]["charging"] = False
+                values[1]["charging"] = False
+                values[1]["current"] = -1.0
+            return values
+
+        result, client, _ = self.run_fake(read=read)
+        self.assertEqual("refused_or_failed", result["outcome"])
+        self.assertIn("not established", result["error"])
+        self.assertLess(result["connection_aborted_after_seconds"], 2.0)
+        self.assertTrue(result["shutdown"]["verified"])
+        self.assertFalse(result["charging_test_passed"])
+        self.assertFalse(client.enabled)
 
 
 if __name__ == "__main__":

@@ -56,6 +56,24 @@ class Client:
 
 
 class MotionGuardTests(unittest.TestCase):
+    def test_script_timeout_covers_required_axial_travel(self):
+        advance_runner.validate_script_timeout(0.30, 0.01, 40.0)
+        with self.assertRaisesRegex(advance_runner.Refused, "at least"):
+            advance_runner.validate_script_timeout(0.30, 0.01, 30.0)
+
+    def test_alignment_stage_is_explicit_and_bounded(self):
+        advance_runner.validate_alignment_options(
+            0.10, -0.014, 0.073, 0.003, "path", True)
+        with self.assertRaisesRegex(ValueError, "requires --alignment-stage"):
+            advance_runner.validate_alignment_options(
+                0.10, -0.014, 0.073, 0.003, "path", False)
+        with self.assertRaisesRegex(ValueError, "speed"):
+            advance_runner.validate_alignment_options(
+                0.10, -0.014, 0.073, 0.01, "path", True)
+        with self.assertRaisesRegex(ValueError, "yaw"):
+            advance_runner.validate_alignment_options(
+                0.10, -0.014, 0.081, 0.003, "path", True)
+
     def test_completed_and_cancelled_retained_tasks_need_fresh_confirmation(self):
         for status in (4, 6):
             state = dict(idle(), task_status=status)

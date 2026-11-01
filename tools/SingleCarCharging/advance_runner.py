@@ -31,6 +31,30 @@ ADVANCE_MARKER = "charge_dock_advance_v1"
 NAV_TASK_PREFIX = "charge-advance-"
 
 
+def validate_script_timeout(distance_m, max_speed, script_timeout):
+    minimum = 10.0 + abs(float(distance_m)) / float(max_speed)
+    if float(script_timeout) < minimum:
+        raise Refused(
+            "script timeout %.1f s is insufficient for %.3f m at %.3f m/s; "
+            "at least %.1f s is required" %
+            (float(script_timeout), float(distance_m), float(max_speed), minimum))
+
+
+def validate_alignment_options(distance_m, lateral_m, yaw_delta_rad,
+                               max_speed, motion_mode, alignment_stage):
+    if lateral_m == 0.0 and yaw_delta_rad == 0.0:
+        return
+    if not alignment_stage:
+        raise ValueError(
+            "lateral/heading correction requires --alignment-stage after retracting from the dock")
+    if motion_mode != "path":
+        raise ValueError("alignment stage requires path motion")
+    if abs(distance_m) > 0.12 or max_speed > 0.005 or abs(yaw_delta_rad) > 0.08:
+        raise ValueError(
+            "alignment stage limits travel to 0.12 m, yaw to 0.08 rad "
+            "and speed to 0.005 m/s")
+
+
 def matching_report(value, run_id):
     if isinstance(value, str):
         try:
@@ -125,6 +149,12 @@ def track_advance(client, task_id, run_id, timeout_s):
 
 
 def run_advance(client, args, run_id):
+    validate_script_timeout(
+        args.distance_m, args.max_speed, args.script_timeout)
+    validate_alignment_options(
+        args.distance_m, args.lateral_m, args.yaw_delta_rad,
+        args.max_speed, args.motion_mode,
+        getattr(args, "alignment_stage", False))
     source = Path(__file__).with_name("charge_dock_advance.py").read_bytes()
     digest = hashlib.sha256(source).hexdigest()
     relative_path = "charge_dock_advance_%s.py" % digest[:12]
@@ -144,6 +174,7 @@ def run_advance(client, args, run_id):
         "lateral_m": args.lateral_m, "yaw_delta_rad": args.yaw_delta_rad,
         "obstacle_stop_dist_m": args.obstacle_stop_dist_m,
         "motion_mode": args.motion_mode,
+        "alignment_stage": getattr(args, "alignment_stage", False),
         "reach_dist_m": args.reach_dist_m, "max_speed_mps": args.max_speed, "start": start,
         "contact_and_charging_enabled": False,
     })
@@ -189,6 +220,7 @@ def run_advance(client, args, run_id):
             "lateral_m": args.lateral_m, "yaw_delta_rad": args.yaw_delta_rad,
             "obstacle_stop_dist_m": args.obstacle_stop_dist_m,
             "motion_mode": args.motion_mode,
+            "alignment_stage": getattr(args, "alignment_stage", False),
             "reach_dist_m": args.reach_dist_m, "max_speed_mps": args.max_speed,
             "expected_x": start["x"], "expected_y": start["y"],
             "expected_angle": start["angle"], "timeout_s": args.script_timeout,
@@ -218,8 +250,11 @@ def main(argv=None):
     parser.add_argument("--motion-mode", choices=("path", "open_speed"), default="path")
     parser.add_argument("--reach-dist-m", type=float, default=0.001)
     parser.add_argument("--max-speed", type=float, default=0.01)
-    parser.add_argument("--script-timeout", type=float, default=30.0)
+    parser.add_argument("--script-timeout", type=float, default=40.0)
     parser.add_argument("--track-timeout", type=float, default=45.0)
+    parser.add_argument(
+        "--alignment-stage", action="store_true",
+        help="permit one bounded lateral/heading correction after the vehicle has been retracted")
     parser.add_argument("--stage-only", action="store_true")
     args = parser.parse_args(argv)
     if not -0.30 <= args.distance_m <= 0.15:
@@ -228,8 +263,6 @@ def main(argv=None):
         parser.error("--lateral-m must be between -0.02 and 0.02")
     if not -0.10 <= args.yaw_delta_rad <= 0.10:
         parser.error("--yaw-delta-rad must be between -0.10 and 0.10")
-    if args.lateral_m != 0.0 or args.yaw_delta_rad != 0.0:
-        parser.error("final insertion permits axial travel only; return to recognition for lateral/heading alignment")
     if not 0.05 <= args.obstacle_stop_dist_m <= 0.10:
         parser.error("--obstacle-stop-dist-m must be between 0.05 and 0.10; protection cannot be disabled")
     if args.distance_m == 0.0 and args.lateral_m == 0.0 and args.yaw_delta_rad == 0.0:
@@ -246,6 +279,12 @@ def main(argv=None):
         parser.error("--script-timeout must be between 10 and 45")
     if not 10.0 <= args.track_timeout <= 60.0:
         parser.error("--track-timeout must be between 10 and 60")
+    try:
+        validate_alignment_options(
+            args.distance_m, args.lateral_m, args.yaw_delta_rad,
+            args.max_speed, args.motion_mode, args.alignment_stage)
+    except ValueError as exc:
+        parser.error(str(exc))
     run_id = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ_") + uuid.uuid4().hex[:12]
     evidence = Evidence(args.evidence_dir, run_id)
     client = Robokit(args.robot, evidence)
