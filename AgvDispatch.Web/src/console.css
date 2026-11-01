@@ -70,3 +70,8 @@ input[type=checkbox]{width:16px;min-width:16px;height:16px;min-height:16px;flex:
 .console-shell>.overview-page,.console-shell>.management-page,.console-shell>.planning-workbench{min-height:0;overflow:auto;flex:1}
 /* Isolated engineering instances must not suggest a live equipment connection. */
 .engineering-isolated-footer{padding:14px 24px;background:#14293a;color:#9ddce9;font-size:13px;border-top:1px solid #345771;text-align:center}
+/* Keep every monitored device reachable; the strip scrolls on smaller screens. */
+.equipment-strip>button,.equipment-strip>div{flex:0 0 auto}
+.equipment-strip>b{flex-shrink:0}
+.equipment-strip>.backend-status{flex:0 0 auto}
+.equipment-strip>.charger-monitor{min-width:245px}

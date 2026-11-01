@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import { useDispatchStore } from './stores/dispatch';
 import { shortTime } from './dashboard';
+import { chargerMonitoringState, equipmentTone } from './equipment-status';
 import {
   IconRobot, IconRoute, IconBell, IconLayoutDashboard, IconListDetails, IconMap,
   IconPlus, IconPlugConnected, IconCircleCheck, IconCpu, IconNetwork, IconChevronDown, IconFlask
@@ -22,6 +23,7 @@ const clockDate = computed(() => dateFormatter.format(store.now));
 const clockTime = computed(() => timeFormatter.format(store.now));
 const connectionState = computed(() => store.fresh ? '已连接' : store.snapshot ? '断连 / 数据过期' : store.error ? '未连接' : '连接中');
 const lastObservation = computed(() => store.snapshot ? `最近采样 ${shortTime(store.snapshot.receivedAt)}` : '尚无后台观察');
+const chargerMonitor = chargerMonitoringState();
 
 const navigation = [
   { path: '/', label: '调度大屏', icon: IconLayoutDashboard },
@@ -98,10 +100,14 @@ onUnmounted(() => {
     <footer v-if="store.engineeringSimulationOnly" class="engineering-isolated-footer">工程隔离模拟 · 设备、任务与现场恢复接口已禁用 · 不连接真车或PLC · 现场5199未改动</footer>
     <footer v-else class="equipment-strip">
       <b>设备状态<small>DEVICE STATUS</small></b>
-      <button v-for="device in store.equipment.slice(0, 4)" :key="device.id" title="查看设备通信与执行门禁" @click="router.push('/commissioning')">
+      <button v-for="device in store.equipment" :key="device.id" title="查看设备通信与执行门禁" @click="router.push('/commissioning')">
         <IconCpu :size="19" /><span>{{ device.name }}</span>
-        <i class="status-dot" :class="store.fresh && device.quality === 'Good' ? 'green' : 'amber'"></i>
+        <i class="status-dot" :class="equipmentTone(device, store.fresh)"></i>
         <small>{{ store.fresh ? device.status : '数据非当前' }}</small>
+      </button>
+      <button class="charger-monitor" :title="chargerMonitor.summary" @click="router.push('/charging')">
+        <IconPlugConnected :size="19" /><span>充电桩</span>
+        <i class="status-dot" :class="chargerMonitor.tone"></i><small>{{chargerMonitor.label}}</small>
       </button>
       <div class="backend-status" :class="{disconnected:!store.fresh}">
         <button class="backend-details-button" aria-label="后台连接详情" @click="connectionOpen = true"><IconNetwork :size="19" /><span>后台通信</span></button>
