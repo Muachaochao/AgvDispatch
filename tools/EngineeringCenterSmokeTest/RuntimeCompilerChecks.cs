@@ -20,7 +20,11 @@ internal static class RuntimeCompilerChecks
         var workspace=new MapWorkspaceSnapshot(project,published,published);
         var config=new TaskParameterConfiguration("OLD","OLDWAIT","OLDDUMP",[new("OLD","OLDPICK")],
             new[]{DispatchTaskStepType.GoToPickup,DispatchTaskStepType.DeliverFullBoxToDumper,DispatchTaskStepType.EnterDumpingPosition,DispatchTaskStepType.ReturnEmptyBox}
-                .Select((s,i)=>new TaskActionParameter(s,i==0?"JackLoad":i==3?"JackUnload":"Wait",null,null,null,null)).ToArray());
+                .Select((s,i)=>new TaskActionParameter(s,i==0?"JackLoad":i==3?"JackUnload":"Wait",null,null,null,null)).ToArray())
+        {
+            WaitingSites=["OLDWAIT","OLDWAIT-SECOND"],
+            EngineeringSource=new("OLD-ENGINEERING","OLD-CONTENT","OLD-MAP-HASH")
+        };
         var parameters=new TaskParameterSnapshot("revision",config,plan.MapId,plan.MapVersion,true,"",[]);
         var comm=new CommunicationConfiguration { AgvEnabled=true, Plcs=plan.Plcs.Select(p=>new PlcConnectionSetting{DeviceId=p.Id,Enabled=p.Enabled,IpAddress=p.Host,Port=p.Port}).ToList(),
             Agvs=plan.Vehicles.Select(v=>new AgvConnectionSetting{VehicleId=v.Id,Enabled=v.Enabled,IpAddress=v.Host}).ToList() };
@@ -31,6 +35,12 @@ internal static class RuntimeCompilerChecks
         check(result.Ready&&result.MapActive,"300工位5车工程可编译为真实九步参数");
         check(result.Configuration!.Pickups.Count==300&&result.Configuration.Pickups.All(p=>p.AllowedVehicleIds!.Count==5),"所有工位保留明确车辆池白名单");
         check(result.Configuration.Standbys.Count==plan.Standbys.Count && result.Configuration.Standbys.All(b=>b.AllowedVehicleIds.Count==5),"待机位及明确车辆池授权随工程版本编译");
+        check(result.Configuration.WaitingSite==plan.Dumpers.Single().WaitingNode &&
+            result.Configuration.WaitingSites.SequenceEqual(new[]{plan.Dumpers.Single().WaitingNode}),
+            "切换工程地图后候车位仅使用新倒料等待点，不继承旧地图的多等待位");
+        check(config.WaitingSites.SequenceEqual(new[]{"OLDWAIT","OLDWAIT-SECOND"}) &&
+            config.EngineeringSource!.MapDefinitionHash=="OLD-MAP-HASH",
+            "新地图编译不改写原任务参数及旧工程来源");
         check(result.Configuration.Actions.SequenceEqual(config.Actions)&&result.Configuration.StepTimeouts.SequenceEqual(config.StepTimeouts),"编译保留当前车辆动作和超时，不从模拟耗时推断动作");
         check(result.Configuration.EngineeringSource?.MapDefinitionHash==EngineeringRuntimeIdentity.MapHash(map),"绑定完整原地图摘要，包含曲线控制点");
         check(workspace.Published!.Definition.Edges[0].GeometryKind==MapEdgeGeometryKind.CubicBezier&&workspace.Published.Definition.Edges[0].ControlPoints![0].Y==2,"编译不覆盖厂家曲线");
