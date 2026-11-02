@@ -22,7 +22,7 @@ public sealed class TaskSwitchQueries(ITaskSystemQueryPort tasks, IManualTaskCre
         var blockers = current is { } active && !TaskSwitchStages.IsTerminal(active.Stage) ? active.Blockers : [];
         var supported = task.Stage == DispatchTaskStage.GoingToPickup || TaskSwitchModes.IsBusinessCleanupStage(task.Stage);
         var eligible = current is null && supported && !string.IsNullOrWhiteSpace(vehicleId);
-        var modeHint = task.Stage == DispatchTaskStage.GoingToPickup
+        var modeHint = !supported ? "" : task.Stage == DispatchTaskStage.GoingToPickup
             ? TaskSwitchModes.Auto
             : TaskSwitchModes.CompleteBusinessReturn;
         var message = current is { } activeRecord ? activeRecord.Message :
@@ -34,6 +34,7 @@ public sealed class TaskSwitchQueries(ITaskSystemQueryPort tasks, IManualTaskCre
         var modeDescription = modeHint switch
         {
             TaskSwitchModes.CompleteBusinessReturn => "完成原业务返箱后再切换；不会中途取消载箱任务。",
+            "" => "当前阶段没有可执行的自动换单方式。",
             _ => "系统按实时载荷与顶升状态自动判定取消空车导航或完成返箱收尾。",
         };
         return new(true, eligible, message, vehicleId, creationOptions.Stations, blockers, current)
