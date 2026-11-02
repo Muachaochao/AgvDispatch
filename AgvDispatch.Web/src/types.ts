@@ -14,7 +14,7 @@ export interface TaskRow { taskId: string; stationId: string; vehicleId: string 
 export interface TaskListSummary { total: number; running: number; waiting: number; completed: number; cancelled: number; failed: number; other: number }
 export interface TaskPage { items: TaskRow[]; totalCount: number; page: number; pageSize: number; summary?: TaskListSummary | null }
 export interface DeviceField { name: string; value: string; quality: string; address: string; updatedAt: string }
-export interface Device { id: string; name: string; status: string; quality: string; summary: string; fields: DeviceField[] }
+export interface Device { id: string; name: string; category?: string; status: string; quality: string; summary: string; fields: DeviceField[] }
 export interface Snapshot { receivedAt: string; connected: boolean; source: 'demo' | 'backend'; error: string | null; map: WebMap | null;
   traffic?: TrafficObservation | null;
   alarms?: Alarm[];

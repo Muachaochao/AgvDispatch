@@ -2,6 +2,16 @@ import type { Device } from './types';
 
 export type EquipmentTone = 'green' | 'amber' | 'red' | 'offline';
 
+// This is a signal/communication summary, not permission to dispatch a job.
+export function stationSignalSummary(devices: Device[], current: boolean) {
+  const tones = devices.map(device => equipmentTone(device, current));
+  const good = tones.filter(tone => tone === 'green').length;
+  const tone: EquipmentTone = !current || !devices.length ? 'offline' :
+    tones.includes('red') ? 'red' : good === devices.length ? 'green' : 'amber';
+  return { tone, label: !current ? '数据非当前' : !devices.length ? '尚未配置' :
+    `${good}/${devices.length} 正常`, total: devices.length };
+}
+
 export function equipmentTone(device: Pick<Device, 'quality' | 'status'>, current: boolean): EquipmentTone {
   if (!current) return 'offline';
   if (['未启用', 'Disabled'].includes(device.quality) || device.status === '通信未启用') return 'offline';

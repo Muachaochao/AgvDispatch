@@ -153,7 +153,7 @@ const currentPhase = computed(() => switchStatus.value?.current?.phaseText ?? '�
 </script>
 
 <template>
-  <section class="management-page">
+  <section class="management-page map-catalog-page">
     <header class="management-title">
       <h2><IconMap :size="23" />地图管理</h2>
       <span>共 {{ catalog.length }} 张</span>
@@ -171,7 +171,7 @@ const currentPhase = computed(() => switchStatus.value?.current?.phaseText ?? '�
     <p v-if="catalogError" class="inline-warning">{{ catalogError }}</p>
     <div class="map-catalog">
       <article v-for="map in catalog" :key="map.mapId" class="map-card">
-        <div class="map-card-art"><IconMap :size="64" stroke="1" /><span class="outline-badge" :class="{ cyan: map.isActive }">{{ map.isActive ? '当前运行' : '未运行' }}</span><b>{{ map.mapId }}</b><small>{{ map.unit }} / {{ map.coordinateSystem }}</small></div>
+        <div class="map-card-art"><IconMap :size="36" stroke="1" /><span class="outline-badge" :class="{ cyan: map.isActive }">{{ map.isActive ? '当前运行' : '未运行' }}</span><b :title="map.mapId">{{ map.mapId }}</b><small>{{ map.unit }} / {{ map.coordinateSystem }}</small></div>
         <h3>{{ map.name }}</h3>
         <p>{{ map.description || '未填写说明' }}</p>
         <dl><dt>运行版本</dt><dd>{{ map.activeVersionId ?? '—' }}</dd><dt>发布版本</dt><dd>{{ map.publishedVersionId ?? '—' }}</dd></dl>
@@ -300,3 +300,18 @@ const currentPhase = computed(() => switchStatus.value?.current?.phaseText ?? '�
     <template #footer><button @click="reviewOpen=false"><ActionIcon name="close"/>关闭并保留待核对</button><button :disabled="!mayAcknowledge" @click="acknowledgeActivation"><ActionIcon name="safety"/>已知原结果，转安全流程核对</button></template>
   </ConsoleDialog>
 </template>
+
+<style scoped>
+.map-catalog-page > :not(.map-catalog){flex-shrink:0}
+/* The page owns scrolling. Grid rows must size to their content, never to
+   the remaining viewport height, or overflow:hidden clips card actions. */
+.map-catalog-page > .map-catalog{flex:none;overflow:visible;grid-auto-rows:max-content;grid-template-columns:repeat(auto-fill,minmax(min(100%,300px),1fr));align-items:stretch;padding-bottom:20px}
+.map-card{display:flex;flex-direction:column;min-width:0;height:auto}
+.map-card-art{height:118px;flex-shrink:0;gap:6px;padding-top:20px}
+.map-card-art>b{width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}
+.map-card h3{overflow-wrap:anywhere;line-height:1.6}
+.map-card>p{min-height:0;overflow-wrap:anywhere;padding-bottom:8px}
+.map-card dl{grid-template-columns:62px minmax(0,1fr);line-height:1.6}
+.map-card footer{margin-top:auto;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;padding:12px}
+.map-card footer button{min-width:0;min-height:32px;padding:6px;font-size:11px}
+</style>

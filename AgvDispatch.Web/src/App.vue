@@ -3,7 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import { useDispatchStore } from './stores/dispatch';
 import { shortTime } from './dashboard';
-import { chargerMonitoringState, equipmentTone } from './equipment-status';
+import { chargerMonitoringState, equipmentTone, stationSignalSummary } from './equipment-status';
 import {
   IconRobot, IconRoute, IconBell, IconLayoutDashboard, IconListDetails, IconMap,
   IconPlus, IconPlugConnected, IconCircleCheck, IconCpu, IconNetwork, IconChevronDown, IconFlask
@@ -16,6 +16,12 @@ const store = useDispatchStore();
 const router = useRouter();
 const route = useRoute();
 const connectionOpen = ref(false);
+const stationSignalsOpen = ref(false);
+const selectedStationId = ref('');
+const plcDevices = computed(() => store.equipment.filter(device => device.category === 'PLC' || device.quality === '连接诊断'));
+const stationDevices = computed(() => store.equipment.filter(device => !plcDevices.value.some(plc => plc.id === device.id)));
+const stationSignals = computed(() => stationSignalSummary(stationDevices.value, store.fresh));
+const selectedStation = computed(() => stationDevices.value.find(device => device.id === selectedStationId.value));
 const engineeringMenu = ref<HTMLDetailsElement>();
 const dateFormatter = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'short' });
 const timeFormatter = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' });
@@ -100,10 +106,14 @@ onUnmounted(() => {
     <footer v-if="store.engineeringSimulationOnly" class="engineering-isolated-footer">工程隔离模拟 · 设备、任务与现场恢复接口已禁用 · 不连接真车或PLC · 现场5199未改动</footer>
     <footer v-else class="equipment-strip">
       <b>设备状态<small>DEVICE STATUS</small></b>
-      <button v-for="device in store.equipment" :key="device.id" title="查看设备通信与执行门禁" @click="router.push('/commissioning')">
+      <button v-for="device in plcDevices" :key="device.id" title="查看设备通信与执行门禁" @click="router.push('/commissioning')">
         <IconCpu :size="19" /><span>{{ device.name }}</span>
         <i class="status-dot" :class="equipmentTone(device, store.fresh)"></i>
         <small>{{ store.fresh ? device.status : '数据非当前' }}</small>
+      </button>
+      <button class="station-signal-summary" title="查看各工位的通信、业务状态和PLC点位；信号正常不代表已允许派车" @click="stationSignalsOpen = true">
+        <IconCpu :size="19" /><span>工位信号</span>
+        <i class="status-dot" :class="stationSignals.tone"></i><small>{{stationSignals.label}}</small>
       </button>
       <button class="charger-monitor" :title="chargerMonitor.summary" @click="router.push('/charging')">
         <IconPlugConnected :size="19" /><span>充电桩</span>
@@ -118,6 +128,23 @@ onUnmounted(() => {
       <div><IconRoute :size="20" /><span>执行开关</span><small>{{ !store.fresh || !store.snapshot?.status ? '未取得有效状态' : store.snapshot.status.safety.dispatchingEnabled ? '调度已启用' : '调度未启用' }}</small></div>
     </footer>
 
+    <ConsoleDialog v-if="stationSignalsOpen" title="工位信号" wide @close="stationSignalsOpen = false; selectedStationId = ''">
+      <p class="form-explanation">此处查看信号采集与握手状态。未呼叫、等待握手属于业务状态，不代表通信故障。</p>
+      <p v-if="!store.fresh" class="inline-warning">后台数据非当前，以下信息仅供回看。</p>
+      <p v-if="!stationDevices.length" class="empty-panel">尚未配置工位。</p>
+      <div class="station-signal-list">
+        <button v-for="device in stationDevices" :key="device.id" :aria-pressed="selectedStationId === device.id" @click="selectedStationId = selectedStationId === device.id ? '' : device.id">
+          <i class="status-dot" :class="equipmentTone(device, store.fresh)"></i><b>{{device.name}}</b><span>采集：{{device.quality}}</span><small>{{device.status}}</small><span>查看点位</span>
+        </button>
+      </div>
+      <template v-if="selectedStation">
+        <h3 class="signal-detail-heading">{{selectedStation.name}} · 点位详情</h3>
+        <p class="form-explanation">{{selectedStation.summary}}</p>
+        <div class="signal-detail-table"><table class="dialog-table"><thead><tr><th>信号</th><th>值</th><th>质量</th><th>地址</th><th>更新时间</th></tr></thead>
+          <tbody><tr v-for="field in selectedStation.fields" :key="field.name"><td>{{field.name}}</td><td>{{field.value}}</td><td>{{field.quality}}</td><td>{{field.address}}</td><td>{{field.updatedAt}}</td></tr></tbody>
+        </table></div>
+      </template>
+    </ConsoleDialog>
     <ConsoleDialog v-if="connectionOpen" title="后台连接详情" @close="connectionOpen = false">
       <p class="connection-summary" :class="store.fresh ? 'green-text' : 'amber-text'">{{connectionState}} · {{lastObservation}}</p>
       <p v-if="store.error" class="inline-warning">{{store.error}}</p>
@@ -133,3 +160,19 @@ onUnmounted(() => {
     <AppToast />
   </div>
 </template>
+
+<style scoped>
+.equipment-strip>button{background:transparent;border-color:transparent;min-width:150px}
+.equipment-strip>button:hover{background:#172a44;border-color:#315273}
+.equipment-strip>.charger-monitor{min-width:215px}
+.equipment-strip>.station-signal-summary{min-width:185px}
+.station-signal-list{display:grid;gap:8px;margin-top:16px}
+.station-signal-list>button{justify-content:flex-start;padding:12px;white-space:normal;flex-wrap:wrap;text-align:left}
+.station-signal-list>button[aria-pressed=true]{border-color:var(--cyan);background:#15314c}
+.station-signal-list b{min-width:105px}
+.station-signal-list small{color:var(--muted)}
+.station-signal-list>button>span:last-child{margin-left:auto;color:var(--cyan)}
+.signal-detail-heading{font-size:13px;margin:20px 0 10px}
+.signal-detail-table{overflow:auto;margin-top:10px}
+.signal-detail-table td{white-space:nowrap}
+</style>

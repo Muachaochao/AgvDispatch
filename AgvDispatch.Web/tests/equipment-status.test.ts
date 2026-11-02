@@ -1,7 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chargerMonitoringState, equipmentTone } from '../src/equipment-status.ts';
+import { chargerMonitoringState, equipmentTone, stationSignalSummary } from '../src/equipment-status.ts';
 import type { ChargingStatus } from '../src/equipment-status.ts';
+import type { Device } from '../src/types.ts';
+
+test('工位摘要保留故障和过期状态，空闲未呼叫不等于信号故障', () => {
+  const device = (quality: string, status: string): Device => ({ id: 'station', name: '工位', quality, status, summary: '', fields: [] });
+  const idle = device('正常', '业务状态未就绪');
+  assert.deepEqual(stationSignalSummary([idle], true), { tone: 'green', label: '1/1 正常', total: 1 });
+  assert.equal(stationSignalSummary([idle, device('正常', '故障')], true).tone, 'red');
+  assert.equal(stationSignalSummary([idle, device('数据过期', '数据过期')], true).label, '1/2 正常');
+  assert.equal(stationSignalSummary([idle], false).tone, 'offline');
+  assert.equal(stationSignalSummary([], true).label, '尚未配置');
+});
 
 const status: ChargingStatus = {
   enabled: false, capturedAt: '2026-11-01T10:00:00Z',
