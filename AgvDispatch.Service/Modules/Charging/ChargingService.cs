@@ -15,14 +15,17 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
     private readonly ILogger<ChargingService> logger;
     private readonly TimeProvider clock;
     private readonly IChargingWorkflow? workflow;
+    private readonly IChargerTelemetryMonitor? chargerMonitor;
     private readonly SemaphoreSlim mutex = new(1, 1);
     private ChargingSession[] sessions;
     private DateTimeOffset Now => clock.GetUtcNow();
 
     public ChargingService(ChargingOptions options, IChargingRuntimePort port, IChargingRobotControl robot,
-        string path, ILogger<ChargingService> logger, TimeProvider? clock = null, IChargingWorkflow? workflow = null)
+        string path, ILogger<ChargingService> logger, TimeProvider? clock = null, IChargingWorkflow? workflow = null,
+        IChargerTelemetryMonitor? chargerMonitor = null)
     {
-        this.options=options; this.port=port; this.robot=robot; this.logger=logger; this.clock=clock??TimeProvider.System; this.workflow=workflow;
+        this.options=options; this.port=port; this.robot=robot; this.logger=logger; this.clock=clock??TimeProvider.System;
+        this.workflow=workflow; this.chargerMonitor=chargerMonitor;
         if(options.ConfigurationError() is {} error) throw new InvalidOperationException(error);
         store=new(path);
         sessions=store.Load();
@@ -61,7 +64,8 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
     public async Task<ChargingStatus> ReadAsync(CancellationToken ct)
     {
         using var lease=await EnterBusinessAsync(ct);
-        return new(options.Enabled,options,options.Enabled?(port.NewWorkBlockReason??(options.Sites.Any(s=>s.Commissioned)?null:"尚未配置经现场核定的充电位、允许车辆及安全退出路线。")):"自动充电未启用；严重低电量仍禁止新业务。",sessions.ToArray(),Now);
+        return new(options.Enabled,options,options.Enabled?(port.NewWorkBlockReason??(options.Sites.Any(s=>s.Commissioned)?null:"尚未配置经现场核定的充电位、允许车辆及安全退出路线。")):"自动充电未启用；严重低电量仍禁止新业务。",sessions.ToArray(),Now)
+        { Chargers=chargerMonitor?.Read()??[] };
     }
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {

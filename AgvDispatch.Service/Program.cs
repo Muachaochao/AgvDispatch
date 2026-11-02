@@ -103,6 +103,12 @@ builder.Services.AddSingleton(chargingOptions);
 var chargingScriptOptions = new ChargingScriptOptions();
 builder.Configuration.GetSection("ChargingScript").Bind(chargingScriptOptions);
 builder.Services.AddSingleton(chargingScriptOptions);
+var chargerMonitoringOptions = new ChargerMonitoringOptions();
+builder.Configuration.GetSection("ChargerMonitoring").Bind(chargerMonitoringOptions);
+builder.Services.AddSingleton(chargerMonitoringOptions);
+builder.Services.AddSingleton<ChargerMonitoringService>();
+builder.Services.AddSingleton<IChargerTelemetryMonitor>(p => p.GetRequiredService<ChargerMonitoringService>());
+builder.Services.AddHostedService(p => p.GetRequiredService<ChargerMonitoringService>());
 var chargingRobotOptions = new RobokitChargingRobotControlOptions();
 builder.Configuration.GetSection(RobokitChargingRobotControlOptions.SectionName).Bind(chargingRobotOptions);
 builder.Services.AddSingleton(chargingRobotOptions);
@@ -128,7 +134,8 @@ builder.Services.AddSingleton<IChargingRuntimePort>(p => new ChargingRuntimePort
     returnSite:id => p.GetRequiredService<BusinessRunOwnership>().GetChargingReturnSite(id)));
 builder.Services.AddSingleton(p => new ChargingService(chargingOptions, p.GetRequiredService<IChargingRuntimePort>(),
     p.GetRequiredService<IChargingRobotControl>(), chargingPath, p.GetRequiredService<ILogger<ChargingService>>(),
-    workflow:p.GetRequiredService<IChargingWorkflow>()));
+    workflow:p.GetRequiredService<IChargingWorkflow>(),
+    chargerMonitor:p.GetRequiredService<IChargerTelemetryMonitor>()));
 builder.Services.AddSingleton<IChargingService>(p => p.GetRequiredService<ChargingService>());
 builder.Services.AddSingleton<IChargingDispatchGuard>(p => p.GetRequiredService<ChargingService>());
 builder.Services.AddHostedService(p => p.GetRequiredService<ChargingService>());
@@ -228,7 +235,8 @@ builder.Services.AddSingleton<IBusinessRunPort>(p => new BusinessRunPort(
     p.GetRequiredService<IRoutePlanner>(), p.GetRequiredService<ITrafficResourceManager>(), p.GetRequiredService<IRobokitTaskMapPreflight>(),
     p.GetRequiredService<BusinessStandbyChains>(), p.GetRequiredService<ITrafficResourceControlService>(), p.GetRequiredService<ISingleNavigationTestService>(), PlcCycleTestPort.AllPlcsAreLoopback(plcConnections), p.GetRequiredService<IManualTaskCreationRepository>(), p.GetRequiredService<BusinessRunOwnership>(),fleetTestOptions,p.GetRequiredService<FleetTestOwnership>(),p.GetRequiredService<IChargingDispatchGuard>()));
 builder.Services.AddSingleton(p => new BusinessRunService(p.GetRequiredService<IBusinessRunPort>(), p.GetRequiredService<BusinessRunOwnership>(),
-    Path.Combine(Path.GetDirectoryName(databaseOptions.DatabasePath)!, "business-run.json"),p.GetRequiredService<IChargingDispatchGuard>()));
+    Path.Combine(Path.GetDirectoryName(databaseOptions.DatabasePath)!, "business-run.json"),p.GetRequiredService<IChargingDispatchGuard>(),
+    p.GetRequiredService<ITaskSwitchGuard>()));
 builder.Services.AddSingleton<IBusinessRunService>(p => p.GetRequiredService<BusinessRunService>());
 builder.Services.AddHostedService(p => p.GetRequiredService<BusinessRunService>());
 builder.Services.AddSingleton<IFleetTestPort>(p=>new FleetTestPort(fleetTestOptions,p.GetRequiredService<IBusinessRunService>(),p.GetRequiredService<IBusinessRunPort>(),

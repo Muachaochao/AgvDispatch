@@ -8,6 +8,8 @@ using AgvDispatch.Infrastructure.Persistence.Entities;
 using AgvDispatch.Infrastructure.Traffic;
 using AgvDispatch.Service;
 using Microsoft.Extensions.Logging.Abstractions;
+using System.Net;
+using System.Net.Sockets;
 
 var checks = 0;
 void Check(bool condition, string description)
@@ -19,6 +21,28 @@ void Check(bool condition, string description)
 var admin = TrafficUserContext.LocalOperation("charging-smoke-test");
 var evidence = Path.Combine(Path.GetTempPath(), "agv-charging-smoke-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(evidence);
+
+var monitorAck = new TcpListener(IPAddress.Loopback, 0);
+var monitorStatus = new TcpListener(IPAddress.Loopback, 0);
+monitorAck.Start(); monitorStatus.Start();
+var monitor = new ChargerMonitoringService(new ChargerMonitoringOptions
+{
+    Addresses = ["127.0.0.1"],
+    AckPort = ((IPEndPoint)monitorAck.LocalEndpoint).Port,
+    StatusPort = ((IPEndPoint)monitorStatus.LocalEndpoint).Port,
+    PollIntervalMs = 1000,
+    ConnectTimeoutMs = 500
+}, NullLogger<ChargerMonitoringService>.Instance);
+await monitor.StartAsync(default);
+for (var i = 0; i < 20 && monitor.Read().Count == 0; i++) await Task.Delay(100);
+Check(monitor.Read().Single() is { AckPortReachable: true, StatusPortReachable: true, Outcome: "connected" },
+    "charger monitor checks both ports without sending control payload");
+monitorStatus.Stop();
+await Task.Delay(1500);
+Check(monitor.Read().Single() is { AckPortReachable: true, StatusPortReachable: false, Outcome: "degraded" },
+    "charger monitor reports partial communication loss");
+await monitor.StopAsync(default);
+monitor.Dispose(); monitorAck.Stop();
 Console.WriteLine("Isolated evidence: " + evidence);
 
 Check(new ChargingOptions().ConfigurationError() is null, "default charging thresholds are valid");

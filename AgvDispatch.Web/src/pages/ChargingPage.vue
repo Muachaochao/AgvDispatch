@@ -125,7 +125,7 @@ onMounted(() => {
         <div><dt>车端充电证据</dt><dd>{{monitoring.vehicleCharge}}</dd></div>
       </dl>
       <p>{{monitoring.summary}}</p>
-      <p>只显示本轮会话的新鲜桩端反馈。历史测试记录、地图到点和策略开启均不能证明此刻已经接合或正在充电。</p>
+      <p>后台常驻检查 20207/20204 通信。工作模式、报警和输出只在新鲜充电会话中存在；厂家提供独立只读状态协议前，端口在线不能代替这些字段。</p>
     </div>
     <template v-if="status">
       <div class="charge-policy">

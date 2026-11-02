@@ -75,7 +75,11 @@ public sealed record ChargingSession(string SessionId, string VehicleId, Chargin
     public string? ReturnSiteId => Route?.ReturnSiteId;
     public bool HasReservation => Site is not null && Route is not null && Phase != ChargingPhase.Completed;
 }
-public sealed record ChargingStatus(bool Enabled, ChargingOptions Options, string? BlockReason, IReadOnlyList<ChargingSession> Sessions, DateTimeOffset CapturedAt);
+public sealed record ChargingStatus(bool Enabled, ChargingOptions Options, string? BlockReason,
+    IReadOnlyList<ChargingSession> Sessions, DateTimeOffset CapturedAt)
+{
+    public IReadOnlyList<ChargerTelemetrySnapshot> Chargers { get; init; } = [];
+}
 public sealed record ChargingStopRequest(string SessionId, string Reason);
 public sealed record ChargingRequest(string RequestId, string VehicleId, int? RequiredPositiveSeconds = null, string? ReturnSiteId = null);
 public enum ChargingHoldDecision { ContinueOriginal, CloseAfterPhysicalExit }
@@ -98,6 +102,34 @@ public interface IChargingService : IChargingDispatchGuard
         Task.FromResult(new ChargingResult(false, "当前实现不支持手动充电申请。"));
     Task<ChargingResult> RequestStopAsync(TrafficUserContext user, ChargingStopRequest request, CancellationToken ct);
     Task<ChargingResult> ResolveHoldAsync(TrafficUserContext user, ChargingResolveRequest request, CancellationToken ct);
+}
+
+public sealed class ChargerMonitoringOptions
+{
+    public bool Enabled { get; set; } = true;
+    public string[] Addresses { get; set; } = [];
+    public int AckPort { get; set; } = 20207;
+    public int StatusPort { get; set; } = 20204;
+    public int PollIntervalMs { get; set; } = 5000;
+    public int ConnectTimeoutMs { get; set; } = 2000;
+    public string? ConfigurationError() =>
+        Addresses is null || Addresses.Length == 0 || Addresses.Any(value => !System.Net.IPAddress.TryParse(value,out _)) ||
+        AckPort is < 1 or > 65535 || StatusPort is < 1 or > 65535 ||
+        PollIntervalMs is < 1000 or > 60000 || ConnectTimeoutMs is < 250 or > 10000
+            ? "充电桩监控地址、端口、周期或超时无效。"
+            : null;
+}
+
+public sealed record ChargerTelemetrySnapshot(string Address, bool AckPortReachable,
+    bool StatusPortReachable, DateTimeOffset ObservedAt, string Outcome,
+    string Message, DateTimeOffset? LastFullSuccessAt = null)
+{
+    public string Transport => "TCP health only";
+}
+
+public interface IChargerTelemetryMonitor
+{
+    IReadOnlyList<ChargerTelemetrySnapshot> Read();
 }
 
 // A narrow port makes the persisted workflow testable without robot connections.

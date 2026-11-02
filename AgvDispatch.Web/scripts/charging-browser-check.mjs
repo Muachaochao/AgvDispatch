@@ -14,7 +14,7 @@ const binary = ['C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', 
 assert.ok(binary, 'Chromium browser required');
 const site = { id: 'CHARGE-A', chargingSiteId: 'LM52', exitSiteId: 'LM51', resourceId: 'BAY-A',
   controlMode: 'RobokitScript', commissioned: true, allowedVehicleIds: ['AGV-01', 'AGV-02'] };
-let sessions = [], allowTimedTests = false, acceptRequest = true, staleStation = false;
+let sessions = [], allowTimedTests = false, acceptRequest = true, staleStation = false, connectedHealth = false;
 let child, ws, sequence = 0;
 const requests = [], errors = [], calls = [], pending = new Map();
 const sleep = ms => new Promise(ok => setTimeout(ok, ms));
@@ -26,6 +26,8 @@ const snapshot = () => {
       workflowStatus: { ...row.workflowStatus, updatedAt: stamp,
         battery: { ...row.workflowStatus.battery, observedAt: stamp },
         station: { ...row.workflowStatus.station, observedAt: new Date(Date.now() - (staleStation ? 10000 : 0)).toISOString() } } } : row),
+    chargers: connectedHealth ? [{ address: '192.168.98.11', ackPortReachable: true, statusPortReachable: true,
+      observedAt: stamp, outcome: 'connected', message: '端口可连接', transport: 'TCP health only' }] : [],
     capturedAt: stamp };
 };
 const server = createServer(async (req, res) => {
@@ -95,6 +97,9 @@ try {
   await wait(() => evaluate(`Boolean(document.querySelector('.charge-request-form'))`), 'charging form');
   check('timed test is disabled until explicitly configured', await evaluate(`document.querySelector('.charge-request-form option[value=test]').disabled`));
   check('configuration alone does not display live charger communication', await evaluate(`document.querySelector('.charge-monitoring').textContent.includes('等待桩端反馈')`));
+  connectedHealth = true; await click('刷新状态');
+  await wait(() => evaluate(`document.querySelector('.charge-monitoring').textContent.includes('通信已连接')`), 'persistent charger health');
+  check('persistent TCP monitor is shown without pretending to know charger operation', await evaluate(`document.querySelector('.charge-monitoring').textContent.includes('20207 / 20204 均可连接')&&document.querySelector('.charge-monitoring').textContent.includes('待厂家只读状态协议')`));
   allowTimedTests = true; await click('刷新状态');
   await wait(() => evaluate(`!document.querySelector('.charge-request-form option[value=test]').disabled`), 'timed test enabled');
   await set('.charge-request-form input[list]', 'AGV-01');
