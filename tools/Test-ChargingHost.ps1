@@ -28,9 +28,13 @@ try{
         try{$reply=Invoke-RestMethod "http://127.0.0.1:$port/api/charging" -TimeoutSec 3;break}catch{Start-Sleep -Milliseconds 250}
     }
     if(!$reply -or $reply.enabled -ne $false -or $reply.options.startBatteryPercent -ne 25 -or $reply.options.targetBatteryPercent -ne 80 -or $reply.sessions.Count -ne 0){throw '真实进程DI/IPC充电状态与默认配置不符。'}
+    $communication=Invoke-RestMethod "http://127.0.0.1:$port/api/communication" -TimeoutSec 5
+    if($communication.saved.chargers.Count -ne 1 -or $communication.saved.chargers[0].id -ne 'CHARGER-192-168-98-11' -or
+        $communication.saved.chargers[0].ackPort -ne 20207 -or $communication.saved.chargers[0].statusPort -ne 20204){throw ('充电桩连接配置没有进入统一通信配置快照。' + ($communication.saved | ConvertTo-Json -Depth 5 -Compress))}
     if($RequireChargerReachable){
         for($i=0;$i -lt 20 -and $reply.chargers.Count -eq 0;$i++){Start-Sleep -Milliseconds 250; $reply=Invoke-RestMethod "http://127.0.0.1:$port/api/charging" -TimeoutSec 3}
-        if($reply.chargers.Count -lt 1 -or $reply.chargers[0].ackPortReachable -ne $true -or $reply.chargers[0].statusPortReachable -ne $true){throw '充电桩常驻通信检查未取得20207和20204可达结果。'}
+        if($reply.chargers.Count -lt 1 -or $reply.chargers[0].chargerId -ne 'CHARGER-192-168-98-11' -or
+            $reply.chargers[0].ackPortReachable -ne $true -or $reply.chargers[0].statusPortReachable -ne $true){throw '充电桩常驻通信检查未取得20207和20204可达结果。'}
     }
     $requestId=[guid]::NewGuid().ToString('N')
     $requestBody=@{requestId=$requestId;vehicleId='AGV-01';requiredPositiveSeconds=60;returnSiteId='LM44'} | ConvertTo-Json

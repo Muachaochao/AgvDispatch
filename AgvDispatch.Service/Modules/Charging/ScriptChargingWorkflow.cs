@@ -57,6 +57,9 @@ public sealed class ScriptChargingWorkflow(ChargingScriptOptions settings, Charg
             !Required(p, "robotMapMd5").Equals(binding.RobotMapMd5, StringComparison.OrdinalIgnoreCase) ||
             Required(p, "approachSite") != site.ChargingSiteId)
             throw new InvalidOperationException("本车标定的IP、地图或接近站点与当前调度绑定不一致。");
+        if (string.IsNullOrWhiteSpace(site.ChargerAddress) ||
+            Required(p, "chargerIp") != site.ChargerAddress)
+            throw new InvalidOperationException("本车标定的充电桩IP与充电位绑定的充电桩不一致。");
         if (kind == ChargingWorkflowKind.Undock && (!session.ShutdownVerified || string.IsNullOrWhiteSpace(session.ChargeOperationId)))
             throw new InvalidOperationException("原充电操作尚无已核验的停充证据，禁止退桩。");
         var tools = Path.GetFullPath(Path.IsPathRooted(settings.ToolsDirectory) ? settings.ToolsDirectory :

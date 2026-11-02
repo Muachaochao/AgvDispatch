@@ -40,6 +40,13 @@ public sealed class CommunicationSettingsService : ICommunicationSettingsService
         _charging=charging;
         _saved = ReadDocument(path) ?? new(1, "initial", active, []);
         _saved.Configuration.MapBindings ??= Clone(active).MapBindings ?? [];
+        if (_saved.Configuration.Chargers.Count == 0)
+            _saved.Configuration.Chargers = Clone(active).Chargers.ToList();
+        if (_saved.Configuration.ChargingSites.Count == 0)
+            _saved.Configuration.ChargingSites = Clone(active).ChargingSites.ToList();
+        _saved.Configuration.ChargerMonitoringEnabled = active.ChargerMonitoringEnabled;
+        _saved.Configuration.ChargerConfigurationInitialized = active.ChargerConfigurationInitialized;
+        _saved.Configuration.ChargingSiteConfigurationInitialized = active.ChargingSiteConfigurationInitialized;
     }
 
     public static CommunicationSettingsDocument? ReadDocument(string path)
@@ -88,8 +95,9 @@ public sealed class CommunicationSettingsService : ICommunicationSettingsService
     }
     public static void Validate(CommunicationConfiguration c, string baseDirectory)
     {
-        if (c.Plcs is null || c.Agvs is null || c.Plcs.Count is < 1 or > 64 || c.Agvs.Count > 100)
-            throw new ArgumentException("PLC配置需1~64项（可禁用），AGV最多100项。");
+        if (c.Plcs is null || c.Agvs is null || c.Chargers is null || c.ChargingSites is null ||
+            c.Plcs.Count is < 1 or > 64 || c.Agvs.Count > 100 || c.Chargers.Count > 20 || c.ChargingSites.Count > 100)
+            throw new ArgumentException("PLC配置需1~64项（可禁用），AGV最多100项，充电桩最多20项，充电位最多100项。");
         var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var stations = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var endpoints = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -128,6 +136,40 @@ public sealed class CommunicationSettingsService : ICommunicationSettingsService
             if (c.AgvEnabled && a.Enabled)
                 foreach (var port in new[] { a.Port, a.NavigationPort }.Distinct())
                     if (!endpoints.Add($"{IPAddress.Parse(a.IpAddress)}:{port}")) throw new ArgumentException("不同AGV的状态或导航连接地址重复。");
+        }
+        ids.Clear(); endpoints.Clear();
+        foreach (var charger in c.Chargers)
+        {
+            ValidateId(charger.Id);
+            if (!ids.Add(charger.Id)) throw new ArgumentException($"充电桩编号重复：{charger.Id}");
+            if (charger.DisplayName is null || charger.DisplayName.Length > 80)
+                throw new ArgumentException($"充电桩{charger.Id}名称过长。");
+            ValidateEndpoint(charger.IpAddress, charger.AckPort, c.ChargerMonitoringEnabled && charger.Enabled);
+            ValidateEndpoint(charger.IpAddress, charger.StatusPort, c.ChargerMonitoringEnabled && charger.Enabled);
+            if (c.ChargerMonitoringEnabled && charger.Enabled)
+                foreach (var port in new[] { charger.AckPort, charger.StatusPort }.Distinct())
+                    if (!endpoints.Add($"{IPAddress.Parse(charger.IpAddress)}:{port}"))
+                        throw new ArgumentException("启用的充电桩连接地址重复。");
+        }
+        var chargerIds = c.Chargers.Select(value => value.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var siteIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var resources = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var site in c.ChargingSites)
+        {
+            ValidateId(site.Id);
+            if (!siteIds.Add(site.Id) || !resources.Add(site.ResourceId))
+                throw new ArgumentException($"充电位编号或独占资源重复：{site.Id}");
+            if (!chargerIds.Contains(site.ChargerId))
+                throw new ArgumentException($"充电位{site.Id}绑定的充电桩{site.ChargerId}不存在。");
+            if (string.IsNullOrWhiteSpace(site.ChargingSiteId) || string.IsNullOrWhiteSpace(site.ExitSiteId) ||
+                site.ChargingSiteId == site.ExitSiteId || string.IsNullOrWhiteSpace(site.ResourceId))
+                throw new ArgumentException($"充电位{site.Id}的前往点、退出点或独占资源无效。");
+            if (site.ControlMode is not ("Relay6005" or "RobokitScript"))
+                throw new ArgumentException($"充电位{site.Id}控制方式无效。");
+            if (site.AllowedVehicleIds is null || site.AllowedVehicleIds.Any(id => !c.Agvs.Any(v => v.VehicleId.Equals(id, StringComparison.OrdinalIgnoreCase))))
+                throw new ArgumentException($"充电位{site.Id}包含未配置车辆。");
+            if (site.Commissioned && c.Chargers.Single(v => v.Id.Equals(site.ChargerId, StringComparison.OrdinalIgnoreCase)).Enabled is false)
+                throw new ArgumentException($"充电位{site.Id}已核定但绑定充电桩未启用。");
         }
         if(c.MapBindings is { } bindings)
         {

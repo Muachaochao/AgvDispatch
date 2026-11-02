@@ -26,8 +26,12 @@ const snapshot = () => {
       workflowStatus: { ...row.workflowStatus, updatedAt: stamp,
         battery: { ...row.workflowStatus.battery, observedAt: stamp },
         station: { ...row.workflowStatus.station, observedAt: new Date(Date.now() - (staleStation ? 10000 : 0)).toISOString() } } } : row),
-    chargers: connectedHealth ? [{ address: '192.168.98.11', ackPortReachable: true, statusPortReachable: true,
-      observedAt: stamp, outcome: 'connected', message: '端口可连接', transport: 'TCP health only' }] : [],
+    chargers: connectedHealth ? [
+      { chargerId: 'CHARGER-192-168-98-11', chargerName: '一号充电桩', address: '192.168.98.11', ackPort: 20207, statusPort: 20204, ackPortReachable: true, statusPortReachable: true,
+        observedAt: stamp, outcome: 'connected', message: '端口可连接', transport: 'TCP health only' },
+      { chargerId: 'CHARGER-192-168-98-12', chargerName: '二号充电桩', address: '192.168.98.12', ackPort: 20207, statusPort: 20204, ackPortReachable: true, statusPortReachable: true,
+        observedAt: stamp, outcome: 'connected', message: '端口可连接', transport: 'TCP health only' }
+    ] : [],
     capturedAt: stamp };
 };
 const server = createServer(async (req, res) => {
@@ -100,6 +104,7 @@ try {
   connectedHealth = true; await click('刷新状态');
   await wait(() => evaluate(`document.querySelector('.charge-monitoring').textContent.includes('通信已连接')`), 'persistent charger health');
   check('persistent TCP monitor is shown without pretending to know charger operation', await evaluate(`document.querySelector('.charge-monitoring').textContent.includes('20207 / 20204 均可连接')&&document.querySelector('.charge-monitoring').textContent.includes('待厂家只读状态协议')`));
+  check('multiple chargers are listed separately by stable charger ID', await evaluate(`document.querySelector('.charge-monitoring').textContent.includes('CHARGER-192-168-98-11')&&document.querySelector('.charge-monitoring').textContent.includes('CHARGER-192-168-98-12')`));
   allowTimedTests = true; await click('刷新状态');
   await wait(() => evaluate(`!document.querySelector('.charge-request-form option[value=test]').disabled`), 'timed test enabled');
   await set('.charge-request-form input[list]', 'AGV-01');

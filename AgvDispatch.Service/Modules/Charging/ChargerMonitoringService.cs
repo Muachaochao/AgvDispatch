@@ -25,11 +25,15 @@ public sealed class ChargerMonitoringService(ChargerMonitoringOptions options,
         }
         if (options.ConfigurationError() is { } error) throw new InvalidOperationException(error);
 
-        var previous = new ChargerTelemetrySnapshot[options.Addresses.Length];
+        var endpoints = options.Chargers.Length > 0 ? options.Chargers :
+            options.Addresses.Select(address => new ChargerEndpoint(
+                "CHARGER-" + address.Replace('.','-'), "充电桩", address,
+                options.AckPort, options.StatusPort)).ToArray();
+        var previous = new ChargerTelemetrySnapshot[endpoints.Length];
         while (!stoppingToken.IsCancellationRequested)
         {
-            var observed = await Task.WhenAll(options.Addresses.Select((address, index) =>
-                ProbeAsync(address, previous[index], stoppingToken)));
+            var observed = await Task.WhenAll(endpoints.Select((endpoint, index) =>
+                ProbeAsync(endpoint, previous[index], stoppingToken)));
             Volatile.Write(ref snapshots, observed);
             for (var index = 0; index < observed.Length; index++)
             {
@@ -44,23 +48,27 @@ public sealed class ChargerMonitoringService(ChargerMonitoringOptions options,
         }
     }
 
-    private async Task<ChargerTelemetrySnapshot> ProbeAsync(string address,
+    private async Task<ChargerTelemetrySnapshot> ProbeAsync(ChargerEndpoint endpoint,
         ChargerTelemetrySnapshot? previous, CancellationToken outer)
     {
-        var ack = await CanConnectAsync(address, options.AckPort, outer);
-        var status = await CanConnectAsync(address, options.StatusPort, outer);
+        var ack = await CanConnectAsync(endpoint.Address, endpoint.AckPort, outer);
+        var status = await CanConnectAsync(endpoint.Address, endpoint.StatusPort, outer);
         var now = clock.GetUtcNow();
         var full = ack.Reachable && status.Reachable;
         var outcome = full ? "connected" : ack.Reachable || status.Reachable ? "degraded" : "offline";
         var message = full
-            ? "20207 与 20204 端口均可连接；该检查不发送1001控制报文。"
+            ? $"{endpoint.AckPort} 与 {endpoint.StatusPort} 端口均可连接；该检查不发送1001控制报文。"
             : string.Join("；", new[]
             {
-                ack.Reachable ? null : "20207不可连接" + (ack.Error is null ? "" : "：" + ack.Error),
-                status.Reachable ? null : "20204不可连接" + (status.Error is null ? "" : "：" + status.Error)
+                ack.Reachable ? null : endpoint.AckPort + "不可连接" + (ack.Error is null ? "" : "：" + ack.Error),
+                status.Reachable ? null : endpoint.StatusPort + "不可连接" + (status.Error is null ? "" : "：" + status.Error)
             }.Where(value => value is not null));
-        return new(address, ack.Reachable, status.Reachable, now, outcome, message,
-            full ? now : previous?.LastFullSuccessAt);
+        return new(endpoint.Id, endpoint.Name, endpoint.Address, ack.Reachable, status.Reachable, now, outcome, message,
+            full ? now : previous?.LastFullSuccessAt)
+        {
+            AckPort=endpoint.AckPort,
+            StatusPort=endpoint.StatusPort
+        };
     }
 
     private async Task<(bool Reachable, string? Error)> CanConnectAsync(string address, int port,

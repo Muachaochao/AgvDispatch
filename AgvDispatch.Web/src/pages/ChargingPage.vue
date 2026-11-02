@@ -32,6 +32,8 @@ const positiveSeconds = (row: Session) => {
   const value = matchingChargingWorkflow(row)?.continuousPositiveSeconds;
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? `${value.toFixed(1)} 秒` : '尚未取得';
 };
+const sessionForCharger = (chargerId: string) => (status.value?.sessions ?? [])
+  .find(row => row.site?.chargerId === chargerId && row.phase !== 'Completed');
 function clearRequestIntent() {
   sessionStorage.removeItem(chargingRequestStorageKey); requestIntent.value = undefined;
 }
@@ -125,6 +127,18 @@ onMounted(() => {
         <div><dt>车端充电证据</dt><dd>{{monitoring.vehicleCharge}}</dd></div>
       </dl>
       <p>{{monitoring.summary}}</p>
+      <p>充电桩ID、IP、端口及充电位绑定统一在 <RouterLink to="/communication">PLC / AGV / 充电桩通信配置</RouterLink> 管理。</p>
+      <div v-if="status?.chargers?.length" class="charge-table-wrap">
+        <table><thead><tr><th>充电桩</th><th>地址 / 端口</th><th>常驻通信</th><th>当前充电会话</th><th>最后检查</th></tr></thead><tbody>
+          <tr v-for="charger in status.chargers" :key="charger.chargerId">
+            <td><strong>{{charger.chargerId}}</strong><small>{{charger.chargerName}}</small></td>
+            <td>{{charger.address}}<small>{{charger.ackPort ?? 20207}} / {{charger.statusPort ?? 20204}}</small></td>
+            <td :class="{ 'charge-error': charger.outcome !== 'connected' }">{{charger.outcome === 'connected' ? '20207 / 20204 可连接' : charger.message}}</td>
+            <td><template v-if="sessionForCharger(charger.chargerId)">{{sessionForCharger(charger.chargerId)?.vehicleId}} · {{phases[sessionForCharger(charger.chargerId)!.phase] ?? sessionForCharger(charger.chargerId)!.phase}}<small>{{matchingChargingWorkflow(sessionForCharger(charger.chargerId)!)?.station?.current ?? '—'}} A · {{matchingChargingWorkflow(sessionForCharger(charger.chargerId)!)?.station?.voltage ?? '—'}} V</small></template><span v-else>无</span></td>
+            <td>{{when(charger.observedAt)}}</td>
+          </tr>
+        </tbody></table>
+      </div>
       <p>后台常驻检查 20207/20204 通信。工作模式、报警和输出只在新鲜充电会话中存在；厂家提供独立只读状态协议前，端口在线不能代替这些字段。</p>
     </div>
     <template v-if="status">
@@ -154,8 +168,8 @@ onMounted(() => {
       </div>
       <div class="charge-section"><h3>充电位配置</h3>
         <p v-if="!status.options.sites.length">尚未配置充电位。请在现场核定充电点、出口、独占区域及充电控制方式后更新后台配置。</p>
-        <div v-else class="charge-table-wrap"><table><thead><tr><th>充电位</th><th>前往站点</th><th>出口</th><th>控制方式</th><th>允许车辆</th><th>现场核定</th></tr></thead><tbody>
-          <tr v-for="site in status.options.sites" :key="site.id"><td>{{site.id}}</td><td>{{site.chargingSiteId}}</td><td>{{site.exitSiteId}}</td><td>{{controlMode(site.controlMode)}}</td><td>{{site.allowedVehicleIds.join('、') || '未指定'}}</td><td>{{site.commissioned ? '已配置核定' : '待核定'}}</td></tr>
+        <div v-else class="charge-table-wrap"><table><thead><tr><th>充电位</th><th>绑定充电桩</th><th>前往站点</th><th>出口</th><th>控制方式</th><th>允许车辆</th><th>现场核定</th></tr></thead><tbody>
+          <tr v-for="site in status.options.sites" :key="site.id"><td>{{site.id}}</td><td>{{site.chargerId || '未绑定'}}</td><td>{{site.chargingSiteId}}</td><td>{{site.exitSiteId}}</td><td>{{controlMode(site.controlMode)}}</td><td>{{site.allowedVehicleIds.join('、') || '未指定'}}</td><td>{{site.commissioned ? '已配置核定' : '待核定'}}</td></tr>
         </tbody></table></div>
       </div>
       <div class="charge-section"><h3>后台自动充电会话 <small>{{loadError ? '上次成功读取' : '后台读取时间'}}：{{when(status.capturedAt)}}</small></h3>

@@ -34,7 +34,7 @@ export function equipmentTone(device: Pick<Device, 'quality' | 'status'>, curren
 
 export interface ChargingSite {
   id: string; chargingSiteId: string; exitSiteId: string; resourceId: string;
-  commissioned: boolean; allowedVehicleIds: string[]; controlMode?: string;
+  chargerId?: string; chargerAddress?: string; commissioned: boolean; allowedVehicleIds: string[]; controlMode?: string;
 }
 export interface ChargingBatteryReading {
   batteryPercent?: number | null; current?: number | null; temperature?: number | null;
@@ -50,7 +50,8 @@ export interface ChargingWorkflowStatus {
   continuousPositiveSeconds: number; shutdownVerified: boolean; evidenceDirectory?: string;
 }
 export interface ChargerTelemetrySnapshot {
-  address: string; ackPortReachable: boolean; statusPortReachable: boolean;
+  chargerId: string; chargerName: string; address: string; ackPort?: number; statusPort?: number;
+  ackPortReachable: boolean; statusPortReachable: boolean;
   observedAt: string; outcome: 'connected' | 'degraded' | 'offline'; message: string;
   lastFullSuccessAt?: string | null; transport?: string;
 }
@@ -118,7 +119,7 @@ export function chargerMonitoringState(status?: ChargingStatus, readError = '', 
         ...unknown, label: '通信已连接 · 状态待读取', tone: 'amber' as EquipmentTone,
         communication: '20207 / 20204 均可连接', operation: '待厂家只读状态协议',
         lastFeedback: new Date(selected.observedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }),
-        summary: `${selected.address} 的通信端口在线；为避免1001控制报文改变充电模式，未把端口在线冒充工作状态、故障或充电电流。`
+        summary: `${selected.chargerId} · ${selected.chargerName} · ${selected.address} 的通信端口在线；为避免1001控制报文改变充电模式，未把端口在线冒充工作状态、故障或充电电流。`
       };
       return {
         ...unknown, label: selected.outcome === 'offline' ? '充电桩通信中断' : '充电桩通信部分异常',

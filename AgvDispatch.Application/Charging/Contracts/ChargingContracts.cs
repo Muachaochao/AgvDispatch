@@ -34,6 +34,8 @@ public sealed class ChargingOptions
 // been confirmed for this vehicle. A ChargingPoint alone never enables motion.
 public sealed record ChargingSite(string Id, string ChargingSiteId, string ExitSiteId, string ResourceId)
 {
+    public string ChargerId { get; init; } = "";
+    public string ChargerAddress { get; init; } = "";
     public bool Commissioned { get; init; }
     public string[] AllowedVehicleIds { get; init; } = [];
     public string ControlMode { get; init; } = "Relay6005";
@@ -108,22 +110,30 @@ public sealed class ChargerMonitoringOptions
 {
     public bool Enabled { get; set; } = true;
     public string[] Addresses { get; set; } = [];
+    public ChargerEndpoint[] Chargers { get; set; } = [];
     public int AckPort { get; set; } = 20207;
     public int StatusPort { get; set; } = 20204;
     public int PollIntervalMs { get; set; } = 5000;
     public int ConnectTimeoutMs { get; set; } = 2000;
     public string? ConfigurationError() =>
-        Addresses is null || Addresses.Length == 0 || Addresses.Any(value => !System.Net.IPAddress.TryParse(value,out _)) ||
+        Addresses.Any(value => !System.Net.IPAddress.TryParse(value,out _)) ||
+        Chargers.Any(value => string.IsNullOrWhiteSpace(value.Id) || string.IsNullOrWhiteSpace(value.Name) ||
+            !System.Net.IPAddress.TryParse(value.Address,out _) ||
+            value.AckPort is < 1 or > 65535 || value.StatusPort is < 1 or > 65535) ||
         AckPort is < 1 or > 65535 || StatusPort is < 1 or > 65535 ||
         PollIntervalMs is < 1000 or > 60000 || ConnectTimeoutMs is < 250 or > 10000
             ? "充电桩监控地址、端口、周期或超时无效。"
             : null;
 }
 
-public sealed record ChargerTelemetrySnapshot(string Address, bool AckPortReachable,
+public sealed record ChargerEndpoint(string Id, string Name, string Address, int AckPort, int StatusPort);
+
+public sealed record ChargerTelemetrySnapshot(string ChargerId, string ChargerName, string Address, bool AckPortReachable,
     bool StatusPortReachable, DateTimeOffset ObservedAt, string Outcome,
     string Message, DateTimeOffset? LastFullSuccessAt = null)
 {
+    public int AckPort { get; init; } = 20207;
+    public int StatusPort { get; init; } = 20204;
     public string Transport => "TCP health only";
 }
 

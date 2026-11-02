@@ -166,7 +166,7 @@ test('其他桩较新的正常反馈不掩盖仍新鲜的报警，过期车端�
 test('无充电会话时展示常驻TCP健康，但不把端口在线冒充桩工作状态', () => {
   const data: ChargingStatus = {
     ...status, enabled: false, capturedAt: stamp(),
-    chargers: [{ address: '192.168.98.11', ackPortReachable: true, statusPortReachable: true,
+    chargers: [{ chargerId: 'CHARGE-01', chargerName: '一号桩', address: '192.168.98.11', ackPortReachable: true, statusPortReachable: true,
       observedAt: stamp(), outcome: 'connected', message: '端口可连接', transport: 'TCP health only' }]
   };
   const view = chargerMonitoringState(data, '', now);
@@ -184,7 +184,7 @@ test('常驻桩监控离线、部分可用和过期均明确降级', () => {
     { outcome: 'degraded' as const, ack: true, status: false, label: '充电桩通信部分异常', tone: 'amber' }
   ]) {
     const data: ChargingStatus = {
-      ...status, capturedAt: stamp(), chargers: [{ address: '192.168.98.11',
+      ...status, capturedAt: stamp(), chargers: [{ chargerId: 'CHARGE-01', chargerName: '一号桩', address: '192.168.98.11',
         ackPortReachable: test.ack, statusPortReachable: test.status, observedAt: stamp(),
         outcome: test.outcome, message: '20204不可连接：超时' }]
     };
@@ -194,7 +194,7 @@ test('常驻桩监控离线、部分可用和过期均明确降级', () => {
     assert.equal(view.operation, '未知');
   }
   const stale: ChargingStatus = {
-    ...status, capturedAt: stamp(), chargers: [{ address: '192.168.98.11',
+    ...status, capturedAt: stamp(), chargers: [{ chargerId: 'CHARGE-01', chargerName: '一号桩', address: '192.168.98.11',
       ackPortReachable: true, statusPortReachable: true, observedAt: stamp(-6000),
       outcome: 'connected', message: '端口可连接' }]
   };

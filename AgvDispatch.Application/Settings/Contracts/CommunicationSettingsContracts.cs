@@ -88,6 +88,40 @@ public sealed class AgvMapBindingSetting : ObservableConnectionSetting
     private bool _coordinatesVerified;
     public bool CoordinatesVerified {get=>_coordinatesVerified;set=>Set(ref _coordinatesVerified,value);}
 }
+public sealed class ChargerConnectionSetting : ObservableConnectionSetting
+{
+    private string _id = "";
+    public string Id { get => _id; set => Set(ref _id, value); }
+    private string _displayName = "";
+    public string DisplayName { get => _displayName; set => Set(ref _displayName, value); }
+    private bool _enabled;
+    public bool Enabled { get => _enabled; set => Set(ref _enabled, value); }
+    private string _ipAddress = "";
+    public string IpAddress { get => _ipAddress; set => Set(ref _ipAddress, value); }
+    private int _ackPort = 20207;
+    public int AckPort { get => _ackPort; set => Set(ref _ackPort, value); }
+    private int _statusPort = 20204;
+    public int StatusPort { get => _statusPort; set => Set(ref _statusPort, value); }
+}
+public sealed class ChargingSiteSetting : ObservableConnectionSetting
+{
+    private string _id = "";
+    public string Id { get => _id; set => Set(ref _id, value); }
+    private string _chargerId = "";
+    public string ChargerId { get => _chargerId; set => Set(ref _chargerId, value); }
+    private string _chargingSiteId = "";
+    public string ChargingSiteId { get => _chargingSiteId; set => Set(ref _chargingSiteId, value); }
+    private string _exitSiteId = "";
+    public string ExitSiteId { get => _exitSiteId; set => Set(ref _exitSiteId, value); }
+    private string _resourceId = "";
+    public string ResourceId { get => _resourceId; set => Set(ref _resourceId, value); }
+    private string _controlMode = "RobokitScript";
+    public string ControlMode { get => _controlMode; set => Set(ref _controlMode, value); }
+    private bool _commissioned;
+    public bool Commissioned { get => _commissioned; set => Set(ref _commissioned, value); }
+    private List<string> _allowedVehicleIds = [];
+    public List<string> AllowedVehicleIds { get => _allowedVehicleIds; set => Set(ref _allowedVehicleIds, value); }
+}
 public sealed class CommunicationConfiguration : ObservableConnectionSetting
 {
     public List<AgvMapBindingSetting>? MapBindings { get; set; }
@@ -95,6 +129,14 @@ public sealed class CommunicationConfiguration : ObservableConnectionSetting
     public List<PlcConnectionSetting> Plcs { get => _plcs; set => Set(ref _plcs, value); }
     private List<AgvConnectionSetting> _agvs = [];
     public List<AgvConnectionSetting> Agvs { get => _agvs; set => Set(ref _agvs, value); }
+    private bool _chargerMonitoringEnabled = true;
+    public bool ChargerMonitoringEnabled { get => _chargerMonitoringEnabled; set => Set(ref _chargerMonitoringEnabled, value); }
+    private List<ChargerConnectionSetting> _chargers = [];
+    public List<ChargerConnectionSetting> Chargers { get => _chargers; set => Set(ref _chargers, value); }
+    private List<ChargingSiteSetting> _chargingSites = [];
+    public List<ChargingSiteSetting> ChargingSites { get => _chargingSites; set => Set(ref _chargingSites, value); }
+    public bool ChargerConfigurationInitialized { get; set; }
+    public bool ChargingSiteConfigurationInitialized { get; set; }
     private bool _agvEnabled;
     public bool AgvEnabled { get => _agvEnabled; set => Set(ref _agvEnabled, value); }
     private byte _agvProtocolVersion = 1;

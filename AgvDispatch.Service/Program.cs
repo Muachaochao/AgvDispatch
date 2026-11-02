@@ -75,6 +75,61 @@ builder.Configuration.GetSection(AgvOptions.SectionName).Bind(agvOptions);
 var communicationSettingsPath = Path.Combine(Path.GetDirectoryName(databaseOptions.DatabasePath)!, "communication-settings.json");
 var communicationDocument = CommunicationSettingsService.ReadDocument(communicationSettingsPath);
 var communicationConfig = communicationDocument?.Configuration ?? CommunicationSettingsService.FromLegacy(plcOptions, agvOptions);
+var chargingOptions = new ChargingOptions();
+builder.Configuration.GetSection("Charging").Bind(chargingOptions);
+var chargerMonitoringOptions = new ChargerMonitoringOptions();
+builder.Configuration.GetSection("ChargerMonitoring").Bind(chargerMonitoringOptions);
+communicationConfig.Chargers ??= [];
+communicationConfig.ChargingSites ??= [];
+if (communicationConfig.Chargers.Count == 0 && !communicationConfig.ChargerConfigurationInitialized)
+{
+    communicationConfig.Chargers = chargerMonitoringOptions.Addresses.Distinct(StringComparer.OrdinalIgnoreCase)
+        .Select((address,index) => new ChargerConnectionSetting
+        {
+            Id = "CHARGER-" + address.Replace('.','-'), DisplayName = "充电桩" + (index + 1),
+            Enabled = true, IpAddress = address, AckPort = chargerMonitoringOptions.AckPort,
+            StatusPort = chargerMonitoringOptions.StatusPort
+        }).ToList();
+    communicationConfig.ChargerConfigurationInitialized = true;
+}
+chargerMonitoringOptions.Enabled = communicationConfig.ChargerMonitoringEnabled;
+chargerMonitoringOptions.Addresses = [];
+chargerMonitoringOptions.Chargers = communicationConfig.Chargers.Where(value => value.Enabled)
+    .Select(value => new ChargerEndpoint(value.Id,value.DisplayName,value.IpAddress,value.AckPort,value.StatusPort)).ToArray();
+if (communicationConfig.ChargingSites.Count > 0)
+{
+    chargingOptions.Sites = communicationConfig.ChargingSites.Select(value => new ChargingSite(
+        value.Id,value.ChargingSiteId,value.ExitSiteId,value.ResourceId)
+        {
+            ChargerId=value.ChargerId,
+            ChargerAddress=communicationConfig.Chargers.Single(charger=>charger.Id.Equals(value.ChargerId,StringComparison.OrdinalIgnoreCase)).IpAddress,
+            Commissioned=value.Commissioned,
+            AllowedVehicleIds=value.AllowedVehicleIds.ToArray(), ControlMode=value.ControlMode
+        }).ToArray();
+    communicationConfig.ChargingSiteConfigurationInitialized = true;
+}
+else if (!communicationConfig.ChargingSiteConfigurationInitialized && chargingOptions.Sites.Length > 0)
+{
+    var fallbackCharger = communicationConfig.Chargers.Count == 1 ? communicationConfig.Chargers[0].Id : "";
+    chargingOptions.Sites = chargingOptions.Sites.Select(site =>
+    {
+        var chargerId=string.IsNullOrWhiteSpace(site.ChargerId)?fallbackCharger:site.ChargerId;
+        return site with
+        {
+            ChargerId=chargerId,
+            ChargerAddress=communicationConfig.Chargers.FirstOrDefault(value=>value.Id.Equals(chargerId,StringComparison.OrdinalIgnoreCase))?.IpAddress??""
+        };
+    }).ToArray();
+    communicationConfig.ChargingSites = chargingOptions.Sites.Select(site => new ChargingSiteSetting
+    {
+        Id=site.Id, ChargerId=site.ChargerId, ChargingSiteId=site.ChargingSiteId,
+        ExitSiteId=site.ExitSiteId, ResourceId=site.ResourceId, Commissioned=site.Commissioned,
+        AllowedVehicleIds=site.AllowedVehicleIds.ToList(), ControlMode=site.ControlMode
+    }).ToList();
+    communicationConfig.ChargingSiteConfigurationInitialized = true;
+}
+else if (communicationConfig.ChargingSiteConfigurationInitialized)
+    chargingOptions.Sites = [];
 communicationConfig.MapBindings ??= CommunicationSettingsService.FromLegacy(plcOptions,agvOptions).MapBindings;
 CommunicationSettingsService.Validate(communicationConfig, AppContext.BaseDirectory);
 var plcConnections = communicationConfig.Plcs.Select(p => CommunicationSettingsService.ToPlcOptions(p, plcOptions, AppContext.BaseDirectory)).ToArray();
@@ -97,14 +152,10 @@ builder.Services.AddSingleton<ICommunicationSettingsService>(provider => new Com
     provider.GetRequiredService<IActiveMapRuntime>(), provider.GetRequiredService<AgvConnectionManager>(),
     provider.GetRequiredService<AgvStateCache>(), agvOptions,provider.GetRequiredService<IChargingDispatchGuard>()));
 builder.Services.AddSingleton(agvOptions);
-var chargingOptions = new ChargingOptions();
-builder.Configuration.GetSection("Charging").Bind(chargingOptions);
 builder.Services.AddSingleton(chargingOptions);
 var chargingScriptOptions = new ChargingScriptOptions();
 builder.Configuration.GetSection("ChargingScript").Bind(chargingScriptOptions);
 builder.Services.AddSingleton(chargingScriptOptions);
-var chargerMonitoringOptions = new ChargerMonitoringOptions();
-builder.Configuration.GetSection("ChargerMonitoring").Bind(chargerMonitoringOptions);
 builder.Services.AddSingleton(chargerMonitoringOptions);
 builder.Services.AddSingleton<ChargerMonitoringService>();
 builder.Services.AddSingleton<IChargerTelemetryMonitor>(p => p.GetRequiredService<ChargerMonitoringService>());

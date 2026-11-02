@@ -20,6 +20,15 @@ var settings = new CommunicationConfiguration
     Agvs = [new() { VehicleId = "AGV-01" }, new() { VehicleId = "AGV-02" }]
 };
 CommunicationSettingsService.Validate(settings, root);
+settings.Chargers=[new(){Id="CHARGER-01",DisplayName="一号桩",Enabled=false,AckPort=20207,StatusPort=20204}];
+settings.ChargingSites=[new(){Id="CHARGE-01",ChargerId="CHARGER-01",ChargingSiteId="LM52",ExitSiteId="LM51",
+    ResourceId="CHARGING-BAY-LM52",ControlMode="RobokitScript",Commissioned=false,AllowedVehicleIds=["AGV-01"]}];
+CommunicationSettingsService.Validate(settings,root);
+settings.ChargingSites[0].ChargerId="MISSING";Reject(()=>CommunicationSettingsService.Validate(settings,root),"charging site must bind configured charger");
+settings.ChargingSites[0].ChargerId="CHARGER-01";
+settings.Chargers.Add(new(){Id="CHARGER-01",DisplayName="重复",Enabled=false,AckPort=20207,StatusPort=20204});
+Reject(()=>CommunicationSettingsService.Validate(settings,root),"duplicate charger id rejected");
+settings.Chargers.RemoveAt(1);settings.Chargers=[];settings.ChargingSites=[];
 var bindingOnly=System.Text.Json.JsonSerializer.Deserialize<CommunicationConfiguration>(System.Text.Json.JsonSerializer.Serialize(settings))!;
 bindingOnly.MapBindings=[new(){VehicleId="AGV-01",LocalMapId="MAP",LocalMapVersion="V1",RobotMap="test",RobotMapMd5=new string('a',32)}];
 Require(CommunicationSettingsService.OnlyMapBindingsDiffer(settings,bindingOnly),"map binding-only persistence distinguished from device changes");
