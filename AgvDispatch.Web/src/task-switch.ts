@@ -42,6 +42,8 @@ export interface TaskSwitchOptions {
   current: TaskSwitchRecord | null;
   modeHint?: 'Auto' | 'CancelEmptyNavigation' | 'CompleteBusinessReturn';
   modeDescription?: string;
+  handoffReadySites?: string[];
+  handoffMessage?: string;
 }
 
 export interface TaskSwitchResult {
@@ -54,7 +56,7 @@ const names: Record<string, string> = {
   Requested: '已记录换单申请', AwaitingStop: '等待原任务结束与停稳', ClosingOriginal: '核对原业务收尾',
   AwaitingBusinessCleanup: '完成原业务返箱收尾',
   ReadyToSwitch: '换单条件已满足', SubmittingReplacement: '核对新任务受理', Completed: '换单完成',
-  ReviewHold: '暂停待核对', Abandoned: '已停止换单',
+  ReviewHold: '暂停待核对', Suspended: '换单已挂起', Abandoned: '已停止换单',
 };
 
 export const taskSwitchStageName = (stage: string): string => names[stage] ?? `未知阶段（${stage}）`;

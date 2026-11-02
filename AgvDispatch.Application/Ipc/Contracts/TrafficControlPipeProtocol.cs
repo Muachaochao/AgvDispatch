@@ -34,6 +34,7 @@ public static class TrafficControlOperations
     public const string GetTaskSwitchOptions = "GetTaskSwitchOptions";
     public const string GetTaskSwitch = "GetTaskSwitch";
     public const string CreateTaskSwitch = "CreateTaskSwitch";
+    public const string SuspendTaskSwitch = "SuspendTaskSwitch";
     public const string ResumeTaskSwitch = "ResumeTaskSwitch";
     public const string AbandonTaskSwitch = "AbandonTaskSwitch";
     public const string GetTaskHistory = "GetTaskHistory";

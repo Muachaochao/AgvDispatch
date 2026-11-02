@@ -7,7 +7,7 @@ public static class TaskSwitchStages
     public const string Requested = "Requested", AwaitingStop = "AwaitingStop", ClosingOriginal = "ClosingOriginal",
         AwaitingBusinessCleanup = "AwaitingBusinessCleanup",
         ReadyToSwitch = "ReadyToSwitch", SubmittingReplacement = "SubmittingReplacement", Completed = "Completed",
-        ReviewHold = "ReviewHold", Abandoned = "Abandoned";
+        ReviewHold = "ReviewHold", Suspended = "Suspended", Abandoned = "Abandoned";
     public static bool IsTerminal(string stage) => stage is Completed or Abandoned;
 }
 
@@ -73,6 +73,7 @@ public interface ITaskSwitchService
     Task<TaskSwitchRecord?> GetAsync(string switchId, CancellationToken ct);
     Task<IReadOnlyList<TaskSwitchRecord>> ListAsync(CancellationToken ct);
     Task<TaskSwitchResult> RequestAsync(TrafficUserContext user, TaskSwitchRequest request, CancellationToken ct);
+    Task<TaskSwitchResult> SuspendAsync(TrafficUserContext user, TaskSwitchResumeRequest request, CancellationToken ct);
     Task<TaskSwitchResult> ResumeAsync(TrafficUserContext user, TaskSwitchResumeRequest request, CancellationToken ct);
     Task<TaskSwitchResult> AbandonAsync(TrafficUserContext user, TaskSwitchResumeRequest request, CancellationToken ct);
     Task ProcessAsync(CancellationToken ct);

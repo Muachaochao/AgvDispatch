@@ -99,7 +99,8 @@ public sealed class TaskSwitchService(ISqlSugarClient database, ITaskSwitchPort 
             var row = await RowAsync(request.SwitchId, ct);
             if (row is null) return Reject("换单申请不存在。", null);
             var session = Convert(row);
-            if (!ValidReview(request) || request.ExpectedRevision != session.Revision || session.Stage != TaskSwitchStages.ReviewHold)
+            if (!ValidReview(request) || request.ExpectedRevision != session.Revision ||
+                session.Stage is not (TaskSwitchStages.ReviewHold or TaskSwitchStages.Suspended))
                 return Reject("现场确认、依据、版本或原挂起状态不匹配，请刷新原记录后核对。", session);
             var observation = await port.ObserveCloseAsync(session, ct);
             var blockers = ContextBlockers(session, observation);
@@ -119,6 +120,41 @@ public sealed class TaskSwitchService(ISqlSugarClient database, ITaskSwitchPort 
             if (row is null) throw;
             var held = await HoldAsync(Convert(row), "续接核对失败；原车辆及申请仍保留。", [error.Message], ct);
             return Reject(held.Message, held);
+        }
+        finally { mutex.Release(); }
+    }
+
+    public async Task<TaskSwitchResult> SuspendAsync(TrafficUserContext user, TaskSwitchResumeRequest request, CancellationToken ct)
+    {
+        Demand(user);
+        await mutex.WaitAsync(ct);
+        try
+        {
+            await InitializeCoreAsync(ct);
+            var row = await RowAsync(request.SwitchId, ct);
+            if (row is null) return Reject("换单申请不存在。", null);
+            var session = Convert(row);
+            if (!ValidReview(request) || request.ExpectedRevision != session.Revision || TaskSwitchStages.IsTerminal(session.Stage))
+                return Reject("现场确认、依据或原版本不匹配，请刷新后重新核对。", session);
+            if (session.Stage == TaskSwitchStages.Suspended)
+                return new(true, "原换单申请已经挂起；车辆锁和原任务责任继续保留。", session);
+            if (session.ReplacementCreateAttempted || session.Stage is TaskSwitchStages.SubmittingReplacement or TaskSwitchStages.ReadyToSwitch)
+                return Reject("新任务创建意图已经记录，不能挂起后释放车辆。", session);
+            if (session.Stage is TaskSwitchStages.AwaitingStop or TaskSwitchStages.ClosingOriginal)
+                return Reject("原导航取消或原任务关闭已经发起，只能查询原记录并完成收尾，不能临时挂起。", session);
+            if (session.Stage is not (TaskSwitchStages.Requested or TaskSwitchStages.AwaitingBusinessCleanup or TaskSwitchStages.ReviewHold))
+                return Reject("当前换单阶段不能挂起。", session);
+            var resumeStage = session.Stage == TaskSwitchStages.ReviewHold
+                ? session.ResumeStage ?? TaskSwitchStages.Requested
+                : session.Stage;
+            session = await SaveAsync(session with
+            {
+                Stage = TaskSwitchStages.Suspended,
+                ResumeStage = resumeStage,
+                Blockers = [],
+                Message = "换单已挂起；原任务和车辆责任保持不变，其他车辆可以接单。依据：" + request.Reason.Trim(),
+            }, ct);
+            return new(true, session.Message, session);
         }
         finally { mutex.Release(); }
     }
@@ -168,7 +204,7 @@ public sealed class TaskSwitchService(ISqlSugarClient database, ITaskSwitchPort 
             foreach (var row in await ActiveRowsAsync(ct))
             {
                 var session = Convert(row);
-                if (session.Stage == TaskSwitchStages.ReviewHold) continue;
+                if (session.Stage is TaskSwitchStages.ReviewHold or TaskSwitchStages.Suspended) continue;
                 try { await AdvanceAsync(session, ct); }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
                 catch (Exception error)

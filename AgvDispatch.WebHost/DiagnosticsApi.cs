@@ -33,6 +33,12 @@ public static class DiagnosticsApi
             if(request.SwitchId!=id)return Results.BadRequest(new{error="换单申请编号不一致。"});
             return Results.Ok(await pipe.ReadAsync<TaskSwitchResult>(TrafficControlOperations.ResumeTaskSwitch,request,ct));
         });
+        app.MapPost("/api/task-switches/{id}/suspend",async(string id,TaskSwitchResumeRequest request,DispatchPipe pipe,CancellationToken ct)=>
+        {
+            if(!taskOperationsEnabled)return DisabledTaskOperation("Web任务操作未启用。");
+            if(request.SwitchId!=id)return Results.BadRequest(new{error="换单申请编号不一致。"});
+            return Results.Ok(await pipe.ReadAsync<TaskSwitchResult>(TrafficControlOperations.SuspendTaskSwitch,request,ct));
+        });
         app.MapPost("/api/task-switches/{id}/abandon",async(string id,TaskSwitchResumeRequest request,DispatchPipe pipe,CancellationToken ct)=>
         {
             if(!taskOperationsEnabled)return DisabledTaskOperation("Web任务操作未启用。");

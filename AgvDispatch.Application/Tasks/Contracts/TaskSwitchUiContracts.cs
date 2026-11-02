@@ -5,6 +5,8 @@ public sealed record TaskSwitchOptions(bool Enabled, bool Eligible, string Messa
 {
     public string ModeHint { get; init; } = TaskSwitchModes.Auto;
     public string ModeDescription { get; init; } = "";
+    public string[] HandoffReadySites { get; init; } = [];
+    public string HandoffMessage { get; init; } = "";
 }
 public interface ITaskSwitchQueries
 {

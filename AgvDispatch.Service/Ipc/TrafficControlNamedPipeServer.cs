@@ -318,6 +318,8 @@ public sealed class TrafficControlNamedPipeServer(
                 Success(await taskSwitches.GetAsync(Deserialize<string>(request.Payload), cancellationToken)),
             TrafficControlOperations.CreateTaskSwitch =>
                 Success(await taskSwitches.RequestAsync(user, Deserialize<TaskSwitchRequest>(request.Payload), cancellationToken)),
+            TrafficControlOperations.SuspendTaskSwitch =>
+                Success(await taskSwitches.SuspendAsync(user, Deserialize<TaskSwitchResumeRequest>(request.Payload), cancellationToken)),
             TrafficControlOperations.ResumeTaskSwitch =>
                 Success(await taskSwitches.ResumeAsync(user, Deserialize<TaskSwitchResumeRequest>(request.Payload), cancellationToken)),
             TrafficControlOperations.AbandonTaskSwitch =>

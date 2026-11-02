@@ -27,7 +27,11 @@ const canApply = computed(() => fresh.value && options.value?.enabled && options
   confirmed.value && reason.value.trim().length >= 10 && reason.value.trim().length <= 1000 &&
   Number.isInteger(priority.value) && priority.value >= 0 && priority.value <= 100);
 const canReview = computed(() => fresh.value && options.value?.enabled && !busy.value && !reading.value && !pending.value &&
-  !storageError.value && record.value?.stage === 'ReviewHold' && reviewConfirmed.value && reviewReason.value.trim().length >= 10);
+  !storageError.value && ['ReviewHold', 'Suspended'].includes(record.value?.stage ?? '') &&
+  reviewConfirmed.value && reviewReason.value.trim().length >= 10);
+const canSuspend = computed(() => fresh.value && options.value?.enabled && !busy.value && !reading.value && !pending.value &&
+  !storageError.value && ['Requested', 'AwaitingBusinessCleanup', 'ReviewHold'].includes(record.value?.stage ?? '') &&
+  reviewConfirmed.value && reviewReason.value.trim().length >= 10);
 const progress = computed(() => taskSwitchProgress(record.value?.stage ?? ''));
 const cleanupMode = computed(() => (record.value?.resolvedMode ?? options.value?.modeHint) === 'CompleteBusinessReturn');
 const confirmationText = computed(() => cleanupMode.value
@@ -124,9 +128,11 @@ async function apply() {
     if (mine === epoch && !disposed) error.value = `换单结果待核对：${String(e)}。保留原申请，不自动重发，请查询原编号。`;
   } finally { if (mine === epoch) { busy.value = false; confirmed.value = false; } }
 }
-async function review(action: 'resume' | 'abandon') {
+async function review(action: 'suspend' | 'resume' | 'abandon') {
   if (!record.value || !fresh.value || busy.value || reading.value || !options.value?.enabled || pending.value || storageError.value) return;
-  if (action === 'resume' ? !canReview.value : !active.value || !abandonConfirmed.value || !reviewConfirmed.value || reviewReason.value.trim().length < 10) return;
+  if (action === 'resume' ? !canReview.value :
+      action === 'suspend' ? !canSuspend.value :
+      !active.value || !abandonConfirmed.value || !reviewConfirmed.value || reviewReason.value.trim().length < 10) return;
   const mine = epoch, original = record.value;
   busy.value = true; error.value = ''; notice.value = '';
   try {
@@ -172,7 +178,7 @@ onUnmounted(() => { disposed = true; ++epoch; clearInterval(timer); });
         <p v-if="storageError" class="switch-warning" role="alert">{{ storageError }} 本页已锁定新申请，请先在原任务恢复入口核对。</p>
         <p v-if="notice" class="switch-message" role="status">{{ notice }}</p>
         <template v-if="record">
-          <div class="switch-status" :class="{ hold: record.stage === 'ReviewHold', complete: record.stage === 'Completed' }" role="status">
+          <div class="switch-status" :class="{ hold: record.stage === 'ReviewHold' || record.stage === 'Suspended', complete: record.stage === 'Completed' }" role="status">
             <strong>{{ taskSwitchStageName(record.stage) }}</strong><p>{{ record.message }}</p>
             <small>申请 {{ record.switchId }} · 修订 {{ record.revision }} · {{ shortTime(record.updatedAt) }}</small>
           </div>
@@ -185,13 +191,14 @@ onUnmounted(() => { disposed = true; ++epoch; clearInterval(timer); });
             <p>原单闭合前不下发新单。停止后仍有载荷、顶升、PLC 或路权缺项时，先完成对应核对，再显式续接。</p>
             <label>本次核对依据<textarea v-model="reviewReason" rows="2" minlength="10" maxlength="1000" :disabled="busy" placeholder="说明原运输终态、车辆与箱体、PLC 周期及原占用核对结果" /></label>
             <label class="switch-check"><input v-model="reviewConfirmed" type="checkbox" :disabled="busy || !fresh" />已核对本次现场状态，原任务责任与车辆状态对应正确</label>
-            <div class="switch-review-actions"><button v-if="record.stage === 'ReviewHold'" type="submit" class="accent-button" :disabled="!canReview">核对后续接原换单</button></div>
+            <div class="switch-review-actions"><button v-if="['ReviewHold','Suspended'].includes(record.stage)" type="submit" class="accent-button" :disabled="!canReview">核对后续接原换单</button><button v-if="['Requested','AwaitingBusinessCleanup','ReviewHold'].includes(record.stage)" type="button" :disabled="!canSuspend" @click="review('suspend')">挂起换单并保留原任务</button></div>
             <details class="switch-abandon"><summary>停止本次换单</summary><p>停止后不再创建替代任务；原任务取消、载荷、PLC 与路权仍需单独闭合。已创建的新任务需在其详情中处理。</p><label class="switch-check"><input v-model="abandonConfirmed" type="checkbox" :disabled="busy || !fresh" />确认只停止换单流程，继续保留原任务处置责任</label><button type="button" :disabled="!fresh || !options?.enabled || busy || reading || !!pending || !!storageError || !reviewConfirmed || !abandonConfirmed || reviewReason.trim().length < 10" @click="review('abandon')">停止换单并保留原任务处置</button></details>
           </form>
         </template>
         <template v-if="!active">
           <p v-if="options" class="switch-message">{{ options.message }}</p>
           <p v-if="options?.modeDescription" class="switch-message">{{ options.modeDescription }}</p>
+          <p v-if="options?.handoffMessage" class="switch-message">指定交接位：{{ options.handoffMessage }}</p>
           <div v-if="options?.blockers.length" class="switch-blockers"><h4>申请前需处理</h4><ul><li v-for="(blocker, index) in options.blockers" :key="index">{{ blocker }}</li></ul></div>
           <p v-if="pending" class="switch-warning">原申请 {{ pending.requestId }} 尚未确认；目标、优先级和原因已锁定。查询未返回记录也不能更换编号重发。</p>
           <form v-if="options?.enabled || pending" class="switch-form" @submit.prevent="apply">

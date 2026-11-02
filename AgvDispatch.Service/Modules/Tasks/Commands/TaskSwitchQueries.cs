@@ -4,7 +4,7 @@ using AgvDispatch.Domain.Tasks;
 namespace AgvDispatch.Service;
 
 public sealed class TaskSwitchQueries(ITaskSystemQueryPort tasks, IManualTaskCreationService creation,
-    ITaskSwitchService switches) : ITaskSwitchQueries
+    ITaskSwitchService switches, TaskHandoffOptions? handoffOptions = null) : ITaskSwitchQueries
 {
     public async Task<TaskSwitchOptions> GetOptionsAsync(string taskId, CancellationToken ct)
     {
@@ -37,10 +37,18 @@ public sealed class TaskSwitchQueries(ITaskSystemQueryPort tasks, IManualTaskCre
             "" => "当前阶段没有可执行的自动换单方式。",
             _ => "系统按实时载荷与顶升状态自动判定取消空车导航或完成返箱收尾。",
         };
+        var readyHandoffs = handoffOptions?.ReadySites().Select(site => site.HandoffId).ToArray() ?? [];
+        var handoffMessage = handoffOptions is not { Enabled: true }
+            ? "指定交接位未启用；当前只允许完成原业务返箱后切换。"
+            : readyHandoffs.Length == 0
+                ? "指定交接位尚无可执行配置；需完成站点、PLC五信号、接收车辆、路线、标定和现场联调。"
+                : $"已核定 {readyHandoffs.Length} 个交接位；载箱直接交接执行分支仍需启用对应车端与PLC动作契约。";
         return new(true, eligible, message, vehicleId, creationOptions.Stations, blockers, current)
         {
             ModeHint = modeHint,
             ModeDescription = modeDescription,
+            HandoffReadySites = readyHandoffs,
+            HandoffMessage = handoffMessage,
         };
     }
 }

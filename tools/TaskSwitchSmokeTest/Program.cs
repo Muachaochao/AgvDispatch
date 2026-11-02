@@ -12,8 +12,10 @@ var tests = new (string Name, Func<Task> Run)[]
     ("arrival-state-mode-policy", ArrivalModePolicy),
     ("loaded-return-create-without-cancel", LoadedReturn),
     ("loaded-return-restart-no-side-effect", LoadedReturnRestart),
+    ("suspend-resume-preserves-original", SuspendResume),
     ("cleanup-blockers-hold-vehicle", CleanupBlockers),
     ("multi-vehicle-insertion-isolation", MultiVehicleIsolation),
+    ("five-vehicle-switch-reservations", FiveVehicleReservations),
     ("unknown-original-and-action-block", UnknownOriginal),
     ("lost-cancel-response-stable-request", LostCancelResponse),
     ("restart-holds-until-explicit-resume", Restart),
@@ -25,7 +27,8 @@ var tests = new (string Name, Func<Task> Run)[]
     ("abandon-requires-closed-original", Abandon),
     ("identity-and-revision-database-guard", DatabaseGuard),
     ("stale-resume-revision-rejected", StaleResume),
-    ("legacy-schema-mode-migration", LegacySchemaMigration)
+    ("legacy-schema-mode-migration", LegacySchemaMigration),
+    ("handoff-commissioning-contract", HandoffContract)
 };
 foreach (var test in tests) { await test.Run(); Console.WriteLine("PASS " + test.Name); }
 Console.WriteLine($"PASS TaskSwitchSmokeTest: {tests.Length} isolated scenarios; no robot actions.");
@@ -107,6 +110,37 @@ static async Task LoadedReturnRestart()
     Require(!await f.Guard.AllowsVehicleAsync("CAR-X", null, null, default), "restart keeps vehicle locked");
 }
 
+static async Task SuspendResume()
+{
+    using var f = await Fixture.Create();
+    await f.Db.Insertable(new DispatchTaskEntity
+    {
+        TaskId = "SOURCE-1", StationId = "CNC-001", VehicleId = "CAR-X", Stage = (int)DispatchTaskStage.PickingUp,
+        CreatedAt = DateTime.Now, UpdatedAt = DateTime.Now
+    }).ExecuteCommandAsync();
+    f.Port.InspectionMode = TaskSwitchModes.CompleteBusinessReturn;
+    var request = f.Request() with { ExpectedStage = DispatchTaskStage.PickingUp, Mode = TaskSwitchModes.CompleteBusinessReturn };
+    var started = await f.Service.RequestAsync(f.User, request, default);
+    Require(started.Accepted, "cleanup request accepted before suspension");
+    await f.Service.ProcessAsync(default);
+    var current = await f.Current(started.Current!.SwitchId);
+    var suspended = await f.Service.SuspendAsync(f.User, Review(current), default);
+    Require(suspended.Accepted && suspended.Current!.Stage == TaskSwitchStages.Suspended &&
+        suspended.Current.ResumeStage == TaskSwitchStages.AwaitingBusinessCleanup,
+        "switch suspends at cleanup phase");
+    await f.Service.ProcessAsync(default);
+    Require((await f.Current(current.SwitchId)).Stage == TaskSwitchStages.Suspended &&
+        f.Port.CancelCalls == 0 && f.Port.CreateCalls == 0 &&
+        !await f.Guard.AllowsVehicleAsync("CAR-X", "OTHER", null, default),
+        "suspended switch retains original vehicle and creates nothing");
+    current = await f.Current(current.SwitchId);
+    var resumed = await f.Service.ResumeAsync(f.User, Review(current), default);
+    Require(resumed.Accepted && resumed.Current!.Stage == TaskSwitchStages.AwaitingBusinessCleanup,
+        "explicit resume restores original cleanup phase");
+    var source = await f.Db.Queryable<DispatchTaskEntity>().SingleAsync(t => t.TaskId == "SOURCE-1");
+    Require(source.Stage == (int)DispatchTaskStage.PickingUp, "suspension never rewrites original task");
+}
+
 static async Task CleanupBlockers()
 {
     using var f = await Fixture.Create();
@@ -132,6 +166,24 @@ static async Task MultiVehicleIsolation()
     Require(await f.Guard.AllowsVehicleAsync("CAR-Y", "OTHER-Y", null, default), "other vehicle may accept an inserted task");
     var conflict = await f.Service.RequestAsync(f.User, f.Request("SOURCE-2"), default);
     Require(!conflict.Accepted && conflict.Current!.SwitchId == current.SwitchId, "same vehicle cannot acquire a second switch");
+}
+
+static async Task FiveVehicleReservations()
+{
+    using var f = await Fixture.Create();
+    for (var index = 1; index <= 5; index++)
+    {
+        f.Port.VehicleId = $"CAR-{index}";
+        f.Port.InspectionMode = TaskSwitchModes.CancelEmptyNavigation;
+        var result = await f.Service.RequestAsync(f.User, f.Request($"SOURCE-{index}"), default);
+        Require(result.Accepted, $"vehicle {index} acquires one switch reservation");
+    }
+    Require((await f.Service.ListAsync(default)).Count == 5, "five vehicles retain five independent switch sessions");
+    for (var index = 1; index <= 5; index++)
+        Require(!await f.Guard.AllowsVehicleAsync($"CAR-{index}", "OTHER", null, default),
+            $"CAR-{index} original responsibility remains reserved");
+    Require(await f.Guard.AllowsVehicleAsync("CAR-6", "INSERTED", null, default),
+        "unreserved sixth vehicle accepts an inserted task");
 }
 
 static async Task UnknownOriginal()
@@ -342,6 +394,27 @@ static async Task LegacySchemaMigration()
     try { File.Delete(path); } catch (IOException) { }
 }
 
+static Task HandoffContract()
+{
+    var site = new TaskHandoffSite("HANDOFF-01", "LM70", "HANDOFF-PLC", "HANDOFF-BAY-01",
+        "handoff-v1", ["CAR-1"], true, ["CAR-2"],
+        new("AtHandoff", "TransferReady", "BoxTaken", "TransferComplete", "ReceiverLoaded"),
+        true, true, true, "COMM-HANDOFF-20261102");
+    var options = new TaskHandoffOptions { Enabled = true, Sites = [site] };
+    Require(options.Validate(site).Length == 0 && options.ReadySites().Single().HandoffId == "HANDOFF-01",
+        "fully commissioned handoff contract passes");
+    options.Enabled = false;
+    Require(options.ReadySites().Length == 0, "disabled handoff configuration is not actionable");
+    options.Enabled = true;
+    var invalid = site with { ResourceId = "", RouteVerified = false, Signals = site.Signals with { BoxTaken = "" } };
+    var errors = options.Validate(invalid);
+    Require(errors.Any(error => error.Contains("资源")) && errors.Any(error => error.Contains("路线")) &&
+        errors.Any(error => error.Contains("PLC")), "handoff configuration lists concrete blockers");
+    options.Sites = [invalid];
+    Require(options.ReadySites().Length == 0, "incomplete handoff never becomes ready");
+    return Task.CompletedTask;
+}
+
 static TaskSwitchResumeRequest Review(TaskSwitchRecord current) => new(current.SwitchId, current.Revision, "模拟核对原车辆箱体PLC和路权责任已闭合", true);
 static void Require(bool value, string message) { if (!value) throw new Exception("FAIL " + message); }
 
@@ -394,13 +467,13 @@ sealed class Fixture : IDisposable
 sealed class SyntheticPort(ISqlSugarClient database) : ITaskSwitchPort
 {
     public string[] InspectionBlockers = [], ObservationBlockers = [];
-    public string Version = "MAP-V1";
+    public string Version = "MAP-V1", VehicleId = "CAR-X";
     public string InspectionMode = TaskSwitchModes.CancelEmptyNavigation;
     public bool CancelConfirmed, CleanupConfirmed, OriginalClosed, CanClose, ThrowCancelOnce, ThrowCreateOnce, PersistCreate = true;
     public int CancelCalls, CloseCalls, CreateCalls;
     public List<string> CancelKeys = [], CreateKeys = [];
     public Task<TaskSwitchInspection> InspectSourceAsync(TaskSwitchRequest request, CancellationToken ct) =>
-        Task.FromResult(new TaskSwitchInspection("CAR-X", "MAP-X", Version, "PARAM-1", InspectionBlockers)
+        Task.FromResult(new TaskSwitchInspection(VehicleId, "MAP-X", Version, "PARAM-1", InspectionBlockers)
             { ResolvedMode = InspectionMode });
     public Task RequestCancelAsync(TaskSwitchRecord session, CancellationToken ct)
     {

@@ -55,7 +55,7 @@ test('后台使用嵌套原申请时严格核对完整参数，不丢失续接�
 });
 
 test('取消受理、停稳待查及待核对均不能显示为切换完成', () => {
-  for (const stage of ['Requested', 'AwaitingStop', 'AwaitingBusinessCleanup', 'ClosingOriginal', 'ReadyToSwitch', 'SubmittingReplacement', 'ReviewHold', 'Unknown'])
+  for (const stage of ['Requested', 'AwaitingStop', 'AwaitingBusinessCleanup', 'ClosingOriginal', 'ReadyToSwitch', 'SubmittingReplacement', 'ReviewHold', 'Suspended', 'Unknown'])
     assert.equal(taskSwitchTerminal(stage), false);
   assert.equal(taskSwitchTerminal('Completed'), true);
   assert.equal(taskSwitchTerminal('Abandoned'), true);
@@ -66,4 +66,5 @@ test('取消受理、停稳待查及待核对均不能显示为切换完成', ()
   assert.match(taskSwitchStageName('arbitrary'), /未知阶段/);
   assert.equal(taskSwitchStageName('ReviewHold'), '暂停待核对');
   assert.equal(taskSwitchStageName('AwaitingBusinessCleanup'), '完成原业务返箱收尾');
+  assert.equal(taskSwitchStageName('Suspended'), '换单已挂起');
 });
