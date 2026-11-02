@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 
 const project = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-const dist = resolve(project, 'AgvDispatch.Web/dist-task-switch');
+const dist = resolve(project, 'AgvDispatch.Web', process.env.TASK_SWITCH_DIST || 'dist');
 const evidence = resolve(project, 'artifacts/task-switch-browser');
 const profile = resolve(project, '.codex-tmp', `task-switch-browser-${Date.now()}`);
 mkdirSync(evidence, { recursive: true });
