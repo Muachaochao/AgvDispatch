@@ -26,6 +26,8 @@ public sealed class TrafficControlNamedPipeServer(
     IManualTaskCreationService taskCreation,
     ITaskParameterService taskParameters,
     ITaskCancellationService taskCancellation,
+    ITaskSwitchService taskSwitches,
+    ITaskSwitchQueries taskSwitchQueries,
     ITaskHistoryExportService historyExports,
     ICommunicationSettingsService communicationSettings,
     NamedPipeDiagnostics pipeDiagnostics,
@@ -309,6 +311,16 @@ public sealed class TrafficControlNamedPipeServer(
                 Success(await tasks.QueryHistoryAsync(Deserialize<TaskHistoryQuery>(request.Payload), cancellationToken)),
             TrafficControlOperations.GetTaskDetail =>
                 Success(await tasks.GetDetailAsync(Deserialize<TaskDetailRequest>(request.Payload), cancellationToken)),
+            TrafficControlOperations.GetTaskSwitchOptions =>
+                Success(await taskSwitchQueries.GetOptionsAsync(Deserialize<string>(request.Payload), cancellationToken)),
+            TrafficControlOperations.GetTaskSwitch =>
+                Success(await taskSwitches.GetAsync(Deserialize<string>(request.Payload), cancellationToken)),
+            TrafficControlOperations.CreateTaskSwitch =>
+                Success(await taskSwitches.RequestAsync(user, Deserialize<TaskSwitchRequest>(request.Payload), cancellationToken)),
+            TrafficControlOperations.ResumeTaskSwitch =>
+                Success(await taskSwitches.ResumeAsync(user, Deserialize<TaskSwitchResumeRequest>(request.Payload), cancellationToken)),
+            TrafficControlOperations.AbandonTaskSwitch =>
+                Success(await taskSwitches.AbandonAsync(user, Deserialize<TaskSwitchResumeRequest>(request.Payload), cancellationToken)),
             TrafficControlOperations.ListMapTransfers=>Success(await (mapTransfers??throw new NotSupportedException("未配置地图传输记录。")).ListAsync(user,Deserialize<MapTransferListQuery>(request.Payload),cancellationToken)),
             TrafficControlOperations.GetMapTransferHistory=>Success(await (mapTransfers??throw new NotSupportedException("未配置地图传输记录。")).HistoryAsync(user,Deserialize<MapTransferHistoryQuery>(request.Payload),cancellationToken)),
             TrafficControlOperations.GetMapTransferReview=>Success(await (mapTransfers??throw new NotSupportedException("未配置地图传输记录。")).ReviewAsync(user,Deserialize<MapTransferQuery>(request.Payload),cancellationToken)),

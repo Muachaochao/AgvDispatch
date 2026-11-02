@@ -31,6 +31,11 @@ public static class TrafficControlOperations
     public const string ValidateTaskParameters = "ValidateTaskParameters";
     public const string SaveTaskParameters = "SaveTaskParameters";
     public const string GetTaskDetail = "GetTaskDetail";
+    public const string GetTaskSwitchOptions = "GetTaskSwitchOptions";
+    public const string GetTaskSwitch = "GetTaskSwitch";
+    public const string CreateTaskSwitch = "CreateTaskSwitch";
+    public const string ResumeTaskSwitch = "ResumeTaskSwitch";
+    public const string AbandonTaskSwitch = "AbandonTaskSwitch";
     public const string GetTaskHistory = "GetTaskHistory";
     public const string GetTaskHistoryExportProgress = "GetTaskHistoryExportProgress";
     public const string CancelTaskHistoryExport = "CancelTaskHistoryExport";

@@ -6,6 +6,7 @@ import TaskRouteMap from './TaskRouteMap.vue';
 import {useDispatchStore} from './stores/dispatch';
 const store=useDispatchStore();
 import TaskCancelDialog from './components/TaskCancelDialog.vue';
+import TaskSwitchPanel from './components/TaskSwitchPanel.vue';
 import type { TaskDetail } from './types';
 import { label } from './state';
 import { shortTime } from './dashboard';
@@ -34,6 +35,7 @@ const events = computed(() => props.detail.executionTimeline ?? []);
       <a :href="`/api/tasks/${encodeURIComponent(detail.task.taskId)}/diagnostics/export`" download>导出原任务诊断包</a>
       <p>取消受理 → 查询原任务结束状态 → 现场核对载荷、PLC 和占用 → 恢复批次放行。取消不是急停。</p>
     </div>
+    <TaskSwitchPanel :task-id="detail.task.taskId" :stage="detail.task.stage" :live="live" />
     <TaskRouteMap v-if="step" :detail="detail" :sequence="step.sequence"/>
     <nav class="execution-steps" aria-label="九步业务流程"><button v-for="s in detail.steps" :key="s.sequence" :class="{ selected: step?.sequence===s.sequence, current: s.isCurrent, done:s.status==='Completed' }" :aria-pressed="step?.sequence===s.sequence" @click="selected=s.sequence"><span>{{ s.sequence }}</span><b>{{ label(s.stepType) }}</b><small>{{ s.isCurrent ? '当前 · ' : '' }}{{ stepStatusLabel(s.status,label(s.status)) }}</small></button></nav>
     <section v-if="step" class="execution-inspection">

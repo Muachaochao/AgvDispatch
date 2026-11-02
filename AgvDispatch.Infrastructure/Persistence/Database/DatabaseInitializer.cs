@@ -86,6 +86,13 @@ public sealed class DatabaseInitializer : IDatabaseInitializer
         _database.CodeFirst.InitTables<ExecutionRecoverySessionEntity, ExecutionRecoveryTicketEntity, ExecutionEvidenceEntity>();
         _database.CodeFirst.InitTables<TaskHandshakeEntity, TaskRuntimeEventEntity, TaskSignalLastEntity, TaskEquipmentClaimEntity>();
         _database.CodeFirst.InitTables<TaskWaitingBayEntity>();
+        _database.CodeFirst.InitTables<TaskSwitchEntity>();
+        _database.Ado.ExecuteCommand("CREATE UNIQUE INDEX IF NOT EXISTS ux_task_switch_active_vehicle ON task_switch_session(VehicleId) WHERE Stage NOT IN ('Completed','Abandoned')");
+        _database.Ado.ExecuteCommand("CREATE UNIQUE INDEX IF NOT EXISTS ux_task_switch_active_source ON task_switch_session(SourceTaskId) WHERE Stage NOT IN ('Completed','Abandoned')");
+        _database.Ado.ExecuteCommand("CREATE UNIQUE INDEX IF NOT EXISTS ux_task_switch_replacement_request ON task_switch_session(ReplacementRequestId)");
+        _database.Ado.ExecuteCommand("CREATE UNIQUE INDEX IF NOT EXISTS ux_task_switch_cancel_request ON task_switch_session(CancelRequestId)");
+        _database.Ado.ExecuteCommand("CREATE TRIGGER IF NOT EXISTS guard_task_switch_identity BEFORE UPDATE ON task_switch_session WHEN NEW.SwitchId IS NOT OLD.SwitchId OR NEW.SourceTaskId IS NOT OLD.SourceTaskId OR NEW.VehicleId IS NOT OLD.VehicleId OR NEW.TargetStationId IS NOT OLD.TargetStationId OR NEW.MapId IS NOT OLD.MapId OR NEW.MapVersionId IS NOT OLD.MapVersionId OR NEW.ParameterRevision IS NOT OLD.ParameterRevision OR NEW.ReplacementRequestId IS NOT OLD.ReplacementRequestId OR NEW.CancelRequestId IS NOT OLD.CancelRequestId OR NEW.RequestJson IS NOT OLD.RequestJson OR NEW.Operator IS NOT OLD.Operator OR NEW.Revision!=OLD.Revision+1 OR NEW.ReplacementCreateAttempted<OLD.ReplacementCreateAttempted OR OLD.TargetTaskId IS NOT NULL AND NEW.TargetTaskId IS NOT OLD.TargetTaskId BEGIN SELECT RAISE(ABORT,'task switch identity/version is immutable'); END;");
+        _database.Ado.ExecuteCommand("CREATE TRIGGER IF NOT EXISTS guard_task_switch_delete BEFORE DELETE ON task_switch_session BEGIN SELECT RAISE(ABORT,'task switch audit is immutable'); END;");
         _database.Ado.ExecuteCommand("CREATE TRIGGER IF NOT EXISTS guard_task_waiting_bay_update BEFORE UPDATE ON task_waiting_bay BEGIN SELECT RAISE(ABORT,'task waiting bay is immutable'); END;");
         _database.Ado.ExecuteCommand("CREATE TRIGGER IF NOT EXISTS guard_task_waiting_bay_delete BEFORE DELETE ON task_waiting_bay BEGIN SELECT RAISE(ABORT,'task waiting bay audit is immutable'); END;");
         _database.Ado.ExecuteCommand("CREATE INDEX IF NOT EXISTS ix_runtime_event_task_sequence ON task_runtime_event(TaskId,Sequence)");

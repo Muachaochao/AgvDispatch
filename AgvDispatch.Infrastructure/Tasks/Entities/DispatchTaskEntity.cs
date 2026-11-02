@@ -29,6 +29,7 @@ public sealed class DispatchTaskEntity
     [SugarColumn(IsNullable = true)] public DateTime? CancelSentAt { get; set; }
     [SugarColumn(IsNullable = true)] public DateTime? CancelConfirmedAt { get; set; }
     [SugarColumn(IsNullable = true)] public int? CancelAttemptCount { get; set; }
+    public bool CancelRequiresPickupNavigation { get; set; }
     public int Stage { get; set; }
     public int Priority { get; set; }
     [SugarColumn(Length = 32, IsNullable = true)]

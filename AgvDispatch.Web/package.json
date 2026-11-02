@@ -10,7 +10,8 @@
     "test:editor-browser": "node scripts/editor-browser-check.mjs",
     "test:navigation-browser": "node scripts/navigation-browser-check.mjs",
     "test:plc-cycle-browser": "node scripts/plc-cycle-browser-check.mjs",
-    "test:fleet-browser": "node scripts/fleet-test-browser-check.mjs"
+    "test:fleet-browser": "node scripts/fleet-test-browser-check.mjs",
+    "test:task-switch-browser": "node scripts/task-switch-browser-check.mjs"
   },
   "dependencies": {
     "@tabler/icons-vue": "^3.49.0",

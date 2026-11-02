@@ -41,8 +41,19 @@ internal static class Program
         var vendor=await gateway.CreateTransportTaskAsync(step.StepId,"SIM",["HOME","PICK"],new("JackLoad"),default);
         await outbox.MarkSentAsync(claimed.CommandId,vendor,default);
         var gate=new MapExecutionGate(); gate.SetMode(MapExecutionMode.Running); var cancel=new TaskCancellationService(db,gate,gateway);
-        var request=new TaskCancelRequest(Guid.NewGuid().ToString("N"),id,DispatchTaskStage.GoingToPickup,"模拟联调申请停止原运输并核对箱体PLC和路权");
+        var request=new TaskCancelRequest(Guid.NewGuid().ToString("N"),id,DispatchTaskStage.GoingToPickup,"模拟联调申请停止原运输并核对箱体PLC和路权")
+            { RequirePickupNavigation=true };
+        Check(Row().CancelRequiresPickupNavigation==false,"取消申请前尚未写入换单策略");
+        var second=(await tasks.GetStepsAsync(id,default)).Skip(1).First();
+        await db.Updateable<DispatchTaskStepEntity>().SetColumns(s=>new DispatchTaskStepEntity{Status=(int)DispatchTaskStepStatus.Ready})
+            .Where(s=>s.StepId==second.StepId).ExecuteCommandAsync();
+        var ineligible=await cancel.RequestAsync(TrafficUserContext.LocalOperation("isolated-test"),
+            request with { RequestId=Guid.NewGuid().ToString("N") },default);
+        Check(!ineligible.Accepted&&Row().CancelRequestId==null,"后续步骤已激活时拒绝按空车导航换单 "+mode);
+        await db.Updateable<DispatchTaskStepEntity>().SetColumns(s=>new DispatchTaskStepEntity{Status=(int)DispatchTaskStepStatus.Pending})
+            .Where(s=>s.StepId==second.StepId).ExecuteCommandAsync();
         Check((await cancel.RequestAsync(TrafficUserContext.LocalOperation("isolated-test"),request,default)).Accepted,"取消请求持久化 "+mode);
+        Check(Row().CancelRequiresPickupNavigation,"换单取消策略持久化 "+mode);
         Check(Row().Stage==(int)DispatchTaskStage.CancellationPending && (await tasks.GetStepsAsync(id,default)).All(s=>s.Status==DispatchTaskStepStatus.ManualIntervention),"九步冻结并进入取消待确认 "+mode);
         Check((await orchestration.GetReadyStepsAsync(20,default)).Count==0 && (await orchestration.GetExecutingTasksAsync(default)).Count==0,"取消冻结后不进入正常调度推进 "+mode);
         Check((await outbox.GetDueCommandsAsync(DateTimeOffset.Now.AddMinutes(1),20,default)).Count==0,"取消后无运输命令可继续发送 "+mode);

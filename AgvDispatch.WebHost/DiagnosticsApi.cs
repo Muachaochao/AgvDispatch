@@ -7,6 +7,38 @@ public static class DiagnosticsApi
     public sealed record WebCancelRequest(string RequestId,string TaskId,AgvDispatch.Domain.Tasks.DispatchTaskStage? ExpectedStage,string Reason);
     public static void MapDiagnosticsApi(this WebApplication app,bool recoveryEnabled,bool taskOperationsEnabled=false)
     {
+        app.MapGet("/api/tasks/{id}/switch-options",async(string id,DispatchPipe pipe,CancellationToken ct)=>
+        {
+            var options=await pipe.ReadAsync<TaskSwitchOptions>(
+                TrafficControlOperations.GetTaskSwitchOptions,
+                id,
+                ct) ?? throw new InvalidDataException("后台未返回受控换单条件。");
+            return Results.Ok(options with
+            {
+                Enabled=taskOperationsEnabled,
+                Message=taskOperationsEnabled? options.Message : "Web任务操作未启用；当前只能只读查看受控换单状态。",
+            });
+        });
+        app.MapGet("/api/task-switches/{id}",async(string id,DispatchPipe pipe,CancellationToken ct)=>
+            Results.Ok(await pipe.ReadAsync<TaskSwitchRecord?>(TrafficControlOperations.GetTaskSwitch,id,ct)));
+        app.MapPost("/api/tasks/{id}/switch",async(string id,TaskSwitchRequest request,DispatchPipe pipe,CancellationToken ct)=>
+        {
+            if(!taskOperationsEnabled)return DisabledTaskOperation("Web任务操作未启用。");
+            if(request.TaskId!=id)return Results.BadRequest(new{error="换单申请的原任务编号不一致。"});
+            return Results.Ok(await pipe.ReadAsync<TaskSwitchResult>(TrafficControlOperations.CreateTaskSwitch,request,ct));
+        });
+        app.MapPost("/api/task-switches/{id}/resume",async(string id,TaskSwitchResumeRequest request,DispatchPipe pipe,CancellationToken ct)=>
+        {
+            if(!taskOperationsEnabled)return DisabledTaskOperation("Web任务操作未启用。");
+            if(request.SwitchId!=id)return Results.BadRequest(new{error="换单申请编号不一致。"});
+            return Results.Ok(await pipe.ReadAsync<TaskSwitchResult>(TrafficControlOperations.ResumeTaskSwitch,request,ct));
+        });
+        app.MapPost("/api/task-switches/{id}/abandon",async(string id,TaskSwitchResumeRequest request,DispatchPipe pipe,CancellationToken ct)=>
+        {
+            if(!taskOperationsEnabled)return DisabledTaskOperation("Web任务操作未启用。");
+            if(request.SwitchId!=id)return Results.BadRequest(new{error="换单申请编号不一致。"});
+            return Results.Ok(await pipe.ReadAsync<TaskSwitchResult>(TrafficControlOperations.AbandonTaskSwitch,request,ct));
+        });
         app.MapPost("/api/tasks/{id}/cancel",async(string id,WebCancelRequest request,DispatchPipe pipe,CancellationToken ct)=>
         {
             if(!taskOperationsEnabled)return Results.Json(new{error="Web任务取消未启用；取消能力与新建任务权限分别配置。"},statusCode:403);
@@ -50,4 +82,5 @@ public static class DiagnosticsApi
             recoveryEnabled?Results.Ok(await pipe.ReadAsync<RecoveryResult>("ReleaseExecutionRecovery",request,ct)):Disabled());
     }
     private static IResult Disabled()=>Results.Json(new{error="Web恢复写操作未启用；可只读核对。启用后仍由后台验证权限、批次、版本和现场条件。"},statusCode:403);
+    private static IResult DisabledTaskOperation(string message)=>Results.Json(new{error=message},statusCode:403);
 }

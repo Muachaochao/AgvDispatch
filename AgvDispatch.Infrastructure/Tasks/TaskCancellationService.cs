@@ -18,7 +18,8 @@ public sealed class TaskCancellationService(ISqlSugarClient database, IMapExecut
             return new(false, "请填写有效请求编号及至少10字、最多1000字的取消依据。");
         using var lease = await gate.EnterControlAsync(ct);
         var replay = await database.Queryable<DispatchTaskEntity>().Where(t => t.CancelRequestId == request.RequestId).FirstAsync(ct);
-        if (replay != null) return replay.TaskId == request.TaskId && replay.CancelReason == request.Reason.Trim() && replay.CancelOriginalStage == (int)request.ExpectedStage
+        if (replay != null) return replay.TaskId == request.TaskId && replay.CancelReason == request.Reason.Trim() &&
+            replay.CancelOriginalStage == (int)request.ExpectedStage && replay.CancelRequiresPickupNavigation == request.RequirePickupNavigation
             ? new(true, replay.ErrorMessage ?? "取消请求已记录。") : new(false, "请求编号已用于不同取消参数。");
         var task = await database.Queryable<DispatchTaskEntity>().Where(t => t.TaskId == request.TaskId).FirstAsync(ct);
         if (task == null || task.Stage != (int)request.ExpectedStage) return new(false, "任务状态已变化，请刷新后重新核对。");
@@ -27,6 +28,12 @@ public sealed class TaskCancellationService(ISqlSugarClient database, IMapExecut
         var current = steps.FirstOrDefault(s => s.Status != (int)DispatchTaskStepStatus.Completed);
         var commands = await database.Queryable<AgvCommandOutboxEntity>().Where(c => c.TaskId == task.TaskId).ToListAsync(ct);
         var command = commands.FirstOrDefault(c => c.StepId == current?.StepId && c.CommandType == (int)AgvCommandType.Transport);
+        if (request.RequirePickupNavigation &&
+            (task.Stage != (int)DispatchTaskStage.GoingToPickup || steps.Count == 0 ||
+             steps[0].StepType != (int)DispatchTaskStepType.GoToPickup ||
+             steps[0].Status != (int)DispatchTaskStepStatus.Executing ||
+             steps.Skip(1).Any(s => s.Status != (int)DispatchTaskStepStatus.Pending)))
+            return new(false, "第一阶段受控换单仅允许前往取箱首段导航执行中且尚未发生取箱；其他阶段保持原取消与恢复流程。");
         if (commands.Any(c => c.StepId != current?.StepId && (c.Status == (int)AgvCommandStatus.Sending ||
             c.AttemptCount > 0 && !steps.Any(s => s.StepId == c.StepId && s.Status == (int)DispatchTaskStepStatus.Completed))))
             return new(false, "存在其他步骤发送结果不明，须先进行现场恢复核对。");
@@ -34,6 +41,7 @@ public sealed class TaskCancellationService(ISqlSugarClient database, IMapExecut
         task.CancelRequestedAt = DateTime.Now; task.CancelNextAttemptAt = DateTime.Now; task.CancelAttemptCount = 0;
         task.CancelStepId = current?.StepId; task.CancelVehicleId = current?.VehicleId ?? task.VehicleId ?? command?.VehicleId;
         task.CancelVendorId = current?.VendorTaskId ?? command?.VendorCommandId;
+        task.CancelRequiresPickupNavigation = request.RequirePickupNavigation;
         var possiblySent = task.CancelVendorId != null || command is { AttemptCount: > 0 } || current?.Status == (int)DispatchTaskStepStatus.Executing;
         // A lost send response is queried by the original stable business key, never treated as unsent.
         if (possiblySent && task.CancelVendorId == null) task.CancelVendorId = current?.StepId;

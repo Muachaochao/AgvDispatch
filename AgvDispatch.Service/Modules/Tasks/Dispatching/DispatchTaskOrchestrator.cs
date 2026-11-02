@@ -17,7 +17,10 @@ public sealed class DispatchTaskOrchestrator(
     MapOptions mapOptions,
     IRoutePlanner routePlanner,
     ITrafficResourceManager trafficResources,
-    IMapExecutionGate executionGate, IRobokitTaskMapPreflight? robokitMap = null, HandshakeExecutionOptions? handshakeOptions = null, PersistentHandshakeExecutor? handshake = null, BusinessRunOwnership? businessRun = null, FleetTestOwnership? fleetTest=null, IChargingDispatchGuard? charging=null) : IsolatedBackgroundService
+    IMapExecutionGate executionGate, IRobokitTaskMapPreflight? robokitMap = null,
+    HandshakeExecutionOptions? handshakeOptions = null, PersistentHandshakeExecutor? handshake = null,
+    BusinessRunOwnership? businessRun = null, FleetTestOwnership? fleetTest=null,
+    IChargingDispatchGuard? charging=null, ITaskSwitchGuard? taskSwitchGuard=null) : IsolatedBackgroundService
 {
     private readonly HashSet<string> _missingRouteWarnings =
         new(StringComparer.OrdinalIgnoreCase);
@@ -156,11 +159,15 @@ public sealed class DispatchTaskOrchestrator(
                 task.TaskId,
                 cancellationToken);
             var planningMap = activeMap.Current;
-            var routeCandidates = idleVehicles
-                .Where(vehicle => options.AllowsVehicle(task.StationId, vehicle.VehicleId))
-                .Where(vehicle => fleetTest?.Allows(task.TaskId,vehicle.VehicleId)!=false)
-                .Where(vehicle => TaskVehicleSelection.Accepts(task, vehicle.VehicleId))
-                .Where(vehicle => !selectedVehicles.Contains(vehicle.VehicleId))
+            var ownableVehicles = new List<AgvVehicleStatus>();
+            foreach (var vehicle in idleVehicles
+                         .Where(vehicle => options.AllowsVehicle(task.StationId, vehicle.VehicleId))
+                         .Where(vehicle => fleetTest?.Allows(task.TaskId,vehicle.VehicleId)!=false)
+                         .Where(vehicle => TaskVehicleSelection.Accepts(task, vehicle.VehicleId))
+                         .Where(vehicle => !selectedVehicles.Contains(vehicle.VehicleId)))
+                if (taskSwitchGuard is null || await taskSwitchGuard.AllowsVehicleAsync(vehicle.VehicleId, task.TaskId, null, cancellationToken))
+                    ownableVehicles.Add(vehicle);
+            var routeCandidates = ownableVehicles
                 .Where(vehicle => !string.IsNullOrWhiteSpace(vehicle.CurrentStation))
                 .Select(vehicle => new
                 {

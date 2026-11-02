@@ -10,7 +10,9 @@ public sealed partial class ManualTaskCreationService(IManualTaskCreationReposit
     IDispatchOrchestrationRepository tasks, DispatchTaskCreationOptions creation, DispatchOrchestratorOptions dispatch,
     DispatchTaskStepOptions steps, MapOptions mapOptions, IPlcConfigurationInspector plcConfiguration,
     TaskParameterRuntime parameters, IRobokitTaskMapPreflight? robokitMap = null,
-    HandshakeExecutionOptions? handshakeOptions = null, BusinessRunOwnership? businessRun = null, FleetTestOptions? fleetOptions=null,FleetTestOwnership? fleetOwnership=null, IChargingDispatchGuard? charging=null) : IManualTaskCreationService
+    HandshakeExecutionOptions? handshakeOptions = null, BusinessRunOwnership? businessRun = null,
+    FleetTestOptions? fleetOptions=null, FleetTestOwnership? fleetOwnership=null, IChargingDispatchGuard? charging=null,
+    ITaskSwitchGuard? taskSwitchGuard=null) : IManualTaskCreationService
 {
     public async Task<ManualTaskCreationOptions> GetOptionsAsync(CancellationToken ct)
     {
@@ -125,7 +127,12 @@ public sealed partial class ManualTaskCreationService(IManualTaskCreationReposit
             return new(false, false, null, $"工位 {request.StationId} 的车辆池不包含 {requested}，未创建任务。");
         var vehicles = options.Vehicles.Where(vehicle => vehicle.Available && dispatch.AllowsVehicle(request.StationId, vehicle.VehicleId) && CanRoute(activeMap.Current, vehicle.CurrentSite, station.PickupSite, true, PickupExcludedNodes(activeMap.Current)));
         if (request.RequestedVehicleId is not null) vehicles = vehicles.Where(vehicle => vehicle.VehicleId == request.RequestedVehicleId);
-        if (!vehicles.Any()) return new(false, false, null, options.Vehicles.FirstOrDefault(v=>v.VehicleId==request.RequestedVehicleId&& !v.Available)?.Explanation??"第 1 步（前往取货点）：所选车辆当前不可用或无可执行路径；车辆已在取货点时必须配置避开等待/倒料节点的真实已启用进出闭合路线，不能用同点空路径代替取箱动作。");
+        var vehicleCandidates = new List<ManualTaskVehicleChoice>();
+        foreach (var vehicle in vehicles)
+            if (taskSwitchGuard is null || await taskSwitchGuard.AllowsVehicleAsync(vehicle.VehicleId, null, request.RequestId, ct))
+                vehicleCandidates.Add(vehicle);
+        if (vehicleCandidates.Count == 0) return new(false, false, null, options.Vehicles.FirstOrDefault(v=>v.VehicleId==request.RequestedVehicleId&& !v.Available)?.Explanation??"第 1 步（前往取货点）：所选车辆当前不可用、正在受控换单交接或无可执行路径；不能用同点空路径代替取箱动作。");
+        vehicles = vehicleCandidates;
         if (robokitMap is not null)
         {
             if(request.RequestedVehicleId is null)return new(false,false,null,"车端地图核验需要明确选择车辆，不能以自动派车跳过核验。");
