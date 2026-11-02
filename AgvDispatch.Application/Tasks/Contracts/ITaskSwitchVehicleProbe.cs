@@ -7,6 +7,10 @@ public sealed record TaskSwitchVehicleEvidence(string VehicleId, bool EmptyAndLo
 {
     public bool TasksKnown { get; init; }
     public bool NoActiveTasks { get; init; }
+    public bool BusinessCleanupReady { get; init; }
+    public IReadOnlyList<string> BusinessCleanupBlockers { get; init; } = [];
+    public bool? Loaded { get; init; }
+    public int? JackState { get; init; }
 }
 
 public interface ITaskSwitchVehicleProbe

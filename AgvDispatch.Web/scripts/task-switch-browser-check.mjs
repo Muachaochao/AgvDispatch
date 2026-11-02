@@ -45,6 +45,7 @@ const options = {
     { stationId: 'CNC-002', pickupSite: 'LM62', available: true, explanation: '目标工位条件满足' },
   ],
   blockers: [], current: null,
+  modeHint: 'Auto', modeDescription: '系统按实时载荷与顶升状态自动判定取消空车导航或完成返箱收尾。',
 };
 
 const server = createServer(async (req, res) => {
@@ -66,6 +67,7 @@ const server = createServer(async (req, res) => {
           blockers: [], revision: 1, updatedAt: now, mapId: 'MAP', mapVersionId: 'V1',
           parameterRevision: 'R1', replacementRequestId: 'fedcba9876543210fedcba9876543210',
           cancelRequestId: '00112233445566770011223344556677', request: body,
+          resolvedMode: 'CancelEmptyNavigation',
         };
         return json(200, { accepted: true, message: record.message, current: record });
       }
@@ -174,7 +176,7 @@ try {
   await wait(() => evaluate(`Boolean(document.querySelector('.task-switch-panel'))`), 'task switch panel');
   await click('查看换单条件');
   await wait(() => evaluate(`document.querySelector('.switch-form') !== null`), 'switch form');
-  check('Eligible navigation shows the controlled-switch entry', await evaluate(`document.querySelector('.task-switch-panel header p').textContent.includes('空车取货导航')`));
+  check('Eligible navigation shows the controlled-switch entry', await evaluate(`document.querySelector('.task-switch-panel header p').textContent.includes('空车导航或载箱返箱')`));
   await evaluate(`(()=>{const s=document.querySelector('.switch-form select');s.value='CNC-002';s.dispatchEvent(new Event('change',{bubbles:true}));const t=document.querySelector('.switch-form textarea');t.value='现场确认空车，目标工位等待处理，需要受控切换';t.dispatchEvent(new Event('input',{bubbles:true}));const c=document.querySelector('.switch-form input[type=checkbox]');c.click();})()`);
   await click('申请受控停止并换单');
   await wait(() => mutations.length === 1, 'switch request');
@@ -182,7 +184,7 @@ try {
   assert.match(request.body.requestId, /^[0-9a-f]{32}$/);
   check('Request pins original stage, target, confirmation and reason', request.path === `/api/tasks/${taskId}/switch` &&
     request.body.expectedStage === 'GoingToPickup' && request.body.targetStationId === 'CNC-002' &&
-    request.body.siteConfirmed === true && request.body.reason.includes('目标工位'));
+    request.body.siteConfirmed === true && request.body.reason.includes('目标工位') && request.body.mode === 'Auto');
   await wait(() => evaluate(`document.querySelector('.switch-status strong')?.textContent.includes('等待原任务结束')`), 'stop progress');
   check('Accepted request is shown as awaiting stop, never completed', await evaluate(`document.querySelector('.switch-status strong').textContent.includes('等待原任务结束')`));
   check('Stop boundary explains jack and pickup may already have occurred', await evaluate(`document.querySelector('.task-switch-panel')?.textContent.includes('停止不等于已闭合') && document.querySelector('.task-switch-panel')?.textContent.includes('到站取箱可能包含顶升动作')`));

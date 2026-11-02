@@ -32,10 +32,13 @@ public sealed class TaskSwitchVehicleProbe(AgvOptions options, AgvConnectionMana
             var state = RequiredInt(RequiredField(fields, "jack_state"), "jack_state");
             var loaded = RequiredBool(fields, "jack_isFull");
             var blockers = new List<string>();
-            if (!enabled) blockers.Add("车端顶升未启用，不能核定下降到位。");
-            if (emergency) blockers.Add("顶升急停尚未解除。");
-            if (errorCode != 0) blockers.Add($"顶升错误码为 {errorCode}，不能换单。");
+            var cleanupBlockers = new List<string>();
+            void Shared(string message) { blockers.Add(message); cleanupBlockers.Add(message); }
+            if (!enabled) Shared("车端顶升未启用，不能确认换单所需机械状态。");
+            if (emergency) Shared("顶升急停尚未解除。");
+            if (errorCode != 0) Shared($"顶升错误码为 {errorCode}，不能换单。");
             if (loaded) blockers.Add("车端报告顶升上有载荷，不能按空车换单。");
+            else cleanupBlockers.Add("车端未报告载箱，不能按“完成原业务返箱”换单。");
             if (state != 3)
                 blockers.Add(state switch
                 {
@@ -45,6 +48,16 @@ public sealed class TaskSwitchVehicleProbe(AgvOptions options, AgvConnectionMana
                     4 => "顶升已停止，但未确认下降到位。",
                     255 => "顶升执行失败，尚未确认下降到位。",
                     _ => $"未知顶升状态码 {state}，不能推定下降到位。"
+                });
+            if (state != 1)
+                cleanupBlockers.Add(state switch
+                {
+                    0 => "顶升正在上升，尚未确认载箱到位。",
+                    2 => "顶升正在下降，不能开始返箱收尾换单。",
+                    3 => "顶升处于下降状态，载箱任务尚未确认可安全运行。",
+                    4 => "顶升已停止，但未确认载箱到位。",
+                    255 => "顶升执行失败，不能开始返箱收尾换单。",
+                    _ => $"未知顶升状态码 {state}，不能核定载箱收尾。"
                 });
             var emptyAndLowered = blockers.Count == 0;
             var tasksKnown = false;
@@ -58,11 +71,19 @@ public sealed class TaskSwitchVehicleProbe(AgvOptions options, AgvConnectionMana
             catch (Exception error) when (!ct.IsCancellationRequested)
             {
                 blockers.Add("车端全任务列表未核定：" + Limit(error.Message));
+                cleanupBlockers.Add("车端全任务列表未核定：" + Limit(error.Message));
             }
             if (!options.Enabled || !client.CommunicationEnabled || !client.Robot.Enabled)
                 return Rejected(client.Robot.VehicleId, "查询期间车辆通信已禁用，本次反馈不用于换单。");
             return new(client.Robot.VehicleId, emptyAndLowered, observedAt, blockers.ToArray())
-            { TasksKnown = tasksKnown, NoActiveTasks = tasksKnown && noActiveTasks };
+            {
+                TasksKnown = tasksKnown,
+                NoActiveTasks = tasksKnown && noActiveTasks,
+                BusinessCleanupReady = cleanupBlockers.Count == 0,
+                BusinessCleanupBlockers = cleanupBlockers.ToArray(),
+                Loaded = loaded,
+                JackState = state,
+            };
         }
         catch (Exception error) when (!ct.IsCancellationRequested)
         {

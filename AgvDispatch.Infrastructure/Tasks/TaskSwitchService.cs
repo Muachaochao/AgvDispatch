@@ -46,7 +46,7 @@ public sealed class TaskSwitchService(ISqlSugarClient database, ITaskSwitchPort 
         Demand(user);
         if (!ValidId(request.RequestId) || !Text(request.TaskId, 64) || !Text(request.TargetStationId, 32) ||
             !Enum.IsDefined(request.ExpectedStage) || request.Priority is < 0 or > 100 || !request.SiteConfirmed ||
-            !Text(request.Reason, 1000) || request.Reason.Trim().Length < 10)
+            !Text(request.Reason, 1000) || request.Reason.Trim().Length < 10 || !TaskSwitchModes.IsValid(request.Mode))
             return Reject("须填写有效的原任务、目标工位、优先级、至少10字依据，并确认现场条件。", null);
         request = request with { Reason = request.Reason.Trim() };
         await mutex.WaitAsync(ct);
@@ -69,10 +69,14 @@ public sealed class TaskSwitchService(ISqlSugarClient database, ITaskSwitchPort 
             if (conflict is not null) return Reject("原任务或车辆已有未闭合换单申请，请查询原记录。", Convert(conflict));
             if (!await new TaskSwitchGuard(database).AllowsVehicleAsync(inspection.VehicleId, null, null, ct))
                 return Reject("原车辆正在交接已创建的新任务，须等正常调度完成接管后再申请换单。", null);
+            var initialMessage = TaskSwitchModes.IsCleanup(inspection.ResolvedMode)
+                ? "已保存载箱返箱收尾申请；原九步业务继续执行，完成PLC收尾后才创建新任务。"
+                : "已保存空车导航换单申请，等待按原编号申请取消。";
             var session = new TaskSwitchRecord(request.RequestId, request.TaskId, inspection.VehicleId, request.TargetStationId,
-                null, TaskSwitchStages.Requested, "已保存受控换单申请，等待按原编号申请取消。", [], 1,
+                null, TaskSwitchStages.Requested, initialMessage, [], 1,
                 new DateTimeOffset(Now, TimeSpan.Zero), inspection.MapId, inspection.MapVersionId, inspection.ParameterRevision,
-                Guid.NewGuid().ToString("N"), Guid.NewGuid().ToString("N"), request, user.WindowsIdentity);
+                Guid.NewGuid().ToString("N"), Guid.NewGuid().ToString("N"), request, user.WindowsIdentity)
+                { ResolvedMode = inspection.ResolvedMode };
             try { await database.Insertable(ToRow(session)).ExecuteCommandAsync(ct); }
             catch (Exception) when (!ct.IsCancellationRequested)
             {
@@ -192,11 +196,24 @@ public sealed class TaskSwitchService(ISqlSugarClient database, ITaskSwitchPort 
         switch (session.Stage)
         {
             case TaskSwitchStages.Requested:
-                // Persist before external cancellation. A lost response is recovered with the SAME cancel request.
-                session = await SaveAsync(session with { Stage = TaskSwitchStages.AwaitingStop,
-                    ResumeStage = TaskSwitchStages.Requested, Message = "已记录取消提交意图，等待原运输终结。" }, ct);
-                await port.RequestCancelAsync(session, ct);
-                await SaveAsync(session with { ResumeStage = null }, ct);
+                if (TaskSwitchModes.IsCleanup(session.ResolvedMode))
+                {
+                    await SaveAsync(session with { Stage = TaskSwitchStages.AwaitingBusinessCleanup,
+                        Message = "原任务继续按九步业务返箱、倒料和PLC收尾；此阶段不发送取消或替代导航。" }, ct);
+                }
+                else
+                {
+                    // Persist before external cancellation. A lost response is recovered with the SAME cancel request.
+                    session = await SaveAsync(session with { Stage = TaskSwitchStages.AwaitingStop,
+                        ResumeStage = TaskSwitchStages.Requested, Message = "已记录取消提交意图，等待原运输终结。" }, ct);
+                    await port.RequestCancelAsync(session, ct);
+                    await SaveAsync(session with { ResumeStage = null }, ct);
+                }
+                break;
+            case TaskSwitchStages.AwaitingBusinessCleanup:
+                if (observation.CleanupConfirmed && observation.OriginalClosed)
+                    await SaveAsync(session with { Stage = TaskSwitchStages.ReadyToSwitch,
+                        Message = "原任务九步和PLC责任已完成，下一阶段才会申请新任务。" }, ct);
                 break;
             case TaskSwitchStages.AwaitingStop:
                 if (observation.CancelConfirmed)
@@ -212,15 +229,15 @@ public sealed class TaskSwitchService(ISqlSugarClient database, ITaskSwitchPort 
                 }
                 break;
             case TaskSwitchStages.ReadyToSwitch:
-                if (!observation.OriginalClosed || !observation.CancelConfirmed)
-                { await HoldAsync(session, "原闭合证据发生变化。", ["原任务或取消确认未闭合"], ct); return; }
+                if (!observation.OriginalClosed || !observation.TerminalConfirmed)
+                { await HoldAsync(session, "原闭合证据发生变化。", ["原任务终态或责任闭合未确认"], ct); return; }
                 await SaveAsync(session with { Stage = TaskSwitchStages.SubmittingReplacement, Message = "已保存新任务申请阶段，下一次只使用固定申请编号。" }, ct);
                 break;
             case TaskSwitchStages.SubmittingReplacement:
                 if (session.ReplacementCreateAttempted)
                 { await HoldAsync(session, "新任务创建结果不确定，继续查询原申请回执；禁止重建或更换编号。", ["未查询到原新任务申请回执"], ct); return; }
-                if (!observation.OriginalClosed || !observation.CancelConfirmed)
-                { await HoldAsync(session, "原闭合证据发生变化。", ["原任务或取消确认未闭合"], ct); return; }
+                if (!observation.OriginalClosed || !observation.TerminalConfirmed)
+                { await HoldAsync(session, "原闭合证据发生变化。", ["原任务终态或责任闭合未确认"], ct); return; }
                 session = await SaveAsync(session with { ReplacementCreateAttempted = true, Message = "已持久化新任务创建意图，沿用固定申请编号。" }, ct);
                 var targetId = await port.CreateReplacementAsync(session, ct);
                 if (string.IsNullOrWhiteSpace(targetId)) throw new InvalidOperationException("创建接口未返回确定的新任务编号，须查询原申请回执。");
@@ -267,7 +284,11 @@ public sealed class TaskSwitchService(ISqlSugarClient database, ITaskSwitchPort 
         new DateTimeOffset(DateTime.SpecifyKind(row.UpdatedAtUtc, DateTimeKind.Utc)), row.MapId, row.MapVersionId, row.ParameterRevision,
         row.ReplacementRequestId, row.CancelRequestId, JsonSerializer.Deserialize<TaskSwitchRequest>(row.RequestJson, Json)
             ?? throw new InvalidDataException("原换单申请内容损坏，禁止继续。"), row.Operator)
-        { ResumeStage = row.ResumeStage, ReplacementCreateAttempted = row.ReplacementCreateAttempted };
+        {
+            ResumeStage = row.ResumeStage,
+            ReplacementCreateAttempted = row.ReplacementCreateAttempted,
+            ResolvedMode = TaskSwitchModes.IsValid(row.ResolvedMode) ? row.ResolvedMode : TaskSwitchModes.CancelEmptyNavigation,
+        };
     private static TaskSwitchEntity ToRow(TaskSwitchRecord session) => new()
     {
         SwitchId = session.SwitchId, SourceTaskId = session.SourceTaskId, VehicleId = session.VehicleId, TargetStationId = session.TargetStationId,
@@ -275,6 +296,7 @@ public sealed class TaskSwitchService(ISqlSugarClient database, ITaskSwitchPort 
         BlockersJson = JsonSerializer.Serialize(session.Blockers, Json), Revision = session.Revision, UpdatedAtUtc = session.UpdatedAt.UtcDateTime,
         MapId = session.MapId, MapVersionId = session.MapVersionId, ParameterRevision = session.ParameterRevision,
         ReplacementRequestId = session.ReplacementRequestId, CancelRequestId = session.CancelRequestId,
-        RequestJson = JsonSerializer.Serialize(session.Request, Json), Operator = session.Operator, ReplacementCreateAttempted = session.ReplacementCreateAttempted
+        ResolvedMode = session.ResolvedMode, RequestJson = JsonSerializer.Serialize(session.Request, Json),
+        Operator = session.Operator, ReplacementCreateAttempted = session.ReplacementCreateAttempted
     };
 }

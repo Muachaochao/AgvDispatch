@@ -12,7 +12,7 @@ namespace AgvDispatch.Service;
 public sealed class TaskSwitchRuntimePort(ISqlSugarClient database, ITaskCancellationService cancellation,
     IManualTaskCreationService creation, IManualTaskCreationRepository receipts, IAgvStateCache vehicles,
     ITaskSwitchVehicleProbe probe, IPlcSignalCache signals, IActiveMapRuntime map, IMapExecutionGate gate,
-    TaskParameterRuntime parameters, DispatchOrchestratorOptions dispatch, BusinessRunOwnership business,
+    TaskParameterRuntime parameters, DispatchOrchestratorOptions dispatch,
     FleetTestOwnership fleet, IChargingDispatchGuard charging, MapOptions mapOptions) : ITaskSwitchPort
 {
     private static TrafficUserContext Operator(TaskSwitchRecord session) => TrafficUserContext.LocalOperation(session.Operator);
@@ -25,13 +25,13 @@ public sealed class TaskSwitchRuntimePort(ISqlSugarClient database, ITaskCancell
     {
         if (!gate.CanStartNewWork) blockers.Add(gate.NewWorkBlockReason ?? "地图或启动恢复尚未放行。");
         if (map.Current is null) blockers.Add("尚无激活运行地图。");
-        if (business.Active || fleet.Active) blockers.Add("按需运行或多车联调正在管理原任务；请先停止新增并收尾，本阶段不抢占运行会话。");
+        if (fleet.Active) blockers.Add("多车联调仍在管理原车辆；多车并发换单属于第三阶段，本阶段保持冻结。");
     }
     private void Health(string vehicleId, List<string> blockers, bool stopped, DateTimeOffset? after = null)
     {
         if (!vehicles.TryGet(vehicleId, out var vehicle)) { blockers.Add("尚无原车辆实时状态。"); return; }
         if (vehicle.Connection != ConnectionState.Online || vehicle.Quality != SignalQuality.Good || !Fresh(vehicle.LastSuccessfulPollAt, after))
-            blockers.Add("原车辆离线、采集过期或尚无取消后的新鲜状态。");
+            blockers.Add("原车辆离线、采集过期或尚无换单所需的新鲜状态。");
         if (vehicle.EmergencyStopped != false || vehicle.Blocked != false || vehicle.Charging != false)
             blockers.Add("原车辆急停、阻挡、充电状态未确认正常。");
         if (vehicle.LocalizationConfidence is not { } confidence || !double.IsFinite(confidence) || confidence < mapOptions.MinimumLocalizationConfidence ||
@@ -50,22 +50,49 @@ public sealed class TaskSwitchRuntimePort(ISqlSugarClient database, ITaskCancell
         var blockers = new List<string>(); Context(blockers);
         var source = await Source(request.TaskId, ct);
         var vehicleId = source?.VehicleId ?? "";
+        var resolvedMode = TaskSwitchModes.CancelEmptyNavigation;
         if (source is null) blockers.Add("原任务不存在。");
         else
         {
             if (source.Stage != (int)request.ExpectedStage) blockers.Add("原任务状态已变化，请刷新。");
-            if (source.Stage != (int)DispatchTaskStage.GoingToPickup || string.IsNullOrWhiteSpace(source.VehicleId) || source.CancelRequestId is not null)
-                blockers.Add("第一阶段仅支持已分配车辆且尚未取箱的首段导航；其他阶段请走原取消与恢复流程。");
+            if (string.IsNullOrWhiteSpace(source.VehicleId) || source.CancelRequestId is not null)
+                blockers.Add("原任务尚无车辆归属或已有取消申请，不能进入受控换单。");
             var steps = await database.Queryable<DispatchTaskStepEntity>().Where(s => s.TaskId == source.TaskId).OrderBy(s => s.Sequence).ToListAsync(ct);
-            if (steps.Count == 0 || steps[0].StepType != (int)DispatchTaskStepType.GoToPickup || steps[0].Status != (int)DispatchTaskStepStatus.Executing ||
-                steps.Skip(1).Any(s => s.Status != (int)DispatchTaskStepStatus.Pending)) blockers.Add("原首段运输或后续步骤状态不符合空车换单范围。");
+            var lateBusinessStage = TaskSwitchModes.IsBusinessCleanupStage((DispatchTaskStage)source.Stage);
+            if (source.Stage == (int)DispatchTaskStage.GoingToPickup)
+            {
+                if (steps.Count == 0 || steps[0].StepType != (int)DispatchTaskStepType.GoToPickup ||
+                    steps[0].Status != (int)DispatchTaskStepStatus.Executing ||
+                    steps.Skip(1).Any(s => s.Status != (int)DispatchTaskStepStatus.Pending))
+                    blockers.Add("原首段运输或后续步骤状态不符合换单前置范围。");
+            }
+            else if (lateBusinessStage)
+            {
+                if (steps.All(s => s.StepType != (int)DispatchTaskStepType.CompletePlcHandshake))
+                    blockers.Add("原任务缺少完整返箱收尾步骤，不能按原业务完成换单。");
+            }
+            else blockers.Add("仅支持前往取箱首段，以及已取箱后的返箱、倒料和PLC收尾阶段。");
             if (request.TargetStationId == source.StationId) blockers.Add("目标工位与原工位相同，无需换单。");
             if (string.IsNullOrWhiteSpace(vehicleId)) blockers.Add("原车辆归属缺失。");
             else
             {
                 Health(vehicleId, blockers, false);
-                var evidence = await probe.ReadAsync(vehicleId, ct); blockers.AddRange(evidence.Blockers);
-                if (!evidence.EmptyAndLowered) blockers.Add("车端未确认空载且顶升下降；不把前往取箱状态当成空载证明。");
+                var evidence = await probe.ReadAsync(vehicleId, ct);
+                if (source.Stage == (int)DispatchTaskStage.GoingToPickup)
+                {
+                    resolvedMode = TaskSwitchModes.Resolve((DispatchTaskStage)source.Stage,
+                        evidence.EmptyAndLowered && evidence.Blockers.Count == 0,
+                        evidence.BusinessCleanupReady);
+                    if (resolvedMode == "")
+                    {
+                        blockers.AddRange(evidence.Blockers);
+                        blockers.AddRange(evidence.BusinessCleanupBlockers);
+                        blockers.Add("恰好到站时未能明确核定空载下降或载箱上升状态；保留原任务，禁止猜测取消方式。");
+                    }
+                }
+                else resolvedMode = TaskSwitchModes.CompleteBusinessReturn;
+                if (request.Mode != TaskSwitchModes.Auto && request.Mode != resolvedMode)
+                    blockers.Add("所选换单方式与当前任务、车辆和载荷状态不符。");
                 if (await database.Queryable<DispatchTaskEntity>().AnyAsync(t => t.TaskId != source.TaskId && t.VehicleId == vehicleId &&
                     t.Stage != (int)DispatchTaskStage.Completed && t.Stage != (int)DispatchTaskStage.Cancelled, ct)) blockers.Add("原车辆还有其他未闭合业务任务。");
                 if (!dispatch.AllowsVehicle(request.TargetStationId, vehicleId)) blockers.Add("目标工位车辆池不包含原车辆。");
@@ -73,8 +100,11 @@ public sealed class TaskSwitchRuntimePort(ISqlSugarClient database, ITaskCancell
         }
         var target = options.Stations.SingleOrDefault(s => s.StationId == request.TargetStationId);
         if (target is null) blockers.Add("目标工位不在当前工程配置中。");
-        else if (!target.ConfigurationValid || !target.Available) blockers.Add("目标工位：" + target.Explanation);
-        return new(vehicleId, map.Current?.MapId ?? "", map.Current?.VersionId ?? "", parameters.Revision, blockers.Distinct().ToArray());
+        else if (!target.ConfigurationValid) blockers.Add("目标工位：" + target.Explanation);
+        return new(vehicleId, map.Current?.MapId ?? "", map.Current?.VersionId ?? "", parameters.Revision, blockers.Distinct().ToArray())
+        {
+            ResolvedMode = resolvedMode,
+        };
     }
 
     public async Task RequestCancelAsync(TaskSwitchRecord session, CancellationToken ct)
@@ -103,6 +133,39 @@ public sealed class TaskSwitchRuntimePort(ISqlSugarClient database, ITaskCancell
         var blockers = new List<string>(); Context(blockers);
         var source = await Source(session.SourceTaskId, ct);
         if (source is null || source.VehicleId != session.VehicleId) blockers.Add("原任务或原车辆归属缺失/不符。");
+        if (TaskSwitchModes.IsCleanup(session.ResolvedMode))
+        {
+            if (source is null) return CleanupObservation(false, false);
+            if (source.Stage is (int)DispatchTaskStage.Faulted or (int)DispatchTaskStage.Cancelled or
+                (int)DispatchTaskStage.CancellationPending or (int)DispatchTaskStage.CancellationReview)
+            {
+                blockers.Add("原业务任务未以Completed结束，不能自动创建替代任务；请按原故障或取消流程核对。");
+                return CleanupObservation(false, false);
+            }
+            Health(session.VehicleId, blockers, false);
+            if (source.Stage != (int)DispatchTaskStage.Completed) return CleanupObservation(false, false);
+
+            var steps = await database.Queryable<DispatchTaskStepEntity>().Where(s => s.TaskId == source.TaskId).ToListAsync(ct);
+            if (steps.Count == 0 || steps.Any(s => s.Status != (int)DispatchTaskStepStatus.Completed))
+                blockers.Add("原任务已标记完成，但九步记录尚未全部闭合。");
+            if (await database.Queryable<TrafficResourceLeaseEntity>().AnyAsync(l => l.TaskId == source.TaskId || l.VehicleId == session.VehicleId, ct))
+                blockers.Add("原任务完成后仍有交通路权，须核实实际离区。");
+            if (await database.Queryable<TaskEquipmentClaimEntity>().AnyAsync(e => e.TaskId == source.TaskId, ct))
+                blockers.Add("原任务完成后仍持有倒料设备归属。");
+            if (await database.Queryable<TaskHandshakeEntity>().AnyAsync(h => h.TaskId == source.TaskId && h.PendingSignal != null, ct))
+                blockers.Add("原任务完成后仍有PLC写入结果待确认。");
+            if (await database.Queryable<AgvCommandOutboxEntity>().AnyAsync(c => c.VehicleId == session.VehicleId &&
+                c.Status != (int)AgvCommandStatus.Sent && c.Status != (int)AgvCommandStatus.Cancelled, ct))
+                blockers.Add("原车辆仍有未闭合命令队列。");
+            var probeEvidence = await probe.ReadAsync(session.VehicleId, ct);
+            if (!probeEvidence.TasksKnown) blockers.AddRange(probeEvidence.BusinessCleanupBlockers.Where(reason => reason.StartsWith("车端全任务列表", StringComparison.Ordinal)));
+            return CleanupObservation(source.Stage == (int)DispatchTaskStage.Completed && blockers.Count == 0,
+                source.Stage == (int)DispatchTaskStage.Completed);
+
+            TaskSwitchClosureObservation CleanupObservation(bool terminal, bool closed) => new(false, closed,
+                map.Current?.MapId ?? "", map.Current?.VersionId ?? "", parameters.Revision, blockers.Distinct().ToArray())
+            { CleanupConfirmed = terminal };
+        }
         if (source?.CancelRequestId is null && session.Stage is TaskSwitchStages.Requested or TaskSwitchStages.ReviewHold)
         {
             if (source?.Stage != (int)session.Request.ExpectedStage) blockers.Add("取消前原任务阶段已经变化。");
@@ -162,7 +225,7 @@ public sealed class TaskSwitchRuntimePort(ISqlSugarClient database, ITaskCancell
     public async Task<string> CreateReplacementAsync(TaskSwitchRecord session, CancellationToken ct)
     {
         var observed = await ObserveCloseAsync(session, ct);
-        if (!observed.CancelConfirmed || !observed.OriginalClosed || observed.Blockers.Length > 0 || observed.MapId != session.MapId || observed.MapVersionId != session.MapVersionId || observed.ParameterRevision != session.ParameterRevision)
+        if (!observed.TerminalConfirmed || !observed.OriginalClosed || observed.Blockers.Length > 0 || observed.MapId != session.MapId || observed.MapVersionId != session.MapVersionId || observed.ParameterRevision != session.ParameterRevision)
             throw new InvalidOperationException("创建新任务前原责任或工程版本需重新核对：" + string.Join("；", observed.Blockers));
         var result = await creation.CreateAsync(Operator(session), new(session.ReplacementRequestId, session.TargetStationId,
             session.VehicleId, session.Request.Priority, session.MapId, session.MapVersionId) { ParameterRevision = session.ParameterRevision }, ct);

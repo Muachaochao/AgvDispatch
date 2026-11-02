@@ -72,6 +72,24 @@ foreach (var item in cases)
     Check(!options.AllowCommands, item.Name + " commands remain disabled");
 }
 
+var cleanupCases = new[]
+{
+    (Name: "loaded-raised", Response: lowered.Replace("\"jack_isFull\":false", "\"jack_isFull\":true").Replace("\"jack_state\":3", "\"jack_state\":1"), Ready: true, Blocker: (string?)null),
+    (Name: "loaded-lowered", Response: lowered.Replace("\"jack_isFull\":false", "\"jack_isFull\":true"), Ready: false, Blocker: "载箱任务尚未确认"),
+    (Name: "empty-raised", Response: lowered.Replace("\"jack_state\":3", "\"jack_state\":1"), Ready: false, Blocker: "未报告载箱"),
+    (Name: "emergency-loaded-raised", Response: lowered.Replace("\"jack_isFull\":false", "\"jack_isFull\":true").Replace("\"jack_state\":3", "\"jack_state\":1").Replace("\"jack_emc\":false", "\"jack_emc\":true"), Ready: false, Blocker: "急停"),
+};
+foreach (var item in cleanupCases)
+{
+    await using var robot = new ProbeRobot(item.Response);
+    var options = new AgvOptions { Enabled = true, AllowCommands = false, Robots = [robot.Configuration] };
+    await using var connections = new AgvConnectionManager(options);
+    var result = await new TaskSwitchVehicleProbe(options, connections).ReadAsync("PROBE-VEHICLE", default);
+    Check(result.BusinessCleanupReady == item.Ready, item.Name + " cleanup readiness");
+    if (item.Blocker is not null) Check(result.BusinessCleanupBlockers.Any(reason => reason.Contains(item.Blocker)), item.Name + " cleanup diagnostic");
+    Check(robot.Requests.SequenceEqual(new ushort[] { 1027, 1110 }) && !options.AllowCommands, item.Name + " read-only cleanup evidence");
+}
+
 await using (var robot = new ProbeRobot(lowered))
 {
     var options = new AgvOptions { Enabled = true, Robots = [robot.Configuration] };

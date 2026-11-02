@@ -7,11 +7,12 @@ var checks = 0;
 void Check(bool condition, string name) { if (!condition) throw new Exception(name); checks++; }
 var user = TrafficUserContext.LocalOperation("test-operator");
 BusinessRunStart Plan(string mode = "Demand", int rounds = 1) => new(Guid.NewGuid().ToString("N"), mode, "AGV-01", ["CNC-001", "CNC-002"], rounds, "LM7", true);
-(BusinessRunService Service, Port Port, BusinessRunOwnership Ownership, string Path) Fixture(IChargingDispatchGuard? charging = null)
+(BusinessRunService Service, Port Port, BusinessRunOwnership Ownership, string Path) Fixture(
+    IChargingDispatchGuard? charging = null, ITaskSwitchGuard? switchGuard = null)
 {
     var path = Path.Combine(root, Guid.NewGuid().ToString("N") + ".json");
     var port = new Port(); var ownership = new BusinessRunOwnership();
-    return (new(port, ownership, path, charging), port, ownership, path);
+    return (new(port, ownership, path, charging, switchGuard), port, ownership, path);
 }
 async Task<BusinessRunRecord> Row(BusinessRunService service) => (await service.ReadAsync(default)).Current!;
 async Task Reject(Func<Task> operation, string label)
@@ -73,6 +74,18 @@ Check((await Row(betweenCalls.Service)).Stage == "Waiting" && betweenCalls.Port.
 var old = (await Row(cycle.Service)).Plan;
 await cycle.Service.StartAsync(user, Plan("Cycle"), default);
 await Reject(() => cycle.Service.StartAsync(user, old, default), "old request replay while current active");
+
+var switchGuard = new FixedSwitchGuard(true);
+var switchHold = Fixture(switchGuard: switchGuard);
+await switchHold.Service.StartAsync(user, Plan(), default);
+switchHold.Port.Calls = ["CNC-001"]; await switchHold.Service.TickAsync(default);
+switchGuard.Allowed = false;
+switchHold.Port.TaskState = "Completed"; switchHold.Port.Active = false; switchHold.Port.Closed = true;
+switchHold.Port.Calls = ["CNC-002"];
+await switchHold.Service.TickAsync(default); await switchHold.Service.TickAsync(default);
+var switchState = await Row(switchHold.Service);
+Check(switchState.Stage == "Hold" && switchHold.Port.Creates == 1,
+    $"active switch pauses continuous run before creating the next station task; actual={switchState.Stage}/{switchHold.Port.Creates}");
 
 var stop = Fixture(); await stop.Service.StartAsync(user, Plan("Cycle",3), default);
 stop.Port.Calls = ["CNC-001"]; await stop.Service.TickAsync(default);
@@ -393,6 +406,13 @@ sealed class ReceiptStore : IManualTaskCreationRepository
     public Task<ManualTaskReceipt?> FindRequestAsync(string id, CancellationToken ct) => Task.FromResult(Receipt);
     public Task<AgvDispatch.Domain.Tasks.TaskCreationResult> TryCreateManualAsync(ManualTaskCreationRequest r, string d, string o, CancellationToken ct)
         => throw new Exception("retirement must never create tasks");
+}
+
+sealed class FixedSwitchGuard(bool allowed) : ITaskSwitchGuard
+{
+    public bool Allowed { get; set; } = allowed;
+    public Task<bool> AllowsVehicleAsync(string vehicleId, string? taskId, string? requestId, CancellationToken ct) =>
+        Task.FromResult(Allowed);
 }
 
 sealed class Port : IBusinessRunPort

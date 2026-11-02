@@ -9,6 +9,11 @@ using SqlSugar;
 var tests = new (string Name, Func<Task> Run)[]
 {
     ("cancel-close-create-handoff", FullChain),
+    ("arrival-state-mode-policy", ArrivalModePolicy),
+    ("loaded-return-create-without-cancel", LoadedReturn),
+    ("loaded-return-restart-no-side-effect", LoadedReturnRestart),
+    ("cleanup-blockers-hold-vehicle", CleanupBlockers),
+    ("multi-vehicle-insertion-isolation", MultiVehicleIsolation),
     ("unknown-original-and-action-block", UnknownOriginal),
     ("lost-cancel-response-stable-request", LostCancelResponse),
     ("restart-holds-until-explicit-resume", Restart),
@@ -19,7 +24,8 @@ var tests = new (string Name, Func<Task> Run)[]
     ("map-version-change-keeps-original-pin", VersionChange),
     ("abandon-requires-closed-original", Abandon),
     ("identity-and-revision-database-guard", DatabaseGuard),
-    ("stale-resume-revision-rejected", StaleResume)
+    ("stale-resume-revision-rejected", StaleResume),
+    ("legacy-schema-mode-migration", LegacySchemaMigration)
 };
 foreach (var test in tests) { await test.Run(); Console.WriteLine("PASS " + test.Name); }
 Console.WriteLine($"PASS TaskSwitchSmokeTest: {tests.Length} isolated scenarios; no robot actions.");
@@ -51,6 +57,81 @@ static async Task FullChain()
     await f.Db.Updateable<DispatchTaskEntity>().SetColumns(t => new DispatchTaskEntity { Stage = (int)DispatchTaskStage.SubmittingToAgv })
         .Where(t => t.TaskId == current.TargetTaskId).ExecuteCommandAsync();
     Require(await f.Guard.AllowsVehicleAsync("CAR-X", "OTHER", null, default), "normal assigned task ownership takes over handoff guard");
+}
+
+static Task ArrivalModePolicy()
+{
+    Require(TaskSwitchModes.Resolve(DispatchTaskStage.GoingToPickup, true, false) == TaskSwitchModes.CancelEmptyNavigation,
+        "empty lowered arrival cancels navigation");
+    Require(TaskSwitchModes.Resolve(DispatchTaskStage.GoingToPickup, false, true) == TaskSwitchModes.CompleteBusinessReturn,
+        "loaded raised arrival continues business cleanup");
+    Require(TaskSwitchModes.Resolve(DispatchTaskStage.GoingToPickup, false, false) == "",
+        "unknown arrival state is not guessed");
+    Require(TaskSwitchModes.Resolve(DispatchTaskStage.Dumping, false, false) == TaskSwitchModes.CompleteBusinessReturn,
+        "post-pickup business stage always completes original");
+    return Task.CompletedTask;
+}
+
+static async Task LoadedReturn()
+{
+    using var f = await Fixture.Create();
+    f.Port.InspectionMode = TaskSwitchModes.CompleteBusinessReturn;
+    var request = f.Request() with { ExpectedStage = DispatchTaskStage.PickingUp, Mode = TaskSwitchModes.CompleteBusinessReturn };
+    var started = await f.Service.RequestAsync(f.User, request, default);
+    Require(started.Accepted && started.Current!.ResolvedMode == TaskSwitchModes.CompleteBusinessReturn, "loaded task selects return cleanup");
+    var current = started.Current!;
+    await f.Service.ProcessAsync(default);
+    current = await f.Current(current.SwitchId);
+    Require(current.Stage == TaskSwitchStages.AwaitingBusinessCleanup && f.Port.CancelCalls == 0, "loaded task is never cancelled");
+    await f.Service.ProcessAsync(default);
+    Require((await f.Current(current.SwitchId)).Stage == TaskSwitchStages.AwaitingBusinessCleanup && f.Port.CreateCalls == 0, "in-progress business remains locked");
+    f.Port.CleanupConfirmed = f.Port.OriginalClosed = true;
+    await f.PumpUntil(current.SwitchId, TaskSwitchStages.Completed);
+    Require(f.Port.CancelCalls == 0 && f.Port.CloseCalls == 0 && f.Port.CreateCalls == 1, "only terminal business completion creates replacement");
+}
+
+static async Task LoadedReturnRestart()
+{
+    using var f = await Fixture.Create();
+    f.Port.InspectionMode = TaskSwitchModes.CompleteBusinessReturn;
+    var request = f.Request() with { ExpectedStage = DispatchTaskStage.ReturningEmptyBox, Mode = TaskSwitchModes.CompleteBusinessReturn };
+    var started = await f.Service.RequestAsync(f.User, request, default);
+    Require(started.Accepted, "returning task accepted for cleanup");
+    await f.Service.ProcessAsync(default);
+    var current = await f.Current(started.Current!.SwitchId);
+    var restarted = new TaskSwitchService(f.Db, f.Port);
+    await restarted.InitializeAsync(default);
+    current = (await restarted.GetAsync(current.SwitchId, default))!;
+    Require(current.Stage == TaskSwitchStages.ReviewHold && current.ResumeStage == TaskSwitchStages.AwaitingBusinessCleanup, "restart holds cleanup phase");
+    Require(f.Port.CancelCalls == 0 && f.Port.CreateCalls == 0, "restart sends no cancel or replacement");
+    Require(!await f.Guard.AllowsVehicleAsync("CAR-X", null, null, default), "restart keeps vehicle locked");
+}
+
+static async Task CleanupBlockers()
+{
+    using var f = await Fixture.Create();
+    f.Port.InspectionMode = TaskSwitchModes.CompleteBusinessReturn;
+    var request = f.Request() with { ExpectedStage = DispatchTaskStage.ReturningEmptyBox, Mode = TaskSwitchModes.CompleteBusinessReturn };
+    var started = await f.Service.RequestAsync(f.User, request, default);
+    Require(started.Accepted, "cleanup request accepted");
+    await f.Service.ProcessAsync(default);
+    f.Port.ObservationBlockers = ["原PLC握手或车辆状态尚未闭合"];
+    await f.Service.ProcessAsync(default);
+    var held = await f.Current(started.Current!.SwitchId);
+    Require(held.Stage == TaskSwitchStages.ReviewHold && held.Blockers.Contains(f.Port.ObservationBlockers[0]),
+        "cleanup blocker freezes the switch");
+    Require(f.Port.CancelCalls == 0 && f.Port.CreateCalls == 0 && !await f.Guard.AllowsVehicleAsync("CAR-X", null, null, default),
+        "blocked cleanup keeps ownership and sends nothing");
+}
+
+static async Task MultiVehicleIsolation()
+{
+    using var f = await Fixture.Create();
+    var current = await f.Start();
+    Require(!await f.Guard.AllowsVehicleAsync("CAR-X", "OTHER-X", null, default), "original vehicle remains reserved");
+    Require(await f.Guard.AllowsVehicleAsync("CAR-Y", "OTHER-Y", null, default), "other vehicle may accept an inserted task");
+    var conflict = await f.Service.RequestAsync(f.User, f.Request("SOURCE-2"), default);
+    Require(!conflict.Accepted && conflict.Current!.SwitchId == current.SwitchId, "same vehicle cannot acquire a second switch");
 }
 
 static async Task UnknownOriginal()
@@ -230,6 +311,37 @@ static async Task StaleResume()
     Require(!(await f.Service.ResumeAsync(f.User, Review(held) with { SiteConfirmed = false }, default)).Accepted, "site confirmation mandatory");
 }
 
+static async Task LegacySchemaMigration()
+{
+    var path = Path.Combine(Path.GetTempPath(), "TaskSwitchMigration-" + Guid.NewGuid().ToString("N") + ".db");
+    using var db = DatabaseFactory.Create(new DatabaseOptions { DatabasePath = path });
+    await db.Ado.ExecuteCommandAsync("""
+        CREATE TABLE task_switch_session (
+          SwitchId TEXT PRIMARY KEY, SourceTaskId TEXT NOT NULL, VehicleId TEXT NOT NULL, TargetStationId TEXT NOT NULL,
+          TargetTaskId TEXT NULL, Stage TEXT NOT NULL, ResumeStage TEXT NULL, Message TEXT NOT NULL, BlockersJson TEXT NOT NULL,
+          Revision INTEGER NOT NULL, UpdatedAtUtc TEXT NOT NULL, MapId TEXT NOT NULL, MapVersionId TEXT NOT NULL,
+          ParameterRevision TEXT NOT NULL, ReplacementRequestId TEXT NOT NULL, CancelRequestId TEXT NOT NULL,
+          RequestJson TEXT NOT NULL, Operator TEXT NOT NULL, ReplacementCreateAttempted INTEGER NOT NULL
+        );
+        CREATE TRIGGER guard_task_switch_identity BEFORE UPDATE ON task_switch_session
+        WHEN NEW.SwitchId IS NOT OLD.SwitchId OR NEW.Revision != OLD.Revision + 1
+        BEGIN SELECT RAISE(ABORT,'legacy guard'); END;
+        """);
+    var id = Guid.NewGuid().ToString("N");
+    await db.Ado.ExecuteCommandAsync($$"""
+        INSERT INTO task_switch_session
+        (SwitchId,SourceTaskId,VehicleId,TargetStationId,TargetTaskId,Stage,ResumeStage,Message,BlockersJson,Revision,
+         UpdatedAtUtc,MapId,MapVersionId,ParameterRevision,ReplacementRequestId,CancelRequestId,RequestJson,Operator,
+         ReplacementCreateAttempted)
+        VALUES ('{{id}}','LEGACY-SOURCE','CAR-X','TARGET',NULL,'{{TaskSwitchStages.Requested}}',NULL,'legacy','[]',1,
+                '{{DateTime.UtcNow:O}}','MAP','V1','P1','{{Guid.NewGuid():N}}','{{Guid.NewGuid():N}}','{}','legacy',0)
+        """);
+    await new DatabaseInitializer(db).InitializeAsync(default);
+    var migrated = await db.Queryable<TaskSwitchEntity>().SingleAsync(row => row.SwitchId == id);
+    Require(migrated.ResolvedMode == TaskSwitchModes.CancelEmptyNavigation, "legacy request remains empty-navigation cancellation");
+    try { File.Delete(path); } catch (IOException) { }
+}
+
 static TaskSwitchResumeRequest Review(TaskSwitchRecord current) => new(current.SwitchId, current.Revision, "模拟核对原车辆箱体PLC和路权责任已闭合", true);
 static void Require(bool value, string message) { if (!value) throw new Exception("FAIL " + message); }
 
@@ -283,11 +395,13 @@ sealed class SyntheticPort(ISqlSugarClient database) : ITaskSwitchPort
 {
     public string[] InspectionBlockers = [], ObservationBlockers = [];
     public string Version = "MAP-V1";
-    public bool CancelConfirmed, OriginalClosed, CanClose, ThrowCancelOnce, ThrowCreateOnce, PersistCreate = true;
+    public string InspectionMode = TaskSwitchModes.CancelEmptyNavigation;
+    public bool CancelConfirmed, CleanupConfirmed, OriginalClosed, CanClose, ThrowCancelOnce, ThrowCreateOnce, PersistCreate = true;
     public int CancelCalls, CloseCalls, CreateCalls;
     public List<string> CancelKeys = [], CreateKeys = [];
     public Task<TaskSwitchInspection> InspectSourceAsync(TaskSwitchRequest request, CancellationToken ct) =>
-        Task.FromResult(new TaskSwitchInspection("CAR-X", "MAP-X", Version, "PARAM-1", InspectionBlockers));
+        Task.FromResult(new TaskSwitchInspection("CAR-X", "MAP-X", Version, "PARAM-1", InspectionBlockers)
+            { ResolvedMode = InspectionMode });
     public Task RequestCancelAsync(TaskSwitchRecord session, CancellationToken ct)
     {
         CancelCalls++; CancelKeys.Add(session.CancelRequestId);
@@ -296,7 +410,7 @@ sealed class SyntheticPort(ISqlSugarClient database) : ITaskSwitchPort
     }
     public Task<TaskSwitchClosureObservation> ObserveCloseAsync(TaskSwitchRecord session, CancellationToken ct) =>
         Task.FromResult(new TaskSwitchClosureObservation(CancelConfirmed, OriginalClosed, "MAP-X", Version, "PARAM-1", ObservationBlockers)
-        { CanCloseOriginal = CanClose });
+        { CanCloseOriginal = CanClose, CleanupConfirmed = CleanupConfirmed });
     public Task CloseOriginalAsync(TaskSwitchRecord session, CancellationToken ct)
     {
         if (!CancelConfirmed || !CanClose) throw new Exception("synthetic close requires original evidence");

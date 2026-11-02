@@ -6,6 +6,7 @@ export interface TaskSwitchIntent {
   priority: number;
   reason: string;
   siteConfirmed: boolean;
+  mode?: 'Auto' | 'CancelEmptyNavigation' | 'CompleteBusinessReturn';
 }
 
 export interface TaskSwitchRecord {
@@ -28,6 +29,7 @@ export interface TaskSwitchRecord {
   cancelRequestId: string;
   request?: TaskSwitchIntent;
   resumeStage?: string | null;
+  resolvedMode?: 'Auto' | 'CancelEmptyNavigation' | 'CompleteBusinessReturn';
 }
 
 export interface TaskSwitchOptions {
@@ -38,6 +40,8 @@ export interface TaskSwitchOptions {
   stations: { stationId: string; pickupSite: string; available: boolean; explanation: string }[];
   blockers: string[];
   current: TaskSwitchRecord | null;
+  modeHint?: 'Auto' | 'CancelEmptyNavigation' | 'CompleteBusinessReturn';
+  modeDescription?: string;
 }
 
 export interface TaskSwitchResult {
@@ -48,6 +52,7 @@ export interface TaskSwitchResult {
 
 const names: Record<string, string> = {
   Requested: '已记录换单申请', AwaitingStop: '等待原任务结束与停稳', ClosingOriginal: '核对原业务收尾',
+  AwaitingBusinessCleanup: '完成原业务返箱收尾',
   ReadyToSwitch: '换单条件已满足', SubmittingReplacement: '核对新任务受理', Completed: '换单完成',
   ReviewHold: '暂停待核对', Abandoned: '已停止换单',
 };
@@ -65,7 +70,9 @@ export function taskSwitchIntentError(value: TaskSwitchIntent): string | null {
     return '优先级应为 0～100 的整数。';
   if (typeof value.reason !== 'string' || value.reason.trim().length < 10 || value.reason.trim().length > 1000)
     return '请填写至少10字、最多1000字的换单依据。';
-  if (value.siteConfirmed !== true) return '请核对并勾选本次空载及现场条件。';
+  if (value.siteConfirmed !== true) return '请核对并勾选本次车辆箱体责任及现场条件。';
+  if (value.mode !== undefined && !['Auto', 'CancelEmptyNavigation', 'CompleteBusinessReturn'].includes(value.mode))
+    return '换单执行方式无效。';
   return null;
 }
 
@@ -88,7 +95,8 @@ export function retainTaskSwitchIntent(previous: TaskSwitchIntent | null, draft:
   if (previous) {
     if (previous.requestId !== normalized.requestId || previous.taskId !== normalized.taskId ||
         previous.expectedStage !== normalized.expectedStage || previous.targetStationId !== normalized.targetStationId ||
-        previous.priority !== normalized.priority || previous.reason !== normalized.reason || previous.siteConfirmed !== normalized.siteConfirmed)
+        previous.priority !== normalized.priority || previous.reason !== normalized.reason || previous.siteConfirmed !== normalized.siteConfirmed ||
+        (previous.mode ?? 'Auto') !== (normalized.mode ?? 'Auto'))
       throw new Error('原换单申请结果未确认，不能修改参数或更换申请编号。请查询原申请。');
     return previous;
   }
@@ -102,13 +110,14 @@ export function observeTaskSwitchIntent(intent: TaskSwitchIntent, record: TaskSw
     record.targetStationId === intent.targetStationId && (original?.priority ?? record.priority) === intent.priority &&
     (original?.reason ?? record.reason) === intent.reason && (!original || original.requestId === intent.requestId &&
       original.taskId === intent.taskId && original.targetStationId === intent.targetStationId &&
-      original.expectedStage === intent.expectedStage && original.siteConfirmed === intent.siteConfirmed)
+      original.expectedStage === intent.expectedStage && original.siteConfirmed === intent.siteConfirmed &&
+      (original.mode ?? 'Auto') === (intent.mode ?? 'Auto'))
     ? 'Accepted' : 'Mismatch';
 }
 
 export const taskSwitchSteps = [
   { key: 'Requested', name: '记录申请' },
-  { key: 'AwaitingStop', name: '停止确认' },
+  { key: 'AwaitingStop', name: '原任务收尾' },
   { key: 'ClosingOriginal', name: '原单收尾' },
   { key: 'ReadyToSwitch', name: '条件核验' },
   { key: 'SubmittingReplacement', name: '创建新单' },
@@ -116,5 +125,6 @@ export const taskSwitchSteps = [
 ] as const;
 
 export function taskSwitchProgress(stage: string): number {
+  if (stage === 'AwaitingBusinessCleanup') return 1;
   return taskSwitchSteps.findIndex(item => item.key === stage);
 }

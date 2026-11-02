@@ -20,12 +20,27 @@ public sealed class TaskSwitchQueries(ITaskSystemQueryPort tasks, IManualTaskCre
         var current = existing.FirstOrDefault(row => !TaskSwitchStages.IsTerminal(row.Stage)) ?? existing.FirstOrDefault();
         var vehicleId = task.VehicleId ?? current?.VehicleId;
         var blockers = current is { } active && !TaskSwitchStages.IsTerminal(active.Stage) ? active.Blockers : [];
-        var eligible = current is null && task.Stage == DispatchTaskStage.GoingToPickup && !string.IsNullOrWhiteSpace(vehicleId);
+        var supported = task.Stage == DispatchTaskStage.GoingToPickup || TaskSwitchModes.IsBusinessCleanupStage(task.Stage);
+        var eligible = current is null && supported && !string.IsNullOrWhiteSpace(vehicleId);
+        var modeHint = task.Stage == DispatchTaskStage.GoingToPickup
+            ? TaskSwitchModes.Auto
+            : TaskSwitchModes.CompleteBusinessReturn;
         var message = current is { } activeRecord ? activeRecord.Message :
-            task.Stage != DispatchTaskStage.GoingToPickup ? "第一阶段仅支持空车前往取箱首段导航执行中换单。" :
+            !supported ? "当前任务阶段不支持自动换单；已完成、故障、取消中或尚未派车的任务保持原处置流程。" :
             string.IsNullOrWhiteSpace(vehicleId) ? "原任务尚未分配车辆，无需换单，可直接在调度队列处理。" :
-            "可申请受控停止；后台会重新核对空载、顶升、车辆终态、PLC周期和交通占用。";
-        return new(true, eligible, message, vehicleId, creationOptions.Stations, blockers, current);
+            task.Stage == DispatchTaskStage.GoingToPickup
+                ? "前往取箱途中由后台按车端载荷自动选择：空载下降时取消原导航，已载箱或顶升到位时继续完成原业务返箱。"
+                : "原车已承担箱体责任：继续按九步执行倒料、返箱和PLC收尾，原任务完成后才创建新任务。";
+        var modeDescription = modeHint switch
+        {
+            TaskSwitchModes.CompleteBusinessReturn => "完成原业务返箱后再切换；不会中途取消载箱任务。",
+            _ => "系统按实时载荷与顶升状态自动判定取消空车导航或完成返箱收尾。",
+        };
+        return new(true, eligible, message, vehicleId, creationOptions.Stations, blockers, current)
+        {
+            ModeHint = modeHint,
+            ModeDescription = modeDescription,
+        };
     }
 }
 

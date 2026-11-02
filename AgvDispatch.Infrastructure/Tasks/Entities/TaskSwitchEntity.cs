@@ -21,6 +21,7 @@ public sealed class TaskSwitchEntity
     [SugarColumn(Length = 128)] public string ParameterRevision { get; set; } = "";
     [SugarColumn(Length = 32)] public string ReplacementRequestId { get; set; } = "";
     [SugarColumn(Length = 32)] public string CancelRequestId { get; set; } = "";
+    [SugarColumn(Length = 32)] public string ResolvedMode { get; set; } = "";
     [SugarColumn(ColumnDataType = "TEXT")] public string RequestJson { get; set; } = "";
     [SugarColumn(Length = 256)] public string Operator { get; set; } = "";
     public bool ReplacementCreateAttempted { get; set; }

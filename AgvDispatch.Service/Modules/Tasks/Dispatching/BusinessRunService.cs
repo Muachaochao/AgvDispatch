@@ -6,7 +6,8 @@ namespace AgvDispatch.Service;
 
 // A durable session, not a second task executor. Nine-step tasks retain their own
 // outbox, handshake and cancellation rules. Uncertain sends never auto retry.
-public sealed class BusinessRunService(IBusinessRunPort port, BusinessRunOwnership ownership, string path, IChargingDispatchGuard? charging=null)
+public sealed class BusinessRunService(IBusinessRunPort port, BusinessRunOwnership ownership, string path,
+    IChargingDispatchGuard? charging=null, ITaskSwitchGuard? taskSwitchGuard=null)
     : IsolatedBackgroundService, IBusinessRunService
 {
     private readonly SemaphoreSlim mutex = new(1, 1);
@@ -268,6 +269,11 @@ public sealed class BusinessRunService(IBusinessRunPort port, BusinessRunOwnersh
             if (next is not null)
             {
                 if (o.AnyActiveTasks || !o.Stopped) return;
+                if (taskSwitchGuard is not null && !await taskSwitchGuard.AllowsVehicleAsync(run.Plan.VehicleId, run.TaskId, null, ct))
+                {
+                    Move("Hold", "受控换单已接管原车辆；持续运行暂停，不会创建下一工位任务。原换单完成后请核对并结束此业务运行。");
+                    return;
+                }
                 if (finished) { Move("Hold", "轮数已达到但仍有呼叫，保留现场信号待核对。"); return; }
                 var id = Guid.NewGuid().ToString("N");
                 run = run with { PendingRequestId = id }; Move("Creating", "正在受理 " + next);

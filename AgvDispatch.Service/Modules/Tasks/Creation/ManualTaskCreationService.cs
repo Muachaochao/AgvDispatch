@@ -95,13 +95,15 @@ public sealed partial class ManualTaskCreationService(IManualTaskCreationReposit
     public async Task<ManualTaskCreationResult> CreateAsync(TrafficUserContext user, ManualTaskCreationRequest request, CancellationToken ct)
     {
         using var chargingLease = charging is null ? null : await charging.EnterBusinessAsync(ct);
-        if(fleetOptions?.Enabled==true||fleetOwnership?.Active==true)throw new InvalidOperationException("双车测试模式或原会话尚未闭合，不能另建手工任务。");
         if (!Guid.TryParseExact(request.RequestId, "N", out _) || string.IsNullOrWhiteSpace(request.StationId) ||
             request.StationId.Length > 32 || request.RequestedVehicleId?.Length > 32 || request.Priority is < 0 or > 100 ||
             string.IsNullOrWhiteSpace(request.MapId) || string.IsNullOrWhiteSpace(request.MapVersionId) ||
             request.MapId.Length > 64 || request.MapVersionId.Length > 64)
             return new(false, false, null, "请求编号、工位、车辆、运行地图或优先级无效；优先级范围 0–100。");
         request = request with { RequestedVehicleId = string.IsNullOrWhiteSpace(request.RequestedVehicleId) ? null : request.RequestedVehicleId };
+        var switchReplacement = request.RequestedVehicleId is { } requestedVehicle && taskSwitchGuard is not null &&
+            await taskSwitchGuard.AllowsVehicleAsync(requestedVehicle, null, request.RequestId, ct);
+        if(fleetOptions?.Enabled==true||fleetOwnership?.Active==true)throw new InvalidOperationException("双车测试模式或原会话尚未闭合，不能另建手工任务。");
         var receipt = await repository.FindRequestAsync(request.RequestId, ct);
         if (receipt is not null)
             return receipt.StationId == request.StationId && receipt.RequestedVehicleId == request.RequestedVehicleId && receipt.Priority == request.Priority &&
@@ -112,7 +114,7 @@ public sealed partial class ManualTaskCreationService(IManualTaskCreationReposit
         if (lease is null) return new(false, false, null, "当前不允许新任务，请等待地图切换或恢复完成。");
         if (businessRun?.IsRetired(request.RequestId) == true)
             return new(false, false, null, "原申请已核对注销，禁止重放或迟到创建；请查询原运行。");
-        if (businessRun?.Active == true && businessRun.RequestId != request.RequestId)
+        if (businessRun?.Active == true && businessRun.RequestId != request.RequestId && !switchReplacement)
             return new(false, false, null, "持续运行正在接续呼叫，请先停止新增并收尾，不接受额外手动任务。");
         if (request.ParameterRevision != parameters.Revision)
             return new(false, false, null, "任务参数已变化，请刷新创建选项后提交。");
