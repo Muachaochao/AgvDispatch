@@ -12,7 +12,8 @@ public sealed class AgvCommandOutboxDispatcher(
     IAgvGateway agvGateway,
     IMapExecutionGate executionGate,
     IExecutionEvidenceJournal? journal = null, ITaskHandshakeStore? handshakes = null, IDispatchTaskRepository? taskReader = null, HandshakeExecutionOptions? handshakeOptions = null,PersistentHandshakeExecutor? handshake = null,
-    IRoadClosureService? roadClosures = null) : IsolatedBackgroundService
+    IRoadClosureService? roadClosures = null, ITrafficResourceManager? trafficResources = null,
+    IActiveMapRuntime? activeMap = null) : IsolatedBackgroundService
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly Dictionary<string,string> _blockedReasons=new(StringComparer.Ordinal);
@@ -92,6 +93,29 @@ public sealed class AgvCommandOutboxDispatcher(
             if (vehicle?.Connection != ConnectionState.Online)
             {
                 continue;
+            }
+            if (trafficResources is not null)
+            {
+                try
+                {
+                    var payload = JsonSerializer.Deserialize<AgvTransportCommandPayload>(candidate.PayloadJson, JsonOptions)
+                        ?? throw new InvalidOperationException("待发送路径为空。");
+                    if (payload.Path.Count < 2) throw new InvalidOperationException("待发送路径不完整。");
+                    var map = activeMap?.Current;
+                    if (await trafficResources.CheckStepReservationAsync(candidate.StepId, candidate.TaskId, candidate.VehicleId,
+                        map?.MapId, map?.VersionId, payload.Path[0], payload.Path[^1], cancellationToken) is { } reason)
+                        throw new InvalidOperationException(reason);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                catch (Exception ex)
+                {
+                    if (!_blockedReasons.TryGetValue(candidate.CommandId, out var old) || old != ex.Message)
+                    {
+                        logger.LogWarning("发送前持久化路权核验未通过，保留原Outbox，不领取、不发送。CommandId={CommandId}, Reason={Reason}", candidate.CommandId, ex.Message);
+                        _blockedReasons[candidate.CommandId] = ex.Message;
+                    }
+                    continue;
+                }
             }
             if (roadClosures is not null && candidate.AttemptCount == 0)
             {

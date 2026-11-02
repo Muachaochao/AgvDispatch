@@ -81,6 +81,7 @@ public sealed class DatabaseInitializer : IDatabaseInitializer
         _database.Ado.ExecuteCommand("CREATE TRIGGER IF NOT EXISTS guard_segment_commit_update BEFORE UPDATE ON traffic_segment_commit BEGIN SELECT RAISE(ABORT,'segment commit is immutable'); END;");
         _database.Ado.ExecuteCommand("CREATE TRIGGER IF NOT EXISTS guard_segment_commit_lease_update BEFORE UPDATE ON traffic_segment_commit_lease BEGIN SELECT RAISE(ABORT,'segment commit audit is immutable'); END;");
         _database.Ado.ExecuteCommand("CREATE INDEX IF NOT EXISTS ix_traffic_request_waiting ON traffic_request(State, WaitingSinceUtc)");
+        _database.Ado.ExecuteCommand("CREATE INDEX IF NOT EXISTS ix_traffic_request_queue_observed ON traffic_request(State, QueueObservedAtUtc)");
         _database.Ado.ExecuteCommand("CREATE INDEX IF NOT EXISTS ix_traffic_request_updated ON traffic_request(UpdatedAt DESC)");
         _database.Ado.ExecuteCommand("CREATE INDEX IF NOT EXISTS ix_traffic_lifecycle_time ON traffic_lifecycle_event(OccurredAt DESC)");
         _database.CodeFirst.InitTables<ExecutionRecoverySessionEntity, ExecutionRecoveryTicketEntity, ExecutionEvidenceEntity>();

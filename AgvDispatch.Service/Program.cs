@@ -267,6 +267,14 @@ var dispatchOrchestratorOptions = new DispatchOrchestratorOptions();
 builder.Configuration.GetSection(DispatchOrchestratorOptions.SectionName)
     .Bind(dispatchOrchestratorOptions);
 builder.Services.AddSingleton(dispatchOrchestratorOptions);
+var assignmentOptions = new DispatchAssignmentOptions();
+builder.Configuration.GetSection("DispatchOptimization").Bind(assignmentOptions);
+builder.Services.AddSingleton(p => new DispatchOptimizationService(
+    Path.Combine(Path.GetDirectoryName(databaseOptions.DatabasePath)!, "dispatch-optimization.json"), assignmentOptions,
+    p.GetRequiredService<ILogger<DispatchOptimizationService>>()));
+builder.Services.AddSingleton<IDispatchOptimizationService>(p => p.GetRequiredService<DispatchOptimizationService>());
+builder.Services.AddSingleton(p => new DispatchRouteCache(p.GetRequiredService<IRoutePlanner>(), p.GetRequiredService<IActiveMapRuntime>(),
+    p.GetRequiredService<ITrafficFlowMonitor>(), p.GetRequiredService<IRoadClosureService>(), p.GetRequiredService<IAgvStateCache>(), dispatchOrchestratorOptions));
 var taskParameterPath = Path.Combine(Path.GetDirectoryName(databaseOptions.DatabasePath)!, "task-parameters.json");
 var taskParameterRuntime = new TaskParameterRuntime(dispatchOrchestratorOptions, taskCreationOptions);
 if (TaskParameterSettingsService.ReadDocument(taskParameterPath) is { } taskParameterDocument) taskParameterRuntime.Apply(taskParameterDocument);

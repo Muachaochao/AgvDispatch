@@ -21,6 +21,8 @@ public sealed class TrafficRequestEntity
     [SugarColumn(IsNullable = true)] public DateTime? BlockingSinceUtc { get; set; }
     [SugarColumn(IsNullable = true)] public bool? BlockingStartKnown { get; set; }
     [SugarColumn(IsNullable = true)] public DateTime? LastBlockingClearedUtc { get; set; }
+    [SugarColumn(IsNullable = true)] public double? QueuePriority { get; set; }
+    [SugarColumn(IsNullable = true)] public DateTime? QueueObservedAtUtc { get; set; }
     public DateTime RequestedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
 }

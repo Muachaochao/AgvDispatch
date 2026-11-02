@@ -6,6 +6,8 @@ public sealed record TrafficRouteObservation(string StepId, string TaskId, strin
     public string WaitingCategory { get; init; } = "Route";
     public string? MapId { get; init; }
     public string? MapVersionId { get; init; }
+    /// <summary>Rolling optimizer's effective priority; null preserves legacy acquisition behavior.</summary>
+    public double? QueuePriority { get; init; }
 }
 public sealed record TrafficHeldResource(string ResourceId, string? MapId, string? MapVersionId);
 public sealed record TrafficBlocker(string ResourceId, string TaskId, string VehicleId, string StepId, bool HeartbeatExpired)

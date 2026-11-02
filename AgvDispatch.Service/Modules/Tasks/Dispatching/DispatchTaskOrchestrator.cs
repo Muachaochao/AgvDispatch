@@ -6,7 +6,7 @@ using AgvDispatch.Application.Maps;
 
 namespace AgvDispatch.Service;
 
-public sealed class DispatchTaskOrchestrator(
+public sealed partial class DispatchTaskOrchestrator(
     ILogger<DispatchTaskOrchestrator> logger,
     DispatchOrchestratorOptions options,
     IDispatchOrchestrationRepository tasks,
@@ -20,7 +20,8 @@ public sealed class DispatchTaskOrchestrator(
     IMapExecutionGate executionGate, IRobokitTaskMapPreflight? robokitMap = null,
     HandshakeExecutionOptions? handshakeOptions = null, PersistentHandshakeExecutor? handshake = null,
     BusinessRunOwnership? businessRun = null, FleetTestOwnership? fleetTest=null,
-    IChargingDispatchGuard? charging=null, ITaskSwitchGuard? taskSwitchGuard=null) : IsolatedBackgroundService
+    IChargingDispatchGuard? charging=null, ITaskSwitchGuard? taskSwitchGuard=null,
+    DispatchOptimizationService? optimization=null, DispatchRouteCache? routeCache=null) : IsolatedBackgroundService
 {
     private readonly HashSet<string> _missingRouteWarnings =
         new(StringComparer.OrdinalIgnoreCase);
@@ -30,6 +31,7 @@ public sealed class DispatchTaskOrchestrator(
     {
         if (!options.Enabled)
         {
+            ReportOptimizationGate("任务编排未启用；优化配置可查看，当前不会计算业务派车或发车。");
             logger.LogInformation("AGV任务编排服务未启用，待厂家接口和地图站点配置完成后开启。");
             return;
         }
@@ -69,10 +71,11 @@ public sealed class DispatchTaskOrchestrator(
     {
         using var chargingLease = charging is null ? null : await charging.EnterBusinessAsync(cancellationToken);
         using var execution = await executionGate.EnterAsync(MapExecutionOperation.ExistingWork, cancellationToken);
-        if (execution is null) return;
+        if (execution is null) { ReportOptimizationGate("地图恢复或切换门禁尚未放行。" ); return; }
         var connection = await agvGateway.GetConnectionStatusAsync(cancellationToken);
         if (connection.State is not (ConnectionState.Online or ConnectionState.Degraded))
         {
+            ReportOptimizationGate("AGV通信未就绪，保留等待队列。");
             return;
         }
 
@@ -83,19 +86,29 @@ public sealed class DispatchTaskOrchestrator(
         {
             await trafficResources.RenewTaskAsync(activeTask.TaskId, cancellationToken);
         }
-        if (!executionGate.CanStartNewWork) return;
-        if (options.EngineeringMapError(activeMap.Current) is not null) return;
+        if (!executionGate.CanStartNewWork) { ReportOptimizationGate("地图执行门禁尚未允许新增派车。"); return; }
+        if (options.EngineeringMapError(activeMap.Current) is { } mapError) { ReportOptimizationGate(mapError); return; }
         var bayError = DumperWaitingBaySafety.GetError(activeMap.Current?.Definition, options,
             handshakeOptions is { Enabled: true, PlcContractVersion: HandshakeExecutionOptions.Version });
         if (bayError is not null)
         {
             if (_waitingBayError != bayError) logger.LogWarning("新派车被候车位门禁阻止：{Reason}", bayError);
             _waitingBayError = bayError;
+            ReportOptimizationGate(bayError);
             return;
         }
         _waitingBayError = null;
         var occupiedSlots = submitting.Count + assigned.Count;
         var availableSlots = options.MaxConcurrentTasks - occupiedSlots;
+        if (optimization is not null && !optimization.Options.Mode.Equals("Disabled", StringComparison.OrdinalIgnoreCase))
+        {
+            if (DateTimeOffset.UtcNow < _nextOptimizationAt) return;
+            var policy = optimization.Options;
+            _nextOptimizationAt = DateTimeOffset.UtcNow.AddMilliseconds(policy.IntervalMs);
+            var global = policy.Mode.Equals("Global", StringComparison.OrdinalIgnoreCase);
+            await RunOptimizationAsync(policy, Math.Max(0, availableSlots), submitting.Concat(assigned).ToArray(), cancellationToken);
+            if (global) return;
+        }
         if (availableSlots <= 0)
         {
             return;
@@ -105,13 +118,17 @@ public sealed class DispatchTaskOrchestrator(
             .Concat(assigned)
             .Select(task => task.VehicleId)
             .Where(vehicleId => !string.IsNullOrWhiteSpace(vehicleId))
+            .Select(vehicleId => vehicleId!)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var vehicles = await agvGateway.GetVehiclesAsync(cancellationToken);
+        var heldVehicles = await trafficResources.GetHeldVehicleIdsAsync(cancellationToken);
+        occupiedVehicles.UnionWith(heldVehicles);
         var idleVehicles = vehicles
             .Where(vehicle => charging?.AllowsNewBusiness(vehicle.VehicleId) != false)
             .Where(vehicle => businessRun?.Returning != true || vehicle.VehicleId != businessRun.Vehicle)
             .Where(vehicle => vehicle.Connection == ConnectionState.Online)
             .Where(vehicle => IsPositionSafeForNewTask(vehicle.VehicleId))
+            .Where(vehicle => VehicleExclusion(vehicle, occupiedVehicles, optimization?.Options ?? new DispatchAssignmentOptions()) is null)
             .Where(vehicle => options.IdleOperatingStates.Contains(
                 vehicle.OperatingState,
                 StringComparer.OrdinalIgnoreCase))
@@ -250,6 +267,12 @@ public sealed class DispatchTaskOrchestrator(
                 var commandPrepared = false;
                 try
                 {
+                    var currentVehicle = (await agvGateway.GetVehiclesAsync(cancellationToken))
+                        .SingleOrDefault(v => v.VehicleId == vehicle.VehicleId);
+                    if (currentVehicle is null || currentVehicle.CurrentStation != vehicle.CurrentStation ||
+                        VehicleExclusion(currentVehicle, occupiedVehicles, optimization?.Options ?? new DispatchAssignmentOptions()) is not null ||
+                        !executionGate.CanStartNewWork || !ReferenceEquals(planningMap, activeMap.Current))
+                    { await trafficResources.ReleaseStepAsync(readyStep.StepId, cancellationToken); continue; }
                     if(fleetTest?.Allows(task.TaskId,vehicle.VehicleId)==false)
                     {await trafficResources.ReleaseStepAsync(readyStep.StepId,cancellationToken);continue;}
                     if(handshake!=null)await handshake.BindBeforeTransportAsync(readyStep with {VehicleId=vehicle.VehicleId},cancellationToken);

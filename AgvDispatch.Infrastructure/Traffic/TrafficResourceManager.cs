@@ -15,6 +15,21 @@ public sealed partial class TrafficResourceManager(
     TrafficResourceCatalog catalog,
     TrafficControlSettings settings, TimeProvider? clock = null) : ITrafficResourceManager, ITaskWaitingBayAllocator
 {
+    public async Task<IReadOnlySet<string>> GetHeldTaskIdsAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return (await database.Queryable<TrafficResourceLeaseEntity>().Select(l => l.TaskId)
+            .Distinct().ToListAsync(cancellationToken)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
+    public async Task<IReadOnlySet<string>> GetHeldVehicleIdsAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return (await database.Queryable<TrafficResourceLeaseEntity>().Select(l => l.VehicleId)
+            .Distinct().ToListAsync(cancellationToken)).Where(id => !string.IsNullOrWhiteSpace(id))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
     public async Task<IReadOnlySet<string>> GetUnavailableResourceIdsAsync(
         string requestingTaskId,
         CancellationToken cancellationToken)
@@ -126,6 +141,20 @@ public sealed partial class TrafficResourceManager(
                     blockerResource = resourceId;
                     blockerTask = otherTasks[0];
                     await WriteStateAsync(ownerStepId, taskId, vehicleId, "Waiting", $"资源{resourceId}容量已满，等待任务{blockerTask}释放。", requested, cancellationToken);
+                    return;
+                }
+                // A capacity becoming free is not a permit to jump ahead of a
+                // freshly evaluated higher-priority/older waiting call. Existing
+                // owners always keep their resource, regardless of queue order.
+                if (!leases.Any(l => string.Equals(l.TaskId, taskId, StringComparison.OrdinalIgnoreCase)) &&
+                    await FindQueuePredecessorAsync(context, taskId, resourceId,
+                        resource.Capacity - otherTasks.Length, cancellationToken) is { } predecessor)
+                {
+                    blockerResource = resourceId;
+                    blockerTask = predecessor;
+                    await WriteStateAsync(ownerStepId, taskId, vehicleId, "Waiting",
+                        $"资源{resourceId}按有效优先级和呼叫时间排队，等待前序任务{predecessor}申请；已有路权保持不变。",
+                        requested, cancellationToken);
                     return;
                 }
             }

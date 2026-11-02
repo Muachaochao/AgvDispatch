@@ -68,6 +68,7 @@ app.MapEngineeringRuntimeApi(!engineeringSimulationOnly && builder.Configuration
 app.MapNavigationTestApi();
 app.MapRoadClosureApi();
 app.MapChargingApi();
+app.MapDispatchOptimizationApi();
 app.MapPlcCycleTestApi();
 app.MapRobotMapDownloadApi();
 app.MapWaitingApi();

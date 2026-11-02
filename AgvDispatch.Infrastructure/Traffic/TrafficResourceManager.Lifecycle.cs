@@ -9,6 +9,7 @@ public sealed partial class TrafficResourceManager
     {
         ct.ThrowIfCancellationRequested();
         if (route.WaitingCategory is not ("Route" or "Equipment")) throw new ArgumentException("等待类别无效。");
+        if (route.QueuePriority is { } priority && !double.IsFinite(priority)) throw new ArgumentException("路权排队优先级必须为有限数值。");
         var result = await database.Ado.UseTranAsync(async () =>
             await WriteStateAsync(route.StepId, route.TaskId, route.VehicleId, route.Waiting ? "Waiting" :
                 route.WaitingCategory == "Equipment" ? "ObservedReady" : "Requested", route.Reason, route.ResourceIds, ct, route));
@@ -25,7 +26,7 @@ public sealed partial class TrafficResourceManager
         if (state == "Requested" && old?.State == "Waiting") { state = "Waiting"; reason = old.Reason; }
         // Keep polling idempotent, but a newly chosen route must replace the old diagnostic route.
         if (state == "Requested" && old?.State is ("Acquired" or "Held" or "Waiting") && old.VehicleId == vehicle &&
-            old.ResourceIds == ids && old.EdgeIds == edges && (route == null || old.Source == route.Source && old.Destination == route.Destination && old.MapId == route.MapId && old.MapVersionId == route.MapVersionId)) return;
+            old.ResourceIds == ids && old.EdgeIds == edges && route?.QueuePriority == null && (route == null || old.QueuePriority == null && old.Source == route.Source && old.Destination == route.Destination && old.MapId == route.MapId && old.MapVersionId == route.MapVersionId)) return;
         var changed = old == null || old.State != state || old.Reason != reason || old.VehicleId != vehicle || old.ResourceIds != ids || old.EdgeIds != edges || route != null && (old.MapId != route.MapId || old.MapVersionId != route.MapVersionId || old.Source != route.Source || old.Destination != route.Destination || old.WaitingCategory != route.WaitingCategory);
         var previousWait = old?.WaitingSinceUtc;
         var row = old ?? new TrafficRequestEntity { StepId = step, TaskId = task, RequestedAt = DateTime.Now };
@@ -74,6 +75,13 @@ public sealed partial class TrafficResourceManager
             OccurredAt=(clock ?? TimeProvider.System).GetUtcNow().LocalDateTime
         }).ExecuteCommandAsync(ct);
         row.VehicleId = vehicle; row.State = state; row.Reason = reason; row.ResourceIds = ids; row.EdgeIds = edges; row.UpdatedAt = DateTime.Now;
+        if (route is not null)
+        {
+            // This timestamp expires only an ungranted queue recommendation. It
+            // never expires, revokes or releases a traffic lease.
+            row.QueuePriority = route.QueuePriority;
+            row.QueueObservedAtUtc = route.QueuePriority == null ? null : (clock ?? TimeProvider.System).GetUtcNow().UtcDateTime;
+        }
         if (route != null) { row.Source = route.Source; row.Destination = route.Destination; row.MapId = route.MapId; row.MapVersionId = route.MapVersionId; row.WaitingCategory = route.WaitingCategory; }
         if (old == null) await database.Insertable(row).ExecuteCommandAsync(ct);
         else await database.Updateable(row).ExecuteCommandAsync(ct);
