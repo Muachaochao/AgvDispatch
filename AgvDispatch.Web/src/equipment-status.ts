@@ -2,6 +2,14 @@ import type { Device } from './types';
 
 export type EquipmentTone = 'green' | 'amber' | 'red' | 'offline';
 
+export function executionModeState(safety: { dispatchingEnabled: boolean; plcWritesAllowed: boolean; agvCommandsAllowed: boolean } | null | undefined, current: boolean) {
+  if (!current || !safety) return { label: '状态未取得', tone: 'offline' as EquipmentTone };
+  const flags = [safety.dispatchingEnabled, safety.plcWritesAllowed, safety.agvCommandsAllowed];
+  if (flags.every(value => value === false)) return { label: '查看模式', tone: 'offline' as EquipmentTone };
+  if (flags.every(value => value === true)) return { label: '执行已启用', tone: 'green' as EquipmentTone };
+  return { label: '部分执行开启', tone: 'amber' as EquipmentTone };
+}
+
 // This is a signal/communication summary, not permission to dispatch a job.
 export function stationSignalSummary(devices: Device[], current: boolean) {
   const tones = devices.map(device => equipmentTone(device, current));

@@ -3,7 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import { useDispatchStore } from './stores/dispatch';
 import { shortTime } from './dashboard';
-import { chargerMonitoringState, equipmentTone, stationSignalSummary } from './equipment-status';
+import { chargerMonitoringState, equipmentTone, stationSignalSummary, executionModeState } from './equipment-status';
 import {
   IconRobot, IconRoute, IconBell, IconLayoutDashboard, IconListDetails, IconMap,
   IconPlus, IconPlugConnected, IconCircleCheck, IconCpu, IconNetwork, IconChevronDown, IconFlask
@@ -17,10 +17,14 @@ const router = useRouter();
 const route = useRoute();
 const connectionOpen = ref(false);
 const stationSignalsOpen = ref(false);
+const executionModeOpen = ref(false);
 const selectedStationId = ref('');
 const plcDevices = computed(() => store.equipment.filter(device => device.category === 'PLC' || device.quality === '连接诊断'));
 const stationDevices = computed(() => store.equipment.filter(device => !plcDevices.value.some(plc => plc.id === device.id)));
 const stationSignals = computed(() => stationSignalSummary(stationDevices.value, store.fresh));
+const dumperCount = computed(() => stationDevices.value.filter(device => device.category === '倒料机').length);
+const stationCount = computed(() => stationDevices.value.length - dumperCount.value);
+const executionMode = computed(() => executionModeState(store.snapshot?.status?.safety, store.fresh));
 const selectedStation = computed(() => stationDevices.value.find(device => device.id === selectedStationId.value));
 const engineeringMenu = ref<HTMLDetailsElement>();
 const dateFormatter = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'short' });
@@ -112,7 +116,7 @@ onUnmounted(() => {
         <small>{{ store.fresh ? device.status : '数据非当前' }}</small>
       </button>
       <button class="station-signal-summary" title="查看各工位的通信、业务状态和PLC点位；信号正常不代表已允许派车" @click="stationSignalsOpen = true">
-        <IconCpu :size="19" /><span>工位信号</span>
+        <IconCpu :size="19" /><span>{{stationCount}} 工位 · {{dumperCount}} 倒料</span>
         <i class="status-dot" :class="stationSignals.tone"></i><small>{{stationSignals.label}}</small>
       </button>
       <button class="charger-monitor" :title="chargerMonitor.summary" @click="router.push('/charging')">
@@ -125,10 +129,11 @@ onUnmounted(() => {
         <div class="backend-observation"><b role="status">{{connectionState}}</b><small :title="store.error || lastObservation">{{store.error || lastObservation}}</small></div>
         <button class="icon-button" aria-label="重新连接后台" title="重新连接后台" @click="store.connectBackend()"><IconPlugConnected :size="17" /></button>
       </div>
-      <div><IconRoute :size="20" /><span>执行开关</span><small>{{ !store.fresh || !store.snapshot?.status ? '未取得有效状态' : store.snapshot.status.safety.dispatchingEnabled ? '调度已启用' : '调度未启用' }}</small></div>
+      <button class="execution-mode" title="查看任务派发、PLC写入和车辆指令的启用状态；此处不会切换开关" @click="executionModeOpen = true"><IconRoute :size="20" /><span>运行模式</span><i class="status-dot" :class="executionMode.tone"></i><small>{{executionMode.label}}</small></button>
     </footer>
 
     <ConsoleDialog v-if="stationSignalsOpen" title="工位信号" wide @close="stationSignalsOpen = false; selectedStationId = ''">
+      <p class="form-explanation">当前接入 {{stationCount}} 处工位、{{dumperCount}} 台倒料机。仅统计当前运行配置，不累计历史方案中的工位。</p>
       <p class="form-explanation">此处查看信号采集与握手状态。未呼叫、等待握手属于业务状态，不代表通信故障。</p>
       <p v-if="!store.fresh" class="inline-warning">后台数据非当前，以下信息仅供回看。</p>
       <p v-if="!stationDevices.length" class="empty-panel">尚未配置工位。</p>
@@ -144,6 +149,18 @@ onUnmounted(() => {
           <tbody><tr v-for="field in selectedStation.fields" :key="field.name"><td>{{field.name}}</td><td>{{field.value}}</td><td>{{field.quality}}</td><td>{{field.address}}</td><td>{{field.updatedAt}}</td></tr></tbody>
         </table></div>
       </template>
+    </ConsoleDialog>
+    <ConsoleDialog v-if="executionModeOpen" title="调度运行状态" @close="executionModeOpen = false">
+      <p class="connection-summary">{{executionMode.label}}</p>
+      <p class="form-explanation">这里显示后台执行权限，不是启停按钮。信号采集正常不代表可以派车；任务执行还需要通过现场恢复、车辆、地图和路线核验。</p>
+      <p v-if="!store.fresh" class="inline-warning">后台数据非当前，不能据此判断执行权限。</p>
+      <dl class="property-list">
+        <dt>任务派发</dt><dd>{{!store.fresh || !store.snapshot?.status ? '未知' : store.snapshot.status.safety.dispatchingEnabled ? '已开启' : '未开启'}}</dd>
+        <dt>PLC 写入</dt><dd>{{!store.fresh || !store.snapshot?.status ? '未知' : store.snapshot.status.safety.plcWritesAllowed ? '已开启' : '未开启'}}</dd>
+        <dt>车辆指令</dt><dd>{{!store.fresh || !store.snapshot?.status ? '未知' : store.snapshot.status.safety.agvCommandsAllowed ? '已开启' : '未开启'}}</dd>
+      </dl>
+      <p class="form-explanation">查看模式用于看地图、设备与历史记录。需要测试业务时，通过统一业务启动入口选择车辆；开启执行权限不会替代现场核对。</p>
+      <template #footer><button @click="executionModeOpen = false">关闭</button><button @click="executionModeOpen = false; router.push('/commissioning')">查看联调条件</button></template>
     </ConsoleDialog>
     <ConsoleDialog v-if="connectionOpen" title="后台连接详情" @close="connectionOpen = false">
       <p class="connection-summary" :class="store.fresh ? 'green-text' : 'amber-text'">{{connectionState}} · {{lastObservation}}</p>
@@ -166,6 +183,13 @@ onUnmounted(() => {
 .equipment-strip>button:hover{background:#172a44;border-color:#315273}
 .equipment-strip>.charger-monitor{min-width:215px}
 .equipment-strip>.station-signal-summary{min-width:185px}
+/* Grow into the available width on desktop; preserve readable horizontal
+   scrolling on narrow windows instead of squeezing labels. */
+.equipment-strip>button{flex:1 0 155px;min-width:0}
+.equipment-strip>.charger-monitor{flex:1.2 0 220px;min-width:0}
+.equipment-strip>.station-signal-summary{flex:1.2 0 215px;min-width:0}
+.equipment-strip>.backend-status{flex:1.7 0 300px;min-width:0}
+.equipment-strip>.execution-mode{flex:1 0 185px}
 .station-signal-list{display:grid;gap:8px;margin-top:16px}
 .station-signal-list>button{justify-content:flex-start;padding:12px;white-space:normal;flex-wrap:wrap;text-align:left}
 .station-signal-list>button[aria-pressed=true]{border-color:var(--cyan);background:#15314c}

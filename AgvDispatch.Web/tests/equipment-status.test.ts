@@ -1,8 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chargerMonitoringState, equipmentTone, stationSignalSummary } from '../src/equipment-status.ts';
+import { chargerMonitoringState, equipmentTone, stationSignalSummary, executionModeState } from '../src/equipment-status.ts';
 import type { ChargingStatus } from '../src/equipment-status.ts';
 import type { Device } from '../src/types.ts';
+
+test('运行模式区分查看、全部开启、部分开启和过期；不把派发标志当作全部就绪', () => {
+  const off = { dispatchingEnabled: false, plcWritesAllowed: false, agvCommandsAllowed: false };
+  assert.equal(executionModeState(off, true).label, '查看模式');
+  assert.equal(executionModeState({ ...off, dispatchingEnabled: true }, true).label, '部分执行开启');
+  assert.equal(executionModeState({ dispatchingEnabled: true, plcWritesAllowed: true, agvCommandsAllowed: true }, true).label, '执行已启用');
+  assert.equal(executionModeState(off, false).label, '状态未取得');
+  assert.equal(executionModeState(null, true).tone, 'offline');
+});
 
 test('工位摘要保留故障和过期状态，空闲未呼叫不等于信号故障', () => {
   const device = (quality: string, status: string): Device => ({ id: 'station', name: '工位', quality, status, summary: '', fields: [] });
