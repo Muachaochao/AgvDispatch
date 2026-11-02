@@ -34,32 +34,103 @@ export function equipmentTone(device: Pick<Device, 'quality' | 'status'>, curren
 
 export interface ChargingSite {
   id: string; chargingSiteId: string; exitSiteId: string; resourceId: string;
-  commissioned: boolean; allowedVehicleIds: string[];
+  commissioned: boolean; allowedVehicleIds: string[]; controlMode?: string;
+}
+export interface ChargingBatteryReading {
+  batteryPercent?: number | null; current?: number | null; temperature?: number | null;
+  charging?: boolean | null; observedAt?: string;
+}
+export interface ChargingChargerReading {
+  chargerIp: string; isAuto?: boolean | null; charging?: boolean | null;
+  current?: number | null; voltage?: number | null; alarms: string[]; observedAt: string;
+}
+export interface ChargingWorkflowStatus {
+  operationId: string; kind: string; state: string; updatedAt: string; message: string;
+  battery?: ChargingBatteryReading; station?: ChargingChargerReading;
+  continuousPositiveSeconds: number; shutdownVerified: boolean; evidenceDirectory?: string;
 }
 export interface ChargingSession {
   sessionId: string; vehicleId: string; phase: string; message: string; updatedAt: string; site?: ChargingSite;
-  battery?: { batteryPercent?: number; current?: number; temperature?: number; charging?: boolean };
+  battery?: ChargingBatteryReading; requestId?: string; originSiteId?: string | null; returnSiteId?: string | null;
+  requestedReturnSiteId?: string | null; targetBatteryPercent?: number | null; requiredPositiveSeconds?: number | null;
+  scriptOperationId?: string | null; workflowStatus?: ChargingWorkflowStatus; shutdownVerified?: boolean;
 }
 export interface ChargingStatus {
   enabled: boolean; blockReason?: string; capturedAt: string;
-  options: { startBatteryPercent: number; criticalBatteryPercent: number; targetBatteryPercent: number; sites: ChargingSite[] };
+  options: { startBatteryPercent: number; criticalBatteryPercent: number; targetBatteryPercent: number; sites: ChargingSite[]; stateMaxAgeSeconds?: number; allowTimedTests?: boolean };
   sessions: ChargingSession[];
 }
 
-// /api/charging reports the C# workflow and vehicle samples. It currently has no
-// charger TCP observations. Configuration and workflow phases cannot prove the
-// charger is connected, charging or free of alarms.
-export function chargerMonitoringState(status?: ChargingStatus, readError = '') {
-  return {
+export const chargingPhaseLabels: Record<string, string> = {
+  Queued: '排队', WaitingForBusiness: '等待业务安全结束', Reserved: '已预留充电位',
+  SendingToCharger: '前往命令待确认', GoingToCharger: '前往接近点',
+  SendingDock: '对接命令待确认', Docking: '识别并低速对接',
+  StartingSession: '建立充电会话', SessionRunning: '充电会话运行中',
+  StartingCharge: '启动充电待确认', AwaitingCurrent: '等待充电电流', Charging: '充电中',
+  StoppingCharge: '停止充电待确认', AwaitingStop: '等待停止确认',
+  SendingUndock: '退桩命令待确认', Undocking: '低速退桩',
+  SendingExit: '退出命令待确认', Exiting: '退出充电位',
+  SendingReturn: '返程命令待确认', Returning: '返回待机点', Hold: '暂停待核对', Completed: '已结束'
+};
+
+export function chargingObservationFresh(stamp: string | undefined, now: number, maxAgeSeconds = 5) {
+  const time = stamp ? Date.parse(stamp) : NaN;
+  return Number.isFinite(time) && Number.isFinite(now) && time <= now + 1000 && now - time <= maxAgeSeconds * 1000;
+}
+
+export function matchingChargingWorkflow(row: ChargingSession) {
+  return row.scriptOperationId && row.workflowStatus?.operationId === row.scriptOperationId ? row.workflowStatus : undefined;
+}
+
+// Only matched, fresh worker station observations establish communication.
+// A configured site, vehicle charging flag or historical completed session does not.
+export function chargerMonitoringState(status?: ChargingStatus, readError = '', now = Date.now()) {
+  const policy = readError ? '读取失败' : !status ? '未取得' : status.enabled ? '已启用' : '未启用';
+  const scripted = status?.options.sites.some(site => site.controlMode === 'RobokitScript') ?? false;
+  const unknown = {
     label: '未接入实时监测',
     tone: 'offline' as EquipmentTone,
     communication: '未接入',
     operation: '未知',
     fault: '未知',
     lastFeedback: '尚未取得',
-    policy: readError ? '读取失败' : !status ? '未取得' : status.enabled ? '已启用' : '未启用',
-    summary: readError ? '后台充电策略读取失败，充电桩实时反馈尚未接入。' :
-      status?.options.sites.length ? '充电位配置仅代表后台策略，尚未取得充电桩实时反馈。' :
-      '尚未接入充电桩实时反馈，不能判断当前通信、充电或故障状态。'
+    output: '未知', vehicleCharge: '未知', policy,
+    summary: '尚未取得充电桩实时反馈，不能判断当前通信、充电或故障状态。'
+  };
+  if (readError) return { ...unknown, label: '状态读取失败', communication: '后台读取失败', summary: '后台充电状态读取失败，已有采样仅供回看。' };
+  const rows = status?.sessions.filter(row => row.phase !== 'Completed' && row.site?.controlMode === 'RobokitScript') ?? [];
+  const observations = rows.map(row => ({ row, workflow: matchingChargingWorkflow(row) }))
+    .filter(item => item.workflow?.station)
+    .sort((a, b) => Date.parse(b.workflow!.station!.observedAt) - Date.parse(a.workflow!.station!.observedAt));
+  if (!observations.length) return scripted ? { ...unknown, label: '等待桩端反馈', communication: '尚无本轮回包',
+    summary: '已配置反光板插接流程，桩端状态等待本轮充电会话反馈；配置不代表在线或已充电。' } : unknown;
+  const maxAge = Math.min(5, status?.options.stateMaxAgeSeconds && status.options.stateMaxAgeSeconds > 0 ? status.options.stateMaxAgeSeconds : 5);
+  const current = observations.filter(item => chargingObservationFresh(item.workflow!.updatedAt, now, maxAge)
+    && chargingObservationFresh(item.workflow!.station!.observedAt, now, maxAge));
+  if (!chargingObservationFresh(status?.capturedAt, now, maxAge) || !current.length) return {
+    ...unknown, label: '桩端反馈过期', communication: '数据非当前',
+    lastFeedback: `${new Date(observations[0].workflow!.station!.observedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}（历史）`,
+    summary: '本轮桩端反馈已过期，当前工作状态和故障均未知；保留原会话等待核对。'
+  };
+  // When more than one station is active, a newer normal packet must not hide an alarm.
+  const selected = current.find(item => item.workflow!.station!.alarms?.length) ?? current[0];
+  const workflow = selected.workflow!, station = workflow.station!;
+  const alarms = Array.isArray(station.alarms) ? station.alarms : undefined;
+  const review = selected.row.phase === 'Hold' || workflow.state === 'Unknown' || workflow.state === 'Failed';
+  const battery = workflow.battery;
+  const vehicleCharge = battery && chargingObservationFresh(battery.observedAt, now, maxAge)
+    ? battery.charging === true && typeof battery.current === 'number' && Number.isFinite(battery.current) && battery.current > .1
+      ? '车端状态及正电流已确认' : '尚未共同确认充电状态与正电流'
+    : '车端采样非当前';
+  const number = (value: number | null | undefined, unit: string) => typeof value === 'number' && Number.isFinite(value) ? `${value.toFixed(2)} ${unit}` : `— ${unit}`;
+  return {
+    label: alarms?.length ? '桩端报警' : review ? '反馈在线 · 待核对' : '反馈在线',
+    tone: (alarms?.length ? 'red' : review || !alarms ? 'amber' : 'green') as EquipmentTone,
+    communication: '已收到桩端回包',
+    operation: station.charging === true ? '桩端报告充电' : station.charging === false ? '桩端未报告充电' : '桩端充电状态待核定',
+    fault: alarms ? alarms.length ? alarms.join('、') : '本次反馈无报警' : '未知',
+    lastFeedback: new Date(station.observedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }),
+    output: `${number(station.voltage, 'V')} / ${number(station.current, 'A')}`, vehicleCharge, policy,
+    summary: `${station.chargerIp} · ${selected.row.vehicleId} 的本轮桩端反馈。车端实际充电证据单独显示，停充及退桩仍由后台核验。`
   };
 }

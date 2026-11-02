@@ -344,9 +344,11 @@ Check((await business.ReadAsync(default)).Current?.Stage == "Waiting" && busines
     "completed business must also stop the vehicle before charging handover");
 businessPort.Stopped = true;
 await business.TickAsync(default);
-Check((await business.ReadAsync(default)).Current?.Stage == "Completed" && !businessOwner.Active && businessPort.Calls.SequenceEqual(["CNC"]) &&
+var handedToCharge = (await business.ReadAsync(default)).Current;
+Check(handedToCharge is { Stage: "WaitingForCharge", ChargeResumePending: true, ChargeSimulatorPaused: true } &&
+    !businessOwner.Active && businessPort.Calls.SequenceEqual(["CNC"]) &&
     businessPort.Creates == 1 && businessPort.Returns == 0 && businessPort.Releases == 0 && businessPort.SimulatorStops == 1,
-    "safe charging handover leaves pending calls latched, stops simulator, and sends no standby or new task");
+    "safe charging handover retains the original plan, leaves calls latched, stops the simulator, and sends no standby or new task");
 
 Console.WriteLine($"PASS: {checks} charging workflow and fault checks. Synthetic hardware evidence only; no real charging acceptance is claimed.");
 

@@ -62,7 +62,7 @@ const selectedVehicleBlock=computed(()=>{
   const selected=props.options?.vehicles.find(v=>v.vehicleId===id);
   return businessVehicleBlock(selected);
 });
-const labels:Record<string,string>={Preparing:'准备中',Waiting:'等待呼叫 / 待机',Creating:'受理呼叫中',Executing:'业务执行中',ReturnSending:'准备返回待机',Returning:'返回待机中',Hold:'暂停待核对',Completed:'收尾完成，已回待机'};
+const labels:Record<string,string>={Preparing:'准备中',Waiting:'等待呼叫 / 待机',Creating:'受理呼叫中',Executing:'业务执行中',ReturnSending:'准备返回待机',Returning:'返回待机中',PausingForCharge:'准备交接充电',WaitingForCharge:'等待充电及返回原待机点',ResumingAfterCharge:'充电后核验恢复中',Hold:'暂停待核对',Completed:'收尾完成'};
 let timer:ReturnType<typeof setInterval>|undefined;
 let disposed=false, reading=false, epoch=0;
 async function read(){
@@ -145,6 +145,7 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);});
     </template>
     <p v-if="!fresh" class="inline-warning">当前运行观察无效或已过期；保存状态不代表车辆实时状态，请查询并恢复后台连接。</p>
     <p v-if="current?.stage==='Hold'">Hold 保留了原任务责任。先进入异常恢复核对原任务；记录不能直接清空。核对结束记录仍须通过后台的任务、握手、占用和待机停靠检查。</p>
+    <p v-if="current?.stage==='WaitingForCharge'">原业务计划和已完成轮数已保留。充电会话结束、车辆返回原待机点并通过状态及握手核验后接续；此时请求停止，将在充电返程完成后结束业务接续，保留工位呼叫。</p>
     <label v-if="current?.stage==='Hold'">续接现场依据（至少10字）<input v-model="resumeReason" maxlength="1000" :disabled="busy"/></label>
     <label v-if="!statusOnly||current?.stage==='Hold'" class="confirm"><input v-model="confirmed" type="checkbox" :disabled="(!!active&&current?.stage!=='Hold')||busy"/>{{current?.stage==='Hold'?'已现场核对原运行；续接将继续原流程，结束记录仍须核验任务、握手及待机停靠':'已核对当前车辆、路线和现场条件，确认启动所选运行模式'}}</label>
     <div class="buttons">

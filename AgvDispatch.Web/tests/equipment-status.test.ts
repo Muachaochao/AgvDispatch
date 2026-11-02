@@ -73,10 +73,92 @@ test('启用策略、核定充电位和车辆充电采样都不能证明桩端�
   assert.equal(view.lastFeedback, '尚未取得');
 });
 
-test('后台读取失败不沿用旧的已启用策略作为当前状态', () => {
+test('后台读取失败不沿用旧的已启用策略或桩状态作为当前状态', () => {
   const view = chargerMonitoringState({ ...status, enabled: true }, 'connection lost');
   assert.equal(view.policy, '读取失败');
-  assert.equal(view.label, '未接入实时监测');
+  assert.equal(view.label, '状态读取失败');
   assert.equal(view.tone, 'offline');
   assert.equal(chargerMonitoringState().policy, '未取得');
+});
+
+const now = Date.parse('2026-11-02T11:00:00Z');
+const stamp = (offset = 0) => new Date(now + offset).toISOString();
+function liveCharging(): ChargingStatus {
+  const site = { id: 'CHARGE-A', chargingSiteId: 'LM52', exitSiteId: 'LM51', resourceId: 'BAY-A',
+    commissioned: true, allowedVehicleIds: ['AGV-01'], controlMode: 'RobokitScript' };
+  return {
+    ...status, enabled: true, capturedAt: stamp(), options: { ...status.options, stateMaxAgeSeconds: 5, sites: [site] },
+    sessions: [{ sessionId: 'session-A', vehicleId: 'AGV-01', phase: 'SessionRunning', site,
+      message: '充电会话运行中', updatedAt: stamp(), scriptOperationId: 'operation-A',
+      workflowStatus: { operationId: 'operation-A', kind: 'Charge', state: 'Running', updatedAt: stamp(), message: '正电流观察',
+        continuousPositiveSeconds: 30, shutdownVerified: false,
+        battery: { current: 19, charging: true, observedAt: stamp() },
+        station: { chargerIp: '192.0.2.11', observedAt: stamp(), isAuto: true, charging: null, current: 19, voltage: 54, alarms: [] }
+      } }]
+  };
+}
+
+test('同一原操作的新鲜桩端回包证明通信，自动模式和输出电流不代替桩充电判据', () => {
+  const view = chargerMonitoringState(liveCharging(), '', now);
+  assert.equal(view.label, '反馈在线');
+  assert.equal(view.tone, 'green');
+  assert.equal(view.operation, '桩端充电状态待核定');
+  assert.equal(view.vehicleCharge, '车端状态及正电流已确认');
+  assert.equal(view.fault, '本次反馈无报警');
+  assert.equal(view.output, '54.00 V / 19.00 A');
+});
+
+test('原操作不匹配或历史已完成会话不提升为桩端实时在线', () => {
+  for (const change of ['mismatch', 'completed']) {
+    const data = liveCharging();
+    if (change === 'mismatch') data.sessions[0].scriptOperationId = 'different-operation';
+    else data.sessions[0].phase = 'Completed';
+    const view = chargerMonitoringState(data, '', now);
+    assert.equal(view.label, '等待桩端反馈');
+    assert.equal(view.operation, '未知');
+    assert.equal(view.fault, '未知');
+  }
+});
+
+test('后台快照、worker或桩端任一采样过期或来自未来，当前状态均未知', () => {
+  for (const source of ['backend', 'worker', 'station', 'future']) {
+    const data = liveCharging();
+    if (source === 'backend') data.capturedAt = stamp(-5001);
+    if (source === 'worker') data.sessions[0].workflowStatus!.updatedAt = stamp(-5001);
+    if (source === 'station') data.sessions[0].workflowStatus!.station!.observedAt = stamp(-5001);
+    if (source === 'future') data.sessions[0].workflowStatus!.station!.observedAt = stamp(1001);
+    const view = chargerMonitoringState(data, '', now);
+    assert.equal(view.label, '桩端反馈过期', source);
+    assert.equal(view.tone, 'offline', source);
+    assert.equal(view.operation, '未知', source);
+    assert.equal(view.fault, '未知', source);
+  }
+});
+
+test('充电连接失败、新鲜警报与正电流证据分别显示', () => {
+  const data = liveCharging();
+  data.sessions[0].phase = 'Hold';
+  const workflow = data.sessions[0].workflowStatus!;
+  workflow.state = 'Failed'; workflow.station!.alarms = ['5201'];
+  workflow.battery!.current = 0;
+  const view = chargerMonitoringState(data, '', now);
+  assert.equal(view.label, '桩端报警');
+  assert.equal(view.tone, 'red');
+  assert.equal(view.fault, '5201');
+  assert.match(view.vehicleCharge, /尚未共同确认/);
+  workflow.station!.alarms = [];
+  assert.equal(chargerMonitoringState(data, '', now).label, '反馈在线 · 待核对');
+});
+
+test('其他桩较新的正常反馈不掩盖仍新鲜的报警，过期车端采样不证明充电', () => {
+  const data = liveCharging();
+  const alarming = structuredClone(data.sessions[0]);
+  alarming.sessionId = 'session-B'; alarming.vehicleId = 'AGV-02';
+  alarming.workflowStatus!.station!.alarms = ['5201'];
+  alarming.workflowStatus!.station!.observedAt = stamp(-1000);
+  data.sessions.push(alarming);
+  assert.equal(chargerMonitoringState(data, '', now).fault, '5201');
+  data.sessions.pop();
+  data.sessions[0].workflowStatus!.battery!.observedAt = stamp(-5001);
+  assert.equal(chargerMonitoringState(data, '', now).vehicleCharge, '车端采样非当前');
 });

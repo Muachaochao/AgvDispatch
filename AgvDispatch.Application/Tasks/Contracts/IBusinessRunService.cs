@@ -10,6 +10,9 @@ public sealed record BusinessRunRecord(string RunId, BusinessRunStart Plan, stri
 {
     public string? LastResumeRequestId { get; init; }
     public string? LastResumeReason { get; init; }
+    public bool ChargeResumePending { get; init; }
+    public bool ChargeSimulatorPaused { get; init; }
+    public bool ChargeSimulatorResumeAttempted { get; init; }
 }
 public sealed record BusinessRunStatus(BusinessRunRecord? Current, string Message);
 public sealed record BusinessRunObservation(string MapId, string MapVersionId, string ParameterRevision,

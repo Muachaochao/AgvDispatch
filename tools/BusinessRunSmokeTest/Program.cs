@@ -7,11 +7,11 @@ var checks = 0;
 void Check(bool condition, string name) { if (!condition) throw new Exception(name); checks++; }
 var user = TrafficUserContext.LocalOperation("test-operator");
 BusinessRunStart Plan(string mode = "Demand", int rounds = 1) => new(Guid.NewGuid().ToString("N"), mode, "AGV-01", ["CNC-001", "CNC-002"], rounds, "LM7", true);
-(BusinessRunService Service, Port Port, BusinessRunOwnership Ownership, string Path) Fixture()
+(BusinessRunService Service, Port Port, BusinessRunOwnership Ownership, string Path) Fixture(IChargingDispatchGuard? charging = null)
 {
     var path = Path.Combine(root, Guid.NewGuid().ToString("N") + ".json");
     var port = new Port(); var ownership = new BusinessRunOwnership();
-    return (new(port, ownership, path), port, ownership, path);
+    return (new(port, ownership, path, charging), port, ownership, path);
 }
 async Task<BusinessRunRecord> Row(BusinessRunService service) => (await service.ReadAsync(default)).Current!;
 async Task Reject(Func<Task> operation, string label)
@@ -276,6 +276,115 @@ Check((await Row(lowAtCompletion.Service)) is { Stage: "Executing", CompletedJob
 lowAtCompletion.Port.Stopped = true; await lowAtCompletion.Service.TickAsync(default);
 Check((await Row(lowAtCompletion.Service)) is { Stage: "Waiting", CompletedJobs: 1 },
     "fresh verified standstill permits original completion without manual recovery");
+
+var chargeGuard = new ChargingGuard();
+var chargingRun = Fixture(chargeGuard);
+var chargingPlan = Plan("Cycle", 3);
+await chargingRun.Service.StartAsync(user, chargingPlan, default);
+chargingRun.Port.Calls = ["CNC-001"]; await chargingRun.Service.TickAsync(default);
+chargeGuard.Allow = false;
+await chargingRun.Service.TickAsync(default);
+Check((await Row(chargingRun.Service)).Stage == "Executing" && chargingRun.Ownership.Active && chargingRun.Port.SimulatorStops == 0,
+    "low battery does not interrupt the accepted full-box cycle");
+chargingRun.Port.TaskState = "Completed"; chargingRun.Port.Active = false; chargingRun.Port.Closed = false;
+await chargingRun.Service.TickAsync(default);
+Check((await Row(chargingRun.Service)).CompletedJobs == 0, "charging waits for equipment responsibility as well as business completion");
+chargingRun.Port.Closed = true; chargingRun.Port.Calls = ["CNC-002"];
+await chargingRun.Service.TickAsync(default); await chargingRun.Service.TickAsync(default);
+var pausedForCharge = await Row(chargingRun.Service);
+Check(pausedForCharge is { Stage: "WaitingForCharge", CompletedJobs: 1, ChargeResumePending: true, ChargeSimulatorPaused: true } &&
+    pausedForCharge.Plan == chargingPlan && pausedForCharge.TaskId is null && !chargingRun.Ownership.Active && !chargingRun.Ownership.Returning,
+    "safe charging handoff durably retains the exact original plan and progress without business ownership");
+Check(chargingRun.Ownership.GetChargingReturnSite("agv-01") == "LM7" && chargingRun.Ownership.GetChargingReturnSite("other") is null &&
+    System.Text.Json.JsonSerializer.Deserialize<BusinessRunRecord>(File.ReadAllText(chargingRun.Path))!.Stage == "WaitingForCharge",
+    "charging return destination is vehicle scoped and the wait survives on disk");
+for (var i = 0; i < 3; i++) await chargingRun.Service.TickAsync(default);
+Check(chargingRun.Port.Creates == 1 && chargingRun.Port.Returns == 0 && chargingRun.Port.SimulatorStops == 1 && chargingRun.Port.Calls.SequenceEqual(new[] { "CNC-002" }),
+    "charging wait never creates business, standby, repeated simulator stops or clears latched calls");
+var pausedRestartOwner = new BusinessRunOwnership();
+var pausedRestart = new BusinessRunService(chargingRun.Port, pausedRestartOwner, chargingRun.Path, chargeGuard);
+await pausedRestart.TickAsync(default);
+Check((await Row(pausedRestart)).Stage == "Hold" && pausedRestartOwner.Active && pausedRestartOwner.GetChargingReturnSite("AGV-01") == "LM7" && chargingRun.Port.SimulatorStarts == 1,
+    "restart during charging preserves destination and holds instead of resuming the plan");
+chargeGuard.Allow = true; chargeGuard.Owns = true;
+await chargingRun.Service.TickAsync(default);
+Check((await Row(chargingRun.Service)).Stage == "WaitingForCharge", "charging ownership must end even if the battery gate permits new business");
+chargeGuard.Owns = false; chargingRun.Port.Site = "CHARGE-EXIT";
+await chargingRun.Service.TickAsync(default);
+Check((await Row(chargingRun.Service)).Stage == "WaitingForCharge", "charging exit alone does not substitute for the original standby destination");
+chargingRun.Port.Site = "LM7"; chargingRun.Port.Stopped = false;
+await chargingRun.Service.TickAsync(default);
+chargingRun.Port.Stopped = true; chargingRun.Port.Closed = false;
+await chargingRun.Service.TickAsync(default);
+chargingRun.Port.Closed = true; chargingRun.Port.Active = true;
+await chargingRun.Service.TickAsync(default);
+Check(chargingRun.Port.SimulatorStarts == 1 && chargingRun.Port.Creates == 1, "moving vehicle, open handshake or active tasks each prevent charge resumption");
+chargingRun.Port.Active = false;
+chargingRun.Port.AfterValidate = () => chargingRun.Port.Stopped = false;
+await chargingRun.Service.TickAsync(default);
+Check((await Row(chargingRun.Service)).Stage == "WaitingForCharge" && chargingRun.Port.SimulatorStarts == 1,
+    "a stop-state change during plan validation prevents resumption");
+chargingRun.Port.AfterValidate = null; chargingRun.Port.Stopped = true;
+await chargingRun.Service.TickAsync(default);
+Check((await Row(chargingRun.Service)) is { Stage: "Waiting", CompletedJobs: 1, ChargeResumePending: false } &&
+    chargingRun.Ownership.Active && chargingRun.Ownership.GetChargingReturnSite("AGV-01") is null &&
+    chargingRun.Port.SimulatorStarts == 2 && chargingRun.Port.LastSimulatorStartStage == "ResumingAfterCharge" &&
+    chargingRun.Port.LastSimulatorRunId == pausedForCharge.RunId && chargingRun.Port.Creates == 1,
+    "charging resumes the same validated plan and simulator once, without creating a business task in the recovery phase");
+await chargingRun.Service.TickAsync(default);
+Check(chargingRun.Port.CreatedStations.SequenceEqual(new[] { "CNC-001", "CNC-002" }) && (await Row(chargingRun.Service)).CompletedJobs == 1,
+    "retained call resumes after charging without resetting completed rounds");
+
+var stopChargeGuard = new ChargingGuard(); var stopDuringCharge = Fixture(stopChargeGuard);
+await stopDuringCharge.Service.StartAsync(user, Plan("Cycle", 2), default);
+stopChargeGuard.Allow = false; await stopDuringCharge.Service.TickAsync(default);
+stopDuringCharge.Port.Calls = ["CNC-001"];
+await stopDuringCharge.Service.StopAsync(user, new((await Row(stopDuringCharge.Service)).RunId), default);
+await stopDuringCharge.Service.TickAsync(default);
+Check((await Row(stopDuringCharge.Service)) is { Stage: "WaitingForCharge", StopRequested: true } &&
+    stopDuringCharge.Ownership.GetChargingReturnSite("AGV-01") == "LM7" && stopDuringCharge.Port.Creates == 0 && stopDuringCharge.Port.Returns == 0,
+    "stop during charging retains return destination and never cancels charging or sends standby");
+stopChargeGuard.Allow = true; await stopDuringCharge.Service.TickAsync(default);
+Check((await Row(stopDuringCharge.Service)).Stage == "Completed" && !stopDuringCharge.Ownership.Active &&
+    stopDuringCharge.Ownership.GetChargingReturnSite("AGV-01") is null && stopDuringCharge.Port.SimulatorStarts == 1 &&
+    stopDuringCharge.Port.Creates == 0 && stopDuringCharge.Port.Calls.SequenceEqual(new[] { "CNC-001" }),
+    "stopped business wait completes after verified charging return without restarting calls or clearing latched requests");
+
+var changedChargeGuard = new ChargingGuard(); var changedAfterCharge = Fixture(changedChargeGuard);
+await changedAfterCharge.Service.StartAsync(user, Plan(), default);
+changedChargeGuard.Allow = false; await changedAfterCharge.Service.TickAsync(default);
+changedChargeGuard.Allow = true; changedAfterCharge.Port.Version = "v2";
+await changedAfterCharge.Service.TickAsync(default); await changedAfterCharge.Service.TickAsync(default);
+Check((await Row(changedAfterCharge.Service)).Stage == "Hold" && changedAfterCharge.Port.Creates == 0 && changedAfterCharge.Port.Returns == 0,
+    "map change while charging holds the retained plan rather than automatically rebinding it");
+
+var invalidChargeGuard = new ChargingGuard(); var invalidAfterCharge = Fixture(invalidChargeGuard);
+await invalidAfterCharge.Service.StartAsync(user, Plan(), default);
+invalidChargeGuard.Allow = false; await invalidAfterCharge.Service.TickAsync(default);
+invalidChargeGuard.Allow = true; invalidAfterCharge.Port.ValidationBlock = "vehicle pool changed";
+await invalidAfterCharge.Service.TickAsync(default);
+Check((await Row(invalidAfterCharge.Service)).Stage == "Hold" && invalidAfterCharge.Port.Creates == 0 && invalidAfterCharge.Port.Validations == 2,
+    "original plan configuration is revalidated before business can resume after charging");
+
+var uncertainChargeGuard = new ChargingGuard(); var uncertainChargeResume = Fixture(uncertainChargeGuard);
+await uncertainChargeResume.Service.StartAsync(user, Plan("Cycle", 2), default);
+uncertainChargeGuard.Allow = false; await uncertainChargeResume.Service.TickAsync(default);
+uncertainChargeGuard.Allow = true; uncertainChargeResume.Port.ThrowSimulatorStart = true;
+await uncertainChargeResume.Service.TickAsync(default); await uncertainChargeResume.Service.TickAsync(default);
+var unknownChargeResume = await Row(uncertainChargeResume.Service);
+Check(unknownChargeResume is { Stage: "Hold", ChargeResumePending: true, ChargeSimulatorResumeAttempted: true } &&
+    uncertainChargeResume.Port.SimulatorStarts == 2 && uncertainChargeResume.Port.Creates == 0,
+    "unknown simulator resume is durably held and never automatically repeated");
+await Reject(() => uncertainChargeResume.Service.ResumeAsync(user,
+    new(unknownChargeResume.RunId, Guid.NewGuid().ToString("N"), unknownChargeResume.UpdatedAt, "已现场检查但原模拟恢复应答仍然未知", true), default),
+    "manual resume must not replay an uncertain simulator start");
+await uncertainChargeResume.Service.StopAsync(user, new(unknownChargeResume.RunId), default);
+var stoppedChargeHold = await Row(uncertainChargeResume.Service);
+await uncertainChargeResume.Service.ResumeAsync(user,
+    new(stoppedChargeHold.RunId, Guid.NewGuid().ToString("N"), stoppedChargeHold.UpdatedAt, "已确认模拟器停止且充电完成返回原待机点", true), default);
+await uncertainChargeResume.Service.TickAsync(default);
+Check((await Row(uncertainChargeResume.Service)).Stage == "Completed" && uncertainChargeResume.Port.SimulatorStarts == 2,
+    "explicit confirmed stop can close a reviewed charging wait without replaying its uncertain resume");
 Console.WriteLine($"BusinessRunSmokeTest passed {checks} checks. Fake ports only; no PLC or AGV commands.");
 
 sealed class ReceiptStore : IManualTaskCreationRepository
@@ -290,14 +399,27 @@ sealed class Port : IBusinessRunPort
 {
     public string[] Calls=[];public bool Closed=true,Active,Stopped=true,Returned,ThrowReturn;
     public string Site="LM7",Version="v1";public string? TaskState,Block;
-    public int Creates,Returns,Releases,SimulatorStarts,SimulatorStops;public List<string> CreatedStations=[];
-    public Task ValidateAsync(BusinessRunStart plan,CancellationToken ct)=>Task.CompletedTask;
+    public int Creates,Returns,Releases,SimulatorStarts,SimulatorStops,Validations;public List<string> CreatedStations=[];
+    public bool ThrowSimulatorStart; public string? ValidationBlock, LastSimulatorStartStage, LastSimulatorRunId;
+    public Action? AfterValidate;
+    public Task ValidateAsync(BusinessRunStart plan,CancellationToken ct)
+    {Validations++;if(ValidationBlock is not null)throw new InvalidOperationException(ValidationBlock);AfterValidate?.Invoke();return Task.CompletedTask;}
     public Task<BusinessRunObservation> ObserveAsync(BusinessRunRecord run,CancellationToken ct)=>Task.FromResult(new BusinessRunObservation("map",Version,"revision",Block,Calls,Closed,Active,Site,Stopped,TaskState,Returned));
     public Task<string> CreateAsync(BusinessRunRecord run,string station,string id,CancellationToken ct)
     {Creates++;CreatedStations.Add(station);Active=true;TaskState="Executing";return Task.FromResult("task-"+Creates);}
     public Task<string> ReturnAsync(BusinessRunRecord run,CancellationToken ct)
     {Returns++;if(ThrowReturn)throw new IOException("response lost");return Task.FromResult("vendor-return");}
     public Task SimulatorAsync(BusinessRunRecord run,bool stop,CancellationToken ct)
-    {if(stop)SimulatorStops++;else SimulatorStarts++;return Task.CompletedTask;}
+    {if(stop)SimulatorStops++;else{SimulatorStarts++;LastSimulatorStartStage=run.Stage;LastSimulatorRunId=run.RunId;if(ThrowSimulatorStart)throw new IOException("simulator response lost");}return Task.CompletedTask;}
     public Task ReleaseReturnAsync(BusinessRunRecord run,CancellationToken ct){Releases++;return Task.CompletedTask;}
+}
+
+sealed class ChargingGuard : IChargingDispatchGuard
+{
+    public bool Allow = true, Owns;
+    public bool HasActiveSessions => Owns;
+    public bool OwnsVehicle(string vehicleId) => Owns;
+    public bool AllowsNewBusiness(string vehicleId) => Allow;
+    public ValueTask<IDisposable> EnterBusinessAsync(CancellationToken ct) => ValueTask.FromResult<IDisposable>(new Lease());
+    private sealed class Lease : IDisposable { public void Dispose() { } }
 }

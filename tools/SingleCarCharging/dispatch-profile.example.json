@@ -1,0 +1,32 @@
+{
+  "schema": "agv-dispatch-charge-profile-v1",
+  "commissioned": false,
+  "_instructions": [
+    "TEMPLATE ONLY: documentation IPs and zero pose below are not a field calibration.",
+    "Create a separate runtime file for each vehicle and charger; do not commit field profiles.",
+    "A technician must confirm hardware identity, exact current map binding, reflector-to-contact offset, insertion and exit travel before commissioning.",
+    "Navigation must reach approachSite with approachPose heading already facing the calibrated docking axis. The worker will not blindly turn a vehicle near the plug.",
+    "All distances/speeds below are software examples, not physical permission. Preserve obstacle protection. If it prevents insertion, confirm the manufacturer's near-field docking strategy.",
+    "approachPose is the mapped safe entry/undock pose, not the inserted dock pose. Actual return station, pose, stop and charging state are checked before road navigation.",
+    "Undock segments must be individually calibrated, axial and <=0.30 m each; total <=1.20 m. Never copy another vehicle's distances or historical world dock coordinates."
+  ],
+  "calibrationVersion": "REQUIRES-FIELD-CALIBRATION",
+  "siteId": "CHARGER-EXAMPLE",
+  "vehicleId": "AGV-EXAMPLE",
+  "hardwareId": "REPLACE-WITH-VERIFIED-HARDWARE-ID",
+  "robotIp": "192.0.2.66",
+  "robotMap": "REPLACE-WITH-CURRENT-MAP",
+  "robotMapMd5": "00000000000000000000000000000000",
+  "approachSite": "REPLACE-WITH-APPROACH-STATION",
+  "chargerIp": "192.0.2.11",
+  "approachPose": { "x": 0, "y": 0, "angleRad": 0 },
+  "maximumUndockPositionErrorM": 0.05,
+  "approachStandoffsM": [0.875, 0.65],
+  "approachSpeedMps": 0.03,
+  "maximumAxisErrorRad": 0.03,
+  "insertionDistanceM": 0.10,
+  "insertionSpeedMps": 0.01,
+  "obstacleStopDistanceM": 0.05,
+  "undockSegmentsM": [-0.20],
+  "undockSpeedMps": 0.01
+}

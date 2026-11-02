@@ -17,6 +17,8 @@ public sealed class BusinessRunService(IBusinessRunPort port, BusinessRunOwnersh
         if (!File.Exists(path)) return null;
         var row = JsonSerializer.Deserialize<BusinessRunRecord>(File.ReadAllText(path))
             ?? throw new InvalidDataException("业务运行记录损坏。");
+        if (row.ChargeResumePending)
+            ownership.SetChargingReturnSite(row.Plan.VehicleId, row.Plan.StandbySite);
         if (row.Stage != "Completed")
         {
             row = row with { Stage = "Hold", Message = "重启后保留原任务和占用，须核对原运行；禁止自动续跑。" };
@@ -32,6 +34,8 @@ public sealed class BusinessRunService(IBusinessRunPort port, BusinessRunOwnersh
         using (var file = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
         { JsonSerializer.Serialize(file, run, new JsonSerializerOptions { WriteIndented = true }); file.Flush(true); }
         File.Move(tmp, path, true);
+        ownership.SetChargingReturnSite(run?.ChargeResumePending == true ? run.Plan.VehicleId : null,
+            run?.ChargeResumePending == true ? run.Plan.StandbySite : null);
     }
     private void Move(string stage, string message)
     { if (stage == "Hold") ownership.Returning = true; run = run! with { Stage = stage, Message = message, UpdatedAt = DateTimeOffset.UtcNow }; Save(); }
@@ -94,7 +98,15 @@ public sealed class BusinessRunService(IBusinessRunPort port, BusinessRunOwnersh
             if (run.Stage == "Completed") return Status();
             run = run with { StopRequested = true, UpdatedAt = DateTimeOffset.UtcNow }; Save();
             if (run.Plan.Mode == "Cycle")
-                try { await port.SimulatorAsync(run, true, ct); }
+                try
+                {
+                    await port.SimulatorAsync(run, true, ct);
+                    if (run.ChargeResumePending)
+                    {
+                        run = run with { ChargeSimulatorPaused = true, ChargeSimulatorResumeAttempted = false };
+                        Save();
+                    }
+                }
                 catch (Exception e) { Move("Hold", "停止新增呼叫结果待核对，请重试同一停止申请：" + e.Message); throw; }
             // Do not cancel motion or clear calls/H bits. Already raised calls still drain.
             return Status();
@@ -108,12 +120,16 @@ public sealed class BusinessRunService(IBusinessRunPort port, BusinessRunOwnersh
         {
             if (run is null || run.RunId != request.RunId || run.Stage != "Hold")
                 throw new InvalidOperationException("仅能核对并结束指定暂停运行。");
+            if (run.ChargeResumePending && charging?.OwnsVehicle(run.Plan.VehicleId) == true)
+                throw new InvalidOperationException("原充电会话尚未确认结束并返回待机点，不能结束业务等待记录。");
             run = await port.ReconcileAsync(run, ct); Save();
             var o = await port.ObserveAsync(run, ct);
             if (o.Block is not null || !o.AllClosed || o.AnyActiveTasks || o.Calls.Length != 0 || !o.Stopped ||
                 string.IsNullOrWhiteSpace(o.CurrentSite) || run.TaskId is not null && o.CurrentTaskState is not ("Completed" or "Cancelled") ||
                 run.VendorTaskId is not null && !o.StandbyCompleted)
                 throw new InvalidOperationException(o.Block ?? "原任务、呼叫、握手或待机停靠尚未核对闭合，不解除占用。");
+            if (run.ChargeResumePending && o.CurrentSite != run.Plan.StandbySite)
+                throw new InvalidOperationException("充电交接尚未返回原待机点，不能关闭业务等待记录。");
             if (run.PendingRequestId is not null && run.TaskId is null && run.VendorTaskId is null)
             {
                 run = await port.RetireUnacceptedAsync(run, ct); Save();
@@ -123,6 +139,7 @@ public sealed class BusinessRunService(IBusinessRunPort port, BusinessRunOwnersh
             await port.ValidateAsync(run.Plan, ct);
             if (run.Plan.Mode == "Cycle") await port.SimulatorAsync(run, true, ct);
             if (run.VendorTaskId is not null) await port.ReleaseReturnAsync(run, ct);
+            run = run with { ChargeResumePending = false, ChargeSimulatorPaused = false, ChargeSimulatorResumeAttempted = false };
             Move("Completed", "人工请求核对结束；原任务、停止状态及安全站点已核验，没有自动续跑或重发。");
             ownership.Set(null); ownership.Returning = false;
             return Status();
@@ -150,7 +167,17 @@ public sealed class BusinessRunService(IBusinessRunPort port, BusinessRunOwnersh
             if (o.MapId != run.MapId || o.MapVersionId != run.MapVersionId || o.ParameterRevision != run.ParameterRevision)
                 throw new InvalidOperationException("原地图或参数版本已变化，不允许续接。");
             string stage;
-            if (run.VendorTaskId is not null) stage = "Returning"; // Observe verifies the original vendor identity.
+            if (run.ChargeResumePending)
+            {
+                if (run.TaskId is not null || run.VendorTaskId is not null || run.PendingRequestId is not null)
+                    throw new InvalidOperationException("充电交接仍有原业务或发送意图，不能恢复等待。");
+                if (o.AnyActiveTasks)
+                    throw new InvalidOperationException("仍有未结束业务任务，不能解除充电等待的原业务核对。");
+                if (run.Plan.Mode == "Cycle" && (!run.ChargeSimulatorPaused || run.ChargeSimulatorResumeAttempted))
+                    throw new InvalidOperationException("模拟呼叫暂停或恢复结果尚未确认，请先执行停止新增呼叫并核对原模拟器，禁止重发恢复。");
+                stage = "WaitingForCharge";
+            }
+            else if (run.VendorTaskId is not null) stage = "Returning"; // Observe verifies the original vendor identity.
             else if (run.TaskId is not null)
             {
                 if (o.CurrentTaskState is null or "Cancelled" or "Faulted" or "CancellationReview" or "CancellationPending")
@@ -166,6 +193,7 @@ public sealed class BusinessRunService(IBusinessRunPort port, BusinessRunOwnersh
             }
             run = run with { LastResumeRequestId=request.RequestId, LastResumeReason=request.Reason.Trim(), Operator=user.WindowsIdentity };
             Move(stage,"人工核对后续接原运行；保留原任务、发送意图及停止新增标记。依据："+request.Reason.Trim());
+            ownership.Set(stage == "WaitingForCharge" ? null : run.Plan.VehicleId);
             ownership.Returning=stage=="Returning";
             return Status();
         }
@@ -186,6 +214,11 @@ public sealed class BusinessRunService(IBusinessRunPort port, BusinessRunOwnersh
             if (o.Block is { } block) { ownership.Returning = true; Move("Hold", block); return; }
             if (o.MapId != run.MapId || o.MapVersionId != run.MapVersionId || o.ParameterRevision != run.ParameterRevision)
             { Move("Hold", "地图或参数版本变化，请核对原运行。"); return; }
+            if (run.Stage == "WaitingForCharge")
+            {
+                await ResumeAfterChargingAsync(ct);
+                return;
+            }
             if (run.Stage == "Executing")
             {
                 if (o.CurrentTaskState is "Faulted" or "Cancelled" or "CancellationReview" || o.CurrentTaskState is null)
@@ -208,10 +241,19 @@ public sealed class BusinessRunService(IBusinessRunPort port, BusinessRunOwnersh
             if (charging?.AllowsNewBusiness(run.Plan.VehicleId) == false)
             {
                 // Finish the entire box cycle before handing the vehicle to charging.
-                // Pending P calls stay latched for a different vehicle or a later run.
+                // Pending P calls and the original round counter survive the handoff.
                 if (!o.AllClosed || o.AnyActiveTasks || !o.Stopped) return;
+                using var chargingLease = await charging.EnterBusinessAsync(ct);
+                if (charging.AllowsNewBusiness(run.Plan.VehicleId)) return;
+                o = await port.ObserveAsync(run, ct);
+                if (o.Block is not null || o.MapId != run.MapId || o.MapVersionId != run.MapVersionId || o.ParameterRevision != run.ParameterRevision)
+                { Move("Hold", o.Block ?? "充电交接前地图或参数版本变化。"); return; }
+                if (!o.AllClosed || o.AnyActiveTasks || !o.Stopped) return;
+                run = run with { ChargeResumePending = true, ChargeSimulatorPaused = false, ChargeSimulatorResumeAttempted = false };
+                Move("PausingForCharge", "原箱体循环及设备责任已闭合，持久化暂停计划并停止模拟新增呼叫。");
                 if (run.Plan.Mode == "Cycle") await port.SimulatorAsync(run, true, ct);
-                Move("Completed", "电量达到充电门限：原箱体循环及设备握手已闭合，停止接新业务，车辆原位交给充电调度；未清除工位呼叫。");
+                run = run with { ChargeSimulatorPaused = run.Plan.Mode == "Cycle" };
+                Move("WaitingForCharge", "业务已安全交给充电调度；保留原计划、轮数与工位呼叫，等待停充、返回原待机点后继续。");
                 ownership.Set(null); ownership.Returning = false;
                 return;
             }
@@ -255,6 +297,47 @@ public sealed class BusinessRunService(IBusinessRunPort port, BusinessRunOwnersh
         { if (run is not null && run.Stage is not ("Completed" or "Hold")) Move("Hold", "运行中断，保留原任务及发送意图，禁止重发。"); }
         catch (Exception e) { if (run is not null) { ownership.Returning = true; Move("Hold", "运行暂停待核对：" + e.Message); } }
         finally { mutex.Release(); }
+    }
+
+    private async Task ResumeAfterChargingAsync(CancellationToken ct)
+    {
+        if (run is null || !run.ChargeResumePending || charging is null)
+            throw new InvalidOperationException("缺少原充电交接记录或充电调度，保留业务等待核对。");
+        using var chargingLease = await charging.EnterBusinessAsync(ct);
+        if (!charging.AllowsNewBusiness(run.Plan.VehicleId) || charging.OwnsVehicle(run.Plan.VehicleId)) return;
+        if (run.TaskId is not null || run.PendingRequestId is not null || run.VendorTaskId is not null)
+            throw new InvalidOperationException("充电等待仍有原任务或未知发送意图，禁止创建替代任务。");
+        var observation = await port.ObserveAsync(run, ct);
+        if (observation.Block is not null) throw new InvalidOperationException(observation.Block);
+        if (observation.MapId != run.MapId || observation.MapVersionId != run.MapVersionId || observation.ParameterRevision != run.ParameterRevision)
+            throw new InvalidOperationException("充电期间地图或参数版本变化，不能自动恢复业务。");
+        if (!observation.AllClosed || observation.AnyActiveTasks || !observation.Stopped || observation.CurrentSite != run.Plan.StandbySite) return;
+        await port.ValidateAsync(run.Plan, ct);
+        // Validation can outlast the first snapshot. Recheck the same conditions
+        // under the charging lease before accepting the original business plan.
+        observation = await port.ObserveAsync(run, ct);
+        if (observation.Block is not null || observation.MapId != run.MapId || observation.MapVersionId != run.MapVersionId || observation.ParameterRevision != run.ParameterRevision)
+            throw new InvalidOperationException(observation.Block ?? "恢复业务前地图或参数版本变化。");
+        if (!charging.AllowsNewBusiness(run.Plan.VehicleId) || charging.OwnsVehicle(run.Plan.VehicleId) ||
+            !observation.AllClosed || observation.AnyActiveTasks || !observation.Stopped || observation.CurrentSite != run.Plan.StandbySite) return;
+        if (run.StopRequested)
+        {
+            run = run with { ChargeResumePending = false, ChargeSimulatorPaused = false, ChargeSimulatorResumeAttempted = false };
+            Move("Completed", "已停止业务接续；充电会话结束并返回原待机点，保留尚未处理的工位呼叫。");
+            ownership.Set(null); ownership.Returning = false;
+            return;
+        }
+        Move("ResumingAfterCharge", "充电已结束且返回原待机点，重新核验原计划后恢复业务等待。");
+        ownership.Set(run.Plan.VehicleId); ownership.Returning = false;
+        if (run.Plan.Mode == "Cycle" && run.CompletedJobs < run.Plan.Rounds * run.Plan.Stations.Length)
+        {
+            if (!run.ChargeSimulatorPaused || run.ChargeSimulatorResumeAttempted)
+                throw new InvalidOperationException("模拟呼叫恢复结果尚未核定，禁止重发。");
+            run = run with { ChargeSimulatorResumeAttempted = true }; Save();
+            await port.SimulatorAsync(run, false, ct);
+        }
+        run = run with { ChargeResumePending = false, ChargeSimulatorPaused = false, ChargeSimulatorResumeAttempted = false };
+        Move("Waiting", "充电结束并已返回原待机点，接续原计划与剩余轮数；本阶段未创建或重发业务任务。");
     }
 }
 

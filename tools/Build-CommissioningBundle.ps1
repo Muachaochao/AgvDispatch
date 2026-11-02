@@ -71,6 +71,10 @@ New-Item -ItemType Directory -Path (Join-Path $bundleOutput 'Web/licenses') -For
 Copy-Item -LiteralPath (Join-Path $bundleProject 'AgvDispatch.Web/src/vendor/agv-web-visible/LICENSE'),(Join-Path $bundleProject 'AgvDispatch.Web/src/vendor/agv-web-visible/UPSTREAM.md') -Destination (Join-Path $bundleOutput 'Web/licenses')
 New-Item -ItemType Directory -Path (Join-Path $bundleOutput 'Docs') -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $bundleProject 'docs/commissioning/自动充电调度与验收边界-20261030.md') -Destination (Join-Path $bundleOutput 'Docs')
+Copy-Item -LiteralPath (Join-Path $bundleProject 'docs/architecture/单车充电流程与恢复契约-20261101.md') -Destination (Join-Path $bundleOutput 'Docs')
+Copy-Item -LiteralPath (Join-Path $bundleProject 'tools/SingleCarCharging/README.md') -Destination (Join-Path $bundleOutput 'Docs/现场充电脚本与调度接入说明.md')
+New-Item -ItemType Directory -Path (Join-Path $bundleOutput 'Service/charging-profiles') -Force | Out-Null
+Copy-Item -LiteralPath (Join-Path $bundleProject 'tools/SingleCarCharging/dispatch-profile.example.json') -Destination (Join-Path $bundleOutput 'Service/charging-profiles/DISPATCH-PROFILE.example.json')
 Copy-Item -LiteralPath (Join-Path $bundleProject 'docs/architecture/道路封锁与叉车受控改道-20261030.md') -Destination (Join-Path $bundleOutput 'Docs')
 Copy-Item -LiteralPath (Join-Path $bundleProject 'docs/architecture/双车双工位竞争交接测试-20261027.md') -Destination (Join-Path $bundleOutput 'Docs')
 Copy-Item -LiteralPath (Join-Path $bundleProject 'docs/architecture/创建任务按需运行与交替循环-20261025.md') -Destination (Join-Path $bundleOutput 'Docs')

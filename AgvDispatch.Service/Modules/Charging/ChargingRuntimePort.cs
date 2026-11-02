@@ -9,7 +9,7 @@ public sealed class ChargingRuntimePort(ChargingOptions options, IAgvStateCache 
     IActiveMapRuntime map, IMapExecutionGate gate, IRoutePlanner planner, ITrafficResourceManager resources,
     ITrafficResourceControlService traffic, IAgvGateway gateway, IRobokitTaskMapPreflight preflight,
     Func<string?>? externalBlock = null, TimeProvider? clock = null, IChargingBusinessSafety? businessSafety = null,
-    Func<string,string?>? vehicleBlock = null) : IChargingRuntimePort
+    Func<string,string?>? vehicleBlock = null, Func<string,string?>? returnSite = null) : IChargingRuntimePort
 {
     private DateTimeOffset Now => (clock??TimeProvider.System).GetUtcNow();
     public IReadOnlyList<AgvRobotSnapshot> Vehicles => vehicles.GetAll();
@@ -51,7 +51,8 @@ public sealed class ChargingRuntimePort(ChargingOptions options, IAgvStateCache 
     {
         var current=map.Current;
         if(current is null)return "没有运行地图。";
-        if(!site.Commissioned||site.ControlMode!="Relay6005")return "充电位尚未确认现场对接、继电器及安全退出方式。";
+        if(!site.Commissioned||site.ControlMode is not ("Relay6005" or "RobokitScript"))
+            return "充电位尚未确认现场对接、控制方式及安全退出方式。";
         var target=Node(site.ChargingSiteId);var exit=Node(site.ExitSiteId);
         if(target is not {Type:MapNodeType.ChargingPoint}||exit is null||exit.Id==target.Id)return "充电点类型、出口或厂家站点映射无效。";
         if(exit.ResourceIds.Contains(site.ResourceId,StringComparer.OrdinalIgnoreCase))return "退出点仍属于原充电资源，不能作为实际离位点。";
@@ -66,20 +67,34 @@ public sealed class ChargingRuntimePort(ChargingOptions options, IAgvStateCache 
         (v.CurrentStation?.Equals(node.AgvSiteId,StringComparison.OrdinalIgnoreCase)==true||v.CurrentStation?.Equals(node.Id,StringComparison.OrdinalIgnoreCase)==true||
          v.X is {} x&&v.Y is {} y&&double.IsFinite(x)&&double.IsFinite(y)&&Math.Sqrt(Math.Pow(x-node.X,2)+Math.Pow(y-node.Y,2))<.6));
     public async Task<ChargingRoute?> PlanAsync(string vehicleId,ChargingSite site,CancellationToken ct)
+        => await PlanWithReturnAsync(vehicleId,site,null,ct);
+
+    public async Task<ChargingRoute?> PlanWithReturnAsync(string vehicleId,ChargingSite site,string? requestedReturnSite,CancellationToken ct)
     {
         if(Health(vehicleId,true) is not null||vehicleBlock?.Invoke(vehicleId) is not null||SiteError(site) is not null||!vehicles.TryGet(vehicleId,out var v)||Node(v.CurrentStation??"") is not {} source)return null;
         var current=map.Current!;var target=Node(site.ChargingSiteId)!;var exit=Node(site.ExitSiteId)!;
-        if(OccupiedByOther(vehicleId,target)||OccupiedByOther(vehicleId,exit))return null;
+        var selectedHome=string.IsNullOrWhiteSpace(requestedReturnSite)?returnSite?.Invoke(vehicleId):requestedReturnSite.Trim();
+        var homeId=string.IsNullOrWhiteSpace(selectedHome)?source.AgvSiteId!:selectedHome!;
+        var home=Node(homeId);
+        if(home is null)return null;
+        if(OccupiedByOther(vehicleId,target)||OccupiedByOther(vehicleId,exit)||OccupiedByOther(vehicleId,home))return null;
         // No same-station empty route can stand in for a commissioned docking move.
         if(source.Id==target.Id)return null;
         var unavailable=await resources.GetUnavailableResourceIdsAsync("CHARGING-PLAN",ct);
         if(unavailable.Contains(site.ResourceId))return null;
         var incoming=planner.Plan(source.AgvSiteId!,target.AgvSiteId!,unavailable);
         var outgoing=planner.Plan(target.AgvSiteId!,exit.AgvSiteId!,unavailable);
-        if(incoming is not {Nodes.Count:>=2}||outgoing is not {Nodes.Count:>=2})return null;
-        if(incoming.Nodes.Any(id=>Node(id) is null)||outgoing.Nodes.Any(id=>Node(id) is null))return null;
+        var returning=planner.Plan(exit.AgvSiteId!,home.AgvSiteId!,unavailable);
+        if(incoming is not {Nodes.Count:>=2}||outgoing is not {Nodes.Count:>=2}||returning is not {Nodes.Count:>=2})return null;
+        if(incoming.Nodes.Any(id=>Node(id) is null)||outgoing.Nodes.Any(id=>Node(id) is null)||returning.Nodes.Any(id=>Node(id) is null))return null;
         return new(current.MapId,current.VersionId,incoming.Nodes.Select(id=>Node(id)!.AgvSiteId!).ToArray(),outgoing.Nodes.Select(id=>Node(id)!.AgvSiteId!).ToArray(),
-            incoming.ResourceIds.Concat(outgoing.ResourceIds).Append(site.ResourceId).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),incoming.Cost);
+            incoming.ResourceIds.Concat(outgoing.ResourceIds).Concat(returning.ResourceIds).Append(site.ResourceId)
+                .Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),incoming.Cost)
+        {
+            OriginSiteId=source.AgvSiteId,
+            ReturnSiteId=home.AgvSiteId,
+            ReturnPath=returning.Nodes.Select(id=>Node(id)!.AgvSiteId!).ToArray()
+        };
     }
     public async Task<string?> ValidateAsync(ChargingSession session,bool requireStopped,CancellationToken ct)
     {
@@ -97,9 +112,15 @@ public sealed class ChargingRuntimePort(ChargingOptions options, IAgvStateCache 
         if(requireStopped)
         {
             if(Health(session.VehicleId,true) is {} changed)return changed;
-            // Recheck actual route in front of every motion write, including exit.
-            var exiting=session.Phase is ChargingPhase.AwaitingStop or ChargingPhase.SendingExit or ChargingPhase.Exiting;
-            var routeCheck=await preflight.CheckRouteAsync(session.VehicleId,exiting?session.Route.ExitPath:session.Route.ToCharger,ct);
+            // Recheck the exact route in front of every navigation write.
+            var path=session.Phase switch
+            {
+                ChargingPhase.SendingReturn or ChargingPhase.Returning => session.Route.ReturnPath,
+                ChargingPhase.AwaitingStop or ChargingPhase.SendingExit or ChargingPhase.Exiting => session.Route.ExitPath,
+                _ => session.Route.ToCharger
+            };
+            if(path.Length<2)return "原充电导航阶段缺少完整路线。";
+            var routeCheck=await preflight.CheckRouteAsync(session.VehicleId,path,ct);
             if(!routeCheck.Accepted)return "充电导航路线核验未通过："+routeCheck.Message;
             if(!ReferenceEquals(current,map.Current))return "路线核验期间地图发生变化。";
         }
@@ -139,6 +160,13 @@ public sealed class ChargingRuntimePort(ChargingOptions options, IAgvStateCache 
     public Task ReleaseAsync(string sessionId,CancellationToken ct)=>resources.ReleaseTaskAsync(sessionId,ct);
     public Task<string> NavigateAsync(string commandId,string vehicleId,IReadOnlyList<string> path,CancellationToken ct)=>
         gateway.CreateTransportTaskAsync(commandId,vehicleId,path,new AgvTransportAction("Wait"),ct);
+    public Task CancelNavigationAsync(ChargingSession session,CancellationToken ct)
+    {
+        var taskId=session.VendorTaskId??session.CommandId;
+        return string.IsNullOrWhiteSpace(taskId)
+            ? Task.FromException(new InvalidOperationException("原充电导航任务身份未知，不能取消。"))
+            : gateway.CancelTaskAsync(taskId,ct);
+    }
     public Task<AgvTransportTaskStatus?> ObserveNavigationAsync(string commandId,string vehicleId,IReadOnlyList<string> path,CancellationToken ct)=>
         gateway.GetTransportTaskStatusAsync(commandId,vehicleId,path,ct);
 }

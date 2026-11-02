@@ -6,7 +6,7 @@ namespace AgvDispatch.Service;
 
 /// <summary>Charging owns a vehicle until observed physical exit. Every write is
 /// preceded by a durable intent; timeout, cancellation and restart never resend it.</summary>
-public sealed class ChargingService : IsolatedBackgroundService, IChargingService
+public sealed partial class ChargingService : IsolatedBackgroundService, IChargingService
 {
     private readonly ChargingOptions options;
     private readonly IChargingRuntimePort port;
@@ -14,14 +14,15 @@ public sealed class ChargingService : IsolatedBackgroundService, IChargingServic
     private readonly ChargingSessionStore store;
     private readonly ILogger<ChargingService> logger;
     private readonly TimeProvider clock;
+    private readonly IChargingWorkflow? workflow;
     private readonly SemaphoreSlim mutex = new(1, 1);
     private ChargingSession[] sessions;
     private DateTimeOffset Now => clock.GetUtcNow();
 
     public ChargingService(ChargingOptions options, IChargingRuntimePort port, IChargingRobotControl robot,
-        string path, ILogger<ChargingService> logger, TimeProvider? clock = null)
+        string path, ILogger<ChargingService> logger, TimeProvider? clock = null, IChargingWorkflow? workflow = null)
     {
-        this.options=options; this.port=port; this.robot=robot; this.logger=logger; this.clock=clock??TimeProvider.System;
+        this.options=options; this.port=port; this.robot=robot; this.logger=logger; this.clock=clock??TimeProvider.System; this.workflow=workflow;
         if(options.ConfigurationError() is {} error) throw new InvalidOperationException(error);
         store=new(path);
         sessions=store.Load();
@@ -53,6 +54,7 @@ public sealed class ChargingService : IsolatedBackgroundService, IChargingServic
             {
                 if(commandId==row.SessionId+"-IN")return new(commandId,row.VehicleId,route.ToCharger,1,row.Phase==ChargingPhase.SendingToCharger);
                 if(commandId==row.SessionId+"-OUT")return new(commandId,row.VehicleId,route.ExitPath,1,row.Phase==ChargingPhase.SendingExit);
+                if(commandId==row.SessionId+"-RETURN" && route.ReturnPath.Length>=2)return new(commandId,row.VehicleId,route.ReturnPath,1,row.Phase==ChargingPhase.SendingReturn);
             }
         return null;
     }
@@ -75,7 +77,7 @@ public sealed class ChargingService : IsolatedBackgroundService, IChargingServic
     {
         var next=sessions.Where(s=>s.SessionId!=row.SessionId).Append(row).ToArray();
         // Keep all active sessions and a bounded recent history.
-        next=next.Where(s=>s.Phase!=ChargingPhase.Completed).Concat(next.Where(s=>s.Phase==ChargingPhase.Completed).OrderByDescending(s=>s.UpdatedAt).Take(200)).ToArray();
+        next=next.Where(s=>s.Phase!=ChargingPhase.Completed||s.RequestId is not null).Concat(next.Where(s=>s.Phase==ChargingPhase.Completed&&s.RequestId is null).OrderByDescending(s=>s.UpdatedAt).Take(200)).ToArray();
         store.Save(next); Volatile.Write(ref sessions,next); return row;
     }
     private ChargingSession Move(ChargingSession row,ChargingPhase phase,string message)=>Save(row with {Phase=phase,PhaseSince=Now,UpdatedAt=Now,Message=message});
@@ -92,7 +94,7 @@ public sealed class ChargingService : IsolatedBackgroundService, IChargingServic
         if(options.Enabled)
             foreach(var vehicle in port.Vehicles.Where(v=>v.BatteryPercent is >=0&&v.BatteryPercent<=options.StartBatteryPercent&&v.Connection==ConnectionState.Online&&Fresh(v.LastSuccessfulPollAt)))
                 if(!sessions.Any(s=>s.Phase!=ChargingPhase.Completed&&s.VehicleId.Equals(vehicle.VehicleId,StringComparison.OrdinalIgnoreCase)))
-                    Save(new("CHARGE-"+Guid.NewGuid().ToString("N"),vehicle.VehicleId,ChargingPhase.Queued,Now,Now,"低电量已进入充电队列；等待业务箱体循环及设备责任安全结束。"));
+                    Save(new("CHARGE-"+Guid.NewGuid().ToString("N"),vehicle.VehicleId,ChargingPhase.Queued,Now,Now,"低电量已进入充电队列；等待业务箱体循环及设备责任安全结束。") {TargetBatteryPercent=options.TargetBatteryPercent});
 
         foreach(var row in sessions.Where(s=>s.HasReservation).ToArray())
             await port.RenewAsync(row.SessionId,ct);
@@ -111,9 +113,9 @@ public sealed class ChargingService : IsolatedBackgroundService, IChargingServic
                     var busy=await port.BusyReasonAsync(row.VehicleId,row.SessionId,ct);
                     if(busy is not null){Save(row with {Phase=ChargingPhase.WaitingForBusiness,Message=busy,UpdatedAt=Now});continue;}
                     var choices=new List<(ChargingSite Site,ChargingRoute Route)>();
-                    foreach(var site in options.Sites.Where(s=>s.Commissioned&&s.ControlMode=="Relay6005"&&s.AllowedVehicleIds.Contains(row.VehicleId,StringComparer.OrdinalIgnoreCase)&&
+                    foreach(var site in options.Sites.Where(s=>s.Commissioned&&CanHandleSite(s,row.VehicleId)&&s.AllowedVehicleIds.Contains(row.VehicleId,StringComparer.OrdinalIgnoreCase)&&
                         !sessions.Any(other=>other.HasReservation&&other.Site!.ResourceId.Equals(s.ResourceId,StringComparison.OrdinalIgnoreCase))))
-                        if(await port.PlanAsync(row.VehicleId,site,ct) is {} route)choices.Add((site,route));
+                        if(await port.PlanWithReturnAsync(row.VehicleId,site,row.RequestedReturnSiteId,ct) is {} route)choices.Add((site,route));
                     foreach(var candidate in choices.OrderBy(c=>c.Route.Cost).ThenBy(c=>c.Site.Id,StringComparer.Ordinal))
                     {
                         row=Save(row with {Site=candidate.Site,Route=candidate.Route,Phase=ChargingPhase.Reserved,PhaseSince=Now,UpdatedAt=Now,Message="保存车辆、充电位和完整进出路线归属，申请独占路权。"});
@@ -138,6 +140,7 @@ public sealed class ChargingService : IsolatedBackgroundService, IChargingServic
 
     private async Task AdvanceAsync(ChargingSession row,CancellationToken ct)
     {
+        if(row.Site?.ControlMode=="RobokitScript") {await AdvanceScriptAsync(row,ct);return;}
         ChargingBatteryReading? chargeReading=null;
         if(row.Phase is ChargingPhase.AwaitingCurrent or ChargingPhase.Charging or ChargingPhase.AwaitingStop)
         {
@@ -276,6 +279,27 @@ public sealed class ChargingService : IsolatedBackgroundService, IChargingServic
         if(row.Phase==ChargingPhase.Completed)return new(true,"充电会话已结束。");
         if(row.Phase is ChargingPhase.Queued or ChargingPhase.WaitingForBusiness)
         {Move(row with {Operator=user.WindowsIdentity,OperatorEvidence=request.Reason},ChargingPhase.Completed,"人工取消尚未取得资源或发送命令的充电需求。");return new(true,"已取消排队；低电量仍禁止新业务，下轮仍满足启动条件时会重新申请。");}
+        if(row.Site?.ControlMode=="RobokitScript")
+        {
+            using var control=await port.EnterRecoveryControlAsync(ct);
+            if(control is null)return new(false,"无法取得安全停止控制门，保留原状态待现场核对。");
+            row=Save(row with {Operator=user.WindowsIdentity,OperatorEvidence=request.Reason});
+            if(row.StopAttempted)return new(false,"原停止已申请，请查询原结果，不重复发送。");
+            try
+            {
+                var stoppedPhase=row.Phase==ChargingPhase.Hold?row.HeldPhase:row.Phase;
+                if(row.ScriptOperationId is not null&&stoppedPhase is not (ChargingPhase.SendingToCharger or ChargingPhase.GoingToCharger or ChargingPhase.SendingExit or ChargingPhase.Exiting or ChargingPhase.SendingReturn or ChargingPhase.Returning))
+                    await StopScriptAsync(row,request.Reason,ct);
+                else
+                {
+                    row=Save(row with {StopAttempted=true,StopRequested=true,UpdatedAt=Now});
+                    await port.CancelNavigationAsync(row,ct);
+                    Hold(row,"已针对唯一原导航申请取消，保留资源等待原任务终态和停车核验。");
+                }
+                return new(true,"停止申请已保存；只核对原任务及停充结果，充电位尚未释放。");
+            }
+            catch(Exception e){Hold(sessions.Single(s=>s.SessionId==row.SessionId),"原停止结果不确定，保留现场状态："+e.Message);return new(false,"停止结果不确定，不自动重复发送或释放资源。");}
+        }
         if(row.StopAttempted)return new(false,"已有停止意图，禁止重复发送；请只读核对并处置原停止结果。");
         if(!row.StartAttempted)return new(false,"原导航尚未建立充电，不自动取消行驶或释放资源；请现场核对后处理保留会话。");
         // An explicit operator stop is a single relay-off safety action. The
@@ -309,15 +333,35 @@ public sealed class ChargingService : IsolatedBackgroundService, IChargingServic
         row=row with {Operator=user.WindowsIdentity,OperatorEvidence=request.Reason,UpdatedAt=Now};
         if(request.Decision==ChargingHoldDecision.CloseAfterPhysicalExit)
         {
+            if(row.Site?.ControlMode=="RobokitScript"&&await ScriptCloseBlockAsync(row,ct) is {} scriptBlock)return new(false,scriptBlock);
             var reading=await ReadBatteryAsync(row,ct);
-            if(!port.IsAt(row.VehicleId,row.Site!.ExitSiteId)||!CurrentStopped(reading)||reading.ManualCharge==true||reading.AutoCharge==true)
+            var closingSite=row.Site!.ControlMode=="RobokitScript"?row.Route!.ReturnSiteId??row.Site.ExitSiteId:row.Site.ExitSiteId;
+            if(!port.IsAt(row.VehicleId,closingSite)||!CurrentStopped(reading)||reading.ManualCharge==true||reading.AutoCharge==true)
                 return new(false,"实际退出位置、停稳、无充电及电流归零须共同确认，不能直接释放充电位。");
             await CompleteAsync(row with {Battery=reading},"现场核对车辆已停止充电并实际退出，关闭原会话并释放资源。依据："+request.Reason,ct);
             return new(true,"已按实际离位证据关闭充电会话并释放充电资源。");
         }
         var phase=row.HeldPhase;
+        if(row.Site?.ControlMode=="RobokitScript"&&row.ScriptOperationId is not null&&
+            phase is ChargingPhase.SendingDock or ChargingPhase.Docking or ChargingPhase.StartingSession or ChargingPhase.SessionRunning or ChargingPhase.SendingUndock or ChargingPhase.Undocking)
+        {
+            var script=await ObserveScriptAsync(row,ct);
+            row=row with {WorkflowStatus=script,Battery=script.Battery??row.Battery};
+            if(script.State==ChargingWorkflowState.Unknown)return new(false,"原脚本执行结果仍未知，不能重发、退车或释放资源。");
+            if(row.StopRequested&&row.ScriptOperationKind==ChargingWorkflowKind.Charge&&script.ShutdownVerified&&script.State is ChargingWorkflowState.Succeeded or ChargingWorkflowState.Failed)
+            {row=row with {ShutdownVerified=true};phase=ChargingPhase.AwaitingStop;}
+            else if(script.State==ChargingWorkflowState.Failed)
+            {
+                return new(false,"原脚本失败，不能通过续接重做动作；请完成现场核对后关闭原会话。");
+            }
+            else if(row.StopRequested&&script.State==ChargingWorkflowState.Succeeded)row=row with {StopRequested=false};
+        }
         if(phase is ChargingPhase.SendingToCharger)phase=ChargingPhase.GoingToCharger;
         if(phase is ChargingPhase.SendingExit)phase=ChargingPhase.Exiting;
+        if(phase is ChargingPhase.SendingReturn)phase=ChargingPhase.Returning;
+        if(phase is ChargingPhase.SendingDock)phase=ChargingPhase.Docking;
+        if(phase is ChargingPhase.StartingSession)phase=ChargingPhase.SessionRunning;
+        if(phase is ChargingPhase.SendingUndock)phase=ChargingPhase.Undocking;
         if(phase==ChargingPhase.StartingCharge&&row.StartAttempted)phase=ChargingPhase.AwaitingCurrent;
         if(phase==ChargingPhase.StoppingCharge)phase=ChargingPhase.AwaitingStop;
         if(phase is null or ChargingPhase.Hold or ChargingPhase.Completed)return new(false,"原阶段不可安全续接，请确认已停止充电并实际退出后关闭。");

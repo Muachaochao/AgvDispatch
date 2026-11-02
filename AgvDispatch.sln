@@ -121,6 +121,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NavigationDetourPlanningSmo
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NavigationResumeSmokeTest", "tools\NavigationResumeSmokeTest\NavigationResumeSmokeTest.csproj", "{5CEF1A08-0A39-40A4-9A42-D13951213705}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ChargingScriptBridgeSmokeTest", "tools\ChargingScriptBridgeSmokeTest\ChargingScriptBridgeSmokeTest.csproj", "{A92EDEA5-FC15-4389-954B-70B7A82235EF}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -707,6 +709,18 @@ Global
 		{5CEF1A08-0A39-40A4-9A42-D13951213705}.Release|x64.Build.0 = Release|Any CPU
 		{5CEF1A08-0A39-40A4-9A42-D13951213705}.Release|x86.ActiveCfg = Release|Any CPU
 		{5CEF1A08-0A39-40A4-9A42-D13951213705}.Release|x86.Build.0 = Release|Any CPU
+		{A92EDEA5-FC15-4389-954B-70B7A82235EF}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A92EDEA5-FC15-4389-954B-70B7A82235EF}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A92EDEA5-FC15-4389-954B-70B7A82235EF}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{A92EDEA5-FC15-4389-954B-70B7A82235EF}.Debug|x64.Build.0 = Debug|Any CPU
+		{A92EDEA5-FC15-4389-954B-70B7A82235EF}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{A92EDEA5-FC15-4389-954B-70B7A82235EF}.Debug|x86.Build.0 = Debug|Any CPU
+		{A92EDEA5-FC15-4389-954B-70B7A82235EF}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A92EDEA5-FC15-4389-954B-70B7A82235EF}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A92EDEA5-FC15-4389-954B-70B7A82235EF}.Release|x64.ActiveCfg = Release|Any CPU
+		{A92EDEA5-FC15-4389-954B-70B7A82235EF}.Release|x64.Build.0 = Release|Any CPU
+		{A92EDEA5-FC15-4389-954B-70B7A82235EF}.Release|x86.ActiveCfg = Release|Any CPU
+		{A92EDEA5-FC15-4389-954B-70B7A82235EF}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -762,5 +776,6 @@ Global
 		{A62E5EDC-F881-47B9-8C30-AF9E2553E0DC} = {D691E330-1100-43CD-ADAA-4CC7F3910879}
 		{1325F087-13AD-4998-8A24-22EE82158221} = {D691E330-1100-43CD-ADAA-4CC7F3910879}
 		{5CEF1A08-0A39-40A4-9A42-D13951213705} = {D691E330-1100-43CD-ADAA-4CC7F3910879}
+		{A92EDEA5-FC15-4389-954B-70B7A82235EF} = {D691E330-1100-43CD-ADAA-4CC7F3910879}
 	EndGlobalSection
 EndGlobal

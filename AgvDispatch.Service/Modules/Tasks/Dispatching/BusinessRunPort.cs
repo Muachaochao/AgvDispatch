@@ -286,17 +286,22 @@ public sealed partial class BusinessRunPort(IManualTaskCreationService manual, I
     public async Task SimulatorAsync(BusinessRunRecord run, bool stop, CancellationToken ct)
     {
         if (!simulatorOnly) throw new InvalidOperationException("循环呼叫不能连接正式PLC。");
+        var resumeAfterCharge = !stop && run.Stage == "ResumingAfterCharge";
         if (!stop)
         {
             using var probe = new HttpRequestMessage(HttpMethod.Get, "capabilities");
             probe.Headers.Add("X-Agv-Lab-Control", "business-run-v1");
             using var capabilities = await lab.SendAsync(probe, ct);
-            if (!capabilities.IsSuccessStatusCode ||
-                (await capabilities.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>(ct)).GetProperty("boxFeedbackContract").GetString() != "business-box-action-v1")
+            if (!capabilities.IsSuccessStatusCode)
                 throw new InvalidOperationException("请先启动1.5.1及以上PLC联调台；旧工具没有原动作箱体反馈，未发出循环呼叫。");
+            var contracts = await capabilities.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>(ct);
+            if (!contracts.TryGetProperty("boxFeedbackContract", out var feedback) || feedback.GetString() != "business-box-action-v1")
+                throw new InvalidOperationException("请先启动1.5.1及以上PLC联调台；旧工具没有原动作箱体反馈，未发出循环呼叫。");
+            if (resumeAfterCharge && (!contracts.TryGetProperty("chargeResumeContract", out var resume) || resume.GetString() != "business-charge-resume-v1"))
+                throw new InvalidOperationException("当前PLC联调台不支持保留原轮数的充电后恢复，保持原业务待核对，未发送模拟呼叫恢复。");
         }
         using var request = new HttpRequestMessage(HttpMethod.Post, "cycle")
-        { Content = JsonContent.Create(new { runId = run.RunId, stations = run.Plan.Stations, rounds = run.Plan.Rounds, stop }) };
+        { Content = JsonContent.Create(new { runId = run.RunId, stations = run.Plan.Stations, rounds = run.Plan.Rounds, stop, resumeAfterCharge }) };
         request.Headers.Add("X-Agv-Lab-Control", "business-run-v1");
         using var response = await lab.SendAsync(request, ct);
         if (!response.IsSuccessStatusCode) throw new InvalidOperationException("模拟PLC循环控制未接受：" + await response.Content.ReadAsStringAsync(ct));

@@ -248,6 +248,7 @@ public sealed class TrafficControlNamedPipeServer(
             "ConfirmNavigationTestDetour" => Success(await (navigationTest??throw new NotSupportedException("后台未更新受控改道。")).ConfirmDetourAsync(user,Deserialize<NavigationTestDetourConfirm>(request.Payload),cancellationToken)),
             "ContinueNavigationTestDetour" => Success(await (navigationTest??throw new NotSupportedException("后台未更新受控改道。")).ContinueDetourAsync(user,Deserialize<NavigationTestDetourContinue>(request.Payload),cancellationToken)),
             "GetCharging" => Success(await (charging??throw new NotSupportedException("后台未更新充电调度。")).ReadAsync(cancellationToken)),
+            "RequestCharging" => Success(await (charging??throw new NotSupportedException("后台未更新充电调度。")).RequestAsync(user,Deserialize<ChargingRequest>(request.Payload),cancellationToken)),
             "StopCharging" => Success(await (charging??throw new NotSupportedException("后台未更新充电调度。")).RequestStopAsync(user,Deserialize<ChargingStopRequest>(request.Payload),cancellationToken)),
             "ResolveCharging" => Success(await (charging??throw new NotSupportedException("后台未更新充电调度。")).ResolveHoldAsync(user,Deserialize<ChargingResolveRequest>(request.Payload),cancellationToken)),
             "GetForkTest" => Success(await (navigationTest??throw new NotSupportedException("货叉后台未更新。")).ReadForkAsync(cancellationToken)),

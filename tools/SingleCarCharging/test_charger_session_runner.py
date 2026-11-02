@@ -319,6 +319,53 @@ class SessionTests(unittest.TestCase):
         self.assertEqual([True, False], [p["status"] for api, p in client.calls if api == session.RELAY_API])
         self.assertGreaterEqual(commands.count(("status", False)), 2)
 
+    def test_dispatch_interval_ends_after_real_positive_duration(self):
+        options = args()
+        options.duration_seconds = 20
+        options.required_positive_seconds = 1.0
+        result, client, _ = self.run_fake(options=options)
+        self.assertEqual("positive_interval_reached", result["end_reason"])
+        self.assertEqual(1.0, result["continuous_positive_seconds"])
+        self.assertTrue(result["charging_test_passed"])
+        self.assertFalse(client.enabled)
+
+    def test_dispatch_timeout_does_not_count_as_target_completion(self):
+        options = args()
+        options.target_battery_percent = 80
+        result, client, _ = self.run_fake(options=options)
+        self.assertEqual("duration_reached", result["end_reason"])
+        self.assertFalse(result["charging_test_passed"])
+        self.assertTrue(result["shutdown"]["verified"])
+        self.assertFalse(client.enabled)
+
+    def test_dispatch_target_reached_stops_and_verifies_output(self):
+        options = args()
+        options.target_battery_percent = 80
+        def read(values, client, clock):
+            values[1]["battery_level"] = 0.80 if clock.now >= 1.25 else 0.70
+            return values
+        result, client, _ = self.run_fake(options=options, read=read)
+        self.assertEqual("target_reached", result["end_reason"])
+        self.assertTrue(result["charging_test_passed"])
+        self.assertFalse(client.enabled)
+
+    def test_dispatch_lease_loss_after_on_always_attempts_off_and_stop_heartbeat(self):
+        options = args()
+        client = Client()
+        samples = []
+        def progress(sample, station, seconds):
+            samples.append(sample)
+        def control():
+            if samples:
+                raise session.ResultUnknown("dispatch lease expired")
+        options.control_check = control
+        options.progress_callback = progress
+        result, client, commands = self.run_fake(client=client, options=options)
+        self.assertIn("lease expired", result["error"])
+        self.assertEqual([True, False], [p["status"] for api, p in client.calls if api == session.RELAY_API])
+        self.assertIn(("status", False), commands)
+        self.assertTrue(result["shutdown"]["verified"])
+
     def test_old_real_shutdown_response_does_not_pass(self):
         def exchange(stream, active, clock, client):
             return {"ret_code": 0, "ret": True} if stream.name == "ack" else station_status(True, 20)

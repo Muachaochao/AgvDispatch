@@ -450,6 +450,14 @@ def finish_session(client, streams, payload, sequence, evidence, args,
 
 
 def run_session(client, args, run_id, evidence):
+    # Dispatch supplies these callbacks; the standalone CLI keeps its existing
+    # bounded observation policy. A lost dispatch lease must reach finally/OFF.
+    def dispatch_control():
+        check = getattr(args, "control_check", None)
+        if check is not None:
+            check()
+
+    dispatch_control()
     info = client.request(1000, 19204, {})
     if str(info.get("id", "")).casefold() != args.expected_id.casefold():
         raise Refused("robot hardware ID mismatch")
@@ -545,6 +553,7 @@ def run_session(client, args, run_id, evidence):
         return responses["ack"], responses["status"]
 
     def ensure_safe(state, battery):
+        dispatch_control()
         if not safe_sample(state, battery, args.max_temperature):
             raise Refused("vehicle safety stop")
         if set(warning_signature(state, battery)) - set(baseline_warnings):
@@ -677,12 +686,33 @@ def run_session(client, args, run_id, evidence):
                 last_station = status
                 station_at = time.monotonic()
                 next_heartbeat = now + args.heartbeat_seconds
+            progress = getattr(args, "progress_callback", None)
+            if progress is not None:
+                progress(sample, last_station, interval.seconds)
             if time.monotonic() - station_at > MAX_STATION_AGE_SECONDS:
                 raise ResultUnknown("station status exceeded freshness limit")
+            # Dispatch tests measure a full positive-current interval, rather
+            # than counting initial handshake/connection time as charge time.
+            required = getattr(args, "required_positive_seconds", None)
+            target = getattr(args, "target_battery_percent", None)
+            if (required is not None and interval.seconds >= required
+                    and interval.count >= args.confirm_samples):
+                end_reason = "positive_interval_reached"
+                break
+            if target is not None:
+                level = battery.get("battery_level")
+                if not finite_number(level) or not 0 <= level <= 1:
+                    raise ResultUnknown("battery level is invalid during target charging")
+                if level * 100 >= target:
+                    end_reason = "target_reached"
+                    break
             time.sleep(min(args.poll_seconds, max(0.0, deadline - time.monotonic())))
 
         confirmed = (
-            end_reason == "duration_reached"
+            end_reason in ("duration_reached", "positive_interval_reached", "target_reached")
+            and (end_reason != "duration_reached" or
+                 (getattr(args, "required_positive_seconds", None) is None
+                  and getattr(args, "target_battery_percent", None) is None))
             and interval.count >= args.confirm_samples
             and interval.seconds >= args.minimum_positive_seconds
             and interval.last is not None

@@ -5,6 +5,7 @@ namespace AgvDispatch.Application.Abstractions;
 public sealed class ChargingOptions
 {
     public bool Enabled { get; set; }
+    public bool AllowTimedTests { get; set; }
     public decimal StartBatteryPercent { get; set; } = 25;
     public decimal CriticalBatteryPercent { get; set; } = 15;
     public decimal TargetBatteryPercent { get; set; } = 80;
@@ -38,8 +39,15 @@ public sealed record ChargingSite(string Id, string ChargingSiteId, string ExitS
     public string ControlMode { get; init; } = "Relay6005";
 }
 
-public enum ChargingPhase { Queued, WaitingForBusiness, Reserved, SendingToCharger, GoingToCharger, StartingCharge, AwaitingCurrent, Charging, StoppingCharge, AwaitingStop, SendingExit, Exiting, Hold, Completed }
-public sealed record ChargingRoute(string MapId, string MapVersionId, string[] ToCharger, string[] ExitPath, string[] ResourceIds, double Cost);
+// Append phases: persisted older sessions use the original numeric enum values.
+public enum ChargingPhase { Queued, WaitingForBusiness, Reserved, SendingToCharger, GoingToCharger, StartingCharge, AwaitingCurrent, Charging, StoppingCharge, AwaitingStop, SendingExit, Exiting, Hold, Completed,
+    SendingDock, Docking, StartingSession, SessionRunning, SendingUndock, Undocking, SendingReturn, Returning }
+public sealed record ChargingRoute(string MapId, string MapVersionId, string[] ToCharger, string[] ExitPath, string[] ResourceIds, double Cost)
+{
+    public string? OriginSiteId { get; init; }
+    public string? ReturnSiteId { get; init; }
+    public string[] ReturnPath { get; init; } = [];
+}
 public sealed record ChargingSession(string SessionId, string VehicleId, ChargingPhase Phase, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt, string Message)
 {
     public ChargingSite? Site { get; init; }
@@ -54,10 +62,22 @@ public sealed record ChargingSession(string SessionId, string VehicleId, Chargin
     public ChargingBatteryReading? Battery { get; init; }
     public string? Operator { get; init; }
     public string? OperatorEvidence { get; init; }
+    public string? RequestId { get; init; }
+    public decimal? TargetBatteryPercent { get; init; }
+    public int? RequiredPositiveSeconds { get; init; }
+    public string? RequestedReturnSiteId { get; init; }
+    public string? ScriptOperationId { get; init; }
+    public string? ChargeOperationId { get; init; }
+    public ChargingWorkflowKind? ScriptOperationKind { get; init; }
+    public ChargingWorkflowStatus? WorkflowStatus { get; init; }
+    public bool ShutdownVerified { get; init; }
+    public string? OriginSiteId => Route?.OriginSiteId;
+    public string? ReturnSiteId => Route?.ReturnSiteId;
     public bool HasReservation => Site is not null && Route is not null && Phase != ChargingPhase.Completed;
 }
 public sealed record ChargingStatus(bool Enabled, ChargingOptions Options, string? BlockReason, IReadOnlyList<ChargingSession> Sessions, DateTimeOffset CapturedAt);
 public sealed record ChargingStopRequest(string SessionId, string Reason);
+public sealed record ChargingRequest(string RequestId, string VehicleId, int? RequiredPositiveSeconds = null, string? ReturnSiteId = null);
 public enum ChargingHoldDecision { ContinueOriginal, CloseAfterPhysicalExit }
 public sealed record ChargingResolveRequest(string SessionId, ChargingHoldDecision Decision, string Reason, bool VehicleAndLoadConfirmed, bool ChargerAndLocationConfirmed);
 public sealed record ChargingResult(bool Accepted, string Message);
@@ -74,6 +94,8 @@ public interface IChargingDispatchGuard
 public interface IChargingService : IChargingDispatchGuard
 {
     Task<ChargingStatus> ReadAsync(CancellationToken ct);
+    Task<ChargingResult> RequestAsync(TrafficUserContext user, ChargingRequest request, CancellationToken ct) =>
+        Task.FromResult(new ChargingResult(false, "当前实现不支持手动充电申请。"));
     Task<ChargingResult> RequestStopAsync(TrafficUserContext user, ChargingStopRequest request, CancellationToken ct);
     Task<ChargingResult> ResolveHoldAsync(TrafficUserContext user, ChargingResolveRequest request, CancellationToken ct);
 }
@@ -87,6 +109,7 @@ public interface IChargingRuntimePort
     ValueTask<IDisposable?> EnterRecoveryControlAsync(CancellationToken ct) => EnterExecutionAsync(false,ct);
     Task<string?> BusyReasonAsync(string vehicleId, string? ownSessionId, CancellationToken ct);
     Task<ChargingRoute?> PlanAsync(string vehicleId, ChargingSite site, CancellationToken ct);
+    Task<ChargingRoute?> PlanWithReturnAsync(string vehicleId, ChargingSite site, string? returnSiteId, CancellationToken ct) => PlanAsync(vehicleId,site,ct);
     Task<string?> ValidateAsync(ChargingSession session, bool requireStopped, CancellationToken ct);
     Task<string?> ValidateRecoveryCloseAsync(ChargingSession session,CancellationToken ct) => ValidateAsync(session,true,ct);
     bool IsAt(string vehicleId, string siteId);
@@ -94,5 +117,6 @@ public interface IChargingRuntimePort
     Task RenewAsync(string sessionId, CancellationToken ct);
     Task ReleaseAsync(string sessionId, CancellationToken ct);
     Task<string> NavigateAsync(string commandId, string vehicleId, IReadOnlyList<string> path, CancellationToken ct);
+    Task CancelNavigationAsync(ChargingSession session, CancellationToken ct) => throw new NotSupportedException("未提供原充电导航定向取消。");
     Task<AgvTransportTaskStatus?> ObserveNavigationAsync(string commandId, string vehicleId, IReadOnlyList<string> path, CancellationToken ct);
 }

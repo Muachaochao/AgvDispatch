@@ -29,5 +29,12 @@
     <None Update="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
     <None Update="config\plc-signals.csv" CopyToOutputDirectory="PreserveNewest" />
     <None Update="config\map-template\**\*" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\tools\SingleCarCharging\dispatch_worker.py" Link="charging-tools\dispatch_worker.py" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\tools\SingleCarCharging\probe_runner.py" Link="charging-tools\probe_runner.py" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\tools\SingleCarCharging\approach_runner.py" Link="charging-tools\approach_runner.py" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\tools\SingleCarCharging\advance_runner.py" Link="charging-tools\advance_runner.py" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\tools\SingleCarCharging\charge_dock_approach.py" Link="charging-tools\charge_dock_approach.py" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\tools\SingleCarCharging\charge_dock_advance.py" Link="charging-tools\charge_dock_advance.py" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\tools\SingleCarCharging\charger_session_runner.py" Link="charging-tools\charger_session_runner.py" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

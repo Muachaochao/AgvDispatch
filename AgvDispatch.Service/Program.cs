@@ -100,11 +100,17 @@ builder.Services.AddSingleton(agvOptions);
 var chargingOptions = new ChargingOptions();
 builder.Configuration.GetSection("Charging").Bind(chargingOptions);
 builder.Services.AddSingleton(chargingOptions);
+var chargingScriptOptions = new ChargingScriptOptions();
+builder.Configuration.GetSection("ChargingScript").Bind(chargingScriptOptions);
+builder.Services.AddSingleton(chargingScriptOptions);
 var chargingRobotOptions = new RobokitChargingRobotControlOptions();
 builder.Configuration.GetSection(RobokitChargingRobotControlOptions.SectionName).Bind(chargingRobotOptions);
 builder.Services.AddSingleton(chargingRobotOptions);
 builder.Services.AddSingleton<IChargingRobotControl, RobokitChargingRobotControl>();
 var chargingPath = Path.Combine(Path.GetDirectoryName(databaseOptions.DatabasePath)!, "charging-sessions.json");
+var chargingDataDirectory = Path.GetDirectoryName(databaseOptions.DatabasePath)!;
+builder.Services.AddSingleton<IChargingWorkflow>(p => new ScriptChargingWorkflow(chargingScriptOptions,
+    chargingOptions,p.GetRequiredService<AgvOptions>(),chargingDataDirectory));
 builder.Services.AddSingleton<IChargingRecoveryEvidence>(new ChargingSessionStore(chargingPath));
 builder.Services.AddSingleton<IChargingBusinessSafety, ChargingBusinessSafety>();
 builder.Services.AddSingleton<IChargingRuntimePort>(p => new ChargingRuntimePort(chargingOptions,
@@ -118,9 +124,11 @@ builder.Services.AddSingleton<IChargingRuntimePort>(p => new ChargingRuntimePort
             : !chargingRobotOptions.RelayControlConfirmed ? "厂家充电继电器及充电桩对接尚未现场核定，自动充电保持排队。" : null,
     businessSafety:p.GetRequiredService<IChargingBusinessSafety>(),
     vehicleBlock:id => p.GetRequiredService<BusinessRunOwnership>() is {Active:true} owner &&
-        string.Equals(owner.Vehicle,id,StringComparison.OrdinalIgnoreCase) ? "当前车辆业务运行尚未安全交接，等待整轮箱体循环结束。" : null));
+        string.Equals(owner.Vehicle,id,StringComparison.OrdinalIgnoreCase) ? "当前车辆业务运行尚未安全交接，等待整轮箱体循环结束。" : null,
+    returnSite:id => p.GetRequiredService<BusinessRunOwnership>().GetChargingReturnSite(id)));
 builder.Services.AddSingleton(p => new ChargingService(chargingOptions, p.GetRequiredService<IChargingRuntimePort>(),
-    p.GetRequiredService<IChargingRobotControl>(), chargingPath, p.GetRequiredService<ILogger<ChargingService>>()));
+    p.GetRequiredService<IChargingRobotControl>(), chargingPath, p.GetRequiredService<ILogger<ChargingService>>(),
+    workflow:p.GetRequiredService<IChargingWorkflow>()));
 builder.Services.AddSingleton<IChargingService>(p => p.GetRequiredService<ChargingService>());
 builder.Services.AddSingleton<IChargingDispatchGuard>(p => p.GetRequiredService<ChargingService>());
 builder.Services.AddHostedService(p => p.GetRequiredService<ChargingService>());

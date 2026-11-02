@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import { useDispatchStore } from './stores/dispatch';
+import { useChargingStore } from './stores/charging';
 import { shortTime } from './dashboard';
 import { chargerMonitoringState, equipmentTone, stationSignalSummary, executionModeState } from './equipment-status';
 import {
@@ -13,6 +14,7 @@ import AppToast from './components/AppToast.vue';
 import AppLoading from './components/AppLoading.vue';
 
 const store = useDispatchStore();
+const charging = useChargingStore();
 const router = useRouter();
 const route = useRoute();
 const connectionOpen = ref(false);
@@ -33,7 +35,7 @@ const clockDate = computed(() => dateFormatter.format(store.now));
 const clockTime = computed(() => timeFormatter.format(store.now));
 const connectionState = computed(() => store.fresh ? '已连接' : store.snapshot ? '断连 / 数据过期' : store.error ? '未连接' : '连接中');
 const lastObservation = computed(() => store.snapshot ? `最近采样 ${shortTime(store.snapshot.receivedAt)}` : '尚无后台观察');
-const chargerMonitor = chargerMonitoringState();
+const chargerMonitor = computed(() => chargerMonitoringState(charging.status, charging.loadError, store.now));
 
 const navigation = [
   { path: '/', label: '调度大屏', icon: IconLayoutDashboard },
@@ -67,11 +69,12 @@ function isActive(path: string) {
 
 onMounted(() => {
   store.startNowTimer();
-  void store.connectBackend();
+  void store.connectBackend().then(() => { if (!store.engineeringSimulationOnly) charging.start(); });
   document.addEventListener('pointerdown', closeMenu);
 });
 onUnmounted(() => {
   store.dispose();
+  charging.stop();
   document.removeEventListener('pointerdown', closeMenu);
 });
 </script>
