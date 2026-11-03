@@ -125,14 +125,17 @@ public sealed partial class NetworkLab : IDisposable
     private string? _feedbackTask;
     private string? _feedbackVehicle;
     private CycleTransportFeedback? _pickupFeedback, _placeFeedback;
+    private readonly Dictionary<string, CycleTransportFeedback> _manualPickups = [];
+    private readonly Dictionary<string, CycleTransportFeedback> _manualPlaces = [];
     public string CallPlanStatus { get { lock (_gate) return _callRun is null ? "未启动循环呼叫" :
         $"循环呼叫 {_callCompleted}/{_callLimit} 次工位任务 · {(_stopCalls ? "停止新增，等待闭合" : "运行中")}"; } }
 
     // Only P signals are generated here. The scheduler still owns every motion and H output.
-    public void ConfigureCalls(string runId, string[] stations, int rounds, bool stop)
+    public void ConfigureCalls(string runId, string[] stations, int rounds, bool stop, bool resumeAfterCharge = false)
     {
         lock (_gate)
         {
+            if (stop && resumeAfterCharge) throw new ArgumentException("停止和充电后恢复不能同时申请。");
             if (stop)
             {
                 if (_callRun is null) return; // A restarted tool has no call producer to stop; never clears P/H.
@@ -147,8 +150,19 @@ public sealed partial class NetworkLab : IDisposable
             {
                 if (!_callStations.SequenceEqual(stations) || _callLimit != rounds * stations.Length)
                     throw new InvalidOperationException("同一运行编号不能修改顺序或轮数。");
+                if (resumeAfterCharge && _stopCalls)
+                {
+                    if (!_automatic || !_communicationHealthy || _recoveryReason is not null || _permit ||
+                        _fleetRun is not null && !_fleetStopped ||
+                        Config.Points.Any(p => p.Owner == "H" && Get(p.Station, p.Signal)) ||
+                        Enumerable.Range(6, 4).Any(s => Get(NetworkLabConfig.Shared, s)))
+                        throw new InvalidOperationException("充电后恢复须先核对自动模式、S7通信及原设备握手闭合；保留原呼叫和计数。");
+                    _stopCalls = false;
+                    Record("充电后恢复循环呼叫", "", "", "", "", $"{runId}；保留已闭合{_callCompleted}/{_callLimit}及原待处理呼叫。");
+                }
                 return;
             }
+            if (resumeAfterCharge) throw new InvalidOperationException("原循环记录不存在或编号不一致，禁止以充电恢复重建模拟循环。");
             if (_fleetRun is not null && !_fleetStopped || _callOutstanding || _callRun is not null && !_stopCalls && _callCompleted < _callLimit)
                 throw new InvalidOperationException("原循环仍未结束。");
             if (!_communicationHealthy || _recoveryReason is not null || _permit ||
@@ -193,14 +207,21 @@ public sealed partial class NetworkLab : IDisposable
         lock (_gate)
         {
             var now = DateTimeOffset.UtcNow;
-            if (feedback.RunId != _callRun || !_callOutstanding || feedback.CallIndex != _callCompleted ||
-                feedback.Station != _callStations[_callCompleted % _callStations.Length] ||
+            if (string.IsNullOrWhiteSpace(feedback.RunId) || feedback.RunId.Length > 160 ||
                 !_automatic || !_communicationHealthy || _recoveryReason is not null ||
                 Get(feedback.Station, 10) || !Get(feedback.Station, 11) || Get(NetworkLabConfig.Shared, 12))
                 throw new InvalidOperationException("动作反馈与当前有效循环/工位/次序不符，或存在恢复/联锁门禁。");
             if (new[] { feedback.TaskId, feedback.VehicleId, feedback.StepId, feedback.VendorTaskId }.Any(s => string.IsNullOrWhiteSpace(s) || s.Length > 160) ||
                 feedback.ObservedAt > now || now - feedback.ObservedAt > TimeSpan.FromSeconds(5) || feedback.Action is not ("Pickup" or "Place"))
                 throw new ArgumentException("动作反馈身份、种类或新鲜度无效。");
+            if (_callRun is null || !_callOutstanding)
+            {
+                ApplyManualTransportFeedback(feedback);
+                return;
+            }
+            if (feedback.RunId != _callRun || feedback.CallIndex != _callCompleted ||
+                feedback.Station != _callStations[_callCompleted % _callStations.Length])
+                throw new InvalidOperationException("动作反馈与当前有效循环/工位/次序不符，或存在恢复/联锁门禁。");
             if (_feedbackTask is not null && (_feedbackTask != feedback.TaskId || _feedbackVehicle != feedback.VehicleId))
                 throw new InvalidOperationException("动作反馈不属于本次呼叫绑定的原任务/车辆。");
             if (feedback.Action == "Pickup")
@@ -235,6 +256,42 @@ public sealed partial class NetworkLab : IDisposable
                 _placeFeedback = feedback;
             }
         }
+    }
+
+    private void ApplyManualTransportFeedback(CycleTransportFeedback feedback)
+    {
+        if (!_states.ContainsKey((feedback.Station, 1)))
+            throw new InvalidOperationException("动作反馈工位不存在。");
+        if (feedback.Action == "Pickup")
+        {
+            if (_manualPickups.TryGetValue(feedback.TaskId, out var previous))
+            {
+                if (previous.Station != feedback.Station || previous.VehicleId != feedback.VehicleId ||
+                    previous.StepId != feedback.StepId || previous.VendorTaskId != feedback.VendorTaskId)
+                    throw new InvalidOperationException("手工呼叫取箱重试与原动作身份不符。");
+                return;
+            }
+            if (_manualPickups.Values.Any(p => p.TaskId == feedback.TaskId && p.Station != feedback.Station) ||
+                Get(feedback.Station, 0) || !Get(feedback.Station, 1) || !Get(feedback.Station, 2) || Get(feedback.Station, 3))
+                throw new InvalidOperationException("取箱反馈要求本轮已受理、已撤呼叫且原工位有箱。");
+            Record("按需动作证据", feedback.Station, "", "", "", JsonSerializer.Serialize(feedback));
+            Set(Find(feedback.Station, 1), false, "按需原取箱动作完成，模拟无箱（非物理证据）");
+            _manualPickups[feedback.TaskId] = feedback;
+            return;
+        }
+        if (!_manualPickups.TryGetValue(feedback.TaskId, out var pickup) ||
+            pickup.Station != feedback.Station || pickup.VehicleId != feedback.VehicleId ||
+            !Get(feedback.Station, 4))
+            throw new InvalidOperationException("放箱反馈须属于本轮已取箱且仍保持返箱责任的原任务。");
+        if (_manualPlaces.TryGetValue(feedback.TaskId, out var placed))
+        {
+            if (placed.StepId != feedback.StepId || placed.VendorTaskId != feedback.VendorTaskId)
+                throw new InvalidOperationException("手工呼叫放箱重试与原动作身份不符。");
+            return;
+        }
+        Record("按需动作证据", feedback.Station, "", "", "", JsonSerializer.Serialize(feedback));
+        Set(Find(feedback.Station, 1), true, "按需原放箱动作完成，模拟有箱（非物理证据）");
+        _manualPlaces[feedback.TaskId] = feedback;
     }
     private bool _permit;
     private long? _dumpSince;
@@ -346,7 +403,7 @@ public sealed partial class NetworkLab : IDisposable
                 throw new InvalidOperationException(_recoveryReason ?? "存在倒料周期、Ready或Done反馈，请先人工闭合后再切入自动模式。");
             // A consumed Ready has no visible high bit in stages12/13. Preserve that reservation across mode changes.
             _automatic = automatic; _dumpSince = null;
-            Record("模式", "", "", "", "", automatic ? "自动PLC握手：呼叫应答撤销、Ready握手及定时Done；箱体仍由人工确认。非真实动作。" : "切回人工：保留所有电平，停止自动反馈。");
+            Record("模式", "", "", "", "", automatic ? "自动PLC握手：呼叫应答撤销、按需/循环原动作箱体反馈、Ready握手及定时Done。仅本机模拟，非真实动作。" : "切回人工：保留所有电平，停止自动反馈。");
         }
     }
 

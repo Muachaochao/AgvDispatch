@@ -46,10 +46,46 @@ internal static class CallPlanTests
         lab.ConfigureCalls(next,["CNC-002","CNC-001"],3,true);
         Check(Value("CNC-002",0),"stop retains raised call");Close("CNC-002");lab.TickAutomatic();
         Check(!Value("CNC-001",0)&&lab.CallPlanStatus.Contains("1/6"),"stop prevents next call after draining");
+        lab.ConfigureCalls(next,["CNC-002","CNC-001"],3,false);lab.TickAutomatic();
+        Check(!Value("CNC-001",0),"ordinary start replay cannot undo the charging pause");
+        Reject(()=>lab.ConfigureCalls(Guid.NewGuid().ToString("N"),["CNC-002","CNC-001"],3,false,true));
+        Reject(()=>lab.ConfigureCalls(next,["CNC-001","CNC-002"],3,false,true));
+        H("CNC-001",2,true);
+        Reject(()=>lab.ConfigureCalls(next,["CNC-002","CNC-001"],3,false,true));
+        H("CNC-001",2,false);
+        lab.ConfigureCalls(next,["CNC-002","CNC-001"],3,false,true);lab.TickAutomatic();
+        Check(Value("CNC-001",0)&&!Value("CNC-002",0)&&lab.CallPlanStatus.Contains("1/6"),
+            "explicit charging resume preserves the completed count and next configured station");
+        lab.ConfigureCalls(next,["CNC-002","CNC-001"],3,true);
+        lab.ConfigureCalls(next,["CNC-002","CNC-001"],3,false,true);
+        lab.ConfigureCalls(next,["CNC-002","CNC-001"],3,false,true);lab.TickAutomatic();
+        Check(Value("CNC-001",0)&&lab.CallPlanStatus.Contains("1/6"),"charging resume retry retains an already raised call without resetting progress");
+        Close("CNC-001");lab.TickAutomatic();Check(Value("CNC-002",0)&&lab.CallPlanStatus.Contains("2/6"),"post-charge feedback retains the original run and call index");
+        lab.ConfigureCalls(next,["CNC-002","CNC-001"],3,true);Close("CNC-002");lab.TickAutomatic();
         var interrupted=Guid.NewGuid().ToString("N");lab.ConfigureCalls(interrupted,["CNC-001","CNC-002"],2,false);lab.TickAutomatic();
         lab.UpdateCommunication(false);lab.UpdateCommunication(true);lab.TickAutomatic();
         Reject(()=>lab.ApplyTransportFeedback(new(interrupted,0,"CNC-001","t","v","s","vendor","Pickup",DateTimeOffset.UtcNow)));
+        Reject(()=>lab.ConfigureCalls(interrupted,["CNC-001","CNC-002"],2,false,true));
         Check(Value("CNC-001",0)&&!Value("CNC-002",0)&&lab.AutomaticStatus.Contains("暂停"),"reconnection never resumes an interrupted call plan");
+        using var manual = new NetworkLab(NetworkLabConfig.CreateDefault(), Path.Combine(root,"manual-direct.jsonl"));
+        manual.SetAutomatic(true);
+        manual.ManualSet("CNC-001",0,true);
+        var manualAck=manual.Config.Points.Single(p=>p.Station=="CNC-001"&&p.Signal==2);
+        Check(manual.WriteHost(manualAck.Db,manualAck.Byte,manualAck.Bit,[1],true,"test"),"manual call ack");
+        manual.TickAutomatic();
+        Check(!manual.Snapshot("CNC-001").Single(p=>p.Mapping.Signal==0).Value&&manual.Snapshot("CNC-001").Single(p=>p.Mapping.Signal==1).Value,
+            "manual call clears acknowledgement without inventing box pickup");
+        var manualRun=Guid.NewGuid().ToString("N");
+        var manualPickup=new CycleTransportFeedback(manualRun,0,"CNC-001","manual-task","AGV-01","pickup-step","pickup-vendor","Pickup",DateTimeOffset.UtcNow);
+        manual.ApplyTransportFeedback(manualPickup);manual.ApplyTransportFeedback(manualPickup);
+        Check(!manual.Snapshot("CNC-001").Single(p=>p.Mapping.Signal==1).Value,
+            "manual demand accepts idempotent pickup feedback without a machine-generated call plan");
+        var emptyResponsibility=manual.Config.Points.Single(p=>p.Station=="CNC-001"&&p.Signal==4);
+        Check(manual.WriteHost(emptyResponsibility.Db,emptyResponsibility.Byte,emptyResponsibility.Bit,[1],true,"test"),"return responsibility");
+        var manualPlace=new CycleTransportFeedback(manualRun,0,"CNC-001","manual-task","AGV-01","place-step","place-vendor","Place",DateTimeOffset.UtcNow);
+        manual.ApplyTransportFeedback(manualPlace);manual.ApplyTransportFeedback(manualPlace);
+        Check(manual.Snapshot("CNC-001").Single(p=>p.Mapping.Signal==1).Value,
+            "manual demand accepts idempotent place feedback after return responsibility");
         var configured = NetworkLabConfig.CreateDefault();
         var pattern = configured.Points.Where(p => p.Station == "CNC-001").Select(p => p.Copy()).ToArray();
         configured.Points.RemoveAll(p => p.Station != NetworkLabConfig.Shared);

@@ -30,7 +30,10 @@ internal static class FeedbackTests
             Check(BusinessRunPort.SelectFeedbackStep(run, detail with {
                 Task = detail.Task with { Stage = stage, VehicleId = null }, Steps = unassignedSteps }) is null);
         Reject(() => BusinessRunPort.SelectFeedbackStep(run, detail with { Task = detail.Task with { VehicleId = null } }));
-        Check(BusinessRunPort.SelectFeedbackStep(run with { Plan = run.Plan with { Mode = "Demand" } }, detail) is null);
+        var demand = run with { Plan = run.Plan with { Mode = "Demand" } };
+        Check(BusinessRunPort.SelectFeedbackStep(demand, detail)?.StepId == "step-0");
+        var outOfOrder = detail with { Task = detail.Task with { StationId = "CNC-002" } };
+        Check(BusinessRunPort.SelectFeedbackStep(demand, outOfOrder)?.StepId == "step-0");
         Check(BusinessRunPort.SelectFeedbackStep(run with { Stage = "Hold" }, detail) is null);
         foreach (var state in new[] { DispatchTaskStage.Completed, DispatchTaskStage.Cancelled, DispatchTaskStage.CancellationPending, DispatchTaskStage.CancellationReview, DispatchTaskStage.Faulted })
             Check(BusinessRunPort.SelectFeedbackStep(run, detail with { Task = detail.Task with { Stage = state } }) is null);

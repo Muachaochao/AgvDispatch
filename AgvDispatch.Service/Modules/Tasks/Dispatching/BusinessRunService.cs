@@ -210,7 +210,12 @@ public sealed class BusinessRunService(IBusinessRunPort port, BusinessRunOwnersh
         await mutex.WaitAsync(ct);
         try
         {
-            if (run is null || run.Stage is "Completed" or "Hold") return;
+            if (run is null || run.Stage == "Completed")
+            {
+                await port.SimulateDirectFeedbackAsync(ct);
+                return;
+            }
+            if (run.Stage == "Hold") return;
             var o = await port.ObserveAsync(run, ct);
             if (o.Block is { } block) { ownership.Returning = true; Move("Hold", block); return; }
             if (o.MapId != run.MapId || o.MapVersionId != run.MapVersionId || o.ParameterRevision != run.ParameterRevision)
@@ -224,7 +229,7 @@ public sealed class BusinessRunService(IBusinessRunPort port, BusinessRunOwnersh
             {
                 if (o.CurrentTaskState is "Faulted" or "Cancelled" or "CancellationReview" || o.CurrentTaskState is null)
                 { Move("Hold", "原业务任务异常或未找到，不计完成也不启动下一工位。"); return; }
-                if (run.Plan.Mode == "Cycle") await port.SimulatorFeedbackAsync(run, ct);
+                await port.SimulatorFeedbackAsync(run, ct);
                 if (o.CurrentTaskState != "Completed" || !o.AllClosed || o.AnyActiveTasks || !o.Stopped) return;
                 run = run with { CompletedJobs = run.CompletedJobs + 1, TaskId = null, PendingRequestId = null };
                 Move("Waiting", "原工位任务及握手已闭合，检查下一呼叫。");

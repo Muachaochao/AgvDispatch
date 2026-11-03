@@ -27,7 +27,8 @@ demand.Port.Calls = ["CNC-001"];
 await demand.Service.TickAsync(default);
 Check((await Row(demand.Service)).Stage == "Executing" && demand.Port.CreatedStations.SequenceEqual(new[]{"CNC-001"}), "first call creates exactly one business task");
 for (var i = 0; i < 3; i++) await demand.Service.TickAsync(default);
-Check(demand.Port.Creates == 1, "running task never duplicated");
+Check(demand.Port.Creates == 1 && demand.Port.ActiveFeedbackCalls >= 3,
+    "running demand task never duplicates and requests automatic box feedback");
 demand.Port.TaskState = "Completed"; demand.Port.Closed = false; demand.Port.Active = false;
 await demand.Service.TickAsync(default);
 Check((await Row(demand.Service)).CompletedJobs == 0, "task Completed with open responsibility is not a completed job");
@@ -419,7 +420,7 @@ sealed class Port : IBusinessRunPort
 {
     public string[] Calls=[];public bool Closed=true,Active,Stopped=true,Returned,ThrowReturn;
     public string Site="LM7",Version="v1";public string? TaskState,Block;
-    public int Creates,Returns,Releases,SimulatorStarts,SimulatorStops,Validations;public List<string> CreatedStations=[];
+    public int Creates,Returns,Releases,SimulatorStarts,SimulatorStops,Validations,ActiveFeedbackCalls,DirectFeedbackCalls;public List<string> CreatedStations=[];
     public bool ThrowSimulatorStart; public string? ValidationBlock, LastSimulatorStartStage, LastSimulatorRunId;
     public Action? AfterValidate;
     public Task ValidateAsync(BusinessRunStart plan,CancellationToken ct)
@@ -431,6 +432,8 @@ sealed class Port : IBusinessRunPort
     {Returns++;if(ThrowReturn)throw new IOException("response lost");return Task.FromResult("vendor-return");}
     public Task SimulatorAsync(BusinessRunRecord run,bool stop,CancellationToken ct)
     {if(stop)SimulatorStops++;else{SimulatorStarts++;LastSimulatorStartStage=run.Stage;LastSimulatorRunId=run.RunId;if(ThrowSimulatorStart)throw new IOException("simulator response lost");}return Task.CompletedTask;}
+    public Task SimulatorFeedbackAsync(BusinessRunRecord run,CancellationToken ct){ActiveFeedbackCalls++;return Task.CompletedTask;}
+    public Task SimulateDirectFeedbackAsync(CancellationToken ct){DirectFeedbackCalls++;return Task.CompletedTask;}
     public Task ReleaseReturnAsync(BusinessRunRecord run,CancellationToken ct){Releases++;return Task.CompletedTask;}
 }
 

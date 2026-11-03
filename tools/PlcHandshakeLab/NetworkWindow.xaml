@@ -15,7 +15,7 @@
   <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
   <DockPanel Margin="0,0,0,8"><TextBlock Text="PLC 人工联调台" FontSize="23" FontWeight="Bold"/><TextBlock DockPanel.Dock="Right" Text="独立模拟PLC · H由调度写入 · 不下发AGV指令" HorizontalAlignment="Right" VerticalAlignment="Center" Foreground="#147F79"/></DockPanel>
   <Border Grid.Row="1" Background="White" Padding="12" CornerRadius="6" Margin="0,0,0,8"><StackPanel>
-   <WrapPanel><Button x:Name="StartButton" Content="启动 S7 服务" Click="Start_Click" Background="#147F79" Foreground="White"/><Button x:Name="StopButton" Content="停止服务" Click="Stop_Click" IsEnabled="False"/><TextBlock Text="PLC反馈模式" VerticalAlignment="Center" Margin="12,0,6,0"/><ComboBox x:Name="AutoMode" SelectedIndex="0" Width="235" SelectionChanged="AutoMode_Changed"><ComboBoxItem Content="人工控制全部P点"/><ComboBoxItem Content="自动握手（箱体仍人工）"/></ComboBox><TextBlock x:Name="ConnectionStatus" Text="未启动 · 配置地址后由调度主动连接" VerticalAlignment="Center" Margin="16,0,0,0"/></WrapPanel>
+   <WrapPanel><Button x:Name="StartButton" Content="启动 S7 服务" Click="Start_Click" Background="#147F79" Foreground="White"/><Button x:Name="StopButton" Content="停止服务" Click="Stop_Click" IsEnabled="False"/><TextBlock Text="PLC反馈模式" VerticalAlignment="Center" Margin="12,0,6,0"/><ComboBox x:Name="AutoMode" SelectedIndex="0" Width="255" SelectionChanged="AutoMode_Changed"><ComboBoxItem Content="人工控制全部P点"/><ComboBoxItem Content="自动闭环（仅人工置呼叫）"/></ComboBox><TextBlock x:Name="ConnectionStatus" Text="未启动 · 配置地址后由调度主动连接" VerticalAlignment="Center" Margin="16,0,0,0"/></WrapPanel>
    <Border x:Name="HealthBanner" Background="MistyRose" Padding="8" Margin="0,8,0,0"><TextBlock x:Name="HealthText" FontWeight="Bold" Text="调度未连接" TextWrapping="Wrap"/></Border>
    <TextBlock x:Name="AutoState" TextWrapping="Wrap" Margin="0,6,0,0"/>
    <TextBlock x:Name="Message" Text="默认只监听本机127.0.0.1:10200。厂家联调请在“连接与点表”设置本机网卡IP和允许的调度IP。" TextWrapping="Wrap" Margin="0,8,0,0" Foreground="#886031"/>
@@ -60,7 +60,7 @@
        <Button x:Name="StageTestButton" Content="保存本阶段测试结果" Click="StageTest_Click" Margin="0,8,0,0"/>
       </StackPanel></Expander>
       <Expander Header="操作说明与模拟周期恢复" Margin="0,10,0,0"><StackPanel>
-       <TextBlock Text="人工选阶段仅记录，不证明到站、取放或出区。通过需10点交换有效、电平符合，并核实实际条件。自动模式只处理呼叫、Ready及定时Done，箱体始终由人工确认。" TextWrapping="Wrap" Margin="0,6"/>
+   <TextBlock Text="人工选阶段仅记录，不证明到站、取放或出区。通过需10点交换有效、电平符合，并核实实际条件。自动闭环模式下可只人工置工位呼叫；原任务、车辆到站和原车端取放动作通过验证后，模拟器自动产生箱体与倒料反馈。" TextWrapping="Wrap" Margin="0,6"/>
        <TextBlock Text="28阶段使用plc-28-stage-v2；25/26/27阶段依次清取箱通知、放箱通知、返箱责任。旧任务不能自动迁入。恢复前先核对实际设备与调度原任务，在观察备注中填写依据。" TextWrapping="Wrap" Foreground="#886031"/>
        <Button x:Name="ConfirmClosureButton" Content="确认模拟周期闭合" Click="ConfirmClosure_Click" Margin="0,10,0,0"/>
       </StackPanel></Expander>

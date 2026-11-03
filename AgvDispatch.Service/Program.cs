@@ -295,6 +295,7 @@ builder.Services.AddSingleton<FleetTestOwnership>();
 builder.Services.AddSingleton<IBusinessRunInterlock,CommissioningInterlock>();
 builder.Services.AddSingleton<IBusinessRunPort>(p => new BusinessRunPort(
     p.GetRequiredService<IManualTaskCreationService>(), p.GetRequiredService<ITaskCenterQueryService>(),
+    p.GetRequiredService<IActiveTaskLookup>(),
     p.GetRequiredService<IPlcSignalCache>(), p.GetRequiredService<IAgvStateCache>(), p.GetRequiredService<IActiveMapRuntime>(),
     p.GetRequiredService<IMapExecutionGate>(), taskParameterRuntime, taskCreationOptions, dispatchOrchestratorOptions,
     p.GetRequiredService<DispatchTaskStepOptions>(), plcCycleTestOptions, p.GetRequiredService<IAgvGateway>(),

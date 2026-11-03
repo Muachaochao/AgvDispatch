@@ -12,10 +12,28 @@ public sealed partial class BusinessRunPort
     // H notifications cannot be used as its trigger: they themselves wait for this P input.
     public async Task SimulatorFeedbackAsync(BusinessRunRecord run, CancellationToken ct)
     {
-        if (!simulatorOnly || run.Plan.Mode != "Cycle" || run.Stage != "Executing" || run.TaskId is null) return;
+        if (!simulatorOnly || run.Stage != "Executing" || run.TaskId is null) return;
         var detail = await tasks.GetDetailAsync(run.TaskId, ct)
             ?? throw new InvalidOperationException("模拟箱体反馈找不到原业务任务。");
         await ApplySimulatorFeedbackAsync(run,detail,"cycle-feedback",ct);
+    }
+
+    public async Task SimulateDirectFeedbackAsync(CancellationToken ct)
+    {
+        if (!simulatorOnly) return;
+        foreach (var active in await activeTasks.GetActiveTasksAsync(ct))
+        {
+            if (active.VehicleId is not { Length: > 0 } vehicleId ||
+                active.Stage is DispatchTaskStage.Completed or DispatchTaskStage.Cancelled or DispatchTaskStage.CancellationReview)
+                continue;
+            var detail = await tasks.GetDetailAsync(new TaskDetailRequest(active.TaskId, false), ct);
+            if (detail is null) continue;
+            var run = new BusinessRunRecord("manual-" + active.TaskId,
+                new("manual-" + active.TaskId, "Demand", vehicleId, [active.StationId], 1, "", true),
+                map.Current?.MapId ?? "", map.Current?.VersionId ?? "", parameters.Revision,
+                "loopback-plc-simulator", "Executing", "", 0, active.TaskId, null, null, false, DateTimeOffset.UtcNow);
+            await ApplySimulatorFeedbackAsync(run, detail, "cycle-feedback", ct);
+        }
     }
     internal async Task ApplySimulatorFeedbackAsync(BusinessRunRecord run,TaskCenterDetail detail,string endpoint,CancellationToken ct)
     {
@@ -58,9 +76,10 @@ public sealed partial class BusinessRunPort
 
     public static TaskStepDetail? SelectFeedbackStep(BusinessRunRecord run, TaskCenterDetail detail)
     {
-        if (run.Plan.Mode != "Cycle" || run.Stage != "Executing" || run.TaskId is null) return null;
+        if (run.Stage != "Executing" || run.TaskId is null) return null;
         if (detail.Task.TaskId != run.TaskId || detail.Task.VehicleId is { } assigned && assigned != run.Plan.VehicleId ||
-            detail.Task.StationId != run.Plan.Stations[run.CompletedJobs % run.Plan.Stations.Length])
+            run.Plan.Mode == "Cycle" && detail.Task.StationId != run.Plan.Stations[run.CompletedJobs % run.Plan.Stations.Length] ||
+            run.Plan.Mode == "Demand" && !run.Plan.Stations.Contains(detail.Task.StationId, StringComparer.Ordinal))
             throw new InvalidOperationException("模拟箱体反馈与本轮任务/原车/工位身份不符。");
         if (detail.Task.Stage is DispatchTaskStage.Completed or DispatchTaskStage.Cancelled or DispatchTaskStage.Faulted or
             DispatchTaskStage.CancellationPending or DispatchTaskStage.CancellationReview)

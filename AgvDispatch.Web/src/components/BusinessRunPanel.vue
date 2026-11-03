@@ -118,7 +118,7 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);});
   <section class="business-run">
     <h3>业务运行与收尾</h3>
     <template v-if="!statusOnly">
-    <p>{{mode==='Demand'?'按真实PLC呼叫接续工位，不主动产生呼叫。':'由本机PLC人工联调台按工位顺序产生模拟呼叫；一轮包含每个所选工位各一次任务。'}}</p>
+    <p>{{mode==='Demand'?'按PLC呼叫接续工位，不主动产生呼叫；使用127.0.0.1模拟PLC联调台时，箱体和倒料反馈由工具按原任务及车辆动作自动模拟，真实PLC环境不会模拟写入。':'由本机PLC人工联调台按工位顺序产生模拟呼叫；一轮包含每个所选工位各一次任务。'}}</p>
     <div class="fields">
       <label>本次运行车辆<select v-model="vehicle" :disabled="locked"><option value="" disabled>请选择车辆</option><option v-for="v in choices.vehicles" :key="v.vehicleId" :value="v.vehicleId">{{v.label}}</option></select><small>从所选工位车辆池的共同允许车辆中选择，共 {{choices.vehicles.length}} 台。</small></label>
       <label v-if="mode==='Cycle'">测试轮数<input v-model.number="rounds" type="number" min="1" max="100" :disabled="locked"/></label>

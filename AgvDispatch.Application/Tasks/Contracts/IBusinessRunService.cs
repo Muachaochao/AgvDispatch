@@ -28,6 +28,9 @@ public interface IBusinessRunPort
     Task<string> ReturnAsync(BusinessRunRecord run, CancellationToken ct);
     Task SimulatorAsync(BusinessRunRecord run, bool stop, CancellationToken ct);
     Task SimulatorFeedbackAsync(BusinessRunRecord run, CancellationToken ct) => Task.CompletedTask;
+    // Loopback-PLC test sessions may accept ordinary PLC calls while the
+    // simulator derives box feedback from the original task and AGV actions.
+    Task SimulateDirectFeedbackAsync(CancellationToken ct) => Task.CompletedTask;
     Task ReleaseReturnAsync(BusinessRunRecord run, CancellationToken ct);
     Task<BusinessRunRecord> ReconcileAsync(BusinessRunRecord run, CancellationToken ct) => Task.FromResult(run);
     Task<BusinessRunRecord> RetireUnacceptedAsync(BusinessRunRecord run, CancellationToken ct) => Task.FromResult(run);

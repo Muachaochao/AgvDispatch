@@ -8,6 +8,7 @@ using AgvDispatch.Domain.Tasks;
 namespace AgvDispatch.Service;
 
 public sealed partial class BusinessRunPort(IManualTaskCreationService manual, ITaskCenterQueryService tasks,
+    IActiveTaskLookup activeTasks,
     IPlcSignalCache signals, IAgvStateCache vehicles, IActiveMapRuntime map, IMapExecutionGate gate,
     TaskParameterRuntime parameters, DispatchTaskCreationOptions creation, DispatchOrchestratorOptions dispatch,
     DispatchTaskStepOptions steps, PlcCycleTestOptions isolated, IAgvGateway gateway,
