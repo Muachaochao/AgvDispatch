@@ -13,7 +13,8 @@ internal static class WebLocalLauncher
     private sealed record OwnedProcess(int Id,long StartedUtcTicks,string Path);
     private sealed record Session(string ReleaseId,OwnedProcess Service,OwnedProcess Web,string NavigationTestVehicle="",
         string PlcCycleTestVehicle="",string PlcCycleTestStation="",string BusinessRunVehicle="",bool ForkTest=false,
-        bool AutoNavigationDetour=false,string FleetVehicles="",int FleetMaxConcurrentTasks=0);
+        bool AutoNavigationDetour=false,string FleetVehicles="",int FleetMaxConcurrentTasks=0,
+        bool ProductionDispatch=false,int ProductionMaxConcurrentTasks=0);
     public static async Task<int> RunAsync(string[] args)
     {
         var created=new List<Process>();
@@ -22,7 +23,7 @@ internal static class WebLocalLauncher
             var index=Array.IndexOf(args,"--bundle-root");
             if(index<0||index+1>=args.Length)throw new ArgumentException("Missing --bundle-root.");
             var root=System.IO.Path.GetFullPath(args[index+1]);
-            var mode=WebLocalLaunchMode.Parse(args);
+            var mode=WebLocalLaunchMode.Parse(WebDailyLaunchSettings.Apply(args));
             using var manifest=JsonDocument.Parse(File.ReadAllText(System.IO.Path.Combine(root,"release-manifest.json")));
             if(manifest.RootElement.GetProperty("schema").GetString()!="agv-commissioning-release")throw new InvalidDataException("Unsupported release manifest.");
             var release=manifest.RootElement.GetProperty("releaseId").GetString()!;
@@ -53,6 +54,7 @@ internal static class WebLocalLauncher
                     Console.WriteLine("Stopped only the recorded processes for this release. Browser windows are unchanged.");return 0;
                 }
                 if(serviceAlive&&(session!.NavigationTestVehicle!=mode.NavigationVehicle||session.PlcCycleTestVehicle!=mode.PlcCycleVehicle||session.PlcCycleTestStation!=mode.PlcCycleStation||session.BusinessRunVehicle!=mode.BusinessVehicle||session.ForkTest!=mode.ForkTest||session.FleetVehicles!=string.Join(",",mode.FleetVehicles)||
+                    session.ProductionDispatch!=mode.ProductionDispatch||session.ProductionMaxConcurrentTasks!=mode.ProductionMaxConcurrentTasks||
                     session.AutoNavigationDetour!=mode.AutoNavigationDetour||
                     (session.FleetMaxConcurrentTasks>0?session.FleetMaxConcurrentTasks:string.IsNullOrEmpty(session.FleetVehicles)?0:session.FleetVehicles.Split(',').Length)!=mode.FleetMaxConcurrentTasks))
                     throw new InvalidOperationException("Running session uses another test mode/vehicle/station. Stop this bundle before changing mode.");
@@ -66,8 +68,10 @@ internal static class WebLocalLauncher
                     var serviceArgs=mode.ServiceArguments(pipe);
                     if(dailyData is not null) serviceArgs=[..serviceArgs,$"--Database:Path={System.IO.Path.Combine(dailyData,"后台5199","agv-dispatch.db")}"];
                     var service=Start(servicePath,serviceArgs);created.Add(service);
-                    var web=Start(webPath,[$"--Web:Port={port}",$"--Web:PipeName={pipe}",$"--Web:EnableTaskSubmission={mode.IsBusiness}","--Web:EnableRecoveryActions=true","--Web:EnableTaskCancellation=true",$"--Web:ProjectStorePath={storePath}",$"--Web:StaticPath={System.IO.Path.Combine(root,"Web","wwwroot")}"]);
-                    created.Add(web);session=new(release,Describe(service,servicePath),Describe(web,webPath),mode.NavigationVehicle,mode.PlcCycleVehicle,mode.PlcCycleStation,mode.BusinessVehicle,mode.ForkTest,mode.AutoNavigationDetour,string.Join(",",mode.FleetVehicles),mode.FleetMaxConcurrentTasks);
+                    // Applying an engineering plan only persists validated task parameters.
+                    // Dispatch, AGV commands and PLC writes remain independently gated.
+                    var web=Start(webPath,[$"--Web:Port={port}",$"--Web:PipeName={pipe}",$"--Web:EnableTaskSubmission={mode.IsBusiness}","--Web:EnableRecoveryActions=true","--Web:EnableTaskCancellation=true","--Web:EnableEngineeringRuntimeApply=true",$"--Web:ProjectStorePath={storePath}",$"--Web:StaticPath={System.IO.Path.Combine(root,"Web","wwwroot")}"]);
+                    created.Add(web);session=new(release,Describe(service,servicePath),Describe(web,webPath),mode.NavigationVehicle,mode.PlcCycleVehicle,mode.PlcCycleStation,mode.BusinessVehicle,mode.ForkTest,mode.AutoNavigationDetour,string.Join(",",mode.FleetVehicles),mode.FleetMaxConcurrentTasks,mode.ProductionDispatch,mode.ProductionMaxConcurrentTasks);
                     var pending=statePath+".tmp";File.WriteAllText(pending,JsonSerializer.Serialize(session,new JsonSerializerOptions{WriteIndented=true}));File.Move(pending,statePath,true);
                 }
                 using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(60));

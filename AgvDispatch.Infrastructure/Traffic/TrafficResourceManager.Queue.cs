@@ -10,29 +10,42 @@ public sealed partial class TrafficResourceManager
         string resourceId, int freeSlots, CancellationToken ct)
     {
         var now = (clock ?? TimeProvider.System).GetUtcNow().UtcDateTime;
-        bool Fresh(TrafficRequestEntity row) => row.QueuePriority is { } priority && double.IsFinite(priority) &&
+        bool Fresh(TrafficRequestEntity row) => (row.QueuePriority is null || double.IsFinite(row.QueuePriority.Value)) &&
             row.QueueObservedAtUtc is { } observed && observed <= now && now - observed <= TimeSpan.FromSeconds(10);
         if (current is null || !Fresh(current)) return null;
         var cutoff = now.AddSeconds(-10);
         var requests = (await database.Queryable<TrafficRequestEntity>()
-            .Where(r => r.State == "Waiting" && r.TaskId != taskId && r.QueuePriority != null &&
+            .Where(r => r.State == "Waiting" && r.TaskId != taskId &&
                 r.QueueObservedAtUtc >= cutoff && r.QueueObservedAtUtc <= now)
-            .ToListAsync(ct)).Where(r => Fresh(r) && (r.WaitingCategory is null or "Route") &&
-                r.MapId == current.MapId && r.MapVersionId == current.MapVersionId &&
+            .ToListAsync(ct)).Where(r => Fresh(r) && (r.WaitingCategory is null or "Route" or "Equipment") &&
+                (current.MapId is null || r.MapId == current.MapId && r.MapVersionId == current.MapVersionId) &&
                 Resources(r).Contains(resourceId, StringComparer.OrdinalIgnoreCase)).ToArray();
         if (requests.Length == 0) return null;
         var taskIds = requests.Select(r => r.TaskId).Append(taskId).Distinct().ToArray();
         var stepIds = requests.Select(r => r.StepId).ToArray();
         var tasks = (await database.Queryable<DispatchTaskEntity>().Where(t => taskIds.Contains(t.TaskId))
             .ToListAsync(ct)).ToDictionary(t => t.TaskId, StringComparer.OrdinalIgnoreCase);
-        if (!tasks.TryGetValue(taskId, out var currentTask)) return null;
         var steps = (await database.Queryable<DispatchTaskStepEntity>().Where(s => stepIds.Contains(s.StepId))
             .ToListAsync(ct)).ToDictionary(s => s.StepId, StringComparer.OrdinalIgnoreCase);
         var leases = await database.Queryable<TrafficResourceLeaseEntity>().ToListAsync(ct);
-        bool Ahead(TrafficRequestEntity row, DispatchTaskEntity task) =>
-            row.QueuePriority > current.QueuePriority || row.QueuePriority == current.QueuePriority &&
-                (task.CreatedAt < currentTask.CreatedAt || task.CreatedAt == currentTask.CreatedAt &&
-                    StringComparer.Ordinal.Compare(task.TaskId, taskId) < 0);
+        // System movements (charging and returning to standby) have no DispatchTask.
+        // They participate at ordinary priority zero, FIFO by their durable request,
+        // instead of bypassing a valid business queue with a null priority.
+        double Priority(TrafficRequestEntity row) => tasks.TryGetValue(row.TaskId, out var task)
+            ? row.QueuePriority ?? task.Priority : 0;
+        DateTime CalledAt(TrafficRequestEntity row) => tasks.TryGetValue(row.TaskId, out var task)
+            ? task.CreatedAt : row.RequestedAt;
+        bool ValidOwner(TrafficRequestEntity row) => tasks.TryGetValue(row.TaskId, out var task)
+            ? Enum.IsDefined(typeof(DispatchTaskStage), task.Stage) && task.Stage is >= 0 and < 90 &&
+                (string.IsNullOrWhiteSpace(task.VehicleId) || string.Equals(task.VehicleId, row.VehicleId, StringComparison.OrdinalIgnoreCase)) &&
+                steps.TryGetValue(row.StepId, out var step) && step.TaskId == row.TaskId && step.Status is 0 or 10 or 60
+            // A missing business task with an explicit optimizer score must not
+            // become a new system owner. Only ordinary system requests lack it.
+            : row.QueuePriority is null;
+        bool Ahead(TrafficRequestEntity row) =>
+            Priority(row) > Priority(current) || Priority(row) == Priority(current) &&
+                (CalledAt(row) < CalledAt(current) || CalledAt(row) == CalledAt(current) &&
+                    StringComparer.Ordinal.Compare(row.TaskId, taskId) < 0);
         // Do not reserve a free resource for a predecessor that is still blocked
         // by a different full resource: acquisition remains all-or-nothing.
         bool CanAcquireAll(TrafficRequestEntity row) => Resources(row).All(id =>
@@ -40,14 +53,11 @@ public sealed partial class TrafficResourceManager
             leases.Where(l => string.Equals(l.ResourceId, id, StringComparison.OrdinalIgnoreCase) &&
                 !string.Equals(l.TaskId, row.TaskId, StringComparison.OrdinalIgnoreCase))
                 .Select(l => l.TaskId).Distinct(StringComparer.OrdinalIgnoreCase).Count() < definition.Capacity);
-        var ahead = requests.Where(r => tasks.TryGetValue(r.TaskId, out var task) &&
-                Enum.IsDefined(typeof(DispatchTaskStage), task.Stage) && task.Stage is >= 0 and < 90 &&
-                (string.IsNullOrWhiteSpace(task.VehicleId) || string.Equals(task.VehicleId, r.VehicleId, StringComparison.OrdinalIgnoreCase)) &&
-                steps.TryGetValue(r.StepId, out var step) && step.TaskId == r.TaskId && step.Status is 0 or 10 or 60 &&
+        var ahead = requests.Where(r => ValidOwner(r) &&
                 !leases.Any(l => string.Equals(l.ResourceId, resourceId, StringComparison.OrdinalIgnoreCase) &&
                     string.Equals(l.TaskId, r.TaskId, StringComparison.OrdinalIgnoreCase)) &&
-                Ahead(r, task) && CanAcquireAll(r))
-            .OrderByDescending(r => r.QueuePriority).ThenBy(r => tasks[r.TaskId].CreatedAt)
+                Ahead(r) && CanAcquireAll(r))
+            .OrderByDescending(Priority).ThenBy(CalledAt)
             .ThenBy(r => r.TaskId, StringComparer.Ordinal).DistinctBy(r => r.TaskId, StringComparer.OrdinalIgnoreCase).ToArray();
         return ahead.Length >= freeSlots ? ahead[0].TaskId : null;
     }

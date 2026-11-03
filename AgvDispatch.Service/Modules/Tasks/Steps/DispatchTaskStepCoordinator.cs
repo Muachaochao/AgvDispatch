@@ -1,4 +1,5 @@
 using AgvDispatch.Application.Abstractions;
+using AgvDispatch.Domain.Agvs;
 using AgvDispatch.Domain.Devices;
 using AgvDispatch.Domain.Tasks;
 
@@ -19,8 +20,9 @@ public sealed class DispatchTaskStepCoordinator(
     IExecutionEvidenceJournal? journal = null,
     IAgvStateCache? vehicleStates = null, IActiveMapRuntime? activeMap = null, PersistentHandshakeExecutor? handshake = null,
     IDispatchPreSendSafetyService? preSendSafety = null, DispatchTrafficReservationService? trafficLayer = null,
-    IDispatchPipelineMonitor? pipeline = null) : IsolatedBackgroundService
+    IDispatchPipelineMonitor? pipeline = null, DispatchOptimizationService? optimization = null, MapOptions? mapOptions = null) : IsolatedBackgroundService
 {
+    private readonly DispatchTrafficReservationService _trafficLayer = trafficLayer ?? new(trafficResources, pipeline, tasks, optimization);
     private readonly Dictionary<string, string> _conditionFingerprints = new(StringComparer.Ordinal);
     private readonly HashSet<string> _observedSteps = new(StringComparer.Ordinal);
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -101,7 +103,32 @@ public sealed class DispatchTaskStepCoordinator(
                     }
                 }
             }
-        var readySteps = await tasks.GetReadyStepsAsync(options.BatchSize, cancellationToken);
+        var priorities = await _trafficLayer.PrioritiesAsync(cancellationToken);
+        var readySteps = (await tasks.GetReadyStepsAsync(int.MaxValue, cancellationToken))
+            .OrderByDescending(s => priorities.GetValueOrDefault(s.TaskId)?.EffectivePriority ?? double.MinValue)
+            .ThenBy(s => priorities.GetValueOrDefault(s.TaskId)?.CalledAt ?? DateTimeOffset.MaxValue)
+            .ThenBy(s => s.TaskId, StringComparer.Ordinal).ThenBy(s => s.Sequence)
+            .Take(options.BatchSize).ToArray();
+        // Publish every eligible contender before the first grant. Otherwise a low-priority
+        // step polled first could consume a just-freed resource before its peer is observed.
+        foreach (var step in readySteps)
+        {
+            try
+            {
+                if (step.StepType is DispatchTaskStepType.DeliverFullBoxToDumper or
+                    DispatchTaskStepType.EnterDumpingPosition or DispatchTaskStepType.ReturnEmptyBox)
+                    await ObserveTransportAsync(step, cancellationToken);
+                else if (step.StepType == DispatchTaskStepType.WaitForDumperReady && handshake?.Enabled == true)
+                    await handshake.ObserveEquipmentWaitingAsync(step, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+            catch (Exception exception)
+            {
+                // Normal processing below records the original step failure. Observing a
+                // proposal never clears ownership or prepares an external command.
+                logger.LogDebug(exception, "后续步骤路权候选尚未满足条件。StepId={StepId}", step.StepId);
+            }
+        }
         var readyIds = readySteps.Select(s => s.StepId).ToHashSet(StringComparer.Ordinal);
         foreach (var id in _conditionFingerprints.Keys.Where(id => !id.StartsWith("exit:",StringComparison.Ordinal)&&!readyIds.Contains(id)).ToArray()) _conditionFingerprints.Remove(id);
         foreach (var step in readySteps)
@@ -158,6 +185,56 @@ public sealed class DispatchTaskStepCoordinator(
         }
     }
 
+    private async Task ObserveTransportAsync(DispatchTaskStepWorkItem step, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(step.VehicleId)) return;
+        if (handshake?.Enabled == true) await handshake.ValidateTransportAsync(step, ct);
+        var current = activeMap?.Current;
+        if (current is null) return;
+        var pickup = dispatchOptions.GetPickupSite(step.StationId);
+        if (pickup is null) return;
+        if (step.StepType == DispatchTaskStepType.DeliverFullBoxToDumper && dispatchOptions.GetDumperWaitingSites().Count > 1)
+        {
+            if (!VehicleReadyAt(step.VehicleId, pickup, current)) return;
+            if (trafficResources is ITaskWaitingBayAllocator allocator)
+                await TaskWaitingBayRouter.ObserveWaitingAsync(step, pickup, dispatchOptions, current, routePlanner,
+                    trafficResources, allocator, _trafficLayer, ct);
+            return;
+        }
+        var waiting = dispatchOptions.GetDumperWaitingSite()!;
+        if (dispatchOptions.GetDumperWaitingSites().Count > 1 && step.StepType == DispatchTaskStepType.EnterDumpingPosition)
+        {
+            var binding = trafficResources is ITaskWaitingBayAllocator allocator ? await allocator.GetAsync(step.TaskId, ct) : null;
+            if (binding is null || binding.VehicleId != step.VehicleId || binding.MapId != current.MapId || binding.MapVersionId != current.VersionId) return;
+            waiting = binding.WaitingSite;
+        }
+        var route = step.StepType switch
+        {
+            DispatchTaskStepType.DeliverFullBoxToDumper => (pickup, waiting),
+            DispatchTaskStepType.EnterDumpingPosition => (waiting, dispatchOptions.DumperDumpingSite),
+            _ => (dispatchOptions.DumperDumpingSite, pickup)
+        };
+        var unavailable = await trafficResources.GetUnavailableResourceIdsAsync(step.TaskId, ct);
+        var plan = routePlanner.Plan(route.Item1, route.Item2, unavailable) ??
+            routePlanner.Plan(route.Item1, route.Item2, new HashSet<string>());
+        if (plan is not { Nodes.Count: >= 2 } || !VehicleReadyAt(step.VehicleId, route.Item1, current)) return;
+        await _trafficLayer.ObserveAsync(new(step.StepId, step.TaskId, step.VehicleId, route.Item1, route.Item2,
+            plan.EdgeIds, plan.ResourceIds, true, "后续运输候选已核对，按原任务有效优先级等待整组路权。")
+            { MapId = current.MapId, MapVersionId = current.VersionId }, ct);
+    }
+
+    private bool VehicleReadyAt(string vehicleId, string source, ActiveMapRuntimeSnapshot current)
+    {
+        if (vehicleStates is null) return true; // Optional compatibility adapter; runtime always provides telemetry.
+        if (!vehicleStates.TryGet(vehicleId, out var vehicle) || vehicle.Connection != ConnectionState.Online ||
+            vehicle.Quality != SignalQuality.Good || vehicle.EmergencyStopped != false || vehicle.Blocked != false ||
+            AgvObstaclePolicy.IsBlocked(vehicle) || AgvObstaclePolicy.HasBlockingAlarm(vehicle) ||
+            vehicle.LastSuccessfulPollAt is not { } observed || observed > DateTimeOffset.UtcNow.AddSeconds(1) ||
+            DateTimeOffset.UtcNow - observed > TimeSpan.FromSeconds(mapOptions?.PositionStaleSeconds ?? 5) || vehicle.Tasks.Any(t => t.Status is 1 or 2 or 3)) return false;
+        return current.Definition.Nodes.Any(n => n.Enabled && (n.Id == source || n.AgvSiteId == source) &&
+            (n.Id == vehicle.CurrentStation || n.AgvSiteId == vehicle.CurrentStation));
+    }
+
     private Task ProcessStepAsync(
         DispatchTaskStepWorkItem step,
         CancellationToken cancellationToken) => step.StepType switch
@@ -196,7 +273,7 @@ public sealed class DispatchTaskStepCoordinator(
             if (step.StepType == DispatchTaskStepType.DeliverFullBoxToDumper)
             {
                 var chosen = await TaskWaitingBayRouter.AcquireAsync(step, pickupSite, dispatchOptions, current,
-                    routePlanner, trafficResources, allocator, cancellationToken);
+                    routePlanner, trafficResources, allocator, cancellationToken, _trafficLayer);
                 if (chosen is null) return;
                 waitingSite = chosen.Value.Site;
                 selectedPlan = chosen.Value.Plan;
@@ -229,7 +306,7 @@ public sealed class DispatchTaskStepCoordinator(
             var diagnostic = routePlanner.Plan(route.Item1, route.Item2, new HashSet<string>());
             var bayBlocked = step.StepType == DispatchTaskStepType.DeliverFullBoxToDumper && planningMap is not null &&
                 DumperWaitingBaySafety.ExclusiveResourceIds(planningMap.Definition, dispatchOptions).Any(unavailable.Contains);
-            await trafficResources.RecordRouteAsync(new(step.StepId, step.TaskId, step.VehicleId, route.Item1, route.Item2,
+            await _trafficLayer.ObserveAsync(new(step.StepId, step.TaskId, step.VehicleId, route.Item1, route.Item2,
                 diagnostic?.EdgeIds ?? [], diagnostic?.ResourceIds ?? [], true,
                 diagnostic == null ? "地图路径不可达，请核对起终点、路段方向和启用状态。" : bayBlocked ?
                     "候车位容量已被其他任务占用，后车在原取箱工位等待；前车断连、取消或心跳过期不自动释放，诊断路线不会发车。" :
@@ -243,8 +320,7 @@ public sealed class DispatchTaskStepCoordinator(
             throw new InvalidOperationException($"AGV路径节点不足：{route.Item1}->{route.Item2}。");
         }
 
-        var reservation = await (trafficLayer ?? new DispatchTrafficReservationService(trafficResources, pipeline))
-            .AcquireAsync(observation, cancellationToken);
+        var reservation = await _trafficLayer.AcquireAsync(observation, cancellationToken);
         if (!reservation.Acquired)
         {
             logger.LogDebug(
@@ -263,6 +339,7 @@ public sealed class DispatchTaskStepCoordinator(
                 planningMap, cancellationToken) is { } rejection)
             {
                 await trafficResources.ReleaseStepAsync(step.StepId, cancellationToken);
+                await _trafficLayer.SuspendRecommendationAsync(observation with { Reason = "安全条件不满足，撤回未授予的排队推荐：" + rejection }, cancellationToken);
                 logger.LogDebug("后续运输步骤等待安全复核。StepId={StepId}, Reason={Reason}", step.StepId, rejection);
                 return;
             }

@@ -8,6 +8,7 @@ public sealed class DispatchOrchestratorOptions
     public const string SectionName = "Dispatching";
 
     public bool Enabled { get; set; }
+    public bool RequireGlobalMatching { get; set; }
     public int PollIntervalMs { get; set; } = 1000;
     public int MaxConcurrentTasks { get; set; } = 1;
     public string DumperSite { get; set; } = string.Empty;

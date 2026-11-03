@@ -27,6 +27,8 @@ public sealed class DispatchPipelineSnapshotService(DispatchOptimizationService 
             Observe("candidates", "Disabled", "业务派车未启用，尚未进行本轮车辆筛选。");
             Observe("matching", "Disabled", "业务派车未启用，尚未进行本轮全局匹配。");
         }
+        else if (dispatchOptions.RequireGlobalMatching && !snapshot.Options.Mode.Equals("Global", StringComparison.OrdinalIgnoreCase))
+            Observe("matching", "Blocked", "正式业务要求 Global；当前模式不符，保留原队列并暂停新增派车。");
         else if (snapshot.Options.Mode == "Disabled") Observe("matching", "Disabled", "全局匹配已关闭；传统派车仍须经过路权和安全复核。");
         if (layers["traffic"].UpdatedAt < DateTimeOffset.UtcNow.AddSeconds(-15))
         {

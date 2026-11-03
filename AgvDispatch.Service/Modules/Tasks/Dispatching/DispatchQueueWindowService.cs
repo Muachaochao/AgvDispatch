@@ -23,11 +23,7 @@ public sealed class DispatchQueueWindowService(IDispatchOrchestrationRepository 
         var work = waiting.Where(t => t.Stage == DispatchTaskStage.WaitingForVehicle &&
             string.IsNullOrWhiteSpace(t.VehicleId) && string.IsNullOrWhiteSpace(t.VendorTaskId) &&
             !heldTasks.Contains(t.TaskId) && !fixedTaskIds.Contains(t.TaskId)).ToArray();
-        var input = work.Select(t => new DispatchAssignmentTask(t.TaskId, t.StationId, t.Priority, t.CreatedAt)
-        {
-            Deadline = policy.StationDeadlineMinutes.FirstOrDefault(p => p.Key.Equals(t.StationId, StringComparison.OrdinalIgnoreCase)).Value is > 0 and var minutes
-                ? t.CreatedAt.AddMinutes(minutes) : null
-        }).ToArray();
+        var input = work.Select(t => DispatchTaskPriority.Input(t, policy)).ToArray();
         var window = _optimizer.SelectWindow(input, policy, now);
         var windowIds = window.Select(t => t.TaskId).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var ready = (await tasks.GetReadyStepsAsync(int.MaxValue, ct))

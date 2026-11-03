@@ -87,6 +87,94 @@ using (var fixture = await Fixture.Create(2))
 
 using (var fixture = await Fixture.Create())
 {
+    await fixture.Call("BUSINESS", 50, -5);
+    await fixture.Observe("BUSINESS", 55, true);
+    await fixture.Ordinary("CHARGING");
+    var charging = await fixture.Acquire("CHARGING");
+    Check(!charging.Acquired && charging.BlockingTaskId == "BUSINESS",
+        "ordinary charging without a DispatchTask cannot bypass a scored business queue");
+    Check((await fixture.Acquire("BUSINESS")).Acquired,
+        "business request acquires before a lower-priority charging movement");
+    await fixture.Manager.ReleaseTaskAsync("BUSINESS", default);
+    Check((await fixture.Acquire("CHARGING")).Acquired,
+        "charging ordinary queue can acquire after the real business owner releases");
+    await fixture.Observe("BUSINESS", 95, true);
+    Check((await fixture.Acquire("CHARGING")).Acquired,
+        "higher business priority does not revoke an existing charging lease");
+}
+
+using (var fixture = await Fixture.Create())
+{
+    await fixture.Ordinary("FIRST", true);
+    fixture.Clock.Now = fixture.Clock.Now.AddSeconds(1);
+    await fixture.Ordinary("SECOND");
+    var second = await fixture.Acquire("SECOND");
+    Check(!second.Acquired && second.BlockingTaskId == "FIRST",
+        "two ordinary system movements use persisted FIFO instead of polling order");
+    await fixture.Ordinary("FIRST", true);
+    fixture.Restart();
+    Check(!(await fixture.Acquire("SECOND")).Acquired,
+        "ordinary FIFO start survives recommendation refresh and manager restart");
+    Check((await fixture.Acquire("FIRST")).Acquired, "oldest ordinary movement can acquire without a DispatchTask");
+    await fixture.Manager.ReleaseTaskAsync("FIRST", default);
+    Check((await fixture.Acquire("SECOND")).Acquired, "next ordinary movement proceeds after actual release");
+}
+
+using (var fixture = await Fixture.Create())
+{
+    await fixture.Call("EQUIPMENT", 50, -5);
+    await fixture.Manager.RecordRouteAsync(new("EQUIPMENT", "EQUIPMENT", "V-EQUIPMENT", "A", "B", [], ["R"], true,
+        "dumper permit") { MapId = "M", MapVersionId = "V", WaitingCategory = "Equipment", QueuePriority = 55 }, default);
+    await fixture.Call("LOW", 10, -5);
+    await fixture.Observe("LOW", 15);
+    Check(!(await fixture.Acquire("LOW")).Acquired,
+        "dumper equipment wait and route wait participate in the same effective-priority queue");
+    Check((await fixture.Acquire("EQUIPMENT")).Acquired, "equipment wait acquires its actual traffic capacity");
+}
+
+using (var fixture = await Fixture.Create())
+{
+    await fixture.Call("BUSINESS", 50, -5);
+    await fixture.Observe("BUSINESS", 55, true);
+    var ordinary = await fixture.Acquire("UNVERSIONED-LEGACY");
+    Check(!ordinary.Acquired && ordinary.BlockingTaskId == "BUSINESS",
+        "legacy direct acquisition without route metadata cannot jump a valid business queue");
+    await fixture.Db.Updateable<DispatchTaskEntity>().SetColumns(t => t.Stage == (int)DispatchTaskStage.Completed)
+        .Where(t => t.TaskId == "BUSINESS").ExecuteCommandAsync();
+    Check((await fixture.Acquire("UNVERSIONED-LEGACY")).Acquired,
+        "legacy direct acquisition remains possible when no valid predecessor exists");
+}
+
+using (var fixture = await Fixture.Create())
+{
+    await fixture.Call("CANCELLED", 90, -5);
+    await fixture.Observe("CANCELLED", 95, true);
+    await fixture.Db.Updateable<DispatchTaskEntity>().SetColumns(t => t.Stage == (int)DispatchTaskStage.Cancelled)
+        .Where(t => t.TaskId == "CANCELLED").ExecuteCommandAsync();
+    await fixture.Ordinary("SYSTEM");
+    Check((await fixture.Acquire("SYSTEM")).Acquired, "cancelled business call cannot block an ordinary system movement");
+}
+
+using (var fixture = await Fixture.Create())
+{
+    await fixture.Call("BUSINESS", 90, -5);
+    await fixture.Observe("BUSINESS", 95, true);
+    await fixture.Manager.RecordRouteAsync(new("BUSINESS", "BUSINESS", "V-BUSINESS", "A", "B", [], ["R"], true,
+        "readiness no longer holds") { MapId = "M", MapVersionId = "V", QueuePriority = 95, QueueEligible = false }, default);
+    await fixture.Ordinary("SYSTEM");
+    Check((await fixture.Acquire("SYSTEM")).Acquired,
+        "withdrawn business recommendation cannot block a ready ordinary system movement");
+    await fixture.Manager.ReleaseTaskAsync("SYSTEM", default);
+    await fixture.Observe("BUSINESS", 95);
+    Check((await fixture.Acquire("BUSINESS")).Acquired, "a revalidated original request can rejoin the priority queue");
+    await fixture.Manager.RecordRouteAsync(new("BUSINESS", "BUSINESS", "V-BUSINESS", "A", "B", [], ["R"], true,
+        "withdraw recommendation only") { MapId = "M", MapVersionId = "V", QueuePriority = 95, QueueEligible = false }, default);
+    Check(!(await fixture.Acquire("SYSTEM")).Acquired,
+        "withdrawn recommendation never releases an already granted physical lease");
+}
+
+using (var fixture = await Fixture.Create())
+{
     await fixture.Call("SEND", 50, -1);
     await fixture.Observe("SEND", 50, resources: ["R", "S"]);
     await fixture.Acquire("SEND", ["R", "S"]);
@@ -207,6 +295,9 @@ sealed class Fixture : IDisposable
     public Task Observe(string id, double priority, bool waiting = false, string map = "M", string[]? resources = null) =>
         Manager.RecordRouteAsync(new(id, id, "V-" + id, "A", "B", [], resources ?? ["R"], waiting, "fixture")
             { MapId = map, MapVersionId = "V", QueuePriority = priority }, default);
+    public Task Ordinary(string id, bool waiting = false) =>
+        Manager.RecordRouteAsync(new(id, id, "V-" + id, "A", "B", [], ["R"], waiting, "ordinary system fixture")
+            { MapId = "M", MapVersionId = "V" }, default);
     public Task<TrafficReservationResult> Acquire(string id, string[]? resources = null) =>
         Manager.TryAcquireAsync(id, id, "V-" + id, resources ?? ["R"], default);
     public void Dispose() => Db.Dispose();

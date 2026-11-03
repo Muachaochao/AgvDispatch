@@ -109,6 +109,23 @@ public sealed partial class TrafficResourceManager(
         var transaction = await database.Ado.UseTranAsync(async () =>
         {
             var context = await database.Queryable<TrafficRequestEntity>().Where(r => r.StepId == ownerStepId).FirstAsync(cancellationToken);
+            // Legacy system callers also join the ordinary priority/FIFO queue.
+            // An actual acquisition attempt refreshes a proposal, never its FIFO
+            // start and never an already granted physical lease.
+            if (context is null)
+            {
+                await WriteStateAsync(ownerStepId, taskId, vehicleId, "Requested", "申请交通资源，按普通优先级和首次请求时间排队。", requested, cancellationToken);
+                context = await database.Queryable<TrafficRequestEntity>().Where(r => r.StepId == ownerStepId).FirstAsync(cancellationToken);
+            }
+            if (context is not null)
+            {
+                if (context.TaskId != taskId || context.VehicleId != vehicleId)
+                    throw new InvalidOperationException("交通排队请求的步骤、任务或车辆身份不一致。");
+                context.QueueObservedAtUtc = (clock ?? TimeProvider.System).GetUtcNow().UtcDateTime;
+                await database.Updateable<TrafficRequestEntity>()
+                    .SetColumns(r => r.QueueObservedAtUtc == context.QueueObservedAtUtc)
+                    .Where(r => r.StepId == ownerStepId).ExecuteCommandAsync(cancellationToken);
+            }
             if(binding is not null)
             {
                 var selected=await GetAsync(taskId,cancellationToken);

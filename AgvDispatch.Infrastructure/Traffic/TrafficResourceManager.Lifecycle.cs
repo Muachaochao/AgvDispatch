@@ -20,16 +20,25 @@ public sealed partial class TrafficResourceManager
     {
         var old = await database.Queryable<TrafficRequestEntity>().Where(r => r.StepId == step).FirstAsync(ct);
         if (old != null && old.TaskId != task) throw new InvalidOperationException("路权请求步骤与业务任务归属冲突。");
+        if (route is { QueueEligible: false } && old?.State is ("Acquired" or "Held"))
+        {
+            // Withdrawing a planning proposal must not rewrite a granted route
+            // or demote its physical ownership to a waiting diagnostic.
+            await database.Updateable<TrafficRequestEntity>()
+                .SetColumns(r => r.QueueObservedAtUtc == null).Where(r => r.StepId == step).ExecuteCommandAsync(ct);
+            return;
+        }
         var ids = JsonSerializer.Serialize(resources.Where(id => !string.IsNullOrWhiteSpace(id)).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(id => id, StringComparer.OrdinalIgnoreCase));
         var edges = route == null ? old?.EdgeIds ?? "[]" : JsonSerializer.Serialize(route.EdgeIds);
         // Replanning while still waiting does not constitute a grant or end the episode.
         if (state == "Requested" && old?.State == "Waiting") { state = "Waiting"; reason = old.Reason; }
         // Keep polling idempotent, but a newly chosen route must replace the old diagnostic route.
-        if (state == "Requested" && old?.State is ("Acquired" or "Held" or "Waiting") && old.VehicleId == vehicle &&
-            old.ResourceIds == ids && old.EdgeIds == edges && route?.QueuePriority == null && (route == null || old.QueuePriority == null && old.Source == route.Source && old.Destination == route.Destination && old.MapId == route.MapId && old.MapVersionId == route.MapVersionId)) return;
+        if (state == "Requested" && old?.State is ("Acquired" or "Held") && old.VehicleId == vehicle &&
+            old.ResourceIds == ids && old.EdgeIds == edges && route?.QueuePriority == null && (route == null || route.QueueEligible && old.QueuePriority == null && old.Source == route.Source && old.Destination == route.Destination && old.MapId == route.MapId && old.MapVersionId == route.MapVersionId)) return;
         var changed = old == null || old.State != state || old.Reason != reason || old.VehicleId != vehicle || old.ResourceIds != ids || old.EdgeIds != edges || route != null && (old.MapId != route.MapId || old.MapVersionId != route.MapVersionId || old.Source != route.Source || old.Destination != route.Destination || old.WaitingCategory != route.WaitingCategory);
         var previousWait = old?.WaitingSinceUtc;
-        var row = old ?? new TrafficRequestEntity { StepId = step, TaskId = task, RequestedAt = DateTime.Now };
+        var row = old ?? new TrafficRequestEntity { StepId = step, TaskId = task,
+            RequestedAt = (clock ?? TimeProvider.System).GetUtcNow().LocalDateTime };
         var contextChanged = old != null && (old.VehicleId != vehicle || route != null &&
             (old.MapId != route.MapId || old.MapVersionId != route.MapVersionId || old.Source != route.Source || old.Destination != route.Destination));
         var previousBlocking = row.BlockingKey;
@@ -80,7 +89,7 @@ public sealed partial class TrafficResourceManager
             // This timestamp expires only an ungranted queue recommendation. It
             // never expires, revokes or releases a traffic lease.
             row.QueuePriority = route.QueuePriority;
-            row.QueueObservedAtUtc = route.QueuePriority == null ? null : (clock ?? TimeProvider.System).GetUtcNow().UtcDateTime;
+            row.QueueObservedAtUtc = route.QueueEligible ? (clock ?? TimeProvider.System).GetUtcNow().UtcDateTime : null;
         }
         if (route != null) { row.Source = route.Source; row.Destination = route.Destination; row.MapId = route.MapId; row.MapVersionId = route.MapVersionId; row.WaitingCategory = route.WaitingCategory; }
         if (old == null) await database.Insertable(row).ExecuteCommandAsync(ct);

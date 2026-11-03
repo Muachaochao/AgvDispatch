@@ -28,6 +28,9 @@ public sealed record MapNode(
     string? AgvSiteId = null)
 {
     public string LayerId { get; init; } = "navigation";
+    // A standby/stop role may also be a mandatory transit point on a corridor.
+    // Traffic resources still block the node when that resource is unavailable.
+    public bool AllowTransitThrough { get; init; }
 }
 
 public enum MapEdgeGeometryKind

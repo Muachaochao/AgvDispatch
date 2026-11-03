@@ -1,5 +1,6 @@
 param([Parameter(Mandatory=$true)][string]$BundleDirectory,[string[]]$FleetVehicleIds=@(),
-    [int]$FleetMaxConcurrentTasks=0,[string]$NavigationTestVehicle='',[switch]$AutoNavigationDetour)
+    [int]$FleetMaxConcurrentTasks=0,[string]$NavigationTestVehicle='',[switch]$AutoNavigationDetour,
+    [switch]$ProductionDispatch,[int]$ProductionMaxConcurrentTasks=0,[switch]$DisableProductionDispatch)
 $ErrorActionPreference='Stop'
 $latestRoot=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../发布包'))
 $latestBundle=[IO.Path]::GetFullPath($BundleDirectory).TrimEnd('\','/')
@@ -7,6 +8,7 @@ if(!$latestBundle.StartsWith($latestRoot+'\',[StringComparison]::OrdinalIgnoreCa
 $latestRelative=[IO.Path]::GetRelativePath($latestRoot,$latestBundle)
 if($latestRelative -match '[%"!&|<>^\r\n]'){throw '目录包含不适合CMD入口的字符。'}
 . (Join-Path $PSScriptRoot 'FleetLaunchConfiguration.ps1')
+. (Join-Path $PSScriptRoot 'ProductionLaunchConfiguration.ps1')
 if($AutoNavigationDetour -and [string]::IsNullOrWhiteSpace($NavigationTestVehicle)){
     throw 'Automatic detour requires an explicit navigation test vehicle.'
 }
@@ -17,6 +19,7 @@ if($NavigationTestVehicle -and ($NavigationTestVehicle.Length -gt 32 -or
 # Validate before changing any entry or pointer. Preserve explicit site selection only.
 $latestFleetSelection=Resolve-FleetLaunchSelection -Root $latestRoot -VehicleIds $FleetVehicleIds -MaxConcurrentTasks $FleetMaxConcurrentTasks
 $latestOldPointer=Join-Path $latestRoot '最新版Web.json'
+$latestPrevious=$null
 if(Test-Path -LiteralPath $latestOldPointer){
     $latestPrevious=Get-Content -LiteralPath $latestOldPointer -Raw | ConvertFrom-Json
     $latestPreviousDirectory=[IO.Path]::GetFullPath((Join-Path $latestRoot $latestPrevious.directory))
@@ -30,6 +33,8 @@ if(Test-Path -LiteralPath $latestOldPointer){
         }
     }
 }
+$latestProductionSelection=Resolve-ProductionLaunchSelection -Previous $latestPrevious -Enable:$ProductionDispatch `
+    -Disable:$DisableProductionDispatch -MaxConcurrentTasks $ProductionMaxConcurrentTasks -NavigationSelected:([bool]$NavigationTestVehicle)
 & (Join-Path $PSScriptRoot 'Verify-CommissioningBundle.ps1') -BundleDirectory $latestBundle -AllowRuntimeData
 $latestManifest=Get-Content -LiteralPath (Join-Path $latestBundle 'release-manifest.json') -Raw | ConvertFrom-Json
 if(!(Test-Path -LiteralPath (Join-Path $latestBundle 'Start-Latest-Web.cmd')) -or !(Test-Path -LiteralPath (Join-Path $latestBundle 'Stop-Latest-Web.cmd'))){throw '缺少完整启动器。'}
@@ -44,7 +49,7 @@ if($AutoNavigationDetour){$latestNavigationArguments+=' --default-auto-navigatio
 $latestStartText=@"
 @echo off
 chcp 65001 >nul
-call "%~dp0$latestRelative\Start-Latest-Web.cmd" --daily-data --project-store-path "%~dp0运行数据\Web工程方案"$latestNavigationArguments %*
+call "%~dp0$latestRelative\Start-Latest-Web.cmd" --daily-data --daily-launch-settings "%~dp0最新版Web.json" --project-store-path "%~dp0运行数据\Web工程方案"$latestNavigationArguments %*
 "@
 $latestStopText=@"
 @echo off
@@ -65,7 +70,8 @@ foreach($latestAlias in @(@{Name='启动界面修复版Web.cmd';Target='启动�
     $latestAliasText="@echo off`r`nchcp 65001 >nul`r`ncall `"%~dp0$($latestAlias.Target)`" %*`r`n"
     [IO.File]::WriteAllText((Join-Path $latestRoot $latestAlias.Name),$latestAliasText,[Text.UTF8Encoding]::new($false))
 }
-@{releaseId=$latestManifest.releaseId;directory=$latestRelative;url="http://127.0.0.1:$($latestManifest.port)/";configurationMigrated=[bool]$latestManifest.siteConfigurationImported} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $latestRoot '最新版Web.json') -Encoding utf8
+@{releaseId=$latestManifest.releaseId;directory=$latestRelative;url="http://127.0.0.1:$($latestManifest.port)/";configurationMigrated=[bool]$latestManifest.siteConfigurationImported;
+    productionDispatch=[bool]$latestProductionSelection.Enabled;maxConcurrentTasks=$latestProductionSelection.MaxConcurrentTasks} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $latestRoot '最新版Web.json') -Encoding utf8
 $latestGuide=@"
 # Web 启动说明
 
@@ -78,6 +84,7 @@ $latestGuide=@"
 5. 本包自带 .NET 运行时。缺配置、地图、设备采样时应按界面提示核对；界面演示不代表实车验收。
 6. 多车竞争测试使用“启动多车联调Web.cmd”，仍为5199；需先停止原模式。入口保留此前明确配置的车辆清单和并发上限，没有清单时必须传入配置车辆编号；旧“启动双车联调Web.cmd”转入同一入口。可在CMD运行“启动多车联调Web.cmd VEHICLE-A,VEHICLE-B,VEHICLE-C 2”选择车辆和可选并发上限，其后可继续传入启动器选项，带空格的路径须加双引号；有已保留清单时也可直接追加选项。示例编号须换成工程配置实际编号。启动不会自动发车，在工程测试中心选择本组车辆、工位及用例后启动；车辆需独立初始停车位、有效地图与包络配置，不会统一驶向同一个待机点。
 7. 本次固定入口$(if($NavigationTestVehicle){"默认选择单车 $NavigationTestVehicle"}else{"未选择单车测试车"})$(if($AutoNavigationDetour){"，并启用自动受阻改道"}else{"，自动受阻改道关闭"})。明确选择多车、业务、PLC或其他单车模式时替换此默认模式，不叠加权限。该许可只在业务执行、PLC写入和派发关闭的单车测试模式有效；启动本身不会发车。
+8. 正式 PLC 自动调度默认策略为$(if($latestProductionSelection.Enabled){"已授权，并发上限 $($latestProductionSelection.MaxConcurrentTasks)"}else{"关闭"})。该选择随固定入口配置承接升级；正式模式启用自动接单、业务派车、步骤执行、PLC 写入及原命令队列，仍需通过现场恢复、车辆和 PLC 实时复核。优化器实际策略在 Web 中保存为 Global 后接管派车。明确的单车或多车测试参数会替换本次正式模式；不会恢复之前的单车导航许可。
 
 具体功能、验证范围见 [$latestRelative/README.md]($latestRelative/README.md) 和该目录 Docs。版本选择以“最新版Web.json”为准。不要直接改指向文件；更新时在主工程运行 tools/Set-LatestWebRelease.ps1，让启动、停止和说明同步更新。
 

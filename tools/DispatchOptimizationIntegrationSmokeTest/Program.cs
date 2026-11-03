@@ -87,6 +87,17 @@ void Check(bool value, string name)
     Check(Estimate(route with { Cost = 4 }, map, 2) == (5, 0), "traffic estimate never reports negative wait");
 }
 
+foreach (var mode in new[] { "Disabled", "Shadow" })
+{
+    using var f = await Fixture.Create(mode);
+    f.Dispatch.RequireGlobalMatching = true;
+    var task = await f.Call("CNC1", 80);
+    await f.Cycle();
+    Check((await f.Due()).Count == 0 && f.Traffic.Acquisitions.Count == 0 &&
+          (await f.Tasks.GetStepsAsync(task, default))[0].Status == DispatchTaskStepStatus.Ready,
+        "production requiring Global preserves waiting task without greedy dispatch in " + mode);
+}
+
 using (var f = await Fixture.Create("Shadow"))
 {
     var a = await f.Call("CNC1", 80); var b = await f.Call("CNC2", 50);

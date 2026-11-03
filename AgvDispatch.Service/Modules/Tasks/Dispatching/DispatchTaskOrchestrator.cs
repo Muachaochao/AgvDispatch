@@ -28,7 +28,7 @@ public sealed partial class DispatchTaskOrchestrator(
     private readonly IDispatchQueueWindowService _queueLayer = queueLayer ?? new DispatchQueueWindowService(tasks, trafficResources);
     private readonly IDispatchCandidateFilter _candidateLayer = candidateLayer ?? new DispatchCandidateFilter(options, agvGateway, agvStates,
         activeMap, mapOptions, routePlanner, trafficResources, routeCache, businessRun, fleetTest, charging, taskSwitchGuard);
-    private readonly DispatchTrafficReservationService _trafficLayer = trafficLayer ?? new(trafficResources, optimization);
+    private readonly DispatchTrafficReservationService _trafficLayer = trafficLayer ?? new(trafficResources, optimization, tasks, optimization);
     private readonly HashSet<string> _missingRouteWarnings =
         new(StringComparer.OrdinalIgnoreCase);
     private string? _waitingBayError;
@@ -106,6 +106,11 @@ public sealed partial class DispatchTaskOrchestrator(
             return;
         }
         _waitingBayError = null;
+        if (options.RequireGlobalMatching && !string.Equals(optimization?.Options.Mode, "Global", StringComparison.OrdinalIgnoreCase))
+        {
+            ReportOptimizationGate("正式业务要求全局匹配；当前优化策略未处于 Global，保留原队列并暂停新增派车。");
+            return;
+        }
         var occupiedSlots = submitting.Count + assigned.Count;
         var availableSlots = options.MaxConcurrentTasks - occupiedSlots;
         if (optimization is not null && !optimization.Options.Mode.Equals("Disabled", StringComparison.OrdinalIgnoreCase))

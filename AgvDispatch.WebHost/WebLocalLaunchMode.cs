@@ -1,14 +1,16 @@
 namespace AgvDispatch.WebHost;
 
-// Permissions are selected explicitly for this launch and are never restored from the session file.
+// Permissions come from explicit launch selection (or the daily production policy), never the process session file.
 internal sealed record WebLocalLaunchMode(string NavigationVehicle, string PlcCycleVehicle, string PlcCycleStation)
 {
     public string BusinessVehicle { get; init; } = "";
+    public bool ProductionDispatch { get; init; }
+    public int ProductionMaxConcurrentTasks { get; init; }
     public bool ForkTest { get; init; }
     public bool AutoNavigationDetour { get; init; }
     public string[] FleetVehicles { get; init; }=[];
     public int FleetMaxConcurrentTasks { get; init; }
-    public bool IsBusiness => BusinessVehicle.Length > 0 || FleetVehicles.Length>0;
+    public bool IsBusiness => ProductionDispatch || BusinessVehicle.Length > 0 || FleetVehicles.Length>0;
     public bool IsPlcCycle => PlcCycleVehicle.Length > 0;
     public string Page => IsBusiness ? "/#/tasks" : IsPlcCycle ? "/#/plc-cycle-test" : NavigationVehicle.Length > 0 ? "/#/navigation-test" : "/";
 
@@ -34,6 +36,19 @@ internal sealed record WebLocalLaunchMode(string NavigationVehicle, string PlcCy
             throw new ArgumentException("Repeated --auto-navigation-detour.");
         var autoDetour=args.Contains("--auto-navigation-detour");
         var business = Read("--business-run-vehicle");
+        if (args.Count(value => value == "--production-dispatch") > 1)
+            throw new ArgumentException("Repeated --production-dispatch.");
+        var production = args.Contains("--production-dispatch");
+        var productionConcurrency = 0;
+        var productionConcurrencyIndex = Array.IndexOf(args, "--production-max-concurrent");
+        if (production || productionConcurrencyIndex >= 0)
+        {
+            if (!production || args.Count(value => value == "--production-max-concurrent") != 1 ||
+                productionConcurrencyIndex < 0 || productionConcurrencyIndex + 1 >= args.Length ||
+                !int.TryParse(args[productionConcurrencyIndex + 1], out productionConcurrency) ||
+                productionConcurrency is < 1 or > 1000)
+                throw new ArgumentException("Production dispatch requires --production-max-concurrent between 1 and 1000.");
+        }
         var fleetIndex=Array.IndexOf(args,"--fleet-test-vehicles");
         string[] fleet=[];
         if(fleetIndex>=0)
@@ -61,7 +76,7 @@ internal sealed record WebLocalLaunchMode(string NavigationVehicle, string PlcCy
         var defaultAutoDetour=args.Contains("--default-auto-navigation-detour");
         if(defaultAutoDetour&&defaultNavigation.Length==0)
             throw new ArgumentException("Default automatic detour requires a default test vehicle.");
-        if(navigation.Length==0&&business.Length==0&&fleet.Length==0&&cycleVehicle.Length==0&&cycleStation.Length==0)
+        if(!production&&navigation.Length==0&&business.Length==0&&fleet.Length==0&&cycleVehicle.Length==0&&cycleStation.Length==0)
         {
             navigation=defaultNavigation;
             autoDetour|=defaultAutoDetour;
@@ -73,10 +88,13 @@ internal sealed record WebLocalLaunchMode(string NavigationVehicle, string PlcCy
         if (business.Length > 0 && (navigation.Length > 0 || cycleVehicle.Length > 0))
             throw new ArgumentException("Business execution cannot share an isolated test launch.");
         if(fleet.Length>0&&(business.Length>0||navigation.Length>0||cycleVehicle.Length>0))throw new ArgumentException("Fleet testing requires an exclusive launch mode.");
+        if (production && (business.Length > 0 || fleet.Length > 0 || navigation.Length > 0 || cycleVehicle.Length > 0))
+            throw new ArgumentException("Production dispatch cannot share an isolated test or selected-vehicle run mode.");
         if(autoDetour&&navigation.Length==0)
             throw new ArgumentException("Automatic detour requires an explicit single navigation test vehicle.");
         return new(cycleVehicle.Length > 0 ? cycleVehicle : navigation, cycleVehicle, cycleStation)
-            { BusinessVehicle=business, ForkTest=forklift.Length>0, AutoNavigationDetour=autoDetour,
+            { BusinessVehicle=business, ProductionDispatch=production, ProductionMaxConcurrentTasks=productionConcurrency,
+              ForkTest=forklift.Length>0, AutoNavigationDetour=autoDetour,
               FleetVehicles=fleet, FleetMaxConcurrentTasks=fleetConcurrency };
     }
 
@@ -85,11 +103,12 @@ internal sealed record WebLocalLaunchMode(string NavigationVehicle, string PlcCy
         $"--Security:PipeName={pipe}", "--Plc:Enabled=false", $"--Plc:AllowWrites={IsBusiness}", "--Agv:Enabled=false",
         $"--Agv:AllowCommands={(IsBusiness || NavigationVehicle.Length > 0 ? "true" : "false")}",
         $"--TaskCreation:Enabled={IsBusiness}", $"--Dispatching:Enabled={IsBusiness}", $"--AgvCommandOutbox:Enabled={IsBusiness}",
+        $"--Dispatching:RequireGlobalMatching={ProductionDispatch}",
         $"--DispatchTaskSteps:Enabled={IsBusiness}", $"--HandshakeExecution:Enabled={IsBusiness}",
-        "--TaskCreation:AutomaticCreationEnabled=false",
+        $"--TaskCreation:AutomaticCreationEnabled={(ProductionDispatch ? "true" : "false")}",
         $"--FleetTest:Enabled={FleetVehicles.Length>=2}",
         ..(FleetVehicles.Length>0?FleetVehicles:["",""]).Select((id,index)=>$"--FleetTest:VehicleIds:{index}={id}"),
-        $"--Dispatching:MaxConcurrentTasks={(FleetVehicles.Length>0?FleetMaxConcurrentTasks:1)}",
+        $"--Dispatching:MaxConcurrentTasks={(ProductionDispatch ? ProductionMaxConcurrentTasks : FleetVehicles.Length>0?FleetMaxConcurrentTasks:1)}",
         $"--NavigationTest:Enabled={(NavigationVehicle.Length > 0 ? "true" : "false")}",
         $"--NavigationTest:VehicleId={(IsBusiness ? BusinessVehicle : NavigationVehicle)}",
         $"--NavigationTest:ForkEnabled={ForkTest}",

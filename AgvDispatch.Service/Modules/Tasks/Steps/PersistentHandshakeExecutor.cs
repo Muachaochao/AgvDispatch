@@ -24,9 +24,57 @@ public static class TaskHandshakeSignals
 public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore store,IPlcGateway gateway,IPlcSignalCache signals,
     IDispatchOrchestrationRepository tasks,IDispatchTaskRepository taskReader,ITrafficResourceManager traffic,
     DispatchTaskCreationOptions creation,DispatchOrchestratorOptions dispatch,HandshakeExecutionOptions options,
-    IAgvStateCache vehicles,IActiveMapRuntime map,IAgvGateway? agvGateway=null,IRobokitTaskMapPreflight? mapPreflight=null)
+    IAgvStateCache vehicles,IActiveMapRuntime map,IAgvGateway? agvGateway=null,IRobokitTaskMapPreflight? mapPreflight=null,
+    DispatchTrafficReservationService? trafficLayer=null, DispatchOptimizationService? optimization=null)
 {
+    private readonly DispatchTrafficReservationService _trafficLayer = trafficLayer ?? new(traffic, optimization, tasks, optimization);
     public bool Enabled => options.Enabled;
+
+    public async Task ObserveEquipmentWaitingAsync(DispatchTaskStepWorkItem step, CancellationToken ct)
+    {
+        try
+        {
+            if (await EquipmentProposalAsync(step, ct) is { } proposal)
+                await _trafficLayer.ObserveAsync(proposal, ct);
+            else await SuspendEquipmentRecommendationAsync(step, ct);
+        }
+        catch
+        {
+            await SuspendEquipmentRecommendationAsync(step, CancellationToken.None);
+            throw;
+        }
+    }
+
+    private Task SuspendEquipmentRecommendationAsync(DispatchTaskStepWorkItem step, CancellationToken ct) =>
+        _trafficLayer.SuspendRecommendationAsync(new(step.StepId, step.TaskId, step.VehicleId ?? "",
+            step.SourceSite ?? dispatch.GetDumperWaitingSite() ?? "", dispatch.DumperDumpingSite, [],
+            options.DumperExit.ResourceIds, true, "倒料候选条件未成立，撤回未授予推荐；既有设备及实际路权保持。")
+            { MapId = map.Current?.MapId, MapVersionId = map.Current?.VersionId, WaitingCategory = "Equipment" }, ct);
+
+    private async Task<TrafficRouteObservation?> EquipmentProposalAsync(DispatchTaskStepWorkItem step, CancellationToken ct)
+    {
+        if (!Enabled || options.PlcContractVersion != HandshakeExecutionOptions.Version ||
+            step.StepType != DispatchTaskStepType.WaitForDumperReady || string.IsNullOrWhiteSpace(step.VehicleId) ||
+            map.Current is not { } current || !Is(creation.DumperStationId, "Faulted", false)) return null;
+        var root = (await taskReader.GetStepsAsync(step.TaskId, ct)).FirstOrDefault(s => s.StepType == DispatchTaskStepType.GoToPickup);
+        var binding = root is null ? null : await store.GetAsync(step.TaskId, root.StepId, ct);
+        if (binding?.ContractVersion != HandshakeExecutionOptions.Version || !BindingMatches(binding, step)) return null;
+        var waiting = await WaitingSiteAsync(step, ct);
+        if (!await store.OwnsEquipmentAsync(step.TaskId, creation.DumperStationId, ct))
+        {
+            if (!vehicles.TryGet(step.VehicleId, out var vehicle) || vehicle.Connection != ConnectionState.Online ||
+                vehicle.Quality != SignalQuality.Good || vehicle.EmergencyStopped != false || vehicle.Blocked != false ||
+                AgvObstaclePolicy.IsBlocked(vehicle) || AgvObstaclePolicy.HasBlockingAlarm(vehicle) ||
+                vehicle.Tasks.Any(t => t.Status is 1 or 2 or 3) ||
+                vehicle.LastSuccessfulPollAt is not { } observed || observed > DateTimeOffset.UtcNow.AddSeconds(1) ||
+                DateTimeOffset.UtcNow - observed > TimeSpan.FromSeconds(Math.Clamp(options.StateMaxAgeSeconds, 1, 60)) ||
+                !current.Definition.Nodes.Any(n => n.Enabled && (n.Id == waiting || n.AgvSiteId == waiting) &&
+                    (n.Id == vehicle.CurrentStation || n.AgvSiteId == vehicle.CurrentStation))) return null;
+        }
+        return new(step.StepId, step.TaskId, step.VehicleId, waiting, dispatch.DumperDumpingSite,
+            [], options.DumperExit.ResourceIds, true, "倒料设备与倒料区按原任务有效优先级排队；已有归属保持不变。")
+            { MapId = current.MapId, MapVersionId = current.VersionId, WaitingCategory = "Equipment" };
+    }
     public async Task BindBeforeTransportAsync(DispatchTaskStepWorkItem step,CancellationToken ct)
     {
         if(!Enabled)
@@ -118,11 +166,27 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
         if(step.StepType==DispatchTaskStepType.WaitForDumperReady)
         {
             if(!Is(creation.DumperStationId,"Faulted",false))throw new InvalidOperationException("倒料设备故障或反馈无效，保持等待。");
-            var owner=await store.TryClaimEquipmentAsync(step.TaskId,step.StepId,creation.DumperStationId,ct);
+            var proposal = await EquipmentProposalAsync(step, ct);
+            if (proposal is null) { await SuspendEquipmentRecommendationAsync(step, ct); return true; }
+            // Equipment and the dumping conflict zone use the same priority queue as transport.
+            // Merely polling the shared PLC first no longer wins ownership.
+            if (!(await _trafficLayer.AcquireAsync(proposal with { Waiting = false }, ct)).Acquired) return true;
+            string? owner;
+            try { owner = await store.TryClaimEquipmentAsync(step.TaskId, step.StepId, creation.DumperStationId, ct); }
+            catch
+            {
+                // A store call can fail after committing. Reconcile its actual owner before
+                // releasing only this uncommitted step's new route; uncertainty retains it.
+                if (!await store.OwnsEquipmentAsync(step.TaskId, creation.DumperStationId, CancellationToken.None))
+                    await _trafficLayer.RollbackUncommittedAsync(step.StepId, CancellationToken.None);
+                throw;
+            }
             var reason=owner!=null ? "倒料机由任务"+owner+"持有，当前任务不消费共享许可。" : "本任务已取得倒料设备归属；PLC就绪握手及实际入站另行核验。";
-            await traffic.RecordRouteAsync(new(step.StepId,step.TaskId,step.VehicleId??"",await WaitingSiteAsync(step,ct),dispatch.DumperDumpingSite,
-                [],options.DumperExit.ResourceIds,owner!=null,reason)
-                {MapId=map.Current?.MapId,MapVersionId=map.Current?.VersionId,WaitingCategory="Equipment"},ct);
+            if (owner is not null)
+            {
+                await _trafficLayer.RollbackUncommittedAsync(step.StepId, ct);
+                await _trafficLayer.ObserveAsync(proposal with { Reason = reason }, ct);
+            }
             // Another task's valid claim is normal queueing. The recorded traffic
             // wait identifies its owner; do not turn it into a failed step or
             // interpret the owner's shared PLC signals as this task's baseline.

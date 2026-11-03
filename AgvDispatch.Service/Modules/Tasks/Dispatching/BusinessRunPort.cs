@@ -257,6 +257,10 @@ public sealed partial class BusinessRunPort(IManualTaskCreationService manual, I
         var checkedRoute = await preflight.CheckRouteAsync(run.Plan.VehicleId, path, ct);
         if (!checkedMap.Accepted || !checkedRoute.Accepted || !ReferenceEquals(pinned, map.Current))
             throw new InvalidOperationException("待机路线车端核验失败：" + checkedMap.Message + checkedRoute.Message);
+        await resources.RecordRouteAsync(new(StandbyId(run), StandbyId(run), run.Plan.VehicleId,
+            route.Nodes[0], route.Nodes[^1], route.EdgeIds, route.ResourceIds, false,
+            "业务收尾返回待机，按普通优先级及原请求时间参与公共资源排队。")
+            { MapId = pinned.MapId, MapVersionId = pinned.VersionId }, ct);
         if (!(await resources.TryAcquireAsync(StandbyId(run), StandbyId(run), run.Plan.VehicleId, route.ResourceIds, ct)).Acquired)
             throw new InvalidOperationException("待机路线资源尚未取得。");
         var latest = await ObserveAsync(run, ct);
