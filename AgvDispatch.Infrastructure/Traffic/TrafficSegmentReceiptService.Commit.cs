@@ -140,8 +140,13 @@ public sealed partial class TrafficSegmentReceiptService
         if(!ReferenceEquals(original.Map,latest.Map)||original.Fingerprint!=latest.Fingerprint||
             original.PolicyJson!=latest.PolicyJson||original.Context.Body!=latest.Context.Body)return false;
         var previous=original.Evidence.Second;var first=latest.Evidence.First;
-        if(first.ControllerEpoch!=previous.ControllerEpoch||first.Sequence<=previous.Sequence||
-            first.ObservedAt<=previous.ObservedAt||first.LastFullyTraversedEdgeIndex<previous.LastFullyTraversedEdgeIndex)return false;
+        // The commit read may begin from the receipt's second frame. That frame
+        // is the continuity anchor; the newly captured pair must still advance
+        // strictly from it to a later second frame.
+        if(first.ControllerEpoch!=previous.ControllerEpoch||first.Sequence<previous.Sequence||
+            first.ObservedAt<previous.ObservedAt||first.LastFullyTraversedEdgeIndex<previous.LastFullyTraversedEdgeIndex||
+            latest.Evidence.Second.Sequence<=first.Sequence||
+            latest.Evidence.Second.ObservedAt<=first.ObservedAt)return false;
         return original.Candidates.All(c=>latest.Candidates.Any(n=>n.LeaseId==c.LeaseId&&n.ResourceId==c.ResourceId&&n.EvidenceVerified));
     }
     private static bool ValidRequest(TrafficSegmentCommitRequest? request)=>request is not null&&

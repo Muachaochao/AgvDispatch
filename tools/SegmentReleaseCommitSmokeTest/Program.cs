@@ -69,6 +69,10 @@ options.Enabled=false;var restarted=new TrafficSegmentReceiptService(db,new Traf
 Check((await restarted.CommitAsync(request,default)).Replayed&&LeaseCount()==2,"新实例且开关关闭仅重放已提交结果不影响他车后来占用");
 Check((await restarted.ReadCommittedAsync(request,default))!.ReleasedLeaseIds.Count==2,"提交结果可独立只读查询");options.Enabled=true;
 var immutable=false;try{db.Updateable<TrafficSegmentCommitEntity>().Where(x=>true).SetColumns(x=>x.ResultHash=="FAKE").ExecuteCommand();}catch(Exception ex){immutable=ex.ToString().Contains("segment commit is immutable");}Check(immutable,"提交结果禁止改写");
+Reset();issued=await service.IssueAsync("STEP",default);
+source.Evidence=new(first with{Sequence=11,ObservedAt=now.AddSeconds(-1)},first with{Sequence=12,ObservedAt=now.AddMilliseconds(-700)});
+var anchored=await service.CommitAsync(new(issued.ReceiptId!,"ANCHORED"),default);
+Check(anchored.Accepted&&anchored.ResourcesReleasedNow&&LeaseCount()==1,"提交首帧可复用签发末帧作为连续锚点，第二帧仍须更新");
 
 async Task Deny(string name,Action change,bool newer=true)
 {
