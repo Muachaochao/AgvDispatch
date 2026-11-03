@@ -49,6 +49,7 @@ public interface ITaskHandshakeStore
         => throw new NotSupportedException("当前存储不支持28阶段设备交接。");
     Task<HandshakeCheckpoint> BeginAsync(DispatchTaskStepWorkItem step, string contractVersion, string initialPhase,
         IReadOnlyList<TaskSignalEvidence> baseline, CancellationToken ct);
+    Task<bool> RollbackUncommittedAsync(string taskId, string stepId, CancellationToken ct) => Task.FromResult(false);
     Task<HandshakeCheckpoint?> GetAsync(string taskId, string stepId, CancellationToken ct);
     Task<bool> MoveAsync(HandshakeCheckpoint expected, string phase, string reason, string? pendingSignal,
         bool? pendingValue, string? nextPhase, CancellationToken ct);

@@ -67,6 +67,43 @@ public sealed partial class TaskHandshakeStore(ISqlSugarClient database, IActive
         return row == null ? null : Describe(row);
     }
 
+    public async Task<bool> RollbackUncommittedAsync(string taskId, string stepId, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(taskId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(stepId);
+        ct.ThrowIfCancellationRequested();
+        var deleted = false;
+        var transaction = await database.Ado.UseTranAsync(async () =>
+        {
+            var row = await database.Queryable<TaskHandshakeEntity>()
+                .Where(e => e.TaskId == taskId && e.StepId == stepId).FirstAsync(ct);
+            if (row is null || row.Phase != "TransportBound" || row.Revision != 1 || row.PendingSignal != null) return;
+            var task = await database.Queryable<DispatchTaskEntity>().Where(t => t.TaskId == taskId).FirstAsync(ct);
+            var step = await database.Queryable<DispatchTaskStepEntity>().Where(s => s.TaskId == taskId && s.StepId == stepId).FirstAsync(ct);
+            if (task is null || task.Stage >= 90 || task.CancelRequestId != null || step is null ||
+                step.StepType != (int)DispatchTaskStepType.GoToPickup ||
+                step.Status != (int)DispatchTaskStepStatus.Ready) return;
+            // Only a first-leg binding that never produced an outbox row may be
+            // replaced. Any command row, even unsent, keeps the original binding
+            // for the normal recovery/rebind path.
+            if (await database.Queryable<AgvCommandOutboxEntity>()
+                .AnyAsync(c => c.TaskId == taskId && c.StepId == stepId, ct)) return;
+            deleted = await database.Deleteable<TaskHandshakeEntity>()
+                .Where(e => e.TaskId == taskId && e.StepId == stepId &&
+                    e.Phase == "TransportBound" && e.Revision == 1 && e.PendingSignal == null)
+                .ExecuteCommandAsync(ct) == 1;
+            if (deleted)
+                await database.Insertable(new TaskRuntimeEventEntity
+                {
+                    TaskId = taskId, StepId = stepId, Kind = "HandshakeRolledBack",
+                    Phase = "TransportBound", RecordedAtUtc = DateTime.UtcNow,
+                    Reason = "首段尚未登记车辆命令，回滚未提交绑定，允许按当前推荐车辆和配置重新绑定。"
+                }).ExecuteCommandAsync(ct);
+        });
+        if (!transaction.IsSuccess) throw new InvalidOperationException("回滚未提交首段握手失败。", transaction.ErrorException);
+        return deleted;
+    }
+
     public async Task<HandshakeCheckpoint> BeginAsync(DispatchTaskStepWorkItem step, string contractVersion, string initialPhase,
         IReadOnlyList<TaskSignalEvidence> baseline, CancellationToken ct)
     {

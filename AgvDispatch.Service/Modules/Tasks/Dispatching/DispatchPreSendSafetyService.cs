@@ -82,7 +82,13 @@ public sealed class DispatchPreSendSafetyService(
                 task.Stage != DispatchTaskStage.SubmittingToAgv || original.SourceSite != path[0] || original.DestinationSite != path[^1])
             return "原任务或步骤状态已经变化，不准备或认领新命令。";
         var firstPreparation = preparing && step.StepType == DispatchTaskStepType.GoToPickup;
-        if ((!firstPreparation && (task.VehicleId != step.VehicleId || original.VehicleId != step.VehicleId)) ||
+        // Later transport steps become Ready before the command binds them, so their
+        // row has no vehicle yet. While preparing, the parent task owns the vehicle;
+        // recovery/sending still requires the exact persisted step binding.
+        var originalVehicleMatches = preparing
+            ? original.VehicleId is null || original.VehicleId == step.VehicleId
+            : original.VehicleId == step.VehicleId;
+        if ((!firstPreparation && (task.VehicleId != step.VehicleId || !originalVehicleMatches)) ||
             firstPreparation && (!string.IsNullOrWhiteSpace(task.VehicleId) && task.VehicleId != step.VehicleId ||
                 !string.IsNullOrWhiteSpace(original.VehicleId) && original.VehicleId != step.VehicleId))
             return "任务、步骤与车辆责任不一致。";
@@ -106,6 +112,9 @@ public sealed class DispatchPreSendSafetyService(
                 return vehicleError;
             if (await CheckPlcAsync(step, preparing, ct) is { } plcError) return plcError;
         }
+        // Traffic requests and command payloads are both written from the same
+        // planned AGV route. Preserve the route's site ids here so preparation,
+        // persisted reservation and all send-time checks compare the same identity.
         if (await trafficResources.CheckStepReservationAsync(step.StepId, step.TaskId, step.VehicleId!,
             expectedMap.MapId, expectedMap.VersionId, path[0], path[^1], ct) is { } trafficError) return trafficError;
         if (!ReferenceEquals(expectedMap, activeMap.Current) || executionGate.Mode is not (MapExecutionMode.Running or MapExecutionMode.Draining))

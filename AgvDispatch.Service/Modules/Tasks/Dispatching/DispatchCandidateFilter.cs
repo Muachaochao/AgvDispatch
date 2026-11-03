@@ -104,7 +104,7 @@ public sealed class DispatchCandidateFilter(DispatchOrchestratorOptions options,
                     BatteryRiskSeconds = candidate.BatteryRiskSeconds, StandbyBonusSeconds = candidate.StandbyBonusSeconds });
             }
             if (!result.Edges.Any(e => e.TaskId == task.TaskId) && blocked is { } b)
-                waitingRoutes.Add(new(step.StepId, task.TaskId, b.Vehicle.VehicleId, b.Vehicle.CurrentStation!, pickup,
+                waitingRoutes.Add(new(step.StepId, task.TaskId, b.Vehicle.VehicleId, b.Route.Nodes[0], b.Route.Nodes[^1],
                     b.Route.EdgeIds, b.Route.ResourceIds, true, "滚动窗口：必要公共资源尚未可用，保留呼叫顺序和动态优先级。")
                     { MapId = map?.MapId, MapVersionId = map?.VersionId, QueuePriority = score.EffectivePriority });
         }

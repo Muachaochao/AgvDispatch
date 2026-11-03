@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Domain.Agvs;
 using AgvDispatch.Domain.Devices;
@@ -41,6 +42,22 @@ public sealed partial class DispatchTaskOrchestrator
         var graph = await _candidateLayer.BuildAsync(queue, policy, map, ct);
         var vehicles = graph.Vehicles; var generalReasons = graph.GeneralReasons; var edges = graph.Edges;
         var plans = graph.Plans; var diagnostics = graph.Diagnostics; var taskReasons = graph.TaskReasons;
+        // First-leg handshake binding is the durable vehicle commitment. Once it
+        // exists, do not let rematching alternate vehicles while the traffic
+        // request still points at the previous attempt.
+        if (handshakes is not null)
+        {
+            var boundVehicles = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var task in work)
+            {
+                if (!ready.TryGetValue(task.TaskId, out var firstStep)) continue;
+                var checkpoint = await handshakes.GetAsync(task.TaskId, firstStep.StepId, ct);
+                if (BindingVehicle(checkpoint) is { Length: > 0 } vehicle) boundVehicles[task.TaskId] = vehicle;
+            }
+            if (boundVehicles.Count > 0)
+                edges = edges.Where(edge => !boundVehicles.TryGetValue(edge.TaskId, out var vehicle) ||
+                    string.Equals(edge.VehicleId, vehicle, StringComparison.OrdinalIgnoreCase)).ToList();
+        }
         optimization?.ReportLayer("candidates", edges.Count == 0 && window.Count > 0 ? "Waiting" : "Ready",
             $"通过硬约束 {generalReasons.Count(p => p.Value is null)} 台车，形成 {edges.Count} 条可执行候选边。", edges.Count);
         if (policy.Mode.Equals("Global", StringComparison.OrdinalIgnoreCase))
@@ -165,7 +182,7 @@ public sealed partial class DispatchTaskOrchestrator
         var route = routePlanner.Plan(current.CurrentStation!, planned.Nodes[^1], unavailable);
         if (route is null || !route.Nodes.SequenceEqual(planned.Nodes) || !route.EdgeIds.SequenceEqual(planned.EdgeIds) ||
             !route.ResourceIds.SequenceEqual(planned.ResourceIds) || !ReferenceEquals(map, activeMap.Current)) return Reject("traffic", "道路、地图或公共资源已变化，重新进入匹配。");
-        var reservation = await _trafficLayer.AcquireAsync(new(step.StepId, task.TaskId, vehicle.VehicleId, current.CurrentStation!, route.Nodes[^1],
+        var reservation = await _trafficLayer.AcquireAsync(new(step.StepId, task.TaskId, vehicle.VehicleId, route.Nodes[0], route.Nodes[^1],
             route.EdgeIds, route.ResourceIds, false, "滚动全局匹配完成，按有效优先级申请路权。")
             { MapId = map?.MapId, MapVersionId = map?.VersionId, QueuePriority = priority }, ct);
         if (!reservation.Acquired) return Reject("traffic", "等待公共资源 " + reservation.BlockingResourceId + "；已取得的有效路权继续保留。");
@@ -192,5 +209,19 @@ public sealed partial class DispatchTaskOrchestrator
         {
             if (!commandPrepared) await _trafficLayer.RollbackUncommittedAsync(step.StepId, CancellationToken.None);
         }
+    }
+
+    private static string? BindingVehicle(HandshakeCheckpoint? checkpoint)
+    {
+        var context = checkpoint?.Baseline.FirstOrDefault(item =>
+            item.StationId == "__context" && item.VariableName == "Binding")?.Address;
+        if (string.IsNullOrWhiteSpace(context)) return null;
+        try
+        {
+            using var document = JsonDocument.Parse(context);
+            return document.RootElement.TryGetProperty("Vehicle", out var vehicle)
+                ? vehicle.GetString() : null;
+        }
+        catch (JsonException) { return null; }
     }
 }

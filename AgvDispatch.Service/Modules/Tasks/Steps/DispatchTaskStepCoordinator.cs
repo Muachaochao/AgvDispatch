@@ -218,7 +218,7 @@ public sealed class DispatchTaskStepCoordinator(
         var plan = routePlanner.Plan(route.Item1, route.Item2, unavailable) ??
             routePlanner.Plan(route.Item1, route.Item2, new HashSet<string>());
         if (plan is not { Nodes.Count: >= 2 } || !VehicleReadyAt(step.VehicleId, route.Item1, current)) return;
-        await _trafficLayer.ObserveAsync(new(step.StepId, step.TaskId, step.VehicleId, route.Item1, route.Item2,
+        await _trafficLayer.ObserveAsync(new(step.StepId, step.TaskId, step.VehicleId, plan.Nodes[0], plan.Nodes[^1],
             plan.EdgeIds, plan.ResourceIds, true, "后续运输候选已核对，按原任务有效优先级等待整组路权。")
             { MapId = current.MapId, MapVersionId = current.VersionId }, ct);
     }
@@ -306,19 +306,22 @@ public sealed class DispatchTaskStepCoordinator(
             var diagnostic = routePlanner.Plan(route.Item1, route.Item2, new HashSet<string>());
             var bayBlocked = step.StepType == DispatchTaskStepType.DeliverFullBoxToDumper && planningMap is not null &&
                 DumperWaitingBaySafety.ExclusiveResourceIds(planningMap.Definition, dispatchOptions).Any(unavailable.Contains);
-            await _trafficLayer.ObserveAsync(new(step.StepId, step.TaskId, step.VehicleId, route.Item1, route.Item2,
+            var hasDiagnosticRoute = diagnostic is not null && diagnostic.Nodes.Count >= 2;
+            await _trafficLayer.ObserveAsync(new(step.StepId, step.TaskId, step.VehicleId,
+                hasDiagnosticRoute ? diagnostic!.Nodes[0] : route.Item1,
+                hasDiagnosticRoute ? diagnostic!.Nodes[^1] : route.Item2,
                 diagnostic?.EdgeIds ?? [], diagnostic?.ResourceIds ?? [], true,
                 diagnostic == null ? "地图路径不可达，请核对起终点、路段方向和启用状态。" : bayBlocked ?
                     "候车位容量已被其他任务占用，后车在原取箱工位等待；前车断连、取消或心跳过期不自动释放，诊断路线不会发车。" :
                     "候选路径被交通资源占用，等待容量释放；诊断路径不会发送车辆。") { MapId = planningMap?.MapId, MapVersionId = planningMap?.VersionId }, cancellationToken);
             return;
         }
-        var observation = new TrafficRouteObservation(step.StepId, step.TaskId, step.VehicleId, route.Item1, route.Item2,
-            plan.EdgeIds, plan.ResourceIds, false, "规划完成，申请本运输路径资源。") { MapId = planningMap?.MapId, MapVersionId = planningMap?.VersionId };
         if (plan.Nodes.Count < 2)
         {
             throw new InvalidOperationException($"AGV路径节点不足：{route.Item1}->{route.Item2}。");
         }
+        var observation = new TrafficRouteObservation(step.StepId, step.TaskId, step.VehicleId, plan.Nodes[0], plan.Nodes[^1],
+            plan.EdgeIds, plan.ResourceIds, false, "规划完成，申请本运输路径资源。") { MapId = planningMap?.MapId, MapVersionId = planningMap?.VersionId };
 
         var reservation = await _trafficLayer.AcquireAsync(observation, cancellationToken);
         if (!reservation.Acquired)

@@ -23,7 +23,8 @@ public sealed partial class DispatchTaskOrchestrator(
     IChargingDispatchGuard? charging=null, ITaskSwitchGuard? taskSwitchGuard=null,
     DispatchOptimizationService? optimization=null, DispatchRouteCache? routeCache=null,
     IDispatchQueueWindowService? queueLayer=null, IDispatchCandidateFilter? candidateLayer=null,
-    DispatchTrafficReservationService? trafficLayer=null, IDispatchPreSendSafetyService? preSendSafety=null) : IsolatedBackgroundService
+    DispatchTrafficReservationService? trafficLayer=null, IDispatchPreSendSafetyService? preSendSafety=null,
+    ITaskHandshakeStore? handshakes=null) : IsolatedBackgroundService
 {
     private readonly IDispatchQueueWindowService _queueLayer = queueLayer ?? new DispatchQueueWindowService(tasks, trafficResources);
     private readonly IDispatchCandidateFilter _candidateLayer = candidateLayer ?? new DispatchCandidateFilter(options, agvGateway, agvStates,
@@ -249,7 +250,7 @@ public sealed partial class DispatchTaskOrchestrator(
                         var reason = !ReferenceEquals(planningMap, activeMap.Current)
                             ? "车端核验期间运行地图已变化，本候选不发送。"
                             : checkedMap.Message;
-                        await trafficResources.RecordRouteAsync(new(readyStep.StepId,task.TaskId,vehicle.VehicleId,vehicle.CurrentStation!,pickupSite,
+                        await trafficResources.RecordRouteAsync(new(readyStep.StepId,task.TaskId,vehicle.VehicleId,route.Nodes[0],route.Nodes[^1],
                             route.EdgeIds,route.ResourceIds,true,"派车前车端地图/路线核验未通过："+reason){MapId=planningMap?.MapId,MapVersionId=planningMap?.VersionId},cancellationToken);
                         logger.LogWarning(
                             "派车前车端地图/路线核验未通过。TaskId={TaskId}, VehicleId={VehicleId}, From={Source}, To={Destination}, Reason={Reason}",
@@ -258,7 +259,7 @@ public sealed partial class DispatchTaskOrchestrator(
                     }
                 }
                 var reservation = await _trafficLayer.AcquireAsync(new(readyStep.StepId, task.TaskId, vehicle.VehicleId,
-                    vehicle.CurrentStation!, pickupSite, route.EdgeIds, route.ResourceIds,
+                    route.Nodes[0], route.Nodes[^1], route.EdgeIds, route.ResourceIds,
                     false, "规划完成，申请到取货站路径资源。") { MapId = planningMap?.MapId, MapVersionId = planningMap?.VersionId }, cancellationToken);
                 if (!reservation.Acquired)
                 {

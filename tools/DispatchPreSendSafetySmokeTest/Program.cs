@@ -19,8 +19,8 @@ var tasks = new DispatchTaskRepository(db); var orchestration = new DispatchOrch
 var traffic = new TrafficResourceManager(db, catalog, new(TimeSpan.FromSeconds(30)));
 var map = new ActiveMapRuntime();
 map.Replace(new("M", "V1", new("fixture", "synthetic", "Cartesian", "m",
-    [new("A", 0, 0, MapNodeType.Station, true, [], "A"), new("B", 10, 0, MapNodeType.Station, true, [], "B")],
-    [new("AB", "A", "B", 10, 1, true, true, ["R"])], [new("R", TrafficResourceType.NarrowAisle)]), DateTimeOffset.UtcNow));
+    [new("BUS-A", 0, 0, MapNodeType.Station, true, [], "A"), new("BUS-B", 10, 0, MapNodeType.Station, true, [], "B")],
+    [new("AB", "BUS-A", "BUS-B", 10, 1, true, true, ["R"])], [new("R", TrafficResourceType.NarrowAisle)]), DateTimeOffset.UtcNow));
 var outbox = new AgvCommandOutboxRepository(db, map);
 var cache = new VehicleCache(); var signalCache = new Signals(); var gate = new Gate(); var monitor = new Monitor();
 var dispatch = new DispatchOrchestratorOptions { Enabled = true, DumperWaitingSite = "B", DumperDumpingSite = "B" };
@@ -37,7 +37,8 @@ var currentMap = map.Current;
 await traffic.RecordRouteAsync(new(step.StepId, step.TaskId, "V", "A", "B", ["AB"], ["R"], false, "fixture") { MapId = "M", MapVersionId = "V1" }, default);
 await traffic.TryAcquireAsync(step.StepId, step.TaskId, "V", ["R"], default);
 Task<string?> Prepare() => guard.CheckPreparationAsync(step, "V", ["A", "B"], currentMap, default);
-Check(await Prepare() == null, "both dispatch strategies share a passing real task/vehicle/PLC/route preparation check");
+Check(await Prepare() == null,
+    "shared preparation compares the planned AGV site ids used by the traffic request instead of remapping them to logical BUS-* ids");
 var goodVehicle = cache.Row;
 cache.Row = goodVehicle with { LastSuccessfulPollAt = DateTimeOffset.UtcNow.AddMinutes(-1) };
 Check(await Prepare() != null, "stale robot observation blocks preparation"); cache.Row = goodVehicle;
