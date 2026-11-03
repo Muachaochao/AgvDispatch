@@ -200,7 +200,7 @@ public sealed partial class PersistentHandshakeExecutor
             endpointVehicle.VelocityX is {} vx&&endpointVehicle.VelocityY is {} vy&&endpointVehicle.AngularVelocity is {} va&&
             Math.Abs(vx)<=.02&&Math.Abs(vy)<=.02&&Math.Abs(va)<=.02;
         return new(step.TaskId,step.StepId,vehicleId,vendorTaskId,current.MapId,current.VersionId,
-            TransportRouteSnapshots.Hash(JsonSerializer.Serialize(current.Definition,new JsonSerializerOptions(JsonSerializerDefaults.Web))),pair.First!,pair.Second,profile,
+            EngineeringRuntimeIdentity.MapHash(current.Definition),pair.First!,pair.Second,profile,
             options.DumperExit.Policy,options.DumperExit.MaximumRouteDeviationMeters,vendor.UpdatedAt,now)
             {PlcSignals=TaskHandshakeSignals.Capture(signals,step.StationId,creation.DumperStationId).Where(s=>s.StationId==creation.DumperStationId).ToArray(),
              EndpointArrivalConfirmed=vendor.State==AgvTransportTaskState.Completed&&endpointStopped};

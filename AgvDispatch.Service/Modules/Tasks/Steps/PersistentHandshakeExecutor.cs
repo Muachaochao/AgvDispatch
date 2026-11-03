@@ -293,7 +293,7 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
     }
     private string Binding(DispatchTaskStepWorkItem step)
     {
-        var binding=JsonSerializer.Serialize(new {map.Current?.MapId,map.Current?.VersionId,MapHash=map.Current==null?null:TransportRouteSnapshots.Hash(JsonSerializer.Serialize(map.Current.Definition,new JsonSerializerOptions(JsonSerializerDefaults.Web))),Vehicle=step.VehicleId,Pickup=dispatch.GetPickupSite(step.StationId),Waiting=dispatch.GetDumperWaitingSite(),Dump=dispatch.DumperDumpingSite,Dumper=creation.DumperStationId,Exit=options.DumperExit,Actions=dispatch.StepActions.OrderBy(a=>a.Key).ToArray()});
+        var binding=JsonSerializer.Serialize(new {map.Current?.MapId,map.Current?.VersionId,MapHash=map.Current==null?null:EngineeringRuntimeIdentity.MapHash(map.Current.Definition),Vehicle=step.VehicleId,Pickup=dispatch.GetPickupSite(step.StationId),Waiting=dispatch.GetDumperWaitingSite(),Dump=dispatch.DumperDumpingSite,Dumper=creation.DumperStationId,Exit=options.DumperExit,Actions=dispatch.StepActions.OrderBy(a=>a.Key).ToArray()});
         if(dispatch.GetDumperWaitingSites().Count<=1)return binding;
         var node=JsonNode.Parse(binding)!.AsObject();
         node["WaitingSites"]=JsonSerializer.SerializeToNode(dispatch.GetDumperWaitingSites());
@@ -312,6 +312,18 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
             var oldExit=oldRoot?["Exit"] as JsonObject;
             var currentExit=currentRoot?["Exit"] as JsonObject;
             if(oldRoot==null||currentRoot==null||oldExit==null||currentExit==null)return false;
+            var canonicalMapHash=map.Current is null?null:EngineeringRuntimeIdentity.MapHash(map.Current.Definition);
+            var legacyMapHash=map.Current is null?null:TransportRouteSnapshots.Hash(JsonSerializer.Serialize(map.Current.Definition,new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+            var oldMapHash=oldRoot["MapHash"]?.GetValue<string>();
+            var currentMapHash=currentRoot["MapHash"]?.GetValue<string>();
+            // In-flight tasks created before this fix recorded the raw enum-number
+            // serialization. Accept it only when it exactly matches the current map's
+            // legacy representation; every new binding and evidence uses the published
+            // canonical hash shared by route snapshots and the Web engineering plan.
+            if(canonicalMapHash is null||currentMapHash!=canonicalMapHash||
+                oldMapHash!=canonicalMapHash&&oldMapHash!=legacyMapHash)return false;
+            oldRoot["MapHash"]=canonicalMapHash;
+            currentRoot["MapHash"]=canonicalMapHash;
             var oldTop=oldExit["MinimumConfidence"]?.GetValue<double>();
             var currentTop=currentExit["MinimumConfidence"]?.GetValue<double>();
             var oldPolicy=oldExit["Policy"] as JsonObject;

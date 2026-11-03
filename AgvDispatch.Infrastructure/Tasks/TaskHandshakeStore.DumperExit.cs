@@ -99,14 +99,16 @@ public sealed partial class TaskHandshakeStore
         if(proof.First.ObservedAt<new DateTimeOffset(sent) || proof.VendorObservedAt<new DateTimeOffset(sent))
             throw new InvalidOperationException("出区观测早于本轮返程发送。");
         var route=TransportRouteSnapshots.Read(commands[0]);
-        var hash=TransportRouteSnapshots.Hash(JsonSerializer.Serialize(map.Definition,new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+        var hash=EngineeringRuntimeIdentity.MapHash(map.Definition);
+        var legacyHash=TransportRouteSnapshots.Hash(JsonSerializer.Serialize(map.Definition,new JsonSerializerOptions(JsonSerializerDefaults.Web)));
         if(route.MapId!=map.MapId || route.MapVersionId!=map.VersionId || route.MapDefinitionHash!=hash || proof.MapDefinitionHash!=hash)
             throw new InvalidOperationException("发送时地图与出区证据不一致，不能重规划代替原路线。");
         using var bound=JsonDocument.Parse(checkpoint.Baseline.Single(s=>s.StationId=="__context"&&s.VariableName=="Binding").Address);
         var context=bound.RootElement;
         var configuration=context.GetProperty("Exit").Deserialize<DumperExitConfiguration>()??throw new InvalidOperationException("原出区配置缺失。");
         var profiles=configuration.BodyProfiles.Where(p=>p.VehicleId==proof.VehicleId).ToArray();
-        if(context.GetProperty("MapId").GetString()!=proof.MapId||context.GetProperty("VersionId").GetString()!=proof.MapVersionId||context.GetProperty("MapHash").GetString()!=hash||context.GetProperty("Vehicle").GetString()!=proof.VehicleId||
+        var bindingHash=context.GetProperty("MapHash").GetString();
+        if(context.GetProperty("MapId").GetString()!=proof.MapId||context.GetProperty("VersionId").GetString()!=proof.MapVersionId||bindingHash!=hash&&bindingHash!=legacyHash||context.GetProperty("Vehicle").GetString()!=proof.VehicleId||
             profiles.Length!=1||profiles[0]!=proof.Body||!PolicyEvidenceCompatible(configuration,proof.Policy,proof.MaximumRouteDeviationMeters))
             throw new InvalidOperationException("出区证据的地图、区域、包络或阈值不等于原持久化绑定。");
         var equipment=context.GetProperty("Dumper").GetString();
