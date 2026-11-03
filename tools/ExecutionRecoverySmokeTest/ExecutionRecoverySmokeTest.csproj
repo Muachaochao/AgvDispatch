@@ -11,6 +11,8 @@
   <Compile Include="../../AgvDispatch.Service/Modules/Tasks/Steps/PersistentHandshakeExecutor.Exit.cs" Link="PersistentHandshakeExecutor.Exit.cs"/>
   <Compile Include="../../AgvDispatch.Service/Modules/Traffic/DumperWaitingBaySafety.cs" Link="DumperWaitingBaySafety.cs"/>
   <Compile Include="../../AgvDispatch.Service/Modules/Tasks/Dispatching/DispatchOrchestratorOptions.cs" Link="DispatchOrchestratorOptions.cs"/>
+  <Compile Include="../../AgvDispatch.Service/Modules/Tasks/Dispatching/DispatchTrafficReservationService.cs" Link="DispatchTrafficReservationService.cs"/>
+  <Compile Include="../../AgvDispatch.Service/Modules/Tasks/Dispatching/DispatchOptimizationService.cs" Link="DispatchOptimizationService.cs"/>
   <Compile Include="../../AgvDispatch.Service/Modules/Tasks/Creation/TaskCreationOptions.cs" Link="TaskCreationOptions.cs"/>
   <Compile Include="../../AgvDispatch.Service/Modules/Plc/Evidence/JournaledPlcGateway.cs" Link="JournaledPlcGateway.cs"/>
  </ItemGroup>

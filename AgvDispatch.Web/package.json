@@ -13,7 +13,8 @@
     "test:fleet-browser": "node scripts/fleet-test-browser-check.mjs",
     "test:charging-browser": "node scripts/charging-browser-check.mjs",
     "test:task-switch-browser": "node scripts/task-switch-browser-check.mjs",
-    "test:dispatch-optimization-browser": "node scripts/dispatch-optimization-browser-check.mjs"
+    "test:dispatch-optimization-browser": "node scripts/dispatch-optimization-browser-check.mjs",
+    "test:dispatch-pipeline-browser": "node scripts/dispatch-pipeline-browser-check.mjs"
   },
   "dependencies": {
     "@tabler/icons-vue": "^3.49.0",

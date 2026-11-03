@@ -71,6 +71,7 @@ New-Item -ItemType Directory -Path (Join-Path $bundleOutput 'Web/licenses') -For
 Copy-Item -LiteralPath (Join-Path $bundleProject 'AgvDispatch.Web/src/vendor/agv-web-visible/LICENSE'),(Join-Path $bundleProject 'AgvDispatch.Web/src/vendor/agv-web-visible/UPSTREAM.md') -Destination (Join-Path $bundleOutput 'Web/licenses')
 New-Item -ItemType Directory -Path (Join-Path $bundleOutput 'Docs') -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $bundleProject 'docs/architecture/dispatch-rolling-optimization.md') -Destination (Join-Path $bundleOutput 'Docs')
+Copy-Item -LiteralPath (Join-Path $bundleProject 'docs/architecture/dispatch-pipeline-monitor-20261103.md') -Destination (Join-Path $bundleOutput 'Docs')
 Copy-Item -LiteralPath (Join-Path $bundleProject 'docs/commissioning/自动充电调度与验收边界-20261030.md') -Destination (Join-Path $bundleOutput 'Docs')
 Copy-Item -LiteralPath (Join-Path $bundleProject 'docs/architecture/单车充电流程与恢复契约-20261101.md') -Destination (Join-Path $bundleOutput 'Docs')
 Copy-Item -LiteralPath (Join-Path $bundleProject 'tools/SingleCarCharging/README.md') -Destination (Join-Path $bundleOutput 'Docs/现场充电脚本与调度接入说明.md')

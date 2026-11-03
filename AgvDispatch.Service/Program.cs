@@ -274,6 +274,7 @@ builder.Services.AddSingleton(p => new DispatchOptimizationService(
     p.GetRequiredService<ILogger<DispatchOptimizationService>>()));
 builder.Services.AddSingleton<IDispatchPipelineMonitor>(p => p.GetRequiredService<DispatchOptimizationService>());
 builder.Services.AddSingleton<IDispatchOptimizationService, DispatchPipelineSnapshotService>();
+builder.Services.AddSingleton<IDispatchPipelineInspectionService, DispatchPipelineInspectionService>();
 builder.Services.AddSingleton<IDispatchQueueWindowService, DispatchQueueWindowService>();
 builder.Services.AddSingleton<IDispatchCandidateFilter, DispatchCandidateFilter>();
 builder.Services.AddSingleton<DispatchTrafficReservationService>();

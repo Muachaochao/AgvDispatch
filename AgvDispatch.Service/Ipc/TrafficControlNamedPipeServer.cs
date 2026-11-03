@@ -35,7 +35,8 @@ public sealed class TrafficControlNamedPipeServer(
     IRobokitInspectionService? robokit=null, IRobokitInspectionHistory? robokitHistory=null,IMapTransferLedger? mapTransfers=null, ITaskHandshakeStore? handshakes=null, ITaskDiagnosticArchiveService? diagnosticExports=null, ICommissioningQueryService? commissioning=null,
     ITrafficWaitingBayDepartureService? waitingBayDeparture=null, ISingleNavigationTestService? navigationTest=null, IRobotMapDownloadService? robotMapDownload=null,
     IPlcCycleTestService? plcCycleTest=null, IBusinessRunService? businessRun=null, IFleetTestService? fleetTest=null, IChargingService? charging=null,
-    IRoadClosureService? roadClosures=null, IDispatchOptimizationService? dispatchOptimization=null) : IsolatedBackgroundService
+    IRoadClosureService? roadClosures=null, IDispatchOptimizationService? dispatchOptimization=null,
+    IDispatchPipelineInspectionService? dispatchPipeline=null) : IsolatedBackgroundService
 {
     private async Task<RobokitInspectionSnapshot> InspectRobokitAsync(TrafficUserContext user,RobokitInspectionQuery query,CancellationToken ct)
     {
@@ -211,6 +212,8 @@ public sealed class TrafficControlNamedPipeServer(
 
         if (request.Operation == "GetDispatchOptimization")
             return Success(await (dispatchOptimization ?? throw new NotSupportedException("后台尚未配置派车优化。" )).GetAsync(cancellationToken));
+        if (request.Operation == "GetDispatchPipelineInspection")
+            return Success(await (dispatchPipeline ?? throw new NotSupportedException("后台尚未配置六层调度监控。" )).GetAsync(cancellationToken));
         if (request.Operation == "SaveDispatchOptimizationOptions")
             return Success(await (dispatchOptimization ?? throw new NotSupportedException("后台尚未配置派车优化。" )).SaveOptionsAsync(user,
                 Deserialize<SaveDispatchOptimizationOptionsRequest>(request.Payload), cancellationToken));

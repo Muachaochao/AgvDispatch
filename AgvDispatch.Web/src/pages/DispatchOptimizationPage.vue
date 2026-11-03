@@ -126,6 +126,7 @@ onUnmounted(() => {
     <header class="management-title">
       <h2>滚动派车优化</h2>
       <span class="assignment-mode" :class="{ global: data?.options.mode === 'Global' }">{{modeLabel(data?.options.mode)}}</span>
+      <RouterLink class="assignment-monitor-entry" to="/dispatch-pipeline">六层调度监控 · 查看每层明细</RouterLink>
       <RouterLink to="/tasks">业务任务</RouterLink>
       <button :disabled="loading || saving || !liveContext" @click="load">{{loading ? '读取中…' : '刷新状态'}}</button>
     </header>
@@ -144,6 +145,7 @@ onUnmounted(() => {
           <div class="pipeline-layer-state"><strong>{{layer.label}}</strong><span v-if="layer.itemCount !== null">{{layer.itemCount}} 项</span></div>
           <p class="pipeline-purpose">{{layer.purpose}}</p><p class="pipeline-summary">{{layer.summary}}</p>
           <small>{{layer.updatedAt ? `观察于 ${time(layer.updatedAt)}` : '尚无有效更新时间'}}</small>
+          <RouterLink :to="`/dispatch-pipeline?layer=${layer.key}`">查看本层输入、依据与实际记录 →</RouterLink>
           <RouterLink v-if="layer.link" :to="layer.link">{{layer.linkLabel}}</RouterLink><span v-else class="pipeline-detail-note">下方查看本轮匹配组合</span>
         </li>
       </ol>
@@ -261,4 +263,5 @@ onUnmounted(() => {
 @media(max-width:800px){.pipeline-layers{grid-template-columns:repeat(2,minmax(0,1fr))}.pipeline-layer:nth-child(3)::after{display:block}.pipeline-layer:nth-child(even)::after{display:none}}
 @media(max-width:480px){.assignment-config-grid{grid-template-columns:1fr}.assignment-metrics b{font-size:24px}.assignment-metrics small{line-height:1.7}}
 @media(max-width:480px){.pipeline-layers{grid-template-columns:1fr}.pipeline-layer:not(:last-child)::after{display:block;right:auto;left:22px;top:auto;bottom:-15px;transform:rotate(90deg);background:#101d35;height:16px;line-height:16px}.pipeline-purpose{min-height:0}.pipeline-layer{gap:8px}.pipeline-layer>small{font-size:10px}}
+.management-title>.assignment-monitor-entry{margin-left:auto;color:#a5e5ef;border:1px solid #367187;background:#17374a;padding:7px 11px;border-radius:4px;font-size:12px}.management-title>.assignment-monitor-entry~a{margin-left:0}
 </style>
