@@ -31,6 +31,9 @@ Check(empty.Gates.Single(g => g.Key == "dispatch").Enabled == false && empty.Gat
 Check(empty.Layers.Single(l => l.Key == "safety").Checks.Single(c => c.Key == "last-safety").State == "NotChecked", "no prior safety execution remains explicitly unreviewed");
 Check(empty.Layers.Single(l => l.Key == "safety").Checks.Single(c => c.Key == "pre-send").ObservedAt is null && gate.Entries == 0, "monitoring never enters actionful pre-send checks or execution operation leases");
 Check(empty.Layers.Single(l => l.Key == "candidates").Checks.Single(c => c.Key == "vehicle-fresh").State == "Unknown", "empty vehicle cache is not treated as valid telemetry");
+Check(empty.Layers.Single(l => l.Key == "traffic").Checks.Single(c => c.Key == "segment-release-observation").State == "Disabled" &&
+      empty.Layers.Single(l => l.Key == "traffic").Checks.Single(c => c.Key == "segment-release-commit").State == "Disabled",
+    "pass-through observation and commit switches are independently visible");
 
 var taskRows = Enumerable.Range(0, 125).Select(i => new DispatchTaskEntity { TaskId = "T" + i, StationId = "S" + i, Stage = 10, Priority = i, VehicleId = i == 0 ? "V-OWNED" : i == 124 ? "V-OUTSIDE" : null,
     CreatedAt = now.AddMinutes(-20 - i).LocalDateTime, UpdatedAt = now.AddMinutes(-i).LocalDateTime }).ToList();
@@ -75,6 +78,20 @@ Check(execution.Records.Count(r => r.State == "Sent") == 20 && execution.Records
 Check(execution.TotalCount == 146 && execution.Truncated && execution.Records.Count == 100, "execution exact total includes all 125 unfinished-task steps, not just a 100-task sample");
 var traffic = observed.Layers.Single(l => l.Key == "traffic");
 Check(traffic.Records.Single(r => r.Id == "lease:LEASE") is { State: "Retained" } lease && lease.Facts.Any(f => f.Label == "占用步骤" && f.Value == "STEP0"), "expired heartbeat remains visible with original owner step and is never released by monitoring");
+var segmentMonitor = new TrafficSegmentReleaseMonitor();
+segmentMonitor.Update(new("T0", "STEP0", "V-OWNED", "Held", "车辆完整包络仍覆盖 LM11，继续占用。", now,
+    [new("LEASE", "LM11", false, "完整车体/载荷与定位误差/安全裕量仍覆盖资源。")],
+    new(2, 2, 3, 0, 3.2, 0, 0.1, 0.1, "AGV-FULL-LOAD", 0.49, now, now)));
+var releaseService = new DispatchPipelineInspectionService(db, monitor, robots, stations, plc,
+    new TrafficResourceControlService(db, catalog), gate, map, new(), dispatch, creation, sender, new(),
+    new TrafficSegmentReleasePolicy { Enabled = true }, new TrafficSegmentCommitOptions { Enabled = true },
+    segmentMonitor);
+var releaseView = await releaseService.GetAsync(default);
+var releaseTraffic = releaseView.Layers.Single(l => l.Key == "traffic");
+Check(releaseTraffic.Records.Single(r => r.Id == "segment-release:STEP0") is { State: "Held" } observation &&
+      observation.Facts.Any(f => f.Label == "继续占用" && f.Value.Contains("LM11")) &&
+      observation.Facts.Any(f => f.Label == "两帧路段进度" && f.Value == "2 → 2"),
+    "traffic layer shows held resource, two-frame route progress, and envelope conclusion without releasing it");
 var safety = observed.Layers.Single(l => l.Key == "safety");
 Check(safety.Records.Single(r => r.Id == "plc:S0:FullBoxRequested").State == "Observed" && safety.Records.Single(r => r.Id == "plc:S0:Faulted").State == "Unknown" && safety.Records.Single(r => r.Id == "plc:S0:BoxPresent").State == "Stale", "PLC unknown quality and old samples remain distinct from fresh observed values");
 Check(safety.Checks.Single(c => c.Key == "pre-send").State == "NotChecked" && safety.Records.All(r => r.State != "Pass"), "observed PLC values do not fabricate task-stage send permission");

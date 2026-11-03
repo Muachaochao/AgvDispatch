@@ -48,7 +48,8 @@ int ReceiptCount()=>db.Queryable<TrafficSegmentReceiptEntity>().Count();
 int EventCount()=>db.Queryable<TrafficSegmentReceiptEventEntity>().Count();
 int LeaseCount()=>db.Queryable<TrafficResourceLeaseEntity>().Count();
 Reset();var issued=await receipts.IssueAsync("STEP",default);
-Check(issued.State==TrafficSegmentReceiptState.Pending&&issued.ReceiptId is not null&&issued.CandidateCount==1,"真实检查器生成后台凭据及候选数量");
+Check(issued.State==TrafficSegmentReceiptState.Pending&&issued.ReceiptId is not null&&issued.CandidateCount==1&&
+    issued.Candidates.Count==1&&issued.Progress is not null,"真实检查器生成后台凭据、候选与两帧观察摘要");
 Check(!issued.ResourcesReleased&&LeaseCount()==1&&ReceiptCount()==1&&EventCount()==1,"签发只保存凭据与审计，不删租约");
 var row=db.Queryable<TrafficSegmentReceiptEntity>().First();
 Check(row.BindingHash==TransportRouteSnapshots.Hash(row.BindingJson)&&row.BindingJson.Contains("EPOCH")&&row.BindingJson.Contains("LEASE"),"凭据绑定完整证据与原租约及摘要");

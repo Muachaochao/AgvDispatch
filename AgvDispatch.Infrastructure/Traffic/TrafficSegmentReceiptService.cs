@@ -50,7 +50,11 @@ public sealed partial class TrafficSegmentReceiptService(ISqlSugarClient databas
             ct.ThrowIfCancellationRequested();return Refuse("凭据和签发审计事务已回滚。");
         }
         pending[id]=new(proof,hash,expires);
-        return new(id,TrafficSegmentReceiptState.Pending,"仅保存检查凭据，尚未释放资源。",expires,row.CandidateCount);
+        return new(id,TrafficSegmentReceiptState.Pending,"仅保存检查凭据，尚未释放资源。",expires,row.CandidateCount)
+        {
+            Candidates = proof.Candidates,
+            Progress = proof.Progress
+        };
     }
 
     public async Task<TrafficSegmentReceiptView> ReadAsync(string receiptId,CancellationToken ct)

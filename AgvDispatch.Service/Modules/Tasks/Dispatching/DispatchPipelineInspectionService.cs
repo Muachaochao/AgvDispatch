@@ -13,7 +13,10 @@ public sealed class DispatchPipelineInspectionService(ISqlSugarClient database, 
     IAgvStateCache vehicles, IStationStateService stations, IPlcSignalCache signals,
     ITrafficResourceControlService traffic, IMapExecutionGate gate, IActiveMapRuntime activeMap,
     MapOptions mapOptions, DispatchOrchestratorOptions dispatch, DispatchTaskCreationOptions creation,
-    AgvCommandOutboxOptions outbox, HandshakeExecutionOptions handshake) : IDispatchPipelineInspectionService
+    AgvCommandOutboxOptions outbox, HandshakeExecutionOptions handshake,
+    TrafficSegmentReleasePolicy? segmentRelease = null,
+    TrafficSegmentCommitOptions? segmentCommit = null,
+    TrafficSegmentReleaseMonitor? segmentMonitor = null) : IDispatchPipelineInspectionService
 {
     private const int Limit = 100;
     private const int RecentSentLimit = 20;
@@ -112,7 +115,65 @@ public sealed class DispatchPipelineInspectionService(ISqlSugarClient database, 
                 ObservationCheck("matching-cycle", "最近实际匹配观察", matchingObservation, now)], matchingRecords, cycle.Tasks.Count,
             "本层表格来自最近编排/匹配观察，时间与当前数据库采集时间分别显示。推荐、路权和实际命令登记是不同结果；没有新周期时不把旧推荐当作当前执行。" );
 
-        var trafficRecords = SampleGroups(waits.Items.Select(w => new DispatchPipelineInspectionRecord
+        var segmentObservations = segmentMonitor?.Active(TimeSpan.FromMinutes(15)).Select(observation =>
+        {
+            var verified = observation.Candidates.Where(candidate => candidate.EvidenceVerified)
+                .Select(candidate => candidate.ResourceId).ToArray();
+            var held = observation.Candidates.Where(candidate => !candidate.EvidenceVerified)
+                .Select(candidate => candidate.ResourceId + "：" + candidate.Reason).ToArray();
+            var progress = observation.Progress;
+            return new DispatchPipelineInspectionRecord
+            {
+                Id = "segment-release:" + observation.StepId,
+                TaskId = observation.TaskId,
+                VehicleId = observation.VehicleId,
+                ResourceId = verified.FirstOrDefault() ?? observation.Candidates.FirstOrDefault()?.ResourceId,
+                State = observation.State,
+                Title = observation.VehicleId + " · 通过即释放观察",
+                Reason = observation.Reason,
+                UpdatedAt = observation.ObservedAt,
+                Link = TaskLink(observation.TaskId),
+                Facts =
+                [
+                    F("原步骤", observation.StepId),
+                    F("已证明通过", verified.Length == 0 ? "尚无" : string.Join(", ", verified)),
+                    F("继续占用", held.Length == 0 ? "无未通过资源" : string.Join("；", held)),
+                    F("两帧路段进度", progress is null ? "未取得" :
+                        $"{progress.FirstLastFullyTraversedEdgeIndex} → {progress.SecondLastFullyTraversedEdgeIndex}"),
+                    F("两帧定位", progress is null ? "未取得" :
+                        $"({progress.FirstX:0.###},{progress.FirstY:0.###}) → ({progress.SecondX:0.###},{progress.SecondY:0.###})"),
+                    F("定位误差界", progress is null ? "未取得" :
+                        $"{progress.FirstPositionUncertaintyMeters:0.###} / {progress.SecondPositionUncertaintyMeters:0.###} m"),
+                    F("整车包络", progress is null ? "未核定" :
+                        $"{progress.BodyProfileId}，半径 {progress.BodyRadiusMeters:0.###} m"),
+                    F("两帧采样", progress is null ? "未取得" :
+                        $"{Text(progress.FirstObservedAt)} → {Text(progress.SecondObservedAt)}")
+                ]
+            };
+        }) ?? [];
+        var releasedSegmentRecords = store.ReleasedSegments.Select(release => new DispatchPipelineInspectionRecord
+        {
+            Id = "segment-released:" + release.AuditId,
+            TaskId = release.TaskId,
+            VehicleId = release.VehicleId,
+            ResourceId = release.ResourceId,
+            State = "Released",
+            Title = release.ResourceId + " · 已通过并释放",
+            Reason = "完整车体已离开资源边界，且原路线后续不再使用该资源；租约删除与逐资源审计已同事务提交。",
+            UpdatedAt = Stamp(release.ReleasedAtUtc),
+            Link = TaskLink(release.TaskId),
+            Facts =
+            [
+                F("原步骤", release.StepId),
+                F("原租约", release.LeaseId),
+                F("取得时间", Text(Stamp(release.AcquiredAt))),
+                F("释放时间", Text(Stamp(release.ReleasedAtUtc))),
+                F("证据摘要", release.EvidenceHash),
+                F("提交请求", release.RequestId)
+            ]
+        }).ToArray();
+        var trafficRecords = SampleGroups(segmentObservations.Select(record => record),
+            releasedSegmentRecords.Select(record => record), waits.Items.Select(w => new DispatchPipelineInspectionRecord
         {
             Id = "wait:" + w.StepId, TaskId = w.TaskId, VehicleId = w.VehicleId, ResourceId = w.Blockers.FirstOrDefault()?.ResourceId,
             State = w.State, Title = w.VehicleId + " · 路权等待", Reason = w.Reason, UpdatedAt = w.UpdatedAt, Link = TaskLink(w.TaskId),
@@ -131,11 +192,17 @@ public sealed class DispatchPipelineInspectionService(ISqlSugarClient database, 
             Title = r.ResourceId + " · 当前容量", Reason = "资源目录与持久化占用的只读汇总；剩余容量不代替整条路径申请。", UpdatedAt = now, Link = "/resource-review",
             Facts = [F("容量", r.Capacity), F("实际占用", r.OccupiedCount), F("剩余容量", Math.Max(0, r.Capacity - r.OccupiedCount)), F("类型", r.Type)]
         }));
-        var trafficLayer = Layer("traffic", waits.TotalWaiting > 0 ? "Waiting" : leases.Length > 0 ? "Running" : "Idle",
-            $"持久化等待 {waits.TotalWaiting} 单，实际占用 {leases.Length} 项，资源目录 {resources.Count} 项。", now,
-            [M("等待申请", waits.TotalWaiting, "单"), M("实际租约", leases.Length, "项"), M("公共资源", resources.Count, "项")],
+        var trafficLayer = Layer("traffic", waits.TotalWaiting > 0 ? "Waiting" :
+                segmentObservations.Any(record => record.State == "PassedPendingRelease") ? "Running" :
+                leases.Length > 0 ? "Running" : "Idle",
+            $"持久化等待 {waits.TotalWaiting} 单，实际占用 {leases.Length} 项，自动通过即释放观察 {segmentObservations.Count()} 项，最近释放审计 {releasedSegmentRecords.Length} 项。", now,
+            [M("等待申请", waits.TotalWaiting, "单"), M("实际租约", leases.Length, "项"),
+                M("自动释放观察", segmentObservations.Count(), "项"), M("最近释放资源", releasedSegmentRecords.Length, "项"),
+                M("公共资源", resources.Count, "项")],
             [C("traffic-read", "实际申请与容量读取", "Pass", $"等待{waits.TotalWaiting} / 租约{leases.Length}", "按当前申请、原步骤与占用责任核对", "读取不申请、不续约、不释放路权；心跳过期不解锁。", now)],
-            trafficRecords, waits.TotalWaiting + leases.Length + resources.Count, "等待申请、实际租约和资源容量交替采样，合计最多100项；总数为三类记录之和。完整等待及阻塞链可在公共资源页查看。" );
+            trafficRecords, waits.TotalWaiting + leases.Length + resources.Count +
+                segmentObservations.Count() + releasedSegmentRecords.Length,
+            "通过即释放观察、最近释放审计、等待申请、实际租约和资源容量交替采样，合计最多100项。只有两帧进度、完整车体和后续不重入全部满足才释放；未通过资源继续占用。" );
 
         var safetyObservation = cycle.Layers.Single(l => l.Key == "safety");
         var safetyRecords = plc.Select(s => new DispatchPipelineInspectionRecord
@@ -179,6 +246,28 @@ public sealed class DispatchPipelineInspectionService(ISqlSugarClient database, 
             store.OpenCommandCount + store.RecentSentCount + store.StepCount,
             "需跟踪命令、最近20条已发送历史和未闭环任务步骤交替采样，合计最多100项。步骤源只取最近100个未闭环任务；原始历史和完整步骤请查看业务任务。" );
 
+        trafficLayer = trafficLayer with
+        {
+            Checks =
+            [
+                .. trafficLayer.Checks,
+                C("segment-release-observation", "通过即释放评估",
+                    segmentRelease?.Enabled == true ? "Pass" : "Disabled",
+                    segmentRelease?.Enabled == true ? "已启用" : "未启用",
+                    "两帧权威进度与完整包络",
+                    segmentRelease?.Enabled == true
+                        ? "已启用只读评估；评估命中后仍须签发凭据并重新采集。"
+                        : "未启用时所有资源保持到正常步骤交接或任务收尾。", now),
+                C("segment-release-commit", "逐资源原子释放",
+                    segmentCommit?.Enabled == true ? "Pass" : "Disabled",
+                    segmentCommit?.Enabled == true ? "已启用" : "未启用",
+                    "凭据、最新证据与租约同事务核对",
+                    segmentCommit?.Enabled == true
+                        ? "删除租约与审计写入必须同事务成功，失败则全部保留。"
+                        : "只观察不删除租约。", now)
+            ]
+        };
+
         return new() { CapturedAt = DateTimeOffset.UtcNow, CycleNumber = cycle.CycleNumber,
             // Gate-only publications also increment CycleNumber. Only the compute
             // path records positive elapsed work; do not label a disabled gate as a calculation.
@@ -216,6 +305,8 @@ public sealed class DispatchPipelineInspectionService(ISqlSugarClient database, 
             result.Commands = await database.Queryable<AgvCommandOutboxEntity>().Where(c => c.Status != 30 && c.Status != 100).OrderBy(c => c.NextAttemptAt).Take(Limit).ToListAsync(ct);
             var recent = await database.Queryable<AgvCommandOutboxEntity>().Where(c => c.Status == 30).OrderByDescending(c => c.UpdatedAt).Take(RecentSentLimit).ToListAsync(ct);
             result.RecentSentCount = recent.Count; result.Commands.AddRange(recent);
+            result.ReleasedSegments = await database.Queryable<TrafficSegmentCommitLeaseEntity>()
+                .OrderByDescending(row => row.ReleasedAtUtc).Take(RecentSentLimit).ToListAsync(ct);
         });
         if (!read.IsSuccess) throw new InvalidOperationException("读取六层任务观察失败。", read.ErrorException);
         return result;
@@ -226,6 +317,7 @@ public sealed class DispatchPipelineInspectionService(ISqlSugarClient database, 
         public List<DispatchTaskEntity> Queue = [], ActiveTasks = [];
         public List<DispatchTaskStepEntity> Steps = [];
         public List<AgvCommandOutboxEntity> Commands = [];
+        public List<TrafficSegmentCommitLeaseEntity> ReleasedSegments = [];
         public List<string> OwnedVehicles = [];
     }
     private (string State, string Reason)? TelemetryReason(AgvRobotSnapshot robot, DateTimeOffset now, IReadOnlySet<string> owners, double battery)

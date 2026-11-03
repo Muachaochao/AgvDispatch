@@ -18,6 +18,12 @@ TrafficSegmentReleaseAssessment Evaluate(TrafficSegmentReleaseContext? c=null,Tr
 void Refuse(string name,TrafficSegmentReleaseContext? c=null,TrafficProgressPair? p=null,TrafficSegmentReleasePolicy? o=null){var result=Evaluate(c,p,o);Check(!result.Available||result.Candidates.All(x=>!x.EvidenceVerified),name);}
 var valid=Evaluate();Check(valid.Available&&valid.Candidates.Single(c=>c.ResourceId=="R").EvidenceVerified,"两帧同车原运输经过与全车包络离开通过只读评估");
 Check(!valid.Candidates.Single(c=>c.ResourceId=="FINAL").EvidenceVerified,"终点资源始终保留至正常交接");Check(!valid.ResourcesReleased,"证据通过不执行任何释放");
+var nodeMap=map with{
+    Nodes=[nodes[0],nodes[1] with{ResourceIds=["NODE"]},nodes[2],nodes[3]],
+    Resources=[..map.Resources,new("NODE",TrafficResourceType.NarrowAisle,1,[new(1.8,-1),new(2.2,-1),new(2.2,1),new(1.8,1)])]};
+var nodeContext=context with{Map=nodeMap,Leases=[new("NODE-LEASE","NODE","TASK","STEP","AGV","M","V1")]};
+var nodeAssessment=Evaluate(nodeContext);
+Check(nodeAssessment.Candidates.Single().EvidenceVerified,"非终点节点资源在前一相邻路段通过且车体离开后即可释放");
 Refuse("默认开关关闭",o:new());Refuse("无注册进度源拒绝",c:context with{EvidenceSourceRegistered=false});Refuse("恢复门禁关闭拒绝",c:context with{RecoveryAndMapGateOpen=false});Refuse("任务或步骤非执行中拒绝",c:context with{TaskAndStepExecuting=false});
 Refuse("缺车辆包络拒绝",c:context with{Body=null});Refuse("参考点未标定拒绝",c:context with{Body=context.Body! with{CalibrationVerified=false}});Refuse("最大载荷不在包络内拒绝",c:context with{Body=context.Body! with{IncludesMaximumPermittedLoad=false}});
 Refuse("包络属于另一辆车拒绝",c:context with{Body=context.Body! with{VehicleId="OTHER"}});Refuse("包络坐标参考不一致拒绝",c:context with{Body=context.Body! with{CoordinateFrameId="OTHER"}});Refuse("非有限包络拒绝",c:context with{Body=context.Body! with{RadiusFromReportedReferenceMeters=double.NaN}});

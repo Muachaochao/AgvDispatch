@@ -33,7 +33,12 @@ public sealed class TrafficSegmentReleasePolicy
     public double SafetyMarginMeters { get; set; } = 0.15;
 }
 public sealed record TrafficSegmentReleaseCandidate(string LeaseId,string ResourceId,bool EvidenceVerified,string Reason);
+public sealed record TrafficSegmentProgressSummary(int FirstLastFullyTraversedEdgeIndex,
+    int SecondLastFullyTraversedEdgeIndex,double FirstX,double FirstY,double SecondX,double SecondY,
+    double FirstPositionUncertaintyMeters,double SecondPositionUncertaintyMeters,string BodyProfileId,
+    double BodyRadiusMeters,DateTimeOffset FirstObservedAt,DateTimeOffset SecondObservedAt);
 public sealed record TrafficSegmentReleaseAssessment(bool Available,string Reason,IReadOnlyList<TrafficSegmentReleaseCandidate> Candidates)
 {
     public bool ResourcesReleased => false;
+    public TrafficSegmentProgressSummary? Progress { get; init; }
 }

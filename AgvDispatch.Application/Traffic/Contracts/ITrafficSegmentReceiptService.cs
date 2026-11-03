@@ -5,6 +5,8 @@ public sealed record TrafficSegmentReceiptView(string? ReceiptId,TrafficSegmentR
     DateTimeOffset? ExpiresAt,int CandidateCount)
 {
     public bool ResourcesReleased=>false;
+    public IReadOnlyList<TrafficSegmentReleaseCandidate> Candidates { get; init; } = [];
+    public TrafficSegmentProgressSummary? Progress { get; init; }
 }
 
 public sealed class TrafficSegmentCommitOptions { public bool Enabled { get; set; } }

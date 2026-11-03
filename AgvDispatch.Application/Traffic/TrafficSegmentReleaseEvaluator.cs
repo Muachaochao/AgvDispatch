@@ -77,7 +77,13 @@ public static class TrafficSegmentReleaseEvaluator
             {
                 var last=-1;
                 for(int i=0;i<context.RouteEdgeIds.Count;i++)
-                    if(edges[context.RouteEdgeIds[i]].ResourceIds.Contains(lease.ResourceId,StringComparer.OrdinalIgnoreCase)||nodes[context.RouteNodeIds[i]].ResourceIds.Contains(lease.ResourceId,StringComparer.OrdinalIgnoreCase))last=i;
+                {
+                    if(edges[context.RouteEdgeIds[i]].ResourceIds.Contains(lease.ResourceId,StringComparer.OrdinalIgnoreCase))last=i;
+                    // A non-terminal node resource is passed when the preceding
+                    // edge is complete. The current edge need not also finish.
+                    if(nodes[context.RouteNodeIds[i]].ResourceIds.Contains(lease.ResourceId,StringComparer.OrdinalIgnoreCase)&&i>0)
+                        last=Math.Max(last,i-1);
+                }
                 if(nodes[context.RouteNodeIds[^1]].ResourceIds.Contains(lease.ResourceId,StringComparer.OrdinalIgnoreCase))reason="本段终点资源保持至正常交接/业务收尾。";
                 else if(last<0)reason="资源未绑定原路线，无法确定最后一次使用。";
                 else if(a.LastFullyTraversedEdgeIndex<last||b.LastFullyTraversedEdgeIndex<last)reason="两帧未确认通过最后一次使用，未来或重入资源仍保持。";
@@ -85,7 +91,12 @@ public static class TrafficSegmentReleaseEvaluator
             }
             candidates.Add(new(lease.LeaseId,lease.ResourceId,reason==null,reason??"两帧原运输证据与完整车体包络满足评估条件；本次未释放资源。"));
         }
-        return new(true,"只读评估；实际释放必须在控制门和数据库事务内重新核对最新证据、租约及未来占用。",candidates);
+        return new(true,"只读评估；实际释放必须在控制门和数据库事务内重新核对最新证据、租约及未来占用。",candidates)
+        {
+            Progress = new(a.LastFullyTraversedEdgeIndex,b.LastFullyTraversedEdgeIndex,
+                a.X,a.Y,b.X,b.Y,a.PositionUncertaintyMeters,b.PositionUncertaintyMeters,
+                body.ProfileId,body.RadiusFromReportedReferenceMeters,a.ObservedAt,b.ObservedAt)
+        };
     }
     static bool Finite(double value)=>double.IsFinite(value)&&Math.Abs(value)<=1e6;
     static double Cross(MapPoint2D a,MapPoint2D b,MapPoint2D c)=>(b.X-a.X)*(c.Y-a.Y)-(b.Y-a.Y)*(c.X-a.X);

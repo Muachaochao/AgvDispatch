@@ -382,8 +382,20 @@ builder.Services.AddSingleton<ITaskWaitingBayAllocator>(p=>p.GetRequiredService<
 var waitingAlerts = new TrafficWaitingAlertOptions();
 builder.Configuration.GetSection("TrafficWaitingAlerts").Bind(waitingAlerts); waitingAlerts.Validate();
 builder.Services.AddSingleton(waitingAlerts);
-// Read-only preparation; no commissioned progress source and no release operation.
-builder.Services.AddSingleton(new TrafficSegmentReleasePolicy());
+var segmentReleaseWorkerOptions = new TrafficSegmentReleaseWorkerOptions();
+builder.Configuration.GetSection("TrafficSegmentRelease").Bind(segmentReleaseWorkerOptions);
+segmentReleaseWorkerOptions.Validate();
+var segmentReleasePolicy = new TrafficSegmentReleasePolicy();
+builder.Configuration.GetSection("TrafficSegmentRelease").Bind(segmentReleasePolicy);
+var segmentCommitOptions = new TrafficSegmentCommitOptions
+{
+    Enabled = builder.Configuration.GetValue("TrafficSegmentRelease:CommitEnabled", false)
+};
+builder.Services.AddSingleton(segmentReleaseWorkerOptions);
+builder.Services.AddSingleton(segmentReleasePolicy);
+builder.Services.AddSingleton(new TrafficSegmentReleaseMonitor());
+builder.Services.AddSingleton<ITrafficBodyEnvelopeProvider, ConfiguredTrafficBodyEnvelopeProvider>();
+builder.Services.AddSingleton<IAuthoritativeTrafficProgressReader, AgvTrafficProgressReader>();
 builder.Services.AddSingleton<TrafficSegmentReleaseInspector>();
 builder.Services.AddSingleton<ITrafficWaitingBayDepartureService>(p=>new TrafficWaitingBayDepartureInspector(
     p.GetRequiredService<ISqlSugarClient>(),p.GetRequiredService<TrafficSegmentReleaseInspector>(),p.GetRequiredService<IMapExecutionGate>(),
@@ -393,7 +405,7 @@ builder.Services.AddSingleton<ITrafficWaitingBayDepartureService>(p=>new Traffic
 builder.Services.AddSingleton(new TrafficGeometryPreviewPolicy { Enabled=true });
 builder.Services.AddSingleton<ITrafficGeometryPreviewService,TrafficGeometryPreviewService>();
 builder.Services.AddSingleton<ITrafficSegmentReleaseInspector>(p=>p.GetRequiredService<TrafficSegmentReleaseInspector>());
-builder.Services.AddSingleton(new TrafficSegmentCommitOptions());
+builder.Services.AddSingleton(segmentCommitOptions);
 builder.Services.AddSingleton<TrafficSegmentReceiptService>();
 builder.Services.AddSingleton<ITrafficSegmentReceiptService>(p=>p.GetRequiredService<TrafficSegmentReceiptService>());
 builder.Services.AddSingleton<ITrafficSegmentCommitService>(p=>p.GetRequiredService<TrafficSegmentReceiptService>());
@@ -455,6 +467,7 @@ builder.Configuration.GetSection(AgvCommandOutboxOptions.SectionName).Bind(outbo
 builder.Services.AddSingleton(outboxOptions);
 builder.Services.AddHostedService<AgvCommandOutboxDispatcher>();
 builder.Services.AddHostedService<WaitingBayDepartureReleaseWorker>();
+builder.Services.AddHostedService<RouteSegmentPassThroughReleaseWorker>();
 var taskStepOptions = new DispatchTaskStepOptions();
 builder.Configuration.GetSection(DispatchTaskStepOptions.SectionName).Bind(taskStepOptions);
 builder.Services.AddSingleton(taskStepOptions);

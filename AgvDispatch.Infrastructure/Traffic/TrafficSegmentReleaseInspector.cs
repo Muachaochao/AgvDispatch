@@ -83,7 +83,8 @@ public sealed class TrafficSegmentReleaseInspector(ISqlSugarClient database, IAc
                 var assessment=TrafficSegmentReleaseEvaluator.Evaluate(context,evidence,policy,assessedAt);
                 if(assessment.Available && assessment.Candidates.Any(c=>c.EvidenceVerified) && evidence is not null)
                     capture?.Invoke(new(after.Fingerprint,after.Map,context,evidence,policyJson,assessedAt,
-                        policy.MaximumAgeSeconds,assessment.Candidates.Where(c=>c.EvidenceVerified).ToArray()));
+                        policy.MaximumAgeSeconds,assessment.Candidates.Where(c=>c.EvidenceVerified).ToArray(),
+                        assessment.Progress));
                 return assessment;
             }
         }
@@ -192,7 +193,9 @@ public sealed class TrafficSegmentReleaseInspector(ISqlSugarClient database, IAc
     private sealed record Snapshot(TrafficSegmentReleaseContext Context, string Fingerprint, ActiveMapRuntimeSnapshot Map);
     internal sealed record CapturedEvidence(string Fingerprint,ActiveMapRuntimeSnapshot Map,
         TrafficSegmentReleaseContext Context,TrafficProgressPair Evidence,string PolicyJson,
-        DateTimeOffset AssessedAt,double MaximumAgeSeconds,IReadOnlyList<TrafficSegmentReleaseCandidate> Candidates);
+        DateTimeOffset AssessedAt,double MaximumAgeSeconds,
+        IReadOnlyList<TrafficSegmentReleaseCandidate> Candidates,
+        TrafficSegmentProgressSummary? Progress);
     internal sealed record RequestTransition(string StepId,string BeforeState,string BeforeResourceIds,
         string AfterState,string AfterResourceIds,string AfterReason);
 }
