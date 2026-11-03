@@ -99,7 +99,10 @@ public sealed record DispatchOptimizationCandidate(string VehicleId, double Trav
 }
 public sealed record DispatchOptimizationTask(string TaskId, string StationId, DateTimeOffset CalledAt,
     int BasePriority, double EffectivePriority, double WaitMinutes, string? RecommendedVehicleId,
-    string? GreedyVehicleId, string? DispatchedVehicleId, string Reason, IReadOnlyList<DispatchOptimizationCandidate> Candidates);
+    string? GreedyVehicleId, string? DispatchedVehicleId, string Reason, IReadOnlyList<DispatchOptimizationCandidate> Candidates)
+{
+    public string? BlockedLayer { get; init; }
+}
 public sealed record DispatchOptimizationSnapshot
 {
     public DispatchAssignmentOptions Options { get; init; } = new();
@@ -118,6 +121,7 @@ public sealed record DispatchOptimizationSnapshot
     public long ImprovedCycleCount { get; init; }
     public string Message { get; init; } = "等待调度周期；影子模式只计算推荐，沿用现有派车。";
     public IReadOnlyList<DispatchOptimizationTask> Tasks { get; init; } = [];
+    public IReadOnlyList<DispatchPipelineLayerSnapshot> Layers { get; init; } = DispatchPipelineLayers.Initial();
 }
 public sealed record SaveDispatchOptimizationOptionsRequest(DispatchAssignmentOptions Options, string ExpectedRevision);
 public interface IDispatchOptimizationService

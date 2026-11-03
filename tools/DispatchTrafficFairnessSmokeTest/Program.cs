@@ -136,6 +136,28 @@ using (var fixture = await Fixture.Create())
     Check(await Verify() != null, "send guard rejects damaged resource metadata");
 }
 
+using (var fixture = await Fixture.Create())
+{
+    await fixture.Call("DONE", 1, -10); await fixture.Call("FAULT", 1, -5);
+    await fixture.Observe("DONE", 1, resources: ["R"]); await fixture.Acquire("DONE", ["R"]);
+    await fixture.Observe("FAULT", 1, resources: ["S"]); await fixture.Acquire("FAULT", ["S"]);
+    await fixture.Db.Updateable<DispatchTaskEntity>().SetColumns(t => t.Stage == (int)DispatchTaskStage.Completed)
+        .Where(t => t.TaskId == "DONE").ExecuteCommandAsync();
+    await fixture.Db.Updateable<DispatchTaskEntity>().SetColumns(t => t.Stage == (int)DispatchTaskStage.Faulted)
+        .Where(t => t.TaskId == "FAULT").ExecuteCommandAsync();
+    var events = await fixture.Db.Queryable<TrafficLifecycleEventEntity>().CountAsync();
+    var observed = await fixture.Manager.GetUnavailableResourceIdsAsync("READER", default);
+    Check(observed.SetEquals(["R", "S"]) && await fixture.Db.Queryable<TrafficResourceLeaseEntity>().CountAsync() == 2 &&
+        await fixture.Db.Queryable<TrafficLifecycleEventEntity>().CountAsync() == events,
+        "candidate unavailable-resource read never prunes leases or writes lifecycle history");
+    await fixture.Manager.PrepareDispatchCycleAsync(default);
+    Check(!(await fixture.Manager.GetUnavailableResourceIdsAsync("READER", default)).Contains("R") &&
+        await fixture.Db.Queryable<TrafficLifecycleEventEntity>().AnyAsync(e => e.TaskId == "DONE" && e.Kind == "Released"),
+        "explicit traffic lifecycle preparation releases actually completed ownership with audit");
+    Check((await fixture.Manager.GetHeldTaskIdsAsync(default)).SetEquals(["FAULT"]),
+        "explicit lifecycle cleanup retains faulted task ownership");
+}
+
 var map = new ActiveMapRuntime();
 var definition = new MapDefinition("fixture", "synthetic", "Cartesian", "m",
     [new("A", 0, 0, MapNodeType.Station, true, []), new("B", 1, 0, MapNodeType.Station, true, [])],

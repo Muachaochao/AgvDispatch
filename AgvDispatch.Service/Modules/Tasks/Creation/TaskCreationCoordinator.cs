@@ -15,7 +15,8 @@ public sealed class TaskCreationCoordinator(
     IMapExecutionGate executionGate,
     TaskParameterRuntime parameters,
     IExecutionEvidenceJournal? journal = null, BusinessRunOwnership? businessRun = null,FleetTestOwnership? fleetOwnership=null,
-    IActiveMapRuntime? activeMap = null, DispatchOrchestratorOptions? dispatchOptions = null) : IsolatedBackgroundService
+    IActiveMapRuntime? activeMap = null, DispatchOrchestratorOptions? dispatchOptions = null,
+    IDispatchPipelineMonitor? pipeline = null) : IsolatedBackgroundService
 {
     private readonly Channel<string> _eligibleStations = Channel.CreateUnbounded<string>(
         new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
@@ -26,6 +27,7 @@ public sealed class TaskCreationCoordinator(
     {
         if (!options.Enabled)
         {
+            pipeline?.ReportLayer("queue", "Disabled", "PLC 自动接单未启用，持久化原任务继续保留。");
             logger.LogInformation("任务自动创建服务未启用。");
             return;
         }
@@ -122,6 +124,7 @@ public sealed class TaskCreationCoordinator(
                 cancellationToken);
             if (result.Created)
             {
+                pipeline?.ReportLayer("queue", "Waiting", $"工位 {stationId} 呼叫已持久化，保留基础优先级与呼叫时间，等待 PLC 应答。", 1);
                 logger.LogInformation(
                     "已创建调度任务。TaskId={TaskId}, StationId={StationId}, Priority={Priority}",
                     result.Task.TaskId,
@@ -130,6 +133,7 @@ public sealed class TaskCreationCoordinator(
             }
             else
             {
+                pipeline?.ReportLayer("queue", "Ready", $"工位 {stationId} 已有活动任务，重复呼叫继续使用原任务和呼叫时间。", 1);
                 logger.LogInformation(
                     "跳过重复任务创建。StationId={StationId}, ExistingTaskId={TaskId}, Reason={Reason}",
                     stationId,
@@ -190,6 +194,7 @@ public sealed class TaskCreationCoordinator(
                 true,
                 cancellationToken);
             await tasks.MarkAcknowledgedAsync(task.TaskId, cancellationToken);
+            pipeline?.ReportLayer("queue", "Ready", $"工位 {task.StationId} PLC 应答完成，原任务进入候选窗口。", 1);
             logger.LogInformation(
                 "PLC满箱呼叫已应答，任务进入待派车。TaskId={TaskId}, StationId={StationId}",
                 task.TaskId,

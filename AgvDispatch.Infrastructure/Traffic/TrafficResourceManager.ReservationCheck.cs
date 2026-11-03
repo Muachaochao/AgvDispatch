@@ -36,13 +36,17 @@ public sealed partial class TrafficResourceManager
                 request.State == "NotRequired" && resources.Length != 0 ||
                 request.State != "NotRequired" && resources.Length == 0)
             { rejection = "发送前路权核验失败：资源清单与路权状态不一致。"; return; }
-            if (resources.Length == 0) return;
             var leases = await database.Queryable<TrafficResourceLeaseEntity>()
-                .Where(l => l.OwnerStepId == stepId).ToListAsync(ct);
+                .Where(l => l.OwnerStepId == stepId || l.VehicleId == vehicleId).ToListAsync(ct);
+            if (leases.Any(l => string.Equals(l.VehicleId, vehicleId, StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(l.TaskId, taskId, StringComparison.OrdinalIgnoreCase)))
+            { rejection = "发送前路权核验失败：车辆仍由其他任务的实际路权占用。"; return; }
+            if (resources.Length == 0) return;
             foreach (var resource in resources.Distinct(StringComparer.OrdinalIgnoreCase))
             {
                 if (!catalog.TryGet(resource, out var definition) || definition.Capacity < 1 ||
-                    !leases.Any(l => string.Equals(l.ResourceId, resource, StringComparison.OrdinalIgnoreCase) &&
+                    !leases.Any(l => string.Equals(l.OwnerStepId, stepId, StringComparison.OrdinalIgnoreCase) &&
+                        string.Equals(l.ResourceId, resource, StringComparison.OrdinalIgnoreCase) &&
                         string.Equals(l.TaskId, taskId, StringComparison.OrdinalIgnoreCase) &&
                         string.Equals(l.VehicleId, vehicleId, StringComparison.OrdinalIgnoreCase) &&
                         l.MapId == mapId && l.MapVersionId == mapVersionId))

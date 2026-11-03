@@ -1,0 +1,208 @@
+using System.Text.Json;
+using AgvDispatch.Application.Abstractions;
+using AgvDispatch.Application.Maps;
+using AgvDispatch.Domain.Agvs;
+using AgvDispatch.Domain.Devices;
+using AgvDispatch.Domain.Tasks;
+
+namespace AgvDispatch.Service;
+
+/// <summary>
+/// Common fifth-layer check for both assignment strategies and the final outbox
+/// claim. Callers retain their map/charging operation leases; this helper never
+/// opens a gate or acquires a second operation lease.
+/// </summary>
+public sealed class DispatchPreSendSafetyService(
+    IMapExecutionGate executionGate, IActiveMapRuntime activeMap, IAgvStateCache vehicleStates,
+    IAgvGateway agvGateway, MapOptions mapOptions, DispatchOrchestratorOptions dispatch,
+    IDispatchOrchestrationRepository tasks, IDispatchTaskRepository taskReader,
+    ITrafficResourceManager trafficResources, DispatchTaskCreationOptions creation,
+    IPlcSignalCache signals, HandshakeExecutionOptions handshakeOptions,
+    PersistentHandshakeExecutor? handshake = null, ITaskHandshakeStore? handshakes = null,
+    IChargingDispatchGuard? charging = null, ITaskSwitchGuard? taskSwitchGuard = null,
+    FleetTestOwnership? fleetTest = null, BusinessRunOwnership? businessRun = null,
+    DispatchOptimizationService? optimization = null, IDispatchPipelineMonitor? monitor = null) : IDispatchPreSendSafetyService
+{
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    public Task<string?> CheckPreparationAsync(DispatchTaskStepWorkItem step, string vehicleId,
+        IReadOnlyList<string> path, ActiveMapRuntimeSnapshot? expectedMap, CancellationToken ct) =>
+        ObserveAsync(async () =>
+        {
+            var owned = step with { VehicleId = vehicleId };
+            return await CheckCoreAsync(owned, path, expectedMap, preparing: true, recovering: false, ct);
+        }, ct);
+
+    public Task<string?> CheckPendingCommandAsync(AgvCommandOutboxItem command, CancellationToken ct) =>
+        ObserveAsync(async () =>
+        {
+            if (command.CommandType != AgvCommandType.Transport || command.Status is not (AgvCommandStatus.Pending or AgvCommandStatus.RetryScheduled))
+                return "待发命令类型或持久化状态不允许认领。";
+            var payload = JsonSerializer.Deserialize<AgvTransportCommandPayload>(command.PayloadJson, JsonOptions);
+            if (payload is null || payload.BusinessTaskId != command.StepId || payload.VehicleId != command.VehicleId ||
+                payload.Path is not { Count: >= 2 } || payload.Source != payload.Path[0] || payload.Destination != payload.Path[^1])
+                return "待发命令负载与原步骤、车辆或路径端点不一致。";
+            var task = (await CurrentTasksAsync(ct)).SingleOrDefault(t => t.TaskId == command.TaskId);
+            var original = (await taskReader.GetStepsAsync(command.TaskId, ct)).SingleOrDefault(s => s.StepId == command.StepId);
+            if (task is null || original is null) return "原任务或运输步骤不在有效执行队列。";
+            var step = new DispatchTaskStepWorkItem(task.TaskId, task.StationId, command.VehicleId, task.Stage,
+                original.StepId, original.Sequence, original.StepType, original.Status,
+                original.SourceSite, original.DestinationSite, original.UpdatedAt);
+            return await CheckCoreAsync(step, payload.Path, activeMap.Current, preparing: false,
+                recovering: command.AttemptCount > 0, ct);
+        }, ct);
+
+    private async Task<string?> CheckCoreAsync(DispatchTaskStepWorkItem step, IReadOnlyList<string> path,
+        ActiveMapRuntimeSnapshot? expectedMap, bool preparing, bool recovering, CancellationToken ct)
+    {
+        if (path.Count < 2 || path.Any(string.IsNullOrWhiteSpace) || string.IsNullOrWhiteSpace(step.VehicleId))
+            return "运输路径或指定车辆不完整。";
+        if (executionGate.Mode is not (MapExecutionMode.Running or MapExecutionMode.Draining))
+            return "地图切换或启动恢复屏障尚未放行执行。";
+        if (preparing && step.StepType == DispatchTaskStepType.GoToPickup &&
+            (!executionGate.CanStartNewWork || !dispatch.Enabled)) return "新增派车门禁尚未放行。";
+        if (expectedMap is null || !ReferenceEquals(expectedMap, activeMap.Current)) return "运行地图缺失或已变化。";
+        if (dispatch.EngineeringMapError(expectedMap) is { } mapError) return mapError;
+
+        var current = await CurrentTasksAsync(ct);
+        var task = current.SingleOrDefault(t => t.TaskId == step.TaskId);
+        if (task is null || task.StationId != step.StationId) return "原任务已结束、冻结或工位归属不一致。";
+        var original = (await taskReader.GetStepsAsync(step.TaskId, ct)).SingleOrDefault(s => s.StepId == step.StepId);
+        if (original is null || original.StepType != step.StepType) return "原任务的运输步骤身份不一致。";
+        var expectedStage = step.StepType switch
+        {
+            DispatchTaskStepType.GoToPickup => DispatchTaskStage.WaitingForVehicle,
+            DispatchTaskStepType.DeliverFullBoxToDumper => DispatchTaskStage.PickingUp,
+            DispatchTaskStepType.EnterDumpingPosition => DispatchTaskStage.WaitingForDumper,
+            DispatchTaskStepType.ReturnEmptyBox => DispatchTaskStage.Dumping,
+            _ => (DispatchTaskStage)(-1)
+        };
+        if (preparing ? original.Status != DispatchTaskStepStatus.Ready || task.Stage != expectedStage :
+            original.Status is not (DispatchTaskStepStatus.CommandPending or DispatchTaskStepStatus.RetryScheduled) ||
+                task.Stage != DispatchTaskStage.SubmittingToAgv || original.SourceSite != path[0] || original.DestinationSite != path[^1])
+            return "原任务或步骤状态已经变化，不准备或认领新命令。";
+        var firstPreparation = preparing && step.StepType == DispatchTaskStepType.GoToPickup;
+        if ((!firstPreparation && (task.VehicleId != step.VehicleId || original.VehicleId != step.VehicleId)) ||
+            firstPreparation && (!string.IsNullOrWhiteSpace(task.VehicleId) && task.VehicleId != step.VehicleId ||
+                !string.IsNullOrWhiteSpace(original.VehicleId) && original.VehicleId != step.VehicleId))
+            return "任务、步骤与车辆责任不一致。";
+        if (current.Any(t => t.TaskId != step.TaskId && string.Equals(t.VehicleId, step.VehicleId, StringComparison.OrdinalIgnoreCase)))
+            return "该车辆仍由其他持久化任务占用。";
+        if (taskSwitchGuard is not null && !await taskSwitchGuard.AllowsVehicleAsync(step.VehicleId!, step.TaskId, null, ct))
+            return "车辆受控换单责任尚未交接。";
+        if (fleetTest?.Allows(step.TaskId, step.VehicleId!) == false) return "车辆联调责任不允许当前任务。";
+        if (step.StepType == DispatchTaskStepType.GoToPickup && !recovering &&
+            (!dispatch.AllowsVehicle(step.StationId, step.VehicleId!) || !TaskVehicleSelection.Accepts(task, step.VehicleId!) ||
+                charging?.AllowsNewBusiness(step.VehicleId!) == false ||
+                businessRun?.Returning == true && businessRun.Vehicle == step.VehicleId)) return "工位车辆池、充电或回待机责任不允许新增派车。";
+
+        // A previous physical attempt may have been accepted. Its reconciliation
+        // must use the same stable StepId even after movement/PLC consumption.
+        // The Robokit gateway queries that identity before any write and refuses
+        // a second physical send when acceptance remains uncertain.
+        if (!recovering)
+        {
+            if (await CheckVehicleAsync(step.VehicleId!, path[0], step.StepType == DispatchTaskStepType.GoToPickup, ct) is { } vehicleError)
+                return vehicleError;
+            if (await CheckPlcAsync(step, preparing, ct) is { } plcError) return plcError;
+        }
+        if (await trafficResources.CheckStepReservationAsync(step.StepId, step.TaskId, step.VehicleId!,
+            expectedMap.MapId, expectedMap.VersionId, path[0], path[^1], ct) is { } trafficError) return trafficError;
+        if (!ReferenceEquals(expectedMap, activeMap.Current) || executionGate.Mode is not (MapExecutionMode.Running or MapExecutionMode.Draining))
+            return "核验期间地图或执行门禁已变化。";
+        return null;
+    }
+
+    private async Task<string?> CheckVehicleAsync(string vehicleId, string source, bool newBusiness, CancellationToken ct)
+    {
+        var vehicle = (await agvGateway.GetVehiclesAsync(ct)).SingleOrDefault(v => v.VehicleId == vehicleId);
+        if (vehicle?.Connection != ConnectionState.Online || !vehicleStates.TryGet(vehicleId, out var robot) ||
+            robot.Connection != ConnectionState.Online || robot.Quality != SignalQuality.Good)
+            return "车辆离线或遥测质量无效。";
+        var now = DateTimeOffset.UtcNow;
+        if (robot.LastSuccessfulPollAt is not { } observed || observed > now.AddSeconds(1) ||
+            now - observed > TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds)) return "车辆观察已过期或时间异常。";
+        if (robot.EmergencyStopped != false || robot.Blocked != false || AgvObstaclePolicy.IsBlocked(robot) || AgvObstaclePolicy.HasBlockingAlarm(robot))
+            return "车辆急停、阻挡、阻塞报警或健康状态未知。";
+        if (robot.Tasks.Any(t => t.Status is 1 or 2 or 3) ||
+            !dispatch.IdleOperatingStates.Contains(vehicle.OperatingState, StringComparer.OrdinalIgnoreCase)) return "车辆存在未结束的车端任务或尚未空闲。";
+        if (!string.Equals(vehicle.CurrentStation, source, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(robot.CurrentStation, source, StringComparison.OrdinalIgnoreCase)) return "车辆实际起点与待发送路径不一致。";
+        var position = AgvMapPositionAnalyzer.Analyze(robot.X, robot.Y, robot.LocalizationConfidence,
+            robot.LastSuccessfulPollAt, activeMap.Current?.Definition, now, TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds),
+            mapOptions.MinimumLocalizationConfidence, mapOptions.MaximumRouteDeviationMeters);
+        if (position.State != AgvMapPositionState.Normal) return "车辆定位核验未通过：" + position.Message;
+        var minimum = (decimal)(optimization?.Options.MinimumBatteryPercent ?? 20);
+        if (newBusiness && (robot.BatteryPercent is null or < 0 or > 100 || robot.BatteryPercent < minimum ||
+            vehicle.BatteryPercent is < 0 or > 100 || vehicle.BatteryPercent < minimum))
+            return "电量未知或低于新业务最低电量。";
+        return null;
+    }
+
+    private async Task<string?> CheckPlcAsync(DispatchTaskStepWorkItem step, bool preparing, CancellationToken ct)
+    {
+        var allSteps = await taskReader.GetStepsAsync(step.TaskId, ct);
+        var first = allSteps.FirstOrDefault(s => s.StepType == DispatchTaskStepType.GoToPickup);
+        var binding = first is null || handshakes is null ? null : await handshakes.GetAsync(step.TaskId, first.StepId, ct);
+        if (handshakeOptions.Enabled)
+        {
+            if (handshake is null || handshakes is null || handshakeOptions.PlcContractVersion != HandshakeExecutionOptions.Version)
+                return "已启用的28阶段契约缺少匹配执行器、持久化绑定或版本。";
+            if (!preparing) await handshake.ValidatePendingTransportAsync(step.TaskId, step.StepId, step.VehicleId!, ct);
+            else if (step.StepType == DispatchTaskStepType.GoToPickup) await handshake.BindBeforeTransportAsync(step, ct);
+            else await handshake.ValidateTransportAsync(step, ct);
+            return null;
+        }
+        if (binding is not null) return "原任务绑定28阶段契约，禁止降级为旧握手发送。";
+        var conditions = new List<(string Station, string Variable, bool Expected)>
+        {
+            (step.StationId, "Faulted", false), (step.StationId, "CommunicationOnline", true),
+            (creation.DumperStationId, "Faulted", false)
+        };
+        if (step.StepType == DispatchTaskStepType.GoToPickup)
+        {
+            conditions.Add((step.StationId, "BoxPresent", true));
+            conditions.Add((step.StationId, "FullBoxRequestAcknowledged", true));
+        }
+        else
+        {
+            var priorType = step.StepType switch
+            {
+                DispatchTaskStepType.DeliverFullBoxToDumper => DispatchTaskStepType.PickupFullBox,
+                DispatchTaskStepType.EnterDumpingPosition => DispatchTaskStepType.WaitForDumperReady,
+                DispatchTaskStepType.ReturnEmptyBox => DispatchTaskStepType.DumpFullBox,
+                _ => (DispatchTaskStepType)(-1)
+            };
+            if (!allSteps.Any(s => s.StepType == priorType && s.Status == DispatchTaskStepStatus.Completed))
+                return "后续运输缺少原任务前序步骤完成依据。";
+            conditions.Add((step.StationId, "EmptyBoxTaskAcknowledged", true));
+            if (step.StepType == DispatchTaskStepType.DeliverFullBoxToDumper) conditions.Add((step.StationId, "BoxPresent", false));
+            if (step.StepType == DispatchTaskStepType.EnterDumpingPosition) conditions.Add((creation.DumperStationId, "DumperReady", true));
+            if (step.StepType == DispatchTaskStepType.ReturnEmptyBox) conditions.Add((creation.DumperStationId, "DumpingCompletedMayLeave", true));
+        }
+        var now = DateTimeOffset.UtcNow;
+        foreach (var condition in conditions)
+        {
+            signals.TryGet(condition.Station, condition.Variable, out var sample);
+            var result = TaskSignalPredicate.EvaluateFresh(condition.Station, condition.Variable, condition.Expected,
+                sample, now, handshakeOptions.StateMaxAgeSeconds, "发送前复核既有PLC条件");
+            if (!result.Satisfied) return $"PLC发送条件未成立：{condition.Station}/{condition.Variable}；{result.Reason}";
+        }
+        return null;
+    }
+
+    private async Task<DispatchTaskWorkItem[]> CurrentTasksAsync(CancellationToken ct) =>
+        (await tasks.GetDispatchCandidatesAsync(int.MaxValue, ct)).Concat(await tasks.GetSubmittingTasksAsync(ct))
+            .Concat(await tasks.GetAssignedTasksAsync(ct)).DistinctBy(t => t.TaskId).ToArray();
+
+    private async Task<string?> ObserveAsync(Func<Task<string?>> check, CancellationToken ct)
+    {
+        string? reason;
+        try { reason = await check(); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex) { reason = "安全复核未通过：" + ex.Message; }
+        monitor?.ReportLayer("safety", reason is null ? "Ready" : "Blocked",
+            reason ?? "原任务、地图、车辆、PLC契约与持久化路权复核通过。", 1);
+        return reason;
+    }
+}

@@ -99,6 +99,8 @@ internal static class Program
         Check(db.Queryable<TrafficResourceLeaseEntity>().Any(l=>l.OwnerStepId=="STEP-A2") && (await control.GetLifecycleAsync(default)).Requests.Single(r=>r.StepId=="STEP-A2").State=="Retained", "故障任务保留路权且展示异常保留");
         await db.Updateable<DispatchTaskEntity>().SetColumns(t=>t.Stage==90).Where(t=>t.TaskId=="TASK-A").ExecuteCommandAsync();
         await manager.GetUnavailableResourceIdsAsync("TASK-B",default);
+        Check(db.Queryable<TrafficResourceLeaseEntity>().Any(l=>l.TaskId=="TASK-A"), "只读候选查询不隐式释放已完成任务路权");
+        await manager.PrepareDispatchCycleAsync(default);
         Check(!db.Queryable<TrafficResourceLeaseEntity>().Any(l=>l.TaskId=="TASK-A") && (await control.GetLifecycleAsync(default)).Events.Any(e=>e.StepId=="STEP-A2" && e.Kind=="Released"), "已完成任务正常释放并保存过程记录");
         Check((await control.GetLifecycleAsync(default)).Requests.Single(r=>r.StepId=="STEP-B").Reason.Contains("重新规划"), "阻塞方释放后等待下一轮调度不在查询时自动授予");
         Check((await manager.TryAcquireAsync("STEP-B","TASK-B","AGV-B",["CROSS","NARROW"],default)).Acquired, "冲突解除后原请求可重新取得完整资源");

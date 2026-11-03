@@ -55,7 +55,8 @@ var sealedRoad = await roads.CreateAsync(roadUser,new("outbox-seal","ROAD-MAP","
 var queuedTask = await tasks.TryCreateAsync("ROAD-CLOSED-ORIGIN","DUMPER",0,default);
 await tasks.MarkAcknowledgedAsync(queuedTask.Task.TaskId,default);
 var queuedStep=(await tasks.GetStepsAsync(queuedTask.Task.TaskId,default))[0];
-await outbox.TryPrepareTransportStepAsync(queuedTask.Task.TaskId,queuedStep.StepId,"CAR-ONLINE",["A","B"],new("Wait"),default);
+Check(await outbox.TryPrepareTransportStepAsync(queuedTask.Task.TaskId,queuedStep.StepId,"CAR-ROAD",["A","B"],new("Wait"),default),
+    "封路用例使用独立车辆登记原命令，不抢占前两辆仍有业务责任的车辆");
 using var roadSender = new AgvCommandOutboxDispatcher(NullLogger<AgvCommandOutboxDispatcher>.Instance,new(),outbox,gateway,gate,roadClosures:roads);
 for(var i=0;i<8;i++)await (Task)method.Invoke(roadSender,[CancellationToken.None])!;
 var roadHeld = db.Queryable<AgvCommandOutboxEntity>().Single(c=>c.StepId==queuedStep.StepId);
@@ -75,7 +76,8 @@ sealed class Fleet : IAgvGateway
     public Task<DeviceConnectionStatus> GetConnectionStatusAsync(CancellationToken ct) => Task.FromResult(new DeviceConnectionStatus("FLEET", "Synthetic", ConnectionState.Degraded, DateTimeOffset.Now, null));
     public Task<IReadOnlyList<AgvVehicleStatus>> GetVehiclesAsync(CancellationToken ct) => Task.FromResult<IReadOnlyList<AgvVehicleStatus>>([
         new("CAR-OFFLINE", Offline ? ConnectionState.Disconnected : ConnectionState.Online, "Idle", 80, "A", DateTimeOffset.Now),
-        new("CAR-ONLINE", ConnectionState.Online, "Idle", 80, "A", DateTimeOffset.Now)]);
+        new("CAR-ONLINE", ConnectionState.Online, "Idle", 80, "A", DateTimeOffset.Now),
+        new("CAR-ROAD", ConnectionState.Online, "Idle", 80, "A", DateTimeOffset.Now)]);
     public Task<string> CreateTransportTaskAsync(string id, string? car, IReadOnlyList<string> path, AgvTransportAction? action, CancellationToken ct)
     { Sends.Add(car!); return Task.FromResult(id); }
     public Task<AgvTransportTaskStatus?> GetTransportTaskStatusAsync(string id, CancellationToken ct) => throw new NotSupportedException();

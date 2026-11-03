@@ -15,6 +15,7 @@ public sealed partial class TrafficResourceManager(
     TrafficResourceCatalog catalog,
     TrafficControlSettings settings, TimeProvider? clock = null) : ITrafficResourceManager, ITaskWaitingBayAllocator
 {
+    public Task PrepareDispatchCycleAsync(CancellationToken cancellationToken) => PruneCompletedTasksAsync(cancellationToken);
     public async Task<IReadOnlySet<string>> GetHeldTaskIdsAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -36,7 +37,6 @@ public sealed partial class TrafficResourceManager(
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(requestingTaskId);
         cancellationToken.ThrowIfCancellationRequested();
-        await PruneCompletedTasksAsync(cancellationToken);
         var leases = await database.Queryable<TrafficResourceLeaseEntity>()
             .Where(lease => lease.TaskId != requestingTaskId)
             .ToListAsync(cancellationToken);

@@ -48,6 +48,58 @@ export interface DispatchOptimizationTask {
   dispatchedVehicleId: string | null;
   reason: string;
   candidates: DispatchOptimizationCandidate[];
+  blockedLayer?: string | null;
+}
+
+export type DispatchPipelineLayerKey = 'queue' | 'candidates' | 'matching' | 'traffic' | 'safety' | 'execution';
+export interface DispatchPipelineLayerSnapshot {
+  key: string;
+  number: number;
+  name: string;
+  state: string;
+  summary: string;
+  itemCount: number | null;
+  updatedAt: string;
+}
+
+const dispatchPipelineDefinitions = [
+  { key: 'queue', number: 1, name: 'PLC 呼叫队列', purpose: '持久化、去重，保留优先级和原始呼叫时间', link: '/tasks', linkLabel: '查看业务任务' },
+  { key: 'candidates', number: 2, name: '候选筛选', purpose: '核对车辆健康、能力、电量、车辆池与路线可达', link: '/vehicles', linkLabel: '查看车辆状态' },
+  { key: 'matching', number: 3, name: '滚动全局匹配', purpose: '对当前窗口任务与可用车辆生成推荐组合', link: null, linkLabel: '' },
+  { key: 'traffic', number: 4, name: '交通路权', purpose: '按优先级申请容量，交接后释放原占用', link: '/resource-review', linkLabel: '查看公共资源' },
+  { key: 'safety', number: 5, name: '安全复核', purpose: '命令登记前复核地图、车辆、路权及 PLC 许可', link: '/commissioning', linkLabel: '查看执行条件' },
+  { key: 'execution', number: 6, name: '执行与恢复', purpose: '沿原任务和命令队列执行，保留恢复依据', link: '/recovery', linkLabel: '查看执行恢复' },
+] as const;
+
+export function dispatchPipelineLayerName(key?: string | null): string {
+  const layer = dispatchPipelineDefinitions.find(layer => layer.key === key);
+  return layer ? `第 ${layer.number} 层 · ${layer.name}` : '';
+}
+
+export function dispatchPipelineLayers(layers: DispatchPipelineLayerSnapshot[] | undefined, fresh: boolean, now = Date.now()) {
+  const states: Record<string, { label: string; tone: string }> = {
+    Ready: { label: '已就绪', tone: 'ready' }, Running: { label: '运行中', tone: 'running' },
+    Waiting: { label: '等待中', tone: 'waiting' }, Blocked: { label: '已阻止', tone: 'blocked' },
+    Disabled: { label: '未启用', tone: 'disabled' }, Observing: { label: '影子观察', tone: 'observing' },
+    Idle: { label: '当前空闲', tone: 'idle' }
+  };
+  return dispatchPipelineDefinitions.map(definition => {
+    const rows = layers?.filter(layer => layer.key === definition.key) ?? [];
+    const observed = rows.length === 1 ? rows[0] : undefined;
+    const stamp = observed ? Date.parse(observed.updatedAt) : Number.NaN;
+    const valid = !!observed && !!states[observed.state] && Number.isFinite(stamp) && stamp > 0 && stamp <= now + 1000;
+    const current = valid && fresh && now - stamp < 15000;
+    return {
+      ...definition,
+      label: !observed ? '未取得状态' : !valid ? '尚未观察' : current ? states[observed.state]!.label : '观察已过期',
+      tone: !observed || !valid ? 'unknown' : current ? states[observed.state]!.tone : 'stale',
+      state: current ? observed.state : 'Unknown',
+      summary: observed?.summary || '等待后台提供该层的运行观察。',
+      itemCount: current && typeof observed.itemCount === 'number' && Number.isInteger(observed.itemCount) && observed.itemCount >= 0
+        ? observed.itemCount : null,
+      updatedAt: valid ? observed.updatedAt : null,
+    };
+  });
 }
 
 export interface DispatchOptimizationSnapshot {
@@ -67,6 +119,7 @@ export interface DispatchOptimizationSnapshot {
   routeCacheMisses: number;
   message: string;
   tasks: DispatchOptimizationTask[];
+  layers?: DispatchPipelineLayerSnapshot[];
 }
 
 export const assignmentModeLabels: Record<DispatchAssignmentMode, string> = {

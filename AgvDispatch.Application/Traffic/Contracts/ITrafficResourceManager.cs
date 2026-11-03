@@ -7,6 +7,8 @@ public sealed record TrafficReservationResult(
 
 public interface ITrafficResourceManager
 {
+    // Explicit layer-four lifecycle work; candidate route readers must stay read-only.
+    Task PrepareDispatchCycleAsync(CancellationToken cancellationToken) => Task.CompletedTask;
     // A lease remains fixed even when a previous prepare crashed before assigning
     // a vehicle to its task. Optimizers must never reclaim such work implicitly.
     Task<IReadOnlySet<string>> GetHeldTaskIdsAsync(CancellationToken cancellationToken) =>

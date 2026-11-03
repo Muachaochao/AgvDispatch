@@ -17,7 +17,9 @@ public sealed class DispatchTaskStepCoordinator(
     ITrafficResourceManager trafficResources,
     IMapExecutionGate executionGate,
     IExecutionEvidenceJournal? journal = null,
-    IAgvStateCache? vehicleStates = null, IActiveMapRuntime? activeMap = null, PersistentHandshakeExecutor? handshake = null) : IsolatedBackgroundService
+    IAgvStateCache? vehicleStates = null, IActiveMapRuntime? activeMap = null, PersistentHandshakeExecutor? handshake = null,
+    IDispatchPreSendSafetyService? preSendSafety = null, DispatchTrafficReservationService? trafficLayer = null,
+    IDispatchPipelineMonitor? pipeline = null) : IsolatedBackgroundService
 {
     private readonly Dictionary<string, string> _conditionFingerprints = new(StringComparer.Ordinal);
     private readonly HashSet<string> _observedSteps = new(StringComparer.Ordinal);
@@ -234,19 +236,15 @@ public sealed class DispatchTaskStepCoordinator(
                     "候选路径被交通资源占用，等待容量释放；诊断路径不会发送车辆。") { MapId = planningMap?.MapId, MapVersionId = planningMap?.VersionId }, cancellationToken);
             return;
         }
-        await trafficResources.RecordRouteAsync(new(step.StepId, step.TaskId, step.VehicleId, route.Item1, route.Item2,
-            plan.EdgeIds, plan.ResourceIds, false, "规划完成，申请本运输路径资源。") { MapId = planningMap?.MapId, MapVersionId = planningMap?.VersionId }, cancellationToken);
+        var observation = new TrafficRouteObservation(step.StepId, step.TaskId, step.VehicleId, route.Item1, route.Item2,
+            plan.EdgeIds, plan.ResourceIds, false, "规划完成，申请本运输路径资源。") { MapId = planningMap?.MapId, MapVersionId = planningMap?.VersionId };
         if (plan.Nodes.Count < 2)
         {
             throw new InvalidOperationException($"AGV路径节点不足：{route.Item1}->{route.Item2}。");
         }
 
-        var reservation = await trafficResources.TryAcquireAsync(
-            step.StepId,
-            step.TaskId,
-            step.VehicleId,
-            plan.ResourceIds,
-            cancellationToken);
+        var reservation = await (trafficLayer ?? new DispatchTrafficReservationService(trafficResources, pipeline))
+            .AcquireAsync(observation, cancellationToken);
         if (!reservation.Acquired)
         {
             logger.LogDebug(
@@ -261,6 +259,13 @@ public sealed class DispatchTaskStepCoordinator(
         var commandPrepared = false;
         try
         {
+            if (preSendSafety is not null && await preSendSafety.CheckPreparationAsync(step, step.VehicleId, plan.Nodes,
+                planningMap, cancellationToken) is { } rejection)
+            {
+                await trafficResources.ReleaseStepAsync(step.StepId, cancellationToken);
+                logger.LogDebug("后续运输步骤等待安全复核。StepId={StepId}, Reason={Reason}", step.StepId, rejection);
+                return;
+            }
             commandPrepared = await outbox.TryPrepareTransportStepAsync(
                     step.TaskId,
                     step.StepId,
@@ -270,6 +275,7 @@ public sealed class DispatchTaskStepCoordinator(
                     cancellationToken);
             if (commandPrepared)
             {
+                pipeline?.ReportLayer("execution", "Waiting", "后续运输步骤已沿用原任务与步骤原子登记；发送前再次经过安全复核。", 1);
                 // New contract conservatively retains earlier path leases until verified full-cycle closure.
                 if (handshake?.Enabled != true) await trafficResources.ReleaseTaskExceptStepAsync(
                     step.TaskId, step.StepId, cancellationToken);

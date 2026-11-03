@@ -272,7 +272,13 @@ builder.Configuration.GetSection("DispatchOptimization").Bind(assignmentOptions)
 builder.Services.AddSingleton(p => new DispatchOptimizationService(
     Path.Combine(Path.GetDirectoryName(databaseOptions.DatabasePath)!, "dispatch-optimization.json"), assignmentOptions,
     p.GetRequiredService<ILogger<DispatchOptimizationService>>()));
-builder.Services.AddSingleton<IDispatchOptimizationService>(p => p.GetRequiredService<DispatchOptimizationService>());
+builder.Services.AddSingleton<IDispatchPipelineMonitor>(p => p.GetRequiredService<DispatchOptimizationService>());
+builder.Services.AddSingleton<IDispatchOptimizationService, DispatchPipelineSnapshotService>();
+builder.Services.AddSingleton<IDispatchQueueWindowService, DispatchQueueWindowService>();
+builder.Services.AddSingleton<IDispatchCandidateFilter, DispatchCandidateFilter>();
+builder.Services.AddSingleton<DispatchTrafficReservationService>();
+builder.Services.AddSingleton<DispatchPreSendSafetyService>();
+builder.Services.AddSingleton<IDispatchPreSendSafetyService>(p => p.GetRequiredService<DispatchPreSendSafetyService>());
 builder.Services.AddSingleton(p => new DispatchRouteCache(p.GetRequiredService<IRoutePlanner>(), p.GetRequiredService<IActiveMapRuntime>(),
     p.GetRequiredService<ITrafficFlowMonitor>(), p.GetRequiredService<IRoadClosureService>(), p.GetRequiredService<IAgvStateCache>(), dispatchOrchestratorOptions));
 var taskParameterPath = Path.Combine(Path.GetDirectoryName(databaseOptions.DatabasePath)!, "task-parameters.json");

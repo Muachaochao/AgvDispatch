@@ -21,8 +21,14 @@ public sealed partial class DispatchTaskOrchestrator(
     HandshakeExecutionOptions? handshakeOptions = null, PersistentHandshakeExecutor? handshake = null,
     BusinessRunOwnership? businessRun = null, FleetTestOwnership? fleetTest=null,
     IChargingDispatchGuard? charging=null, ITaskSwitchGuard? taskSwitchGuard=null,
-    DispatchOptimizationService? optimization=null, DispatchRouteCache? routeCache=null) : IsolatedBackgroundService
+    DispatchOptimizationService? optimization=null, DispatchRouteCache? routeCache=null,
+    IDispatchQueueWindowService? queueLayer=null, IDispatchCandidateFilter? candidateLayer=null,
+    DispatchTrafficReservationService? trafficLayer=null, IDispatchPreSendSafetyService? preSendSafety=null) : IsolatedBackgroundService
 {
+    private readonly IDispatchQueueWindowService _queueLayer = queueLayer ?? new DispatchQueueWindowService(tasks, trafficResources);
+    private readonly IDispatchCandidateFilter _candidateLayer = candidateLayer ?? new DispatchCandidateFilter(options, agvGateway, agvStates,
+        activeMap, mapOptions, routePlanner, trafficResources, routeCache, businessRun, fleetTest, charging, taskSwitchGuard);
+    private readonly DispatchTrafficReservationService _trafficLayer = trafficLayer ?? new(trafficResources, optimization);
     private readonly HashSet<string> _missingRouteWarnings =
         new(StringComparer.OrdinalIgnoreCase);
     private string? _waitingBayError;
@@ -63,7 +69,8 @@ public sealed partial class DispatchTaskOrchestrator(
                 logger.LogError(exception, "AGV任务编排周期执行失败。");
             }
 
-            await Task.Delay(options.PollIntervalMs, stoppingToken);
+            await Task.Delay(optimization is not null && optimization.Options.Mode != "Disabled"
+                ? Math.Min(options.PollIntervalMs, optimization.Options.IntervalMs) : options.PollIntervalMs, stoppingToken);
         }
     }
 
@@ -80,6 +87,7 @@ public sealed partial class DispatchTaskOrchestrator(
         }
 
         await SynchronizeExecutingTasksAsync(cancellationToken);
+        await _trafficLayer.PrepareCycleAsync(cancellationToken);
         var submitting = await tasks.GetSubmittingTasksAsync(cancellationToken);
         var assigned = await tasks.GetAssignedTasksAsync(cancellationToken);
         foreach (var activeTask in submitting.Concat(assigned).DistinctBy(task => task.TaskId))
@@ -244,15 +252,9 @@ public sealed partial class DispatchTaskOrchestrator(
                         continue;
                     }
                 }
-                await trafficResources.RecordRouteAsync(new(readyStep.StepId, task.TaskId, vehicle.VehicleId,
+                var reservation = await _trafficLayer.AcquireAsync(new(readyStep.StepId, task.TaskId, vehicle.VehicleId,
                     vehicle.CurrentStation!, pickupSite, route.EdgeIds, route.ResourceIds,
                     false, "规划完成，申请到取货站路径资源。") { MapId = planningMap?.MapId, MapVersionId = planningMap?.VersionId }, cancellationToken);
-                var reservation = await trafficResources.TryAcquireAsync(
-                    readyStep.StepId,
-                    task.TaskId,
-                    vehicle.VehicleId,
-                    route.ResourceIds,
-                    cancellationToken);
                 if (!reservation.Acquired)
                 {
                     logger.LogDebug(
@@ -275,7 +277,10 @@ public sealed partial class DispatchTaskOrchestrator(
                     { await trafficResources.ReleaseStepAsync(readyStep.StepId, cancellationToken); continue; }
                     if(fleetTest?.Allows(task.TaskId,vehicle.VehicleId)==false)
                     {await trafficResources.ReleaseStepAsync(readyStep.StepId,cancellationToken);continue;}
-                    if(handshake!=null)await handshake.BindBeforeTransportAsync(readyStep with {VehicleId=vehicle.VehicleId},cancellationToken);
+                    if (preSendSafety is not null && await preSendSafety.CheckPreparationAsync(readyStep, vehicle.VehicleId, route.Nodes,
+                        planningMap, cancellationToken) is { } rejected)
+                    { await trafficResources.ReleaseStepAsync(readyStep.StepId, cancellationToken); continue; }
+                    if(preSendSafety is null && handshake!=null)await handshake.BindBeforeTransportAsync(readyStep with {VehicleId=vehicle.VehicleId},cancellationToken);
                     commandPrepared = await outbox.TryPrepareTransportStepAsync(
                         task.TaskId,
                         readyStep.StepId,

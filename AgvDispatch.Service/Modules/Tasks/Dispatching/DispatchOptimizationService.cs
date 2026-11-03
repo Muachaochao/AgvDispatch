@@ -4,7 +4,7 @@ using AgvDispatch.Application.Abstractions;
 namespace AgvDispatch.Service;
 
 /// <summary>Immutable, revisioned options are captured once per cycle. Saving never opens an execution gate.</summary>
-public sealed class DispatchOptimizationService : IDispatchOptimizationService
+public sealed class DispatchOptimizationService : IDispatchOptimizationService, IDispatchPipelineMonitor
 {
     private readonly string _path;
     private readonly SemaphoreSlim _save = new(1, 1);
@@ -33,6 +33,17 @@ public sealed class DispatchOptimizationService : IDispatchOptimizationService
         }
     }
     public DispatchAssignmentOptions Options => Volatile.Read(ref _snapshot).Options;
+    public void ReportLayer(string key, string state, string summary, int? itemCount = null)
+    {
+        DispatchOptimizationSnapshot before, after;
+        do
+        {
+            before = Volatile.Read(ref _snapshot);
+            if (!before.Layers.Any(layer => layer.Key == key)) throw new ArgumentException("未知派车层：" + key);
+            after = before with { Layers = before.Layers.Select(layer => layer.Key == key
+                ? layer with { State = state, Summary = summary, ItemCount = itemCount, UpdatedAt = DateTimeOffset.UtcNow } : layer).ToArray() };
+        } while (!ReferenceEquals(Interlocked.CompareExchange(ref _snapshot, after, before), before));
+    }
     public Task<DispatchOptimizationSnapshot> GetAsync(CancellationToken ct)
     { ct.ThrowIfCancellationRequested(); return Task.FromResult(Volatile.Read(ref _snapshot)); }
 
@@ -43,6 +54,7 @@ public sealed class DispatchOptimizationService : IDispatchOptimizationService
         {
             before = Volatile.Read(ref _snapshot);
             after = cycle with { Options = before.Options, Revision = before.Revision, CycleNumber = before.CycleNumber + 1,
+                Layers = before.Layers,
                 ShadowCycleCount = before.ShadowCycleCount + (shadow ? 1 : 0),
                 ImprovedCycleCount = before.ImprovedCycleCount + (improved ? 1 : 0) };
         } while (!ReferenceEquals(Interlocked.CompareExchange(ref _snapshot, after, before), before));

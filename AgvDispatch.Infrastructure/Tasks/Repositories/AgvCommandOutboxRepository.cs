@@ -54,6 +54,15 @@ public sealed class AgvCommandOutboxRepository(ISqlSugarClient database, IActive
                 return;
             }
 
+            // Assignment snapshots are advisory. Enforce vehicle ownership in
+            // the same transaction that registers the persistent command.
+            if (await database.Queryable<DispatchTaskEntity>().AnyAsync(task =>
+                    task.TaskId != taskId && task.VehicleId == vehicleId &&
+                    task.Stage >= (int)DispatchTaskStage.SubmittingToAgv &&
+                    task.Stage <= (int)DispatchTaskStage.WaitingForPlcConfirmation, cancellationToken) ||
+                await database.Queryable<TrafficResourceLeaseEntity>().AnyAsync(lease =>
+                    lease.TaskId != taskId && lease.VehicleId == vehicleId, cancellationToken)) return;
+
             var expectedTaskStage = ((DispatchTaskStepType)step.StepType) switch
             {
                 DispatchTaskStepType.GoToPickup => DispatchTaskStage.WaitingForVehicle,
@@ -184,6 +193,7 @@ public sealed class AgvCommandOutboxRepository(ISqlSugarClient database, IActive
         var pending = (int)AgvCommandStatus.Pending;
         var retry = (int)AgvCommandStatus.RetryScheduled;
         var now = claimedAt.LocalDateTime;
+        var claimedThisCall = false;
         var transaction = await database.Ado.UseTranAsync(async () =>
         {
             var affected = await database.Updateable<AgvCommandOutboxEntity>()
@@ -203,6 +213,8 @@ public sealed class AgvCommandOutboxRepository(ISqlSugarClient database, IActive
             {
                 return;
             }
+
+            claimedThisCall = true;
 
             var command = await database.Queryable<AgvCommandOutboxEntity>()
                 .Where(item => item.CommandId == commandId)
@@ -227,6 +239,8 @@ public sealed class AgvCommandOutboxRepository(ISqlSugarClient database, IActive
                 $"领取AGV命令{commandId}失败。",
                 transaction.ErrorException);
         }
+
+        if (!claimedThisCall) return null;
 
         var claimed = await database.Queryable<AgvCommandOutboxEntity>()
             .Where(item =>
@@ -418,7 +432,8 @@ public sealed class AgvCommandOutboxRepository(ISqlSugarClient database, IActive
                     })
                     .Where(item =>
                         item.CommandId == command.CommandId &&
-                        item.Status == (int)AgvCommandStatus.Sending)
+                        item.Status == (int)AgvCommandStatus.Sending &&
+                        item.ClaimedAt == command.ClaimedAt && item.ClaimedAt <= staleBefore.LocalDateTime)
                     .ExecuteCommandAsync(cancellationToken);
                 if (affected == 1)
                 {

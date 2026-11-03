@@ -13,7 +13,8 @@ public sealed class AgvCommandOutboxDispatcher(
     IMapExecutionGate executionGate,
     IExecutionEvidenceJournal? journal = null, ITaskHandshakeStore? handshakes = null, IDispatchTaskRepository? taskReader = null, HandshakeExecutionOptions? handshakeOptions = null,PersistentHandshakeExecutor? handshake = null,
     IRoadClosureService? roadClosures = null, ITrafficResourceManager? trafficResources = null,
-    IActiveMapRuntime? activeMap = null) : IsolatedBackgroundService
+    IActiveMapRuntime? activeMap = null, IDispatchPreSendSafetyService? preSendSafety = null,
+    IDispatchPipelineMonitor? pipeline = null) : IsolatedBackgroundService
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly Dictionary<string,string> _blockedReasons=new(StringComparer.Ordinal);
@@ -22,6 +23,7 @@ public sealed class AgvCommandOutboxDispatcher(
     {
         if (!options.Enabled)
         {
+            pipeline?.ReportLayer("execution", "Disabled", "Outbox 发送未启用，原任务和命令保留。");
             logger.LogInformation("AGV命令Outbox发送服务未启用。");
             return;
         }
@@ -65,6 +67,7 @@ public sealed class AgvCommandOutboxDispatcher(
             cancellationToken);
         if (count > 0)
         {
+            pipeline?.ReportLayer("execution", "Waiting", $"回收 {count} 条超时领取，沿用原命令和步骤编号核对厂家状态，不重新生成任务。", count);
             logger.LogWarning("已回收发送租约超时的AGV命令。Count={Count}", count);
         }
     }
@@ -83,8 +86,14 @@ public sealed class AgvCommandOutboxDispatcher(
             DateTimeOffset.Now,
             options.BatchSize,
             cancellationToken);
+        if (due.Count == 0) pipeline?.ReportLayer("execution", "Idle", "当前没有到期的持久化命令，等待原任务后续步骤。", 0);
         foreach (var candidate in due)
         {
+            if (preSendSafety is not null && await preSendSafety.CheckPendingCommandAsync(candidate, cancellationToken) is { } rejected)
+            {
+                pipeline?.ReportLayer("execution", "Waiting", "原命令等待安全层放行：" + rejected, due.Count);
+                continue;
+            }
             // A degraded fleet can still serve healthy cars. Do not claim an
             // offline car's command: claiming records a possible send attempt,
             // which cannot later be treated as proof that nothing was sent.
@@ -148,7 +157,7 @@ public sealed class AgvCommandOutboxDispatcher(
                     continue;
                 }
             }
-            if(handshakeOptions?.Enabled==true)
+            if(preSendSafety is null && handshakeOptions?.Enabled==true)
             {
                 try
                 {
@@ -207,6 +216,7 @@ public sealed class AgvCommandOutboxDispatcher(
 
             if (journal != null) await journal.RecordAsync(command.TaskId, command.StepId, "AgvSendAcknowledged", new { command.CommandId, vendorCommandId }, cancellationToken);
             await outbox.MarkSentAsync(command.CommandId, vendorCommandId, cancellationToken);
+            pipeline?.ReportLayer("execution", "Running", "厂家已确认原命令；执行、反馈、路权交接及恢复继续沿用同一任务和步骤。", 1);
             logger.LogInformation(
                 "AGV命令发送成功。CommandId={CommandId}, StepId={StepId}, VendorCommandId={VendorCommandId}, Attempt={Attempt}",
                 command.CommandId,
@@ -227,6 +237,7 @@ public sealed class AgvCommandOutboxDispatcher(
                 DateTimeOffset.Now.Add(delay),
                 exception is AgvPartialAcceptanceException ? 1 : options.MaximumAttempts,
                 cancellationToken);
+            pipeline?.ReportLayer("execution", "Waiting", "发送回执失败或不确定，保留原命令并持久化重试计划，不重建任务：" + exception.Message, 1);
             logger.LogWarning(
                 exception,
                 "AGV命令发送失败，已持久化重试计划。CommandId={CommandId}, StepId={StepId}, Attempt={Attempt}, RetryAfterMs={RetryAfterMs}",

@@ -16,13 +16,22 @@ let options = { mode: 'Shadow', intervalMs: 3000, windowSize: 80, candidatesPerV
   waitPriorityPerMinute: 1, maxWaitPriority: 30, deadlineHorizonMinutes: 15, maxDeadlinePriority: 30,
   minimumBatteryPercent: 20, nominalSpeedMetersPerSecond: 1, standbyBonusSeconds: 1, batteryRiskSeconds: 10,
   crossZoneSeconds: 10, returnCostWeight: 0.2, siteZones: { LM28: 'A区' }, stationDeadlineMinutes: { 'CNC-A': 30 } };
-let revision = 'r1', unavailable = false, writes = [], child, ws, sequence = 0;
+let revision = 'r1', unavailable = false, includeLayers = false, writes = [], child, ws, sequence = 0;
 const pending = new Map(), errors = [];
 const snapshot = () => ({ options, revision, capturedAt: new Date().toISOString(), cycleNumber: 7, durationMs: 3.7,
   waitingTaskCount: 300, windowTaskCount: 80, eligibleVehicleCount: 2, candidateCount: 3, routeCacheHits: 9, routeCacheMisses: 2,
-  message: '影子推荐已计算；等待交通资源 TRAFFIC-LM28 容量释放。', tasks: [
+  message: '影子推荐已计算；等待交通资源 TRAFFIC-LM28 容量释放。',
+  layers: includeLayers ? [
+    { key: 'queue', number: 1, name: 'PLC 呼叫队列', state: 'Ready', summary: '300 个呼叫已持久化，80 个进入窗口。', itemCount: 300 },
+    { key: 'candidates', number: 2, name: '候选筛选', state: 'Ready', summary: '2 台车辆通过本轮硬约束。', itemCount: 2 },
+    { key: 'matching', number: 3, name: '滚动全局匹配', state: options.mode === 'Global' ? 'Ready' : 'Observing', summary: '已计算2组全局推荐。', itemCount: 2 },
+    { key: 'traffic', number: 4, name: '交通路权', state: 'Waiting', summary: 'TRAFFIC-LM28 容量不足，保留原占用等待释放。', itemCount: 2 },
+    { key: 'safety', number: 5, name: '安全复核', state: 'Waiting', summary: '尚未取得本轮路权，未进入命令登记前复核。', itemCount: null },
+    { key: 'execution', number: 6, name: '执行与恢复', state: 'Idle', summary: '本轮尚未登记车辆命令。', itemCount: 0 }
+  ].map(layer => ({ ...layer, updatedAt: new Date().toISOString() })) : undefined,
+  tasks: [
     { taskId: 'T-A', stationId: 'CNC-A', calledAt: new Date(Date.now() - 120000).toISOString(), basePriority: 50, effectivePriority: 52,
-      waitMinutes: 2, recommendedVehicleId: 'AGV-01', greedyVehicleId: 'AGV-03', dispatchedVehicleId: null, reason: '保留唯一可执行车辆给 CNC-B。',
+      waitMinutes: 2, recommendedVehicleId: 'AGV-01', greedyVehicleId: 'AGV-03', dispatchedVehicleId: null, reason: '保留唯一可执行车辆给 CNC-B。', blockedLayer: 'traffic',
       candidates: [{ vehicleId: 'AGV-01', travelSeconds: 8, totalCost: 7, eligible: true, reason: '待机加分 1 秒。' },
         { vehicleId: 'AGV-02', travelSeconds: 0, totalCost: 0, eligible: false, reason: '急停信号未解除。' },
         { vehicleId: 'AGV-03', travelSeconds: 5, totalCost: 5, eligible: true, reason: '空闲车辆。' }] },
@@ -93,6 +102,11 @@ try {
   await rpc('Page.addScriptToEvaluateOnNewDocument', { source: `window.WebSocket=class{constructor(){this.timer=setInterval(()=>this.onmessage?.({data:JSON.stringify({source:'backend',connected:true,receivedAt:new Date().toISOString(),tasks:{items:[],totalCount:0},status:{agvs:[],safety:{dispatchingEnabled:true,plcWritesAllowed:true,agvCommandsAllowed:true}},devices:{equipment:[]},resources:[],alarms:[]})}),100)}close(){clearInterval(this.timer)}};` });
   await rpc('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/#/dispatch-optimization` });
   await wait(async () => (await pageText()).includes('保留唯一可执行车辆'), 'diagnostics loaded');
+  check('all six layers are unobserved before backend stage evidence arrives', await evaluate(`document.querySelectorAll('.pipeline-layer.unknown').length===6&&document.querySelectorAll('.pipeline-layer.ready').length===0`));
+  includeLayers = true; await click('刷新状态');
+  await wait(() => evaluate(`document.querySelector('.pipeline-layer[data-layer=traffic]').textContent.includes('TRAFFIC-LM28')`), 'pipeline evidence');
+  check('pipeline separates matching recommendations, resource wait and idle execution', await evaluate(`document.querySelector('.pipeline-layer[data-layer=matching]').classList.contains('observing')&&document.querySelector('.pipeline-layer[data-layer=traffic]').classList.contains('waiting')&&document.querySelector('.pipeline-layer[data-layer=execution]').textContent.includes('当前空闲')`));
+  check('task wait details identify the exact blocked layer', await evaluate(`document.querySelector('.assignment-queue .assignment-layer-tag').textContent.includes('第 4 层')&&document.querySelector('.pipeline-layer[data-layer=traffic]').classList.contains('focused')`));
   check('initial read shows shadow recommendations without sending any action', writes.length === 0 && (await pageText()).includes('与传统派车不同 2 项'));
   check('window leaves remaining persisted calls visible', (await pageText()).includes('窗口外还有 220 个任务'));
   check('hard exclusions do not appear as zero cost routes', await evaluate(`document.querySelector('.assignment-candidates tr.excluded')?.textContent.includes('急停信号未解除')&&[...document.querySelector('.assignment-candidates tr.excluded').children].slice(1,3).every(td=>td.textContent==='—')`));
@@ -127,6 +141,7 @@ try {
   await wait(async () => (await pageText()).includes('后台读取失败'), 'backend failure');
   await field('派车模式', 'Shadow');
   check('lost backend freshness disables writes while retaining the previous results', await evaluate(`document.querySelector('.assignment-config button[type=submit]').disabled&&document.querySelector('.assignment-queue').textContent.includes('CNC-A')`));
+  check('a lost connection cannot leave any stage falsely ready or running', await evaluate(`document.querySelectorAll('.pipeline-layer.stale').length===6&&document.querySelectorAll('.pipeline-layer.ready,.pipeline-layer.running').length===0`));
   assert.deepEqual(errors, []);
   console.log('PASS dispatch optimization browser; isolated fixture only. Evidence: ' + evidence);
 } finally {
