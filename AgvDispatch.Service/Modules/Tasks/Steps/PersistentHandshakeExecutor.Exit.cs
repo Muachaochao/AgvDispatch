@@ -55,7 +55,12 @@ public sealed partial class PersistentHandshakeExecutor
         }
         if(checkpoint.ContractVersion!=HandshakeExecutionOptions.Version||checkpoint.PendingSignal!=null||checkpoint.Phase=="ReviewRequired"||!BindingMatches(checkpoint,step))
             throw new InvalidOperationException("出区原阶段冲突或写入结果未知，需要恢复核对，禁止重发。");
-        if(checkpoint.Phase=="ExitHandoverComplete"){_exitSamples.Remove(step.StepId);return;}
+        if(checkpoint.Phase=="ExitHandoverComplete")
+        {
+            _exitSamples.Remove(step.StepId);
+            await traffic.ReleaseTaskExceptStepAsync(task.TaskId,step.StepId,ct);
+            return;
+        }
         foreach(var original in checkpoint.Baseline.Where(s=>s.StationId!="__context"))
             if(!signals.TryGet(original.StationId,original.VariableName,out var value)||original.Address!=value.Address)
                 throw new InvalidOperationException("出区原点表已变化，保持原设备责任。");

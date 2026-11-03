@@ -221,10 +221,16 @@ internal static class Program
                 // Missing/stale PLC data cannot advance pickup even when its boolean looks satisfied.
                 plc.Set(station,"BoxPresent",false,SignalQuality.Bad); Cycle(steps,"RunCycleAsync");
                 Check(Await(tasks.GetStepsAsync(taskId,default))[1].Status==DispatchTaskStepStatus.Ready,"坏质量箱体信号阻止取箱步骤推进 "+station);Capture(2,"BoxPresent=false但Quality=Bad，等待有效质量");
-                plc.Set(station,"BoxPresent",false); Handshake(); Transport(2); WaitStep(3);
+                plc.Set(station,"BoxPresent",false); Handshake(); Transport(2);
+                var pickupStepId=Await(tasks.GetStepsAsync(taskId,default))[0].StepId;
+                Check(!db.Queryable<TrafficResourceLeaseEntity>().Any(l=>l.OwnerStepId==pickupStepId),"后续运输命令登记后释放已结束首段路权 "+station);
+                WaitStep(3);
                 plc.Set("DUMPER-001","DumperReady",false); Handshake();
                 Check(Await(tasks.GetStepsAsync(taskId,default))[3].Status==DispatchTaskStepStatus.Ready,"倒料Ready未满足保持等待 "+station);Capture(4,"DumperReady=false，保持等待");
-                plc.Set("DUMPER-001","DumperReady",true); Handshake(); Transport(4); WaitStep(5);
+                plc.Set("DUMPER-001","DumperReady",true); Handshake(); Transport(4);
+                var deliveryStepId=Await(tasks.GetStepsAsync(taskId,default))[2].StepId;
+                Check(!db.Queryable<TrafficResourceLeaseEntity>().Any(l=>l.OwnerStepId==deliveryStepId),"进入倒料位前释放已结束送货段路权 "+station);
+                WaitStep(5);
                 plc.Set("DUMPER-001","DumpingCompletedMayLeave",false); Handshake();
                 Check(Await(tasks.GetStepsAsync(taskId,default))[5].Status==DispatchTaskStepStatus.Ready,"未允许离开不跳过倒料步骤 "+station);Capture(6,"DumpingCompletedMayLeave=false，不离开倒料位");
                 plc.Set("DUMPER-001","DumpingCompletedMayLeave",true); Handshake(); Transport(6); WaitStep(7);

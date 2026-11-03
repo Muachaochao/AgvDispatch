@@ -356,9 +356,12 @@ public sealed class DispatchTaskStepCoordinator(
             if (commandPrepared)
             {
                 pipeline?.ReportLayer("execution", "Waiting", "后续运输步骤已沿用原任务与步骤原子登记；发送前再次经过安全复核。", 1);
-                // New contract conservatively retains earlier path leases until verified full-cycle closure.
-                if (handshake?.Enabled != true) await trafficResources.ReleaseTaskExceptStepAsync(
-                    step.TaskId, step.StepId, cancellationToken);
+                // The previous transport step is complete once the next transport
+                // command is atomically prepared. Keep the dump-area ownership
+                // through the return leg until physical exit handover is verified.
+                if (handshake?.Enabled != true || step.StepType != DispatchTaskStepType.ReturnEmptyBox)
+                    await trafficResources.ReleaseTaskExceptStepAsync(
+                        step.TaskId, step.StepId, cancellationToken);
                 logger.LogInformation(
                     "后续AGV运输步骤已取得路权并写入Outbox。TaskId={TaskId}, StepType={StepType}, VehicleId={VehicleId}, From={Source}, To={Destination}, Resources={Resources}",
                     step.TaskId,
