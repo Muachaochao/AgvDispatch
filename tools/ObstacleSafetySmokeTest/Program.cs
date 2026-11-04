@@ -205,8 +205,10 @@ internal static class Program
             Check(assessment!.CandidatePath.SequenceEqual(new[]{"H","D","X"}),"timeout detour starts at actual station and avoids inferred blocked edge for "+type);
             var step=db.Queryable<DispatchTaskStepEntity>().Single(s=>s.StepId==item.Step);
             var saved=db.Queryable<DispatchTaskEntity>().Single(t=>t.TaskId==item.Task);
+            var snapshot=await recovery.GetAsync(item.Task,default);
             Check(step.Status==(int)DispatchTaskStepStatus.ManualIntervention,"timeout leaves executing state for "+type);
             Check(saved.Stage==(int)DispatchTaskStage.Faulted&&saved.ErrorMessage!.Contains("超时"),"timeout freezes original business task for "+type);
+            Check(snapshot is {State:"ReadyForControlledDetour",CandidatePath.Count:3},"timeout recovery snapshot exposes the confirmable candidate for "+type);
             Check(db.Queryable<ExecutionEvidenceEntity>().Any(e=>e.TaskId==item.Task&&e.StepId==item.Step&&e.Kind=="TransportTimeoutRecoveryCaptured"),"timeout evidence is persisted for "+type);
         }
         var blocked=await Seed(DispatchTaskStepType.GoToPickup);
@@ -218,6 +220,47 @@ internal static class Program
         var blockedAssessment=await recovery.CaptureAsync(blockedTask,blockedStatus,default);
         Check(blockedAssessment is {Outcome:TransportTimeoutRecoveryOutcome.AwaitingObstacleClear},"active obstacle remains a hold instead of sending a detour");
         Check(!db.Queryable<AgvCommandOutboxEntity>().Any(c=>c.Status==(int)AgvCommandStatus.Pending),"timeout recovery sends no replacement command");
+        var executable=await Seed(DispatchTaskStepType.GoToPickup);
+        cache.ApplyTelemetry("A",Telemetry(DateTimeOffset.UtcNow) with
+        {
+            X=1,Y=0,CurrentStation="H",VelocityX=0,VelocityY=0,AngularVelocity=0
+        },TimeSpan.Zero);
+        var executableStatus=new AgvTransportTaskStatus(executable.Step,executable.Step,AgvTransportTaskState.Failed,
+            "A",DateTimeOffset.UtcNow,"Robokit状态=7：超时"){VendorStatusCode=7};
+        var executableTask=new DispatchTaskWorkItem(executable.Task,executable.Station,"A",executable.Step,
+            DispatchTaskStage.GoingToPickup,0,DateTimeOffset.Now,DateTimeOffset.Now);
+        var executableAssessment=await recovery.CaptureAsync(executableTask,executableStatus,default);
+        var executableSnapshot=await recovery.GetAsync(executable.Task,default);
+        Check(executableAssessment is {Outcome:TransportTimeoutRecoveryOutcome.ReadyForControlledDetour}&&executableSnapshot is not null,
+            "captured timeout can be read as an executable confirmation candidate");
+        var executionGate=new MapExecutionGate();executionGate.SetMode(MapExecutionMode.Running);
+        var sentGateway=new RecoveryGateway(executable.Step);
+        var plc=new FixedPlcSignals(executable.Station,"DUMPER",DateTimeOffset.UtcNow);
+        var executableRecovery=new TransportTimeoutRecoveryService(db,cache,mapRuntime,
+            new AgvTransportChainLookup(db),traffic,null,new(),null,
+            sentGateway,executionGate,handshakeOptions:new HandshakeExecutionOptions{Enabled=false},
+            signals:plc,creation:new DispatchTaskCreationOptions{DumperStationId="DUMPER"},
+            dispatch:new DispatchOrchestratorOptions());
+        var request=new TransportTimeoutRecoveryRequest(executable.Task,executableSnapshot!.Revision,true,
+            true,true,true,"现场确认障碍已清理，车辆已停稳，箱体和PLC状态一致");
+        var refresh=Task.Run(async()=>
+        {
+            await Task.Delay(250);
+            cache.ApplyTelemetry("A",Telemetry(DateTimeOffset.UtcNow) with
+            {
+                X=1,Y=0,CurrentStation="H",VelocityX=0,VelocityY=0,AngularVelocity=0
+            },TimeSpan.Zero);
+        });
+        var execution=await executableRecovery.ExecuteAsync(TrafficUserContext.LocalOperation("test"),request,default);
+        await refresh;
+        Check(execution.Accepted&&sentGateway.Writes==1,"confirmed timeout recovery sends exactly one replacement navigation");
+        var reboundTask=db.Queryable<DispatchTaskEntity>().Single(t=>t.TaskId==executable.Task);
+        var reboundStep=db.Queryable<DispatchTaskStepEntity>().Single(s=>s.StepId==executable.Step);
+        Check(reboundTask.VendorTaskId==sentGateway.NewRoot&&reboundStep.Status==(int)DispatchTaskStepStatus.Executing,
+            "replacement navigation binds the original business task to the new vendor root");
+        var duplicate=await executableRecovery.ExecuteAsync(TrafficUserContext.LocalOperation("test"),
+            request with { ExpectedRevision=execution.Snapshot!.Revision },default);
+        Check(!duplicate.Accepted&&sentGateway.Writes==1,"repeating confirmation never resends the replacement navigation");
         Console.WriteLine("Timeout evidence: "+directory);
     }
 }
@@ -239,6 +282,51 @@ sealed class TerminalGateway:IAgvGateway
     public Task<IReadOnlyList<AgvVehicleStatus>> GetVehiclesAsync(CancellationToken ct)=>throw new NotSupportedException();
     public Task<string> CreateTransportTaskAsync(string id,string? vehicle,IReadOnlyList<string> path,AgvTransportAction? action,CancellationToken ct){Writes++;throw new Exception("unexpected motion");}
     public Task CancelTaskAsync(string id,CancellationToken ct){Writes++;throw new Exception("unexpected cancellation");}
+}
+sealed class RecoveryGateway(string originalId):IAgvGateway
+{
+    public string? NewRoot{get;private set;}public int Writes{get;private set;}
+    public Task<AgvTransportTaskStatus?> GetTransportTaskStatusAsync(string id,CancellationToken ct)=>
+        Task.FromResult<AgvTransportTaskStatus?>(new(id,id,
+            id==originalId?AgvTransportTaskState.Failed:AgvTransportTaskState.GoingToDestination,
+            "A",DateTimeOffset.UtcNow){VendorStatusCode=id==originalId?7:null});
+    public Task<AgvTransportTaskStatus?> GetTransportTaskStatusAsync(string id,string vehicle,
+        IReadOnlyList<string> path,CancellationToken ct)=>GetTransportTaskStatusAsync(id,ct);
+    public Task<DeviceConnectionStatus> GetConnectionStatusAsync(CancellationToken ct)=>throw new NotSupportedException();
+    public Task<IReadOnlyList<AgvVehicleStatus>> GetVehiclesAsync(CancellationToken ct)=>throw new NotSupportedException();
+    public Task<string> CreateTransportTaskAsync(string id,string? vehicle,IReadOnlyList<string> path,
+        AgvTransportAction? action,CancellationToken ct)
+    {
+        Writes++;NewRoot=id;
+        return Task.FromResult(id);
+    }
+    public Task CancelTaskAsync(string id,CancellationToken ct)=>throw new NotSupportedException();
+}
+sealed class FixedPlcSignals:IPlcSignalCache
+{
+    readonly Dictionary<string,PlcSignalSnapshot> snapshots;
+    public FixedPlcSignals(string station,string dumper,DateTimeOffset now)
+    {
+        var values=new Dictionary<(string Station,string Variable),bool>
+        {
+            [(station,"Faulted")]=false,[(station,"CommunicationOnline")]=true,
+            [(station,"FullBoxRequested")]=false,[(station,"FullBoxRequestAcknowledged")]=true,
+            [(station,"BoxPresent")]=true,[(station,"FullBoxRemoved")]=false,
+            [(station,"EmptyBoxTaskAcknowledged")]=false,[(station,"EmptyBoxPlaced")]=false,
+            [(dumper,"Faulted")]=false
+        };
+        snapshots=values.ToDictionary(pair=>pair.Key.Station+"\u001F"+pair.Key.Variable,
+            pair=>new PlcSignalSnapshot(pair.Key.Station,pair.Key.Variable,pair.Key.Variable,
+                "DB1."+pair.Key.Variable,"Bool","Read","Read",true,pair.Value,
+                SignalQuality.Good,now,null,1),StringComparer.OrdinalIgnoreCase);
+    }
+    public event Action<PlcSignalChanged>? SignalChanged;
+    public long Version=>1;
+    public IReadOnlyList<PlcSignalSnapshot> GetAll()=>snapshots.Values.ToArray();
+    public IReadOnlyList<PlcSignalSnapshot> GetStation(string stationId)=>snapshots.Values
+        .Where(s=>s.StationId.Equals(stationId,StringComparison.OrdinalIgnoreCase)).ToArray();
+    public bool TryGet(string stationId,string variableName,out PlcSignalSnapshot snapshot)=>
+        snapshots.TryGetValue(stationId+"\u001F"+variableName,out snapshot!);
 }
 sealed class ReadOnlyRobot:IAsyncDisposable
 {

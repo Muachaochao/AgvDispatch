@@ -36,7 +36,8 @@ public sealed class TrafficControlNamedPipeServer(
     ITrafficWaitingBayDepartureService? waitingBayDeparture=null, ISingleNavigationTestService? navigationTest=null, IRobotMapDownloadService? robotMapDownload=null,
     IPlcCycleTestService? plcCycleTest=null, IBusinessRunService? businessRun=null, IFleetTestService? fleetTest=null, IChargingService? charging=null,
     IRoadClosureService? roadClosures=null, IDispatchOptimizationService? dispatchOptimization=null,
-    IDispatchPipelineInspectionService? dispatchPipeline=null) : IsolatedBackgroundService
+    IDispatchPipelineInspectionService? dispatchPipeline=null,
+    ITransportTimeoutRecoveryService? timeoutRecovery=null) : IsolatedBackgroundService
 {
     private async Task<RobokitInspectionSnapshot> InspectRobokitAsync(TrafficUserContext user,RobokitInspectionQuery query,CancellationToken ct)
     {
@@ -296,6 +297,12 @@ public sealed class TrafficControlNamedPipeServer(
             "GetExecutionRecovery" => Success(await recovery.GetAsync(cancellationToken)),
             "DecideExecutionRecovery" => Success(await recovery.DecideAsync(user, Deserialize<RecoveryDecisionRequest>(request.Payload), cancellationToken)),
             "ReleaseExecutionRecovery" => Success(await recovery.ReleaseAsync(user, Deserialize<RecoveryReleaseRequest>(request.Payload), cancellationToken)),
+            TrafficControlOperations.GetTransportTimeoutRecovery => Success(
+                await (timeoutRecovery??throw new NotSupportedException("后台未配置运输超时恢复。"))
+                    .GetAsync(Deserialize<TransportTimeoutRecoveryQuery>(request.Payload).TaskId,cancellationToken)),
+            TrafficControlOperations.ExecuteTransportTimeoutRecovery => Success(
+                await (timeoutRecovery??throw new NotSupportedException("后台未配置运输超时恢复。"))
+                    .ExecuteAsync(user,Deserialize<TransportTimeoutRecoveryRequest>(request.Payload),cancellationToken)),
             "SetVehicleConnection" => Success(await communicationSettings.SetVehicleConnectionAsync(user,
                 Deserialize<SetVehicleConnectionRequest>(request.Payload), cancellationToken)),
             TrafficControlOperations.GetCommunicationSettings => Success(await communicationSettings.GetAsync(user, cancellationToken)),

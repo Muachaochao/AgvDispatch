@@ -86,6 +86,21 @@ public static class DiagnosticsApi
             recoveryEnabled?Results.Ok(await pipe.ReadAsync<RecoveryResult>("DecideExecutionRecovery",request,ct)):Disabled());
         app.MapPost("/api/recovery/release",async(RecoveryReleaseRequest request,DispatchPipe pipe,CancellationToken ct)=>
             recoveryEnabled?Results.Ok(await pipe.ReadAsync<RecoveryResult>("ReleaseExecutionRecovery",request,ct)):Disabled());
+        app.MapGet("/api/timeout-recovery/{id}",async(string id,DispatchPipe pipe,CancellationToken ct)=>
+        {
+            if(string.IsNullOrWhiteSpace(id)||id.Length>64)return Results.BadRequest(new{error="任务编号无效。"});
+            var row=await pipe.ReadAsync<TransportTimeoutRecoverySnapshot>(
+                TrafficControlOperations.GetTransportTimeoutRecovery,new TransportTimeoutRecoveryQuery(id),ct);
+            return Results.Ok(row);
+        });
+        app.MapPost("/api/timeout-recovery/{id}/execute",async(string id,
+            TransportTimeoutRecoveryRequest request,DispatchPipe pipe,CancellationToken ct)=>
+        {
+            if(!recoveryEnabled)return Disabled();
+            if(request.TaskId!=id)return Results.BadRequest(new{error="恢复任务编号不一致。"});
+            return Results.Ok(await pipe.ReadAsync<TransportTimeoutRecoveryResult>(
+                TrafficControlOperations.ExecuteTransportTimeoutRecovery,request,ct));
+        });
     }
     private static IResult Disabled()=>Results.Json(new{error="Web恢复写操作未启用；可只读核对。启用后仍由后台验证权限、批次、版本和现场条件。"},statusCode:403);
     private static IResult DisabledTaskOperation(string message)=>Results.Json(new{error=message},statusCode:403);

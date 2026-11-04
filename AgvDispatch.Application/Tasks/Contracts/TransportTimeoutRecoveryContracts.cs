@@ -23,6 +23,45 @@ public sealed record TransportTimeoutRecoveryAssessment(
     IReadOnlyList<string> CandidatePath,
     string Message);
 
+public sealed record TransportTimeoutRecoverySnapshot(
+    string RecoveryId,
+    string TaskId,
+    string StepId,
+    string VehicleId,
+    DispatchTaskStepType StepType,
+    string State,
+    string Outcome,
+    string OriginalVendorTaskId,
+    string? NewVendorTaskId,
+    string? CurrentStation,
+    string DestinationSite,
+    IReadOnlyList<string> OriginalPath,
+    IReadOnlyList<string> CandidatePath,
+    string MapId,
+    string MapVersionId,
+    string DefinitionHash,
+    string PreviewHash,
+    bool SendAttempted,
+    string Message,
+    int Revision,
+    DateTimeOffset UpdatedAt);
+
+public sealed record TransportTimeoutRecoveryRequest(
+    string TaskId,
+    int ExpectedRevision,
+    bool ExecuteConfirmed,
+    bool VehicleAndLocationConfirmed,
+    bool LoadAndOwnershipConfirmed,
+    bool PlcConditionsConfirmed,
+    string Reason);
+
+public sealed record TransportTimeoutRecoveryQuery(string TaskId);
+
+public sealed record TransportTimeoutRecoveryResult(
+    bool Accepted,
+    string Message,
+    TransportTimeoutRecoverySnapshot? Snapshot = null);
+
 /// <summary>
 /// Captures a confirmed Robokit navigation timeout as an explicit business
 /// recovery state. It never sends cancellation, navigation, or PLC output.
@@ -32,5 +71,16 @@ public interface ITransportTimeoutRecoveryService
     Task<TransportTimeoutRecoveryAssessment?> CaptureAsync(
         DispatchTaskWorkItem task,
         AgvTransportTaskStatus status,
+        CancellationToken cancellationToken);
+
+    Task<TransportTimeoutRecoverySnapshot?> GetAsync(string taskId, CancellationToken cancellationToken);
+
+    Task<TransportTimeoutRecoveryResult> ExecuteAsync(
+        TrafficUserContext user,
+        TransportTimeoutRecoveryRequest request,
+        CancellationToken cancellationToken);
+
+    Task<AgvTransportTaskStatus?> GetReplacementStatusAsync(
+        DispatchTaskWorkItem task,
         CancellationToken cancellationToken);
 }

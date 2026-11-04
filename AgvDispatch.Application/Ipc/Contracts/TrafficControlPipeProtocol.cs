@@ -73,6 +73,8 @@ public static class TrafficControlOperations
     public const string GetReleaseRequests = "GetReleaseRequests";
     public const string SubmitRelease = "SubmitRelease";
     public const string ReviewRelease = "ReviewRelease";
+    public const string GetTransportTimeoutRecovery = "GetTransportTimeoutRecovery";
+    public const string ExecuteTransportTimeoutRecovery = "ExecuteTransportTimeoutRecovery";
 }
 
 public sealed record TrafficControlPipeRequest(string Operation, JsonElement Payload);

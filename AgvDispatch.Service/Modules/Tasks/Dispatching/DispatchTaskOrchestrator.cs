@@ -387,7 +387,10 @@ public sealed partial class DispatchTaskOrchestrator(
 
             try
             {
-                var status = await agvGateway.GetTransportTaskStatusAsync(
+                var status = timeoutRecovery is null
+                    ? null
+                    : await timeoutRecovery.GetReplacementStatusAsync(task, cancellationToken);
+                status ??= await agvGateway.GetTransportTaskStatusAsync(
                     task.VendorTaskId,
                     cancellationToken);
                 if (status is null)

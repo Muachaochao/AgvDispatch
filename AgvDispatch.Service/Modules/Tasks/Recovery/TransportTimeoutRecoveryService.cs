@@ -13,8 +13,8 @@ namespace AgvDispatch.Service;
 
 /// <summary>
 /// Converts a Robokit status-7 transport timeout into an explicit, auditable
-/// business hold. Route assessment is read-only; this service never sends a
-/// cancellation or a replacement navigation command.
+/// business hold. Route assessment is read-only until an operator explicitly
+/// confirms one replacement navigation; it never sends a cancellation.
 /// </summary>
 public sealed class TransportTimeoutRecoveryService(
     ISqlSugarClient database,
@@ -24,8 +24,20 @@ public sealed class TransportTimeoutRecoveryService(
     ITrafficResourceManager traffic,
     IRoadClosureService? roadClosures,
     MapOptions mapOptions,
-    TimeProvider? clock = null) : ITransportTimeoutRecoveryService
+    TimeProvider? clock = null,
+    IAgvGateway? gateway = null,
+    IMapExecutionGate? executionGate = null,
+    PersistentHandshakeExecutor? handshake = null,
+    ITaskHandshakeStore? handshakes = null,
+    HandshakeExecutionOptions? handshakeOptions = null,
+    IPlcSignalCache? signals = null,
+    DispatchTaskCreationOptions? creation = null,
+    DispatchOrchestratorOptions? dispatch = null,
+    ILogger<TransportTimeoutRecoveryService>? logger = null) : ITransportTimeoutRecoveryService
 {
+    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    private readonly SemaphoreSlim _execute = new(1, 1);
+
     public async Task<TransportTimeoutRecoveryAssessment?> CaptureAsync(
         DispatchTaskWorkItem task,
         AgvTransportTaskStatus status,
@@ -94,6 +106,71 @@ public sealed class TransportTimeoutRecoveryService(
             await database.Updateable(currentStep).ExecuteCommandAsync(cancellationToken);
             await database.Updateable(currentTask).ExecuteCommandAsync(cancellationToken);
 
+            var map = activeMap.Current;
+            var mapId = map?.MapId ?? "";
+            var mapVersionId = map?.VersionId ?? "";
+            var definitionHash = map is null ? "" : EngineeringRuntimeIdentity.MapHash(map.Definition);
+            var previewHash = Hash(new
+            {
+                assessment.StepType,
+                assessment.VehicleId,
+                assessment.OriginalVendorTaskId,
+                assessment.CurrentStation,
+                assessment.DestinationSite,
+                assessment.OriginalPath,
+                assessment.CandidatePath,
+                MapId = mapId,
+                MapVersionId = mapVersionId,
+                DefinitionHash = definitionHash
+            });
+            var existing = await database.Queryable<TransportTimeoutRecoveryEntity>()
+                .Where(row => row.TaskId == task.TaskId && row.StepId == step.StepId)
+                .FirstAsync(cancellationToken);
+            if (existing is null)
+            {
+                await database.Insertable(new TransportTimeoutRecoveryEntity
+                {
+                    RecoveryId = Guid.NewGuid().ToString("N"),
+                    TaskId = task.TaskId,
+                    StepId = step.StepId,
+                    VehicleId = task.VehicleId,
+                    StepType = (int)assessment.StepType,
+                    State = assessment.Outcome == TransportTimeoutRecoveryOutcome.ReadyForControlledDetour
+                        ? "ReadyForControlledDetour" : "ManualIntervention",
+                    Outcome = assessment.Outcome.ToString(),
+                    OriginalVendorTaskId = status.VendorTaskId,
+                    CurrentStation = assessment.CurrentStation,
+                    DestinationSite = assessment.DestinationSite,
+                    OriginalPathJson = JsonSerializer.Serialize(assessment.OriginalPath, Json),
+                    CandidatePathJson = JsonSerializer.Serialize(assessment.CandidatePath, Json),
+                    MapId = mapId,
+                    MapVersionId = mapVersionId,
+                    DefinitionHash = definitionHash,
+                    PreviewHash = previewHash,
+                    LastError = Truncate(message),
+                    Revision = 1,
+                    CreatedAt = now,
+                    UpdatedAt = now
+                }).ExecuteCommandAsync(cancellationToken);
+            }
+            else if (existing.SendAttemptedAt is null && string.IsNullOrWhiteSpace(existing.NewVendorTaskId))
+            {
+                existing.State = assessment.Outcome == TransportTimeoutRecoveryOutcome.ReadyForControlledDetour
+                    ? "ReadyForControlledDetour" : "ManualIntervention";
+                existing.Outcome = assessment.Outcome.ToString();
+                existing.CurrentStation = assessment.CurrentStation;
+                existing.OriginalPathJson = JsonSerializer.Serialize(assessment.OriginalPath, Json);
+                existing.CandidatePathJson = JsonSerializer.Serialize(assessment.CandidatePath, Json);
+                existing.MapId = mapId;
+                existing.MapVersionId = mapVersionId;
+                existing.DefinitionHash = definitionHash;
+                existing.PreviewHash = previewHash;
+                existing.LastError = Truncate(message);
+                existing.Revision++;
+                existing.UpdatedAt = now;
+                await database.Updateable(existing).ExecuteCommandAsync(cancellationToken);
+            }
+
             if (!await database.Queryable<ExecutionEvidenceEntity>().AnyAsync(row =>
                     row.TaskId == task.TaskId &&
                     row.StepId == step.StepId &&
@@ -124,6 +201,386 @@ public sealed class TransportTimeoutRecoveryService(
             throw new InvalidOperationException("保存运输超时恢复状态失败，原任务保持未确认。", transaction.ErrorException);
         return captured ? assessment : null;
     }
+
+    public async Task<TransportTimeoutRecoverySnapshot?> GetAsync(string taskId, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(taskId)) return null;
+        var row = await database.Queryable<TransportTimeoutRecoveryEntity>()
+            .Where(item => item.TaskId == taskId)
+            .OrderByDescending(item => item.UpdatedAt)
+            .FirstAsync(cancellationToken);
+        return row is null ? null : Snapshot(row);
+    }
+
+    public async Task<TransportTimeoutRecoveryResult> ExecuteAsync(
+        TrafficUserContext user,
+        TransportTimeoutRecoveryRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (!user.Has(TrafficPermission.RecoverExecution))
+            return new(false, "需要恢复处置权限。");
+        if (gateway is null || executionGate is null || dispatch is null)
+            return new(false, "超时恢复发送依赖未配置，保持原任务。");
+        if (string.IsNullOrWhiteSpace(request.TaskId) || !request.ExecuteConfirmed ||
+            !request.VehicleAndLocationConfirmed || !request.LoadAndOwnershipConfirmed ||
+            !request.PlcConditionsConfirmed || request.Reason.Trim().Length is < 10 or > 1000)
+            return new(false, "必须确认车辆位置、载荷归属和PLC条件，填写至少10字现场依据，并明确执行。");
+
+        await _execute.WaitAsync(cancellationToken);
+        try
+        {
+            if (executionGate.Mode != MapExecutionMode.Running)
+                return new(false, "地图切换或启动恢复门禁未处于运行状态，禁止发送恢复导航。");
+            using var control = await executionGate.EnterControlAsync(cancellationToken);
+            var row = await database.Queryable<TransportTimeoutRecoveryEntity>()
+                .Where(item => item.TaskId == request.TaskId)
+                .OrderByDescending(item => item.UpdatedAt)
+                .FirstAsync(cancellationToken);
+            if (row is null) return new(false, "没有已捕获的运输超时恢复记录。");
+            if (row.Revision != request.ExpectedRevision || row.State != "ReadyForControlledDetour")
+                return new(false, "恢复候选已变化或不是可执行状态，请重新读取。", Snapshot(row));
+            if (row.SendAttemptedAt is not null || !string.IsNullOrWhiteSpace(row.NewVendorTaskId))
+                return await ReconcileExistingAsync(row, cancellationToken);
+
+            var task = await database.Queryable<DispatchTaskEntity>().Where(item => item.TaskId == row.TaskId).FirstAsync(cancellationToken);
+            var step = await database.Queryable<DispatchTaskStepEntity>().Where(item => item.StepId == row.StepId).FirstAsync(cancellationToken);
+            if (task is null || step is null || task.Stage != (int)DispatchTaskStage.Faulted ||
+                step.Status != (int)DispatchTaskStepStatus.ManualIntervention ||
+                step.VendorTaskId != row.OriginalVendorTaskId)
+                return new(false, "原任务、步骤或厂家编号已经变化，禁止发送恢复导航。", Snapshot(row));
+
+            var originalPath = JsonSerializer.Deserialize<string[]>(row.OriginalPathJson, Json) ?? [];
+            var storedCandidate = JsonSerializer.Deserialize<string[]>(row.CandidatePathJson, Json) ?? [];
+            var map = activeMap.Current;
+            if (map is null || map.MapId != row.MapId || map.VersionId != row.MapVersionId ||
+                !string.Equals(EngineeringRuntimeIdentity.MapHash(map.Definition), row.DefinitionHash, StringComparison.OrdinalIgnoreCase))
+                return new(false, "运行地图或版本已变化，恢复候选失效。", Snapshot(row));
+
+            var current = await AssessAsync((DispatchTaskStepType)row.StepType, row.VehicleId,
+                row.OriginalVendorTaskId, row.DestinationSite, originalPath, cancellationToken);
+            if (current.Outcome != TransportTimeoutRecoveryOutcome.ReadyForControlledDetour ||
+                !current.CandidatePath.SequenceEqual(storedCandidate, StringComparer.OrdinalIgnoreCase))
+                return new(false, "车辆位置、障碍或道路状态已变化，请重新读取恢复候选：" + current.Message, Snapshot(row));
+
+            var original = await gateway.GetTransportTaskStatusAsync(row.OriginalVendorTaskId, row.VehicleId,
+                originalPath, cancellationToken);
+            if (original is null || original.State != AgvTransportTaskState.Failed ||
+                !string.Equals(original.VehicleId, row.VehicleId, StringComparison.OrdinalIgnoreCase))
+                return new(false, "原厂家任务链未确认全部超时终结，禁止发送替代导航。", Snapshot(row));
+
+            if (!await ConfirmStoppedAsync(row.VehicleId, row.CurrentStation, cancellationToken))
+                return new(false, "车辆未连续停稳、定位不新鲜或与候选起点不一致。", Snapshot(row));
+
+            var route = await PlanReplacementAsync(map, row, originalPath, cancellationToken);
+            if (route is null || !route.Nodes.SequenceEqual(storedCandidate, StringComparer.OrdinalIgnoreCase))
+                return new(false, "新路线资源、道路或地图复核未通过，请重新读取。", Snapshot(row));
+            var reservation = await traffic.TryAcquireAsync(row.StepId, row.TaskId, row.VehicleId,
+                route.ResourceIds, cancellationToken);
+            if (!reservation.Acquired)
+                return new(false, $"新路线等待公共资源 {reservation.BlockingResourceId}，尚未发送。", Snapshot(row));
+
+            var stepWork = new DispatchTaskStepWorkItem(task.TaskId, task.StationId, row.VehicleId,
+                (DispatchTaskStage)task.Stage, step.StepId, step.Sequence,
+                (DispatchTaskStepType)step.StepType, (DispatchTaskStepStatus)step.Status,
+                step.SourceSite, step.DestinationSite, new DateTimeOffset(step.UpdatedAt));
+            if (await ValidateRecoveryPlcAsync(stepWork, step, cancellationToken) is { } plcError)
+                return new(false, plcError, Snapshot(row));
+
+            var newRoot = "TIMEOUTRECOVERY-" + Guid.NewGuid().ToString("N");
+            row.State = "Sending";
+            row.NewVendorTaskId = newRoot;
+            row.SendAttemptedAt = NowLocal;
+            row.LastError = "已持久化替代导航发送意图；最多发送一次。";
+            row.Revision++;
+            row.UpdatedAt = NowLocal;
+            await database.Updateable(row).ExecuteCommandAsync(cancellationToken);
+            try
+            {
+                var sentRoot = await gateway.CreateTransportTaskAsync(newRoot, row.VehicleId,
+                    route.Nodes, dispatch.GetAction((DispatchTaskStepType)row.StepType), cancellationToken);
+                if (!string.Equals(sentRoot, newRoot, StringComparison.Ordinal))
+                    throw new InvalidOperationException("替代导航返回的根编号与持久化意图不一致。");
+                return await BindReplacementAsync(row, task, step, route.Nodes, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception error)
+            {
+                row.State = "Uncertain";
+                row.LastError = Truncate("替代导航结果不确定；只查询原新编号，禁止重发：" + error.Message);
+                row.Revision++;
+                row.UpdatedAt = NowLocal;
+                await database.Updateable(row).ExecuteCommandAsync(CancellationToken.None);
+                logger?.LogWarning(error, "运输超时替代导航结果不确定。TaskId={TaskId}, NewRoot={NewRoot}", row.TaskId, newRoot);
+                return new(false, row.LastError, Snapshot(row));
+            }
+        }
+        finally
+        {
+            _execute.Release();
+        }
+    }
+
+    public async Task<AgvTransportTaskStatus?> GetReplacementStatusAsync(
+        DispatchTaskWorkItem task,
+        CancellationToken cancellationToken)
+    {
+        if (gateway is null || string.IsNullOrWhiteSpace(task.VendorTaskId)) return null;
+        var row = await database.Queryable<TransportTimeoutRecoveryEntity>()
+            .Where(item => item.TaskId == task.TaskId && item.NewVendorTaskId == task.VendorTaskId)
+            .FirstAsync(cancellationToken);
+        if (row is null) return null;
+        var path = JsonSerializer.Deserialize<string[]>(row.CandidatePathJson, Json) ?? [];
+        if (path.Length < 2) return null;
+        var status = await gateway.GetTransportTaskStatusAsync(task.VendorTaskId!, row.VehicleId, path, cancellationToken);
+        if (status is { State: AgvTransportTaskState.Completed } && row.State != "Completed")
+        {
+            row.State = "Completed";
+            row.LastError = "替代导航已全部完成；继续等待业务步骤及PLC结果推进。";
+            row.Revision++;
+            row.UpdatedAt = NowLocal;
+            await database.Updateable(row).ExecuteCommandAsync(cancellationToken);
+        }
+        return status;
+    }
+
+    private async Task<TransportTimeoutRecoveryResult> ReconcileExistingAsync(
+        TransportTimeoutRecoveryEntity row,
+        CancellationToken cancellationToken)
+    {
+        if (gateway is null || string.IsNullOrWhiteSpace(row.NewVendorTaskId))
+            return new(false, "原替代导航已尝试发送，不能再次发送。", Snapshot(row));
+        var path = JsonSerializer.Deserialize<string[]>(row.CandidatePathJson, Json) ?? [];
+        var status = path.Length < 2 ? null : await gateway.GetTransportTaskStatusAsync(
+            row.NewVendorTaskId, row.VehicleId, path, cancellationToken);
+        if (status is null || status.State == AgvTransportTaskState.Unknown)
+        {
+            row.State = "Uncertain";
+            row.LastError = "原替代导航记录未知；只查询原新编号，禁止重发。";
+            row.UpdatedAt = NowLocal;
+            await database.Updateable(row).ExecuteCommandAsync(cancellationToken);
+            return new(false, row.LastError, Snapshot(row));
+        }
+        if (status.State is AgvTransportTaskState.Failed or AgvTransportTaskState.Cancelled)
+        {
+            row.State = "ManualIntervention";
+            row.LastError = "替代导航失败或取消；原业务任务保持冻结，由现场核对。";
+            row.Revision++;
+            row.UpdatedAt = NowLocal;
+            await database.Updateable(row).ExecuteCommandAsync(cancellationToken);
+            return new(false, row.LastError, Snapshot(row));
+        }
+        var task = await database.Queryable<DispatchTaskEntity>().Where(item => item.TaskId == row.TaskId).FirstAsync(cancellationToken);
+        var step = await database.Queryable<DispatchTaskStepEntity>().Where(item => item.StepId == row.StepId).FirstAsync(cancellationToken);
+        if (task is null || step is null) return new(false, "原业务任务或步骤缺失，保持冻结。", Snapshot(row));
+        return await BindReplacementAsync(row, task, step, path, cancellationToken);
+    }
+
+    private async Task<TransportTimeoutRecoveryResult> BindReplacementAsync(
+        TransportTimeoutRecoveryEntity row,
+        DispatchTaskEntity task,
+        DispatchTaskStepEntity step,
+        IReadOnlyList<string> path,
+        CancellationToken cancellationToken)
+    {
+        var now = NowLocal;
+        step.Status = (int)DispatchTaskStepStatus.Executing;
+        step.VendorTaskId = row.NewVendorTaskId;
+        step.VehicleId = row.VehicleId;
+        step.SourceSite = path[0];
+        step.DestinationSite = path[^1];
+        step.ErrorMessage = null;
+        step.UpdatedAt = now;
+        task.Stage = (int)TargetStage((DispatchTaskStepType)row.StepType);
+        task.VehicleId = row.VehicleId;
+        task.VendorTaskId = row.NewVendorTaskId;
+        task.ErrorMessage = "超时恢复导航已发送；继续沿用原业务任务和步骤。";
+        task.UpdatedAt = now;
+        row.State = "Executing";
+        row.LastError = task.ErrorMessage;
+        row.Revision++;
+        row.UpdatedAt = now;
+        var transaction = await database.Ado.UseTranAsync(async () =>
+        {
+            await database.Updateable(step).ExecuteCommandAsync(cancellationToken);
+            await database.Updateable(task).ExecuteCommandAsync(cancellationToken);
+            await database.Updateable(row).ExecuteCommandAsync(cancellationToken);
+            await database.Insertable(new ExecutionEvidenceEntity
+            {
+                Id = Guid.NewGuid().ToString("N"),SessionId = "",TaskId = row.TaskId,StepId = row.StepId,
+                Operator = "operator",Kind = "TransportTimeoutReplacementSent",
+                Reason = "现场确认后发送一次替代3066任务链。",Evidence = JsonSerializer.Serialize(new { row, Path = path }),
+                OccurredAt = now
+            }).ExecuteCommandAsync(cancellationToken);
+        });
+        if (!transaction.IsSuccess)
+            return new(false, "替代导航已发送，但任务绑定落库失败；禁止重发，须按新编号现场核对。", Snapshot(row));
+        return new(true, "替代导航已发送并绑定原业务任务；等待车辆实际完成。", Snapshot(row));
+    }
+
+    private async Task<bool> ConfirmStoppedAsync(string vehicleId, string? station, CancellationToken cancellationToken)
+    {
+        static bool Stopped(AgvRobotSnapshot robot, string? station) =>
+            robot.Connection == ConnectionState.Online && robot.Quality == SignalQuality.Good &&
+            robot.EmergencyStopped == false && !AgvObstaclePolicy.IsBlocked(robot) &&
+            !AgvObstaclePolicy.HasBlockingAlarm(robot) &&
+            string.Equals(robot.CurrentStation, station, StringComparison.OrdinalIgnoreCase) &&
+            robot.VelocityX is { } vx && Math.Abs(vx) < 0.02 &&
+            robot.VelocityY is { } vy && Math.Abs(vy) < 0.02 &&
+            robot.AngularVelocity is { } w && Math.Abs(w) < 0.02;
+        if (!vehicles.TryGet(vehicleId, out var first) || !Stopped(first, station)) return false;
+        var firstSample = first.LastSuccessfulPollAt;
+        for (var attempt = 0; attempt < 40; attempt++)
+        {
+            await Task.Delay(100, cancellationToken);
+            if (!vehicles.TryGet(vehicleId, out var second) ||
+                second.LastSuccessfulPollAt is not { } secondSample ||
+                firstSample is null || secondSample <= firstSample ||
+                !Stopped(second, station)) continue;
+            return first.X is { } x1 && second.X is { } x2 && Math.Abs(x1 - x2) < 0.02 &&
+                   first.Y is { } y1 && second.Y is { } y2 && Math.Abs(y1 - y2) < 0.02;
+        }
+        return false;
+    }
+
+    private async Task<RoutePlan?> PlanReplacementAsync(ActiveMapRuntimeSnapshot map,
+        TransportTimeoutRecoveryEntity row, IReadOnlyList<string> originalPath, CancellationToken cancellationToken)
+    {
+        var source = MapRouteSiteMapper.ResolveLogicalNodeId(map.Definition, row.CurrentStation!);
+        var destination = MapRouteSiteMapper.ResolveLogicalNodeId(map.Definition, row.DestinationSite);
+        var index = originalPath.Select((site, idx) => (site, idx))
+            .Single(item => string.Equals(item.site, row.CurrentStation, StringComparison.OrdinalIgnoreCase)).idx;
+        var next = MapRouteSiteMapper.ResolveLogicalNodeId(map.Definition, originalPath[index + 1]);
+        var blocked = map.Definition.Edges.Where(edge => edge.Enabled &&
+                (edge.From == source && edge.To == next || edge.Bidirectional && edge.From == next && edge.To == source))
+            .SelectMany(edge => edge.Bidirectional
+                ? new[] { new MapDirectedTraversal(edge.Id, source, next), new MapDirectedTraversal(edge.Id, next, source) }
+                : new[] { new MapDirectedTraversal(edge.Id, source, next) }).ToList();
+        if (roadClosures is not null) blocked.AddRange((await roadClosures.ListAsync(cancellationToken)).BlockedTraversals);
+        var unavailable = await traffic.GetUnavailableResourceIdsAsync(row.TaskId, cancellationToken);
+        var logical = map.Graph.FindShortestTransportRoute(source, destination, unavailable, null, null,
+            blocked.Distinct().ToArray());
+        return logical is null ? null : MapRouteSiteMapper.ToAgvSitePlan(map.Definition, logical);
+    }
+
+    private async Task<string?> ValidateRecoveryPlcAsync(DispatchTaskStepWorkItem work,
+        DispatchTaskStepEntity step, CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (handshakeOptions?.Enabled == true)
+            {
+                if (handshakes is null || signals is null || creation is null || dispatch is null)
+                    return "缺少28阶段PLC存储、点表或工位配置，禁止发送恢复导航。";
+                if (work.StepType != DispatchTaskStepType.GoToPickup)
+                {
+                    if (handshake is null) return "缺少28阶段PLC执行器，禁止发送恢复导航。";
+                    await handshake.ValidateTransportAsync(work, cancellationToken);
+                    return null;
+                }
+                var checkpoint = await handshakes.GetAsync(work.TaskId, work.StepId, cancellationToken);
+                if (checkpoint is null ||
+                    checkpoint.ContractVersion != handshakeOptions.PlcContractVersion ||
+                    checkpoint.PendingSignal is not null ||
+                    checkpoint.Phase is not ("TransportBound" or "ReadyToComplete"))
+                    return "首段原28阶段绑定缺失、待确认或阶段不一致，禁止发送恢复导航。";
+                var now = (clock ?? TimeProvider.System).GetUtcNow();
+                foreach (var expected in checkpoint.Baseline.Where(row => row.StationId != "__context"))
+                {
+                    if (!signals.TryGet(expected.StationId, expected.VariableName, out var sample) ||
+                        sample.Address != expected.Address)
+                        return $"首段PLC原点表地址已变化：{expected.StationId}/{expected.VariableName}";
+                    if (sample.Value is not bool value ||
+                        !TaskSignalPredicate.EvaluateFresh(expected.StationId, expected.VariableName,
+                            value, sample, now, handshakeOptions.StateMaxAgeSeconds).Satisfied)
+                        return $"首段恢复前PLC信号无效或过期：{expected.StationId}/{expected.VariableName}";
+                }
+                bool Exact(string station, string variable, bool expected)
+                {
+                    signals.TryGet(station, variable, out var sample);
+                    return TaskSignalPredicate.EvaluateFresh(station, variable, expected, sample, now,
+                        handshakeOptions.StateMaxAgeSeconds).Satisfied;
+                }
+                if (!Exact(work.StationId, "Faulted", false) ||
+                    !Exact(work.StationId, "CommunicationOnline", true) ||
+                    !Exact(creation.DumperStationId, "Faulted", false) ||
+                    !Exact(work.StationId, "FullBoxRequested", false) ||
+                    !Exact(work.StationId, "FullBoxRequestAcknowledged", true) ||
+                    !Exact(work.StationId, "BoxPresent", true) ||
+                    new[] { "FullBoxRemoved", "EmptyBoxTaskAcknowledged", "EmptyBoxPlaced" }
+                        .Any(variable => !Exact(work.StationId, variable, false)))
+                    return "原取箱工位PLC周期、载荷或通知责任已变化，禁止发送恢复导航。";
+                return null;
+            }
+            if (signals is null || creation is null) return "缺少PLC点表缓存或工位配置，禁止发送恢复导航。";
+            var all = await database.Queryable<DispatchTaskStepEntity>()
+                .Where(item => item.TaskId == step.TaskId).OrderBy(item => item.Sequence).ToListAsync(cancellationToken);
+            bool Fresh(string station, string variable, bool expected)
+            {
+                signals.TryGet(station, variable, out var sample);
+                return TaskSignalPredicate.EvaluateFresh(station, variable, expected, sample,
+                    (clock ?? TimeProvider.System).GetUtcNow(), handshakeOptions?.StateMaxAgeSeconds ?? 5).Satisfied;
+            }
+            if (!Fresh(work.StationId!, "Faulted", false) ||
+                !Fresh(work.StationId!, "CommunicationOnline", true) ||
+                !Fresh(creation.DumperStationId, "Faulted", false))
+                return "工位或倒料机故障/通讯PLC条件不成立。";
+            if (work.StepType == DispatchTaskStepType.GoToPickup)
+            {
+                if (!Fresh(work.StationId!, "BoxPresent", true) ||
+                    !Fresh(work.StationId!, "FullBoxRequestAcknowledged", true))
+                    return "取箱工位满箱或呼叫受理条件不成立。";
+            }
+            else
+            {
+                var priorType = work.StepType switch
+                {
+                    DispatchTaskStepType.DeliverFullBoxToDumper => DispatchTaskStepType.PickupFullBox,
+                    DispatchTaskStepType.EnterDumpingPosition => DispatchTaskStepType.WaitForDumperReady,
+                    DispatchTaskStepType.ReturnEmptyBox => DispatchTaskStepType.DumpFullBox,
+                    _ => (DispatchTaskStepType)(-1)
+                };
+                if (!all.Any(item => item.StepType == (int)priorType && item.Status == (int)DispatchTaskStepStatus.Completed))
+                    return "前序业务步骤未完成，禁止恢复后续运输。";
+                if (!Fresh(work.StationId!, "EmptyBoxTaskAcknowledged", true)) return "返箱责任PLC条件不成立。";
+                if (work.StepType == DispatchTaskStepType.DeliverFullBoxToDumper && !Fresh(work.StationId!, "BoxPresent", false))
+                    return "满箱尚未离开取货工位。";
+                if (work.StepType == DispatchTaskStepType.EnterDumpingPosition && !Fresh(creation.DumperStationId, "DumperReady", true))
+                    return "倒料机Ready条件不成立。";
+                if (work.StepType == DispatchTaskStepType.ReturnEmptyBox &&
+                    !Fresh(creation.DumperStationId, "DumpingCompletedMayLeave", true))
+                    return "倒料完成及离位许可条件不成立。";
+            }
+            return null;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception error) { return "PLC恢复条件复核未通过：" + error.Message; }
+    }
+
+    private TransportTimeoutRecoverySnapshot Snapshot(TransportTimeoutRecoveryEntity row) =>
+        new(row.RecoveryId, row.TaskId, row.StepId, row.VehicleId, (DispatchTaskStepType)row.StepType,
+            row.State, row.Outcome, row.OriginalVendorTaskId, row.NewVendorTaskId, row.CurrentStation,
+            row.DestinationSite,
+            JsonSerializer.Deserialize<string[]>(row.OriginalPathJson, Json) ?? [],
+            JsonSerializer.Deserialize<string[]>(row.CandidatePathJson, Json) ?? [],
+            row.MapId, row.MapVersionId, row.DefinitionHash, row.PreviewHash,
+            row.SendAttemptedAt is not null, row.LastError ?? "", row.Revision,
+            new DateTimeOffset(DateTime.SpecifyKind(row.UpdatedAt, DateTimeKind.Local)));
+
+    private DateTime NowLocal => (clock ?? TimeProvider.System).GetLocalNow().DateTime;
+    private static DispatchTaskStage TargetStage(DispatchTaskStepType stepType) => stepType switch
+    {
+        DispatchTaskStepType.GoToPickup => DispatchTaskStage.GoingToPickup,
+        DispatchTaskStepType.DeliverFullBoxToDumper => DispatchTaskStage.GoingToDumper,
+        DispatchTaskStepType.EnterDumpingPosition => DispatchTaskStage.Dumping,
+        DispatchTaskStepType.ReturnEmptyBox => DispatchTaskStage.ReturningEmptyBox,
+        _ => throw new InvalidOperationException("不是运输恢复步骤。")
+    };
+
+    private static string Hash(object value) =>
+        Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(value, Json)));
 
     private async Task<TransportTimeoutRecoveryAssessment> AssessAsync(
         DispatchTaskStepType stepType,
