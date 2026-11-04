@@ -24,7 +24,7 @@ public sealed partial class DispatchTaskOrchestrator(
     DispatchOptimizationService? optimization=null, DispatchRouteCache? routeCache=null,
     IDispatchQueueWindowService? queueLayer=null, IDispatchCandidateFilter? candidateLayer=null,
     DispatchTrafficReservationService? trafficLayer=null, IDispatchPreSendSafetyService? preSendSafety=null,
-    ITaskHandshakeStore? handshakes=null) : IsolatedBackgroundService
+    ITaskHandshakeStore? handshakes=null, ITransportTimeoutRecoveryService? timeoutRecovery=null) : IsolatedBackgroundService
 {
     private readonly IDispatchQueueWindowService _queueLayer = queueLayer ?? new DispatchQueueWindowService(tasks, trafficResources);
     private readonly IDispatchCandidateFilter _candidateLayer = candidateLayer ?? new DispatchCandidateFilter(options, agvGateway, agvStates,
@@ -422,6 +422,20 @@ public sealed partial class DispatchTaskOrchestrator(
 
                 if (status.State is AgvTransportTaskState.Failed or AgvTransportTaskState.Cancelled)
                 {
+                    if (status.State == AgvTransportTaskState.Failed &&
+                        status.VendorStatusCode == 7 &&
+                        timeoutRecovery is not null &&
+                        await timeoutRecovery.CaptureAsync(task, status, cancellationToken) is { } assessment)
+                    {
+                        logger.LogWarning(
+                            "AGV导航任务超时，已进入显式恢复状态。TaskId={TaskId}, StepType={StepType}, VehicleId={VehicleId}, Outcome={Outcome}, Message={Message}",
+                            task.TaskId,
+                            assessment.StepType,
+                            assessment.VehicleId,
+                            assessment.Outcome,
+                            assessment.Message);
+                        continue;
+                    }
                     var terminalStage = status.State == AgvTransportTaskState.Cancelled
                         ? DispatchTaskStage.Cancelled
                         : DispatchTaskStage.Faulted;

@@ -22,4 +22,8 @@ public sealed record AgvTransportTaskStatus(
     AgvTransportTaskState State,
     string? VehicleId,
     DateTimeOffset UpdatedAt,
-    string? Message = null);
+    string? Message = null)
+{
+    /// <summary>Raw Robokit task status when the response is unambiguous.</summary>
+    public int? VendorStatusCode { get; init; }
+}

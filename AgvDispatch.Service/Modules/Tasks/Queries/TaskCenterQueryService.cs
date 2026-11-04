@@ -22,7 +22,8 @@ public sealed partial class TaskCenterQueryService(ITaskCenterReadRepository rep
         var task = detail.Task;
         if (task.Stage is DispatchTaskStage.Completed or DispatchTaskStage.Cancelled or DispatchTaskStage.Faulted)
             return EnrichSteps(detail with { WaitingExplanation = task.Stage == DispatchTaskStage.Faulted
-                ? "任务故障：查看任务、步骤和命令错误。路权不会因故障自动释放。"
+                ? "任务故障：" + (string.IsNullOrWhiteSpace(task.ErrorMessage) ? "查看任务、步骤和命令错误。" : task.ErrorMessage) +
+                  " 路权不会因故障自动释放。"
                 : "任务已结束；若仍有路权，请按人工处置流程核查。" }, null);
         if (task.Stage is DispatchTaskStage.CancellationPending or DispatchTaskStage.CancellationReview)
             return EnrichSteps(detail with { WaitingExplanation = task.ErrorMessage ?? "取消处置中；后续步骤保持冻结，原路权保留。" }, null);

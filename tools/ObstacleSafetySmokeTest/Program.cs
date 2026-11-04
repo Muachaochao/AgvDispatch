@@ -23,6 +23,7 @@ internal static class Program
     {
         TimingAndPolicy();
         await CommandGateAsync();
+        await TransportTimeoutRecoveryAsync();
         await CompletionGateAsync();
         Console.WriteLine($"PASS: {checks} obstacle safety checks; isolated database and loopback protocol only; no physical AGV or PLC.");
     }
@@ -85,6 +86,9 @@ internal static class Program
         Check((await gateway.GetVehiclesAsync(default)).Single().OperatingState=="Unknown","stale duplicate telemetry is never advertised as an idle dispatch candidate");
         robot.Status=2;
         Check(await gateway.CreateTransportTaskAsync("ORIGINAL","A",["HOME","TARGET"],null,default)=="ORIGINAL"&&robot.Writes==0,"accepted original identity is read-only and never cancelled or re-sent during blockage");
+        robot.Status=7;
+        var timedOut=await gateway.GetTransportTaskStatusAsync("ORIGINAL",default);
+        Check(timedOut is {State:AgvTransportTaskState.Failed,VendorStatusCode:7},"Robokit status 7 remains distinguishable from other failures");
         cache.ApplyTelemetry("A",Telemetry(DateTimeOffset.UtcNow,true,false,new AgvAlarmSnapshot("52200",AgvAlarmSeverity.Fatal,"blocked")),TimeSpan.Zero);
         Check((await gateway.GetVehiclesAsync(default)).Single().OperatingState=="Faulted","Fatal takes priority over the local blocked label");
     }
@@ -92,12 +96,15 @@ internal static class Program
     {
         var directory=Path.Combine(Path.GetTempPath(),"agv-obstacle-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(directory);
         using var db=DatabaseFactory.Create(new(){DatabasePath=Path.Combine(directory,"test.db")});
-        var catalog=new TrafficResourceCatalog([new("A-LANE",TrafficResourceType.NarrowAisle),new("B-LANE",TrafficResourceType.NarrowAisle)]);
+        var vehicleIds=Enumerable.Range(0,12).Select(index=>"V"+index).ToArray();
+        var catalog=new TrafficResourceCatalog(vehicleIds.Select(id=>new TrafficResourceDefinition(id+"-LANE",TrafficResourceType.NarrowAisle)).ToArray());
         await new DatabaseInitializer(db,catalog).InitializeAsync(default);
         var tasks=new DispatchTaskRepository(db);var orchestration=new DispatchOrchestrationRepository(db);var outbox=new AgvCommandOutboxRepository(db);
         var traffic=new TrafficResourceManager(db,catalog,new(TimeSpan.FromMinutes(1)));var map=new ActiveMapRuntime();
-        var cache=new AgvStateCache(Options("A","B"));var gateway=new TerminalGateway();
-        var orchestrator=new DispatchTaskOrchestrator(NullLogger<DispatchTaskOrchestrator>.Instance,new(),orchestration,outbox,gateway,cache,map,new(),null!,traffic,null!);
+        var cache=new AgvStateCache(Options(vehicleIds));var gateway=new TerminalGateway();
+        var timeoutRecovery=new TransportTimeoutRecoveryService(db,cache,map,new AgvTransportChainLookup(db),traffic,null,new());
+        var orchestrator=new DispatchTaskOrchestrator(NullLogger<DispatchTaskOrchestrator>.Instance,new(),orchestration,outbox,gateway,cache,map,new(),null!,traffic,null!,
+            timeoutRecovery:timeoutRecovery);
         async Task<(string Task,string Step)> Executing(string vehicle)
         {
             var created=await tasks.TryCreateAsync("CNC-"+Guid.NewGuid().ToString("N"),"DUMPER",10,default);await tasks.MarkAcknowledgedAsync(created.Task.TaskId,default);
@@ -110,23 +117,108 @@ internal static class Program
         }
         async Task Sync()=>await (Task)typeof(DispatchTaskOrchestrator).GetMethod("SynchronizeExecutingTasksAsync",BindingFlags.Instance|BindingFlags.NonPublic)!.Invoke(orchestrator,[CancellationToken.None])!;
         async Task<bool> Complete((string Task,string Step) item)=>(await tasks.GetStepsAsync(item.Task,default)).Single(s=>s.StepId==item.Step).Status==DispatchTaskStepStatus.Completed;
-        var a=await Executing("A");var b=await Executing("B");
-        cache.ApplyTelemetry("A",Telemetry(DateTimeOffset.UtcNow,true),TimeSpan.Zero);cache.ApplyTelemetry("B",Telemetry(DateTimeOffset.UtcNow),TimeSpan.Zero);
+        var a=await Executing(vehicleIds[0]);var b=await Executing(vehicleIds[1]);
+        cache.ApplyTelemetry(vehicleIds[0],Telemetry(DateTimeOffset.UtcNow,true),TimeSpan.Zero);cache.ApplyTelemetry(vehicleIds[1],Telemetry(DateTimeOffset.UtcNow),TimeSpan.Zero);
         await Sync();
         Check(!await Complete(a)&&await Complete(b),"one blocked vehicle does not finish on stale terminal status while another vehicle completes");
         Check(db.Queryable<TrafficResourceLeaseEntity>().Any(l=>l.OwnerStepId==a.Step),"blocked original transport retains its traffic resource");
-        cache.ApplyTelemetry("A",Telemetry(DateTimeOffset.UtcNow),TimeSpan.Zero);await Sync();
+        cache.ApplyTelemetry(vehicleIds[0],Telemetry(DateTimeOffset.UtcNow),TimeSpan.Zero);await Sync();
         Check(await Complete(a),"fresh obstacle clear allows original completed transport to advance automatically");
+        var sampleIndex=2;
         foreach(var sample in new[]{Telemetry(DateTimeOffset.UtcNow,false,false,new AgvAlarmSnapshot("52200",AgvAlarmSeverity.Error,"blocked")),Telemetry(DateTimeOffset.UtcNow,false,true),Telemetry(DateTimeOffset.UtcNow,false,false,new AgvAlarmSnapshot("52200",AgvAlarmSeverity.Fatal,"blocked")),Telemetry(DateTimeOffset.UtcNow,null),Telemetry(DateTimeOffset.UtcNow,false,false,new AgvAlarmSnapshot("51001",AgvAlarmSeverity.Error,"fault"))})
         {
-            var current=await Executing("A");cache.ApplyTelemetry("A",sample with{ReadAt=DateTimeOffset.UtcNow},TimeSpan.Zero);await Sync();
+            var vehicle=vehicleIds[sampleIndex++];var current=await Executing(vehicle);cache.ApplyTelemetry(vehicle,sample with{ReadAt=DateTimeOffset.UtcNow},TimeSpan.Zero);await Sync();
             Check(!await Complete(current),"52200/urgent/fatal/unknown/error state prevents Completed from advancing the original transport");
-            cache.ApplyTelemetry("A",Telemetry(DateTimeOffset.UtcNow),TimeSpan.Zero);await Sync();Check(await Complete(current),"original identity resumes after fresh valid safe observation");
+            cache.ApplyTelemetry(vehicle,Telemetry(DateTimeOffset.UtcNow),TimeSpan.Zero);await Sync();Check(await Complete(current),"original identity resumes after fresh valid safe observation");
         }
-        var stale=await Executing("A");cache.MarkFailure("A",new IOException("offline"),TimeSpan.FromSeconds(5));await Sync();
+        var timeoutVehicle=vehicleIds[sampleIndex++];
+        var timeoutTask=await Executing(timeoutVehicle);
+        gateway.TaskStates[timeoutTask.Step]=AgvTransportTaskState.Failed;
+        gateway.TaskCodes[timeoutTask.Step]=7;
+        cache.ApplyTelemetry(timeoutVehicle,Telemetry(DateTimeOffset.UtcNow),TimeSpan.Zero);
+        await Sync();
+        var timeoutStep=(await tasks.GetStepsAsync(timeoutTask.Task,default)).Single(s=>s.StepId==timeoutTask.Step);
+        var timeoutSaved=db.Queryable<DispatchTaskEntity>().Single(t=>t.TaskId==timeoutTask.Task);
+        Check(timeoutStep.Status==DispatchTaskStepStatus.ManualIntervention&&timeoutSaved.Stage==(int)DispatchTaskStage.Faulted,
+            "orchestrator routes status 7 into an explicit timeout hold");
+        Check(timeoutSaved.ErrorMessage!.Contains("取箱导航超时")&&timeoutSaved.ErrorMessage.Contains("运行地图不可用"),
+            "timeout hold preserves stage context and reports unavailable recovery evidence");
+        var staleVehicle=vehicleIds[sampleIndex];
+        var stale=await Executing(staleVehicle);cache.MarkFailure(staleVehicle,new IOException("offline"),TimeSpan.FromSeconds(5));await Sync();
         Check(!await Complete(stale),"bad quality cannot promote a vendor terminal row to business completion");
         Check(gateway.Writes==0,"all obstacle recovery cycles issue zero cancel, replacement or navigation commands");
         Console.WriteLine("Evidence: "+directory);
+    }
+    static async Task TransportTimeoutRecoveryAsync()
+    {
+        var directory=Path.Combine(Path.GetTempPath(),"agv-timeout-recovery-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(directory);
+        using var db=DatabaseFactory.Create(new(){DatabasePath=Path.Combine(directory,"test.db")});
+        var catalog=new TrafficResourceCatalog([]);await new DatabaseInitializer(db,catalog).InitializeAsync(default);
+        var mapRuntime=new ActiveMapRuntime();
+        var definition=new MapDefinition("TIMEOUT","test","RobotWorld","m",
+            [
+                new("S",0,0,MapNodeType.Station,true,[],"S"),
+                new("H",1,0,MapNodeType.Waypoint,true,[],"H"),
+                new("D",1,1,MapNodeType.Waypoint,true,[],"D"),
+                new("X",2,0,MapNodeType.Station,true,[],"X")
+            ],
+            [
+                new("E-SH","S","H",1,1,false,true,[]),
+                new("E-HX","H","X",1,1,false,true,[]),
+                new("E-HD","H","D",1,1,false,true,[]),
+                new("E-DX","D","X",1,1,false,true,[])
+            ],[]);
+        mapRuntime.Replace(new("MAP-T","MAPV-T",definition,DateTimeOffset.UtcNow));
+        var traffic=new TrafficResourceManager(db,catalog,new(TimeSpan.FromMinutes(1)));
+        var cache=new AgvStateCache(Options("A"));
+        var chains=new AgvTransportChainLookup(db);
+        var recovery=new TransportTimeoutRecoveryService(db,cache,mapRuntime,chains,traffic,null,new());
+        var json=new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        var stationSequence=0;
+        async Task<(string Task,string Step,string Station)> Seed(DispatchTaskStepType type)
+        {
+            var taskId="TASK-"+Guid.NewGuid().ToString("N");var stepId="STEP-"+Guid.NewGuid().ToString("N");
+            var now=DateTime.Now;var station="CNC-"+(++stationSequence);
+            await db.Insertable(new DispatchTaskEntity{TaskId=taskId,StationId=station,VehicleId="A",VendorTaskId=stepId,
+                Stage=(int)DispatchTaskStage.GoingToPickup,Priority=0,CreatedAt=now,UpdatedAt=now}).ExecuteCommandAsync();
+            await db.Insertable(new DispatchTaskStepEntity{StepId=stepId,TaskId=taskId,Sequence=1,StepType=(int)type,
+                Status=(int)DispatchTaskStepStatus.Executing,SourceSite="S",DestinationSite="X",VehicleId="A",
+                VendorTaskId=stepId,CreatedAt=now,UpdatedAt=now,StartedAt=now}).ExecuteCommandAsync();
+            var payload=new AgvTransportCommandPayload(stepId,"A","S","X",["S","H","X"],null);
+            await db.Insertable(new AgvCommandOutboxEntity{CommandId="CMD-"+Guid.NewGuid().ToString("N"),
+                IdempotencyKey="TEST:"+stepId,TaskId=taskId,StepId=stepId,VehicleId="A",
+                CommandType=(int)AgvCommandType.Transport,Status=(int)AgvCommandStatus.Sent,
+                PayloadJson=JsonSerializer.Serialize(payload,json),NextAttemptAt=now,CreatedAt=now,UpdatedAt=now,
+                SentAt=now,VendorCommandId=stepId}).ExecuteCommandAsync();
+            return(taskId,stepId,station);
+        }
+        var observed=DateTimeOffset.UtcNow;
+        cache.ApplyTelemetry("A",Telemetry(observed) with{X=1,Y=0,CurrentStation="H"},TimeSpan.Zero);
+        foreach(var type in new[]{DispatchTaskStepType.GoToPickup,DispatchTaskStepType.DeliverFullBoxToDumper,DispatchTaskStepType.ReturnEmptyBox})
+        {
+            var item=await Seed(type);var status=new AgvTransportTaskStatus(item.Step,item.Step,AgvTransportTaskState.Failed,
+                "A",DateTimeOffset.UtcNow,"Robokit状态=7：超时"){VendorStatusCode=7};
+            var task=new DispatchTaskWorkItem(item.Task,item.Station,"A",item.Step,DispatchTaskStage.GoingToPickup,0,
+                DateTimeOffset.Now,DateTimeOffset.Now);
+            var assessment=await recovery.CaptureAsync(task,status,default);
+            Check(assessment is {Outcome:TransportTimeoutRecoveryOutcome.ReadyForControlledDetour},"status 7 creates a safe read-only detour candidate for "+type);
+            Check(assessment!.CandidatePath.SequenceEqual(new[]{"H","D","X"}),"timeout detour starts at actual station and avoids inferred blocked edge for "+type);
+            var step=db.Queryable<DispatchTaskStepEntity>().Single(s=>s.StepId==item.Step);
+            var saved=db.Queryable<DispatchTaskEntity>().Single(t=>t.TaskId==item.Task);
+            Check(step.Status==(int)DispatchTaskStepStatus.ManualIntervention,"timeout leaves executing state for "+type);
+            Check(saved.Stage==(int)DispatchTaskStage.Faulted&&saved.ErrorMessage!.Contains("超时"),"timeout freezes original business task for "+type);
+            Check(db.Queryable<ExecutionEvidenceEntity>().Any(e=>e.TaskId==item.Task&&e.StepId==item.Step&&e.Kind=="TransportTimeoutRecoveryCaptured"),"timeout evidence is persisted for "+type);
+        }
+        var blocked=await Seed(DispatchTaskStepType.GoToPickup);
+        cache.ApplyTelemetry("A",Telemetry(DateTimeOffset.UtcNow,true) with{X=1,Y=0,CurrentStation="H"},TimeSpan.Zero);
+        var blockedStatus=new AgvTransportTaskStatus(blocked.Step,blocked.Step,AgvTransportTaskState.Failed,"A",
+            DateTimeOffset.UtcNow,"Robokit状态=7：超时"){VendorStatusCode=7};
+        var blockedTask=new DispatchTaskWorkItem(blocked.Task,blocked.Station,"A",blocked.Step,DispatchTaskStage.GoingToPickup,0,
+            DateTimeOffset.Now,DateTimeOffset.Now);
+        var blockedAssessment=await recovery.CaptureAsync(blockedTask,blockedStatus,default);
+        Check(blockedAssessment is {Outcome:TransportTimeoutRecoveryOutcome.AwaitingObstacleClear},"active obstacle remains a hold instead of sending a detour");
+        Check(!db.Queryable<AgvCommandOutboxEntity>().Any(c=>c.Status==(int)AgvCommandStatus.Pending),"timeout recovery sends no replacement command");
+        Console.WriteLine("Timeout evidence: "+directory);
     }
 }
 
@@ -138,7 +230,11 @@ sealed class ManualClock(DateTimeOffset start):TimeProvider
 sealed class TerminalGateway:IAgvGateway
 {
     public Dictionary<string,string> Vehicles{get;}=[];public int Writes{get;private set;}
-    public Task<AgvTransportTaskStatus?> GetTransportTaskStatusAsync(string id,CancellationToken ct)=>Task.FromResult<AgvTransportTaskStatus?>(new(id,id,AgvTransportTaskState.Completed,Vehicles[id],DateTimeOffset.UtcNow));
+    public Dictionary<string,AgvTransportTaskState> TaskStates{get;}=[];
+    public Dictionary<string,int?> TaskCodes{get;}=[];
+    public Task<AgvTransportTaskStatus?> GetTransportTaskStatusAsync(string id,CancellationToken ct)=>
+        Task.FromResult<AgvTransportTaskStatus?>(new(id,id,TaskStates.GetValueOrDefault(id,AgvTransportTaskState.Completed),
+            Vehicles[id],DateTimeOffset.UtcNow){VendorStatusCode=TaskCodes.GetValueOrDefault(id)});
     public Task<DeviceConnectionStatus> GetConnectionStatusAsync(CancellationToken ct)=>throw new NotSupportedException();
     public Task<IReadOnlyList<AgvVehicleStatus>> GetVehiclesAsync(CancellationToken ct)=>throw new NotSupportedException();
     public Task<string> CreateTransportTaskAsync(string id,string? vehicle,IReadOnlyList<string> path,AgvTransportAction? action,CancellationToken ct){Writes++;throw new Exception("unexpected motion");}
