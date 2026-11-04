@@ -2,17 +2,18 @@ export interface SimulationVehicle {
   x: number; y: number; angle?: number; station?: string; loaded?: boolean;
   current_task?: string | null; tasks?: Record<string, number>; offline?: boolean;
   paused?: boolean; speedScale?: number; completed_segments?: number; waitReason?: string;
-  batteryPercent?: number; speedMps?: number; distanceMeters?: number;
-  simulationControl?: { sequence?: string; error?: string | null; responseDropPending?: boolean; blockedEdges?: string[]; plc?: SimulationControls['plc'] };
+  batteryPercent?: number; batteryVoltage?: number; charging?: boolean; speedMps?: number; distanceMeters?: number;
+  simulationControl?: { sequence?: string; error?: string | null; responseDropPending?: boolean; blockedEdges?: string[]; charging?: boolean; plc?: SimulationControls['plc'] };
 }
 export interface SimulationNode { id: string; agvSiteId?: string; x: number; y: number; type?: string; enabled?: boolean; resourceIds?: string[] }
-export interface SimulationEdge { from: string; to: string; id?: string; enabled?: boolean; bidirectional?: boolean; geometryKind?: string; controlPoints?: { x: number; y: number }[] }
+export interface SimulationEdge { from: string; to: string; id?: string; enabled?: boolean; bidirectional?: boolean; speedLimit?: number; geometryKind?: string; controlPoints?: { x: number; y: number }[] }
 export interface SimulationResource { id: string; capacity?: number; boundary?: { x: number; y: number }[] }
 export interface SimulationMapDefinition { name?: string; nodes: SimulationNode[]; edges: SimulationEdge[]; resources: SimulationResource[] }
 export interface SimulationStationConfiguration { stationId: 'CNC-001' | 'CNC-002'; pickupSite: string; offset?: number }
 export interface SimulationVehicleConfiguration {
   id: string; initialSite: string; radiusMeters: number; initialLoaded?: boolean;
-  batteryPercent?: number; speedScale?: number;
+  batteryPercent?: number; speedScale?: number; voltageCurve?: { percent: number; voltage: number }[];
+  chargingGainPercentPerHour?: number;
 }
 export interface SimulationConfigureRequest {
   name: string; mapDefinition: SimulationMapDefinition; stations: SimulationStationConfiguration[];
@@ -27,6 +28,16 @@ export interface SimulationRecoveryItem {
 }
 export interface SimulationRecovery {
   sessionId?: string; released: boolean; message?: string; items: SimulationRecoveryItem[]; error?: string;
+}
+export interface SimulationProtocolStatus {
+  running: boolean; name?: string; transport?: string; framing?: string; port?: number; rules?: number;
+  requests?: number; state?: Record<string, unknown>; counters?: Record<string, number>;
+  startedAt?: number; lastEvent?: Record<string, unknown> | null; error?: string;
+}
+export interface SimulationEquipmentStatus {
+  running: boolean; floors?: string[]; currentFloor?: string; targetFloor?: string | null;
+  direction?: string; door?: string; moving?: boolean; progress?: number; fault?: boolean;
+  signals?: Record<string, unknown>; schedules?: unknown[]; signalEvents?: Record<string, unknown>[]; error?: string;
 }
 export interface SimulationCheck { name: string; status: string; detail?: string }
 export interface SimulationReport {
@@ -49,10 +60,12 @@ export interface SimulationStatus {
     dumper: { dumpingSite: string; waitingSite: string; resourceId: string }; mapName: string;
   } | null;
   recovery?: SimulationRecovery | null;
+  protocol?: SimulationProtocolStatus | null;
+  equipment?: SimulationEquipmentStatus | null;
 }
 export interface SimulationControls {
   sequence: string;
-  vehicles?: Record<string, { paused?: boolean; offline?: boolean; speedScale?: number; dropNextResponse?: boolean; blockedEdges?: string[] }>;
+  vehicles?: Record<string, { paused?: boolean; offline?: boolean; charging?: boolean; speedScale?: number; dropNextResponse?: boolean; blockedEdges?: string[] }>;
   plc?: { readyDelaySeconds?: number; doneDelaySeconds?: number; suppressReady?: boolean; suppressDone?: boolean; fault?: boolean };
 }
 export interface SimulationRun {

@@ -5,6 +5,7 @@ import { simulationApi, simulationFresh, simulationGeometry, simulationLabel, si
   type SimulationStatus, type SimulationRun, type SimulationControls, type SimulationReport,
   type SimulationConfigureRequest, type SimulationMapDefinition, type SimulationCall,
   type SimulationRecoveryItem } from '../simulation';
+import { importProfControlRpj } from '../profcontrol-rpj';
 
 const status = ref<SimulationStatus | null>(null), error = ref(''), notice = ref('');
 const reading = ref(false), busy = ref(false), connected = ref(false), now = ref(Date.now());
@@ -20,15 +21,25 @@ const stationPickupA = ref(''), stationPickupB = ref(''), waitingSite = ref(''),
 const inspectionSite = ref(''), dumperResourceId = ref('');
 const customVehicles = ref([
   { id: 'AGV-SIM-01', initialSite: '', radiusMeters: 0.6, initialLoaded: false, batteryPercent: 86, speedScale: 1,
-    accelerationMetersPerSecondSquared: 0.6, operationSeconds: 2, travelCostPercentPerMeter: 0.01, idleCostPercentPerHour: 0.1 },
+    accelerationMetersPerSecondSquared: 0.6, operationSeconds: 2, travelCostPercentPerMeter: 0.01, idleCostPercentPerHour: 0.1,
+    voltageCurve: [{ percent: 0, voltage: 21 }, { percent: 100, voltage: 26 }], chargingGainPercentPerHour: 20 },
   { id: 'AGV-SIM-02', initialSite: '', radiusMeters: 0.6, initialLoaded: false, batteryPercent: 86, speedScale: 1,
-    accelerationMetersPerSecondSquared: 0.6, operationSeconds: 2, travelCostPercentPerMeter: 0.01, idleCostPercentPerHour: 0.1 }
+    accelerationMetersPerSecondSquared: 0.6, operationSeconds: 2, travelCostPercentPerMeter: 0.01, idleCostPercentPerHour: 0.1,
+    voltageCurve: [{ percent: 0, voltage: 21 }, { percent: 100, voltage: 26 }], chargingGainPercentPerHour: 20 }
 ]);
+type VehicleDraft = (typeof customVehicles.value)[number];
 const callCount = ref(2), callInterval = ref(2), callBatchSize = ref(2), callPattern = ref('CNC-001,CNC-002'), callVehicleId = ref('');
 const recoveryMaterial = ref('SIM-ONLY：原车辆、箱体及任务归属已按当前设备快照核对');
 const recoveryReason = ref('隔离仿真中核对原运输机械结果和PLC周期后继续原任务');
 const recoveryDecision = ref(10);
 const vehicleConfirmed = ref(false), loadConfirmed = ref(false), plcConfirmed = ref(false);
+const protocolText = ref(JSON.stringify({
+  name: 'loopback-protocol', transport: 'tcp', port: 0, framing: 'line-json', state: { ready: true },
+  rules: [{ id: 'ping', match: { command: 'ping' }, response: { ok: true, command: '{{request.command}}', count: '{{counters.ping}}' } }]
+}, null, 2));
+const protocolFile = ref('');
+const equipmentTravelSeconds = ref(2), equipmentDoorSeconds = ref(1);
+const signalSetText = ref('{"call":true}'), signalScheduleText = ref('[{"id":"delayed-stop","afterMs":2000,"set":{"call":false}}]');
 let disposed = false, poll: ReturnType<typeof setInterval> | undefined, tick: ReturnType<typeof setInterval> | undefined;
 let controller: AbortController | undefined;
 const cars = computed(() => status.value?.device?.cars ?? {});
@@ -58,9 +69,17 @@ const snapshotTime = computed(() => stamp(status.value?.device?.time));
 const mapNodes = computed(() => (mapDefinition.value?.nodes ?? []).filter(node => node.enabled !== false));
 const mapResources = computed(() => (mapDefinition.value?.resources ?? []).filter(resource => (resource.boundary?.length ?? 0) >= 3));
 const recovery = computed(() => status.value?.recovery);
+const protocol = computed(() => status.value?.protocol);
+const equipment = computed(() => status.value?.equipment);
 const callPlanValid = computed(() => Number.isInteger(callCount.value) && callCount.value >= 1 && callCount.value <= 500 &&
   Number.isFinite(callInterval.value) && callInterval.value >= 0 && callInterval.value <= 60 && [1, 2].includes(callBatchSize.value) &&
   callPattern.value.split(',').map(value => value.trim()).filter(value => value === 'CNC-001' || value === 'CNC-002').length > 0);
+function voltageCurveValid(curve: VehicleDraft['voltageCurve']): boolean {
+  if (!Array.isArray(curve) || curve.length < 2 || curve.length > 20) return false;
+  if (!curve.every(point => Number.isFinite(point.percent) && point.percent >= 0 && point.percent <= 100 &&
+    Number.isFinite(point.voltage) && point.voltage >= 0.1 && point.voltage <= 1000)) return false;
+  return new Set(curve.map(point => point.percent)).size === curve.length;
+}
 const configurationValid = computed(() => !!mapDefinition.value && !!stationPickupA.value && !!waitingSite.value && !!dumpingSite.value &&
   !!dumperResourceId.value && !!inspectionSite.value && customVehicles.value.length >= 1 && customVehicles.value.length <= 8 &&
   (!stationPickupB.value || stationPickupB.value !== stationPickupA.value) && waitingSite.value !== dumpingSite.value &&
@@ -73,7 +92,9 @@ const configurationValid = computed(() => !!mapDefinition.value && !!stationPick
     vehicle.operationSeconds! >= 0.1 && vehicle.operationSeconds! <= 120 &&
     Number.isFinite(vehicle.travelCostPercentPerMeter) && vehicle.travelCostPercentPerMeter! >= 0 &&
     vehicle.travelCostPercentPerMeter! <= 10 && Number.isFinite(vehicle.idleCostPercentPerHour) &&
-    vehicle.idleCostPercentPerHour! >= 0 && vehicle.idleCostPercentPerHour! <= 100) &&
+    vehicle.idleCostPercentPerHour! >= 0 && vehicle.idleCostPercentPerHour! <= 100 &&
+    voltageCurveValid(vehicle.voltageCurve) && Number.isFinite(vehicle.chargingGainPercentPerHour) &&
+    vehicle.chargingGainPercentPerHour! >= 0 && vehicle.chargingGainPercentPerHour! <= 100) &&
   new Set(customVehicles.value.map(vehicle => vehicle.id)).size === customVehicles.value.length &&
   new Set(customVehicles.value.map(vehicle => vehicle.initialSite)).size === customVehicles.value.length);
 function stamp(value?: string | number): string {
@@ -96,9 +117,23 @@ async function loadMapFile(event: Event) {
   const file = (event.target as HTMLInputElement).files?.[0]; if (!file) return;
   if (file.size > 5 * 1024 * 1024) { error.value = '地图文件不能超过5 MiB。'; return; }
   try {
-    const value = JSON.parse(await file.text()) as SimulationMapDefinition;
+    const raw = await file.text();
+    const parsed = JSON.parse(raw.replace(/^\uFEFF/, ''));
+    const profControl = /\.rpj$/i.test(file.name) || Array.isArray(parsed.ItemsInNet);
+    const imported = profControl ? importProfControlRpj(raw, file.name) : null;
+    const value = imported?.mapDefinition ?? parsed as SimulationMapDefinition;
     if (!value || !Array.isArray(value.nodes) || !Array.isArray(value.edges) || !Array.isArray(value.resources) || value.nodes.length < 3 || !value.edges.length) throw new Error('地图必须包含至少3个节点、道路和资源数组。');
     mapDefinition.value = value; mapFileName.value = file.name;
+    if (imported?.sourceVehicles.length) {
+      customVehicles.value = imported.sourceVehicles.map((vehicle, index) => ({
+        id: `RPJ-AGV-${String(index + 1).padStart(2, '0')}`,
+        initialSite: '', radiusMeters: Math.max(.1, Math.max(vehicle.widthMeters, vehicle.heightMeters) / 2),
+        initialLoaded: false, batteryPercent: 86, speedScale: 1, accelerationMetersPerSecondSquared: .6,
+        operationSeconds: 2, travelCostPercentPerMeter: .01, idleCostPercentPerHour: .1,
+        voltageCurve: [{ percent: 0, voltage: 21 }, { percent: 100, voltage: 26 }], chargingGainPercentPerHour: 20
+      }));
+      newVehicleCount.value = customVehicles.value.length;
+    }
     stationPickupA.value = defaultSite(['取货A', 'LM101', 'CNC-001'], 0);
     stationPickupB.value = defaultSite(['取货B', 'LM102', 'CNC-002'], 1);
     dumpingSite.value = defaultSite(['倒料', 'LM108'], 2);
@@ -106,7 +141,9 @@ async function loadMapFile(event: Event) {
     inspectionSite.value = defaultSite(['检修', '停车'], 4);
     dumperResourceId.value = mapResources.value.find(resource => resource.id.includes('倒料'))?.id ?? mapResources.value[0]?.id ?? '';
     resetVehicleOrigins();
-    notice.value = `已载入地图 ${file.name}：${value.nodes.length}个节点、${value.edges.length}条道路、${value.resources.length}个资源。请核对语义节点后再新建实例。`;
+    notice.value = imported
+      ? `已转换 ProfControl ${file.name}：${value.nodes.length}个节点、${value.edges.length}条道路、${value.resources.length}个资源、${imported.sourceVehicles.length}辆车。${imported.warnings.join('；')}`
+      : `已载入地图 ${file.name}：${value.nodes.length}个节点、${value.edges.length}条道路、${value.resources.length}个资源。请核对语义节点后再新建实例。`;
   } catch (reason) { mapDefinition.value = null; error.value = reason instanceof Error ? reason.message : String(reason); }
 }
 function vehicleCountChanged() {
@@ -115,9 +152,30 @@ function vehicleCountChanged() {
   customVehicles.value = Array.from({ length: count }, (_, index) => current[index] ?? {
     id: `AGV-SIM-${String(index + 1).padStart(2, '0')}`, initialSite: '', radiusMeters: 0.6,
     initialLoaded: false, batteryPercent: 86, speedScale: 1, accelerationMetersPerSecondSquared: 0.6,
-    operationSeconds: 2, travelCostPercentPerMeter: 0.01, idleCostPercentPerHour: 0.1
+    operationSeconds: 2, travelCostPercentPerMeter: 0.01, idleCostPercentPerHour: 0.1,
+    voltageCurve: [{ percent: 0, voltage: 21 }, { percent: 100, voltage: 26 }], chargingGainPercentPerHour: 20
   });
   resetVehicleOrigins();
+}
+function addVoltagePoint(vehicle: VehicleDraft) {
+  if (!vehicle.voltageCurve || vehicle.voltageCurve.length >= 20) return;
+  const sorted = [...vehicle.voltageCurve].sort((left, right) => left.percent - right.percent);
+  let percent = 50;
+  let voltage = 24;
+  for (let index = 1; index < sorted.length; index++) {
+    if (sorted[index].percent - sorted[index - 1].percent > 1) {
+      percent = Math.round((sorted[index].percent + sorted[index - 1].percent) / 2);
+      voltage = Math.round((sorted[index].voltage + sorted[index - 1].voltage) / 2 * 10) / 10;
+      break;
+    }
+  }
+  vehicle.voltageCurve.push({ percent, voltage });
+}
+function removeVoltagePoint(vehicle: VehicleDraft, index: number) {
+  if ((vehicle.voltageCurve?.length ?? 0) > 2) vehicle.voltageCurve!.splice(index, 1);
+}
+function sortVoltageCurve(vehicle: VehicleDraft) {
+  vehicle.voltageCurve?.sort((left, right) => left.percent - right.percent);
 }
 async function configureSimulation() {
   if (!configurationValid.value || !mapDefinition.value || status.value?.running || active.value) return;
@@ -125,7 +183,9 @@ async function configureSimulation() {
   if (stationPickupB.value) stations.push({ stationId: 'CNC-002' as const, pickupSite: stationPickupB.value });
   const payload: SimulationConfigureRequest = {
     name: mapDefinition.value.name || mapFileName.value.replace(/\.json$/i, '') || 'custom-simulation',
-    mapDefinition: mapDefinition.value, stations, vehicles: customVehicles.value.map(vehicle => ({ ...vehicle })),
+    mapDefinition: mapDefinition.value, stations,
+    vehicles: customVehicles.value.map(vehicle => ({ ...vehicle,
+      voltageCurve: [...vehicle.voltageCurve].sort((left, right) => left.percent - right.percent) })),
     dumper: { dumpingSite: dumpingSite.value, waitingSite: waitingSite.value, resourceId: dumperResourceId.value },
     inspectionSite: inspectionSite.value
   };
@@ -178,6 +238,36 @@ async function releaseRecovery() {
   } catch (reason) { error.value = reason instanceof Error ? reason.message : String(reason); }
   finally { busy.value = false; }
 }
+async function loadProtocolFile(event: Event) {
+  const file = (event.target as HTMLInputElement).files?.[0]; if (!file) return;
+  if (file.size > 256 * 1024) { error.value = '协议脚本不能超过256 KiB。'; return; }
+  try { protocolText.value = (await file.text()).replace(/^\uFEFF/, ''); JSON.parse(protocolText.value); protocolFile.value = file.name; notice.value = '已载入协议脚本，核对端口和规则后启动。'; }
+  catch (reason) { error.value = reason instanceof Error ? reason.message : String(reason); }
+}
+async function startProtocol() {
+  try {
+    const config = JSON.parse(protocolText.value);
+    if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error('协议脚本必须是JSON对象。');
+    await action('protocol-start', config);
+  } catch (reason) { error.value = reason instanceof Error ? reason.message : String(reason); }
+}
+function protocolAddress() {
+  if (!protocol.value?.port) return '尚未监听';
+  return `${protocol.value.transport}://127.0.0.1:${protocol.value.port}`;
+}
+function equipmentControl(payload: Record<string, unknown>) {
+  void action('equipment-control', { sequence: crypto.randomUUID(), ...payload });
+}
+async function startEquipment() {
+  await action('equipment-start', { sequence: crypto.randomUUID(), travelSeconds: equipmentTravelSeconds.value, doorSeconds: equipmentDoorSeconds.value });
+}
+async function setEquipmentSignals() {
+  try {
+    const set = JSON.parse(signalSetText.value), schedule = JSON.parse(signalScheduleText.value);
+    if (!set || typeof set !== 'object' || Array.isArray(set) || !Array.isArray(schedule)) throw new Error('信号集合须为对象，时间轴须为数组。');
+    equipmentControl({ signals: { set, schedule } });
+  } catch (reason) { error.value = reason instanceof Error ? reason.message : String(reason); }
+}
 function accept(next: SimulationStatus) {
   status.value = next; connected.value = true;
   if (!Object.hasOwn(next.device?.cars ?? {}, selectedVehicle.value)) selectedVehicle.value = Object.keys(next.device?.cars ?? {})[0] ?? '';
@@ -190,7 +280,8 @@ async function refresh(force = false) {
   catch (reason) { if (!disposed) { connected.value = false; error.value = reason instanceof Error ? reason.message : String(reason); } }
   finally { clearTimeout(timeout); reading.value = false; if (controller === request) controller = undefined; }
 }
-async function action(name: 'start' | 'stop' | 'run' | 'abort' | 'control' | 'new-instance' | 'configure', payload: unknown = {}) {
+async function action(name: 'start' | 'stop' | 'run' | 'abort' | 'control' | 'new-instance' | 'configure' |
+  'protocol-start' | 'protocol-stop' | 'equipment-start' | 'equipment-control' | 'equipment-stop', payload: unknown = {}) {
   if (!available.value || (name === 'run' && (!fresh.value || !runValid.value || active.value)) || (name === 'control' && !fresh.value)) return;
   if (name === 'new-instance' && (status.value?.running || starting.value || active.value)) return;
   if (name === 'new-instance' && (!Number.isInteger(newVehicleCount.value) || newVehicleCount.value < 1 || newVehicleCount.value > 8)) return;
@@ -239,9 +330,9 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
     </section>
     <section class="simulation-panel instance-designer" aria-labelledby="simulation-instance-designer">
       <header><h3 id="simulation-instance-designer">自定义仿真环境</h3><span class="scope-label">停止环境后创建新的隔离实例</span></header>
-      <p class="designer-intro">导入当前格式的 <code>.agvmap.json</code>，指定两个呼叫工位取货点、等待点、倒料点和资源边界。车辆编号、起点的节点及合成包络半径均可配置。地图只进入新实例，不改现场地图。</p>
+      <p class="designer-intro">导入本项目 <code>.agvmap.json</code>，或只读转换 ProfControl <code>.rpj</code> 中的站点、路径、曲线、控制区和车辆元数据，再指定两个呼叫工位取货点、等待点、倒料点和资源边界。地图只进入新实例，不改现场地图。</p>
       <div class="map-import">
-        <label class="file-picker">选择地图 JSON<input type="file" accept=".json,.agvmap.json,application/json" :disabled="!!status?.running || starting || active" @change="loadMapFile" /></label>
+        <label class="file-picker">选择地图文件<input type="file" accept=".json,.agvmap.json,.rpj,application/json" :disabled="!!status?.running || starting || active" @change="loadMapFile" /></label>
         <span v-if="mapFileName">已载入：{{ mapFileName }} · {{ mapDefinition?.nodes.length }} 节点 / {{ mapDefinition?.edges.length }} 道路 / {{ mapDefinition?.resources.length }} 资源</span>
         <span v-else>尚未载入自定义地图</span>
       </div>
@@ -267,13 +358,58 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
             <details class="vehicle-advanced"><summary>物理参数 · 加速度 {{ vehicle.accelerationMetersPerSecondSquared ?? 0.6 }} m/s² · 动作 {{ vehicle.operationSeconds ?? 2 }} 秒</summary>
               <div class="form-row"><label>加速度 / m/s²<input v-model.number="vehicle.accelerationMetersPerSecondSquared" type="number" min="0.05" max="10" step="0.05" /></label><label>取放动作时长 / 秒<input v-model.number="vehicle.operationSeconds" type="number" min="0.1" max="120" step="0.1" /></label></div>
               <div class="form-row"><label>行驶耗电 / %每米<input v-model.number="vehicle.travelCostPercentPerMeter" type="number" min="0" max="10" step="0.001" /></label><label>待机耗电 / %每小时<input v-model.number="vehicle.idleCostPercentPerHour" type="number" min="0" max="100" step="0.01" /></label></div>
+              <div class="voltage-curve-editor">
+                <div class="designer-subhead"><b>电池电压曲线 · {{ vehicle.voltageCurve?.length ?? 0 }} 点</b><small>支持2–20个唯一电量点；创建时按电量升序保存。</small></div>
+                <div class="voltage-point" v-for="(point, pointIndex) in vehicle.voltageCurve" :key="pointIndex">
+                  <label>电量 / %<input v-model.number="point.percent" type="number" min="0" max="100" step="0.1" /></label>
+                  <label>电压 / V<input v-model.number="point.voltage" type="number" min="0.1" max="1000" step="0.1" /></label>
+                  <button :disabled="(vehicle.voltageCurve?.length ?? 0) <= 2" @click="removeVoltagePoint(vehicle, pointIndex)">删除点</button>
+                </div>
+                <div class="toolbar"><button :disabled="(vehicle.voltageCurve?.length ?? 0) >= 20" @click="addVoltagePoint(vehicle)">增加曲线点</button><button @click="sortVoltageCurve(vehicle)">按电量排序</button></div>
+              </div>
+              <div class="form-row"><label>充电 / %每小时<input v-model.number="vehicle.chargingGainPercentPerHour" type="number" min="0" max="100" step="0.1" /></label></div>
             </details>
           </div>
-          <button :disabled="customVehicles.length >= 8" @click="customVehicles.push({ id: `AGV-SIM-${String(customVehicles.length + 1).padStart(2, '0')}`, initialSite: '', radiusMeters: 0.6, initialLoaded: false, batteryPercent: 86, speedScale: 1, accelerationMetersPerSecondSquared: 0.6, operationSeconds: 2, travelCostPercentPerMeter: 0.01, idleCostPercentPerHour: 0.1 }); resetVehicleOrigins()">增加车辆</button>
+          <button :disabled="customVehicles.length >= 8" @click="customVehicles.push({ id: `AGV-SIM-${String(customVehicles.length + 1).padStart(2, '0')}`, initialSite: '', radiusMeters: 0.6, initialLoaded: false, batteryPercent: 86, speedScale: 1, accelerationMetersPerSecondSquared: 0.6, operationSeconds: 2, travelCostPercentPerMeter: 0.01, idleCostPercentPerHour: 0.1, voltageCurve: [{ percent: 0, voltage: 21 }, { percent: 100, voltage: 26 }], chargingGainPercentPerHour: 20 }); resetVehicleOrigins()">增加车辆</button>
         </div>
         <p v-if="!configurationValid" class="inline-warning">请核对地图、工位取货点、等待/倒料/检修节点、倒料资源，以及每辆车唯一ID和起点。</p>
         <div class="toolbar designer-actions"><button class="primary" :disabled="!available || !!status?.running || starting || active || !configurationValid" @click="configureSimulation">创建自定义隔离实例</button><span>创建后不会自动启动；核对实例名和拓扑后再启动。</span></div>
       </template>
+    </section>
+    <section class="simulation-panel protocol-designer" aria-labelledby="simulation-protocol">
+      <header><h3 id="simulation-protocol">通用协议虚拟服务器</h3><span :class="['state-pill', protocol?.running ? 'pass' : 'unknown']">{{ protocol?.running ? '监听中' : '未运行' }}</span></header>
+      <p>用声明式JSON模拟 TCP、UDP 或 HTTP 设备：按请求字段、文本或正则匹配，维护状态变量，返回模板响应，并可设置延迟、丢响应和断连。仅监听回环地址，不执行任意程序代码。</p>
+      <div class="protocol-grid">
+        <div>
+          <label class="file-picker">载入协议 JSON<input type="file" accept=".json,application/json" @change="loadProtocolFile" /></label>
+          <textarea v-model="protocolText" rows="13" spellcheck="false" aria-label="协议模拟JSON"></textarea>
+          <div class="toolbar"><button class="primary" :disabled="busy || protocol?.running" @click="startProtocol">启动协议服务器</button><button :disabled="busy || !protocol?.running" @click="action('protocol-stop')">停止协议服务器</button></div>
+        </div>
+        <aside>
+          <dl><dt>端点</dt><dd>{{ protocolAddress() }}</dd><dt>协议 / 分帧</dt><dd>{{ protocol?.transport || '—' }} / {{ protocol?.framing || '—' }}</dd><dt>规则数</dt><dd>{{ protocol?.rules ?? 0 }}</dd><dt>请求数</dt><dd>{{ protocol?.requests ?? 0 }}</dd></dl>
+          <p v-if="protocolFile">脚本文件：{{ protocolFile }}</p>
+          <p v-if="protocol?.error" class="inline-warning">{{ protocol.error }}</p>
+          <details v-if="protocol?.lastEvent"><summary>最近匹配事件</summary><pre>{{ JSON.stringify(protocol.lastEvent, null, 2) }}</pre></details>
+          <small>该服务器用于设备协议和脚本测试；通用HTTP请求不会自动冒充当前正式AGV连接器。</small>
+        </aside>
+      </div>
+    </section>
+    <section class="simulation-panel equipment-designer" aria-labelledby="simulation-equipment-model">
+      <header><h3 id="simulation-equipment-model">电梯 / 门 / 信号发生器</h3><span :class="['state-pill', equipment?.running ? 'pass' : 'unknown']">{{ equipment?.running ? '模型运行中' : '未运行' }}</span></header>
+      <p>这是可选的通用设备模型，用于演练楼层运输、开关门和外部信号时间轴。当前尚未把电梯状态接入正式派车或安全联锁。</p>
+      <div class="equipment-grid">
+        <div>
+          <div class="toolbar"><label>楼层运行 / 秒<input v-model.number="equipmentTravelSeconds" type="number" min="0.1" max="300" step="0.1" /></label><label>开关门 / 秒<input v-model.number="equipmentDoorSeconds" type="number" min="0.1" max="60" step="0.1" /></label><button class="primary" :disabled="busy || equipment?.running" @click="startEquipment">启动设备模型</button><button :disabled="busy || !equipment?.running" @click="action('equipment-stop')">停止设备模型</button></div>
+          <dl class="equipment-facts"><dt>当前 / 目标楼层</dt><dd>{{ equipment?.currentFloor || '—' }} → {{ equipment?.targetFloor || '—' }}</dd><dt>运行状态</dt><dd>{{ equipment?.fault ? '故障' : equipment?.moving ? `${equipment?.direction} · ${Math.round((equipment?.progress ?? 0) * 100)}%` : equipment?.direction || '停止' }}</dd><dt>门状态</dt><dd>{{ equipment?.door || '—' }}</dd></dl>
+          <div class="toolbar"><button :disabled="busy || !equipment?.running || equipment?.fault || equipment?.moving || equipment?.door !== 'Closed'" @click="equipmentControl({ elevator: { targetFloor: '2' } })">前往2层</button><button :disabled="busy || !equipment?.running || equipment?.fault || equipment?.moving || equipment?.door !== 'Closed'" @click="equipmentControl({ elevator: { targetFloor: '1' } })">前往1层</button><button :disabled="busy || !equipment?.running || equipment?.moving" @click="equipmentControl({ elevator: { doorCommand: 'open' } })">开门</button><button :disabled="busy || !equipment?.running || equipment?.moving" @click="equipmentControl({ elevator: { doorCommand: 'close' } })">关门</button><button :disabled="busy || !equipment?.running" @click="equipmentControl({ elevator: { fault: true } })">注入故障</button><button :disabled="busy || !equipment?.running" @click="equipmentControl({ elevator: { reset: true } })">复位设备</button></div>
+        </div>
+        <div>
+          <label>立即设置信号<textarea v-model="signalSetText" rows="3" spellcheck="false"></textarea></label>
+          <label>信号时间轴 JSON<textarea v-model="signalScheduleText" rows="4" spellcheck="false"></textarea></label>
+          <div class="toolbar"><button :disabled="busy || !equipment?.running" @click="setEquipmentSignals">应用信号及时间轴</button><button :disabled="busy || !equipment?.running" @click="equipmentControl({ signals: { clearSchedule: true } })">清除时间轴</button></div>
+          <pre>{{ JSON.stringify({ signals: equipment?.signals || {}, scheduled: equipment?.schedules?.length || 0, recent: equipment?.signalEvents?.slice(-5) || [] }, null, 2) }}</pre>
+        </div>
+      </div>
     </section>
     <section v-if="connected && !status?.enabled" class="configuration-guide">
       <h3>配置一次，之后在此页面操作</h3><p>请先准备独立仿真实例，并为当前 Web 入口配置仿真控制器、Python 路径和实例目录。启用后即可在本页启动、运行场景和导出报告。</p>
@@ -316,8 +452,8 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
       <section class="simulation-panel vehicle-panel" aria-labelledby="simulation-vehicle">
         <header><h3 id="simulation-vehicle"><IconRobot :size="18" />虚拟车辆与故障</h3><span v-if="!fresh" class="inline-warning">反馈无效，控制已禁用</span></header>
         <label class="vehicle-select">选择车辆<select v-model="selectedVehicle" aria-label="选择虚拟车辆"><option v-if="!vehicleIds.length" value="">尚无车辆</option><option v-for="id in vehicleIds" :key="id" :value="id">{{ id }}</option></select></label>
-        <dl class="vehicle-facts"><dt>状态</dt><dd>{{ !fresh ? '未知 / 历史快照' : vehicle?.offline ? '通信断开' : vehicle?.paused ? '运动暂停' : vehicle?.current_task ? '执行中' : '空闲' }}</dd><dt>位置</dt><dd>{{ vehicle?.station || '尚无反馈' }}</dd><dt>载箱</dt><dd>{{ !fresh ? '未知' : vehicle?.loaded ? '有箱' : '无箱' }}</dd><dt>电量 / 速度</dt><dd>{{ vehicle?.batteryPercent !== undefined ? `${vehicle.batteryPercent.toFixed(1)}%` : '未知' }} · {{ vehicle?.speedMps !== undefined ? `${vehicle.speedMps.toFixed(2)} m/s` : '未知' }}</dd><dt>累计模型里程</dt><dd>{{ vehicle?.distanceMeters !== undefined ? `${vehicle.distanceMeters.toFixed(2)} m` : '未知' }}</dd><dt>原运输编号</dt><dd>{{ currentTask }}</dd><dt>当前等待原因</dt><dd>{{ vehicle?.waitReason || status?.scenario?.message || '尚无等待原因反馈' }}</dd></dl>
-        <fieldset :disabled="!canControl || !selectedVehicle"><div class="toolbar"><button @click="carControl({ paused: true })">暂停运动</button><button @click="carControl({ paused: false })">恢复运动</button><button @click="carControl({ offline: true })">断开通信</button><button @click="carControl({ offline: false })">恢复通信</button><button @click="carControl({ dropNextResponse: true })">丢弃下一响应</button></div><div class="speed-control"><label>运动倍率<input v-model.number="speedScale" type="number" min="0.1" max="10" step="0.1" /></label><button :disabled="!Number.isFinite(speedScale) || speedScale < 0.1 || speedScale > 10" @click="carControl({ speedScale })">应用倍率</button></div></fieldset>
+        <dl class="vehicle-facts"><dt>状态</dt><dd>{{ !fresh ? '未知 / 历史快照' : vehicle?.offline ? '通信断开' : vehicle?.paused ? '运动暂停' : vehicle?.current_task ? '执行中' : '空闲' }}</dd><dt>位置</dt><dd>{{ vehicle?.station || '尚无反馈' }}</dd><dt>载箱</dt><dd>{{ !fresh ? '未知' : vehicle?.loaded ? '有箱' : '无箱' }}</dd><dt>电量 / 电压</dt><dd>{{ vehicle?.batteryPercent !== undefined ? `${vehicle.batteryPercent.toFixed(1)}%` : '未知' }} · {{ vehicle?.batteryVoltage !== undefined ? `${vehicle.batteryVoltage.toFixed(2)} V` : '未知' }}{{ vehicle?.charging ? ' · 充电中' : '' }}</dd><dt>速度 / 里程</dt><dd>{{ vehicle?.speedMps !== undefined ? `${vehicle.speedMps.toFixed(2)} m/s` : '未知' }} · {{ vehicle?.distanceMeters !== undefined ? `${vehicle.distanceMeters.toFixed(2)} m` : '未知' }}</dd><dt>原运输编号</dt><dd>{{ currentTask }}</dd><dt>当前等待原因</dt><dd>{{ vehicle?.waitReason || status?.scenario?.message || '尚无等待原因反馈' }}</dd></dl>
+        <fieldset :disabled="!canControl || !selectedVehicle"><div class="toolbar"><button @click="carControl({ paused: true })">暂停运动</button><button @click="carControl({ paused: false })">恢复运动</button><button @click="carControl({ offline: true })">断开通信</button><button @click="carControl({ offline: false })">恢复通信</button><button @click="carControl({ charging: true })">开始充电</button><button @click="carControl({ charging: false })">停止充电</button><button @click="carControl({ dropNextResponse: true })">丢弃下一响应</button></div><div class="speed-control"><label>运动倍率<input v-model.number="speedScale" type="number" min="0.1" max="10" step="0.1" /></label><button :disabled="!Number.isFinite(speedScale) || speedScale < 0.1 || speedScale > 10" @click="carControl({ speedScale })">应用倍率</button></div></fieldset>
         <small v-if="vehicle?.simulationControl">设备反馈控制编号：{{ vehicle.simulationControl.sequence || '尚无反馈' }} · 当前运动倍率 {{ vehicle.speedScale ?? '未知' }}<span v-if="vehicle.simulationControl.responseDropPending"> · 等待丢弃下一响应</span></small>
         <p v-if="vehicle?.simulationControl?.error" class="inline-warning">{{ vehicle.simulationControl.error }}</p>
         <details class="edge-controls"><summary>道路阻塞 · 已反馈 {{ appliedBlockedEdges.length }} 条</summary><fieldset :disabled="!canControl || !selectedVehicle"><p>选择道路，在所选虚拟车经过时阻止运动，观察调度等待与超时处理。</p><div class="edge-options"><label v-for="edge in blockableEdges" :key="edge.id"><input v-model="blockedEdgeIds" type="checkbox" :value="edge.id" />{{ edge.id }} · {{ edge.from }} → {{ edge.to }}</label><span v-if="!blockableEdges.length">当前地图没有可用道路。</span></div><div class="toolbar"><button :disabled="!blockableEdges.length" @click="carControl({ blockedEdges: blockedEdgeIds })">应用道路阻塞</button><button @click="blockedEdgeIds = []; carControl({ blockedEdges: [] })">解除所选车全部道路阻塞</button></div></fieldset></details>
@@ -367,4 +503,6 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
 .simulation-page{flex:1;min-height:0;overflow:auto;padding:8px 12px 30px;color:#d3e2f3}.simulation-title{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:8px 0 18px}.simulation-title h2{display:flex;align-items:center;gap:9px;font-size:23px}.simulation-title p{margin-top:9px;color:#94abc8;line-height:1.6}.toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:8px}.new-vehicle-count{display:flex;align-items:center;gap:7px;color:#9cb1cb;font-size:11px}.new-vehicle-count input{width:60px}.scope-label{font-size:11px;color:#7ad4e7;border:1px solid #2b6676;background:#102e3e;padding:4px 8px;border-radius:4px;white-space:nowrap}.environment-panel,.simulation-panel,.configuration-guide{border:1px solid #2b4162;border-radius:6px;background:#101b32;padding:18px}.environment-panel{display:flex;align-items:center;flex-wrap:wrap;gap:20px;margin-bottom:14px}.environment-panel>div:first-child{flex:1;min-width:240px}.environment-panel h3{font-size:16px}.environment-panel p{color:#9cb1cb;line-height:1.6;margin-top:7px;overflow-wrap:anywhere}.environment-state{display:flex;flex-direction:column;gap:8px}.environment-state small{color:#89a0be}.simulation-grid{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(320px,1fr);gap:14px}.simulation-panel{min-width:0}.simulation-panel>header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}.simulation-panel h3{display:flex;align-items:center;gap:8px;font-size:15px}.simulation-panel small{display:block;color:#91a8c3;line-height:1.65;margin-top:12px}.simulation-map{width:100%;height:340px;background:#0c1529;border:1px solid #223654;border-radius:4px}.roads path{fill:none;stroke:#3b5475;stroke-width:4;stroke-linecap:round}.roads path.blocked{stroke:#ef947b;stroke-dasharray:8 6}.edge-controls{border-top:1px solid #2b4162;padding-top:12px;margin-top:15px}.edge-controls summary{cursor:pointer;color:#a9c7dc}.edge-controls p{line-height:1.6;color:#91a8c3;margin:12px 0}.edge-options{max-height:150px;overflow:auto;margin:12px 0}.edge-options label{display:flex;flex-direction:row;align-items:center;gap:8px;padding:5px}.edge-options input{width:15px;min-height:15px}.map-node circle{fill:#90abc8;stroke:#0c1529;stroke-width:2}.map-node text{font-size:12px;fill:#a5b7cc;paint-order:stroke;stroke:#0c1529;stroke-width:4;stroke-linejoin:round}.map-car{color:var(--car-color);transition:transform .5s linear}.map-car>circle{fill:var(--car-color);fill-opacity:.12;stroke:var(--car-color);stroke-width:1.5}.map-car rect{fill:var(--car-color);stroke:#091525;stroke-width:2}.map-car text{fill:var(--car-color);font-size:13px;font-weight:600;paint-order:stroke;stroke:#0c1529;stroke-width:4;stroke-linejoin:round}.map-car.selected>circle{stroke-width:3}.map-car.stale{opacity:.4}.map-car.offline>circle{stroke-dasharray:4 3}.map-caption{display:flex;justify-content:space-between;gap:12px;color:#86a0bf;padding-top:10px;line-height:1.6}.map-empty{min-height:340px;display:grid;place-content:center;color:#839bbb;background:#0c1529;padding:28px;text-align:center}.simulation-panel label{display:flex;flex-direction:column;gap:7px;color:#a5bad2;font-size:12px}.simulation-panel input,.simulation-panel select{width:100%;min-width:0}.simulation-panel fieldset{border:0;padding:0;margin:0 0 16px;min-width:0}.form-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:14px 0}.scenario-panel fieldset>label{margin-bottom:12px}.simulation-page .primary{color:#a6f0ff;border-color:#289db6;background:#134050}.state-pill{display:inline-flex;padding:4px 8px;border:1px solid #3f526d;border-radius:4px;font-size:11px;white-space:nowrap}.state-pill.pass{color:#67e1bb;background:#112f2e;border-color:#286a59}.state-pill.fail{color:#ffacb6;background:#3c2432;border-color:#865064}.state-pill.waiting{color:#f1d08f;background:#342e21;border-color:#75603a}.state-pill.unknown{color:#a2b1c6;background:#1a273c;border-color:#3c4f6a}.scenario-progress{border-top:1px solid #293c59;margin-top:19px;padding-top:16px}.scenario-progress>div{display:flex;justify-content:space-between;color:#a5d5e4}.scenario-progress progress{width:100%;height:6px;margin:12px 0;accent-color:#3ac5cf}.scenario-progress p{line-height:1.7;color:#b1c5dd;overflow-wrap:anywhere}.vehicle-select{max-width:320px}.vehicle-facts{display:grid;grid-template-columns:105px minmax(0,1fr);gap:9px 12px;line-height:1.5;margin:16px 0 19px}.vehicle-facts dt{color:#8fa6c3}.vehicle-facts dd{margin:0;overflow-wrap:anywhere}.speed-control{display:flex;align-items:flex-end;gap:10px;margin-top:15px}.speed-control label{max-width:130px}.plc-faults{margin-top:18px}.report-panel{margin-top:14px}.report-metrics{display:flex;flex-wrap:wrap;gap:12px 28px;padding-bottom:8px}.report-metrics dt{font-size:11px;color:#8da6c3}.report-metrics dd{margin:5px 0;font-size:19px;color:#b7e7ef;font-variant-numeric:tabular-nums}.report-identity{display:flex;flex-wrap:wrap;align-items:center;gap:10px 18px;padding:0 0 15px;color:#99b1ca;line-height:1.6}.report-identity b{color:#c2dbe8}.report-panel>.inline-warning{line-height:1.7;margin-bottom:12px}.report-table{overflow:auto}.report-panel table{width:100%;border-collapse:collapse;text-align:left;line-height:1.6}.report-panel th{font-weight:400;color:#8fa7c6;background:#12223a}.report-panel td,.report-panel th{padding:12px;border-bottom:1px solid #293b56}.report-panel td:first-child{min-width:150px}.report-panel td:last-child{overflow-wrap:anywhere}.report-empty{color:#91a8c3;line-height:1.8;padding:8px 0}.simulation-error,.simulation-notice{padding:12px 15px;line-height:1.6;margin-bottom:14px;border-radius:4px}.simulation-error{background:#402633;border:1px solid #865269;color:#ffbdc8}.simulation-notice{background:#143037;border:1px solid #2c626a;color:#9edfe0}.inline-warning{color:#eac17d;font-size:11px}.scenario-panel>.inline-warning{margin-top:10px}.configuration-guide{margin-bottom:14px}.configuration-guide h3{margin-bottom:10px}.configuration-guide p{line-height:1.8;color:#a0b8d0}.event-panel{margin-top:14px}.event-panel summary{cursor:pointer;color:#a8cedf}.event-panel ol{list-style:none;padding:0;max-height:250px;overflow:auto}.event-panel li{display:flex;gap:16px;line-height:1.7;border-top:1px solid #263a55;padding:9px 0;overflow-wrap:anywhere}.event-panel time{flex:none;color:#8ca5c1}.simulation-boundary{color:#8098b5;line-height:1.8;margin-top:16px;font-size:11px}@media(max-width:1050px){.simulation-grid{grid-template-columns:1fr}.simulation-title{align-items:flex-start}.map-panel{order:0}}@media(max-width:650px){.simulation-page{padding:5px}.simulation-title{flex-direction:column}.environment-panel{padding:14px}.simulation-panel{padding:14px}.simulation-panel>header{align-items:flex-start;flex-wrap:wrap}.simulation-map{height:280px}.form-row{grid-template-columns:1fr}.map-caption{flex-direction:column}.event-panel li{display:block}.event-panel time{display:block}.vehicle-facts{grid-template-columns:85px minmax(0,1fr)}}@media(prefers-reduced-motion:reduce){.map-car{transition:none}}
 .instance-designer{margin-bottom:14px}.designer-intro{line-height:1.75;color:#9db4ce;margin-bottom:14px}.designer-intro code{color:#8ce0e4}.map-import{display:flex;align-items:center;flex-wrap:wrap;gap:12px;padding:12px;background:#0c172b;border:1px solid #263d5b;margin-bottom:14px}.map-import>span{color:#8da7c4;line-height:1.55}.file-picker{max-width:330px}.file-picker input{padding:7px}.topology-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.vehicle-designer{border-top:1px solid #293e5d;margin-top:16px;padding-top:14px}.designer-subhead{display:flex;justify-content:space-between;gap:12px;align-items:baseline;margin-bottom:10px}.designer-subhead small,.designer-actions span{color:#8da4c0}.vehicle-config-row{display:grid;grid-template-columns:1fr 1.3fr .7fr auto;gap:9px;align-items:end;padding:9px 0;border-top:1px solid #223651}.agentel-config-row button{height:34px}.designer-actions{margin-top:15px}.call-plan{border-top:1px solid #2a405f;padding-top:13px;margin-top:14px}.recovery-panel{margin-top:14px}.recovery-panel>p{line-height:1.75;color:#a1b8d1}.recovery-items{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:10px;margin:14px 0}.recovery-items article{border:1px solid #304965;background:#0d192d;padding:12px}.recovery-title{display:flex;justify-content:space-between;gap:10px;margin-bottom:9px}.recovery-items p,.recovery-items small{display:block;color:#9fb6cf;line-height:1.6;overflow-wrap:anywhere;margin:5px 0}.recovery-items button{margin-top:8px}.recovery-confirmations{display:flex;flex-wrap:wrap;gap:18px;margin-top:12px}.recovery-confirmations label{display:flex;flex-direction:row;align-items:center;gap:8px}.recovery-confirmations input{width:16px;min-height:16px}.simulation-panel textarea{width:100%;min-width:0;resize:vertical}@media(max-width:1050px){.topology-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:650px){.topology-grid,.vehicle-config-row{grid-template-columns:1fr}}
 .vehicle-config-row{grid-template-columns:minmax(120px,1fr) minmax(150px,1.3fr) repeat(3,minmax(90px,.65fr)) auto auto}.vehicle-config-row .loaded-config{flex-direction:row;align-items:center;gap:7px}.vehicle-config-row .loaded-config input{width:16px;min-height:16px}.vehicle-config-row button{height:34px}.vehicle-advanced{grid-column:1/-1;border:1px solid #223651;padding:9px}.vehicle-advanced summary{cursor:pointer;color:#8db5ce}.vehicle-advanced .form-row{margin:10px 0 0}
+.protocol-designer{margin-bottom:14px}.protocol-designer>p{line-height:1.75;color:#9fb6cf;margin-bottom:12px}.protocol-grid{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(260px,.8fr);gap:14px}.protocol-grid textarea{font-family:Consolas,monospace;font-size:12px;line-height:1.5;margin-top:10px;background:#091426;color:#bfe6ef}.protocol-grid aside{border:1px solid #2b4162;background:#0b172a;padding:14px}.protocol-grid aside dl{display:grid;grid-template-columns:90px minmax(0,1fr);gap:8px;line-height:1.5}.protocol-grid aside dt{color:#829bb8}.protocol-grid aside dd{margin:0;overflow-wrap:anywhere}.protocol-grid pre{max-height:220px;overflow:auto;background:#07101f;padding:10px;color:#a9d7e2;white-space:pre-wrap;overflow-wrap:anywhere}@media(max-width:850px){.protocol-grid{grid-template-columns:1fr}}
+.voltage-curve-editor{margin-top:12px;border-top:1px solid #223651;padding-top:10px}.voltage-point{display:grid;grid-template-columns:minmax(110px,1fr) minmax(110px,1fr) auto;gap:9px;align-items:end;margin:8px 0}.voltage-point button{height:34px}.voltage-curve-editor .toolbar{margin-top:9px}.equipment-designer{margin-bottom:14px}.equipment-designer>p{line-height:1.75;color:#9fb6cf;margin-bottom:12px}.equipment-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.equipment-grid>div{border:1px solid #2b4162;background:#0b172a;padding:14px;min-width:0}.equipment-grid label{min-width:150px}.equipment-grid textarea{font-family:Consolas,monospace;font-size:12px;line-height:1.5}.equipment-facts{display:grid;grid-template-columns:130px minmax(0,1fr);gap:8px;margin:16px 0;line-height:1.5}.equipment-facts dt{color:#829bb8}.equipment-facts dd{margin:0}.equipment-grid pre{max-height:180px;overflow:auto;background:#07101f;padding:10px;color:#a9d7e2;white-space:pre-wrap}@media(max-width:850px){.equipment-grid{grid-template-columns:1fr}}
 </style>

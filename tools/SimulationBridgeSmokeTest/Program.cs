@@ -109,7 +109,8 @@ await using (var bridge = new SimulationBridge(Config(Values(freePort))))
     var repeated = await Execute(await bridge.ForwardAsync(HttpMethod.Get, "/status", null, timeout.Token));
     Check(repeated.GetProperty("pid").GetInt32() == ownedPid, "status reuses only its already owned controller");
     Check((await Execute(await bridge.ForwardAsync(HttpMethod.Get, "/report", null, timeout.Token))).GetProperty("path").GetString() == "/report", "report proxy uses fixed route");
-    foreach (var path in new[] { "/configure", "/recover", "/recover-release" })
+    foreach (var path in new[] { "/configure", "/recover", "/recover-release", "/protocol-start", "/protocol-stop",
+                                 "/equipment-start", "/equipment-control", "/equipment-stop" })
         Check((await Execute(await bridge.ForwardAsync(HttpMethod.Post, path, "{}", timeout.Token))).GetProperty("path").GetString() == path,
             "custom simulation route allowed: " + path);
     var rejected = false;

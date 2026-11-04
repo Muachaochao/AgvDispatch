@@ -54,7 +54,8 @@ public sealed class SimulationBridge : IAsyncDisposable
         if (!Enabled) return Results.Json(new { error = "隔离仿真环境未启用。" }, statusCode: 403);
         if ((method != HttpMethod.Get || path is not ("/status" or "/report")) &&
             (method != HttpMethod.Post || path is not ("/start" or "/stop" or "/run" or "/abort" or "/control" or
-                "/new-instance" or "/configure" or "/recover" or "/recover-release")))
+                "/new-instance" or "/configure" or "/recover" or "/recover-release" or "/protocol-start" or "/protocol-stop" or
+                "/equipment-start" or "/equipment-control" or "/equipment-stop")))
             throw new ArgumentException("不支持的仿真操作。");
         await gate.WaitAsync(ct);
         try

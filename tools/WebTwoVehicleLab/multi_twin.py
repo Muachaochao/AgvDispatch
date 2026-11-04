@@ -41,7 +41,8 @@ def snapshot(car):
                 loaded=car.loaded, current_task=car.current, tasks=car.tasks,
                 completed_segments=car.steps, offline=car.offline,
                 paused=car.paused, speedScale=car.speed_scale,
-                batteryPercent=car.battery_percent*100, speedMps=car.current_speed_mps,
+                batteryPercent=car.battery_percent*100, batteryVoltage=car.battery_voltage(), charging=car.charging,
+                speedMps=car.current_speed_mps,
                 distanceMeters=car.distance_meters,
                 moving=car.moving, motionEdge=car.motion_edge,
                 simulationControl=car.control_snapshot())

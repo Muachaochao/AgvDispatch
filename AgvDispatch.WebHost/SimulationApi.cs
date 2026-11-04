@@ -15,7 +15,9 @@ public static class SimulationApi
         {
             if (!bridge.Enabled) return Disabled();
             if (action is not ("start" or "stop" or "run" or "abort" or "control" or
-                "new-instance" or "configure" or "recover" or "recover-release")) return Results.NotFound();
+                "new-instance" or "configure" or "recover" or "recover-release" or "protocol-start" or "protocol-stop" or
+                "equipment-start" or "equipment-control" or "equipment-stop"))
+                return Results.NotFound();
             var body = "{}";
             if (request.ContentLength != 0)
             {

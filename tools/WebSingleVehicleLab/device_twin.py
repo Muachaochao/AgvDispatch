@@ -38,6 +38,9 @@ class DeviceTwin:
         self.control_error_fingerprint = None
         self.speed_scale = 1.0
         self.battery_percent = 0.86
+        self.voltage_curve = [dict(percent=0, voltage=21), dict(percent=100, voltage=26)]
+        self.charging_gain_percent_per_hour = 20.0
+        self.charging = False
         self.acceleration = 0.6
         self.operation_seconds = 2.0
         self.travel_cost_percent_per_meter = 0.01
@@ -130,6 +133,8 @@ class DeviceTwin:
         profile = self.vehicle_profiles.get(self.vehicle_id, {})
         self.loaded = bool(profile.get('initialLoaded', False))
         self.battery_percent = float(profile.get('batteryPercent', 86)) / 100.0
+        self.voltage_curve = sorted(profile.get('voltageCurve', self.voltage_curve), key=lambda point: point['percent'])
+        self.charging_gain_percent_per_hour = float(profile.get('chargingGainPercentPerHour', 20))
         self.speed_scale = float(profile.get('speedScale', 1.0))
         self.acceleration = float(profile.get('accelerationMetersPerSecondSquared', .6))
         self.operation_seconds = float(profile.get('operationSeconds', 2.0))
@@ -137,8 +142,20 @@ class DeviceTwin:
         self.idle_cost_percent_per_hour = float(profile.get('idleCostPercentPerHour', .1))
 
     def consume_battery(self, distance=0.0, seconds=0.0):
+        if self.charging:
+            self.battery_percent = min(1.0, self.battery_percent + self.charging_gain_percent_per_hour / 100.0 * seconds / 3600.0)
+            return
         cost_percent = distance * self.travel_cost_percent_per_meter + seconds * self.idle_cost_percent_per_hour / 3600.0
         self.battery_percent = max(0.0, self.battery_percent - cost_percent / 100.0)
+
+    def battery_voltage(self):
+        percent = self.battery_percent * 100
+        if percent <= self.voltage_curve[0]['percent']: return self.voltage_curve[0]['voltage']
+        for left, right in zip(self.voltage_curve, self.voltage_curve[1:]):
+            if percent <= right['percent']:
+                ratio = (percent - left['percent']) / (right['percent'] - left['percent'])
+                return left['voltage'] + (right['voltage'] - left['voltage']) * ratio
+        return self.voltage_curve[-1]['voltage']
 
     def setbit(self, byte, bit, value):
         before = self.bit(byte, bit)
@@ -176,6 +193,7 @@ class DeviceTwin:
                 return
             car = value['vehicles'].get(self.vehicle_id, dict(VEHICLE_DEFAULTS))
             self.speed_scale, self.paused = car['speedScale'], car['paused']
+            self.charging = car['charging']
             self.offline, self.drop_next_response = car['offline'], car['dropNextResponse']
             self.blocked_edges = set(car['blockedEdges'])
             self.plc_controls = value['plc']
@@ -195,7 +213,7 @@ class DeviceTwin:
         return dict(sequence=self.control_sequence, error=self.control_error,
                     speedScale=self.speed_scale, paused=self.paused,
                     offline=self.offline, responseDropPending=self.drop_next_response,
-                    blockedEdges=sorted(self.blocked_edges), plc=self.plc_controls)
+                    blockedEdges=sorted(self.blocked_edges), charging=self.charging, plc=self.plc_controls)
 
     def at_site(self, site):
         node = self.nodes[site]
@@ -372,7 +390,8 @@ class DeviceTwin:
                          loaded=self.loaded, current_task=self.current, tasks=self.tasks,
                          completed_segments=self.steps, db1=list(self.memory[:4]), dumper=list(self.memory[610:611]), memory_hex=self.memory.hex(),
                          contract=self.contract, dumper_reserved=self.dumper_reserved,
-                         batteryPercent=self.battery_percent * 100, speedMps=self.current_speed_mps,
+                         batteryPercent=self.battery_percent * 100, batteryVoltage=self.battery_voltage(), charging=self.charging,
+                         speedMps=self.current_speed_mps,
                          distanceMeters=self.distance_meters, simulationControl=self.control_snapshot(), time=time.time(),
                          externalInput=dict(sequence=self.input_sequence, accepted=self.input_accepted, error=self.input_error))
             temp = self.root / 'device-state.tmp'
@@ -389,9 +408,9 @@ class DeviceTwin:
         if api == 1100:
             return dict(x=self.x, y=self.y, angle=self.angle, confidence=0.99,
                         current_station=self.station, last_station=self.station,
-                        battery_level=self.battery_percent, emergency=False, blocked=False,
+                        battery_level=self.battery_percent, battery_voltage=self.battery_voltage(), emergency=False, blocked=False,
                         navigation_status=2 if self.current else 0, errors=[], fatals=[], warnings=[],
-                        vx=0.5*self.speed_scale if self.current and not self.paused else 0, vy=0, w=0, charging=False)
+                        vx=self.current_speed_mps if self.current and not self.paused else 0, vy=0, w=0, charging=self.charging)
         if api == 1110:
             wanted = request.get('task_ids', list(self.tasks))
             return dict(task_status_package=dict(task_status_list=[dict(task_id=t, status=self.tasks.get(t,404), type=1) for t in wanted]))

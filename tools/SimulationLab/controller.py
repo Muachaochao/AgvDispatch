@@ -92,6 +92,8 @@ class Runtime:
         self.scenario = {'status': 'idle', 'completedRounds': 0, 'totalRounds': 0}
         self.report = read(self.root / 'simulation-report.json') if (self.root / 'simulation-report.json').exists() else None
         self.controls = {'sequence': uuid.uuid4().hex, 'vehicles': {}, 'plc': {}}
+        self.protocol_runtime = None
+        self.equipment_model = None
 
     def api(self, path, data=None, allow_rejection=False):
         if self.abort.is_set():
@@ -127,6 +129,8 @@ class Runtime:
                         fresh=self.phase == 'running' and time.time() - device.get('time', 0) < 3 and all(p.poll() is None for p in self.children.values()),
                         device=device, map=read(self.root / 'navigation.agvmap.json'), scenario=dict(self.scenario), report=self.report,
                         controls=self.controls, error=self.error, configuration=getattr(self, 'lab', {}).get('simulationConfiguration'), recovery=recovery,
+                        protocol=self.protocol_status(),
+                        equipment=self.equipment_status(),
                         message='回环设备仿真；合成模型不代表真实固件、机械及安全联锁验收。')
 
     def launch(self, name, arguments, cwd):
@@ -326,7 +330,7 @@ class Runtime:
             if not isinstance(vehicle, dict) or set(vehicle) - {
                     'id', 'initialSite', 'radiusMeters', 'initialLoaded', 'batteryPercent', 'speedScale',
                     'accelerationMetersPerSecondSquared', 'operationSeconds', 'travelCostPercentPerMeter',
-                    'idleCostPercentPerHour'}:
+                    'idleCostPercentPerHour', 'voltageCurve', 'chargingGainPercentPerHour'}:
                 raise ValueError('车辆配置字段无效。')
             vehicle_id = vehicle.get('id')
             if not isinstance(vehicle_id, str) or not VEHICLE_ID.fullmatch(vehicle_id) or vehicle_id in vehicle_ids:
@@ -348,17 +352,33 @@ class Runtime:
             operation = vehicle.get('operationSeconds', 2.0)
             travel_cost = vehicle.get('travelCostPercentPerMeter', 0.01)
             idle_cost = vehicle.get('idleCostPercentPerHour', 0.1)
+            charging_gain = vehicle.get('chargingGainPercentPerHour', 20)
             if not isinstance(loaded, bool) or not self._finite_number(battery) or not 0 <= battery <= 100 or \
                     not self._finite_number(speed) or not 0.1 <= speed <= 10 or \
                     not self._finite_number(acceleration) or not 0.05 <= acceleration <= 10 or \
                     not self._finite_number(operation) or not 0.1 <= operation <= 120 or \
                     not self._finite_number(travel_cost) or not 0 <= travel_cost <= 10 or \
-                    not self._finite_number(idle_cost) or not 0 <= idle_cost <= 100:
+                    not self._finite_number(idle_cost) or not 0 <= idle_cost <= 100 or \
+                    not self._finite_number(charging_gain) or not 0 <= charging_gain <= 100:
                 raise ValueError('车辆载荷、电量、速度、加速度、动作时长或耗电参数无效。')
+            curve = vehicle.get('voltageCurve')
+            if curve is None: curve = [dict(percent=0, voltage=21), dict(percent=100, voltage=26)]
+            if not isinstance(curve, list) or not 2 <= len(curve) <= 20:
+                raise ValueError('电池电压曲线须包含2至20个点。')
+            normalized_curve = []
+            seen_percent = set()
+            for point in curve:
+                if not isinstance(point, dict) or set(point) != {'percent', 'voltage'} or \
+                        not self._finite_number(point['percent']) or not 0 <= point['percent'] <= 100 or \
+                        not self._finite_number(point['voltage']) or not 0 < point['voltage'] <= 1000 or point['percent'] in seen_percent:
+                    raise ValueError('电池电压曲线点无效。')
+                seen_percent.add(point['percent']); normalized_curve.append(dict(percent=float(point['percent']), voltage=float(point['voltage'])))
             normalized_vehicles.append(dict(id=vehicle_id, initialSite=initial, radiusMeters=float(radius),
                                             initialLoaded=loaded, batteryPercent=float(battery), speedScale=float(speed),
                                             accelerationMetersPerSecondSquared=float(acceleration), operationSeconds=float(operation),
-                                            travelCostPercentPerMeter=float(travel_cost), idleCostPercentPerHour=float(idle_cost)))
+                                            travelCostPercentPerMeter=float(travel_cost), idleCostPercentPerHour=float(idle_cost),
+                                            voltageCurve=sorted(normalized_curve, key=lambda point: point['percent']),
+                                            chargingGainPercentPerHour=float(charging_gain)))
         # Reachability is undirected here; the formal route planner performs the
         # directed, resource-aware validation after the isolated instance starts.
         graph = {node_id: set() for node_id in nodes}
@@ -444,7 +464,8 @@ class Runtime:
                 vehicleProfiles={v['id']: dict(initialLoaded=v['initialLoaded'], batteryPercent=v['batteryPercent'],
                     speedScale=v['speedScale'], accelerationMetersPerSecondSquared=v['accelerationMetersPerSecondSquared'],
                     operationSeconds=v['operationSeconds'], travelCostPercentPerMeter=v['travelCostPercentPerMeter'],
-                    idleCostPercentPerHour=v['idleCostPercentPerHour']) for v in configuration['vehicles']},
+                    idleCostPercentPerHour=v['idleCostPercentPerHour'], voltageCurve=v['voltageCurve'],
+                    chargingGainPercentPerHour=v['chargingGainPercentPerHour']) for v in configuration['vehicles']},
                 simulationTopology=dict(stations=configuration['stations'], dumperSite=configuration['dumper']['dumpingSite'],
                     waitingSite=configuration['dumper']['waitingSite'], inspectionSite=configuration['inspectionSite']),
                 simulationConfiguration=dict(stations=configuration['stations'], dumper=configuration['dumper'],
@@ -514,6 +535,12 @@ class Runtime:
             worker.join(timeout=18)
             if worker.is_alive():
                 raise CleanupPending('操作仍在收尾，稍后重试停止。')
+        if self.protocol_runtime is not None:
+            from protocol_twin import stop_protocol
+            stop_protocol(self.protocol_runtime)
+            self.protocol_runtime = None
+        if self.equipment_model is not None:
+            self.equipment_model.stop(); self.equipment_model = None
         (self.root / 'STOP').touch()
         for name, child in tuple(self.children.items()):
             if child.poll() is None:
@@ -523,6 +550,52 @@ class Runtime:
                 except subprocess.TimeoutExpired:
                     child.kill(); child.wait(timeout=5)
         self.children.clear(); self.phase = 'stopped'
+        return self.status()
+
+    def protocol_status(self):
+        path = self.root / 'protocol-state.json'
+        try: value = read(path)
+        except (OSError, ValueError): value = dict(running=False, name='未配置协议脚本', transport='', port=0, rules=0)
+        if getattr(self, 'protocol_runtime', None) is None and value.get('running'):
+            value = dict(value, running=False, error='控制器重启后协议服务器已停止，请重新启动。')
+        return value
+
+    def start_protocol(self, payload):
+        from protocol_twin import start_protocol, stop_protocol
+        if self.protocol_runtime is not None:
+            stop_protocol(self.protocol_runtime); self.protocol_runtime = None
+        self.protocol_runtime = start_protocol(self.root, payload)
+        return self.status()
+
+    def stop_protocol(self):
+        from protocol_twin import stop_protocol
+        if self.protocol_runtime is not None:
+            stop_protocol(self.protocol_runtime); self.protocol_runtime = None
+        return self.status()
+
+    def equipment_status(self):
+        if getattr(self, 'equipment_model', None) is not None: return self.equipment_model.status()
+        try: value = read(self.root / 'equipment-state.json')
+        except (OSError, ValueError): value = dict(running=False, floors=['1','2'], currentFloor='1', door='Closed', signals={}, schedules=[])
+        if value.get('running'): value = dict(value, running=False, error='控制器重启后设备模型已停止，请重新启动。')
+        return value
+
+    def start_equipment(self, payload):
+        from equipment_twin import EquipmentModel
+        if self.equipment_model is not None: self.equipment_model.stop()
+        self.equipment_model = EquipmentModel(self.root)
+        if payload and set(payload) - {'sequence'}:
+            self.equipment_model.control(payload)
+        return self.status()
+
+    def control_equipment(self, payload):
+        if self.equipment_model is None: raise ValueError('电梯/信号设备模型尚未启动。')
+        self.equipment_model.control(payload)
+        return self.status()
+
+    def stop_equipment(self):
+        if self.equipment_model is not None:
+            self.equipment_model.stop(); self.equipment_model = None
         return self.status()
 
     def control(self, payload):
@@ -640,6 +713,11 @@ def serve(root, port, token):
                     elif self.path == '/configure': result = runtime.configure(payload)
                     elif self.path == '/recover': result = runtime.decide_recovery(payload)
                     elif self.path == '/recover-release': result = runtime.release_recovery(payload)
+                    elif self.path == '/protocol-start': result = runtime.start_protocol(payload)
+                    elif self.path == '/protocol-stop': result = runtime.stop_protocol()
+                    elif self.path == '/equipment-start': result = runtime.start_equipment(payload)
+                    elif self.path == '/equipment-control': result = runtime.control_equipment(payload)
+                    elif self.path == '/equipment-stop': result = runtime.stop_equipment()
                     elif self.path == '/abort': runtime.abort.set(); result = runtime.status()
                     elif self.path == '/shutdown':
                         result = cleanup_owned_runtime(runtime); threading.Thread(target=server.shutdown, daemon=True).start()
@@ -686,7 +764,11 @@ def serve(root, port, token):
     threading.Thread(target=watch_parent, daemon=True).start()
     try: server.serve_forever(poll_interval=.2)
     finally:
-        stopping.set(); cleanup_owned_runtime(runtime); server.server_close()
+        stopping.set()
+        if runtime.protocol_runtime is not None:
+            from protocol_twin import stop_protocol
+            stop_protocol(runtime.protocol_runtime); runtime.protocol_runtime = None
+        cleanup_owned_runtime(runtime); server.server_close()
 
 
 if __name__ == '__main__':

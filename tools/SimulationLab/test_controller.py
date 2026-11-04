@@ -34,6 +34,8 @@ class SimulationTests(unittest.TestCase):
         self.assertEqual(value['dumper']['resourceId'], 'R-DUMP')
         broken = self.custom_payload(); broken['vehicles'][0]['initialSite'] = 'MISSING'
         with self.assertRaises(ValueError): runtime._validate_configuration(broken)
+        broken = self.custom_payload(); broken['vehicles'][0]['voltageCurve'] = [dict(percent=0, voltage=21)]
+        with self.assertRaisesRegex(ValueError, '电压曲线'): runtime._validate_configuration(broken)
         disconnected = self.custom_payload(); disconnected['mapDefinition']['edges'] = disconnected['mapDefinition']['edges'][:-1]
         with self.assertRaisesRegex(ValueError, '不连通'): runtime._validate_configuration(disconnected)
 

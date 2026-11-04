@@ -8,7 +8,7 @@ import math
 
 
 VEHICLE_DEFAULTS = dict(speedScale=1.0, paused=False, offline=False,
-                        dropNextResponse=False, blockedEdges=[])
+                        dropNextResponse=False, blockedEdges=[], charging=False)
 PLC_DEFAULTS = dict(readyDelaySeconds=0.0, doneDelaySeconds=5.0,
                     suppressReady=False, suppressDone=False, fault=False)
 

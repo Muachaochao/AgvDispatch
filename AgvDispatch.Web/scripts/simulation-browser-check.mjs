@@ -12,7 +12,7 @@ const profile = resolve(project, '.codex-tmp', `simulation-browser-${Date.now()}
 mkdirSync(profile, { recursive: true });
 const binary = ['C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', 'C:/Program Files/Google/Chrome/Application/chrome.exe'].find(existsSync);
 assert.ok(binary, 'Chromium browser required');
-let enabled = false, running = true, rootName = 'mock-private-lab', offline = false, fresh = true, active = false, requestDelay = 0, inflight = 0, maximum = 0;
+let enabled = false, running = true, rootName = 'mock-private-lab', offline = false, fresh = true, active = false, protocolRunning = false, equipmentRunning = false, requestDelay = 0, inflight = 0, maximum = 0;
 let child, ws, seq = 0;
 const pending = new Map(), mutations = [], errors = [];
 const sleep = ms => new Promise(ok => setTimeout(ok, ms));
@@ -22,6 +22,8 @@ const status = () => ({ enabled, running: enabled && running, rootName, fresh,
     'AGV-02': { x: 3, y: 4, station: 'LM2', loaded: true, current_task: 'original-transport', offline: false }
   } }, map: { nodes: [{ id: '取料', agvSiteId: 'LM1', x: 1, y: 2 }, { id: '倒料', agvSiteId: 'LM2', x: 3, y: 4 }], edges: [{ id: 'E1', from: '取料', to: '倒料', geometryKind: 'CubicBezier', controlPoints: [{ x: 1, y: 4 }, { x: 3, y: 2 }] }] },
   scenario: { id: 'original-scenario', status: active ? 'running' : 'idle', completedRounds: 0, totalRounds: 2, message: '等待原任务反馈' },
+  protocol: protocolRunning ? { running: true, name: 'browser-protocol', transport: 'tcp', framing: 'line-json', port: 45678, rules: 1, requests: 0 } : { running: false },
+  equipment: equipmentRunning ? { running: true, floors: ['1','2'], currentFloor: '1', targetFloor: null, direction: 'Stopped', door: 'Closed', moving: false, fault: false, signals: { call: true }, schedules: [], signalEvents: [] } : { running: false, currentFloor: '1', door: 'Closed', signals: {} },
   report: { id: 'previous-scenario', name: 'plc-delay', finishedAt: Date.now() / 1000, status: 'inconclusive', checks: [{ name: '真实机械反馈', status: 'unknown', detail: '模型不提供现场证据' }] }
 });
 const server = createServer(async (req, res) => {
@@ -47,8 +49,14 @@ const server = createServer(async (req, res) => {
         assert.equal(mutations.at(-1).body.vehicles[0].batteryPercent, 86);
         assert.equal(mutations.at(-1).body.vehicles[0].accelerationMetersPerSecondSquared, .6);
         assert.equal(mutations.at(-1).body.vehicles[0].operationSeconds, 2);
+        assert.deepEqual(mutations.at(-1).body.vehicles[0].voltageCurve.map(point => point.percent), [0, 30, 80]);
+        assert.equal(mutations.at(-1).body.vehicles[0].chargingGainPercentPerHour, 20);
         rootName = 'mock-custom-lab';
       }
+      if (path.endsWith('/protocol-start')) { assert.equal(mutations.at(-1).body.transport, 'tcp'); protocolRunning = true; }
+      if (path.endsWith('/protocol-stop')) protocolRunning = false;
+      if (path.endsWith('/equipment-start')) equipmentRunning = true;
+      if (path.endsWith('/equipment-stop')) equipmentRunning = false;
       return json(200, status());
     }
     if (path.startsWith('/api/')) return json(503, { error: 'mock only' });
@@ -83,6 +91,16 @@ try {
   enabled = true; await click('刷新原记录');
   await wait(() => evaluate(`document.querySelectorAll('.map-car').length===2&&document.querySelector('.environment-state').textContent.includes('反馈有效')`), 'Two device positions');
   check('Map renders observed vehicles and original curved roads', await evaluate(`document.querySelectorAll('.roads path').length===1&&document.querySelector('.roads path').getAttribute('d').includes('C')&&document.querySelector('.environment-state').textContent.includes('反馈有效')`));
+  await click('启动协议服务器');
+  check('Declarative protocol server starts only on loopback and reports its assigned endpoint',
+    mutations.at(-1).path.endsWith('/protocol-start') && mutations.at(-1).body.rules.length===1 &&
+    await evaluate(`document.querySelector('.protocol-designer').textContent.includes('tcp://127.0.0.1:45678')`));
+  await click('停止协议服务器');
+  await click('启动设备模型');
+  await click('前往2层');
+  check('Optional elevator/door model accepts a bounded target-floor command',
+    mutations.at(-1).path.endsWith('/equipment-control') && mutations.at(-1).body.elevator.targetFloor==='2' && !!mutations.at(-1).body.sequence);
+  await click('停止设备模型');
   const screenshot = await rpc('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
   const screenshotPath = resolve(profile, 'simulation-center.png'); writeFileSync(screenshotPath, Buffer.from(screenshot.data, 'base64')); console.log('Preview ' + screenshotPath);
   await evaluate(`(()=>{const e=document.querySelector('[aria-label="选择虚拟车辆"]');e.value='AGV-02';e.dispatchEvent(new Event('change',{bubbles:true}))})()`);
@@ -117,6 +135,10 @@ try {
     resources:[{id:'RDUMP',capacity:1,boundary:[{x:3.5,y:.5},{x:4.5,y:.5},{x:4.5,y:1.5}]}]};
     const input=document.querySelector('.file-picker input');const transfer=new DataTransfer();transfer.items.add(new File([JSON.stringify(map)],'custom.agvmap.json',{type:'application/json'}));input.files=transfer.files;input.dispatchEvent(new Event('change',{bubbles:true}));})()`);
   await wait(()=>evaluate(`document.querySelector('.map-import')?.textContent.includes('custom.agvmap.json')&&document.querySelectorAll('.vehicle-config-row').length===2`),'Custom map form loaded');
+  await click('增加曲线点');
+  await evaluate(`(()=>{const rows=[...document.querySelectorAll('.vehicle-config-row')[0].querySelectorAll('.voltage-point')];const percents=[80,0,30];rows.forEach((row,index)=>{const input=row.querySelector('input');input.value=String(percents[index]);input.dispatchEvent(new Event('input',{bubbles:true}))})})()`);
+  check('Battery voltage curve supports bounded custom points before submission',
+    await evaluate(`document.querySelectorAll('.vehicle-config-row')[0].querySelectorAll('.voltage-point').length===3`));
   await click('创建自定义隔离实例');
   check('Imported map, stations, vehicles and dumper resource are submitted as one isolated configuration',
     mutations.at(-1).path.endsWith('/configure') && mutations.at(-1).body.mapDefinition.nodes.length===5 &&

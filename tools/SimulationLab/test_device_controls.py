@@ -54,6 +54,22 @@ class ControlValidationTests(unittest.TestCase):
         finally:
             f.close()
 
+    def test_battery_voltage_curve_interpolates_and_charging_is_bounded(self):
+        f = Fixture()
+        try:
+            f.car.voltage_curve = [dict(percent=0,voltage=20),dict(percent=50,voltage=24),dict(percent=100,voltage=26)]
+            f.car.charging_gain_percent_per_hour = 10
+            f.car.battery_percent = .25
+            self.assertEqual(f.car.battery_voltage(), 22)
+            f.car.battery_percent = .75
+            self.assertEqual(f.car.battery_voltage(), 25)
+            f.car.charging = True; f.car.consume_battery(seconds=360)
+            self.assertAlmostEqual(f.car.battery_percent, .76)
+            f.car.consume_battery(seconds=360000)
+            self.assertEqual(f.car.battery_percent, 1)
+        finally:
+            f.close()
+
     def test_batch_calls_publish_same_scan_or_reject_whole_batch(self):
         f = Fixture()
         try:
