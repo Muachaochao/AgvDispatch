@@ -9,19 +9,49 @@ import hashlib
 import json
 import math
 import struct
+import sys
 import time
 from pathlib import Path
 from lab_logging import DeviceJournal
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'SimulationLab'))
+from device_controls import PLC_DEFAULTS, VEHICLE_DEFAULTS, read_controls
 
 
 class DeviceTwin:
     def __init__(self, root):
         self.root = Path(root).resolve()
         self.journal = DeviceJournal(self.root)
+        lab_path = self.root / 'lab.json'
+        self.lab = json.loads(lab_path.read_text(encoding='utf-8-sig')) if lab_path.exists() else {}
+        self.topology = self.lab.get('simulationTopology', {})
+        self.vehicle_profiles = self.lab.get('vehicleProfiles', {})
         settings = self.root / 'service/appsettings.json'
         if not settings.exists():
             settings = self.root / 'service-settings.json'
-        self.contract = json.loads(settings.read_text(encoding='utf-8-sig'))['HandshakeExecution']['PlcContractVersion']
+        settings = json.loads(settings.read_text(encoding='utf-8-sig'))
+        self.contract = settings['HandshakeExecution']['PlcContractVersion']
+        self.vehicle_ids = {robot['VehicleId'] for robot in settings.get('Agv', {}).get('Robots', [])}
+        self.vehicle_id = next(iter(self.vehicle_ids)) if len(self.vehicle_ids) == 1 else None
+        self.control_root = self.root
+        self.control_sequence = None
+        self.control_error = None
+        self.control_error_fingerprint = None
+        self.speed_scale = 1.0
+        self.battery_percent = 0.86
+        self.acceleration = 0.6
+        self.operation_seconds = 2.0
+        self.travel_cost_percent_per_meter = 0.01
+        self.idle_cost_percent_per_hour = 0.1
+        self.current_speed_mps = 0.0
+        self.distance_meters = 0.0
+        self.paused = self.offline = self.drop_next_response = False
+        self.blocked_edges = set()
+        self.writers = set()
+        self.plc_controls = dict(PLC_DEFAULTS)
+        self.ready_requested_at = None
+        self.motion_edge = None
+        self.moving = False
+        self.at_source = True
         if self.contract not in ('plc-28-stage-v2', 'sender-owned-return-confirmed-v1'):
             raise RuntimeError('Unknown explicit PLC contract; refusing to infer a sequence')
         self.sequence28 = self.contract == 'plc-28-stage-v2'
@@ -36,7 +66,10 @@ class DeviceTwin:
             self.edges[a, b] = (edge, False)
             if edge['bidirectional']:
                 self.edges[b, a] = (edge, True)
-        self.station = ids['检修']
+        inspection = self.topology.get('inspectionSite', '检修')
+        self.station = ids.get(inspection, next((value for value in ids.values() if value in self.nodes), None))
+        if self.station is None:
+            raise RuntimeError('Map contains no usable nodes')
         self.x, self.y = self.nodes[self.station]['x'], self.nodes[self.station]['y']
         self.angle = 0.0
         self.tasks = {}
@@ -44,16 +77,18 @@ class DeviceTwin:
         self.current = None
         self.loaded = False
         self.memory = bytearray(1024)
-        self.setbit(0, 1, True)
-        self.setbit(0, 3, True)
-        self.setbit(2, 1, True)
-        self.setbit(2, 3, True)
+        for station in self.station_definitions():
+            offset = station['offset']
+            self.setbit(offset, 1, True)
+            self.setbit(offset, 3, True)
         self.setbit(610, 2, not self.sequence28)
         self.last_wait = False
         self.dump_started = None
         self.dumper_reserved = False
         self.steps = 0
         self.input_sequence = None
+        self.input_accepted = None
+        self.input_error = None
         previous = self.root / 'device-state.json'
         if previous.exists():
             state = json.loads(previous.read_text(encoding='utf-8'))
@@ -72,12 +107,38 @@ class DeviceTwin:
             else:
                 self.memory[:4] = bytes(state['db1'])
                 self.memory[610:611] = bytes(state['dumper'])
+            node = self.nodes.get(self.station)
+            self.at_source = bool(node and math.hypot(self.x-node['x'], self.y-node['y']) <= 0.02)
 
     def log(self, kind, **data):
         self.journal.write(kind, **data)
 
     def bit(self, byte, bit):
         return bool(self.memory[byte] & (1 << bit))
+
+    def station_definitions(self):
+        configured = self.topology.get('stations')
+        if isinstance(configured, list) and configured:
+            return configured
+        return [dict(stationId='CNC-001', pickupSite='取货A', offset=0),
+                dict(stationId='CNC-002', pickupSite='取货B', offset=2)]
+
+    def semantic_site(self, key, fallback):
+        return self.topology.get(key, fallback)
+
+    def apply_vehicle_profile(self):
+        profile = self.vehicle_profiles.get(self.vehicle_id, {})
+        self.loaded = bool(profile.get('initialLoaded', False))
+        self.battery_percent = float(profile.get('batteryPercent', 86)) / 100.0
+        self.speed_scale = float(profile.get('speedScale', 1.0))
+        self.acceleration = float(profile.get('accelerationMetersPerSecondSquared', .6))
+        self.operation_seconds = float(profile.get('operationSeconds', 2.0))
+        self.travel_cost_percent_per_meter = float(profile.get('travelCostPercentPerMeter', .01))
+        self.idle_cost_percent_per_hour = float(profile.get('idleCostPercentPerHour', .1))
+
+    def consume_battery(self, distance=0.0, seconds=0.0):
+        cost_percent = distance * self.travel_cost_percent_per_meter + seconds * self.idle_cost_percent_per_hour / 3600.0
+        self.battery_percent = max(0.0, self.battery_percent - cost_percent / 100.0)
 
     def setbit(self, byte, bit, value):
         before = self.bit(byte, bit)
@@ -103,6 +164,55 @@ class DeviceTwin:
             points.append((end['x'], end['y']))
         return list(reversed(points)) if reverse else points
 
+    def refresh_controls(self):
+        control = self.control_root / 'simulation-control.json'
+        if not control.exists():
+            return
+        try:
+            value = read_controls(control, self.vehicle_ids or None,
+                                  {edge.get('id') for edge, _ in self.edges.values()})
+            if value['sequence'] == self.control_sequence:
+                self.control_error = None
+                return
+            car = value['vehicles'].get(self.vehicle_id, dict(VEHICLE_DEFAULTS))
+            self.speed_scale, self.paused = car['speedScale'], car['paused']
+            self.offline, self.drop_next_response = car['offline'], car['dropNextResponse']
+            self.blocked_edges = set(car['blockedEdges'])
+            self.plc_controls = value['plc']
+            self.control_sequence, self.control_error = value['sequence'], None
+            if self.offline:
+                for writer in tuple(self.writers):
+                    writer.close()
+            self.log('simulation-control-applied', sequence=self.control_sequence,
+                     vehicle_id=self.vehicle_id, vehicle=car, plc=self.plc_controls)
+        except (OSError, ValueError, TypeError, KeyError) as ex:
+            self.control_error = str(ex)
+            if self.control_error != self.control_error_fingerprint:
+                self.log('simulation-control-rejected', error=self.control_error)
+                self.control_error_fingerprint = self.control_error
+
+    def control_snapshot(self):
+        return dict(sequence=self.control_sequence, error=self.control_error,
+                    speedScale=self.speed_scale, paused=self.paused,
+                    offline=self.offline, responseDropPending=self.drop_next_response,
+                    blockedEdges=sorted(self.blocked_edges), plc=self.plc_controls)
+
+    def at_site(self, site):
+        node = self.nodes[site]
+        return self.station == site and self.at_source and not self.moving and math.hypot(self.x-node['x'], self.y-node['y']) <= 0.02
+
+    async def wait_motion(self, tid, seconds, edge_id=None):
+        """Physical time stops on pause/block, but networking and PLC keep scanning."""
+        elapsed = 0.0
+        while elapsed < seconds:
+            if self.tasks[tid] == 6:
+                return False
+            if not self.paused and edge_id not in self.blocked_edges:
+                elapsed += 0.1 * self.speed_scale
+                self.consume_battery(seconds=0.1 * self.speed_scale)
+            await asyncio.sleep(0.1)
+        return self.tasks[tid] != 6
+
     async def drive(self):
         while True:
             item = await self.queue.get()
@@ -110,88 +220,161 @@ class DeviceTwin:
             if self.tasks[tid] == 6:
                 self.queue.task_done()
                 continue
+            if not self.at_site(item['source_id']):
+                # A cancelled preceding segment may leave the virtual robot
+                # between nodes. Never jump back to the next command's source.
+                self.tasks[tid] = 5
+                self.log('movement-rejected', task_id=tid, reason='physical source mismatch',
+                         station=self.station, x=self.x, y=self.y, source_id=item['source_id'])
+                self.queue.task_done()
+                continue
             self.current = tid
             self.tasks[tid] = 2
             self.log('movement-start', task_id=tid, command=item)
             points = self.path_points(item['source_id'], item['id'])
-            for (ax, ay), (bx, by) in zip(points, points[1:]):
-                distance = math.hypot(bx - ax, by - ay)
-                # Virtual speed in m/s; capped by the actual edited route speed.
-                edge = self.edges[item['source_id'], item['id']][0]
-                speed = min(1.0, edge.get('speedLimit', 0.5))
-                count = max(1, math.ceil(distance / speed / 0.1))
-                for k in range(1, count + 1):
-                    if self.tasks[tid] == 6:
-                        break
-                    self.x, self.y = ax + (bx-ax)*k/count, ay + (by-ay)*k/count
-                    self.angle = math.atan2(by-ay, bx-ax)
-                    await asyncio.sleep(0.1)
+            edge = self.edges[item['source_id'], item['id']][0]
+            self.motion_edge = edge.get('id')
+            # Carry distance across curve samples within each tick. Waiting one
+            # tick per Bezier sample would make acceleration depend on geometry.
+            speed = min(1.0, edge.get('speedLimit', 0.5))
+            if speed <= 0:
+                raise ValueError('Virtual route speed must be positive')
+            segment, progress = 0, 0.0
+            moved_meters = 0.0
+            while segment < len(points) - 1:
                 if self.tasks[tid] == 6:
                     break
+                if not self.paused and self.motion_edge not in self.blocked_edges:
+                    self.moving = True
+                    target_speed = speed * self.speed_scale
+                    self.current_speed_mps = min(target_speed, self.current_speed_mps + self.acceleration * 0.1)
+                    budget = self.current_speed_mps * 0.1
+                    while segment < len(points) - 1:
+                        (ax, ay), (bx, by) = points[segment:segment+2]
+                        distance = math.hypot(bx-ax, by-ay)
+                        advance = min(budget, distance-progress)
+                        moved_meters += advance
+                        if advance > 0:
+                            self.at_source = False
+                        progress += advance
+                        budget -= advance
+                        if distance:
+                            self.x, self.y = ax+(bx-ax)*progress/distance, ay+(by-ay)*progress/distance
+                            self.angle = math.atan2(by-ay, bx-ax)
+                        if progress >= distance - 1e-10:
+                            segment, progress = segment+1, 0.0
+                        if budget <= 1e-10:
+                            break
+                await asyncio.sleep(0.1)
+                if not self.moving:
+                    self.current_speed_mps = max(0.0, self.current_speed_mps - self.acceleration * 0.1)
+                    self.consume_battery(seconds=0.1)
+            self.distance_meters += moved_meters
+            self.consume_battery(distance=moved_meters)
+            self.current_speed_mps = 0.0
             if self.tasks[tid] != 6:
                 self.station = item['id']
+                self.moving = False
+                self.at_source = True
                 operation = item.get('operation', 'Wait')
                 if operation in ('JackLoad', 'JackUnload'):
-                    await asyncio.sleep(2)
+                    if not await self.wait_motion(tid, self.operation_seconds):
+                        self.current = None
+                        self.motion_edge = None
+                        self.queue.task_done()
+                        continue
                     self.loaded = operation == 'JackLoad'
-                    if self.station == self.site('取货A'):
-                        self.setbit(0, 1, not self.loaded)
-                    elif self.station == self.site('取货B'):
-                        self.setbit(2, 1, not self.loaded)
+                    for station in self.station_definitions():
+                        if self.station == self.site(station['pickupSite']):
+                            self.setbit(station['offset'], 1, not self.loaded)
                 self.tasks[tid] = 4
                 self.steps += 1
                 self.log('movement-complete', task_id=tid, station=self.station, operation=operation, loaded=self.loaded)
             self.current = None
+            self.motion_edge = None
+            self.moving = False
             self.queue.task_done()
 
     def site(self, name):
         return next(n['agvSiteId'] for n in self.map['nodes'] if n['id'] == name)
 
     def scan_handshakes(self):
-        for offset in (0, 2):
+        if self.control_sequence is not None:
+            self.setbit(610, 4, self.plc_controls['fault'])
+        for offset in (station['offset'] for station in self.station_definitions()):
             if self.bit(offset, 0) and self.bit(offset, 4):
                 self.setbit(offset, 0, False)
         wait = self.bit(610, 0)
         if self.sequence28 and wait and not self.last_wait and not self.dumper_reserved and not any(self.bit(610, b) for b in (1, 3, 4)):
             self.dumper_reserved = True
-            self.setbit(610, 2, True)
+            self.ready_requested_at = time.monotonic()
+        if self.dumper_reserved and wait and self.ready_requested_at is not None:
+            ready = time.monotonic() - self.ready_requested_at >= self.plc_controls['readyDelaySeconds']
+            self.setbit(610, 2, ready and not self.plc_controls['suppressReady'] and not self.bit(610, 4))
         if self.last_wait and not wait:
             self.setbit(610, 2, False)
         self.last_wait = wait
-        if self.bit(610, 1) and self.station == self.site('倒料'):
+        if self.bit(610, 1) and self.at_site(self.site(self.semantic_site('dumperSite', '倒料'))):
             if self.dump_started is None:
                 self.dump_started = time.monotonic()
-            if time.monotonic() - self.dump_started >= 5:
+            if time.monotonic() - self.dump_started >= self.plc_controls['doneDelaySeconds'] and not self.plc_controls['suppressDone'] and not self.bit(610, 4):
                 self.setbit(610, 3, True)
+        if self.plc_controls['suppressDone'] or self.bit(610, 4):
+            self.setbit(610, 3, False)
         if not self.bit(610, 1) and self.dump_started is not None:
             self.setbit(610, 3, False)
             self.setbit(610, 2, not self.sequence28)
             self.dump_started = None
             self.dumper_reserved = False
+            self.ready_requested_at = None
+
+    def apply_external_input(self, event):
+        """Publish all requested P-side calls in one scan, or publish none."""
+        if not isinstance(event, dict):
+            raise ValueError('External device input must be a JSON object')
+        if event.get('sequence') == self.input_sequence:
+            return
+        self.input_sequence = event['sequence']
+        self.input_accepted, self.input_error = False, None
+        try:
+            if 'calls' in event:
+                stations = event['calls']
+                if 'call' in event or not isinstance(stations, list) or not 1 <= len(stations) <= 2 or any(not isinstance(s, str) for s in stations) or len(set(stations)) != len(stations):
+                    raise ValueError('calls must contain one or two unique supported station IDs')
+            else:
+                stations = [event.get('call')]
+            configured = {station['stationId']: station for station in self.station_definitions()}
+            if any(station not in configured for station in stations):
+                raise ValueError('Unsupported virtual station call')
+            offsets = [configured[station]['offset'] for station in stations]
+            if self.sequence28 and any(not self.bit(offset, 1) or any(self.bit(offset, b) for b in (4, 5, 6, 7)) for offset in offsets):
+                raise ValueError('origin cycle not closed')
+            for offset in offsets:
+                self.setbit(offset, 0, True)
+            self.input_accepted = True
+        except ValueError as error:
+            self.input_error = str(error)
+            self.log('virtual-call-rejected', reason=self.input_error, event=event)
+        self.log('external-virtual-input', accepted=self.input_accepted, event=event)
 
     async def plc_scan(self):
         while True:
+            self.refresh_controls()
             control = self.root / 'device-input.json'
             if control.exists():
                 try:
                     event = json.loads(control.read_text(encoding='utf-8'))
-                    if event.get('sequence') != self.input_sequence:
-                        self.input_sequence = event['sequence']
-                        station = event.get('call')
-                        if station in ('CNC-001', 'CNC-002'):
-                            offset = 0 if station == 'CNC-001' else 2
-                            if self.sequence28 and (not self.bit(offset, 1) or any(self.bit(offset, b) for b in (4, 5, 6, 7))):
-                                self.log('virtual-call-rejected', reason='origin cycle not closed', event=event)
-                            else:
-                                self.setbit(offset, 0, True)
-                            self.log('external-virtual-input', event=event)
+                    self.apply_external_input(event)
                 except (OSError, ValueError, KeyError):
                     pass
             self.scan_handshakes()
             state = dict(station=self.station, x=self.x, y=self.y, angle=self.angle,
                          loaded=self.loaded, current_task=self.current, tasks=self.tasks,
                          completed_segments=self.steps, db1=list(self.memory[:4]), dumper=list(self.memory[610:611]), memory_hex=self.memory.hex(),
-                         contract=self.contract, dumper_reserved=self.dumper_reserved)
+                         contract=self.contract, dumper_reserved=self.dumper_reserved,
+                         batteryPercent=self.battery_percent * 100, speedMps=self.current_speed_mps,
+                         distanceMeters=self.distance_meters, simulationControl=self.control_snapshot(), time=time.time(),
+                         externalInput=dict(sequence=self.input_sequence, accepted=self.input_accepted, error=self.input_error))
             temp = self.root / 'device-state.tmp'
             temp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding='utf-8')
             try:
@@ -206,9 +389,9 @@ class DeviceTwin:
         if api == 1100:
             return dict(x=self.x, y=self.y, angle=self.angle, confidence=0.99,
                         current_station=self.station, last_station=self.station,
-                        battery_level=0.86, emergency=False, blocked=False,
+                        battery_level=self.battery_percent, emergency=False, blocked=False,
                         navigation_status=2 if self.current else 0, errors=[], fatals=[], warnings=[],
-                        vx=0.5 if self.current else 0, vy=0, w=0, charging=False)
+                        vx=0.5*self.speed_scale if self.current and not self.paused else 0, vy=0, w=0, charging=False)
         if api == 1110:
             wanted = request.get('task_ids', list(self.tasks))
             return dict(task_status_package=dict(task_status_list=[dict(task_id=t, status=self.tasks.get(t,404), type=1) for t in wanted]))
@@ -235,7 +418,7 @@ class DeviceTwin:
                 return dict(ret_code=400,err_msg='Duplicate ids or discontinuous task chain')
             if any((item['source_id'],item['id']) not in self.edges for item in items):
                 return dict(ret_code=400,err_msg='Unknown or reverse-only edge')
-            if items[0]['source_id'] != self.station or self.current or not self.queue.empty():
+            if not self.at_site(items[0]['source_id']) or self.current or not self.queue.empty():
                 return dict(ret_code=400,err_msg='Vehicle busy or source mismatch')
             for item in items:
                 if item['task_id'] in self.tasks:
@@ -253,6 +436,11 @@ class DeviceTwin:
         return dict(ret_code=400,err_msg=f'Unsupported twin API {api}')
 
     async def robokit(self, reader, writer):
+        self.refresh_controls()
+        if self.offline:
+            writer.close()
+            return
+        self.writers.add(writer)
         try:
             while True:
                 header=await reader.readexactly(16)
@@ -266,6 +454,10 @@ class DeviceTwin:
                 request=json.loads(payload) if payload else {}
                 response=self.robokit_reply(api,request)
                 self.log('robokit', api=api, sequence=struct.unpack_from('>H',header,2)[0], request=request,response=response)
+                if api == 3066 and response.get('ret_code') == 0 and self.drop_next_response:
+                    self.drop_next_response = False
+                    self.log('simulation-response-dropped', api=api, sequence=self.control_sequence)
+                    return
                 data=json.dumps(response,ensure_ascii=False).encode()
                 result=bytearray(header)
                 struct.pack_into('>I',result,4,len(data))
@@ -277,6 +469,7 @@ class DeviceTwin:
         except Exception as ex:
             self.log('robokit-error', error=str(ex))
         finally:
+            self.writers.discard(writer)
             writer.close()
 
     async def s7(self, reader, writer):
@@ -352,7 +545,12 @@ class DeviceTwin:
                 await asyncio.sleep(0.2)
         finally:
             for worker in workers:worker.cancel()
-            for server in servers:server.close()
+            await asyncio.gather(*workers, return_exceptions=True)
+            for server in servers:
+                server.close()
+                await server.wait_closed()
+            for writer in tuple(self.writers):writer.close()
+            self.journal.close()
 
 
 if __name__ == '__main__':

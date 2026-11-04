@@ -59,7 +59,8 @@ def launch(args,cwd,label):
 
 import sys
 (labroot/'ready.json').write_text(json.dumps(ready,ensure_ascii=False,indent=2),encoding='utf-8')
-twin = 'WebTwoVehicleLab/multi_twin.py' if json.loads((root/'lab.json').read_text(encoding='utf-8-sig')).get('twoVehicleSimulation') is True else 'WebSingleVehicleLab/device_twin.py'
+lab = json.loads((root/'lab.json').read_text(encoding='utf-8-sig'))
+twin = 'WebTwoVehicleLab/multi_twin.py' if lab.get('twoVehicleSimulation') is True or lab.get('multiVehicleSimulation') is True else 'WebSingleVehicleLab/device_twin.py'
 launch([sys.executable,str(workspace/'tools'/twin),str(root)],root,'twin')
 launch([str(root/'service/AgvDispatch.Service.exe')],root/'service','service')
 launch([str(root/'webhost/AgvDispatch.WebHost.exe')],root/'webhost','web')

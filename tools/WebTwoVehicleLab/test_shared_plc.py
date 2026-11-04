@@ -39,6 +39,9 @@ class SharedPlcTests(unittest.TestCase):
             self.assertIsNone(plc.dump_started, 'Request alone cannot simulate physical arrival')
             b.station = b.site('倒料')
             plc.scan_handshakes()
+            self.assertIsNone(plc.dump_started, 'Stale station text without physical arrival is not arrival')
+            b.x, b.y = b.nodes[b.station]['x'], b.nodes[b.station]['y']
+            plc.scan_handshakes()
             self.assertIsNotNone(plc.dump_started, 'Either independent car can reach the shared machine')
             plc.dump_started = time.monotonic() - 6
             plc.scan_handshakes()

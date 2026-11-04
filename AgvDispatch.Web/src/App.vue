@@ -46,6 +46,7 @@ const navigation = [
   { path: '/maps', label: '地图管理', icon: IconMap }
 ] as const;
 const engineering = [
+  { path: '/simulation-center', label: '仿真测试中心', icon: IconFlask },
   { path: '/dispatch-pipeline', label: '六层调度监控', icon: IconRoute },
   { path: '/dispatch-optimization', label: '滚动派车优化', icon: IconRoute },
   { path: '/charging', label: '充电管理', icon: IconPlugConnected },

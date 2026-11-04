@@ -16,17 +16,21 @@ var map=new MapDefinition("test","","LocalCartesian","m",
 var active=new ActiveMapRuntime();active.Replace(new("M","V1",map,DateTimeOffset.UtcNow));
 var repository=new AgvCommandOutboxRepository(db,active);var checks=0;
 void Check(bool good,string name){if(!good)throw new Exception(name);checks++;Console.WriteLine("PASS "+name);}
+// Each independent preparation fixture needs its own vehicle. An earlier active
+// command correctly prevents another task from claiming that same vehicle.
+string Vehicle(string id)=>id=="TASK"?"AGV":"AGV-"+id;
 void Seed(string id,bool wrong=false)
 {
     db.Insertable(new DispatchTaskEntity{TaskId=id,StationId=id,Stage=(int)DispatchTaskStage.WaitingForVehicle}).ExecuteCommand();
     db.Insertable(new DispatchTaskStepEntity{StepId=id+"-STEP",TaskId=id,Status=(int)DispatchTaskStepStatus.Ready,StepType=(int)DispatchTaskStepType.GoToPickup,Sequence=1}).ExecuteCommand();
-    db.Insertable(new TrafficRequestEntity{StepId=id+"-STEP",TaskId=id,VehicleId="AGV",Source="A",Destination="B",MapId="M",MapVersionId=wrong?"OLD":"V1",EdgeIds="[\"AB\"]",ResourceIds="[]",State="Acquired"}).ExecuteCommand();
+    db.Insertable(new TrafficRequestEntity{StepId=id+"-STEP",TaskId=id,VehicleId=Vehicle(id),Source="A",Destination="B",MapId="M",MapVersionId=wrong?"OLD":"V1",EdgeIds="[\"AB\"]",ResourceIds="[]",State="Acquired"}).ExecuteCommand();
 }
 Seed("TASK");Check(await repository.TryPrepareTransportStepAsync("TASK","TASK-STEP","AGV",["P1","P2"],null,default),"准备事务写入命令及路线快照");
 var command=db.Queryable<AgvCommandOutboxEntity>().Where(x=>x.TaskId=="TASK").Single();
 var snapshot=TransportRouteSnapshots.Read(command);var originalJson=command.ExecutionRouteSnapshotJson;var originalHash=command.ExecutionRouteSnapshotHash;
 Check(snapshot.NodeIds.SequenceEqual(["A","B"])&&snapshot.EdgeIds.SequenceEqual(["AB"])&&snapshot.AgvSites.SequenceEqual(["P1","P2"]),"原逻辑节点/路段和Robokit站点分别持久化");
 Check(snapshot.MapId=="M"&&snapshot.MapVersionId=="V1"&&snapshot.CommandId==command.CommandId&&snapshot.StepId=="TASK-STEP","快照绑定地图版本及稳定命令步骤");
+Check(snapshot.MapDefinitionHash==EngineeringRuntimeIdentity.MapHash(map),"发送路线快照与28阶段实际出区证据使用相同规范地图摘要，枚举序列化不产生身份冲突");
 Check(snapshot.PayloadHash==TransportRouteSnapshots.Hash(command.PayloadJson),"快照包含原载荷摘要");
 Check(!await repository.TryPrepareTransportStepAsync("TASK","TASK-STEP","AGV",["P1","P2"],null,default),"重复准备不会重写快照或新增命令");
 var claim=await repository.TryClaimAsync(command.CommandId,DateTimeOffset.Now.AddSeconds(1),default);Check(claim is not null,"数据库保护允许认领命令");
@@ -51,25 +55,25 @@ Guard("禁止补成新版地图",()=>db.Updateable<AgvCommandOutboxEntity>().Whe
 db.Updateable<TrafficRequestEntity>().Where(x=>x.TaskId=="TASK").SetColumns(x=>x.EdgeIds=="[]").ExecuteCommand();
 Check(TransportRouteSnapshots.Read(db.Queryable<AgvCommandOutboxEntity>().Where(x=>x.CommandId==command.CommandId).Single()).EdgeIds.SequenceEqual(["AB"]),"后续路径观察变化不能覆盖命令原路段");
 Seed("BAD",true);var rejected=false;
-try{await repository.TryPrepareTransportStepAsync("BAD","BAD-STEP","AGV",["P1","P2"],null,default);}catch(InvalidOperationException){rejected=true;}
+try{await repository.TryPrepareTransportStepAsync("BAD","BAD-STEP",Vehicle("BAD"),["P1","P2"],null,default);}catch(InvalidOperationException){rejected=true;}
 Check(rejected&&!db.Queryable<AgvCommandOutboxEntity>().Any(x=>x.TaskId=="BAD"),"地图版本不符准备回滚且无命令");
 Check(db.Queryable<DispatchTaskEntity>().Single(x=>x.TaskId=="BAD").Stage==(int)DispatchTaskStage.WaitingForVehicle&&db.Queryable<DispatchTaskStepEntity>().Single(x=>x.TaskId=="BAD").Status==(int)DispatchTaskStepStatus.Ready,"快照失败同事务回滚任务步骤");
 Seed("LEGACY");var legacyRepository=new AgvCommandOutboxRepository(db);
-Check(await legacyRepository.TryPrepareTransportStepAsync("LEGACY","LEGACY-STEP","AGV",["P1","P2"],null,default),"无活动地图兼容准备但不生成伪快照");
+Check(await legacyRepository.TryPrepareTransportStepAsync("LEGACY","LEGACY-STEP",Vehicle("LEGACY"),["P1","P2"],null,default),"无活动地图兼容准备但不生成伪快照");
 var legacy=db.Queryable<AgvCommandOutboxEntity>().Single(x=>x.TaskId=="LEGACY");
 Check(legacy.ExecutionRouteSnapshotJson is null&&legacy.ExecutionRouteSnapshotHash is null,"遗留无快照保持未知");
 var oldRefused=false;try{TransportRouteSnapshots.Read(legacy);}catch(InvalidDataException){oldRefused=true;}Check(oldRefused,"遗留记录不能通过快照核验");
 var backfillRefused=false;try{db.Updateable<AgvCommandOutboxEntity>().Where(x=>x.TaskId=="LEGACY").SetColumns(x=>x.ExecutionRouteSnapshotJson==originalJson).ExecuteCommand();}catch(Exception ex){backfillRefused=ex.ToString().Contains("transport route snapshot is immutable");}Check(backfillRefused,"禁止事后补造遗留快照");
 Seed("NO-RESOURCES");
 db.Updateable<TrafficRequestEntity>().Where(x=>x.StepId=="NO-RESOURCES-STEP").SetColumns(x=>x.State=="NotRequired").ExecuteCommand();
-Check(await repository.TryPrepareTransportStepAsync("NO-RESOURCES","NO-RESOURCES-STEP","AGV",["P1","P2"],null,default),"无资源路径NotRequired仍生成完整发送快照");
+Check(await repository.TryPrepareTransportStepAsync("NO-RESOURCES","NO-RESOURCES-STEP",Vehicle("NO-RESOURCES"),["P1","P2"],null,default),"无资源路径NotRequired仍生成完整发送快照");
 foreach(var nodeResource in new[]{false,true})
 {
     var id=nodeResource?"HIDDEN-NODE-RESOURCE":"HIDDEN-EDGE-RESOURCE";Seed(id);
     db.Updateable<TrafficRequestEntity>().Where(x=>x.TaskId==id).SetColumns(x=>x.State=="NotRequired").ExecuteCommand();
     var protectedMap=nodeResource?map with{Nodes=map.Nodes.Select(n=>n.Id=="B"?n with{ResourceIds=["R"]}:n).ToArray(),Resources=[new("R",TrafficResourceType.Station)]}:map with{Edges=map.Edges.Select(e=>e with{ResourceIds=["R"]}).ToArray(),Resources=[new("R",TrafficResourceType.NarrowAisle)]};
     active.Replace(new("M","V1",protectedMap,DateTimeOffset.UtcNow));
-    var blocked=false;try{await repository.TryPrepareTransportStepAsync(id,id+"-STEP","AGV",["P1","P2"],null,default);}catch(InvalidOperationException){blocked=true;}
+    var blocked=false;try{await repository.TryPrepareTransportStepAsync(id,id+"-STEP",Vehicle(id),["P1","P2"],null,default);}catch(InvalidOperationException){blocked=true;}
     Check(blocked&&!db.Queryable<AgvCommandOutboxEntity>().Any(x=>x.TaskId==id),"NotRequired不能绕过真实"+(nodeResource?"节点":"路段")+"资源且不留下发送命令");
 }
 active.Replace(new("M","V1",map,DateTimeOffset.UtcNow));

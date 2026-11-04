@@ -15,6 +15,7 @@ builder.WebHost.UseKestrel(o => { o.Listen(IPAddress.Loopback, port); o.Limits.M
 builder.Services.ConfigureHttpJsonOptions(o => o.SerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter()));
 builder.Services.AddSingleton(new DispatchPipe(builder.Configuration["Web:PipeName"] ?? "AgvDispatch.Service"));
 builder.Services.AddSingleton<SnapshotReader>();
+builder.Services.AddSingleton<SimulationBridge>();
 var projectStorePath=Path.GetFullPath(builder.Configuration["Web:ProjectStorePath"]??Path.Combine(builder.Environment.ContentRootPath,"data","projects"));
 builder.Services.AddSingleton(new WebProjectStore(projectStorePath));
 var engineeringRoot = Path.GetFullPath(builder.Configuration["Web:EngineeringStorePath"] ?? Path.Combine(Path.GetDirectoryName(projectStorePath)!, "engineering-center"));
@@ -47,7 +48,7 @@ app.Use(async (ctx, next) =>
     ctx.Response.Headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'";
     // An isolated engineering instance must never fall through to a real Named Pipe, even by direct API calls.
     if (engineeringSimulationOnly && ctx.Request.Path.StartsWithSegments("/api") &&
-        !ctx.Request.Path.StartsWithSegments("/api/engineering") && ctx.Request.Path != "/api/config")
+        !ctx.Request.Path.StartsWithSegments("/api/engineering") && !ctx.Request.Path.StartsWithSegments("/api/simulation") && ctx.Request.Path != "/api/config")
     { ctx.Response.StatusCode = 403; await ctx.Response.WriteAsJsonAsync(new { error = "工程隔离模拟模式禁止访问设备、任务及现场后台接口。" }); return; }
     try { await next(); }
     catch (Exception ex) when (!ctx.RequestAborted.IsCancellationRequested && !ctx.Response.HasStarted)
@@ -70,6 +71,7 @@ app.MapRoadClosureApi();
 app.MapChargingApi();
 app.MapDispatchOptimizationApi();
 app.MapPlcCycleTestApi();
+app.MapSimulationApi();
 app.MapRobotMapDownloadApi();
 app.MapWaitingApi();
 app.MapProjectApi();

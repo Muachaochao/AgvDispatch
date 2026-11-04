@@ -1,0 +1,699 @@
+"""Owned loopback simulation runtime. All business actions use production HTTP APIs."""
+import argparse
+import copy
+import hashlib
+import hmac
+import json
+import math
+import os
+import re
+from pathlib import Path
+import socket
+import shutil
+import subprocess
+import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.request import Request, urlopen
+import uuid
+
+WORKSPACE = Path(__file__).resolve().parents[2]
+STATION_IDS = ('CNC-001', 'CNC-002')
+VEHICLE_ID = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$')
+
+
+class CleanupPending(RuntimeError):
+    pass
+
+
+def read(path):
+    return json.loads(Path(path).read_text(encoding='utf-8-sig'))
+
+
+def write(path, value):
+    path = Path(path)
+    temporary = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
+    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False), encoding='utf-8')
+    temporary.replace(path)
+
+
+def validate_root(root):
+    unresolved = Path(root).absolute()
+    for path in (unresolved, *unresolved.parents):
+        if path.is_symlink() or (hasattr(path, 'is_junction') and path.is_junction()):
+            raise ValueError('仿真目录不能通过链接重定向。')
+    root = unresolved.resolve()
+    artifacts = (WORKSPACE / 'artifacts').resolve()
+    if root.parent != artifacts or not root.name.startswith('web-single-vehicle-'):
+        raise ValueError('必须选择项目 artifacts/web-single-vehicle-* 独立仿真目录。')
+    for path in (root, *root.parents):
+        if path.is_symlink() or (hasattr(path, 'is_junction') and path.is_junction()):
+            raise ValueError('仿真目录不能通过链接重定向。')
+    lab = read(root / 'lab.json')
+    settings = read(root / 'service/appsettings.json')
+    web = read(root / 'webhost/appsettings.json')['Web']
+    if lab.get('simulationOnly') is not True or settings['HandshakeExecution']['PlcContractVersion'] != 'plc-28-stage-v2':
+        raise ValueError('需要明确标记的28阶段仿真实例。')
+    devices = [settings['Plc'], *settings['Agv']['Robots']]
+    saved = root / 'data/communication-settings.json'
+    if saved.exists():
+        communication = read(saved)['Configuration']
+        devices += [*communication['Plcs'], *communication['Agvs']]
+    if any(d['IpAddress'] != '127.0.0.1' for d in devices):
+        raise ValueError('仿真只能连接回环设备。')
+    if Path(settings['Database']['Path']).resolve() != root / 'data/agv-dispatch.db':
+        raise ValueError('数据库必须属于本仿真目录。')
+    if not lab['pipe'].startswith('Agv28StageLab-') or settings['Security']['PipeName'] != lab['pipe'] or web['PipeName'] != lab['pipe']:
+        raise ValueError('仿真后台管道不匹配。')
+    if web['Port'] != lab['webPort'] or web['Port'] in (5198, 5199) or settings['TaskCreation'].get('AutomaticCreationEnabled') is not False:
+        raise ValueError('仿真需要独立临时Web端口和受控呼叫建单。')
+    for key in ('ProjectStorePath', 'EngineeringStorePath'):
+        if key in web and not Path(web[key]).resolve().is_relative_to(root):
+            raise ValueError('仿真工程数据必须位于本目录。')
+    ports = [web['Port'], settings['Plc']['Port']]
+    for robot in settings['Agv']['Robots']:
+        ports += [robot['Port'], robot['NavigationPort']]
+    if len(set(ports)) != len(ports) or any(type(p) is not int or not 1024 <= p <= 65535 or p in (5198, 5199) for p in ports):
+        raise ValueError('仿真端口无效或重复。')
+    return root, lab, settings, web, ports
+
+
+class Runtime:
+    def __init__(self, root, template_root=None):
+        self.root, self.lab, self.settings, self.web, self.ports = validate_root(root)
+        self.template_root = Path(template_root or self.root)
+        self.lock = threading.RLock()
+        self.children = {}
+        self.abort = threading.Event()
+        self.phase = 'stopped'
+        self.error = None
+        self.worker = None
+        self.scenario = {'status': 'idle', 'completedRounds': 0, 'totalRounds': 0}
+        self.report = read(self.root / 'simulation-report.json') if (self.root / 'simulation-report.json').exists() else None
+        self.controls = {'sequence': uuid.uuid4().hex, 'vehicles': {}, 'plc': {}}
+
+    def api(self, path, data=None, allow_rejection=False):
+        if self.abort.is_set():
+            raise InterruptedError('场景已停止，拒绝继续提交后台操作。')
+        request = Request(f"http://127.0.0.1:{self.web['Port']}" + path,
+                          data=json.dumps(data, ensure_ascii=False).encode() if data is not None else None,
+                          headers={'Content-Type': 'application/json'})
+        with urlopen(request, timeout=12) as response:
+            result = json.load(response)
+        if not allow_rejection and isinstance(result, dict) and result.get('accepted') is False:
+            raise RuntimeError(f'{path}: {result}')
+        return result
+
+    def device(self):
+        path = self.root / ('multi-state.json' if self.lab.get('twoVehicleSimulation') or self.lab.get('multiVehicleSimulation') else 'device-state.json')
+        try:
+            value = read(path)
+            if 'cars' not in value:
+                value['cars'] = {self.settings['Agv']['Robots'][0]['VehicleId']: dict(value)}
+            value.setdefault('time', path.stat().st_mtime)
+            return value
+        except (OSError, ValueError):
+            return {}
+
+    def status(self):
+        device = self.device()
+        with self.lock:
+            recovery = None
+            if self.phase == 'running':
+                try: recovery = self.api('/api/recovery')
+                except Exception as error: recovery = dict(error=str(error), items=[], released=False)
+            return dict(enabled=True, rootName=self.root.name, running=self.phase == 'running', phase=self.phase,
+                        fresh=self.phase == 'running' and time.time() - device.get('time', 0) < 3 and all(p.poll() is None for p in self.children.values()),
+                        device=device, map=read(self.root / 'navigation.agvmap.json'), scenario=dict(self.scenario), report=self.report,
+                        controls=self.controls, error=self.error, configuration=getattr(self, 'lab', {}).get('simulationConfiguration'), recovery=recovery,
+                        message='回环设备仿真；合成模型不代表真实固件、机械及安全联锁验收。')
+
+    def launch(self, name, arguments, cwd):
+        env = os.environ.copy()
+        env['AGV_DISPATCH_DATABASE_PATH'] = str(self.root / 'data/agv-dispatch.db')
+        with (self.root / f'simulation-{name}-stdout.log').open('ab') as out, (self.root / f'simulation-{name}-stderr.log').open('ab') as err:
+            child = subprocess.Popen(arguments, cwd=cwd, env=env, stdout=out, stderr=err,
+                                     creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+        self.children[name] = child
+        write(self.root / 'processes.json', [dict(Id=p.pid, Path=str(self.root / (n + '/AgvDispatch.' + ('Service' if n == 'service' else 'WebHost') + '.exe')) if n != 'twin' else sys.executable) for n, p in self.children.items()])
+        return child
+
+    def wait(self, label, predicate, timeout=90):
+        deadline = time.monotonic() + timeout
+        last_error = ''
+        while time.monotonic() < deadline:
+            if self.abort.is_set():
+                raise InterruptedError('场景已停止，任务与设备状态保留供恢复核对。')
+            try:
+                value = predicate()
+                if value:
+                    return value
+            except (OSError, ValueError) as error:
+                last_error = str(error)
+            if any(p.poll() is not None for p in self.children.values()):
+                raise RuntimeError('仿真子进程退出，请查看本实例日志。')
+            self.abort.wait(.3)
+        raise TimeoutError(label + ('；' + last_error if last_error else ''))
+
+    def connected(self):
+        snap = self.api('/api/snapshot')
+        return snap if snap.get('connected') and snap.get('status', {}).get('service', {}).get('processId') == self.children['service'].pid else None
+
+    def devices_ready(self):
+        snap = self.connected()
+        vehicles = snap.get('status', {}).get('agvs', []) if snap else []
+        return len(vehicles) == len(self.settings['Agv']['Robots']) and all(v['connection'] == 'Online' and v['quality'] == 'Good' for v in vehicles)
+
+    def idle_review(self):
+        state = self.device()
+        memory = bytes.fromhex(state['memory_hex'])
+        station_offsets = [station.get('offset', 0) for station in getattr(self, 'lab', {}).get('simulationTopology', {}).get('stations', [])] or [0, 2]
+        if any(c['loaded'] or c['current_task'] or any(t in (1, 2, 3) for t in c['tasks'].values()) for c in state['cars'].values()) or memory[610] != 0 or any(memory[o] & 254 != 10 for o in station_offsets):
+            raise RuntimeError('设备不是空载静止的闭合初态，拒绝自动恢复。')
+        page = self.api('/api/tasks')
+        summary = page.get('summary')
+        # The first page is not an inventory once repeated runs exceed 50 rows.
+        # Current Service provides an aggregate over all matches before pagination.
+        if not isinstance(summary, dict) or any(type(summary.get(key)) is not int for key in ('total', 'completed')) or summary['total'] != page.get('totalCount'):
+            raise RuntimeError('缺少完整任务汇总，不能自动批准初态恢复。')
+        if summary['total'] != summary['completed']:
+            raise RuntimeError('存在未闭合任务，保留现场并人工核对。')
+        recovery = self.api('/api/recovery')
+        if not recovery['released']:
+            if any(t['taskId'] != '__SITE__' for t in recovery['items']):
+                raise RuntimeError('活动任务恢复不自动批准。')
+            for ticket in recovery['items']:
+                self.api('/api/recovery/decisions', dict(sessionId=recovery['sessionId'], ticketId=ticket['ticketId'], revision=ticket['revision'],
+                    decision=10, materialReference='SIM-ONLY 空载静止初态，PLC闭合，任务无未完成项。', reason='isolated synthetic idle baseline',
+                    vehicleAndLocationConfirmed=True, loadAndOwnershipConfirmed=True, plcCycleConfirmed=True))
+            self.api('/api/recovery/release', dict(sessionId=recovery['sessionId'], reason='SIM-ONLY verified idle baseline'))
+
+    def bootstrap(self):
+        if not (self.root / 'map-operation-results.json').exists():
+            process = self.launch('map-import', [sys.executable, str(WORKSPACE / 'tools/WebSingleVehicleLab/configure_map.py'), '--root', str(self.root)], WORKSPACE)
+            self.wait('导入地图超时', lambda: process.poll() is not None)
+            self.children.pop('map-import')
+            if process.returncode:
+                raise RuntimeError('地图导入失败，请查看 simulation-map-import-stderr.log。')
+        metadata = read(self.root / 'map-operation-results.json')
+        target = {k: metadata[k] for k in ('mapId', 'versionId')}
+        switch = self.api('/api/maps/switch')
+        if not switch.get('current') and not any(m['isActive'] and m['mapId'] == target['mapId'] and m['activeVersionId'] == target['versionId'] for m in self.api('/api/maps')):
+            self.api('/api/maps/switch/begin', target)
+            switch = self.api('/api/maps/switch')
+        if switch.get('current'):
+            if any(switch['current'][k] != v for k, v in target.items()):
+                raise RuntimeError('已有其他切图操作，拒绝覆盖。')
+            if switch['current']['phase'] == 'Draining':
+                self.api('/api/maps/activate', dict(**target, confirmationText='ACTIVATE ' + metadata['published']['workspace']['project']['name'],
+                    siteSafetyConfirmed=True, vehicleMapCompatibilityConfirmed=True, evidence='SIM-ONLY same authored map', expectedReleaseId=switch['current']['releaseId']))
+            self.wait('地图恢复门禁等待新观测超时', lambda: self.api('/api/maps/switch/resume', dict(releaseId=switch['current']['releaseId'],
+                siteSafetyConfirmed=True, vehicleMapCompatibilityConfirmed=True, evidence='SIM-ONLY idle virtual map verified'), allow_rejection=True).get('accepted'))
+        self.wait('车辆新鲜观测未就绪', self.devices_ready)
+        self.review_idle_with_retry()
+        import hashlib
+        binding = self.api('/api/map-bindings')
+        self.api('/api/map-bindings', dict(expectedRevision=binding['revision'], bindings=[dict(vehicleId=r['VehicleId'], localMapId=target['mapId'],
+            localMapVersion=target['versionId'], robotMap='single_vehicle_lab', robotMapMd5=hashlib.md5((self.root / 'navigation.agvmap.json').read_bytes()).hexdigest(),
+            coordinatesVerified=True, confirmationNote='SIM-ONLY identical synthetic coordinates; not field calibration') for r in self.settings['Agv']['Robots']]))
+        child = self.children['service']
+        child.terminate(); child.wait(timeout=10)
+        self.children.pop('service')
+        self.launch('service', [str(self.root / 'service/AgvDispatch.Service.exe')], self.root / 'service')
+        self.wait('配置后后台重启超时', self.connected)
+        self.wait('重启后车辆新鲜观测未就绪', self.devices_ready)
+        self.review_idle_with_retry()
+
+    def review_idle_with_retry(self):
+        # A polling observation can revise the site ticket between reading and
+        # deciding. Retry only the verified idle baseline; never force a ticket.
+        last = None
+        for attempt in range(8):
+            try:
+                self.idle_review(); return
+            except RuntimeError as error:
+                last = error
+                if '/api/recovery/decisions' not in str(error): raise
+                if self.abort.wait(.5): raise InterruptedError('启动已中止。')
+        raise last
+
+    @staticmethod
+    def _finite_number(value):
+        return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+    def _validate_configuration(self, payload):
+        if not isinstance(payload, dict) or set(payload) - {'name', 'mapDefinition', 'stations', 'vehicles', 'dumper', 'inspectionSite'}:
+            raise ValueError('新实例配置包含未知字段。')
+        navigation = payload.get('mapDefinition')
+        if not isinstance(navigation, dict) or not all(isinstance(navigation.get(key), list) for key in ('nodes', 'edges', 'resources')):
+            raise ValueError('地图必须是包含nodes、edges和resources的对象。')
+        if not 3 <= len(navigation['nodes']) <= 10000 or not 1 <= len(navigation['edges']) <= 50000 or len(navigation['resources']) > 5000:
+            raise ValueError('地图节点、道路或资源数量超出仿真范围。')
+        nodes = {}
+        vendor_ids = set()
+        for node in navigation['nodes']:
+            if not isinstance(node, dict) or any(not isinstance(node.get(key), str) or not node[key].strip() for key in ('id', 'agvSiteId')):
+                raise ValueError('地图节点缺少id或agvSiteId。')
+            if node['id'] in nodes or node['agvSiteId'] in vendor_ids:
+                raise ValueError('地图节点id或agvSiteId重复。')
+            if not self._finite_number(node.get('x')) or not self._finite_number(node.get('y')):
+                raise ValueError('地图节点坐标无效。')
+            nodes[node['id']] = node
+            vendor_ids.add(node['agvSiteId'])
+        edges = []
+        for edge in navigation['edges']:
+            if not isinstance(edge, dict) or not isinstance(edge.get('id'), str) or edge.get('from') not in nodes or edge.get('to') not in nodes:
+                raise ValueError('地图道路id、起点或终点无效。')
+            if edge.get('enabled', True) is True:
+                edges.append((edge['from'], edge['to'], bool(edge.get('bidirectional', True))))
+        resources = {}
+        for resource in navigation['resources']:
+            if not isinstance(resource, dict) or not isinstance(resource.get('id'), str) or resource['id'] in resources:
+                raise ValueError('地图资源id缺失或重复。')
+            resources[resource['id']] = resource
+        selected = {}
+        def node(field, label):
+            value = field
+            if not isinstance(value, str) or value not in nodes or nodes[value].get('enabled', True) is not True:
+                raise ValueError(f'{label}不存在或已停用。')
+            selected[label] = value
+            return value
+        stations = payload.get('stations')
+        if not isinstance(stations, list) or not 1 <= len(stations) <= 2:
+            raise ValueError('工位须配置1至2个。')
+        normalized_stations = []
+        station_seen = set()
+        typed_topology = any(isinstance(node.get('type'), str) for node in nodes.values())
+        for index, station in enumerate(stations):
+            if not isinstance(station, dict) or set(station) != {'stationId', 'pickupSite'}:
+                raise ValueError('工位配置字段无效。')
+            if station['stationId'] not in STATION_IDS or station['stationId'] in station_seen:
+                raise ValueError('工位ID必须是唯一的CNC-001或CNC-002。')
+            station_seen.add(station['stationId'])
+            pickup = node(station['pickupSite'], '取货点' + str(index + 1))
+            if typed_topology and nodes[pickup].get('type') != 'Station':
+                raise ValueError('呼叫工位取货点必须是Station类型节点。')
+            normalized_stations.append(dict(stationId=station['stationId'], pickupSite=pickup, offset=0 if station['stationId'] == 'CNC-001' else 2))
+        if len({s['pickupSite'] for s in normalized_stations}) != len(normalized_stations):
+            raise ValueError('两个工位必须使用不同取货点。')
+        dumper = payload.get('dumper')
+        if not isinstance(dumper, dict) or set(dumper) != {'dumpingSite', 'waitingSite', 'resourceId'}:
+            raise ValueError('倒料设备配置字段无效。')
+        dumping = node(dumper['dumpingSite'], '倒料点')
+        waiting = node(dumper['waitingSite'], '等待点')
+        if typed_topology and nodes[dumping].get('type') != 'Station':
+            raise ValueError('倒料点必须是Station类型节点。')
+        resource_id = dumper.get('resourceId')
+        resource = resources.get(resource_id)
+        if resource is None or not isinstance(resource.get('boundary'), list) or len(resource['boundary']) < 3 or resource.get('capacity', 1) < 1:
+            raise ValueError('倒料资源必须有有效边界和正容量。')
+        if any(not isinstance(point, dict) or not self._finite_number(point.get('x')) or not self._finite_number(point.get('y'))
+               for point in resource['boundary']):
+            raise ValueError('倒料资源边界坐标无效。')
+        if resource_id not in (nodes[dumping].get('resourceIds') or []):
+            nodes[dumping]['resourceIds'] = list(dict.fromkeys([*(nodes[dumping].get('resourceIds') or []), resource_id]))
+        inspection = node(payload.get('inspectionSite') or next(iter(nodes)), '检修点')
+        if typed_topology and nodes[inspection].get('type') != 'Station':
+            raise ValueError('检修点必须是Station类型节点。')
+        vehicles = payload.get('vehicles')
+        if not isinstance(vehicles, list) or not 1 <= len(vehicles) <= 8:
+            raise ValueError('车辆数量须为1至8辆。')
+        normalized_vehicles = []
+        initial_sites = set()
+        vehicle_ids = set()
+        for vehicle in vehicles:
+            if not isinstance(vehicle, dict) or set(vehicle) - {
+                    'id', 'initialSite', 'radiusMeters', 'initialLoaded', 'batteryPercent', 'speedScale',
+                    'accelerationMetersPerSecondSquared', 'operationSeconds', 'travelCostPercentPerMeter',
+                    'idleCostPercentPerHour'}:
+                raise ValueError('车辆配置字段无效。')
+            vehicle_id = vehicle.get('id')
+            if not isinstance(vehicle_id, str) or not VEHICLE_ID.fullmatch(vehicle_id) or vehicle_id in vehicle_ids:
+                raise ValueError('车辆ID须唯一且只包含字母、数字、下划线或连字符。')
+            vehicle_ids.add(vehicle_id)
+            initial = node(vehicle.get('initialSite'), '车辆起点' + vehicle_id)
+            if any(isinstance(item.get('type'), str) for item in nodes.values()) and nodes[initial].get('type') != 'Station':
+                raise ValueError(f'车辆{vehicle_id}必须从地图Station类型节点起步，才能通过正式切图安全核验。')
+            if initial in initial_sites:
+                raise ValueError('每辆虚拟车必须使用不同的初始节点。')
+            initial_sites.add(initial)
+            radius = vehicle.get('radiusMeters', 0.6)
+            if not self._finite_number(radius) or not 0.1 <= radius <= 5:
+                raise ValueError('车辆包络半径须为0.1至5米。')
+            loaded = vehicle.get('initialLoaded', False)
+            battery = vehicle.get('batteryPercent', 86)
+            speed = vehicle.get('speedScale', 1.0)
+            acceleration = vehicle.get('accelerationMetersPerSecondSquared', 0.6)
+            operation = vehicle.get('operationSeconds', 2.0)
+            travel_cost = vehicle.get('travelCostPercentPerMeter', 0.01)
+            idle_cost = vehicle.get('idleCostPercentPerHour', 0.1)
+            if not isinstance(loaded, bool) or not self._finite_number(battery) or not 0 <= battery <= 100 or \
+                    not self._finite_number(speed) or not 0.1 <= speed <= 10 or \
+                    not self._finite_number(acceleration) or not 0.05 <= acceleration <= 10 or \
+                    not self._finite_number(operation) or not 0.1 <= operation <= 120 or \
+                    not self._finite_number(travel_cost) or not 0 <= travel_cost <= 10 or \
+                    not self._finite_number(idle_cost) or not 0 <= idle_cost <= 100:
+                raise ValueError('车辆载荷、电量、速度、加速度、动作时长或耗电参数无效。')
+            normalized_vehicles.append(dict(id=vehicle_id, initialSite=initial, radiusMeters=float(radius),
+                                            initialLoaded=loaded, batteryPercent=float(battery), speedScale=float(speed),
+                                            accelerationMetersPerSecondSquared=float(acceleration), operationSeconds=float(operation),
+                                            travelCostPercentPerMeter=float(travel_cost), idleCostPercentPerHour=float(idle_cost)))
+        # Reachability is undirected here; the formal route planner performs the
+        # directed, resource-aware validation after the isolated instance starts.
+        graph = {node_id: set() for node_id in nodes}
+        for source, target, bidirectional in edges:
+            graph[source].add(target)
+            if bidirectional: graph[target].add(source)
+        def reachable(source, target):
+            pending, seen = [source], set()
+            while pending:
+                current = pending.pop()
+                if current == target: return True
+                if current in seen: continue
+                seen.add(current); pending.extend(graph[current] - seen)
+            return False
+        targets = [s['pickupSite'] for s in normalized_stations] + [waiting, dumping, inspection]
+        for vehicle in normalized_vehicles:
+            if any(not reachable(vehicle['initialSite'], target) for target in targets):
+                raise ValueError(f"{vehicle['id']}与地图工位、等待点或倒料点不连通。")
+        return dict(name=payload.get('name') or navigation.get('name') or 'custom-simulation',
+                    mapDefinition=navigation, stations=normalized_stations,
+                    vehicles=normalized_vehicles, dumper=dict(dumpingSite=dumping, waitingSite=waiting, resourceId=resource_id),
+                    inspectionSite=inspection)
+
+    def _default_configuration(self, count):
+        navigation = read(self.root / 'navigation.agvmap.json')
+        stations = [dict(stationId=station_id, pickupSite=site)
+                    for station_id, site in self.settings['Dispatching']['StationPickupSites'].items()
+                    if station_id in STATION_IDS]
+        dumper = dict(dumpingSite=self.settings['Dispatching']['DumperDumpingSite'],
+                      waitingSite=self.settings['Dispatching']['DumperWaitingSite'],
+                      resourceId=self.settings['HandshakeExecution']['DumperExit']['ResourceIds'][0])
+        excluded = {s['pickupSite'] for s in stations} | {dumper['dumpingSite'], dumper['waitingSite']}
+        typed = any(isinstance(n.get('type'), str) for n in navigation['nodes'])
+        origins = [n['id'] for n in navigation['nodes'] if n.get('enabled', True) and n['id'] not in excluded
+                   and (not typed or n.get('type') == 'Station')]
+        if count > len(origins): raise ValueError('地图没有足够的独立起点。')
+        vehicles = [dict(id=f'AGV-LOCAL-{index+1:02}', initialSite=origins[index], radiusMeters=0.6) for index in range(count)]
+        inspection = self.lab.get('simulationTopology', {}).get('inspectionSite', '检修')
+        if inspection not in {n['id'] for n in navigation['nodes']}:
+            inspection = origins[0]
+        return self._validate_configuration(dict(mapDefinition=navigation, stations=stations, vehicles=vehicles,
+            dumper=dumper, inspectionSite=inspection, name=self.root.name))
+
+    def configure(self, payload):
+        configuration = self._validate_configuration(payload)
+        return self._create_instance(configuration)
+
+    def new_instance(self, payload=None):
+        payload = payload or {}
+        if not isinstance(payload, dict) or set(payload) - {'vehicles'}:
+            raise ValueError('新实例仅接受vehicles参数。')
+        count = payload.get('vehicles', len(self.settings['Agv']['Robots']))
+        if type(count) is not int or not 1 <= count <= 8:
+            raise ValueError('车队数量须为1至8。')
+        return self._create_instance(self._default_configuration(count))
+
+    def _create_instance(self, configuration):
+        with self.lock:
+            if self.phase in ('running', 'starting') or self.children or self.worker and self.worker.is_alive():
+                raise ValueError('请先停止当前仿真环境，再创建干净实例。')
+            validate_root(self.root)
+            source, lab, settings, web, _ = validate_root(self.template_root)
+            target = WORKSPACE / 'artifacts' / ('web-single-vehicle-sim-' + time.strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:6])
+            target.mkdir()
+            for directory in ('service', 'webhost'):
+                shutil.copytree(source / directory, target / directory,
+                    ignore=shutil.ignore_patterns('data', 'logs', '*.log', '*.db', '*.db-*', 'appsettings*.json'))
+            navigation = copy.deepcopy(configuration['mapDefinition'])
+            write(target / 'navigation.agvmap.json', navigation)
+            write(target / 'source-manifest.json', dict(source='Web simulation configuration', sourceSha256='', editedFile='navigation.agvmap.json',
+                editedSha256=hashlib.sha256((target / 'navigation.agvmap.json').read_bytes()).hexdigest(),
+                changes=['configured through isolated Simulation Center'], boundary='User-provided or copied simulation map; not field provenance or calibration.'))
+            used = set()
+            def port():
+                while True:
+                    with socket.socket() as sock:
+                        sock.bind(('127.0.0.1', 0)); value = sock.getsockname()[1]
+                    if value not in used and value not in (5198, 5199): used.add(value); return value
+            lab.update(root=str(target), pipe='Agv28StageLab-' + target.name, webPort=port(), plcPort=port(),
+                multiVehicleSimulation=True, twoVehicleSimulation=len(configuration['vehicles']) == 2,
+                waitingBayProtection=True, mapName=navigation.get('name') or 'custom_simulation',
+                initialSites={v['id']: v['initialSite'] for v in configuration['vehicles']},
+                vehicleProfiles={v['id']: dict(initialLoaded=v['initialLoaded'], batteryPercent=v['batteryPercent'],
+                    speedScale=v['speedScale'], accelerationMetersPerSecondSquared=v['accelerationMetersPerSecondSquared'],
+                    operationSeconds=v['operationSeconds'], travelCostPercentPerMeter=v['travelCostPercentPerMeter'],
+                    idleCostPercentPerHour=v['idleCostPercentPerHour']) for v in configuration['vehicles']},
+                simulationTopology=dict(stations=configuration['stations'], dumperSite=configuration['dumper']['dumpingSite'],
+                    waitingSite=configuration['dumper']['waitingSite'], inspectionSite=configuration['inspectionSite']),
+                simulationConfiguration=dict(stations=configuration['stations'], dumper=configuration['dumper'],
+                    inspectionSite=configuration['inspectionSite'], vehicles=configuration['vehicles'],
+                    mapName=navigation.get('name') or 'custom_simulation'))
+            settings['Security']['PipeName'] = lab['pipe']
+            settings['Database']['Path'] = str(target / 'data/agv-dispatch.db')
+            settings['Map']['ImportPath'] = str(target / 'navigation.agvmap.json')
+            settings['Plc']['Port'] = lab['plcPort']
+            original = settings['Agv']['Robots'][0]
+            template_profile = settings['HandshakeExecution']['DumperExit']['BodyProfiles'][0]
+            robots, profiles = [], []
+            for index, vehicle in enumerate(configuration['vehicles']):
+                robot = copy.deepcopy(original)
+                robot.update(VehicleId=vehicle['id'], DisplayName=f"仿真车{index+1:02}", Port=port(), NavigationPort=port())
+                robots.append(robot)
+                profile = copy.deepcopy(template_profile)
+                profile.update(VehicleId=vehicle['id'], ProfileId='SIM-ONLY-' + vehicle['id'], RadiusFromReportedReferenceMeters=vehicle['radiusMeters'])
+                profiles.append(profile)
+            settings['Agv']['Robots'] = robots
+            settings['HandshakeExecution']['DumperExit']['BodyProfiles'] = profiles
+            settings['HandshakeExecution']['DumperExit']['ResourceIds'] = [configuration['dumper']['resourceId']]
+            settings['Dispatching']['MaxConcurrentTasks'] = len(robots)
+            settings['Dispatching']['StationPickupSites'] = {s['stationId']: s['pickupSite'] for s in configuration['stations']}
+            settings['Dispatching']['DumperWaitingSite'] = configuration['dumper']['waitingSite']
+            settings['Dispatching']['DumperDumpingSite'] = configuration['dumper']['dumpingSite']
+            lab.update(robotPort=robots[0]['Port'], navigationPort=robots[0]['NavigationPort'])
+            web.update(Port=lab['webPort'], PipeName=lab['pipe'], ProjectStorePath=str(target / 'projects'), EngineeringStorePath=str(target / 'engineering'))
+            for filename, value in [('lab.json', lab), ('service/appsettings.json', settings), ('service-settings.json', settings), ('webhost/appsettings.json', {'Web': web})]:
+                write(target / filename, value)
+            self.__init__(target, template_root=self.template_root)
+        return self.status()
+
+    def start(self):
+        with self.lock:
+            if self.phase in ('starting', 'running'):
+                return self.status()
+            if self.worker and self.worker.is_alive():
+                raise ValueError('上个操作仍在收尾。')
+            validate_root(self.root)
+            if any((self.root / p).exists() for p in ('multi-state.json', 'device-state.json', 'STOP')):
+                raise ValueError('该实例保留了设备历史；请新建仿真实例，不会自动重置故障状态。')
+            for port in self.ports:
+                with socket.socket() as sock:
+                    sock.bind(('127.0.0.1', port))
+            self.abort.clear(); self.phase = 'starting'; self.error = None
+            self.worker = threading.Thread(target=self._start, daemon=True); self.worker.start()
+        return self.status()
+
+    def _start(self):
+        try:
+            multi = self.lab.get('twoVehicleSimulation') or self.lab.get('multiVehicleSimulation')
+            self.launch('twin', [sys.executable, str(WORKSPACE / ('tools/WebTwoVehicleLab/multi_twin.py' if multi else 'tools/WebSingleVehicleLab/device_twin.py')), str(self.root)], self.root)
+            self.wait('虚拟设备启动超时', lambda: self.device(), 15)
+            for name, exe in [('service', 'AgvDispatch.Service'), ('webhost', 'AgvDispatch.WebHost')]:
+                self.launch(name, [str(self.root / name / (exe + '.exe'))], self.root / name)
+            self.wait('正式后台连接超时', self.connected)
+            self.bootstrap()
+            self.phase = 'running'
+        except Exception as error:
+            self.phase = 'failed'; self.error = str(error)
+
+    def stop(self):
+        self.abort.set()
+        worker = self.worker
+        if worker and worker.is_alive() and worker is not threading.current_thread():
+            worker.join(timeout=18)
+            if worker.is_alive():
+                raise CleanupPending('操作仍在收尾，稍后重试停止。')
+        (self.root / 'STOP').touch()
+        for name, child in tuple(self.children.items()):
+            if child.poll() is None:
+                try:
+                    if name == 'twin': child.wait(timeout=3)
+                    else: child.terminate(); child.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    child.kill(); child.wait(timeout=5)
+        self.children.clear(); self.phase = 'stopped'
+        return self.status()
+
+    def control(self, payload):
+        from device_controls import normalize_controls
+        if not self.status()['fresh']:
+            raise ValueError('设备状态过期或运行未就绪。')
+        with self.lock:
+            # Merge explicit patches; device consumes a full replacement snapshot.
+            candidate = json.loads(json.dumps(self.controls))
+            # A new patch must not re-arm a previously consumed one-shot response loss.
+            for fields in candidate['vehicles'].values():
+                fields['dropNextResponse'] = False
+            candidate['sequence'] = payload.get('sequence') or uuid.uuid4().hex
+            if set(payload) - {'sequence', 'vehicles', 'plc'}:
+                raise ValueError('未知控制字段。')
+            for vehicle, changes in payload.get('vehicles', {}).items():
+                if vehicle not in {r['VehicleId'] for r in self.settings['Agv']['Robots']}:
+                    raise ValueError('车辆不存在。')
+                candidate['vehicles'].setdefault(vehicle, {}).update(changes)
+            candidate['plc'].update(payload.get('plc', {}))
+            navigation = read(self.root / 'navigation.agvmap.json')
+            normalize_controls(candidate, {r['VehicleId'] for r in self.settings['Agv']['Robots']}, {e['id'] for e in navigation['edges']})
+            write(self.root / 'simulation-control.json', candidate)
+            self.controls = candidate
+        return self.status()
+
+    def run_scenario(self, payload):
+        from scenarios import validate_scenario, execute
+        request = validate_scenario(payload)
+        with self.lock:
+            if not self.status()['fresh'] or self.worker and self.worker.is_alive():
+                raise ValueError('仿真未就绪或已有场景运行。')
+            self.abort.clear()
+            total_units = len(request['calls']) if request['name'] == 'custom-calls' else request['rounds']
+            self.scenario = dict(id=uuid.uuid4().hex, status='running', completedRounds=0, totalRounds=total_units, startedAt=time.time(), message='核对初态', **request)
+            self.worker = threading.Thread(target=execute, args=(self, request), daemon=True); self.worker.start()
+        return self.status()
+
+    def decide_recovery(self, payload):
+        if not isinstance(payload, dict) or set(payload) - {
+                'sessionId', 'ticketId', 'revision', 'decision', 'materialReference', 'reason',
+                'vehicleAndLocationConfirmed', 'loadAndOwnershipConfirmed', 'plcCycleConfirmed'}:
+            raise ValueError('恢复决策字段无效。')
+        if not self.status().get('fresh'):
+            raise ValueError('设备观测已过期，禁止提交恢复决策。')
+        if payload.get('decision') not in (10, 20, 30):
+            raise ValueError('恢复决策必须是继续原任务、补记物理完成或关闭取消。')
+        if type(payload.get('revision')) is not int:
+            raise ValueError('恢复决策必须携带当前修订号。')
+        if any(payload.get(key) is not True for key in ('vehicleAndLocationConfirmed', 'loadAndOwnershipConfirmed', 'plcCycleConfirmed')):
+            raise ValueError('车辆位置、载荷归属和PLC周期确认必须显式勾选。')
+        if not all(isinstance(payload.get(key), str) and len(payload[key].strip()) >= 10 for key in ('materialReference', 'reason')):
+            raise ValueError('物料核对引用和恢复原因至少10个字符。')
+        recovery = self.api('/api/recovery')
+        if recovery.get('released'):
+            raise ValueError('恢复屏障已经放行，不能重复决策。')
+        if payload.get('sessionId') != recovery.get('sessionId'):
+            raise ValueError('恢复会话已变化，请刷新原记录。')
+        item = next((row for row in recovery.get('items', []) if row.get('ticketId') == payload.get('ticketId')), None)
+        if item is None:
+            raise ValueError('恢复条目不存在或会话已刷新。')
+        if item.get('revision') != payload.get('revision'):
+            raise ValueError('恢复条目修订号已变化，请刷新后重新核对。')
+        result = self.api('/api/recovery/decisions', dict(payload, reason='SIM-ONLY ' + payload['reason']))
+        return dict(result=result, recovery=self.api('/api/recovery'))
+
+    def release_recovery(self, payload):
+        if not isinstance(payload, dict) or set(payload) != {'sessionId', 'reason'}:
+            raise ValueError('恢复放行字段无效。')
+        if not self.status().get('fresh') or not isinstance(payload.get('reason'), str) or len(payload['reason'].strip()) < 10:
+            raise ValueError('需要新鲜设备观测和至少10个字符的放行原因。')
+        recovery = self.api('/api/recovery')
+        if recovery.get('released'):
+            return dict(result=dict(Accepted=True, Message='already released'), recovery=recovery)
+        if payload.get('sessionId') != recovery.get('sessionId'):
+            raise ValueError('恢复会话已变化，请刷新。')
+        if any(not item.get('verified') for item in recovery.get('items', [])):
+            raise ValueError('仍有未核对条目，禁止放行。')
+        result = self.api('/api/recovery/release', dict(sessionId=payload['sessionId'], reason='SIM-ONLY ' + payload['reason']))
+        return dict(result=result, recovery=self.api('/api/recovery'))
+
+
+def cleanup_owned_runtime(runtime, retry_delay=.2):
+    """A still-finishing worker is not permission to orphan its owned children."""
+    while True:
+        try:
+            return runtime.stop()
+        except CleanupPending:
+            time.sleep(retry_delay)
+        except subprocess.TimeoutExpired:
+            # stop() retains the Popen handle when a killed child has not yet exited.
+            time.sleep(retry_delay)
+
+
+def serve(root, port, token):
+    runtime = Runtime(root)
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args): pass
+        def dispatch(self):
+            if not hmac.compare_digest(self.headers.get('X-Simulation-Token', ''), token):
+                self.send_error(403); return
+            try:
+                if self.command == 'GET':
+                    result = runtime.status() if self.path == '/status' else runtime.report if self.path == '/report' else None
+                else:
+                    length = int(self.headers.get('Content-Length', 0))
+                    if not 0 <= length <= 8 * 1024 * 1024: raise ValueError('请求过大。')
+                    payload = json.loads(self.rfile.read(length) or b'{}')
+                    if not isinstance(payload, dict): raise ValueError('请求应为JSON对象。')
+                    if self.path == '/start': result = runtime.start()
+                    elif self.path == '/stop': result = runtime.stop()
+                    elif self.path == '/run': result = runtime.run_scenario(payload)
+                    elif self.path == '/control': result = runtime.control(payload)
+                    elif self.path == '/new-instance': result = runtime.new_instance(payload)
+                    elif self.path == '/configure': result = runtime.configure(payload)
+                    elif self.path == '/recover': result = runtime.decide_recovery(payload)
+                    elif self.path == '/recover-release': result = runtime.release_recovery(payload)
+                    elif self.path == '/abort': runtime.abort.set(); result = runtime.status()
+                    elif self.path == '/shutdown':
+                        result = cleanup_owned_runtime(runtime); threading.Thread(target=server.shutdown, daemon=True).start()
+                    else: result = None
+                if result is None and self.path != '/report': self.send_error(404); return
+                encoded = json.dumps(result, ensure_ascii=False, allow_nan=False).encode()
+                self.send_response(200); self.send_header('Content-Type', 'application/json; charset=utf-8'); self.end_headers(); self.wfile.write(encoded)
+            except Exception as error:
+                encoded = json.dumps({'error': str(error)}, ensure_ascii=False).encode()
+                self.send_response(400); self.send_header('Content-Type', 'application/json; charset=utf-8'); self.end_headers(); self.wfile.write(encoded)
+        do_GET = dispatch
+        do_POST = dispatch
+    server = ThreadingHTTPServer(('127.0.0.1', port), Handler)
+    stopping = threading.Event()
+    parent = os.getppid()
+    def watch_parent():
+        # The daily launcher can terminate WebHost without a graceful .NET
+        # shutdown. Hold the Windows parent handle so PID reuse cannot orphan
+        # or accidentally attach the virtual devices to a different WebHost.
+        handle = None
+        kernel = None
+        if os.name == 'nt':
+            import ctypes
+            from ctypes import wintypes
+            kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+            kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            kernel.OpenProcess.restype = wintypes.HANDLE
+            kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+            kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+            handle = kernel.OpenProcess(0x100000, False, parent)
+        try:
+            while not stopping.wait(.5):
+                if kernel:
+                    alive = bool(handle) and kernel.WaitForSingleObject(handle, 0) == 258
+                else:
+                    try: os.kill(parent, 0); alive = True
+                    except ProcessLookupError: alive = False
+                if not alive:
+                    try: cleanup_owned_runtime(runtime)
+                    finally: server.shutdown()
+                    return
+        finally:
+            if handle: kernel.CloseHandle(handle)
+    threading.Thread(target=watch_parent, daemon=True).start()
+    try: server.serve_forever(poll_interval=.2)
+    finally:
+        stopping.set(); cleanup_owned_runtime(runtime); server.server_close()
+
+
+if __name__ == '__main__':
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'WebSingleVehicleLab'))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--root', required=True); parser.add_argument('--port', type=int, required=True)
+    args = parser.parse_args()
+    token = os.environ.get('AGV_SIMULATION_TOKEN', '')
+    if len(token) < 32: raise SystemExit('Controller requires a private bridge token.')
+    serve(args.root, args.port, token)

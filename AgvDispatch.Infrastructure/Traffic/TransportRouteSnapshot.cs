@@ -54,7 +54,9 @@ public static class TransportRouteSnapshots
              map.Definition.Edges.Where(e => edges.Contains(e.Id)).Any(e => e.ResourceIds.Count > 0)))
             throw new InvalidDataException("无需申请状态只能用于确实不经过任何交通资源的路径。");
         return new(1,taskId,stepId,commandId,vehicleId,map.MapId,map.VersionId,map.Definition.CoordinateSystem,
-            Hash(JsonSerializer.Serialize(map.Definition, JsonOptions)),
+            // Match the Web map's published definition hash (string enums) so the task
+            // page can prove a snapshot belongs to the active map version.
+            EngineeringRuntimeIdentity.MapHash(map.Definition),
             Hash(payloadJson),nodes,edges,payload.Path.ToArray());
     }
 
