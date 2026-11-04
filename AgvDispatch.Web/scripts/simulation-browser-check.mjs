@@ -71,7 +71,7 @@ function rpc(method, params = {}) { return new Promise((ok, no) => { const id = 
 async function evaluate(expression) { const result = await rpc('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }); if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails)); return result.result.value; }
 async function click(label) {
   await wait(() => evaluate(`(()=>{const b=[...document.querySelectorAll('.simulation-page button')].find(e=>e.textContent.trim()===${JSON.stringify(label)});if(!b||b.disabled||b.matches(':disabled'))return false;b.click();return true})()`), 'Button unavailable: ' + label);
-  await wait(async () => !(await disabled('刷新原记录')), 'Request completed: ' + label);
+  await wait(async () => !(await disabled('刷新状态')), 'Request completed: ' + label);
 }
 async function disabled(label) { return evaluate(`(()=>{const b=[...document.querySelectorAll('.simulation-page button')].find(e=>e.textContent.trim()===${JSON.stringify(label)});return !!b&&(b.disabled||b.matches(':disabled'))})()`); }
 function check(label, condition) { assert.ok(condition, label); console.log('PASS ' + label); }
@@ -86,11 +86,19 @@ try {
   await rpc('Page.enable'); await rpc('Runtime.enable');
   await rpc('Emulation.setDeviceMetricsOverride', { width: 1600, height: 1000, deviceScaleFactor: 1, mobile: false });
   await rpc('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/#/simulation-center` });
-  await wait(() => evaluate(`document.querySelector('.configuration-guide')?.textContent.includes('配置一次')`), 'Disabled environment guidance');
+  await wait(() => evaluate(`document.querySelector('.configuration-guide')?.textContent.includes('首次配置入口')`), 'Disabled environment guidance');
   check('Unconfigured environment cannot start or submit scenarios', await disabled('启动仿真环境') && await disabled('运行场景') && mutations.length === 0);
-  enabled = true; await click('刷新原记录');
-  await wait(() => evaluate(`document.querySelectorAll('.map-car').length===2&&document.querySelector('.environment-state').textContent.includes('反馈有效')`), 'Two device positions');
-  check('Map renders observed vehicles and original curved roads', await evaluate(`document.querySelectorAll('.roads path').length===1&&document.querySelector('.roads path').getAttribute('d').includes('C')&&document.querySelector('.environment-state').textContent.includes('反馈有效')`));
+  enabled = true; await click('刷新状态');
+  await wait(() => evaluate(`document.querySelectorAll('.map-car').length===2&&document.querySelector('.mission-runtime').textContent.includes('反馈有效')`), 'Two device positions');
+  check('Map renders observed vehicles and original curved roads', await evaluate(`document.querySelectorAll('.roads path').length===1&&document.querySelector('.roads path').getAttribute('d').includes('C')&&document.querySelector('.mission-runtime').textContent.includes('反馈有效')`));
+  for (const [index, stage, name] of [['2', '.environment-stage', 'environment'], ['3', '.scenario-stage', 'scenario'], ['4', '.fault-stage', 'faults'], ['5', '.results-stage', 'results']]) {
+    await evaluate(`document.querySelector('.stage-tabs button:nth-child(${index})').click()`);
+    await wait(() => evaluate(`document.querySelector('${stage}')?.offsetParent!==null`), 'Stage visible: ' + stage);
+    const stageShot = await rpc('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+    writeFileSync(resolve(profile, `simulation-${name}.png`), Buffer.from(stageShot.data, 'base64'));
+  }
+  check('Guided stage tabs isolate environment, scenario, fault and evidence workflows', true);
+  await evaluate(`document.querySelector('.stage-tabs button:nth-child(1)').click()`);
   await click('启动协议服务器');
   check('Declarative protocol server starts only on loopback and reports its assigned endpoint',
     mutations.at(-1).path.endsWith('/protocol-start') && mutations.at(-1).body.rules.length===1 &&
@@ -115,9 +123,9 @@ try {
   check('Road fault references the selected vehicle and original edge ID', mutations.at(-1).body.vehicles['AGV-02'].blockedEdges.join(',') === 'E1');
   await click('解除所选车全部道路阻塞');
   check('Road unblock clears only the selected vehicle edge list', mutations.at(-1).body.vehicles['AGV-02'].blockedEdges.length === 0);
-  fresh = false; await click('刷新原记录');
+  fresh = false; await click('刷新状态');
   check('Stale evidence disables scene starts and device controls', await disabled('运行场景') && await disabled('暂停运动') && await disabled('注入设备故障'));
-  fresh = true; await click('刷新原记录');
+  fresh = true; await click('刷新状态');
   await evaluate(`(()=>{const e=document.querySelector('[aria-label="测试场景"]');e.value='simultaneous-calls';e.dispatchEvent(new Event('change',{bubbles:true}));const n=document.querySelector('.scenario-panel input');n.value='2';n.dispatchEvent(new Event('input',{bubbles:true}))})()`);
   await click('运行场景');
   check('Scenario preserves selected kind and round count', mutations.at(-1).body.name === 'simultaneous-calls' && mutations.at(-1).body.rounds === 2);
