@@ -48,13 +48,13 @@ using (var waitingExit = new Fixture())
     using var coordinator = waitingExit.Coordinator(logger, journal);
     var writes = waitingExit.Signals.Writes.Count;
     var leases = await waitingExit.LeaseCountAsync(task);
-    await waitingExit.CoordinateAsync(coordinator);
+    await waitingExit.CoordinateWithPollingAsync(coordinator, "AGV-1", 0, 0, "LM-DUMP");
     for (var i = 0; i < 2; i++)
     {
         await Task.Delay(120);
         waitingExit.Vehicles.Set("AGV-1", 0, 0, "LM-DUMP");
         waitingExit.Signals.Refresh();
-        await waitingExit.CoordinateAsync(coordinator);
+        await waitingExit.CoordinateWithPollingAsync(coordinator, "AGV-1", 0, 0, "LM-DUMP");
     }
     Check(logger.Entries.Count(e => e.Level == LogLevel.Information && e.Message.Contains("等待整车完全离开")) == 1 &&
         logger.Entries.All(e => e.Level < LogLevel.Warning && e.Exception is null) &&
@@ -138,7 +138,7 @@ using (var aliases = new Fixture())
     await aliases.FinishReadyAsync(task, DispatchTaskStepType.DumpFullBox);
     await aliases.PrepareReturnAsync(task);
     await aliases.ProveExitAsync(task);
-    await aliases.ExitAsync(task);
+    await aliases.ExitAsync(task, false, pollVehicle: true);
     aliases.Signals.Set("DUMPER", "DumpingCompletedMayLeave", false);
     await aliases.FinishExitAsync(task);
     await aliases.PlaceAsync(task);
@@ -385,13 +385,13 @@ await fixture.ExitAsync(a);
 Check(fixture.Signals.Get("DUMPER", "AgvAtDumpingPosition"), "过期区外定位不能证明出区");
 fixture.Vehicles.Set("AGV-1", 4, 0, null);
 fixture.Agv.State = AgvTransportTaskState.Unknown;
-for (var i = 0; i < 2; i++) { await Task.Delay(120); fixture.Vehicles.Set("AGV-1", 4, 0, null); await fixture.ExitAsync(a); }
-await fixture.ExitAsync(a);
+for (var i = 0; i < 2; i++) { await Task.Delay(120); fixture.Vehicles.Set("AGV-1", 4, 0, null); await fixture.ExitAsync(a, pollVehicle: true); }
+await fixture.ExitAsync(a, pollVehicle: true);
 Check(fixture.Agv.Queries > 0 && fixture.Signals.Get("DUMPER", "AgvAtDumpingPosition") && await fixture.ReturnPhaseAsync(a) == "AwaitPhysicalExit", "原任务查询Unknown不能清周期");
 fixture.Agv.State = AgvTransportTaskState.GoingToDestination;
 fixture.Preflight.Accepted = false;
 var mapCalls = fixture.Preflight.Calls;
-await fixture.ExitAsync(a);
+await fixture.ExitAsync(a, pollVehicle: true);
 Check(fixture.Preflight.Calls > mapCalls && fixture.Signals.Get("DUMPER", "AgvAtDumpingPosition"), "车端地图未核验不能清周期");
 fixture.Preflight.Accepted = true;
 await fixture.ProveExitAsync(a);
@@ -410,7 +410,7 @@ var lostClear = false;
 for (var i = 0; i < 8 && !lostClear; i++)
 {
     await Task.Delay(120); fixture.Vehicles.Set("AGV-1", 4, 0, null);
-    try { await fixture.ExitAsync(a, swallowHold: false); } catch (IOException) { lostClear = true; }
+    try { await fixture.ExitAsync(a, swallowHold: false, pollVehicle: true); } catch (IOException) { lostClear = true; }
 }
 Check(lostClear, "重新取得有效区外证据后尝试清位并注入失应答");
 var returnCheckpoint = (await fixture.Store.GetAsync(a, returned.StepId, default))!;
@@ -433,7 +433,7 @@ fixture.Preflight.BeforeCheck = () =>
 };
 for (var i = 0; i < 8 && !injectedClosureChange; i++)
 {
-    await Task.Delay(120); fixture.Vehicles.Set("AGV-1", 4, 0, null); await fixture.ExitAsync(a);
+    await Task.Delay(120); fixture.Vehicles.Set("AGV-1", 4, 0, null); await fixture.ExitAsync(a, pollVehicle: true);
 }
 Check(injectedClosureChange && await fixture.EquipmentOwnerAsync() == a && await fixture.LeaseCountAsync(a, "DUMP-AREA") > 0,
     "地图/任务查询期间Done重新变高时，最终交接重新核对共享闭合状态");
@@ -508,7 +508,7 @@ var sentRetry = await fixture.CommandAsync(b);
 Check(fixture.Agv.Creates == 1 && sentRetry.Status == (int)AgvCommandStatus.Sent && sentRetry.CommandId == pendingReturn.CommandId &&
     sentRetry.StepId == pendingReturn.StepId && sentRetry.AttemptCount == 2, "原命令RetryScheduled仍可核验后按原ID发送，不永久卡住或创建新命令");
 await fixture.ProveExitAsync(b);
-await fixture.ExitAsync(b);
+await fixture.ExitAsync(b, false, pollVehicle: true);
 fixture.Signals.Set("DUMPER", "DumpingCompletedMayLeave", false);
 var bReturning = (await fixture.Writer.GetStepsAsync(b, default)).Single(s => s.StepType == DispatchTaskStepType.ReturnEmptyBox);
 await fixture.Orchestrator.CompleteExecutingStepAsync(b, bReturning.VendorTaskId!, default);
@@ -610,6 +610,18 @@ sealed class Fixture : IDisposable
     public Task CoordinateAsync(DispatchTaskStepCoordinator coordinator) =>
         (Task)typeof(DispatchTaskStepCoordinator).GetMethod("RunCycleAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
             .Invoke(coordinator, [CancellationToken.None])!;
+    public async Task CoordinateWithPollingAsync(DispatchTaskStepCoordinator coordinator,
+        string vehicle, double x, double y, string? station)
+    {
+        var cycle = CoordinateAsync(coordinator);
+        while (!cycle.IsCompleted)
+        {
+            await Task.Delay(50);
+            Vehicles.Set(vehicle, x, y, station);
+            Signals.Refresh();
+        }
+        await cycle;
+    }
     public void SetPickupSite(string station,string site) => dispatch.StationPickupSites[station] = site;
     public async Task<TaskExitEvidence?> InspectReturnEvidenceAsync(string task)
     {
@@ -737,10 +749,22 @@ sealed class Fixture : IDisposable
         if (!await Outbox.TryPrepareTransportStepAsync(task, current.StepId, vehicle, ["LM-PICK-" + index, "LM-EXIT", "LM-PICK-" + index], null, default)) throw new Exception("Pickup outbox not prepared");
     }
     public Task<AgvCommandOutboxEntity> CommandAsync(string task) => Db.Queryable<AgvCommandOutboxEntity>().SingleAsync(c => c.TaskId == task);
-    public async Task ExitAsync(string task, bool swallowHold = true)
+    public async Task ExitAsync(string task, bool swallowHold = true, bool pollVehicle = false)
     {
         Signals.Refresh();
-        try { await Engine.ProcessExitAsync(await TaskAsync(task), default); }
+        var parent = await TaskAsync(task);
+        try
+        {
+            var running = Engine.ProcessExitAsync(parent, default);
+            while (pollVehicle && !running.IsCompleted)
+            {
+                await Task.Delay(50);
+                if (Vehicles.TryGet(parent.VehicleId!, out var position) &&
+                    position.X is { } x && position.Y is { } y)
+                    Vehicles.Set(parent.VehicleId!, x, y, position.CurrentStation);
+            }
+            await running;
+        }
         catch (InvalidOperationException) when (swallowHold) { }
     }
     public async Task ProveExitAsync(string task)
@@ -749,11 +773,23 @@ sealed class Fixture : IDisposable
         for (var i = 0; i < 8; i++)
         {
             Vehicles.Set(parent.VehicleId!, 4, 0, null);
-            await ExitAsync(task);
+            var exit = ExitAsync(task);
+            var deadline = DateTimeOffset.UtcNow.AddSeconds(3.5);
+            while (!exit.IsCompleted && DateTimeOffset.UtcNow < deadline)
+            {
+                await Task.Delay(50);
+                // The real AGV poller produces the second independent sample while
+                // the exit evidence collector is waiting inside the same task cycle.
+                Vehicles.Set(parent.VehicleId!, 4, 0, null);
+            }
+            await exit;
             if (await ReturnPhaseAsync(task) == "ClearDumpingAfterExit") return;
             await Task.Delay(120);
         }
-        throw new Exception("Physical exit proof not established: " + await ReturnPhaseAsync(task));
+        var returned = (await Writer.GetStepsAsync(task, default)).Single(s => s.StepType == DispatchTaskStepType.ReturnEmptyBox);
+        var checkpoint = await Store.GetAsync(task, returned.StepId, default);
+        throw new Exception("Physical exit proof not established: " + await ReturnPhaseAsync(task) +
+            "; reason=" + checkpoint?.Reason);
     }
     public async Task<string> PrepareReleaseAsync(string station = "CNC-001", string vehicle = "AGV-1")
     {
@@ -765,9 +801,9 @@ sealed class Fixture : IDisposable
         await FinishReadyAsync(task, DispatchTaskStepType.DumpFullBox);
         await PrepareReturnAsync(task);
         await ProveExitAsync(task);
-        await ExitAsync(task, false);
+        await ExitAsync(task, false, pollVehicle: true);
         Signals.Set("DUMPER", "DumpingCompletedMayLeave", false);
-        await ExitAsync(task, false);
+        await ExitAsync(task, false, pollVehicle: true);
         if (await ReturnPhaseAsync(task) != "ReleaseDumper") throw new Exception("Fixture did not reach ReleaseDumper");
         return task;
     }
@@ -778,11 +814,14 @@ sealed class Fixture : IDisposable
         {
             if (Vehicles.TryGet(parent.VehicleId!, out var position))
                 Vehicles.Set(parent.VehicleId!, position.X!.Value, position.Y!.Value, position.CurrentStation);
-            await ExitAsync(task, false);
+            await ExitAsync(task, false, pollVehicle: true);
             if (await ReturnPhaseAsync(task) == "ExitHandoverComplete") return;
             await Task.Delay(120);
         }
-        throw new Exception("Exit handover did not complete: " + await ReturnPhaseAsync(task));
+        var returned = (await Writer.GetStepsAsync(task, default)).Single(s => s.StepType == DispatchTaskStepType.ReturnEmptyBox);
+        var checkpoint = await Store.GetAsync(task, returned.StepId, default);
+        throw new Exception("Exit handover did not complete: " + await ReturnPhaseAsync(task) +
+            "; reason=" + checkpoint?.Reason);
     }
     public async Task PlaceAsync(string task)
     {

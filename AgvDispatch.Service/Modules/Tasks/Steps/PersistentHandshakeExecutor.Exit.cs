@@ -8,9 +8,6 @@ using AgvDispatch.Infrastructure.Traffic;
 
 namespace AgvDispatch.Service;
 
-/// <summary>Valid observations retain ownership while the vehicle's full envelope leaves the area.</summary>
-public sealed class DumperExitPendingException(string message) : InvalidOperationException(message);
-
 public sealed partial class PersistentHandshakeExecutor
 {
     private readonly Dictionary<string,(DumperExitFrame? First,DumperExitFrame Second)> _exitSamples=new(StringComparer.Ordinal);
@@ -72,7 +69,19 @@ public sealed partial class PersistentHandshakeExecutor
             case "AwaitPhysicalExit":
                 if(!Is(dumper,"AgvAtDumpingPosition",true)||!Is(dumper,"DumpingCompletedMayLeave",true))return;
                 if(await CaptureExitProofAsync(checkpoint,step,returned.VendorTaskId!,ct) is {} proof)
-                    await store.RecordPhysicalExitAsync(checkpoint,proof,ct);
+                {
+                    try { await store.RecordPhysicalExitAsync(checkpoint,proof,ct); }
+                    catch(DumperExitPendingException){throw;}
+                    catch(Exception exception)
+                    {
+                        throw new InvalidOperationException(
+                            exception.GetBaseException().Message+
+                            $" 本次证据：终点到达确认={(proof.EndpointArrivalConfirmed?"是":"否")}；"+
+                            $"第二帧=({proof.Second.X:0.###},{proof.Second.Y:0.###})；"+
+                            $"采样间隔={(proof.Second.ObservedAt-proof.First.ObservedAt).TotalSeconds:0.###}秒。",
+                            exception);
+                    }
+                }
                 break;
             case "ClearDumpingAfterExit":
                 if(await CaptureExitProofAsync(checkpoint,step,returned.VendorTaskId!,ct) is {} fresh)
@@ -141,22 +150,74 @@ public sealed partial class PersistentHandshakeExecutor
                 (first is not null&&(first.LocalizationConfidence<options.DumperExit.MinimumConfidence||second.LocalizationConfidence<options.DumperExit.MinimumConfidence)
                     ?$" 要求定位置信度至少{options.DumperExit.MinimumConfidence:0.###}。":""));
         }
+        async Task<DumperExitFrame> WaitForNewerFrameAsync(DumperExitFrame previous)
+        {
+            var minimum=options.DumperExit.MinimumObservationIntervalSeconds;
+            var maximumAge=TimeSpan.FromSeconds(options.DumperExit.MaximumAgeSeconds);
+            var deadline=DateTimeOffset.UtcNow+maximumAge;
+            while(true)
+            {
+                ct.ThrowIfCancellationRequested();
+                await Task.Delay(TimeSpan.FromMilliseconds(25),ct);
+                var candidate=ReadFrame();
+                if(candidate.ObservedAt<previous.ObservedAt||candidate.ObservedAt==previous.ObservedAt&&candidate!=previous)
+                {
+                    _exitSamples.Remove(step.StepId);
+                    throw new InvalidOperationException("出区连续采样发生时间倒退或同一时刻状态冲突，等待重新采集。");
+                }
+                var now=DateTimeOffset.UtcNow;
+                if(candidate.ObservedAt>previous.ObservedAt&&now-candidate.ObservedAt<=maximumAge&&
+                    (candidate.ObservedAt-previous.ObservedAt).TotalSeconds>=minimum)
+                    return candidate;
+                if(now>=deadline)
+                    throw new InvalidOperationException("车辆定位未在有效期内产生第二帧，保持占用并等待采集恢复。");
+            }
+        }
         var frame=ReadFrame();
         var minimum=options.DumperExit.MinimumObservationIntervalSeconds;
-        if(!_exitSamples.TryGetValue(step.StepId,out var pair)){_exitSamples[step.StepId]=(null,frame);return null;}
-        if(frame.ObservedAt<pair.Second.ObservedAt||frame.ObservedAt==pair.Second.ObservedAt&&frame!=pair.Second)
+        var maximumAge=TimeSpan.FromSeconds(options.DumperExit.MaximumAgeSeconds);
+        var sampledAt=DateTimeOffset.UtcNow;
+        var hasPair=_exitSamples.TryGetValue(step.StepId,out var savedPair);
+        (DumperExitFrame? First,DumperExitFrame Second)? pair=hasPair?savedPair:null;
+        var advancedFromSaved=false;
+        if(pair.HasValue&&sampledAt-pair.Value.Second.ObservedAt<=maximumAge)
+        {
+            var currentPair=pair.Value;
+            if(frame.ObservedAt<currentPair.Second.ObservedAt||frame.ObservedAt==currentPair.Second.ObservedAt&&frame!=currentPair.Second)
+            {
+                _exitSamples.Remove(step.StepId);
+                throw new InvalidOperationException("出区定位时间倒退或同一时刻的车辆状态冲突，等待重新采集。");
+            }
+            if(frame.ObservedAt>currentPair.Second.ObservedAt&&currentPair.First is not null)
+            {
+                pair=(currentPair.Second,frame);
+                advancedFromSaved=true;
+            }
+        }
+        else
         {
             _exitSamples.Remove(step.StepId);
-            throw new InvalidOperationException("出区定位时间倒退或同一时刻的车辆状态冲突，等待重新采集。");
+            pair=null;
         }
-        if(frame.ObservedAt>pair.Second.ObservedAt)
+        // Collect both frames in this call. Waiting for the next round-robin pass
+        // can exceed the three-second evidence lifetime with three active tasks.
+        if(pair?.First is null)
         {
-            // A newer observation always vetoes reuse of an older outside/outside pair.
-            if((frame.ObservedAt-pair.Second.ObservedAt).TotalSeconds<minimum)return null;
-            _exitSamples[step.StepId]=pair=(pair.Second,frame);
+            var first=frame;
+            if(sampledAt-first.ObservedAt>maximumAge)first=await WaitForNewerFrameAsync(first);
+            var second=await WaitForNewerFrameAsync(first);
+            pair=(first,second);
         }
-        if(pair.First is null)return null;
-        RequireVerified(pair.First,pair.Second,DateTimeOffset.UtcNow);
+        else if(advancedFromSaved&&(pair.Value.Second.ObservedAt-pair.Value.First.ObservedAt).TotalSeconds<minimum)
+        {
+            // Reusing the previous second frame can advance the pair by less than
+            // the configured interval. Obtain a third independent frame instead
+            // of looping forever on a rejected pair.
+            pair=(pair.Value.Second,await WaitForNewerFrameAsync(pair.Value.Second));
+        }
+        var verifiedPair=pair.Value;
+        _exitSamples[step.StepId]=verifiedPair;
+        RequireVerified(verifiedPair.First,verifiedPair.Second,DateTimeOffset.UtcNow);
         var mapCheck=await mapPreflight!.CheckCurrentMapAsync(vehicleId,current.MapId,current.VersionId,ct);
         if(!mapCheck.Accepted)throw new InvalidOperationException("实际出区车端地图核验未通过："+mapCheck.Message);
         var vendor=await agvGateway!.GetTransportTaskStatusAsync(vendorTaskId,ct);
@@ -166,17 +227,16 @@ public sealed partial class PersistentHandshakeExecutor
             vendor.UpdatedAt>now.AddSeconds(1)||now-vendor.UpdatedAt>TimeSpan.FromSeconds(options.DumperExit.MaximumAgeSeconds))
             throw new InvalidOperationException("原返程任务身份、执行状态或新鲜查询不成立，不能以其他任务/未知状态交接。");
         var lastFrame=ReadFrame();
-        if(lastFrame.ObservedAt<pair.Second.ObservedAt||lastFrame.ObservedAt==pair.Second.ObservedAt&&lastFrame!=pair.Second)
+        if(lastFrame.ObservedAt<verifiedPair.Second.ObservedAt||lastFrame.ObservedAt==verifiedPair.Second.ObservedAt&&lastFrame!=verifiedPair.Second)
         {
             _exitSamples.Remove(step.StepId);
             throw new InvalidOperationException("车端查询期间定位时间倒退或状态冲突，等待重新采集。");
         }
-        if(lastFrame.ObservedAt>pair.Second.ObservedAt)pair=(pair.Second,lastFrame);
+        if(lastFrame.ObservedAt>verifiedPair.Second.ObservedAt)verifiedPair=(verifiedPair.Second,lastFrame);
         // A map inspection can take longer than the position evidence lifetime. Never
         // keep its pre-query first frame and retry the same doomed pair forever.
         // Recollect after the queries, without extending the vendor-query deadline.
-        var maximumAge=TimeSpan.FromSeconds(options.DumperExit.MaximumAgeSeconds);
-        if(pair.First is null||now-pair.First.ObservedAt>maximumAge)
+        if(verifiedPair.First is null||now-verifiedPair.First.ObservedAt>maximumAge)
         {
             var first=lastFrame;
             _exitSamples[step.StepId]=(null,first);
@@ -191,13 +251,13 @@ public sealed partial class PersistentHandshakeExecutor
                 if(second.ObservedAt<first.ObservedAt||second.ObservedAt==first.ObservedAt&&second!=first)
                     throw new InvalidOperationException("重新采集出区定位时发生时间倒退或状态冲突。");
                 if(second.ObservedAt==first.ObservedAt||(second.ObservedAt-first.ObservedAt).TotalSeconds<minimum)continue;
-                pair=(first,second);
+                verifiedPair=(first,second);
                 break;
             }
         }
         now=DateTimeOffset.UtcNow;
-        _exitSamples[step.StepId]=pair;
-        RequireVerified(pair.First,pair.Second,now);
+        _exitSamples[step.StepId]=verifiedPair;
+        RequireVerified(verifiedPair.First,verifiedPair.Second,now);
         if(vendor.UpdatedAt>now.AddSeconds(1)||now-vendor.UpdatedAt>maximumAge)
             throw new InvalidOperationException("重新采集定位后原返程查询已过期，保持占用。");
         vehicles.TryGet(vehicleId,out var endpointVehicle);
@@ -213,7 +273,7 @@ public sealed partial class PersistentHandshakeExecutor
             endpointVehicle.VelocityX is {} vx&&endpointVehicle.VelocityY is {} vy&&endpointVehicle.AngularVelocity is {} va&&
             Math.Abs(vx)<=.02&&Math.Abs(vy)<=.02&&Math.Abs(va)<=.02;
         return new(step.TaskId,step.StepId,vehicleId,vendorTaskId,current.MapId,current.VersionId,
-            EngineeringRuntimeIdentity.MapHash(current.Definition),pair.First!,pair.Second,profile,
+            EngineeringRuntimeIdentity.MapHash(current.Definition),verifiedPair.First!,verifiedPair.Second,profile,
             options.DumperExit.Policy,options.DumperExit.MaximumRouteDeviationMeters,vendor.UpdatedAt,now)
             {PlcSignals=TaskHandshakeSignals.Capture(signals,step.StationId,creation.DumperStationId).Where(s=>s.StationId==creation.DumperStationId).ToArray(),
              EndpointArrivalConfirmed=vendor.State==AgvTransportTaskState.Completed&&endpointStopped};

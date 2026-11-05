@@ -46,6 +46,13 @@ var routeStates = new RouteStates { CurrentSite = "LM-PICK" };
 var planner = new ConfiguredRoutePlanner(new MapDefinitionProvider(new(), new MapImportService(), new MapValidationService()), runtime, dispatch, flow, vehicleStates: routeStates);
 Check(planner.Plan("LM-PICK", "PICK", new HashSet<string>())!.Nodes.SequenceEqual(new[] { "LM-PICK", "LM-EXIT", "LM-PICK" }), "dispatch planner resolves mixed logical/vendor IDs into actual nonzero vendor path");
 Check(planner.Plan("LM-PICK", "PICK", new HashSet<string> { "R" }) is null, "dispatch planner cannot use unpermitted waiting/dumping shortcut when pickup exit is occupied");
+var occupiedRouteStates = new RouteStates { CurrentSite = "LM-PICK", X = 1, Y = 0 };
+var occupancyAwarePlanner = new ConfiguredRoutePlanner(
+    new MapDefinitionProvider(new(), new MapImportService(), new MapValidationService()),
+    runtime, dispatch, flow, vehicleStates: occupiedRouteStates,
+    mapOptions: new MapOptions());
+Check(occupancyAwarePlanner.Plan("LM-PICK", "LM-EXIT", new HashSet<string>()) is null,
+    "车体位于双向走廊内部时，不允许另一任务规划对向或同向穿越");
 var parkResource=new TrafficResourceDefinition("PARK-R",TrafficResourceType.Station);
 var withParking=definition with { Nodes=definition.Nodes.Append(Node("PARK",1,1,resources:["PARK-R"])).ToArray(),
     Edges=definition.Edges.Concat([Edge("PS","PICK","PARK",.1,true),Edge("SX","PARK","EXIT",.1,true)]).ToArray(),
@@ -117,6 +124,16 @@ runtime.Replace(new("MAP","V1",exitDefinition with{Nodes=nodes},DateTimeOffset.N
 Check(!(await strictManual.GetOptionsAsync(default)).Vehicles.Single().Available,"manual options reject a dump node unrelated to the configured release area");
 runtime.Replace(new("MAP","V1",definition,DateTimeOffset.Now));
 var manual = new ManualTaskCreationService(tasks, new Stations(), vehicle, vehicle, runtime, gate, orchestration, creation, dispatch, new(), new(), new PlcConfiguration(), parameters, checker);
+runtime.Replace(new("MAP","V1",transitParking,DateTimeOffset.Now));
+dispatch.StandbySites=["LM-PARK"];
+var pickupExcluded=typeof(ManualTaskCreationService).GetMethod("PickupExcludedNodes",BindingFlags.NonPublic|BindingFlags.Instance)!;
+var transitExcluded=(IReadOnlySet<string>)pickupExcluded.Invoke(manual,[runtime.Current,"AGV-01","PICK"])!;
+Check(!transitExcluded.Contains("PARK"),"task creation honors an explicit corridor standby that the dispatcher may cross");
+runtime.Replace(new("MAP","V1",withParking,DateTimeOffset.Now));
+var protectedExcluded=(IReadOnlySet<string>)pickupExcluded.Invoke(manual,[runtime.Current,"AGV-01","PICK"])!;
+Check(protectedExcluded.Contains("PARK"),"task creation still protects an ordinary standby bay");
+runtime.Replace(new("MAP","V1",definition,DateTimeOffset.Now));
+dispatch.StandbySites=[];
 var options = await manual.GetOptionsAsync(default);
 Check(options.Available && options.Stations.Single().PickupReachableVehicleIds.Contains("AGV-01"), "returning vehicle at pickup is eligible for next legitimate call");
 var preview = await manual.PreviewRoutesAsync(new("CNC001", "AGV-01", "MAP", "V1", options.ParameterRevision), default);
@@ -150,11 +167,13 @@ sealed class EmptyFlow : ITrafficFlowMonitor
 sealed class RouteStates : IAgvStateCache
 {
     public string CurrentSite { get; set; } = "";
+    public double X { get; set; }
+    public double Y { get; set; }
     public event Action<AgvRobotStateChanged>? StateChanged { add { } remove { } }
     public long Version => 1;
     public IReadOnlyList<AgvRobotSnapshot> GetAll() => [Snapshot()];
     public bool TryGet(string id, out AgvRobotSnapshot snapshot) { snapshot = Snapshot(id); return true; }
-    private AgvRobotSnapshot Snapshot(string id = "AGV-01") => new(id, id, "", 0, ConnectionState.Online, SignalQuality.Good, 0, 0, 0, 1,
+    private AgvRobotSnapshot Snapshot(string id = "AGV-01") => new(id, id, "", 0, ConnectionState.Online, SignalQuality.Good, X, Y, 0, 1,
         CurrentSite, null, 80, false, false, "Idle", null, null, null, [], [], DateTimeOffset.Now, DateTimeOffset.Now, 0, null, null, 1);
 }
 sealed class Vehicle : IAgvGateway, IAgvStateCache

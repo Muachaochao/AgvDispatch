@@ -27,7 +27,11 @@ public sealed partial class TaskHandshakeStore
             if (moved) await database.Insertable(new TaskRuntimeEventEntity { TaskId=checkpoint.TaskId, StepId=checkpoint.StepId,
                 Kind="ExitVerified",Phase="ClearDumpingAfterExit", RecordedAtUtc=now, Reason="实际出区有物理位置、车体载荷包络及原发送路线证据；不以返回命令或终态替代。", EvidenceJson=JsonSerializer.Serialize(evidence) }).ExecuteCommandAsync(ct);
         });
-        if (!result.IsSuccess) throw new InvalidOperationException("实际出区证据事务未提交，保持占用。", result.ErrorException);
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorException is DumperExitPendingException pending) throw pending;
+            throw new InvalidOperationException("实际出区证据事务未提交，保持占用。", result.ErrorException);
+        }
         return moved;
     }
 
@@ -70,7 +74,11 @@ public sealed partial class TaskHandshakeStore
             await database.Insertable(new TaskRuntimeEventEntity {TaskId=checkpoint.TaskId,StepId=checkpoint.StepId,Kind="EquipmentReleased",Phase="ExitHandoverComplete",StationId=equipmentId,
                 RecordedAtUtc=now,Reason="28阶段实际出区、PLC周期闭合后交接倒料设备；返箱任务尚可继续。",EvidenceJson=JsonSerializer.Serialize(new {Proof=evidence,ReleasedLeaseIds=leaseIds})}).ExecuteCommandAsync(ct);
         });
-        if(!result.IsSuccess)throw new InvalidOperationException("倒料归属及已验证区域交接未提交，保持原责任。",result.ErrorException);
+        if(!result.IsSuccess)
+        {
+            if(result.ErrorException is DumperExitPendingException pending)throw pending;
+            throw new InvalidOperationException("倒料归属及已验证区域交接未提交，保持原责任。",result.ErrorException);
+        }
         return moved;
     }
 
@@ -117,7 +125,11 @@ public sealed partial class TaskHandshakeStore
         if(!assessed.Verified)throw new InvalidOperationException(assessed.Reason);
         var suffix=DumperExitEvaluator.VerifyReturnRouteAfterExit(map.Definition,route.NodeIds,route.EdgeIds,proof.Second,proof.Body,proof.Policy,
             proof.MaximumRouteDeviationMeters,proof.EndpointArrivalConfirmed);
-        if(!suffix.Verified)throw new InvalidOperationException(suffix.Reason);
+        if(!suffix.Verified)
+        {
+            if(suffix.WaitingForPhysicalExit)throw new DumperExitPendingException(suffix.Reason);
+            throw new InvalidOperationException(suffix.Reason);
+        }
     }
 
     private static bool PolicyEvidenceCompatible(DumperExitConfiguration original,DumperExitPolicy proof,double proofMaximumRouteDeviationMeters)

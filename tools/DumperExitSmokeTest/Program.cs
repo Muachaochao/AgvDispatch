@@ -242,7 +242,13 @@ var futureCurve = ReturnMap(("D", 1, 1), ("EXIT", 6, 1), ("HOME", 9, 5));
 futureCurve = futureCurve with { Edges = [futureCurve.Edges[0], futureCurve.Edges[1] with
     { GeometryKind = MapEdgeGeometryKind.CubicBezier, ControlPoints = [new(7, 2), new(8, 4)] }] };
 Check(Route(futureCurve).Verified, "直线出区后未来Bezier完整控制凸包远离倒料区允许");
-RouteRefuse("当前定位可能在Bezier保守边界内时保持占用", futureCurve, first with { X = 7, Y = 3 });
+var movingCurve = Route(futureCurve, first with { X = 7, Y = 3 });
+Check(!movingCurve.Verified && movingCurve.WaitingForPhysicalExit,
+    "当前定位在Bezier段内时标记为返程物理等待而非异常占用");
+var incompleteStraightReturn = Route(ReturnMap(("D", 1, 1), ("EXIT", 3.2, 1), ("HOME", 8, 1)),
+    first with { X = 3.2 });
+Check(!incompleteStraightReturn.Verified && incompleteStraightReturn.WaitingForPhysicalExit,
+    "返程尚未走完且未来路段仍可能经过倒料区时标记为物理等待");
 RouteRefuse("当前定位既可能是直线也可能是区外曲线时拒绝", futureCurve, first with { X = 6, Y = 1 });
 RouteRefuse("Bezier控制包络可能回穿倒料区时拒绝", futureCurve with { Edges =
     [futureCurve.Edges[0], futureCurve.Edges[1] with { ControlPoints = [new(1, 1), new(8, 4)] }] });
@@ -278,6 +284,25 @@ var pastDegenerateCurve = ReturnMap(("D",1,1),("EXIT",4,1),("HOME",6,4)) with
 var pastDegenerateResult=Route(pastDegenerateCurve, first with { X = 6, Y = 4 }, endpointConfirmed: true);
 Check(pastDegenerateResult.Verified,
     "厂家DegenerateBezier已走过的区内共线边不阻断终点出区交接："+pastDegenerateResult.Reason);
+var depotCurve = ReturnMap(("D",1,1),("EXIT",5,1),("HOME",6,5)) with
+{
+    Edges =
+    [
+        new MapEdge("E0","D","EXIT",5,1,false,true,[])
+        { GeometryKind=MapEdgeGeometryKind.CubicBezier,ControlPoints=[new(.5,1.7),new(2.5,.2)] },
+        new MapEdge("E1","EXIT","HOME",5,1,false,true,[])
+        { GeometryKind=MapEdgeGeometryKind.CubicBezier,ControlPoints=[new(5.4,2),new(5.6,4)] }
+    ]
+};
+Check(!Route(depotCurve, first with { X = 6, Y = 5 }).Verified,
+    "曲线区段终点未经厂家完成与静止核验时不推断已通过");
+Check(Route(depotCurve, first with { X = 6, Y = 5 }, endpointConfirmed: true).Verified,
+    "起点位于倒料区的真实曲线段按细分包络识别最后一次使用，终点完成核验后允许");
+var finalSegmentRewind = ReturnMap(("D",1,1),("EXIT",2.5,0),("HOME",3,-1));
+RouteRefuse("最后一段仅因定位回看可能靠近倒料区时未完成终点仍拒绝", finalSegmentRewind,
+    first with { X = 3, Y = -1 });
+Check(Route(finalSegmentRewind, first with { X = 3, Y = -1 }, endpointConfirmed: true).Verified,
+    "厂家终点与原站点确认后闭合最后一段回看区间，不把已完成路线误判为阻塞");
 var futureDegenerateReentry = ReturnMap(("D",1,1),("EXIT",5,1),("REENTER",-3,1)) with
 {
     Edges =

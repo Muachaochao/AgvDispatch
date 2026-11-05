@@ -3,6 +3,12 @@ using AgvDispatch.Domain.Maps;
 
 namespace AgvDispatch.Application.Tasks;
 
+/// <summary>
+/// The current vehicle evidence is valid, but the frozen return route has not
+/// reached a point where exit handover can be proven yet.
+/// </summary>
+public sealed class DumperExitPendingException(string message) : InvalidOperationException(message);
+
 /// <summary>A position observation in the verified active map coordinate frame.</summary>
 public sealed record DumperExitFrame(
     string VehicleId, string MapId, string MapVersionId,
@@ -214,7 +220,8 @@ public static class DumperExitEvaluator
             if (curveBounds is {} bounds)
             {
                     if (!endpointConfirmed&&curveCovers[i].Any(part => PointBoundsDistance(point, part) <= maximumRouteDeviationMeters + Epsilon))
-                    return Reject("当前定位可能处于曲线保守边界内，不能从采样推断已通过曲线，等待区外直线定位。");
+                    return Reject("当前定位可能处于曲线保守边界内，不能从采样推断已通过曲线，等待区外直线定位或原返程终点完成。")
+                        with { WaitingForPhysicalExit = true };
                 continue;
             }
             if (Distance(point, a, b) > maximumRouteDeviationMeters + Epsilon) continue;
@@ -236,13 +243,31 @@ public static class DumperExitEvaluator
         if (candidates.Count == 0) return Reject("当前定位偏离原冻结返程，无法确定后续路径。");
         if (candidates.Count > 2 || candidates.Count == 2 && candidates[1].Index != candidates[0].Index + 1)
             return Reject("定位同时对应冻结返程的多个非相邻位置，路径进度有歧义。");
+        // The manufacturer completion and original endpoint jointly remove the
+        // radial "possibly earlier" interval on the final segment. Earlier
+        // nonadjacent matches were rejected above and remain ambiguous.
+        if(endpointConfirmed && candidates.Count==2 &&
+            candidates[0].Index==segments.Count-1 && candidates[1].Index==segments.Count)
+            candidates[0]=(candidates[0].Index,1);
 
         // Account conservatively for the permitted cross-track corridor as well as the
         // body/localization envelope; do not assume future motion is an exact centerline.
         foreach (var resource in boundaries)
         {
             var polygon = resource.Boundary!;
-            if (!segments.Any(s => s.CurveBounds is null && !SegmentEnvelopeOutside(s.From, s.To, radius, polygon)))
+            var used = false;
+            for (var i = 0; i < segments.Count; i++)
+            {
+                var segment = segments[i];
+                if (segment.CurveBounds is null
+                    ? !SegmentEnvelopeOutside(segment.From, segment.To, radius, polygon)
+                    : curveCovers[i].Any(part => ExpandedCoverTouchesPolygon(part, radius, polygon)))
+                {
+                    used = true;
+                    break;
+                }
+            }
+            if (!used)
                 return Reject($"冻结返程未经过倒料资源 {resource.Id}，无法核定最后一次使用。");
             foreach (var candidate in candidates)
                 for (var i = candidate.Index; i < segments.Count; i++)
@@ -252,13 +277,18 @@ public static class DumperExitEvaluator
                         a = new(a.X + (b.X - a.X) * candidate.EarliestT, a.Y + (b.Y - a.Y) * candidate.EarliestT);
                     if (curveBounds is { } bounds)
                     {
-                        var resourceBounds = new MapGeometryBounds(polygon.Min(p => p.X), polygon.Min(p => p.Y),
-                            polygon.Max(p => p.X), polygon.Max(p => p.Y));
-                        if (BoundsDistance(bounds, resourceBounds) <= radius + Epsilon)
-                            return Reject($"冻结返程后续曲线保守包络可能触碰倒料资源 {resource.Id}，保持占用。");
+                        _ = bounds;
+                        if (curveCovers[i].Any(part => ExpandedCoverTouchesPolygon(part, radius, polygon)))
+                            return Reject($"冻结返程后续曲线保守包络可能触碰倒料资源 {resource.Id}，保持占用。"+
+                                $"候选进度={string.Join(',',candidates.Select(candidate=>$"{candidate.Index}:{candidate.EarliestT:0.###}"))}；"+
+                                $"后续路段={orderedEdgeIds[i]}；终点到达核验={(endpointConfirmed?"是":"否")}。")
+                                with { WaitingForPhysicalExit = !endpointConfirmed };
                     }
                     else if (!SegmentEnvelopeOutside(a, b, radius, polygon))
-                        return Reject($"冻结返程可能位置尚未通过倒料资源 {resource.Id} 的最后一次使用，或后续会重新触碰该区域。");
+                        return Reject($"冻结返程可能位置尚未通过倒料资源 {resource.Id} 的最后一次使用，或后续会重新触碰该区域。"+
+                            $"候选进度={string.Join(',',candidates.Select(candidate=>$"{candidate.Index}:{candidate.EarliestT:0.###}"))}；"+
+                            $"后续路段={orderedEdgeIds[i]}；终点到达核验={(endpointConfirmed?"是":"否")}。")
+                            with { WaitingForPhysicalExit = !endpointConfirmed };
                 }
         }
         return new(true, "冻结返程所有可能直线位置均已通过全部倒料资源最后一次使用，后续整车载荷包络及曲线保守边界不再触碰；尚未释放资源。",
@@ -338,6 +368,51 @@ public static class DumperExitEvaluator
                 Distance(c, a, b) <= radius + Epsilon || Distance(d, a, b) <= radius + Epsilon) return false;
         }
         return true;
+    }
+
+    private static bool ExpandedCoverTouchesPolygon(MapGeometryBounds box, double radius,
+        IReadOnlyList<MapPoint2D> polygon)
+    {
+        var expanded = new MapGeometryBounds(box.MinX - radius, box.MinY - radius,
+            box.MaxX + radius, box.MaxY + radius);
+        var corners = new[]
+        {
+            new MapPoint2D(expanded.MinX, expanded.MinY),
+            new MapPoint2D(expanded.MaxX, expanded.MinY),
+            new MapPoint2D(expanded.MaxX, expanded.MaxY),
+            new MapPoint2D(expanded.MinX, expanded.MaxY)
+        };
+        if (polygon.Any(point => PointInBounds(point, expanded)) ||
+            PointInPolygon(new MapPoint2D((expanded.MinX + expanded.MaxX) / 2,
+                (expanded.MinY + expanded.MaxY) / 2), polygon))
+            return true;
+        for (var i = 0; i < 4; i++)
+        {
+            var boxA = corners[i];
+            var boxB = corners[(i + 1) % 4];
+            for (var j = 0; j < polygon.Count; j++)
+                if (Intersects(boxA, boxB, polygon[j], polygon[(j + 1) % polygon.Count]))
+                    return true;
+        }
+        return false;
+    }
+
+    private static bool PointInBounds(MapPoint2D point, MapGeometryBounds bounds) =>
+        point.X >= bounds.MinX && point.X <= bounds.MaxX &&
+        point.Y >= bounds.MinY && point.Y <= bounds.MaxY;
+
+    private static bool PointInPolygon(MapPoint2D point, IReadOnlyList<MapPoint2D> polygon)
+    {
+        var inside = false;
+        for (int i = 0, j = polygon.Count - 1; i < polygon.Count; j = i++)
+        {
+            var a = polygon[j];
+            var b = polygon[i];
+            if ((a.Y > point.Y) != (b.Y > point.Y) &&
+                point.X < (b.X - a.X) * (point.Y - a.Y) / (b.Y - a.Y) + a.X)
+                inside = !inside;
+        }
+        return inside;
     }
 
     private static bool ValidBoundary(IReadOnlyList<MapPoint2D>? polygon)

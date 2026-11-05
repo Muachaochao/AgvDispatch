@@ -42,6 +42,12 @@ public sealed class DatabaseInitializer : IDatabaseInitializer
     private void InitializeCore(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        // WAL keeps telemetry/evidence readers from blocking a short write
+        // transaction. The mode persists in the database file; the busy
+        // timeout is also configured on every connection by DatabaseFactory.
+        _database.Ado.ExecuteCommand("PRAGMA journal_mode=WAL;");
+        _database.Ado.ExecuteCommand("PRAGMA synchronous=NORMAL;");
+        _database.Ado.ExecuteCommand("PRAGMA busy_timeout=30000;");
         _database.DbMaintenance.CreateDatabase();
         _database.CodeFirst.InitTables<
             DispatchTaskEntity,

@@ -11,7 +11,10 @@ public static class DatabaseFactory
 
         return new SqlSugarScope(new ConnectionConfig
         {
-            ConnectionString = $"DataSource={fullPath}",
+            // All long-lived workers share one SQLite file. A finite default
+            // timeout lets short, independent transactions queue instead of
+            // failing immediately when another evidence write is committing.
+            ConnectionString = $"DataSource={fullPath};Default Timeout=30",
             DbType = DbType.Sqlite,
             IsAutoCloseConnection = true,
             InitKeyType = InitKeyType.Attribute,

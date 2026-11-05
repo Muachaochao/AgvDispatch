@@ -1,4 +1,5 @@
 using AgvDispatch.Application.Abstractions;
+using AgvDispatch.Application.Tasks;
 using AgvDispatch.Domain.Agvs;
 using AgvDispatch.Domain.Devices;
 using AgvDispatch.Domain.Tasks;
@@ -150,6 +151,7 @@ public sealed class DispatchTaskStepCoordinator(
                         _conditionFingerprints[step.StepId] = fingerprint;
                     }
                 }
+                if (await ApplyTimeoutPolicyAsync(step, cancellationToken)) continue;
                 if (handshake == null || !await handshake.ProcessAsync(step, cancellationToken)) await ProcessStepAsync(step, cancellationToken);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -158,22 +160,7 @@ public sealed class DispatchTaskStepCoordinator(
             }
             catch (Exception exception)
             {
-                try
-                {
-                    await tasks.RecordReadyStepFailureAsync(
-                        step.TaskId,
-                        step.StepId,
-                        exception.Message,
-                        cancellationToken);
-                }
-                catch (Exception persistenceException)
-                {
-                    logger.LogError(
-                        persistenceException,
-                        "记录任务步骤失败原因时异常。TaskId={TaskId}, StepId={StepId}",
-                        step.TaskId,
-                        step.StepId);
-                }
+                await ApplyFailurePolicyAsync(step, exception, cancellationToken);
 
                 logger.LogWarning(
                     exception,
@@ -182,6 +169,110 @@ public sealed class DispatchTaskStepCoordinator(
                     step.StepId,
                     step.StepType);
             }
+        }
+    }
+
+    private async Task<bool> ApplyTimeoutPolicyAsync(
+        DispatchTaskStepWorkItem step,
+        CancellationToken cancellationToken)
+    {
+        if (step.StartedAt is not { } startedAt || !TaskTemplateExecutionPolicy.HasTimedOut(
+                startedAt, step.TimeoutSeconds, DateTimeOffset.UtcNow)) return false;
+        var elapsed = DateTimeOffset.UtcNow - startedAt;
+
+        var action = TaskTemplateExecutionPolicy.NormalizeTimeoutAction(step.TimeoutAction);
+        var node = string.IsNullOrWhiteSpace(step.TemplateNodeId) ? step.StepType.ToString() : step.TemplateNodeId;
+        var message = $"任务节点 {node} 已运行 {(long)elapsed.TotalSeconds} 秒，超过阈值 {step.TimeoutSeconds} 秒；" +
+                      $"超时处置为 {action}。保留原步骤、路权和设备责任，禁止自动重发。";
+        if (TaskTemplateExecutionPolicy.StopsAutomationForTimeout(action))
+        {
+            var stopped = await tasks.StopReadyStepForPolicyAsync(
+                step.TaskId, step.StepId, action, message, cancellationToken);
+            if (stopped)
+            {
+                await RecordPolicyEvidenceAsync(step, "NodeTimeoutStopped",
+                    new { step.TemplateNodeId, step.TimeoutSeconds, Action = action, ElapsedSeconds = (long)elapsed.TotalSeconds, Reason = message },
+                    cancellationToken);
+                logger.LogWarning(
+                    "任务节点超时并按策略停止自动执行。TaskId={TaskId}, StepId={StepId}, Action={Action}, TimeoutSeconds={TimeoutSeconds}",
+                    step.TaskId, step.StepId, action, step.TimeoutSeconds);
+            }
+            return stopped;
+        }
+
+        var key = "timeout:" + step.StepId;
+        if (!_conditionFingerprints.TryGetValue(key, out var prior) || prior != message)
+        {
+            await tasks.RecordReadyStepFailureAsync(step.TaskId, step.StepId, message, cancellationToken);
+            await RecordPolicyEvidenceAsync(step, "NodeTimeoutHold",
+                new { step.TemplateNodeId, step.TimeoutSeconds, Action = action, ElapsedSeconds = (long)elapsed.TotalSeconds, Reason = message },
+                cancellationToken);
+            _conditionFingerprints[key] = message;
+            logger.LogWarning(
+                "任务节点超阈值，按策略保持等待。TaskId={TaskId}, StepId={StepId}, Action={Action}, TimeoutSeconds={TimeoutSeconds}",
+                step.TaskId, step.StepId, action, step.TimeoutSeconds);
+        }
+        return false;
+    }
+
+    private async Task ApplyFailurePolicyAsync(
+        DispatchTaskStepWorkItem step,
+        Exception exception,
+        CancellationToken cancellationToken)
+    {
+        var policy = TaskTemplateExecutionPolicy.NormalizeFailurePolicy(step.FailurePolicy);
+        var trigger = TaskTemplateExecutionPolicy.ClassifyFailure(exception.GetBaseException().Message);
+        var reason = $"任务节点 {(string.IsNullOrWhiteSpace(step.TemplateNodeId) ? step.StepType.ToString() : step.TemplateNodeId)} " +
+                     $"失败策略 {policy}；白名单条件 {trigger}；{exception.GetBaseException().Message}";
+        try
+        {
+            if (TaskTemplateExecutionPolicy.StopsAutomation(policy))
+            {
+                var stopped = await tasks.StopReadyStepForPolicyAsync(
+                    step.TaskId, step.StepId, policy, reason, cancellationToken);
+                await RecordPolicyEvidenceAsync(step, "NodeFailureStopped",
+                    new { step.TemplateNodeId, Policy = policy, Trigger = trigger, Reason = reason, Stopped = stopped },
+                    cancellationToken);
+            }
+            else
+            {
+                await tasks.RecordReadyStepFailureAsync(
+                    step.TaskId, step.StepId, reason, cancellationToken);
+                await RecordPolicyEvidenceAsync(step, "NodeFailureHeld",
+                    new { step.TemplateNodeId, Policy = policy, Trigger = trigger, Reason = reason },
+                    cancellationToken);
+            }
+        }
+        catch (Exception persistenceException)
+        {
+            logger.LogError(
+                persistenceException,
+                "记录任务步骤失败策略时异常。TaskId={TaskId}, StepId={StepId}, Policy={Policy}",
+                step.TaskId,
+                step.StepId,
+                policy);
+        }
+    }
+
+    private async Task RecordPolicyEvidenceAsync(
+        DispatchTaskStepWorkItem step,
+        string kind,
+        object evidence,
+        CancellationToken cancellationToken)
+    {
+        if (journal is null) return;
+        try
+        {
+            await journal.RecordAsync(step.TaskId, step.StepId, kind, evidence, cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(
+                exception,
+                "记录节点策略证据失败。TaskId={TaskId}, StepId={StepId}, Kind={Kind}",
+                step.TaskId,
+                step.StepId,
+                kind);
         }
     }
 

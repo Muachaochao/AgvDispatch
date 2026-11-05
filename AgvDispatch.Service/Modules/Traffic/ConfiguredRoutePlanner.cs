@@ -1,4 +1,6 @@
 using AgvDispatch.Application.Abstractions;
+using AgvDispatch.Application.Maps;
+using AgvDispatch.Domain.Devices;
 using AgvDispatch.Domain.Maps;
 
 namespace AgvDispatch.Service;
@@ -12,6 +14,7 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
     private readonly ITrafficFlowMonitor _trafficFlow;
     private readonly IRoadClosureService? _roadClosures;
     private readonly IAgvStateCache? _vehicleStates;
+    private readonly MapOptions? _mapOptions;
 
     public ConfiguredRoutePlanner(
         MapDefinitionProvider map,
@@ -19,13 +22,15 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
         DispatchOrchestratorOptions legacyOptions,
         ITrafficFlowMonitor trafficFlow,
         IRoadClosureService? roadClosures = null,
-        IAgvStateCache? vehicleStates = null)
+        IAgvStateCache? vehicleStates = null,
+        MapOptions? mapOptions = null)
     {
         _legacyOptions = legacyOptions;
         _activeMap = activeMap;
         _trafficFlow = trafficFlow;
         _roadClosures = roadClosures;
         _vehicleStates = vehicleStates;
+        _mapOptions = mapOptions;
         if (map.Definition is not null)
         {
             _configuredDefinition = map.Definition;
@@ -86,7 +91,9 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
         {
             unavailableTraversals = (unavailableTraversals ?? []).Concat(
                 DumperTransitClearance.BlockedTraversals(definition, logicalSource, logicalDestination,
-                    _legacyOptions.DumperDumpingSite, _legacyOptions.DumperTransitClearanceMeters)).Distinct().ToArray();
+                    _legacyOptions.DumperDumpingSite, _legacyOptions.DumperTransitClearanceMeters))
+                .Concat(OccupiedCorridorTraversals(definition))
+                .Distinct().ToArray();
         }
         catch (ArgumentException) { return null; }
         var waitingAndDumping = _legacyOptions.GetDumperWaitingSites().Append(_legacyOptions.DumperDumpingSite)
@@ -124,6 +131,63 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
                 logicalSource, logicalDestination, unavailableResourceIds, edgePenalties, departureProtected, unavailableTraversals);
         }
         return plan is null ? null : MapRouteSiteMapper.ToAgvSitePlan(definition, plan);
+    }
+
+    private IReadOnlyList<MapDirectedTraversal> OccupiedCorridorTraversals(MapDefinition definition)
+    {
+        if (_vehicleStates is null || _mapOptions is null) return [];
+        var now = DateTimeOffset.UtcNow;
+        var maximumAge = TimeSpan.FromSeconds(_mapOptions.PositionStaleSeconds);
+        var blocked = new List<MapDirectedTraversal>();
+        foreach (var vehicle in _vehicleStates.GetAll())
+        {
+            if (vehicle.Connection != ConnectionState.Online || vehicle.Quality != SignalQuality.Good ||
+                vehicle.X is not { } x || vehicle.Y is not { } y ||
+                vehicle.LocalizationConfidence is not { } confidence ||
+                vehicle.LastSuccessfulPollAt is not { } observed || observed > now.AddSeconds(1) ||
+                now - observed > maximumAge)
+                continue;
+            var position = AgvMapPositionAnalyzer.Analyze(x, y, confidence, observed, definition, now,
+                maximumAge, _mapOptions.MinimumLocalizationConfidence,
+                _mapOptions.MaximumRouteDeviationMeters);
+            if (position.State != AgvMapPositionState.Normal ||
+                string.IsNullOrWhiteSpace(position.NearestEdgeId))
+                continue;
+            var occupied = definition.Edges.FirstOrDefault(edge =>
+                edge.Enabled && string.Equals(edge.Id, position.NearestEdgeId, StringComparison.OrdinalIgnoreCase));
+            if (occupied is null) continue;
+            var from = definition.Nodes.FirstOrDefault(node =>
+                string.Equals(node.Id, occupied.From, StringComparison.OrdinalIgnoreCase));
+            var to = definition.Nodes.FirstOrDefault(node =>
+                string.Equals(node.Id, occupied.To, StringComparison.OrdinalIgnoreCase));
+            if (from is null || to is null) continue;
+            // At a station node the route must be allowed to depart. Only a vehicle
+            // occupying the interior of a corridor blocks reciprocal traversals.
+            var endpointClearance = 0.1;
+            if (Distance(x, y, from.X, from.Y) <= endpointClearance ||
+                Distance(x, y, to.X, to.Y) <= endpointClearance)
+                continue;
+            foreach (var edge in definition.Edges.Where(edge => edge.Enabled &&
+                         SameUndirectedCorridor(edge, occupied)))
+            {
+                blocked.Add(new(edge.Id, edge.From, edge.To));
+                if (edge.Bidirectional) blocked.Add(new(edge.Id, edge.To, edge.From));
+            }
+        }
+        return blocked.Distinct().ToArray();
+    }
+
+    private static bool SameUndirectedCorridor(MapEdge first, MapEdge second) =>
+        string.Equals(first.From, second.From, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(first.To, second.To, StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(first.From, second.To, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(first.To, second.From, StringComparison.OrdinalIgnoreCase);
+
+    private static double Distance(double ax, double ay, double bx, double by)
+    {
+        var dx = ax - bx;
+        var dy = ay - by;
+        return Math.Sqrt(dx * dx + dy * dy);
     }
 
 }
