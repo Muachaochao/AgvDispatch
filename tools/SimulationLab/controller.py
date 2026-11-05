@@ -481,7 +481,7 @@ class Runtime:
                 raise ValueError('车辆外接半径须为0.1至20米。')
             loaded = vehicle.get('initialLoaded', False)
             battery = vehicle.get('batteryPercent', 86)
-            speed = vehicle.get('speedScale', 1.0)
+            speed = vehicle.get('speedScale', 0.75)
             acceleration = vehicle.get('accelerationMetersPerSecondSquared', 0.6)
             operation = vehicle.get('operationSeconds', 2.0)
             travel_cost = vehicle.get('travelCostPercentPerMeter', 0.01)

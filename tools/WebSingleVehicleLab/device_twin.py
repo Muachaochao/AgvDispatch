@@ -41,7 +41,7 @@ class DeviceTwin:
         self.control_sequence = None
         self.control_error = None
         self.control_error_fingerprint = None
-        self.speed_scale = 1.0
+        self.speed_scale = 0.75
         self.battery_percent = 0.86
         self.voltage_curve = [dict(percent=0, voltage=21), dict(percent=100, voltage=26)]
         self.charging_gain_percent_per_hour = 20.0
@@ -162,7 +162,7 @@ class DeviceTwin:
         self.battery_percent = float(profile.get('batteryPercent', 86)) / 100.0
         self.voltage_curve = sorted(profile.get('voltageCurve', self.voltage_curve), key=lambda point: point['percent'])
         self.charging_gain_percent_per_hour = float(profile.get('chargingGainPercentPerHour', 20))
-        self.speed_scale = float(profile.get('speedScale', 1.0))
+        self.speed_scale = float(profile.get('speedScale', 0.75))
         self.acceleration = float(profile.get('accelerationMetersPerSecondSquared', .6))
         self.operation_seconds = float(profile.get('operationSeconds', 2.0))
         self.travel_cost_percent_per_meter = float(profile.get('travelCostPercentPerMeter', .01))

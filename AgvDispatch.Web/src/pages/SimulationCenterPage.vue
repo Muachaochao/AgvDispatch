@@ -18,7 +18,7 @@ const reading = ref(false), busy = ref(false), connected = ref(false), now = ref
 const selectedVehicle = ref('');
 const newVehicleCount = ref(2);
 const blockedEdgeIds = ref<string[]>([]);
-const speedScale = ref(1), readyDelay = ref(0), doneDelay = ref(5);
+const speedScale = ref(0.75), readyDelay = ref(0), doneDelay = ref(5);
 const run = ref<SimulationRun>({ name: 'normal-cycle', rounds: 1, intervalSeconds: 1, timeoutSeconds: 600 });
 const plcFault = ref<'ready' | 'done'>('ready'), plcFaultHold = ref(10);
 const restartStage = ref<'pickup' | 'delivery'>('pickup');
@@ -41,10 +41,10 @@ const recordingVideo = ref(false), videoProgress = ref(0);
 const additionalWaitingSites = ref<string[]>([]);
 const inspectionSite = ref(''), dumperResourceId = ref('');
 const customVehicles = ref([
-  { id: 'AGV-SIM-01', initialSite: '', radiusMeters: 0.49, lengthMeters: 0.8, widthMeters: 0.52, initialLoaded: false, batteryPercent: 86, speedScale: 1,
+  { id: 'AGV-SIM-01', initialSite: '', radiusMeters: 0.49, lengthMeters: 0.8, widthMeters: 0.52, initialLoaded: false, batteryPercent: 86, speedScale: 0.75,
     accelerationMetersPerSecondSquared: 0.6, operationSeconds: 2, travelCostPercentPerMeter: 0.01, idleCostPercentPerHour: 0.1,
     voltageCurve: [{ percent: 0, voltage: 21 }, { percent: 100, voltage: 26 }], chargingGainPercentPerHour: 20 },
-  { id: 'AGV-SIM-02', initialSite: '', radiusMeters: 0.49, lengthMeters: 0.8, widthMeters: 0.52, initialLoaded: false, batteryPercent: 86, speedScale: 1,
+  { id: 'AGV-SIM-02', initialSite: '', radiusMeters: 0.49, lengthMeters: 0.8, widthMeters: 0.52, initialLoaded: false, batteryPercent: 86, speedScale: 0.75,
     accelerationMetersPerSecondSquared: 0.6, operationSeconds: 2, travelCostPercentPerMeter: 0.01, idleCostPercentPerHour: 0.1,
     voltageCurve: [{ percent: 0, voltage: 21 }, { percent: 100, voltage: 26 }], chargingGainPercentPerHour: 20 }
 ]);
@@ -259,7 +259,7 @@ async function loadMapFile(event: Event) {
         return {
           id: `RPJ-AGV-${String(index + 1).padStart(2, '0')}`, initialSite: '',
           radiusMeters: Math.hypot(lengthMeters, widthMeters) / 2, lengthMeters, widthMeters,
-          initialLoaded: false, batteryPercent: 86, speedScale: 1, accelerationMetersPerSecondSquared: .6,
+          initialLoaded: false, batteryPercent: 86, speedScale: .75, accelerationMetersPerSecondSquared: .6,
           operationSeconds: 2, travelCostPercentPerMeter: .01, idleCostPercentPerHour: .1,
           voltageCurve: [{ percent: 0, voltage: 21 }, { percent: 100, voltage: 26 }], chargingGainPercentPerHour: 20
         };
@@ -406,7 +406,7 @@ function vehicleCountChanged() {
   customVehicles.value = Array.from({ length: count }, (_, index) => current[index] ?? {
     id: `AGV-SIM-${String(index + 1).padStart(2, '0')}`, initialSite: '',
     radiusMeters: 0.49, lengthMeters: 0.8, widthMeters: 0.52,
-    initialLoaded: false, batteryPercent: 86, speedScale: 1, accelerationMetersPerSecondSquared: 0.6,
+    initialLoaded: false, batteryPercent: 86, speedScale: .75, accelerationMetersPerSecondSquared: 0.6,
     operationSeconds: 2, travelCostPercentPerMeter: 0.01, idleCostPercentPerHour: 0.1,
     voltageCurve: [{ percent: 0, voltage: 21 }, { percent: 100, voltage: 26 }], chargingGainPercentPerHour: 20
   });
@@ -648,7 +648,10 @@ function carControl(values: NonNullable<SimulationControls['vehicles']>[string])
 function plcControl(values: SimulationControls['plc']) {
   if (canControl.value) void action('control', { sequence: crypto.randomUUID(), plc: values } satisfies SimulationControls);
 }
-watch(selectedVehicle, () => { blockedEdgeIds.value = [...appliedBlockedEdges.value]; });
+watch(selectedVehicle, () => {
+  blockedEdgeIds.value = [...appliedBlockedEdges.value];
+  if (Number.isFinite(vehicle.value?.speedScale)) speedScale.value = vehicle.value.speedScale!;
+});
 watch(() => run.value.name, name => { if (name === 'dispatch-backlog') { callCount.value = Math.max(6, callCount.value); callInterval.value = 1; } });
 async function downloadReport() {
   if (busy.value || !report.value) return;
@@ -995,7 +998,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
               <label>车长 / m<input v-model.number="vehicle.lengthMeters" type="number" min="0.1" max="20" step="0.01" @input="updateVehicleFootprint(vehicle)" /></label>
               <label>车宽 / m<input v-model.number="vehicle.widthMeters" type="number" min="0.1" max="20" step="0.01" @input="updateVehicleFootprint(vehicle)" /></label>
               <label>电量 / %<input v-model.number="vehicle.batteryPercent" type="number" min="0" max="100" step="1" /></label>
-              <label>速度倍率<input v-model.number="vehicle.speedScale" type="number" min="0.1" max="10" step="0.1" /></label>
+              <label>限速倍率<input v-model.number="vehicle.speedScale" type="number" min="0.1" max="10" step="0.05" /><small>默认 0.75；道路限速 1.0 m/s 时对应实车 0.75 m/s。调高仅用于加速仿真。</small></label>
               <label class="loaded-config"><input v-model="vehicle.initialLoaded" type="checkbox" />初始载箱</label>
               <button :disabled="customVehicles.length <= 1" @click="customVehicles.splice(index, 1); resetVehicleOrigins()">删除</button>
               <details class="vehicle-advanced"><summary>高级物理参数 · 加速度 {{ vehicle.accelerationMetersPerSecondSquared ?? 0.6 }} m/s² · 动作 {{ vehicle.operationSeconds ?? 2 }} 秒</summary>
@@ -1013,7 +1016,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
                 <div class="form-row"><label>充电 / %每小时<input v-model.number="vehicle.chargingGainPercentPerHour" type="number" min="0" max="100" step="0.1" /></label></div>
               </details>
             </div>
-            <button :disabled="customVehicles.length >= 8" @click="customVehicles.push({ id: `AGV-SIM-${String(customVehicles.length + 1).padStart(2, '0')}`, initialSite: '', radiusMeters: 0.49, lengthMeters: 0.8, widthMeters: 0.52, initialLoaded: false, batteryPercent: 86, speedScale: 1, accelerationMetersPerSecondSquared: 0.6, operationSeconds: 2, travelCostPercentPerMeter: 0.01, idleCostPercentPerHour: 0.1, voltageCurve: [{ percent: 0, voltage: 21 }, { percent: 100, voltage: 26 }], chargingGainPercentPerHour: 20 }); resetVehicleOrigins()">增加车辆</button>
+            <button :disabled="customVehicles.length >= 8" @click="customVehicles.push({ id: `AGV-SIM-${String(customVehicles.length + 1).padStart(2, '0')}`, initialSite: '', radiusMeters: 0.49, lengthMeters: 0.8, widthMeters: 0.52, initialLoaded: false, batteryPercent: 86, speedScale: 0.75, accelerationMetersPerSecondSquared: 0.6, operationSeconds: 2, travelCostPercentPerMeter: 0.01, idleCostPercentPerHour: 0.1, voltageCurve: [{ percent: 0, voltage: 21 }, { percent: 100, voltage: 26 }], chargingGainPercentPerHour: 20 }); resetVehicleOrigins()">增加车辆</button>
           </div>
           <div v-if="!configurationValid" class="inline-warning"><b>创建前还需处理：</b><ul><li v-for="problem in configurationProblems" :key="problem">{{ problem }}</li></ul></div>
           <div class="toolbar designer-actions"><button class="primary" :disabled="!available || !!status?.running || starting || active || !configurationValid" @click="configureSimulation">创建自定义隔离实例</button><span>创建后不会自动启动；核对实例名和拓扑后再启动。</span></div>
@@ -1104,7 +1107,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
           <header><div><p class="section-kicker">虚拟车辆</p><h3 id="simulation-vehicle"><IconRobot :size="18" />虚拟车辆与通信</h3></div><span v-if="!fresh" class="inline-warning">反馈无效，控制已禁用</span></header>
           <label class="vehicle-select">选择车辆<select v-model="selectedVehicle" aria-label="选择虚拟车辆"><option v-if="!vehicleIds.length" value="">尚无车辆</option><option v-for="id in vehicleIds" :key="id" :value="id">{{ id }}</option></select></label>
           <dl class="vehicle-facts"><dt>状态</dt><dd>{{ !fresh ? '未知 / 历史快照' : vehicle?.offline ? '通信断开' : vehicle?.paused ? '运动暂停' : vehicle?.blockedByVehicle ? '近障停车等待' : vehicle?.current_task ? '执行中' : '空闲' }}</dd><dt>位置</dt><dd>{{ vehicle?.station || '尚无反馈' }}</dd><dt>载箱</dt><dd>{{ !fresh ? '未知' : vehicle?.loaded ? '有箱' : '无箱' }}</dd><dt>电量 / 电压</dt><dd>{{ vehicle?.batteryPercent !== undefined ? `${vehicle.batteryPercent.toFixed(1)}%` : '未知' }} · {{ vehicle?.batteryVoltage !== undefined ? `${vehicle.batteryVoltage.toFixed(2)} V` : '未知' }}{{ vehicle?.charging ? ' · 充电中' : '' }}</dd><dt>速度 / 里程</dt><dd>{{ vehicle?.speedMps !== undefined ? `${vehicle.speedMps.toFixed(2)} m/s` : '未知' }} · {{ vehicle?.distanceMeters !== undefined ? `${vehicle.distanceMeters.toFixed(2)} m` : '未知' }}</dd><dt>原运输编号</dt><dd>{{ currentTask }}</dd><dt>当前等待原因</dt><dd>{{ industrialText(vehicle?.waitReason || status?.scenario?.message || '尚无等待原因反馈') }}</dd></dl>
-          <fieldset :disabled="!canControl || !selectedVehicle"><div class="toolbar"><button @click="carControl({ paused: true })">暂停运动</button><button @click="carControl({ paused: false })">恢复运动</button><button @click="carControl({ offline: true })">断开通信</button><button @click="carControl({ offline: false })">恢复通信</button><button @click="carControl({ charging: true })">开始充电</button><button @click="carControl({ charging: false })">停止充电</button><button @click="carControl({ dropNextResponse: true })">丢弃下一响应</button></div><div class="speed-control"><label>运动倍率<input v-model.number="speedScale" type="number" min="0.1" max="10" step="0.1" /></label><button :disabled="!Number.isFinite(speedScale) || speedScale < 0.1 || speedScale > 10" @click="carControl({ speedScale })">应用倍率</button></div></fieldset>
+          <fieldset :disabled="!canControl || !selectedVehicle"><div class="toolbar"><button @click="carControl({ paused: true })">暂停运动</button><button @click="carControl({ paused: false })">恢复运动</button><button @click="carControl({ offline: true })">断开通信</button><button @click="carControl({ offline: false })">恢复通信</button><button @click="carControl({ charging: true })">开始充电</button><button @click="carControl({ charging: false })">停止充电</button><button @click="carControl({ dropNextResponse: true })">丢弃下一响应</button></div><div class="speed-control"><label>运动倍率<input v-model.number="speedScale" type="number" min="0.1" max="10" step="0.05" /><small>1 为方案配置速度；0.75 且道路限速 1 m/s 时为 0.75 m/s。</small></label><button :disabled="!Number.isFinite(speedScale) || speedScale < 0.1 || speedScale > 10" @click="carControl({ speedScale })">应用倍率</button></div></fieldset>
           <small v-if="vehicle?.simulationControl">设备反馈控制编号：{{ vehicle.simulationControl.sequence || '尚无反馈' }} · 当前运动倍率 {{ vehicle.speedScale ?? '未知' }}<span v-if="vehicle.simulationControl.responseDropPending"> · 等待丢弃下一响应</span></small>
           <p v-if="vehicle?.simulationControl?.error" class="inline-warning">{{ vehicle.simulationControl.error }}</p>
           <details class="edge-controls"><summary>道路阻塞 · 已反馈 {{ appliedBlockedEdges.length }} 条</summary><fieldset :disabled="!canControl || !selectedVehicle"><p>选择道路，在所选虚拟车经过时阻止运动，观察调度等待与超时处理。</p><div class="edge-options"><label v-for="edge in blockableEdges" :key="edge.id"><input v-model="blockedEdgeIds" type="checkbox" :value="edge.id" />{{ edge.id }} · {{ edge.from }} → {{ edge.to }}</label><span v-if="!blockableEdges.length">当前地图没有可用道路。</span></div><div class="toolbar"><button :disabled="!blockableEdges.length" @click="carControl({ blockedEdges: blockedEdgeIds })">应用道路阻塞</button><button @click="blockedEdgeIds = []; carControl({ blockedEdges: [] })">解除所选车全部道路阻塞</button></div></fieldset></details>

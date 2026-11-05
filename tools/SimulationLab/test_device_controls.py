@@ -106,7 +106,7 @@ class ControlValidationTests(unittest.TestCase):
             self.assertIsNotNone(f.car.control_error)
             f.control()
             self.assertFalse(f.car.paused, 'A new complete control document resets omitted controls')
-            self.assertEqual(1, f.car.speed_scale)
+            self.assertEqual(.75, f.car.speed_scale)
             self.assertIsNone(f.car.control_error)
         finally:
             f.close()
