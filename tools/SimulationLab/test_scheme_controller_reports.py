@@ -47,6 +47,9 @@ class ControllerSchemeTests(unittest.TestCase):
             self.assertTrue((created / 'service/config/simulation-signals.csv').is_file())
             self.assertEqual(read(created / 'lab.json')['plcSignalTable']['sha256'], configuration['plcSignalTable']['sha256'])
             self.assertEqual(read(created / 'lab.json')['plcSignalTable']['sourceSha256'], 'a' * 64)
+            self.assertEqual(read(created / 'lab.json')['plcSignalTable']['sourceFile'],
+                             'config/plc-lab-nine-cnc-signals.csv')
+            self.assertEqual(read(created / 'lab.json')['plcSignalTable']['privateFile'], 'plc-signals.source.csv')
 
     def test_incompatible_saved_scenario_is_rejected_before_creating_any_instance(self):
         with tempfile.TemporaryDirectory() as name, patch('controller.WORKSPACE', Path(name)):

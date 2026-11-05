@@ -714,8 +714,12 @@ class Runtime:
             signal_target = target / 'service/config/simulation-signals.csv'
             signal_manifest = write_private_signal_table(signal_source, signal_target, configuration['stations'])
             lab['stationSignalManifest'] = signal_manifest
-            lab['plcSignalTable'] = dict(self._plc_table_metadata(table), sourceFile='plc-signals.source.csv',
-                                         privateSha256=signal_manifest['privateSha256'])
+            table_metadata = self._plc_table_metadata(table)
+            lab['plcSignalTable'] = dict(
+                table_metadata,
+                sourceFile=table_metadata.get('sourceFile') or 'plc-signals.source.csv',
+                privateFile='plc-signals.source.csv',
+                privateSha256=signal_manifest['privateSha256'])
             settings['Plc']['SignalCsvPath'] = 'config/simulation-signals.csv'
             web.update(Port=lab['webPort'], PipeName=lab['pipe'], ProjectStorePath=str(target / 'projects'), EngineeringStorePath=str(target / 'engineering'))
             for filename, value in [('lab.json', lab), ('service/appsettings.json', settings), ('service-settings.json', settings), ('webhost/appsettings.json', {'Web': web})]:
