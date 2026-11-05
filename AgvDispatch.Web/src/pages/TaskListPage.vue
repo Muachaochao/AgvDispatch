@@ -14,6 +14,7 @@ import { IconListDetails, IconArrowLeft, IconPlus, IconSearch, IconChevronLeft, 
 import ConsoleDialog from '../ConsoleDialog.vue';
 import TaskExecutionDetails from '../TaskExecutionDetails.vue';
 import BusinessRunPanel from '../components/BusinessRunPanel.vue';
+import { industrialText } from '../operator-labels';
 
 const store = useDispatchStore();
 const toast = useToastStore();
@@ -43,6 +44,7 @@ const creationMode = ref<'Single'|'Demand'|'Cycle'>('Single');
 const station = ref('');
 const vehicle = ref('');
 const priority = ref(50);
+const dependencyTaskIdsInput = ref('');
 const options = ref<CreationOptions | null>(null);
 const routePreview = ref<RoutePreview | null>(null);
 const actionBusy = ref(false);
@@ -55,6 +57,7 @@ try {
     if (!original.requestId || !original.stationId || !original.requestedVehicleId) throw new Error('原申请信息不完整');
     requestUncertain.value = true;
     station.value = original.stationId; vehicle.value = original.requestedVehicleId; priority.value = original.priority;
+    dependencyTaskIdsInput.value = (original.dependsOnTaskIds ?? []).join(', ');
     actionMessage.value = `存在结果未确认的原申请 ${original.requestId}，将沿用原编号核对，不能新建替代任务。`;
   }
 } catch { requestUncertain.value = true; actionMessage.value = '原申请存储损坏，禁止新建；请先查询原任务核对。'; }
@@ -62,6 +65,21 @@ const optionsBusy = ref(false);
 const selectedStation = computed(() => options.value?.stations.find(s => s.stationId === station.value));
 const selectedVehicle = computed(() => options.value?.vehicles.find(v => v.vehicleId === vehicle.value));
 const pickupReachable = computed(() => !!selectedStation.value?.pickupReachableVehicleIds?.includes(vehicle.value));
+const templateInputs = computed(() => {
+  const template = options.value?.template;
+  if (!template) return [];
+  const waiting = options.value?.waitingSites?.length ? options.value.waitingSites : [options.value?.waitingSite ?? ''];
+  const values: Record<string, string> = {
+    fromStation: selectedStation.value?.pickupSite ?? '',
+    waitingSite: waiting.filter(Boolean).join('、'),
+    toStation: options.value?.dumpingSite ?? '',
+    vehiclePool: selectedStation.value?.vehiclePoolId ?? '未绑定',
+    vehicleIds: selectedStation.value?.allowedVehicleIds?.join('、') ?? '未绑定',
+    dependsOnTaskIds: dependencyTaskIdsInput.value || '无前置任务'
+  };
+  return template.inputs.map(input => ({...input,value:values[input.key]??'由后台确定'}));
+});
+const templateOutputs = computed(() => options.value?.template?.outputs ?? []);
 
 const draftQuery = computed(() => ({ search: search.value, filter: taskFilter.value, from: createdFrom.value, to: createdTo.value, pageSize: pageSize.value }));
 const queryChanged = computed(() => JSON.stringify(draftQuery.value) !== JSON.stringify(appliedQuery.value));
@@ -146,7 +164,9 @@ async function submitTask() {
   try {
     const stored = sessionStorage.getItem(storageKey);
     if (requestUncertain.value && !stored) throw new Error('原申请缺失，禁止换编号');
-    request = requestUncertain.value && stored ? JSON.parse(stored) : { requestId: newTaskRequestId(), stationId: station.value, requestedVehicleId: vehicle.value, priority: priority.value, mapId: options.value!.mapId, mapVersionId: options.value!.mapVersionId, parameterRevision: options.value!.parameterRevision };
+    const dependsOnTaskIds = [...new Set(dependencyTaskIdsInput.value.split(/[\s,，;；]+/).map(id => id.trim()).filter(Boolean))];
+    if (dependsOnTaskIds.length > 8 || dependsOnTaskIds.some(id => id.length > 64)) throw new Error('前置任务最多8个，每个编号不超过64字符');
+    request = requestUncertain.value && stored ? JSON.parse(stored) : { requestId: newTaskRequestId(), stationId: station.value, requestedVehicleId: vehicle.value, priority: priority.value, mapId: options.value!.mapId, mapVersionId: options.value!.mapVersionId, parameterRevision: options.value!.parameterRevision, dependsOnTaskIds };
     if (!request.requestId || !request.stationId || !request.requestedVehicleId) throw new Error('原申请信息不完整');
     sessionStorage.setItem(storageKey, JSON.stringify(request));
   } catch { actionMessage.value = '无法持久保存申请编号，本次未提交。'; return; }
@@ -195,7 +215,7 @@ watch(() => route.query.create, create => {
             <td>{{ task.priority }}</td>
             <td>{{ shortTime(task.createdAt) }}</td>
             <td>{{ shortTime(task.updatedAt) }}</td>
-            <td class="message-cell" :title="task.errorMessage ?? ''">{{ task.errorMessage ?? '—' }}</td>
+            <td class="message-cell" :title="task.errorMessage ?? ''">{{ task.errorMessage ? industrialText(task.errorMessage) : '—' }}</td>
           </tr>
         </tbody>
       </table>
@@ -233,8 +253,14 @@ watch(() => route.query.create, create => {
       <label>取料工位<select v-model="station" :disabled="requestUncertain || actionBusy || optionsBusy"><option value="">请选择</option><option v-for="s in options?.stations ?? []" :key="s.stationId" :value="s.stationId">{{ s.stationId }} · {{ s.pickupSite }}{{ s.available ? '' : ' · 条件未满足' }}</option></select></label>
       <label>车辆<select v-model="vehicle" :disabled="requestUncertain || actionBusy || optionsBusy"><option value="">请选择</option><option v-for="v in options?.vehicles ?? []" :key="v.vehicleId" :value="v.vehicleId">{{ v.label }}{{ v.available ? '' : ' · 暂不可用' }}</option></select></label>
       <label>优先级（0–100）<input v-model.number="priority" type="number" min="0" max="100" :disabled="requestUncertain || actionBusy" /></label>
+      <label>前置任务（可选）<input v-model="dependencyTaskIdsInput" maxlength="520" placeholder="多个任务编号用逗号分隔；完成前不派车" :disabled="requestUncertain || actionBusy" /></label>
       <label>地图版本<input :value="options?.mapVersionId ?? '—'" readonly /></label>
     </div>
+    <section v-if="options?.template" class="template-instantiation">
+      <header><div><h4>模板输入 · {{ options.template.id }} v{{ options.template.version }}</h4><p>只填写模板输入，节点内部通过类型化连接自动引用。模板不会直接执行任意脚本。</p></div><details><summary>执行引擎信息</summary><code>{{ options.template.engine }}</code></details></header>
+      <dl><div v-for="input in templateInputs" :key="input.key"><dt>{{ input.label }} <small>{{ input.key }}</small></dt><dd>{{ input.value }}</dd></div></dl>
+      <details><summary>查看输出变量与节点失败策略</summary><p v-for="output in templateOutputs" :key="output.key">{{ output.label }} · {{ output.key }} · {{ output.type }}</p><p>节点 {{ options.template.nodes.length }} 个；机械/握手节点默认禁止自动重试，异常分支 {{ options.template.guards.length }} 条。</p></details>
+    </section>
     <details class="form-explanation"><summary>查看工位条件与未满足项</summary><div role="status">
       <p v-for="s in options?.stations ?? []" :key="s.stationId">{{ s.stationId }}：{{ s.explanation }}</p>
       <p v-if="selectedVehicle">车辆：{{ selectedVehicle.explanation }}</p>
@@ -243,7 +269,7 @@ watch(() => route.query.create, create => {
     <p class="form-explanation"><RouterLink class="cyan" to="/engineering-settings" @click="formOpen = false">配置工位、等待点、倒料点及车辆动作</RouterLink>；道路与站点位置在地图编辑中定义。当前业务步骤固定为九步。</p>
     <div class="inline-warning">{{ store.submissionEnabled ? '提交后仍须经过后台核验，成功接收不等于执行完成。' : 'Web提交未启用，可核对条件及路线。' }}</div>
     <div v-if="routePreview" class="route-preview"><b>{{ routePreview.message }}</b><p v-for="leg in routePreview.legs" :key="leg.sequence">{{ leg.sequence }}. {{ leg.name }}：{{ leg.vendorPath || leg.logicalPath }}</p></div>
-    <p v-if="actionMessage" class="form-feedback" role="status">{{ actionMessage }}</p>
+    <p v-if="actionMessage" class="form-feedback" role="status">{{ industrialText(actionMessage) }}</p>
     </template>
     <template #footer>
       <button @click="formOpen = false"><ActionIcon name="close"/>取消</button>
@@ -257,6 +283,9 @@ watch(() => route.query.create, create => {
 .task-history-page{gap:8px}.task-page-header{display:flex;align-items:center;justify-content:space-between;gap:18px;min-height:52px;padding:2px 2px 7px;border-bottom:1px solid #243858}.task-page-title{display:flex;align-items:center;gap:10px;color:#54cadf}.task-page-title h2{color:#d9eafb;font-size:19px;letter-spacing:.8px}.task-page-title small{display:block;margin-top:4px;color:#7089aa;font-size:10px}.task-page-actions{display:flex;align-items:center;gap:7px}.task-page-actions>span{margin-right:6px;color:#6f9fba;font-size:11px}.task-query-toolbar{display:grid;grid-template-columns:minmax(170px,1.25fr) minmax(110px,.55fr) minmax(300px,1.3fr) auto auto auto;align-items:center;gap:7px;padding:8px 10px;border:1px solid #233a5d;border-radius:5px;background:#0e1932}.task-query-toolbar input,.task-query-toolbar select,.task-query-toolbar button{min-height:31px;height:31px}.query-search{display:flex;align-items:center;gap:7px;min-width:0;padding-left:9px;border:1px solid #2b4168;border-radius:3px;background:#0a1530;color:#667f9f}.query-search input{width:100%;padding:4px 7px;border:0;background:transparent}.query-date-range{display:flex;align-items:center;gap:6px;min-width:0}.query-date-range input{width:100%;min-width:126px;padding:4px 7px;color-scheme:dark}.query-date-range>span{color:#7088a8;font-size:10px}.history-presets{display:flex;gap:2px}.history-presets button{height:31px;min-height:31px;padding:4px 8px;border-color:transparent;background:transparent;color:#7f99ba;font-size:10px}.history-presets button:hover{border-color:#2f6081;background:#132947}.query-submit,.reset-submit{padding:4px 12px}.quiet-button{border-color:transparent;background:transparent}.task-result-head{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:26px;padding:2px 4px 0;color:#7890af;font-size:10px}.task-time-note{color:#5e789b}.pending-filter{color:#e9b34f}.management-table{min-height:260px}.task-result-footer{display:flex;align-items:center;justify-content:flex-end;gap:9px;min-height:35px;padding:2px 2px 4px;color:#7890ae;font-size:10px}.task-result-footer>span{margin-right:auto}.task-result-footer label{display:flex;align-items:center;gap:6px}.task-result-footer select{min-height:28px;padding:3px 7px}.task-result-footer button{min-height:28px;padding:4px 8px}.task-result-footer b{font-weight:400;font-size:10px;color:#9cb2cb}.task-history-page>.inline-warning{margin:0}
 @media(max-width:1200px){.task-query-toolbar{grid-template-columns:minmax(170px,1fr) 125px minmax(280px,1.3fr) auto auto}.history-presets{grid-column:1/-1;justify-self:end}.reset-submit{display:none}}
 @media(max-width:780px){.task-page-header{align-items:flex-start;flex-wrap:wrap}.task-page-actions{width:100%;flex-wrap:wrap}.task-page-actions>span{margin-right:auto}.task-query-toolbar{grid-template-columns:1fr 1fr}.query-search,.query-date-range{grid-column:1/-1}.history-presets{grid-column:1/-1;justify-self:start}.query-submit{grid-column:2}.task-result-head{flex-wrap:wrap}.task-result-footer{flex-wrap:wrap}.task-result-footer>span{width:100%}}
+</style>
+<style scoped>
+.template-instantiation{border:1px solid #315b70;background:#0d2435;padding:13px 15px;margin:14px 0;line-height:1.7}.template-instantiation header{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.template-instantiation h4{margin:0;color:#bceaf2;font-size:14px}.template-instantiation p{margin:5px 0;color:#a8c5d6;font-size:12px}.template-instantiation code{color:#6ed7e8;font-size:11px}.template-instantiation dl{display:grid;grid-template-columns:155px minmax(0,1fr);gap:5px 12px;margin:12px 0}.template-instantiation dt{color:#8eafc5;font-size:11px}.template-instantiation dt small{display:block;color:#6f95ae}.template-instantiation dd{margin:0;color:#d3e8f2;font-size:12px;overflow-wrap:anywhere}.template-instantiation details{font-size:11px;color:#9ab8ce}.template-instantiation details p{margin:5px 0}@media(max-width:650px){.template-instantiation dl{grid-template-columns:1fr}}
 </style>
 <style scoped>
 .task-page-title h2{

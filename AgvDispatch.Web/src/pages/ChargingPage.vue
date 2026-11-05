@@ -7,6 +7,7 @@ import { useDispatchStore } from '../stores/dispatch';
 import { useChargingStore } from '../stores/charging';
 import { chargingRequestStorageKey, findChargingRequestSession, readChargingRequestIntent } from '../charging-request';
 import type { ChargingRequestIntent } from '../charging-request';
+import { industrialText } from '../operator-labels';
 
 const dispatch = useDispatchStore();
 const reader = useChargingStore();
@@ -25,7 +26,8 @@ const availableVehicleIds = computed(() => [...new Set([
 ])]);
 const requestLocked = computed(() => pending.value || !!requestIntent.value || !!storageError.value);
 const when = (v: string) => new Date(v).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
-const controlMode = (mode?: string) => mode === 'RobokitScript' ? '反光板识别与插接' : mode === 'Relay6005' || !mode ? '车端标准继电器' : mode;
+const controlMode = (mode?: string) => mode === 'RobokitScript' ? '反光板识别与插接' : mode === 'Relay6005' || !mode ? '车端标准继电器' : '控制方式待核对';
+const phaseLabel = (phase?: string) => phase ? (phases[phase] ?? '阶段待核对') : '阶段待核对';
 const target = (row: Session) => row.requiredPositiveSeconds != null
   ? `连续正电流 ${row.requiredPositiveSeconds} 秒` : `目标电量 ${row.targetBatteryPercent ?? status.value?.options.targetBatteryPercent ?? '—'}%`;
 const positiveSeconds = (row: Session) => {
@@ -42,7 +44,7 @@ function reconcileRequest(intent = requestIntent.value) {
   const row = findChargingRequestSession(intent.requestId, status.value?.sessions ?? []);
   if (!row) return false;
   clearRequestIntent(); error.value = '';
-  message.value = `已查询到原充电申请：${row.vehicleId}，${phases[row.phase] ?? row.phase}。`;
+  message.value = `已查询到原充电申请：${row.vehicleId}，${phaseLabel(row.phase)}。`;
   return true;
 }
 async function load() {
@@ -133,8 +135,8 @@ onMounted(() => {
           <tr v-for="charger in status.chargers" :key="charger.chargerId">
             <td><strong>{{charger.chargerId}}</strong><small>{{charger.chargerName}}</small></td>
             <td>{{charger.address}}<small>{{charger.ackPort ?? 20207}} / {{charger.statusPort ?? 20204}}</small></td>
-            <td :class="{ 'charge-error': charger.outcome !== 'connected' }">{{charger.outcome === 'connected' ? '20207 / 20204 可连接' : charger.message}}</td>
-            <td><template v-if="sessionForCharger(charger.chargerId)">{{sessionForCharger(charger.chargerId)?.vehicleId}} · {{phases[sessionForCharger(charger.chargerId)!.phase] ?? sessionForCharger(charger.chargerId)!.phase}}<small>{{matchingChargingWorkflow(sessionForCharger(charger.chargerId)!)?.station?.current ?? '—'}} A · {{matchingChargingWorkflow(sessionForCharger(charger.chargerId)!)?.station?.voltage ?? '—'}} V</small></template><span v-else>无</span></td>
+            <td :class="{ 'charge-error': charger.outcome !== 'connected' }">{{charger.outcome === 'connected' ? '20207 / 20204 可连接' : industrialText(charger.message)}}</td>
+            <td><template v-if="sessionForCharger(charger.chargerId)">{{sessionForCharger(charger.chargerId)?.vehicleId}} · {{phaseLabel(sessionForCharger(charger.chargerId)!.phase)}}<details><summary>原始阶段</summary><code>{{sessionForCharger(charger.chargerId)!.phase}}</code></details><small>{{matchingChargingWorkflow(sessionForCharger(charger.chargerId)!)?.station?.current ?? '—'}} A · {{matchingChargingWorkflow(sessionForCharger(charger.chargerId)!)?.station?.voltage ?? '—'}} V</small></template><span v-else>无</span></td>
             <td>{{when(charger.observedAt)}}</td>
           </tr>
         </tbody></table>
@@ -177,10 +179,10 @@ onMounted(() => {
         <div v-else class="charge-table-wrap"><table><thead><tr><th>车辆 / 充电位</th><th>后台流程阶段</th><th>目标 / 返程</th><th>车辆电池采样</th><th>流程说明</th><th>操作</th></tr></thead><tbody>
           <tr v-for="row in [...status.sessions].reverse()" :key="row.sessionId">
             <td><strong>{{row.vehicleId}}</strong><small>{{row.site?.id ?? '等待分配'}}</small></td>
-            <td><span :class="{ 'charge-error': row.phase === 'Hold' }">{{phases[row.phase] ?? row.phase}}</span><small>{{when(row.updatedAt)}}</small></td>
+            <td><span :class="{ 'charge-error': row.phase === 'Hold' }">{{phaseLabel(row.phase)}}</span><details><summary>原始阶段</summary><code>{{row.phase}}</code></details><small>{{when(row.updatedAt)}}</small></td>
             <td>{{target(row)}}<small>起点：{{row.originSiteId ?? '待交接后确定'}}</small><small>返程：{{row.returnSiteId ?? row.requestedReturnSiteId ?? '待规划'}}</small></td>
             <td>{{row.battery?.batteryPercent ?? '—'}}%<small>{{row.battery?.current ?? '—'}} A · {{row.battery?.temperature ?? '—'}} ℃</small></td>
-            <td class="charge-reason">{{row.message}}
+            <td class="charge-reason">{{industrialText(row.message)}}
               <template v-if="matchingChargingWorkflow(row)"><small>{{matchingChargingWorkflow(row)?.message}}</small><small>本段连续充电：{{positiveSeconds(row)}} · 停充核验：{{row.shutdownVerified || matchingChargingWorkflow(row)?.shutdownVerified ? '已确认' : '尚未确认'}}</small></template>
               <small>{{row.sessionId}}</small></td>
             <td><div class="charge-actions"><button v-if="row.phase !== 'Completed'" :disabled="pending" @click="open(row, 'stop')">停止申请</button>
@@ -190,7 +192,7 @@ onMounted(() => {
       </div>
     </template>
     <ConsoleDialog v-if="selected" :title="action === 'stop' ? '申请停止充电' : action === 'continue' ? '核对后续接原充电会话' : '核对车辆已经退出充电位'" @close="!pending && (selected = undefined)">
-      <div class="charge-review"><p>{{selected.vehicleId}} · {{phases[selected.phase] ?? selected.phase}}</p>
+      <div class="charge-review"><p>{{selected.vehicleId}} · {{phaseLabel(selected.phase)}}</p>
         <p>{{action === 'stop' ? '向后台申请停止并核验充电输出，原会话及资源继续保留。正在导航或对接时，停止申请不能代替现场急停；请观察原任务状态。' : action === 'continue' ? '查询原命令和实时采样后续接；发送结果未知时不能通过此操作重发。' : '仅在车辆实际退出、充电已停止且原任务终态均有证据时关闭。后台会重新核验。'}}</p>
         <label>操作依据（至少10字）<textarea v-model="reason" rows="3" maxlength="1000" :disabled="pending"></textarea></label>
         <template v-if="action !== 'stop'">

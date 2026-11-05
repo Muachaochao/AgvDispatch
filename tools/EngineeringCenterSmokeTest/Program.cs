@@ -1,12 +1,13 @@
 using System.Diagnostics;
 using System.Text.Json;
+using AgvDispatch.Application.Abstractions;
 using AgvDispatch.WebHost.Engineering;
 
 var output = Path.GetFullPath(args.FirstOrDefault() ?? Path.Combine(Path.GetTempPath(), "agv-engineering-" + Guid.NewGuid().ToString("N")));
 Directory.CreateDirectory(output);
 var checks = 0;
 void Assert(bool ok, string why) { if (!ok) throw new Exception(why); checks++; }
-async Task Reject(Func<Task> fn, string why) { try { await fn(); } catch (Exception e) when(e is ArgumentException || e.GetType().Name == "ProjectConflictException") { checks++; return; } throw new Exception(why); }
+async Task Reject(Func<Task> fn, string why) { try { await fn(); } catch (Exception e) when(e is ArgumentException or InvalidDataException || e.GetType().Name == "ProjectConflictException") { checks++; return; } throw new Exception(why); }
 EngineeringVersion Version(EngineeringPlan p) => new(Guid.NewGuid().ToString("N"), "test", DateTimeOffset.UtcNow, "隔离测试", p, EngineeringStore.Hash(p));
 EngineeringSimulationRequest Calls(EngineeringVersion v, int count = 0) => new(v.Id, v.Plan.Stations.Take(count == 0 ? v.Plan.Stations.Count : count).Select(s => new EngineeringCall("C-" + s.Id, s.Id)).ToList(), [], []);
 void Verify(EngineeringPlan p, EngineeringSimulationReport r)
@@ -32,8 +33,65 @@ void Verify(EngineeringPlan p, EngineeringSimulationReport r)
 }
 var timer = Stopwatch.StartNew();
 var plan = EngineeringSample.Create(300, 5);
-Assert(EngineeringValidator.Validate(plan).Valid, "300工位5车示例应通过校验");
+var sampleValidation = EngineeringValidator.Validate(plan);
+Assert(sampleValidation.Valid, "300工位5车示例应通过校验：" + string.Join("；", sampleValidation.Issues.Take(8).Select(x => x.ObjectId + "：" + x.Message)));
+var template = plan.Templates.Single();
+Assert(template.Version == 1 && template.Engine == EngineeringTaskTemplates.DurableNineStepEngine, "示例保存版本化九步模板");
+Assert(template.Inputs.Count == 6 && template.Outputs.Count == 6 && template.Nodes.Count == 12, "模板固定输入输出、九步节点和两个交通适配节点");
+var taskPreview = EngineeringTaskTemplates.Preview(plan, "CNC-001", template.Id);
+Assert(taskPreview.Ready && taskPreview.Nodes.Count == 12 && taskPreview.Inputs.Any(x => x.Key == "fromStation" && x.Value == "BUS-001") &&
+    taskPreview.Nodes.Any(x => x.StepType == "AcquireTraffic") && taskPreview.Nodes.Any(x => x.StepType == "ReleaseTraffic"),
+    "任务链预览展开工位、车辆池、节点和输入绑定");
+Assert(taskPreview.Nodes.All(x => !string.IsNullOrWhiteSpace(x.PlcCondition) || x.StepType == "SelectAgv"),
+    "任务链预览显示PLC或车辆条件");
+Assert(template.Variables.Count == 17 && template.Connections.Count > 0 && template.Guards.Count == 5,
+    "模板提供类型化变量、单写入者连接和异常分支");
+Assert(template.Nodes.All(x => !x.AutoRetry), "机械和握手节点默认禁止自动重试");
+var runtimeTemplate = EngineeringTaskTemplates.ToRuntimeBinding(template);
+Assert(runtimeTemplate.Nodes.Count == 12 && runtimeTemplate.Variables.Any(x => x.Key == "vehicleId" && x.Producer == "select-agv"),
+    "运行任务契约携带模板节点与变量来源");
+var runtimeJson = JsonSerializer.Serialize(runtimeTemplate, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+var runtimeRoundTrip = JsonSerializer.Deserialize<TaskTemplateBinding>(runtimeJson, new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+Assert(runtimeRoundTrip.Guards.Count == 5 && runtimeRoundTrip.Connections.Count == runtimeTemplate.Connections.Count,
+    "任务模板快照可写入任务记录并完整读回");
+var duplicateWriter = template with
+{
+    Nodes = template.Nodes.Select(x => x.Block == "PickupFullBox"
+        ? x with { Outputs = ["vehicleId"] }
+        : x).ToList()
+};
+Assert(EngineeringTaskTemplates.Validate(duplicateWriter).Any(x => x.Message.Contains("只能")),
+    "同一输出变量不能由两个节点写入");
+var unsafeGuard = template with { Guards = [new("bad", "VehicleUnavailable", "AutoRetryMotion", "select-agv", "禁止")] };
+Assert(EngineeringTaskTemplates.Validate(unsafeGuard).Any(x => x.Message.Contains("白名单")), "非白名单异常处置拒绝模板");
+var adapterRetry = template with
+{
+    Nodes = template.Nodes.Select(node => node.Block == "AcquireTraffic"
+        ? node with { AutoRetry = true }
+        : node).ToList()
+};
+Assert(EngineeringTaskTemplates.Validate(adapterRetry).Any(x => x.Message.Contains("禁止自动重试")),
+    "交通适配节点同样禁止自动重试");
+var legacyTemplate = new EngineeringTemplate("LEGACY", "旧模板", "Jack");
+Assert(EngineeringTaskTemplates.Normalize(legacyTemplate).Nodes.Count == 12, "旧模板动态补全内置节点和交通适配节点契约");
+Assert(EngineeringTaskTemplates.Validate(legacyTemplate).Any(x => x.Severity == "Warning"), "旧模板保留兼容提示");
+var badTemplate = template with { Nodes = template.Nodes.Select((x, i) => i == 2 ? x with { Block = "DropCargo" } : x).ToList() };
+Assert(EngineeringTaskTemplates.Validate(badTemplate).Any(x => x.Message.Contains("节点类型或顺序")), "非受控节点顺序拒绝保存模板");
 var store = new EngineeringStore(Path.Combine(output, "store"));
+var libraryBefore = (await store.TemplateLibrary(default)).Length;
+var templateV2 = template with { Version = 2, Name = "标准取箱倒料返箱 v2" };
+var templateSaved = await store.SaveTemplate(templateV2, default);
+Assert(templateSaved.Template.Version == 2 && templateSaved.ContentHash == EngineeringTaskTemplates.Hash(templateSaved.Template),
+    "全局模板库保存不可变版本及摘要");
+Assert((await store.SaveTemplate(templateV2, default)).ContentHash == templateSaved.ContentHash, "相同模板版本幂等保存");
+await Reject(() => store.SaveTemplate(templateV2 with { Name = "同版本改写" }, default), "相同模板版本不能覆盖");
+var templateV3 = templateV2 with { Version = 3, Name = "标准取箱倒料返箱 v3" };
+Assert((await store.SaveTemplate(templateV3, default)).Template.Version == 3, "提升版本后允许保存新模板版本");
+Assert((await store.TemplateLibrary(default)).Length == libraryBefore + 2, "全局模板库列出全部版本");
+var importTemplate = EngineeringTaskTemplates.Create("IMPORTED", "导入模板", "Jack", version: 1);
+var imported = await store.ImportTemplate(new(1, importTemplate, EngineeringTaskTemplates.Hash(importTemplate)), default);
+Assert(imported.Template.Id == "IMPORTED" && (await store.TemplateLibrary(default)).Length == libraryBefore + 3, "模板包摘要校验后导入全局库");
+await Reject(() => store.ImportTemplate(new(1, importTemplate, new string('0', 64)), default), "模板包摘要错误拒绝导入");
 var initial = await store.Draft(default);
 var draft = await store.Save(new(initial.Revision, plan), default);
 await Reject(() => store.Save(new(initial.Revision, plan), default), "过期修订不能覆盖草稿");
@@ -41,6 +99,16 @@ var reopened = new EngineeringStore(Path.Combine(output, "store"));
 Assert((await reopened.Draft(default)).Revision == draft.Revision, "重建存储实例后草稿保留");
 var published = await store.Publish(new(draft.Revision, "300工位5车基线"), default);
 Assert(published.ContentHash == EngineeringStore.Hash(plan), "发布摘要应一致");
+var corruptPath = Path.Combine(output, "store", "versions", Guid.NewGuid().ToString("N") + ".json");
+Directory.CreateDirectory(Path.GetDirectoryName(corruptPath)!);
+await File.WriteAllTextAsync(corruptPath, JsonSerializer.Serialize(published with
+{
+    Id = Path.GetFileNameWithoutExtension(corruptPath),
+    ContentHash = new string('0', 64)
+}, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+var listedAfterCorruption = await reopened.Versions(default);
+Assert(listedAfterCorruption.Length == 1, "单个损坏版本不能遮蔽其他有效发布版本");
+await Reject(() => reopened.Version(Path.GetFileNameWithoutExtension(corruptPath), default), "损坏版本直接读取仍应拒绝");
 var incomplete = plan with { MapVersion = "" };
 var bad = await store.Save(new(draft.Revision, incomplete), default);
 Assert((await store.Draft(default)).Plan.MapVersion == "", "不完整草稿仍可保存");

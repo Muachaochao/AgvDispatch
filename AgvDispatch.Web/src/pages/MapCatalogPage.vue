@@ -7,12 +7,15 @@ import { useDispatchStore } from '../stores/dispatch';
 import { useToastStore } from '../stores/toast';
 import { shortTime } from '../dashboard';
 import { isMapSwitchPhase } from '../map-lifecycle';
+import { mapSwitchModeLabel } from '../operator-labels';
 import type { MapSummary } from '../types';
 import { IconMap, IconArrowLeft, IconRefresh, IconEye, IconPlayerPlay, IconEdit, IconAlertTriangle, IconCircleCheck, IconX } from '@tabler/icons-vue';
 import ConsoleDialog from '../ConsoleDialog.vue';
 import MapPublishDialog from '../MapPublishDialog.vue';
 
 const store = useDispatchStore();
+const unitLabel=(unit:string|null|undefined)=>unit==='m'?'米':unit||'未提供';
+const coordinateLabel=(value:string|null|undefined)=>({RobotWorld:'车端世界坐标',SmapWorldTranslated:'厂家平移坐标'} as Record<string,string>)[value??'']??'坐标定义待核对';
 const toast = useToastStore();
 const router = useRouter();
 const route = useRoute();
@@ -71,6 +74,40 @@ async function loadVersions(mapId: string) {
   catch (ex) { toast.error(`版本历史加载失败：${String(ex)}`); }
 }
 
+async function restoreVersion(version: { versionId: string; versionNumber: number }) {
+  if (!store.fresh || store.demoMode) { toast.warning('请先连接现场后台。'); return; }
+  if (!window.confirm(`把地图 V${version.versionNumber} 恢复为新的可编辑草稿？\n\n历史版本不会被覆盖；恢复后仍需核对、发布并经过安全激活，当前运行地图不会立即改变。`)) return;
+  busy.value = true;
+  try {
+    const [source, workspace]: any[] = await Promise.all([
+      store.api<any>(`/api/maps/${encodeURIComponent(versionsMapId.value)}/versions/${encodeURIComponent(version.versionId)}`),
+      store.api<any>(`/api/maps/${encodeURIComponent(versionsMapId.value)}/workspace`)
+    ]);
+    if (!source?.definition || !workspace?.draft) throw new Error('历史版本定义或当前草稿不完整。');
+    const draft = workspace.draft;
+    const result: any = await store.api('/api/maps/draft', {
+      mapId: workspace.project.mapId,
+      versionId: draft.versionId,
+      name: source.definition.name,
+      description: workspace.project.description,
+      backgroundFilePath: workspace.project.backgroundFilePath,
+      coordinateSystem: source.definition.coordinateSystem,
+      unit: source.definition.unit,
+      coordinateScale: workspace.project.coordinateScale,
+      definition: source.definition,
+      expectedEditToken: draft.editToken
+    });
+    if (!result.accepted) throw new Error(result.message ?? '历史地图未能恢复为草稿。');
+    toast.success(`地图 V${version.versionNumber} 已恢复为当前草稿；未发布、未激活。`);
+    versionsOpen.value = false;
+    router.push({ name: 'planning', query: { tab: 'map', mapId: versionsMapId.value } });
+  } catch (ex) {
+    toast.error(`地图回滚准备失败：${String(ex)}`);
+  } finally {
+    busy.value = false;
+  }
+}
+
 function openEditDraft(mapId: string) {
   router.push({ name: 'planning', query: { tab: 'map', mapId } });
 }
@@ -95,7 +132,7 @@ async function doActivate() {
       expectedReleaseId:original.releaseId,
       mapId: activateMap.value.mapId,
       versionId: activateMap.value.publishedVersionId,
-      confirmationText: activateConfirmation.value.trim(),
+      confirmationText: `ACTIVATE ${activateMap.value.name}`,
       siteSafetyConfirmed: activateSafetyConfirmed.value,
       vehicleMapCompatibilityConfirmed: activateVehicleConfirmed.value,
       stoppedOffStationGeometryUpdateConfirmed: activateGeometryUpdateConfirmed.value,
@@ -171,7 +208,7 @@ const currentPhase = computed(() => switchStatus.value?.current?.phaseText ?? '�
     <p v-if="catalogError" class="inline-warning">{{ catalogError }}</p>
     <div class="map-catalog">
       <article v-for="map in catalog" :key="map.mapId" class="map-card">
-        <div class="map-card-art"><IconMap :size="36" stroke="1" /><span class="outline-badge" :class="{ cyan: map.isActive }">{{ map.isActive ? '当前运行' : '未运行' }}</span><b :title="map.mapId">{{ map.mapId }}</b><small>{{ map.unit }} / {{ map.coordinateSystem }}</small></div>
+        <div class="map-card-art"><IconMap :size="36" stroke="1" /><span class="outline-badge" :class="{ cyan: map.isActive }">{{ map.isActive ? '当前运行' : '未运行' }}</span><b :title="map.mapId">{{ map.mapId }}</b><small>{{ unitLabel(map.unit) }} · {{ coordinateLabel(map.coordinateSystem) }}</small></div>
         <h3>{{ map.name }}</h3>
         <p>{{ map.description || '未填写说明' }}</p>
         <dl><dt>运行版本</dt><dd>{{ map.activeVersionId ?? '—' }}</dd><dt>发布版本</dt><dd>{{ map.publishedVersionId ?? '—' }}</dd></dl>
@@ -195,7 +232,7 @@ const currentPhase = computed(() => switchStatus.value?.current?.phaseText ?? '�
     <dl class="property-list map-properties">
       <dt>地图编号</dt><dd>{{ selectedMap.mapId }}</dd>
       <dt>地图名称</dt><dd>{{ selectedMap.name }}</dd>
-      <dt>坐标系</dt><dd>{{ selectedMap.coordinateSystem }}</dd>
+      <dt>坐标系</dt><dd>{{ coordinateLabel(selectedMap.coordinateSystem) }}</dd>
       <dt>单位</dt><dd>{{ selectedMap.unit }}</dd>
       <dt>运行版本</dt><dd>{{ selectedMap.activeVersionId ?? '—' }}</dd>
       <dt>发布版本</dt><dd>{{ selectedMap.publishedVersionId ?? '—' }}</dd>
@@ -207,18 +244,20 @@ const currentPhase = computed(() => switchStatus.value?.current?.phaseText ?? '�
   <ConsoleDialog v-if="versionsOpen" :title="`版本历史 · ${versionsMapId}`" wide @close="versionsOpen = false">
     <div class="management-table" style="max-height:400px">
       <table>
-        <thead><tr><th>版本号</th><th>状态</th><th>航点数</th><th>道路数</th><th>更新时间</th></tr></thead>
+        <thead><tr><th>版本号</th><th>状态</th><th>航点数</th><th>道路数</th><th>更新时间</th><th>操作</th></tr></thead>
         <tbody>
           <tr v-for="v in versions" :key="v.versionId">
             <td class="mono cyan">V{{ v.versionNumber }}</td>
-            <td>{{ v.status }}</td>
+            <td>{{ ({Draft:'草稿',Published:'已发布',Active:'当前使用',Retired:'已停用',Archived:'已归档'} as Record<string,string>)[v.status] ?? '状态待核对' }}</td>
             <td>{{ v.nodeCount }}</td>
             <td>{{ v.edgeCount }}</td>
             <td>{{ shortTime(v.updatedAt) }}</td>
+            <td><button :disabled="busy || store.demoMode" @click="restoreVersion(v)"><ActionIcon name="undo"/>恢复为新草稿</button></td>
           </tr>
         </tbody>
       </table>
       <p v-if="!versions.length" class="empty-panel">没有版本记录</p>
+      <p class="inline-warning">回滚只复制历史内容到当前草稿，不覆盖历史版本，也不会立即改变运行地图。之后仍须发布并完成安全切换。</p>
     </div>
   </ConsoleDialog>
 
@@ -232,9 +271,9 @@ const currentPhase = computed(() => switchStatus.value?.current?.phaseText ?? '�
       <div class="inline-warning">激活将切换后台运行地图。在途任务使用安全切换流程处理。</div>
       <label style="display:block;margin:14px 0;font-size:12px;color:#8da5c9">
         确认文字（必须与下面的提示完全一致）
-        <input v-model="activateConfirmation" style="width:100%;margin-top:6px" :placeholder="`ACTIVATE ${activateMap.name}`" />
+        <input v-model="activateConfirmation" style="width:100%;margin-top:6px" :placeholder="`激活 ${activateMap.name}`" />
       </label>
-      <p class="mono">{{ `ACTIVATE ${activateMap.name}` }}</p>
+      <p class="mono">{{ `激活 ${activateMap.name}` }}<small>后台协议会自动转换为 ACTIVATE 指令，现场无需输入英文。</small></p>
       <label>激活依据<input v-model="activateEvidence" maxlength="1500" placeholder="填写本次现场与地图核对依据" /></label>
       <label style="display:flex;gap:8px;font-size:12px;color:#8da5c9;margin:8px 0"><input v-model="activateSafetyConfirmed" type="checkbox" />已确认现场安全条件</label>
       <label style="display:flex;gap:8px;font-size:12px;color:#8da5c9;margin:8px 0"><input v-model="activateVehicleConfirmed" type="checkbox" />已确认车辆地图兼容</label>
@@ -242,7 +281,7 @@ const currentPhase = computed(() => switchStatus.value?.current?.phaseText ?? '�
     </template>
     <template #footer>
       <button @click="activateOpen = false"><ActionIcon name="close"/>取消</button>
-      <button class="accent-button" :disabled="busy || activationBlocked || activateConfirmation.trim() !== `ACTIVATE ${activateMap?.name}` || !activateEvidence.trim() || !activateSafetyConfirmed || !activateVehicleConfirmed" @click="doActivate"><ActionIcon name="activate"/>确认激活</button>
+      <button class="accent-button" :disabled="busy || activationBlocked || activateConfirmation.trim() !== `激活 ${activateMap?.name}` || !activateEvidence.trim() || !activateSafetyConfirmed || !activateVehicleConfirmed" @click="doActivate"><ActionIcon name="activate"/>确认激活</button>
     </template>
   </ConsoleDialog>
 
@@ -250,7 +289,7 @@ const currentPhase = computed(() => switchStatus.value?.current?.phaseText ?? '�
   <ConsoleDialog v-if="switchOpen" title="地图安全切换" wide @close="switchOpen = false">
     <div style="margin-bottom:16px">
       <dl class="property-list">
-        <dt>执行模式</dt><dd>{{ switchStatus?.mode ?? '加载中' }}</dd>
+        <dt>执行模式</dt><dd>{{ mapSwitchModeLabel(switchStatus?.mode) }}</dd>
         <dt>当前切换</dt><dd>{{ currentPhase }}</dd>
       </dl>
       <div v-if="switchStatus?.blockers?.length" class="inline-warning">
@@ -292,7 +331,7 @@ const currentPhase = computed(() => switchStatus.value?.current?.phaseText ?? '�
     <p class="inline-warning">通信失败不等于未提交；只读复核不重发激活、不取消切换、不恢复派发、不解除占用。</p>
     <button :disabled="reviewBusy||!store.fresh||store.demoMode" @click="loadActivationReview"><ActionIcon name="refresh"/>刷新只读复核</button><p v-if="reviewError" role="status">{{reviewError}}</p>
     <template v-if="review"><h3>{{reviewLabel(review.outcome)}}</h3><p>{{reviewCurrent?'有效观察':'观察已失效，联动禁用'}} · {{shortTime(review.capturedAt)}}</p><p>{{review.message}}</p>
-    <dl class="property-list"><dt>持久化阶段</dt><dd>{{review.record?.phaseText||'原记录未找到'}}</dd><dt>数据库活动图</dt><dd>{{review.persistentMapId||'无'}} / {{review.persistentVersionId||'无'}}</dd><dt>运行图</dt><dd>{{review.runtimeMapId||'无'}} / {{review.runtimeVersionId||'无'}}</dd><dt>执行门</dt><dd>{{review.mode}} · 观察到的新任务门 {{review.canStartNewWork?'开（不是放行许可）':'关'}}</dd><dt>本地内容一致</dt><dd>{{review.contentConsistent?'是':'否/未知'}}</dd></dl>
+    <dl class="property-list"><dt>持久化阶段</dt><dd>{{review.record?.phaseText||'原记录未找到'}}</dd><dt>数据库活动图</dt><dd>{{review.persistentMapId||'无'}} / {{review.persistentVersionId||'无'}}</dd><dt>运行图</dt><dd>{{review.runtimeMapId||'无'}} / {{review.runtimeVersionId||'无'}}</dd><dt>执行门</dt><dd>{{mapSwitchModeLabel(review.mode)}} · 观察到的新任务门 {{review.canStartNewWork?'开（不是放行许可）':'关'}}</dd><dt>本地内容一致</dt><dd>{{review.contentConsistent?'是':'否/未知'}}</dd></dl>
     <details><summary>查看本地内容摘要和证据边界</summary><p style="overflow-wrap:anywhere">数据库SHA256 {{review.persistentDefinitionHash||'未取得'}}<br/>运行图SHA256 {{review.runtimeDefinitionHash||'未取得'}}</p><p v-for="e in review.evidence" :key="e">{{e}}</p></details>
     <p v-if="review.outcome==='OriginalMapObserved'">未观察到提交不能自动重试。进入安全切换查看具体阻塞；核对后可人工取消尚未提交的原切换，再编辑修正版。</p>
     <button v-if="review.outcome==='OriginalMapObserved'" @click="reviewOpen=false;loadSwitchStatus()">查看阻塞并处理原切换</button>

@@ -55,7 +55,7 @@ const knownStates: Record<string, { label: string; tone: string }> = {
 
 export function pipelineEvidenceState(state: string, observedAt: string | null | undefined, fresh: boolean, reference: number) {
   const known = knownStates[state];
-  if (!known) return { label: state || '未取得状态', tone: 'unknown' };
+  if (!known) return { label: /[\u3400-\u9fff]/.test(state) ? state : '状态待核对', tone: 'unknown' };
   if (!fresh) return { label: '当前连接或采集已失效', tone: 'stale' };
   if (['Unknown', 'NotChecked', 'Stale'].includes(state)) return known;
   if (!pipelineTimestampFresh(observedAt, reference)) return { label: observedAt ? '观察已过期或时间无效' : '尚无有效观察', tone: 'stale' };
@@ -99,7 +99,7 @@ const recordLabels: Record<string, string> = {
 export function pipelineRecordState(state: string) {
   const base = knownStates[state];
   const issue = pipelineRecordIsIssue({ state } as PipelineRecord);
-  return { label: recordLabels[state] ?? base?.label ?? (state || '未取得状态'), tone: issue ? 'waiting' : 'neutral' };
+  return { label: recordLabels[state] ?? base?.label ?? (/[\u3400-\u9fff]/.test(state) ? state : '状态待核对'), tone: issue ? 'waiting' : 'neutral' };
 }
 export function pipelineRecordIsIssue(record: PipelineRecord): boolean {
   return /waiting|blocked|fail|fault|retry|pending|retained|stale|unknown|offline|excluded|rejected|notchecked|signalconflict|manualintervention|cancellationreview/i.test(record.state) || record.state === 'Full';

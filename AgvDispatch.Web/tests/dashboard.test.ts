@@ -80,7 +80,7 @@ describe('alarmSeverity / alarmStatus', () => {
   it('translates severity', () => {
     assert.equal(alarmSeverity('Warning'), '警告');
     assert.equal(alarmSeverity('Critical'), '严重');
-    assert.equal(alarmSeverity('Unknown'), 'Unknown');
+    assert.equal(alarmSeverity('Unknown'), '级别待核对');
   });
 
   it('translates status', () => {

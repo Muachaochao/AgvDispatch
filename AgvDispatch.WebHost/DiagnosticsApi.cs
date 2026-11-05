@@ -52,6 +52,18 @@ public static class DiagnosticsApi
             if(request.TaskId!=id)return Results.BadRequest(new{error="任务身份不一致。"});
             return Results.Ok(await pipe.ReadAsync<TaskCancelResult>("CancelDispatchTask",new TaskCancelRequest(request.RequestId,request.TaskId,request.ExpectedStage.Value,request.Reason),ct));
         });
+        app.MapPost("/api/tasks/{id}/pause",async(string id,TaskPauseRequest request,DispatchPipe pipe,CancellationToken ct)=>
+        {
+            if(!taskOperationsEnabled)return DisabledTaskOperation("Web任务暂停未启用。");
+            if(request.TaskId!=id)return Results.BadRequest(new{error="任务身份不一致。"});
+            return Results.Ok(await pipe.ReadAsync<TaskPauseResult>(TrafficControlOperations.PauseDispatchTask,request,ct));
+        });
+        app.MapPost("/api/tasks/{id}/resume-paused",async(string id,TaskPauseResumeRequest request,DispatchPipe pipe,CancellationToken ct)=>
+        {
+            if(!taskOperationsEnabled)return DisabledTaskOperation("Web任务恢复未启用。");
+            if(request.TaskId!=id)return Results.BadRequest(new{error="任务身份不一致。"});
+            return Results.Ok(await pipe.ReadAsync<TaskPauseResult>(TrafficControlOperations.ResumeDispatchTask,request,ct));
+        });
         app.MapPost("/api/commissioning",async(CommissioningQuery query,DispatchPipe pipe,CancellationToken ct)=>
         {
             if(query.StationId==null||query.VehicleId==null||query.StationId.Length>32||query.VehicleId.Length>32)return Results.BadRequest(new{error="工位或车辆编号无效。"});

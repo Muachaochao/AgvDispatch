@@ -111,6 +111,7 @@ async def run(root):
                     plc.log('network-fault', event=event)
             state = dict(time=time.time(), cars={r['VehicleId']: snapshot(c) for r,c in zip(robots,cars)},
                          memory_hex=plc.memory.hex(), contract=plc.contract,
+                         stations=plc.station_snapshot(),
                          dumper_reserved=plc.dumper_reserved,
                          simulationControl=plc.control_snapshot(),
                          externalInput=dict(sequence=plc.input_sequence, accepted=plc.input_accepted, error=plc.input_error))

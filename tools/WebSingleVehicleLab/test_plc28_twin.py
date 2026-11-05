@@ -31,6 +31,7 @@ class Plc28TwinTests(unittest.TestCase):
         self.assertFalse(twin.bit(610, 2))
         self.assertTrue(twin.dumper_reserved)
         twin.station = 'LM2'
+        twin.x, twin.y = twin.nodes['LM2']['x'], twin.nodes['LM2']['y']
         twin.setbit(610, 1, True)
         twin.scan_handshakes()
         twin.dump_started -= 6

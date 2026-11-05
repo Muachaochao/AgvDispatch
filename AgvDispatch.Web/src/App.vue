@@ -12,6 +12,7 @@ import {
 import ConsoleDialog from './ConsoleDialog.vue';
 import AppToast from './components/AppToast.vue';
 import AppLoading from './components/AppLoading.vue';
+import { industrialText, qualityLabel, signalLabel } from './operator-labels';
 
 const store = useDispatchStore();
 const charging = useChargingStore();
@@ -46,19 +47,13 @@ const navigation = [
   { path: '/maps', label: '地图管理', icon: IconMap }
 ] as const;
 const engineering = [
-  { path: '/simulation-center', label: '仿真测试中心', icon: IconFlask },
-  { path: '/dispatch-pipeline', label: '六层调度监控', icon: IconRoute },
-  { path: '/dispatch-optimization', label: '滚动派车优化', icon: IconRoute },
-  { path: '/charging', label: '充电管理', icon: IconPlugConnected },
-  { path: '/engineering', label: '工程配置中心', icon: IconCpu },
-  { path: '/engineering-runtime', label: '工程执行接入', icon: IconCpu },
-  { path: '/engineering-tests', label: '工程测试中心', icon: IconFlask },
-  { path: '/communication', label: 'PLC / AGV / 充电桩', icon: IconNetwork },
-  { path: '/plc-cycle-test', label: 'PLC空载联调', icon: IconRoute },
-  { path: '/navigation-test', label: '单车导航调试', icon: IconRoute },
-  { path: '/planning', label: '工程编辑', icon: IconRoute },
-  { path: '/engineering-settings', label: '现场任务参数与地图绑定', icon: IconCpu },
-  { path: '/commissioning', label: '联调检查', icon: IconCircleCheck }
+  { path: '/dispatch-pipeline', label: '六层调度监控', group: '运行诊断', icon: IconRoute },
+  { path: '/dispatch-optimization', label: '滚动派车优化', group: '运行诊断', icon: IconRoute },
+  { path: '/engineering', label: '工程工作台', group: '工程配置', icon: IconCpu },
+  { path: '/planning', label: '地图编辑', group: '工程配置', icon: IconRoute },
+  { path: '/simulation-center', label: '仿真测试中心', group: '联调工具', icon: IconFlask },
+  { path: '/navigation-test', label: '单车导航调试', group: '联调工具', icon: IconRoute },
+  { path: '/charging', label: '充电管理', group: '联调工具', icon: IconPlugConnected },
 ] as const;
 function closeMenu(event: Event) {
   if (!engineeringMenu.value?.contains(event.target as Node)) engineeringMenu.value?.removeAttribute('open');
@@ -68,6 +63,13 @@ watch(() => route.fullPath, () => engineeringMenu.value?.removeAttribute('open')
 function isActive(path: string) {
   if (path === '/') return route.path === '/';
   return route.path.startsWith(path);
+}
+function signalDisplay(name: string) { return signalLabel(name, name); }
+function fieldValue(value: unknown) {
+  if (value === true) return '1';
+  if (value === false) return '0';
+  if (value === null || value === undefined || value === '') return '未知';
+  return String(value);
 }
 
 onMounted(() => {
@@ -89,7 +91,7 @@ onUnmounted(() => {
     <header class="console-header">
       <div class="brand-and-clock"><button class="console-brand" @click="router.push('/')">
         <IconRobot :size="31" stroke="1.5" />
-        <div><h1>AGV 机器人调度系统</h1><span>DISPATCH CONTROL CENTER</span></div>
+        <div><h1>AGV 机器人调度系统</h1><span>铝屑回收 · 实时调度</span></div>
       </button>
       <time class="header-clock" :datetime="new Date(store.now).toISOString()" aria-label="北京时间"><b>{{clockTime}}</b><span>{{clockDate}}</span></time></div>
       <nav aria-label="页面导航">
@@ -99,7 +101,7 @@ onUnmounted(() => {
         <details ref="engineeringMenu" class="engineering-menu" @keydown.esc="engineeringMenu?.removeAttribute('open'); engineeringMenu?.querySelector('summary')?.focus()">
           <summary :class="{ active: engineering.some(item => isActive(item.path)) }"><IconCpu :size="15" />工程工具<IconChevronDown :size="13" /></summary>
           <div class="engineering-dropdown" aria-label="工程工具">
-            <button v-for="item in engineering" :key="item.path" :class="{ active: isActive(item.path) }" :aria-current="isActive(item.path) ? 'page' : undefined" @click="router.push(item.path); engineeringMenu?.removeAttribute('open')"><component :is="item.icon" :size="16" />{{item.label}}</button>
+            <template v-for="(item,index) in engineering" :key="item.path"><p v-if="index===0||engineering[index-1]?.group!==item.group">{{item.group}}</p><button :class="{ active: isActive(item.path) }" :aria-current="isActive(item.path) ? 'page' : undefined" @click="router.push(item.path); engineeringMenu?.removeAttribute('open')"><component :is="item.icon" :size="16" />{{item.label}}</button></template>
           </div>
         </details>
       </nav>
@@ -115,11 +117,11 @@ onUnmounted(() => {
 
     <footer v-if="store.engineeringSimulationOnly" class="engineering-isolated-footer">工程隔离模拟 · 设备、任务与现场恢复接口已禁用 · 不连接真车或PLC · 现场5199未改动</footer>
     <footer v-else class="equipment-strip">
-      <b>设备状态<small>DEVICE STATUS</small></b>
+      <b>设备状态<small>连接与执行许可</small></b>
       <button v-for="device in plcDevices" :key="device.id" title="查看设备通信与执行门禁" @click="router.push('/commissioning')">
         <IconCpu :size="19" /><span>{{ device.name }}</span>
         <i class="status-dot" :class="equipmentTone(device, store.fresh)"></i>
-        <small>{{ store.fresh ? device.status : '数据非当前' }}</small>
+        <small>{{ store.fresh ? industrialText(device.status) : '数据非当前' }}</small>
       </button>
       <button class="station-signal-summary" title="查看各工位的通信、业务状态和PLC点位；信号正常不代表已允许派车" @click="stationSignalsOpen = true">
         <IconCpu :size="19" /><span>{{stationCount}} 工位 · {{dumperCount}} 倒料</span>
@@ -145,14 +147,14 @@ onUnmounted(() => {
       <p v-if="!stationDevices.length" class="empty-panel">尚未配置工位。</p>
       <div class="station-signal-list">
         <button v-for="device in stationDevices" :key="device.id" :aria-pressed="selectedStationId === device.id" @click="selectedStationId = selectedStationId === device.id ? '' : device.id">
-          <i class="status-dot" :class="equipmentTone(device, store.fresh)"></i><b>{{device.name}}</b><span>采集：{{device.quality}}</span><small>{{device.status}}</small><span>查看点位</span>
+          <i class="status-dot" :class="equipmentTone(device, store.fresh)"></i><b>{{device.name}}</b><span>采集：{{qualityLabel(device.quality)}}</span><small>{{industrialText(device.status)}}</small><span>查看点位</span>
         </button>
       </div>
       <template v-if="selectedStation">
         <h3 class="signal-detail-heading">{{selectedStation.name}} · 点位详情</h3>
         <p class="form-explanation">{{selectedStation.summary}}</p>
         <div class="signal-detail-table"><table class="dialog-table"><thead><tr><th>信号</th><th>值</th><th>质量</th><th>地址</th><th>更新时间</th></tr></thead>
-          <tbody><tr v-for="field in selectedStation.fields" :key="field.name"><td>{{field.name}}</td><td>{{field.value}}</td><td>{{field.quality}}</td><td>{{field.address}}</td><td>{{field.updatedAt}}</td></tr></tbody>
+          <tbody><tr v-for="field in selectedStation.fields" :key="field.name"><td>{{signalDisplay(field.name)}}<details><summary>原始字段</summary><code>{{field.name}}</code></details></td><td>{{fieldValue(field.value)}}</td><td>{{qualityLabel(field.quality)}}</td><td>{{field.address}}</td><td>{{field.updatedAt}}</td></tr></tbody>
         </table></div>
       </template>
     </ConsoleDialog>

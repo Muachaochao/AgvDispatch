@@ -68,7 +68,7 @@ test('record filters trace tasks, vehicles, resources and original IDs including
   assert.equal(filterPipelineRecords([waiting], 'TRAFFIC-LM28', true).length, 1);
   assert.equal(pipelineRecordState(waiting.state).label, '等待派车');
   assert.equal(filterPipelineRecords([ready], '', true).length, 0);
-  assert.equal(pipelineRecordState('FirmwareSpecificState').label, 'FirmwareSpecificState');
+  assert.equal(pipelineRecordState('FirmwareSpecificState').label, '状态待核对');
   assert.equal(pipelineRecordState('FirmwareSpecificState').tone, 'neutral');
 });
 

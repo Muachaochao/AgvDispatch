@@ -16,6 +16,7 @@ from lab_logging import DeviceJournal
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'SimulationLab'))
 from device_controls import PLC_DEFAULTS, VEHICLE_DEFAULTS, read_controls
 from footprint import swept_rectangles_overlap, vehicle_extents
+from station_catalog import MEMORY_BYTES, validate_twin_stations
 
 
 class DeviceTwin:
@@ -85,7 +86,7 @@ class DeviceTwin:
         self.queue = asyncio.Queue()
         self.current = None
         self.loaded = False
-        self.memory = bytearray(1024)
+        self.memory = bytearray(MEMORY_BYTES)
         for station in self.station_definitions():
             offset = station['offset']
             self.setbit(offset, 1, True)
@@ -112,10 +113,16 @@ class DeviceTwin:
                 raise RuntimeError('Saved PLC contract differs; preserve this instance and create a fresh lab')
             self.dumper_reserved = state.get('dumper_reserved', False)
             if 'memory_hex' in state:
-                self.memory[:] = bytes.fromhex(state['memory_hex'])
+                restored = bytes.fromhex(state['memory_hex'])
+                if len(restored) != MEMORY_BYTES:
+                    raise ValueError('Saved virtual PLC memory size differs; preserve this instance and create a fresh lab')
+                self.memory[:] = restored
             else:
-                self.memory[:4] = bytes(state['db1'])
-                self.memory[610:611] = bytes(state['dumper'])
+                legacy_station, legacy_dumper = bytes(state['db1']), bytes(state['dumper'])
+                if len(legacy_station) != 4 or len(legacy_dumper) != 1:
+                    raise ValueError('Saved legacy PLC memory size differs; preserve this instance and create a fresh lab')
+                self.memory[:4] = legacy_station
+                self.memory[610:611] = legacy_dumper
             node = self.nodes.get(self.station)
             self.at_source = bool(node and math.hypot(self.x-node['x'], self.y-node['y']) <= 0.02)
 
@@ -123,14 +130,28 @@ class DeviceTwin:
         self.journal.write(kind, **data)
 
     def bit(self, byte, bit):
+        if (not isinstance(byte, int) or isinstance(byte, bool) or not 0 <= byte < len(self.memory) or
+                not isinstance(bit, int) or isinstance(bit, bool) or not 0 <= bit < 8):
+            raise ValueError('Only bounded virtual DB1 bit addresses are supported')
         return bool(self.memory[byte] & (1 << bit))
 
     def station_definitions(self):
         configured = self.topology.get('stations')
-        if isinstance(configured, list) and configured:
-            return configured
-        return [dict(stationId='CNC-001', pickupSite='取货A', offset=0),
-                dict(stationId='CNC-002', pickupSite='取货B', offset=2)]
+        if configured is None:
+            configured = [dict(stationId='CNC-001', pickupSite='取货A', offset=0),
+                          dict(stationId='CNC-002', pickupSite='取货B', offset=2)]
+        return validate_twin_stations(configured)
+
+    def station_snapshot(self):
+        return [dict(stationId=station['stationId'], pickupSite=station['pickupSite'],
+                     offset=station['offset'], signalSource=station.get('signalSource', 'verified'),
+                     sourceLabel=station.get('sourceLabel'),
+                     fullBoxRequested=self.bit(station['offset'], 0),
+                     boxPresent=self.bit(station['offset'], 1),
+                     faulted=self.bit(station['offset'], 2),
+                     communicationOnline=self.bit(station['offset'], 3),
+                     cycleActive=any(self.bit(station['offset'], bit) for bit in (0, 4, 5, 6, 7)))
+                for station in self.station_definitions()]
 
     def semantic_site(self, key, fallback):
         return self.topology.get(key, fallback)
@@ -414,17 +435,17 @@ class DeviceTwin:
         self.input_sequence = event['sequence']
         self.input_accepted, self.input_error = False, None
         try:
+            configured = {station['stationId']: station for station in self.station_definitions()}
             if 'calls' in event:
                 stations = event['calls']
-                if 'call' in event or not isinstance(stations, list) or not 1 <= len(stations) <= 2 or any(not isinstance(s, str) for s in stations) or len(set(stations)) != len(stations):
-                    raise ValueError('calls must contain one or two unique supported station IDs')
+                if 'call' in event or not isinstance(stations, list) or not 1 <= len(stations) <= len(configured) or any(not isinstance(s, str) for s in stations) or len(set(stations)) != len(stations):
+                    raise ValueError('calls must contain unique configured station IDs within the configured station count')
             else:
                 stations = [event.get('call')]
-            configured = {station['stationId']: station for station in self.station_definitions()}
             if any(station not in configured for station in stations):
                 raise ValueError('Unsupported virtual station call')
             offsets = [configured[station]['offset'] for station in stations]
-            if self.sequence28 and any(not self.bit(offset, 1) or any(self.bit(offset, b) for b in (4, 5, 6, 7)) for offset in offsets):
+            if self.sequence28 and any(not self.bit(offset, 1) or any(self.bit(offset, b) for b in (0, 4, 5, 6, 7)) for offset in offsets):
                 raise ValueError('origin cycle not closed')
             for offset in offsets:
                 self.setbit(offset, 0, True)
@@ -452,6 +473,7 @@ class DeviceTwin:
                          batteryPercent=self.battery_percent * 100, batteryVoltage=self.battery_voltage(), charging=self.charging,
                          speedMps=self.current_speed_mps,
                          distanceMeters=self.distance_meters, simulationControl=self.control_snapshot(), time=time.time(),
+                         stations=self.station_snapshot(),
                          externalInput=dict(sequence=self.input_sequence, accepted=self.input_accepted, error=self.input_error))
             temp = self.root / 'device-state.tmp'
             temp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding='utf-8')
@@ -555,6 +577,56 @@ class DeviceTwin:
             self.writers.discard(writer)
             writer.close()
 
+    def s7_memory_data(self, packet, param, function):
+        """Validate every requested item before applying writes to the shared DB.
+
+        Station byte addresses need not be consecutive. A malformed item must
+        neither resize memory nor partially change an earlier station item.
+        """
+        if len(param) < 2 or not 1 <= param[1] <= 255 or len(param) != 2 + 12 * param[1]:
+            raise ValueError('S7 memory parameter length')
+        cursor = 17 + len(param)
+        data, writes = bytearray(), []
+        for index in range(param[1]):
+            var = param[2 + index * 12:14 + index * 12]
+            if var[:3] != b'\x12\x0a\x10':
+                raise ValueError('S7 memory item format')
+            kind = var[3]
+            count = int.from_bytes(var[4:6], 'big')
+            db, area = int.from_bytes(var[6:8], 'big'), var[8]
+            byte_address, bit = divmod(int.from_bytes(var[9:12], 'big'), 8)
+            size = 1 if kind == 1 else count
+            if (kind not in (1, 2) or count < 1 or (kind == 1 and count != 1) or
+                    db != 1 or area != 0x84 or byte_address + size > len(self.memory)):
+                raise ValueError('Only bounded DB1 BOOL/BYTE items supported')
+            if function == 4:
+                raw = bytes([int(self.bit(byte_address, bit))]) if kind == 1 else bytes(self.memory[byte_address:byte_address + count])
+                data.extend(bytes([0xff, 3 if kind == 1 else 4]) + struct.pack('>H', count if kind == 1 else len(raw) * 8) + raw)
+                if len(raw) % 2 and index < param[1] - 1:
+                    data.append(0)
+            else:
+                if cursor + 4 > len(packet):
+                    raise ValueError('Truncated S7 write header')
+                transport = packet[cursor + 1]
+                bits = int.from_bytes(packet[cursor + 2:cursor + 4], 'big')
+                if transport != (3 if kind == 1 else 4) or bits != (1 if kind == 1 else count * 8):
+                    raise ValueError('S7 write payload differs from requested memory size')
+                raw = packet[cursor + 4:cursor + 4 + size]
+                if len(raw) != size:
+                    raise ValueError('Truncated S7 write payload')
+                writes.append((byte_address, bit, kind, bytes(raw)))
+                cursor += 4 + size + (size % 2 if index < param[1] - 1 else 0)
+                data.append(0xff)
+        if (function == 4 and cursor != len(packet)) or (function == 5 and cursor != len(packet)):
+            raise ValueError('S7 memory payload length')
+        for byte_address, bit, kind, raw in writes:
+            if kind == 1:
+                self.setbit(byte_address, bit, raw[0] != 0)
+            else:
+                self.memory[byte_address:byte_address + len(raw)] = raw
+            self.log('s7-write', byte=byte_address, bit=bit, variable_kind=kind, hex=raw.hex())
+        return data
+
     async def s7(self, reader, writer):
         try:
             while True:
@@ -569,6 +641,8 @@ class DeviceTwin:
                 if packet[7] != 0x32:
                     raise ValueError('S7 protocol')
                 plen,dlen=struct.unpack_from('>HH',packet,13)
+                if plen < 1 or 17 + plen + dlen != len(packet):
+                    raise ValueError('S7 parameter/data lengths differ from frame')
                 param=packet[17:17+plen]
                 func=param[0]
                 data=bytearray()
@@ -576,28 +650,7 @@ class DeviceTwin:
                     answer_param=b'\xf0\x00\x00\x01\x00\x01\x03\xc0'
                 elif func in (4,5):
                     answer_param=bytes([func,param[1]])
-                    cursor=17+plen
-                    for index in range(param[1]):
-                        var=param[2+index*12:14+index*12]
-                        kind=var[3]; count=int.from_bytes(var[4:6],'big')
-                        db=int.from_bytes(var[6:8],'big');area=var[8]
-                        bit_address=int.from_bytes(var[9:12],'big')
-                        byte_address,bit=divmod(bit_address,8)
-                        if db != 1 or area != 0x84 or byte_address+count > len(self.memory):
-                            raise ValueError('Only bounded DB1 supported')
-                        if func == 4:
-                            raw=bytes([int(self.bit(byte_address,bit))]) if kind==1 else bytes(self.memory[byte_address:byte_address+count])
-                            data.extend(bytes([0xff,3 if kind==1 else 4])+struct.pack('>H',count if kind==1 else len(raw)*8)+raw)
-                            if len(raw)%2 and index < param[1]-1:data.append(0)
-                        else:
-                            transport=packet[cursor+1];bits=int.from_bytes(packet[cursor+2:cursor+4],'big')
-                            n=(bits+7)//8 if transport!=3 else (bits+7)//8
-                            raw=packet[cursor+4:cursor+4+n]
-                            if kind==1:self.setbit(byte_address,bit,raw[0]!=0)
-                            else:self.memory[byte_address:byte_address+len(raw)]=raw
-                            self.log('s7-write',byte=byte_address,bit=bit,variable_kind=kind,hex=raw.hex())
-                            cursor+=4+n+(n%2 if index<param[1]-1 else 0)
-                            data.append(0xff)
+                    data=self.s7_memory_data(packet,param,func)
                 else:
                     raise ValueError(f'S7 function {func}')
                 s7=b'\x32\x03\x00\x00'+packet[11:13]+struct.pack('>HH',len(answer_param),len(data))+b'\x00\x00'+answer_param+data

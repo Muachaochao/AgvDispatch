@@ -16,10 +16,17 @@ public static class EngineeringRuntimeCompiler
     public static EngineeringRuntimePreview Compile(EngineeringVersion version, MapWorkspaceSnapshot workspace,
         TaskParameterSnapshot parameters, CommunicationSettingsSnapshot communication)
     {
-        var plan = version.Plan;
+        // Legacy templates omitted their explicit node/variable manifest. Upgrade
+        // only the in-memory execution plan; the immutable published version and
+        // its stored content hash remain unchanged.
+        var plan = version.Plan with
+        {
+            Templates = version.Plan.Templates.Select(EngineeringTaskTemplates.Normalize).ToList()
+        };
         var errors = EngineeringValidator.Validate(plan).Issues.Where(i => i.Severity == "Error")
             .Select(i => i.ObjectId + "：" + i.Message).ToList();
-        if (version.ContentHash != EngineeringStore.Hash(plan)) errors.Add("工程版本内容摘要不一致。");
+        if (version.ContentHash != EngineeringStore.Hash(version.Plan) && !version.RawPlanHashVerified)
+            errors.Add("工程版本内容摘要不一致。");
         var map = workspace.Published;
         if (workspace.Project.MapId != plan.MapId || map is null || map.MapId != plan.MapId || map.VersionId != plan.MapVersion || map.Status != MapVersionStatus.Published)
             errors.Add("工程必须绑定目标地图当前已发布的准确版本；请先在地图编辑准备运行图并发布，再重新绑定工程版本。");
@@ -56,6 +63,13 @@ public static class EngineeringRuntimeCompiler
         var dumpers = stations.Select(s => s.DumperId).Distinct().ToArray();
         if (dumpers.Length != 1) errors.Add("当前九步执行器一次工程应用只支持一组倒料设备；多倒料工程暂不能应用，未静默选择第一组。");
         if (stations.Select(s => s.TemplateId).Distinct().Count() != 1) errors.Add("当前执行器共用四段动作；不同业务模板不能合并应用。");
+        var runtimeTemplate = stations.Length == 0 ? null :
+            plan.Templates.FirstOrDefault(t => t.Id.Equals(stations[0].TemplateId, StringComparison.OrdinalIgnoreCase));
+        if (runtimeTemplate is not null)
+        {
+            foreach (var issue in EngineeringTaskTemplates.Validate(runtimeTemplate).Where(x => x.Severity == "Error"))
+                errors.Add("任务模板 " + runtimeTemplate.Id + "：" + issue.Message);
+        }
         if (communication.RestartRequired) errors.Add("通信保存配置尚未重启生效，请先完成受控重启并重新预检。");
         foreach (var plc in plan.Plcs.Where(p => p.Enabled))
             if (!communication.Active.Plcs.Any(p => p.Enabled && p.DeviceId == plc.Id && p.IpAddress == plc.Host && p.Port == plc.Port))
@@ -71,8 +85,11 @@ public static class EngineeringRuntimeCompiler
             configuration = parameters.Configuration with
             {
                 DumperStationId = dumper.Id, WaitingSite = dumper.WaitingNode, DumpingSite = dumper.DumpingNode,
-                // The engineering plan owns the waiting bay; a previous map's extra bays must not survive an application.
-                WaitingSites = [dumper.WaitingNode],
+                // The engineering plan owns all handshake waiting bays. Independent map
+                // waiting resources can queue multiple vehicles while the dumping node
+                // remains mutually exclusive.
+                WaitingSites = new[] { dumper.WaitingNode }.Concat(dumper.AdditionalWaitingNodes)
+                    .Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
                 Standbys = plan.Standbys.Select(b => new TaskStandbyParameter(b.Id, b.NodeId, b.PoolId,
                     plan.Pools.Single(p => p.Id == b.PoolId).VehicleIds.Where(id => plan.Vehicles.Any(v => v.Id == id && v.Enabled)).ToArray(), b.Priority)).ToArray(),
                 Pickups = stations.Select(s => new TaskPickupParameter(s.Id, s.PickupNode)
@@ -81,6 +98,7 @@ public static class EngineeringRuntimeCompiler
                     AllowedVehicleIds = plan.Pools.Single(p => p.Id == s.PoolId).VehicleIds
                         .Where(id => plan.Vehicles.Any(v => v.Id == id && v.Enabled && v.Capability == plan.Templates.Single(t => t.Id == s.TemplateId).Capability)).ToArray()
                 }).ToArray(),
+                TaskTemplate = runtimeTemplate is null ? null : EngineeringTaskTemplates.ToRuntimeBinding(runtimeTemplate),
                 EngineeringSource = new(version.Id, version.ContentHash, EngineeringRuntimeIdentity.MapHash(definition))
             };
             if (configuration.Pickups.Any(p => p.AllowedVehicleIds!.Count == 0)) { errors.Add("至少一个工位没有启用且能力匹配的池内车辆。"); configuration = null; }
@@ -88,6 +106,8 @@ public static class EngineeringRuntimeCompiler
         return new(version.Id, version.ContentHash, plan.MapId, plan.MapVersion, definition is null ? "" : EngineeringRuntimeIdentity.MapHash(definition),
             parameters.Revision, communication.Revision, active, configuration, errors,
             ["使用后台原发布地图，保留圆弧、贝塞尔、方向和厂家来源证据；此步骤不上传机器人地图。",
+             runtimeTemplate is null ? "未找到工位绑定模板。" :
+                $"任务模板 {runtimeTemplate.Id} v{runtimeTemplate.Version} / {EngineeringTaskTemplates.DurableNineStepEngine} / SHA256 {EngineeringTaskTemplates.Hash(runtimeTemplate)} 已编译为固定九步执行计划。",
              "四段车辆动作和九步超时沿用当前后台参数，须在应用前核对；规划模板耗时不转换为车辆动作。",
              "现场 PLC 点表及已核定出区包络继续由真实执行器逐步检查；工程候选包络不自动成为现场标定。",
              "应用只保存执行参数，不启动任务、不开放 PLC/车辆写许可，也不解除地图切换或启动恢复屏障。"]);

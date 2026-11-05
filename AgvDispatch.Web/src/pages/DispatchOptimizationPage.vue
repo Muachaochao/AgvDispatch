@@ -156,7 +156,7 @@ onUnmounted(() => {
         <article><span>持久化等待任务</span><b>{{data.waitingTaskCount}}</b><small>本轮窗口 {{data.windowTaskCount}} 个</small></article>
         <article><span>可用车辆 / 候选边</span><b>{{data.eligibleVehicleCount}} <em>/ {{data.candidateCount}}</em></b><small>匹配图保留 {{data.retainedCandidateCount ?? data.candidateCount}} 条候选边</small></article>
         <article><span>推荐 / 已登记命令</span><b>{{recommendedCount}} <em>/ {{preparedCount}}</em></b><small>与传统派车不同 {{differences}} 项</small></article>
-        <article><span>本轮计算耗时</span><b>{{assignmentNumber(data.durationMs)}} <em>ms</em></b><small>路线缓存：命中 {{data.routeCacheHits}} / 计算 {{data.routeCacheMisses}}</small></article>
+        <article><span>本轮计算耗时</span><b>{{assignmentNumber(data.durationMs)}} <em>毫秒</em></b><small>路线缓存：命中 {{data.routeCacheHits}} / 计算 {{data.routeCacheMisses}}</small></article>
       </div>
       <div class="assignment-cycle-status"><strong>第 {{data.cycleNumber}} 轮</strong><span>{{time(data.capturedAt)}}</span><span>{{data.message}}</span></div>
       <p v-if="data.shadowCycleCount" class="assignment-note" title="同一候选图下，依次比较可分配任务数、有效优先级总和、预计行驶时间总和。">影子比对累计 {{data.shadowCycleCount}} 轮 · 全局推荐更优 {{data.improvedCycleCount ?? 0}} 轮。比较顺序：可分配数量、优先级、行驶时间。</p>

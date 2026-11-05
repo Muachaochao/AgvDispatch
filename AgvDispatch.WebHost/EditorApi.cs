@@ -49,6 +49,8 @@ public static class EditorApi
             await pipe.ReadAsync<MapOperationResult>(TrafficControlOperations.PublishMap, request, ct));
         app.MapGet("/api/maps/{id}/versions", async (string id, DispatchPipe pipe, CancellationToken ct) =>
             await pipe.ReadAsync<MapVersionHistoryItem[]>(TrafficControlOperations.GetMapVersionHistory, new { MapId = id }, ct));
+        app.MapGet("/api/maps/{id}/versions/{versionId}", async (string id, string versionId, DispatchPipe pipe, CancellationToken ct) =>
+            await pipe.ReadAsync<MapVersionSnapshot>(TrafficControlOperations.GetMapVersion, new { MapId = id, VersionId = versionId }, ct));
         // User selects a local file. No client-supplied filesystem path is accepted.
         app.MapPost("/api/maps/import", async (HttpRequest request, DispatchPipe pipe,VendorMapSourceArchive archive, CancellationToken ct) =>
         {

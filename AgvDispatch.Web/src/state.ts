@@ -29,7 +29,9 @@ export const stages: Record<string, string> = {
   CancellationPending: '取消确认中', CancellationReview: '取消待核对', Ready: '条件就绪', CommandPending: '命令待发',
   Sending: '发送中', RetryScheduled: '等待核对重试', ManualIntervention: '需人工处置'
 };
-export const label = (value: string | null | undefined) => value ? (stages[value] ?? value) : '—';
+export const label = (value: string | null | undefined) => value
+  ? (stages[value] ?? (/[\u3400-\u9fff]/.test(value) ? value : '状态待核对'))
+  : '—';
 
 export const isRunningStage = (stage: string) => ['Executing', 'Running', 'GoingToPickup', 'PickingUp', 'GoingToDumper',
   'WaitingForDumper', 'Dumping', 'ReturningEmptyBox', 'WaitingForPlcConfirmation', 'SubmittingToAgv'].includes(stage);

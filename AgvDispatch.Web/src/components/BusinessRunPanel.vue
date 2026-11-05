@@ -138,13 +138,13 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);});
       <ul><li v-for="g in blockGroups" :key="g.reason">{{g.reason}}<small> · 涉及 {{g.stations.join('、')}}</small></li></ul>
       <p v-if="onlyPermissions">这些是同一写入门禁在各业务步骤中的重复检查，不需要逐个重新配置点位。显式切换到业务启动模式后，再刷新条件核对。</p>
       <details><summary>查看技术明细（{{blockGroups.reduce((sum,g)=>sum+g.count,0)}} 项步骤检查）</summary><p v-for="s in configurationBlocks" :key="s.stationId"><b>{{s.stationId}}</b><br>{{s.explanation}}</p></details>
-      <p v-if="needsExitConfiguration">配置位置：当前发布包 Service/appsettings.json → HandshakeExecution → DumperExit。ResourceIds 对应地图编辑中的共享区域资源ID及已核定边界；BodyProfiles 为实测车辆和最大载箱包络。当前网页暂无这两项编辑表单，修改后需受控重启并重新核对本次启动恢复。</p>
+      <div v-if="needsExitConfiguration" class="inline-warning">缺少倒料区实际出区配置。请由维护人员在地图和后台配置本任务涉及的共享区域边界，并核对车辆满载包络；保存后受控重启并重新执行启动恢复核对。<details><summary>查看后台配置位置</summary><code>Service/appsettings.json → HandshakeExecution → DumperExit</code><p>共享区域对应 ResourceIds，车辆包络对应 BodyProfiles。当前网页没有这两项编辑表单。</p></details></div>
       <p v-if="!onlyPermissions">处理上述条件后，点击弹窗底部“刷新条件”；结果未确认时沿用原申请。</p>
     </section>
     <p v-if="selectedVehicleBlock" class="inline-warning" role="status">车辆不可派发的具体原因：{{selectedVehicleBlock}}</p>
     </template>
     <p v-if="!fresh" class="inline-warning">当前运行观察无效或已过期；保存状态不代表车辆实时状态，请查询并恢复后台连接。</p>
-    <p v-if="current?.stage==='Hold'">Hold 保留了原任务责任。先进入异常恢复核对原任务；记录不能直接清空。核对结束记录仍须通过后台的任务、握手、占用和待机停靠检查。</p>
+    <p v-if="current?.stage==='Hold'">“暂停待核对”状态保留了原任务责任。先进入异常恢复核对原任务；记录不能直接清空。核对结束记录仍须通过后台的任务、握手、占用和待机停靠检查。</p>
     <p v-if="current?.stage==='WaitingForCharge'">原业务计划和已完成轮数已保留。充电会话结束、车辆返回原待机点并通过状态及握手核验后接续；此时请求停止，将在充电返程完成后结束业务接续，保留工位呼叫。</p>
     <label v-if="current?.stage==='Hold'">续接现场依据（至少10字）<input v-model="resumeReason" maxlength="1000" :disabled="busy"/></label>
     <label v-if="!statusOnly||current?.stage==='Hold'" class="confirm"><input v-model="confirmed" type="checkbox" :disabled="(!!active&&current?.stage!=='Hold')||busy"/>{{current?.stage==='Hold'?'已现场核对原运行；续接将继续原流程，结束记录仍须核验任务、握手及待机停靠':'已核对当前车辆、路线和现场条件，确认启动所选运行模式'}}</label>

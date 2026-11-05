@@ -5,6 +5,7 @@ import { useToastStore } from '../stores/toast';
 import { newTaskRequestId } from '../task-request';
 import ConsoleDialog from '../ConsoleDialog.vue';
 import {cancelIntent,type CancelIntent} from '../cancel-intent';
+import { label } from '../state';
 
 const props = defineProps<{ taskId: string; stage: string; fresh: boolean }>();
 const emit = defineEmits<{ done: [] }>();
@@ -59,7 +60,7 @@ async function submit() {
     <div class="cancel-info">
       <dl class="property-list">
         <dt>任务编号</dt><dd class="cyan mono">{{ taskId }}</dd>
-        <dt>当前状态</dt><dd>{{ stage }}</dd>
+        <dt>当前状态</dt><dd>{{ label(stage) }}</dd>
       </dl>
     </div>
     <label class="cancel-reason-label">取消原因（至少10字）

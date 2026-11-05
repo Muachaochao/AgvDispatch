@@ -11,7 +11,8 @@ import TrafficClosuresPanel from '../TrafficClosuresPanel.vue';
 import {resourceView} from '../waiting';
 import {taskWait,leaseOwners} from '../traffic-display';
 import { isFresh, isWaitingStage, label, mayPlot } from '../state';
-import { vehicleCategory, categoryLabels, shortTime } from '../dashboard';
+import { vehicleCategory, categoryLabels, shortTime, navigationStateLabel, alarmStatus, alarmSeverity } from '../dashboard';
+import { alarmMessageText, alarmSourceLabel, alarmTitleText, qualityLabel, signalLabel } from '../operator-labels';
 import { vehicleObstacle } from '../obstacles';
 import VehicleObstacleDetails from '../components/VehicleObstacleDetails.vue';
 import type { Snapshot } from '../types';
@@ -106,7 +107,7 @@ onUnmounted(() => { ++detailEpoch;++areaEpoch;clearInterval(areaTimer);scene?.di
   <div class="control-grid">
     <aside class="left-column">
       <section class="control-panel statistics-panel">
-        <header class="section-heading"><h2>车辆状态统计 <small>FLEET STATUS</small></h2><span class="outline-badge">{{ store.snapshot?.status ? `已观察 ${store.vehicles.length} 辆` : '待采集' }}</span></header>
+        <header class="section-heading"><h2>车辆状态统计</h2><span class="outline-badge">{{ store.snapshot?.status ? `已观察 ${store.vehicles.length} 辆` : '待采集' }}</span></header>
         <div class="fleet-counts">
           <button v-for="stat in store.vehicleStats.filter(s => s.key !== 'unknown' || s.count > 0)" :key="stat.key" :class="stat.key" @click="router.push({ name: 'vehicles', query: { filter: stat.key } })">
             <i class="status-dot" :class="stat.key"></i><b>{{ stat.count }}</b><span>{{ stat.label }}</span>
@@ -115,13 +116,13 @@ onUnmounted(() => { ++detailEpoch;++areaEpoch;clearInterval(areaTimer);scene?.di
       </section>
 
       <section class="control-panel vehicle-focus">
-        <header class="section-heading"><h2>车辆详情 <small>VEHICLE</small></h2><button class="text-button" @click="router.push('/vehicles')"><ActionIcon name="list"/>列表</button></header>
+        <header class="section-heading"><h2>车辆详情</h2><button class="text-button" @click="router.push('/vehicles')"><ActionIcon name="list"/>列表</button></header>
         <template v-if="chosenVehicle">
           <div class="focus-vehicle"><IconRobot :size="35" stroke="1.2" /><div><b>{{ chosenVehicle.vehicleId }}</b><small>{{ chosenVehicle.displayName }}</small></div><span class="state-label" :class="vehicleCategory(chosenVehicle, store.allTasks, store.fresh, store.now)">{{ categoryLabels[vehicleCategory(chosenVehicle, store.allTasks, store.fresh, store.now)] }}</span></div>
           <div class="battery-line"><span>电量</span><progress max="100" :value="chosenVehicle.batteryPercent ?? 0"></progress><b>{{ chosenVehicle.batteryPercent ?? '—' }}%</b></div>
           <dl class="property-list">
             <dt>当前站点</dt><dd>{{ chosenVehicle.currentStation ?? '未知' }}</dd>
-            <dt>导航状态</dt><dd>{{ chosenVehicle.navigationState ?? '未知' }}</dd>
+            <dt>导航状态</dt><dd>{{ navigationStateLabel(chosenVehicle.navigationState) }}</dd>
             <dt>障碍状态</dt><dd>{{ chosenObstacle?.label }}<template v-if="chosenObstacle?.tone === 'blocked'"> · {{ chosenObstacle.duration }}</template></dd>
             <dt>原始坐标</dt><dd>{{ chosenVehicle.x?.toFixed(2) ?? '—' }} / {{ chosenVehicle.y?.toFixed(2) ?? '—' }}</dd>
             <dt>定位质量</dt><dd>{{ label(chosenVehicle.quality) }} / {{ chosenVehicle.localizationConfidence ?? '—' }}</dd>
@@ -134,11 +135,11 @@ onUnmounted(() => { ++detailEpoch;++areaEpoch;clearInterval(areaTimer);scene?.di
       </section>
 
       <section class="control-panel alert-preview">
-        <header class="section-heading"><h2>异常告警 <small>ALARM CENTER</small></h2><button class="text-button" @click="router.push('/alarms')">更多 {{ store.openAlarms.length }}</button></header>
+        <header class="section-heading"><h2>异常告警</h2><button class="text-button" @click="router.push('/alarms')">更多 {{ store.openAlarms.length }}</button></header>
         <div class="mini-table-head"><span>级别 / 对象</span><span>告警信息</span></div>
         <button v-for="alarm in store.openAlarms.slice(0, 5)" :key="alarm.alarmId" class="alarm-preview-row" @click="selectedAlarm = alarm">
           <div><span class="severity" :class="alarm.severity.toLowerCase()">{{ ({ Info:'信息',Warning:'警告',Error:'错误',Critical:'严重' })[alarm.severity] ?? alarm.severity }}</span><small>{{ alarm.sourceId }}</small></div>
-          <span>{{ alarm.title }}<small>{{ shortTime(alarm.lastObservedAt) }}</small></span>
+          <span>{{ alarmTitleText(alarm.title) }}<small>{{ shortTime(alarm.lastObservedAt) }}</small></span>
         </button>
         <p v-if="!store.openAlarms.length" class="empty-panel"><IconCircleCheck :size="25" />{{ store.fresh ? '暂无未确认告警' : '等待有效告警数据' }}</p>
         <div class="panel-footnote">确认与恢复是不同状态，不在此自动清除告警</div>
@@ -162,7 +163,7 @@ onUnmounted(() => { ++detailEpoch;++areaEpoch;clearInterval(areaTimer);scene?.di
         <label>展示区域<select aria-label="查看展示区域" :value="chosenArea?.id??''" @change="chosenArea=shownAreas.find(a=>a.id===($event.target as HTMLSelectElement).value)??null"><option value="">选择区域查看站点</option><option v-for="a in shownAreas" :key="a.id" :value="a.id">{{a.name}} · {{a.stationIds.length}}站点</option></select></label>
         <label>路段定位<select v-model="selectedEdge" aria-label="选择地图路段"><option value="">选择道路</option><option v-for="edge in store.snapshot?.map?.edges ?? []" :key="edge.id" :value="edge.id">{{ edge.id }} · {{ edge.from }} → {{ edge.to }}</option></select></label>
         <span v-if="selectedRoad">{{ selectedRoad.from }} {{ selectedRoad.bidirectional ? '↔' : '→' }} {{ selectedRoad.to }}</span>
-        <span v-else>米制导航图 / {{ store.snapshot?.map?.coordinateSystem ?? '待核定' }}</span>
+        <span v-else>米制导航图 · 车端坐标</span>
       </div>
       <p v-if="chosenArea" class="resource-location"><strong :style="{color:chosenArea.color}">{{chosenArea.name}}</strong> · 包含站点：{{chosenArea.stationIds.map(id=>store.snapshot?.map?.nodes.find(n=>n.id===id)?.agvSiteId||id).join('、')||'未分配站点'}} <button @click="chosenArea=null">关闭区域详情</button></p>
       <p v-if="areaMessage" role="status" class="inline-warning">{{areaMessage}}</p>
@@ -180,7 +181,7 @@ onUnmounted(() => { ++detailEpoch;++areaEpoch;clearInterval(areaTimer);scene?.di
       </section>
 
       <section class="control-panel live-tasks">
-        <header class="section-heading"><h2>当前任务 <small>LIVE TASKS</small></h2><button class="text-button" @click="router.push('/tasks')"><ActionIcon name="list"/>全部</button></header>
+        <header class="section-heading"><h2>当前任务</h2><button class="text-button" @click="router.push('/tasks')"><ActionIcon name="list"/>全部</button></header>
         <div class="current-task-counts"><span>执行阶段 <b>{{ store.ringSegments[0].value }}</b></span><span>待派车 <b>{{ store.ringSegments[1].value }}</b></span></div>
         <button v-for="{task,wait} in liveTasks.slice(0, 6)" :key="task.taskId" class="live-task" @click="openTask(task.taskId)">
           <div><b>{{ task.taskId }}</b><span class="state-label" :class="taskStatusTone(task.stage, !!wait)">{{ wait?.label ?? label(task.stage) }}</span></div><small v-if="wait">业务阶段：{{label(task.stage)}} · {{wait.count}}项等待{{wait.truncated?'（观察已截断）':''}}</small>
@@ -191,7 +192,7 @@ onUnmounted(() => { ++detailEpoch;++areaEpoch;clearInterval(areaTimer);scene?.di
       </section>
 
       <section class="control-panel shared-panel">
-        <header class="section-heading"><h2>共享区域 <small>TRAFFIC</small></h2></header>
+        <header class="section-heading"><h2>共享区域</h2></header>
         <div v-for="resource in store.resources" :key="resource.resourceId" class="shared-resource">
           <span><i class="status-dot" :class="resource.occupiedCount ? 'amber' : 'green'"></i>{{ resource.resourceId }}</span>
           <b>{{ resource.occupiedCount }}/{{ resource.capacity }}</b>
@@ -216,11 +217,12 @@ onUnmounted(() => { ++detailEpoch;++areaEpoch;clearInterval(areaTimer);scene?.di
   <ConsoleDialog v-if="selectedAlarm" title="告警详情" @close="selectedAlarm = null">
     <div class="detail-summary">
       <div><span>告警编号</span><b>{{ selectedAlarm.alarmId }}</b></div>
-      <div><span>关联对象</span><b>{{ selectedAlarm.sourceId }}</b></div>
-      <div><span>级别 / 状态</span><b>{{ ({ Info:'信息',Warning:'警告',Error:'错误',Critical:'严重' })[selectedAlarm.severity] ?? selectedAlarm.severity }} / {{ ({ Open:'未确认',Acknowledged:'已确认',Recovered:'已恢复' })[selectedAlarm.status] ?? selectedAlarm.status }}</b></div>
+      <div><span>关联对象</span><b>{{ alarmSourceLabel(selectedAlarm.sourceType) }} · {{ selectedAlarm.sourceId }}</b></div>
+      <div><span>级别 / 状态</span><b>{{ alarmSeverity(selectedAlarm.severity) }} / {{ alarmStatus(selectedAlarm.status) }}</b></div>
     </div>
-    <h3 class="subheading">{{ selectedAlarm.title }}</h3>
-    <p class="long-message">{{ selectedAlarm.message }}</p>
+    <h3 class="subheading">{{ alarmTitleText(selectedAlarm.title) }}</h3>
+    <p class="long-message">{{ alarmMessageText(selectedAlarm.message) }}</p>
+    <details v-if="alarmTitleText(selectedAlarm.title) !== selectedAlarm.title || alarmMessageText(selectedAlarm.message) !== selectedAlarm.message"><summary>查看厂家原始提示</summary><p class="long-message">{{ selectedAlarm.title }}</p><p class="long-message">{{ selectedAlarm.message }}</p></details>
     <p class="muted-note">首次发生：{{ shortTime(selectedAlarm.firstOccurredAt) }}<br>最近观察：{{ shortTime(selectedAlarm.lastObservedAt) }}</p>
     <div class="inline-warning">此处只查看，确认及恢复按现有WPF流程处理。</div>
   </ConsoleDialog>
@@ -228,7 +230,7 @@ onUnmounted(() => { ++detailEpoch;++areaEpoch;clearInterval(areaTimer);scene?.di
   <ConsoleDialog v-if="selectedDevice" :title="selectedDevice.name + ' · PLC设备状态'" wide @close="selectedDevice = null">
     <p class="form-explanation">{{ selectedDevice.summary }}</p>
     <table class="dialog-table"><thead><tr><th>信号</th><th>值</th><th>质量</th><th>地址</th><th>更新时间</th></tr></thead>
-    <tbody><tr v-for="field in selectedDevice.fields" :key="field.name"><td>{{ field.name }}</td><td>{{ field.value }}</td><td>{{ field.quality }}</td><td>{{ field.address }}</td><td>{{ field.updatedAt }}</td></tr></tbody></table>
+    <tbody><tr v-for="field in selectedDevice.fields" :key="field.name"><td>{{ signalLabel(field.name, field.name) }}</td><td>{{ field.value }}</td><td>{{ qualityLabel(field.quality) }}</td><td>{{ field.address }}</td><td>{{ field.updatedAt }}</td></tr></tbody></table>
   </ConsoleDialog>
 </div>
 </template>

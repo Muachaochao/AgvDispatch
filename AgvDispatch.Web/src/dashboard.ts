@@ -15,8 +15,21 @@ export function vehicleCategory(vehicle: Vehicle, tasks: TaskRow[], current: boo
   if (['Idle', 'None', '空闲', '待命'].includes(vehicle.navigationState ?? '')) return 'idle';
   return 'unknown';
 }
-export const alarmStatus = (status: string) => ({ Open: '未确认', Acknowledged: '已确认', Recovered: '已恢复' }[status] ?? status);
-export const alarmSeverity = (severity: string) => ({ Info: '信息', Warning: '警告', Error: '错误', Critical: '严重' }[severity] ?? severity);
+export const alarmStatus = (status: string) => ({ Open: '未确认', Acknowledged: '已确认', Recovered: '已恢复' }[status] ?? '状态待核对');
+export const alarmSeverity = (severity: string) => ({ Info: '信息', Warning: '警告', Error: '错误', Critical: '严重' }[severity] ?? '级别待核对');
+export const navigationStateLabel = (state: string | null | undefined) => {
+  if (!state) return '状态未知';
+  return ({
+    '0': '待命',
+    '1': '准备导航',
+    '2': '导航执行中',
+    '3': '导航暂停',
+    '4': '导航完成',
+    Idle: '待命',
+    None: '待命',
+    Running: '导航执行中'
+  } as Record<string, string>)[state] ?? state;
+};
 export function filterAlarms(alarms: Alarm[], search: string, status: string, severity: string): Alarm[] {
   return alarms.filter(a => (status === 'all' || a.status === status) && (severity === 'all' || a.severity === severity) &&
     `${a.alarmId} ${a.title} ${a.sourceId} ${a.message}`.toLowerCase().includes(search.toLowerCase()));

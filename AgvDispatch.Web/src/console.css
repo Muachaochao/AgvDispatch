@@ -48,7 +48,9 @@ input[type=checkbox]{width:16px;min-width:16px;height:16px;min-height:16px;flex:
 .engineering-menu>summary::-webkit-details-marker{display:none}
 .engineering-menu>summary:hover,.engineering-menu[open]>summary{background:#1a3151;border-color:#46a9cc}
 .engineering-menu>summary.active{color:#54def2;background:#15314c;border-color:#29a0c1}
-.engineering-dropdown{position:absolute;right:0;top:calc(100% + 8px);min-width:160px;padding:7px;display:grid;gap:4px;border:1px solid #345275;border-radius:6px;background:#111d35;box-shadow:0 12px 30px #02071999;z-index:10}
+.engineering-dropdown{position:absolute;right:0;top:calc(100% + 8px);min-width:210px;padding:8px;display:grid;gap:4px;border:1px solid #345275;border-radius:6px;background:#111d35;box-shadow:0 12px 30px #02071999;z-index:10}
+.engineering-dropdown>p{margin:8px 10px 2px;color:#5f86a8;font-size:9px;font-weight:600;letter-spacing:1.4px;text-transform:uppercase}
+.engineering-dropdown>p:first-child{margin-top:2px}
 .console-header nav .engineering-dropdown button{justify-content:flex-start;min-height:37px;padding:8px 12px;font-size:12px;border-color:transparent;background:transparent}
 .console-header nav .engineering-dropdown button:hover,.console-header nav .engineering-dropdown button.active{background:#19324e;color:#68dff0}
 .header-actions{margin-left:0;flex-shrink:0}

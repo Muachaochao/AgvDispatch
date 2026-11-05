@@ -7,6 +7,7 @@ import { shortTime, alarmSeverity, alarmStatus } from '../dashboard';
 import { IconBell, IconArrowLeft, IconSearch, IconChevronLeft, IconChevronRight } from '@tabler/icons-vue';
 import ConsoleDialog from '../ConsoleDialog.vue';
 import type { Alarm, AlarmPage } from '../types';
+import { alarmMessageText, alarmSourceLabel, alarmTitleText } from '../operator-labels';
 import {
   alarmHistoryError,
   alarmHistoryUrl,
@@ -203,8 +204,8 @@ function chooseTimeRange(preset: AlarmTimePreset) {
           <tr v-for="alarm in visibleAlarms" :key="alarm.alarmId">
             <td><button class="table-button" @click="selectedAlarm = alarm"><ActionIcon name="preview"/>详情</button></td>
             <td class="mono cyan alarm-id-cell" :title="alarm.alarmId">{{ alarm.alarmId }}</td>
-            <td class="source-cell"><b>{{ alarm.sourceId }}</b><small>{{ alarm.sourceType }}</small></td>
-            <td class="alarm-message-cell"><b :title="alarm.title">{{ alarm.title }}</b><small :title="alarm.message">{{ alarm.message }}</small></td>
+            <td class="source-cell"><b>{{ alarm.sourceId }}</b><small>{{ alarmSourceLabel(alarm.sourceType) }}</small></td>
+            <td class="alarm-message-cell"><b :title="alarmTitleText(alarm.title)">{{ alarmTitleText(alarm.title) }}</b><small :title="alarmMessageText(alarm.message)">{{ alarmMessageText(alarm.message) }}</small></td>
             <td><span class="severity" :class="alarm.severity.toLowerCase()">{{ alarmSeverity(alarm.severity) }}</span></td>
             <td><span class="alarm-state" :class="statusTone(alarm.status)">{{ alarmStatus(alarm.status) }}</span></td>
             <td class="time-cell">{{ shortTime(alarm.firstOccurredAt) }}</td>
@@ -232,9 +233,9 @@ function chooseTimeRange(preset: AlarmTimePreset) {
   <ConsoleDialog v-if="selectedAlarm" title="告警详情 · 整个生命周期记录" wide @close="selectedAlarm = null">
     <div class="alarm-detail-hero">
       <div>
-        <span>{{ selectedAlarm.sourceType }} · {{ selectedAlarm.sourceId }}</span>
-        <h3>{{ selectedAlarm.title }}</h3>
-        <p>{{ selectedAlarm.message }}</p>
+        <span>{{ alarmSourceLabel(selectedAlarm.sourceType) }} · {{ selectedAlarm.sourceId }}</span>
+        <h3>{{ alarmTitleText(selectedAlarm.title) }}</h3>
+        <p>{{ alarmMessageText(selectedAlarm.message) }}</p>
       </div>
       <div class="alarm-detail-pills">
         <span class="severity" :class="selectedAlarm.severity.toLowerCase()">{{ alarmSeverity(selectedAlarm.severity) }}</span>
@@ -274,6 +275,12 @@ function chooseTimeRange(preset: AlarmTimePreset) {
         <p v-else class="empty-lifecycle">报警条件尚未恢复。</p>
       </div>
     </section>
+
+    <details v-if="alarmTitleText(selectedAlarm.title) !== selectedAlarm.title || alarmMessageText(selectedAlarm.message) !== selectedAlarm.message" class="alarm-raw-message">
+      <summary>查看厂家原始提示</summary>
+      <p>{{ selectedAlarm.title }}</p>
+      <p>{{ selectedAlarm.message }}</p>
+    </details>
 
     <div class="inline-warning">此处为只读历史查询。告警确认及现场恢复仍按现有受控流程执行；查看详情不会解除任务、路权或车辆动作限制。</div>
   </ConsoleDialog>
@@ -357,6 +364,9 @@ function chooseTimeRange(preset: AlarmTimePreset) {
 .alarm-lifecycle dt{color:#758dac}
 .alarm-lifecycle dd{margin:0;color:#b7cbe1;overflow-wrap:anywhere}
 .empty-lifecycle{color:#738aa9;font-size:11px}
+.alarm-raw-message{margin:0 0 17px;padding:12px 14px;border:1px solid #2b405e;border-radius:4px;background:#0d192d;color:#8fa8c5;font-size:11px;line-height:1.7}
+.alarm-raw-message summary{cursor:pointer;color:#78cfe1}
+.alarm-raw-message p{margin:7px 0 0;overflow-wrap:anywhere}
 @media(max-width:1450px){
   .alarm-query-toolbar{grid-template-columns:minmax(200px,1fr) 110px 110px minmax(270px,1.2fr) auto auto}
   .history-presets{grid-column:1/-1;justify-self:end}

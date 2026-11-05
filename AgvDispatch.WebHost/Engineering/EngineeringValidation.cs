@@ -38,6 +38,10 @@ public static partial class EngineeringValidator
     public static EngineeringValidation Validate(EngineeringPlan p)
     {
         CheckShape(p);
+        p = p with
+        {
+            Templates = p.Templates.Select(EngineeringTaskTemplates.Normalize).ToList()
+        };
         var issues = new List<EngineeringIssue>();
         void Error(string section, string id, string field, string message) => issues.Add(new("Error", section, id, field, message));
         void Warn(string section, string id, string field, string message) => issues.Add(new("Warning", section, id, field, message));
@@ -114,8 +118,13 @@ public static partial class EngineeringValidator
         foreach (var g in p.Vehicles.GroupBy(v => v.StartNode, StringComparer.OrdinalIgnoreCase).Where(g => g.Count() > 1))
             Error("vehicles", g.First().Id, "startNode", $"初始停车节点 {g.Key} 被车辆 {string.Join('、', g.Select(v => v.Id))} 重复占用；模型不假定车辆已经调位。");
         foreach (var t in p.Templates)
-            if (string.IsNullOrWhiteSpace(t.Capability) || new[] { t.PickupSeconds, t.DumpSeconds, t.ReturnSeconds }.Any(x => !double.IsFinite(x) || x <= 0 || x > 3600))
-                Error("templates", t.Id, "capability", "任务模板能力或模拟动作耗时无效。");
+        {
+            foreach (var issue in EngineeringTaskTemplates.Validate(t))
+            {
+                if (issue.Severity == "Warning") Warn("templates", t.Id, issue.Field, issue.Message);
+                else Error("templates", t.Id, issue.Field, issue.Message);
+            }
+        }
         foreach (var pool in p.Pools)
         {
             if (pool.VehicleIds.Length == 0 || pool.VehicleIds.Distinct(StringComparer.OrdinalIgnoreCase).Count() != pool.VehicleIds.Length) Error("pools", pool.Id, "vehicleIds", "车辆池不能为空或重复引用车辆。");
@@ -126,6 +135,25 @@ public static partial class EngineeringValidator
             Plc("dumpers", d.Id, d.PlcId); Node("dumpers", d.Id, "waitingNode", d.WaitingNode); Node("dumpers", d.Id, "dumpingNode", d.DumpingNode);
             Resource("dumpers", d.Id, "waitingResource", d.WaitingResource); Resource("dumpers", d.Id, "dumpingResource", d.DumpingResource);
             if (d.WaitingNode == d.DumpingNode || d.WaitingResource == d.DumpingResource) Error("dumpers", d.Id, "waitingNode", "等待位与倒料位必须分开绑定。");
+            if (d.AdditionalWaitingNodes.Distinct(StringComparer.OrdinalIgnoreCase).Count() != d.AdditionalWaitingNodes.Length ||
+                d.AdditionalWaitingResources.Distinct(StringComparer.OrdinalIgnoreCase).Count() != d.AdditionalWaitingResources.Length ||
+                d.AdditionalWaitingNodes.Length != d.AdditionalWaitingResources.Length)
+                Error("dumpers", d.Id, "additionalWaitingNodes", "附加候车位节点与容量资源必须一一对应且不能重复。");
+            foreach (var node in d.AdditionalWaitingNodes)
+            {
+                Node("dumpers", d.Id, "additionalWaitingNodes", node);
+                if (node.Equals(d.WaitingNode, StringComparison.OrdinalIgnoreCase) ||
+                    node.Equals(d.DumpingNode, StringComparison.OrdinalIgnoreCase))
+                    Error("dumpers", d.Id, "additionalWaitingNodes", "附加候车位不能与主候车位或倒料位共用物理节点。");
+            }
+            foreach (var resource in d.AdditionalWaitingResources)
+            {
+                Resource("dumpers", d.Id, "additionalWaitingResources", resource);
+                if (resource.Equals(d.WaitingResource, StringComparison.OrdinalIgnoreCase) ||
+                    resource.Equals(d.DumpingResource, StringComparison.OrdinalIgnoreCase) ||
+                    resources.GetValueOrDefault(resource)?.Kind != "Waiting")
+                    Error("dumpers", d.Id, "additionalWaitingResources", "附加候车位必须绑定独立且类型为 Waiting 的容量资源。");
+            }
             Signals("dumpers", d.Id, d.PlcId, DumperInputs, DumperOutputs);
         }
         foreach (var b in p.Standbys)
@@ -133,7 +161,9 @@ public static partial class EngineeringValidator
             Node("standbys", b.Id, "nodeId", b.NodeId); Resource("standbys", b.Id, "resourceId", b.ResourceId);
             if (!pools.ContainsKey(b.PoolId)) Error("standbys", b.Id, "poolId", "待机位车辆池不存在。");
             if (b.Priority is < 0 or > 100) Error("standbys", b.Id, "priority", "优先级应在0–100之间。");
-            if (p.Dumpers.Any(d => d.WaitingNode.Equals(b.NodeId, StringComparison.OrdinalIgnoreCase) || d.DumpingNode.Equals(b.NodeId, StringComparison.OrdinalIgnoreCase)))
+            if (p.Dumpers.Any(d => d.WaitingNode.Equals(b.NodeId, StringComparison.OrdinalIgnoreCase) ||
+                d.AdditionalWaitingNodes.Contains(b.NodeId, StringComparer.OrdinalIgnoreCase) ||
+                d.DumpingNode.Equals(b.NodeId, StringComparison.OrdinalIgnoreCase)))
                 Error("standbys", b.Id, "nodeId", "待机位不能与倒料等待位或倒料位共用物理节点。");
             if (resources.GetValueOrDefault(b.ResourceId)?.Kind != "Standby") Error("standbys", b.Id, "resourceId", "待机位必须绑定Standby类型资源。");
         }
@@ -154,7 +184,9 @@ public static partial class EngineeringValidator
             if (s.Priority is < 0 or > 100) Error("stations", s.Id, "priority", "优先级应在0–100之间。");
             if (pool != null && template != null && !pool.VehicleIds.Any(id => vehicles.GetValueOrDefault(id) is { Enabled: true } v && v.Capability == template.Capability))
                 Error("stations", s.Id, "poolId", "车辆池没有具备模板所需能力的启用车辆。");
-            if (dumper != null && (graph.Find(s.PickupNode, dumper.WaitingNode) == null || graph.Find(dumper.WaitingNode, dumper.DumpingNode) == null || graph.Find(dumper.DumpingNode, s.PickupNode) == null))
+            if (dumper != null && new[] { dumper.WaitingNode }.Concat(dumper.AdditionalWaitingNodes).Any(waitingNode =>
+                graph.Find(s.PickupNode, waitingNode) == null || graph.Find(waitingNode, dumper.DumpingNode) == null ||
+                graph.Find(dumper.DumpingNode, s.PickupNode) == null))
                 Error("stations", s.Id, "pickupNode", "取货→等待→倒料→返箱路线不完整；检查道路方向与启用状态。");
             if (pool != null && !p.Standbys.Where(b => b.PoolId == pool.Id).Any(b => graph.Find(b.NodeId, s.PickupNode) != null && graph.Find(s.PickupNode, b.NodeId) != null))
                 Error("stations", s.Id, "poolId", "工位与所属车辆池待机位之间无可往返路线。");

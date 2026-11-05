@@ -48,8 +48,8 @@ describe('label', () => {
     assert.equal(label('GoToPickup'), '前往取货');
   });
 
-  it('returns raw value for unknown stages', () => {
-    assert.equal(label('SomeUnknown'), 'SomeUnknown');
+  it('hides unknown technical codes behind an operator-safe fallback', () => {
+    assert.equal(label('SomeUnknown'), '状态待核对');
   });
 
   it('returns dash for null/undefined', () => {

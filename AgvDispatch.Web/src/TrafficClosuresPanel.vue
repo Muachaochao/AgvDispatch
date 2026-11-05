@@ -118,7 +118,7 @@ onUnmounted(() => { ++epoch; clearInterval(timer); });
 
 <template>
   <section class="control-panel closures-panel">
-    <header class="section-heading"><h2>道路封锁与绕行 <small>TRAFFIC</small></h2><button @click="open = true">管理封锁 / 预览路线</button></header>
+    <header class="section-heading"><h2>道路封锁与绕行</h2><button @click="open = true">管理封锁 / 预览路线</button></header>
     <p v-if="!backend">连接当前后台后可查询道路封锁。</p>
     <p v-else-if="error" role="status">{{ error }}</p>
     <p v-else-if="page">{{ map?.id }} / {{ map?.version }} · {{ current ? '当前读取' : '记录待刷新' }} · {{ active.length }} 条有效封锁 · 读取 {{ shortTime(page.receivedAt) }}</p>

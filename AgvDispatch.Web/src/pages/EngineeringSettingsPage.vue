@@ -1,9 +1,10 @@
 ﻿<script setup lang="ts">
 import ActionIcon from '../components/ActionIcon.vue';
-import { computed, onUnmounted, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useDispatchStore } from '../stores/dispatch';
 import { taskStepName } from '../task-step-labels';
 import { effectiveWaitingSites, withWaitingSites } from '../waiting-sites';
+const props=defineProps<{embedded?:boolean}>();
 const store=useDispatchStore();
 const parameters=ref<any>(null),bindings=ref<any>(null),message=ref(''),busy=ref(false),validation=ref<any>(null),inspection=ref<any>(null);
 const waitingSitesText=ref('');
@@ -19,9 +20,10 @@ async function validate(save=false){if(!editable.value)return;await run(async n=
 async function saveBindings(){if(!editable.value)return;await run(async n=>{const b=await store.api('/api/map-bindings',{expectedRevision:bindings.value.revision,bindings:bindings.value.bindings});if(n===epoch){bindings.value=b;message.value='绑定已保存；按后台提示受控重启后生效，不代表现场坐标已验证。';inspection.value=null;}});}
 async function inspect(vehicleId:string){await run(async n=>{const x=await store.api('/api/map-bindings/inspect',{vehicleId});if(n===epoch)inspection.value=x;});}
 function addBinding(){bindings.value.bindings.push({vehicleId:'',localMapId:'',localMapVersion:'',robotMap:'',robotMapMd5:'',confirmationNote:'',coordinatesVerified:false});}
+onMounted(load);
 </script>
 <template>
-<section class="management-page engineering-settings"><header class="management-title"><h2>任务参数与厂家地图绑定</h2><button :disabled="busy||store.demoMode||!store.fresh" @click="load"><ActionIcon name="refresh"/>读取后台配置</button></header>
+<section class="management-page engineering-settings" :class="{embedded:props.embedded}"><header v-if="!props.embedded" class="management-title"><h2>任务参数与厂家地图绑定</h2><button :disabled="busy||store.demoMode||!store.fresh" @click="load"><ActionIcon name="refresh"/>读取后台配置</button></header>
 <p>配置保存不启动设备。绑定保存保留PLC、车辆和全局开关；revision冲突必须重读。坐标确认只能依据实际核对资料，不能从名称或相似图形推断。</p>
 <p v-if="store.demoMode||!store.fresh" class="inline-warning">请退出演示并连接后台后读取配置。</p><p role="status">{{message}}</p>
 <fieldset v-if="parameters" :disabled="busy||!editable"><legend>九步任务参数</legend><p>地图 {{parameters.mapId||'未激活'}} / {{parameters.mapVersionId||'无版本'}} · 修订 {{parameters.revision}}</p><p>{{parameters.explanation}}</p>
@@ -37,4 +39,4 @@ function addBinding(){bindings.value.bindings.push({vehicleId:'',localMapId:'',l
 <div v-for="(b,i) in bindings.bindings" :key="i" class="binding-card"><div class="creation-grid"><label v-for="(label,key) in {vehicleId:'车辆编号',localMapId:'本地地图ID',localMapVersion:'本地版本ID',robotMap:'厂家地图名',robotMapMd5:'厂家确认MD5',confirmationNote:'坐标与地图核对依据'}" :key="key">{{label}}<input v-model="b[key]"/></label></div><label><input v-model="b.coordinatesVerified" type="checkbox"/>已按实际资料完成坐标核对（人工声明）</label><button @click="inspect(b.vehicleId)"><ActionIcon name="search"/>只读查询车端版本／站点</button><button @click="bindings.bindings.splice(i,1)"><ActionIcon name="remove"/>移除此绑定稿</button></div>
 <button @click="addBinding"><ActionIcon name="add"/>新增绑定</button><button :disabled="!bindings.canManage" @click="saveBindings"><ActionIcon name="save"/>保存绑定配置</button><div v-if="inspection"><p>{{inspection.reason}} · {{inspection.robokitVersion}} · {{inspection.robotMap}} · {{inspection.robotMapMd5}}</p><p v-for="x in inspection.issues" :key="x">{{x}}</p><details><summary>站点与映射（只读观察）</summary><p v-for="x in inspection.mappings" :key="x.nodeId">业务 {{x.nodeId}} → 厂家 {{x.siteId}}：{{x.reason}}</p></details></div></fieldset>
 </section></template>
-<style scoped>.engineering-settings p{font-size:13px;line-height:1.8}.engineering-settings fieldset{border:1px solid #2c4563;padding:18px;margin:20px 0;min-width:0}.engineering-settings legend,.engineering-settings h3{color:#a9c9e5;margin:15px 0}.settings-row{display:flex;flex-wrap:wrap;align-items:end;gap:12px;margin:12px 0}.settings-row label{font-size:12px;display:grid;gap:5px}.settings-row input{max-width:200px}.binding-card{border-bottom:1px solid #2c4563;padding:16px 0}button{margin:6px}</style>
+<style scoped>.engineering-settings p{font-size:13px;line-height:1.8}.engineering-settings.embedded{max-width:none;margin:0}.engineering-settings fieldset{border:1px solid #2c4563;padding:18px;margin:14px 0;min-width:0}.engineering-settings legend,.engineering-settings h3{color:#a9c9e5;margin:15px 0}.settings-row{display:flex;flex-wrap:wrap;align-items:end;gap:12px;margin:12px 0}.settings-row label{font-size:12px;display:grid;gap:5px}.settings-row input{max-width:220px}.binding-card{border-bottom:1px solid #2c4563;padding:16px 0}button{margin:6px}</style>

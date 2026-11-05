@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useDispatchStore } from '../stores/dispatch';
 import NavigationDetourPanel from '../components/NavigationDetourPanel.vue';
 import type { NavigationAutoDetourRecord, NavigationDetourRecord } from '../navigation-detour';
+import { actionStateLabel, industrialText } from '../operator-labels';
 const dispatch=useDispatchStore();
 const mapReloadNeeded=ref(false),mapNotice=ref('');
 interface RecordRow {taskId:string;vendorTaskId:string;vehicleId:string;sourceSite:string;targetSite:string;robotMap:string;robotMapMd5:string;state:string;message:string;updatedAt:string;route:string[];currentStation:string|null;x:number|null;y:number|null;observedAt:string|null;detour?:NavigationDetourRecord|null;autoDetour?:NavigationAutoDetourRecord|null}
@@ -12,7 +13,6 @@ interface Stations {vehicleId:string;robotMap:string;robotMapMd5:string;stations
 interface JackStatus {ready:boolean;blockReason:string|null;vehicleId:string;telemetry:{state:number;enabled:boolean;emergency:boolean;errorCode:number;hasLoad:boolean;height:number|null;observedAt:string}|null;current:{requestId:string;action:string;state:string;message:string;updatedAt:string}|null}
 interface ForkStatus {supported:boolean;ready:boolean;blockReason:string|null;vehicleId:string;telemetry:{upperLimit:boolean;lowerLimit:boolean;pumpOn:boolean;valveOn:boolean;observedAt:string}|null;current:{requestId:string;action:string;state:string;message:string}|null}
 const fork=ref<ForkStatus|null>(null),forkError=ref(''),forkAreaClear=ref(false),forkEmpty=ref(false),forkStopBusy=ref(false);
-const forkStateLabels:Record<string,string>={Accepted:'已受理，等待反馈',Completed:'已到限位并关闭输出',ObservedTarget:'已观测目标限位',Stopped:'输出已关闭，请现场确认停稳',Rejected:'已拒绝',Uncertain:'结果不确定，禁止重发'};
 const jack=ref<JackStatus|null>(null),jackError=ref('');
 const jackLabels:Record<number,string>={0:'上升中',1:'上升到位',2:'下降中',3:'下降到位',4:'停止',255:'执行失败'};
 const status=ref<Status|null>(null),catalog=ref<Stations|null>(null),preview=ref<Preview|null>(null);
@@ -73,7 +73,7 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);});
   <div v-if="status&&!status.enabled" class="preview">
    <h3>单车测试模式未启用</h3>
    <p>当前后台未开放单车动作测试；这与地图是否发布、激活是两个独立状态。普通启动或升级重启后不会自动恢复发送许可。</p>
-   <p>恢复步骤：确认没有执行中的动作 → 使用“停止最新版Web.cmd”停止当前实例 → 使用“启动最新版Web.cmd --navigation-test-vehicle AGV-01”启动测试模式 → 回到本页查询状态。实际车辆不同请替换车辆编号。</p>
+   <p>恢复步骤：确认没有执行中的动作 → 停止当前 Web 实例 → 请维护人员以本页指定车辆重启“单车导航联调模式” → 回到本页查询状态。</p>
    <p>模式恢复后本页自动读取车端站点；每次导航仍需重新选择终点、核验路线并确认发送。</p>
   </div>
   <p v-if="mapNotice" role="status" class="notice">{{mapNotice}}</p>
@@ -113,7 +113,7 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);});
   <button :disabled="busy||active||!!readError||!status?.ready||!fork.ready||!forkAreaClear||!forkEmpty||!!forkError||fork.telemetry?.upperLimit" @click="submitFork('Up')">货叉上升</button>
   <button :disabled="busy||active||!!readError||!status?.ready||!fork.ready||!forkAreaClear||!forkEmpty||!!forkError||fork.telemetry?.lowerLimit" @click="submitFork('Down')">货叉下降</button>
   <button class="fork-stop" style="background:#633524;border-color:#dc9467" :disabled="forkStopBusy||!fork.current" @click="submitFork('Stop')">停止货叉</button>
-  <p v-if="fork.current">最近动作：{{fork.current.action==='Up'?'上升':fork.current.action==='Down'?'下降':'停止'}} · {{forkStateLabels[fork.current.state]??fork.current.state}}<br/>{{fork.current.message}}<br/>请求编号：{{fork.current.requestId}}</p>
+  <p v-if="fork.current">最近动作：{{fork.current.action==='Up'?'上升':fork.current.action==='Down'?'下降':'停止'}} · {{actionStateLabel(fork.current.state)}}<br/>{{industrialText(fork.current.message)}}<br/>请求编号：{{fork.current.requestId}}</p>
   <p class="notice">停止按钮只停止货叉，不是车辆急停。停在中间位置时禁止导航，先核对并下降到位。断线、超时或重启后仅查询，不自动重发。</p>
  </section>
  <p v-else-if="forkError" class="notice">货叉测试接口尚不可用：{{forkError}}</p>
@@ -124,17 +124,17 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);});
   <p v-if="jackError" role="alert" class="error">{{jackError}}</p>
   <p v-if="jack?.blockReason" class="notice">当前不能操作：{{jack.blockReason}}</p>
   <div v-if="jack?.telemetry" class="jack-status">
-   <strong>{{jackLabels[jack.telemetry.state]??'未知状态'}} · 原始码 {{jack.telemetry.state}}</strong>
+   <strong>{{jackLabels[jack.telemetry.state]??'状态待核对'}}</strong><details><summary>查看原始状态码</summary><code>{{jack.telemetry.state}}</code></details>
    <p>当前高度：{{jack.telemetry.height==null?'未提供':(jack.telemetry.height*1000).toFixed(1)+' mm'}} · {{jack.telemetry.enabled?'机构已启用':'机构未启用'}} · {{jack.telemetry.hasLoad?'报告有料':'报告无料'}}<br/>故障码：{{jack.telemetry.errorCode}} · {{jack.telemetry.emergency?'顶升急停':'无顶升急停'}}<br/>观测时间：{{new Date(jack.telemetry.observedAt).toLocaleString()}}</p>
   </div>
   <p v-else>尚未取得可靠顶升反馈；未配置或不支持此接口的车辆不能通过此入口操作。</p>
   <div><button :disabled="busy||active||!status?.ready||!jack?.ready||!!jackError||jack?.telemetry?.state===1" @click="submitJack('Up')">顶升上升</button><button :disabled="busy||active||!status?.ready||!jack?.ready||!!jackError||jack?.telemetry?.state===3" @click="submitJack('Down')">顶升下降</button></div>
-  <p v-if="jack?.current">最近动作：{{jack.current.action==='Up'?'上升':'下降'}} · {{jack.current.state}}<br/>{{jack.current.message}}<br/>请求编号：{{jack.current.requestId}}</p>
+  <p v-if="jack?.current">最近动作：{{jack.current.action==='Up'?'上升':'下降'}} · {{actionStateLabel(jack.current.state)}}<br/>{{industrialText(jack.current.message)}}<br/>请求编号：{{jack.current.requestId}}</p>
   <p class="notice">发送应答不代表到位；以车端顶升反馈及现场观察核对。连接中断或重启后不自动重发动作。</p>
  </section>
  <section>
   <h3>{{status?.current&&!active?'最近一次导航记录（已结束）':'本次任务与执行状态'}}</h3><button :disabled="busy" @click="refresh">查询原任务</button>
-  <template v-if="status?.current"><h3>{{labels[status.current.state]||status.current.state}}</h3>
+  <template v-if="status?.current"><h3>{{labels[status.current.state]||'导航状态待核对'}}</h3><details><summary>查看原始导航状态</summary><code>{{status.current.state}}</code></details>
    <p class="notice">记录所属地图：{{status.current.robotMap}} · {{new Date(status.current.updatedAt).toLocaleString()}}。{{!active?'这是已结束的历史记录，不表示当前地图已经核验，也不代表当前允许发送。':''}}</p>
    <p>{{status.current.sourceSite}} → {{status.current.targetSite}} · {{status.current.vehicleId}}</p>
    <p v-if="status.current.route?.length">核验路线：{{status.current.route.join(' → ')}}</p>

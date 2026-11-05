@@ -7,7 +7,26 @@ internal static class RuntimeCompilerChecks
 {
     public static void Run(Action<bool,string> check)
     {
-        var plan = EngineeringSample.Create(300,5);
+        var baseline = EngineeringSample.Create(300,5);
+        var plan = baseline with
+        {
+            Nodes = [..baseline.Nodes, new("WAIT-2", "SIM-WAIT-2", 11, 0)],
+            Edges =
+            [
+                ..baseline.Edges,
+                new("MAIN-WAIT-2", "MAIN", "WAIT-2", 11, .5, []),
+                new("WAIT-2-DUMP", "WAIT-2", "DUMP", 1, .3, [])
+            ],
+            Resources = [..baseline.Resources, new("WAIT-BAY-2", "第二倒料等待位", "Waiting")],
+            Dumpers =
+            [
+                baseline.Dumpers.Single() with
+                {
+                    AdditionalWaitingNodes = ["WAIT-2"],
+                    AdditionalWaitingResources = ["WAIT-BAY-2"]
+                }
+            ]
+        };
         var version = new EngineeringVersion(Guid.NewGuid().ToString("N"),"draft",DateTimeOffset.UtcNow,"runtime fixture",plan,EngineeringStore.Hash(plan));
         var map = new MapDefinition("synthetic runtime","synthetic","RobotWorld","m",
             plan.Nodes.Select(n => new MapNode(n.Id,n.X,n.Y,MapNodeType.Station,n.Enabled,[],n.VendorSite)).ToArray(),
@@ -33,15 +52,20 @@ internal static class RuntimeCompilerChecks
             EngineeringRuntimeCompiler.Compile(v??version,w??workspace,p??parameters,c??communication);
         var result=Compile();
         check(result.Ready&&result.MapActive,"300工位5车工程可编译为真实九步参数");
+        check(EngineeringValidator.Validate(plan).Valid,"双倒料候车位工程通过拓扑、容量和资源校验");
         check(result.Configuration!.Pickups.Count==300&&result.Configuration.Pickups.All(p=>p.AllowedVehicleIds!.Count==5),"所有工位保留明确车辆池白名单");
         check(result.Configuration.Standbys.Count==plan.Standbys.Count && result.Configuration.Standbys.All(b=>b.AllowedVehicleIds.Count==5),"待机位及明确车辆池授权随工程版本编译");
         check(result.Configuration.WaitingSite==plan.Dumpers.Single().WaitingNode &&
-            result.Configuration.WaitingSites.SequenceEqual(new[]{plan.Dumpers.Single().WaitingNode}),
-            "切换工程地图后候车位仅使用新倒料等待点，不继承旧地图的多等待位");
+            result.Configuration.WaitingSites.SequenceEqual(new[]{plan.Dumpers.Single().WaitingNode,"WAIT-2"}),
+            "切换工程地图后保留工程配置的多个独立倒料候车位");
         check(config.WaitingSites.SequenceEqual(new[]{"OLDWAIT","OLDWAIT-SECOND"}) &&
             config.EngineeringSource!.MapDefinitionHash=="OLD-MAP-HASH",
             "新地图编译不改写原任务参数及旧工程来源");
         check(result.Configuration.Actions.SequenceEqual(config.Actions)&&result.Configuration.StepTimeouts.SequenceEqual(config.StepTimeouts),"编译保留当前车辆动作和超时，不从模拟耗时推断动作");
+        check(result.Configuration.TaskTemplate is { Nodes.Count:12 } runtimeTemplate &&
+            runtimeTemplate.Variables.Count==17 && runtimeTemplate.Connections.Count>0 && runtimeTemplate.Guards.Count==5,
+            "工程编译同时下发模板输入、类型化连接、十二个节点和异常分支策略");
+        check(result.Configuration.TaskTemplate!.Nodes.All(n=>!n.AutoRetry),"运行模板快照禁止机械和握手节点自动重试");
         check(result.Configuration.EngineeringSource?.MapDefinitionHash==EngineeringRuntimeIdentity.MapHash(map),"绑定完整原地图摘要，包含曲线控制点");
         check(workspace.Published!.Definition.Edges[0].GeometryKind==MapEdgeGeometryKind.CubicBezier&&workspace.Published.Definition.Edges[0].ControlPoints![0].Y==2,"编译不覆盖厂家曲线");
         check(!Compile(version with { ContentHash=new string('0',64) }).Ready,"工程内容被修改必须拒绝");

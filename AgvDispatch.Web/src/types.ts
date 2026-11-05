@@ -21,13 +21,24 @@ export interface Snapshot { receivedAt: string; connected: boolean; source: 'dem
   positionedVehicleIds: string[]; status: { service?:{version:string;startedAt:string};execution?:import('./commissioning').BackendExecution; generatedAt: string; agvs: Vehicle[]; safety: { dispatchingEnabled: boolean; plcWritesAllowed: boolean; agvCommandsAllowed: boolean }; plc: { state: string; goodSignals: number; totalSignals: number } } | null;
   tasks: { items: TaskRow[]; totalCount: number; summary?: TaskListSummary | null } | null; devices: { equipment: Device[] } | null;
   resources: { resourceId: string; capacity: number; occupiedCount: number; leases: { vehicleId: string; taskId: string }[] }[] | null }
-export interface TaskDetail { cancellation?:{requestId:string;reason:string;requestedAt?:string;sendAttempts:number;sentAt?:string;confirmedAt?:string}; handshakeMode?:string; handshakeContractVersion?:string; handshakes?:HandshakeCheckpoint[]; handover?:HandoverDiagnosis; task: TaskRow; waitingExplanation: string; steps: { stepId?:string; observedPhase?:string; completionRequirement?:string; evidenceBoundary?:string; commandStateExplanation?:string; progressConditions?:ProgressCondition[]; sequence: number; stepType: string; status: string; isCurrent: boolean; waitingExplanation: string; vendorTaskId?: string; sourceSite?:string; destinationSite?:string; elapsedText?:string; timeoutText?:string; errorMessage?:string }[];
+export interface TaskDetail { cancellation?:{requestId:string;reason:string;requestedAt?:string;sendAttempts:number;sentAt?:string;confirmedAt?:string}; pause?:{requestId:string;originalStage:string;stepId:string;reason:string;requestedBy:string;requestedAt:string;resumeRequestId?:string;resumeReason:string;resumedAt?:string;active:boolean}; handshakeMode?:string; handshakeContractVersion?:string; handshakes?:HandshakeCheckpoint[]; handover?:HandoverDiagnosis; dependencies?:{taskId:string;exists:boolean;stage?:string;updatedAt?:string;completed:boolean}[]; task: TaskRow; waitingExplanation: string; steps: { stepId?:string; observedPhase?:string; completionRequirement?:string; evidenceBoundary?:string; commandStateExplanation?:string; progressConditions?:ProgressCondition[]; templateNodeId?:string; failurePolicy?:string; timeoutAction?:string; autoRetry?:boolean; sequence: number; stepType: string; status: string; isCurrent: boolean; waitingExplanation: string; vendorTaskId?: string; sourceSite?:string; destinationSite?:string; elapsedText?:string; timeoutText?:string; errorMessage?:string }[];
   diagnosticsObservedAt?:string; executionTimelineTotal?:number; executionTimeline?:ExecutionEvent[];
+  template?:TaskTemplateRuntime|null;
   commands?: {route?:TaskRoute|null;commandId:string;stepId:string;status:string;attemptCount:number;lastError?:string;vendorCommandId?:string}[];
   resources?: {resourceId:string;vehicleId:string;expiresAt:string;heartbeatExpired:boolean}[];
   plcConditions: { stationId: string; variableName: string; currentValue: boolean | null; expectedValue: boolean; quality: string; satisfied: boolean }[] }
+export interface TaskTemplateRuntime {
+  id:string;version:number;contentHash:string;engine:string;
+  inputs:{key:string;label:string;type:string;required:boolean;source:string}[];
+  outputs:{key:string;label:string;type:string;required:boolean;source:string}[];
+  variables:{key:string;label:string;type:string;producer:string}[];
+  nodes:{id:string;block:string;name:string;inputs:string[];outputs:string[];condition:string;failurePolicy:string;timeoutAction:string;timeoutSeconds:number;autoRetry:boolean}[];
+  connections:{fromNodeId:string;output:string;toNodeId:string;input:string;type:string;external:boolean}[];
+  guards:{id:string;trigger:string;action:string;targetNodeId:string;description:string}[];
+}
 export interface CreationOptions { available: boolean; explanation: string; mapId: string; mapVersionId: string; parameterRevision: string;
   waitingSite?: string; waitingSites?: string[]; dumpingSite?: string;
+    template?:TaskTemplateRuntime|null;
     standbys?: {id:string;site:string;vehiclePoolId:string;allowedVehicleIds:string[];priority:number}[];
     stations: { stationId: string; pickupSite: string; available: boolean; configurationValid?: boolean; explanation: string; pickupReachableVehicleIds?: string[];vehiclePoolId?:string;allowedVehicleIds?:string[]|null }[]; vehicles: { vehicleId: string; label: string; available: boolean; explanation: string }[] }
 export interface RoutePreview { verified: boolean; message: string; mapIssue: string; legs: { sequence: number; name: string; logicalPath: string; vendorPath: string; message: string }[];

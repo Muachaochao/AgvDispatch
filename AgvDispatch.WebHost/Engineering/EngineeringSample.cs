@@ -7,7 +7,7 @@ public static class EngineeringSample
         if (count is < 1 or > 1000 || vehicleCount is < 1 or > 20) throw new ArgumentException("示例工位1–1000、车辆1–20。");
         var p = new EngineeringPlan { Name = $"隔离示例 · {count}工位 / {vehicleCount}车", MapId = "SIM-FACTORY", MapVersion = "SIM-1" };
         p.Plcs.Add(new("PLC-SIM", "simulation.invalid", 10200));
-        p.Templates.Add(new("BOX-CYCLE", "标准取箱倒料返箱", "Jack"));
+        p.Templates.Add(EngineeringTaskTemplates.Create("BOX-CYCLE", "标准取箱倒料返箱", "Jack"));
         p.Nodes.Add(new("MAIN", "SIM-MAIN", 0, 0));
         p.Nodes.Add(new("WAIT", "SIM-WAIT", 10, 0)); p.Nodes.Add(new("DUMP", "SIM-DUMP", 12, 0));
         p.Resources.Add(new("WAIT-BAY", "倒料等待位", "Waiting")); p.Resources.Add(new("DUMP-AREA", "倒料区域", "Dumper"));

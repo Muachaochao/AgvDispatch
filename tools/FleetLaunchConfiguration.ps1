@@ -4,8 +4,12 @@ function Resolve-FleetLaunchSelection {
     $fleetIds=@($VehicleIds)
     $fleetConcurrency=$MaxConcurrentTasks
     if($fleetIds.Count -eq 0){
-        foreach($fleetName in @('启动多车联调Web.cmd','启动双车联调Web.cmd')){
-            $fleetEntry=Join-Path $Root $fleetName
+        $fleetCandidates=@(
+            (Join-Path $Root '高级工具\多车联调\启动多车联调Web.cmd'),
+            (Join-Path $Root '启动多车联调Web.cmd'),
+            (Join-Path $Root '启动双车联调Web.cmd')
+        )
+        foreach($fleetEntry in $fleetCandidates){
             if(!(Test-Path -LiteralPath $fleetEntry)){continue}
             $fleetSource=[IO.File]::ReadAllText($fleetEntry)
             # CMD removes surrounding quotes from both option names and values.

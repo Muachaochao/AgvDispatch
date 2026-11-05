@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue';
 import { useDispatchStore } from '../stores/dispatch';
 import { autoDetourStateLabels, detourCanContinue, detourPreviewCurrent, detourStateLabels,
   type NavigationDetourCurrent, type NavigationDetourPreview } from '../navigation-detour';
+import { industrialText } from '../operator-labels';
 
 const props = defineProps<{ current: NavigationDetourCurrent; enabled: boolean; readCurrent: boolean; busy: boolean; now: number;
   autoDetourEnabled: boolean; autoDetourWaitSeconds: number }>();
@@ -65,21 +66,22 @@ watch(() => props.current.detour?.state, () => { cancelConfirmed.value = false; 
     <p>短时障碍先等待车端恢复；持续受阻后，系统会按原任务路线和车辆实际站点自动推断受阻路段。无法唯一判断时，再到总览核对并封锁受影响通道。</p>
     <p class="detour-note">按车辆实际停稳的站点接入候选。车辆停在站点之间时，当前入口保持等待，不能冒用最近站点作为新起点。</p>
     <RouterLink to="/">前往总览核对道路封锁</RouterLink>
-    <p v-if="error" role="alert" class="detour-error">{{ error }}</p>
+    <p v-if="error" role="alert" class="detour-error">{{ industrialText(error) }}</p>
     <p v-if="!readCurrent" role="status">原任务状态尚未取得或已失效，请先查询原任务。</p>
     <div v-if="current.autoDetour" class="detour-candidate detour-auto-record">
-      <h4>{{ autoDetourStateLabels[current.autoDetour.state] || current.autoDetour.state }}</h4>
-      <p>{{ current.autoDetour.message }}</p>
+      <h4>{{ autoDetourStateLabels[current.autoDetour.state] || '自动改道状态待核对' }}</h4>
+      <details><summary>查看原始自动改道状态</summary><code>{{current.autoDetour.state}}</code></details>
+      <p>{{ industrialText(current.autoDetour.message) }}</p>
       <p v-if="current.autoDetour.sourceSite">实际接入点：{{ current.autoDetour.sourceSite }} · 推断受阻下一站：{{ current.autoDetour.blockedToSite || '待核对' }}</p>
       <p v-if="current.autoDetour.blockedEdgeIds.length">推断受阻道路：{{ current.autoDetour.blockedEdgeIds.join('、') }}</p>
       <p v-if="current.autoDetour.candidateRoute.length" class="detour-route">{{ current.autoDetour.candidateRoute.join(' → ') }}</p>
-      <p v-if="current.autoDetour.planMessage">{{ current.autoDetour.planMessage }}</p>
+      <p v-if="current.autoDetour.planMessage">{{ industrialText(current.autoDetour.planMessage) }}</p>
       <p>最近自动判定：{{ new Date(current.autoDetour.updatedAt).toLocaleString() }}</p>
     </div>
     <button v-if="!autoDetourEnabled && (!current.detour || canRepreview)" :disabled="!canPreview" @click="preview">{{ current.detour ? '重新核验实际接入点与候选' : '核验实际接入点并预览改道' }}</button>
       <div v-if="candidate" class="detour-candidate">
         <h4>{{ !previewCurrent ? '候选已失效，请重新核验' : candidate.plan.available ? current.detour ? '已重新核验候选 · 等待明确确认' : '已找到备选路线 · 尚未结束原导航' : '无可执行的备选路线 · 保持原任务等待' }}</h4>
-        <p>{{ candidate.plan.message }}</p>
+        <p>{{ industrialText(candidate.plan.message) }}</p>
         <p v-if="candidate.plan.route.length" class="detour-route">{{ candidate.plan.route.join(' → ') }}</p>
         <p v-if="candidate.plan.blockedEdgeIds.length">自动推断受阻道路：{{ candidate.plan.blockedEdgeIds.join('、') }}</p>
         <p>实际接入点：{{ candidate.plan.sourceSite }} · 原终点：{{ candidate.plan.targetSite }}<br/>运行地图：{{ candidate.plan.mapId }} / {{ candidate.plan.versionId }} · 封锁修订：{{ candidate.plan.closureRevision }}<br/>车端地图：{{ candidate.plan.robotMap }} · {{ candidate.plan.robotMapMd5 }}</p>
@@ -88,7 +90,7 @@ watch(() => props.current.detour?.state, () => { cancelConfirmed.value = false; 
         <button :disabled="!canConfirm" @click="confirm">{{ current.detour ? '确认更新候选并核验停稳' : '确认结束原导航，等待停稳核验' }}</button>
       </div>
     <div v-if="current.detour" class="detour-candidate">
-      <h4>{{ detourStateLabels[current.detour.state] || current.detour.state }}</h4><p>{{ current.detour.message }}</p>
+      <h4>{{ detourStateLabels[current.detour.state] || '改道状态待核对' }}</h4><details><summary>查看原始改道状态</summary><code>{{current.detour.state}}</code></details><p>{{ industrialText(current.detour.message) }}</p>
       <p>原路线：{{ current.detour.originalRoute.join(' → ') }}<br/>备选路线：{{ current.detour.plan.route.join(' → ') }}</p>
       <p>原车端任务：{{ current.detour.originalVendorTaskIds.join('、') }}<br/>新车端任务：{{ current.detour.newVendorTaskIds.join('、') || '尚未下发' }}</p>
       <template v-if="current.detour.state === 'Ready' && !candidate">

@@ -5,4 +5,8 @@ const names: Record<string, string> = {
   ReturnEmptyBox: '返回取货点', PlaceEmptyBox: '放置空箱',
   CompletePlcHandshake: '完成PLC握手'
 };
-export function taskStepName(value: string): string { return names[value] ?? value; }
+export function taskStepName(value: string): string {
+  const known = names[value];
+  if (known) return known;
+  return /[\u3400-\u9fff]/.test(value) ? value : '业务步骤待核对';
+}
