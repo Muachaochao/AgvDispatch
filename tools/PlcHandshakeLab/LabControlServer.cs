@@ -15,7 +15,7 @@ public sealed class LabControlServer(NetworkLab lab, int port = 10201) : IAsyncD
         if (lab.Config.BindAddress != "127.0.0.1" || lab.Config.Port != 10200 || lab.Config.AllowedClient != "127.0.0.1") return;
         listener.Prefixes.Add($"http://127.0.0.1:{port}/"); listener.Start(); worker = RunAsync();
     }
-    private sealed record Plan(string RunId, string[] Stations, int Rounds, bool Stop);
+    private sealed record Plan(string RunId, string[] Stations, int Rounds, bool Stop, bool ResumeAfterCharge = false);
     private async Task RunAsync()
     {
         while (listener.IsListening)
@@ -35,7 +35,7 @@ public sealed class LabControlServer(NetworkLab lab, int port = 10201) : IAsyncD
                 if (capabilities)
                 {
                     context.Response.ContentType = "application/json";
-                    await context.Response.OutputStream.WriteAsync(System.Text.Encoding.UTF8.GetBytes("{\"boxFeedbackContract\":\"business-box-action-v1\",\"fleetContract\":\"fleet-box-action-v1\"}"));
+                    await context.Response.OutputStream.WriteAsync(System.Text.Encoding.UTF8.GetBytes("{\"boxFeedbackContract\":\"business-box-action-v1\",\"fleetContract\":\"fleet-box-action-v1\",\"chargeResumeContract\":\"business-charge-resume-v1\"}"));
                     continue;
                 }
                 // JsonContent may use chunked transfer. Bound the decoded body too.
@@ -59,7 +59,7 @@ public sealed class LabControlServer(NetworkLab lab, int port = 10201) : IAsyncD
                 {
                     var plan = JsonSerializer.Deserialize<Plan>(body.ToArray(), new JsonSerializerOptions(JsonSerializerDefaults.Web))
                         ?? throw new ArgumentException("控制参数为空。");
-                    lab.ConfigureCalls(plan.RunId, plan.Stations, plan.Rounds, plan.Stop);
+                    lab.ConfigureCalls(plan.RunId, plan.Stations, plan.Rounds, plan.Stop, plan.ResumeAfterCharge);
                 }
                 context.Response.StatusCode = 200;
             }

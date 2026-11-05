@@ -106,6 +106,14 @@ public partial class NetworkWindow : Window
         Station.ItemsSource = _mapping.Where(p => p.Signal == 0).Select(p => p.Station).ToArray();
         Station.SelectedItem = selected;
         if (Station.SelectedIndex < 0) Station.SelectedIndex = 0;
+        var selectedBatch = BatchStationList.SelectedItems.Cast<string>().ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var batchStations = _mapping.Where(p => p.Signal == 0).Select(p => p.Station).ToArray();
+        BatchStationList.ItemsSource = batchStations;
+        BatchStationList.UnselectAll();
+        if (selectedBatch.Count == 0)
+            selectedBatch = batchStations.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var station in batchStations.Where(selectedBatch.Contains))
+            BatchStationList.SelectedItems.Add(station);
         StageChoice.SelectedIndex = _markedStages.GetValueOrDefault(SelectedStation);
         _loading = false;
         _pointsSignature = "";
@@ -172,6 +180,7 @@ public partial class NetworkWindow : Window
         var server = _server; _server = null;
         try
         {
+            _lab?.StopBatchCalls();
             if (server is not null) await server.DisposeAsync();
             if (_control is not null) { await _control.DisposeAsync(); _control = null; }
             if (server is not null && _lab is not null) _lab.Note("停止", "服务停止；调度连接断开，当前内存仅供回看。再次启动创建新会话并应用初值。");
@@ -194,6 +203,12 @@ public partial class NetworkWindow : Window
     private void AutoMode_Changed(object sender, SelectionChangedEventArgs e)
     {
         if (_loading || _lab is null || _server is null) return;
+        if (AutoMode.SelectedIndex == 0 && _lab.BatchCallActive)
+        {
+            Message.Text = "同批自动多轮运行期间不能切换到人工模式；请先停止后续轮次并核对当前P/H闭合。";
+            _loading = true; AutoMode.SelectedIndex = 1; _loading = false;
+            return;
+        }
         try { _lab.SetAutomatic(AutoMode.SelectedIndex == 1); RefreshPanel(); }
         catch (Exception ex)
         {
@@ -223,6 +238,44 @@ public partial class NetworkWindow : Window
     }
     private void StageBack_Click(object sender, RoutedEventArgs e) => StageChoice.SelectedIndex = Math.Max(0, StageChoice.SelectedIndex - 1);
     private void StageNext_Click(object sender, RoutedEventArgs e) => StageChoice.SelectedIndex = Math.Min(27, StageChoice.SelectedIndex + 1);
+    private void BatchStation_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (!_loading && BatchCallStatusText is not null) RefreshPanel();
+    }
+    private void BatchCallOnce_Click(object sender, RoutedEventArgs e) => StartBatchCalls(1);
+    private void BatchCallRounds_Click(object sender, RoutedEventArgs e)
+    {
+        if (!int.TryParse(BatchRoundsText.Text.Trim(), out var rounds) || rounds is < 1 or > 100)
+        {
+            Message.Text = "自动多轮次数应为1至100；当前没有写入任何工位。";
+            return;
+        }
+        StartBatchCalls(rounds);
+    }
+    private void StartBatchCalls(int rounds)
+    {
+        if (_server is null || _lab is null) return;
+        try
+        {
+            var health = CommunicationStatus.Evaluate(true, _server.Clients, _server.LastDataRequest, DateTimeOffset.Now);
+            if (!health.Fresh) throw new InvalidOperationException("调度尚未连接或S7通信无效，不能同批触发。");
+            var stations = BatchStationList.SelectedItems.Cast<string>().ToArray();
+            _lab.StartBatchCalls(stations, rounds);
+            Message.Text = $"已提交{stations.Length}个工位的同批呼叫；当前第1轮，后续轮次只在全部工位完整闭环后触发。";
+            RefreshPanel();
+        }
+        catch (Exception ex) { Message.Text = "同批呼叫未启动：" + ex.Message; RefreshPanel(); }
+    }
+    private void BatchStop_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            _lab?.StopBatchCalls();
+            Message.Text = "已停止后续自动轮次；没有清除P/H电平，当前轮次仍须按正常流程闭合。";
+            RefreshPanel();
+        }
+        catch (Exception ex) { Message.Text = "停止同批轮次失败：" + ex.Message; }
+    }
     private void SetHigh_Click(object sender, RoutedEventArgs e) => ManualSet((int)((Button)sender).Tag, true);
     private void SetLow_Click(object sender, RoutedEventArgs e) => ManualSet((int)((Button)sender).Tag, false);
     private void ManualSet(int signal, bool value)
@@ -254,6 +307,11 @@ public partial class NetworkWindow : Window
         if (_lab is not null && AutoMode.SelectedIndex != (_lab.Automatic ? 1 : 0))
         { _loading = true; AutoMode.SelectedIndex = _lab.Automatic ? 1 : 0; _loading = false; }
         AutoState.Text = "模拟周期：" + (_lab?.AutomaticStatus ?? "尚未启动") + "；" + (_lab?.CallPlanStatus ?? "未启动循环呼叫") + "；模拟反馈不作为物理验收证据。";
+        BatchCallStatusText.Text = _lab?.BatchCallStatus ?? "启动服务并连接调度后，可把所选工位在同一次扫描中置1。";
+        var batchRunning = _lab?.BatchCallActive == true;
+        BatchCallOnceButton.IsEnabled = active && _lab is not null && !batchRunning && BatchStationList.SelectedItems.Count >= 2;
+        BatchCallRoundsButton.IsEnabled = BatchCallOnceButton.IsEnabled;
+        BatchStopButton.IsEnabled = active && batchRunning;
         ConnectionStatus.Text = _server is null ? "服务未运行 · 停止后的电平只供回看" : _server.Fault ??
             $"{_lab!.Config.BindAddress}:{_server.Port} · 连接 {_server.Clients} · 最近请求 {(_server.LastRequest is { } last ? last.ToString("HH:mm:ss") + $" / {(DateTimeOffset.Now - last).TotalSeconds:F1}s前" : "尚无")} ";
         if (_server?.Fault is { } fault) Message.Text = fault;
@@ -325,7 +383,7 @@ public partial class NetworkWindow : Window
         RefreshPanel();
     }
 
-    private void OpenEvents_Click(object sender, RoutedEventArgs e) => NetworkTabs.SelectedIndex = 3;
+    private void OpenEvents_Click(object sender, RoutedEventArgs e) => NetworkTabs.SelectedIndex = 4;
 
     private void ResultFilter_Changed(object sender, RoutedEventArgs e)
     {
@@ -503,7 +561,34 @@ public partial class NetworkWindow : Window
 
     private async void RunSmokeAsync(object sender, RoutedEventArgs e)
     {
-        var args = Environment.GetCommandLineArgs(); var at = Array.IndexOf(args, "--network-smoke-test");
+        var args = Environment.GetCommandLineArgs();
+        if (args.Contains("--network-auto-serve"))
+        {
+            try
+            {
+                var configAt = Array.IndexOf(args, "--config");
+                if (configAt >= 0)
+                {
+                    if (configAt + 1 >= args.Length) throw new ArgumentException("--config 缺少配置文件路径。");
+                    var config = JsonSerializer.Deserialize<NetworkLabConfig>(
+                        File.ReadAllText(Path.GetFullPath(args[configAt + 1])),
+                        new JsonSerializerOptions(JsonSerializerDefaults.Web))
+                        ?? throw new InvalidDataException("PLC联调台配置为空。");
+                    LoadConfig(config);
+                }
+                AutoMode.SelectedIndex = 1;
+                Start_Click(this, new());
+                if (_server is null) throw new InvalidOperationException(Message.Text);
+                if (!args.Contains("--show")) Hide();
+                return;
+            }
+            catch (Exception ex)
+            {
+                Message.Text = "自动服务启动失败：" + ex.Message;
+                return;
+            }
+        }
+        var at = Array.IndexOf(args, "--network-smoke-test");
         if (at < 0 || at + 1 >= args.Length) return;
         var path = Path.GetFullPath(args[at + 1]);
         void RenderWindow(string destination, Window? target = null)
@@ -519,6 +604,12 @@ public partial class NetworkWindow : Window
             PortText.Text = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port.ToString(); listener.Stop();
             Start_Click(this, new());
             if (_server is null || _lab is null) throw new InvalidOperationException(Message.Text);
+            if (BatchStationList.Items.Count != 4 || BatchStationList.SelectedItems.Count != 4)
+                throw new InvalidOperationException("同批呼叫页未默认选择当前四个工位");
+            NetworkTabs.SelectedIndex = 1;
+            await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle); UpdateLayout();
+            RenderWindow(path + ".batch.png");
+            NetworkTabs.SelectedIndex = 0;
             ManualSet(0, true);
             StageChoice.SelectedIndex = 2;
             var before = _lab.Snapshot(SelectedStation).Select(s => s.Value).ToArray();
@@ -550,7 +641,7 @@ public partial class NetworkWindow : Window
                 throw new InvalidOperationException("阶段结果或未测状态未保存");
             await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle); UpdateLayout();
             RenderWindow(path);
-            NetworkTabs.SelectedIndex = 1;
+            NetworkTabs.SelectedIndex = 2;
             await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
             if (!TestSummary.Text.Contains("失败 1") || StageResults.Items.Count != 28) throw new InvalidOperationException("阶段结果页未反映28阶段及失败记录");
             var inspectedBefore = _lab.Snapshot(SelectedStation).Select(s => s.Value).ToArray();
@@ -602,7 +693,7 @@ public partial class NetworkWindow : Window
             }
             RenderWindow(path + ".compact.png");
             Width = 1380; Height = 900;
-            NetworkTabs.SelectedIndex = 3;
+            NetworkTabs.SelectedIndex = 4;
             LogExpander.IsExpanded = true;
             await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
             RenderWindow(path + ".events.png");

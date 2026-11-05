@@ -20,7 +20,13 @@ public partial class MainWindow
             var originalStage = _session.Current;
             var stationArg = Array.IndexOf(args, "--station");
             if (stationArg >= 0 && stationArg + 1 < args.Length)
-                LiveStation.SelectedIndex = args[stationArg + 1] == "CNC-002" ? 1 : 0;
+            {
+                var requested = args[stationArg + 1];
+                var index = _live.Stations.ToList().FindIndex(station =>
+                    string.Equals(station, requested, StringComparison.OrdinalIgnoreCase));
+                if (index < 0) throw new InvalidOperationException("指定工位不在当前虚拟PLC点表中。");
+                LiveStation.SelectedIndex = index;
+            }
             if (args.Contains("--trigger-call"))
             {
                 if (_live.Read(SelectedStation).Values[0]) throw new InvalidOperationException("需要未呼叫工位验证输入，不借用旧高电平。");

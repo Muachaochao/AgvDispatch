@@ -63,7 +63,8 @@ public sealed class LabViewModel : INotifyPropertyChanged
         for (var i = 0; i < 10; i++)
         {
             var definition = Sequence.Signals[i];
-            var address = i < 6 && station == "CNC-002" ? definition.Address.Replace("0.", "2.") : definition.Address;
+            var address = snapshot is null ? definition.Address :
+                definition.Address[(definition.Address.IndexOf('.') + 1)..].Insert(0, snapshot.Offset + ".");
             bool? value = snapshot?.Values[i];
             Signals.Add(new(i, definition.Name, $"{definition.Owner} : DB1.DBX{address}", value is null ? "?" : value.Value ? "1" : "0",
                 i == 0 ? "输入：置1发起呼叫" : "只读：设备实际值",
@@ -83,7 +84,28 @@ public partial class MainWindow : Window
     {
         Stop("已暂停离线演示");
         Refresh();
-        new NetworkWindow { Owner = this }.ShowDialog();
+        OpenConsole(restoreOnClose: false);
+    }
+    private void OpenConsoleOnly_Click(object sender, RoutedEventArgs e)
+    {
+        Stop("已暂停离线演示");
+        Refresh();
+        WindowState = WindowState.Minimized;
+        OpenConsole(restoreOnClose: true);
+    }
+    private void OpenConsole(bool restoreOnClose)
+    {
+        var console = new NetworkWindow { Owner = this, WindowStartupLocation = WindowStartupLocation.Manual };
+        var area = SystemParameters.WorkArea;
+        // Put the console beside the lab instead of on top of it; fall back to an
+        // offset when the screen is too narrow, and keep it fully on the work area.
+        var left = Math.Min(Left + ActualWidth - 160, area.Right - console.Width - 16);
+        if (left < area.Left + 16) left = Math.Max(area.Left + 16, Left + 48);
+        console.Left = Math.Min(left, Math.Max(area.Left, area.Right - console.Width - 16));
+        console.Top = Math.Clamp(Top + 24, area.Top, Math.Max(area.Top, area.Bottom - console.Height - 16));
+        if (restoreOnClose)
+            console.Closed += (_, _) => { WindowState = WindowState.Normal; Activate(); };
+        console.Show();
     }
     private readonly LabSession _session = new();
     private readonly LabViewModel _viewModel = new();
@@ -94,10 +116,11 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _liveTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
     private readonly List<LabEvent> _liveEvents = [];
     private readonly Dictionary<string, bool[]> _previous = new();
+    private readonly LiveBatchCallPlan _batchPlan = new();
     private string? _pendingStation;
     private DateTimeOffset _pendingAt;
     private string _liveMessage = "";
-    private string SelectedStation => ((ComboBoxItem)LiveStation.SelectedItem).Content.ToString()!;
+    private string SelectedStation => LiveStation.SelectedItem as string ?? "";
 
     public MainWindow()
     {
@@ -198,6 +221,9 @@ public partial class MainWindow : Window
         {
             if (position + 1 >= args.Length) throw new ArgumentException("缺少截图路径");
             await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
+            if (BatchCallButton is null || MultiRoundCallButton is null || StopBatchButton is null ||
+                BatchStationsText is null || BatchRoundsText.Text.Trim() != "1")
+                throw new InvalidOperationException("同批呼叫控件未完整加载");
             Timeline.SelectedIndex = 9;
             if (_session.Current != 9) throw new InvalidOperationException("表格跳转未生效");
             _session.Toggle(8);
@@ -254,10 +280,14 @@ public partial class MainWindow : Window
         try
         {
             var connection = new LivePlcConnection(LabRoot.Text);
-            connection.Read(SelectedStation);
             Stop("联调时禁止自动演示");
             _live = connection; _previous.Clear(); _pendingStation = null;
-            _liveMessage = "已连接虚拟PLC。先选择工位，再触发满箱呼叫。";
+            _batchPlan.Stop();
+            LiveStation.ItemsSource = connection.Stations;
+            LiveStation.SelectedIndex = connection.Stations.Count > 0 ? 0 : -1;
+            BatchStationsText.Text = string.Join(", ", connection.Stations);
+            connection.Read(SelectedStation);
+            _liveMessage = $"已连接虚拟PLC，共{connection.Stations.Count}个工位。可单站呼叫、同批并发，或按闭环条件自动多轮。";
             ModeLabel.Text = "虚拟PLC联调 · 不连接现场设备";
             OfflineControls.IsEnabled = false; Timeline.IsEnabled = false; LabRoot.IsEnabled = false;
             AddLiveEvent("连接", "", "", "", "连接 " + connection.Root);
@@ -267,8 +297,10 @@ public partial class MainWindow : Window
     }
     private void DisconnectLab_Click(object sender, RoutedEventArgs e)
     {
-        _liveTimer.Stop(); _live = null; _pendingStation = null;
+        _liveTimer.Stop(); _live = null; _pendingStation = null; _batchPlan.Stop("已断开虚拟PLC，多轮呼叫停止");
         OfflineControls.IsEnabled = true; Timeline.IsEnabled = true; LabRoot.IsEnabled = true; CallButton.IsEnabled = false;
+        BatchCallButton.IsEnabled = MultiRoundCallButton.IsEnabled = StopBatchButton.IsEnabled = false;
+        LiveStation.ItemsSource = null; BatchStationsText.Text = "";
         ModeLabel.Text = "离线模拟 · 不连接现场 PLC";
         LiveStatus.Text = "已断开观察；没有停止设备或清除点位。";
         Stop("离线28阶段 · 已暂停"); Refresh();
@@ -277,7 +309,7 @@ public partial class MainWindow : Window
     { if (_live is not null) PollLive(); }
     private void Call_Click(object sender, RoutedEventArgs e)
     {
-        if (_live is null || _pendingStation is not null) return;
+        if (_live is null || _pendingStation is not null || _batchPlan.Active || string.IsNullOrWhiteSpace(SelectedStation)) return;
         try
         {
             var before = _live.Read(SelectedStation);
@@ -286,6 +318,45 @@ public partial class MainWindow : Window
             AddLiveEvent("虚拟输入", SelectedStation + "/满箱呼叫", "", "", _liveMessage);
         }
         catch (Exception ex) { _liveMessage = "未触发：" + ex.Message; }
+        PollLive();
+    }
+    private void BatchCall_Click(object sender, RoutedEventArgs e)
+    {
+        if (_live is null || _pendingStation is not null || _batchPlan.Active) return;
+        try
+        {
+            var stations = SelectedBatchStations();
+            _liveMessage = _live.CallMany(stations);
+            AddLiveEvent("同批虚拟输入", string.Join("/", stations) + "/满箱呼叫", "", "批量提交", _liveMessage);
+        }
+        catch (Exception ex) { _liveMessage = "同批呼叫未触发：" + ex.Message; }
+        PollLive();
+    }
+    private void MultiRoundCall_Click(object sender, RoutedEventArgs e)
+    {
+        if (_live is null || _pendingStation is not null || _batchPlan.Active) return;
+        try
+        {
+            var stations = SelectedBatchStations();
+            if (!int.TryParse(BatchRoundsText.Text.Trim(), out var rounds) || rounds is < 1 or > 100)
+                throw new ArgumentException("多轮次数应为1至100。");
+            _batchPlan.Start(stations, rounds, DateTimeOffset.UtcNow);
+            _liveMessage = _live.CallMany(stations);
+            _batchPlan.Submitted(DateTimeOffset.UtcNow);
+            AddLiveEvent("启动自动多轮", string.Join("/", stations) + "/满箱呼叫", "", $"第1轮", _liveMessage);
+        }
+        catch (Exception ex)
+        {
+            _batchPlan.Stop("多轮呼叫未启动：" + ex.Message);
+            _liveMessage = _batchPlan.Status;
+        }
+        PollLive();
+    }
+    private void StopBatch_Click(object sender, RoutedEventArgs e)
+    {
+        _batchPlan.Stop("操作员已停止后续自动轮次；当前已发出的P/H电平保留，等待正常闭合。");
+        _liveMessage = _batchPlan.Status;
+        AddLiveEvent("停止自动多轮", "", "", "", _liveMessage);
         PollLive();
     }
     private void PollLive()
@@ -299,22 +370,76 @@ public partial class MainWindow : Window
                 if (pending.Values[0]) { _liveMessage = _pendingStation + " 满箱呼叫已反馈为1，请在Web刷新条件并提交。"; _pendingStation = null; }
                 else if (DateTimeOffset.UtcNow - _pendingAt > TimeSpan.FromSeconds(5)) { _pendingStation = null; _liveMessage = "5秒内未观察到呼叫反馈；请核实设备日志，不认定输入已生效。"; }
             }
+            if (string.IsNullOrWhiteSpace(SelectedStation)) return;
             var snapshot = _live.Read(SelectedStation);
             _previous.TryGetValue(SelectedStation, out var previous);
             for (var i = 0; i < 10; i++) if (previous is null || previous[i] != snapshot.Values[i])
                 AddLiveEvent(previous is null ? "初始观察" : "信号变化", SelectedStation + "/" + Sequence.Signals[i].Name,
                     previous is null ? "?" : previous[i] ? "1" : "0", snapshot.Values[i] ? "1" : "0", "虚拟设备实时快照；非28阶段推演");
             _previous[SelectedStation] = snapshot.Values;
-            CallButton.IsEnabled = _pendingStation is null && !snapshot.Faulted && snapshot.DownstreamOnline && snapshot.Values[1] && !snapshot.Values[0] && !snapshot.Values[2] && !snapshot.Values[4];
+            PollBatchPlan();
+            CallButton.IsEnabled = _pendingStation is null && !_batchPlan.Active && LivePlcConnection.CanRaiseNewCall(snapshot);
+            var batchReady = false;
+            try
+            {
+                var stations = SelectedBatchStations();
+                batchReady = stations.Count >= 2 && _live.ReadMany(stations).Values.All(LivePlcConnection.CanRaiseNewCall);
+            }
+            catch { batchReady = false; }
+            BatchCallButton.IsEnabled = _pendingStation is null && !_batchPlan.Active && batchReady;
+            MultiRoundCallButton.IsEnabled = _pendingStation is null && !_batchPlan.Active && batchReady;
+            StopBatchButton.IsEnabled = _batchPlan.Active;
             LiveStatus.Text = _liveMessage;
             _viewModel.RefreshLive(snapshot, SelectedStation, _liveMessage, _liveEvents, CallButton.IsEnabled);
         }
         catch (Exception ex)
         {
             CallButton.IsEnabled = false;
+            BatchCallButton.IsEnabled = MultiRoundCallButton.IsEnabled = StopBatchButton.IsEnabled = false;
             LiveStatus.Text = "观察失败：" + ex.Message;
             _viewModel.RefreshLive(null, SelectedStation, LiveStatus.Text, _liveEvents, false);
         }
+    }
+    private void PollBatchPlan()
+    {
+        if (_live is null || !_batchPlan.Active) return;
+        try
+        {
+            var snapshots = _live.ReadMany(_batchPlan.Stations);
+            var observation = _batchPlan.Observe(snapshots, DateTimeOffset.UtcNow);
+            _liveMessage = observation.Message;
+            if (observation.Action == "NextRound")
+            {
+                var next = _live.CallMany(_batchPlan.Stations.ToArray());
+                _batchPlan.Submitted(DateTimeOffset.UtcNow);
+                _liveMessage = next;
+                AddLiveEvent("自动多轮呼叫", string.Join("/", _batchPlan.Stations) + "/满箱呼叫", "", $"第{_batchPlan.Round}轮", next);
+            }
+            else if (observation.Action is "CallObserved" or "Completed" or "Failed")
+                AddLiveEvent("自动多轮", "", "", observation.Action, observation.Message);
+        }
+        catch (Exception ex)
+        {
+            _batchPlan.Stop("多轮呼叫暂停：" + ex.Message);
+            _liveMessage = _batchPlan.Status;
+            AddLiveEvent("自动多轮暂停", "", "", "", _liveMessage);
+        }
+    }
+    private IReadOnlyList<string> SelectedBatchStations()
+    {
+        if (_live is null) throw new InvalidOperationException("尚未连接虚拟PLC。");
+        var raw = BatchStationsText.Text.Split([',', '，', ';', '；', ' ', '\t', '\r', '\n'],
+            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (raw.Length < 2) throw new ArgumentException("同批呼叫至少选择两个工位。");
+        var stations = new List<string>();
+        foreach (var name in raw)
+        {
+            var canonical = _live.Stations.FirstOrDefault(station => string.Equals(station, name, StringComparison.OrdinalIgnoreCase)) ??
+                throw new ArgumentException($"当前点表不包含工位{name}。");
+            if (!stations.Contains(canonical, StringComparer.OrdinalIgnoreCase)) stations.Add(canonical);
+        }
+        if (stations.Count != raw.Length) throw new ArgumentException("同批呼叫工位不能重复。");
+        return stations;
     }
     private void AddLiveEvent(string kind, string signal, string before, string after, string detail)
     {

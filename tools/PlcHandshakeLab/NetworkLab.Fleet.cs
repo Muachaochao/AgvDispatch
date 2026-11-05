@@ -14,7 +14,7 @@ public sealed partial class NetworkLab
             if(!Guid.TryParseExact(request.RunId,"N",out _))throw new ArgumentException("双车测试编号无效。");
             if(request.Action=="start"&&_fleetRun!=request.RunId)
             {
-                if(_fleetRun!=null&&!_fleetStopped||_callRun!=null&&!_stopCalls&&_callCompleted<_callLimit||
+                if(_fleetRun!=null&&!_fleetStopped||_batchActive||_callRun!=null&&!_stopCalls&&_callCompleted<_callLimit||
                     !_communicationHealthy||_recoveryReason!=null||_permit||
                     Config.Points.Any(p=>p.Owner=="H"&&Get(p.Station,p.Signal)||p.Signal==0&&Get(p.Station,0))||
                     Enumerable.Range(6,4).Any(s=>Get(NetworkLabConfig.Shared,s)))

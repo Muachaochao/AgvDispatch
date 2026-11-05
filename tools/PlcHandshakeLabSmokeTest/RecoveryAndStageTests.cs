@@ -62,9 +62,11 @@ internal static class RecoveryAndStageTests
             {
                 Permit(lab); lab.UpdateCommunication(false); Host(lab, 7, true); await Task.Delay(130); lab.TickAutomatic();
                 Check(!Value(lab, 9), "断连不自动产生Done"); lab.UpdateCommunication(true); lab.TickAutomatic();
-                Check(!Value(lab, 9) && lab.AutomaticStatus.Contains("暂停待核对"), "重连不自动消费旧许可");
-                lab.SetAutomatic(false); Host(lab, 7, false); lab.ConfirmCycleClosed("断连后核对原任务闭合");
-                Permit(lab); Check(lab.AutomaticStatus.Contains("内部设备保留"), "核对后可重新申请");
+                await Task.Delay(130); lab.TickAutomatic();
+                Check(Value(lab, 9) && !lab.AutomaticStatus.Contains("暂停待核对"),
+                    "后台重连后自动续接同一内存周期，不重复触发且重新计时");
+                Host(lab, 7, false); lab.TickAutomatic();
+                Check(!Value(lab, 9), "自动续接周期仍由原设备周期闭合撤Done");
             }
             using (var lab = NewLab())
             {
@@ -126,8 +128,13 @@ internal static class RecoveryAndStageTests
                 using var reconnect = new TcpClient(); await reconnect.ConnectAsync(IPAddress.Loopback, server.Port);
                 await NetworkTests.Exchange(reconnect.GetStream(), NetworkTests.Variable(4, 1, 0, 611, false));
                 for (var i = 0; i < 20; i++) { lab.TickAutomatic(); await Task.Delay(10); }
-                Check(lab.AutomaticStatus.Contains("暂停待核对") && !Value(lab, 9), "真实重连及新读不清除旧许可恢复门禁");
-                lab.SetAutomatic(false); lab.ConfirmCycleClosed("断连后的共享低基线已逐项核实");
+                Check(!lab.AutomaticStatus.Contains("暂停待核对") && lab.AutomaticStatus.Contains("内部设备保留"),
+                    "真实重连保留原许可并自动续接，不产生新信号");
+                await NetworkTests.Exchange(reconnect.GetStream(), NetworkTests.Variable(5, 1, 610, 1, true, [1])); lab.TickAutomatic();
+                await Task.Delay(130); lab.TickAutomatic();
+                Check(Value(lab, 9), "断连重连后的原许可仍由后台周期正常闭合");
+                await NetworkTests.Exchange(reconnect.GetStream(), NetworkTests.Variable(5, 1, 610, 1, true, [0])); lab.TickAutomatic();
+                Check(!Value(lab, 9), "后台退出周期后自动撤Done");
                 Check(lab.ExportCsv().Contains("断开连接") && lab.ExportCsv().Contains("通信恢复"), "断连与恢复日志持久化");
             }
             Console.WriteLine($"PASS: {checks} recovery/stage checks. 模式许可保留、两轮、故障取消、真实TCP断连重连、逐点新鲜度与阶段报告。");

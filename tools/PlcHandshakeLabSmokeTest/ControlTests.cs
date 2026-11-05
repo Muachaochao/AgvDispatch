@@ -13,9 +13,9 @@ internal static class ControlTests
         await using var server=new LabControlServer(lab,port);server.Start();
         using var client=new HttpClient(new SocketsHttpHandler{UseProxy=false}){BaseAddress=new Uri($"http://127.0.0.1:{port}/"),Timeout=TimeSpan.FromSeconds(5)};
         var id=Guid.NewGuid().ToString("N");
-        async Task<HttpStatusCode> Send(bool header,bool origin,bool stop=false)
+        async Task<HttpStatusCode> Send(bool header,bool origin,bool stop=false,bool resumeAfterCharge=false)
         {
-            using var request=new HttpRequestMessage(HttpMethod.Post,"cycle"){Content=JsonContent.Create(new{runId=id,stations=new[]{"CNC-001","CNC-002"},rounds=2,stop})};
+            using var request=new HttpRequestMessage(HttpMethod.Post,"cycle"){Content=JsonContent.Create(new{runId=id,stations=new[]{"CNC-001","CNC-002"},rounds=2,stop,resumeAfterCharge})};
             if(header)request.Headers.Add("X-Agv-Lab-Control","business-run-v1");
             if(origin)request.Headers.Add("Origin","http://example.invalid");
             using var response=await client.SendAsync(request);return response.StatusCode;
@@ -26,7 +26,8 @@ internal static class ControlTests
         {
             capabilityRequest.Headers.Add("X-Agv-Lab-Control","business-run-v1");
             using var response=await client.SendAsync(capabilityRequest);
-            if(response.StatusCode!=HttpStatusCode.OK||!(await response.Content.ReadAsStringAsync()).Contains("business-box-action-v1"))
+            var contracts=await response.Content.ReadAsStringAsync();
+            if(response.StatusCode!=HttpStatusCode.OK||!contracts.Contains("business-box-action-v1")||!contracts.Contains("business-charge-resume-v1"))
                 throw new Exception("box feedback capability unavailable");
         }
         if(await Send(true,false)!=HttpStatusCode.OK)throw new Exception("loopback call plan rejected");
@@ -50,6 +51,8 @@ internal static class ControlTests
         if(await Proof(true,feedback with {VendorTaskId="another-original",ObservedAt=DateTimeOffset.UtcNow})!=HttpStatusCode.Conflict)
             throw new Exception("retry changed original action identity");
         if(await Send(true,false,true)!=HttpStatusCode.OK||!lab.CallPlanStatus.Contains("停止新增"))throw new Exception("HTTP stop failed");
+        if(await Send(true,false,false,true)!=HttpStatusCode.Conflict||!lab.CallPlanStatus.Contains("停止新增"))
+            throw new Exception("HTTP charging resume ignored open handshake or failed to preserve pause");
         Console.WriteLine("ControlTests passed: isolated HTTP start/stop, missing-header and browser-origin rejection; no site devices.");
     }
 }

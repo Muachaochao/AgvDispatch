@@ -63,7 +63,7 @@ Directory.CreateDirectory(Path.Combine(root, "service"));
 try
 {
     void Config(string ip = "127.0.0.1", bool automatic = false) => File.WriteAllText(Path.Combine(root,"service","appsettings.json"), System.Text.Json.JsonSerializer.Serialize(new { Plc = new { IpAddress = ip }, TaskCreation = new { AutomaticCreationEnabled = automatic }, Agv = new { Robots = new[] { new { IpAddress = "127.0.0.1" } } } }));
-    var memory = new byte[1024]; memory[0] = 10; memory[2] = 10; memory[610] = 4;
+    var memory = new byte[1024]; memory[0] = 10; memory[2] = 10; memory[4] = 10; memory[6] = 10;
     void State() => File.WriteAllText(Path.Combine(root,"device-state.json"), System.Text.Json.JsonSerializer.Serialize(new { memory_hex = Convert.ToHexString(memory) }));
     void Reject(Action operation, string message)
     {
@@ -71,9 +71,18 @@ try
         try { operation(); } catch (Exception ex) when (ex is InvalidOperationException or ArgumentException) { rejected = true; }
         Check(rejected,message);
     }
-    File.WriteAllText(Path.Combine(root,"lab.json"),"{}"); File.WriteAllText(Path.Combine(root,"navigation.agvmap.json"),"{}");
+    File.WriteAllText(Path.Combine(root,"lab.json"),System.Text.Json.JsonSerializer.Serialize(new
+    {
+        simulationTopology = new
+        {
+            stations = new[] { ("CNC-001", 0), ("CNC-002", 2), ("CNC-003", 4), ("CNC-004", 6) }
+                .Select(item => new { stationId = item.Item1, offset = item.Item2 }).ToArray()
+        }
+    }));
+    File.WriteAllText(Path.Combine(root,"navigation.agvmap.json"),"{}");
     Config(); State(); var live = new LivePlcConnection(root);
-    Check(live.Read("CNC-001").Values[1] && live.Read("CNC-002").Values[8], "实时映射箱体与共享Ready");
+    Check(live.Stations.SequenceEqual(new[] { "CNC-001", "CNC-002", "CNC-003", "CNC-004" }), "从实例点表读取全部工位");
+    Check(live.Read("CNC-001").Values[1] && !live.Read("CNC-002").Values[8], "实时映射箱体与共享倒料");
     var original = File.ReadAllText(Path.Combine(root,"device-state.json"));
     live.Call("CNC-002");
     using (var input = System.Text.Json.JsonDocument.Parse(File.ReadAllText(Path.Combine(root,"device-input.json"))))
@@ -81,6 +90,11 @@ try
     Check(original==File.ReadAllText(Path.Combine(root,"device-state.json")),"不改写设备快照或H输出");
     memory[2] |= 1; State(); var sent=File.ReadAllText(Path.Combine(root,"device-input.json")); live.Call("CNC-002");
     Check(sent==File.ReadAllText(Path.Combine(root,"device-input.json")),"重复高电平不重新发输入");
+    memory[2] &= unchecked((byte)~1); State();
+    live.CallMany(["CNC-001", "CNC-003", "CNC-004"]);
+    using (var input = System.Text.Json.JsonDocument.Parse(File.ReadAllText(Path.Combine(root,"device-input.json"))))
+        Check(input.RootElement.GetProperty("calls").EnumerateArray().Select(item => item.GetString()).SequenceEqual(
+            new[] { "CNC-001", "CNC-003", "CNC-004" }), "同批呼叫使用一次输入提交全部工位");
     memory[2] = 10 | 64; State(); Reject(()=>live.Call("CNC-002"),"返箱责任未结束拒绝新呼叫");
     memory[2] = 10; memory[0] |= 16; State(); Check(live.Read("CNC-001").Values[2] && !live.Read("CNC-002").Values[2],"工位应答分别映射");
     memory[610] |= 2 | 8; State(); Check(live.Read("CNC-002").Values[7] && live.Read("CNC-001").Values[9],"倒料输出共享映射");
@@ -92,10 +106,90 @@ try
     State(); Config("192.0.2.1"); Reject(()=>live.Call("CNC-002"),"运行配置改为现场地址立即阻断");
     Config(automatic:true); Reject(()=>new LivePlcConnection(root),"自动建单实例不允许联调输入");
     Config(); File.WriteAllText(Path.Combine(root,"STOP"),""); Reject(()=>live.Read("CNC-001"),"停止实例不沿用快照");
-    Reject(()=>live.Read("CNC-003"),"不推算未知工位");
+    Reject(()=>live.Read("CNC-005"),"不推算未知工位");
+
+    var planNow = DateTimeOffset.UtcNow;
+    LivePlcSnapshot BatchSnapshot(string station, int offset, bool call, bool acknowledgement = false) =>
+        new(station, [call, true, acknowledgement, false, false, false, false, false, false, false],
+            planNow, false, true, offset);
+    static IReadOnlyDictionary<string, LivePlcSnapshot> Snapshots(params LivePlcSnapshot[] values) =>
+        values.ToDictionary(value => value.Station, StringComparer.OrdinalIgnoreCase);
+    var plan = new LiveBatchCallPlan();
+    plan.Start(["CNC-001", "CNC-002", "CNC-003", "CNC-004"], 2, planNow);
+    plan.Submitted(planNow);
+    var observed = plan.Observe(Snapshots(
+        BatchSnapshot("CNC-001", 0, true), BatchSnapshot("CNC-002", 2, true),
+        BatchSnapshot("CNC-003", 4, true), BatchSnapshot("CNC-004", 6, true)), planNow.AddMilliseconds(200));
+    Check(observed.Action == "CallObserved", "多轮计划确认四工位同一批反馈");
+    Check(plan.Observe(Snapshots(
+        BatchSnapshot("CNC-001", 0, false, true), BatchSnapshot("CNC-002", 2, false),
+        BatchSnapshot("CNC-003", 4, false), BatchSnapshot("CNC-004", 6, false)), planNow.AddSeconds(2)).Action == "",
+        "任一工位握手未闭合时不进入下一轮");
+    Check(plan.Observe(Snapshots(
+        BatchSnapshot("CNC-001", 0, false), BatchSnapshot("CNC-002", 2, false),
+        BatchSnapshot("CNC-003", 4, false), BatchSnapshot("CNC-004", 6, false)), planNow.AddSeconds(2)).Action == "NextRound",
+        "全部工位闭环后才发起下一轮");
+    plan.Submitted(planNow.AddSeconds(2));
+    plan.Observe(Snapshots(
+        BatchSnapshot("CNC-001", 0, true), BatchSnapshot("CNC-002", 2, true),
+        BatchSnapshot("CNC-003", 4, true), BatchSnapshot("CNC-004", 6, true)), planNow.AddSeconds(2.2));
+    Check(plan.Observe(Snapshots(
+        BatchSnapshot("CNC-001", 0, false), BatchSnapshot("CNC-002", 2, false),
+        BatchSnapshot("CNC-003", 4, false), BatchSnapshot("CNC-004", 6, false)), planNow.AddSeconds(4)).Action == "Completed",
+        "达到指定轮次后停止自动呼叫");
+
+    var networkSet = typeof(NetworkLab).GetMethod("Set", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+        ?? throw new InvalidOperationException("未找到网络联调台点位写入方法");
+    void SetNetworkPoint(NetworkLab target, string station, int signal, bool value)
+    {
+        var mapping = target.Snapshot(station).Single(item => item.Mapping.Signal == signal).Mapping;
+        networkSet.Invoke(target, [mapping, value, "同批测试", false]);
+    }
+    using (var atomic = new NetworkLab(NetworkLabConfig.CreateDefault(), Path.Combine(root, "network-atomic.jsonl")))
+    {
+        atomic.ManualSet("CNC-001", 1, false);
+        Reject(() => atomic.StartBatchCalls(["CNC-001", "CNC-002", "CNC-003", "CNC-004"], 1),
+            "同批任一工位不满足条件时整批拒绝");
+        Check(new[] { "CNC-001", "CNC-002", "CNC-003", "CNC-004" }
+            .All(station => !atomic.Snapshot(station).Single(point => point.Mapping.Signal == 0).Value),
+            "同批基线失败时没有部分工位先写呼叫");
+    }
+
+    using (var rounds = new NetworkLab(NetworkLabConfig.CreateDefault(), Path.Combine(root, "network-rounds.jsonl")))
+    {
+        rounds.StartBatchCalls(["CNC-001", "CNC-002", "CNC-003", "CNC-004"], 2);
+        Check(new[] { "CNC-001", "CNC-002", "CNC-003", "CNC-004" }
+            .All(station => rounds.Snapshot(station).Single(point => point.Mapping.Signal == 0).Value),
+            "独立S7联调台在同一个自动扫描中触发四工位");
+        Reject(() => rounds.ConfigureCalls(Guid.NewGuid().ToString("N"),
+            ["CNC-001", "CNC-002", "CNC-003", "CNC-004"], 1, false),
+            "同批运行期间拒绝顺序循环覆盖");
+        rounds.TickAutomatic();
+        foreach (var station in new[] { "CNC-001", "CNC-002", "CNC-003", "CNC-004" })
+        {
+            SetNetworkPoint(rounds, station, 0, false);
+            SetNetworkPoint(rounds, station, 2, true);
+        }
+        rounds.TickAutomatic();
+        Check(rounds.BatchCallStatus.Contains("等待全员闭环") &&
+              !rounds.Snapshot("CNC-001").Single(point => point.Mapping.Signal == 0).Value,
+            "任一工位握手残留时不进入下一轮");
+        foreach (var station in new[] { "CNC-001", "CNC-002", "CNC-003", "CNC-004" })
+            SetNetworkPoint(rounds, station, 2, false);
+        rounds.TickAutomatic();
+        Check(rounds.BatchCallStatus.Contains("第2/2轮") &&
+              new[] { "CNC-001", "CNC-002", "CNC-003", "CNC-004" }
+                .All(station => rounds.Snapshot(station).Single(point => point.Mapping.Signal == 0).Value),
+            "四工位全部闭环后同一扫描启动下一轮");
+        rounds.StopBatchCalls();
+        Check(!rounds.BatchCallActive &&
+              new[] { "CNC-001", "CNC-002", "CNC-003", "CNC-004" }
+                .All(station => rounds.Snapshot(station).Single(point => point.Mapping.Signal == 0).Value),
+            "停止后续轮次保留当前P电平");
+    }
 }
 finally { Directory.Delete(root,true); }
-Console.WriteLine($"PASS: {checks} checks. 离线28阶段及联调输入、工位映射、H只读、重复呼叫、过期/故障/离线阻断。");
+Console.WriteLine($"PASS: {checks} checks. 离线28阶段及联调输入、工位映射、H只读、重复呼叫、过期/故障/离线阻断、同批原子呼叫及多轮闭环。");
 await NetworkTests.RunAsync();
 await RecoveryAndStageTests.RunAsync();
 await SessionEvidenceTests.RunAsync();

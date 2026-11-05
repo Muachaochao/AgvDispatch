@@ -163,7 +163,7 @@ public sealed partial class NetworkLab : IDisposable
                 return;
             }
             if (resumeAfterCharge) throw new InvalidOperationException("原循环记录不存在或编号不一致，禁止以充电恢复重建模拟循环。");
-            if (_fleetRun is not null && !_fleetStopped || _callOutstanding || _callRun is not null && !_stopCalls && _callCompleted < _callLimit)
+            if (_fleetRun is not null && !_fleetStopped || _batchActive || _callOutstanding || _callRun is not null && !_stopCalls && _callCompleted < _callLimit)
                 throw new InvalidOperationException("原循环仍未结束。");
             if (!_communicationHealthy || _recoveryReason is not null || _permit ||
                 Config.Points.Any(p => p.Owner == "H" && Get(p.Station, p.Signal)) ||
@@ -322,8 +322,22 @@ public sealed partial class NetworkLab : IDisposable
                 _stopCalls = true;
                 RequireRecovery("循环期间通信中断，已停止新增呼叫；原电平保留，请人工核对闭合。");
             }
+            if (!healthy)
+                PauseBatchForCommunicationLoss();
             if (!healthy && (_permit || Enumerable.Range(6, 4).Any(s => Get(NetworkLabConfig.Shared, s))))
                 RequireRecovery("活动许可或共享信号期间通信中断；请人工闭合并确认模拟周期。");
+            if (healthy && _automatic &&
+                _recoveryReason?.StartsWith("活动许可或共享信号期间通信中断", StringComparison.Ordinal) == true &&
+                !Get(NetworkLabConfig.Shared, 12))
+            {
+                // The simulator retained the complete in-memory cycle while the
+                // dispatcher restarted. Do not manufacture or resend any signal:
+                // resume the same cycle so TickAutomatic can observe the next
+                // backend transition and close only when that transition occurs.
+                _recoveryReason = null;
+                Record("通信恢复自动续接", NetworkLabConfig.Shared, "", "", "",
+                    "后台重连且原模拟周期、许可、Ready/Done和故障状态仍连续；保留全部电平，不重复触发，继续原周期。");
+            }
         }
     }
 
@@ -414,6 +428,7 @@ public sealed partial class NetworkLab : IDisposable
         {
             if (!_automatic || !_communicationHealthy) return;
             TickCalls();
+            TickBatchCalls();
             foreach (var station in Config.Points.Where(p => p.Signal == 0).Select(p => p.Station))
                 if (Get(station, 0) && Get(station, 2) && !Get(station, 10) && Get(station, 11)) Set(Find(station, 0), false, "自动撤呼叫");
             var shared = NetworkLabConfig.Shared;
