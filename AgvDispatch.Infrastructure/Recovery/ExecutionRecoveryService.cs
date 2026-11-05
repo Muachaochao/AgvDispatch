@@ -81,8 +81,8 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
     public async Task<RecoveryResult> BeginReviewAsync(TrafficUserContext user, TaskRecoveryReviewRequest request, CancellationToken ct)
     {
         if (!user.Has(TrafficPermission.RecoverExecution)) throw new UnauthorizedAccessException("需要恢复处置权限。");
-        if (string.IsNullOrWhiteSpace(request.TaskId) || request.TaskId.Length > 64 || string.IsNullOrWhiteSpace(request.Reason) || request.Reason.Trim().Length is < 10 or > 1000)
-            return new(false, "请填写任务及至少10字、最多1000字的现场核对依据。");
+        if (string.IsNullOrWhiteSpace(request.TaskId) || request.TaskId.Length > 64 || string.IsNullOrWhiteSpace(request.Reason) || request.Reason.Trim().Length is < 1 or > 1000)
+            return new(false, "请填写任务及非空、最多1000字的现场核对依据。");
         using var lease = await gate.EnterControlAsync(ct);
         var task = await database.Queryable<DispatchTaskEntity>().Where(t => t.TaskId == request.TaskId).FirstAsync(ct);
         if (task == null || task.Stage is 90 or 110 or 120) return new(false, "任务已结束或仍在等待车辆取消确认，当前不能进入恢复处置。");
@@ -152,9 +152,10 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
             var dumper = task == null ? null : await database.Queryable<DispatchTaskStepEntity>().Where(s => s.TaskId == task.TaskId && s.StepType == (int)DispatchTaskStepType.WaitForDumperReady).FirstAsync(ct);
             var plcRows = task == null ? signals.GetAll() : signals.GetAll().Where(s => s.StationId == task.StationId || s.StationId == dumper?.SourceSite).ToArray();
             var identity = StoredIdentity(ticket.Evidence);
+            var pendingWrite = await database.Queryable<TaskHandshakeEntity>().Where(h => h.TaskId == ticket.TaskId && h.StepId == ticket.StepId && h.PendingSignal != null).AnyAsync(ct);
             items.Add(new(ticket.TicketId, ticket.TaskId, ticket.StepId, task?.StationId ?? "全场核对",
                 vehicleId, charging is not null ? "充电会话核对" : step == null ? "无执行步骤" : ((DispatchTaskStepType)step.StepType).ToString(),
-                ticket.Verified ? "已核对" : "等待核对", ticket.Reason, ticket.Evidence, ticket.Verified, ticket.MaterialReference, ticket.Revision) { TaskStage = task?.Stage, IdentitySummary = identity.Summary, IdentityState = identity.State,
+                ticket.Verified ? "已核对" : "等待核对", ticket.Reason, ticket.Evidence, ticket.Verified, ticket.MaterialReference, ticket.Revision) { TaskStage = task?.Stage, RequiresPendingWriteConfirmation = pendingWrite, IdentitySummary = identity.Summary, IdentityState = identity.State,
                 IdentityBlocksRecovery = identity.BlockReason != null,
                 MachineContainerSummary = identity.Vehicle == null ? "设备容器身份未接入。" : identity.Vehicle.LoadState == ContainerLoadState.Loaded ?
                     "设备报告承载容器：" + identity.Vehicle.ContainerId + "（" + identity.Vehicle.Quality + "）" : identity.Vehicle.LoadState == ContainerLoadState.Empty ? "设备报告车辆空载（" + identity.Vehicle.Quality + "）。" : "设备容器状态未知。",
@@ -179,8 +180,8 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
         var ticket = (await TicketsAsync(ct)).FirstOrDefault(t => t.TicketId == request.TicketId);
         if (ticket == null || ticket.Verified || ticket.Revision != request.Revision) return await RejectAsync(user, request.TicketId, "恢复条目已变化，请刷新后重新核对。", ct);
         if (!Enum.IsDefined(request.Decision) || !request.VehicleAndLocationConfirmed || !request.LoadAndOwnershipConfirmed || !request.PlcCycleConfirmed ||
-            string.IsNullOrWhiteSpace(request.MaterialReference) || request.MaterialReference.Length > 128 || request.Reason.Trim().Length < 10 || request.Reason.Length > 4000)
-            return await RejectAsync(user, request.TicketId, "须确认车辆定位、载荷归属和PLC周期，填写物料/容器编号（无载荷填明确的空载核对说明）及至少10字现场依据。", ct);
+            string.IsNullOrWhiteSpace(request.MaterialReference) || request.MaterialReference.Length > 128 || string.IsNullOrWhiteSpace(request.Reason) || request.Reason.Length > 4000)
+            return await RejectAsync(user, request.TicketId, "须确认车辆定位、载荷归属和PLC周期，填写物料/容器编号（无载荷填明确的空载核对说明）及非空现场依据。", ct);
         var observed = await ObserveAsync(ticket, ct);
         if(request.Decision==RecoveryDecision.ContinueOriginal&&observed.SegmentContinuationBlock is not null)
             return await RejectAsync(user,request.TicketId,observed.SegmentContinuationBlock,ct);
@@ -283,7 +284,7 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
         if (!user.Has(TrafficPermission.RecoverExecution)) throw new UnauthorizedAccessException("需要恢复处置权限或管理员权限。");
         using var lease = await gate.EnterControlAsync(ct);
         if (request.SessionId != _sessionId || barrier.IsOpen) return new(false, "批次变化或已放行，请刷新。");
-        if (request.Reason.Trim().Length < 10 || request.Reason.Length > 4000) return new(false, "请填写至少10字的现场放行依据。");
+        if (string.IsNullOrWhiteSpace(request.Reason) || request.Reason.Length > 4000) return new(false, "请填写非空的现场放行依据。");
         foreach (var ticket in await TicketsAsync(ct))
         {
             if (!ticket.Verified) return new(false, $"{ticket.TaskId}尚未核对。");

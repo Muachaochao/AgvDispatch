@@ -77,7 +77,7 @@ public static class DiagnosticsApi
             var status=await pipe.ReadAsync<RecoveryStatus>("GetExecutionRecovery",new{},ct)??throw new InvalidDataException("后台未返回恢复状态。");
             // Raw recovery Evidence contains device identity baselines; expose review summaries only.
             return new {status.SessionId,status.Released,status.Message,recoveryEnabled,
-                Items=status.Items.Select(i=>new{i.TicketId,i.TaskId,i.StepId,i.StepText,i.State,i.Reason,i.Verified,i.Revision,i.VehicleId,i.VehicleSummary,i.PlcSummary,i.ResourceSummary,i.IdentitySummary,i.IdentityState,i.IdentityBlocksRecovery,i.LoadSummary}),
+                Items=status.Items.Select(i=>new{i.TicketId,i.TaskId,i.StepId,i.StepText,i.State,i.Reason,i.Verified,i.Revision,i.VehicleId,i.VehicleSummary,i.PlcSummary,i.ResourceSummary,i.IdentitySummary,i.IdentityState,i.IdentityBlocksRecovery,i.RequiresPendingWriteConfirmation,i.LoadSummary}),
                 Audits=status.Audits.Take(50).Select(a=>new{a.Id,a.TaskId,a.StepId,a.Operator,a.DecisionText,a.Reason,a.OccurredAt})};
         });
         app.MapPost("/api/recovery/begin",async(TaskRecoveryReviewRequest request,DispatchPipe pipe,CancellationToken ct)=>

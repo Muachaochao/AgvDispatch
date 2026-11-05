@@ -1,4 +1,4 @@
-﻿namespace AgvDispatch.Application.Abstractions;
+namespace AgvDispatch.Application.Abstractions;
 
 public interface IRecoveryBarrier { bool IsOpen { get; } }
 
@@ -12,6 +12,7 @@ public sealed record RecoveryItem(string TicketId, string TaskId, string StepId,
     public string ResourceSummary { get; init; } = "路权状态等待采集。";
     public string IdentitySummary { get; init; } = "无法自动核验：设备身份字段尚未接入，保留现场核对。";
     public string IdentityState { get; init; } = "Unavailable";
+    public bool RequiresPendingWriteConfirmation { get; init; }
     public bool IdentityBlocksRecovery { get; init; }
     public string MachineContainerSummary { get; init; } = "设备容器身份未接入。";
     public string LoadSummary => MachineContainerSummary.TrimEnd('。') + "；" + (MaterialReference == null ? "尚未提交本次现场核对说明，须核对载荷、箱体位置与原任务归属。" : "人工核对载荷：" + MaterialReference);

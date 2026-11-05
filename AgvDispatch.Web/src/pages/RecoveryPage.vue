@@ -3,20 +3,36 @@ import { computed, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { useDispatchStore } from '../stores/dispatch';
 import TaskRecoveryPanel from '../TaskRecoveryPanel.vue';
+import { label } from '../state';
 const store = useDispatchStore();
 const route = useRoute();
 const taskId = ref('');
 watch(() => route.query.taskId, value => { taskId.value = typeof value === 'string' ? value : ''; }, { immediate: true });
 const selected = computed(() => taskId.value.trim());
+const recentTasks = computed(() => [...store.allTasks]
+  .sort((a, b) => Number(['Completed', 'Cancelled'].includes(a.stage)) - Number(['Completed', 'Cancelled'].includes(b.stage))
+    || Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
+  .slice(0, 12));
 </script>
 <template>
   <section class="management-page">
     <header class="management-title"><h2>异常任务与启动恢复</h2><RouterLink to="/tasks">返回业务任务</RouterLink></header>
-    <p>先读取当前批次，核对原任务、车端动作、载荷和 PLC 周期，再提交处置并请求放行。放行恢复批次不等于结束业务运行 Hold；业务运行还需核对收尾。</p>
-    <p>取消原任务请进入任务详情申请。停止新增呼叫、取消车辆任务、现场恢复核对是三个独立操作。</p>
-    <p><RouterLink to="/resource-review">查看取消进度涉及的原占用与资源处置</RouterLink> · <RouterLink to="/engineering?tab=validation">工程配置缺项校验</RouterLink> · <RouterLink to="/communication">通信配置</RouterLink></p>
-    <label>原任务编号（已有恢复批次可直接选择条目）<input v-model="taskId" maxlength="128" placeholder="TASK-…" /></label>
+    <p>选择异常 → 核对现场必要事项 → 确认继续。系统保留原任务与核验记录。</p>
+    <details><summary>查找其他任务／运行中核对</summary>
+    <div class="recovery-task-picker">
+      <label>从最近任务选择<select :value="taskId" @change="taskId=($event.target as HTMLSelectElement).value"><option value="">请选择任务</option><option v-for="task in recentTasks" :key="task.taskId" :value="task.taskId">{{task.stationId}} · {{task.vehicleId||'未派车'}} · {{label(task.stage)}} · {{task.taskId}}</option></select></label>
+      <label>或输入原任务编号<input v-model="taskId" maxlength="128" placeholder="输入任务编号" /></label>
+    </div>
+    </details>
     <p v-if="store.demoMode" class="inline-warning">演示模式不访问真实恢复接口。</p>
     <TaskRecoveryPanel v-else :task-id="selected" :fresh="store.fresh" :now="store.now" />
   </section>
 </template>
+
+<style scoped>
+.recovery-task-picker{display:grid;grid-template-columns:minmax(280px,1fr) minmax(280px,1fr);gap:14px;margin:14px 0}
+.recovery-task-picker label{display:grid;gap:7px;color:#a9bfd6;font-size:12px}
+.recovery-task-picker select,.recovery-task-picker input{min-width:0}
+.recovery-flow{padding:11px 13px;border-left:3px solid #4bb7c8;background:#102235;line-height:1.8}
+@media(max-width:760px){.recovery-task-picker{grid-template-columns:1fr}}
+</style>

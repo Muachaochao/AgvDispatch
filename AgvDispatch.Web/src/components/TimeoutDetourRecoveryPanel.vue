@@ -28,7 +28,7 @@ const store = useDispatchStore();
 const row = ref<TimeoutRecovery | null>(null);
 const busy = ref(false);
 const message = ref('');
-const reason = ref('');
+const reason = ref('障碍已清除');
 const locationConfirmed = ref(false);
 const loadConfirmed = ref(false);
 const plcConfirmed = ref(false);
@@ -53,7 +53,7 @@ const canExecute = computed(() =>
   props.fresh && store.recoveryActionsEnabled && !!props.taskId.trim() && !!row.value &&
   row.value.state === 'ReadyForControlledDetour' && !row.value.sendAttempted &&
   locationConfirmed.value && loadConfirmed.value && plcConfirmed.value &&
-  executeConfirmed.value && reason.value.trim().length >= 10
+  executeConfirmed.value && reason.value.trim().length > 0
 );
 
 function clearConfirmations() {
@@ -121,7 +121,7 @@ async function execute() {
   }
 }
 
-watch(() => props.taskId, () => { epoch++; row.value = null; message.value = ''; clearConfirmations(); });
+watch(() => props.taskId, () => { epoch++; row.value = null; message.value = ''; clearConfirmations(); void load(); });
 onMounted(() => { void load(); });
 </script>
 
@@ -146,7 +146,7 @@ onMounted(() => { void load(); });
         <label><input v-model="plcConfirmed" type="checkbox" :disabled="busy">已核对PLC条件和前序步骤</label>
         <label><input v-model="executeConfirmed" type="checkbox" :disabled="busy">确认只发送一次替代导航</label>
       </div>
-      <label>现场依据（至少10字）<textarea v-model="reason" rows="3" maxlength="1000" :disabled="busy" /></label>
+      <label>处理原因（可简写）<textarea v-model="reason" rows="3" maxlength="1000" :disabled="busy" /></label>
       <button :disabled="!canExecute" @click="execute">正式发送一次替代3066导航</button>
       <p v-if="!store.recoveryActionsEnabled" class="warning">当前Web恢复写操作未启用；只能查看，不能发送。</p>
     </article>

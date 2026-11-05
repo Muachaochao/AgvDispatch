@@ -18,7 +18,7 @@ var viewer = new TrafficUserContext("recovery-test\\viewer", "观察员", Traffi
 async Task<RecoveryDecisionRequest> Request(Fixture f, string owner, RecoveryDecision decision = RecoveryDecision.ContinueOriginal)
 {
     var status = await f.Recovery.GetAsync(ct); var ticket = status.Items.Single(i => i.TaskId == owner);
-    return new(status.SessionId, ticket.TicketId, ticket.Revision, decision, "BOX-001 属于原任务", "现场已核对车辆定位物料归属和PLC原动作周期", true, true, true);
+    return new(status.SessionId, ticket.TicketId, ticket.Revision, decision, "BOX-001 属于原任务", "现场已核对", true, true, true);
 }
 await using (var f = await Fixture.Create())
 {
@@ -45,6 +45,7 @@ await using (var f = await Fixture.Create())
     var denied = false; try { await f.Recovery.DecideAsync(viewer, await Request(f, id), ct); } catch (UnauthorizedAccessException) { denied = true; }
     Check(denied, "只读账号不能处置恢复");
     var request = await Request(f, id);
+    Check(!(await f.Recovery.DecideAsync(admin, request with { Reason = " " }, ct)).Accepted, "空原因仍拒绝，快捷原因可少于10字");
     Check(!(await f.Recovery.DecideAsync(admin, request with { LoadAndOwnershipConfirmed = false }, ct)).Accepted, "未确认载荷归属拒绝续跑");
     f.Vehicles.Items[0] = f.Vehicles.Items[0] with { CurrentStation = "OTHER" };
     Check(!(await f.Recovery.DecideAsync(admin, request, ct)).Accepted, "停机期间移动车辆，原未发送路线不再匹配");

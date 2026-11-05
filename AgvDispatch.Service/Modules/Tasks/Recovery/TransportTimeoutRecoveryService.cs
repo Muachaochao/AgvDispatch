@@ -223,8 +223,8 @@ public sealed class TransportTimeoutRecoveryService(
             return new(false, "超时恢复发送依赖未配置，保持原任务。");
         if (string.IsNullOrWhiteSpace(request.TaskId) || !request.ExecuteConfirmed ||
             !request.VehicleAndLocationConfirmed || !request.LoadAndOwnershipConfirmed ||
-            !request.PlcConditionsConfirmed || request.Reason.Trim().Length is < 10 or > 1000)
-            return new(false, "必须确认车辆位置、载荷归属和PLC条件，填写至少10字现场依据，并明确执行。");
+            !request.PlcConditionsConfirmed || request.Reason.Trim().Length is < 1 or > 1000)
+            return new(false, "必须确认车辆位置、载荷归属和PLC条件，填写非空现场依据，并明确执行。");
 
         await _execute.WaitAsync(cancellationToken);
         try
