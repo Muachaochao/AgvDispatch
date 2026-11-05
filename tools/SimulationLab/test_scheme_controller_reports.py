@@ -7,7 +7,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from controller import Runtime, validate_root, write
+from controller import Runtime, read, validate_root, write
 from schemes import SchemeStore
 from simulation_reports import history, report, replay
 from test_runtime_lifecycle import fixture
@@ -33,7 +33,13 @@ class ControllerSchemeTests(unittest.TestCase):
             restored = SchemeStore(workspace, source, validate_root)
             self.assertEqual(restored.restore_root(), (created, None))
             self.assertEqual(restored.catalog()['selectedSchemeId'], scheme_id)
-            self.assertEqual(restored.get(scheme_id)['configuration']['mapDefinition'], configuration['mapDefinition'])
+            saved = restored.get(scheme_id)['configuration']
+            self.assertEqual(saved['mapDefinition'], configuration['mapDefinition'])
+            self.assertEqual(saved['plcSignalTable']['sha256'], configuration['plcSignalTable']['sha256'])
+            self.assertEqual(restored.catalog()['schemes'][0]['plcTableSha256'], configuration['plcSignalTable']['sha256'])
+            self.assertTrue((created / 'plc-signals.source.csv').is_file())
+            self.assertTrue((created / 'service/config/simulation-signals.csv').is_file())
+            self.assertEqual(read(created / 'lab.json')['plcSignalTable']['sha256'], configuration['plcSignalTable']['sha256'])
 
     def test_incompatible_saved_scenario_is_rejected_before_creating_any_instance(self):
         with tempfile.TemporaryDirectory() as name, patch('controller.WORKSPACE', Path(name)):

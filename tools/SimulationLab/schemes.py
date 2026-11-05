@@ -111,6 +111,8 @@ class SchemeStore:
         entry = dict(rootName=root.name, mapName=configuration.get('mapName') or lab.get('mapName') or '',
                      vehicleCount=len(configuration.get('vehicles') or lab.get('initialSites') or []),
                      stationCount=len(configuration.get('stations') or lab.get('simulationTopology', {}).get('stations') or []),
+                     plcTableName=(configuration.get('plcSignalTable') or lab.get('plcSignalTable') or {}).get('fileName'),
+                     plcTableSha256=(configuration.get('plcSignalTable') or lab.get('plcSignalTable') or {}).get('sha256'),
                      updatedAt=time.time())
         with self.lock:
             state = copy.deepcopy(self.state)
@@ -124,10 +126,15 @@ class SchemeStore:
     @staticmethod
     def _summary(scheme):
         config = scheme['configuration']
+        identity = config.get('mapIdentity') or {}
+        table = config.get('plcSignalTable') or {}
         return dict(id=scheme['id'], name=scheme['name'], updatedAt=scheme['updatedAt'],
                     mapName=config.get('mapDefinition', {}).get('name') or config.get('name') or '',
+                    mapId=identity.get('mapId'), mapVersionId=identity.get('mapVersionId'),
+                    mapDefinitionHash=identity.get('definitionHash'),
                     vehicleCount=len(config.get('vehicles', [])), stationCount=len(config.get('stations', [])),
-                    scenarioName=(scheme.get('scenario') or {}).get('name'))
+                    scenarioName=(scheme.get('scenario') or {}).get('name'),
+                    plcTableName=table.get('fileName'), plcTableSha256=table.get('sha256'))
 
     def catalog(self):
         with self.lock:

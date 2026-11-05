@@ -13,13 +13,15 @@ public static class SimulationApi
             bridge.Enabled ? await bridge.ForwardAsync(HttpMethod.Get, id is null ? "/report" : "/report?id=" + id, null, ct) : Disabled());
         app.MapGet("/api/simulation/replay", async (string? id, SimulationBridge bridge, CancellationToken ct) =>
             bridge.Enabled ? await bridge.ForwardAsync(HttpMethod.Get, id is null ? "/replay" : "/replay?id=" + id, null, ct) : Disabled());
+        app.MapGet("/api/simulation/point-table", async (SimulationBridge bridge, CancellationToken ct) =>
+            bridge.Enabled ? await bridge.ForwardAsync(HttpMethod.Get, "/point-table", null, ct) : Disabled());
         app.MapPost("/api/simulation/{action}", async (string action, HttpRequest request, SimulationBridge bridge, CancellationToken ct) =>
         {
             if (!bridge.Enabled) return Disabled();
             if (action is not ("start" or "stop" or "run" or "abort" or "control" or
                 "new-instance" or "configure" or "recover" or "recover-release" or "protocol-start" or "protocol-stop" or
                 "equipment-start" or "equipment-control" or "equipment-stop" or "scheme-save" or "scheme-select" or "scheme-start" or
-                "scheme-delete"))
+                "scheme-delete" or "point-table-validate"))
                 return Results.NotFound();
             var body = "{}";
             if (request.ContentLength != 0)

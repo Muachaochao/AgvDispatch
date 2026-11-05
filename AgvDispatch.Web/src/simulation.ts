@@ -73,6 +73,25 @@ export async function loadCurrentSimulationMap(read: (path: string) => Promise<u
   return { identity, definition, parameters, parameterWarning };
 }
 export interface SimulationStationConfiguration { stationId: string; pickupSite: string; offset?: number; signalSource?: 'verified' | 'isolated-synthetic'; priority?: number }
+export interface SimulationPlcSignalTable {
+  fileName: string;
+  csvText?: string;
+  sha256: string;
+  bytes?: number;
+  rowCount?: number;
+  signalCount?: number;
+  stationCount?: number;
+  dumperSignalCount?: number;
+  sourceFile?: string;
+  privateSha256?: string;
+  mapDefinitionHash?: string;
+  headers?: string[];
+  stations?: SimulationStationCatalogEntry[];
+}
+export interface SimulationStationCatalogEntry {
+  stationId: string; offset?: number; signalSource: 'verified' | 'isolated-synthetic';
+  sourceLabel?: string; fieldConfirmed?: boolean;
+}
 export interface SimulationVehicleConfiguration {
   id: string; initialSite: string; radiusMeters: number; initialLoaded?: boolean;
   batteryPercent?: number; speedScale?: number; voltageCurve?: { percent: number; voltage: number }[];
@@ -82,10 +101,11 @@ export interface SimulationConfigureRequest {
   name: string; mapDefinition: SimulationMapDefinition; stations: SimulationStationConfiguration[];
   vehicles: SimulationVehicleConfiguration[];
   dumper: { dumpingSite: string; waitingSite: string; waitingSites?: string[]; resourceId: string };
-  inspectionSite: string;
+  inspectionSite: string; plcSignalTable: SimulationPlcSignalTable;
+  mapIdentity?: { mapId?: string; mapVersionId?: string; sourceName?: string; definitionHash?: string };
 }
 export interface SimulationCall { stationId: string; atSeconds: number; vehicleId?: string | null }
-export interface SimulationScheme { id: string; name: string; updatedAt?: number; mapName?: string; vehicleCount?: number; stationCount?: number; scenarioName?: string }
+export interface SimulationScheme { id: string; name: string; updatedAt?: number; mapName?: string; mapId?: string; mapVersionId?: string; mapDefinitionHash?: string; vehicleCount?: number; stationCount?: number; scenarioName?: string; plcTableName?: string; plcTableSha256?: string }
 export interface SimulationGuidance { taskId: string; vehicleId?: string; stationId?: string; stepNumber?: number; stepName?: string; blockedBy?: string; restoreAction?: string; expectedFeedback?: string }
 export interface SimulationReplayFrame {
   time: number; vehicles?: { vehicleId: string; x: number; y: number; site?: string; waitReason?: string; taskId?: string }[];
@@ -167,13 +187,16 @@ export interface SimulationStatus {
   configuration?: {
     stations: SimulationStationConfiguration[]; vehicles: SimulationVehicleConfiguration[]; inspectionSite: string;
     dumper: { dumpingSite: string; waitingSite: string; waitingSites?: string[]; resourceId: string }; mapName: string;
+    plcSignalTable?: SimulationPlcSignalTable | null;
+    mapIdentity?: { mapId?: string; mapVersionId?: string; sourceName?: string; definitionHash?: string } | null;
   } | null;
   recovery?: SimulationRecovery | null;
   protocol?: SimulationProtocolStatus | null;
   equipment?: SimulationEquipmentStatus | null;
   schemes?: SimulationScheme[]; selectedSchemeId?: string | null;
   recentInstances?: { rootName: string; mapName?: string; vehicleCount?: number; stationCount?: number; updatedAt?: number }[];
-  stationCatalog?: { stationId: string; offset?: number; signalSource: 'verified' | 'isolated-synthetic'; sourceLabel?: string; fieldConfirmed?: boolean }[];
+  stationCatalog?: SimulationStationCatalogEntry[];
+  plcSignalTable?: SimulationPlcSignalTable | null;
   history?: SimulationReport[]; recoveryGuidance?: SimulationGuidance[];
   startupPlan?: { status: string; message?: string };
   versionComparison?: SimulationVersionComparison;

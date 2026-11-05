@@ -16,7 +16,24 @@ let enabled = false, running = true, deviceCars = true, rootName = 'mock-private
 let child, ws, seq = 0;
 const pending = new Map(), mutations = [], errors = [];
 const sleep = ms => new Promise(ok => setTimeout(ok, ms));
+const versionComparison = { status: 'different', message: '仿真与现场存在后台构建和派车参数差异', observedAt: Date.now() / 1000,
+  field: { informationalVersion: 'field-original' }, simulation: { informationalVersion: 'simulation-test' },
+  differences: [{ key: 'automatic', label: '自动建单', field: false, simulation: true }], scope: '仅比较所列构建和参数' };
+const priorReport = { id: 'history-baseline', name: 'normal-cycle', status: 'passed', finishedAt: 1700000000,
+  metrics: { taskCount: 1, durationSeconds: 20 }, checks: [] };
+const pointTable = { fileName: 'mock-four-stations.csv', sha256: 'a'.repeat(64), bytes: 4096, rowCount: 30,
+  signalCount: 30, stationCount: 3, dumperSignalCount: 5, csvText: 'mock,csv,content',
+  stations: [{ stationId: 'CNC-001', signalSource: 'verified', fieldConfirmed: true },
+    { stationId: 'CNC-002', signalSource: 'verified', fieldConfirmed: true },
+    { stationId: 'CNC-003', signalSource: 'isolated-synthetic', fieldConfirmed: false }] };
 const status = () => ({ enabled, running: enabled && running, rootName, fresh,
+  selectedSchemeId: 'scheme-1', schemes: [{ id: 'scheme-1', name: '双车排队方案', vehicleCount: 2, stationCount: 2,
+    plcTableName: pointTable.fileName, plcTableSha256: pointTable.sha256 }],
+  recentInstances: [{ rootName: 'mock-prior-lab', mapName: '已保存地图', vehicleCount: 2, stationCount: 2, updatedAt: 1700000000 }],
+  stationCatalog: pointTable.stations.map((station, index) => ({ ...station, sourceLabel: station.fieldConfirmed ? '有效点表工位' + (index + 1) : '隔离点表工位3' })),
+  plcSignalTable: pointTable,
+  versionComparison, history: [priorReport], recoveryGuidance: [{ taskId: 'ORIGINAL', vehicleId: 'AGV-02', stationId: 'CNC-002',
+    stepNumber: 8, stepName: '倒料机就绪', blockedBy: '倒料机未给就绪许可', restoreAction: '解除就绪许可阻止', expectedFeedback: '原任务继续等待倒料完成' }],
   device: { time: (Date.now() - (fresh ? 0 : 10000)) / 1000, cars: !deviceCars ? {} : {
     'AGV-01': { x: 1, y: 2, station: 'LM1', loaded: false, current_task: null, offline: false },
     'AGV-02': { x: 3, y: 4, station: 'LM2', loaded: true, current_task: 'original-transport', offline: false }
@@ -24,7 +41,10 @@ const status = () => ({ enabled, running: enabled && running, rootName, fresh,
   scenario: { id: 'original-scenario', status: active ? 'running' : 'idle', completedRounds: 0, totalRounds: 2, message: '等待原任务反馈' },
   protocol: protocolRunning ? { running: true, name: 'browser-protocol', transport: 'tcp', framing: 'line-json', port: 45678, rules: 1, requests: 0 } : { running: false },
   equipment: equipmentRunning ? { running: true, floors: ['1','2'], currentFloor: '1', targetFloor: null, direction: 'Stopped', door: 'Closed', moving: false, fault: false, signals: { call: true }, schedules: [], signalEvents: [] } : { running: false, currentFloor: '1', door: 'Closed', signals: {} },
-  report: { id: 'previous-scenario', name: 'plc-delay', finishedAt: Date.now() / 1000, status: 'inconclusive', checks: [{ name: '真实机械反馈', status: 'unknown', detail: '模型不提供现场证据' }, { name: '设备确认记录', status: 'passed', detail: { accepted: true, sequence: 'original-input' } }, { name: '原任务身份', status: 'passed', detail: ['TASK-1', 'TASK-2'] }] }
+  report: { id: 'previous-scenario', name: 'plc-delay', finishedAt: Date.now() / 1000, status: 'inconclusive', versionComparison,
+    firstFailure: '倒料机就绪等待超时', metrics: { taskCount: 2, durationSeconds: 30 },
+    waitingChain: [{ taskId: 'ORIGINAL', vehicleId: 'AGV-02', site: 'LM2', waitReason: '等待倒料资源释放' }],
+    checks: [{ name: '真实机械反馈', status: 'unknown', detail: '模型不提供现场证据' }, { name: '设备确认记录', status: 'passed', detail: { accepted: true, sequence: 'original-input' } }, { name: '原任务身份', status: 'passed', detail: ['TASK-1', 'TASK-2'] }] }
 });
 const server = createServer(async (req, res) => {
   try {
@@ -34,7 +54,12 @@ const server = createServer(async (req, res) => {
       inflight++; maximum = Math.max(maximum, inflight);
       try { await sleep(requestDelay); return offline ? json(503, { error: 'controller unavailable fixture' }) : json(200, status()); } finally { inflight--; }
     }
-    if (path === '/api/simulation/report') return json(200, status().report);
+    if (path === '/api/simulation/report') return json(200, new URL(req.url, 'http://127.0.0.1').searchParams.get('id') === priorReport.id ? priorReport : status().report);
+    if (path === '/api/simulation/replay') return json(200, { id: 'previous-scenario', map: status().map, timeline: [
+      { time: 1700000000, vehicles: [{ vehicleId: 'AGV-02', x: 1, y: 2, site: 'LM1', taskId: 'ORIGINAL', waitReason: '等待倒料资源' }], tasks: [{ taskId: 'ORIGINAL', vehicleId: 'AGV-02', stationId: 'CNC-002', step: '等待倒料' }] },
+      { time: 1700000001, vehicles: [{ vehicleId: 'AGV-02', x: 3, y: 4, site: 'LM2', taskId: 'ORIGINAL', waitReason: '等待就绪许可' }], tasks: [] }
+    ] });
+    if (path === '/api/simulation/point-table') return json(200, pointTable);
     if (path.startsWith('/api/simulation/')) {
       let body = ''; for await (const chunk of req) body += chunk;
       mutations.push({ path, body: JSON.parse(body) });
@@ -43,9 +68,12 @@ const server = createServer(async (req, res) => {
       if (path.endsWith('/stop')) running = false;
       if (path.endsWith('/start')) { running = true; deviceCars = true; }
       if (path.endsWith('/new-instance')) { assert.equal(running, false); assert.equal(mutations.at(-1).body.vehicles, 2); rootName = 'mock-fresh-lab'; deviceCars = false; }
+      if (path.endsWith('/scheme-select') || path.endsWith('/scheme-start')) { assert.equal(running, false); assert.equal(mutations.at(-1).body.id, 'scheme-1'); rootName = 'mock-scheme-lab'; deviceCars = path.endsWith('/scheme-start'); running = path.endsWith('/scheme-start'); }
       if (path.endsWith('/configure')) {
         assert.equal(running, false); assert.equal(mutations.at(-1).body.stations.length, 2);
         assert.equal(mutations.at(-1).body.vehicles.length, 2); assert.equal(mutations.at(-1).body.dumper.resourceId, 'RDUMP');
+        assert.equal(mutations.at(-1).body.plcSignalTable.sha256, pointTable.sha256);
+        assert.equal(mutations.at(-1).body.mapIdentity.sourceName, 'custom.agvmap.json');
         assert.equal(mutations.at(-1).body.vehicles[0].batteryPercent, 86);
         assert.equal(mutations.at(-1).body.vehicles[0].accelerationMetersPerSecondSquared, .6);
         assert.equal(mutations.at(-1).body.vehicles[0].operationSeconds, 2);
@@ -101,6 +129,24 @@ try {
     writeFileSync(resolve(profile, `simulation-${name}.png`), Buffer.from(stageShot.data, 'base64'));
   }
   check('Guided stage tabs isolate environment, scenario, fault and evidence workflows', true);
+  check('Build differences and concrete recovery actions are readable without raw configuration keys', await evaluate(`document.querySelector('.version-panel').textContent.includes('field-original')&&document.querySelector('.version-panel').textContent.includes('自动建单')&&document.querySelector('.recovery-guidance').textContent.includes('第8步')&&document.querySelector('.recovery-guidance').textContent.includes('解除就绪许可阻止')`));
+  check('Report highlights the first failure, waiting chain and Chinese metrics', await evaluate(`document.querySelector('.first-failure').textContent.includes('倒料机就绪等待超时')&&document.querySelector('.report-panel .waiting-chain').textContent.includes('等待倒料资源释放')&&document.querySelector('.report-metrics').textContent.includes('运行时长（秒）')&&!document.querySelector('.report-metrics').textContent.includes('durationSeconds')`));
+  await click('载入本报告时间轴');
+  check('Replay loads original report positions on its saved map without device mutations', await evaluate(`document.querySelector('.replay-map .map-car text').textContent==='AGV-02'&&document.querySelector('.history-panel .waiting-chain').textContent.includes('ORIGINAL')`));
+  await evaluate(`(()=>{const input=document.querySelector('[aria-label="回放时间点"]');input.value='1';input.dispatchEvent(new Event('input',{bubbles:true}))})()`);
+  await wait(() => evaluate(`document.querySelector('.history-panel .waiting-chain').textContent.includes('等待就绪许可')`), 'Replay changes recorded frame');
+  check('Replay scrubbing preserves original task and has no control request', mutations.length === 0);
+  await evaluate(`(()=>{const e=document.querySelectorAll('.history-panel select')[1];e.value='history-baseline';e.dispatchEvent(new Event('change',{bubbles:true}))})()`);
+  await wait(() => evaluate(`document.querySelector('.history-panel table')?.textContent.includes('+10')`), 'Report comparison finite numeric delta');
+  await evaluate(`(()=>{const e=document.querySelector('.history-panel select');e.value='history-baseline';e.dispatchEvent(new Event('change',{bubbles:true}))})()`);
+  await wait(() => evaluate(`document.querySelector('.report-identity').textContent.includes('history-baseline')`), 'Read selected historical report');
+  check('History selection reads the requested report rather than replacing it with current status polling', await evaluate(`document.querySelector('.report-panel').textContent.includes('history-baseline')`));
+  await evaluate(`(()=>{const e=document.querySelector('.history-panel select');e.value='';e.dispatchEvent(new Event('change',{bubbles:true}))})()`);
+  await evaluate(`(()=>{const e=document.querySelector('[aria-label="测试场景"]');e.value='dispatch-backlog';e.dispatchEvent(new Event('change',{bubbles:true}))})()`);
+  await click('运行场景');
+  check('Formal-dispatch backlog emits station calls continuously without any vehicle selection', mutations.at(-1).body.name === 'dispatch-backlog' && mutations.at(-1).body.calls.length === 6 && mutations.at(-1).body.calls.every(call => !Object.hasOwn(call, 'vehicleId')));
+  await click('中止后续场景');
+  await evaluate(`(()=>{const e=document.querySelector('[aria-label="测试场景"]');e.value='normal-cycle';e.dispatchEvent(new Event('change',{bubbles:true}))})()`);
   await evaluate(`document.querySelector('.stage-tabs button:nth-child(1)').click()`);
   await click('启动协议服务器');
   check('Declarative protocol server starts only on loopback and reports its assigned endpoint',
@@ -150,6 +196,15 @@ try {
     resources:[{id:'RDUMP',capacity:1,boundary:[{x:3.5,y:.5},{x:4.5,y:.5},{x:4.5,y:1.5}]}]};
     const input=document.querySelector('.file-picker input');const transfer=new DataTransfer();transfer.items.add(new File([JSON.stringify(map)],'custom.agvmap.json',{type:'application/json'}));input.files=transfer.files;input.dispatchEvent(new Event('change',{bubbles:true}));})()`);
   await wait(()=>evaluate(`document.querySelector('.map-import')?.textContent.includes('custom.agvmap.json')&&document.querySelectorAll('.vehicle-config-row').length===2`),'Custom map form loaded');
+  await click('载入当前实例点表');
+  await wait(()=>evaluate(`document.querySelector('.plc-table-summary')?.textContent.includes('mock-four-stations.csv')&&document.querySelector('.plc-table-summary')?.textContent.includes('aaaaaaaaaaaa')`),'Point table binding loaded');
+  check('Scheme canvas requires an explicit PLC table and retains its source hash', await evaluate(`document.querySelector('.plc-table-binding').textContent.includes('3 工位')&&document.querySelector('.plc-table-binding').textContent.includes('${'a'.repeat(12)}')`));
+  await click('增加隔离仿真工位');
+  await evaluate(`(()=>{const row=document.querySelectorAll('.station-config-row')[2];const site=row.querySelector('select');site.value='PARK';site.dispatchEvent(new Event('change',{bubbles:true}));const priority=row.querySelectorAll('input')[1];priority.value='90';priority.dispatchEvent(new Event('input',{bubbles:true}))})()`);
+  check('Additional station requires explicit isolated point semantics and supports a dispatch priority', await evaluate(`document.querySelectorAll('.station-config-row').length===3&&document.querySelectorAll('.station-config-row')[2].textContent.includes('现场未确认')&&document.querySelectorAll('.station-config-row')[2].querySelectorAll('input')[1].value==='90'`));
+  await evaluate(`(()=>{const e=document.querySelectorAll('.station-config-row')[2].querySelectorAll('select')[1];e.value='verified';e.dispatchEvent(new Event('change',{bubbles:true}))})()`);
+  check('Unconfirmed field station cannot be saved as a verified PLC point-table mapping', await disabled('创建自定义隔离实例'));
+  await evaluate(`document.querySelectorAll('.station-config-row')[2].querySelector('button').click()`);
   await click('增加曲线点');
   await evaluate(`(()=>{const rows=[...document.querySelectorAll('.vehicle-config-row')[0].querySelectorAll('.voltage-point')];const percents=[80,0,30];rows.forEach((row,index)=>{const input=row.querySelector('input');input.value=String(percents[index]);input.dispatchEvent(new Event('input',{bubbles:true}))})})()`);
   check('Battery voltage curve supports bounded custom points before submission',
@@ -167,6 +222,14 @@ try {
   check('A stopped environment can prepare a fresh sibling without clearing old records', mutations.at(-1).path.endsWith('/new-instance') && await evaluate(`document.querySelector('#simulation-environment').textContent==='mock-fresh-lab'`));
   await click('启动仿真环境');
   check('Unknown report evidence is never styled as passed', await evaluate(`document.querySelector('.report-table .state-pill').textContent==='未核定'&&!document.querySelector('.report-table .state-pill').classList.contains('pass')`));
+  await evaluate(`(()=>{const e=document.querySelector('.scheme-panel input');e.value='当前地图双车方案';e.dispatchEvent(new Event('input',{bubbles:true}))})()`);
+  await click('保存当前方案');
+  check('Scheme saves complete map, vehicle physics, workstation mapping and chosen scene', mutations.at(-1).path.endsWith('/scheme-save') && mutations.at(-1).body.name === '当前地图双车方案' && mutations.at(-1).body.configuration.vehicles.length === 2 && mutations.at(-1).body.configuration.mapDefinition.name === 'custom-mock' && mutations.at(-1).body.configuration.plcSignalTable.sha256 === pointTable.sha256 && mutations.at(-1).body.configuration.mapIdentity.sourceName === 'custom.agvmap.json' && mutations.at(-1).body.scenario.name === 'simultaneous-calls');
+  check('Running environment prevents destructive scheme replacement', await disabled('一键开测') && await disabled('按方案新建实例'));
+  await click('停止仿真环境'); await click('按方案新建实例');
+  check('Saved scheme creates a clean instance only after the current environment stops', mutations.at(-1).path.endsWith('/scheme-select') && mutations.at(-1).body.id === 'scheme-1' && await evaluate(`document.querySelector('#simulation-environment').textContent==='mock-scheme-lab'`));
+  await click('一键开测');
+  check('One-click testing submits only the selected saved scheme identity', mutations.at(-1).path.endsWith('/scheme-start') && mutations.at(-1).body.id === 'scheme-1');
   requestDelay = 2200; maximum = 0; await sleep(6500);
   check('Slow polling has no overlapping status requests', maximum === 1);
   requestDelay = 0; offline = true;

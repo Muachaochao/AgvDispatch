@@ -8,6 +8,8 @@ from unittest.mock import patch
 
 from controller import CleanupPending, Runtime, cleanup_owned_runtime, read, validate_root, write
 
+SOURCE_PLC_TABLE = Path(__file__).resolve().parents[2] / 'AgvDispatch.Service/config/plc-signals.csv'
+
 
 class Child:
     def __init__(self, timeout=False):
@@ -49,7 +51,7 @@ def fixture(workspace):
         write(root/filename, value)
     (root/'service/AgvDispatch.Service.exe').write_bytes(b'synthetic-build')
     (root/'webhost/AgvDispatch.WebHost.exe').write_bytes(b'synthetic-build')
-    (root/'service/config/plc.csv').write_text('synthetic-points', encoding='utf-8')
+    (root/'service/config/plc.csv').write_bytes(SOURCE_PLC_TABLE.read_bytes())
     return root
 
 
@@ -159,7 +161,7 @@ class LifecycleTests(unittest.TestCase):
             self.assertFalse((target/'service/data').exists())
             self.assertFalse((target/'service/appsettings.Production.json').exists())
             self.assertFalse((target/'multi-state.json').exists())
-            self.assertEqual((target/'service/config/plc.csv').read_text(), 'synthetic-points')
+            self.assertEqual((target/'service/config/plc.csv').read_bytes(), SOURCE_PLC_TABLE.read_bytes())
             self.assertEqual(runtime.settings['Database']['Path'], str(target/'data/agv-dispatch.db'))
             self.assertNotEqual(runtime.lab['pipe'], 'Agv28StageLab-source')
             self.assertEqual(len(runtime.ports), len(set(runtime.ports)))

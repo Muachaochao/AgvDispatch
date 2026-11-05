@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from controller import Runtime, WORKSPACE, validate_root, write
 from scenarios import Observer, separation, validate_scenario
+from test_runtime_lifecycle import SOURCE_PLC_TABLE
 
 
 class SimulationTests(unittest.TestCase):
@@ -23,6 +24,7 @@ class SimulationTests(unittest.TestCase):
             dict(stationId='CNC-001', pickupSite='P1'), dict(stationId='CNC-002', pickupSite='P2')],
             dumper=dict(dumpingSite='DUMP', waitingSite='WAIT', resourceId='R-DUMP'),
             vehicles=[dict(id='CAR-1', initialSite='PARK1', radiusMeters=.5), dict(id='CAR-2', initialSite='PARK2', radiusMeters=.5)],
+            plcSignalTable=dict(fileName='plc-signals.csv', csvText=SOURCE_PLC_TABLE.read_text(encoding='utf-8-sig')),
             mapDefinition=dict(name='custom', nodes=nodes, edges=edges, resources=[
                 dict(id='R-DUMP', capacity=1, boundary=[dict(x=2,y=0),dict(x=3,y=0),dict(x=3,y=1)])]))
 
@@ -38,6 +40,9 @@ class SimulationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '电压曲线'): runtime._validate_configuration(broken)
         disconnected = self.custom_payload(); disconnected['mapDefinition']['edges'] = disconnected['mapDefinition']['edges'][:-1]
         with self.assertRaisesRegex(ValueError, '不连通'): runtime._validate_configuration(disconnected)
+        missing_table = self.custom_payload(); missing_table.pop('plcSignalTable')
+        with self.assertRaisesRegex(ValueError, '必须明确绑定PLC点表'):
+            runtime._validate_configuration(missing_table)
 
     def test_multiple_waiting_bays_survive_configuration_and_reject_duplicates(self):
         runtime = object.__new__(Runtime)

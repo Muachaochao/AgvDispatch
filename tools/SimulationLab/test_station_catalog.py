@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'WebSingleVehicleLab'))
 from device_twin import DeviceTwin
-from station_catalog import (normalize_stations, station_catalog, validate_twin_stations,
+from station_catalog import (normalize_plc_table, normalize_stations, station_catalog, validate_twin_stations,
                              write_private_signal_table)
 
 
@@ -19,6 +19,22 @@ SOURCE = Path(__file__).resolve().parents[2] / 'AgvDispatch.Service/config/plc-s
 
 
 class StationCatalogTests(unittest.TestCase):
+    def test_uploaded_point_table_is_canonicalized_and_hashed_with_station_provenance(self):
+        text = SOURCE.read_text(encoding='utf-8-sig')
+        value = normalize_plc_table('现场四工位.csv', text)
+        self.assertEqual(value['stationCount'], 305)
+        self.assertGreater(value['signalCount'], 305 * 8)
+        self.assertEqual(len(value['sha256']), 64)
+        self.assertEqual(value['fileName'], '现场四工位.csv')
+        self.assertEqual([row['stationId'] for row in value['stations'] if row['fieldConfirmed']],
+                         ['CNC-001', 'CNC-002'])
+        moved = normalize_plc_table('现场四工位.csv', text.replace('CNC-003', 'CNC-003 '))
+        self.assertNotEqual(value['sha256'], moved['sha256'])
+        with self.assertRaises(ValueError):
+            normalize_plc_table('../plc-signals.csv', text)
+        with self.assertRaises(ValueError):
+            normalize_plc_table('plc-signals.csv', '')
+
     def test_current_table_never_claims_inferred_points_are_field_confirmed(self):
         catalog = station_catalog(SOURCE)
         self.assertEqual(len(catalog), 305)

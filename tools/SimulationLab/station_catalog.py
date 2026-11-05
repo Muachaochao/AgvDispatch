@@ -15,6 +15,7 @@ import re
 MEMORY_BYTES = 1024
 DUMPER_OFFSET = 610
 MAX_STATIONS = 305
+MAX_PLC_TABLE_BYTES = 8 * 1024 * 1024
 STATION_SIGNALS = (
     ('FullBoxRequested', 'PlcToHost', 'Read'),
     ('BoxPresent', 'PlcToHost', 'Read'),
@@ -37,26 +38,28 @@ VERIFIED_LABEL = '当前点表已确认并启用；仅复制到隔离仿真'
 SYNTHETIC_LABEL = '隔离仿真点位，现场未确认或未启用'
 
 
-def _rows(path):
-    with Path(path).open(encoding='utf-8-sig', newline='') as stream:
-        reader = csv.DictReader(stream)
-        headers = reader.fieldnames
-        required = {'address', 'variableName', 'stationId', 'deviceType', 'dataType',
-                    'direction', 'access', 'addressStatus', 'enabled', 'sourceNote'}
-        if not headers or not required <= set(headers):
-            raise ValueError('PLC点表缺少工位、地址、读写方向或核定状态字段。')
-        rows = []
-        for row in reader:
-            if None in row:
-                raise ValueError('PLC点表包含列数不匹配的行。')
-            if any(row.values()):
-                rows.append({key: (value or '').strip() for key, value in row.items()})
+def _parse_rows(stream):
+    reader = csv.DictReader(stream)
+    headers = reader.fieldnames
+    required = {'address', 'variableName', 'stationId', 'deviceType', 'dataType',
+                'direction', 'access', 'addressStatus', 'enabled', 'sourceNote'}
+    if not headers or not required <= set(headers):
+        raise ValueError('PLC点表缺少工位、地址、读写方向或核定状态字段。')
+    rows = []
+    for row in reader:
+        if None in row:
+            raise ValueError('PLC点表包含列数不匹配的行。')
+        if any(row.values()):
+            rows.append({key: (value or '').strip() for key, value in row.items()})
     return headers, rows
 
 
-def station_catalog(csv_path):
-    """Return supported station layouts, preserving their field validity flag."""
-    _, rows = _rows(csv_path)
+def _rows(path):
+    with Path(path).open(encoding='utf-8-sig', newline='') as stream:
+        return _parse_rows(stream)
+
+
+def _catalog_from_rows(rows):
     grouped = {}
     for row in rows:
         if row['deviceType'] == 'ChipRemovalStation':
@@ -95,11 +98,69 @@ def station_catalog(csv_path):
     return sorted(result, key=lambda station: (station['offset'], station['stationId']))
 
 
-def normalize_stations(stations, csv_path):
+def station_catalog(csv_path):
+    """Return supported station layouts, preserving their field validity flag."""
+    _, rows = _rows(csv_path)
+    return _catalog_from_rows(rows)
+
+
+def normalize_plc_table(file_name, csv_text):
+    """Validate and canonicalize an explicitly uploaded simulation point table."""
+    if not isinstance(file_name, str) or not file_name.strip() or len(file_name) > 160 or \
+            Path(file_name).name != file_name or not file_name.lower().endswith('.csv'):
+        raise ValueError('PLC点表文件名须为不超过160字符的CSV文件名。')
+    if not isinstance(csv_text, str) or not csv_text.strip():
+        raise ValueError('PLC点表内容为空。')
+    text = csv_text.lstrip('\ufeff').replace('\r\n', '\n').replace('\r', '\n')
+    data = text.encode('utf-8-sig')
+    if len(data) > MAX_PLC_TABLE_BYTES:
+        raise ValueError('PLC点表不能超过8 MiB。')
+    if '\x00' in text:
+        raise ValueError('PLC点表包含空字符。')
+    try:
+        headers, rows = _parse_rows(io.StringIO(text, newline=''))
+        catalog = _catalog_from_rows(rows)
+        dumper_rows = [row for row in rows if row['stationId'] == 'DUMPER-001']
+        _validate_dumper_rows(dumper_rows)
+    except csv.Error as error:
+        raise ValueError('PLC点表CSV格式无效：' + str(error)) from error
+    return dict(fileName=file_name.strip(), csvText=text,
+                sha256=hashlib.sha256(data).hexdigest(), bytes=len(data),
+                rowCount=len(rows), signalCount=len(rows), stationCount=len(catalog),
+                dumperSignalCount=len(dumper_rows), stations=catalog,
+                headers=[str(header) for header in headers])
+
+
+def normalize_plc_table_from_path(path, file_name=None):
+    path = Path(path).resolve()
+    if path.stat().st_size > MAX_PLC_TABLE_BYTES:
+        raise ValueError('PLC点表不能超过8 MiB。')
+    text = path.read_text(encoding='utf-8-sig')
+    return normalize_plc_table(file_name or path.name, text)
+
+
+def _validate_dumper_rows(dumper_rows):
+    dumper_by_name = {row['variableName']: row for row in dumper_rows}
+    if len(dumper_rows) != 5 or len(dumper_by_name) != 5:
+        raise ValueError('当前倒料点表不是受支持的DB1.DBX610五信号契约。')
+    for bit, (variable, direction, access) in enumerate(DUMPER_SIGNALS):
+        row = dumper_by_name.get(variable)
+        if (row is None or row['address'].upper() != f'DB1.DBX{DUMPER_OFFSET}.{bit}' or
+                row['dataType'].lower() != 'bool' or row['direction'] != direction or
+                row['access'] != access or row['enabled'].lower() != 'true' or
+                row['addressStatus'].lower() != 'confirmed'):
+            raise ValueError('当前倒料点表需具备已确认并启用的DB1.DBX610五信号契约。')
+
+
+def normalize_stations(stations, csv_path=None, catalog=None):
     """Resolve station IDs against the CSV; pickup node validation belongs to map code."""
     if not isinstance(stations, list) or not 1 <= len(stations) <= MAX_STATIONS:
         raise ValueError(f'工位须配置1至{MAX_STATIONS}个，并在当前点表中具有完整业务握手地址。')
-    available = {station['stationId']: station for station in station_catalog(csv_path)}
+    if catalog is None:
+        if csv_path is None:
+            raise ValueError('缺少PLC点表。')
+        catalog = station_catalog(csv_path)
+    available = {station['stationId']: station for station in catalog}
     result, seen = [], set()
     for station in stations:
         if (not isinstance(station, dict) or
@@ -146,16 +207,7 @@ def write_private_signal_table(source_csv, target_csv, stations, dumper_station_
     headers, rows = _rows(source_csv)
     output = []
     dumper_rows = [row for row in rows if row['stationId'] == dumper_station_id]
-    dumper_by_name = {row['variableName']: row for row in dumper_rows}
-    if len(dumper_rows) != 5 or len(dumper_by_name) != 5:
-        raise ValueError('当前倒料点表不是受支持的DB1.DBX610五信号契约。')
-    for bit, (variable, direction, access) in enumerate(DUMPER_SIGNALS):
-        row = dumper_by_name.get(variable)
-        if (row is None or row['address'].upper() != f'DB1.DBX{DUMPER_OFFSET}.{bit}' or
-                row['dataType'].lower() != 'bool' or row['direction'] != direction or
-                row['access'] != access or row['enabled'].lower() != 'true' or
-                row['addressStatus'].lower() != 'confirmed'):
-            raise ValueError('当前倒料点表需具备已确认并启用的DB1.DBX610五信号契约。')
+    _validate_dumper_rows(dumper_rows)
     for row in rows:
         binding = selected.get(row['stationId'])
         if binding is not None:

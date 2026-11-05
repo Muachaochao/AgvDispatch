@@ -21,7 +21,6 @@ import uuid
 
 WORKSPACE = Path(__file__).resolve().parents[2]
 STATION_IDS = ('CNC-001', 'CNC-002')
-STATION_CSV = WORKSPACE / 'AgvDispatch.Service/config/plc-signals.csv'
 VEHICLE_ID = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$')
 
 
@@ -99,6 +98,7 @@ class Runtime:
         self.scheme_store = scheme_store
         self.history_cache = (0, [])
         self.guidance_cache = (0, [])
+        self.plc_table_cache = None
         self.startup_plan = None
         self.startup_thread = None
         if scheme_store is not None:
@@ -135,7 +135,6 @@ class Runtime:
 
     def status(self):
         from simulation_reports import history, guidance
-        from station_catalog import station_catalog
         device = self.device()
         with self.lock:
             recovery = None
@@ -153,6 +152,7 @@ class Runtime:
                         try: details[tid] = self.api('/api/tasks/' + tid)
                         except (OSError, ValueError): pass
                 self.guidance_cache = (now, guidance(details, device))
+            plc_table = self._bound_plc_table()
             return dict(enabled=True, rootName=self.root.name, running=self.phase == 'running', phase=self.phase,
                         fresh=self.phase == 'running' and 0 <= time.time() - device.get('time', 0) < 5 and bool(self.children) and all(p.poll() is None for p in self.children.values()),
                         device=device, map=read(self.root / 'navigation.agvmap.json'), scenario=dict(self.scenario), report=self.report,
@@ -160,7 +160,8 @@ class Runtime:
                         protocol=self.protocol_status(),
                         equipment=self.equipment_status(),
                         **(self.scheme_store.catalog() if getattr(self, 'scheme_store', None) else {}),
-                        stationCatalog=station_catalog(STATION_CSV), history=self.history_cache[1],
+                        stationCatalog=plc_table.get('stations', []), history=self.history_cache[1],
+                        plcSignalTable=self._plc_table_metadata(plc_table),
                         recoveryGuidance=self.guidance_cache[1], startupPlan=self.startup_plan,
                         versionComparison=self.version_comparison.snapshot() if hasattr(self, 'version_comparison') else None,
                         message='回环设备仿真；合成模型不代表真实固件、机械及安全联锁验收。')
@@ -278,14 +279,66 @@ class Runtime:
     def _finite_number(value):
         return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
+    def _bound_plc_table(self):
+        from station_catalog import normalize_plc_table_from_path
+        candidates = [self.root / 'plc-signals.source.csv']
+        configured = getattr(self, 'settings', {}).get('Plc', {}).get('SignalCsvPath')
+        if configured:
+            path = Path(configured)
+            candidates.append(path if path.is_absolute() else self.root / 'service' / path)
+        for path in candidates:
+            if not path.is_file() or path.is_symlink():
+                continue
+            stat = path.stat()
+            key = (str(path.resolve()), stat.st_mtime_ns, stat.st_size)
+            if self.plc_table_cache and self.plc_table_cache[0] == key:
+                return self.plc_table_cache[1]
+            try:
+                table = normalize_plc_table_from_path(path, 'plc-signals.source.csv' if path.name == 'plc-signals.source.csv' else path.name)
+            except (OSError, ValueError):
+                continue
+            self.plc_table_cache = (key, table)
+            return table
+        return {}
+
+    @staticmethod
+    def _plc_table_metadata(table):
+        if not table:
+            return None
+        return {key: table.get(key) for key in
+                ('fileName', 'sha256', 'bytes', 'rowCount', 'signalCount', 'stationCount', 'dumperSignalCount',
+                 'stations', 'headers', 'mapDefinitionHash')}
+
+    def validate_point_table(self, payload):
+        from station_catalog import normalize_plc_table
+        if not isinstance(payload, dict) or set(payload) != {'fileName', 'csvText'}:
+            raise ValueError('PLC点表校验字段无效。')
+        return self._plc_table_metadata(normalize_plc_table(payload.get('fileName'), payload.get('csvText')))
+
+    def current_point_table(self):
+        table = self._bound_plc_table()
+        if not table:
+            raise ValueError('当前实例尚未绑定PLC点表。')
+        return table
+
     def _validate_configuration(self, payload):
-        if not isinstance(payload, dict) or set(payload) - {'name', 'mapDefinition', 'stations', 'vehicles', 'dumper', 'inspectionSite'}:
+        if not isinstance(payload, dict) or set(payload) - {'name', 'mapDefinition', 'stations', 'vehicles', 'dumper', 'inspectionSite', 'plcSignalTable', 'mapIdentity'}:
             raise ValueError('新实例配置包含未知字段。')
         navigation = payload.get('mapDefinition')
         if not isinstance(navigation, dict) or not all(isinstance(navigation.get(key), list) for key in ('nodes', 'edges', 'resources')):
             raise ValueError('地图必须是包含nodes、edges和resources的对象。')
         if not 3 <= len(navigation['nodes']) <= 10000 or not 1 <= len(navigation['edges']) <= 50000 or len(navigation['resources']) > 5000:
             raise ValueError('地图节点、道路或资源数量超出仿真范围。')
+        map_hash = hashlib.sha256(json.dumps(navigation, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        identity_payload = payload.get('mapIdentity') or {}
+        if not isinstance(identity_payload, dict) or set(identity_payload) - {'mapId', 'mapVersionId', 'sourceName', 'definitionHash'}:
+            raise ValueError('地图身份字段无效。')
+        for key in ('mapId', 'mapVersionId', 'sourceName'):
+            if identity_payload.get(key) is not None and (not isinstance(identity_payload[key], str) or len(identity_payload[key]) > 256):
+                raise ValueError('地图身份字段长度或类型无效。')
+        map_identity = dict(mapId=identity_payload.get('mapId') or '', mapVersionId=identity_payload.get('mapVersionId') or '',
+                            sourceName=identity_payload.get('sourceName') or navigation.get('name') or '自定义仿真地图',
+                            definitionHash=map_hash)
         nodes = {}
         vendor_ids = set()
         for node in navigation['nodes']:
@@ -315,8 +368,17 @@ class Runtime:
                 raise ValueError(f'{label}不存在或已停用。')
             selected[label] = value
             return value
-        from station_catalog import normalize_stations
-        stations = normalize_stations(payload.get('stations'), STATION_CSV)
+        from station_catalog import normalize_plc_table, normalize_stations
+        table_payload = payload.get('plcSignalTable')
+        table_fields = {'fileName', 'csvText', 'sha256', 'bytes', 'rowCount', 'signalCount', 'stationCount',
+                        'dumperSignalCount', 'stations', 'headers', 'mapDefinitionHash'}
+        if not isinstance(table_payload, dict) or set(table_payload) - table_fields:
+            raise ValueError('新实例必须明确绑定PLC点表；未再使用仓库全局点表作为回退。')
+        table = normalize_plc_table(table_payload.get('fileName'), table_payload.get('csvText'))
+        if table_payload.get('sha256') and table_payload['sha256'].lower() != table['sha256']:
+            raise ValueError('PLC点表内容与浏览器提供的SHA256不一致，请重新选择文件。')
+        table['mapDefinitionHash'] = map_hash
+        stations = normalize_stations(payload.get('stations'), catalog=table['stations'])
         normalized_stations = []
         typed_topology = any(isinstance(node.get('type'), str) for node in nodes.values())
         for index, station in enumerate(stations):
@@ -431,9 +493,12 @@ class Runtime:
         return dict(name=payload.get('name') or navigation.get('name') or 'custom-simulation',
                     mapDefinition=navigation, stations=normalized_stations,
                     vehicles=normalized_vehicles, dumper=dict(dumpingSite=dumping, waitingSite=waiting, waitingSites=waiting_sites, resourceId=resource_id),
-                    inspectionSite=inspection)
+                    inspectionSite=inspection, plcSignalTable=table, mapIdentity=map_identity)
 
     def _default_configuration(self, count):
+        table = self._bound_plc_table()
+        if not table:
+            raise ValueError('当前实例没有可复用的PLC点表；请先上传并绑定对应地图的CSV。')
         navigation = read(self.root / 'navigation.agvmap.json')
         prior_stations = {station['stationId']: station for station in self.lab.get('simulationTopology', {}).get('stations', [])}
         stations = [dict(stationId=station_id, pickupSite=site,
@@ -455,7 +520,8 @@ class Runtime:
         if inspection not in {n['id'] for n in navigation['nodes']}:
             inspection = origins[0]
         return self._validate_configuration(dict(mapDefinition=navigation, stations=stations, vehicles=vehicles,
-            dumper=dumper, inspectionSite=inspection, name=self.root.name))
+            dumper=dumper, inspectionSite=inspection, name=self.root.name,
+            plcSignalTable=dict(fileName=table['fileName'], csvText=table['csvText'], sha256=table['sha256'])))
 
     def configure(self, payload):
         configuration = self._validate_configuration(payload)
@@ -470,6 +536,10 @@ class Runtime:
             configuration = dict(self.lab.get('simulationConfiguration') or {})
             configuration.pop('mapName', None)
             configuration['mapDefinition'] = read(self.root / 'navigation.agvmap.json')
+            table = self._bound_plc_table()
+            if not table:
+                raise ValueError('当前实例没有已绑定的PLC点表，不能保存为可复现方案。')
+            configuration['plcSignalTable'] = dict(fileName=table['fileName'], csvText=table['csvText'], sha256=table['sha256'])
         validated = self._validate_configuration(configuration)
         scenario = validate_scenario(payload['scenario']) if payload.get('scenario') is not None else None
         if scenario and any(call['stationId'] not in {s['stationId'] for s in validated['stations']} for call in scenario.get('calls', [])):
@@ -522,6 +592,10 @@ class Runtime:
         return self.status()
 
     def new_instance(self, payload=None):
+        if self.phase in ('running', 'starting') or self.children or self.worker and self.worker.is_alive():
+            raise ValueError('请先停止当前仿真环境，再创建干净实例。')
+        if self.protocol_runtime is not None or self.equipment_model is not None:
+            raise ValueError('请先停止协议服务和设备模型，再创建干净实例。')
         payload = payload or {}
         if not isinstance(payload, dict) or set(payload) - {'vehicles'}:
             raise ValueError('新实例仅接受vehicles参数。')
@@ -547,9 +621,14 @@ class Runtime:
                     ignore=shutil.ignore_patterns('data', 'logs', '*.log', '*.db', '*.db-*', 'appsettings*.json'))
             navigation = copy.deepcopy(configuration['mapDefinition'])
             write(target / 'navigation.agvmap.json', navigation)
+            table = configuration['plcSignalTable']
+            signal_source = target / 'plc-signals.source.csv'
+            signal_source.write_bytes(table['csvText'].encode('utf-8-sig'))
             write(target / 'source-manifest.json', dict(source='Web simulation configuration', sourceSha256='', editedFile='navigation.agvmap.json',
                 editedSha256=hashlib.sha256((target / 'navigation.agvmap.json').read_bytes()).hexdigest(),
-                changes=['configured through isolated Simulation Center'], boundary='User-provided or copied simulation map; not field provenance or calibration.'))
+                plcSignalTable=dict(fileName=table['fileName'], sha256=table['sha256'], bytes=table['bytes']),
+                changes=['configured through isolated Simulation Center', 'explicit user-bound PLC signal table'],
+                boundary='User-provided or copied simulation map and PLC mapping; not field provenance, calibration or live PLC proof.'))
             used = set()
             def port():
                 while True:
@@ -569,7 +648,8 @@ class Runtime:
                     waitingSite=configuration['dumper']['waitingSite'], waitingSites=configuration['dumper']['waitingSites'], inspectionSite=configuration['inspectionSite']),
                 simulationConfiguration=dict(stations=configuration['stations'], dumper=configuration['dumper'],
                     inspectionSite=configuration['inspectionSite'], vehicles=configuration['vehicles'],
-                    mapName=navigation.get('name') or 'custom_simulation'))
+                    mapName=navigation.get('name') or 'custom_simulation',
+                    plcSignalTable=self._plc_table_metadata(table), mapIdentity=configuration['mapIdentity']))
             settings['Security']['PipeName'] = lab['pipe']
             settings['Database']['Path'] = str(target / 'data/agv-dispatch.db')
             settings['Map']['ImportPath'] = str(target / 'navigation.agvmap.json')
@@ -605,7 +685,10 @@ class Runtime:
             lab.update(robotPort=robots[0]['Port'], navigationPort=robots[0]['NavigationPort'])
             from station_catalog import write_private_signal_table
             signal_target = target / 'service/config/simulation-signals.csv'
-            lab['stationSignalManifest'] = write_private_signal_table(STATION_CSV, signal_target, configuration['stations'])
+            signal_manifest = write_private_signal_table(signal_source, signal_target, configuration['stations'])
+            lab['stationSignalManifest'] = signal_manifest
+            lab['plcSignalTable'] = dict(self._plc_table_metadata(table), sourceFile='plc-signals.source.csv',
+                                         privateSha256=signal_manifest['privateSha256'])
             settings['Plc']['SignalCsvPath'] = 'config/simulation-signals.csv'
             web.update(Port=lab['webPort'], PipeName=lab['pipe'], ProjectStorePath=str(target / 'projects'), EngineeringStorePath=str(target / 'engineering'))
             for filename, value in [('lab.json', lab), ('service/appsettings.json', settings), ('service-settings.json', settings), ('webhost/appsettings.json', {'Web': web})]:
@@ -851,7 +934,9 @@ def serve(root, port, token):
                     query = parse_qs(parsed.query, strict_parsing=True)
                     if query and (set(query) != {'id'} or len(query['id']) != 1): raise ValueError('报告查询参数无效。')
                     identity = query.get('id', [None])[0]
-                    result = runtime.status() if parsed.path == '/status' and not query else report(runtime, identity) if parsed.path == '/report' else replay(runtime, identity) if parsed.path == '/replay' else None
+                    result = runtime.status() if parsed.path == '/status' and not query else \
+                        runtime.current_point_table() if parsed.path == '/point-table' and not query else \
+                        report(runtime, identity) if parsed.path == '/report' else replay(runtime, identity) if parsed.path == '/replay' else None
                 else:
                     length = int(self.headers.get('Content-Length', 0))
                     if not 0 <= length <= 8 * 1024 * 1024: raise ValueError('请求过大。')
@@ -867,6 +952,7 @@ def serve(root, port, token):
                     elif self.path == '/scheme-select': result = runtime.select_scheme(payload)
                     elif self.path == '/scheme-start': result = runtime.select_scheme(payload, start=True)
                     elif self.path == '/scheme-delete': result = runtime.delete_scheme(payload)
+                    elif self.path == '/point-table-validate': result = runtime.validate_point_table(payload)
                     elif self.path == '/recover': result = runtime.decide_recovery(payload)
                     elif self.path == '/recover-release': result = runtime.release_recovery(payload)
                     elif self.path == '/protocol-start': result = runtime.start_protocol(payload)

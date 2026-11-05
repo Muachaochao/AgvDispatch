@@ -264,7 +264,21 @@ def execute(runtime, request):
     write(evidence / 'scenario.json', dict(**request, startedAt=started, rootName=runtime.root.name))
     if (runtime.root / 'navigation.agvmap.json').is_file():
         write(evidence / 'map.json', read(runtime.root / 'navigation.agvmap.json'))
+    simulation_configuration = getattr(runtime, 'lab', {}).get('simulationConfiguration') or {}
+    plc_signal_table = getattr(runtime, 'lab', {}).get('plcSignalTable')
+    if plc_signal_table:
+        write(evidence / 'plc-signal-table.json', plc_signal_table)
+        source_table = runtime.root / 'plc-signals.source.csv'
+        if source_table.is_file() and not source_table.is_symlink():
+            (evidence / 'plc-signals.source.csv').write_bytes(source_table.read_bytes())
+    write(evidence / 'simulation-configuration.json', dict(
+        mapIdentity=simulation_configuration.get('mapIdentity'),
+        plcSignalTable=plc_signal_table,
+        stations=simulation_configuration.get('stations'),
+        dumper=simulation_configuration.get('dumper'),
+        vehicles=simulation_configuration.get('vehicles')))
     execution_configuration = {key: runtime.settings.get(key) for key in ('TaskCreation', 'Dispatching', 'TrafficSegmentRelease')}
+    execution_configuration['plcSignalTable'] = plc_signal_table
     write(evidence / 'execution-configuration.json', execution_configuration)
     checks = []
     tasks = {}
