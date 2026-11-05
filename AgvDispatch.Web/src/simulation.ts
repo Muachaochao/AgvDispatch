@@ -101,7 +101,7 @@ export interface SimulationStationCatalogEntry {
   sourceLabel?: string; fieldConfirmed?: boolean;
 }
 export interface SimulationVehicleConfiguration {
-  id: string; initialSite: string; radiusMeters: number; initialLoaded?: boolean;
+  id: string; initialSite: string; radiusMeters: number; lengthMeters: number; widthMeters: number; initialLoaded?: boolean;
   batteryPercent?: number; speedScale?: number; voltageCurve?: { percent: number; voltage: number }[];
   chargingGainPercentPerHour?: number;
 }
@@ -164,7 +164,7 @@ export interface SimulationReport {
 
 const metricNames: Record<string, string> = {
   taskCount: '任务数', completedTaskCount: '已完成任务数', completedRounds: '完成轮数', durationSeconds: '运行时长（秒）',
-  samples: '观察采样数', minimumSeparationMeters: '车辆最小间距（米）', longestUnchangedStepSeconds: '最长步骤等待（秒）',
+  samples: '观察采样数', minimumSeparationMeters: '车辆中心最小间距（米）', longestUnchangedStepSeconds: '最长步骤等待（秒）',
   commandCount: '原始运输命令数', vehicleCount: '车辆数', callCount: '计划呼叫数', issuedCalls: '已触发呼叫数',
   maximumQueuedTasks: '最大排队任务数', maximumActiveTasks: '最大执行任务数', longestWaitSeconds: '最长派车等待（秒）',
   maxWaitingSeconds: '最长派车等待（秒）', duplicateVehicleAssignments: '同车重复分配次数', stationCount: '工位数',

@@ -41,10 +41,10 @@ const recordingVideo = ref(false), videoProgress = ref(0);
 const additionalWaitingSites = ref<string[]>([]);
 const inspectionSite = ref(''), dumperResourceId = ref('');
 const customVehicles = ref([
-  { id: 'AGV-SIM-01', initialSite: '', radiusMeters: 0.6, initialLoaded: false, batteryPercent: 86, speedScale: 1,
+  { id: 'AGV-SIM-01', initialSite: '', radiusMeters: 0.49, lengthMeters: 0.8, widthMeters: 0.52, initialLoaded: false, batteryPercent: 86, speedScale: 1,
     accelerationMetersPerSecondSquared: 0.6, operationSeconds: 2, travelCostPercentPerMeter: 0.01, idleCostPercentPerHour: 0.1,
     voltageCurve: [{ percent: 0, voltage: 21 }, { percent: 100, voltage: 26 }], chargingGainPercentPerHour: 20 },
-  { id: 'AGV-SIM-02', initialSite: '', radiusMeters: 0.6, initialLoaded: false, batteryPercent: 86, speedScale: 1,
+  { id: 'AGV-SIM-02', initialSite: '', radiusMeters: 0.49, lengthMeters: 0.8, widthMeters: 0.52, initialLoaded: false, batteryPercent: 86, speedScale: 1,
     accelerationMetersPerSecondSquared: 0.6, operationSeconds: 2, travelCostPercentPerMeter: 0.01, idleCostPercentPerHour: 0.1,
     voltageCurve: [{ percent: 0, voltage: 21 }, { percent: 100, voltage: 26 }], chargingGainPercentPerHour: 20 }
 ]);
@@ -198,7 +198,9 @@ const configurationProblems = computed(() => {
     const label = `车辆${index + 1}`;
     if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/.test(vehicle.id)) problems.push(`${label} ID格式无效。`);
     if (!vehicle.initialSite || !mapNodes.value.some(node => node.id === vehicle.initialSite)) problems.push(`${label}未选择有效初始节点。`);
-    if (!Number.isFinite(vehicle.radiusMeters) || vehicle.radiusMeters < 0.1 || vehicle.radiusMeters > 5) problems.push(`${label}包络半径无效。`);
+    if (!Number.isFinite(vehicle.lengthMeters) || !Number.isFinite(vehicle.widthMeters) ||
+      vehicle.widthMeters < 0.1 || vehicle.lengthMeters < vehicle.widthMeters || vehicle.lengthMeters > 20)
+      problems.push(`${label}车长和车宽无效，须满足0.1≤宽≤长≤20米。`);
     if (!Number.isFinite(vehicle.batteryPercent) || vehicle.batteryPercent < 0 || vehicle.batteryPercent > 100) problems.push(`${label}电量无效。`);
     if (!Number.isFinite(vehicle.speedScale) || vehicle.speedScale < 0.1 || vehicle.speedScale > 10) problems.push(`${label}速度倍率无效。`);
     if (!Number.isFinite(vehicle.accelerationMetersPerSecondSquared) || vehicle.accelerationMetersPerSecondSquared < 0.05 ||
@@ -251,13 +253,17 @@ async function loadMapFile(event: Event) {
     mapIdentityDraft.value = { sourceName: file.name };
     clearPlcTableDraft();
     if (imported?.sourceVehicles.length) {
-      customVehicles.value = imported.sourceVehicles.map((vehicle, index) => ({
-        id: `RPJ-AGV-${String(index + 1).padStart(2, '0')}`,
-        initialSite: '', radiusMeters: Math.max(.1, Math.max(vehicle.widthMeters, vehicle.heightMeters) / 2),
-        initialLoaded: false, batteryPercent: 86, speedScale: 1, accelerationMetersPerSecondSquared: .6,
-        operationSeconds: 2, travelCostPercentPerMeter: .01, idleCostPercentPerHour: .1,
-        voltageCurve: [{ percent: 0, voltage: 21 }, { percent: 100, voltage: 26 }], chargingGainPercentPerHour: 20
-      }));
+      customVehicles.value = imported.sourceVehicles.map((vehicle, index) => {
+        const lengthMeters = Math.max(.1, vehicle.widthMeters, vehicle.heightMeters);
+        const widthMeters = Math.min(vehicle.widthMeters, vehicle.heightMeters);
+        return {
+          id: `RPJ-AGV-${String(index + 1).padStart(2, '0')}`, initialSite: '',
+          radiusMeters: Math.hypot(lengthMeters, widthMeters) / 2, lengthMeters, widthMeters,
+          initialLoaded: false, batteryPercent: 86, speedScale: 1, accelerationMetersPerSecondSquared: .6,
+          operationSeconds: 2, travelCostPercentPerMeter: .01, idleCostPercentPerHour: .1,
+          voltageCurve: [{ percent: 0, voltage: 21 }, { percent: 100, voltage: 26 }], chargingGainPercentPerHour: 20
+        };
+      });
       newVehicleCount.value = customVehicles.value.length;
     }
     stationDrafts.value = [
@@ -398,7 +404,8 @@ function vehicleCountChanged() {
   const count = Math.max(1, Math.min(8, Number(newVehicleCount.value) || 1));
   const current = [...customVehicles.value];
   customVehicles.value = Array.from({ length: count }, (_, index) => current[index] ?? {
-    id: `AGV-SIM-${String(index + 1).padStart(2, '0')}`, initialSite: '', radiusMeters: 0.6,
+    id: `AGV-SIM-${String(index + 1).padStart(2, '0')}`, initialSite: '',
+    radiusMeters: 0.49, lengthMeters: 0.8, widthMeters: 0.52,
     initialLoaded: false, batteryPercent: 86, speedScale: 1, accelerationMetersPerSecondSquared: 0.6,
     operationSeconds: 2, travelCostPercentPerMeter: 0.01, idleCostPercentPerHour: 0.1,
     voltageCurve: [{ percent: 0, voltage: 21 }, { percent: 100, voltage: 26 }], chargingGainPercentPerHour: 20
@@ -418,6 +425,11 @@ function addVoltagePoint(vehicle: VehicleDraft) {
     }
   }
   vehicle.voltageCurve.push({ percent, voltage });
+}
+function updateVehicleFootprint(vehicle: VehicleDraft) {
+  if (Number.isFinite(vehicle.lengthMeters) && Number.isFinite(vehicle.widthMeters)) {
+    vehicle.radiusMeters = Math.max(0.49, Math.hypot(vehicle.lengthMeters, vehicle.widthMeters) / 2);
+  }
 }
 function removeVoltagePoint(vehicle: VehicleDraft, index: number) {
   if ((vehicle.voltageCurve?.length ?? 0) > 2) vehicle.voltageCurve!.splice(index, 1);
@@ -586,6 +598,8 @@ function accept(next: SimulationStatus) {
     }
     const defaults = customVehicles.value[0]!;
     customVehicles.value = next.configuration.vehicles.map(vehicle => ({ ...defaults, ...vehicle,
+      lengthMeters: vehicle.lengthMeters ?? Math.max(.1, (vehicle.radiusMeters ?? .49) * 2),
+      widthMeters: vehicle.widthMeters ?? Math.max(.1, (vehicle.radiusMeters ?? .49) * 2),
       voltageCurve: vehicle.voltageCurve?.map(point => ({ ...point })) ?? [{ percent: 0, voltage: 21 }, { percent: 100, voltage: 26 }] }));
     newVehicleCount.value = customVehicles.value.length;
     callPattern.value = stationDrafts.value.map(station => station.stationId).join(',');
@@ -973,7 +987,8 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
             <div v-for="(vehicle, index) in customVehicles" :key="index" class="vehicle-config-row">
               <label>车辆 ID<input v-model.trim="vehicle.id" maxlength="32" /></label>
               <label>初始节点<select v-model="vehicle.initialSite"><option v-for="node in mapNodes" :key="node.id" :value="node.id">{{ node.id }}</option></select></label>
-              <label>包络半径 / m<input v-model.number="vehicle.radiusMeters" type="number" min="0.1" max="5" step="0.05" /></label>
+              <label>车长 / m<input v-model.number="vehicle.lengthMeters" type="number" min="0.1" max="20" step="0.01" @input="updateVehicleFootprint(vehicle)" /></label>
+              <label>车宽 / m<input v-model.number="vehicle.widthMeters" type="number" min="0.1" max="20" step="0.01" @input="updateVehicleFootprint(vehicle)" /></label>
               <label>电量 / %<input v-model.number="vehicle.batteryPercent" type="number" min="0" max="100" step="1" /></label>
               <label>速度倍率<input v-model.number="vehicle.speedScale" type="number" min="0.1" max="10" step="0.1" /></label>
               <label class="loaded-config"><input v-model="vehicle.initialLoaded" type="checkbox" />初始载箱</label>
@@ -993,7 +1008,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
                 <div class="form-row"><label>充电 / %每小时<input v-model.number="vehicle.chargingGainPercentPerHour" type="number" min="0" max="100" step="0.1" /></label></div>
               </details>
             </div>
-            <button :disabled="customVehicles.length >= 8" @click="customVehicles.push({ id: `AGV-SIM-${String(customVehicles.length + 1).padStart(2, '0')}`, initialSite: '', radiusMeters: 0.6, initialLoaded: false, batteryPercent: 86, speedScale: 1, accelerationMetersPerSecondSquared: 0.6, operationSeconds: 2, travelCostPercentPerMeter: 0.01, idleCostPercentPerHour: 0.1, voltageCurve: [{ percent: 0, voltage: 21 }, { percent: 100, voltage: 26 }], chargingGainPercentPerHour: 20 }); resetVehicleOrigins()">增加车辆</button>
+            <button :disabled="customVehicles.length >= 8" @click="customVehicles.push({ id: `AGV-SIM-${String(customVehicles.length + 1).padStart(2, '0')}`, initialSite: '', radiusMeters: 0.49, lengthMeters: 0.8, widthMeters: 0.52, initialLoaded: false, batteryPercent: 86, speedScale: 1, accelerationMetersPerSecondSquared: 0.6, operationSeconds: 2, travelCostPercentPerMeter: 0.01, idleCostPercentPerHour: 0.1, voltageCurve: [{ percent: 0, voltage: 21 }, { percent: 100, voltage: 26 }], chargingGainPercentPerHour: 20 }); resetVehicleOrigins()">增加车辆</button>
           </div>
           <div v-if="!configurationValid" class="inline-warning"><b>创建前还需处理：</b><ul><li v-for="problem in configurationProblems" :key="problem">{{ problem }}</li></ul></div>
           <div class="toolbar designer-actions"><button class="primary" :disabled="!available || !!status?.running || starting || active || !configurationValid" @click="configureSimulation">创建自定义隔离实例</button><span>创建后不会自动启动；核对实例名和拓扑后再启动。</span></div>

@@ -447,7 +447,8 @@ class Runtime:
         vehicle_ids = set()
         for vehicle in vehicles:
             if not isinstance(vehicle, dict) or set(vehicle) - {
-                    'id', 'initialSite', 'radiusMeters', 'initialLoaded', 'batteryPercent', 'speedScale',
+                    'id', 'initialSite', 'radiusMeters', 'lengthMeters', 'widthMeters',
+                    'initialLoaded', 'batteryPercent', 'speedScale',
                     'accelerationMetersPerSecondSquared', 'operationSeconds', 'travelCostPercentPerMeter',
                     'idleCostPercentPerHour', 'voltageCurve', 'chargingGainPercentPerHour'}:
                 raise ValueError('车辆配置字段无效。')
@@ -461,9 +462,23 @@ class Runtime:
             if initial in initial_sites:
                 raise ValueError('每辆虚拟车必须使用不同的初始节点。')
             initial_sites.add(initial)
-            radius = vehicle.get('radiusMeters', 0.6)
-            if not self._finite_number(radius) or not 0.1 <= radius <= 5:
-                raise ValueError('车辆包络半径须为0.1至5米。')
+            supplied_length = vehicle.get('lengthMeters')
+            supplied_width = vehicle.get('widthMeters')
+            if (supplied_length is None) != (supplied_width is None):
+                raise ValueError('车辆长宽必须同时提供。')
+            if supplied_length is not None:
+                if not self._finite_number(supplied_length) or not self._finite_number(supplied_width) or \
+                        not 0.1 <= supplied_width <= supplied_length <= 20:
+                    raise ValueError('车辆长宽须满足0.1≤宽≤长≤20米。')
+                length, width = float(supplied_length), float(supplied_width)
+            else:
+                radius = vehicle.get('radiusMeters', 0.6)
+                if not self._finite_number(radius) or not 0.1 <= radius <= 5:
+                    raise ValueError('车辆包络半径须为0.1至5米。')
+                length = width = 2 * float(radius)
+            radius = max(float(vehicle.get('radiusMeters') or 0), math.hypot(length, width) / 2)
+            if not 0.1 <= radius <= 20:
+                raise ValueError('车辆外接半径须为0.1至20米。')
             loaded = vehicle.get('initialLoaded', False)
             battery = vehicle.get('batteryPercent', 86)
             speed = vehicle.get('speedScale', 1.0)
@@ -493,6 +508,7 @@ class Runtime:
                     raise ValueError('电池电压曲线点无效。')
                 seen_percent.add(point['percent']); normalized_curve.append(dict(percent=float(point['percent']), voltage=float(point['voltage'])))
             normalized_vehicles.append(dict(id=vehicle_id, initialSite=initial, radiusMeters=float(radius),
+                                            lengthMeters=length, widthMeters=width,
                                             initialLoaded=loaded, batteryPercent=float(battery), speedScale=float(speed),
                                             accelerationMetersPerSecondSquared=float(acceleration), operationSeconds=float(operation),
                                             travelCostPercentPerMeter=float(travel_cost), idleCostPercentPerHour=float(idle_cost),
@@ -541,7 +557,9 @@ class Runtime:
         origins = [n['id'] for n in navigation['nodes'] if n.get('enabled', True) and n['id'] not in excluded
                    and (not typed or n.get('type') == 'Station')]
         if count > len(origins): raise ValueError('地图没有足够的独立起点。')
-        vehicles = [dict(id=f'AGV-LOCAL-{index+1:02}', initialSite=origins[index], radiusMeters=0.6) for index in range(count)]
+        vehicles = [dict(id=f'AGV-LOCAL-{index+1:02}', initialSite=origins[index],
+                         radiusMeters=.49, lengthMeters=.8, widthMeters=.52)
+                    for index in range(count)]
         inspection = self.lab.get('simulationTopology', {}).get('inspectionSite', '检修')
         if inspection not in {n['id'] for n in navigation['nodes']}:
             inspection = origins[0]
@@ -667,6 +685,7 @@ class Runtime:
                 waitingBayProtection=True, mapName=navigation.get('name') or 'custom_simulation',
                 initialSites={v['id']: v['initialSite'] for v in configuration['vehicles']},
                 vehicleProfiles={v['id']: dict(initialLoaded=v['initialLoaded'], batteryPercent=v['batteryPercent'],
+                    lengthMeters=v['lengthMeters'], widthMeters=v['widthMeters'],
                     speedScale=v['speedScale'], accelerationMetersPerSecondSquared=v['accelerationMetersPerSecondSquared'],
                     operationSeconds=v['operationSeconds'], travelCostPercentPerMeter=v['travelCostPercentPerMeter'],
                     idleCostPercentPerHour=v['idleCostPercentPerHour'], voltageCurve=v['voltageCurve'],
@@ -689,7 +708,9 @@ class Runtime:
                 robot.update(VehicleId=vehicle['id'], DisplayName=f"仿真车{index+1:02}", Port=port(), NavigationPort=port())
                 robots.append(robot)
                 profile = copy.deepcopy(template_profile)
-                profile.update(VehicleId=vehicle['id'], ProfileId='SIM-ONLY-' + vehicle['id'], RadiusFromReportedReferenceMeters=vehicle['radiusMeters'])
+                profile.update(VehicleId=vehicle['id'], ProfileId='SIM-ONLY-' + vehicle['id'],
+                               RadiusFromReportedReferenceMeters=vehicle['radiusMeters'],
+                               LengthMeters=vehicle['lengthMeters'], WidthMeters=vehicle['widthMeters'])
                 profiles.append(profile)
             settings['Agv']['Robots'] = robots
             settings['HandshakeExecution']['DumperExit']['BodyProfiles'] = profiles

@@ -170,7 +170,7 @@ class LifecycleTests(unittest.TestCase):
             self.assertEqual(runtime.lab['simulationConfiguration']['dumper']['waitingSites'], ['等待','停车C'])
             self.assertTrue(runtime.settings['TrafficSegmentRelease']['Enabled'])
             self.assertTrue(runtime.settings['TrafficSegmentRelease']['CommitEnabled'])
-            self.assertAlmostEqual(runtime.settings['Dispatching']['DumperTransitClearanceMeters'], 1.35)
+            self.assertAlmostEqual(runtime.settings['Dispatching']['DumperTransitClearanceMeters'], 1.13)
 
     def test_clone_rejects_running_instance_and_nonloopback_saved_endpoint(self):
         with tempfile.TemporaryDirectory() as name, patch('controller.WORKSPACE', Path(name)):
@@ -195,7 +195,10 @@ class LifecycleTests(unittest.TestCase):
             self.assertEqual([r['VehicleId'] for r in robots], expected)
             self.assertEqual([p['VehicleId'] for p in runtime.settings['HandshakeExecution']['DumperExit']['BodyProfiles']], expected)
             self.assertEqual(len(set(p['ProfileId'] for p in runtime.settings['HandshakeExecution']['DumperExit']['BodyProfiles'])), 3)
-            self.assertTrue(all(p['RadiusFromReportedReferenceMeters']==0.6 for p in runtime.settings['HandshakeExecution']['DumperExit']['BodyProfiles']))
+            self.assertTrue(all(abs(p['RadiusFromReportedReferenceMeters'] - .49) < 1e-9
+                                for p in runtime.settings['HandshakeExecution']['DumperExit']['BodyProfiles']))
+            self.assertTrue(all((p['LengthMeters'], p['WidthMeters']) == (.8, .52)
+                                for p in runtime.settings['HandshakeExecution']['DumperExit']['BodyProfiles']))
             self.assertEqual(runtime.settings['Dispatching']['MaxConcurrentTasks'], 3)
             self.assertTrue(runtime.lab['multiVehicleSimulation'])
             self.assertEqual(set(runtime.lab['initialSites']), set(expected))

@@ -215,6 +215,7 @@ try {
   check('Imported map, stations, vehicles and dumper resource are submitted as one isolated configuration',
     mutations.at(-1).path.endsWith('/configure') && mutations.at(-1).body.mapDefinition.nodes.length===5 &&
     mutations.at(-1).body.stations.length===2 && mutations.at(-1).body.vehicles.length===2 &&
+    mutations.at(-1).body.vehicles[0].lengthMeters===.8 && mutations.at(-1).body.vehicles[0].widthMeters===.52 &&
     mutations.at(-1).body.dumper.resourceId==='RDUMP' && mutations.at(-1).body.dumper.waitingSites[0]===mutations.at(-1).body.dumper.waitingSite &&
     await evaluate(`document.querySelector('#simulation-environment').textContent==='mock-custom-lab'`));
   await evaluate(`(()=>{const input=document.querySelector('[aria-label="新实例车辆数"]');input.value='9';input.dispatchEvent(new Event('input',{bubbles:true}))})()`);

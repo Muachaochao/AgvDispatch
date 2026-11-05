@@ -33,7 +33,14 @@ class SimulationTests(unittest.TestCase):
         value = runtime._validate_configuration(self.custom_payload())
         self.assertEqual([s['stationId'] for s in value['stations']], ['CNC-001','CNC-002'])
         self.assertEqual([v['id'] for v in value['vehicles']], ['CAR-1','CAR-2'])
+        self.assertEqual((value['vehicles'][0]['lengthMeters'], value['vehicles'][0]['widthMeters']), (1.0, 1.0))
         self.assertEqual(value['dumper']['resourceId'], 'R-DUMP')
+        sized = self.custom_payload(); sized['vehicles'][0].update(lengthMeters=.8, widthMeters=.52)
+        normalized = runtime._validate_configuration(sized)['vehicles'][0]
+        self.assertEqual((normalized['lengthMeters'], normalized['widthMeters']), (.8, .52))
+        self.assertAlmostEqual(normalized['radiusMeters'], .5)
+        broken = self.custom_payload(); broken['vehicles'][0].update(lengthMeters=.52, widthMeters=.8)
+        with self.assertRaisesRegex(ValueError, '车辆长宽'): runtime._validate_configuration(broken)
         broken = self.custom_payload(); broken['vehicles'][0]['initialSite'] = 'MISSING'
         with self.assertRaises(ValueError): runtime._validate_configuration(broken)
         broken = self.custom_payload(); broken['vehicles'][0]['voltageCurve'] = [dict(percent=0, voltage=21)]

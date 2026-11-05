@@ -4,11 +4,15 @@ import json
 import math
 import re
 import sqlite3
+import sys
 import time
 import uuid
+from pathlib import Path
 from urllib.error import HTTPError, URLError
 from controller import read, write
 from device_controls import PLC_DEFAULTS
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'WebSingleVehicleLab'))
+from footprint import swept_rectangles_overlap, vehicle_extents
 
 NAMES = ('normal-cycle', 'simultaneous-calls', 'custom-calls', 'dispatch-backlog', 'disconnect-reconnect',
          'plc-delay', 'plc-recovery', 'service-restart', 'resume-recovery')
@@ -220,10 +224,13 @@ class Observer:
         self.max_wait = 0
         self.wait_started = {}
         self.mutual_wait_started = {}
+        self.overlap_pairs = set()
         self.last_details = {}
         self.seen_details = {}
         self.resources = {r['id']: r.get('capacity', 1) for r in read(runtime.root / 'navigation.agvmap.json')['resources']}
-        self.radii = {p['VehicleId']: p['RadiusFromReportedReferenceMeters'] for p in runtime.settings['HandshakeExecution']['DumperExit']['BodyProfiles']}
+        self.footprints = {
+            p['VehicleId']: vehicle_extents(p)
+            for p in runtime.settings['HandshakeExecution']['DumperExit']['BodyProfiles']}
 
     def sample(self, details):
         self.last_details = details
@@ -245,12 +252,26 @@ class Observer:
         ids = sorted(cars)
         for i, first in enumerate(ids):
             for second in ids[i + 1:]:
-                if first not in self.radii or second not in self.radii: raise RuntimeError('缺少合成车体尺寸，无法判定碰撞。')
+                if first not in self.footprints or second not in self.footprints:
+                    raise RuntimeError('缺少合成车体长宽，无法判定碰撞。')
                 previous = self.previous or state
                 distance = separation(previous['cars'][first], cars[first], previous['cars'][second], cars[second])
                 self.minimum = distance if self.minimum is None else min(self.minimum, distance)
-                limit = self.radii[first] + self.radii[second]
-                if distance < limit: self.violations.append(dict(kind='envelope-overlap', vehicles=[first, second], distance=distance, threshold=limit))
+                first_from = dict(previous['cars'][first], lengthMeters=self.footprints[first][0],
+                                  widthMeters=self.footprints[first][1])
+                first_to = dict(cars[first], lengthMeters=self.footprints[first][0],
+                                widthMeters=self.footprints[first][1])
+                second_from = dict(previous['cars'][second], lengthMeters=self.footprints[second][0],
+                                   widthMeters=self.footprints[second][1])
+                second_to = dict(cars[second], lengthMeters=self.footprints[second][0],
+                                 widthMeters=self.footprints[second][1])
+                pair = (first, second)
+                if pair not in self.overlap_pairs and swept_rectangles_overlap(
+                        first_from, first_to, second_from, second_to, margin=.05):
+                    self.overlap_pairs.add(pair)
+                    self.violations.append(dict(kind='envelope-overlap', vehicles=[first, second],
+                        distance=distance, dimensions={first: self.footprints[first], second: self.footprints[second]},
+                        marginMeters=.05))
         now = time.monotonic()
         current_pairs = set(mutual_wait_pairs(cars))
         for pair in tuple(self.mutual_wait_started):
@@ -642,7 +663,7 @@ def execute(runtime, request):
                          samples=observer.samples if observer else 0, minimumSeparationMeters=observer.minimum if observer else None,
                          longestUnchangedStepSeconds=observer.max_wait if observer else 0,
                          **{key:queue_metrics[key] for key in ('maximumWaitingTasks','maximumActiveTasks','maximumDuePlanCalls','maximumBusyWaitingTasks') if key in queue_metrics}),
-            violations=observer.violations if observer else [], scope='正式后台 + 回环Robokit/S7合成模型；碰撞为采样间线性包络检查；超时可发现长期等待，不构成死锁/公平性证明；不代替现场固件、机械及安全验收。')
+            violations=observer.violations if observer else [], scope='正式后台 + 回环Robokit/S7合成模型；碰撞按车辆长宽与朝向的旋转矩形包络检查，并保留5厘米合成余量；超时可发现长期等待，不构成死锁/公平性证明；不代替现场固件、机械及安全验收。')
         write(evidence / 'report.json', report)
         files = [dict(path=p.name, sha256=hashlib.sha256(p.read_bytes()).hexdigest(), bytes=p.stat().st_size) for p in sorted(evidence.iterdir()) if p.is_file()]
         write(evidence / 'manifest.json', files)

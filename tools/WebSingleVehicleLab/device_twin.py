@@ -15,6 +15,7 @@ from pathlib import Path
 from lab_logging import DeviceJournal
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'SimulationLab'))
 from device_controls import PLC_DEFAULTS, VEHICLE_DEFAULTS, read_controls
+from footprint import swept_rectangles_overlap, vehicle_extents
 
 
 class DeviceTwin:
@@ -341,7 +342,17 @@ class DeviceTwin:
 
     def body_radius(self):
         profiles = [p for p in self.body_profiles if p.get('VehicleId') == self.vehicle_id]
-        return profiles[0]['RadiusFromReportedReferenceMeters'] if len(profiles) == 1 else 0.6
+        source = profiles[0] if len(profiles) == 1 else (self.vehicle_profiles.get(self.vehicle_id) or {})
+        radius = source.get('RadiusFromReportedReferenceMeters', source.get('radiusMeters'))
+        if radius is not None:
+            return float(radius)
+        length, width = vehicle_extents(source)
+        return max(length, width) / 2
+
+    def body_extents(self):
+        profiles = [p for p in self.body_profiles if p.get('VehicleId') == self.vehicle_id]
+        source = profiles[0] if len(profiles) == 1 else (self.vehicle_profiles.get(self.vehicle_id) or {})
+        return vehicle_extents(source)
 
     def movement_blocker(self, nx, ny):
         """Synthetic near-obstacle stop; independent collision verdict stays enabled."""
@@ -349,10 +360,15 @@ class DeviceTwin:
         length2 = dx*dx+dy*dy
         if length2 <= 1e-20:
             return None
+        angle = math.atan2(dy, dx)
+        length, width = self.body_extents()
+        candidate = dict(x=nx, y=ny, angle=angle, lengthMeters=length, widthMeters=width)
+        current = dict(x=self.x, y=self.y, angle=self.angle, lengthMeters=length, widthMeters=width)
         for peer in self.peers:
-            fraction = min(1.0, max(0.0, ((peer.x-self.x)*dx+(peer.y-self.y)*dy)/length2))
-            clearance = math.hypot(self.x+fraction*dx-peer.x, self.y+fraction*dy-peer.y)
-            if clearance < self.body_radius()+peer.body_radius()+0.05:
+            peer_length, peer_width = peer.body_extents()
+            peer_footprint = dict(x=peer.x, y=peer.y, angle=peer.angle,
+                                  lengthMeters=peer_length, widthMeters=peer_width)
+            if swept_rectangles_overlap(current, candidate, peer_footprint, peer_footprint, margin=.05):
                 return peer.vehicle_id
         return None
 
