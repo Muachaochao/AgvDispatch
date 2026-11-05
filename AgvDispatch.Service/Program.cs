@@ -357,7 +357,9 @@ builder.Services.AddSingleton(new MapAssetStorageOptions
 });
 builder.Services.AddSingleton<MapDefinitionProvider>();
 builder.Services.AddSingleton(provider => new TrafficResourceCatalog(
-    provider.GetRequiredService<MapDefinitionProvider>().Definition?.Resources ?? []));
+    provider.GetRequiredService<MapDefinitionProvider>().Definition is { } definition
+        ? MapCorridorResources.AllResources(definition)
+        : []));
 builder.Services.AddSingleton<ActiveMapRuntime>();
 builder.Services.AddSingleton<IActiveMapRuntime>(provider => provider.GetRequiredService<ActiveMapRuntime>());
 builder.Services.AddSingleton(new RoadClosureRoutingOptions

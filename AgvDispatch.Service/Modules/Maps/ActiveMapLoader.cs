@@ -48,11 +48,12 @@ public sealed class ActiveMapLoader(
             version.VersionId,
             definition,
             DateTimeOffset.Now));
-        resources.Replace(definition.Resources);
+        var runtimeResources = MapCorridorResources.AllResources(definition);
+        resources.Replace(runtimeResources);
         await database.Deleteable<TrafficResourceDefinitionEntity>().ExecuteCommandAsync(cancellationToken);
-        if (definition.Resources.Count > 0)
+        if (runtimeResources.Count > 0)
         {
-            await database.Insertable(definition.Resources.Select(resource =>
+            await database.Insertable(runtimeResources.Select(resource =>
                 new TrafficResourceDefinitionEntity
                 {
                     ResourceId = resource.Id,

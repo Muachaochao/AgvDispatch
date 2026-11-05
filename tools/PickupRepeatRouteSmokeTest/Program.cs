@@ -38,6 +38,88 @@ Check((definition with { Nodes = nodes.Select(n => n.Id == "PICK" ? n with { Ena
 Check((noCycle with { Edges = noCycle.Edges.Append(Edge("RETURN-DISABLED", "EXIT", "PICK", 2, enabled: false)).ToArray() }).ToGraph().FindShortestTransportRoute("PICK", "PICK") is null, "disabled return edge cannot invent a cycle");
 Check((definition with { Nodes = nodes.Select(n => n.Id == "EXIT" ? n with { ResourceIds = ["R"] } : n).ToArray() }).ToGraph().FindShortestTransportRoute("EXIT", "EXIT", new HashSet<string> { "R" }) is null, "blocked source-node resource prevents departure");
 
+var corridorNodes = new[]
+{
+    Node("L", 0, 0),
+    Node("R", 2, 0),
+    Node("AUX", -1, 1)
+};
+var forwardCurve = Edge("L-R", "L", "R", 2) with
+{
+    GeometryKind = MapEdgeGeometryKind.CubicBezier,
+    ControlPoints = [new(0.5, 1), new(1.5, 1)]
+};
+var reverseCurve = Edge("R-L", "R", "L", 2) with
+{
+    GeometryKind = MapEdgeGeometryKind.CubicBezier,
+    ControlPoints = [new(1.5, 1), new(0.5, 1)]
+};
+var corridorDefinition = new MapDefinition(
+    "auto-corridor-test", "", "LocalCartesian", "m",
+    corridorNodes,
+    [forwardCurve, reverseCurve, Edge("AUX-L", "AUX", "L", 1, true, resources: ["DEPART"])],
+    [new TrafficResourceDefinition("DEPART", TrafficResourceType.Station)]);
+var corridorGraph = corridorDefinition.ToGraph();
+var forwardPlan = corridorGraph.FindShortestRoute("L", "R")!;
+var reversePlan = corridorGraph.FindShortestRoute("R", "L")!;
+var corridorResourceId = corridorGraph.Resources.Keys.Single(id => MapCorridorResources.IsAutomatic(id));
+Check(forwardPlan.ResourceIds.SequenceEqual([corridorResourceId]) &&
+      reversePlan.ResourceIds.SequenceEqual([corridorResourceId]),
+    "opposing curved edges share one automatic corridor resource");
+Check(corridorGraph.Resources[corridorResourceId] is
+      { Type: TrafficResourceType.SingleLane, Capacity: 1, Boundary.Count: 4 },
+    "automatic corridor is a capacity-one single lane with conservative boundary");
+Check(corridorGraph.FindShortestRoute("AUX", "R", new HashSet<string> { corridorResourceId }) is null,
+    "occupied corridor cannot be used as an intermediate shortcut");
+var bidirectionalGraph = new MapDefinition(
+    "auto-bidirectional", "", "LocalCartesian", "m",
+    [Node("L", 0, 0), Node("R", 2, 0)],
+    [Edge("L-R", "L", "R", 2, true)],
+    []).ToGraph();
+var bidirectionalId = bidirectionalGraph.Resources.Keys.Single(MapCorridorResources.IsAutomatic);
+Check(bidirectionalGraph.FindShortestRoute("L", "R")!.ResourceIds.SequenceEqual([bidirectionalId]) &&
+      bidirectionalGraph.FindShortestRoute("R", "L")!.ResourceIds.SequenceEqual([bidirectionalId]),
+    "a single unrestricted bidirectional edge receives one mutual corridor resource");
+var explicitCorridor = new MapDefinition(
+    "explicit-corridor", "", "LocalCartesian", "m",
+    [Node("L", 0, 0), Node("R", 2, 0)],
+    [forwardCurve with { ResourceIds = ["R"] }, reverseCurve with { ResourceIds = ["R"] }],
+    [new("R", TrafficResourceType.SingleLane)]).ToGraph();
+Check(!explicitCorridor.Resources.Keys.Any(MapCorridorResources.IsAutomatic) &&
+      explicitCorridor.FindShortestRoute("L", "R")!.ResourceIds.SequenceEqual(["R"]),
+    "an explicit resource shared by both directions suppresses an automatic duplicate");
+
+var corridorRuntime = new ActiveMapRuntime();
+corridorRuntime.Replace(new("MAP", "V1", corridorDefinition, DateTimeOffset.Now));
+var corridorPlanner = new ConfiguredRoutePlanner(
+    new MapDefinitionProvider(new(), new MapImportService(), new MapValidationService()),
+    corridorRuntime, new DispatchOrchestratorOptions(), new EmptyFlow());
+Check(corridorPlanner.Plan("LM-L", "LM-AUX", new HashSet<string> { corridorResourceId }) is not null,
+    "a vehicle at the corridor endpoint may depart without taking the corridor resource");
+
+var corridorDbPath = Path.Combine(Path.GetTempPath(), "agv-auto-corridor-" + Guid.NewGuid().ToString("N") + ".db");
+using (var corridorDb = DatabaseFactory.Create(new() { DatabasePath = corridorDbPath }))
+    await new DatabaseInitializer(corridorDb, new TrafficResourceCatalog(corridorGraph.Resources.Values)).InitializeAsync(default);
+async Task<TrafficReservationResult> RequestCorridorAsync(string step, string task, string vehicle)
+{
+    using var connection = DatabaseFactory.Create(new() { DatabasePath = corridorDbPath });
+    var manager = new TrafficResourceManager(
+        connection,
+        new TrafficResourceCatalog(corridorGraph.Resources.Values),
+        new(TimeSpan.FromMinutes(1)));
+    return await manager.TryAcquireAsync(step, task, vehicle, [corridorResourceId], default);
+}
+var corridorRequests = await Task.WhenAll(
+    Task.Run(() => RequestCorridorAsync("STEP-A", "TASK-A", "AGV-A")),
+    Task.Run(() => RequestCorridorAsync("STEP-B", "TASK-B", "AGV-B")));
+Check(corridorRequests.Count(result => result.Acquired) == 1 &&
+      corridorRequests.Count(result => !result.Acquired) == 1,
+    "two concurrent vehicles cannot both acquire the automatic corridor");
+using (var corridorDb = DatabaseFactory.Create(new() { DatabasePath = corridorDbPath }))
+    Check(corridorDb.Queryable<TrafficResourceLeaseEntity>()
+        .Where(lease => lease.ResourceId == corridorResourceId).Count() == 1,
+        "automatic corridor contention persists exactly one physical lease");
+
 var runtime = new ActiveMapRuntime(); runtime.Replace(new("MAP", "V1", definition, DateTimeOffset.Now));
 var dispatch = new DispatchOrchestratorOptions { Enabled = true, DumperWaitingSite = "WAIT", DumperDumpingSite = "DUMP", StationPickupSites = new() { ["CNC001"] = "PICK" } };
 foreach (var (step, operation) in new[] { ("GoToPickup", "JackLoad"), ("DeliverFullBoxToDumper", "Wait"), ("EnterDumpingPosition", "Wait"), ("ReturnEmptyBox", "JackUnload") }) dispatch.StepActions[step] = new() { Operation = operation };

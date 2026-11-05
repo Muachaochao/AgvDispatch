@@ -637,8 +637,9 @@ public sealed class MapManagementService(
                 .ExecuteCommandAsync(cancellationToken);
             if (updated != 1) throw new InvalidOperationException("地图发布指针已变化。");
             await database.Deleteable<TrafficResourceDefinitionEntity>().ExecuteCommandAsync(cancellationToken);
-            if (definition.Resources.Count > 0)
-                await database.Insertable(definition.Resources.Select(resource => new TrafficResourceDefinitionEntity
+            var runtimeResources = MapCorridorResources.AllResources(definition);
+            if (runtimeResources.Count > 0)
+                await database.Insertable(runtimeResources.Select(resource => new TrafficResourceDefinitionEntity
                 { ResourceId = resource.Id, ResourceType = (int)resource.Type, Capacity = resource.Capacity, UpdatedAt = now })
                 .ToArray()).ExecuteCommandAsync(cancellationToken);
             updated = await database.Updateable<MapSwitchEntity>()
@@ -652,7 +653,7 @@ public sealed class MapManagementService(
         });
         if (!transaction.IsSuccess) throw new InvalidOperationException("激活事务失败；保持停止派单，请核对切换记录。", transaction.ErrorException);
         activeMap.Replace(snapshot);
-        resourceCatalog.Replace(snapshot.Definition.Resources);
+        resourceCatalog.Replace(MapCorridorResources.AllResources(snapshot.Definition));
         return new(true, $"地图V{version.VersionNumber}已激活，派单仍暂停；重新核对现场后点击确认放行。",
             responseWorkspace);
     }

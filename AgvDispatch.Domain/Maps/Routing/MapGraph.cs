@@ -14,8 +14,10 @@ public sealed class MapGraph
         ArgumentNullException.ThrowIfNull(nodes);
         ArgumentNullException.ThrowIfNull(edges);
         ArgumentNullException.ThrowIfNull(resources);
-        _nodes = nodes.ToDictionary(node => node.Id, StringComparer.OrdinalIgnoreCase);
-        _resources = resources.ToDictionary(resource => resource.Id, StringComparer.OrdinalIgnoreCase);
+        var suppliedNodes = nodes.ToArray();
+        var topology = MapCorridorResources.Enrich(suppliedNodes, edges, resources);
+        _nodes = suppliedNodes.ToDictionary(node => node.Id, StringComparer.OrdinalIgnoreCase);
+        _resources = topology.Resources.ToDictionary(resource => resource.Id, StringComparer.OrdinalIgnoreCase);
         _outgoing = _nodes.Keys.ToDictionary(
             id => id,
             _ => new List<Traversal>(),
@@ -40,7 +42,7 @@ public sealed class MapGraph
         }
 
         var edgeIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var suppliedEdge in edges)
+        foreach (var suppliedEdge in topology.Edges)
         {
             var edge = suppliedEdge;
             if (string.IsNullOrWhiteSpace(edge.Id) ||

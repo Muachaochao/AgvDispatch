@@ -48,7 +48,13 @@ public static class TrafficSegmentReleaseEvaluator
         if(context.Map.Nodes.Any(n=>n==null)||context.Map.Edges.Any(e=>e==null)||context.Map.Resources.Any(r=>r==null)||
             context.Map.Nodes.Select(n=>n.Id).Distinct(StringComparer.OrdinalIgnoreCase).Count()!=context.Map.Nodes.Count||context.Map.Edges.Select(e=>e.Id).Distinct(StringComparer.OrdinalIgnoreCase).Count()!=context.Map.Edges.Count||context.Map.Resources.Select(r=>r.Id).Distinct(StringComparer.OrdinalIgnoreCase).Count()!=context.Map.Resources.Count)
             return Reject("地图对象重复或无效。");
-        var nodes=context.Map.Nodes.ToDictionary(n=>n.Id,StringComparer.OrdinalIgnoreCase);var edges=context.Map.Edges.ToDictionary(e=>e.Id,StringComparer.OrdinalIgnoreCase);var resources=context.Map.Resources.ToDictionary(r=>r.Id,StringComparer.OrdinalIgnoreCase);
+        MapCorridorTopology topology;
+        try { topology=MapCorridorResources.Enrich(context.Map); }
+        catch(Exception exception) when(exception is InvalidOperationException or ArgumentException or KeyNotFoundException)
+        {return Reject("运行地图无法建立自动走廊资源，保持路权。");}
+        var nodes=context.Map.Nodes.ToDictionary(n=>n.Id,StringComparer.OrdinalIgnoreCase);
+        var edges=topology.Edges.ToDictionary(e=>e.Id,StringComparer.OrdinalIgnoreCase);
+        var resources=topology.Resources.ToDictionary(r=>r.Id,StringComparer.OrdinalIgnoreCase);
         for(int i=0;i<context.RouteEdgeIds.Count;i++)
         {
             if(!nodes.TryGetValue(context.RouteNodeIds[i],out var from)||!nodes.TryGetValue(context.RouteNodeIds[i+1],out var to)||!from.Enabled||!to.Enabled ||

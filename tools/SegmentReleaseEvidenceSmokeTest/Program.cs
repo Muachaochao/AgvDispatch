@@ -24,6 +24,47 @@ var nodeMap=map with{
 var nodeContext=context with{Map=nodeMap,Leases=[new("NODE-LEASE","NODE","TASK","STEP","AGV","M","V1")]};
 var nodeAssessment=Evaluate(nodeContext);
 Check(nodeAssessment.Candidates.Single().EvidenceVerified,"非终点节点资源在前一相邻路段通过且车体离开后即可释放");
+var corridorNodes=new[]
+{
+    new MapNode("L",0,0,MapNodeType.Waypoint,true,[]),
+    new MapNode("R",2,0,MapNodeType.Waypoint,true,[]),
+    new MapNode("OUT",3,0,MapNodeType.Station,true,[])
+};
+var corridorMap=new MapDefinition("corridor","","LocalCartesian","m",corridorNodes,
+[
+    new MapEdge("L-R","L","R",2,1,false,true,[]) with
+    {
+        GeometryKind=MapEdgeGeometryKind.CubicBezier,
+        ControlPoints=[new(0.5,1),new(1.5,1)]
+    },
+    new MapEdge("R-L","R","L",2,1,false,true,[]) with
+    {
+        GeometryKind=MapEdgeGeometryKind.CubicBezier,
+        ControlPoints=[new(1.5,1),new(0.5,1)]
+    },
+    new MapEdge("R-OUT","R","OUT",1,1,false,true,[])
+],[]);
+var corridorResourceId=MapCorridorResources.Enrich(corridorMap).Resources.Single(resource=>
+    MapCorridorResources.IsAutomatic(resource.Id)).Id;
+var corridorContext=context with
+{
+    Map=corridorMap,
+    RouteNodeIds=["L","R","OUT"],
+    RouteEdgeIds=["L-R","R-OUT"],
+    Leases=[new("CORRIDOR-LEASE",corridorResourceId,"TASK","STEP","AGV","M","V1")]
+};
+var corridorFirst=first with{LastFullyTraversedEdgeIndex=1,X=3,Y=0};
+var corridorPair=pair with
+{
+    First=corridorFirst,
+    Second=corridorFirst with{Sequence=11,ObservedAt=now.AddSeconds(-1)}
+};
+Check(Evaluate(corridorContext,corridorPair).Candidates.Single().EvidenceVerified,
+    "自动双向曲线走廊由完整车体离开证据确认后可释放");
+var corridorNear=corridorFirst with{X=2.2};
+Refuse("自动走廊车体或安全包络仍覆盖时不释放",
+    corridorContext,
+    corridorPair with{First=corridorNear,Second=corridorNear with{Sequence=11,ObservedAt=now.AddSeconds(-1)}});
 Refuse("默认开关关闭",o:new());Refuse("无注册进度源拒绝",c:context with{EvidenceSourceRegistered=false});Refuse("恢复门禁关闭拒绝",c:context with{RecoveryAndMapGateOpen=false});Refuse("任务或步骤非执行中拒绝",c:context with{TaskAndStepExecuting=false});
 Refuse("缺车辆包络拒绝",c:context with{Body=null});Refuse("参考点未标定拒绝",c:context with{Body=context.Body! with{CalibrationVerified=false}});Refuse("最大载荷不在包络内拒绝",c:context with{Body=context.Body! with{IncludesMaximumPermittedLoad=false}});
 Refuse("包络属于另一辆车拒绝",c:context with{Body=context.Body! with{VehicleId="OTHER"}});Refuse("包络坐标参考不一致拒绝",c:context with{Body=context.Body! with{CoordinateFrameId="OTHER"}});Refuse("非有限包络拒绝",c:context with{Body=context.Body! with{RadiusFromReportedReferenceMeters=double.NaN}});

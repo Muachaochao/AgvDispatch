@@ -57,19 +57,28 @@ async Task WaitFile(string file)
 {
     var deadline=Stopwatch.StartNew();while(!File.Exists(file)){if(deadline.Elapsed>TimeSpan.FromSeconds(30))throw new TimeoutException(file);await Task.Delay(50);}
 }
-async Task<Process> Start(string mode,string? directory=null)
+Process Start(string mode,string? directory=null)
 {
     var start=new ProcessStartInfo(Environment.ProcessPath!){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true};
     if(string.Equals(Path.GetFileNameWithoutExtension(Environment.ProcessPath),"dotnet",StringComparison.OrdinalIgnoreCase))start.ArgumentList.Add(typeof(Program).Assembly.Location);
     var childRoot=directory??root;
     start.ArgumentList.Add(mode);start.ArgumentList.Add(childRoot);start.ArgumentList.Add(now.ToString("O"));
-    var process=Process.Start(start)!;
+    return Process.Start(start)!;
+}
+async Task Finish(Process process,string mode,string? directory=null)
+{
+    var childRoot=directory??root;
     var stdout=process.StandardOutput.ReadToEndAsync();var stderr=process.StandardError.ReadToEndAsync();
     try{await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(45));}
     catch{if(!process.HasExited)process.Kill(entireProcessTree:true);throw;}
     var output=await stdout;var error=await stderr;
     File.WriteAllText(Path.Combine(childRoot,mode.TrimStart('-')+".log"),output+error);
     if(process.ExitCode!=0)throw new Exception(output+error);
+}
+async Task<Process> RunToExit(string mode,string? directory=null)
+{
+    var process=Start(mode,directory);
+    await Finish(process,mode,directory);
     return process;
 }
 
@@ -79,18 +88,20 @@ if(args.Length==0)
     var child=Start("--handoff");await WaitFile(Path.Combine(root,"ready.json"));
     var ready=JsonSerializer.Deserialize<Ready>(File.ReadAllText(Path.Combine(root,"ready.json")))!;
     Check(ready.Pid!=Environment.ProcessId,"实际独立模拟后台进程");
-    Check(db.Queryable<TrafficResourceLeaseEntity>().Count()==3,"父进程观察释放前原占用保持");
+    using(var observation=DatabaseFactory.Create(new DatabaseOptions{DatabasePath=Path.Combine(root,"test.db")}))
+        Check(observation.Queryable<TrafficResourceLeaseEntity>().Count()==3,"父进程观察释放前原占用保持");
     File.WriteAllText(Path.Combine(root,"go.request"),"release");
-    using(var completed=await child)Check(completed.HasExited,"模拟后台正常结束");
+    await Finish(child,"--handoff");
+    using(child){Check(child.HasExited,"模拟后台正常结束");}
     var report=JsonSerializer.Deserialize<Report>(File.ReadAllText(Path.Combine(root,"handoff-result.json")))!;
     Check(report.Checks>=15,"独立后台完成资源交接断言");
     Check(db.Queryable<TrafficSegmentCommitEntity>().Count()==1&&db.Queryable<TrafficSegmentCommitLeaseEntity>().Count()==2,"父进程确认提交与审计持久化");
-    using(var replay=await Start("--replay"))Check(replay.HasExited,"新独立进程完成历史结果重放");
+    using(var replay=await RunToExit("--replay"))Check(replay.HasExited,"新独立进程完成历史结果重放");
     Check(db.Queryable<TrafficResourceLeaseEntity>().Where(l=>l.TaskId=="TASK-B").Count()==2,"跨进程重放保留后来车辆占用");
     Check(db.Queryable<TrafficRequestEntity>().Single(r=>r.StepId=="NEXT").ResourceIds=="[\"FINAL\"]","父进程确认当前请求只显示剩余终点");
     var pendingRoot=Path.Combine(root,"pending-restart");
-    using(var issuer=await Start("--pending",pendingRoot))Check(issuer.HasExited,"单独进程签发未提交凭据后正常退出");
-    using(var reject=await Start("--pending-restart",pendingRoot))Check(reject.HasExited,"真正新进程拒绝未提交旧会话凭据");
+    using(var issuer=await RunToExit("--pending",pendingRoot))Check(issuer.HasExited,"单独进程签发未提交凭据后正常退出");
+    using(var reject=await RunToExit("--pending-restart",pendingRoot))Check(reject.HasExited,"真正新进程拒绝未提交旧会话凭据");
     var pendingDb=DatabaseFactory.Create(new DatabaseOptions{DatabasePath=Path.Combine(pendingRoot,"test.db")});
     Check(pendingDb.Queryable<TrafficResourceLeaseEntity>().Count()==3&&pendingDb.Queryable<TrafficSegmentCommitEntity>().Count()==0,"未提交凭据跨进程不释放原占用");
     File.WriteAllText(Path.Combine(AppContext.BaseDirectory,"handoff-result.json"),JsonSerializer.Serialize(new{Checks=checks+report.Checks+3,ParentChecks=checks,ChildChecks=report.Checks+3,Database=root,Scope="independent simulated backend and real traffic manager, private file coordination; no production IPC or devices"},new JsonSerializerOptions{WriteIndented=true}));
