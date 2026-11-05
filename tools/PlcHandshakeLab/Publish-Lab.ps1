@@ -45,7 +45,9 @@ try {
     if ($process.ExitCode -ne 0 -or !(Test-Path -LiteralPath ($qa + '.result.txt')) -or
         !(Get-Content -LiteralPath ($qa + '.result.txt') -Raw -Encoding UTF8).StartsWith('PASS:')) { throw 'Published executable UI smoke check failed.' }
     $files = @(Get-ChildItem -LiteralPath $package -File -Recurse | ForEach-Object {
-        [ordered]@{ path=[IO.Path]::GetRelativePath($package,$_.FullName); bytes=$_.Length; sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash }
+        $full = [IO.Path]::GetFullPath($_.FullName)
+        if (!$full.StartsWith($package + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw 'Published file escaped package directory.' }
+        [ordered]@{ path=$full.Substring($package.Length + 1); bytes=$_.Length; sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash }
     })
     $manifest = [ordered]@{ version=$version; sourceCommit=$commit; publishedAt=[DateTimeOffset]::Now.ToString('O');
         contract='plc-28-stage-v2'; runtime='win-x64 self-contained'; sourceScope=$sourceScope; uiSmoke='PASS'; files=$files }
