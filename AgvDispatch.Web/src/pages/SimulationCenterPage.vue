@@ -299,10 +299,15 @@ async function loadPlcTableFile(event: Event) {
   }
   busy.value = true; actionError.value = ''; notice.value = '';
   try {
-    const text = (await file.text()).replace(/^\uFEFF/, '');
-    const validated = await simulationApi<SimulationPlcSignalTable>('/point-table-validate', { fileName: file.name, csvText: text });
+    const bytes = await file.arrayBuffer();
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    const sourceSha256 = [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, '0')).join('');
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes).replace(/^\uFEFF/, '');
+    const validated = await simulationApi<SimulationPlcSignalTable>('/point-table-validate', {
+      fileName: file.name, csvText: text, sourceSha256, sourceFile: file.name
+    });
     adoptPlcTable(validated, text);
-    notice.value = `PLC点表已验证：${validated.stationCount ?? 0}个工位、${validated.signalCount ?? 0}条点位，SHA256 ${validated.sha256.slice(0, 12)}…`;
+    notice.value = `PLC点表已验证：${validated.stationCount ?? 0}个工位、${validated.signalCount ?? 0}条点位；原文件摘要 ${sourceSha256.slice(0, 12)}…，仿真副本摘要 ${validated.sha256.slice(0, 12)}…`;
   } catch (reason) {
     plcTableText.value = ''; plcTableFileName.value = ''; plcTableSha256.value = ''; plcStationCatalog.value = [];
     plcTableMetadata.value = null;
@@ -330,7 +335,8 @@ async function loadCurrentMap() {
     const imported = await loadCurrentSimulationMap(path => dispatchStore.api(path));
     const serviceTable = await dispatchStore.api('/api/communication/point-table') as ServicePlcPointTableSnapshot;
     const validatedTable = await simulationApi<SimulationPlcSignalTable>('/point-table-validate', {
-      fileName: serviceTable.fileName, csvText: serviceTable.csvText
+      fileName: serviceTable.fileName, csvText: serviceTable.csvText, sourceSha256: serviceTable.sha256,
+      sourceFile: serviceTable.relativePath, sourceDeviceId: serviceTable.deviceId, sourceDeviceName: serviceTable.deviceName
     });
     const communication = await dispatchStore.api('/api/communication') as {
       saved?: { agvs?: { vehicleId?: string; displayName?: string; enabled?: boolean }[] };
@@ -778,7 +784,9 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
           <div v-if="plcTableMetadata" class="plc-table-summary">
             <b>{{ plcTableFileName }}</b>
             <span>{{ plcTableMetadata.stationCount ?? plcStationCatalog.length }} 工位 · {{ plcTableMetadata.signalCount ?? 0 }} 条点位 · {{ plcTableMetadata.bytes ?? 0 }} 字节</span>
-            <code>SHA256 {{ plcTableSha256 }}</code>
+            <code v-if="plcTableMetadata.sourceSha256">原工程 SHA256 {{ plcTableMetadata.sourceSha256 }}</code>
+            <code>仿真副本 SHA256 {{ plcTableSha256 }}</code>
+            <small v-if="plcTableMetadata.sourceFile">来源：{{ plcTableMetadata.sourceDeviceName || plcTableMetadata.sourceDeviceId || '当前工程' }} · {{ plcTableMetadata.sourceFile }}</small>
           </div>
           <p v-else class="inline-warning">未选择点表。仿真不会使用仓库全局 PLC 点表，也不会悄悄沿用现场后台实验室文件。</p>
         </div>

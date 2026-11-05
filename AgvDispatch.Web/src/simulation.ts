@@ -77,12 +77,15 @@ export interface SimulationPlcSignalTable {
   fileName: string;
   csvText?: string;
   sha256: string;
+  sourceSha256?: string;
+  sourceFile?: string;
+  sourceDeviceId?: string;
+  sourceDeviceName?: string;
   bytes?: number;
   rowCount?: number;
   signalCount?: number;
   stationCount?: number;
   dumperSignalCount?: number;
-  sourceFile?: string;
   privateSha256?: string;
   mapDefinitionHash?: string;
   headers?: string[];
@@ -110,7 +113,7 @@ export interface SimulationConfigureRequest {
   mapIdentity?: { mapId?: string; mapVersionId?: string; sourceName?: string; definitionHash?: string };
 }
 export interface SimulationCall { stationId: string; atSeconds: number; vehicleId?: string | null }
-export interface SimulationScheme { id: string; name: string; updatedAt?: number; mapName?: string; mapId?: string; mapVersionId?: string; mapDefinitionHash?: string; vehicleCount?: number; stationCount?: number; scenarioName?: string; plcTableName?: string; plcTableSha256?: string }
+export interface SimulationScheme { id: string; name: string; updatedAt?: number; mapName?: string; mapId?: string; mapVersionId?: string; mapDefinitionHash?: string; vehicleCount?: number; stationCount?: number; scenarioName?: string; plcTableName?: string; plcTableSha256?: string; plcSourceSha256?: string }
 export interface SimulationGuidance { taskId: string; vehicleId?: string; stationId?: string; stepNumber?: number; stepName?: string; blockedBy?: string; restoreAction?: string; expectedFeedback?: string }
 export interface SimulationReplayFrame {
   time: number; vehicles?: { vehicleId: string; x: number; y: number; site?: string; waitReason?: string; taskId?: string }[];

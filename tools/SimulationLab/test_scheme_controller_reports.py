@@ -21,6 +21,9 @@ class ControllerSchemeTests(unittest.TestCase):
             store = SchemeStore(workspace, source, validate_root)
             runtime = Runtime(source, scheme_store=store)
             configuration = runtime._default_configuration(2)
+            configuration['plcSignalTable'].update(sourceSha256='a' * 64,
+                sourceFile='config/plc-lab-nine-cnc-signals.csv',
+                sourceDeviceId='PLC-MAIN', sourceDeviceName='总控PLC')
             result = runtime.save_scheme(dict(name='双车原图方案', configuration=configuration,
                                              scenario=dict(name='normal-cycle', rounds=1)))
             scheme_id = result['selectedSchemeId']
@@ -36,10 +39,14 @@ class ControllerSchemeTests(unittest.TestCase):
             saved = restored.get(scheme_id)['configuration']
             self.assertEqual(saved['mapDefinition'], configuration['mapDefinition'])
             self.assertEqual(saved['plcSignalTable']['sha256'], configuration['plcSignalTable']['sha256'])
+            self.assertEqual(saved['plcSignalTable']['sourceSha256'], 'a' * 64)
+            self.assertEqual(saved['plcSignalTable']['sourceFile'], 'config/plc-lab-nine-cnc-signals.csv')
             self.assertEqual(restored.catalog()['schemes'][0]['plcTableSha256'], configuration['plcSignalTable']['sha256'])
+            self.assertEqual(restored.catalog()['schemes'][0]['plcSourceSha256'], 'a' * 64)
             self.assertTrue((created / 'plc-signals.source.csv').is_file())
             self.assertTrue((created / 'service/config/simulation-signals.csv').is_file())
             self.assertEqual(read(created / 'lab.json')['plcSignalTable']['sha256'], configuration['plcSignalTable']['sha256'])
+            self.assertEqual(read(created / 'lab.json')['plcSignalTable']['sourceSha256'], 'a' * 64)
 
     def test_incompatible_saved_scenario_is_rejected_before_creating_any_instance(self):
         with tempfile.TemporaryDirectory() as name, patch('controller.WORKSPACE', Path(name)):

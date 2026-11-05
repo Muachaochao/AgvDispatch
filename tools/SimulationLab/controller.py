@@ -22,6 +22,8 @@ import uuid
 WORKSPACE = Path(__file__).resolve().parents[2]
 STATION_IDS = ('CNC-001', 'CNC-002')
 VEHICLE_ID = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$')
+SOURCE_SHA256 = re.compile(r'^[a-f0-9]{64}$')
+POINT_TABLE_SOURCE_FIELDS = ('sourceSha256', 'sourceFile', 'sourceDeviceId', 'sourceDeviceName')
 
 
 class CleanupPending(RuntimeError):
@@ -279,6 +281,23 @@ class Runtime:
     def _finite_number(value):
         return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
+    @staticmethod
+    def _attach_plc_table_source(table, payload):
+        """Keep the exact source-file identity separate from the normalized copy hash."""
+        result = dict(table)
+        source_sha256 = payload.get('sourceSha256') if isinstance(payload, dict) else None
+        if source_sha256 is not None:
+            if not isinstance(source_sha256, str) or not SOURCE_SHA256.fullmatch(source_sha256.lower()):
+                raise ValueError('PLC点表原文件SHA256格式无效。')
+            result['sourceSha256'] = source_sha256.lower()
+        for key, maximum in (('sourceFile', 512), ('sourceDeviceId', 128), ('sourceDeviceName', 256)):
+            value = payload.get(key) if isinstance(payload, dict) else None
+            if value is not None:
+                if not isinstance(value, str) or not value.strip() or len(value) > maximum:
+                    raise ValueError('PLC点表来源字段无效。')
+                result[key] = value.strip()
+        return result
+
     def _bound_plc_table(self):
         from station_catalog import normalize_plc_table_from_path
         candidates = [self.root / 'plc-signals.source.csv']
@@ -292,11 +311,14 @@ class Runtime:
             stat = path.stat()
             key = (str(path.resolve()), stat.st_mtime_ns, stat.st_size)
             if self.plc_table_cache and self.plc_table_cache[0] == key:
-                return self.plc_table_cache[1]
+                return self._attach_plc_table_source(
+                    self.plc_table_cache[1], getattr(self, 'lab', {}).get('plcSignalTable') or {})
             try:
                 table = normalize_plc_table_from_path(path, 'plc-signals.source.csv' if path.name == 'plc-signals.source.csv' else path.name)
             except (OSError, ValueError):
                 continue
+            table = self._attach_plc_table_source(
+                table, getattr(self, 'lab', {}).get('plcSignalTable') or {})
             self.plc_table_cache = (key, table)
             return table
         return {}
@@ -307,13 +329,16 @@ class Runtime:
             return None
         return {key: table.get(key) for key in
                 ('fileName', 'sha256', 'bytes', 'rowCount', 'signalCount', 'stationCount', 'dumperSignalCount',
-                 'stations', 'headers', 'mapDefinitionHash')}
+                 'stations', 'headers', 'mapDefinitionHash', *POINT_TABLE_SOURCE_FIELDS)}
 
     def validate_point_table(self, payload):
         from station_catalog import normalize_plc_table
-        if not isinstance(payload, dict) or set(payload) != {'fileName', 'csvText'}:
+        required = {'fileName', 'csvText'}
+        allowed = required | set(POINT_TABLE_SOURCE_FIELDS)
+        if not isinstance(payload, dict) or not required <= set(payload) or set(payload) - allowed:
             raise ValueError('PLC点表校验字段无效。')
-        return self._plc_table_metadata(normalize_plc_table(payload.get('fileName'), payload.get('csvText')))
+        table = normalize_plc_table(payload.get('fileName'), payload.get('csvText'))
+        return self._plc_table_metadata(self._attach_plc_table_source(table, payload))
 
     def current_point_table(self):
         table = self._bound_plc_table()
@@ -371,12 +396,13 @@ class Runtime:
         from station_catalog import normalize_plc_table, normalize_stations
         table_payload = payload.get('plcSignalTable')
         table_fields = {'fileName', 'csvText', 'sha256', 'bytes', 'rowCount', 'signalCount', 'stationCount',
-                        'dumperSignalCount', 'stations', 'headers', 'mapDefinitionHash'}
+                        'dumperSignalCount', 'stations', 'headers', 'mapDefinitionHash', *POINT_TABLE_SOURCE_FIELDS}
         if not isinstance(table_payload, dict) or set(table_payload) - table_fields:
             raise ValueError('新实例必须明确绑定PLC点表；未再使用仓库全局点表作为回退。')
         table = normalize_plc_table(table_payload.get('fileName'), table_payload.get('csvText'))
         if table_payload.get('sha256') and table_payload['sha256'].lower() != table['sha256']:
             raise ValueError('PLC点表内容与浏览器提供的SHA256不一致，请重新选择文件。')
+        table = self._attach_plc_table_source(table, table_payload)
         table['mapDefinitionHash'] = map_hash
         stations = normalize_stations(payload.get('stations'), catalog=table['stations'])
         normalized_stations = []
@@ -626,7 +652,8 @@ class Runtime:
             signal_source.write_bytes(table['csvText'].encode('utf-8-sig'))
             write(target / 'source-manifest.json', dict(source='Web simulation configuration', sourceSha256='', editedFile='navigation.agvmap.json',
                 editedSha256=hashlib.sha256((target / 'navigation.agvmap.json').read_bytes()).hexdigest(),
-                plcSignalTable=dict(fileName=table['fileName'], sha256=table['sha256'], bytes=table['bytes']),
+                plcSignalTable=dict(fileName=table['fileName'], sha256=table['sha256'], bytes=table['bytes'],
+                    **{key: table[key] for key in POINT_TABLE_SOURCE_FIELDS if table.get(key)}),
                 changes=['configured through isolated Simulation Center', 'explicit user-bound PLC signal table'],
                 boundary='User-provided or copied simulation map and PLC mapping; not field provenance, calibration or live PLC proof.'))
             used = set()
