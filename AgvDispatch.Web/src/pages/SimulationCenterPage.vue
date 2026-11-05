@@ -726,8 +726,13 @@ function drawReplayFrame(canvas: HTMLCanvasElement, frame: SimulationReplay['tim
   const colors = ['#41d9bf', '#6fb9ff', '#e8bf64', '#cb9aff'];
   geometry.cars.forEach((car, carIndex) => {
     const color = colors[carIndex % colors.length];
-    ctx.fillStyle = color; ctx.globalAlpha = .16; ctx.beginPath(); ctx.arc(car.x, car.y, 18, 0, Math.PI * 2); ctx.fill();
-    ctx.globalAlpha = 1; ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.stroke();
+    const profile = status.value?.configuration?.vehicles?.find(vehicle => vehicle.id === car.id);
+    const length = (profile?.lengthMeters ?? .8) * geometry.scale;
+    const width = (profile?.widthMeters ?? .52) * geometry.scale;
+    ctx.save(); ctx.translate(car.x, car.y); ctx.rotate(-(car.angle ?? 0));
+    ctx.fillStyle = color; ctx.globalAlpha = .24; ctx.fillRect(-length / 2, -width / 2, length, width);
+    ctx.globalAlpha = 1; ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.strokeRect(-length / 2, -width / 2, length, width);
+    ctx.restore();
     ctx.fillStyle = color; ctx.font = '700 13px "Microsoft YaHei", sans-serif'; ctx.textAlign = 'center';
     ctx.fillText(car.id, car.x, car.y - 23); ctx.textAlign = 'left';
     ctx.font = '11px "Microsoft YaHei", sans-serif'; ctx.fillText(car.station || '道路中', car.x + 20, car.y + 4);

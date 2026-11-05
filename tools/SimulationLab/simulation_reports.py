@@ -173,7 +173,7 @@ def replay(runtime, identity):
     for index, line in enumerate(lines()):
             if index % stride and index != count-1: continue
             value = json.loads(line)
-            vehicles = [dict(vehicleId=vehicle, x=car.get('x'), y=car.get('y'), site=car.get('site'),
+            vehicles = [dict(vehicleId=vehicle, x=car.get('x'), y=car.get('y'), angle=car.get('angle'), site=car.get('site'),
                 waitReason=car.get('waitReason'), taskId=car.get('current_task'))
                 for vehicle, car in value.get('device', {}).get('cars', {}).items()]
             tasks = [dict(taskId=tid, stationId=task.get('stationId'), vehicleId=task.get('vehicleId'),

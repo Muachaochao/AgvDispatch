@@ -116,7 +116,7 @@ export interface SimulationCall { stationId: string; atSeconds: number; vehicleI
 export interface SimulationScheme { id: string; name: string; updatedAt?: number; mapName?: string; mapId?: string; mapVersionId?: string; mapDefinitionHash?: string; vehicleCount?: number; stationCount?: number; scenarioName?: string; plcTableName?: string; plcTableSha256?: string; plcSourceSha256?: string }
 export interface SimulationGuidance { taskId: string; vehicleId?: string; stationId?: string; stepNumber?: number; stepName?: string; blockedBy?: string; restoreAction?: string; expectedFeedback?: string }
 export interface SimulationReplayFrame {
-  time: number; vehicles?: { vehicleId: string; x: number; y: number; site?: string; waitReason?: string; taskId?: string }[];
+  time: number; vehicles?: { vehicleId: string; x: number; y: number; angle?: number; site?: string; waitReason?: string; taskId?: string }[];
   tasks?: { taskId: string; stationId?: string; vehicleId?: string; stage?: string; step?: string | number; waitReason?: string }[];
   leases?: unknown[];
 }
@@ -186,7 +186,8 @@ export function simulationMetricComparison(current: Record<string, unknown> = {}
 }
 export function simulationReplayCars(frame?: SimulationReplayFrame): Record<string, SimulationVehicle> {
   return Object.fromEntries((frame?.vehicles ?? []).filter(vehicle => !!vehicle.vehicleId && Number.isFinite(vehicle.x) && Number.isFinite(vehicle.y))
-    .map(vehicle => [vehicle.vehicleId, { x: vehicle.x, y: vehicle.y, station: vehicle.site, current_task: vehicle.taskId, waitReason: vehicle.waitReason }]));
+    .map(vehicle => [vehicle.vehicleId, { x: vehicle.x, y: vehicle.y, angle: vehicle.angle, station: vehicle.site,
+      current_task: vehicle.taskId, waitReason: vehicle.waitReason }]));
 }
 export interface SimulationScenario {
   id?: string; name?: string; status: string; completedRounds?: number; totalRounds?: number;
@@ -271,7 +272,7 @@ export function simulationGeometry(nodes: SimulationNode[], edges: SimulationEdg
   const offsetX = (800 - (maxX - minX) * scale) / 2;
   const offsetY = (430 - (maxY - minY) * scale) / 2;
   const position = (point: { x: number; y: number }) => ({ x: offsetX + (point.x - minX) * scale, y: 430 - offsetY - (point.y - minY) * scale });
-  return { nodes: validNodes.map(node => ({ ...node, ...position(node) })),
+  return { scale, nodes: validNodes.map(node => ({ ...node, ...position(node) })),
     edges: edges.flatMap((edge, index) => {
       const from = byId.get(edge.from), to = byId.get(edge.to); if (!from || !to) return [];
       const a = position(from), b = position(to);
