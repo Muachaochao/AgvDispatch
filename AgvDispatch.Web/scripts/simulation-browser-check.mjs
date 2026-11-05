@@ -43,6 +43,8 @@ const status = () => ({ enabled, running: enabled && running, rootName, fresh,
   equipment: equipmentRunning ? { running: true, floors: ['1','2'], currentFloor: '1', targetFloor: null, direction: 'Stopped', door: 'Closed', moving: false, fault: false, signals: { call: true }, schedules: [], signalEvents: [] } : { running: false, currentFloor: '1', door: 'Closed', signals: {} },
   report: { id: 'previous-scenario', name: 'plc-delay', finishedAt: Date.now() / 1000, status: 'inconclusive', versionComparison,
     firstFailure: '倒料机就绪等待超时', metrics: { taskCount: 2, durationSeconds: 30 },
+    taskSummary: [{ taskId: 'TASK-ORIGINAL', stationId: 'CNC-002', vehicleId: 'AGV-02', stage: 'Dumping',
+      currentStepNumber: 5, currentStepName: '进入倒料位', currentStepStatus: 'waiting', waitingExplanation: '等待倒料就绪', completed: false }],
     waitingChain: [{ taskId: 'ORIGINAL', vehicleId: 'AGV-02', site: 'LM2', waitReason: '等待倒料资源释放' }],
     checks: [{ name: '真实机械反馈', status: 'unknown', detail: '模型不提供现场证据' }, { name: '设备确认记录', status: 'passed', detail: { accepted: true, sequence: 'original-input' } }, { name: '原任务身份', status: 'passed', detail: ['TASK-1', 'TASK-2'] }] }
 });
@@ -130,7 +132,7 @@ try {
   }
   check('Guided stage tabs isolate environment, scenario, fault and evidence workflows', true);
   check('Build differences and concrete recovery actions are readable without raw configuration keys', await evaluate(`document.querySelector('.version-panel').textContent.includes('field-original')&&document.querySelector('.version-panel').textContent.includes('自动建单')&&document.querySelector('.recovery-guidance').textContent.includes('第8步')&&document.querySelector('.recovery-guidance').textContent.includes('解除就绪许可阻止')`));
-  check('Report highlights the first failure, waiting chain and Chinese metrics', await evaluate(`document.querySelector('.first-failure').textContent.includes('倒料机就绪等待超时')&&document.querySelector('.report-panel .waiting-chain').textContent.includes('等待倒料资源释放')&&document.querySelector('.report-metrics').textContent.includes('运行时长（秒）')&&!document.querySelector('.report-metrics').textContent.includes('durationSeconds')`));
+  check('Report highlights task records, first failure, waiting chain and Chinese metrics', await evaluate(`document.querySelector('.first-failure').textContent.includes('倒料机就绪等待超时')&&document.querySelector('.task-records').textContent.includes('TASK-ORIGINAL')&&document.querySelector('.task-records').textContent.includes('等待倒料就绪')&&document.querySelector('.report-panel .waiting-chain').textContent.includes('等待倒料资源释放')&&document.querySelector('.report-metrics').textContent.includes('运行时长（秒）')&&!document.querySelector('.report-metrics').textContent.includes('durationSeconds')`));
   await click('载入本报告时间轴');
   check('Replay loads original report positions on its saved map without device mutations', await evaluate(`document.querySelector('.replay-map .map-car text').textContent==='AGV-02'&&document.querySelector('.history-panel .waiting-chain').textContent.includes('ORIGINAL')`));
   await evaluate(`(()=>{const input=document.querySelector('[aria-label="回放时间点"]');input.value='1';input.dispatchEvent(new Event('input',{bubbles:true}))})()`);
@@ -221,7 +223,7 @@ try {
   await click('沿用当前地图新建');
   check('A stopped environment can prepare a fresh sibling without clearing old records', mutations.at(-1).path.endsWith('/new-instance') && await evaluate(`document.querySelector('#simulation-environment').textContent==='mock-fresh-lab'`));
   await click('启动仿真环境');
-  check('Unknown report evidence is never styled as passed', await evaluate(`document.querySelector('.report-table .state-pill').textContent==='未核定'&&!document.querySelector('.report-table .state-pill').classList.contains('pass')`));
+  check('Unknown report evidence is never styled as passed', await evaluate(`document.querySelector('.check-records .state-pill').textContent==='未核定'&&!document.querySelector('.check-records .state-pill').classList.contains('pass')`));
   await evaluate(`(()=>{const e=document.querySelector('.scheme-panel input');e.value='当前地图双车方案';e.dispatchEvent(new Event('input',{bubbles:true}))})()`);
   await click('保存当前方案');
   check('Scheme saves complete map, vehicle physics, workstation mapping and chosen scene', mutations.at(-1).path.endsWith('/scheme-save') && mutations.at(-1).body.name === '当前地图双车方案' && mutations.at(-1).body.configuration.vehicles.length === 2 && mutations.at(-1).body.configuration.mapDefinition.name === 'custom-mock' && mutations.at(-1).body.configuration.plcSignalTable.sha256 === pointTable.sha256 && mutations.at(-1).body.configuration.mapIdentity.sourceName === 'custom.agvmap.json' && mutations.at(-1).body.scenario.name === 'simultaneous-calls');

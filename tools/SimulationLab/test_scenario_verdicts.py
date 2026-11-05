@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from controller import read, write
-from scenarios import complete_command_set, control_applied, describe_progress, execute, fresh_device_state, mutual_wait_pairs, submit_original_task, validate_scenario
+from scenarios import complete_command_set, control_applied, describe_progress, execute, fresh_device_state, mutual_wait_pairs, submit_original_task, summarize_tasks, validate_scenario
 
 
 class Event:
@@ -178,6 +178,21 @@ class VerdictTests(unittest.TestCase):
         self.assertEqual(mutual_wait_pairs({'b': dict(blockedByVehicle='a'), 'a': dict(blockedByVehicle='b')}),
                          [('a', 'b')])
         self.assertEqual(mutual_wait_pairs({'a': dict(blockedByVehicle='b'), 'b': dict()}), [])
+
+    def test_report_task_summary_keeps_assignment_current_step_and_wait_reason(self):
+        details = {'TASK-1': dict(
+            task=dict(stationId='CNC-001', vehicleId='AGV-01', stage='GoingToDumper'),
+            waitingExplanation='等待倒料区资源',
+            steps=[dict(sequence=1, stepType='GoToPickup', status='Completed'),
+                   dict(sequence=3, stepType='DeliverFullBoxToDumper', status='Executing', isCurrent=True,
+                        waitingExplanation='前方车辆占用')])}
+        result = summarize_tasks(details)
+        self.assertEqual(result[0]['taskId'], 'TASK-1')
+        self.assertEqual(result[0]['vehicleId'], 'AGV-01')
+        self.assertEqual(result[0]['currentStepNumber'], 3)
+        self.assertEqual(result[0]['currentStepName'], '运送满箱到等待位')
+        self.assertEqual(result[0]['waitingExplanation'], '等待倒料区资源')
+        self.assertEqual(result[0]['steps'][1]['stepName'], '运送满箱到等待位')
 
     def run_case(self, root, scenario, mode='complete', **parameters):
         runtime = Runtime(root, mode)

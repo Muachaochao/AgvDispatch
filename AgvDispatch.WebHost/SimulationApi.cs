@@ -13,6 +13,12 @@ public static class SimulationApi
             bridge.Enabled ? await bridge.ForwardAsync(HttpMethod.Get, id is null ? "/report" : "/report?id=" + id, null, ct) : Disabled());
         app.MapGet("/api/simulation/replay", async (string? id, SimulationBridge bridge, CancellationToken ct) =>
             bridge.Enabled ? await bridge.ForwardAsync(HttpMethod.Get, id is null ? "/replay" : "/replay?id=" + id, null, ct) : Disabled());
+        app.MapGet("/api/simulation/archive", async (string? id, SimulationBridge bridge, CancellationToken ct) =>
+        {
+            if (!bridge.Enabled) return Disabled();
+            if (string.IsNullOrWhiteSpace(id)) return Results.BadRequest(new { error = "导出证据包需要报告编号。" });
+            return await bridge.ForwardArchiveAsync("/archive?id=" + id, "simulation-evidence-" + id + ".zip", ct);
+        });
         app.MapGet("/api/simulation/point-table", async (SimulationBridge bridge, CancellationToken ct) =>
             bridge.Enabled ? await bridge.ForwardAsync(HttpMethod.Get, "/point-table", null, ct) : Disabled());
         app.MapPost("/api/simulation/{action}", async (string action, HttpRequest request, SimulationBridge bridge, CancellationToken ct) =>

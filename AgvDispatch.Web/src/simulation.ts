@@ -139,6 +139,11 @@ export interface SimulationEquipmentStatus {
   signals?: Record<string, unknown>; schedules?: unknown[]; signalEvents?: Record<string, unknown>[]; error?: string;
 }
 export interface SimulationCheck { name: string; status: string; detail?: unknown }
+export interface SimulationTaskRecord {
+  taskId: string; stationId?: string; vehicleId?: string; stage?: string; currentStepNumber?: number;
+  currentStepType?: string; currentStepName?: string; currentStepStatus?: string; waitingExplanation?: string;
+  completed?: boolean; steps?: { number: number; stepType?: string; stepName?: string; status?: string; waitingExplanation?: string }[];
+}
 export interface SimulationVersionComparison {
   status?: string; message?: string;
   simulation?: { informationalVersion?: string | null; buildId?: string; [key: string]: unknown } | null;
@@ -153,6 +158,7 @@ export interface SimulationReport {
   recoveryHold?: boolean; completedBusinessCycle?: boolean; [key: string]: unknown;
   firstFailure?: string | { message?: string; taskId?: string; vehicleId?: string; stepName?: string };
   waitingChain?: { taskId?: string; vehicleId?: string; stationId?: string; stepName?: string; waitReason?: string; blockedBy?: string; site?: string }[];
+  taskSummary?: SimulationTaskRecord[];
   versionComparison?: SimulationVersionComparison;
 }
 

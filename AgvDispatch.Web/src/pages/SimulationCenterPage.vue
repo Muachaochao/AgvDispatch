@@ -37,6 +37,7 @@ const waitingSite = ref(''), dumpingSite = ref('');
 const schemeName = ref(''), selectedScheme = ref(''), selectedHistory = ref(''), comparisonId = ref('');
 const selectedReport = ref<SimulationReport | null>(null), comparisonReport = ref<SimulationReport | null>(null);
 const replay = ref<SimulationReplay | null>(null), replayIndex = ref(0), replayPlaying = ref(false), historyReading = ref(false);
+const recordingVideo = ref(false), videoProgress = ref(0);
 const additionalWaitingSites = ref<string[]>([]);
 const inspectionSite = ref(''), dumperResourceId = ref('');
 const customVehicles = ref([
@@ -644,6 +645,163 @@ async function downloadReport() {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   } catch (reason) { error.value = reason instanceof Error ? reason.message : String(reason); }
 }
+function downloadBlob(blob: Blob, fileName: string) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a'); anchor.href = url; anchor.download = fileName; anchor.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+async function downloadEvidenceArchive() {
+  if (busy.value || !report.value?.id) return;
+  busy.value = true; actionError.value = ''; notice.value = '';
+  try {
+    const response = await fetch('/api/simulation/archive?id=' + encodeURIComponent(report.value.id), { cache: 'no-store' });
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({}));
+      throw new Error(detail.error || detail.detail || `证据包导出失败（${response.status}）`);
+    }
+    downloadBlob(await response.blob(), `simulation-evidence-${report.value.id}.zip`);
+    notice.value = '完整证据包已导出：包含任务清单、逐次观察、地图、PLC点表、场景报告、设备日志和服务日志。';
+  } catch (reason) {
+    actionError.value = reason instanceof Error ? reason.message : String(reason);
+  } finally { busy.value = false; }
+}
+function fitCanvasText(ctx: CanvasRenderingContext2D, value: string, maximum: number): string {
+  if (ctx.measureText(value).width <= maximum) return value;
+  let text = value;
+  while (text.length > 1 && ctx.measureText(text + '…').width > maximum) text = text.slice(0, -1);
+  return text + '…';
+}
+function drawReplayFrame(canvas: HTMLCanvasElement, frame: SimulationReplay['timeline'][number], index: number, total: number) {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('浏览器无法创建视频画布。');
+  const width = canvas.width, height = canvas.height;
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = '#081226'; ctx.fillRect(0, 0, width, height);
+  const gradient = ctx.createLinearGradient(0, 0, width, 0);
+  gradient.addColorStop(0, '#123654'); gradient.addColorStop(1, '#0d1b33');
+  ctx.fillStyle = gradient; ctx.fillRect(0, 0, width, 92);
+  ctx.fillStyle = '#bceef4'; ctx.font = '700 30px "Microsoft YaHei", sans-serif';
+  const vehicleCount = status.value?.configuration?.vehicles?.length ?? frame.vehicles?.length ?? 0;
+  const stationCount = status.value?.configuration?.stations?.length ?? report.value?.taskSummary?.length ?? 0;
+  ctx.fillText(`${vehicleCount}车${stationCount}工位 · 隔离仿真回放`, 30, 40);
+  ctx.fillStyle = '#8fb5c9'; ctx.font = '18px "Microsoft YaHei", sans-serif';
+  ctx.fillText(`场景：${scenarioNames[report.value?.name ?? ''] ?? report.value?.name ?? '仿真任务'}  ·  报告：${report.value?.id ?? '未提供'}`, 30, 70);
+  ctx.fillStyle = '#61d6c2'; ctx.font = '700 17px "Microsoft YaHei", sans-serif';
+  ctx.fillText(`${index + 1} / ${total}`, width - 130, 40);
+  ctx.fillStyle = '#92a9c4'; ctx.font = '15px "Microsoft YaHei", sans-serif';
+  const stampText = Number.isFinite(frame.time) ? new Date(frame.time * 1000).toLocaleString('zh-CN', {
+    timeZone: 'Asia/Shanghai', hour12: false
+  }) : '时间未提供';
+  ctx.fillText(stampText, width - 300, 70);
+
+  ctx.fillStyle = '#0c172b'; ctx.strokeStyle = '#294666'; ctx.lineWidth = 1;
+  ctx.fillRect(24, 106, 1020, 666); ctx.strokeRect(24, 106, 1020, 666);
+  const geometry = simulationGeometry(replay.value?.map?.nodes ?? [], replay.value?.map?.edges ?? [], simulationReplayCars(frame));
+  ctx.save();
+  ctx.beginPath(); ctx.rect(32, 114, 1004, 650); ctx.clip();
+  ctx.translate(94, 219); ctx.scale(1.17, 1.17);
+  ctx.lineCap = 'round'; ctx.strokeStyle = '#385474'; ctx.lineWidth = 4;
+  for (const edge of geometry.edges) ctx.stroke(new Path2D(edge.path));
+  for (const node of geometry.nodes) {
+    ctx.fillStyle = '#7696b6'; ctx.beginPath(); ctx.arc(node.x, node.y, 3, 0, Math.PI * 2); ctx.fill();
+    if (node.type === 'Station' || node.id.includes('BUS-LM')) {
+      ctx.fillStyle = '#89a6c1'; ctx.font = '11px "Microsoft YaHei", sans-serif';
+      ctx.fillText(node.agvSiteId || node.id, node.x + 6, node.y - 6);
+    }
+  }
+  const colors = ['#41d9bf', '#6fb9ff', '#e8bf64', '#cb9aff'];
+  geometry.cars.forEach((car, carIndex) => {
+    const color = colors[carIndex % colors.length];
+    ctx.fillStyle = color; ctx.globalAlpha = .16; ctx.beginPath(); ctx.arc(car.x, car.y, 18, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1; ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.stroke();
+    ctx.fillStyle = color; ctx.font = '700 13px "Microsoft YaHei", sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText(car.id, car.x, car.y - 23); ctx.textAlign = 'left';
+    ctx.font = '11px "Microsoft YaHei", sans-serif'; ctx.fillText(car.station || '道路中', car.x + 20, car.y + 4);
+  });
+  ctx.restore();
+
+  ctx.fillStyle = '#0c172b'; ctx.strokeStyle = '#294666';
+  ctx.fillRect(1060, 106, 316, 666); ctx.strokeRect(1060, 106, 316, 666);
+  ctx.fillStyle = '#a8e2e8'; ctx.font = '700 20px "Microsoft YaHei", sans-serif';
+  ctx.fillText('车辆与任务', 1080, 142);
+  let y = 178;
+  ctx.font = '15px "Microsoft YaHei", sans-serif';
+  for (const car of frame.vehicles ?? []) {
+    ctx.fillStyle = '#69d5c3';
+    ctx.fillText(fitCanvasText(ctx, `${car.vehicleId} · ${car.site || '道路中'}`, 270), 1080, y);
+    y += 24;
+    ctx.fillStyle = '#93a9c1'; ctx.font = '12px "Microsoft YaHei", sans-serif';
+    ctx.fillText(fitCanvasText(ctx, car.taskId ? `任务 ${car.taskId}` : '空闲', 270), 1092, y);
+    if (car.waitReason) { y += 19; ctx.fillStyle = '#e3bd78'; ctx.fillText(fitCanvasText(ctx, car.waitReason, 270), 1092, y); }
+    y += 28; ctx.font = '15px "Microsoft YaHei", sans-serif';
+  }
+  ctx.strokeStyle = '#294666'; ctx.beginPath(); ctx.moveTo(1080, y); ctx.lineTo(1356, y); ctx.stroke(); y += 28;
+  for (const task of (frame.tasks ?? []).slice(0, 5)) {
+    ctx.fillStyle = '#a8cfe4'; ctx.font = '14px "Microsoft YaHei", sans-serif';
+    ctx.fillText(fitCanvasText(ctx, `${task.vehicleId || '待派车'} · ${task.stationId || '工位未知'}`, 270), 1080, y);
+    y += 22;
+    ctx.fillStyle = '#849db9'; ctx.font = '12px "Microsoft YaHei", sans-serif';
+    ctx.fillText(fitCanvasText(ctx, String(task.step || task.stage || '等待推进'), 270), 1092, y);
+    if (task.waitReason) { y += 18; ctx.fillStyle = '#e3bd78'; ctx.fillText(fitCanvasText(ctx, task.waitReason, 270), 1092, y); }
+    y += 28;
+    if (y > 720) break;
+  }
+  const progress = total > 0 ? index / total : 0;
+  ctx.fillStyle = '#17304d'; ctx.fillRect(24, 786, 1352, 8);
+  ctx.fillStyle = '#42d6d5'; ctx.fillRect(24, 786, 1352 * progress, 8);
+  ctx.fillStyle = '#7e98b5'; ctx.font = '13px "Microsoft YaHei", sans-serif';
+  ctx.fillText('回环 Robokit/S7 合成模型 · 任务、车辆、PLC与路权观察记录 · 不替代实车和安全验收', 24, 812);
+}
+async function exportReplayVideo() {
+  if (recordingVideo.value || !report.value?.id) return;
+  if (!replay.value?.timeline.length) await loadReplay();
+  if (!replay.value?.timeline.length) {
+    actionError.value = '当前报告没有可导出的回放采样。';
+    return;
+  }
+  if (typeof MediaRecorder === 'undefined') {
+    actionError.value = '当前浏览器不支持WebM视频录制，请使用最新版Edge或Chrome。';
+    return;
+  }
+  const mimeType = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']
+    .find(type => MediaRecorder.isTypeSupported(type));
+  if (!mimeType) {
+    actionError.value = '当前浏览器没有可用的WebM编码器。';
+    return;
+  }
+  const source = replay.value.timeline;
+  const step = Math.max(1, Math.ceil(source.length / 600));
+  const frames = source.filter((_, index) => index % step === 0 || index === source.length - 1);
+  const canvas = document.createElement('canvas'); canvas.width = 1400; canvas.height = 820;
+  const stream = canvas.captureStream(10);
+  const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 2_500_000 });
+  const chunks: BlobPart[] = [];
+  recordingVideo.value = true; videoProgress.value = 0; actionError.value = '';
+  try {
+    const finished = new Promise<Blob>((resolve, reject) => {
+      recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data); };
+      recorder.onerror = () => reject(new Error('浏览器视频编码失败。'));
+      recorder.onstop = () => resolve(new Blob(chunks, { type: mimeType }));
+    });
+    recorder.start(1000);
+    for (let index = 0; index < frames.length; index++) {
+      drawReplayFrame(canvas, frames[index]!, index, frames.length);
+      videoProgress.value = Math.round((index + 1) / frames.length * 100);
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    await new Promise(resolve => setTimeout(resolve, 250));
+    recorder.stop();
+    const blob = await finished;
+    if (!blob.size) throw new Error('视频没有生成有效内容。');
+    downloadBlob(blob, `simulation-replay-${report.value.id}.webm`);
+    notice.value = `回放视频已导出，共 ${frames.length} 帧；原始 ${source.length} 个观察采样仍保存在完整证据包中。`;
+  } catch (reason) {
+    actionError.value = reason instanceof Error ? reason.message : String(reason);
+  } finally {
+    for (const track of stream.getTracks()) track.stop();
+    recordingVideo.value = false;
+  }
+}
 onMounted(() => { void refresh(); poll = setInterval(() => void refresh(), 1500); tick = setInterval(() => {
   now.value = Date.now();
   if (replayPlaying.value && replay.value?.timeline.length) {
@@ -972,12 +1130,14 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
       </section>
 
       <section class="simulation-panel report-panel" aria-labelledby="simulation-report">
-        <header><div><p class="section-kicker">检查结果</p><h3 id="simulation-report">自动检查与报告</h3></div><div class="toolbar"><span :class="['state-pill', simulationTone(report?.status)]">{{ simulationLabel(report?.status) }}</span><button :disabled="!report || busy" @click="downloadReport"><IconDownload :size="16" />导出报告 JSON</button></div></header>
+        <header><div><p class="section-kicker">检查结果</p><h3 id="simulation-report">自动检查与报告</h3></div><div class="toolbar"><span :class="['state-pill', simulationTone(report?.status)]">{{ simulationLabel(report?.status) }}</span><button :disabled="!report || busy" @click="downloadReport"><IconDownload :size="16" />导出报告 JSON</button><button :disabled="!report?.id || busy" @click="downloadEvidenceArchive"><IconDownload :size="16" />导出完整证据包</button></div></header>
         <div v-if="report" class="report-identity"><span v-if="historicalReport" class="state-pill waiting">上一场景报告 · 与当前场景不同</span><b>{{ scenarioNames[report.name ?? ''] ?? report.name ?? '未提供场景名称' }}</b><span>报告编号：{{ report.id || '未提供' }}</span><span>完成时间：{{ stamp(report.finishedAt ?? report.generatedAt) }}</span></div>
         <p v-if="historicalReport && active" class="inline-warning">当前场景仍在运行，以下结果属于上一场景；本次结果将在场景结束后生成。</p>
         <p v-if="report?.recoveryHold" class="inline-warning">恢复屏障检查已结束，原活动任务保留待核对；该报告不表示完整业务循环已完成。</p>
         <p v-if="!report" class="report-empty">尚无报告。运行场景后显示任务、命令、PLC、交通和残留占用检查；未取得证据的项目保留为未核定。</p>
-        <template v-else><p v-if="report.message">{{ industrialText(report.message) }}</p><p v-if="firstFailure" class="first-failure"><b>第一失败原因</b>{{ industrialText(firstFailure) }}</p><details v-if="report.versionComparison" class="report-version"><summary>本轮绑定的后台版本与配置</summary><p>{{ industrialText(report.versionComparison.message) }}</p><p>现场：{{ report.versionComparison.field?.informationalVersion || report.versionComparison.field?.buildId || '身份未核定' }} · 仿真：{{ report.versionComparison.simulation?.informationalVersion || report.versionComparison.simulation?.buildId || '身份未核定' }}</p><ul><li v-for="(difference, index) in report.versionComparison.differences ?? []" :key="index">{{ difference.label || '待核定项目' }}：现场 {{ industrialText(difference.field ?? '未取得') }}；仿真 {{ industrialText(difference.simulation ?? '未取得') }}</li></ul></details><dl v-if="metrics.length" class="report-metrics"><div v-for="[key, value] in metrics" :key="key"><dt>{{ simulationMetricLabel(key) }}</dt><dd>{{ simulationMetricValue(value) }}</dd></div></dl><div class="report-table"><table><thead><tr><th>检查项</th><th>结果</th><th>证据 / 说明</th></tr></thead><tbody><tr v-for="(check, index) in report.checks ?? []" :key="index"><td>{{ industrialText(check.name) }}</td><td><span :class="['state-pill', simulationTone(check.status)]">{{ simulationLabel(check.status) }}</span></td><td>{{ industrialText(check.detail || '未提供说明') }}</td></tr></tbody></table></div>
+        <template v-else><p v-if="report.message">{{ industrialText(report.message) }}</p><p v-if="firstFailure" class="first-failure"><b>第一失败原因</b>{{ industrialText(firstFailure) }}</p><details v-if="report.versionComparison" class="report-version"><summary>本轮绑定的后台版本与配置</summary><p>{{ industrialText(report.versionComparison.message) }}</p><p>现场：{{ report.versionComparison.field?.informationalVersion || report.versionComparison.field?.buildId || '身份未核定' }} · 仿真：{{ report.versionComparison.simulation?.informationalVersion || report.versionComparison.simulation?.buildId || '身份未核定' }}</p><ul><li v-for="(difference, index) in report.versionComparison.differences ?? []" :key="index">{{ difference.label || '待核定项目' }}：现场 {{ industrialText(difference.field ?? '未取得') }}；仿真 {{ industrialText(difference.simulation ?? '未取得') }}</li></ul></details><dl v-if="metrics.length" class="report-metrics"><div v-for="[key, value] in metrics" :key="key"><dt>{{ simulationMetricLabel(key) }}</dt><dd>{{ simulationMetricValue(value) }}</dd></div></dl>
+          <div v-if="report.taskSummary?.length" class="report-table task-records"><h4>本轮任务清单 · {{ report.taskSummary.length }} 单</h4><table><thead><tr><th>任务编号</th><th>工位</th><th>车辆</th><th>状态</th><th>当前步骤 / 等待原因</th></tr></thead><tbody><tr v-for="task in report.taskSummary" :key="task.taskId"><td><code>{{ task.taskId }}</code></td><td>{{ task.stationId || '未提供' }}</td><td>{{ task.vehicleId || '尚未派车' }}</td><td><span :class="['state-pill', task.completed ? 'pass' : simulationTone(task.currentStepStatus)]">{{ task.completed ? '已完成' : simulationLabel(task.currentStepStatus) }}</span></td><td><b>{{ task.currentStepNumber ? `第${task.currentStepNumber}步 · ` : '' }}{{ task.currentStepName || '等待派车' }}</b><small v-if="task.waitingExplanation">{{ industrialText(task.waitingExplanation) }}</small></td></tr></tbody></table></div>
+          <div class="report-table check-records"><table><thead><tr><th>检查项</th><th>结果</th><th>证据 / 说明</th></tr></thead><tbody><tr v-for="(check, index) in report.checks ?? []" :key="index"><td>{{ industrialText(check.name) }}</td><td><span :class="['state-pill', simulationTone(check.status)]">{{ simulationLabel(check.status) }}</span></td><td>{{ industrialText(check.detail || '未提供说明') }}</td></tr></tbody></table></div>
           <div v-if="report.waitingChain?.length" class="waiting-chain"><h4>任务与车辆等待链</h4><ol><li v-for="(wait, index) in report.waitingChain" :key="index"><b>{{ wait.vehicleId || '尚未派车' }} · {{ wait.taskId || '待建单' }}</b><span>{{ wait.stationId }} · {{ wait.site || '位置未反馈' }} · {{ industrialText(wait.stepName || '等待分配') }}</span><p>{{ industrialText(wait.waitReason || wait.blockedBy || '等待原因未反馈') }}</p></li></ol></div>
         </template>
       </section>
@@ -987,7 +1147,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
         <p v-if="!(status?.history?.length)" class="report-empty">还没有历史场景。运行后会保留通过、失败和中止结果。</p>
         <p v-if="comparisonReport" class="inline-warning">数值差异仅作比较；请同时核对当轮地图、后台版本和场景参数，增减值不直接代表变好或变坏。</p>
         <div v-if="metricComparison.length" class="report-table"><table><thead><tr><th>指标</th><th>当前报告</th><th>基准报告</th><th>差值</th></tr></thead><tbody><tr v-for="item in metricComparison" :key="item.key"><td>{{ item.label }}</td><td>{{ simulationMetricValue(item.current) }}</td><td>{{ simulationMetricValue(item.previous) }}</td><td>{{ item.delta > 0 ? '+' : '' }}{{ simulationMetricValue(item.delta) }}</td></tr></tbody></table></div>
-        <div class="toolbar"><button :disabled="historyReading || !report?.id" @click="loadReplay">载入本报告时间轴</button><button :disabled="!replay?.timeline.length" @click="replayPlaying = !replayPlaying">{{ replayPlaying ? '暂停回放' : '播放回放' }}</button></div>
+        <div class="toolbar"><button :disabled="historyReading || !report?.id" @click="loadReplay">载入本报告时间轴</button><button :disabled="!replay?.timeline.length" @click="replayPlaying = !replayPlaying">{{ replayPlaying ? '暂停回放' : '播放回放' }}</button><button :disabled="historyReading || recordingVideo || !report?.id" @click="exportReplayVideo"><IconDownload :size="16" />{{ recordingVideo ? `正在录制 ${videoProgress}%` : '导出回放视频' }}</button></div>
         <p v-if="replay?.sampled" class="inline-warning">时间轴已按原始时间顺序抽样，保留最后一帧；完整观察记录仍保存在该轮证据文件中。</p>
         <template v-if="replay?.timeline.length"><label class="replay-slider">观察时间 · {{ stamp(replayFrame?.time) }} · {{ replayIndex + 1 }}/{{ replay.timeline.length }}<input v-model.number="replayIndex" aria-label="回放时间点" type="range" min="0" :max="replay.timeline.length - 1" step="1" @input="replayPlaying = false" /></label>
           <svg v-if="replay.map && replayGeometry.nodes.length" class="simulation-map replay-map" viewBox="0 0 800 430" role="img" aria-label="历史任务位置回放"><g class="roads"><path v-for="edge in replayGeometry.edges" :key="edge.key" :d="edge.path" /></g><g v-for="node in replayGeometry.nodes" :key="node.id" class="map-node"><circle :cx="node.x" :cy="node.y" r="3"/><text :x="node.x + 7" :y="node.y - 7">{{ node.id }}</text></g><g v-for="(car, index) in replayGeometry.cars" :key="car.id" class="map-car" :style="{ '--car-color': ['#41d9bf', '#6fb9ff', '#e8bf64', '#cb9aff'][index % 4] }" :transform="`translate(${car.x} ${car.y})`"><circle r="16"/><text x="0" y="-23" text-anchor="middle">{{ car.id }}</text></g></svg>

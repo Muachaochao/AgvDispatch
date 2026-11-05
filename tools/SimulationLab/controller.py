@@ -965,6 +965,18 @@ def serve(root, port, token):
                     query = parse_qs(parsed.query, strict_parsing=True)
                     if query and (set(query) != {'id'} or len(query['id']) != 1): raise ValueError('报告查询参数无效。')
                     identity = query.get('id', [None])[0]
+                    if parsed.path == '/archive':
+                        from simulation_archive import archive_evidence
+                        if identity is None: raise ValueError('导出证据包需要报告编号。')
+                        filename, payload = archive_evidence(runtime, identity)
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'application/zip')
+                        self.send_header('Content-Disposition', f'attachment; filename="{filename}"')
+                        self.send_header('Content-Length', str(len(payload)))
+                        self.send_header('Cache-Control', 'no-store')
+                        self.end_headers()
+                        self.wfile.write(payload)
+                        return
                     result = runtime.status() if parsed.path == '/status' and not query else \
                         runtime.current_point_table() if parsed.path == '/point-table' and not query else \
                         report(runtime, identity) if parsed.path == '/report' else replay(runtime, identity) if parsed.path == '/replay' else None

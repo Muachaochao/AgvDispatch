@@ -34,6 +34,34 @@ def describe_progress(vehicle, detail):
     return f'{vehicle}：第{number}/{len(steps)}步，{label}' + (f'；{reason}' if reason else '')
 
 
+def summarize_tasks(details):
+    """Return a bounded bilingual-safe task record for the report and UI."""
+    result = []
+    for task_id, detail in sorted(details.items()) if isinstance(details, dict) else []:
+        if not isinstance(detail, dict):
+            continue
+        task = detail.get('task') if isinstance(detail.get('task'), dict) else {}
+        steps = detail.get('steps') if isinstance(detail.get('steps'), list) else []
+        current = next((step for step in steps if step.get('isCurrent')), None)
+        steps_out = []
+        for index, step in enumerate(steps):
+            if not isinstance(step, dict):
+                continue
+            number = step.get('sequence') or index + 1
+            steps_out.append(dict(number=number, stepType=step.get('stepType'),
+                                  stepName=STEP_NAMES.get(step.get('stepType'), '等待任务反馈'),
+                                  status=step.get('status'), waitingExplanation=step.get('waitingExplanation')))
+        result.append(dict(
+            taskId=task_id, stationId=task.get('stationId'), vehicleId=task.get('vehicleId'),
+            stage=task.get('stage'), currentStepNumber=current.get('sequence') if current else None,
+            currentStepType=current.get('stepType') if current else None,
+            currentStepName=STEP_NAMES.get(current.get('stepType'), '等待派车') if current else '等待派车',
+            currentStepStatus=current.get('status') if current else None,
+            waitingExplanation=detail.get('waitingExplanation') or (current or {}).get('waitingExplanation'),
+            completed=task.get('stage') == 'Completed', steps=steps_out))
+    return result
+
+
 def submit_original_task(runtime, payload, evidence):
     # Save the identity before sending. A lost HTTP receipt is not evidence that
     # no task was created; repeat only the identical idempotent request.
@@ -587,10 +615,12 @@ def execute(runtime, request):
     except Exception as error:
         message = str(error); checks.append(dict(name='场景执行', status='failed', detail=message))
     finally:
+        all_details = getattr(observer, 'seen_details', {}) if observer else {}
         if observer and getattr(observer, 'last_details', None):
             write(evidence / 'last-task-details.json', observer.last_details)
-        if observer and getattr(observer, 'seen_details', None):
-            write(evidence / 'all-task-details.json', observer.seen_details)
+        if all_details:
+            write(evidence / 'all-task-details.json', all_details)
+        write(evidence / 'task-summary.json', summarize_tasks(all_details))
         write(evidence / 'final-device-observation.json', runtime.device())
         from simulation_reports import guidance
         waiting_chain = guidance(getattr(observer, 'last_details', {}) or {}, runtime.device())
@@ -606,6 +636,7 @@ def execute(runtime, request):
             completedBusinessCycle=result_status == 'passed' and bool(tasks) and completed_tasks == set(tasks) and not recovery_hold,
             recoveryHold=recovery_hold, faultApplied=fault_observed if request['name'] in
                 ('disconnect-reconnect', 'service-restart', 'plc-delay', 'plc-recovery') else None,
+            taskSummary=summarize_tasks(all_details),
             startedAt=started, finishedAt=time.time(), evidenceDirectory=evidence.name,
             metrics=dict(taskCount=len(tasks), completedRounds=runtime.scenario['completedRounds'], durationSeconds=time.time()-started,
                          samples=observer.samples if observer else 0, minimumSeparationMeters=observer.minimum if observer else None,

@@ -78,8 +78,33 @@ public sealed class SimulationBridge : IAsyncDisposable
         finally { gate.Release(); }
     }
 
+    public async Task<IResult> ForwardArchiveAsync(string path, string fileName, CancellationToken ct)
+    {
+        if (!Enabled) return Results.Json(new { error = "隔离仿真环境未启用。" }, statusCode: 403);
+        if (!AllowedReadPath(path)) throw new ArgumentException("不支持的仿真证据读取路径。");
+        await gate.WaitAsync(ct);
+        try
+        {
+            ObjectDisposedException.ThrowIf(disposed, this);
+            await EnsureStartedAsync(ct);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(TimeSpan.FromSeconds(90));
+            using var request = new HttpRequestMessage(HttpMethod.Get, path);
+            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+            await response.Content.LoadIntoBufferAsync(64 * 1024 * 1024, timeout.Token);
+            var bytes = await response.Content.ReadAsByteArrayAsync(timeout.Token);
+            if (!response.IsSuccessStatusCode)
+            {
+                using var parsed = JsonDocument.Parse(bytes);
+                return Results.Json(parsed.RootElement, statusCode: (int)response.StatusCode);
+            }
+            return Results.File(bytes, "application/zip", fileDownloadName: fileName);
+        }
+        finally { gate.Release(); }
+    }
+
     private static bool AllowedReadPath(string path) => path is "/status" or "/report" or "/replay" or "/point-table" ||
-        Regex.IsMatch(path, @"^/(report|replay)\?id=[a-f0-9]{32}$", RegexOptions.CultureInvariant);
+        Regex.IsMatch(path, @"^/(report|replay|archive)\?id=[a-f0-9]{32}$", RegexOptions.CultureInvariant);
 
     private async Task EnsureStartedAsync(CancellationToken ct)
     {

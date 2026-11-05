@@ -25,6 +25,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.headers.get('X-Simulation-Token') != token:
             self.send_response(403);self.end_headers();return
+        if self.path.startswith('/archive?id='):
+            body=b'PK\\x03\\x04simulation-evidence'
+            self.send_response(200);self.send_header('Content-Type','application/zip')
+            self.send_header('Content-Disposition','attachment; filename="evidence.zip"')
+            self.end_headers();self.wfile.write(body);return
         body=json.dumps(dict(enabled=True,pid=os.getpid(),path=self.path)).encode()
         self.send_response(200);self.send_header('Content-Type','application/json');self.end_headers();self.wfile.write(body)
     def do_POST(self):
@@ -60,6 +65,14 @@ async Task<JsonElement> Execute(IResult result)
     stream.Position = 0;
     using var parsed = await JsonDocument.ParseAsync(stream);
     return parsed.RootElement.Clone();
+}
+async Task<(byte[] Body, string? ContentType, string? Disposition)> ExecuteRaw(IResult result)
+{
+    using var services = new ServiceCollection().AddLogging().AddOptions().BuildServiceProvider();
+    var context = new DefaultHttpContext { RequestServices = services };
+    await using var stream = new MemoryStream(); context.Response.Body = stream;
+    await result.ExecuteAsync(context);
+    return (stream.ToArray(), context.Response.ContentType, context.Response.Headers.ContentDisposition.ToString());
 }
 async Task Reject(Dictionary<string, string?> values, string message)
 {
@@ -110,9 +123,23 @@ await using (var bridge = new SimulationBridge(Config(Values(freePort))))
     Check(repeated.GetProperty("pid").GetInt32() == ownedPid, "status reuses only its already owned controller");
     Check((await Execute(await bridge.ForwardAsync(HttpMethod.Get, "/report", null, timeout.Token))).GetProperty("path").GetString() == "/report", "report proxy uses fixed route");
     foreach (var path in new[] { "/configure", "/recover", "/recover-release", "/protocol-start", "/protocol-stop",
-                                 "/equipment-start", "/equipment-control", "/equipment-stop" })
+                                 "/equipment-start", "/equipment-control", "/equipment-stop", "/scheme-save", "/scheme-select", "/scheme-start" })
         Check((await Execute(await bridge.ForwardAsync(HttpMethod.Post, path, "{}", timeout.Token))).GetProperty("path").GetString() == path,
             "custom simulation route allowed: " + path);
+    foreach (var path in new[] { "/replay", "/report?id=" + new string('a', 32), "/replay?id=" + new string('f', 32) })
+        Check((await Execute(await bridge.ForwardAsync(HttpMethod.Get, path, null, timeout.Token))).GetProperty("path").GetString() == path,
+            "history read route allowed: " + path);
+    var archive = await ExecuteRaw(await bridge.ForwardArchiveAsync(
+        "/archive?id=" + new string('b', 32), "simulation-evidence.zip", timeout.Token));
+    Check(archive.ContentType == "application/zip" && archive.Disposition?.Contains("simulation-evidence.zip") == true &&
+          archive.Body.AsSpan().StartsWith(new byte[] { 0x50, 0x4b }), "archive proxy returns a bounded ZIP attachment");
+    foreach (var path in new[] { "/report?id=../../field", "/replay?id=" + new string('a', 32) + "&file=secret", "/replay?id=" + new string('A', 32) })
+    {
+        var invalidHistoryRejected = false;
+        try { await bridge.ForwardAsync(HttpMethod.Get, path, null, timeout.Token); }
+        catch (ArgumentException) { invalidHistoryRejected = true; }
+        Check(invalidHistoryRejected, "history route rejects arbitrary identities and extra query: " + path);
+    }
     var rejected = false;
     try { await bridge.ForwardAsync(HttpMethod.Get, "http://example.com/", null, timeout.Token); }
     catch (ArgumentException) { rejected = true; }
