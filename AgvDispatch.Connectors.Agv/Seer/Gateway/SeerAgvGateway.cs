@@ -101,6 +101,13 @@ public sealed class SeerAgvGateway(
         {
             throw;
         }
+        catch (AgvCommandRejectedException)
+        {
+            // A valid Robokit error response is a definitive pre-send rejection:
+            // no task identity was created, so neither acceptance reconciliation
+            // nor an automatic retry is allowed.
+            throw;
+        }
         catch (Exception sendException)
         {
             // TCP超时可能发生在机器人已接收、但响应未返回的时刻，不能直接重复创建。

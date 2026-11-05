@@ -1,6 +1,7 @@
 ﻿using System.Text.Json;
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Domain.Agvs;
+using AgvDispatch.Domain.Devices;
 using AgvDispatch.Domain.Tasks;
 using AgvDispatch.Infrastructure.Persistence.Entities;
 using SqlSugar;
@@ -8,7 +9,8 @@ namespace AgvDispatch.Infrastructure.Persistence;
 
 // The shared control gate serializes this intent with PLC writers and transport senders.
 // HTTP acceptance never means vehicle cancellation has been confirmed.
-public sealed class TaskCancellationService(ISqlSugarClient database, IMapExecutionGate gate, IAgvGateway gateway) : ITaskCancellationService
+public sealed class TaskCancellationService(ISqlSugarClient database, IMapExecutionGate gate, IAgvGateway gateway,
+    IAgvStateCache? vehicles = null) : ITaskCancellationService
 {
     public async Task<TaskCancelResult> RequestAsync(TrafficUserContext user, TaskCancelRequest request, CancellationToken ct)
     {
@@ -73,6 +75,48 @@ public sealed class TaskCancellationService(ISqlSugarClient database, IMapExecut
             {
                 if (string.IsNullOrWhiteSpace(task.CancelVendorId) || string.IsNullOrWhiteSpace(task.CancelStepId) || string.IsNullOrWhiteSpace(task.CancelVehicleId) || task.CancelRequestedAt == null)
                 { task.ErrorMessage = "取消目标编号或车辆归属不完整；保持冻结，需现场核对。"; await SaveAsync(task, ct); continue; }
+                var cancelStep = await database.Queryable<DispatchTaskStepEntity>()
+                    .Where(s => s.TaskId == task.TaskId && s.StepId == task.CancelStepId).FirstAsync(ct);
+                var cancelCommand = await database.Queryable<AgvCommandOutboxEntity>()
+                    .Where(c => c.TaskId == task.TaskId && c.StepId == task.CancelStepId &&
+                        c.CommandType == (int)AgvCommandType.Transport).FirstAsync(ct);
+                AgvRobotSnapshot? cancelVehicle = null;
+                var vehicleStopped = vehicles is not null &&
+                    vehicles.TryGet(task.CancelVehicleId, out cancelVehicle) &&
+                    cancelVehicle.Connection == ConnectionState.Online &&
+                    cancelVehicle.Quality == SignalQuality.Good &&
+                    cancelVehicle.Blocked == false &&
+                    cancelVehicle.EmergencyStopped == false &&
+                    !cancelVehicle.Tasks.Any(status => status.Status is 1 or 2 or 3);
+                var noVendorTaskWasCreated =
+                    string.Equals(task.CancelVendorId, task.CancelStepId, StringComparison.Ordinal) &&
+                    cancelStep is not null && string.IsNullOrWhiteSpace(cancelStep.VendorTaskId) &&
+                    cancelCommand is not null && string.IsNullOrWhiteSpace(cancelCommand.VendorCommandId) &&
+                    cancelCommand.SentAt is null &&
+                    cancelCommand.LastError?.StartsWith("AGV_PRE_SEND_REJECTED;", StringComparison.Ordinal) == true &&
+                    vehicleStopped;
+                if (noVendorTaskWasCreated)
+                {
+                    task.Stage = (int)DispatchTaskStage.CancellationReview;
+                    task.CancelConfirmedAt = DateTime.Now;
+                    task.ErrorMessage = "车端未创建任务：发送被明确拒绝或无厂家任务号，车辆无活动任务且已停稳；进入现场核对关闭，禁止补发原命令。";
+                    var result = await database.Ado.UseTranAsync(async () =>
+                    {
+                        await SaveAsync(task, ct);
+                        await AuditAsync(task, "TaskCancellationNoVendorTaskConfirmed", "service",
+                            new { task.CancelVendorId, task.CancelStepId, task.CancelVehicleId,
+                                CommandStatus = cancelCommand!.Status, cancelCommand.AttemptCount,
+                                cancelCommand.LastError, VehicleTasks = cancelVehicle!.Tasks },
+                            ct);
+                    });
+                    if (!result.IsSuccess)
+                    {
+                        task.Stage = (int)DispatchTaskStage.CancellationPending;
+                        task.CancelConfirmedAt = null;
+                        throw new InvalidOperationException("无厂家任务确认未提交，保持取消等待。", result.ErrorException);
+                    }
+                    continue;
+                }
                 var status = await gateway.GetTransportTaskStatusAsync(task.CancelVendorId, ct);
                 var now = DateTimeOffset.Now;
                 if (status == null || status.VendorTaskId != task.CancelVendorId || status.BusinessTaskId != task.CancelStepId ||

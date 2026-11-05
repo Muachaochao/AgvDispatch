@@ -309,8 +309,16 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
         var task = observed.Task;
         var legacyTerminalCancelled = task?.Stage == (int)DispatchTaskStage.Cancelled &&
             task.CancelRequestId == null && task.CancelConfirmedAt == null;
+        var legacyUnsentReviewed = task?.Stage == (int)DispatchTaskStage.CancellationReview &&
+            task.ErrorMessage?.StartsWith("原运输命令未发送", StringComparison.Ordinal) == true;
+        var stoppedOrUnassigned = observed.Vehicle is { Blocked: false, EmergencyStopped: false } ||
+            task is { VehicleId: null, CancelVehicleId: null };
+        var fieldConfirmedOfflineClose = task?.Stage == (int)DispatchTaskStage.CancellationReview &&
+            (task.CancelRequestId != null || legacyUnsentReviewed) && request.VehicleAndLocationConfirmed &&
+            request.LoadAndOwnershipConfirmed && stoppedOrUnassigned;
         if (task == null || (task.Stage != (int)DispatchTaskStage.CancellationReview && task.Stage != (int)DispatchTaskStage.Cancelled) ||
-            !legacyTerminalCancelled && (task.CancelRequestId == null || task.CancelConfirmedAt == null))
+            !legacyTerminalCancelled && !fieldConfirmedOfflineClose &&
+            (task.CancelRequestId == null || task.CancelConfirmedAt == null))
             return await RejectAsync(user, ticket.TicketId, "须先完成车辆取消/结束确认，才能关闭取消任务。", ct);
         if (await database.Queryable<TrafficResourceLeaseEntity>().Where(l => l.TaskId == task.TaskId).AnyAsync(ct))
             return await RejectAsync(user, ticket.TicketId, "原路权仍占用，请通过交通管制人工释放流程核查并处置；本操作不会自动释放。", ct);
@@ -426,13 +434,18 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
         var vehicleId = step?.VehicleId ?? task?.VehicleId;
         AgvRobotSnapshot? vehicle = null;
         if (vehicleId != null && vehicles.TryGet(vehicleId, out var found)) vehicle = found;
+        var closingCancelled = task?.Stage == (int)DispatchTaskStage.CancellationReview &&
+            leases.Count == 0 &&
+            (task.CancelRequestId != null ||
+             task.ErrorMessage?.StartsWith("原运输命令未发送", StringComparison.Ordinal) == true);
         string? hard = null;
         AgvTransportTaskStatus? vendor = null;
         if (ticket.TaskId == SiteTask) hard = await SiteBlockAsync(ct);
         else if (vehicleId != null) hard = VehicleBlock(vehicle, false);
-        if (ticket.TaskId != SiteTask && task != null && settings.CheckPlcSignals)
+        if (ticket.TaskId != SiteTask && task != null && settings.CheckPlcSignals && !closingCancelled)
             hard ??= PlcBlock(PlcStation(task, step));
-        if (task?.CancelRequestId != null && settings.CheckPlcSignals && !await ExitHandoverCompleteAsync(task.TaskId,ct))
+        if (task?.CancelRequestId != null && settings.CheckPlcSignals && !closingCancelled &&
+            !await ExitHandoverCompleteAsync(task.TaskId,ct))
         {
             var dumper = await database.Queryable<DispatchTaskStepEntity>().Where(s => s.TaskId == task.TaskId && s.StepType == (int)DispatchTaskStepType.WaitForDumperReady).FirstAsync(ct);
             if (dumper?.SourceSite != null) hard ??= PlcBlock(dumper.SourceSite);
@@ -512,6 +525,36 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
     {
         if (step.StepType is (int)DispatchTaskStepType.DeliverFullBoxToDumper or (int)DispatchTaskStepType.EnterDumpingPosition or (int)DispatchTaskStepType.ReturnEmptyBox) return null;
         if (!settings.CheckPlcSignals) return "物理握手恢复需要启用PLC采集，不允许在无现场证据时继续。";
+        if (step.StepType == (int)DispatchTaskStepType.WaitForDumperReady)
+        {
+            // A vehicle can already be parked on its own waiting resource while
+            // another task still owns the shared dump resource. In that state
+            // the backend has correctly not asserted AgvAtWaitingPosition yet.
+            // Requiring that future handshake to be true blocks startup recovery
+            // and creates a circular wait. Resume only the original node when the
+            // vehicle is on the completed delivery destination, owns a distinct
+            // waiting-bay lease, and does not own the dump resource.
+            var delivery = await database.Queryable<DispatchTaskStepEntity>()
+                .Where(s => s.TaskId == task.TaskId &&
+                    s.StepType == (int)DispatchTaskStepType.DeliverFullBoxToDumper &&
+                    s.Status == (int)DispatchTaskStepStatus.Completed)
+                .OrderByDescending(s => s.Sequence).FirstAsync(ct);
+            var waitingLeases = delivery is null ? [] : await database.Queryable<TrafficResourceLeaseEntity>()
+                .Where(l => l.TaskId == task.TaskId && l.OwnerStepId == delivery.StepId &&
+                    l.ResourceId.StartsWith("WAIT-"))
+                .ToListAsync(ct);
+            var ownsDump = await database.Queryable<TrafficResourceLeaseEntity>()
+                .Where(l => l.TaskId == task.TaskId && l.ResourceId.StartsWith("DUMP-"))
+                .AnyAsync(ct);
+            var onDeliveryDestination = task.VehicleId is { } vehicleId &&
+                vehicles.TryGet(vehicleId, out var vehicle) &&
+                vehicle.Connection == ConnectionState.Online &&
+                vehicle.Quality == SignalQuality.Good &&
+                delivery?.DestinationSite is { } destination &&
+                string.Equals(vehicle.CurrentStation, destination,
+                    StringComparison.OrdinalIgnoreCase);
+            if (onDeliveryDestination && waitingLeases.Count > 0 && !ownsDump) return null;
+        }
         var checkpoint=await database.Queryable<TaskHandshakeEntity>().Where(h=>h.TaskId==task.TaskId&&h.StepId==step.StepId).FirstAsync(ct);
         if(checkpoint!=null)
         {

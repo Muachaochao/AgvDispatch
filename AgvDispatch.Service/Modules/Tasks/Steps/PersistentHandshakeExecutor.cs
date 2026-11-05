@@ -98,6 +98,12 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
         if(!Is(step.StationId,"FullBoxRequested",false)||!Is(step.StationId,"FullBoxRequestAcknowledged",true))throw new InvalidOperationException("28阶段需先受理应答1、PLC撤呼叫0，再开始取箱运输。");
         if(!Is(step.StationId,"BoxPresent",true)||new[]{"FullBoxRemoved","EmptyBoxTaskAcknowledged","EmptyBoxPlaced"}.Any(v=>!Is(step.StationId,v,false)))
             throw new InvalidOperationException("28阶段首段取箱前需原工位有箱，且取箱通知、返箱责任、放箱通知均为0；保留原命令，禁止带入未闭合周期。");
+        var existing = await store.GetAsync(step.TaskId, step.StepId, ct);
+        if (existing is not null && existing.ContractVersion != HandshakeExecutionOptions.Version)
+            throw new InvalidOperationException("原任务已绑定旧PLC契约，禁止静默迁移为28阶段或删除原检查点。");
+        if (existing is not null && !BindingMatches(existing, step) &&
+            !await store.RollbackUncommittedAsync(step.TaskId, step.StepId, ct))
+            throw new InvalidOperationException("首段原契约绑定与当前配置不一致。");
         var baseline=observed.Concat(new[]{new TaskSignalEvidence("__context","Binding",null,"Context",DateTimeOffset.UtcNow,null,Binding(step))}).ToArray();
         var bound=await store.BeginAsync(step,HandshakeExecutionOptions.Version,"TransportBound",baseline,ct);
         if(!BindingMatches(bound,step))throw new InvalidOperationException("首段原契约绑定与当前配置不一致。");
@@ -123,6 +129,29 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
             if(!await store.OwnsEquipmentAsync(step.TaskId,creation.DumperStationId,ct))throw new InvalidOperationException("原任务倒料设备归属缺失，禁止进入或离开指令准备/发送。");
         if(step.StepType==DispatchTaskStepType.ReturnEmptyBox&&(!Is(creation.DumperStationId,"DumpingCompletedMayLeave",true)||!Is(creation.DumperStationId,"AgvAtDumpingPosition",true)))
             throw new InvalidOperationException("本轮离开许可或倒料位保持未成立，禁止准备返程。");
+    }
+
+    public async Task ValidateRecoveryTransportAsync(DispatchTaskStepWorkItem step,CancellationToken ct)
+    {
+        if(!Enabled)return;
+        if(options.PlcContractVersion!=HandshakeExecutionOptions.Version)
+            throw new InvalidOperationException("当前不是28阶段契约，禁止发送恢复运输。");
+        if(step.StepType!=DispatchTaskStepType.GoToPickup)
+        {
+            await ValidateTransportAsync(step,ct);
+            return;
+        }
+        if(!Is(step.StationId,"Faulted",false)||!Is(step.StationId,"CommunicationOnline",true)||
+            !Is(creation.DumperStationId,"Faulted",false))
+            throw new InvalidOperationException("恢复首段前工位或倒料机故障/通讯条件不成立。");
+        if(!Is(step.StationId,"FullBoxRequested",false)||!Is(step.StationId,"FullBoxRequestAcknowledged",true)||
+            !Is(step.StationId,"BoxPresent",true)||
+            new[]{"FullBoxRemoved","EmptyBoxTaskAcknowledged","EmptyBoxPlaced"}.Any(v=>!Is(step.StationId,v,false)))
+            throw new InvalidOperationException("恢复首段前工位箱体、呼叫应答或PLC周期尚未闭合。");
+        var root=(await taskReader.GetStepsAsync(step.TaskId,ct)).FirstOrDefault(s=>s.StepType==DispatchTaskStepType.GoToPickup);
+        var binding=root==null?null:await store.GetAsync(step.TaskId,root.StepId,ct);
+        if(binding?.ContractVersion!=HandshakeExecutionOptions.Version||!BindingMatches(binding,step))
+            throw new InvalidOperationException("恢复首段缺少原任务28阶段绑定，禁止直接发送替代导航。");
     }
 
     public async Task ValidatePendingTransportAsync(string taskId,string stepId,string vehicleId,CancellationToken ct)

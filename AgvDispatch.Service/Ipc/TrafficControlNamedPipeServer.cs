@@ -37,7 +37,8 @@ public sealed class TrafficControlNamedPipeServer(
     IPlcCycleTestService? plcCycleTest=null, IBusinessRunService? businessRun=null, IFleetTestService? fleetTest=null, IChargingService? charging=null,
     IRoadClosureService? roadClosures=null, IDispatchOptimizationService? dispatchOptimization=null,
     IDispatchPipelineInspectionService? dispatchPipeline=null,
-    ITransportTimeoutRecoveryService? timeoutRecovery=null) : IsolatedBackgroundService
+    ITransportTimeoutRecoveryService? timeoutRecovery=null,
+    ITaskPauseService? taskPause=null) : IsolatedBackgroundService
 {
     private async Task<RobokitInspectionSnapshot> InspectRobokitAsync(TrafficUserContext user,RobokitInspectionQuery query,CancellationToken ct)
     {
@@ -186,6 +187,19 @@ public sealed class TrafficControlNamedPipeServer(
         }
         pipeDiagnostics.RecordRequest(identityName, operation, response.Success);
         try { await WriteAsync(pipe, response, cancellationToken); }
+        catch (IOException exception) when (
+            response.Success &&
+            operation?.StartsWith("Get", StringComparison.Ordinal) == true &&
+            !cancellationToken.IsCancellationRequested)
+        {
+            // Dashboard polling and page navigation routinely close read-only
+            // requests before the reply reaches the socket. The operation has
+            // already completed and there is nothing to retry or recover.
+            logger.LogDebug(exception,
+                "只读请求客户端已断开，回执未送达。Identity={Identity}, Operation={Operation}, RequestId={RequestId}",
+                identityName, operation, requestId);
+            return;
+        }
         catch (Exception exception) when (exception is IOException or OperationCanceledException)
         {
             logger.LogWarning(exception,
@@ -293,6 +307,10 @@ public sealed class TrafficControlNamedPipeServer(
             "GetTaskRuntimeEvents" => Success(await (handshakes??throw new NotSupportedException("后台未配置运行事件查询。")).QueryAsync(Deserialize<TaskRuntimeQuery>(request.Payload),cancellationToken)),
             "ExportTaskDiagnostics" => Success(await (diagnosticExports??throw new NotSupportedException("后台未配置联调诊断导出。")).ExportAsync(Deserialize<TaskDetailRequest>(request.Payload).TaskId,cancellationToken)),
             "CancelDispatchTask" => Success(await taskCancellation.RequestAsync(user, Deserialize<TaskCancelRequest>(request.Payload), cancellationToken)),
+            TrafficControlOperations.PauseDispatchTask => Success(await (taskPause ?? throw new NotSupportedException("后台未配置任务暂停服务。"))
+                .PauseAsync(user, Deserialize<TaskPauseRequest>(request.Payload), cancellationToken)),
+            TrafficControlOperations.ResumeDispatchTask => Success(await (taskPause ?? throw new NotSupportedException("后台未配置任务暂停服务。"))
+                .ResumeAsync(user, Deserialize<TaskPauseResumeRequest>(request.Payload), cancellationToken)),
             "BeginTaskRecoveryReview" => Success(await recovery.BeginReviewAsync(user, Deserialize<TaskRecoveryReviewRequest>(request.Payload), cancellationToken)),
             "GetExecutionRecovery" => Success(await recovery.GetAsync(cancellationToken)),
             "DecideExecutionRecovery" => Success(await recovery.DecideAsync(user, Deserialize<RecoveryDecisionRequest>(request.Payload), cancellationToken)),

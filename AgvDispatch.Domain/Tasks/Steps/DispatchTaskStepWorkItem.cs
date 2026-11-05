@@ -11,4 +11,12 @@ public sealed record DispatchTaskStepWorkItem(
     DispatchTaskStepStatus StepStatus,
     string? SourceSite,
     string? DestinationSite,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt)
+{
+    public string TemplateNodeId { get; init; } = "";
+    public string FailurePolicy { get; init; } = TaskTemplateExecutionPolicy.HoldUntilCondition;
+    public string TimeoutAction { get; init; } = TaskTemplateExecutionPolicy.NotifyAndHold;
+    public int TimeoutSeconds { get; init; }
+    public bool AutoRetry { get; init; }
+    public DateTimeOffset? StartedAt { get; init; }
+}

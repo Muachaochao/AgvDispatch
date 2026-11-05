@@ -46,6 +46,10 @@ public sealed record TaskStepDetail(string StepId, int Sequence, DispatchTaskSte
     public string EvidenceBoundary { get; init; } = "";
     public string CommandStateExplanation { get; init; } = "";
     public IReadOnlyList<TaskPlcCondition> ProgressConditions { get; init; } = [];
+    public string TemplateNodeId { get; init; } = "";
+    public string FailurePolicy { get; init; } = TaskTemplateExecutionPolicy.HoldUntilCondition;
+    public string TimeoutAction { get; init; } = TaskTemplateExecutionPolicy.NotifyAndHold;
+    public bool AutoRetry { get; init; }
 }
 public sealed record TaskCommandDetail(string CommandId, string StepId, string VehicleId,
     AgvCommandStatus Status, int AttemptCount, DateTimeOffset NextAttemptAt,
@@ -69,6 +73,17 @@ public sealed record TaskExecutionEvent(string Id, DateTimeOffset OccurredAt, st
     string Kind, string Title, string Summary, string Source);
 public sealed record TaskCancellationInfo(string RequestId, string Reason, string Operator, DateTimeOffset? RequestedAt,
     int SendAttempts, DateTimeOffset? SentAt, DateTimeOffset? ConfirmedAt);
+public sealed record TaskDependencyDetail(string TaskId, bool Exists, DispatchTaskStage? Stage,
+    DateTimeOffset? UpdatedAt)
+{
+    public bool Completed => Exists && Stage == DispatchTaskStage.Completed;
+}
+public sealed record TaskPauseDetail(string RequestId, DispatchTaskStage OriginalStage, string StepId, string Reason,
+    string RequestedBy, DateTimeOffset RequestedAt, string? ResumeRequestId, string ResumeReason,
+    DateTimeOffset? ResumedAt)
+{
+    public bool Active => ResumedAt is null;
+}
 public sealed record TaskOperationHistoryEntry(string Id, DateTimeOffset OccurredAt, string Category, string Operation,
     string Operator, string StepId, string SessionId, string ResourceId, string Scope, string Reason,
     string Evidence, int EvidenceCharacters, bool EvidenceTruncated)
@@ -90,6 +105,9 @@ public sealed record TaskCenterDetail(TaskCenterRow Task, IReadOnlyList<TaskStep
     public string HandshakeContractVersion { get; init; } = "";
     public IReadOnlyList<HandshakeCheckpoint> Handshakes { get; init; } = [];
     public TaskHandoverDiagnosis? Handover { get; init; }
+    public TaskTemplateBinding? Template { get; init; }
+    public IReadOnlyList<TaskDependencyDetail> Dependencies { get; init; } = [];
+    public TaskPauseDetail? Pause { get; init; }
 }
 public sealed record TaskDetailRequest(string TaskId, bool IncludeOperationHistory = true);
 public enum TaskHistoryCategory { All, Cancellation, Recovery, TrafficRelease }

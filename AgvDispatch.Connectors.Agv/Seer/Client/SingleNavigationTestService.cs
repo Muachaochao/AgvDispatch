@@ -65,17 +65,21 @@ public sealed partial class SingleNavigationTestService : ISingleNavigationTestS
     {
         if(!user.Has(TrafficPermission.Administer)) throw new UnauthorizedAccessException("需要现场操作权限。");
     }
-    private async Task<SeerRobotClient> GuardAsync(string vehicle, CancellationToken ct)
+    private async Task<SeerRobotClient> GuardAsync(
+        string vehicle,
+        CancellationToken ct,
+        bool allowMaintenanceLowering = false)
     {
         if (_charging?.OwnsVehicle(vehicle) == true)
             throw new InvalidOperationException("车辆仍有未闭合充电会话，不能执行独立导航或升降测试。");
-        if(!_settings.Enabled || !_settings.BusinessExecutionDisabled || !_options.AllowCommands)
+        if((!allowMaintenanceLowering && (!_settings.Enabled || !_settings.BusinessExecutionDisabled)) ||
+           !_options.AllowCommands)
             throw new InvalidOperationException("单次导航或AGV动作未启用，或业务执行未关闭；不能混用自动调度。");
         if(string.IsNullOrWhiteSpace(_settings.VehicleId) || vehicle!=_settings.VehicleId)
             throw new InvalidOperationException("只能操作后台明确指定的单台测试车。");
         if(!_options.Enabled || _options.GetConfigurationError() is { } || !_connections.TryGet(vehicle,out var client))
             throw new InvalidOperationException("测试车通信配置不可用。");
-        if((await _tasks.GetActiveTasksAsync(ct)).Any(task =>
+        if(!allowMaintenanceLowering && (await _tasks.GetActiveTasksAsync(ct)).Any(task =>
             string.Equals(task.VehicleId,vehicle,StringComparison.OrdinalIgnoreCase)))
             throw new InvalidOperationException("测试车仍有未结束业务任务，不能进行独立导航测试。");
         return client;

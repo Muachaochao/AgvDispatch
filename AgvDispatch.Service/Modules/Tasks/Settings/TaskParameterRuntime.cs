@@ -20,7 +20,8 @@ public sealed class TaskParameterRuntime(DispatchOrchestratorOptions dispatch, D
         dispatch.StationPickupSites.OrderBy(pair => pair.Key).Select(pair => new TaskPickupParameter(pair.Key, pair.Value)).ToArray(),
         TransportSteps.Select(type => dispatch.GetAction(type) is { } action
             ? new TaskActionParameter(type, action.Operation, action.JackHeight, action.Recognize, action.UsePgv, action.UseDownPgv)
-            : new TaskActionParameter(type, "", null, null, null, null)).ToArray()) { StepTimeouts = _stepTimeouts.ToArray(), WaitingSites = dispatch.DumperWaitingSites.ToArray() };
+            : new TaskActionParameter(type, "", null, null, null, null)).ToArray())
+        { StepTimeouts = _stepTimeouts.ToArray(), WaitingSites = dispatch.DumperWaitingSites.ToArray(), TaskTemplate = _configuration?.TaskTemplate };
     public static readonly DispatchTaskStepType[] TransportSteps = [DispatchTaskStepType.GoToPickup, DispatchTaskStepType.DeliverFullBoxToDumper,
         DispatchTaskStepType.EnterDumpingPosition, DispatchTaskStepType.ReturnEmptyBox];
 
@@ -32,6 +33,29 @@ public sealed class TaskParameterRuntime(DispatchOrchestratorOptions dispatch, D
         if (configuration.EngineeringSource is { } source &&
             (!Guid.TryParseExact(source.VersionId, "N", out _) || !IsHash(source.ContentHash) || !IsHash(source.MapDefinitionHash)))
             throw new ArgumentException("工程来源版本或摘要无效。");
+        if (configuration.TaskTemplate is { } template)
+        {
+            if (string.IsNullOrWhiteSpace(template.Id) || template.Id.Length > 64 || template.Version is < 1 or > 1_000_000 ||
+                !IsHash(template.ContentHash) || string.IsNullOrWhiteSpace(template.Engine))
+                throw new ArgumentException("任务模板版本、执行器或摘要无效。");
+            if (template.Inputs is null || template.Outputs is null || template.Variables is null || template.Nodes is null ||
+                template.Connections is null || template.Guards is null)
+                throw new ArgumentException("任务模板输入输出、变量、节点、连接或异常策略不完整。");
+            if (template.Nodes.Count != 12 || template.Nodes.Any(node =>
+                    node is null || string.IsNullOrWhiteSpace(node.Id) || string.IsNullOrWhiteSpace(node.Block) ||
+                    node.Inputs is null || node.Outputs is null || node.TimeoutSeconds is < 0 or > 604800))
+                throw new ArgumentException("任务模板必须包含十二个完整受控节点和有效超时。");
+            if (template.Variables.Select(x => x.Key).Distinct(StringComparer.OrdinalIgnoreCase).Count() != template.Variables.Count)
+                throw new ArgumentException("任务模板变量不能重复。");
+            var writers = template.Variables.Where(x => x.Producer is not ("external" or "any"))
+                .GroupBy(x => x.Key, StringComparer.OrdinalIgnoreCase).Any(group => group.Count() != 1);
+            var outputs = template.Nodes.SelectMany(x => x.Outputs).ToArray();
+            if (writers || outputs.Distinct(StringComparer.OrdinalIgnoreCase).Count() != outputs.Length)
+                throw new ArgumentException("任务模板变量必须是单写入者。");
+            if (template.Nodes.Where(x => x.Block is not ("SelectAgv" or "WaitForDumperReady" or "DumpFullBox"))
+                .Any(x => x.AutoRetry))
+                throw new ArgumentException("机械或握手动作节点禁止自动重试。");
+        }
         if (configuration.StepTimeouts is null || configuration.StepTimeouts.Count != 9 ||
             configuration.StepTimeouts.Any(row => row is null || row.Seconds is < 0 or > 604800) ||
             !configuration.StepTimeouts.Select(row => row.StepType).Order().SequenceEqual(Enum.GetValues<DispatchTaskStepType>().Order()))

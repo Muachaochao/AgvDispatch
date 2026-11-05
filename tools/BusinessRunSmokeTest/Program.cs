@@ -405,7 +405,7 @@ sealed class ReceiptStore : IManualTaskCreationRepository
 {
     public ManualTaskReceipt? Receipt;
     public Task<ManualTaskReceipt?> FindRequestAsync(string id, CancellationToken ct) => Task.FromResult(Receipt);
-    public Task<AgvDispatch.Domain.Tasks.TaskCreationResult> TryCreateManualAsync(ManualTaskCreationRequest r, string d, string o, CancellationToken ct)
+    public Task<AgvDispatch.Domain.Tasks.TaskCreationResult> TryCreateManualAsync(ManualTaskCreationRequest r, string d, string o, CancellationToken ct, TaskTemplateBinding? template = null)
         => throw new Exception("retirement must never create tasks");
 }
 

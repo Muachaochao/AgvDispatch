@@ -41,14 +41,15 @@ public sealed class TaskParameterSettingsService(TaskParameterStorageOptions sto
             return new(false, "运行地图已变化或未激活，请重新加载参数。", []);
         try { TaskParameterRuntime.CheckStructure(request.Configuration); }
         catch (ArgumentException error) { return new(false, error.Message, []); }
-        if (runtime.Capture().EngineeringSource is not null && request.Configuration.EngineeringSource is null)
-            return new(false, "当前任务参数已绑定工程版本，不能移除工程来源和车辆池；请通过工程执行接入应用新版本。", []);
+        if (runtime.Capture().EngineeringSource is not null &&
+            (request.Configuration.EngineeringSource is null || request.Configuration.TaskTemplate is null))
+            return new(false, "当前任务参数已绑定工程版本和任务模板，不能移除工程来源、模板或车辆池；请通过工程执行接入应用新版本。", []);
         var current = runtime.Capture();
         if (current.EngineeringSource is { } bound && request.Configuration.EngineeringSource?.VersionId == bound.VersionId &&
             (request.Configuration.EngineeringSource != bound ||
-             JsonSerializer.Serialize(new { current.DumperStationId, current.WaitingSite, current.WaitingSites, current.DumpingSite, current.Pickups, current.Standbys }) !=
-             JsonSerializer.Serialize(new { request.Configuration.DumperStationId, request.Configuration.WaitingSite, request.Configuration.WaitingSites, request.Configuration.DumpingSite, request.Configuration.Pickups, request.Configuration.Standbys })))
-            return new(false, "同一工程版本的工位、倒料、待机位及车辆池绑定不可改写；请发布并应用新工程版本。", []);
+             JsonSerializer.Serialize(new { current.DumperStationId, current.WaitingSite, current.WaitingSites, current.DumpingSite, current.Pickups, current.Standbys, current.TaskTemplate }) !=
+             JsonSerializer.Serialize(new { request.Configuration.DumperStationId, request.Configuration.WaitingSite, request.Configuration.WaitingSites, request.Configuration.DumpingSite, request.Configuration.Pickups, request.Configuration.Standbys, request.Configuration.TaskTemplate })))
+            return new(false, "同一工程版本的工位、倒料、待机位、车辆池及任务模板绑定不可改写；请发布并应用新工程版本。", []);
         if (request.Configuration.EngineeringSource is { } source && source.MapDefinitionHash != EngineeringRuntimeIdentity.MapHash(map.Definition))
             return new(false, "工程绑定的地图内容摘要已变化，未应用参数。", []);
         foreach (var standby in request.Configuration.Standbys)

@@ -2,6 +2,7 @@ using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Domain.Tasks;
 using AgvDispatch.Infrastructure.Persistence.Entities;
 using SqlSugar;
+using System.Text.Json;
 
 namespace AgvDispatch.Infrastructure.Persistence;
 
@@ -14,13 +15,18 @@ public sealed class DispatchTaskRepository(ISqlSugarClient database) : IDispatch
         CancellationToken cancellationToken) => CreateCoreAsync(stationId, dumperStationId, priority, cancellationToken);
 
     public Task<TaskCreationResult> TryCreateManualAsync(ManualTaskCreationRequest request, string dumperStationId,
-        string operatorIdentity, CancellationToken ct) => CreateCoreAsync(request.StationId, dumperStationId, request.Priority, ct, request, operatorIdentity);
+        string operatorIdentity, CancellationToken ct, TaskTemplateBinding? template = null) =>
+        CreateCoreAsync(request.StationId, dumperStationId, request.Priority, ct, request, operatorIdentity, template);
 
     public async Task<ManualTaskReceipt?> FindRequestAsync(string requestId, CancellationToken ct)
     {
         var entity = await database.Queryable<DispatchTaskEntity>().Where(task => task.CreateRequestId == requestId).FirstAsync(ct);
         return entity is null ? null : new(entity.TaskId, entity.CreateRequestId!, entity.StationId, entity.RequestedVehicleId,
-            entity.Priority, entity.CreateMapId!, entity.CreateMapVersionId!) { ParameterRevision = entity.CreateParameterRevision ?? "initial" };
+            entity.Priority, entity.CreateMapId!, entity.CreateMapVersionId!)
+        {
+            ParameterRevision = entity.CreateParameterRevision ?? "initial",
+            DependsOnTaskIds = ReadDependencies(entity.DependsOnTaskIdsJson)
+        };
     }
 
     private async Task<DispatchTaskEntity?> FindReplayAsync(ManualTaskCreationRequest request, CancellationToken ct)
@@ -28,13 +34,15 @@ public sealed class DispatchTaskRepository(ISqlSugarClient database) : IDispatch
         var entity = await database.Queryable<DispatchTaskEntity>().Where(task => task.CreateRequestId == request.RequestId).FirstAsync(ct);
         if (entity is not null && (entity.StationId != request.StationId || entity.RequestedVehicleId != request.RequestedVehicleId ||
             entity.Priority != request.Priority || entity.CreateMapId != request.MapId || entity.CreateMapVersionId != request.MapVersionId ||
-            (entity.CreateParameterRevision ?? "initial") != request.ParameterRevision))
+            (entity.CreateParameterRevision ?? "initial") != request.ParameterRevision ||
+            !ReadDependencies(entity.DependsOnTaskIdsJson).SequenceEqual(request.DependsOnTaskIds, StringComparer.OrdinalIgnoreCase)))
             throw new InvalidOperationException("请求编号已用于不同参数，请重新核对任务。");
         return entity;
     }
 
     private async Task<TaskCreationResult> CreateCoreAsync(string stationId, string dumperStationId, int priority,
-        CancellationToken cancellationToken, ManualTaskCreationRequest? request = null, string? operatorIdentity = null)
+        CancellationToken cancellationToken, ManualTaskCreationRequest? request = null, string? operatorIdentity = null,
+        TaskTemplateBinding? template = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(stationId);
         ArgumentException.ThrowIfNullOrWhiteSpace(dumperStationId);
@@ -67,6 +75,10 @@ public sealed class DispatchTaskRepository(ISqlSugarClient database) : IDispatch
                 CreateMapId = request?.MapId,
                 CreateMapVersionId = request?.MapVersionId,
                 CreateParameterRevision = request?.ParameterRevision,
+                TaskTemplateJson = template is null ? null : JsonSerializer.Serialize(template, new JsonSerializerOptions(JsonSerializerDefaults.Web)),
+                DependsOnTaskIdsJson = request is { DependsOnTaskIds.Count: > 0 }
+                    ? JsonSerializer.Serialize(request.DependsOnTaskIds, new JsonSerializerOptions(JsonSerializerDefaults.Web))
+                    : null,
                 CreatedBy = operatorIdentity,
                 CreatedAt = now,
                 UpdatedAt = now
@@ -212,6 +224,19 @@ public sealed class DispatchTaskRepository(ISqlSugarClient database) : IDispatch
 
     private static string CreateTaskId(DateTime createdAt) =>
         $"TASK-{createdAt:yyyyMMddHHmmssfff}-{Guid.NewGuid():N}";
+
+    private static IReadOnlyList<string> ReadDependencies(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return [];
+        try
+        {
+            return JsonSerializer.Deserialize<string[]>(json, new JsonSerializerOptions(JsonSerializerDefaults.Web)) ?? [];
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+    }
 
     private static DispatchTaskStepEntity[] CreateSteps(
         DispatchTaskEntity task,

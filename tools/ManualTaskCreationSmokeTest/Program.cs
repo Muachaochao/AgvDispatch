@@ -91,6 +91,18 @@ internal static partial class Program
             "late request after reviewed retirement cannot create a task or outbox");
         var options = Complete(service.GetOptionsAsync(default));
         Require(options.Available && options.Stations.Single().Available && options.Vehicles.Single().Available, "healthy options available");
+        var templateNodes = Enumerable.Range(0, 12).Select(i => new TaskTemplateNodeBinding(
+            "node-" + i, i == 0 ? "SelectAgv" : "WaitForDumperReady", "节点" + i,
+            [], [], "fixture", "HoldUntilCondition", "NotifyAndHold", 0, false)).ToArray();
+        var templateBinding = new TaskTemplateBinding("TEMPLATE-SMOKE", 1, new string('A', 64),
+            "DurableNineStepV1", [], [], [new TaskTemplateVariableBinding("vehicleId", "执行车辆", "string", "node-0")],
+            templateNodes, [], []);
+        parameterRuntime.Apply(new(1, "template-smoke", "", "MAP", "VERSION",
+            parameterRuntime.Capture() with { TaskTemplate = templateBinding }, []));
+        var templateOptions = Complete(service.GetOptionsAsync(default));
+        Require(templateOptions.Template is { Id: "TEMPLATE-SMOKE", Version: 1, Nodes.Count: 12 },
+            "task creation options expose the compiled template inputs and nodes");
+        parameterRuntime.Apply(new(1, "initial", "", "MAP", "VERSION", initialParameters.Configuration, []));
         dispatch.MaxConcurrentTasks = 2;
         var unsafeMulti = Complete(service.GetOptionsAsync(default));
         Require(!unsafeMulti.Available && unsafeMulti.Stations.Single().PreviewSteps[2].ValidationErrors.Any(e => e.Contains("候车位")),
@@ -111,6 +123,12 @@ internal static partial class Program
         ResetActions();
         ManualTaskCreationRequest Request() => new(Guid.NewGuid().ToString("N"), "CNC001", "AGV-01", 20, "MAP", "VERSION");
         var request = Request();
+        Require(!Complete(service.CreateAsync(user, request with { DependsOnTaskIds = ["MISSING-TASK"] }, default)).Accepted &&
+            Complete(db.Queryable<DispatchTaskEntity>().CountAsync()) == 0,
+            "missing predecessor is rejected before task persistence");
+        Require(!Complete(service.CreateAsync(user, request with { DependsOnTaskIds = ["SAME", "same"] }, default)).Accepted &&
+            Complete(db.Queryable<DispatchTaskEntity>().CountAsync()) == 0,
+            "duplicate predecessor IDs are rejected before task persistence");
         var requiredPoint = plcConfiguration.Signals.Single(point => point.StationId == "CNC001" && point.VariableName == "EmptyBoxPlaced");
         foreach (var invalid in new[] { requiredPoint with { Enabled = false }, requiredPoint with { Access = "Read" },
             requiredPoint with { DataType = "Int" }, requiredPoint with { Address = "DB1.DBX0.8" } })

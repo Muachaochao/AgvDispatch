@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net.Sockets;
 using System.Text.Json;
+using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Domain.Agvs;
 
 namespace AgvDispatch.Connectors.Agv;
@@ -299,9 +300,14 @@ public sealed class SeerRobotClient : IAsyncDisposable
             return;
         }
 
+        var message = FindString(root, "err_msg") ?? "未提供错误信息";
+        if (requestType is GoToTarget or GoToTargetList)
+        {
+            throw new AgvCommandRejectedException(requestType, returnCode.Value, message);
+        }
+
         throw new InvalidOperationException(
-            $"Robokit API {requestType}返回错误{returnCode}：" +
-            (FindString(root, "err_msg") ?? "未提供错误信息"));
+            $"Robokit API {requestType}返回错误{returnCode}：{message}");
     }
 
     private static bool TryFindProperty(

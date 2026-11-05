@@ -94,7 +94,13 @@ public sealed partial class SingleNavigationTestService
                 return _jackRecord;
             }
             if(_record is not null&&!Terminal(_record.State))throw new InvalidOperationException("原导航任务未结束。");
-            var client=await GuardAsync(_settings.VehicleId,ct);
+            // Lowering is the maintenance escape for a failed lift task. It remains
+            // available when business execution is active, while every fresh vehicle,
+            // map, control-owner, task and jack-health check below still applies.
+            var client=await GuardAsync(
+                _settings.VehicleId,
+                ct,
+                allowMaintenanceLowering: request.Action=="Down");
             // Jack actions are local commissioning operations, not transport work. Serialize
             // them with map control and keep the hardware/task safety checks below.
             using var lease=await _execution.EnterControlAsync(ct);

@@ -2,6 +2,7 @@
 using AgvDispatch.Application.Maps;
 using AgvDispatch.Domain.Devices;
 using AgvDispatch.Domain.Maps;
+using AgvDispatch.Domain.Tasks;
 
 namespace AgvDispatch.Service;
 
@@ -65,18 +66,50 @@ public sealed partial class ManualTaskCreationService(IManualTaskCreationReposit
                 vehicle.CurrentStation ?? "", block is null && reason is null, block ?? "在线空闲，定位正常。");
         }).OrderBy(vehicle => vehicle.VehicleId).ToArray();
         choices = choices.Select(choice => choice with
-        { PickupReachableVehicleIds = vehicles.Where(vehicle => dispatch.AllowsVehicle(choice.StationId, vehicle.VehicleId) && CanRoute(map, vehicle.CurrentSite, choice.PickupSite, true, PickupExcludedNodes(map))).Select(vehicle => vehicle.VehicleId).ToArray() }).ToArray();
+        { PickupReachableVehicleIds = vehicles.Where(vehicle => dispatch.AllowsVehicle(choice.StationId, vehicle.VehicleId) && CanRoute(map, vehicle.CurrentSite, choice.PickupSite, true, PickupExcludedNodes(map, vehicle.VehicleId, vehicle.CurrentSite))).Select(vehicle => vehicle.VehicleId).ToArray() }).ToArray();
         reason ??= !choices.Any(station => station.Available) ? "暂无满足 PLC 条件和路径要求的工位。" :
             !vehicles.Any(vehicle => vehicle.Available) ? "暂无可派车辆：" +
                 string.Join("；", vehicles.Select(vehicle => vehicle.VehicleId + "：" + vehicle.Explanation)) : null;
         return new(map?.MapId, map?.VersionId, reason is null, reason ?? "使用当前运行地图创建取满箱、倒料、返空箱九步任务。",
             creation.DumperStationId, dispatch.GetDumperWaitingSite() ?? "", dispatch.DumperDumpingSite, choices, vehicles)
-        { ParameterRevision = parameters.Revision, RequiresExplicitVehicle = robokitMap is not null, MapRuntimeId=map?.RuntimeId??"", Standbys = configured.Standbys, WaitingSites = dispatch.GetDumperWaitingSites() };
+        { ParameterRevision = parameters.Revision, RequiresExplicitVehicle = robokitMap is not null, MapRuntimeId=map?.RuntimeId??"",
+            Standbys = configured.Standbys, WaitingSites = dispatch.GetDumperWaitingSites(), Template = configured.TaskTemplate };
     }
 
-    private IReadOnlySet<string> PickupExcludedNodes(ActiveMapRuntimeSnapshot? map) => map is null ? new HashSet<string>() :
-        dispatch.GetDumperWaitingSites().Append(dispatch.DumperDumpingSite).Concat(dispatch.StandbySites).Where(site => !string.IsNullOrWhiteSpace(site))
-            .Select(site => MapRouteSiteMapper.ResolveLogicalNodeId(map.Definition, site!)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlySet<string> PickupExcludedNodes(ActiveMapRuntimeSnapshot? map, string? departingVehicleId = null,
+        string? sourceSite = null)
+    {
+        if (map is null) return new HashSet<string>();
+        var transitThroughNodes = map.Definition.Nodes
+            .Where(node => node.Enabled && node.AllowTransitThrough)
+            .Select(node => node.Id)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var excluded = dispatch.GetDumperWaitingSites().Append(dispatch.DumperDumpingSite)
+            .Where(site => !string.IsNullOrWhiteSpace(site))
+            .Select(site => MapRouteSiteMapper.ResolveLogicalNodeId(map.Definition, site!))
+            .Where(id => !transitThroughNodes.Contains(id))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var standbyNodes = dispatch.StandbySites.Where(site => !string.IsNullOrWhiteSpace(site))
+            .Select(site => MapRouteSiteMapper.ResolveLogicalNodeId(map.Definition, site!))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var source = string.IsNullOrWhiteSpace(sourceSite)
+            ? null
+            : MapRouteSiteMapper.ResolveLogicalNodeId(map.Definition, sourceSite);
+        if (source is null || !standbyNodes.Contains(source))
+        {
+            excluded.UnionWith(standbyNodes.Where(id => !transitThroughNodes.Contains(id)));
+            return excluded;
+        }
+        var occupiedByOtherVehicles = states.GetAll()
+            .Where(vehicle => !string.IsNullOrWhiteSpace(vehicle.VehicleId) &&
+                !vehicle.VehicleId.Equals(departingVehicleId, StringComparison.OrdinalIgnoreCase) &&
+                !string.IsNullOrWhiteSpace(vehicle.CurrentStation))
+            .Select(vehicle => MapRouteSiteMapper.ResolveLogicalNodeId(map.Definition, vehicle.CurrentStation!))
+            .Where(id => standbyNodes.Contains(id) && !transitThroughNodes.Contains(id) &&
+                !id.Equals(source, StringComparison.OrdinalIgnoreCase));
+        excluded.UnionWith(occupiedByOtherVehicles);
+        return excluded;
+    }
 
     private static bool CanRoute(ActiveMapRuntimeSnapshot? map, string? from, string? to, bool requireTransport = false, IReadOnlySet<string>? forbiddenNodes = null)
     {
@@ -100,14 +133,23 @@ public sealed partial class ManualTaskCreationService(IManualTaskCreationReposit
             string.IsNullOrWhiteSpace(request.MapId) || string.IsNullOrWhiteSpace(request.MapVersionId) ||
             request.MapId.Length > 64 || request.MapVersionId.Length > 64)
             return new(false, false, null, "请求编号、工位、车辆、运行地图或优先级无效；优先级范围 0–100。");
-        request = request with { RequestedVehicleId = string.IsNullOrWhiteSpace(request.RequestedVehicleId) ? null : request.RequestedVehicleId };
+        var dependencies = request.DependsOnTaskIds.Select(id => id.Trim()).ToArray();
+        if (dependencies.Length > 8 || dependencies.Any(id => string.IsNullOrWhiteSpace(id) || id.Length > 64) ||
+            dependencies.Distinct(StringComparer.OrdinalIgnoreCase).Count() != dependencies.Length)
+            return new(false, false, null, "前置任务最多8个，编号不能为空、重复或超过64字符。");
+        request = request with
+        {
+            RequestedVehicleId = string.IsNullOrWhiteSpace(request.RequestedVehicleId) ? null : request.RequestedVehicleId,
+            DependsOnTaskIds = dependencies
+        };
         var switchReplacement = request.RequestedVehicleId is { } requestedVehicle && taskSwitchGuard is not null &&
             await taskSwitchGuard.AllowsVehicleAsync(requestedVehicle, null, request.RequestId, ct);
         if(fleetOptions?.Enabled==true||fleetOwnership?.Active==true)throw new InvalidOperationException("双车测试模式或原会话尚未闭合，不能另建手工任务。");
         var receipt = await repository.FindRequestAsync(request.RequestId, ct);
         if (receipt is not null)
             return receipt.StationId == request.StationId && receipt.RequestedVehicleId == request.RequestedVehicleId && receipt.Priority == request.Priority &&
-                   receipt.MapId == request.MapId && receipt.MapVersionId == request.MapVersionId && receipt.ParameterRevision == request.ParameterRevision
+                   receipt.MapId == request.MapId && receipt.MapVersionId == request.MapVersionId && receipt.ParameterRevision == request.ParameterRevision &&
+                   receipt.DependsOnTaskIds.SequenceEqual(request.DependsOnTaskIds, StringComparer.OrdinalIgnoreCase)
                 ? new(true, false, receipt.TaskId, "该请求已经创建任务，未重复提交。")
                 : new(false, false, null, "请求编号已用于不同参数，请核对任务。");
         using var lease = await gate.EnterAsync(MapExecutionOperation.NewWork, ct);
@@ -116,6 +158,19 @@ public sealed partial class ManualTaskCreationService(IManualTaskCreationReposit
             return new(false, false, null, "原申请已核对注销，禁止重放或迟到创建；请查询原运行。");
         if (businessRun?.Active == true && businessRun.RequestId != request.RequestId && !switchReplacement)
             return new(false, false, null, "持续运行正在接续呼叫，请先停止新增并收尾，不接受额外手动任务。");
+        if (dependencies.Length > 0)
+        {
+            var states = await tasks.GetTaskDependencyStatesAsync(dependencies, ct);
+            var missing = states.Where(state => !state.Exists).Select(state => state.TaskId).ToArray();
+            if (missing.Length > 0)
+                return new(false, false, null, "前置任务不存在：" + string.Join("、", missing));
+            var terminalNotCompleted = states.Where(state =>
+                    state.Stage is DispatchTaskStage.Cancelled or DispatchTaskStage.Faulted or
+                    DispatchTaskStage.CancellationPending or DispatchTaskStage.CancellationReview)
+                .Select(state => state.TaskId).ToArray();
+            if (terminalNotCompleted.Length > 0)
+                return new(false, false, null, "前置任务已取消或故障，不能作为完成条件：" + string.Join("、", terminalNotCompleted));
+        }
         if (request.ParameterRevision != parameters.Revision)
             return new(false, false, null, "任务参数已变化，请刷新创建选项后提交。");
         var options = await GetOptionsCoreAsync(ct);
@@ -127,7 +182,7 @@ public sealed partial class ManualTaskCreationService(IManualTaskCreationReposit
         if (station is not { Available: true }) return new(false, false, null, station?.Explanation ?? "工位不在当前调度配置中。");
         if (request.RequestedVehicleId is { } requested && !dispatch.AllowsVehicle(request.StationId, requested))
             return new(false, false, null, $"工位 {request.StationId} 的车辆池不包含 {requested}，未创建任务。");
-        var vehicles = options.Vehicles.Where(vehicle => vehicle.Available && dispatch.AllowsVehicle(request.StationId, vehicle.VehicleId) && CanRoute(activeMap.Current, vehicle.CurrentSite, station.PickupSite, true, PickupExcludedNodes(activeMap.Current)));
+        var vehicles = options.Vehicles.Where(vehicle => vehicle.Available && dispatch.AllowsVehicle(request.StationId, vehicle.VehicleId) && CanRoute(activeMap.Current, vehicle.CurrentSite, station.PickupSite, true, PickupExcludedNodes(activeMap.Current, vehicle.VehicleId, vehicle.CurrentSite)));
         if (request.RequestedVehicleId is not null) vehicles = vehicles.Where(vehicle => vehicle.VehicleId == request.RequestedVehicleId);
         var vehicleCandidates = new List<ManualTaskVehicleChoice>();
         foreach (var vehicle in vehicles)
@@ -150,7 +205,8 @@ public sealed partial class ManualTaskCreationService(IManualTaskCreationReposit
                 !latest.Available || latestVehicle is not {Available:true} || latestVehicle.CurrentSite!=vehicle.CurrentSite || latestStation is not {Available:true})
                 return new(false,false,null,"车端核验期间运行地图、参数、工位或车辆状态变化；未创建任务，请刷新。");
         }
-        var result = await repository.TryCreateManualAsync(request, creation.DumperStationId, user.WindowsIdentity, ct);
+        var result = await repository.TryCreateManualAsync(request, creation.DumperStationId, user.WindowsIdentity, ct,
+            parameters.Capture().TaskTemplate);
         if (!result.Created)
         {
             var replay = await repository.FindRequestAsync(request.RequestId, ct);

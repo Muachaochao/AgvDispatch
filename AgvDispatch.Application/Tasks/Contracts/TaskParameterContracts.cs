@@ -12,6 +12,16 @@ public sealed record TaskActionParameter(DispatchTaskStepType StepType, string O
     bool? Recognize, bool? UsePgv, bool? UseDownPgv);
 public sealed record TaskStepTimeoutParameter(DispatchTaskStepType StepType, int Seconds);
 public sealed record TaskStandbyParameter(string Id, string Site, string VehiclePoolId, IReadOnlyList<string> AllowedVehicleIds, int Priority = 50);
+public sealed record TaskTemplatePortBinding(string Key, string Label, string Type, bool Required, string Source);
+public sealed record TaskTemplateVariableBinding(string Key, string Label, string Type, string Producer);
+public sealed record TaskTemplateNodeBinding(string Id, string Block, string Name, IReadOnlyList<string> Inputs,
+    IReadOnlyList<string> Outputs, string Condition, string FailurePolicy, string TimeoutAction, int TimeoutSeconds, bool AutoRetry);
+public sealed record TaskTemplateConnectionBinding(string FromNodeId, string Output, string ToNodeId, string Input, string Type, bool External);
+public sealed record TaskTemplateGuardBinding(string Id, string Trigger, string Action, string TargetNodeId, string Description);
+public sealed record TaskTemplateBinding(string Id, int Version, string ContentHash, string Engine,
+    IReadOnlyList<TaskTemplatePortBinding> Inputs, IReadOnlyList<TaskTemplatePortBinding> Outputs,
+    IReadOnlyList<TaskTemplateVariableBinding> Variables, IReadOnlyList<TaskTemplateNodeBinding> Nodes,
+    IReadOnlyList<TaskTemplateConnectionBinding> Connections, IReadOnlyList<TaskTemplateGuardBinding> Guards);
 public sealed record TaskParameterConfiguration(string DumperStationId, string WaitingSite, string DumpingSite,
     IReadOnlyList<TaskPickupParameter> Pickups, IReadOnlyList<TaskActionParameter> Actions)
 {
@@ -22,6 +32,7 @@ public sealed record TaskParameterConfiguration(string DumperStationId, string W
         Enum.GetValues<DispatchTaskStepType>().Select(type => new TaskStepTimeoutParameter(type, 0)).ToArray();
     public EngineeringRuntimeSource? EngineeringSource { get; init; }
     public IReadOnlyList<TaskStandbyParameter> Standbys { get; init; } = [];
+    public TaskTemplateBinding? TaskTemplate { get; init; }
 }
 public sealed record EngineeringRuntimeSource(string VersionId, string ContentHash, string MapDefinitionHash);
 public sealed record TaskParameterAudit(DateTimeOffset At, string Operator, string Revision);

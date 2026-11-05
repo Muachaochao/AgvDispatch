@@ -24,17 +24,20 @@ public sealed record ManualTaskCreationOptions(string? MapId, string? MapVersion
     public string ParameterRevision { get; init; } = "initial";
     public IReadOnlyList<string> WaitingSites { get; init; } = [];
     public IReadOnlyList<TaskStandbyParameter> Standbys { get; init; } = [];
+    public TaskTemplateBinding? Template { get; init; }
 }
 public sealed record ManualTaskCreationRequest(string RequestId, string StationId, string? RequestedVehicleId,
     int Priority, string MapId, string MapVersionId)
 {
     public string ParameterRevision { get; init; } = "initial";
+    public IReadOnlyList<string> DependsOnTaskIds { get; init; } = [];
 }
 public sealed record ManualTaskCreationResult(bool Accepted, bool Created, string? TaskId, string Message);
 public sealed record ManualTaskReceipt(string TaskId, string RequestId, string StationId, string? RequestedVehicleId,
     int Priority, string MapId, string MapVersionId)
 {
     public string ParameterRevision { get; init; } = "initial";
+    public IReadOnlyList<string> DependsOnTaskIds { get; init; } = [];
 }
 
 public interface IManualTaskCreationService
@@ -50,7 +53,7 @@ public interface IManualTaskCreationRepository
 {
     Task<ManualTaskReceipt?> FindRequestAsync(string requestId, CancellationToken ct);
     Task<AgvDispatch.Domain.Tasks.TaskCreationResult> TryCreateManualAsync(ManualTaskCreationRequest request,
-        string dumperStationId, string operatorIdentity, CancellationToken ct);
+        string dumperStationId, string operatorIdentity, CancellationToken ct, TaskTemplateBinding? template = null);
 }
 
 public sealed record ManualTaskRoutePreviewRequest(string StationId,string VehicleId,string MapId,string MapVersionId,string ParameterRevision);

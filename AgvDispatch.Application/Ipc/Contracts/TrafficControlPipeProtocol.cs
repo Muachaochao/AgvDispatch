@@ -31,6 +31,8 @@ public static class TrafficControlOperations
     public const string ValidateTaskParameters = "ValidateTaskParameters";
     public const string SaveTaskParameters = "SaveTaskParameters";
     public const string GetTaskDetail = "GetTaskDetail";
+    public const string PauseDispatchTask = "PauseDispatchTask";
+    public const string ResumeDispatchTask = "ResumeDispatchTask";
     public const string GetTaskSwitchOptions = "GetTaskSwitchOptions";
     public const string GetTaskSwitch = "GetTaskSwitch";
     public const string CreateTaskSwitch = "CreateTaskSwitch";

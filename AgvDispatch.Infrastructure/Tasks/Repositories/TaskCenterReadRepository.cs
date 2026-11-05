@@ -2,6 +2,7 @@
 using AgvDispatch.Domain.Tasks;
 using AgvDispatch.Infrastructure.Persistence.Entities;
 using SqlSugar;
+using System.Text.Json;
 
 namespace AgvDispatch.Infrastructure.Persistence;
 
@@ -64,6 +65,16 @@ public sealed partial class TaskCenterReadRepository(ISqlSugarClient database) :
         var task = await database.Queryable<DispatchTaskEntity>()
             .Where(t => t.TaskId == taskId).FirstAsync(cancellationToken);
         if (task is null) return null;
+        var dependencyIds = ReadDependencies(task.DependsOnTaskIdsJson);
+        var dependencyRows = dependencyIds.Length == 0
+            ? []
+            : await database.Queryable<DispatchTaskEntity>()
+                .Where(item => dependencyIds.Contains(item.TaskId))
+                .ToListAsync(cancellationToken);
+        var dependencyById = dependencyRows.ToDictionary(item => item.TaskId, StringComparer.OrdinalIgnoreCase);
+        var dependencies = dependencyIds.Select(id => dependencyById.TryGetValue(id, out var dependency)
+            ? new TaskDependencyDetail(id, true, (DispatchTaskStage)dependency.Stage, Time(dependency.UpdatedAt))
+            : new TaskDependencyDetail(id, false, null, null)).ToArray();
         var steps = await database.Queryable<DispatchTaskStepEntity>()
             .Where(t => t.TaskId == taskId).OrderBy(t => t.Sequence).ToListAsync(cancellationToken);
         var commands = await database.Queryable<AgvCommandOutboxEntity>()
@@ -96,7 +107,15 @@ public sealed partial class TaskCenterReadRepository(ISqlSugarClient database) :
             leases.Select(l => new TaskResourceDetail(l.ResourceId, l.OwnerStepId, l.VehicleId,
                 Time(l.AcquiredAt), Time(l.ExpiresAt), Time(l.ExpiresAt) < DateTimeOffset.Now)).ToArray(),
             [], "") { Handshakes=handshakes.Select(TaskHandshakeStore.Describe).ToArray(), Handover=handover, ExecutionTimeline = timeline.Items, ExecutionTimelineTotal = timeline.Total, OperationHistory = history.Items, OperationHistoryTotal = history.Total, Cancellation = task.CancelRequestId == null ? null : new(task.CancelRequestId, task.CancelReason ?? "", task.CancelRequestedBy ?? "",
-                TimeOrNull(task.CancelRequestedAt), task.CancelAttemptCount ?? 0, TimeOrNull(task.CancelSentAt), TimeOrNull(task.CancelConfirmedAt)) };
+                TimeOrNull(task.CancelRequestedAt), task.CancelAttemptCount ?? 0, TimeOrNull(task.CancelSentAt), TimeOrNull(task.CancelConfirmedAt)),
+                Template = ReadTemplate(task.TaskTemplateJson), Dependencies = dependencies,
+                Pause = task.PauseRequestId is null || task.PauseOriginalStage is null || task.PauseStepId is null ||
+                        task.PauseRequestedAt is null
+                    ? null
+                    : new TaskPauseDetail(task.PauseRequestId, (DispatchTaskStage)task.PauseOriginalStage.Value,
+                        task.PauseStepId, task.PauseReason ?? "", task.PauseRequestedBy ?? "",
+                        Time(task.PauseRequestedAt.Value), task.PauseResumeRequestId, task.PauseResumeReason ?? "",
+                        TimeOrNull(task.PauseResumedAt)) };
     }
 
     private static TaskCenterRow ToRow(DispatchTaskEntity t) => new(t.TaskId, t.StationId,
@@ -104,4 +123,23 @@ public sealed partial class TaskCenterReadRepository(ISqlSugarClient database) :
         { RequestedVehicleId = t.RequestedVehicleId };
     private static DateTimeOffset Time(DateTime value) => new(DateTime.SpecifyKind(value, DateTimeKind.Local));
     private static DateTimeOffset? TimeOrNull(DateTime? value) => value.HasValue ? Time(value.Value) : null;
+    private static TaskTemplateBinding? ReadTemplate(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        try { return JsonSerializer.Deserialize<TaskTemplateBinding>(json, new JsonSerializerOptions(JsonSerializerDefaults.Web)); }
+        catch (JsonException) { return null; }
+    }
+    private static string[] ReadDependencies(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return [];
+        try
+        {
+            return JsonSerializer.Deserialize<string[]>(
+                json, new JsonSerializerOptions(JsonSerializerDefaults.Web)) ?? [];
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+    }
 }

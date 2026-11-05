@@ -171,7 +171,10 @@ internal static class Program
             vm.OnNavigatedTo(null!); Pump(()=>!vm.IsBusy); Await(vm.LoadCreationOptionsAsync());
             if (!vm.CreationStations.Any() || !vm.CreationVehicles.Any(v=>v.Id=="AGV-01")) throw new InvalidOperationException("创建选项未就绪：" + vm.CreationMessage + "；工位=" + string.Join(",",vm.CreationStations.Select(s=>s.StationId)) + "；车辆=" + string.Join(",",vm.CreationVehicles.Select(v=>v.Id)));
             vm.CreationStation=vm.CreationStations.Single(s=>s.StationId=="CNC001"); vm.CreationVehicle=vm.CreationVehicles.Single(v=>v.Id=="AGV-01");
-            Check(vm.CreationStepPreview.Count==9 && vm.CreationStepPreview.All(s=>!s.HasErrors),"真实IPC载入创建前九步预览，PLC及动作配置通过");
+            Check(vm.CreationStepPreview.Count==9 && vm.CreationStepPreview.All(s=>!s.HasErrors),
+                "真实IPC载入创建前九步预览，PLC及动作配置通过；"
+                +vm.CreationMessage+"；"
+                +string.Join(" | ",vm.CreationStepPreview.Where(s=>s.HasErrors).Select(s=>$"{s.Sequence}:{s.ValidationMessage}")));
             Await(vm.PreviewCreationRoutesAsync());
             Check(vm.CreationMapRoutes.Count==4,"真实IPC返回同批四段导航几何");
             foreach(var sequence in new[]{1,3,5,7})

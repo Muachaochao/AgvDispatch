@@ -2,6 +2,7 @@ using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Domain.Tasks;
 using AgvDispatch.Infrastructure.Persistence.Entities;
 using SqlSugar;
+using System.Text.Json;
 
 namespace AgvDispatch.Infrastructure.Persistence;
 
@@ -82,9 +83,11 @@ public sealed class DispatchOrchestrationRepository(ISqlSugarClient database)
             .Where(task => taskIds.Contains(task.TaskId) && task.Stage < (int)DispatchTaskStage.Completed)
             .ToListAsync(cancellationToken);
         var byId = parents.ToDictionary(task => task.TaskId, StringComparer.OrdinalIgnoreCase);
+        var templates = parents.ToDictionary(task => task.TaskId,
+            task => ReadTemplate(task.TaskTemplateJson), StringComparer.OrdinalIgnoreCase);
         return steps
             .Where(step => byId.ContainsKey(step.TaskId))
-            .Select(step => ToStepWorkItem(byId[step.TaskId], step))
+            .Select(step => ToStepWorkItem(byId[step.TaskId], step, templates[step.TaskId]))
             .ToArray();
     }
 
@@ -191,12 +194,13 @@ public sealed class DispatchOrchestrationRepository(ISqlSugarClient database)
             .ExecuteCommandAsync(cancellationToken);
     }
 
-    public async Task CompleteExecutingStepAsync(
+    public async Task<string> CompleteExecutingStepAsync(
         string taskId,
         string vendorTaskId,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        var completedStepId = string.Empty;
         var transaction = await database.Ado.UseTranAsync(async () =>
         {
             var step = await database.Queryable<DispatchTaskStepEntity>()
@@ -207,6 +211,7 @@ public sealed class DispatchOrchestrationRepository(ISqlSugarClient database)
                 .FirstAsync(cancellationToken) ??
                 throw new InvalidOperationException(
                     $"任务{taskId}找不到执行中的AGV步骤{vendorTaskId}。");
+            completedStepId = step.StepId;
             var targetStage = ((DispatchTaskStepType)step.StepType) switch
             {
                 DispatchTaskStepType.GoToPickup => DispatchTaskStage.PickingUp,
@@ -263,6 +268,7 @@ public sealed class DispatchOrchestrationRepository(ISqlSugarClient database)
                 $"完成任务{taskId}的AGV步骤失败。",
                 transaction.ErrorException);
         }
+        return completedStepId;
     }
 
     public async Task<bool> CompleteReadyStepAsync(
@@ -399,6 +405,85 @@ public sealed class DispatchOrchestrationRepository(ISqlSugarClient database)
         }
     }
 
+    public async Task<bool> StopReadyStepForPolicyAsync(
+        string taskId,
+        string stepId,
+        string failurePolicy,
+        string errorMessage,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var policy = TaskTemplateExecutionPolicy.NormalizeFailurePolicy(failurePolicy);
+        if (!TaskTemplateExecutionPolicy.StopsAutomation(policy))
+            throw new ArgumentOutOfRangeException(nameof(failurePolicy), failurePolicy, "该失败策略不会停止自动执行。");
+        var targetStatus = policy == TaskTemplateExecutionPolicy.Terminate
+            ? DispatchTaskStepStatus.Failed
+            : DispatchTaskStepStatus.ManualIntervention;
+        var message = errorMessage.Length <= 1000 ? errorMessage : errorMessage[..1000];
+        var stopped = false;
+        var transaction = await database.Ado.UseTranAsync(async () =>
+        {
+            var now = DateTime.Now;
+            var stepAffected = await database.Updateable<DispatchTaskStepEntity>()
+                .SetColumns(step => new DispatchTaskStepEntity
+                {
+                    Status = (int)targetStatus,
+                    UpdatedAt = now,
+                    ErrorMessage = message
+                })
+                .Where(step =>
+                    step.TaskId == taskId &&
+                    step.StepId == stepId &&
+                    step.Status == (int)DispatchTaskStepStatus.Ready)
+                .ExecuteCommandAsync(cancellationToken);
+            if (stepAffected != 1)
+            {
+                stopped = false;
+                return;
+            }
+
+            var taskAffected = await database.Updateable<DispatchTaskEntity>()
+                .SetColumns(task => new DispatchTaskEntity
+                {
+                    Stage = (int)DispatchTaskStage.Faulted,
+                    UpdatedAt = now,
+                    ErrorMessage = message
+                })
+                .Where(task =>
+                    task.TaskId == taskId &&
+                    task.Stage < (int)DispatchTaskStage.Completed)
+                .ExecuteCommandAsync(cancellationToken);
+            if (taskAffected != 1)
+                throw new InvalidOperationException($"任务{taskId}已不在可冻结阶段。");
+            stopped = true;
+        });
+        if (!transaction.IsSuccess)
+        {
+            throw new InvalidOperationException(
+                $"应用任务步骤{stepId}失败策略{policy}时落库失败。",
+                transaction.ErrorException);
+        }
+
+        return stopped;
+    }
+
+    public async Task<IReadOnlyList<DispatchTaskDependencyState>> GetTaskDependencyStatesAsync(
+        IReadOnlyCollection<string> taskIds,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var ids = taskIds.Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        if (ids.Length == 0) return [];
+        var rows = await database.Queryable<DispatchTaskEntity>()
+            .Where(task => ids.Contains(task.TaskId))
+            .ToListAsync(cancellationToken);
+        var byId = rows.ToDictionary(task => task.TaskId, StringComparer.OrdinalIgnoreCase);
+        return ids.Select(id => byId.TryGetValue(id, out var task)
+            ? new DispatchTaskDependencyState(id, true, (DispatchTaskStage)task.Stage, ToOffset(task.UpdatedAt))
+            : new DispatchTaskDependencyState(id, false, null, null)).ToArray();
+    }
+
     public async Task FailExecutingStepAsync(
         string taskId,
         string vendorTaskId,
@@ -468,30 +553,91 @@ public sealed class DispatchOrchestrationRepository(ISqlSugarClient database)
             _ => false
         };
 
-    private static DispatchTaskWorkItem ToWorkItem(DispatchTaskEntity task) => new(
-        task.TaskId,
-        task.StationId,
-        task.VehicleId,
-        task.VendorTaskId,
-        (DispatchTaskStage)task.Stage,
-        task.Priority,
-        ToOffset(task.CreatedAt),
-        ToOffset(task.UpdatedAt)) { RequestedVehicleId = task.RequestedVehicleId };
+    private static DispatchTaskWorkItem ToWorkItem(DispatchTaskEntity task)
+    {
+        var template = ReadTemplate(task.TaskTemplateJson);
+        var node = template?.Nodes.FirstOrDefault(item =>
+            item.Block.Equals("SelectAgv", StringComparison.OrdinalIgnoreCase));
+        return new(
+            task.TaskId,
+            task.StationId,
+            task.VehicleId,
+            task.VendorTaskId,
+            (DispatchTaskStage)task.Stage,
+            task.Priority,
+            ToOffset(task.CreatedAt),
+            ToOffset(task.UpdatedAt))
+        {
+            RequestedVehicleId = task.RequestedVehicleId,
+            TemplateNodeId = node?.Id ?? "",
+            FailurePolicy = TaskTemplateExecutionPolicy.NormalizeFailurePolicy(node?.FailurePolicy),
+            TimeoutAction = TaskTemplateExecutionPolicy.NormalizeTimeoutAction(node?.TimeoutAction),
+            TimeoutSeconds = node?.TimeoutSeconds ?? 0,
+            AutoRetry = false,
+            PolicyStartedAt = ToOffset(task.UpdatedAt),
+            DependsOnTaskIds = ReadDependencies(task.DependsOnTaskIdsJson)
+        };
+    }
+
+    private static IReadOnlyList<string> ReadDependencies(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return [];
+        try
+        {
+            return JsonSerializer.Deserialize<string[]>(
+                json, new JsonSerializerOptions(JsonSerializerDefaults.Web)) ?? [];
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+    }
 
     private static DispatchTaskStepWorkItem ToStepWorkItem(
         DispatchTaskEntity task,
-        DispatchTaskStepEntity step) => new(
-        task.TaskId,
-        task.StationId,
-        task.VehicleId,
-        (DispatchTaskStage)task.Stage,
-        step.StepId,
-        step.Sequence,
-        (DispatchTaskStepType)step.StepType,
-        (DispatchTaskStepStatus)step.Status,
-        step.SourceSite,
-        step.DestinationSite,
-        ToOffset(step.UpdatedAt));
+        DispatchTaskStepEntity step,
+        TaskTemplateBinding? template)
+    {
+        var stepType = (DispatchTaskStepType)step.StepType;
+        var node = template?.Nodes.FirstOrDefault(item =>
+            item.Block.Equals(stepType.ToString(), StringComparison.OrdinalIgnoreCase));
+        return new(
+            task.TaskId,
+            task.StationId,
+            task.VehicleId,
+            (DispatchTaskStage)task.Stage,
+            step.StepId,
+            step.Sequence,
+            stepType,
+            (DispatchTaskStepStatus)step.Status,
+            step.SourceSite,
+            step.DestinationSite,
+            ToOffset(step.UpdatedAt))
+        {
+            TemplateNodeId = node?.Id ?? "",
+            FailurePolicy = TaskTemplateExecutionPolicy.NormalizeFailurePolicy(node?.FailurePolicy),
+            TimeoutAction = TaskTemplateExecutionPolicy.NormalizeTimeoutAction(node?.TimeoutAction),
+            TimeoutSeconds = node?.TimeoutSeconds ?? 0,
+            // The durable nine-step executor never replays an uncertain mechanical action.
+            // Keep the snapshot flag visible in the template but force runtime auto-retry off.
+            AutoRetry = false,
+            StartedAt = step.StartedAt is { } started ? ToOffset(started) : null
+        };
+    }
+
+    private static TaskTemplateBinding? ReadTemplate(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        try
+        {
+            return JsonSerializer.Deserialize<TaskTemplateBinding>(
+                json, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
 
     private static DateTimeOffset ToOffset(DateTime value) =>
         new(DateTime.SpecifyKind(value, DateTimeKind.Local));

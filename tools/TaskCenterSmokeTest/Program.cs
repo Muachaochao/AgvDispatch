@@ -276,7 +276,11 @@ Console.WriteLine("PASS: task-history full filtered export, original evidence, e
 Console.WriteLine($"Isolated export package: {package.FilePath}");
 // Job progress/cancellation and scoped cache retention use a private fixture directory.
 var jobRoot=Path.Combine(Path.GetTempPath(),"agv-export-jobs-"+Guid.NewGuid().ToString("N")); Directory.CreateDirectory(jobRoot);
-var jobDbPath=Path.Combine(jobRoot,"jobs.db"); File.Copy(path,jobDbPath);
+var jobDbPath=Path.Combine(jobRoot,"jobs.db");
+// The source database runs in WAL mode. Flush the main file before copying it
+// so the isolated export worker receives a complete schema and snapshot.
+await database.Ado.ExecuteCommandAsync("PRAGMA wal_checkpoint(FULL)");
+File.Copy(path,jobDbPath);
 using var jobDb=DatabaseFactory.Create(new DatabaseOptions { DatabasePath=jobDbPath });
 await jobDb.Insertable(Enumerable.Range(0,600).Select(n=>HistoryEvent($"job-{n:D4}",a.Task.TaskId,"CloseCancelled",20,evidence:new string('证',4000))).ToArray()).ExecuteCommandAsync();
 var jobs=new TaskHistoryExportService(new DatabaseOptions { DatabasePath=jobDbPath });
@@ -434,7 +438,141 @@ var oldStep=(await writer.GetStepsAsync(oldTask,token)).First();
 await database.Insertable(new TaskHandshakeEntity{TaskId=oldTask,StepId=oldStep.StepId,CycleId=oldTask,ContractVersion=HandshakeExecutionOptions.LegacyVersion,Phase="TransportBound",Revision=1,StartedAtUtc=DateTime.UtcNow,UpdatedAtUtc=DateTime.UtcNow}).ExecuteCommandAsync();
 var oldDetail=(await v2Query.GetDetailAsync(oldTask,token))!;
 Require(oldDetail.PlcConditions.Count==0&&oldDetail.WaitingExplanation.Contains("不一致")&&oldDetail.Steps[0].EvidenceBoundary.Contains("旧契约"),"legacy checkpoint is not reinterpreted as 28-stage conditions or silently migrated");
+Require(TaskTemplateExecutionPolicy.ClassifyFailure("车辆离线，AGV状态未知") == "VehicleUnavailable" &&
+    TaskTemplateExecutionPolicy.ClassifyFailure("路线不可达") == "RouteUnavailable" &&
+    TaskTemplateExecutionPolicy.ClassifyFailure("PLC信号质量Stale") == "PlcSignalNotReady" &&
+    TaskTemplateExecutionPolicy.ClassifyFailure("候车位路权被占用") == "TrafficResourceOccupied" &&
+    TaskTemplateExecutionPolicy.ClassifyFailure("28阶段握手异常") == "HandshakeFaulted" &&
+    TaskTemplateExecutionPolicy.ClassifyFailure("未知解析错误") == "Unclassified",
+    "failure conditions are limited to the five whitelist triggers and an explicit unclassified bucket");
+var runtimePolicy = new DispatchOrchestrationRepository(database);
+var dependencyTask = (await writer.TryCreateAsync("CNC-DEP-A", "DUMPER-001", 0, token)).Task.TaskId;
+var dependentRequest = new ManualTaskCreationRequest(Guid.NewGuid().ToString("N"), "CNC-DEP-B", null, 0,
+    "MAP", "VERSION") { ParameterRevision = "initial", DependsOnTaskIds = [dependencyTask] };
+var dependentTask = (await writer.TryCreateManualAsync(dependentRequest, "DUMPER-001", "dependency-test",
+    token, null)).Task.TaskId;
+await writer.MarkAcknowledgedAsync(dependencyTask, token);
+await writer.MarkAcknowledgedAsync(dependentTask, token);
+var dependencyStates = await runtimePolicy.GetTaskDependencyStatesAsync([dependencyTask], token);
+Require(dependencyStates.Single() is { Exists: true, Stage: DispatchTaskStage.WaitingForVehicle, UpdatedAt: not null },
+    "task dependency identifies an existing unfinished predecessor and its last transition time");
+var dependencyCandidate = (await runtimePolicy.GetDispatchCandidatesAsync(100, token))
+    .Single(task => task.TaskId == dependentTask);
+Require(dependencyCandidate.DependsOnTaskIds.SequenceEqual([dependencyTask]),
+    "dispatch candidate carries its persisted predecessor task IDs");
+var dependentDetail = (await service.GetDetailAsync(dependentTask, token))!;
+Require(dependentDetail.Dependencies.Single() is { TaskId: var dependencyId, Exists: true, Completed: false } &&
+    dependencyId == dependencyTask && dependentDetail.WaitingExplanation.Contains("等待前置任务完成"),
+    "task detail exposes unfinished predecessor and does not claim dispatch readiness");
+await database.Updateable<DispatchTaskEntity>()
+    .SetColumns(task => task.Stage == (int)DispatchTaskStage.Completed)
+    .Where(task => task.TaskId == dependencyTask).ExecuteCommandAsync();
+Require((await runtimePolicy.GetTaskDependencyStatesAsync([dependencyTask], token)).Single()
+    .Stage == DispatchTaskStage.Completed,
+    "completed predecessor releases the persisted dependency gate");
+// A task-owned template snapshot is authoritative for history and for the ready-step policy.
+var template = new TaskTemplateBinding("snapshot-nine-step", 7, new string('A', 64), "DurableNineStepV1",
+    [new("fromStation", "来源工位", "string", true, "station.pickupNode")],
+    [new("vehicleId", "执行车辆", "string", false, "select-agv.vehicleId")],
+    [new("vehicleId", "执行车辆", "string", "select-agv")],
+    [new("select-agv", "SelectAgv", "选择车辆", ["fromStation"], ["vehicleId"],
+        "车辆在线且路线可达", "ManualRecovery", "ManualRecovery", 30, false),
+     new("go-to-pickup", "GoToPickup", "移动至取货点", ["vehicleId", "fromStation"], ["arrival"],
+        "车辆在线且路线可达", "ManualRecovery", "ManualRecovery", 30, false)],
+    [new("select-agv", "vehicleId", "go-to-pickup", "vehicleId", "string", false)],
+    [new("guard-vehicle", "VehicleUnavailable", "EnterManualRecovery", "select-agv", "车辆异常时停止自动执行")]);
+var templateJson = JsonSerializer.Serialize(template, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+var snapshotTask = (await writer.TryCreateAsync("CNCSNAP", "DUMPER-001", 0, token)).Task.TaskId;
+await database.Updateable<DispatchTaskEntity>()
+    .SetColumns(task => task.TaskTemplateJson == templateJson)
+    .Where(task => task.TaskId == snapshotTask).ExecuteCommandAsync();
+await writer.MarkAcknowledgedAsync(snapshotTask, token);
+var selectionPolicy = (await runtimePolicy.GetDispatchCandidatesAsync(100, token))
+    .Single(task => task.TaskId == snapshotTask);
+Require(selectionPolicy.TemplateNodeId == "select-agv" && selectionPolicy.FailurePolicy == "ManualRecovery" &&
+    selectionPolicy.TimeoutAction == "ManualRecovery" && selectionPolicy.TimeoutSeconds == 30 &&
+    !selectionPolicy.AutoRetry && selectionPolicy.PolicyStartedAt != default,
+    "dispatch candidate carries the task's SelectAgv timeout and failure policy");
+Require((await service.GetDetailAsync(snapshotTask, token))!.Steps[0] is
+    { TemplateNodeId: "select-agv", FailurePolicy: "ManualRecovery", TimeoutSeconds: 30 },
+    "task detail shows SelectAgv policy while the task is waiting for dispatch");
+var policyStep = (await runtimePolicy.GetReadyStepsAsync(100, token)).Single(step => step.TaskId == snapshotTask);
+Require(policyStep.TemplateNodeId == "go-to-pickup" && policyStep.FailurePolicy == "ManualRecovery" &&
+    policyStep.TimeoutAction == "ManualRecovery" && policyStep.TimeoutSeconds == 30 && !policyStep.AutoRetry &&
+    policyStep.StartedAt is not null, "ready step carries the task's immutable node policy and actual start time");
+await database.Insertable(new TrafficResourceLeaseEntity
+{
+    LeaseId = Guid.NewGuid().ToString("N"), ResourceId = "SNAPSHOT-RESOURCE", OwnerStepId = policyStep.StepId,
+    TaskId = snapshotTask, VehicleId = "AGV-SNAPSHOT", AcquiredAt = DateTime.Now,
+    RenewedAt = DateTime.Now, ExpiresAt = DateTime.Now.AddMinutes(5)
+}).ExecuteCommandAsync();
+var leaseCountBeforePolicy = await database.Queryable<TrafficResourceLeaseEntity>().CountAsync();
+Require(await runtimePolicy.StopReadyStepForPolicyAsync(snapshotTask, policyStep.StepId, "ManualRecovery",
+    "fixture node failure", token), "manual recovery policy freezes the ready step atomically");
+var frozenTask = await database.Queryable<DispatchTaskEntity>().Where(task => task.TaskId == snapshotTask).FirstAsync();
+var frozenStep = await database.Queryable<DispatchTaskStepEntity>().Where(step => step.StepId == policyStep.StepId).FirstAsync();
+Require(frozenTask.Stage == (int)DispatchTaskStage.Faulted && frozenStep.Status == (int)DispatchTaskStepStatus.ManualIntervention &&
+    !(await runtimePolicy.GetReadyStepsAsync(100, token)).Any(step => step.TaskId == snapshotTask) &&
+    await database.Queryable<TrafficResourceLeaseEntity>().CountAsync() == leaseCountBeforePolicy,
+    "policy stop removes the node from automation without fabricating completion or releasing road ownership");
+parameters.Apply(new(1, parameters.Revision, Guid.NewGuid().ToString("N"), "MAP", "VERSION",
+    config with { StepTimeouts = config.StepTimeouts.Select(row => row with { Seconds = 1 }).ToArray() }, []));
+var snapshotDetail = (await service.GetDetailAsync(snapshotTask, token))!;
+Require(snapshotDetail.Template is { Id: "snapshot-nine-step", Version: 7 } &&
+    snapshotDetail.Template.Connections.Single().Output == "vehicleId" &&
+    snapshotDetail.Template.Guards.Single().Trigger == "VehicleUnavailable" &&
+    snapshotDetail.Steps[0].TemplateNodeId == "go-to-pickup" &&
+    snapshotDetail.Steps[0].FailurePolicy == "ManualRecovery" && snapshotDetail.Steps[0].TimeoutSeconds == 30 &&
+    !snapshotDetail.Steps[0].AutoRetry,
+    "historical task detail reads its own template inputs, connections, guards, timeout and policy after current settings change");
+var timeoutOrigin = DateTimeOffset.UtcNow.AddMinutes(-5);
+Require(TaskTemplateExecutionPolicy.HasTimedOut(timeoutOrigin, 30, DateTimeOffset.UtcNow) &&
+    !TaskTemplateExecutionPolicy.HasTimedOut(timeoutOrigin, 0, DateTimeOffset.UtcNow) &&
+    TaskTemplateExecutionPolicy.StopsAutomationForTimeout("ManualRecovery"),
+    "SelectAgv timeout uses the same task-owned threshold and stop-action contract");
+var pauseTask = (await writer.TryCreateAsync("CNCPAUSE", "DUMPER-001", 0, token)).Task.TaskId;
+await writer.MarkAcknowledgedAsync(pauseTask, token);
+var pauseStep = (await runtimePolicy.GetReadyStepsAsync(100, token)).Single(step => step.TaskId == pauseTask);
+await database.Insertable(new TrafficResourceLeaseEntity
+{
+    LeaseId = Guid.NewGuid().ToString("N"), ResourceId = "PAUSE-RESOURCE", OwnerStepId = pauseStep.StepId,
+    TaskId = pauseTask, VehicleId = "AGV-PAUSE", AcquiredAt = DateTime.Now,
+    RenewedAt = DateTime.Now, ExpiresAt = DateTime.Now.AddMinutes(5)
+}).ExecuteCommandAsync();
+var pauseService = new TaskPauseService(database);
+var pauseUser = new TrafficUserContext("pause-operator", "暂停测试员",
+    TrafficPermission.View | TrafficPermission.RecoverExecution);
+var pauseRequest = new TaskPauseRequest(Guid.NewGuid().ToString("N"), pauseTask,
+    DispatchTaskStage.WaitingForVehicle, "现场要求暂停并保留全部原责任。");
+Require(!(await pauseService.PauseAsync(new TrafficUserContext("viewer", "只读员", TrafficPermission.View),
+    pauseRequest, token)).Accepted,
+    "view-only identity cannot pause a task");
+Require((await pauseService.PauseAsync(pauseUser, pauseRequest, token)).Accepted,
+    "authorized operator can pause a ready step");
+Require((await pauseService.PauseAsync(pauseUser, pauseRequest, token)).Accepted,
+    "same pause request replays without creating a second state transition");
+var pausedDetail = (await service.GetDetailAsync(pauseTask, token))!;
+Require(pausedDetail.Task.Stage == DispatchTaskStage.Faulted &&
+    pausedDetail.Steps.Single(step => step.StepId == pauseStep.StepId).Status == DispatchTaskStepStatus.ManualIntervention &&
+    pausedDetail.Pause is { Active: true } && pausedDetail.WaitingExplanation.Contains("任务已暂停") &&
+    pausedDetail.Resources.Any(resource => resource.ResourceId == "PAUSE-RESOURCE"),
+    "pause freezes automation, keeps road ownership and exposes an explicit pause record");
+var resumeRequest = new TaskPauseResumeRequest(Guid.NewGuid().ToString("N"), pauseTask,
+    "现场条件已恢复并完成原暂停核对。");
+Require((await pauseService.ResumeAsync(pauseUser, resumeRequest, token)).Accepted,
+    "authorized operator can explicitly resume the original paused stage");
+Require((await pauseService.ResumeAsync(pauseUser, resumeRequest, token)).Accepted,
+    "same resume request replays without changing the restored stage");
+var resumedDetail = (await service.GetDetailAsync(pauseTask, token))!;
+Require(resumedDetail.Task.Stage == DispatchTaskStage.WaitingForVehicle &&
+    resumedDetail.Steps.Single(step => step.StepId == pauseStep.StepId).Status == DispatchTaskStepStatus.Ready &&
+    resumedDetail.Pause is { Active: false } &&
+    resumedDetail.Resources.Any(resource => resource.ResourceId == "PAUSE-RESOURCE"),
+    "resume restores only the original ready step and preserves audited road ownership");
 Console.WriteLine("PASS: 28-stage execution-time exit, handover, next-vehicle isolation and legacy diagnostic checks");
+Console.WriteLine("PASS: task-owned template snapshot, ready-step policy loading, atomic freeze and road-ownership retention checks");
+Console.WriteLine("PASS: SelectAgv timeout, traffic adapter nodes and persisted predecessor dependency checks");
+Console.WriteLine("PASS: explicit pause/resume with original stage restoration and retained road ownership checks");
 Console.WriteLine("PASS: live progress, active cancellation, identity/replay and scoped cache retention checks");
 Console.WriteLine("PASS: task queries, PLC quality, commands, leases, current step, waiting reasons and elapsed time");
 Console.WriteLine($"Isolated test database: {path}");

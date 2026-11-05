@@ -42,6 +42,20 @@ public sealed class DispatchTaskEntity
     public string? CreateMapVersionId { get; set; }
     [SugarColumn(Length = 64, IsNullable = true)]
     public string? CreateParameterRevision { get; set; }
+    [SugarColumn(IsNullable = true, ColumnDataType = "TEXT")]
+    public string? TaskTemplateJson { get; set; }
+    [SugarColumn(IsNullable = true, ColumnDataType = "TEXT")]
+    public string? DependsOnTaskIdsJson { get; set; }
+    [SugarColumn(Length = 64, IsNullable = true)] public string? PauseRequestId { get; set; }
+    [SugarColumn(IsNullable = true)] public int? PauseOriginalStage { get; set; }
+    [SugarColumn(Length = 64, IsNullable = true)] public string? PauseStepId { get; set; }
+    [SugarColumn(Length = 1000, IsNullable = true)] public string? PauseReason { get; set; }
+    [SugarColumn(Length = 256, IsNullable = true)] public string? PauseRequestedBy { get; set; }
+    [SugarColumn(IsNullable = true)] public DateTime? PauseRequestedAt { get; set; }
+    [SugarColumn(Length = 64, IsNullable = true)] public string? PauseResumeRequestId { get; set; }
+    [SugarColumn(Length = 1000, IsNullable = true)] public string? PauseResumeReason { get; set; }
+    [SugarColumn(Length = 256, IsNullable = true)] public string? PauseResumeRequestedBy { get; set; }
+    [SugarColumn(IsNullable = true)] public DateTime? PauseResumedAt { get; set; }
     [SugarColumn(Length = 256, IsNullable = true)]
     public string? CreatedBy { get; set; }
     public DateTime CreatedAt { get; set; }

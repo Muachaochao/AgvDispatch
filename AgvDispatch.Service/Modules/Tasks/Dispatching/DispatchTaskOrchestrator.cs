@@ -24,13 +24,18 @@ public sealed partial class DispatchTaskOrchestrator(
     DispatchOptimizationService? optimization=null, DispatchRouteCache? routeCache=null,
     IDispatchQueueWindowService? queueLayer=null, IDispatchCandidateFilter? candidateLayer=null,
     DispatchTrafficReservationService? trafficLayer=null, IDispatchPreSendSafetyService? preSendSafety=null,
-    ITaskHandshakeStore? handshakes=null, ITransportTimeoutRecoveryService? timeoutRecovery=null) : IsolatedBackgroundService
+    ITaskHandshakeStore? handshakes=null, ITransportTimeoutRecoveryService? timeoutRecovery=null,
+    CompletedTransportRouteReleaseService? completedRouteRelease=null) : IsolatedBackgroundService
 {
     private readonly IDispatchQueueWindowService _queueLayer = queueLayer ?? new DispatchQueueWindowService(tasks, trafficResources);
     private readonly IDispatchCandidateFilter _candidateLayer = candidateLayer ?? new DispatchCandidateFilter(options, agvGateway, agvStates,
         activeMap, mapOptions, routePlanner, trafficResources, routeCache, businessRun, fleetTest, charging, taskSwitchGuard);
     private readonly DispatchTrafficReservationService _trafficLayer = trafficLayer ?? new(trafficResources, optimization, tasks, optimization);
     private readonly HashSet<string> _missingRouteWarnings =
+        new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _selectWaitTimeouts =
+        new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _dependencyWaitWarnings =
         new(StringComparer.OrdinalIgnoreCase);
     private string? _waitingBayError;
 
@@ -154,6 +159,12 @@ public sealed partial class DispatchTaskOrchestrator(
         }
 
         var candidates = await tasks.GetDispatchCandidatesAsync(int.MaxValue, cancellationToken);
+        var dependencyIds = candidates.SelectMany(task => task.DependsOnTaskIds)
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var dependencyStates = dependencyIds.Length == 0
+            ? new Dictionary<string, DispatchTaskDependencyState>(StringComparer.OrdinalIgnoreCase)
+            : (await tasks.GetTaskDependencyStatesAsync(dependencyIds, cancellationToken))
+                .ToDictionary(state => state.TaskId, StringComparer.OrdinalIgnoreCase);
         var selectedVehicles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var dispatchedCount = 0;
         foreach (var task in candidates)
@@ -162,6 +173,42 @@ public sealed partial class DispatchTaskOrchestrator(
             {
                 break;
             }
+            var unmetDependency = task.DependsOnTaskIds.FirstOrDefault(id =>
+                !dependencyStates.TryGetValue(id, out var state) ||
+                !state.Exists ||
+                state.Stage != DispatchTaskStage.Completed);
+            if (unmetDependency is not null)
+            {
+                if (_dependencyWaitWarnings.Add(task.TaskId + ":" + unmetDependency))
+                {
+                    logger.LogInformation(
+                        "任务等待前置任务完成，不进入派车。TaskId={TaskId}, DependencyTaskId={DependencyTaskId}, Stage={Stage}",
+                        task.TaskId,
+                        unmetDependency,
+                        dependencyStates.TryGetValue(unmetDependency, out var state) ? state.Stage : null);
+                }
+                continue;
+            }
+            foreach (var dependencyId in task.DependsOnTaskIds)
+                _dependencyWaitWarnings.Remove(task.TaskId + ":" + dependencyId);
+
+            var readyStep = (await tasks.GetReadyStepsAsync(100, cancellationToken))
+                .FirstOrDefault(step =>
+                    step.TaskId == task.TaskId &&
+                    step.StepType == DispatchTaskStepType.GoToPickup);
+            if (readyStep is null)
+            {
+                continue;
+            }
+            var selectionStartedAt = task.PolicyStartedAt;
+            if (task.DependsOnTaskIds.Count > 0 &&
+                task.DependsOnTaskIds.Select(id => dependencyStates.GetValueOrDefault(id)?.UpdatedAt)
+                    .Where(value => value is not null).Max() is { } dependencyReadyAt &&
+                dependencyReadyAt > selectionStartedAt)
+                selectionStartedAt = dependencyReadyAt;
+            if (await ApplySelectAgvTimeoutAsync(task with { PolicyStartedAt = selectionStartedAt },
+                    readyStep, cancellationToken))
+                continue;
 
             var pickupSite = options.GetPickupSite(task.StationId);
             if (pickupSite is null)
@@ -173,16 +220,9 @@ public sealed partial class DispatchTaskOrchestrator(
                         task.StationId,
                         task.TaskId);
                 }
-
-                continue;
-            }
-
-            var readyStep = (await tasks.GetReadyStepsAsync(100, cancellationToken))
-                .FirstOrDefault(step =>
-                    step.TaskId == task.TaskId &&
-                    step.StepType == DispatchTaskStepType.GoToPickup);
-            if (readyStep is null)
-            {
+                if (await ApplySelectAgvConditionAsync(task, readyStep, TaskTemplateExecutionPolicy.RouteUnavailable,
+                        $"工位 {task.StationId} 未配置取货站点，派车条件不可用。", cancellationToken))
+                    continue;
                 continue;
             }
 
@@ -225,7 +265,18 @@ public sealed partial class DispatchTaskOrchestrator(
                         pickupSite,
                         task.TaskId);
                 }
-
+                var trigger = ownableVehicles.Count == 0
+                    ? TaskTemplateExecutionPolicy.VehicleUnavailable
+                    : diagnostic?.Route is null
+                        ? TaskTemplateExecutionPolicy.RouteUnavailable
+                        : TaskTemplateExecutionPolicy.TrafficResourceOccupied;
+                var reason = ownableVehicles.Count == 0
+                    ? "没有满足车辆池、任务选择或车辆可用条件的派车候选。"
+                    : diagnostic?.Route is null
+                        ? "候选车辆均没有到取货点的可执行路线。"
+                        : "候选路线均被交通资源占用。";
+                if (await ApplySelectAgvConditionAsync(task, readyStep, trigger, reason, cancellationToken))
+                    continue;
                 continue;
             }
 
@@ -353,9 +404,69 @@ public sealed partial class DispatchTaskOrchestrator(
 
             if (!dispatched)
             {
+                var trigger = routeCandidates.Length > 0
+                    ? TaskTemplateExecutionPolicy.TrafficResourceOccupied
+                    : TaskTemplateExecutionPolicy.RouteUnavailable;
+                if (await ApplySelectAgvConditionAsync(task, readyStep, trigger,
+                        "本轮派车没有形成可发送的首段命令，按 SelectAgv 节点策略处理。", cancellationToken))
+                    continue;
                 continue;
             }
         }
+    }
+
+    private async Task<bool> ApplySelectAgvTimeoutAsync(
+        DispatchTaskWorkItem task,
+        DispatchTaskStepWorkItem readyStep,
+        CancellationToken cancellationToken)
+    {
+        if (!TaskTemplateExecutionPolicy.HasTimedOut(
+                task.PolicyStartedAt, task.TimeoutSeconds, DateTimeOffset.UtcNow)) return false;
+        var elapsed = DateTimeOffset.UtcNow - task.PolicyStartedAt;
+        var action = TaskTemplateExecutionPolicy.NormalizeTimeoutAction(task.TimeoutAction);
+        var reason = $"SelectAgv 已等待 {(long)elapsed.TotalSeconds} 秒，超过模板阈值 {task.TimeoutSeconds} 秒；" +
+                     $"超时处置 {action}，保留原任务与现场责任，禁止自动重发。";
+        if (!TaskTemplateExecutionPolicy.StopsAutomationForTimeout(action))
+        {
+            if (_selectWaitTimeouts.Add(task.TaskId + ":timeout"))
+            {
+                logger.LogWarning(
+                    "SelectAgv 超时，按模板策略保持派车窗口。TaskId={TaskId}, Action={Action}, TimeoutSeconds={TimeoutSeconds}",
+                    task.TaskId, action, task.TimeoutSeconds);
+            }
+            return false;
+        }
+        var stopped = await tasks.StopReadyStepForPolicyAsync(
+            task.TaskId, readyStep.StepId, action, reason, cancellationToken);
+        if (stopped)
+        {
+            _selectWaitTimeouts.Remove(task.TaskId + ":timeout");
+            logger.LogWarning(
+                "SelectAgv 超时，按模板策略冻结任务。TaskId={TaskId}, Action={Action}, TimeoutSeconds={TimeoutSeconds}",
+                task.TaskId, action, task.TimeoutSeconds);
+        }
+        return stopped;
+    }
+
+    private async Task<bool> ApplySelectAgvConditionAsync(
+        DispatchTaskWorkItem task,
+        DispatchTaskStepWorkItem readyStep,
+        string trigger,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        var policy = TaskTemplateExecutionPolicy.NormalizeFailurePolicy(task.FailurePolicy);
+        if (!TaskTemplateExecutionPolicy.StopsAutomation(policy)) return false;
+        var message = $"SelectAgv 白名单条件 {trigger}；失败策略 {policy}；{reason}";
+        var stopped = await tasks.StopReadyStepForPolicyAsync(
+            task.TaskId, readyStep.StepId, policy, message, cancellationToken);
+        if (stopped)
+        {
+            logger.LogWarning(
+                "SelectAgv 条件触发节点失败策略并冻结任务。TaskId={TaskId}, Trigger={Trigger}, Policy={Policy}",
+                task.TaskId, trigger, policy);
+        }
+        return stopped;
     }
 
     private bool IsPositionSafeForNewTask(string vehicleId)
@@ -412,10 +523,22 @@ public sealed partial class DispatchTaskOrchestrator(
                         robot.Blocked != false || robot.EmergencyStopped != false ||
                         AgvObstaclePolicy.IsBlocked(robot) || AgvObstaclePolicy.HasBlockingAlarm(robot))
                         continue;
-                    await tasks.CompleteExecutingStepAsync(
+                    var completedStepId = await tasks.CompleteExecutingStepAsync(
                         task.TaskId,
                         task.VendorTaskId,
                         cancellationToken);
+                    if (completedRouteRelease is not null)
+                    {
+                        var release = await completedRouteRelease.ReleaseAsync(
+                            task.TaskId, completedStepId, cancellationToken);
+                        if (release.ReleasedCount > 0)
+                        {
+                            logger.LogInformation(
+                                "AGV到站后已释放前序路段。TaskId={TaskId}, StepId={StepId}, VehicleId={VehicleId}, Released={Released}, Reason={Reason}",
+                                task.TaskId, completedStepId, task.VehicleId,
+                                release.ReleasedCount, release.Reason);
+                        }
+                    }
                     logger.LogInformation(
                         "AGV运输步骤完成，已激活下一业务步骤。TaskId={TaskId}, VendorTaskId={VendorTaskId}",
                         task.TaskId,

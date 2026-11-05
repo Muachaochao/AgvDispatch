@@ -49,7 +49,7 @@ public sealed partial class ManualTaskCreationService
         var localValid=true;
         foreach(var (sequence,name,source,target) in pairs)
         {
-            token.ThrowIfCancellationRequested();var from=Resolve(source);var to=Resolve(target);var route=from is null||to is null?null:sequence==1?map.Graph.FindShortestTransportRoute(from.Id,to.Id,forbiddenIntermediateNodes:PickupExcludedNodes(map)):map.Graph.FindShortestRoute(from.Id,to.Id);
+            token.ThrowIfCancellationRequested();var from=Resolve(source);var to=Resolve(target);var route=from is null||to is null?null:sequence==1?map.Graph.FindShortestTransportRoute(from.Id,to.Id,forbiddenIntermediateNodes:PickupExcludedNodes(map,request.VehicleId,from.Id)):map.Graph.FindShortestRoute(from.Id,to.Id);
             if(route is null||route.Nodes.Count is <2 or >129||route.EdgeIds.Count!=route.Nodes.Count-1){legs.Add(new(sequence,name,source+" → "+target,"",route is null&&sequence==1&&from is not null&&from.Id==to?.Id?"车辆已在取货点；缺少避开等待/倒料节点的真实已启用进出闭合路线，禁止同点空路径代替取箱动作。":"无可执行本地路线、端点不唯一或超过本页每段运输128子段的显示预算。"));localValid=false;continue;}
             var path=route.Nodes.Select(id=>nodes[id]).ToArray();
             var mapping=path.All(n=>!string.IsNullOrWhiteSpace(n.AgvSiteId)&&map.Definition.Nodes.Count(other=>other.Enabled&&other.AgvSiteId==n.AgvSiteId)==1);

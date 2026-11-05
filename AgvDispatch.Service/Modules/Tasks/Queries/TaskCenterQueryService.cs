@@ -22,8 +22,10 @@ public sealed partial class TaskCenterQueryService(ITaskCenterReadRepository rep
         var task = detail.Task;
         if (task.Stage is DispatchTaskStage.Completed or DispatchTaskStage.Cancelled or DispatchTaskStage.Faulted)
             return EnrichSteps(detail with { WaitingExplanation = task.Stage == DispatchTaskStage.Faulted
-                ? "任务故障：" + (string.IsNullOrWhiteSpace(task.ErrorMessage) ? "查看任务、步骤和命令错误。" : task.ErrorMessage) +
-                  " 路权不会因故障自动释放。"
+                ? detail.Pause is { Active: true }
+                    ? "任务已暂停：" + detail.Pause.Reason + " 原阶段、路权、设备和命令保持不变；核对现场后可显式恢复。"
+                    : "任务故障：" + (string.IsNullOrWhiteSpace(task.ErrorMessage) ? "查看任务、步骤和命令错误。" : task.ErrorMessage) +
+                      " 路权不会因故障自动释放。"
                 : "任务已结束；若仍有路权，请按人工处置流程核查。" }, null);
         if (task.Stage is DispatchTaskStage.CancellationPending or DispatchTaskStage.CancellationReview)
             return EnrichSteps(detail with { WaitingExplanation = task.ErrorMessage ?? "取消处置中；后续步骤保持冻结，原路权保留。" }, null);
@@ -42,12 +44,21 @@ public sealed partial class TaskCenterQueryService(ITaskCenterReadRepository rep
         }
         else if (task.Stage == DispatchTaskStage.WaitingForVehicle)
         {
-            var dispatch = current is null || trafficControl is null ? null :
-                await trafficControl.GetDispatchDiagnosisAsync(task.TaskId, current.StepId, cancellationToken);
-            explanation = dispatch is null
-                ? "等待可用车辆、工位映射、可行路径和交通资源；尚未形成候选派车记录。"
-                : $"{dispatch.VehicleId} 已作为候选，已规划 {dispatch.Source}→{dispatch.Destination}；" +
-                  $"派车状态 {dispatch.State}：{dispatch.Reason}";
+            var unmetDependencies = detail.Dependencies.Where(dependency => !dependency.Completed).ToArray();
+            if (unmetDependencies.Length > 0)
+            {
+                explanation = "等待前置任务完成，尚未进入派车：" + string.Join("；", unmetDependencies.Select(dependency =>
+                    $"{dependency.TaskId}（{(dependency.Exists ? dependency.Stage?.ToString() ?? "未知" : "不存在")}）"));
+            }
+            else
+            {
+                var dispatch = current is null || trafficControl is null ? null :
+                    await trafficControl.GetDispatchDiagnosisAsync(task.TaskId, current.StepId, cancellationToken);
+                explanation = dispatch is null
+                    ? "等待可用车辆、工位映射、可行路径和交通资源；尚未形成候选派车记录。"
+                    : $"{dispatch.VehicleId} 已作为候选，已规划 {dispatch.Source}→{dispatch.Destination}；" +
+                      $"派车状态 {dispatch.State}：{dispatch.Reason}";
+            }
         }
         else if (current?.Status == DispatchTaskStepStatus.Ready)
         {
@@ -134,24 +145,42 @@ public sealed partial class TaskCenterQueryService(ITaskCenterReadRepository rep
         var terminal = detail.Task.Stage is DispatchTaskStage.Completed or DispatchTaskStage.Cancelled or DispatchTaskStage.Faulted or DispatchTaskStage.CancellationReview;
         var steps = detail.Steps.Select(step =>
         {
+            var templateNode = detail.Task.Stage == DispatchTaskStage.WaitingForVehicle &&
+                               step.StepType == DispatchTaskStepType.GoToPickup
+                ? detail.Template?.Nodes.FirstOrDefault(node =>
+                    node.Block.Equals("SelectAgv", StringComparison.OrdinalIgnoreCase))
+                : detail.Template?.Nodes.FirstOrDefault(node =>
+                    node.Block.Equals(step.StepType.ToString(), StringComparison.OrdinalIgnoreCase));
+            var durationStartedAt = step.StartedAt;
+            if (templateNode?.Block.Equals("SelectAgv", StringComparison.OrdinalIgnoreCase) == true &&
+                detail.Dependencies.Count > 0 &&
+                detail.Dependencies.Where(dependency => dependency.Completed && dependency.UpdatedAt is not null)
+                    .Select(dependency => dependency.UpdatedAt).Max() is { } dependencyReadyAt &&
+                (durationStartedAt is null || dependencyReadyAt > durationStartedAt))
+                durationStartedAt = dependencyReadyAt;
             var elapsed = step.Status == DispatchTaskStepStatus.Pending ? "未开始" : "未记录开始时间";
             var duration = TimeSpan.Zero;
-            if (step.StartedAt is { } started)
+            if (durationStartedAt is { } started)
             {
                 var end = step.CompletedAt ?? (terminal ? detail.Task.UpdatedAt : now);
                 duration = end < started ? TimeSpan.Zero : end - started;
                 elapsed = $"{(int)duration.TotalHours:00}:{duration.Minutes:00}:{duration.Seconds:00}";
                 if (step.CompletedAt is null && terminal) elapsed += "（截至任务结束）";
             }
-            var threshold = thresholds?.GetValueOrDefault(step.StepType) ?? 0;
-            var timedOut = !terminal && step.StepId == currentStepId && step.StartedAt is not null &&
+            var threshold = templateNode?.TimeoutSeconds ?? thresholds?.GetValueOrDefault(step.StepType) ?? 0;
+            var timeoutAction = TaskTemplateExecutionPolicy.NormalizeTimeoutAction(templateNode?.TimeoutAction);
+            var failurePolicy = TaskTemplateExecutionPolicy.NormalizeFailurePolicy(templateNode?.FailurePolicy);
+            var timedOut = !terminal && step.StepId == currentStepId && durationStartedAt is not null &&
                 step.CompletedAt is null && threshold > 0 && duration.TotalSeconds >= threshold;
             var timeoutText = threshold == 0 ? "超时提示：关闭" : timedOut
-                ? $"已超时 · 阈值 {threshold} 秒 · 超出 {(long)(duration.TotalSeconds - threshold)} 秒"
-                : $"超时阈值：{threshold} 秒";
+                ? $"已超时 · 阈值 {threshold} 秒 · 处置 {timeoutAction} · 超出 {(long)(duration.TotalSeconds - threshold)} 秒"
+                : $"超时阈值：{threshold} 秒 · 处置 {timeoutAction}";
             return step with { TimeoutSeconds = threshold, IsTimedOut = timedOut, TimeoutText = timeoutText, IsCurrent = step.StepId == currentStepId, ElapsedText = elapsed,
-                WaitingExplanation = step.StepId == currentStepId ? detail.WaitingExplanation : "" };
+                WaitingExplanation = step.StepId == currentStepId ? detail.WaitingExplanation : "",
+                TemplateNodeId = templateNode?.Id ?? "", FailurePolicy = failurePolicy,
+                TimeoutAction = timeoutAction, AutoRetry = false };
         }).ToArray();
-        return AddDiagnostics(detail with { Steps = steps, DiagnosticsObservedAt = now, HandshakeMode = handshakeOptions?.Enabled==true?"PersistentExecution":"ObservationOnly", HandshakeContractVersion = handshakeOptions?.PlcContractVersion??"" });
+        return AddDiagnostics(detail with { Steps = steps, DiagnosticsObservedAt = now, HandshakeMode = handshakeOptions?.Enabled==true?"PersistentExecution":"ObservationOnly",
+            HandshakeContractVersion = handshakeOptions?.PlcContractVersion??"" });
     }
 }

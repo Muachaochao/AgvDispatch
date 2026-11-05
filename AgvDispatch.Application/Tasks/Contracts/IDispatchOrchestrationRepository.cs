@@ -2,6 +2,9 @@ using AgvDispatch.Domain.Tasks;
 
 namespace AgvDispatch.Application.Abstractions;
 
+public sealed record DispatchTaskDependencyState(string TaskId, bool Exists, DispatchTaskStage? Stage,
+    DateTimeOffset? UpdatedAt);
+
 public interface IDispatchOrchestrationRepository
 {
     Task<IReadOnlyList<DispatchTaskWorkItem>> GetDispatchCandidatesAsync(
@@ -44,7 +47,7 @@ public interface IDispatchOrchestrationRepository
         string errorMessage,
         CancellationToken cancellationToken);
 
-    Task CompleteExecutingStepAsync(
+    Task<string> CompleteExecutingStepAsync(
         string taskId,
         string vendorTaskId,
         CancellationToken cancellationToken);
@@ -65,5 +68,16 @@ public interface IDispatchOrchestrationRepository
         string taskId,
         string stepId,
         string errorMessage,
+        CancellationToken cancellationToken);
+
+    Task<bool> StopReadyStepForPolicyAsync(
+        string taskId,
+        string stepId,
+        string failurePolicy,
+        string errorMessage,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<DispatchTaskDependencyState>> GetTaskDependencyStatesAsync(
+        IReadOnlyCollection<string> taskIds,
         CancellationToken cancellationToken);
 }

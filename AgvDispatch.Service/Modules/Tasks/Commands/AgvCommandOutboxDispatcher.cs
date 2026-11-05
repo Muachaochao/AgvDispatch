@@ -231,13 +231,23 @@ public sealed class AgvCommandOutboxDispatcher(
         catch (Exception exception)
         {
             var delay = GetRetryDelay(command.AttemptCount);
+            var terminalSendResult = exception is AgvPartialAcceptanceException or AgvCommandRejectedException;
             await outbox.ScheduleRetryAsync(
                 command.CommandId,
                 exception.Message,
                 DateTimeOffset.Now.Add(delay),
-                exception is AgvPartialAcceptanceException ? 1 : options.MaximumAttempts,
+                terminalSendResult ? 1 : options.MaximumAttempts,
                 cancellationToken);
-            pipeline?.ReportLayer("execution", "Waiting", "发送回执失败或不确定，保留原命令并持久化重试计划，不重建任务：" + exception.Message, 1);
+            pipeline?.ReportLayer(
+                "execution",
+                terminalSendResult ? "Failed" : "Waiting",
+                (exception is AgvCommandRejectedException
+                    ? "车端明确拒绝控制命令，原命令永久停止重试，须排除控制权/现场条件后新建任务："
+                    : exception is AgvPartialAcceptanceException
+                        ? "发送结果不完整或原任务链不可证明，原命令永久停止自动重试，保留路权等待恢复核对："
+                        : "发送回执失败或不确定，保留原命令并持久化重试计划，不重建任务：") +
+                exception.Message,
+                1);
             logger.LogWarning(
                 exception,
                 "AGV命令发送失败，已持久化重试计划。CommandId={CommandId}, StepId={StepId}, Attempt={Attempt}, RetryAfterMs={RetryAfterMs}",

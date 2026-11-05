@@ -50,10 +50,18 @@ var overtime=await gateway.GetTransportTaskStatusAsync("TASK",default);
 Check(overtime?.State==AgvTransportTaskState.Failed && overtime.Message!.Contains("超时"),"状态7失败处置保留超时原因");
 robot.TaskStatus=404;Check(await gateway.GetTransportTaskStatusAsync("TASK",default)==null,"404仍为未知不作完成");
 robot.TaskStatus=2;
+robot.RejectNavigationCode=40020;
+var rejectedSends=robot.Types.Count(t=>t.Type==3066);
+try{await gateway.CreateTransportTaskAsync("CONTROL-LOCKED","SIM",["LM1","LM2"],null,default);throw new Exception("明确控制抢占仍被当作可重试");}
+catch(AgvCommandRejectedException e){Check(e.RequestType==3066&&e.ReturnCode==40020,"明确40020归类为发送前终态拒绝");}
+Check(robot.Types.Count(t=>t.Type==3066)==rejectedSends+1,"发送前拒绝不会在同一调用内重发3066");
+Check((await client.QueryTaskAsync("CONTROL-LOCKED",default))?.Status==404,"发送前拒绝没有创建车端任务");
+robot.RejectNavigationCode=null;
+var sendsBeforeDroppedResponse=robot.Types.Count(t=>t.Type==3066);
 robot.DropNavigation=true;
 await gateway.CreateTransportTaskAsync("UNKNOWN", "SIM",["LM1","LM2"],null,default);
 Check((await client.QueryTaskAsync("UNKNOWN",default))?.Status==2,"导航响应丢失后从状态端口确认原任务");
-Check(robot.Types.Count(t=>t.Type==3066)==2,"发送未知不重复3066");
+Check(robot.Types.Count(t=>t.Type==3066)==sendsBeforeDroppedResponse+1,"发送未知不重复3066");
 robot.DropNavigation=false;
 options.RequestTimeoutMs=1500;
 robot.HoldNavigation=true;
@@ -168,20 +176,35 @@ using(var db=DatabaseFactory.Create(new(){DatabasePath=Path.Combine(directory,"t
 {
     var resource=new TrafficResourceDefinition("R",TrafficResourceType.NarrowAisle);
     var catalog=new TrafficResourceCatalog(new[]{resource});await new DatabaseInitializer(db,catalog).InitializeAsync(default);
-    var tasks=new DispatchTaskRepository(db);var created=await tasks.TryCreateAsync("SIM-STATION","SIM-DUMPER",20,default);
+    var tasks=new DispatchTaskRepository(db);
+    var outbox=new AgvCommandOutboxRepository(db);
+    var gate=new MapExecutionGate();gate.SetMode(MapExecutionMode.Running);
+    var dispatch=typeof(AgvCommandOutboxDispatcher).GetMethod("DispatchDueCommandsAsync",BindingFlags.NonPublic|BindingFlags.Instance)!;
+    var rejectedTask=await tasks.TryCreateAsync("CNC-REJECT","DUMPER-REJECT",20,default);
+    await tasks.MarkAcknowledgedAsync(rejectedTask.Task.TaskId,default);
+    var rejectedStep=(await tasks.GetStepsAsync(rejectedTask.Task.TaskId,default))[0];
+    Check(await outbox.TryPrepareTransportStepAsync(rejectedTask.Task.TaskId,rejectedStep.StepId,"SIM",new[]{"LM1","LM2"},null,default),"发送前拒绝测试持久化原命令");
+    robot.RejectNavigationCode=40020;
+    var rejectedSender=new AgvCommandOutboxDispatcher(NullLogger<AgvCommandOutboxDispatcher>.Instance,new(){MaximumAttempts=3},outbox,new SeerAgvGateway(cache,manager,options),gate);
+    var rejectedDispatchCount=robot.Types.Count(t=>t.Type==3066);
+    await (Task)dispatch.Invoke(rejectedSender,new object[]{CancellationToken.None})!;
+    var rejectedCommand=await db.Queryable<AgvCommandOutboxEntity>().Where(c=>c.StepId==rejectedStep.StepId).FirstAsync();
+    var rejectedTaskRow=await db.Queryable<DispatchTaskEntity>().Where(t=>t.TaskId==rejectedTask.Task.TaskId).FirstAsync();
+    Check(rejectedCommand.Status==(int)AgvCommandStatus.Failed&&rejectedCommand.AttemptCount==1,"明确40020在Outbox立即失败且只尝试一次");
+    Check(rejectedTaskRow.Stage==(int)DispatchTaskStage.Faulted,"明确40020保留任务故障和原路权，等待人工恢复");
+    Check(robot.Types.Count(t=>t.Type==3066)==rejectedDispatchCount+1,"Outbox对明确40020不安排第二次3066");
+    robot.RejectNavigationCode=null;
+    var created=await tasks.TryCreateAsync("SIM-STATION","SIM-DUMPER",20,default);
     await tasks.MarkAcknowledgedAsync(created.Task.TaskId,default);var step=(await tasks.GetStepsAsync(created.Task.TaskId,default))[0];
     var traffic=new TrafficResourceManager(db,catalog,new(TimeSpan.FromMinutes(1)));
     await traffic.RecordRouteAsync(new(step.StepId,created.Task.TaskId,"SIM","LM1","LM3",new[]{"E1","E2"},new[]{"R"},false,"partial acceptance simulation"),default);
     Check((await traffic.TryAcquireAsync(step.StepId,created.Task.TaskId,"SIM",new[]{"R"},default)).Acquired,"部分接收测试先持有真实数据库路权");
-    var outbox=new AgvCommandOutboxRepository(db);
     Check(await outbox.TryPrepareTransportStepAsync(created.Task.TaskId,step.StepId,"SIM",new[]{"LM1","LM2","LM3"},null,default),"原多段负载持久化");
     var lookup=new AgvTransportChainLookup(db);
     var recorded=await lookup.FindAsync(step.StepId,default);
     Check(recorded?.Path.SequenceEqual(new[]{"LM1","LM2","LM3"})==true && recorded.VehicleId=="SIM","任务链从原Outbox读取，不依赖内存猜编号");
-    var gate=new MapExecutionGate();gate.SetMode(MapExecutionMode.Running);
     var persistentGateway=new SeerAgvGateway(cache,manager,options,lookup);robot.AcceptLimit=1;
     var sender=new AgvCommandOutboxDispatcher(NullLogger<AgvCommandOutboxDispatcher>.Instance,new(){MaximumAttempts=3},outbox,persistentGateway,gate);
-    var dispatch=typeof(AgvCommandOutboxDispatcher).GetMethod("DispatchDueCommandsAsync",BindingFlags.NonPublic|BindingFlags.Instance)!;
     await (Task)dispatch.Invoke(sender,new object[]{CancellationToken.None})!;
     Check((await outbox.GetDueCommandsAsync(DateTimeOffset.Now.AddDays(1),10,default)).Count==0,"部分接收立即停止Outbox自动重试");
     var command=await db.Queryable<AgvCommandOutboxEntity>().Where(c=>c.StepId==step.StepId).FirstAsync();
@@ -211,7 +234,7 @@ sealed class Robot : IAsyncDisposable
     public int StatusPort=>((IPEndPoint)status.LocalEndpoint).Port;
     public int NavigationPort=>((IPEndPoint)navigation.LocalEndpoint).Port;
     public int TaskStatus=2;public bool DropNavigation,HoldNavigation,DropStatus;public string? LastCancel;public string Mode="ok";
-    public bool ExtraStation; public string Md5="abc";public int AcceptLimit=int.MaxValue;public bool CascadeEnabled=true;
+    public bool ExtraStation; public string Md5="abc";public int AcceptLimit=int.MaxValue;public bool CascadeEnabled=true;public int? RejectNavigationCode;
     public JsonElement[] LastMoves=[];
     public void SetTask(string id,int state)=>tasks[id]=state;
     public bool ZeroPayloadReads=true;int mapsRead;readonly ConcurrentDictionary<string,int> tasks=new();
@@ -239,6 +262,11 @@ sealed class Robot : IAsyncDisposable
                 else if(frame.MessageType==3066)
                 {
                     LastMoves=json.RootElement.GetProperty("move_task_list").EnumerateArray().Select(i=>i.Clone()).ToArray();
+                    if(RejectNavigationCode is {} rejectCode)
+                    {
+                        result=new{ret_code=rejectCode,err_msg="control is preempted, can't execute any standalone operation"};
+                        goto respond;
+                    }
                     foreach(var item in LastMoves.Take(AcceptLimit))tasks[item.GetProperty("task_id").GetString()!]=2;
                     if(DropNavigation)return;
                     if(HoldNavigation){Held.TrySetResult();await Release.Task.WaitAsync(stop.Token);}
@@ -272,6 +300,7 @@ sealed class Robot : IAsyncDisposable
                         _=>new{ret_code=40001}
                     };
                 }
+                respond:
                 var bytes=JsonSerializer.SerializeToUtf8Bytes(result);var response=new byte[16]; response[0]=0x5A;response[1]=frame.Version;BinaryPrimitives.WriteUInt16BigEndian(response.AsSpan(2),frame.Sequence);BinaryPrimitives.WriteInt32BigEndian(response.AsSpan(4),bytes.Length);BinaryPrimitives.WriteUInt16BigEndian(response.AsSpan(8),(ushort)(frame.MessageType+10000));
                 await stream.WriteAsync(response,stop.Token);await stream.WriteAsync(bytes,stop.Token);
             }

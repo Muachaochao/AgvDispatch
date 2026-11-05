@@ -249,6 +249,52 @@ public sealed partial class TrafficResourceManager(
         return ReleaseAsync(taskId, null, false, "业务任务完成，正常释放任务持有路权。", ct);
     }
 
+    /// <summary>
+    /// Releases only named leases from one completed transport step. The caller
+    /// must first prove that the vehicle has reached the step destination and
+    /// that its complete safety envelope is outside every released resource.
+    /// </summary>
+    public async Task<int> ReleasePassedLeasesAsync(string taskId, string stepId,
+        IReadOnlyCollection<string> leaseIds, string reason, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(taskId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(stepId);
+        ArgumentNullException.ThrowIfNull(leaseIds);
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+        ct.ThrowIfCancellationRequested();
+        var ids = leaseIds.Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.Ordinal).ToArray();
+        if (ids.Length == 0) return 0;
+
+        var released = 0;
+        var transaction = await database.Ado.UseTranAsync(async () =>
+        {
+            var leases = await database.Queryable<TrafficResourceLeaseEntity>()
+                .Where(l => l.TaskId == taskId && l.OwnerStepId == stepId && ids.Contains(l.LeaseId))
+                .ToListAsync(ct);
+            if (leases.Count == 0) return;
+            await database.Deleteable<TrafficResourceLeaseEntity>()
+                .Where(l => l.TaskId == taskId && l.OwnerStepId == stepId &&
+                    leases.Select(item => item.LeaseId).Contains(l.LeaseId))
+                .ExecuteCommandAsync(ct);
+            var remaining = await database.Queryable<TrafficResourceLeaseEntity>()
+                .Where(l => l.TaskId == taskId && l.OwnerStepId == stepId)
+                .ToListAsync(ct);
+            var first = leases[0];
+            await WriteStateAsync(stepId, taskId, first.VehicleId,
+                remaining.Count == 0 ? "Released" : "Held",
+                remaining.Count == 0
+                    ? reason
+                    : reason + " 终点或仍有车体覆盖的资源继续占用。",
+                remaining.Select(l => l.ResourceId).ToArray(), ct);
+            released = leases.Count;
+        });
+        if (!transaction.IsSuccess)
+            throw new InvalidOperationException("已完成运输路段释放事务失败，原占用保持不变。",
+                transaction.ErrorException);
+        return released;
+    }
+
     public async Task RenewTaskAsync(string taskId, CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(taskId); ct.ThrowIfCancellationRequested();
