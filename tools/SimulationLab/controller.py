@@ -16,10 +16,12 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.request import Request, urlopen
+from urllib.parse import urlsplit, parse_qs
 import uuid
 
 WORKSPACE = Path(__file__).resolve().parents[2]
 STATION_IDS = ('CNC-001', 'CNC-002')
+STATION_CSV = WORKSPACE / 'AgvDispatch.Service/config/plc-signals.csv'
 VEHICLE_ID = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$')
 
 
@@ -66,8 +68,8 @@ def validate_root(root):
         raise ValueError('数据库必须属于本仿真目录。')
     if not lab['pipe'].startswith('Agv28StageLab-') or settings['Security']['PipeName'] != lab['pipe'] or web['PipeName'] != lab['pipe']:
         raise ValueError('仿真后台管道不匹配。')
-    if web['Port'] != lab['webPort'] or web['Port'] in (5198, 5199) or settings['TaskCreation'].get('AutomaticCreationEnabled') is not False:
-        raise ValueError('仿真需要独立临时Web端口和受控呼叫建单。')
+    if web['Port'] != lab['webPort'] or web['Port'] in (5198, 5199) or type(settings['TaskCreation'].get('AutomaticCreationEnabled')) is not bool:
+        raise ValueError('仿真需要独立临时Web端口和明确的PLC接单模式。')
     for key in ('ProjectStorePath', 'EngineeringStorePath'):
         if key in web and not Path(web[key]).resolve().is_relative_to(root):
             raise ValueError('仿真工程数据必须位于本目录。')
@@ -80,7 +82,7 @@ def validate_root(root):
 
 
 class Runtime:
-    def __init__(self, root, template_root=None):
+    def __init__(self, root, template_root=None, scheme_store=None):
         self.root, self.lab, self.settings, self.web, self.ports = validate_root(root)
         self.template_root = Path(template_root or self.root)
         self.lock = threading.RLock()
@@ -94,6 +96,14 @@ class Runtime:
         self.controls = {'sequence': uuid.uuid4().hex, 'vehicles': {}, 'plc': {}}
         self.protocol_runtime = None
         self.equipment_model = None
+        self.scheme_store = scheme_store
+        self.history_cache = (0, [])
+        self.guidance_cache = (0, [])
+        self.startup_plan = None
+        self.startup_thread = None
+        if scheme_store is not None:
+            from versions import VersionComparison
+            self.version_comparison = VersionComparison(self)
 
     def api(self, path, data=None, allow_rejection=False):
         if self.abort.is_set():
@@ -124,18 +134,35 @@ class Runtime:
             return {}
 
     def status(self):
+        from simulation_reports import history, guidance
+        from station_catalog import station_catalog
         device = self.device()
         with self.lock:
             recovery = None
             if self.phase == 'running':
                 try: recovery = self.api('/api/recovery')
                 except Exception as error: recovery = dict(error=str(error), items=[], released=False)
+            now = time.monotonic()
+            if now - self.history_cache[0] > 15:
+                self.history_cache = (now, history(self))
+            if self.phase == 'running' and recovery and not recovery.get('released') and now-self.guidance_cache[0] > 4:
+                details = {}
+                for item in recovery.get('items', []):
+                    tid = item.get('taskId')
+                    if tid and tid != '__SITE__':
+                        try: details[tid] = self.api('/api/tasks/' + tid)
+                        except (OSError, ValueError): pass
+                self.guidance_cache = (now, guidance(details, device))
             return dict(enabled=True, rootName=self.root.name, running=self.phase == 'running', phase=self.phase,
                         fresh=self.phase == 'running' and 0 <= time.time() - device.get('time', 0) < 5 and bool(self.children) and all(p.poll() is None for p in self.children.values()),
                         device=device, map=read(self.root / 'navigation.agvmap.json'), scenario=dict(self.scenario), report=self.report,
                         controls=self.controls, error=self.error, configuration=getattr(self, 'lab', {}).get('simulationConfiguration'), recovery=recovery,
                         protocol=self.protocol_status(),
                         equipment=self.equipment_status(),
+                        **(self.scheme_store.catalog() if getattr(self, 'scheme_store', None) else {}),
+                        stationCatalog=station_catalog(STATION_CSV), history=self.history_cache[1],
+                        recoveryGuidance=self.guidance_cache[1], startupPlan=self.startup_plan,
+                        versionComparison=self.version_comparison.snapshot() if hasattr(self, 'version_comparison') else None,
                         message='回环设备仿真；合成模型不代表真实固件、机械及安全联锁验收。')
 
     def launch(self, name, arguments, cwd):
@@ -288,24 +315,17 @@ class Runtime:
                 raise ValueError(f'{label}不存在或已停用。')
             selected[label] = value
             return value
-        stations = payload.get('stations')
-        if not isinstance(stations, list) or not 1 <= len(stations) <= 2:
-            raise ValueError('工位须配置1至2个。')
+        from station_catalog import normalize_stations
+        stations = normalize_stations(payload.get('stations'), STATION_CSV)
         normalized_stations = []
-        station_seen = set()
         typed_topology = any(isinstance(node.get('type'), str) for node in nodes.values())
         for index, station in enumerate(stations):
-            if not isinstance(station, dict) or set(station) != {'stationId', 'pickupSite'}:
-                raise ValueError('工位配置字段无效。')
-            if station['stationId'] not in STATION_IDS or station['stationId'] in station_seen:
-                raise ValueError('工位ID必须是唯一的CNC-001或CNC-002。')
-            station_seen.add(station['stationId'])
             pickup = node(station['pickupSite'], '取货点' + str(index + 1))
             if typed_topology and nodes[pickup].get('type') != 'Station':
                 raise ValueError('呼叫工位取货点必须是Station类型节点。')
-            normalized_stations.append(dict(stationId=station['stationId'], pickupSite=pickup, offset=0 if station['stationId'] == 'CNC-001' else 2))
+            normalized_stations.append(dict(station, pickupSite=pickup))
         if len({s['pickupSite'] for s in normalized_stations}) != len(normalized_stations):
-            raise ValueError('两个工位必须使用不同取货点。')
+            raise ValueError('各工位必须使用不同取货点。')
         dumper = payload.get('dumper')
         if not isinstance(dumper, dict) or set(dumper) - {'dumpingSite', 'waitingSite', 'waitingSites', 'resourceId'} or not {'dumpingSite', 'waitingSite', 'resourceId'} <= set(dumper):
             raise ValueError('倒料设备配置字段无效。')
@@ -415,9 +435,12 @@ class Runtime:
 
     def _default_configuration(self, count):
         navigation = read(self.root / 'navigation.agvmap.json')
-        stations = [dict(stationId=station_id, pickupSite=site)
+        prior_stations = {station['stationId']: station for station in self.lab.get('simulationTopology', {}).get('stations', [])}
+        stations = [dict(stationId=station_id, pickupSite=site,
+                        signalSource=prior_stations.get(station_id, {}).get('signalSource', 'verified'),
+                        priority=prior_stations.get(station_id, {}).get('priority', 0))
                     for station_id, site in self.settings['Dispatching']['StationPickupSites'].items()
-                    if station_id in STATION_IDS]
+                    ]
         dumper = dict(dumpingSite=self.settings['Dispatching']['DumperDumpingSite'],
                       waitingSite=self.settings['Dispatching']['DumperWaitingSite'],
                       waitingSites=self.settings['Dispatching'].get('DumperWaitingSites') or [self.settings['Dispatching']['DumperWaitingSite']],
@@ -438,6 +461,66 @@ class Runtime:
         configuration = self._validate_configuration(payload)
         return self._create_instance(configuration)
 
+    def save_scheme(self, payload):
+        from scenarios import validate_scenario
+        if self.scheme_store is None: raise ValueError('仿真方案存储未初始化。')
+        if set(payload) - {'id','name','configuration','scenario'}: raise ValueError('方案字段无效。')
+        configuration = payload.get('configuration')
+        if configuration is None:
+            configuration = dict(self.lab.get('simulationConfiguration') or {})
+            configuration.pop('mapName', None)
+            configuration['mapDefinition'] = read(self.root / 'navigation.agvmap.json')
+        validated = self._validate_configuration(configuration)
+        scenario = validate_scenario(payload['scenario']) if payload.get('scenario') is not None else None
+        if scenario and any(call['stationId'] not in {s['stationId'] for s in validated['stations']} for call in scenario.get('calls', [])):
+            raise ValueError('方案场景包含未配置工位。')
+        if scenario and any(call.get('vehicleId') for call in scenario.get('calls', [])):
+            raise ValueError('保存的PLC自动呼叫场景不能预先指定车辆；车辆由正式调度选择。')
+        value = self.scheme_store.save(payload.get('name'), validated, scenario, payload.get('id'))
+        self.scheme_store.remember(self.root, value['id'])
+        return self.status()
+
+    def select_scheme(self, payload, start=False):
+        if self.scheme_store is None: raise ValueError('仿真方案存储未初始化。')
+        if set(payload) != {'id'}: raise ValueError('请选择一个保存的方案。')
+        value = self.scheme_store.get(payload['id'])
+        configuration = self._validate_configuration(value['configuration'])
+        from scenarios import validate_scenario
+        scenario = validate_scenario(value['scenario']) if value.get('scenario') else None
+        if scenario and (any(call['stationId'] not in {s['stationId'] for s in configuration['stations']} for call in scenario.get('calls', [])) or
+                         any(call.get('vehicleId') for call in scenario.get('calls', []))):
+            raise ValueError('保存场景与当前工位或自动选车规则不匹配，请更新方案。')
+        self._create_instance(configuration)
+        self.scheme_store.remember(self.root, value['id'])
+        if start:
+            self.startup_plan = dict(status='starting', schemeId=value['id'], scenarioName=scenario.get('name') if scenario else None,
+                                     message='正在启动保存的隔离方案。')
+            self.start()
+            def after_start():
+                try:
+                    worker = self.worker
+                    if worker: worker.join()
+                    if self.abort.is_set():
+                        self.startup_plan.update(status='aborted', message='启动计划已停止。'); return
+                    if self.phase != 'running':
+                        raise RuntimeError(self.error or '仿真未就绪，未提交测试呼叫。')
+                    if scenario: self.run_scenario(scenario, clear_abort=False)
+                    self.startup_plan.update(status='submitted' if scenario else 'ready',
+                        message='保存场景已开始，结果见运行进度。' if scenario else '方案已启动，可以选择场景。')
+                except Exception as error:
+                    self.startup_plan.update(status='failed', message=str(error))
+            self.startup_thread = threading.Thread(target=after_start, daemon=True)
+            self.startup_thread.start()
+        return self.status()
+
+    def delete_scheme(self, payload):
+        if self.scheme_store is None: raise ValueError('仿真方案存储未初始化。')
+        if set(payload) != {'id'}: raise ValueError('请选择要删除的保存方案。')
+        if self.phase == 'running' or self.worker and self.worker.is_alive():
+            raise ValueError('请先停止当前仿真，再删除保存方案。')
+        self.scheme_store.delete(payload['id'])
+        return self.status()
+
     def new_instance(self, payload=None):
         payload = payload or {}
         if not isinstance(payload, dict) or set(payload) - {'vehicles'}:
@@ -449,6 +532,8 @@ class Runtime:
 
     def _create_instance(self, configuration):
         with self.lock:
+            if self.startup_thread and self.startup_thread.is_alive():
+                raise ValueError('一键开测仍在准备，请先停止并等待收尾。')
             if self.phase in ('running', 'starting') or self.children or self.worker and self.worker.is_alive():
                 raise ValueError('请先停止当前仿真环境，再创建干净实例。')
             if self.protocol_runtime is not None or self.equipment_model is not None:
@@ -508,16 +593,26 @@ class Runtime:
             settings['TrafficSegmentRelease'] = dict(Enabled=True, CommitEnabled=True,
                 PollIntervalMs=250, MaximumStepsPerCycle=32, FrameWaitSeconds=2)
             settings['Dispatching']['MaxConcurrentTasks'] = len(robots)
+            # Only loopback PLC calls enter the production creation coordinator.
+            # Scenarios never choose a car or fabricate a queued database row.
+            settings['TaskCreation']['AutomaticCreationEnabled'] = True
+            settings['TaskCreation']['StationPriorities'] = {station['stationId']: station.get('priority', 0) for station in configuration['stations']}
             settings['Dispatching']['StationPickupSites'] = {s['stationId']: s['pickupSite'] for s in configuration['stations']}
             settings['Dispatching']['DumperWaitingSite'] = configuration['dumper']['waitingSite']
             settings['Dispatching']['DumperWaitingSites'] = configuration['dumper']['waitingSites']
             settings['Dispatching']['DumperDumpingSite'] = configuration['dumper']['dumpingSite']
             settings['Dispatching']['DumperTransitClearanceMeters'] = 2 * max(v['radiusMeters'] for v in configuration['vehicles']) + 0.15
             lab.update(robotPort=robots[0]['Port'], navigationPort=robots[0]['NavigationPort'])
+            from station_catalog import write_private_signal_table
+            signal_target = target / 'service/config/simulation-signals.csv'
+            lab['stationSignalManifest'] = write_private_signal_table(STATION_CSV, signal_target, configuration['stations'])
+            settings['Plc']['SignalCsvPath'] = 'config/simulation-signals.csv'
             web.update(Port=lab['webPort'], PipeName=lab['pipe'], ProjectStorePath=str(target / 'projects'), EngineeringStorePath=str(target / 'engineering'))
             for filename, value in [('lab.json', lab), ('service/appsettings.json', settings), ('service-settings.json', settings), ('webhost/appsettings.json', {'Web': web})]:
                 write(target / filename, value)
-            self.__init__(target, template_root=self.template_root)
+            store = self.scheme_store
+            self.__init__(target, template_root=self.template_root, scheme_store=store)
+            if store is not None: store.remember(target)
         return self.status()
 
     def start(self):
@@ -568,9 +663,15 @@ class Runtime:
 
     def stop(self):
         self.abort.set()
+        deadline = time.monotonic() + 18
+        startup = getattr(self, 'startup_thread', None)
+        if startup and startup.is_alive() and startup is not threading.current_thread():
+            startup.join(timeout=max(0, deadline-time.monotonic()))
+            if startup.is_alive():
+                raise CleanupPending('一键开测仍在收尾，稍后重试停止。')
         worker = self.worker
         if worker and worker.is_alive() and worker is not threading.current_thread():
-            worker.join(timeout=18)
+            worker.join(timeout=max(0, deadline-time.monotonic()))
             if worker.is_alive():
                 raise CleanupPending('操作仍在收尾，稍后重试停止。')
         if self.protocol_runtime is not None:
@@ -653,14 +754,25 @@ class Runtime:
             self.controls = candidate
         return self.status()
 
-    def run_scenario(self, payload):
+    def run_scenario(self, payload, clear_abort=True):
         from scenarios import validate_scenario, execute
         request = validate_scenario(payload)
         with self.lock:
+            if not clear_abort and self.abort.is_set():
+                raise InterruptedError('一键开测已停止，未提交测试呼叫。')
             if not self.status()['fresh'] or self.worker and self.worker.is_alive():
                 raise ValueError('仿真未就绪或已有场景运行。')
-            self.abort.clear()
-            total_units = len(request['calls']) if request['name'] == 'custom-calls' else request['rounds']
+            if not clear_abort and self.abort.is_set():
+                raise InterruptedError('一键开测已停止，未提交测试呼叫。')
+            if clear_abort: self.abort.clear()
+            stations = set(self.settings['Dispatching']['StationPickupSites'])
+            if any(call['stationId'] not in stations for call in request.get('calls', [])):
+                raise ValueError('呼叫计划包含本实例未配置的工位。')
+            if request['name'] == 'dispatch-backlog' and not self.settings['TaskCreation']['AutomaticCreationEnabled']:
+                raise ValueError('此旧实例未启用正式PLC自动接单，请按当前方案新建实例。')
+            if self.settings['TaskCreation']['AutomaticCreationEnabled'] and any(call.get('vehicleId') for call in request.get('calls', [])):
+                raise ValueError('PLC自动接单由正式调度选择车辆，呼叫计划不能指定车辆。')
+            total_units = len(request['calls']) if request['name'] in ('custom-calls', 'dispatch-backlog') else request['rounds']
             self.scenario = dict(id=uuid.uuid4().hex, status='running', completedRounds=0, totalRounds=total_units, startedAt=time.time(), message='核对初态', **request)
             self.worker = threading.Thread(target=execute, args=(self, request), daemon=True); self.worker.start()
         return self.status()
@@ -722,7 +834,11 @@ def cleanup_owned_runtime(runtime, retry_delay=.2):
 
 
 def serve(root, port, token):
-    runtime = Runtime(root)
+    from schemes import SchemeStore
+    store = SchemeStore(WORKSPACE, root, validate_root)
+    selected, notice = store.restore_root()
+    runtime = Runtime(selected, template_root=root, scheme_store=store)
+    if notice: runtime.error = notice
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args): pass
         def dispatch(self):
@@ -730,7 +846,12 @@ def serve(root, port, token):
                 self.send_error(403); return
             try:
                 if self.command == 'GET':
-                    result = runtime.status() if self.path == '/status' else runtime.report if self.path == '/report' else None
+                    from simulation_reports import report, replay
+                    parsed = urlsplit(self.path)
+                    query = parse_qs(parsed.query, strict_parsing=True)
+                    if query and (set(query) != {'id'} or len(query['id']) != 1): raise ValueError('报告查询参数无效。')
+                    identity = query.get('id', [None])[0]
+                    result = runtime.status() if parsed.path == '/status' and not query else report(runtime, identity) if parsed.path == '/report' else replay(runtime, identity) if parsed.path == '/replay' else None
                 else:
                     length = int(self.headers.get('Content-Length', 0))
                     if not 0 <= length <= 8 * 1024 * 1024: raise ValueError('请求过大。')
@@ -742,6 +863,10 @@ def serve(root, port, token):
                     elif self.path == '/control': result = runtime.control(payload)
                     elif self.path == '/new-instance': result = runtime.new_instance(payload)
                     elif self.path == '/configure': result = runtime.configure(payload)
+                    elif self.path == '/scheme-save': result = runtime.save_scheme(payload)
+                    elif self.path == '/scheme-select': result = runtime.select_scheme(payload)
+                    elif self.path == '/scheme-start': result = runtime.select_scheme(payload, start=True)
+                    elif self.path == '/scheme-delete': result = runtime.delete_scheme(payload)
                     elif self.path == '/recover': result = runtime.decide_recovery(payload)
                     elif self.path == '/recover-release': result = runtime.release_recovery(payload)
                     elif self.path == '/protocol-start': result = runtime.start_protocol(payload)

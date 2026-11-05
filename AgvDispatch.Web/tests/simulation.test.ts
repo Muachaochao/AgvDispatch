@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { simulationFresh, scenarioActive, simulationGeometry, simulationTone, simulationLabel, simulationMapFromPublishedVersion, loadCurrentSimulationMap, type SimulationMapWorkspace, type SimulationStatus } from '../src/simulation.ts';
+import { simulationFresh, scenarioActive, simulationGeometry, simulationTone, simulationLabel, simulationMapFromPublishedVersion, loadCurrentSimulationMap,
+  simulationMetricLabel, simulationMetricValue, simulationMetricComparison, simulationReplayCars, type SimulationMapWorkspace, type SimulationStatus } from '../src/simulation.ts';
 import type { Snapshot, WebMap } from '../src/types.ts';
 
 const now = Date.parse('2026-11-04T10:00:00+08:00');
@@ -24,6 +25,35 @@ test('unknown or missing evidence is visibly distinct from passed checks', () =>
   assert.equal(simulationTone('passed'), 'pass');
   assert.equal(simulationTone('failed'), 'fail');
   assert.equal(simulationLabel('skipped'), '未执行');
+});
+
+test('report metrics stay readable in Chinese and invalid numbers cannot appear as a valid observation', () => {
+  assert.equal(simulationMetricLabel('durationSeconds'), '运行时长（秒）');
+  assert.equal(simulationMetricLabel('newInternalEnglishKey'), '扩展检查指标');
+  assert.equal(simulationMetricValue(NaN), '证据无效');
+  assert.equal(simulationMetricValue(Infinity), '证据无效');
+  assert.equal(simulationMetricValue(false), '否');
+  assert.equal(simulationMetricValue(2.34567), '2.346');
+});
+
+test('history comparison uses only common finite numeric evidence and preserves direction without inferring improvement', () => {
+  assert.deepEqual(simulationMetricComparison({ taskCount: 4, durationSeconds: 20, samples: NaN, unknown: '10' },
+    { taskCount: 2, durationSeconds: 30, samples: 2, unknown: 5 }), [
+    { key: 'taskCount', label: '任务数', current: 4, previous: 2, delta: 2 },
+    { key: 'durationSeconds', label: '运行时长（秒）', current: 20, previous: 30, delta: -10 }
+  ]);
+});
+
+test('replay retains the recorded original identity and omits invalid positions without fabricating a live state', () => {
+  const cars = simulationReplayCars({ time: 12, vehicles: [
+    { vehicleId: 'AGV-1', x: 3, y: 4, site: 'LM4', taskId: 'ORIGINAL', waitReason: '等待倒料资源' },
+    { vehicleId: 'broken', x: NaN, y: 4 }, { vehicleId: '', x: 0, y: 0 }
+  ] });
+  assert.deepEqual(Object.keys(cars), ['AGV-1']);
+  assert.equal(cars['AGV-1'].current_task, 'ORIGINAL');
+  assert.equal(cars['AGV-1'].waitReason, '等待倒料资源');
+  assert.equal(cars['AGV-1'].offline, undefined);
+  assert.deepEqual(simulationReplayCars(), {});
 });
 
 test('map joins edges by node ID or vehicle site ID and ignores invalid coordinates', () => {

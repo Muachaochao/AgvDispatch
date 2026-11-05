@@ -2,6 +2,7 @@
 import hashlib
 import json
 import math
+import re
 import sqlite3
 import time
 import uuid
@@ -9,7 +10,7 @@ from urllib.error import HTTPError, URLError
 from controller import read, write
 from device_controls import PLC_DEFAULTS
 
-NAMES = ('normal-cycle', 'simultaneous-calls', 'custom-calls', 'disconnect-reconnect',
+NAMES = ('normal-cycle', 'simultaneous-calls', 'custom-calls', 'dispatch-backlog', 'disconnect-reconnect',
          'plc-delay', 'plc-recovery', 'service-restart', 'resume-recovery')
 STEP_NAMES = {'GoToPickup': '前往工位取满箱', 'PickupFullBox': '确认满箱已取走',
               'DeliverFullBoxToDumper': '运送满箱到等待位', 'WaitForDumperReady': '等待倒料机就绪',
@@ -77,7 +78,7 @@ def validate_scenario(value):
             raise ValueError('PLC卡位保持时间须为1至120秒。')
         result.update(plcFault=value['plcFault'], holdSeconds=float(hold))
     calls = value.get('calls')
-    if result['name'] == 'custom-calls':
+    if result['name'] in ('custom-calls', 'dispatch-backlog'):
         if not isinstance(calls, list) or not 1 <= len(calls) <= 500:
             raise ValueError('自定义呼叫计划须包含1至500条呼叫。')
         normalized = []
@@ -88,22 +89,22 @@ def validate_scenario(value):
             station = call.get('stationId')
             at = call.get('atSeconds', 0)
             vehicle = call.get('vehicleId')
-            if station not in ('CNC-001', 'CNC-002'):
-                raise ValueError('呼叫工位必须是CNC-001或CNC-002。')
+            if not isinstance(station, str) or not re.fullmatch(r'CNC-\d{3}', station) or not 1 <= int(station[4:]) <= 305:
+                raise ValueError('呼叫工位编号必须是已配置的CNC-001至CNC-305。')
             if type(at) not in (int, float) or not math.isfinite(at) or not 0 <= at <= 86400:
                 raise ValueError('呼叫时间须为0至86400秒。')
             if vehicle is not None and (not isinstance(vehicle, str) or not vehicle.strip()):
                 raise ValueError('指定车辆编号无效。')
+            if vehicle is not None and result['name'] == 'dispatch-backlog':
+                raise ValueError('持续积压场景只产生PLC呼叫，不能指定车辆。')
             key = round(float(at), 6)
-            if station in simultaneous.setdefault(key, set()):
+            if station in simultaneous.setdefault(key, set()) and result['name'] != 'dispatch-backlog':
                 raise ValueError('同一时刻不能重复呼叫同一工位。')
             simultaneous[key].add(station)
-            if len(simultaneous[key]) > 2:
-                raise ValueError('同一批次最多包含两个工位。')
             normalized.append(dict(stationId=station, atSeconds=float(at), vehicleId=vehicle))
         result['calls'] = normalized
     elif calls is not None:
-        raise ValueError('仅自定义呼叫场景接受calls参数。')
+        raise ValueError('仅自定义呼叫和持续积压场景接受calls参数。')
     if result['name'] != 'plc-recovery' and ('plcFault' in value or 'holdSeconds' in value):
         raise ValueError('仅PLC卡位恢复场景接受plcFault和holdSeconds。')
     if result['name'] != 'service-restart' and 'restartStage' in value:
@@ -112,7 +113,7 @@ def validate_scenario(value):
 
 
 def query(root, sql, parameters=()):
-    with sqlite3.connect((root / 'data/agv-dispatch.db').as_uri() + '?mode=ro', uri=True, timeout=3) as db:
+    with sqlite3.connect((root / 'data/agv-dispatch.db').resolve().as_uri() + '?mode=ro', uri=True, timeout=3) as db:
         db.row_factory = sqlite3.Row
         return [dict(row) for row in db.execute(sql, parameters)]
 
@@ -156,6 +157,19 @@ def fresh_device_state(runtime, timeout=5):
         runtime.abort.wait(.1)
 
 
+def external_input(runtime, sequence):
+    observed = fresh_device_state(runtime).get('externalInput', {})
+    return observed if observed.get('sequence') == sequence else None
+
+
+def mutual_wait_pairs(cars):
+    """Return unresolved reciprocal blockers; one-way queues are not failures."""
+    blocked = {vehicle: car.get('blockedByVehicle') for vehicle, car in cars.items()
+               if car.get('blockedByVehicle')}
+    return sorted(tuple(sorted((vehicle, blocker))) for vehicle, blocker in blocked.items()
+                  if blocked.get(blocker) == vehicle and vehicle < blocker)
+
+
 def complete_command_set(commands, tasks):
     """Totals alone can hide one task's duplicate replacing another task's missing command."""
     if len(commands) != len(tasks) * 4 or len({c['CommandId'] for c in commands}) != len(commands):
@@ -177,6 +191,7 @@ class Observer:
         self.violations = []
         self.max_wait = 0
         self.wait_started = {}
+        self.mutual_wait_started = {}
         self.last_details = {}
         self.seen_details = {}
         self.resources = {r['id']: r.get('capacity', 1) for r in read(runtime.root / 'navigation.agvmap.json')['resources']}
@@ -209,6 +224,19 @@ class Observer:
                 limit = self.radii[first] + self.radii[second]
                 if distance < limit: self.violations.append(dict(kind='envelope-overlap', vehicles=[first, second], distance=distance, threshold=limit))
         now = time.monotonic()
+        current_pairs = set(mutual_wait_pairs(cars))
+        for pair in tuple(self.mutual_wait_started):
+            if pair not in current_pairs: self.mutual_wait_started.pop(pair)
+        for pair in current_pairs:
+            started = self.mutual_wait_started.setdefault(pair, now)
+            if now - started >= 45:
+                owners = [row for row in ownership if row['VehicleId'] in pair]
+                detail = dict(kind='mutual-vehicle-wait', vehicles=list(pair), seconds=round(now-started, 1),
+                              tasks=sorted(row['TaskId'] for row in owners),
+                              sites={vehicle: cars[vehicle].get('station') for vehicle in pair})
+                if not any(item.get('kind') == 'mutual-vehicle-wait' and item.get('vehicles') == list(pair)
+                           for item in self.violations):
+                    self.violations.append(detail)
         for tid, detail in details.items():
             signature = tuple(s['status'] for s in detail['steps'])
             prior = self.wait_started.get(tid)
@@ -217,7 +245,14 @@ class Observer:
         self.samples += 1; self.previous = state
         with (self.evidence / 'observations.jsonl').open('a', encoding='utf-8') as stream:
             stream.write(json.dumps(dict(time=time.time(), device=state, leases=leases, vehicleTaskOwnership=ownership,
-                tasks={t:dict(stage=d['task']['stage'], steps=[s['status'] for s in d['steps']]) for t, d in details.items()}), ensure_ascii=False) + '\n')
+                tasks={t:dict(stage=d['task']['stage'], stationId=d['task'].get('stationId'), vehicleId=d['task'].get('vehicleId'),
+                    progress=describe_progress(d['task'].get('vehicleId') or '待派车', d),
+                    waitingExplanation=d.get('waitingExplanation'), steps=[s['status'] for s in d['steps']]) for t, d in details.items()}), ensure_ascii=False) + '\n')
+        mutual = next((item for item in self.violations if item.get('kind') == 'mutual-vehicle-wait'), None)
+        if mutual:
+            raise RuntimeError(f"互锁等待：{mutual['vehicles'][0]} 与 {mutual['vehicles'][1]} 连续45秒互相阻塞；"
+                               f"任务 {', '.join(mutual['tasks']) or '未绑定'}。先检查共享路口路权和候选路线，"
+                               "原任务及路权已保留，禁止删除任务或人工改信号绕过。")
         if self.violations: raise RuntimeError('独立交通检查发现资源超容量或合成包络重叠。')
         return leases
 
@@ -227,6 +262,10 @@ def execute(runtime, request):
     evidence = runtime.root / ('simulation-run-' + runtime.scenario['id'])
     evidence.mkdir(exist_ok=False)
     write(evidence / 'scenario.json', dict(**request, startedAt=started, rootName=runtime.root.name))
+    if (runtime.root / 'navigation.agvmap.json').is_file():
+        write(evidence / 'map.json', read(runtime.root / 'navigation.agvmap.json'))
+    execution_configuration = {key: runtime.settings.get(key) for key in ('TaskCreation', 'Dispatching', 'TrafficSegmentRelease')}
+    write(evidence / 'execution-configuration.json', execution_configuration)
     checks = []
     tasks = {}
     observer = None
@@ -236,12 +275,30 @@ def execute(runtime, request):
     completed_tasks = set()
     result_status = 'failed'
     message = ''
+    version_start = None
+    automatic = runtime.settings.get('TaskCreation', {}).get('AutomaticCreationEnabled') is True
+    baseline = set()
+    def discover(station):
+        rows = [row for row in query(runtime.root,
+            'select TaskId,StationId,VehicleId,RequestedVehicleId,CreateRequestId from dispatch_task where StationId=? order by CreatedAt', (station,))
+            if row['TaskId'] not in baseline and row['TaskId'] not in tasks]
+        if len(rows) > 1:
+            raise RuntimeError('一次工位呼叫出现多个新任务，保留现场核查：' + station)
+        if not rows: return None
+        row = rows[0]
+        if row.get('RequestedVehicleId') or row.get('CreateRequestId'):
+            raise RuntimeError('呼叫未经过正式PLC自动建单通道：' + station)
+        tid = row['TaskId']; tasks[tid] = dict(vehicle=row.get('VehicleId'), station=station)
+        write(evidence / 'task-identities.json', tasks)
+        return tid
     def check(name, passed, detail):
         checks.append(dict(name=name, status='passed' if passed else 'failed', detail=detail))
         if not passed: raise RuntimeError(name + '：' + str(detail))
     def create(station, vehicle, trigger=True):
         if trigger:
             write(runtime.root / 'device-input.json', dict(sequence=uuid.uuid4().hex, call=station))
+        if automatic:
+            return runtime.wait('正式后台未从PLC呼叫创建原任务：' + station, lambda: discover(station), 40)
         def available():
             value = runtime.api('/api/task-options')
             return value if value['available'] and any(s['stationId'] == station and s['available'] for s in value['stations']) else None
@@ -279,6 +336,8 @@ def execute(runtime, request):
         while time.monotonic() < deadline:
             if runtime.abort.is_set(): raise InterruptedError('场景已中止，原任务及占用保留；请核对后恢复。')
             details = {tid: runtime.api('/api/tasks/' + tid) for tid in ids}
+            for tid, detail in details.items():
+                tasks[tid]['vehicle'] = detail['task'].get('vehicleId') or tasks[tid]['vehicle']
             leases = observer.sample(details)
             if any(d['task']['stage'] in ('Faulted', 'Cancelled') for d in details.values()): raise RuntimeError('任务出现非预期故障或取消。')
             name = request['name']
@@ -363,6 +422,11 @@ def execute(runtime, request):
             runtime.abort.wait(.5)
         raise TimeoutError('任务未在期限内闭合，可能存在长期等待；保留全部现场。')
     try:
+        if hasattr(runtime, 'version_comparison'):
+            version_start = runtime.version_comparison.refresh()
+            write(evidence / 'version-start.json', version_start)
+        if automatic:
+            baseline = {row['TaskId'] for row in query(runtime.root, 'select TaskId from dispatch_task')}
         observer = Observer(runtime, evidence)
         recovering = request['name'] == 'resume-recovery'
         if recovering:
@@ -389,11 +453,14 @@ def execute(runtime, request):
             write(evidence / 'plc-delay-applied.json', applied)
             check('PLC延迟在建单前被设备确认', True, applied)
             fault_observed = True
-        pairs = list(zip(runtime.settings['Dispatching']['StationPickupSites'], [r['VehicleId'] for r in runtime.settings['Agv']['Robots']]))
+        pairs = [(station, None) for station in runtime.settings['Dispatching']['StationPickupSites']] if automatic else list(zip(runtime.settings['Dispatching']['StationPickupSites'], [r['VehicleId'] for r in runtime.settings['Agv']['Robots']]))
         if not pairs: raise ValueError('没有可测试的车辆与工位配对。')
         if request['name'] == 'plc-recovery': pairs = pairs[:1]
         if request['name'] == 'simultaneous-calls' and len(pairs) < 2: raise ValueError('同时呼叫场景至少需要两辆车和两个工位。')
-        if request['name'] == 'custom-calls':
+        if request['name'] == 'dispatch-backlog':
+            from automatic_calls import run_backlog
+            run_backlog(runtime, request, evidence, observer, tasks, completed_tasks, discover, check)
+        elif request['name'] == 'custom-calls':
             ordered = sorted(request['calls'], key=lambda call: (call['atSeconds'], call['stationId']))
             grouped = []
             for call in ordered:
@@ -405,7 +472,7 @@ def execute(runtime, request):
             round_started = time.monotonic()
             station_offsets = {station['stationId']: station['offset'] for station in runtime.lab.get('simulationTopology', {}).get('stations', [])}
             def calls_closed(group_calls):
-                memory = bytes.fromhex(runtime.device()['memory_hex'])
+                memory = bytes.fromhex(fresh_device_state(runtime)['memory_hex'])
                 return memory[610] == 0 and all(memory[station_offsets.get(call['stationId'], 0 if call['stationId'] == 'CNC-001' else 2)] == 10
                                                 for call in group_calls)
             closed_since = None
@@ -426,7 +493,7 @@ def execute(runtime, request):
                 sequence = uuid.uuid4().hex
                 payload = dict(sequence=sequence, call=stations[0]) if len(stations) == 1 else dict(sequence=sequence, calls=stations)
                 write(runtime.root / 'device-input.json', payload)
-                applied = runtime.wait('自定义呼叫批次未被设备确认', lambda: runtime.device().get('externalInput') if runtime.device().get('externalInput', {}).get('sequence') == sequence else None, 10)
+                applied = runtime.wait('自定义呼叫批次未被设备确认', lambda: external_input(runtime, sequence), 10)
                 check('自定义呼叫批次已由设备应用', applied.get('accepted') is True, applied)
                 write(evidence / ('call-batch-' + str(len(all_created)) + '-' + uuid.uuid4().hex + '.json'),
                       dict(request=payload, requestedAtSeconds=due, actualElapsedSeconds=time.monotonic()-round_started, applied=applied))
@@ -441,7 +508,7 @@ def execute(runtime, request):
                 if request['name'] in ('simultaneous-calls', 'disconnect-reconnect'):
                     sequence = uuid.uuid4().hex
                     write(runtime.root / 'device-input.json', dict(sequence=sequence, calls=[station for station, _ in pairs]))
-                    applied = runtime.wait('批量呼叫未被设备确认', lambda: runtime.device().get('externalInput') if runtime.device().get('externalInput', {}).get('sequence') == sequence else None, 10)
+                    applied = runtime.wait('批量呼叫未被设备确认', lambda: external_input(runtime, sequence), 10)
                     check('同一扫描周期批量呼叫已应用', applied.get('accepted') is True, applied)
                     write(evidence / ('batch-call-' + str(iteration) + '.json'), applied)
                     ids = [create(station, vehicle, trigger=False) for station, vehicle in pairs]
@@ -451,7 +518,7 @@ def execute(runtime, request):
                         if not complete([create(station, vehicle)]): break
                 if request['name'] == 'service-restart': break
                 def closed():
-                    memory = bytes.fromhex(runtime.device()['memory_hex'])
+                    memory = bytes.fromhex(fresh_device_state(runtime)['memory_hex'])
                     offsets = [station.get('offset', 0) for station in getattr(runtime, 'lab', {}).get('simulationTopology', {}).get('stations', [])] or [0, 2]
                     return all(memory[o] == 10 for o in offsets) and memory[610] == 0
                 runtime.wait('PLC最终握手未闭合', closed, 30)
@@ -494,6 +561,11 @@ def execute(runtime, request):
         if getattr(observer, 'ownership_samples', 0):
             check('同一车辆没有同时承担多个未结束任务', not any(v['kind'] == 'vehicle-multiple-tasks' for v in observer.violations),
                   f'{observer.ownership_samples}次独立数据库核对')
+        if automatic and tasks:
+            automatic_rows = query(runtime.root, 'select TaskId,RequestedVehicleId,CreateRequestId from dispatch_task')
+            selected = [row for row in automatic_rows if row['TaskId'] in tasks]
+            check('仅PLC呼叫建单且车辆由正式调度选择', len(selected) == len(tasks) and all(not row['RequestedVehicleId'] and not row['CreateRequestId'] for row in selected),
+                  '场景没有提交人工任务、指定车辆或修改调度数据库。')
         result_status = 'passed'; message = '恢复屏障已验证，保留活动任务待核对。' if request['name'] == 'service-restart' else '场景及闭环检查通过。'
     except InterruptedError as error:
         result_status = 'aborted'; message = str(error)
@@ -506,18 +578,31 @@ def execute(runtime, request):
         if observer and getattr(observer, 'seen_details', None):
             write(evidence / 'all-task-details.json', observer.seen_details)
         write(evidence / 'final-device-observation.json', runtime.device())
+        from simulation_reports import guidance
+        waiting_chain = guidance(getattr(observer, 'last_details', {}) or {}, runtime.device())
+        version_end = runtime.version_comparison.refresh() if hasattr(runtime, 'version_comparison') else None
+        if version_end: write(evidence / 'version-end.json', version_end)
+        queue_metrics = read(evidence / 'queue-summary.json') if (evidence / 'queue-summary.json').exists() else {}
         report = dict(id=runtime.scenario['id'], name=request['name'], status=result_status, message=message, checks=checks,
+            firstFailure=next((str(item['detail']) for item in checks if item['status'] == 'failed'), None),
+            waitingChain=waiting_chain, versionComparison=version_start,
+            versionComparisonEnd=version_end,
+            executionConfiguration=execution_configuration,
+            callMode='plc-automatic' if automatic else 'legacy-manual',
             completedBusinessCycle=result_status == 'passed' and bool(tasks) and completed_tasks == set(tasks) and not recovery_hold,
             recoveryHold=recovery_hold, faultApplied=fault_observed if request['name'] in
                 ('disconnect-reconnect', 'service-restart', 'plc-delay', 'plc-recovery') else None,
             startedAt=started, finishedAt=time.time(), evidenceDirectory=evidence.name,
             metrics=dict(taskCount=len(tasks), completedRounds=runtime.scenario['completedRounds'], durationSeconds=time.time()-started,
                          samples=observer.samples if observer else 0, minimumSeparationMeters=observer.minimum if observer else None,
-                         longestUnchangedStepSeconds=observer.max_wait if observer else 0),
+                         longestUnchangedStepSeconds=observer.max_wait if observer else 0,
+                         **{key:queue_metrics[key] for key in ('maximumWaitingTasks','maximumActiveTasks','maximumDuePlanCalls','maximumBusyWaitingTasks') if key in queue_metrics}),
             violations=observer.violations if observer else [], scope='正式后台 + 回环Robokit/S7合成模型；碰撞为采样间线性包络检查；超时可发现长期等待，不构成死锁/公平性证明；不代替现场固件、机械及安全验收。')
         write(evidence / 'report.json', report)
         files = [dict(path=p.name, sha256=hashlib.sha256(p.read_bytes()).hexdigest(), bytes=p.stat().st_size) for p in sorted(evidence.iterdir()) if p.is_file()]
         write(evidence / 'manifest.json', files)
         write(runtime.root / 'simulation-report.json', report)
         runtime.report = report
+        runtime.history_cache = (0, [])
+        runtime.guidance_cache = (time.monotonic(), waiting_chain)
         runtime.scenario.update(status=result_status, message=message)

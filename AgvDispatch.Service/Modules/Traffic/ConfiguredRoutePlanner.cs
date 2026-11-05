@@ -97,24 +97,29 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
             .Where(site => !string.IsNullOrWhiteSpace(site))
             .Select(site => MapRouteSiteMapper.ResolveLogicalNodeId(definition, site!))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        // Waiting, dumping and standby bays are no-through during ordinary routes.
+        // A corridor point may explicitly allow transit; its capacity-1 resource
+        // remains enforced by route resources.
         var protectedNodes = waitingAndDumping.Concat(standbyNodes).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        // Most standby bays remain no-through nodes. A corridor point may explicitly
-        // allow transit; its capacity-1 resource remains enforced by route resources.
         protectedNodes.RemoveWhere(id => definition.Nodes.Any(node =>
             node.Id.Equals(id, StringComparison.OrdinalIgnoreCase) && node.AllowTransitThrough));
         var plan = graph.FindShortestTransportRoute(
             logicalSource, logicalDestination, unavailableResourceIds, edgePenalties, protectedNodes, unavailableTraversals);
-        // A vehicle parked in one standby bay may need to pass another bay in the
-        // same cluster to reach the road network. Permit that departure path only
-        // when the intermediate standby nodes are known to be empty.
-        if (plan is null && _vehicleStates is not null && standbyNodes.Contains(logicalSource))
+        // A vehicle leaving a bay cluster may need to pass an empty sibling bay to
+        // reach the road network. This applies to standby bays and to the waiting /
+        // dumping cluster: the latter became reachable only as a protected
+        // intermediate node after the 28-stage return path was introduced. Permit
+        // the departure path only through cluster nodes observed empty; occupied
+        // siblings remain excluded.
+        var physicalBayNodes = standbyNodes.Concat(waitingAndDumping).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (plan is null && _vehicleStates is not null && physicalBayNodes.Contains(logicalSource))
         {
-            var occupiedStandby = _vehicleStates.GetAll()
+            var occupiedBays = _vehicleStates.GetAll()
                 .Where(vehicle => !string.IsNullOrWhiteSpace(vehicle.CurrentStation))
                 .Select(vehicle => MapRouteSiteMapper.ResolveLogicalNodeId(definition, vehicle.CurrentStation!))
-                .Where(id => standbyNodes.Contains(id) && !id.Equals(logicalSource, StringComparison.OrdinalIgnoreCase))
+                .Where(id => physicalBayNodes.Contains(id) && !id.Equals(logicalSource, StringComparison.OrdinalIgnoreCase))
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
-            var departureProtected = waitingAndDumping.Concat(occupiedStandby).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var departureProtected = occupiedBays;
             plan = graph.FindShortestTransportRoute(
                 logicalSource, logicalDestination, unavailableResourceIds, edgePenalties, departureProtected, unavailableTraversals);
         }

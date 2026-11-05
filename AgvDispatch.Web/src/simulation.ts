@@ -46,7 +46,7 @@ export interface SimulationCurrentMap {
   identity: WebMap;
   definition: SimulationMapDefinition;
   parameters: { mapId?: string; mapVersionId?: string; configuration?: {
-    pickups?: { pickupSite: string }[]; waitingSites?: string[]; waitingSite?: string; dumpingSite?: string;
+    pickups?: { stationId?: string; pickupSite: string }[]; waitingSites?: string[]; waitingSite?: string; dumpingSite?: string;
   } } | null;
   parameterWarning: string;
 }
@@ -72,7 +72,7 @@ export async function loadCurrentSimulationMap(read: (path: string) => Promise<u
     throw new Error('拉取期间运行地图发生变化或连接已失效，未替换仿真地图。请刷新后重新拉取。');
   return { identity, definition, parameters, parameterWarning };
 }
-export interface SimulationStationConfiguration { stationId: 'CNC-001' | 'CNC-002'; pickupSite: string; offset?: number }
+export interface SimulationStationConfiguration { stationId: string; pickupSite: string; offset?: number; signalSource?: 'verified' | 'isolated-synthetic'; priority?: number }
 export interface SimulationVehicleConfiguration {
   id: string; initialSite: string; radiusMeters: number; initialLoaded?: boolean;
   batteryPercent?: number; speedScale?: number; voltageCurve?: { percent: number; voltage: number }[];
@@ -84,7 +84,15 @@ export interface SimulationConfigureRequest {
   dumper: { dumpingSite: string; waitingSite: string; waitingSites?: string[]; resourceId: string };
   inspectionSite: string;
 }
-export interface SimulationCall { stationId: 'CNC-001' | 'CNC-002'; atSeconds: number; vehicleId?: string | null }
+export interface SimulationCall { stationId: string; atSeconds: number; vehicleId?: string | null }
+export interface SimulationScheme { id: string; name: string; updatedAt?: number; mapName?: string; vehicleCount?: number; stationCount?: number; scenarioName?: string }
+export interface SimulationGuidance { taskId: string; vehicleId?: string; stationId?: string; stepNumber?: number; stepName?: string; blockedBy?: string; restoreAction?: string; expectedFeedback?: string }
+export interface SimulationReplayFrame {
+  time: number; vehicles?: { vehicleId: string; x: number; y: number; site?: string; waitReason?: string; taskId?: string }[];
+  tasks?: { taskId: string; stationId?: string; vehicleId?: string; stage?: string; step?: string | number; waitReason?: string }[];
+  leases?: unknown[];
+}
+export interface SimulationReplay { id: string; timeline: SimulationReplayFrame[]; map?: SimulationMapDefinition; mapMessage?: string | null; sampled?: boolean }
 export interface SimulationRecoveryItem {
   ticketId: string; taskId: string; stepId?: string; stepText: string; state: string; reason: string; verified: boolean;
   revision: number; vehicleId?: string | null; vehicleSummary?: string; plcSummary?: string; resourceSummary?: string; loadSummary?: string;
@@ -103,10 +111,48 @@ export interface SimulationEquipmentStatus {
   signals?: Record<string, unknown>; schedules?: unknown[]; signalEvents?: Record<string, unknown>[]; error?: string;
 }
 export interface SimulationCheck { name: string; status: string; detail?: unknown }
+export interface SimulationVersionComparison {
+  status?: string; message?: string;
+  simulation?: { informationalVersion?: string | null; buildId?: string; [key: string]: unknown } | null;
+  field?: { informationalVersion?: string | null; buildId?: string; [key: string]: unknown } | null;
+  observedAt?: number | null; scope?: string;
+  differences?: { key?: string; label?: string; simulation?: unknown; field?: unknown; [key: string]: unknown }[];
+  [key: string]: unknown;
+}
 export interface SimulationReport {
   status: string; checks?: SimulationCheck[]; metrics?: Record<string, unknown>;
   id?: string; name?: string; message?: string; generatedAt?: string | number; finishedAt?: string | number;
   recoveryHold?: boolean; completedBusinessCycle?: boolean; [key: string]: unknown;
+  firstFailure?: string | { message?: string; taskId?: string; vehicleId?: string; stepName?: string };
+  waitingChain?: { taskId?: string; vehicleId?: string; stationId?: string; stepName?: string; waitReason?: string; blockedBy?: string; site?: string }[];
+  versionComparison?: SimulationVersionComparison;
+}
+
+const metricNames: Record<string, string> = {
+  taskCount: '任务数', completedTaskCount: '已完成任务数', completedRounds: '完成轮数', durationSeconds: '运行时长（秒）',
+  samples: '观察采样数', minimumSeparationMeters: '车辆最小间距（米）', longestUnchangedStepSeconds: '最长步骤等待（秒）',
+  commandCount: '原始运输命令数', vehicleCount: '车辆数', callCount: '计划呼叫数', issuedCalls: '已触发呼叫数',
+  maximumQueuedTasks: '最大排队任务数', maximumActiveTasks: '最大执行任务数', longestWaitSeconds: '最长派车等待（秒）',
+  maxWaitingSeconds: '最长派车等待（秒）', duplicateVehicleAssignments: '同车重复分配次数', stationCount: '工位数',
+  acceptedCalls: '已接收呼叫数', peakQueueLength: '最大积压任务数', maxQueueDepth: '最大积压任务数',
+  maximumWaitingTasks: '最多待派任务', maximumDuePlanCalls: '最多到期待发呼叫', maximumBusyWaitingTasks: '全部车辆忙碌时最多待派任务'
+};
+export function simulationMetricLabel(key: string): string {
+  return metricNames[key] ?? (/[\u3400-\u9fff]/.test(key) ? key : '扩展检查指标');
+}
+export function simulationMetricValue(value: unknown): string {
+  if (typeof value === 'boolean') return value ? '是' : '否';
+  if (typeof value === 'number') return Number.isFinite(value) ? new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 3 }).format(value) : '证据无效';
+  return typeof value === 'string' ? value : '未提供';
+}
+export function simulationMetricComparison(current: Record<string, unknown> = {}, previous: Record<string, unknown> = {}) {
+  return Object.entries(current).flatMap(([key, value]) => typeof value === 'number' && Number.isFinite(value) &&
+    typeof previous[key] === 'number' && Number.isFinite(previous[key])
+    ? [{ key, label: simulationMetricLabel(key), current: value, previous: previous[key] as number, delta: value - (previous[key] as number) }] : []);
+}
+export function simulationReplayCars(frame?: SimulationReplayFrame): Record<string, SimulationVehicle> {
+  return Object.fromEntries((frame?.vehicles ?? []).filter(vehicle => !!vehicle.vehicleId && Number.isFinite(vehicle.x) && Number.isFinite(vehicle.y))
+    .map(vehicle => [vehicle.vehicleId, { x: vehicle.x, y: vehicle.y, station: vehicle.site, current_task: vehicle.taskId, waitReason: vehicle.waitReason }]));
 }
 export interface SimulationScenario {
   id?: string; name?: string; status: string; completedRounds?: number; totalRounds?: number;
@@ -125,6 +171,12 @@ export interface SimulationStatus {
   recovery?: SimulationRecovery | null;
   protocol?: SimulationProtocolStatus | null;
   equipment?: SimulationEquipmentStatus | null;
+  schemes?: SimulationScheme[]; selectedSchemeId?: string | null;
+  recentInstances?: { rootName: string; mapName?: string; vehicleCount?: number; stationCount?: number; updatedAt?: number }[];
+  stationCatalog?: { stationId: string; offset?: number; signalSource: 'verified' | 'isolated-synthetic'; sourceLabel?: string; fieldConfirmed?: boolean }[];
+  history?: SimulationReport[]; recoveryGuidance?: SimulationGuidance[];
+  startupPlan?: { status: string; message?: string };
+  versionComparison?: SimulationVersionComparison;
 }
 export interface SimulationControls {
   sequence: string;
@@ -133,7 +185,7 @@ export interface SimulationControls {
 }
 export interface SimulationRun {
   name: 'normal-cycle' | 'simultaneous-calls' | 'custom-calls' | 'disconnect-reconnect' | 'plc-delay' |
-    'service-restart' | 'plc-recovery' | 'resume-recovery';
+    'service-restart' | 'plc-recovery' | 'resume-recovery' | 'dispatch-backlog';
   rounds: number; intervalSeconds: number; timeoutSeconds: number; calls?: SimulationCall[];
   plcFault?: 'ready' | 'done'; holdSeconds?: number; restartStage?: 'pickup' | 'delivery';
 }

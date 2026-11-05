@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from controller import read, write
-from scenarios import complete_command_set, control_applied, describe_progress, execute, fresh_device_state, submit_original_task, validate_scenario
+from scenarios import complete_command_set, control_applied, describe_progress, execute, fresh_device_state, mutual_wait_pairs, submit_original_task, validate_scenario
 
 
 class Event:
@@ -21,6 +21,7 @@ class Event:
 
 class Child:
     pid = 41
+    def poll(self): return None
     def terminate(self): pass
     def wait(self, timeout): pass
 
@@ -172,6 +173,11 @@ class VerdictTests(unittest.TestCase):
         self.assertFalse(complete_command_set(rows, {'original-task': {}}))
         rows = commands() + [dict(c, CommandId='other-'+c['CommandId']) for c in commands()]
         self.assertFalse(complete_command_set(rows, {'original-task': {}, 'missing-task': {}}))
+
+    def test_mutual_blockers_are_distinguished_from_a_one_way_queue(self):
+        self.assertEqual(mutual_wait_pairs({'b': dict(blockedByVehicle='a'), 'a': dict(blockedByVehicle='b')}),
+                         [('a', 'b')])
+        self.assertEqual(mutual_wait_pairs({'a': dict(blockedByVehicle='b'), 'b': dict()}), [])
 
     def run_case(self, root, scenario, mode='complete', **parameters):
         runtime = Runtime(root, mode)

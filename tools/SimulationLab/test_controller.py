@@ -114,6 +114,8 @@ class SimulationTests(unittest.TestCase):
         runtime = object.__new__(Runtime)
         runtime.phase='running'; runtime.lock=threading.RLock(); runtime.children={}; runtime.scenario={};runtime.report=None;runtime.controls={};runtime.error=None
         runtime.root=Path('test'); runtime.device=lambda:dict(time=time.time()-10)
+        runtime.history_cache=(time.monotonic(), []); runtime.guidance_cache=(0, [])
+        runtime.scheme_store=None; runtime.startup_plan=None
         with patch('controller.read',return_value={}): self.assertFalse(runtime.status()['fresh'])
 
     def test_readonly_observer_detects_overcapacity(self):

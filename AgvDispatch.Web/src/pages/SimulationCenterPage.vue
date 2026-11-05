@@ -2,9 +2,10 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { IconPlayerPlay, IconPlayerStop, IconRefresh, IconDownload, IconFlask, IconRobot } from '@tabler/icons-vue';
 import { simulationApi, simulationFresh, simulationGeometry, simulationLabel, loadCurrentSimulationMap, simulationTone, scenarioActive,
+  simulationMetricLabel, simulationMetricValue, simulationMetricComparison, simulationReplayCars,
   type SimulationStatus, type SimulationRun, type SimulationControls, type SimulationReport,
   type SimulationConfigureRequest, type SimulationMapDefinition, type SimulationCall,
-  type SimulationRecoveryItem } from '../simulation';
+  type SimulationRecoveryItem, type SimulationReplay, type SimulationStationConfiguration } from '../simulation';
 import { importProfControlRpj } from '../profcontrol-rpj';
 import { actionStateLabel, equipmentDirectionLabel, industrialText } from '../operator-labels';
 import { useDispatchStore } from '../stores/dispatch';
@@ -21,7 +22,14 @@ const plcFault = ref<'ready' | 'done'>('ready'), plcFaultHold = ref(10);
 const restartStage = ref<'pickup' | 'delivery'>('pickup');
 const mapDefinition = ref<SimulationMapDefinition | null>(null), mapFileName = ref('');
 const liveMapIdentity = ref('');
-const stationPickupA = ref(''), stationPickupB = ref(''), waitingSite = ref(''), dumpingSite = ref('');
+const stationDrafts = ref<SimulationStationConfiguration[]>([
+  { stationId: 'CNC-001', pickupSite: '', signalSource: 'verified' },
+  { stationId: 'CNC-002', pickupSite: '', signalSource: 'verified' }
+]);
+const waitingSite = ref(''), dumpingSite = ref('');
+const schemeName = ref(''), selectedScheme = ref(''), selectedHistory = ref(''), comparisonId = ref('');
+const selectedReport = ref<SimulationReport | null>(null), comparisonReport = ref<SimulationReport | null>(null);
+const replay = ref<SimulationReplay | null>(null), replayIndex = ref(0), replayPlaying = ref(false), historyReading = ref(false);
 const additionalWaitingSites = ref<string[]>([]);
 const inspectionSite = ref(''), dumperResourceId = ref('');
 const customVehicles = ref([
@@ -61,12 +69,20 @@ const appliedBlockedEdges = computed(() => vehicle.value?.simulationControl?.blo
 const blockableEdges = computed(() => (status.value?.map?.edges ?? []).filter(edge => !!edge.id));
 const geometry = computed(() => simulationGeometry(status.value?.map?.nodes ?? [], status.value?.map?.edges ?? [], cars.value));
 const progress = computed(() => Math.min(100, Math.max(0, (status.value?.scenario?.completedRounds ?? 0) / Math.max(1, status.value?.scenario?.totalRounds ?? 1) * 100)));
-const report = computed(() => status.value?.report);
+const report = computed(() => selectedReport.value ?? status.value?.report);
 const historicalReport = computed(() => !!report.value?.id && !!status.value?.scenario?.id && report.value.id !== status.value.scenario.id);
 const scenarioNames: Record<string, string> = { 'normal-cycle': '完整业务循环', 'simultaneous-calls': '多工位同时呼叫',
-  'custom-calls': '自定义呼叫计划', 'disconnect-reconnect': '车辆断连与重连', 'plc-delay': 'PLC 反馈延迟',
+  'custom-calls': '自定义呼叫计划', 'dispatch-backlog': '正式调度持续排队测试', 'disconnect-reconnect': '车辆断连与重连', 'plc-delay': 'PLC 反馈延迟',
   'plc-recovery': 'PLC卡位与恢复', 'service-restart': '后台重启与恢复屏障', 'resume-recovery': '恢复后继续原任务' };
 const metrics = computed(() => Object.entries(report.value?.metrics ?? {}).filter(([, value]) => value !== null && typeof value !== 'object'));
+const metricComparison = computed(() => simulationMetricComparison(report.value?.metrics, comparisonReport.value?.metrics));
+const firstFailure = computed(() => typeof report.value?.firstFailure === 'string' ? report.value.firstFailure :
+  report.value?.firstFailure?.message || report.value?.checks?.find(check => ['fail', 'failed', 'error'].includes(check.status))?.detail);
+const versionComparison = computed(() => status.value?.versionComparison);
+const configuredStationIds = computed(() => (status.value?.running ? status.value.configuration?.stations ?? stationDrafts.value : stationDrafts.value).map(station => station.stationId));
+const replayFrame = computed(() => replay.value?.timeline[replayIndex.value]);
+const replayGeometry = computed(() => simulationGeometry((replay.value?.map ?? status.value?.map)?.nodes ?? [],
+  (replay.value?.map ?? status.value?.map)?.edges ?? [], simulationReplayCars(replayFrame.value)));
 const runValid = computed(() => Number.isInteger(run.value.rounds) && run.value.rounds >= 1 && run.value.rounds <= 100 &&
   Number.isFinite(run.value.intervalSeconds) && run.value.intervalSeconds >= 0 && run.value.intervalSeconds <= 60 &&
   Number.isFinite(run.value.timeoutSeconds) && run.value.timeoutSeconds >= 30 && run.value.timeoutSeconds <= 3600);
@@ -90,6 +106,7 @@ const scenarioDescriptions: Record<SimulationRun['name'], string> = {
   'normal-cycle': '从工位呼叫开始，经过取箱、等待、倒料、返空和28阶段握手，验证一次完整业务闭环。',
   'simultaneous-calls': '两个呼叫工位在同一设备扫描周期置位，验证并发建单、车辆分配、交通资源等待和最终释放。',
   'custom-calls': '按指定次数、批次间隔、工位顺序和车辆运行呼叫计划，适合反复包场或定点压测。',
+  'dispatch-backlog': '按时间表持续产生工位呼叫，不指定车辆。由正式后台建单、选择空闲车辆和维护队列，检查忙车排除、重复占车与等待链。',
   'disconnect-reconnect': '在正式运输命令执行中切断车端通信，再恢复连接，验证原任务和路权能否续接。',
   'plc-delay': '延迟或阻止倒料机“就绪许可”和“倒料完成”反馈，验证握手阶段不会越级，恢复后仍能按原链路闭合。',
   'plc-recovery': '把指定 PLC 信号卡住一段时间后恢复，验证卡位期间任务保持等待且没有跳过步骤。',
@@ -129,32 +146,70 @@ function followNextAction() {
   if (nextAction.value.kind === 'cleanup') void action('stop');
 }
 const callPlanValid = computed(() => Number.isInteger(callCount.value) && callCount.value >= 1 && callCount.value <= 500 &&
-  Number.isFinite(callInterval.value) && callInterval.value >= 0 && callInterval.value <= 60 && [1, 2].includes(callBatchSize.value) &&
-  callPattern.value.split(',').map(value => value.trim()).filter(value => value === 'CNC-001' || value === 'CNC-002').length > 0);
+  Number.isFinite(callInterval.value) && callInterval.value >= 0 && callInterval.value <= 60 && Number.isInteger(callBatchSize.value) &&
+  callBatchSize.value >= 1 && callBatchSize.value <= configuredStationIds.value.length &&
+  callPattern.value.split(',').map(value => value.trim()).every(value => configuredStationIds.value.includes(value)));
 function voltageCurveValid(curve: VehicleDraft['voltageCurve']): boolean {
   if (!Array.isArray(curve) || curve.length < 2 || curve.length > 20) return false;
   if (!curve.every(point => Number.isFinite(point.percent) && point.percent >= 0 && point.percent <= 100 &&
     Number.isFinite(point.voltage) && point.voltage >= 0.1 && point.voltage <= 1000)) return false;
   return new Set(curve.map(point => point.percent)).size === curve.length;
 }
-const configurationValid = computed(() => !!mapDefinition.value && !!stationPickupA.value && !!waitingSite.value && !!dumpingSite.value &&
-  !!dumperResourceId.value && !!inspectionSite.value && customVehicles.value.length >= 1 && customVehicles.value.length <= 8 &&
-  (!stationPickupB.value || stationPickupB.value !== stationPickupA.value) && waitingSite.value !== dumpingSite.value &&
-  additionalWaitingSites.value.every(site => site !== waitingSite.value && site !== dumpingSite.value && mapNodes.value.some(node => node.id === site)) &&
-  customVehicles.value.every(vehicle => /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/.test(vehicle.id) && !!vehicle.initialSite &&
-    Number.isFinite(vehicle.radiusMeters) && vehicle.radiusMeters >= 0.1 && vehicle.radiusMeters <= 5 &&
-    Number.isFinite(vehicle.batteryPercent) && vehicle.batteryPercent! >= 0 && vehicle.batteryPercent! <= 100 &&
-    Number.isFinite(vehicle.speedScale) && vehicle.speedScale! >= 0.1 && vehicle.speedScale! <= 10 &&
-    Number.isFinite(vehicle.accelerationMetersPerSecondSquared) && vehicle.accelerationMetersPerSecondSquared! >= 0.05 &&
-    vehicle.accelerationMetersPerSecondSquared! <= 10 && Number.isFinite(vehicle.operationSeconds) &&
-    vehicle.operationSeconds! >= 0.1 && vehicle.operationSeconds! <= 120 &&
-    Number.isFinite(vehicle.travelCostPercentPerMeter) && vehicle.travelCostPercentPerMeter! >= 0 &&
-    vehicle.travelCostPercentPerMeter! <= 10 && Number.isFinite(vehicle.idleCostPercentPerHour) &&
-    vehicle.idleCostPercentPerHour! >= 0 && vehicle.idleCostPercentPerHour! <= 100 &&
-    voltageCurveValid(vehicle.voltageCurve) && Number.isFinite(vehicle.chargingGainPercentPerHour) &&
-    vehicle.chargingGainPercentPerHour! >= 0 && vehicle.chargingGainPercentPerHour! <= 100) &&
-  new Set(customVehicles.value.map(vehicle => vehicle.id)).size === customVehicles.value.length &&
-  new Set(customVehicles.value.map(vehicle => vehicle.initialSite)).size === customVehicles.value.length);
+const configurationProblems = computed(() => {
+  const problems: string[] = [];
+  if (!mapDefinition.value) problems.push('尚未载入地图。');
+  if (stationDrafts.value.length < 1 || stationDrafts.value.length > 32) problems.push('工位数量须为1至32个。');
+  const verified = new Set((status.value?.stationCatalog ?? [
+    { stationId: 'CNC-001', signalSource: 'verified' },
+    { stationId: 'CNC-002', signalSource: 'verified' }
+  ]).filter(item => item.signalSource === 'verified').map(item => item.stationId));
+  stationDrafts.value.forEach((station, index) => {
+    const label = `工位${index + 1}`;
+    if (!/^CNC-\d{3}$/.test(station.stationId)) problems.push(`${label}编号格式无效。`);
+    if (!station.pickupSite || !mapNodes.value.some(node => node.id === station.pickupSite)) problems.push(`${label}未选择有效取货节点。`);
+    if (station.priority !== undefined && (!Number.isInteger(station.priority) || station.priority < 0 || station.priority > 100))
+      problems.push(`${label}优先级须为0至100的整数。`);
+    if (station.signalSource !== 'isolated-synthetic' && !verified.has(station.stationId))
+      problems.push(`${label}的点位未在当前有效点表中确认，请改选“隔离合成点位”。`);
+  });
+  if (new Set(stationDrafts.value.map(station => station.stationId)).size !== stationDrafts.value.length)
+    problems.push('工位编号不能重复。');
+  if (new Set(stationDrafts.value.map(station => station.pickupSite)).size !== stationDrafts.value.length)
+    problems.push('各工位不能共用同一取货节点。');
+  if (!waitingSite.value) problems.push('未选择主等待位。');
+  if (!dumpingSite.value) problems.push('未选择倒料位。');
+  if (!inspectionSite.value) problems.push('未选择检修或设备观察点。');
+  if (!dumperResourceId.value) problems.push('未选择倒料资源边界。');
+  if (waitingSite.value && waitingSite.value === dumpingSite.value) problems.push('主等待位与倒料位不能相同。');
+  if (additionalWaitingSites.value.some(site => site === waitingSite.value || site === dumpingSite.value || !mapNodes.value.some(node => node.id === site)))
+    problems.push('其他等待位包含重复、无效或与倒料位相同的节点。');
+  if (customVehicles.value.length < 1 || customVehicles.value.length > 8) problems.push('车辆数量须为1至8辆。');
+  customVehicles.value.forEach((vehicle, index) => {
+    const label = `车辆${index + 1}`;
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/.test(vehicle.id)) problems.push(`${label} ID格式无效。`);
+    if (!vehicle.initialSite || !mapNodes.value.some(node => node.id === vehicle.initialSite)) problems.push(`${label}未选择有效初始节点。`);
+    if (!Number.isFinite(vehicle.radiusMeters) || vehicle.radiusMeters < 0.1 || vehicle.radiusMeters > 5) problems.push(`${label}包络半径无效。`);
+    if (!Number.isFinite(vehicle.batteryPercent) || vehicle.batteryPercent < 0 || vehicle.batteryPercent > 100) problems.push(`${label}电量无效。`);
+    if (!Number.isFinite(vehicle.speedScale) || vehicle.speedScale < 0.1 || vehicle.speedScale > 10) problems.push(`${label}速度倍率无效。`);
+    if (!Number.isFinite(vehicle.accelerationMetersPerSecondSquared) || vehicle.accelerationMetersPerSecondSquared < 0.05 ||
+      vehicle.accelerationMetersPerSecondSquared > 10) problems.push(`${label}加速度无效。`);
+    if (!Number.isFinite(vehicle.operationSeconds) || vehicle.operationSeconds < 0.1 || vehicle.operationSeconds > 120)
+      problems.push(`${label}取放动作时长无效。`);
+    if (!Number.isFinite(vehicle.travelCostPercentPerMeter) || vehicle.travelCostPercentPerMeter < 0 ||
+      vehicle.travelCostPercentPerMeter > 10) problems.push(`${label}行驶耗电参数无效。`);
+    if (!Number.isFinite(vehicle.idleCostPercentPerHour) || vehicle.idleCostPercentPerHour < 0 || vehicle.idleCostPercentPerHour > 100)
+      problems.push(`${label}待机耗电参数无效。`);
+    if (!voltageCurveValid(vehicle.voltageCurve)) problems.push(`${label}电池电压曲线无效。`);
+    if (!Number.isFinite(vehicle.chargingGainPercentPerHour) || vehicle.chargingGainPercentPerHour < 0 ||
+      vehicle.chargingGainPercentPerHour > 100) problems.push(`${label}充电参数无效。`);
+  });
+  if (new Set(customVehicles.value.map(vehicle => vehicle.id)).size !== customVehicles.value.length)
+    problems.push('车辆 ID 不能重复。');
+  if (new Set(customVehicles.value.map(vehicle => vehicle.initialSite)).size !== customVehicles.value.length)
+    problems.push('每辆虚拟车必须使用不同初始节点。');
+  return [...new Set(problems)];
+});
+const configurationValid = computed(() => configurationProblems.value.length === 0);
 function stamp(value?: string | number): string {
   if (value === undefined) return '尚无记录';
   const date = new Date(typeof value === 'number' ? value * 1000 : value);
@@ -164,8 +219,9 @@ function defaultSite(names: string[], fallbackIndex: number): string {
   return mapNodes.value.find(node => names.some(name => node.id.includes(name)))?.id ?? mapNodes.value[fallbackIndex]?.id ?? '';
 }
 function resetVehicleOrigins() {
-  const excluded = new Set([stationPickupA.value, stationPickupB.value, waitingSite.value, ...additionalWaitingSites.value, dumpingSite.value, inspectionSite.value].filter(Boolean));
-  const stationOrigins = [stationPickupA.value, stationPickupB.value, inspectionSite.value,
+  const pickups = stationDrafts.value.map(station => station.pickupSite);
+  const excluded = new Set([...pickups, waitingSite.value, ...additionalWaitingSites.value, dumpingSite.value, inspectionSite.value].filter(Boolean));
+  const stationOrigins = [...pickups, inspectionSite.value,
     ...mapNodes.value.filter(node => node.type === 'Station' && !excluded.has(node.id)).map(node => node.id)];
   const origins = [...new Set(stationOrigins.filter(Boolean).concat(mapNodes.value.map(node => node.id).filter(id => !excluded.has(id))))];
   customVehicles.value.forEach((vehicle, index) => { vehicle.initialSite = origins[index] ?? mapNodes.value[index]?.id ?? ''; });
@@ -192,8 +248,10 @@ async function loadMapFile(event: Event) {
       }));
       newVehicleCount.value = customVehicles.value.length;
     }
-    stationPickupA.value = defaultSite(['取货A', 'LM101', 'CNC-001'], 0);
-    stationPickupB.value = defaultSite(['取货B', 'LM102', 'CNC-002'], 1);
+    stationDrafts.value = [
+      { stationId: 'CNC-001', pickupSite: defaultSite(['取货A', 'LM101', 'CNC-001'], 0), signalSource: 'verified' },
+      { stationId: 'CNC-002', pickupSite: defaultSite(['取货B', 'LM102', 'CNC-002'], 1), signalSource: 'verified' }
+    ];
     dumpingSite.value = defaultSite(['倒料', 'LM108'], 2);
     waitingSite.value = defaultSite(['等待', 'LM107'], 3);
     additionalWaitingSites.value = [];
@@ -218,15 +276,32 @@ async function loadCurrentMap() {
     mapFileName.value = '当前运行地图完整副本';
     const configuration = imported.parameters?.configuration;
     const validSite = (site?: string) => mapNodes.value.some(node => node.id === site) ? site! : '';
-    stationPickupA.value = validSite(configuration?.pickups?.[0]?.pickupSite);
-    stationPickupB.value = validSite(configuration?.pickups?.[1]?.pickupSite);
+    const verifiedStations = new Set((status.value?.stationCatalog ?? [])
+      .filter(station => station.signalSource === 'verified' && station.fieldConfirmed !== false)
+      .map(station => station.stationId));
+    stationDrafts.value = (configuration?.pickups ?? []).map((pickup, index) => {
+      const stationId = pickup.stationId || `CNC-${String(index + 1).padStart(3, '0')}`;
+      return {
+        stationId,
+        pickupSite: validSite(pickup.pickupSite),
+        signalSource: verifiedStations.has(stationId) ? 'verified' : 'isolated-synthetic'
+      };
+    });
+    if (!stationDrafts.value.length) stationDrafts.value = [{ stationId: 'CNC-001', pickupSite: '', signalSource: 'verified' }];
     waitingSite.value = validSite(configuration?.waitingSites?.[0] ?? configuration?.waitingSite);
     additionalWaitingSites.value = (configuration?.waitingSites ?? []).slice(1).map(site => validSite(site)).filter(Boolean);
     dumpingSite.value = validSite(configuration?.dumpingSite);
     const dumpBindings = mapNodes.value.find(node => node.id === dumpingSite.value)?.resourceIds ?? [];
     const dumpResources = mapResources.value.filter(resource => dumpBindings.includes(resource.id));
     dumperResourceId.value = dumpResources.length === 1 ? dumpResources[0]!.id : '';
-    inspectionSite.value = '';
+    const reservedSites = new Set([
+      ...stationDrafts.value.map(station => station.pickupSite),
+      waitingSite.value,
+      ...additionalWaitingSites.value,
+      dumpingSite.value
+    ].filter(Boolean));
+    inspectionSite.value = validSite(status.value?.configuration?.inspectionSite) ||
+      mapNodes.value.find(node => !reservedSites.has(node.id))?.id || '';
     resetVehicleOrigins();
     notice.value = `已复制当前发布地图的完整道路、曲线和资源绑定。${imported.parameterWarning || '已套用同一地图版本的工位参数。'}请选择检修点，并核对倒料资源和车辆起点后创建隔离实例。`;
   } catch (reason) {
@@ -264,33 +339,80 @@ function removeVoltagePoint(vehicle: VehicleDraft, index: number) {
 function sortVoltageCurve(vehicle: VehicleDraft) {
   vehicle.voltageCurve?.sort((left, right) => left.percent - right.percent);
 }
-async function configureSimulation() {
-  if (!configurationValid.value || !mapDefinition.value || status.value?.running || active.value) return;
-  const stations: SimulationConfigureRequest['stations'] = [{ stationId: 'CNC-001', pickupSite: stationPickupA.value }];
-  if (stationPickupB.value) stations.push({ stationId: 'CNC-002' as const, pickupSite: stationPickupB.value });
-  const payload: SimulationConfigureRequest = {
+function configurationDraft(): SimulationConfigureRequest | null {
+  if (!configurationValid.value || !mapDefinition.value) return null;
+  return {
     name: mapDefinition.value.name || mapFileName.value.replace(/\.json$/i, '') || 'custom-simulation',
-    mapDefinition: mapDefinition.value, stations,
+    mapDefinition: mapDefinition.value, stations: stationDrafts.value.map(station => ({ ...station })),
     vehicles: customVehicles.value.map(vehicle => ({ ...vehicle,
       voltageCurve: [...vehicle.voltageCurve].sort((left, right) => left.percent - right.percent) })),
     dumper: { dumpingSite: dumpingSite.value, waitingSite: waitingSite.value, waitingSites: [waitingSite.value, ...additionalWaitingSites.value], resourceId: dumperResourceId.value },
     inspectionSite: inspectionSite.value
   };
-  await action('configure', payload);
+}
+async function configureSimulation() {
+  if (status.value?.running || active.value) return;
+  const payload = configurationDraft(); if (payload) await action('configure', payload);
 }
 function buildCustomCalls(): SimulationCall[] {
-  const pattern = callPattern.value.split(',').map(value => value.trim()).filter((value): value is 'CNC-001' | 'CNC-002' => value === 'CNC-001' || value === 'CNC-002');
+  const pattern = callPattern.value.split(',').map(value => value.trim()).filter(value => configuredStationIds.value.includes(value));
   return Array.from({ length: callCount.value }, (_, index) => ({
     stationId: pattern[index % pattern.length], atSeconds: Math.floor(index / callBatchSize.value) * callInterval.value,
-    vehicleId: callVehicleId.value || null
+    ...(run.value.name === 'dispatch-backlog' ? {} : { vehicleId: callVehicleId.value || null })
   }));
+}
+function scenarioDraft(): SimulationRun {
+  const payload: SimulationRun = { ...run.value };
+  if (['custom-calls', 'dispatch-backlog'].includes(payload.name)) payload.calls = buildCustomCalls();
+  if (payload.name === 'plc-recovery') { payload.plcFault = plcFault.value; payload.holdSeconds = plcFaultHold.value; }
+  if (payload.name === 'service-restart') payload.restartStage = restartStage.value;
+  return payload;
+}
+function addStation() {
+  const used = new Set(stationDrafts.value.map(station => station.stationId));
+  const verified = status.value?.stationCatalog?.find(station => station.signalSource === 'verified' && !used.has(station.stationId));
+  const next = Array.from({ length: 999 }, (_, index) => `CNC-${String(index + 1).padStart(3, '0')}`).find(id => !used.has(id))!;
+  stationDrafts.value.push({ stationId: verified?.stationId ?? next, pickupSite: '', signalSource: verified ? 'verified' : 'isolated-synthetic' });
+}
+async function saveScheme() {
+  if (!schemeName.value.trim()) return;
+  if (!runValid.value) { actionError.value = '请核对场景轮数、间隔和超时后再保存方案。'; return; }
+  const configuration = configurationDraft();
+  if (mapDefinition.value && !configuration) { actionError.value = '请完善当前地图和车辆草稿后再保存方案。'; return; }
+  if (['custom-calls', 'dispatch-backlog'].includes(run.value.name) && !callPlanValid.value) { actionError.value = '请核对呼叫计划后再保存方案。'; return; }
+  await action('scheme-save', { name: schemeName.value.trim(), ...(configuration ? { configuration } : {}), scenario: scenarioDraft() });
+}
+async function deleteScheme() {
+  if (!selectedScheme.value || !window.confirm('删除这个保存方案？不会停止或删除历史仿真实例与报告。')) return;
+  await action('scheme-delete', { id: selectedScheme.value });
+  selectedScheme.value = '';
+}
+async function selectHistory() {
+  replayPlaying.value = false; replay.value = null; replayIndex.value = 0;
+  if (!selectedHistory.value) { selectedReport.value = null; return; }
+  historyReading.value = true;
+  try { selectedReport.value = await simulationApi<SimulationReport>('/report?id=' + encodeURIComponent(selectedHistory.value)); }
+  catch (reason) { actionError.value = reason instanceof Error ? reason.message : String(reason); }
+  finally { historyReading.value = false; }
+}
+async function compareHistory() {
+  comparisonReport.value = null;
+  if (!comparisonId.value) return;
+  try { comparisonReport.value = await simulationApi<SimulationReport>('/report?id=' + encodeURIComponent(comparisonId.value)); }
+  catch (reason) { actionError.value = reason instanceof Error ? reason.message : String(reason); }
+}
+async function loadReplay() {
+  if (!report.value?.id || historyReading.value) return;
+  historyReading.value = true; replayPlaying.value = false;
+  try { replay.value = await simulationApi<SimulationReplay>('/replay?id=' + encodeURIComponent(report.value.id)); replayIndex.value = 0; }
+  catch (reason) { actionError.value = reason instanceof Error ? reason.message : String(reason); }
+  finally { historyReading.value = false; }
 }
 async function startScenario() {
   if (!runValid.value) return;
-  const payload: SimulationRun = { ...run.value };
-  if (payload.name === 'custom-calls') {
+  const payload = scenarioDraft();
+  if (['custom-calls', 'dispatch-backlog'].includes(payload.name)) {
     if (!callPlanValid.value) { error.value = '核对呼叫数量、间隔、批量和工位序列。'; return; }
-    payload.calls = buildCustomCalls();
   }
   if (payload.name === 'plc-recovery') {
     if (!Number.isFinite(plcFaultHold.value) || plcFaultHold.value < 1 || plcFaultHold.value > 120) {
@@ -356,6 +478,22 @@ async function setEquipmentSignals() {
   } catch (reason) { error.value = reason instanceof Error ? reason.message : String(reason); }
 }
 function accept(next: SimulationStatus) {
+  if (next.rootName !== status.value?.rootName && next.configuration && next.map) {
+    mapDefinition.value = next.map; mapFileName.value = next.configuration.mapName || '已保存的实例地图';
+    stationDrafts.value = next.configuration.stations.map(station => ({ ...station, signalSource: station.signalSource ?? 'verified' }));
+    waitingSite.value = next.configuration.dumper.waitingSite;
+    additionalWaitingSites.value = (next.configuration.dumper.waitingSites ?? []).filter(site => site !== waitingSite.value);
+    dumpingSite.value = next.configuration.dumper.dumpingSite; dumperResourceId.value = next.configuration.dumper.resourceId;
+    inspectionSite.value = next.configuration.inspectionSite;
+    const defaults = customVehicles.value[0]!;
+    customVehicles.value = next.configuration.vehicles.map(vehicle => ({ ...defaults, ...vehicle,
+      voltageCurve: vehicle.voltageCurve?.map(point => ({ ...point })) ?? [{ percent: 0, voltage: 21 }, { percent: 100, voltage: 26 }] }));
+    newVehicleCount.value = customVehicles.value.length;
+    callPattern.value = stationDrafts.value.map(station => station.stationId).join(',');
+    callBatchSize.value = Math.min(callBatchSize.value, stationDrafts.value.length);
+    selectedHistory.value = ''; selectedReport.value = null; replay.value = null; replayPlaying.value = false;
+  }
+  if (!selectedScheme.value) selectedScheme.value = next.selectedSchemeId ?? next.schemes?.[0]?.id ?? '';
   status.value = next; connected.value = true;
   if (!Object.hasOwn(next.device?.cars ?? {}, selectedVehicle.value)) selectedVehicle.value = Object.keys(next.device?.cars ?? {})[0] ?? '';
 }
@@ -368,6 +506,7 @@ async function refresh(force = false) {
   finally { clearTimeout(timeout); reading.value = false; if (controller === request) controller = undefined; }
 }
 async function action(name: 'start' | 'stop' | 'run' | 'abort' | 'control' | 'new-instance' | 'configure' |
+  'scheme-save' | 'scheme-select' | 'scheme-start' | 'scheme-delete' |
   'protocol-start' | 'protocol-stop' | 'equipment-start' | 'equipment-control' | 'equipment-stop', payload: unknown = {}) {
   if (!available.value || (name === 'run' && (!fresh.value || !runValid.value || active.value)) || (name === 'control' && !fresh.value)) return;
   if (name === 'new-instance' && (status.value?.running || starting.value || active.value)) return;
@@ -394,16 +533,23 @@ function plcControl(values: SimulationControls['plc']) {
   if (canControl.value) void action('control', { sequence: crypto.randomUUID(), plc: values } satisfies SimulationControls);
 }
 watch(selectedVehicle, () => { blockedEdgeIds.value = [...appliedBlockedEdges.value]; });
+watch(() => run.value.name, name => { if (name === 'dispatch-backlog') { callCount.value = Math.max(6, callCount.value); callInterval.value = 1; } });
 async function downloadReport() {
   if (busy.value || !report.value) return;
   try {
-    const data = await simulationApi<SimulationReport>('/report');
+    const data = await simulationApi<SimulationReport>('/report' + (report.value.id ? '?id=' + encodeURIComponent(report.value.id) : ''));
     const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
     const anchor = document.createElement('a'); anchor.href = url; anchor.download = 'simulation-report-' + (data.id?.replace(/[^a-zA-Z0-9_-]/g, '') || 'latest') + '.json'; anchor.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   } catch (reason) { error.value = reason instanceof Error ? reason.message : String(reason); }
 }
-onMounted(() => { void refresh(); poll = setInterval(() => void refresh(), 1500); tick = setInterval(() => { now.value = Date.now(); }, 500); });
+onMounted(() => { void refresh(); poll = setInterval(() => void refresh(), 1500); tick = setInterval(() => {
+  now.value = Date.now();
+  if (replayPlaying.value && replay.value?.timeline.length) {
+    if (replayIndex.value < replay.value.timeline.length - 1) replayIndex.value++;
+    else replayPlaying.value = false;
+  }
+}, 500); });
 onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); clearInterval(tick); });
 </script>
 
@@ -429,6 +575,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
         <span class="mission-label">当前实例</span>
         <h3 id="simulation-environment">{{ status?.rootName || '尚未选择仿真实例' }}</h3>
         <p>{{ industrialText(status?.error || status?.message || '正在读取仿真环境配置…') }}</p>
+        <p v-if="status?.startupPlan?.message">{{ industrialText(status.startupPlan.message) }}</p>
         <p v-if="requiresFreshInstance" class="inline-warning">该实例已有历史状态，不能原地重启。请到“环境与地图”创建新的干净实例。</p>
       </div>
       <div class="mission-runtime">
@@ -498,6 +645,21 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
     </section>
 
     <section v-show="activeStage === 'environment'" class="stage-surface environment-stage">
+      <section class="simulation-panel scheme-panel" aria-labelledby="simulation-schemes">
+        <header><div><p class="section-kicker">日常开测</p><h3 id="simulation-schemes">保存方案，下次直接开测</h3></div><span class="scope-label">记住地图、车辆、工位和场景</span></header>
+        <p>保存后可重复创建干净实例。控制器重开会记住最近选择；已有任务、故障和恢复决策仍保留在原实例中。</p>
+        <div class="form-row"><label>保存方案名称<input v-model.trim="schemeName" maxlength="80" placeholder="例如：当前地图双车持续排队" /></label><label>已保存方案<select v-model="selectedScheme" aria-label="选择仿真方案"><option value="">请选择方案</option><option v-for="scheme in status?.schemes ?? []" :key="scheme.id" :value="scheme.id">{{ scheme.name }} · {{ scheme.vehicleCount }}辆 · {{ scheme.stationCount }}工位</option></select></label></div>
+        <div class="toolbar"><button :disabled="!available || !schemeName || active || starting" @click="saveScheme">保存当前方案</button><button :disabled="!available || !selectedScheme || !!status?.running || starting || active" @click="action('scheme-select', { id: selectedScheme })">按方案新建实例</button><button class="primary" :disabled="!available || !selectedScheme || !!status?.running || starting || active" @click="action('scheme-start', { id: selectedScheme })">一键开测</button><button :disabled="!available || !selectedScheme || !!status?.running || starting || active" @click="deleteScheme">删除所选方案</button></div>
+        <small>一键开测会新建实例、启动虚拟设备，再运行方案中保存的场景。运行中请先停止当前环境。</small>
+        <details v-if="status?.recentInstances?.length" class="recent-instances"><summary>最近实例 · {{ status.recentInstances.length }} 个</summary><ol><li v-for="instance in status.recentInstances" :key="instance.rootName"><b>{{ instance.mapName || '未命名地图' }}</b><span>{{ instance.vehicleCount }}辆车 · {{ instance.stationCount }}工位 · {{ stamp(instance.updatedAt) }}</span><small>{{ instance.rootName }}</small></li></ol></details>
+      </section>
+      <section v-if="versionComparison" class="simulation-panel version-panel" aria-labelledby="simulation-versions">
+        <header><div><p class="section-kicker">结果适用范围</p><h3 id="simulation-versions">仿真与现场后台版本对照</h3></div><span :class="['state-pill', versionComparison.status === 'matched' ? 'pass' : versionComparison.status === 'different' ? 'waiting' : 'unknown']">{{ versionComparison.status === 'matched' ? '所列项目一致' : versionComparison.status === 'different' ? '存在差异' : '尚未核定' }}</span></header>
+        <p>{{ industrialText(versionComparison.message || '读取构建身份和关键配置后才能比较。') }}</p>
+        <div class="version-builds"><div><small>现场后台</small><b>{{ versionComparison.field?.informationalVersion || versionComparison.field?.buildId || '未取得构建身份' }}</b></div><div><small>仿真后台</small><b>{{ versionComparison.simulation?.informationalVersion || versionComparison.simulation?.buildId || '未取得构建身份' }}</b></div></div>
+        <div v-if="versionComparison.differences?.length" class="report-table"><table><thead><tr><th>对照项目</th><th>现场</th><th>仿真</th></tr></thead><tbody><tr v-for="(difference, index) in versionComparison.differences" :key="index"><td>{{ difference.label || '待核定配置' }}</td><td>{{ industrialText(difference.field ?? '未取得') }}</td><td>{{ industrialText(difference.simulation ?? '未取得') }}</td></tr></tbody></table></div>
+        <small>{{ versionComparison.scope || '构建和配置比较不替代现场机械动作、定位与安全联锁验收。' }} · 对照时间 {{ stamp(versionComparison.observedAt ?? undefined) }}</small>
+      </section>
       <section class="new-instance-control">
         <div><p class="section-kicker">沿用地图新建</p><h3>沿用当前地图新建隔离实例</h3><p>不复制数据库、设备历史或已经注入的故障；适用于修改车辆数量后重新开一轮。</p></div>
         <label>车辆数量<input v-model.number="newVehicleCount" aria-label="新实例车辆数" type="number" min="1" max="8" step="1" :disabled="!available || !!status?.running || starting || active" @change="vehicleCountChanged" /></label>
@@ -514,8 +676,17 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
         <template v-if="mapDefinition">
           <div class="designer-section-title"><span>01</span><div><b>业务拓扑映射</b><small>把地图节点绑定到当前 28 阶段业务模型。</small></div></div>
           <fieldset :disabled="busy || !!status?.running || starting || active" class="topology-grid">
-            <label>呼叫工位 1 取货点<select v-model="stationPickupA" @change="resetVehicleOrigins"><option value="">不启用</option><option v-for="node in mapNodes" :key="node.id" :value="node.id">{{ node.id }} · {{ node.agvSiteId }}</option></select></label>
-            <label>呼叫工位 2 取货点<select v-model="stationPickupB" @change="resetVehicleOrigins"><option value="">不启用第二工位</option><option v-for="node in mapNodes" :key="node.id" :value="node.id">{{ node.id }} · {{ node.agvSiteId }}</option></select></label>
+            <div class="station-designer">
+              <div v-for="(station, index) in stationDrafts" :key="index" class="station-config-row">
+                <label>工位编号<input v-model.trim="station.stationId" placeholder="CNC-001" maxlength="7" /></label>
+                <label>工位取货节点<select v-model="station.pickupSite" @change="resetVehicleOrigins"><option value="">请选择节点</option><option v-for="node in mapNodes" :key="node.id" :value="node.id">{{ node.id }} · {{ node.agvSiteId }}</option></select></label>
+                <label>信号依据<select v-model="station.signalSource"><option value="verified">当前有效点表</option><option value="isolated-synthetic">隔离合成点位（现场未确认）</option></select></label>
+                <label>派车优先级<input :value="station.priority" type="number" min="0" max="100" step="1" placeholder="沿用默认" @input="station.priority = ($event.target as HTMLInputElement).value === '' ? undefined : Number(($event.target as HTMLInputElement).value)" /></label>
+                <button :disabled="stationDrafts.length <= 1" @click="stationDrafts.splice(index, 1); resetVehicleOrigins()">删除工位</button>
+                <small :class="{ 'inline-warning': station.signalSource === 'isolated-synthetic' }">{{ station.signalSource === 'isolated-synthetic' ? '仅用于隔离仿真，不代表现场已有此工位和地址。' : (status?.stationCatalog?.find(item => item.stationId === station.stationId && item.signalSource === 'verified')?.sourceLabel || '必须与当前已确认且启用的点表工位一致。') }}</small>
+              </div>
+              <button :disabled="stationDrafts.length >= 32" @click="addStation">增加隔离仿真工位</button><small>本页最多配置32个工位；仅已确认且启用的点表工位可选择“当前有效点表”。优先级0–100，数值越大越优先。</small>
+            </div>
             <label>主等待位节点<select v-model="waitingSite" @change="additionalWaitingSites = additionalWaitingSites.filter(site => site !== waitingSite); resetVehicleOrigins()"><option v-for="node in mapNodes" :key="node.id" :value="node.id">{{ node.id }}</option></select></label>
             <label>其他等待位（可多选）<select v-model="additionalWaitingSites" multiple @change="resetVehicleOrigins"><option v-for="node in mapNodes.filter(node => node.id !== waitingSite && node.id !== dumpingSite)" :key="node.id" :value="node.id">{{ node.id }}</option></select><small>多车排队使用全部等待位；拉取当前地图时同步带入现场候车位配置。</small></label>
             <label>倒料位节点<select v-model="dumpingSite" @change="resetVehicleOrigins"><option v-for="node in mapNodes" :key="node.id" :value="node.id">{{ node.id }}</option></select></label>
@@ -549,7 +720,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
             </div>
             <button :disabled="customVehicles.length >= 8" @click="customVehicles.push({ id: `AGV-SIM-${String(customVehicles.length + 1).padStart(2, '0')}`, initialSite: '', radiusMeters: 0.6, initialLoaded: false, batteryPercent: 86, speedScale: 1, accelerationMetersPerSecondSquared: 0.6, operationSeconds: 2, travelCostPercentPerMeter: 0.01, idleCostPercentPerHour: 0.1, voltageCurve: [{ percent: 0, voltage: 21 }, { percent: 100, voltage: 26 }], chargingGainPercentPerHour: 20 }); resetVehicleOrigins()">增加车辆</button>
           </div>
-          <p v-if="!configurationValid" class="inline-warning">请核对地图、工位取货点、等待/倒料/检修节点、倒料资源，以及每辆车唯一ID和起点。</p>
+          <div v-if="!configurationValid" class="inline-warning"><b>创建前还需处理：</b><ul><li v-for="problem in configurationProblems" :key="problem">{{ problem }}</li></ul></div>
           <div class="toolbar designer-actions"><button class="primary" :disabled="!available || !!status?.running || starting || active || !configurationValid" @click="configureSimulation">创建自定义隔离实例</button><span>创建后不会自动启动；核对实例名和拓扑后再启动。</span></div>
         </template>
       </section>
@@ -604,19 +775,19 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
         <section class="simulation-panel scenario-panel" aria-labelledby="simulation-scenario">
           <header><div><p class="section-kicker">场景设置</p><h3 id="simulation-scenario">场景编排</h3></div><span :class="['state-pill', simulationTone(status?.scenario?.status)]">{{ simulationLabel(status?.scenario?.status) }}</span></header>
           <fieldset :disabled="busy || active">
-            <label>测试场景<select v-model="run.name" aria-label="测试场景"><option value="normal-cycle">完整业务循环</option><option value="simultaneous-calls">多工位同时呼叫</option><option value="custom-calls">自定义呼叫计划</option><option value="disconnect-reconnect">车辆断连与重连</option><option value="plc-delay">PLC 反馈延迟</option><option value="plc-recovery">PLC卡位与恢复</option><option value="service-restart">后台重启与恢复屏障</option><option value="resume-recovery">恢复后继续原任务</option></select></label>
+            <label>测试场景<select v-model="run.name" aria-label="测试场景"><option value="normal-cycle">完整业务循环</option><option value="simultaneous-calls">多工位同时呼叫</option><option value="dispatch-backlog">正式调度持续排队测试</option><option value="custom-calls">自定义呼叫计划</option><option value="disconnect-reconnect">车辆断连与重连</option><option value="plc-delay">PLC 反馈延迟</option><option value="plc-recovery">PLC卡位与恢复</option><option value="service-restart">后台重启与恢复屏障</option><option value="resume-recovery">恢复后继续原任务</option></select></label>
             <div class="form-row"><label>循环轮数<input v-model.number="run.rounds" type="number" min="1" max="100" step="1" /></label><label>轮间隔 / 秒<input v-model.number="run.intervalSeconds" type="number" min="0" max="60" /></label></div>
             <label>单轮超时 / 秒<input v-model.number="run.timeoutSeconds" type="number" min="30" max="3600" /></label>
-            <div v-if="run.name === 'custom-calls'" class="call-plan">
+            <div v-if="['custom-calls', 'dispatch-backlog'].includes(run.name)" class="call-plan">
               <div class="form-row"><label>呼叫总数<input v-model.number="callCount" type="number" min="1" max="500" step="1" /></label><label>批次间隔 / 秒<input v-model.number="callInterval" type="number" min="0" max="60" step="1" /></label></div>
-              <div class="form-row"><label>每批同时呼叫<select v-model.number="callBatchSize"><option :value="1">1个工位</option><option :value="2">2个工位同时</option></select></label><label>指定车辆<select v-model="callVehicleId"><option value="">自动选择可达车辆</option><option v-for="id in vehicleIds" :key="id" :value="id">{{ id }}</option></select></label></div>
+              <div class="form-row"><label>每批同时呼叫<select v-model.number="callBatchSize"><option v-for="count in configuredStationIds.length" :key="count" :value="count">{{ count }}个工位</option></select></label><label v-if="run.name === 'custom-calls'">指定车辆<select v-model="callVehicleId"><option value="">场景选择可达车辆</option><option v-for="id in vehicleIds" :key="id" :value="id">{{ id }}</option></select></label><p v-else class="inline-warning">由正式后台自主派车；呼叫计划中不指定车辆。</p></div>
               <label>工位轮转顺序<input v-model.trim="callPattern" placeholder="CNC-001,CNC-002" /></label>
-              <small>同一批次两个工位会在同一设备扫描中置位；指定车辆不可达时停止并报告。</small>
+              <small>{{ run.name === 'dispatch-backlog' ? '按时间持续追加，不等上一批完成；同一工位仍有原任务时，后续呼叫保留在计划队列。验证忙车排除建议1车2工位或2车3工位，第3工位须明确使用隔离合成点位。只有真正观察到全部车辆忙碌期间仍有正式待派任务，才证明覆盖了积压；2车2工位可能无法形成积压。工位优先级在新建环境前配置，并写入报告。' : '同一批次工位会在同一设备扫描中置位；指定车辆不可达时停止并报告。此场景按批次完成后继续。' }}</small>
             </div>
             <div v-if="run.name === 'plc-recovery'" class="form-row"><label>卡位信号<select v-model="plcFault"><option value="ready">倒料机就绪许可</option><option value="done">倒料完成，允许离开</option></select></label><label>卡位保持 / 秒<input v-model.number="plcFaultHold" type="number" min="1" max="120" /></label></div>
             <label v-if="run.name === 'service-restart'">重启注入阶段<select v-model="restartStage"><option value="pickup">原取料运输执行中（可验证到站补记后续接）</option><option value="delivery">满箱运输执行中（保留更复杂恢复现场）</option></select></label>
           </fieldset>
-          <div class="toolbar"><button class="primary" :disabled="!canControl || active || !runValid || (run.name === 'custom-calls' && !callPlanValid)" @click="startScenario"><IconPlayerPlay :size="16" />运行场景</button><button :disabled="!available || !active" @click="action('abort')">中止后续场景</button></div>
+          <div class="toolbar"><button class="primary" :disabled="!canControl || active || !runValid || (['custom-calls', 'dispatch-backlog'].includes(run.name) && !callPlanValid)" @click="startScenario"><IconPlayerPlay :size="16" />运行场景</button><button :disabled="!available || !active" @click="action('abort')">中止后续场景</button></div>
           <p v-if="run.name === 'service-restart'" class="inline-warning">该场景结束时保留原任务和恢复屏障，不表示完整业务循环已完成。</p>
           <p v-if="run.name === 'resume-recovery'" class="inline-warning">只有在恢复页逐项核对并放行后才能运行；它只续接原任务编号。</p>
           <p v-if="!runValid" class="inline-warning">轮数 1–100、间隔 0–60 秒、超时 30–3600 秒。</p>
@@ -624,7 +795,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
 
         <aside class="scenario-brief">
           <div><p class="section-kicker">验证目标</p><h3>{{ scenarioNames[run.name] }}</h3><p>{{ currentScenarioDescription }}</p></div>
-          <dl><dt>建议起点</dt><dd>{{ status?.running && fresh ? '环境与设备反馈已就绪，可以直接运行' : '先启动仿真环境，再运行场景' }}</dd><dt>观察重点</dt><dd>原任务步骤、Outbox 命令、虚拟设备接收、PLC 电平、交通资源和残留占用</dd><dt>结束方式</dt><dd>通过、失败、中止、未知分别保留，不以旧报告代替本轮结果</dd></dl>
+          <dl><dt>建议起点</dt><dd>{{ status?.running && fresh ? '环境与设备反馈已就绪，可以直接运行' : '先启动仿真环境，再运行场景' }}</dd><dt>观察重点</dt><dd>原任务步骤、运输命令、虚拟设备接收、PLC 电平、交通资源和残留占用</dd><dt>结束方式</dt><dd>通过、失败、中止、未知分别保留，不以旧报告代替本轮结果</dd></dl>
           <div class="scenario-progress"><div><b>{{ status?.scenario?.completedRounds ?? 0 }} / {{ status?.scenario?.totalRounds ?? run.rounds }} 轮</b><span>{{ Math.round(progress) }}%</span></div><progress :value="progress" max="100" aria-label="场景完成进度"/><p>{{ industrialText(status?.scenario?.message || '运行后显示当前阶段、等待原因和设备实际反馈。') }}</p></div>
           <button @click="openStage('faults')">运行中需要注入故障</button>
         </aside>
@@ -655,6 +826,13 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
     </section>
 
     <section v-show="activeStage === 'results'" class="stage-surface results-stage">
+      <section v-if="status?.recoveryGuidance?.length" class="simulation-panel recovery-guidance" aria-labelledby="recovery-guidance-title">
+        <header><div><p class="section-kicker">当前阻塞</p><h3 id="recovery-guidance-title">卡在哪里，怎样恢复</h3></div><span :class="['state-pill', fresh ? 'waiting' : 'unknown']">{{ fresh ? '当前任务证据' : '历史证据，先刷新' }}</span></header>
+        <article v-for="(guide, index) in status.recoveryGuidance" :key="guide.taskId + index">
+          <b>{{ guide.vehicleId || '尚未派车' }} · {{ guide.stationId || '工位待核对' }} · {{ guide.taskId }}</b>
+          <dl><dt>当前步骤</dt><dd>{{ guide.stepNumber ? `第${guide.stepNumber}步 · ` : '' }}{{ industrialText(guide.stepName || '等待派车') }}</dd><dt>等待什么</dt><dd>{{ industrialText(guide.blockedBy || '尚无明确阻塞证据') }}</dd><dt>需要恢复</dt><dd>{{ industrialText(guide.restoreAction || '先核对当前反馈，勿跳过原任务') }}</dd><dt>恢复后确认</dt><dd>{{ industrialText(guide.expectedFeedback || '同一原任务继续推进且占用正常释放') }}</dd></dl>
+        </article>
+      </section>
       <section v-if="recovery" class="simulation-panel recovery-panel" aria-labelledby="simulation-recovery">
         <header><div><p class="section-kicker">现场恢复</p><h3 id="simulation-recovery">现场式恢复核对</h3></div><span :class="['state-pill', recovery.released ? 'pass' : 'waiting']">{{ recovery.released ? '已放行' : '恢复屏障保持' }}</span></header>
         <p>恢复操作直接走私有 Service 的恢复接口。每次决策必须绑定当前会话、条目修订号和显式人工确认；未全部核对时不能放行，放行后也只能续接原任务编号。</p>
@@ -682,12 +860,28 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
         <p v-if="historicalReport && active" class="inline-warning">当前场景仍在运行，以下结果属于上一场景；本次结果将在场景结束后生成。</p>
         <p v-if="report?.recoveryHold" class="inline-warning">恢复屏障检查已结束，原活动任务保留待核对；该报告不表示完整业务循环已完成。</p>
         <p v-if="!report" class="report-empty">尚无报告。运行场景后显示任务、命令、PLC、交通和残留占用检查；未取得证据的项目保留为未核定。</p>
-        <template v-else><p v-if="report.message">{{ industrialText(report.message) }}</p><dl v-if="metrics.length" class="report-metrics"><div v-for="[key, value] in metrics" :key="key"><dt>{{ key }}</dt><dd>{{ value }}</dd></div></dl><div class="report-table"><table><thead><tr><th>检查项</th><th>结果</th><th>证据 / 说明</th></tr></thead><tbody><tr v-for="(check, index) in report.checks ?? []" :key="index"><td>{{ industrialText(check.name) }}</td><td><span :class="['state-pill', simulationTone(check.status)]">{{ simulationLabel(check.status) }}</span></td><td>{{ industrialText(check.detail || '未提供说明') }}</td></tr></tbody></table></div></template>
+        <template v-else><p v-if="report.message">{{ industrialText(report.message) }}</p><p v-if="firstFailure" class="first-failure"><b>第一失败原因</b>{{ industrialText(firstFailure) }}</p><details v-if="report.versionComparison" class="report-version"><summary>本轮绑定的后台版本与配置</summary><p>{{ industrialText(report.versionComparison.message) }}</p><p>现场：{{ report.versionComparison.field?.informationalVersion || report.versionComparison.field?.buildId || '身份未核定' }} · 仿真：{{ report.versionComparison.simulation?.informationalVersion || report.versionComparison.simulation?.buildId || '身份未核定' }}</p><ul><li v-for="(difference, index) in report.versionComparison.differences ?? []" :key="index">{{ difference.label || '待核定项目' }}：现场 {{ industrialText(difference.field ?? '未取得') }}；仿真 {{ industrialText(difference.simulation ?? '未取得') }}</li></ul></details><dl v-if="metrics.length" class="report-metrics"><div v-for="[key, value] in metrics" :key="key"><dt>{{ simulationMetricLabel(key) }}</dt><dd>{{ simulationMetricValue(value) }}</dd></div></dl><div class="report-table"><table><thead><tr><th>检查项</th><th>结果</th><th>证据 / 说明</th></tr></thead><tbody><tr v-for="(check, index) in report.checks ?? []" :key="index"><td>{{ industrialText(check.name) }}</td><td><span :class="['state-pill', simulationTone(check.status)]">{{ simulationLabel(check.status) }}</span></td><td>{{ industrialText(check.detail || '未提供说明') }}</td></tr></tbody></table></div>
+          <div v-if="report.waitingChain?.length" class="waiting-chain"><h4>任务与车辆等待链</h4><ol><li v-for="(wait, index) in report.waitingChain" :key="index"><b>{{ wait.vehicleId || '尚未派车' }} · {{ wait.taskId || '待建单' }}</b><span>{{ wait.stationId }} · {{ wait.site || '位置未反馈' }} · {{ industrialText(wait.stepName || '等待分配') }}</span><p>{{ industrialText(wait.waitReason || wait.blockedBy || '等待原因未反馈') }}</p></li></ol></div>
+        </template>
+      </section>
+      <section class="simulation-panel history-panel" aria-labelledby="simulation-history">
+        <header><div><p class="section-kicker">历史证据</p><h3 id="simulation-history">历史对比与问题回放</h3></div><span>只读历史，不操作车辆</span></header>
+        <div class="form-row"><label>查看报告<select v-model="selectedHistory" :disabled="historyReading" @change="selectHistory"><option value="">当前实例最近报告</option><option v-for="item in status?.history ?? []" :key="item.id" :value="item.id">{{ stamp(item.finishedAt ?? item.generatedAt) }} · {{ scenarioNames[item.name ?? ''] || '仿真场景' }} · {{ simulationLabel(item.status) }}</option></select></label><label>对比基准<select v-model="comparisonId" @change="compareHistory"><option value="">不对比</option><option v-for="item in status?.history ?? []" :key="item.id" :value="item.id">{{ stamp(item.finishedAt ?? item.generatedAt) }} · {{ scenarioNames[item.name ?? ''] || '仿真场景' }} · {{ simulationLabel(item.status) }}</option></select></label></div>
+        <p v-if="!(status?.history?.length)" class="report-empty">还没有历史场景。运行后会保留通过、失败和中止结果。</p>
+        <p v-if="comparisonReport" class="inline-warning">数值差异仅作比较；请同时核对当轮地图、后台版本和场景参数，增减值不直接代表变好或变坏。</p>
+        <div v-if="metricComparison.length" class="report-table"><table><thead><tr><th>指标</th><th>当前报告</th><th>基准报告</th><th>差值</th></tr></thead><tbody><tr v-for="item in metricComparison" :key="item.key"><td>{{ item.label }}</td><td>{{ simulationMetricValue(item.current) }}</td><td>{{ simulationMetricValue(item.previous) }}</td><td>{{ item.delta > 0 ? '+' : '' }}{{ simulationMetricValue(item.delta) }}</td></tr></tbody></table></div>
+        <div class="toolbar"><button :disabled="historyReading || !report?.id" @click="loadReplay">载入本报告时间轴</button><button :disabled="!replay?.timeline.length" @click="replayPlaying = !replayPlaying">{{ replayPlaying ? '暂停回放' : '播放回放' }}</button></div>
+        <p v-if="replay?.sampled" class="inline-warning">时间轴已按原始时间顺序抽样，保留最后一帧；完整观察记录仍保存在该轮证据文件中。</p>
+        <template v-if="replay?.timeline.length"><label class="replay-slider">观察时间 · {{ stamp(replayFrame?.time) }} · {{ replayIndex + 1 }}/{{ replay.timeline.length }}<input v-model.number="replayIndex" aria-label="回放时间点" type="range" min="0" :max="replay.timeline.length - 1" step="1" @input="replayPlaying = false" /></label>
+          <svg v-if="replay.map && replayGeometry.nodes.length" class="simulation-map replay-map" viewBox="0 0 800 430" role="img" aria-label="历史任务位置回放"><g class="roads"><path v-for="edge in replayGeometry.edges" :key="edge.key" :d="edge.path" /></g><g v-for="node in replayGeometry.nodes" :key="node.id" class="map-node"><circle :cx="node.x" :cy="node.y" r="3"/><text :x="node.x + 7" :y="node.y - 7">{{ node.id }}</text></g><g v-for="(car, index) in replayGeometry.cars" :key="car.id" class="map-car" :style="{ '--car-color': ['#41d9bf', '#6fb9ff', '#e8bf64', '#cb9aff'][index % 4] }" :transform="`translate(${car.x} ${car.y})`"><circle r="16"/><text x="0" y="-23" text-anchor="middle">{{ car.id }}</text></g></svg>
+          <p v-else class="inline-warning">{{ replay.mapMessage || '该轮没有保存完整地图，只显示任务时间轴，不叠加到当前地图。' }}</p>
+          <div class="waiting-chain"><ol><li v-for="car in replayFrame?.vehicles ?? []" :key="car.vehicleId"><b>{{ car.vehicleId }} · {{ car.site || '道路中' }}</b><span>{{ car.taskId || '空闲' }}</span><p>{{ industrialText(car.waitReason || '无阻塞反馈') }}</p></li><li v-for="task in replayFrame?.tasks ?? []" :key="task.taskId"><b>{{ task.taskId }} · {{ task.vehicleId || '等待派车' }}</b><span>{{ task.stationId }} · {{ industrialText(task.step || task.stage || '等待推进') }}</span><p>{{ industrialText(task.waitReason || '无阻塞反馈') }}</p></li></ol></div>
+        </template><p v-else-if="replay" class="report-empty">本轮没有可回放的观察采样；不补造位置和任务轨迹。</p>
       </section>
       <details v-if="status?.scenario?.events?.length" class="simulation-panel event-panel"><summary>场景事件 · {{ status.scenario.events.length }} 条</summary><ol><li v-for="(event, index) in [...status.scenario.events].reverse().slice(0, 100)" :key="index"><time>{{ stamp(event.time) }}</time>{{ industrialText(event.message) }}</li></ol></details>
     </section>
 
-    <p class="simulation-boundary">本仿真采用统一启停、车辆物理模型、设备时间轴、现场状态条和独立故障注入。合成模型不代表真实固件、机械动作、定位误差与安全联锁已经验收；这些项目仍需现场测试。</p>
+    <p class="simulation-boundary">仿真是否就绪，以本页实例、虚拟车辆和设备反馈为准；页面底部全局设备栏对应日常现场后台。本仿真采用统一启停、车辆物理模型、设备时间轴和独立故障注入。合成模型不代表真实固件、机械动作、定位误差与安全联锁已经验收；这些项目仍需现场测试。</p>
   </main>
 </template>
 
@@ -709,6 +903,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
 .scenario-layout{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(300px,.75fr);gap:14px;align-items:start}.scenario-brief{position:sticky;top:10px;padding:17px;border:1px solid #2d506d;border-radius:7px;background:linear-gradient(160deg,#10243a,#0b172a)}.scenario-brief h3{margin:3px 0 8px;color:#e0edf5;font-size:18px}.scenario-brief>div:first-child>p:last-child{color:#9db5cb;line-height:1.7;font-size:12px}.scenario-brief dl{display:grid;grid-template-columns:82px minmax(0,1fr);gap:9px 12px;margin:16px 0;padding:13px 0;border-top:1px solid #29425e;border-bottom:1px solid #29425e;line-height:1.55}.scenario-brief dt{color:#7d99b7}.scenario-brief dd{margin:0;color:#b3c9dc;font-size:11px}.scenario-brief>button{width:100%;margin-top:8px}
 .fault-intro{margin-bottom:13px;padding:14px 16px;border:1px solid #4e3c3a;border-left:3px solid #e18f65;border-radius:6px;background:#201822}.fault-intro>p{max-width:600px;margin:0;color:#c1a9a9;font-size:11px;line-height:1.65}.fault-grid{grid-template-columns:minmax(0,1.15fr) minmax(320px,.85fr)}
 .results-stage>.simulation-panel{margin-bottom:14px}.recovery-panel{margin-top:0}
+.scheme-panel,.version-panel{margin-bottom:14px}.scheme-panel>p,.version-panel>p{color:#9fb6cf;line-height:1.7}.recent-instances{margin-top:14px;border-top:1px solid #29425e;padding-top:12px}.recent-instances summary,.report-version summary{cursor:pointer;color:#a8cedf}.recent-instances ol,.waiting-chain ol{list-style:none;margin:10px 0;padding:0;display:grid;gap:8px}.recent-instances li,.waiting-chain li{display:flex;flex-direction:column;gap:5px;border:1px solid #2a405c;padding:10px;background:#0b1729;overflow-wrap:anywhere}.recent-instances span,.waiting-chain span,.waiting-chain p{color:#91abc5;font-size:11px;line-height:1.6;margin:0}.version-builds{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:12px 0}.version-builds>div{border:1px solid #29415e;padding:12px;min-width:0}.version-builds small{margin:0 0 6px}.version-builds b{color:#c9e4ef;overflow-wrap:anywhere}.version-panel table,.history-panel table{width:100%;border-collapse:collapse;text-align:left;line-height:1.65}.version-panel td,.version-panel th,.history-panel td,.history-panel th{padding:10px;border-bottom:1px solid #2a3e59;overflow-wrap:anywhere}.version-panel th,.history-panel th{color:#91abc5;font-weight:400;background:#12223a}.station-designer{grid-column:1/-1;border:1px solid #29415e;padding:12px}.station-config-row{display:grid;grid-template-columns:110px minmax(140px,1fr) minmax(170px,1fr) 90px auto;gap:10px;align-items:end;padding:8px 0 12px;border-bottom:1px solid #263d58;margin-bottom:10px}.station-config-row small{grid-column:1/-1;margin:0}.station-config-row button{height:34px}.recovery-guidance article{border-top:1px solid #2a405c;padding:12px 0}.recovery-guidance article>b{color:#d0e4ef;overflow-wrap:anywhere}.recovery-guidance dl{display:grid;grid-template-columns:100px minmax(0,1fr);gap:9px;margin:12px 0;line-height:1.7}.recovery-guidance dt{color:#7f9cb9}.recovery-guidance dd{margin:0;color:#b7cede;overflow-wrap:anywhere}.first-failure{display:flex;flex-direction:column;gap:6px;padding:12px;border:1px solid #80535a;background:#302131;color:#f0b2b8;line-height:1.65;margin:12px 0}.report-version{margin:12px 0;padding:12px;border:1px solid #29415e;color:#9fb6cf;line-height:1.7}.report-version p,.report-version li{overflow-wrap:anywhere}.history-panel>header>span{font-size:11px;color:#91abc5}.history-panel .toolbar{margin-top:14px}.replay-slider{margin:15px 0;line-height:1.7}.replay-slider input{accent-color:#37c9d8}.replay-map .map-car{transition:none}.waiting-chain{margin-top:16px}.waiting-chain h4{color:#bdd9e8;margin-bottom:10px}@media(max-width:850px){.station-config-row{grid-template-columns:1fr 1fr}.station-config-row small{grid-column:1/-1}}@media(max-width:620px){.version-builds,.station-config-row{grid-template-columns:1fr}.recovery-guidance dl{grid-template-columns:1fr;gap:4px}.recovery-guidance dd{margin-bottom:8px}}
 @media(max-width:1180px){.mission-control{grid-template-columns:minmax(240px,1fr) minmax(240px,1fr) auto}.mission-runtime{grid-column:1}.mission-metrics{grid-column:2}.mission-actions{grid-column:3}.guide-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:900px){.simulation-header-actions{width:100%;justify-content:space-between}.simulation-title{flex-direction:column}.mission-control{grid-template-columns:1fr 1fr}.mission-actions{grid-column:1/-1;flex-direction:row}.stage-tabs{grid-template-columns:repeat(3,minmax(120px,1fr))}.overview-grid,.scenario-layout,.fault-grid{grid-template-columns:1fr}.scenario-brief{position:static}}
 @media(max-width:620px){.simulation-page{padding:6px 7px 20px}.mission-control,.next-step-card,.stage-tabs,.guide-grid,.new-instance-control{grid-template-columns:1fr}.mission-runtime,.mission-metrics,.mission-actions,.next-step-index{grid-column:auto}.mission-actions{flex-direction:column}.next-step-index{width:100%;height:26px}.stage-tabs{max-height:240px;overflow:auto}.stage-tabs button{min-height:54px}.first-run-guide>header,.fault-intro{align-items:flex-start;flex-direction:column}.guide-grid article{min-height:auto}.simulation-header-actions{align-items:stretch;flex-direction:column}.mode-card{min-width:0}}

@@ -42,6 +42,9 @@ public sealed class TaskCreationCoordinator(
         {
             throw new InvalidOperationException("TaskCreation:DumperStationId不能为空。");
         }
+        if (options.DefaultPriority is < 0 or > 100 || options.StationPriorities.Any(pair =>
+            string.IsNullOrWhiteSpace(pair.Key) || pair.Value is < 0 or > 100))
+            throw new InvalidOperationException("TaskCreation工位优先级须为0至100，且工位编号不能为空。");
 
         if (options.AutomaticCreationEnabled)
             stationStates.StationStateChanged += OnStationStateChanged;
@@ -120,7 +123,7 @@ public sealed class TaskCreationCoordinator(
             var result = await tasks.TryCreateAsync(
                 stationId,
                 options.DumperStationId,
-                options.DefaultPriority,
+                options.PriorityFor(stationId),
                 cancellationToken);
             if (result.Created)
             {
@@ -129,7 +132,7 @@ public sealed class TaskCreationCoordinator(
                     "已创建调度任务。TaskId={TaskId}, StationId={StationId}, Priority={Priority}",
                     result.Task.TaskId,
                     stationId,
-                    options.DefaultPriority);
+                    options.PriorityFor(stationId));
             }
             else
             {

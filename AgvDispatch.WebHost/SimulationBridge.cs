@@ -4,6 +4,7 @@ using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace AgvDispatch.WebHost;
 
@@ -52,10 +53,11 @@ public sealed class SimulationBridge : IAsyncDisposable
     public async Task<IResult> ForwardAsync(HttpMethod method, string path, string? body, CancellationToken ct)
     {
         if (!Enabled) return Results.Json(new { error = "隔离仿真环境未启用。" }, statusCode: 403);
-        if ((method != HttpMethod.Get || path is not ("/status" or "/report")) &&
+        if ((method != HttpMethod.Get || !AllowedReadPath(path)) &&
             (method != HttpMethod.Post || path is not ("/start" or "/stop" or "/run" or "/abort" or "/control" or
                 "/new-instance" or "/configure" or "/recover" or "/recover-release" or "/protocol-start" or "/protocol-stop" or
-                "/equipment-start" or "/equipment-control" or "/equipment-stop")))
+                "/equipment-start" or "/equipment-control" or "/equipment-stop" or "/scheme-save" or "/scheme-select" or
+                "/scheme-start" or "/scheme-delete")))
             throw new ArgumentException("不支持的仿真操作。");
         await gate.WaitAsync(ct);
         try
@@ -75,6 +77,9 @@ public sealed class SimulationBridge : IAsyncDisposable
         }
         finally { gate.Release(); }
     }
+
+    private static bool AllowedReadPath(string path) => path is "/status" or "/report" or "/replay" ||
+        Regex.IsMatch(path, @"^/(report|replay)\?id=[a-f0-9]{32}$", RegexOptions.CultureInvariant);
 
     private async Task EnsureStartedAsync(CancellationToken ct)
     {
