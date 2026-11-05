@@ -30,6 +30,9 @@ class StationCatalogTests(unittest.TestCase):
                          ['CNC-001', 'CNC-002'])
         moved = normalize_plc_table('现场四工位.csv', text.replace('CNC-003', 'CNC-003 '))
         self.assertNotEqual(value['sha256'], moved['sha256'])
+        arrow_directions = normalize_plc_table('现场四工位.csv',
+            text.replace('PlcToHost', 'PLC->Host').replace('HostToPlc', 'Host->PLC'))
+        self.assertEqual(arrow_directions['stationCount'], value['stationCount'])
         with self.assertRaises(ValueError):
             normalize_plc_table('../plc-signals.csv', text)
         with self.assertRaises(ValueError):

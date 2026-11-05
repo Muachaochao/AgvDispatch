@@ -88,6 +88,11 @@ export interface SimulationPlcSignalTable {
   headers?: string[];
   stations?: SimulationStationCatalogEntry[];
 }
+export interface ServicePlcPointTableSnapshot {
+  deviceId: string; deviceName: string; enabled: boolean; relativePath: string; fileName: string;
+  sha256: string; bytes: number; csvText: string; readAt: string;
+  availableTables: { deviceId: string; deviceName: string; enabled: boolean; relativePath: string }[];
+}
 export interface SimulationStationCatalogEntry {
   stationId: string; offset?: number; signalSource: 'verified' | 'isolated-synthetic';
   sourceLabel?: string; fieldConfirmed?: boolean;

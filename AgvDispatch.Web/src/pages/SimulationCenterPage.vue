@@ -6,7 +6,8 @@ import { simulationApi, simulationFresh, simulationGeometry, simulationLabel, lo
   type SimulationStatus, type SimulationRun, type SimulationControls, type SimulationReport,
   type SimulationConfigureRequest, type SimulationMapDefinition, type SimulationCall,
   type SimulationRecoveryItem, type SimulationReplay, type SimulationStationConfiguration,
-  type SimulationPlcSignalTable, type SimulationStationCatalogEntry } from '../simulation';
+  type SimulationPlcSignalTable, type SimulationStationCatalogEntry,
+  type ServicePlcPointTableSnapshot } from '../simulation';
 import { importProfControlRpj } from '../profcontrol-rpj';
 import { actionStateLabel, equipmentDirectionLabel, industrialText } from '../operator-labels';
 import { useDispatchStore } from '../stores/dispatch';
@@ -323,13 +324,21 @@ async function loadCurrentPlcTable() {
 async function loadCurrentMap() {
   if (busy.value || status.value?.running || starting.value || active.value) return;
   error.value = ''; actionError.value = ''; notice.value = '';
+  clearPlcTableDraft();
   busy.value = true;
   try {
     const imported = await loadCurrentSimulationMap(path => dispatchStore.api(path));
+    const serviceTable = await dispatchStore.api('/api/communication/point-table') as ServicePlcPointTableSnapshot;
+    const validatedTable = await simulationApi<SimulationPlcSignalTable>('/point-table-validate', {
+      fileName: serviceTable.fileName, csvText: serviceTable.csvText
+    });
+    const communication = await dispatchStore.api('/api/communication') as {
+      saved?: { agvs?: { vehicleId?: string; displayName?: string; enabled?: boolean }[] };
+    };
     if (disposed) return;
     const live = imported.identity;
     mapDefinition.value = imported.definition;
-    clearPlcTableDraft();
+    adoptPlcTable(validatedTable, serviceTable.csvText);
     liveMapIdentity.value = `${live.name || '当前运行地图'} · ${live.id} / ${live.version}`;
     mapIdentityDraft.value = { mapId: live.id, mapVersionId: live.version, sourceName: live.name || '当前运行地图',
       definitionHash: live.definitionHash };
@@ -362,8 +371,18 @@ async function loadCurrentMap() {
     ].filter(Boolean));
     inspectionSite.value = validSite(status.value?.configuration?.inspectionSite) ||
       mapNodes.value.find(node => !reservedSites.has(node.id))?.id || '';
+    const configuredVehicles = (communication.saved?.agvs ?? [])
+      .filter(vehicle => !!vehicle.vehicleId && vehicle.enabled === true).slice(0, 8);
+    if (configuredVehicles.length > 0) {
+      const template = customVehicles.value[0]!;
+      customVehicles.value = configuredVehicles.map((vehicle, index) => ({
+        ...template, id: vehicle.vehicleId!, initialSite: '',
+        voltageCurve: template.voltageCurve.map(point => ({ ...point }))
+      }));
+      newVehicleCount.value = customVehicles.value.length;
+    }
     resetVehicleOrigins();
-    notice.value = `已复制当前发布地图的完整道路、曲线和资源绑定。${imported.parameterWarning || '已套用同一地图版本的工位参数。'}请选择检修点，并核对倒料资源和车辆起点后创建隔离实例。`;
+    notice.value = `已拉取当前工程：地图、任务参数、${configuredVehicles.length || customVehicles.value.length}辆车辆和PLC点表 ${serviceTable.fileName}（${serviceTable.deviceName}）。${imported.parameterWarning || '已自动映射同一地图版本的工位与业务拓扑。'}请核对后创建隔离实例。`;
   } catch (reason) {
     if (!disposed) actionError.value = reason instanceof Error ? reason.message : String(reason);
   } finally { busy.value = false; }
@@ -685,7 +704,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
       <div class="first-run-guide">
         <header><div><p class="section-kicker">首次使用</p><h3>第一次仿真按这四步走</h3></div><span>先建干净实例，再启动和运行场景</span></header>
         <div class="guide-grid">
-          <article :class="{ complete: !!status?.enabled, current: !status?.enabled || requiresFreshInstance }"><b>01</b><div><strong>拉取地图并新建实例</strong><p>进入“环境与地图”，拉取当前运行地图，核对工位、等待位、倒料资源与车辆起点，然后创建隔离实例。</p><button @click="openStage('environment')">配置地图与车辆</button></div></article>
+          <article :class="{ complete: !!status?.enabled, current: !status?.enabled || requiresFreshInstance }"><b>01</b><div><strong>拉取当前工程并新建实例</strong><p>一次带入当前地图、任务参数、启用车辆、PLC点表和业务拓扑；自动映射后仍可修改或删除不需要的工位和车辆。</p><button @click="openStage('environment')">配置地图、点表与车辆</button></div></article>
           <article :class="{ complete: !!status?.running, current: !!status?.enabled && !status?.running && !requiresFreshInstance && !cleanupRequired }"><b>02</b><div><strong>启动隔离环境</strong><p>新建实例后点击启动。每个实例只从干净状态启动一次；如果启动失败，先停止并清理，再新建实例。</p><button :disabled="!available || !!status?.running || starting || requiresFreshInstance || cleanupRequired" @click="action('start')">启动仿真环境</button></div></article>
           <article :class="{ complete: !!report, current: !!status?.running && !active && !report }"><b>03</b><div><strong>选择并运行场景</strong><p>先从完整业务循环 1 轮开始；双车排队测试可选择多工位同时呼叫，再按需设置轮次和呼叫计划。</p><button @click="openStage('scenario')">编排场景</button></div></article>
           <article :class="{ current: !!report }"><b>04</b><div><strong>查看结果与现场恢复</strong><p>报告显示任务、命令、PLC、交通资源、残留占用和恢复屏障。异常场景结束后，再到恢复页逐项核对。</p><button @click="openStage('results')">查看恢复与报告</button></div></article>
@@ -746,7 +765,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
         <header><div><p class="section-kicker">环境配置</p><h3 id="simulation-instance-designer">地图、工位与虚拟车辆</h3></div><span class="scope-label">停止环境后创建新的隔离实例</span></header>
         <p class="designer-intro">支持本项目 <code>.agvmap.json</code>，并兼容只读 <code>.rpj</code> 工程包。导入后必须核对语义工位、资源边界和每辆车的唯一起点；这些数据只进入新实例。</p>
         <div class="map-import">
-          <button :disabled="busy || !dispatchStore.fresh || dispatchStore.demoMode || !dispatchStore.snapshot?.map || !!status?.running || starting || active" @click="loadCurrentMap"><IconRefresh :size="15" />拉取当前运行地图</button>
+          <button :disabled="busy || !dispatchStore.fresh || dispatchStore.demoMode || !dispatchStore.snapshot?.map || !!status?.running || starting || active" @click="loadCurrentMap"><IconRefresh :size="15" />拉取当前工程（地图+参数+点表）</button>
           <label class="file-picker">选择地图文件<input type="file" accept=".json,.agvmap.json,.rpj,application/json" :disabled="busy || !!status?.running || starting || active" @change="loadMapFile" /></label>
           <div><b v-if="mapFileName">{{ mapFileName }}</b><span v-if="liveMapIdentity">{{ liveMapIdentity }}</span><span v-if="mapDefinition">{{ mapDefinition.nodes.length }} 节点 · {{ mapDefinition.edges.length }} 道路 · {{ mapDefinition.resources.length }} 资源</span><span v-if="mapIdentityDraft?.definitionHash">地图摘要 {{ mapIdentityDraft.definitionHash.slice(0, 12) }}…</span><span v-else-if="!mapDefinition">尚未载入自定义地图</span></div>
         </div>

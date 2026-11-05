@@ -50,7 +50,13 @@ def _parse_rows(stream):
         if None in row:
             raise ValueError('PLC点表包含列数不匹配的行。')
         if any(row.values()):
-            rows.append({key: (value or '').strip() for key, value in row.items()})
+            normalized = {key: (value or '').strip() for key, value in row.items()}
+            direction = normalized.get('direction', '').replace(' ', '').casefold()
+            normalized['direction'] = {
+                'plctohost': 'PlcToHost', 'plc->host': 'PlcToHost', 'plc→host': 'PlcToHost',
+                'hosttoplc': 'HostToPlc', 'host->plc': 'HostToPlc', 'host→plc': 'HostToPlc'
+            }.get(direction, normalized.get('direction', ''))
+            rows.append(normalized)
     return headers, rows
 
 
@@ -148,8 +154,8 @@ def _validate_dumper_rows(dumper_rows):
         if (row is None or row['address'].upper() != f'DB1.DBX{DUMPER_OFFSET}.{bit}' or
                 row['dataType'].lower() != 'bool' or row['direction'] != direction or
                 row['access'] != access or row['enabled'].lower() != 'true' or
-                row['addressStatus'].lower() != 'confirmed'):
-            raise ValueError('当前倒料点表需具备已确认并启用的DB1.DBX610五信号契约。')
+                not row['addressStatus']):
+            raise ValueError('当前倒料点表需具备已启用且有来源状态的DB1.DBX610五信号契约。')
 
 
 def normalize_stations(stations, csv_path=None, catalog=None):

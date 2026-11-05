@@ -64,6 +64,7 @@ app.MapGet("/api/config", () => new { taskSubmissionEnabled = !engineeringSimula
     servicePipeName = builder.Configuration["Web:PipeName"] ?? "AgvDispatch.Service" });
 app.MapEditorApi();
 app.MapEngineeringApi();
+app.MapServicePointTableApi();
 app.MapEngineeringCenterApi();
 app.MapEngineeringRuntimeApi(!engineeringSimulationOnly && builder.Configuration.GetValue("Web:EnableEngineeringRuntimeApply", false));
 app.MapNavigationTestApi();
