@@ -39,6 +39,15 @@ class SimulationTests(unittest.TestCase):
         disconnected = self.custom_payload(); disconnected['mapDefinition']['edges'] = disconnected['mapDefinition']['edges'][:-1]
         with self.assertRaisesRegex(ValueError, '不连通'): runtime._validate_configuration(disconnected)
 
+    def test_multiple_waiting_bays_survive_configuration_and_reject_duplicates(self):
+        runtime = object.__new__(Runtime)
+        payload = self.custom_payload()
+        payload['dumper']['waitingSites'] = ['WAIT', 'PARK1']
+        self.assertEqual(runtime._validate_configuration(payload)['dumper']['waitingSites'], ['WAIT', 'PARK1'])
+        for sites in (['WAIT','WAIT'], ['PARK1','WAIT'], ['WAIT','DUMP'], ['WAIT','MISSING']):
+            payload = self.custom_payload(); payload['dumper']['waitingSites'] = sites
+            with self.assertRaises(ValueError): runtime._validate_configuration(payload)
+
     def test_custom_call_plan_limits_duplicate_station_batches(self):
         value = validate_scenario(dict(name='custom-calls', rounds=1, intervalSeconds=0, timeoutSeconds=90,
             calls=[dict(stationId='CNC-001', atSeconds=0), dict(stationId='CNC-002', atSeconds=0),
@@ -110,12 +119,26 @@ class SimulationTests(unittest.TestCase):
     def test_readonly_observer_detects_overcapacity(self):
         with tempfile.TemporaryDirectory() as name:
             runtime = object.__new__(Runtime); runtime.root=Path(name)
+            runtime.abort=threading.Event(); runtime.children={}
             runtime.settings={'HandshakeExecution':{'DumperExit':{'BodyProfiles':[]}}}
             runtime.device=lambda:dict(time=time.time(),cars={})
             write(runtime.root/'navigation.agvmap.json',{'resources':[{'id':'bay','capacity':1}]})
             observer=Observer(runtime,runtime.root)
-            with patch('scenarios.query',return_value=[{'ResourceId':'bay','TaskId':'first'},{'ResourceId':'bay','TaskId':'second'}]), self.assertRaises(RuntimeError): observer.sample({})
+            with patch('scenarios.query', side_effect=lambda root, sql: [] if 'dispatch_task' in sql else [{'ResourceId':'bay','TaskId':'first'},{'ResourceId':'bay','TaskId':'second'}]), self.assertRaises(RuntimeError): observer.sample({})
             self.assertEqual(observer.violations[0]['kind'],'capacity')
+
+    def test_readonly_observer_detects_one_vehicle_holding_two_unfinished_tasks(self):
+        with tempfile.TemporaryDirectory() as name:
+            runtime = object.__new__(Runtime); runtime.root=Path(name)
+            runtime.abort=threading.Event(); runtime.children={}
+            runtime.settings={'HandshakeExecution':{'DumperExit':{'BodyProfiles':[]}}}
+            runtime.device=lambda:dict(time=time.time(),cars={})
+            write(runtime.root/'navigation.agvmap.json',{'resources':[]})
+            observer=Observer(runtime,runtime.root)
+            rows=[dict(VehicleId='car',TaskId='first'),dict(VehicleId='car',TaskId='second')]
+            with patch('scenarios.query',side_effect=lambda root,sql: rows if 'dispatch_task' in sql else []), self.assertRaises(RuntimeError):
+                observer.sample({})
+            self.assertEqual(observer.violations[0]['kind'],'vehicle-multiple-tasks')
 
 
 if __name__ == '__main__': unittest.main()

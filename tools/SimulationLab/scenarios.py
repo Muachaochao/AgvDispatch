@@ -5,11 +5,52 @@ import math
 import sqlite3
 import time
 import uuid
+from urllib.error import HTTPError, URLError
 from controller import read, write
 from device_controls import PLC_DEFAULTS
 
 NAMES = ('normal-cycle', 'simultaneous-calls', 'custom-calls', 'disconnect-reconnect',
          'plc-delay', 'plc-recovery', 'service-restart', 'resume-recovery')
+STEP_NAMES = {'GoToPickup': '前往工位取满箱', 'PickupFullBox': '确认满箱已取走',
+              'DeliverFullBoxToDumper': '运送满箱到等待位', 'WaitForDumperReady': '等待倒料机就绪',
+              'EnterDumpingPosition': '进入倒料位', 'DumpFullBox': '等待倒料完成',
+              'ReturnEmptyBox': '返送空箱到原工位', 'PlaceEmptyBox': '确认空箱已放到位',
+              'CompletePlcHandshake': '完成工位握手收尾'}
+
+
+def describe_progress(vehicle, detail):
+    steps = detail.get('steps', [])
+    if detail['task']['stage'] == 'Completed':
+        return f'{vehicle}：任务已完成，握手已结束'
+    current = next((s for s in steps if s.get('isCurrent')), None)
+    if current is None:
+        current = next((s for s in steps if s.get('status') in ('Ready', 'Executing', 'WaitingForTraffic')), None)
+    if current is None:
+        return f'{vehicle}：等待派车或前序条件'
+    number = current.get('sequence') or steps.index(current) + 1
+    label = STEP_NAMES.get(current.get('stepType'), '等待任务反馈')
+    reason = current.get('waitingExplanation') or detail.get('waitingExplanation')
+    return f'{vehicle}：第{number}/{len(steps)}步，{label}' + (f'；{reason}' if reason else '')
+
+
+def submit_original_task(runtime, payload, evidence):
+    # Save the identity before sending. A lost HTTP receipt is not evidence that
+    # no task was created; repeat only the identical idempotent request.
+    intent = dict(request=payload, attempts=[])
+    path = evidence / ('create-intent-' + payload['requestId'] + '.json')
+    write(path, intent)
+    for attempt in range(3):
+        try:
+            response = runtime.api('/api/tasks', payload)
+            intent['response'] = response
+            write(path, intent)
+            return response
+        except (TimeoutError, URLError) as error:
+            transient = not isinstance(error, HTTPError) or error.code in (502, 503, 504)
+            intent['attempts'].append(dict(attempt=attempt + 1, error=str(error)))
+            write(path, intent)
+            if not transient or attempt == 2: raise
+            if runtime.abort.wait(.5): raise InterruptedError('场景已中止，请按原请求编号核对建单结果。')
 
 
 def validate_scenario(value):
@@ -99,6 +140,22 @@ def control_applied(state, controls, vehicle=None):
     return observed
 
 
+def fresh_device_state(runtime, timeout=5):
+    deadline = time.monotonic() + timeout
+    while True:
+        if runtime.abort.is_set():
+            raise InterruptedError('场景已中止，停止等待设备反馈。')
+        if any(child.poll() is not None for child in runtime.children.values()):
+            raise RuntimeError('仿真子进程已退出，不能继续判定。')
+        state = runtime.device()
+        stamp = state.get('time', 0)
+        if type(stamp) in (int, float) and math.isfinite(stamp) and 0 <= time.time() - stamp <= timeout:
+            return state
+        if time.monotonic() >= deadline:
+            raise RuntimeError('设备快照过期，不能继续判定。')
+        runtime.abort.wait(.1)
+
+
 def complete_command_set(commands, tasks):
     """Totals alone can hide one task's duplicate replacing another task's missing command."""
     if len(commands) != len(tasks) * 4 or len({c['CommandId'] for c in commands}) != len(commands):
@@ -114,6 +171,7 @@ class Observer:
     def __init__(self, runtime, evidence):
         self.runtime, self.evidence = runtime, evidence
         self.previous = None
+        self.ownership_samples = 0
         self.samples = 0
         self.minimum = None
         self.violations = []
@@ -127,8 +185,15 @@ class Observer:
     def sample(self, details):
         self.last_details = details
         self.seen_details.update(details)
-        state = self.runtime.device()
-        if time.time() - state.get('time', 0) > 3: raise RuntimeError('设备快照过期，不能继续判定。')
+        state = fresh_device_state(self.runtime)
+        ownership = query(self.runtime.root, 'select VehicleId,TaskId from dispatch_task where VehicleId is not null and VehicleId != \'\' and Stage not in (90,110)')
+        by_vehicle = {}
+        for row in ownership:
+            by_vehicle.setdefault(row['VehicleId'], set()).add(row['TaskId'])
+        for vehicle, task_ids in by_vehicle.items():
+            if len(task_ids) > 1:
+                self.violations.append(dict(kind='vehicle-multiple-tasks', vehicle=vehicle, tasks=sorted(task_ids)))
+        self.ownership_samples += 1
         leases = query(self.runtime.root, 'select ResourceId,TaskId,VehicleId,OwnerStepId from traffic_resource_lease')
         for resource, capacity in self.resources.items():
             owners = {r['TaskId'] for r in leases if r['ResourceId'] == resource}
@@ -151,7 +216,7 @@ class Observer:
             self.max_wait = max(self.max_wait, now - self.wait_started[tid][1])
         self.samples += 1; self.previous = state
         with (self.evidence / 'observations.jsonl').open('a', encoding='utf-8') as stream:
-            stream.write(json.dumps(dict(time=time.time(), device=state, leases=leases,
+            stream.write(json.dumps(dict(time=time.time(), device=state, leases=leases, vehicleTaskOwnership=ownership,
                 tasks={t:dict(stage=d['task']['stage'], steps=[s['status'] for s in d['steps']]) for t, d in details.items()}), ensure_ascii=False) + '\n')
         if self.violations: raise RuntimeError('独立交通检查发现资源超容量或合成包络重叠。')
         return leases
@@ -200,7 +265,7 @@ def execute(runtime, request):
             raise RuntimeError(f'指定车辆{requested}当前不可用或无法到达{station}。')
         payload = dict(requestId=uuid.uuid4().hex, stationId=station, requestedVehicleId=requested, priority=0,
                        mapId=options['mapId'], mapVersionId=options['mapVersionId'], parameterRevision=options['parameterRevision'])
-        response = runtime.api('/api/tasks', payload)
+        response = submit_original_task(runtime, payload, evidence)
         tid = response['taskId']; tasks[tid] = dict(vehicle=requested, station=station)
         write(evidence / 'task-identities.json', tasks)
         write(evidence / ('create-' + tid + '.json'), dict(request=payload, response=response))
@@ -294,7 +359,7 @@ def execute(runtime, request):
                 check('原任务出区证据', all(d.get('handover', {}).get('exitPhysicallyVerified') for d in details.values()), list(ids))
                 completed_tasks.update(ids)
                 return True
-            runtime.scenario['message'] = '；'.join(f"{tasks[t]['vehicle']}：{d['task']['stage']} / " + ','.join(s['status'] for s in d['steps']) for t, d in details.items())
+            runtime.scenario['message'] = '；'.join(describe_progress(tasks[t]['vehicle'], d) for t, d in details.items())
             runtime.abort.wait(.5)
         raise TimeoutError('任务未在期限内闭合，可能存在长期等待；保留全部现场。')
     try:
@@ -426,6 +491,9 @@ def execute(runtime, request):
             runtime.control(dict(plc=dict(readyDelaySeconds=0, doneDelaySeconds=5)))
             runtime.controls['plc'] = {}
         check('采样期间资源容量与合成包络检查', observer.samples > 0 and not observer.violations, f'{observer.samples}次独立采样；相邻采样间线性包络检查')
+        if getattr(observer, 'ownership_samples', 0):
+            check('同一车辆没有同时承担多个未结束任务', not any(v['kind'] == 'vehicle-multiple-tasks' for v in observer.violations),
+                  f'{observer.ownership_samples}次独立数据库核对')
         result_status = 'passed'; message = '恢复屏障已验证，保留活动任务待核对。' if request['name'] == 'service-restart' else '场景及闭环检查通过。'
     except InterruptedError as error:
         result_status = 'aborted'; message = str(error)

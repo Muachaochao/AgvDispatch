@@ -1,14 +1,77 @@
+import type { Snapshot, WebMap } from './types.ts';
+import type { VendorPath } from './vendor-path.ts';
+import { isFresh } from './state.ts';
+
 export interface SimulationVehicle {
   x: number; y: number; angle?: number; station?: string; loaded?: boolean;
   current_task?: string | null; tasks?: Record<string, number>; offline?: boolean;
   paused?: boolean; speedScale?: number; completed_segments?: number; waitReason?: string;
+  blockedByVehicle?: string | null;
   batteryPercent?: number; batteryVoltage?: number; charging?: boolean; speedMps?: number; distanceMeters?: number;
   simulationControl?: { sequence?: string; error?: string | null; responseDropPending?: boolean; blockedEdges?: string[]; charging?: boolean; plc?: SimulationControls['plc'] };
 }
-export interface SimulationNode { id: string; agvSiteId?: string; x: number; y: number; type?: string; enabled?: boolean; resourceIds?: string[] }
-export interface SimulationEdge { from: string; to: string; id?: string; enabled?: boolean; bidirectional?: boolean; speedLimit?: number; geometryKind?: string; controlPoints?: { x: number; y: number }[] }
-export interface SimulationResource { id: string; capacity?: number; boundary?: { x: number; y: number }[] }
-export interface SimulationMapDefinition { name?: string; nodes: SimulationNode[]; edges: SimulationEdge[]; resources: SimulationResource[] }
+export interface SimulationNode { id: string; agvSiteId?: string | null; x: number; y: number; type?: string; enabled?: boolean; resourceIds?: string[] }
+export interface SimulationEdge { from: string; to: string; id?: string; enabled?: boolean; bidirectional?: boolean; distance?: number; speedLimit?: number; geometryKind?: string; controlPoints?: { x: number; y: number }[] | null; resourceIds?: string[]; vendorPath?: VendorPath | null }
+export interface SimulationResource { id: string; type?: string; capacity?: number; boundary?: { x: number; y: number }[] | null }
+export interface SimulationMapDefinition { name?: string; source?: string; coordinateSystem?: string; unit?: string; nodes: SimulationNode[]; edges: SimulationEdge[]; resources: SimulationResource[]; [key: string]: unknown }
+export interface SimulationMapWorkspace {
+  project?: { mapId: string; isActive: boolean; activeVersionId?: string | null };
+  published?: { mapId: string; versionId: string; status: string; definition: SimulationMapDefinition } | null;
+}
+
+// A live WebMap is a display projection: its sampled curve points are not control
+// points and it omits resource bindings, speed limits and vendor path evidence.
+export function simulationMapFromPublishedVersion(map: WebMap, workspace: SimulationMapWorkspace | null): SimulationMapDefinition {
+  const project = workspace?.project, published = workspace?.published;
+  if (!project?.isActive || project.mapId !== map.id || project.activeVersionId !== map.version ||
+      published?.mapId !== map.id || published.versionId !== map.version || published.status !== 'Published')
+    throw new Error('当前运行版本与完整发布地图不一致，未替换仿真地图。请刷新后重试，或导入该运行版本的完整地图文件。');
+  const definition = published.definition;
+  if (!definition || !Array.isArray(definition.nodes) || !Array.isArray(definition.edges) || !Array.isArray(definition.resources) ||
+      definition.nodes.length < 3 || definition.edges.length === 0 || definition.unit !== 'm' ||
+      definition.coordinateSystem !== map.coordinateSystem || definition.unit !== map.unit)
+    throw new Error('后台未返回完整的米制发布地图，不能用显示快照代替。');
+  if (definition.nodes.some(node => !Array.isArray(node.resourceIds)) || definition.edges.some(edge =>
+      !Array.isArray(edge.resourceIds) || !Number.isFinite(edge.distance) || !Number.isFinite(edge.speedLimit) ||
+      !['Line', 'CubicBezier', 'CircularArc'].includes(edge.geometryKind ?? '') ||
+      (edge.geometryKind === 'CubicBezier' && edge.controlPoints?.length !== 2) ||
+      (edge.geometryKind === 'CircularArc' && edge.controlPoints?.length !== 1) ||
+      edge.controlPoints?.some(point => !Number.isFinite(point.x) || !Number.isFinite(point.y))))
+    throw new Error('完整发布地图缺少道路、曲线控制点或资源绑定，未自动推测或补写。请先核对地图版本。');
+  // Preserve every original field, including future metadata, and never mutate the source.
+  return JSON.parse(JSON.stringify(definition)) as SimulationMapDefinition;
+}
+
+export interface SimulationCurrentMap {
+  identity: WebMap;
+  definition: SimulationMapDefinition;
+  parameters: { mapId?: string; mapVersionId?: string; configuration?: {
+    pickups?: { pickupSite: string }[]; waitingSites?: string[]; waitingSite?: string; dumpingSite?: string;
+  } } | null;
+  parameterWarning: string;
+}
+export async function loadCurrentSimulationMap(read: (path: string) => Promise<unknown>, now = () => Date.now()): Promise<SimulationCurrentMap> {
+  const before = await read('/api/snapshot') as Snapshot;
+  if (before?.source !== 'backend' || !isFresh(before, now()) || !before.map?.id || !before.map.version || !before.map.definitionHash)
+    throw new Error('当前运行地图没有有效观察。请等待后台连接和地图刷新后重试。');
+  const identity = before.map;
+  const workspace = await read(`/api/maps/${encodeURIComponent(identity.id)}/workspace`) as SimulationMapWorkspace;
+  const definition = simulationMapFromPublishedVersion(identity, workspace);
+  let parameters: SimulationCurrentMap['parameters'] = null, parameterWarning = '';
+  try {
+    const result = await read('/api/task-parameters') as SimulationCurrentMap['parameters'];
+    if (result?.mapId !== identity.id || result.mapVersionId !== identity.version || !result.configuration)
+      throw new Error('工位参数与当前运行地图版本不一致');
+    parameters = result;
+  } catch {
+    parameterWarning = '当前工位参数不可用或不属于该地图版本，请手动选择取货、等待、倒料和检修节点。';
+  }
+  const after = await read('/api/snapshot') as Snapshot;
+  if (after?.source !== 'backend' || !isFresh(after, now()) || after.map?.id !== identity.id ||
+      after.map.version !== identity.version || after.map.definitionHash !== identity.definitionHash)
+    throw new Error('拉取期间运行地图发生变化或连接已失效，未替换仿真地图。请刷新后重新拉取。');
+  return { identity, definition, parameters, parameterWarning };
+}
 export interface SimulationStationConfiguration { stationId: 'CNC-001' | 'CNC-002'; pickupSite: string; offset?: number }
 export interface SimulationVehicleConfiguration {
   id: string; initialSite: string; radiusMeters: number; initialLoaded?: boolean;
@@ -18,7 +81,7 @@ export interface SimulationVehicleConfiguration {
 export interface SimulationConfigureRequest {
   name: string; mapDefinition: SimulationMapDefinition; stations: SimulationStationConfiguration[];
   vehicles: SimulationVehicleConfiguration[];
-  dumper: { dumpingSite: string; waitingSite: string; resourceId: string };
+  dumper: { dumpingSite: string; waitingSite: string; waitingSites?: string[]; resourceId: string };
   inspectionSite: string;
 }
 export interface SimulationCall { stationId: 'CNC-001' | 'CNC-002'; atSeconds: number; vehicleId?: string | null }
@@ -39,7 +102,7 @@ export interface SimulationEquipmentStatus {
   direction?: string; door?: string; moving?: boolean; progress?: number; fault?: boolean;
   signals?: Record<string, unknown>; schedules?: unknown[]; signalEvents?: Record<string, unknown>[]; error?: string;
 }
-export interface SimulationCheck { name: string; status: string; detail?: string }
+export interface SimulationCheck { name: string; status: string; detail?: unknown }
 export interface SimulationReport {
   status: string; checks?: SimulationCheck[]; metrics?: Record<string, unknown>;
   id?: string; name?: string; message?: string; generatedAt?: string | number; finishedAt?: string | number;
@@ -57,7 +120,7 @@ export interface SimulationStatus {
   scenario?: SimulationScenario | null; report?: SimulationReport | null; phase?: string; controls?: Partial<SimulationControls>;
   configuration?: {
     stations: SimulationStationConfiguration[]; vehicles: SimulationVehicleConfiguration[]; inspectionSite: string;
-    dumper: { dumpingSite: string; waitingSite: string; resourceId: string }; mapName: string;
+    dumper: { dumpingSite: string; waitingSite: string; waitingSites?: string[]; resourceId: string }; mapName: string;
   } | null;
   recovery?: SimulationRecovery | null;
   protocol?: SimulationProtocolStatus | null;
@@ -104,9 +167,10 @@ export function simulationTone(status?: string): 'pass' | 'fail' | 'waiting' | '
   }
 }
 export function simulationLabel(status?: string): string {
-  return ({ pass: '通过', passed: '通过', fail: '失败', failed: '失败', error: '出错', completed: '已完成',
+  const known=({ pass: '通过', passed: '通过', fail: '失败', failed: '失败', error: '出错', completed: '已完成',
     running: '运行中', starting: '启动中', pending: '等待中', waiting: '等待中', stopping: '停止中',
-    aborted: '已中止', idle: '未运行', unknown: '未核定', inconclusive: '证据不足', skipped: '未执行' } as Record<string, string>)[status?.toLowerCase() ?? ''] ?? status ?? '尚无记录';
+    aborted: '已中止', idle: '未运行', unknown: '未核定', inconclusive: '证据不足', skipped: '未执行' } as Record<string, string>)[status?.toLowerCase() ?? ''];
+  return known ?? (status && /[\u3400-\u9fff]/.test(status) ? status : status ? '状态待核对' : '尚无记录');
 }
 export function simulationGeometry(nodes: SimulationNode[], edges: SimulationEdge[], cars: Record<string, SimulationVehicle>) {
   const validNodes = nodes.filter(node => Number.isFinite(node.x) && Number.isFinite(node.y));

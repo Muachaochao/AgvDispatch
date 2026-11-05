@@ -82,6 +82,13 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
     {
         var logicalSource = MapRouteSiteMapper.ResolveLogicalNodeId(definition, source);
         var logicalDestination = MapRouteSiteMapper.ResolveLogicalNodeId(definition, destination);
+        try
+        {
+            unavailableTraversals = (unavailableTraversals ?? []).Concat(
+                DumperTransitClearance.BlockedTraversals(definition, logicalSource, logicalDestination,
+                    _legacyOptions.DumperDumpingSite, _legacyOptions.DumperTransitClearanceMeters)).Distinct().ToArray();
+        }
+        catch (ArgumentException) { return null; }
         var waitingAndDumping = _legacyOptions.GetDumperWaitingSites().Append(_legacyOptions.DumperDumpingSite)
             .Where(site => !string.IsNullOrWhiteSpace(site))
             .Select(site => MapRouteSiteMapper.ResolveLogicalNodeId(definition, site!))

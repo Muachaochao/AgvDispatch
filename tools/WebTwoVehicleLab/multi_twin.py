@@ -45,6 +45,10 @@ def snapshot(car):
                 speedMps=car.current_speed_mps,
                 distanceMeters=car.distance_meters,
                 moving=car.moving, motionEdge=car.motion_edge,
+                blockedByVehicle=car.blocked_by_vehicle,
+                waitReason=(f'前方车辆 {car.blocked_by_vehicle} 距离较近，停车等待其离开；原运输任务保持。'
+                            if car.blocked_by_vehicle else '当前道路被封锁，等待解除。'
+                            if car.motion_edge in car.blocked_edges else '车辆已暂停，等待继续。' if car.paused else None),
                 simulationControl=car.control_snapshot())
 
 
@@ -77,6 +81,8 @@ async def run(root):
         (child / 'navigation.agvmap.json').write_bytes((root / 'navigation.agvmap.json').read_bytes())
         cars.append(Car(child, plc.memory, origin, robot['VehicleId'], root))
     plc.cars = cars
+    for car in cars:
+        car.peers = [peer for peer in cars if peer is not car]
     servers = [await asyncio.start_server(plc.s7, '127.0.0.1', lab['plcPort'])]
     for robot, car in zip(robots, cars):
         for port in (robot['Port'], robot['NavigationPort']):

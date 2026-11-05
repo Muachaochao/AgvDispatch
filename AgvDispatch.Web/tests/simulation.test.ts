@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { simulationFresh, scenarioActive, simulationGeometry, simulationTone, simulationLabel, type SimulationStatus } from '../src/simulation.ts';
+import { simulationFresh, scenarioActive, simulationGeometry, simulationTone, simulationLabel, simulationMapFromPublishedVersion, loadCurrentSimulationMap, type SimulationMapWorkspace, type SimulationStatus } from '../src/simulation.ts';
+import type { Snapshot, WebMap } from '../src/types.ts';
 
 const now = Date.parse('2026-11-04T10:00:00+08:00');
 const sample = (patch: Partial<SimulationStatus> = {}): SimulationStatus => ({ enabled: true, running: true, fresh: true, device: { time: now / 1000, cars: {} }, ...patch });
@@ -41,4 +42,112 @@ test('cubic curves preserve their real control points and remain inside the map 
     [{ id: 'curve', from: 'A', to: 'B', geometryKind: 'CubicBezier', controlPoints: [{ x: -5, y: 30 }, { x: 15, y: 30 }] }], {});
   assert.ok(result.edges[0].path.includes('C ')); assert.ok(!result.edges[0].path.includes('NaN'));
   assert.ok(result.nodes.every(node => node.x >= 0 && node.x <= 800 && node.y >= 0 && node.y <= 430));
+});
+
+const liveMap = {
+  id: 'MAP-LIVE', version: 'MAPV-LIVE', definitionHash: 'immutable-definition-hash', name: '当前运行图', unit: 'm', coordinateSystem: 'RobotWorld',
+  nodes: [], edges: [], resources: [], warnings: []
+} as WebMap;
+const workspace = (): SimulationMapWorkspace => ({
+  project: { mapId: liveMap.id, isActive: true, activeVersionId: liveMap.version },
+  published: { mapId: liveMap.id, versionId: liveMap.version, status: 'Published', definition: {
+    name: liveMap.name, source: 'original source', unit: 'm', coordinateSystem: 'RobotWorld',
+    robokitSource: { mapName: 'robot-original', sha256: 'source-hash' },
+    nodes: [
+      { id: 'BUS-LM1', agvSiteId: 'LM1', x: 1, y: 2, type: 'Station', enabled: true, resourceIds: ['R1'] },
+      { id: 'BUS-LM2', agvSiteId: 'LM2', x: 3, y: 4, type: 'WaitingPoint', enabled: true, resourceIds: ['WAIT-EXPLICIT'] },
+      { id: 'BUS-LM3', agvSiteId: 'LM3', x: 5, y: 6, type: 'Station', enabled: true, resourceIds: [] }
+    ],
+    edges: [
+      { id: 'E1', from: 'BUS-LM1', to: 'BUS-LM2', enabled: true, bidirectional: true, geometryKind: 'CubicBezier',
+        distance: 12.34, controlPoints: [{ x: 2, y: 15 }, { x: 4, y: -10 }], speedLimit: 0.6, resourceIds: ['R1'] },
+      { id: 'E2', from: 'BUS-LM2', to: 'BUS-LM3', enabled: true, bidirectional: false, geometryKind: 'Line',
+        distance: 4, speedLimit: 0.4, controlPoints: null, resourceIds: [] }
+    ],
+    resources: [
+      { id: 'R1', type: 'Station', capacity: 1, boundary: [{ x: 0, y: 0 }, { x: 2, y: 0 }, { x: 2, y: 2 }] },
+      { id: 'WAIT-EXPLICIT', type: 'Station', capacity: 1, boundary: [{ x: 2, y: 3 }, { x: 4, y: 3 }, { x: 4, y: 5 }] },
+      { id: 'WAIT-LM3', type: 'Station', capacity: 1, boundary: [{ x: 12, y: 3 }, { x: 14, y: 3 }, { x: 14, y: 5 }] }
+    ]
+  } }
+});
+
+test('full published map is independently copied without guessing geometry or resource bindings', () => {
+  const source = workspace();
+  const original = source.published!.definition;
+  original.edges[0]!.vendorPath = { className: 'DegenerateBezier', rawPropertiesJson: '[{"key":"direction","value":0}]' } as any;
+  const copy = simulationMapFromPublishedVersion(liveMap, source);
+  assert.deepEqual(copy, original);
+  assert.notEqual(copy, original);
+  assert.deepEqual(copy.nodes[1]?.resourceIds, ['WAIT-EXPLICIT']);
+  assert.deepEqual(copy.nodes[2]?.resourceIds, []); // WAIT-LM3 name must not create a binding.
+  assert.deepEqual(copy.edges[0]?.resourceIds, ['R1']); // Endpoint bindings must not spread onto roads.
+  assert.deepEqual(copy.edges[0]?.controlPoints, [{ x: 2, y: 15 }, { x: 4, y: -10 }]);
+  assert.equal(copy.edges[0]?.distance, 12.34);
+  copy.edges[0]!.controlPoints![0]!.x = 99;
+  copy.nodes[0]!.resourceIds!.push('changed');
+  copy.edges[0]!.vendorPath!.className = 'changed';
+  assert.equal(original.edges[0]!.controlPoints![0]!.x, 2);
+  assert.deepEqual(original.nodes[0]!.resourceIds, ['R1']);
+  assert.equal(original.edges[0]!.vendorPath!.className, 'DegenerateBezier');
+});
+
+test('no draft, other version or inactive project can silently replace the running map', () => {
+  for (const patch of [(w: SimulationMapWorkspace) => { w.project!.isActive = false; },
+    (w: SimulationMapWorkspace) => { w.project!.activeVersionId = 'other'; },
+    (w: SimulationMapWorkspace) => { w.published!.versionId = 'other'; },
+    (w: SimulationMapWorkspace) => { w.published!.mapId = 'other'; },
+    (w: SimulationMapWorkspace) => { w.published!.status = 'Draft'; },
+    (w: SimulationMapWorkspace) => { w.published = null; }]) {
+    const source = workspace(); patch(source);
+    assert.throws(() => simulationMapFromPublishedVersion(liveMap, source), /完整发布地图不一致/);
+  }
+});
+
+test('a sampled display curve or missing bindings cannot be substituted for the full definition', () => {
+  for (const patch of [(w: SimulationMapWorkspace) => { w.published!.definition.edges[0]!.controlPoints = undefined; },
+    (w: SimulationMapWorkspace) => { w.published!.definition.edges[0]!.resourceIds = undefined; },
+    (w: SimulationMapWorkspace) => { w.published!.definition.nodes[0]!.resourceIds = undefined; }]) {
+    const source = workspace(); patch(source);
+    assert.throws(() => simulationMapFromPublishedVersion(liveMap, source), /未自动推测或补写/);
+  }
+});
+const snapshot = (patch: Partial<Snapshot> = {}): Snapshot => ({
+  connected: true, source: 'backend', receivedAt: new Date(now).toISOString(), map: liveMap,
+  error: null, positionedVehicleIds: [], status: null, tasks: null, devices: null, resources: null, ...patch
+});
+function currentMapReader(after: Snapshot = snapshot(), parameterPatch = {}) {
+  const requests: string[] = []; let snapshots = 0;
+  const read = async (path: string) => {
+    requests.push(path);
+    if (path === '/api/snapshot') return snapshots++ === 0 ? snapshot() : after;
+    if (path.endsWith('/workspace')) return workspace();
+    if (path === '/api/task-parameters') return { mapId: liveMap.id, mapVersionId: liveMap.version,
+      configuration: { pickups: [{ pickupSite: 'BUS-LM1' }], waitingSite: 'BUS-LM2', dumpingSite: 'BUS-LM3' }, ...parameterPatch };
+    throw new Error('Unexpected request ' + path);
+  };
+  return { read, requests };
+}
+
+test('current map loading uses full workspace and verifies the active map again after reading parameters', async () => {
+  const fixture = currentMapReader();
+  const result = await loadCurrentSimulationMap(fixture.read, () => now);
+  assert.deepEqual(result.definition, workspace().published!.definition);
+  assert.equal(result.parameters?.configuration?.waitingSite, 'BUS-LM2');
+  assert.equal(result.parameterWarning, '');
+  assert.deepEqual(fixture.requests, ['/api/snapshot', '/api/maps/MAP-LIVE/workspace', '/api/task-parameters', '/api/snapshot']);
+});
+
+test('a version or hash change, stale feedback or disconnect during loading rejects the copy', async () => {
+  for (const after of [snapshot({ map: { ...liveMap, version: 'other' } }), snapshot({ map: { ...liveMap, definitionHash: 'other' } }),
+    snapshot({ connected: false }), snapshot({ source: 'demo' }), snapshot({ receivedAt: new Date(now - 8000).toISOString() })]) {
+    await assert.rejects(loadCurrentSimulationMap(currentMapReader(after).read, () => now), /未替换仿真地图/);
+  }
+});
+
+test('demo snapshots cannot supply a current map and mismatched parameters are not inherited', async () => {
+  await assert.rejects(loadCurrentSimulationMap(async () => snapshot({ source: 'demo' }), () => now), /没有有效观察/);
+  const result = await loadCurrentSimulationMap(currentMapReader(snapshot(), { mapVersionId: 'other' }).read, () => now);
+  assert.equal(result.parameters, null);
+  assert.match(result.parameterWarning, /手动选择/);
 });

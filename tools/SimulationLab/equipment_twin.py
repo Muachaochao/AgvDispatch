@@ -1,5 +1,7 @@
 """Optional elevator/door and signal-generator simulation; not a dispatch contract."""
 import json
+import copy
+import math
 import threading
 import time
 import uuid
@@ -15,17 +17,26 @@ class EquipmentModel:
                           direction='Stopped', door='Closed', moving=False, progress=0.0, fault=False,
                           signals={}, signalEvents=[], schedules=[])
         self.travel_seconds = 2.0; self.door_seconds = 1.0
-        self.thread = threading.Thread(target=self._run, daemon=True); self.thread.start()
+        self.last_tick = time.time()
         self._write()
+        self.thread = threading.Thread(target=self._run, daemon=True); self.thread.start()
 
     def _write(self):
-        value = dict(time=time.time(), **self.state)
+        value = dict(time=self.last_tick, **self.state)
+        value['error'] = None
         temporary = self.root / 'equipment-state.tmp'
-        temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding='utf-8')
-        temporary.replace(self.root / 'equipment-state.json')
+        try:
+            temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False), encoding='utf-8')
+            temporary.replace(self.root / 'equipment-state.json')
+        except OSError as exc:
+            # Readers can hold the destination briefly on Windows. Retry on the
+            # next tick without killing the model or claiming the file was saved.
+            self.state['error'] = f'设备状态保存失败，正在重试：{exc}'
+        else:
+            self.state['error'] = None
 
     def status(self):
-        with self.lock: return dict(self.state, time=time.time())
+        with self.lock: return dict(copy.deepcopy(self.state), time=self.last_tick)
 
     def control(self, payload):
         if not isinstance(payload, dict) or set(payload) - {'sequence', 'elevator', 'signals', 'travelSeconds', 'doorSeconds'}:
@@ -33,52 +44,78 @@ class EquipmentModel:
         sequence = payload.get('sequence')
         if not isinstance(sequence, str) or not sequence or len(sequence) > 128: raise ValueError('设备控制序号无效。')
         with self.lock:
-            if payload.get('travelSeconds') is not None:
-                self.travel_seconds = self._bounded(payload['travelSeconds'], .1, 300, '运行时间')
-            if payload.get('doorSeconds') is not None:
-                self.door_seconds = self._bounded(payload['doorSeconds'], .1, 60, '开关门时间')
-            elevator = payload.get('elevator', {})
-            if not isinstance(elevator, dict) or set(elevator) - {'targetFloor', 'doorCommand', 'fault', 'reset'}:
-                raise ValueError('电梯控制字段无效。')
-            if 'targetFloor' in elevator:
-                floor = str(elevator['targetFloor'])
-                if floor not in self.state['floors']: raise ValueError('目标楼层不存在。')
-                if self.state['fault']: raise ValueError('电梯故障状态下禁止运行。')
-                if self.state['door'] != 'Closed': raise ValueError('门未关闭，禁止电梯运行。')
-                self.state['targetFloor'] = floor
-            if 'doorCommand' in elevator:
-                command = elevator['doorCommand']
-                if command not in ('open', 'close'): raise ValueError('门控制只支持open或close。')
-                if self.state['moving']: raise ValueError('电梯运行中禁止开关门。')
-                self.state['door'] = 'Opening' if command == 'open' else 'Closing'
-            if 'fault' in elevator:
-                if not isinstance(elevator['fault'], bool): raise ValueError('故障标志必须为布尔值。')
-                self.state['fault'] = elevator['fault']
-                if elevator['fault']:
-                    self.state.update(targetFloor=None, moving=False, direction='Stopped', door='Faulted')
-            if elevator.get('reset') is True:
-                self.state.update(fault=False, targetFloor=None, moving=False, direction='Stopped', door='Closed', progress=0.0)
-            signals = payload.get('signals', {})
-            if not isinstance(signals, dict) or set(signals) - {'set', 'schedule', 'clearSchedule'}:
-                raise ValueError('信号控制字段无效。')
-            if 'set' in signals:
-                self._set_signals(signals['set'], 'manual')
-            if signals.get('clearSchedule') is True:
-                self.state['schedules'].clear()
-            if 'schedule' in signals:
-                entries = signals['schedule']
-                if not isinstance(entries, list) or len(entries) > 200: raise ValueError('信号计划须为最多200项数组。')
-                now = time.monotonic()
-                for entry in entries:
-                    if not isinstance(entry, dict) or set(entry) != {'id', 'afterMs', 'set'}:
-                        raise ValueError('信号计划条目字段无效。')
-                    if not isinstance(entry['id'], str) or not entry['id'] or len(entry['id']) > 64:
-                        raise ValueError('信号计划编号无效。')
-                    delay = self._bounded(entry['afterMs'], 0, 3600000, '信号延迟') / 1000
-                    self.state['schedules'].append(dict(id=entry['id'], due=now + delay, set=self._validate_signals(entry['set'])))
-            self.state['sequence'] = sequence; self.state['error'] = None
+            # Validate the whole request against an isolated copy. A rejected
+            # signal plan must not have already started the elevator or door.
+            old_state = self.state
+            old_travel, old_door = self.travel_seconds, self.door_seconds
+            self.state = copy.deepcopy(old_state)
+            try:
+                self._apply_control(payload, sequence)
+            except (ValueError, TypeError):
+                self.state = old_state
+                self.travel_seconds, self.door_seconds = old_travel, old_door
+                raise
             self._write()
             return self.status()
+
+    def _apply_control(self, payload, sequence):
+        if payload.get('travelSeconds') is not None:
+            self.travel_seconds = self._bounded(payload['travelSeconds'], .1, 300, '运行时间')
+        if payload.get('doorSeconds') is not None:
+            self.door_seconds = self._bounded(payload['doorSeconds'], .1, 60, '开关门时间')
+        elevator = payload.get('elevator', {})
+        if not isinstance(elevator, dict) or set(elevator) - {'targetFloor', 'doorCommand', 'fault', 'reset'}:
+            raise ValueError('电梯控制字段无效。')
+        for key in ('fault', 'reset'):
+            if key in elevator and not isinstance(elevator[key], bool):
+                raise ValueError('故障与复位标志必须为布尔值。')
+        if elevator.get('targetFloor') is not None and elevator.get('doorCommand') == 'open':
+            raise ValueError('不能同时请求电梯运行和开门。')
+        if 'targetFloor' in elevator:
+            floor = str(elevator['targetFloor'])
+            if floor not in self.state['floors']: raise ValueError('目标楼层不存在。')
+            if self.state['fault']: raise ValueError('电梯故障状态下禁止运行。')
+            if self.state['moving']: raise ValueError('电梯运行中不能更改目标楼层。')
+            if self.state['door'] != 'Closed': raise ValueError('门未关闭，禁止电梯运行。')
+            self.state['targetFloor'] = floor if floor != self.state['currentFloor'] else None
+        if 'doorCommand' in elevator:
+            command = elevator['doorCommand']
+            if command not in ('open', 'close'): raise ValueError('门控制只支持open或close。')
+            if self.state['fault']: raise ValueError('电梯故障状态下请先复位。')
+            if self.state['moving']: raise ValueError('电梯运行中禁止开关门。')
+            self.state['_opening'] = self.state['_closing'] = 0
+            self.state['door'] = 'Opening' if command == 'open' else 'Closing'
+        if 'fault' in elevator:
+            if not isinstance(elevator['fault'], bool): raise ValueError('故障标志必须为布尔值。')
+            self.state['fault'] = elevator['fault']
+            if elevator['fault']:
+                self.state.update(targetFloor=None, moving=False, direction='Stopped', door='Faulted')
+        if elevator.get('reset') is True:
+            self.state.update(fault=False, targetFloor=None, moving=False, direction='Stopped', door='Closed', progress=0.0)
+            self.state['_opening'] = self.state['_closing'] = 0
+        signals = payload.get('signals', {})
+        if not isinstance(signals, dict) or set(signals) - {'set', 'schedule', 'clearSchedule'}:
+            raise ValueError('信号控制字段无效。')
+        if 'clearSchedule' in signals and not isinstance(signals['clearSchedule'], bool):
+            raise ValueError('清除信号计划标志必须为布尔值。')
+        if 'set' in signals:
+            self._set_signals(signals['set'], 'manual')
+        if signals.get('clearSchedule') is True:
+            self.state['schedules'].clear()
+        if 'schedule' in signals:
+            entries = signals['schedule']
+            if not isinstance(entries, list) or len(entries) > 200: raise ValueError('信号计划须为最多200项数组。')
+            if len(entries) + len(self.state['schedules']) > 200:
+                raise ValueError('待执行信号计划总数不能超过200项，请先清除旧计划。')
+            now = time.monotonic()
+            for entry in entries:
+                if not isinstance(entry, dict) or set(entry) != {'id', 'afterMs', 'set'}:
+                    raise ValueError('信号计划条目字段无效。')
+                if not isinstance(entry['id'], str) or not entry['id'] or len(entry['id']) > 64:
+                    raise ValueError('信号计划编号无效。')
+                delay = self._bounded(entry['afterMs'], 0, 3600000, '信号延迟') / 1000
+                self.state['schedules'].append(dict(id=entry['id'], due=now + delay, set=self._validate_signals(entry['set'])))
+        self.state['sequence'] = sequence; self.state['error'] = None
 
     @staticmethod
     def _bounded(value, low, high, name):
@@ -93,6 +130,8 @@ class EquipmentModel:
         for key, item in value.items():
             if not isinstance(key, str) or not key or len(key) > 64: raise ValueError('信号名称无效。')
             if isinstance(item, bool) or (isinstance(item, (int, float)) and not isinstance(item, bool)):
+                if isinstance(item, float) and not math.isfinite(item):
+                    raise ValueError('信号数字必须是有限值。')
                 result[key] = item
             elif isinstance(item, str):
                 result[key] = item[:256]
@@ -110,7 +149,8 @@ class EquipmentModel:
         while not self.stop_event.wait(.1):
             now = time.monotonic(); dt = now - last; last = now
             with self.lock:
-                due = [entry for entry in self.state['schedules'] if entry['due'] <= now]
+                self.last_tick = time.time()
+                due = sorted((entry for entry in self.state['schedules'] if entry['due'] <= now), key=lambda entry: entry['due'])
                 if due:
                     for entry in due:
                         self._set_signals(entry['set'], entry['id'])

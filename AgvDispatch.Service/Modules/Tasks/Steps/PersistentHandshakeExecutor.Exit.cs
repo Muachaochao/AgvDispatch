@@ -201,7 +201,15 @@ public sealed partial class PersistentHandshakeExecutor
         if(vendor.UpdatedAt>now.AddSeconds(1)||now-vendor.UpdatedAt>maximumAge)
             throw new InvalidOperationException("重新采集定位后原返程查询已过期，保持占用。");
         vehicles.TryGet(vehicleId,out var endpointVehicle);
-        var endpointStopped=endpointVehicle is not null&&endpointVehicle.CurrentStation==step.DestinationSite&&
+        // Task destinations use logical node IDs; telemetry uses the manufacturer's
+        // station ID. Only a unique enabled mapping may establish endpoint arrival.
+        var destinations=current.Definition.Nodes.Where(n=>n.Enabled&&
+            (string.Equals(n.Id,step.DestinationSite,StringComparison.OrdinalIgnoreCase)||
+             string.Equals(n.AgvSiteId,step.DestinationSite,StringComparison.OrdinalIgnoreCase))).ToArray();
+        var destination=destinations.Length==1?destinations[0]:null;
+        var endpointStopped=destination is not null&&!string.IsNullOrWhiteSpace(destination.AgvSiteId)&&
+            current.Definition.Nodes.Count(n=>n.Enabled&&string.Equals(n.AgvSiteId,destination.AgvSiteId,StringComparison.OrdinalIgnoreCase))==1&&
+            endpointVehicle is not null&&string.Equals(endpointVehicle.CurrentStation,destination.AgvSiteId,StringComparison.OrdinalIgnoreCase)&&
             endpointVehicle.VelocityX is {} vx&&endpointVehicle.VelocityY is {} vy&&endpointVehicle.AngularVelocity is {} va&&
             Math.Abs(vx)<=.02&&Math.Abs(vy)<=.02&&Math.Abs(va)<=.02;
         return new(step.TaskId,step.StepId,vehicleId,vendorTaskId,current.MapId,current.VersionId,

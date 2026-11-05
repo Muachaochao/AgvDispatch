@@ -32,6 +32,9 @@ class DeviceTwin:
         self.contract = settings['HandshakeExecution']['PlcContractVersion']
         self.vehicle_ids = {robot['VehicleId'] for robot in settings.get('Agv', {}).get('Robots', [])}
         self.vehicle_id = next(iter(self.vehicle_ids)) if len(self.vehicle_ids) == 1 else None
+        self.body_profiles = settings['HandshakeExecution'].get('DumperExit', {}).get('BodyProfiles', [])
+        self.peers = []
+        self.blocked_by_vehicle = None
         self.control_root = self.root
         self.control_sequence = None
         self.control_error = None
@@ -53,6 +56,8 @@ class DeviceTwin:
         self.plc_controls = dict(PLC_DEFAULTS)
         self.ready_requested_at = None
         self.motion_edge = None
+        self.motion_source = self.motion_target = None
+        self.motion_percentage = 0.0
         self.moving = False
         self.at_source = True
         if self.contract not in ('plc-28-stage-v2', 'sender-owned-return-confirmed-v1'):
@@ -252,6 +257,10 @@ class DeviceTwin:
             points = self.path_points(item['source_id'], item['id'])
             edge = self.edges[item['source_id'], item['id']][0]
             self.motion_edge = edge.get('id')
+            self.motion_source, self.motion_target = item['source_id'], item['id']
+            self.motion_percentage = 0.0
+            route_length = sum(math.hypot(bx-ax, by-ay)
+                               for (ax, ay), (bx, by) in zip(points, points[1:]))
             # Carry distance across curve samples within each tick. Waiting one
             # tick per Bezier sample would make acceleration depend on geometry.
             speed = min(1.0, edge.get('speedLimit', 0.5))
@@ -262,8 +271,15 @@ class DeviceTwin:
             while segment < len(points) - 1:
                 if self.tasks[tid] == 6:
                     break
+                self.moving = False
+                prior_blocker = next((p for p in self.peers if p.vehicle_id == self.blocked_by_vehicle), None)
+                if prior_blocker is not None and math.hypot(self.x-prior_blocker.x, self.y-prior_blocker.y) < self.body_radius()+prior_blocker.body_radius()+0.15:
+                    self.current_speed_mps = 0.0
+                    self.consume_battery(seconds=0.1)
+                    await asyncio.sleep(0.1)
+                    continue
+                self.blocked_by_vehicle = None
                 if not self.paused and self.motion_edge not in self.blocked_edges:
-                    self.moving = True
                     target_speed = speed * self.speed_scale
                     self.current_speed_mps = min(target_speed, self.current_speed_mps + self.acceleration * 0.1)
                     budget = self.current_speed_mps * 0.1
@@ -271,9 +287,17 @@ class DeviceTwin:
                         (ax, ay), (bx, by) = points[segment:segment+2]
                         distance = math.hypot(bx-ax, by-ay)
                         advance = min(budget, distance-progress)
+                        nx, ny = ((ax+(bx-ax)*(progress+advance)/distance,
+                                   ay+(by-ay)*(progress+advance)/distance) if distance else (bx, by))
+                        blocker = self.movement_blocker(nx, ny)
+                        if blocker is not None:
+                            self.blocked_by_vehicle = blocker
+                            self.current_speed_mps = 0.0
+                            break
                         moved_meters += advance
                         if advance > 0:
                             self.at_source = False
+                            self.moving = True
                         progress += advance
                         budget -= advance
                         if distance:
@@ -283,6 +307,7 @@ class DeviceTwin:
                             segment, progress = segment+1, 0.0
                         if budget <= 1e-10:
                             break
+                    self.motion_percentage = min(1.0, moved_meters / route_length) if route_length else 1.0
                 await asyncio.sleep(0.1)
                 if not self.moving:
                     self.current_speed_mps = max(0.0, self.current_speed_mps - self.acceleration * 0.1)
@@ -311,7 +336,25 @@ class DeviceTwin:
             self.current = None
             self.motion_edge = None
             self.moving = False
+            self.blocked_by_vehicle = None
             self.queue.task_done()
+
+    def body_radius(self):
+        profiles = [p for p in self.body_profiles if p.get('VehicleId') == self.vehicle_id]
+        return profiles[0]['RadiusFromReportedReferenceMeters'] if len(profiles) == 1 else 0.6
+
+    def movement_blocker(self, nx, ny):
+        """Synthetic near-obstacle stop; independent collision verdict stays enabled."""
+        dx, dy = nx-self.x, ny-self.y
+        length2 = dx*dx+dy*dy
+        if length2 <= 1e-20:
+            return None
+        for peer in self.peers:
+            fraction = min(1.0, max(0.0, ((peer.x-self.x)*dx+(peer.y-self.y)*dy)/length2))
+            clearance = math.hypot(self.x+fraction*dx-peer.x, self.y+fraction*dy-peer.y)
+            if clearance < self.body_radius()+peer.body_radius()+0.05:
+                return peer.vehicle_id
+        return None
 
     def site(self, name):
         return next(n['agvSiteId'] for n in self.map['nodes'] if n['id'] == name)
@@ -408,12 +451,17 @@ class DeviceTwin:
         if api == 1100:
             return dict(x=self.x, y=self.y, angle=self.angle, confidence=0.99,
                         current_station=self.station, last_station=self.station,
-                        battery_level=self.battery_percent, battery_voltage=self.battery_voltage(), emergency=False, blocked=False,
+                        battery_level=self.battery_percent, battery_voltage=self.battery_voltage(), emergency=False,
+                        blocked=self.blocked_by_vehicle is not None or self.motion_edge in self.blocked_edges,
                         navigation_status=2 if self.current else 0, errors=[], fatals=[], warnings=[],
                         vx=self.current_speed_mps if self.current and not self.paused else 0, vy=0, w=0, charging=self.charging)
         if api == 1110:
             wanted = request.get('task_ids', list(self.tasks))
-            return dict(task_status_package=dict(task_status_list=[dict(task_id=t, status=self.tasks.get(t,404), type=1) for t in wanted]))
+            result = dict(task_status_package=dict(task_status_list=[dict(task_id=t, status=self.tasks.get(t,404), type=1) for t in wanted]))
+            if self.current is not None and self.motion_source is not None:
+                result.update(source_name=self.motion_source, target_name=self.motion_target,
+                              percentage=self.motion_percentage)
+            return result
         if api == 1000:
             return dict(version='3.5-local-twin', protocol_version='2', model='LocalTcpTwin')
         if api == 1300:

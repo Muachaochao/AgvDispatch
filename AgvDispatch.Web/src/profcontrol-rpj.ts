@@ -39,10 +39,10 @@ const pointText = (value: unknown): { x: number; y: number } | null => {
   return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
 };
 
-export function importProfControlRpj(source: string, sourceName = 'ProfControl project'): RpjImportResult {
+export function importProfControlRpj(source: string, sourceName = '工程包'): RpjImportResult {
   let project: JsonObject;
   try { project = object(JSON.parse(source.replace(/^\uFEFF/, ''))); }
-  catch (error) { throw new Error('ProfControl .rpj 不是有效JSON：' + (error instanceof Error ? error.message : String(error))); }
+  catch (error) { throw new Error('.rpj 工程包不是有效JSON：' + (error instanceof Error ? error.message : String(error))); }
   if (!Array.isArray(project.ItemsInNet)) throw new Error('.rpj 缺少 ItemsInNet。');
   const scale = number(object(project.Global).Scale, 0.01);
   if (!(scale > 0) || scale > 1000) throw new Error('.rpj 坐标比例无效。');
@@ -167,7 +167,7 @@ export function importProfControlRpj(source: string, sourceName = 'ProfControl p
   if (sourceVehicles.length > 8) warnings.push(`源项目有 ${sourceVehicles.length} 辆车，仿真页面最多保留前8辆元数据。`);
   if (unsupported.SignalGeneratorView) warnings.push('信号发生器只导入元数据；运行信号需在仿真页另行配置。');
   return {
-    mapDefinition: { name: sourceName.replace(/\.rpj$/i, '') || 'ProfControl import', nodes, edges, resources },
+    mapDefinition: { name: sourceName.replace(/\.rpj$/i, '') || '工程包导入', nodes, edges, resources },
     sourceVehicles: sourceVehicles.slice(0, 8), signalGenerators, unsupported, warnings
   };
 }

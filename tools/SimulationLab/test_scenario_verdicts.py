@@ -3,12 +3,13 @@ import copy
 import json
 from pathlib import Path
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
 
 from controller import read, write
-from scenarios import complete_command_set, control_applied, execute, validate_scenario
+from scenarios import complete_command_set, control_applied, describe_progress, execute, fresh_device_state, submit_original_task, validate_scenario
 
 
 class Event:
@@ -95,6 +96,64 @@ def query(root, sql, parameters=()):
 
 
 class VerdictTests(unittest.TestCase):
+    def test_lost_creation_receipt_retries_only_original_request_and_saves_intent(self):
+        with tempfile.TemporaryDirectory() as name:
+            root=Path(name)
+            class Runtime:
+                abort=Event()
+                calls=[]
+                def api(self, path, payload):
+                    self.calls.append(dict(payload))
+                    if len(self.calls)==1: raise TimeoutError('lost response after commit')
+                    return dict(taskId='original-task',accepted=True,created=False)
+            runtime=Runtime()
+            payload=dict(requestId='original-request',stationId='CNC-001',requestedVehicleId='car')
+            result=submit_original_task(runtime,payload,root)
+            self.assertEqual(result['taskId'],'original-task')
+            self.assertEqual(runtime.calls,[payload,payload])
+            intent=read(root/'create-intent-original-request.json')
+            self.assertEqual(intent['request'],payload)
+            self.assertEqual(len(intent['attempts']),1)
+
+    def test_progress_names_current_step_and_waiting_reason_in_chinese(self):
+        text = describe_progress('车1', dict(task=dict(stage='WaitingForDumper'), steps=[
+            dict(sequence=4, stepType='WaitForDumperReady', status='Ready', isCurrent=True,
+                 waitingExplanation='倒料机尚未就绪，请检查就绪许可')]))
+        self.assertIn('等待倒料机就绪', text)
+        self.assertIn('请检查就绪许可', text)
+        self.assertNotIn('Ready', text)
+    def test_device_observation_retry_absorbs_a_transient_atomic_file_gap(self):
+        now = time.time()
+        class Runtime:
+            abort = threading.Event()
+            children = {}
+            values = [dict(time=now - 10), dict(time=now)]
+            calls = 0
+            def device(self):
+                value = self.values[min(self.calls, len(self.values) - 1)]
+                self.calls += 1
+                return value
+        runtime = Runtime()
+        with patch.object(runtime.abort, 'wait'):
+            self.assertEqual(fresh_device_state(runtime), dict(time=now))
+        self.assertEqual(runtime.calls, 2)
+
+    def test_device_observation_rejects_future_stamp_and_stops_on_abort_or_dead_process(self):
+        class Runtime:
+            abort = threading.Event()
+            children = {}
+            def device(self): return dict(time=time.time() + 100)
+        runtime = Runtime()
+        with self.assertRaisesRegex(RuntimeError, '过期'):
+            fresh_device_state(runtime, timeout=0)
+        runtime.abort.set()
+        with self.assertRaises(InterruptedError): fresh_device_state(runtime)
+        runtime.abort.clear()
+        class ExitedChild:
+            def poll(self): return 1
+        runtime.children['twin'] = ExitedChild()
+        with self.assertRaisesRegex(RuntimeError, '子进程已退出'): fresh_device_state(runtime)
+
     def test_control_requires_fresh_applied_fields_and_sequence(self):
         controls = dict(sequence='new', plc=dict(readyDelaySeconds=3))
         state = dict(time=time.time(), simulationControl=dict(sequence='new', error=None, plc=dict(readyDelaySeconds=0)))

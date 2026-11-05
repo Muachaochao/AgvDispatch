@@ -16,6 +16,7 @@ public sealed class DispatchOrchestratorOptions
     public string[] DumperWaitingSites { get; set; } = [];
     public string[] StandbySites { get; set; } = [];
     public string DumperDumpingSite { get; set; } = string.Empty;
+    public double DumperTransitClearanceMeters { get; set; }
     public string[] IdleOperatingStates { get; set; } = ["Idle", "空闲"];
     public bool AllowUnconfiguredDirectRoutes { get; set; }
     public Dictionary<string, string> StationPickupSites { get; set; } =

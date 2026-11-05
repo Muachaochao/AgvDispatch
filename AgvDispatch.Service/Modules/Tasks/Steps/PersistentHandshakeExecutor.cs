@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Domain.Agvs;
 using AgvDispatch.Domain.Devices;
+using AgvDispatch.Domain.Maps;
 using AgvDispatch.Domain.Tasks;
 using AgvDispatch.Infrastructure.Traffic;
 
@@ -134,7 +135,15 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
         if(dispatch.GetDumperWaitingSites().Count>1 && original.StepType is DispatchTaskStepType.DeliverFullBoxToDumper or DispatchTaskStepType.EnterDumpingPosition)
         {
             var waiting=await WaitingSiteAsync(step,ct);
-            if((original.StepType==DispatchTaskStepType.DeliverFullBoxToDumper ? original.DestinationSite : original.SourceSite)!=waiting)
+            var recorded=original.StepType==DispatchTaskStepType.DeliverFullBoxToDumper ? original.DestinationSite : original.SourceSite;
+            // Command paths may carry vendor site ids (LMxx) while the waiting-bay
+            // binding stores the logical BUS-* node; compare both against the map.
+            if(!string.IsNullOrWhiteSpace(recorded) && map.Current?.Definition is { } waitingDefinition)
+            {
+                recorded=MapRouteSiteMapper.ResolveLogicalNodeId(waitingDefinition,recorded);
+                waiting=MapRouteSiteMapper.ResolveLogicalNodeId(waitingDefinition,waiting);
+            }
+            if(!string.Equals(recorded,waiting,StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException("待发命令与原任务持久候车位不一致，禁止发送。");
         }
         if(original.StepType==DispatchTaskStepType.GoToPickup)await BindBeforeTransportAsync(step,ct);

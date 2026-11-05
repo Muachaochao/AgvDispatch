@@ -31,6 +31,8 @@ async Task ExpectHold(Func<Task> action, string name)
     Check(held, name);
 }
 
+await EndpointAliasChecks.RunAsync(Check);
+
 using (var waitingExit = new Fixture())
 {
     await waitingExit.InitializeAsync();
@@ -671,6 +673,8 @@ sealed class Fixture : IDisposable
             _ => DispatchTaskStage.WaitingForPlcConfirmation
         };
         await Db.Updateable<DispatchTaskEntity>().SetColumns(t => new DispatchTaskEntity { Stage = (int)stage, UpdatedAt = DateTime.Now }).Where(t => t.TaskId == task).ExecuteCommandAsync();
+        if (type == DispatchTaskStepType.WaitForDumperReady && parent.VehicleId is { } waitingVehicle)
+            Vehicles.Set(waitingVehicle, -5, 0, "LM-WAIT");
     }
     public async Task FinishReadyAsync(string task, DispatchTaskStepType type)
     {
@@ -685,6 +689,10 @@ sealed class Fixture : IDisposable
     public async Task WaitAndClaimAsync(string task)
     {
         if ((await CurrentAsync(task)).StepType != DispatchTaskStepType.WaitForDumperReady) await SetReadyAsync(task, DispatchTaskStepType.WaitForDumperReady);
+        var parent = await TaskAsync(task);
+        // The fixture skips the transport command but must still model arrival at
+        // the configured waiting bay before the equipment can be claimed.
+        Vehicles.Set(parent.VehicleId!, -5, 0, "LM-WAIT");
         Signals.Set("DUMPER", "DumperReady", false);
         for (var i = 0; i < 10 && await PhaseAsync(task) != "AwaitReady"; i++) await TickAsync(task);
         Signals.Set("DUMPER", "DumperReady", true);
@@ -873,6 +881,7 @@ sealed class VehicleHarness : IAgvStateCache
         values[vehicle] = new(vehicle, vehicle, "127.0.0.1", 0, ConnectionState.Online, SignalQuality.Good,
             x, y, 0, confidence, station, null, 100, false, false, "Running", null, null, null, [], [], time, time, 0, null, null, Interlocked.Increment(ref version));
     }
+    public void SetVelocity(string vehicle, double? x, double? y, double? angular) => values[vehicle] = values[vehicle] with { VelocityX = x, VelocityY = y, AngularVelocity = angular };
     public event Action<AgvRobotStateChanged>? StateChanged { add { } remove { } }
     public long Version => Interlocked.Read(ref version);
     public IReadOnlyList<AgvRobotSnapshot> GetAll() => values.Values.ToArray();

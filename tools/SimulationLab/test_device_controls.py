@@ -214,6 +214,57 @@ class DeviceNetworkTests(unittest.IsolatedAsyncioTestCase):
         self.f.control()
         self.assertIn('x', await self.request(1100, {}))
 
+    async def test_segment_progress_tracks_distance_and_stops_on_pause(self):
+        car = self.f.car
+        car.nodes['LM1']['x'] = 2
+        self.assertNotIn('percentage', car.robokit_reply(1110, {}))
+        self.assertEqual(0, car.robokit_reply(3066, {'move_task_list': [
+            {'task_id': 'progress', 'source_id': 'LM0', 'id': 'LM1'}]})['ret_code'])
+        driver = asyncio.create_task(car.drive())
+        try:
+            await self.wait_until(lambda: car.x > .05, 'No physical progress')
+            self.f.control(vehicles={'A': {'paused': True}})
+            reply = await self.request(1110, {})
+            self.assertEqual(('LM0', 'LM1'), (reply['source_name'], reply['target_name']))
+            self.assertAlmostEqual(car.x / 2, reply['percentage'])
+            self.assertGreater(reply['percentage'], 0)
+            self.assertLess(reply['percentage'], 1)
+            before = reply['percentage']
+            await asyncio.sleep(.25)
+            self.assertEqual(before, (await self.request(1110, {}))['percentage'])
+            car.robokit_reply(3003, {'taskId': 'progress'})
+            await self.wait_until(lambda: car.current is None, 'Cancel did not clear active progress')
+            self.assertNotIn('percentage', car.robokit_reply(1110, {}))
+        finally:
+            driver.cancel()
+            await asyncio.gather(driver, return_exceptions=True)
+
+    async def test_near_vehicle_blocks_motion_and_resumes_when_clear(self):
+        car = self.f.car
+        car.nodes['LM1']['x'] = 5
+        peer = Car(self.f.root, car.memory, 'LM1', 'B')
+        car.peers = [peer]
+        try:
+            car.robokit_reply(3066, {'move_task_list': [
+                {'task_id': 'yield', 'source_id': 'LM0', 'id': 'LM1'}]})
+            driver = asyncio.create_task(car.drive())
+            try:
+                peer.x = 1.4
+                await self.wait_until(lambda: car.blocked_by_vehicle == 'B', 'Missing obstacle stop')
+                self.assertTrue(car.robokit_reply(1100, {})['blocked'])
+                self.assertGreaterEqual(peer.x-car.x, car.body_radius()+peer.body_radius())
+                stopped = car.x
+                await asyncio.sleep(.2)
+                self.assertEqual(stopped, car.x)
+                peer.y = 10
+                await self.wait_until(lambda: car.x > stopped and car.blocked_by_vehicle is None, 'Vehicle did not resume after peer cleared')
+                self.assertEqual(2, car.tasks['yield'], 'Obstacle release must retain the original task identity')
+            finally:
+                driver.cancel()
+                await asyncio.gather(driver, return_exceptions=True)
+        finally:
+            peer.journal.close()
+
     async def test_pause_block_and_cancel_during_jack(self):
         car = self.f.car
         jack_started, release_jack = asyncio.Event(), asyncio.Event()

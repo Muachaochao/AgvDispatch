@@ -12,19 +12,19 @@ const profile = resolve(project, '.codex-tmp', `simulation-browser-${Date.now()}
 mkdirSync(profile, { recursive: true });
 const binary = ['C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', 'C:/Program Files/Google/Chrome/Application/chrome.exe'].find(existsSync);
 assert.ok(binary, 'Chromium browser required');
-let enabled = false, running = true, rootName = 'mock-private-lab', offline = false, fresh = true, active = false, protocolRunning = false, equipmentRunning = false, requestDelay = 0, inflight = 0, maximum = 0;
+let enabled = false, running = true, deviceCars = true, rootName = 'mock-private-lab', offline = false, fresh = true, active = false, protocolRunning = false, equipmentRunning = false, requestDelay = 0, inflight = 0, maximum = 0;
 let child, ws, seq = 0;
 const pending = new Map(), mutations = [], errors = [];
 const sleep = ms => new Promise(ok => setTimeout(ok, ms));
 const status = () => ({ enabled, running: enabled && running, rootName, fresh,
-  device: { time: (Date.now() - (fresh ? 0 : 10000)) / 1000, cars: {
+  device: { time: (Date.now() - (fresh ? 0 : 10000)) / 1000, cars: !deviceCars ? {} : {
     'AGV-01': { x: 1, y: 2, station: 'LM1', loaded: false, current_task: null, offline: false },
     'AGV-02': { x: 3, y: 4, station: 'LM2', loaded: true, current_task: 'original-transport', offline: false }
   } }, map: { nodes: [{ id: '取料', agvSiteId: 'LM1', x: 1, y: 2 }, { id: '倒料', agvSiteId: 'LM2', x: 3, y: 4 }], edges: [{ id: 'E1', from: '取料', to: '倒料', geometryKind: 'CubicBezier', controlPoints: [{ x: 1, y: 4 }, { x: 3, y: 2 }] }] },
   scenario: { id: 'original-scenario', status: active ? 'running' : 'idle', completedRounds: 0, totalRounds: 2, message: '等待原任务反馈' },
   protocol: protocolRunning ? { running: true, name: 'browser-protocol', transport: 'tcp', framing: 'line-json', port: 45678, rules: 1, requests: 0 } : { running: false },
   equipment: equipmentRunning ? { running: true, floors: ['1','2'], currentFloor: '1', targetFloor: null, direction: 'Stopped', door: 'Closed', moving: false, fault: false, signals: { call: true }, schedules: [], signalEvents: [] } : { running: false, currentFloor: '1', door: 'Closed', signals: {} },
-  report: { id: 'previous-scenario', name: 'plc-delay', finishedAt: Date.now() / 1000, status: 'inconclusive', checks: [{ name: '真实机械反馈', status: 'unknown', detail: '模型不提供现场证据' }] }
+  report: { id: 'previous-scenario', name: 'plc-delay', finishedAt: Date.now() / 1000, status: 'inconclusive', checks: [{ name: '真实机械反馈', status: 'unknown', detail: '模型不提供现场证据' }, { name: '设备确认记录', status: 'passed', detail: { accepted: true, sequence: 'original-input' } }, { name: '原任务身份', status: 'passed', detail: ['TASK-1', 'TASK-2'] }] }
 });
 const server = createServer(async (req, res) => {
   try {
@@ -41,8 +41,8 @@ const server = createServer(async (req, res) => {
       if (path.endsWith('/run')) active = true;
       if (path.endsWith('/abort')) active = false;
       if (path.endsWith('/stop')) running = false;
-      if (path.endsWith('/start')) running = true;
-      if (path.endsWith('/new-instance')) { assert.equal(running, false); assert.equal(mutations.at(-1).body.vehicles, 2); rootName = 'mock-fresh-lab'; }
+      if (path.endsWith('/start')) { running = true; deviceCars = true; }
+      if (path.endsWith('/new-instance')) { assert.equal(running, false); assert.equal(mutations.at(-1).body.vehicles, 2); rootName = 'mock-fresh-lab'; deviceCars = false; }
       if (path.endsWith('/configure')) {
         assert.equal(running, false); assert.equal(mutations.at(-1).body.stations.length, 2);
         assert.equal(mutations.at(-1).body.vehicles.length, 2); assert.equal(mutations.at(-1).body.dumper.resourceId, 'RDUMP');
@@ -51,7 +51,7 @@ const server = createServer(async (req, res) => {
         assert.equal(mutations.at(-1).body.vehicles[0].operationSeconds, 2);
         assert.deepEqual(mutations.at(-1).body.vehicles[0].voltageCurve.map(point => point.percent), [0, 30, 80]);
         assert.equal(mutations.at(-1).body.vehicles[0].chargingGainPercentPerHour, 20);
-        rootName = 'mock-custom-lab';
+        rootName = 'mock-custom-lab'; deviceCars = false;
       }
       if (path.endsWith('/protocol-start')) { assert.equal(mutations.at(-1).body.transport, 'tcp'); protocolRunning = true; }
       if (path.endsWith('/protocol-stop')) protocolRunning = false;
@@ -82,11 +82,14 @@ try {
   const pages = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
   ws = new WebSocket(pages.find(page => page.type === 'page').webSocketDebuggerUrl);
   await new Promise(ok => ws.addEventListener('open', ok, { once: true }));
-  ws.addEventListener('message', event => { const data = JSON.parse(event.data); if (data.id) { const entry = pending.get(data.id); if (entry) { pending.delete(data.id); data.error ? entry.no(new Error(JSON.stringify(data.error))) : entry.ok(data.result); } } });
+  ws.addEventListener('message', event => { const data = JSON.parse(event.data); if (data.id) { const entry = pending.get(data.id); if (entry) { pending.delete(data.id); data.error ? entry.no(new Error(JSON.stringify(data.error))) : entry.ok(data.result); } } else if(data.method==='Runtime.exceptionThrown'||data.method==='Runtime.consoleAPICalled'&&data.params.type==='error') errors.push(JSON.stringify(data.params)); });
   await rpc('Page.enable'); await rpc('Runtime.enable');
   await rpc('Emulation.setDeviceMetricsOverride', { width: 1600, height: 1000, deviceScaleFactor: 1, mobile: false });
   await rpc('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/#/simulation-center` });
   await wait(() => evaluate(`document.querySelector('.configuration-guide')?.textContent.includes('首次配置入口')`), 'Disabled environment guidance');
+  check('Structured report evidence renders without blanking the page', await evaluate(`document.querySelector('.simulation-page').textContent.includes('结构化核对记录已保存')&&document.querySelector('.simulation-page').textContent.includes('共 2 项核对记录')`));
+  check('Simulation page does not expose vendor-specific implementation names',
+    !(await evaluate(`document.querySelector('.simulation-page').textContent.includes('ProfControl')`)));
   check('Unconfigured environment cannot start or submit scenarios', await disabled('启动仿真环境') && await disabled('运行场景') && mutations.length === 0);
   enabled = true; await click('刷新状态');
   await wait(() => evaluate(`document.querySelectorAll('.map-car').length===2&&document.querySelector('.mission-runtime').textContent.includes('反馈有效')`), 'Two device positions');
@@ -106,6 +109,7 @@ try {
   await click('停止协议服务器');
   await click('启动设备模型');
   await click('前往2层');
+  await wait(() => mutations.at(-1)?.path.endsWith('/equipment-control'), 'Equipment control request observed');
   check('Optional elevator/door model accepts a bounded target-floor command',
     mutations.at(-1).path.endsWith('/equipment-control') && mutations.at(-1).body.elevator.targetFloor==='2' && !!mutations.at(-1).body.sequence);
   await click('停止设备模型');
@@ -116,9 +120,9 @@ try {
   check('Fault targets the selected original vehicle and has a unique sequence', mutations.at(-1).body.vehicles['AGV-02'].offline === true && !!mutations.at(-1).body.sequence);
   await click('丢弃下一响应');
   check('Response loss is explicitly requested as a one-shot control', mutations.at(-1).body.vehicles['AGV-02'].dropNextResponse === true);
-  await click('阻止 Done');
+  await click('阻止完成许可');
   check('PLC fault request changes the device input model', mutations.at(-1).body.plc.suppressDone === true);
-  await evaluate(`(()=>{document.querySelector('.edge-controls').open=true;document.querySelector('.edge-options input').click()})()`);
+  await wait(() => evaluate(`(()=>{document.querySelector('.edge-controls').open=true;const input=document.querySelector('.edge-options input');if(!input||input.matches(':disabled'))return false;if(!input.checked)input.click();return input.checked})()`), 'Road selection enabled between polls');
   await click('应用道路阻塞');
   check('Road fault references the selected vehicle and original edge ID', mutations.at(-1).body.vehicles['AGV-02'].blockedEdges.join(',') === 'E1');
   await click('解除所选车全部道路阻塞');
@@ -135,6 +139,9 @@ try {
   check('Abort does not mutate original tasks or clear evidence', mutations.at(-1).path.endsWith('/abort'));
   check('A running environment cannot be replaced with a fresh instance', await disabled('沿用当前地图新建'));
   await click('停止仿真环境');
+  await wait(() => evaluate(`document.querySelector('.mission-identity')?.textContent.includes('已有历史状态')&&document.querySelector('.next-step-copy')?.textContent.includes('当前实例保留了上次设备历史')`), 'Historical instance guidance');
+  check('A stopped instance with device history requires a fresh instance instead of silently failing to restart',
+    await disabled('请先新建实例') && await evaluate(`document.querySelector('.simulation-page').textContent.includes('当前实例保留了上次设备历史')`));
   await evaluate(`(()=>{const map={name:'custom-mock',nodes:[
     {id:'PICK-A',agvSiteId:'LA',x:1,y:1,enabled:true},{id:'PICK-B',agvSiteId:'LB',x:2,y:1,enabled:true},
     {id:'WAIT',agvSiteId:'LW',x:3,y:1,enabled:true},{id:'DUMP',agvSiteId:'LD',x:4,y:1,enabled:true},
@@ -151,7 +158,8 @@ try {
   check('Imported map, stations, vehicles and dumper resource are submitted as one isolated configuration',
     mutations.at(-1).path.endsWith('/configure') && mutations.at(-1).body.mapDefinition.nodes.length===5 &&
     mutations.at(-1).body.stations.length===2 && mutations.at(-1).body.vehicles.length===2 &&
-    mutations.at(-1).body.dumper.resourceId==='RDUMP' && await evaluate(`document.querySelector('#simulation-environment').textContent==='mock-custom-lab'`));
+    mutations.at(-1).body.dumper.resourceId==='RDUMP' && mutations.at(-1).body.dumper.waitingSites[0]===mutations.at(-1).body.dumper.waitingSite &&
+    await evaluate(`document.querySelector('#simulation-environment').textContent==='mock-custom-lab'`));
   await evaluate(`(()=>{const input=document.querySelector('[aria-label="新实例车辆数"]');input.value='9';input.dispatchEvent(new Event('input',{bubbles:true}))})()`);
   check('Fresh instance vehicle count outside 1..8 is rejected in the form', await disabled('沿用当前地图新建'));
   await evaluate(`(()=>{const input=document.querySelector('[aria-label="新实例车辆数"]');input.value='2';input.dispatchEvent(new Event('input',{bubbles:true}))})()`);

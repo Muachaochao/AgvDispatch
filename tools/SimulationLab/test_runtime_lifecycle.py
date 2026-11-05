@@ -54,6 +54,36 @@ def fixture(workspace):
 
 
 class LifecycleTests(unittest.TestCase):
+    def test_failed_start_waits_for_children_and_keeps_handles_if_cleanup_is_pending(self):
+        with tempfile.TemporaryDirectory() as name, patch('controller.WORKSPACE', Path(name)):
+            root = fixture(Path(name)); runtime = Runtime(root)
+            class StuckChild(Child):
+                def wait(self, timeout):
+                    raise subprocess.TimeoutExpired('owned-child', timeout)
+            child = StuckChild()
+            def launch(*args):
+                runtime.children['twin'] = child
+                raise RuntimeError('startup failure')
+            runtime.launch = launch
+            runtime._start()
+            self.assertEqual(runtime.phase, 'failed')
+            self.assertIn('startup failure', runtime.error)
+            self.assertIn('停止并清理', runtime.error)
+            self.assertIs(runtime.children['twin'], child)
+            self.assertTrue(child.killed)
+            child.wait = lambda timeout: 0
+            runtime.stop()
+            self.assertFalse(runtime.children)
+
+    def test_new_instance_does_not_orphan_optional_models(self):
+        with tempfile.TemporaryDirectory() as name, patch('controller.WORKSPACE', Path(name)):
+            root = fixture(Path(name)); runtime = Runtime(root)
+            runtime.equipment_model = object()
+            with self.assertRaisesRegex(ValueError, '设备模型'): runtime.new_instance()
+            self.assertEqual(runtime.root, root)
+            runtime.equipment_model = None; runtime.protocol_runtime = object()
+            with self.assertRaisesRegex(ValueError, '协议服务'): runtime.new_instance()
+
     def test_shutdown_retries_finishing_worker_without_losing_owned_child(self):
         runtime = object.__new__(Runtime)
         owned = Child()
@@ -116,6 +146,7 @@ class LifecycleTests(unittest.TestCase):
             (source/'service/data/hidden.db').write_bytes(b'must-not-copy')
             (source/'service/appsettings.Production.json').write_text('{"private":"must-not-copy"}', encoding='utf-8')
             runtime = Runtime(source)
+            runtime.settings['Dispatching']['DumperWaitingSites'] = ['等待', '停车C']
             result = runtime.new_instance()
             target = runtime.root
             self.assertNotEqual(source, target)
@@ -133,6 +164,11 @@ class LifecycleTests(unittest.TestCase):
             self.assertNotEqual(runtime.lab['pipe'], 'Agv28StageLab-source')
             self.assertEqual(len(runtime.ports), len(set(runtime.ports)))
             self.assertFalse(set(runtime.ports) & {5198,5199})
+            self.assertEqual(runtime.settings['Dispatching']['DumperWaitingSites'], ['等待','停车C'])
+            self.assertEqual(runtime.lab['simulationConfiguration']['dumper']['waitingSites'], ['等待','停车C'])
+            self.assertTrue(runtime.settings['TrafficSegmentRelease']['Enabled'])
+            self.assertTrue(runtime.settings['TrafficSegmentRelease']['CommitEnabled'])
+            self.assertAlmostEqual(runtime.settings['Dispatching']['DumperTransitClearanceMeters'], 1.35)
 
     def test_clone_rejects_running_instance_and_nonloopback_saved_endpoint(self):
         with tempfile.TemporaryDirectory() as name, patch('controller.WORKSPACE', Path(name)):

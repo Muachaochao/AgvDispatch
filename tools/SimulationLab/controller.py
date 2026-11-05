@@ -101,8 +101,13 @@ class Runtime:
         request = Request(f"http://127.0.0.1:{self.web['Port']}" + path,
                           data=json.dumps(data, ensure_ascii=False).encode() if data is not None else None,
                           headers={'Content-Type': 'application/json'})
-        with urlopen(request, timeout=12) as response:
-            result = json.load(response)
+        # The normal WebHost pipe operation is bounded at 25 seconds. A shorter
+        # client timeout can abandon a successful task creation before its receipt.
+        try:
+            with urlopen(request, timeout=35) as response:
+                result = json.load(response)
+        except TimeoutError as error:
+            raise TimeoutError(f'等待仿真后台接口 {path} 返回超时，请核对原请求结果。') from error
         if not allow_rejection and isinstance(result, dict) and result.get('accepted') is False:
             raise RuntimeError(f'{path}: {result}')
         return result
@@ -126,7 +131,7 @@ class Runtime:
                 try: recovery = self.api('/api/recovery')
                 except Exception as error: recovery = dict(error=str(error), items=[], released=False)
             return dict(enabled=True, rootName=self.root.name, running=self.phase == 'running', phase=self.phase,
-                        fresh=self.phase == 'running' and time.time() - device.get('time', 0) < 3 and all(p.poll() is None for p in self.children.values()),
+                        fresh=self.phase == 'running' and 0 <= time.time() - device.get('time', 0) < 5 and bool(self.children) and all(p.poll() is None for p in self.children.values()),
                         device=device, map=read(self.root / 'navigation.agvmap.json'), scenario=dict(self.scenario), report=self.report,
                         controls=self.controls, error=self.error, configuration=getattr(self, 'lab', {}).get('simulationConfiguration'), recovery=recovery,
                         protocol=self.protocol_status(),
@@ -302,10 +307,16 @@ class Runtime:
         if len({s['pickupSite'] for s in normalized_stations}) != len(normalized_stations):
             raise ValueError('两个工位必须使用不同取货点。')
         dumper = payload.get('dumper')
-        if not isinstance(dumper, dict) or set(dumper) != {'dumpingSite', 'waitingSite', 'resourceId'}:
+        if not isinstance(dumper, dict) or set(dumper) - {'dumpingSite', 'waitingSite', 'waitingSites', 'resourceId'} or not {'dumpingSite', 'waitingSite', 'resourceId'} <= set(dumper):
             raise ValueError('倒料设备配置字段无效。')
         dumping = node(dumper['dumpingSite'], '倒料点')
         waiting = node(dumper['waitingSite'], '等待点')
+        waiting_sites = dumper.get('waitingSites', [waiting])
+        if not isinstance(waiting_sites, list) or not 1 <= len(waiting_sites) <= 32 or any(not isinstance(site, str) for site in waiting_sites):
+            raise ValueError('等待位列表须包含1至32个节点。')
+        waiting_sites = [node(site, '等待位') for site in waiting_sites]
+        if waiting_sites[0] != waiting or len(set(waiting_sites)) != len(waiting_sites) or dumping in waiting_sites:
+            raise ValueError('等待位不能重复或与倒料点相同，首项须为主等待位。')
         if typed_topology and nodes[dumping].get('type') != 'Station':
             raise ValueError('倒料点必须是Station类型节点。')
         resource_id = dumper.get('resourceId')
@@ -393,13 +404,13 @@ class Runtime:
                 if current in seen: continue
                 seen.add(current); pending.extend(graph[current] - seen)
             return False
-        targets = [s['pickupSite'] for s in normalized_stations] + [waiting, dumping, inspection]
+        targets = [s['pickupSite'] for s in normalized_stations] + waiting_sites + [dumping, inspection]
         for vehicle in normalized_vehicles:
             if any(not reachable(vehicle['initialSite'], target) for target in targets):
                 raise ValueError(f"{vehicle['id']}与地图工位、等待点或倒料点不连通。")
         return dict(name=payload.get('name') or navigation.get('name') or 'custom-simulation',
                     mapDefinition=navigation, stations=normalized_stations,
-                    vehicles=normalized_vehicles, dumper=dict(dumpingSite=dumping, waitingSite=waiting, resourceId=resource_id),
+                    vehicles=normalized_vehicles, dumper=dict(dumpingSite=dumping, waitingSite=waiting, waitingSites=waiting_sites, resourceId=resource_id),
                     inspectionSite=inspection)
 
     def _default_configuration(self, count):
@@ -409,8 +420,9 @@ class Runtime:
                     if station_id in STATION_IDS]
         dumper = dict(dumpingSite=self.settings['Dispatching']['DumperDumpingSite'],
                       waitingSite=self.settings['Dispatching']['DumperWaitingSite'],
+                      waitingSites=self.settings['Dispatching'].get('DumperWaitingSites') or [self.settings['Dispatching']['DumperWaitingSite']],
                       resourceId=self.settings['HandshakeExecution']['DumperExit']['ResourceIds'][0])
-        excluded = {s['pickupSite'] for s in stations} | {dumper['dumpingSite'], dumper['waitingSite']}
+        excluded = {s['pickupSite'] for s in stations} | {dumper['dumpingSite'], *dumper['waitingSites']}
         typed = any(isinstance(n.get('type'), str) for n in navigation['nodes'])
         origins = [n['id'] for n in navigation['nodes'] if n.get('enabled', True) and n['id'] not in excluded
                    and (not typed or n.get('type') == 'Station')]
@@ -439,6 +451,8 @@ class Runtime:
         with self.lock:
             if self.phase in ('running', 'starting') or self.children or self.worker and self.worker.is_alive():
                 raise ValueError('请先停止当前仿真环境，再创建干净实例。')
+            if self.protocol_runtime is not None or self.equipment_model is not None:
+                raise ValueError('请先停止协议服务和设备模型，再创建干净实例。')
             validate_root(self.root)
             source, lab, settings, web, _ = validate_root(self.template_root)
             target = WORKSPACE / 'artifacts' / ('web-single-vehicle-sim-' + time.strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:6])
@@ -467,7 +481,7 @@ class Runtime:
                     idleCostPercentPerHour=v['idleCostPercentPerHour'], voltageCurve=v['voltageCurve'],
                     chargingGainPercentPerHour=v['chargingGainPercentPerHour']) for v in configuration['vehicles']},
                 simulationTopology=dict(stations=configuration['stations'], dumperSite=configuration['dumper']['dumpingSite'],
-                    waitingSite=configuration['dumper']['waitingSite'], inspectionSite=configuration['inspectionSite']),
+                    waitingSite=configuration['dumper']['waitingSite'], waitingSites=configuration['dumper']['waitingSites'], inspectionSite=configuration['inspectionSite']),
                 simulationConfiguration=dict(stations=configuration['stations'], dumper=configuration['dumper'],
                     inspectionSite=configuration['inspectionSite'], vehicles=configuration['vehicles'],
                     mapName=navigation.get('name') or 'custom_simulation'))
@@ -488,10 +502,17 @@ class Runtime:
             settings['Agv']['Robots'] = robots
             settings['HandshakeExecution']['DumperExit']['BodyProfiles'] = profiles
             settings['HandshakeExecution']['DumperExit']['ResourceIds'] = [configuration['dumper']['resourceId']]
+            # Isolated synthetic devices provide exact segment identity and pose.
+            # Use the production two-frame/body-envelope verifier, never remove
+            # traffic leases merely because the visual car reached a station.
+            settings['TrafficSegmentRelease'] = dict(Enabled=True, CommitEnabled=True,
+                PollIntervalMs=250, MaximumStepsPerCycle=32, FrameWaitSeconds=2)
             settings['Dispatching']['MaxConcurrentTasks'] = len(robots)
             settings['Dispatching']['StationPickupSites'] = {s['stationId']: s['pickupSite'] for s in configuration['stations']}
             settings['Dispatching']['DumperWaitingSite'] = configuration['dumper']['waitingSite']
+            settings['Dispatching']['DumperWaitingSites'] = configuration['dumper']['waitingSites']
             settings['Dispatching']['DumperDumpingSite'] = configuration['dumper']['dumpingSite']
+            settings['Dispatching']['DumperTransitClearanceMeters'] = 2 * max(v['radiusMeters'] for v in configuration['vehicles']) + 0.15
             lab.update(robotPort=robots[0]['Port'], navigationPort=robots[0]['NavigationPort'])
             web.update(Port=lab['webPort'], PipeName=lab['pipe'], ProjectStorePath=str(target / 'projects'), EngineeringStorePath=str(target / 'engineering'))
             for filename, value in [('lab.json', lab), ('service/appsettings.json', settings), ('service-settings.json', settings), ('webhost/appsettings.json', {'Web': web})]:
@@ -527,6 +548,23 @@ class Runtime:
             self.phase = 'running'
         except Exception as error:
             self.phase = 'failed'; self.error = str(error)
+            try:
+                self._stop_children()
+            except (OSError, subprocess.TimeoutExpired) as cleanup_error:
+                # Preserve the owned process handles so Stop can finish cleanup.
+                self.error += '；子进程尚未退出，请点击停止并清理：' + str(cleanup_error)
+
+    def _stop_children(self):
+        (self.root / 'STOP').touch()
+        for name, child in tuple(self.children.items()):
+            if child.poll() is None:
+                try:
+                    if name == 'twin': child.wait(timeout=3)
+                    else: child.terminate(); child.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    child.kill(); child.wait(timeout=5)
+            # Only forget a process after wait/poll confirmed its exit.
+            self.children.pop(name)
 
     def stop(self):
         self.abort.set()
@@ -541,15 +579,8 @@ class Runtime:
             self.protocol_runtime = None
         if self.equipment_model is not None:
             self.equipment_model.stop(); self.equipment_model = None
-        (self.root / 'STOP').touch()
-        for name, child in tuple(self.children.items()):
-            if child.poll() is None:
-                try:
-                    if name == 'twin': child.wait(timeout=3)
-                    else: child.terminate(); child.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    child.kill(); child.wait(timeout=5)
-        self.children.clear(); self.phase = 'stopped'
+        self._stop_children()
+        self.phase = 'stopped'
         return self.status()
 
     def protocol_status(self):
