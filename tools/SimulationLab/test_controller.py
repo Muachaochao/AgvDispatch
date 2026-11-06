@@ -98,17 +98,26 @@ class SimulationTests(unittest.TestCase):
         self.assertEqual(validate_scenario(dict(name='vendor-cancel-return', rounds=1))['name'], 'vendor-cancel-return')
         self.assertEqual(validate_scenario(dict(name='response-loss', rounds=1))['name'], 'response-loss')
         self.assertEqual(validate_scenario(dict(name='road-block-recovery', rounds=1, holdSeconds=7))['holdSeconds'], 7)
+        self.assertEqual(validate_scenario(dict(name='obstacle-auto-detour', rounds=1, holdSeconds=8))['holdSeconds'], 8)
         with self.assertRaises(ValueError):
             validate_scenario(dict(name='plc-recovery', rounds=1, plcFault='unknown'))
         with self.assertRaises(ValueError):
             validate_scenario(dict(name='vendor-cancel-return', rounds=2))
         with self.assertRaises(ValueError):
             validate_scenario(dict(name='road-block-recovery', rounds=1, holdSeconds=0))
+        with self.assertRaises(ValueError):
+            validate_scenario(dict(name='obstacle-auto-detour', rounds=2))
 
     def test_scenario_rejects_nonfinite_and_invalid_inputs(self):
         for value in ({'rounds': True}, {'rounds': 101}, {'timeoutSeconds': math.nan}, {'intervalSeconds': math.inf}, {'name':'arbitrary-process'}, {'name':'service-restart','rounds':2}, {'script':'bad'}):
             with self.subTest(value=value), self.assertRaises(ValueError): validate_scenario(value)
         self.assertEqual(validate_scenario({'name':'simultaneous-calls','rounds':100})['rounds'], 100)
+        self.assertEqual(
+            validate_scenario({'name':'dispatch-backlog','timeoutSeconds':86400,
+                               'calls':[{'stationId':'CNC-001','atSeconds':0}]})['timeoutSeconds'],
+            86400)
+        with self.assertRaises(ValueError):
+            validate_scenario({'name':'normal-cycle','timeoutSeconds':86401})
 
     def test_continuous_sample_collision_detects_crossing_not_just_endpoints(self):
         point = lambda x,y: dict(x=x,y=y)
@@ -159,6 +168,43 @@ class SimulationTests(unittest.TestCase):
         runtime.history_cache=(time.monotonic(), []); runtime.guidance_cache=(0, [])
         runtime.scheme_store=None; runtime.startup_plan=None
         with patch('controller.read',return_value={}): self.assertFalse(runtime.status()['fresh'])
+
+    def test_task_resources_project_the_readonly_service_snapshot(self):
+        runtime = object.__new__(Runtime)
+        runtime.lock = threading.RLock()
+        calls = []
+        runtime.api = lambda path: calls.append(path) or {
+            'resources': [dict(resourceId='RDUMP', capacity=1, occupiedCount=1)]}
+        self.assertEqual(runtime.task_resources()[0]['resourceId'], 'RDUMP')
+        self.assertEqual(calls, ['/api/snapshot'])
+
+    def test_stopped_environment_uses_saved_report_task_evidence(self):
+        runtime = object.__new__(Runtime)
+        runtime.lock = threading.RLock()
+        runtime.api = lambda path: (_ for _ in ()).throw(ConnectionRefusedError('service stopped'))
+        runtime.report = {
+            'finishedAt': 1000,
+            'taskSummary': [dict(
+                taskId='TASK-1', stationId='CNC-024', vehicleId='AGV-03', stage='Completed', completed=True,
+                currentStepNumber=9, steps=[
+                    dict(number=index, stepType=step, status='Completed', waitingExplanation='')
+                    for index, step in enumerate(('GoToPickup', 'PickupFullBox', 'DeliverFullBoxToDumper',
+                        'WaitForDumperReady', 'EnterDumpingPosition', 'DumpFullBox', 'ReturnEmptyBox',
+                        'PlaceEmptyBox', 'CompletePlcHandshake'), 1)])]}
+        page = runtime.task_page({'filter': ['All'], 'page': ['1'], 'pageSize': ['20']})
+        self.assertEqual(page['summary']['completed'], 1)
+        self.assertEqual(page['evidenceSource'], 'saved-report')
+        detail = runtime.task_detail('TASK-1')
+        self.assertEqual(detail['evidenceSource'], 'saved-report')
+        self.assertEqual(len(detail['steps']), 9)
+        self.assertEqual(detail['steps'][8]['stepType'], 'CompletePlcHandshake')
+        self.assertEqual(runtime.task_resources(), [])
+
+    def test_task_page_rejects_pages_larger_than_the_production_api_limit(self):
+        runtime = object.__new__(Runtime)
+        runtime.lock = threading.RLock()
+        with self.assertRaisesRegex(ValueError, '任务查询参数无效'):
+            runtime.task_page({'pageSize': ['201']})
 
     def test_readonly_observer_detects_overcapacity(self):
         with tempfile.TemporaryDirectory() as name:

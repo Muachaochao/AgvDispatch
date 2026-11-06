@@ -16,12 +16,37 @@ from footprint import swept_rectangles_overlap, vehicle_extents
 
 NAMES = ('normal-cycle', 'simultaneous-calls', 'custom-calls', 'dispatch-backlog', 'disconnect-reconnect',
          'plc-delay', 'plc-recovery', 'service-restart', 'resume-recovery', 'vendor-cancel-return',
-         'response-loss', 'road-block-recovery')
+         'response-loss', 'road-block-recovery', 'obstacle-auto-detour')
 STEP_NAMES = {'GoToPickup': '前往工位取满箱', 'PickupFullBox': '确认满箱已取走',
               'DeliverFullBoxToDumper': '运送满箱到等待位', 'WaitForDumperReady': '等待倒料机就绪',
               'EnterDumpingPosition': '进入倒料位', 'DumpFullBox': '等待倒料完成',
               'ReturnEmptyBox': '返送空箱到原工位', 'PlaceEmptyBox': '确认空箱已放到位',
               'CompletePlcHandshake': '完成工位握手收尾'}
+
+
+def has_alternate_connection(navigation, edge_id):
+    edge = next((item for item in navigation.get('edges', [])
+                 if item.get('id') == edge_id and item.get('enabled', True)), None)
+    if edge is None:
+        return False
+    adjacency = {}
+    for item in navigation.get('edges', []):
+        if item.get('id') == edge_id or not item.get('enabled', True):
+            continue
+        source, target = item.get('from'), item.get('to')
+        adjacency.setdefault(source, set()).add(target)
+        if item.get('bidirectional', True):
+            adjacency.setdefault(target, set()).add(source)
+    pending, seen = [edge.get('from')], {edge.get('from')}
+    while pending:
+        current = pending.pop()
+        for target in adjacency.get(current, ()):
+            if target == edge.get('to'):
+                return True
+            if target not in seen:
+                seen.add(target)
+                pending.append(target)
+    return False
 
 
 def describe_progress(vehicle, detail):
@@ -94,13 +119,16 @@ def validate_scenario(value):
                   intervalSeconds=value.get('intervalSeconds', 0), timeoutSeconds=value.get('timeoutSeconds', 720))
     if result['name'] not in NAMES: raise ValueError('场景不存在。')
     if type(result['rounds']) is not int or not 1 <= result['rounds'] <= 100: raise ValueError('轮次须为1至100。')
-    for key, low, high in [('intervalSeconds', 0, 60), ('timeoutSeconds', 30, 3600)]:
+    # Full-factory campaigns can queue 305 stations across five vehicles and
+    # therefore need a bounded but longer observation window than the original
+    # single-cell scenarios.
+    for key, low, high in [('intervalSeconds', 0, 60), ('timeoutSeconds', 30, 86400)]:
         number = result[key]
         if type(number) not in (int, float) or not math.isfinite(number) or not low <= number <= high: raise ValueError('场景时间参数无效。')
     if result['name'] == 'service-restart' and result['rounds'] != 1: raise ValueError('重启故障场景仅运行一轮，保留恢复现场。')
     if result['name'] == 'vendor-cancel-return' and result['rounds'] != 1:
         raise ValueError('车端返程取消场景仅运行一轮，保留取消现场。')
-    if result['name'] in ('response-loss', 'road-block-recovery') and result['rounds'] != 1:
+    if result['name'] in ('response-loss', 'road-block-recovery', 'obstacle-auto-detour') and result['rounds'] != 1:
         raise ValueError('单车通信或道路故障场景仅运行一轮。')
     if result['name'] == 'service-restart':
         stage = value.get('restartStage', 'pickup')
@@ -114,7 +142,7 @@ def validate_scenario(value):
         if type(hold) not in (int, float) or not math.isfinite(hold) or not 1 <= hold <= 120:
             raise ValueError('PLC卡位保持时间须为1至120秒。')
         result.update(plcFault=value['plcFault'], holdSeconds=float(hold))
-    elif result['name'] == 'road-block-recovery':
+    elif result['name'] in ('road-block-recovery', 'obstacle-auto-detour'):
         hold = value.get('holdSeconds', 5)
         if type(hold) not in (int, float) or not math.isfinite(hold) or not 1 <= hold <= 120:
             raise ValueError('道路阻塞保持时间须为1至120秒。')
@@ -149,8 +177,8 @@ def validate_scenario(value):
         raise ValueError('仅自定义呼叫和持续积压场景接受calls参数。')
     if result['name'] != 'plc-recovery' and 'plcFault' in value:
         raise ValueError('仅PLC卡位恢复场景接受plcFault。')
-    if result['name'] not in ('plc-recovery', 'road-block-recovery') and 'holdSeconds' in value:
-        raise ValueError('仅PLC卡位或道路阻塞场景接受holdSeconds。')
+    if result['name'] not in ('plc-recovery', 'road-block-recovery', 'obstacle-auto-detour') and 'holdSeconds' in value:
+        raise ValueError('仅PLC卡位、道路阻塞或车端障碍场景接受holdSeconds。')
     if result['name'] != 'service-restart' and 'restartStage' in value:
         raise ValueError('仅后台重启场景接受restartStage。')
     return result
@@ -345,6 +373,7 @@ def execute(runtime, request):
     tasks = {}
     observer = None
     fault_observed = False
+    auto_detour_sends = 0
     plc_fault_controls = None
     recovery_hold = False
     completed_tasks = set()
@@ -402,13 +431,60 @@ def execute(runtime, request):
         write(evidence / 'task-identities.json', tasks)
         write(evidence / ('create-' + tid + '.json'), dict(request=payload, response=response))
         return tid
+    def collect_batch(stations):
+        """Collect one simultaneous PLC batch without timing out stations serially.
+
+        The production coordinator persists and acknowledges calls one by one.
+        A large station batch therefore needs one shared deadline; waiting 40
+        seconds inside each station would reject later stations even though
+        their PLC calls were valid and still queued.
+        """
+        ordered = list(dict.fromkeys(stations))
+        found = {}
+        timeout = max(40.0, min(float(request['timeoutSeconds']), 30.0 + len(ordered) * 1.5))
+        deadline = time.monotonic() + timeout
+        last_progress = time.monotonic()
+        last_count = -1
+        while time.monotonic() < deadline:
+            if runtime.abort.is_set():
+                raise InterruptedError('批量呼叫建单已中止；已经建出的原任务保留。')
+            for station in ordered:
+                if station in found:
+                    continue
+                task_id = discover(station)
+                if task_id:
+                    found[station] = task_id
+            if len(found) != last_count:
+                last_count = len(found)
+                last_progress = time.monotonic()
+                runtime.scenario['message'] = f'同时呼叫 {len(ordered)} 个工位；正式后台已建单 {len(found)} 个，等待 {len(ordered) - len(found)} 个。'
+            if len(found) == len(ordered):
+                write(evidence / 'batch-creation.json', dict(
+                    requestedStations=ordered, createdStations=list(found),
+                    elapsedSeconds=timeout - max(0.0, deadline - time.monotonic()),
+                    waitTimeoutSeconds=timeout))
+                return [found[station] for station in ordered]
+            # If no new task appears for 60 seconds, report the exact stations
+            # instead of waiting until the global scenario deadline.
+            if time.monotonic() - last_progress >= 60:
+                break
+            runtime.abort.wait(.25)
+        missing = [station for station in ordered if station not in found]
+        write(evidence / 'batch-creation-timeout.json', dict(
+            requestedStations=ordered, createdStations=list(found), missingStations=missing,
+            createdCount=len(found), requestedCount=len(ordered), waitTimeoutSeconds=timeout))
+        raise TimeoutError(
+            f'同时呼叫批次未在 {timeout:.0f} 秒内全部建单：'
+            f'已建 {len(found)}/{len(ordered)}，首个未建工位 {missing[0] if missing else "无"}。')
     def complete(ids):
-        nonlocal fault_observed, recovery_hold
+        nonlocal fault_observed, recovery_hold, auto_detour_sends
         deadline = time.monotonic() + request['timeoutSeconds']
         write(evidence / ('completion-start-' + uuid.uuid4().hex + '.json'), dict(taskIds=list(ids), startedAt=time.time()))
         offline_at = None; fault_vehicle = None; held = set(); restored = False; offline_controls = None
         plc_fault_started = None; plc_recovery_controls = None
         road_block_started = None; road_block_controls = None
+        obstacle_scan_started = None; obstacle_armed_at = None; obstacle_started = None
+        obstacle_controls = None; obstacle_recovery = None
         while time.monotonic() < deadline:
             if runtime.abort.is_set(): raise InterruptedError('场景已中止，原任务及占用保留；请核对后恢复。')
             details = {tid: runtime.api('/api/tasks/' + tid) for tid in ids}
@@ -429,7 +505,8 @@ def execute(runtime, request):
                     write(evidence / 'vendor-cancel-applied.json', dict(taskId=candidate, vehicleId=fault_vehicle, applied=applied))
                     check('车端返程取消已在返程命令前武装到原车辆', True, fault_vehicle)
                     fault_observed = True
-            if any(d['task']['stage'] in ('Faulted', 'Cancelled') for d in details.values()):
+            if name != 'obstacle-auto-detour' and any(
+                    d['task']['stage'] in ('Faulted', 'Cancelled') for d in details.values()):
                 if name == 'vendor-cancel-return' and fault_observed:
                     cancelled = next(d for d in details.values() if d['task']['stage'] == 'Cancelled')
                     fault_vehicle = cancelled['task'].get('vehicleId') or tasks[cancelled['task']['taskId']].get('vehicle')
@@ -463,6 +540,82 @@ def execute(runtime, request):
                     return False
                 raise RuntimeError('任务出现非预期故障或取消。')
             state = runtime.device()
+            if name == 'obstacle-auto-detour':
+                if obstacle_armed_at is None:
+                    target_index = 2
+                    active = next((tid for tid, detail in details.items()
+                                   if next((step for step in detail['steps']
+                                            if step.get('sequence') == target_index + 1), {}).get('status') == 'Executing'), None)
+                    if active:
+                        obstacle_scan_started = obstacle_scan_started or time.monotonic()
+                        vehicle_id = details[active]['task'].get('vehicleId')
+                        car = (state.get('cars') or {}).get(vehicle_id or '', {})
+                        navigation = read(runtime.root / 'navigation.agvmap.json')
+                        moving_on_detourable_edge = bool(car.get('moving')) and has_alternate_connection(
+                            navigation, car.get('motionEdge'))
+                        if vehicle_id and moving_on_detourable_edge:
+                            runtime.control(dict(vehicles={vehicle_id: dict(
+                                obstacleAfterSegments=int(car.get('completed_segments') or 0) + 1)}))
+                            obstacle_controls = json.loads(json.dumps(runtime.controls))
+                            applied = runtime.wait('车端障碍控制未生效',
+                                                   lambda: control_applied(runtime.device(), obstacle_controls, vehicle_id), 10)
+                            obstacle_armed_at = time.monotonic()
+                            obstacle_recovery = dict(taskId=active, vehicleId=vehicle_id, firstObserved=None)
+                            write(evidence / 'obstacle-auto-armed.json',
+                                  dict(taskId=active, vehicleId=vehicle_id, edge=car.get('motionEdge'),
+                                       completedSegments=car.get('completed_segments'), applied=applied))
+                        elif time.monotonic() - obstacle_scan_started >= 30:
+                            check('当前地图存在可自动改道的独立连通道路', False,
+                                  '原配送路线持续30秒未经过具有独立备选连接的路段；未注入虚假障碍。')
+                elif obstacle_started is None:
+                    car = (state.get('cars') or {}).get(obstacle_recovery['vehicleId'], {})
+                    if car.get('blocked') is True and car.get('simulationControl', {}).get('obstacle') is True:
+                        obstacle_started = time.monotonic()
+                        write(evidence / 'obstacle-auto-triggered.json',
+                              dict(taskId=obstacle_recovery['taskId'], vehicleId=obstacle_recovery['vehicleId'],
+                                   station=car.get('station'), completedSegments=car.get('completed_segments')))
+                        check('车端在合法站点边界先报Blocked', True,
+                              dict(taskId=obstacle_recovery['taskId'], station=car.get('station')))
+                    elif time.monotonic() - obstacle_armed_at >= 40:
+                        check('车端在合法站点边界先报Blocked', False,
+                              '障碍触发控制已应用，但车辆未在限制时间内到达可改道站点。')
+                elif not fault_observed:
+                    try:
+                        snapshot = runtime.api('/api/snapshot')
+                        observed = next((agv.get('recovery') for agv in snapshot.get('status', {}).get('agvs', [])
+                                         if agv.get('recovery') and agv.get('vehicleId') == obstacle_recovery['vehicleId']), None)
+                    except Exception:
+                        observed = None
+                    if observed:
+                        obstacle_recovery['latest'] = observed
+                        if obstacle_recovery.get('firstObserved') is None:
+                            obstacle_recovery['firstObserved'] = observed
+                        if observed.get('newVendorTaskId') or observed.get('sendAttempted'):
+                            obstacle_recovery['sent'] = observed
+                    elapsed = time.monotonic() - obstacle_started
+                    if elapsed >= request['holdSeconds'] + 20 and observed is None:
+                        check('后台收到车端障碍并建立恢复记录', False,
+                              '超过观察窗口仍未取得原任务、车辆或恢复状态；保留设备与任务现场。')
+                    if elapsed >= request['holdSeconds'] and observed and (
+                            observed.get('state') == 'Executing' or elapsed >= request['holdSeconds'] + 20):
+                        runtime.control(dict(vehicles={obstacle_recovery['vehicleId']: dict(
+                            obstacle=False, obstacleAfterSegments=None)}))
+                        cleared = runtime.wait('障碍清除未生效',
+                                               lambda: control_applied(runtime.device(), runtime.controls,
+                                                                       obstacle_recovery['vehicleId']), 10)
+                        write(evidence / 'obstacle-auto-recovery.json',
+                              dict(clearApplied=cleared, firstObserved=obstacle_recovery.get('firstObserved'),
+                                   latest=obstacle_recovery.get('latest'), sent=obstacle_recovery.get('sent')))
+                        check('后台先保留原业务任务再自动生成替代路线',
+                              bool(obstacle_recovery.get('firstObserved')) and
+                              obstacle_recovery['firstObserved'].get('taskId') == obstacle_recovery['taskId'],
+                              obstacle_recovery.get('firstObserved'))
+                        check('原导航终态后只发送一条替代3066并绑定原任务',
+                              bool(obstacle_recovery.get('sent')) and
+                              obstacle_recovery['sent'].get('state') in ('Executing', 'Recovered'),
+                              obstacle_recovery.get('latest'))
+                        auto_detour_sends += 1
+                        fault_observed = True
             if name == 'road-block-recovery':
                 if road_block_started is None:
                     active = next((tid for tid, detail in details.items()
@@ -604,7 +757,9 @@ def execute(runtime, request):
         else:
             runtime.idle_review()
             check('运行前无残留路权', not query(runtime.root, 'select ResourceId from traffic_resource_lease'), '只读数据库核对')
-        if any(v.get('offline') or v.get('paused') or v.get('dropNextResponse') or v.get('blockedEdges') for v in runtime.controls['vehicles'].values()) or any(value != PLC_DEFAULTS.get(key) for key, value in runtime.controls['plc'].items()):
+        if any(v.get('offline') or v.get('paused') or v.get('dropNextResponse') or v.get('blockedEdges') or
+               v.get('obstacle') or v.get('obstacleAfterSegments') is not None
+               for v in runtime.controls['vehicles'].values()) or any(value != PLC_DEFAULTS.get(key) for key, value in runtime.controls['plc'].items()):
             raise RuntimeError('开始场景前请解除人工故障；不自动覆盖控制。')
         if request['name'] == 'plc-delay':
             runtime.control(dict(plc=dict(readyDelaySeconds=3, doneDelaySeconds=8)))
@@ -671,7 +826,12 @@ def execute(runtime, request):
                 check('自定义呼叫批次已由设备应用', applied.get('accepted') is True, applied)
                 write(evidence / ('call-batch-' + str(len(all_created)) + '-' + uuid.uuid4().hex + '.json'),
                       dict(request=payload, requestedAtSeconds=due, actualElapsedSeconds=time.monotonic()-round_started, applied=applied))
-                batch_ids = [create(call['stationId'], call.get('vehicleId'), trigger=False) for call in group]
+                # The PLC already holds all calls in this batch. Poll the
+                # durable task table with one shared deadline so later station
+                # numbers are not judged as missing while earlier calls are
+                # still being persisted and acknowledged.
+                batch_ids = collect_batch([call['stationId'] for call in group]) if automatic else [
+                    create(call['stationId'], call.get('vehicleId'), trigger=False) for call in group]
                 all_created.extend(batch_ids)
                 complete(batch_ids)
                 batch_timeline.append(dict(
@@ -747,7 +907,7 @@ def execute(runtime, request):
             fault_observed = True
             complete([task_id])
             runtime.scenario['completedRounds'] = 1
-        elif request['name'] in ('response-loss', 'road-block-recovery'):
+        elif request['name'] in ('response-loss', 'road-block-recovery', 'obstacle-auto-detour'):
             station, vehicle = pairs[0]
             task_id = create(station, vehicle)
             complete([task_id])
@@ -778,10 +938,22 @@ def execute(runtime, request):
             check('预期车端取消已形成独立故障结果', fault_observed, '取消任务、原命令和原路权已保留待核对')
         elif request['name'] != 'service-restart':
             check('最终无残留路权', not query(runtime.root, 'select ResourceId from traffic_resource_lease'), '所有资源租约已释放')
-            commands = query(runtime.root, 'select TaskId,StepId,CommandId,Status,AttemptCount from agv_command_outbox')
+            commands = query(runtime.root, 'select TaskId,StepId,CommandId,Status,AttemptCount,VendorCommandId,LastError from agv_command_outbox')
             commands = [c for c in commands if c['TaskId'] in tasks]
             write(evidence / 'outbox-readonly.json', commands)
-            check('运输命令无重复或遗漏', complete_command_set(commands, tasks), f'{len(commands)}条原命令 / {len(tasks)}个任务')
+            if request['name'] == 'obstacle-auto-detour':
+                sent = [c for c in commands if c['Status'] == 30]
+                cancelled = [c for c in commands if c['Status'] == 100]
+                command_ok = (len(sent) == len(tasks) * 4 and
+                              len({c['StepId'] for c in sent}) == len(tasks) * 4 and
+                              len(cancelled) == auto_detour_sends and
+                              all(c['VendorCommandId'] and
+                                  (c['VendorCommandId'].startswith('OBSTACLERECOVERY-') or
+                                   c['VendorCommandId'] == c['StepId']) for c in sent))
+                check('自动改道运输命令保留原步骤且只有一条有效替代命令', command_ok,
+                      f'{len(sent)}条有效命令，{len(cancelled)}条已取消原命令，{len(tasks)}个任务')
+            else:
+                check('运输命令无重复或遗漏', complete_command_set(commands, tasks), f'{len(commands)}条原命令 / {len(tasks)}个任务')
             sends = []
             allowed_step_ids = {
                 str(value)
@@ -800,9 +972,11 @@ def execute(runtime, request):
                             event['response'].get('ret_code') == 0 and (not allowed_step_ids or requested_ids & allowed_step_ids)):
                         sends.append(dict(vehicle=vehicle, **event))
             write(evidence / 'accepted-3066.json', sends)
-            check('设备实际接收原运输命令', len(sends) == len(tasks) * 4, f'{len(sends)}次成功接收')
+            check('设备实际接收原运输及必要改道命令',
+                  len(sends) == len(tasks) * 4 + auto_detour_sends,
+                  f'{len(sends)}次成功接收；原任务{len(tasks) * 4}次，自动改道{auto_detour_sends}次')
         if request['name'] in ('disconnect-reconnect', 'service-restart', 'plc-recovery', 'response-loss',
-                               'road-block-recovery', 'vendor-cancel-return'):
+                               'road-block-recovery', 'vendor-cancel-return', 'obstacle-auto-detour'):
             check('指定阶段故障实际触发', fault_observed, request['name'])
         if request['name'] == 'plc-delay':
             applied = control_applied(runtime.device(), plc_fault_controls)
@@ -849,12 +1023,13 @@ def execute(runtime, request):
             completedBusinessCycle=result_status == 'passed' and bool(tasks) and completed_tasks == set(tasks) and not recovery_hold,
             recoveryHold=recovery_hold, faultApplied=fault_observed if request['name'] in
                 ('disconnect-reconnect', 'service-restart', 'plc-delay', 'plc-recovery', 'vendor-cancel-return',
-                 'response-loss', 'road-block-recovery') else None,
+                 'response-loss', 'road-block-recovery', 'obstacle-auto-detour') else None,
             taskSummary=summarize_tasks(all_details),
             startedAt=started, finishedAt=time.time(), evidenceDirectory=evidence.name,
             metrics=dict(taskCount=len(tasks), completedRounds=runtime.scenario['completedRounds'], durationSeconds=time.time()-started,
                          samples=observer.samples if observer else 0, minimumSeparationMeters=observer.minimum if observer else None,
                          longestUnchangedStepSeconds=observer.max_wait if observer else 0,
+                         obstacleAutoDetourSends=auto_detour_sends,
                          **{key:queue_metrics[key] for key in ('maximumWaitingTasks','maximumActiveTasks','maximumDuePlanCalls','maximumBusyWaitingTasks') if key in queue_metrics}),
             violations=observer.violations if observer else [], scope='正式后台 + 回环Robokit/S7合成模型；碰撞按车辆长宽与朝向的旋转矩形包络检查，并保留5厘米合成余量；超时可发现长期等待，不构成死锁/公平性证明；不代替现场固件、机械及安全验收。')
         write(evidence / 'report.json', report)

@@ -93,6 +93,9 @@ public sealed class DatabaseInitializer : IDatabaseInitializer
         _database.CodeFirst.InitTables<ExecutionRecoverySessionEntity, ExecutionRecoveryTicketEntity, ExecutionEvidenceEntity>();
         _database.CodeFirst.InitTables<TransportTimeoutRecoveryEntity>();
         _database.Ado.ExecuteCommand("CREATE UNIQUE INDEX IF NOT EXISTS ux_transport_timeout_recovery_task_step ON transport_timeout_recovery(TaskId,StepId)");
+        _database.CodeFirst.InitTables<ObstacleRecoveryEntity>();
+        _database.Ado.ExecuteCommand("CREATE UNIQUE INDEX IF NOT EXISTS ux_obstacle_recovery_task_step ON obstacle_recovery(TaskId,StepId)");
+        _database.Ado.ExecuteCommand("CREATE INDEX IF NOT EXISTS ix_obstacle_recovery_vehicle_state ON obstacle_recovery(VehicleId,State,UpdatedAt DESC)");
         _database.CodeFirst.InitTables<TaskHandshakeEntity, TaskRuntimeEventEntity, TaskSignalLastEntity, TaskEquipmentClaimEntity>();
         _database.CodeFirst.InitTables<TaskWaitingBayEntity>();
         // Older releases guarded every UPDATE; drop it only for this controlled CodeFirst schema extension.

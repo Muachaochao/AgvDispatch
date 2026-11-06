@@ -12,7 +12,8 @@ var freshFor = TimeSpan.FromSeconds(5);
 var blocked = clear with { Blocked = true, ObstacleSince = now.AddSeconds(-2) };
 var result = AgvObstacleDiagnostics.Analyze(blocked, now, freshFor);
 Check(result.State == "Blocked" && result.DurationSeconds == 2, "短暂阻挡显示等待及后台观察时长");
-Check(result.Source == "Blocked" && result.NavigationPolicy.Contains("保留原任务") && result.LocalDetourEvidence.Contains("未验证"), "显示原任务策略及自主绕行证据边界");
+Check(result.Source == "Blocked" && result.NavigationPolicy.Contains("自动改道") &&
+      result.LocalDetourEvidence.Contains("保留原任务"), "显示自动改道顺序及原任务安全边界");
 var prolonged = blocked with { ObstacleSince = now.AddSeconds(-30) };
 Check(AgvObstacleDiagnostics.Analyze(prolonged, now, freshFor).State == "Prolonged", "30秒持续占道进入长期受阻提示");
 Check(AgvObstacleDiagnostics.Analyze(prolonged with { LastSuccessfulPollAt = now.AddSeconds(-6) }, now, freshFor) is

@@ -247,6 +247,8 @@ builder.Services.AddSingleton<IAgvTransportChainLookup>(p => new BusinessTranspo
 builder.Services.AddSingleton<SeerAgvGateway>();
 builder.Services.AddSingleton<IAgvGateway>(
     provider => provider.GetRequiredService<SeerAgvGateway>());
+builder.Services.AddSingleton<IAgvObstacleRecoveryGateway>(
+    provider => provider.GetRequiredService<SeerAgvGateway>());
 builder.Services.AddHostedService<PlcFleetPollingService>();
 builder.Services.AddHostedService<AgvPollingService>();
 builder.Services.AddHostedService<AgvTrackRecorder>();
@@ -383,6 +385,13 @@ builder.Services.AddSingleton<ITrafficResourceManager>(p=>p.GetRequiredService<T
 builder.Services.AddSingleton<ITaskWaitingBayAllocator>(p=>p.GetRequiredService<TrafficResourceManager>());
 builder.Services.AddSingleton<CompletedTransportRouteReleaseService>();
 builder.Services.AddSingleton<ITransportTimeoutRecoveryService, TransportTimeoutRecoveryService>();
+var obstacleRecoveryOptions = new ObstacleRecoveryOptions();
+builder.Configuration.GetSection(ObstacleRecoveryOptions.SectionName).Bind(obstacleRecoveryOptions);
+obstacleRecoveryOptions.Validate();
+builder.Services.AddSingleton(obstacleRecoveryOptions);
+builder.Services.AddSingleton<ObstacleRecoveryStore>();
+builder.Services.AddSingleton<ObstacleRecoveryCoordinator>();
+builder.Services.AddHostedService(provider => provider.GetRequiredService<ObstacleRecoveryCoordinator>());
 var waitingAlerts = new TrafficWaitingAlertOptions();
 builder.Configuration.GetSection("TrafficWaitingAlerts").Bind(waitingAlerts); waitingAlerts.Validate();
 builder.Services.AddSingleton(waitingAlerts);

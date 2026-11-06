@@ -96,15 +96,55 @@ public sealed class SimulationBridge : IAsyncDisposable
             if (!response.IsSuccessStatusCode)
             {
                 using var parsed = JsonDocument.Parse(bytes);
-                return Results.Json(parsed.RootElement, statusCode: (int)response.StatusCode);
+                // JsonElement owns the document lifetime. Materialize its JSON
+                // before leaving the using scope or the HTTP result can fail
+                // later with "Cannot access a disposed object".
+                return Results.Content(parsed.RootElement.GetRawText(), "application/json",
+                    statusCode: (int)response.StatusCode);
             }
             return Results.File(bytes, "application/zip", fileDownloadName: fileName);
         }
         finally { gate.Release(); }
     }
 
-    private static bool AllowedReadPath(string path) => path is "/status" or "/report" or "/replay" or "/point-table" ||
-        Regex.IsMatch(path, @"^/(report|replay|archive)\?id=[a-f0-9]{32}$", RegexOptions.CultureInvariant);
+    private static bool AllowedReadPath(string path)
+    {
+        if (path is "/status" or "/report" or "/replay" or "/point-table" or "/snapshot" or "/resources" or "/tasks" ||
+            Regex.IsMatch(path, @"^/(report|replay|archive)\?id=[a-f0-9]{32}$", RegexOptions.CultureInvariant) ||
+            Regex.IsMatch(path, @"^/task\?id=[A-Za-z0-9_-]{1,128}$", RegexOptions.CultureInvariant))
+            return true;
+        if (!Uri.TryCreate("http://127.0.0.1" + path, UriKind.Absolute, out var uri) ||
+            uri.AbsolutePath != "/tasks")
+            return false;
+
+        var values = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var item in uri.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var pair = item.Split('=', 2);
+            if (pair.Length != 2) return false;
+            string key;
+            string value;
+            try
+            {
+                key = Uri.UnescapeDataString(pair[0]);
+                value = Uri.UnescapeDataString(pair[1]);
+            }
+            catch (UriFormatException) { return false; }
+            if (key is not ("filter" or "search" or "page" or "pageSize") || !values.TryAdd(key, value))
+                return false;
+        }
+
+        if (values.TryGetValue("filter", out var filter) && filter is not ("All" or "Active" or "Completed" or "Failed"))
+            return false;
+        if (values.TryGetValue("search", out var search) && search.Length > 128)
+            return false;
+        if (values.TryGetValue("page", out var page) && (!int.TryParse(page, out var pageNumber) || pageNumber < 1))
+            return false;
+        if (values.TryGetValue("pageSize", out var pageSize) &&
+            (!int.TryParse(pageSize, out var size) || size is < 1 or > 200))
+            return false;
+        return true;
+    }
 
     private async Task EnsureStartedAsync(CancellationToken ct)
     {

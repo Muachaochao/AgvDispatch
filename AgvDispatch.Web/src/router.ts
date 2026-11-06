@@ -3,7 +3,7 @@
 const router = createRouter({
   history: createWebHashHistory(),
   routes: [
-    { path: '/simulation-center', name: 'simulation-center', component: () => import('./pages/SimulationCenterPage.vue') },
+    { path: '/simulation-center/:section?', name: 'simulation-center', component: () => import('./pages/SimulationCenterPage.vue') },
     { path: '/dispatch-pipeline', name: 'dispatch-pipeline', component: () => import('./pages/DispatchPipelinePage.vue') },
     { path: '/dispatch-optimization', name: 'dispatch-optimization', component: () => import('./pages/DispatchOptimizationPage.vue') },
     { path: '/charging', name: 'charging', component: () => import('./pages/ChargingPage.vue') },

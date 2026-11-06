@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from controller import read, write
-from scenarios import complete_command_set, control_applied, describe_progress, execute, fresh_device_state, mutual_wait_pairs, submit_original_task, summarize_tasks, validate_scenario
+from scenarios import complete_command_set, control_applied, describe_progress, execute, fresh_device_state, has_alternate_connection, mutual_wait_pairs, submit_original_task, summarize_tasks, validate_scenario
 
 
 class Event:
@@ -97,6 +97,15 @@ def query(root, sql, parameters=()):
 
 
 class VerdictTests(unittest.TestCase):
+    def test_obstacle_injection_requires_an_independent_connection(self):
+        navigation = dict(edges=[
+            dict(id='direct', **{'from': 'S'}, to='T', enabled=True, bidirectional=True),
+            dict(id='detour', **{'from': 'S'}, to='D', enabled=True, bidirectional=True),
+            dict(id='return', **{'from': 'D'}, to='T', enabled=True, bidirectional=True),
+        ])
+        self.assertTrue(has_alternate_connection(navigation, 'direct'))
+        self.assertFalse(has_alternate_connection(dict(edges=[navigation['edges'][0]]), 'direct'))
+
     def test_lost_creation_receipt_retries_only_original_request_and_saves_intent(self):
         with tempfile.TemporaryDirectory() as name:
             root=Path(name)

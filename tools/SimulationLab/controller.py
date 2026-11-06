@@ -16,8 +16,9 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.request import Request, urlopen
-from urllib.parse import urlsplit, parse_qs
+from urllib.parse import urlsplit, parse_qs, urlencode
 import uuid
+from datetime import datetime, timezone
 
 WORKSPACE = Path(__file__).resolve().parents[2]
 STATION_IDS = ('CNC-001', 'CNC-002')
@@ -30,15 +31,39 @@ class CleanupPending(RuntimeError):
     pass
 
 
+def _transient_file_lock(error):
+    return isinstance(error, PermissionError) or getattr(error, 'winerror', None) in (5, 32, 33)
+
+
 def read(path):
-    return json.loads(Path(path).read_text(encoding='utf-8-sig'))
+    source = Path(path)
+    for attempt in range(20):
+        try:
+            return json.loads(source.read_text(encoding='utf-8-sig'))
+        except OSError as error:
+            if not _transient_file_lock(error) or attempt == 19:
+                raise
+            time.sleep(.02 * (attempt + 1))
 
 
 def write(path, value):
     path = Path(path)
     temporary = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
     temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False), encoding='utf-8')
-    temporary.replace(path)
+    try:
+        for attempt in range(20):
+            try:
+                temporary.replace(path)
+                return
+            except OSError as error:
+                if not _transient_file_lock(error) or attempt == 19:
+                    raise
+                time.sleep(.02 * (attempt + 1))
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def validate_root(root):
@@ -100,6 +125,7 @@ class Runtime:
         self.scheme_store = scheme_store
         self.history_cache = (0, [])
         self.guidance_cache = (0, [])
+        self.recovery_cache = (0, {})
         self.plc_table_cache = None
         self.startup_plan = None
         self.startup_thread = None
@@ -135,15 +161,154 @@ class Runtime:
         except (OSError, ValueError):
             return {}
 
+    def task_page(self, query=None):
+        query = query or {}
+        allowed = {'filter', 'search', 'page', 'pageSize'}
+        if not set(query).issubset(allowed):
+            raise ValueError('任务查询参数无效。')
+        values = {key: query[key][0] for key in query}
+        try:
+            page = int(values.get('page', '1'))
+            page_size = int(values.get('pageSize', '200'))
+        except ValueError as error:
+            raise ValueError('任务分页参数无效。') from error
+        if page < 1 or not 1 <= page_size <= 200 or len(values.get('search', '')) > 128:
+            raise ValueError('任务查询参数无效。')
+        values['page'] = str(page)
+        values['pageSize'] = str(page_size)
+        suffix = ('?' + urlencode(values)) if values else ''
+        with self.lock:
+            try:
+                return self.api('/api/tasks' + suffix)
+            except Exception as live_error:
+                rows = self._report_task_rows()
+                if rows is None:
+                    raise live_error
+                filter_name = values.get('filter', 'All')
+                search = values.get('search', '').strip().casefold()
+                failed_stages = {'Faulted', 'Failed', 'CancellationReview'}
+                if filter_name == 'Active':
+                    rows = [row for row in rows if row['stage'] not in {'Completed', 'Cancelled'} | failed_stages]
+                elif filter_name == 'Completed':
+                    rows = [row for row in rows if row['stage'] == 'Completed']
+                elif filter_name == 'Failed':
+                    rows = [row for row in rows if row['stage'] in failed_stages]
+                if search:
+                    rows = [row for row in rows if search in ' '.join(
+                        str(row.get(key) or '') for key in ('taskId', 'stationId', 'vehicleId', 'stage')).casefold()]
+                start = (page - 1) * page_size
+                all_rows = self._report_task_rows() or []
+                return dict(items=rows[start:start + page_size], totalCount=len(rows), page=page,
+                            pageSize=page_size, summary=dict(
+                                total=len(all_rows),
+                                running=sum(row['stage'] in {'Running', 'Dispatching', 'InProgress'} for row in all_rows),
+                                waiting=sum(row['stage'] in {'Created', 'WaitingForVehicle', 'WaitingForDumper',
+                                                             'WaitingForPlcConfirmation'} for row in all_rows),
+                                completed=sum(row['stage'] == 'Completed' for row in all_rows),
+                                cancelled=sum(row['stage'] == 'Cancelled' for row in all_rows),
+                                failed=sum(row['stage'] in failed_stages for row in all_rows),
+                                other=sum(row['stage'] not in {
+                                    'Running', 'Dispatching', 'InProgress', 'Created', 'WaitingForVehicle',
+                                    'WaitingForDumper', 'WaitingForPlcConfirmation', 'Completed', 'Cancelled',
+                                    *failed_stages} for row in all_rows)),
+                            evidenceSource='saved-report')
+
+    def task_detail(self, task_id):
+        if not isinstance(task_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', task_id):
+            raise ValueError('任务编号无效。')
+        with self.lock:
+            try:
+                return self.api('/api/tasks/' + task_id)
+            except Exception as live_error:
+                saved = next((item for item in (self._report_task_summary() or [])
+                              if item.get('taskId') == task_id), None)
+                if saved is None:
+                    raise live_error
+                row = next(row for row in (self._report_task_rows() or []) if row['taskId'] == task_id)
+                steps = []
+                for step in saved.get('steps') or []:
+                    sequence = step.get('number')
+                    steps.append(dict(
+                        stepId='REPORT-STEP-' + str(sequence),
+                        sequence=sequence,
+                        stepType=step.get('stepType'),
+                        status=step.get('status') or 'Pending',
+                        isCurrent=sequence == saved.get('currentStepNumber'),
+                        waitingExplanation=step.get('waitingExplanation') or '',
+                        elapsedText='报告未保存步骤耗时'))
+                return dict(
+                    task=row,
+                    waitingExplanation=saved.get('waitingExplanation') or '',
+                    steps=steps,
+                    executionTimeline=[],
+                    handshakes=[],
+                    commands=[],
+                    resources=[],
+                    plcConditions=[],
+                    evidenceSource='saved-report',
+                    evidenceMessage='仿真环境当前未在线，显示最近报告保存的只读九步证据；实时命令、PLC握手和路权明细需要在实例运行时查看。')
+
+    def task_resources(self):
+        with self.lock:
+            # Resource leases are part of the coherent service snapshot. The
+            # production WebHost intentionally has no standalone
+            # /api/resources route, so projecting from the same snapshot keeps
+            # the simulation proxy read-only and avoids a false 404.
+            try:
+                return self.api('/api/snapshot').get('resources') or []
+            except Exception:
+                return []
+
+    def _report_task_summary(self):
+        value = getattr(self, 'report', None)
+        summary = value.get('taskSummary') if isinstance(value, dict) else None
+        return summary if isinstance(summary, list) else None
+
+    def _report_task_rows(self):
+        summary = self._report_task_summary()
+        if summary is None:
+            return None
+        finished_at = (getattr(self, 'report', {}) or {}).get('finishedAt')
+        try:
+            timestamp = datetime.fromtimestamp(float(finished_at), timezone.utc).isoformat()
+        except (TypeError, ValueError, OSError, OverflowError):
+            timestamp = ''
+        return [dict(
+            taskId=item.get('taskId'),
+            stationId=item.get('stationId') or '',
+            vehicleId=item.get('vehicleId') or None,
+            stage=item.get('stage') or ('Completed' if item.get('completed') else
+                                        item.get('currentStepStatus') or 'WaitingForVehicle'),
+            priority=0,
+            createdAt=timestamp,
+            updatedAt=timestamp) for item in summary if item.get('taskId')]
+
     def status(self):
         from simulation_reports import history, guidance
         device = self.device()
         with self.lock:
+            now = time.monotonic()
+            recovery_cache = getattr(self, 'recovery_cache', (0, {}))
+            if self.phase == 'running' and now - recovery_cache[0] > 1:
+                try:
+                    snapshot = self.api('/api/snapshot')
+                    recoveries = {row.get('vehicleId'): row.get('recovery')
+                                  for row in snapshot.get('status', {}).get('agvs', [])
+                                  if row.get('vehicleId') and row.get('recovery')}
+                except Exception:
+                    recoveries = {}
+                recovery_cache = (now, recoveries)
+                self.recovery_cache = recovery_cache
+            if self.phase == 'running':
+                for vehicle_id, car in (device.get('cars') or {}).items():
+                    recovery = recovery_cache[1].get(vehicle_id)
+                    if recovery:
+                        car['recovery'] = recovery
+                        car['blocked'] = True
             recovery = None
             if self.phase == 'running':
                 try: recovery = self.api('/api/recovery')
                 except Exception as error: recovery = dict(error=str(error), items=[], released=False)
-            now = time.monotonic()
             if now - self.history_cache[0] > 15:
                 self.history_cache = (now, history(self))
             if self.phase == 'running' and recovery and not recovery.get('released') and now-self.guidance_cache[0] > 4:
@@ -822,6 +987,11 @@ class Runtime:
             settings['Dispatching']['DumperWaitingSites'] = configuration['dumper']['waitingSites']
             settings['Dispatching']['DumperDumpingSite'] = configuration['dumper']['dumpingSite']
             settings['Dispatching']['DumperTransitClearanceMeters'] = 2 * max(v['radiusMeters'] for v in configuration['vehicles']) + 0.15
+            settings['ObstacleRecovery'] = dict(Enabled=True, AutomaticDetourEnabled=True,
+                PollIntervalMs=500, DetourAfterSeconds=5, WarningAfterSeconds=10,
+                AlarmAfterSeconds=30, ClosureSuggestionAfterSeconds=60,
+                StableStopObservationMs=500, StoppedVelocityToleranceMetersPerSecond=0.02,
+                MinimumLocalizationConfidence=0.5)
             lab.update(robotPort=robots[0]['Port'], navigationPort=robots[0]['NavigationPort'])
             from station_catalog import write_private_signal_table
             signal_target = target / 'service/config/simulation-signals.csv'
@@ -1077,9 +1247,9 @@ def serve(root, port, token):
                     from simulation_reports import report, replay
                     parsed = urlsplit(self.path)
                     query = parse_qs(parsed.query, strict_parsing=True)
-                    if query and (set(query) != {'id'} or len(query['id']) != 1): raise ValueError('报告查询参数无效。')
-                    identity = query.get('id', [None])[0]
                     if parsed.path == '/archive':
+                        if query and (set(query) != {'id'} or len(query['id']) != 1): raise ValueError('报告查询参数无效。')
+                        identity = query.get('id', [None])[0]
                         from simulation_archive import archive_evidence
                         if identity is None: raise ValueError('导出证据包需要报告编号。')
                         filename, payload = archive_evidence(runtime, identity)
@@ -1091,9 +1261,21 @@ def serve(root, port, token):
                         self.end_headers()
                         self.wfile.write(payload)
                         return
-                    result = runtime.status() if parsed.path == '/status' and not query else \
-                        runtime.current_point_table() if parsed.path == '/point-table' and not query else \
-                        report(runtime, identity) if parsed.path == '/report' else replay(runtime, identity) if parsed.path == '/replay' else None
+                    if parsed.path == '/tasks': result = runtime.task_page(query)
+                    elif parsed.path == '/task':
+                        if set(query) != {'id'} or len(query['id']) != 1: raise ValueError('任务查询参数无效。')
+                        result = runtime.task_detail(query['id'][0])
+                    elif parsed.path == '/resources': result = runtime.task_resources()
+                    elif parsed.path == '/snapshot': result = runtime.api('/api/snapshot')
+                    elif parsed.path in ('/report', '/replay'):
+                        if query and (set(query) != {'id'} or len(query['id']) != 1): raise ValueError('报告查询参数无效。')
+                        identity = query.get('id', [None])[0]
+                        result = report(runtime, identity) if parsed.path == '/report' else replay(runtime, identity)
+                    elif query:
+                        raise ValueError('只读查询参数无效。')
+                    elif parsed.path == '/status': result = runtime.status()
+                    elif parsed.path == '/point-table': result = runtime.current_point_table()
+                    else: result = None
                 else:
                     length = int(self.headers.get('Content-Length', 0))
                     if not 0 <= length <= 8 * 1024 * 1024: raise ValueError('请求过大。')

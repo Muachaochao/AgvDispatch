@@ -9,7 +9,8 @@ import math
 
 VEHICLE_DEFAULTS = dict(speedScale=0.75, paused=False, offline=False,
                         cancelFinalReturnSegments=0,
-                        dropNextResponse=False, blockedEdges=[], charging=False)
+                        dropNextResponse=False, blockedEdges=[], obstacle=False,
+                        obstacleAfterSegments=None, charging=False)
 PLC_DEFAULTS = dict(readyDelaySeconds=0.0, doneDelaySeconds=5.0,
                     suppressReady=False, suppressDone=False, fault=False)
 
@@ -47,6 +48,13 @@ def validate_controls(value, vehicle_ids=None, edge_ids=None):
                 if not isinstance(item, list) or len(item) > 2048 or any(not isinstance(edge, str) or not edge or (edge_ids is not None and edge not in edge_ids) for edge in item):
                     raise ValueError('blockedEdges must reference existing map edge IDs')
                 control[key] = list(dict.fromkeys(item))
+            elif key == 'obstacleAfterSegments':
+                if item is None:
+                    control[key] = None
+                elif type(item) is not int or not 0 <= item <= 10000:
+                    raise ValueError('obstacleAfterSegments must be null or an integer between 0 and 10000')
+                else:
+                    control[key] = item
             elif not isinstance(item, bool):
                 raise ValueError(f'{key} must be boolean')
             else:

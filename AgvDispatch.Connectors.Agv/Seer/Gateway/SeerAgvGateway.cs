@@ -6,11 +6,11 @@ using System.Runtime.ExceptionServices;
 namespace AgvDispatch.Connectors.Agv;
 
 /// <summary>Robokit TCP adapter. The stable StepId is also the final vendor task_id.</summary>
-public sealed class SeerAgvGateway(
+public sealed partial class SeerAgvGateway(
     IAgvStateCache stateCache,
     AgvConnectionManager connections,
     AgvOptions options, IAgvTransportChainLookup? chains = null, IRobokitTaskMapPreflight? routeGuard = null,
-    IRoadClosureService? roadClosures = null) : IAgvGateway
+    IRoadClosureService? roadClosures = null) : IAgvGateway, IAgvObstacleRecoveryGateway
 {
     public Task<DeviceConnectionStatus> GetConnectionStatusAsync(CancellationToken cancellationToken)
     {

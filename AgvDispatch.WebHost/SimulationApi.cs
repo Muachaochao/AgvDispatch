@@ -21,6 +21,34 @@ public static class SimulationApi
         });
         app.MapGet("/api/simulation/point-table", async (SimulationBridge bridge, CancellationToken ct) =>
             bridge.Enabled ? await bridge.ForwardAsync(HttpMethod.Get, "/point-table", null, ct) : Disabled());
+        app.MapGet("/api/simulation/snapshot", async (SimulationBridge bridge, CancellationToken ct) =>
+            bridge.Enabled ? await bridge.ForwardAsync(HttpMethod.Get, "/snapshot", null, ct) : Disabled());
+        app.MapGet("/api/simulation/resources", async (SimulationBridge bridge, CancellationToken ct) =>
+            bridge.Enabled ? await bridge.ForwardAsync(HttpMethod.Get, "/resources", null, ct) : Disabled());
+        app.MapGet("/api/simulation/tasks", async (string? filter, string? search, int? page, int? pageSize,
+            SimulationBridge bridge, CancellationToken ct) =>
+        {
+            if (!bridge.Enabled) return Disabled();
+            filter ??= "All";
+            if (filter is not ("All" or "Active" or "Completed" or "Failed"))
+                return Results.BadRequest(new { error = "任务筛选无效。" });
+            page ??= 1;
+            pageSize ??= 200;
+            if (page < 1 || pageSize is < 1 or > 200)
+                return Results.BadRequest(new { error = "任务分页参数无效。" });
+            var query = $"?filter={Uri.EscapeDataString(filter)}";
+            if (!string.IsNullOrWhiteSpace(search))
+                query += "&search=" + Uri.EscapeDataString(search.Trim());
+            query += $"&page={page}&pageSize={pageSize}";
+            return await bridge.ForwardAsync(HttpMethod.Get, "/tasks" + query, null, ct);
+        });
+        app.MapGet("/api/simulation/tasks/{id}", async (string id, SimulationBridge bridge, CancellationToken ct) =>
+        {
+            if (!bridge.Enabled) return Disabled();
+            if (string.IsNullOrWhiteSpace(id) || id.Length > 128 || id.Any(ch => !(char.IsLetterOrDigit(ch) || ch is '-' or '_')))
+                return Results.BadRequest(new { error = "任务编号无效。" });
+            return await bridge.ForwardAsync(HttpMethod.Get, "/task?id=" + Uri.EscapeDataString(id), null, ct);
+        });
         app.MapPost("/api/simulation/{action}", async (string action, HttpRequest request, SimulationBridge bridge, CancellationToken ct) =>
         {
             if (!bridge.Enabled) return Disabled();

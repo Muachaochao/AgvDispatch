@@ -2,11 +2,30 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { simulationFresh, scenarioActive, simulationGeometry, simulationTone, simulationLabel, simulationMapFromPublishedVersion, loadCurrentSimulationMap,
   simulationMetricLabel, simulationMetricValue, simulationMetricComparison, simulationReplayCars, simulationVehicleOriginsFromLive,
+  simulationStationBindingsFromCatalog, simulationVehicleVisualState, simulationVehicleVisualColor, simulationVehicleVisualLabel,
+  simulationObstacleRecoveryLabel,
   type SimulationMapWorkspace, type SimulationStatus } from '../src/simulation.ts';
 import type { Snapshot, WebMap } from '../src/types.ts';
 
 const now = Date.parse('2026-11-04T10:00:00+08:00');
 const sample = (patch: Partial<SimulationStatus> = {}): SimulationStatus => ({ enabled: true, running: true, fresh: true, device: { time: now / 1000, cars: {} }, ...patch });
+
+test('vehicle colors follow the operational legend while load stays a separate badge', () => {
+  assert.equal(simulationVehicleVisualState({ x: 0, y: 0 }, false), 'offline');
+  assert.equal(simulationVehicleVisualState({ x: 0, y: 0, offline: true }), 'offline');
+  assert.equal(simulationVehicleVisualState({ x: 0, y: 0, paused: true }), 'fault');
+  assert.equal(simulationVehicleVisualState({ x: 0, y: 0, blockedByVehicle: 'AGV-01' }), 'blocked');
+  assert.equal(simulationVehicleVisualState({ x: 0, y: 0, blocked: true }), 'blocked');
+  assert.equal(simulationVehicleVisualState({ x: 0, y: 0, moving: true, current_task: 'task' }), 'running');
+  assert.equal(simulationVehicleVisualState({ x: 0, y: 0, current_task: 'task', moving: false }), 'waiting');
+  assert.equal(simulationVehicleVisualState({ x: 0, y: 0, loaded: true }), 'waiting');
+  assert.equal(simulationVehicleVisualState({ x: 0, y: 0 }), 'idle');
+  assert.equal(simulationVehicleVisualColor({ x: 0, y: 0, loaded: true }), '#e8bf64');
+  assert.equal(simulationVehicleVisualColor({ x: 0, y: 0 }), '#6fb9ff');
+  assert.equal(simulationVehicleVisualLabel({ x: 0, y: 0, loaded: true }), '载箱待命');
+  assert.equal(simulationObstacleRecoveryLabel('AwaitingOriginalTerminal'), '等待原导航确认结束');
+  assert.equal(simulationObstacleRecoveryLabel('Frozen'), '任务已冻结');
+});
 
 test('controls require a running model with a recent, non-future device sample', () => {
   assert.equal(simulationFresh(sample(), now), true);
@@ -68,6 +87,18 @@ test('map joins edges by node ID or vehicle site ID and ignores invalid coordina
   assert.deepEqual(result.edges[0].a, result.edges[1].a);
 });
 
+test('translated CAD coordinates use the actual scene bounds instead of being compressed toward the origin', () => {
+  const result = simulationGeometry([
+    { id: 'W', x: 910, y: -425 },
+    { id: 'E', x: 1_030, y: -390 }
+  ], [{ from: 'W', to: 'E' }], { 'AGV-01': { x: 920, y: -420 } });
+  assert.ok(result.nodes[0].x <= 100);
+  assert.ok(result.nodes[1].x >= 700);
+  assert.ok(result.nodes[0].y >= 280);
+  assert.ok(result.nodes[1].y <= 140);
+  assert.ok(result.cars[0].x > result.nodes[0].x && result.cars[0].x < result.nodes[1].x);
+});
+
 test('live vehicle origins use current reported stations, require unique valid nodes and report missing positions', () => {
   const result = simulationVehicleOriginsFromLive([
     { vehicleId: 'AGV-01', currentStation: 'LM24' },
@@ -83,6 +114,38 @@ test('live vehicle origins use current reported stations, require unique valid n
   assert.deepEqual(result.matched, ['AGV-01', 'AGV-02']);
   assert.deepEqual(result.conflicts, ['AGV-03：LM24']);
   assert.deepEqual(result.unmatched, ['AGV-04', 'AGV-05']);
+});
+
+test('PLC station catalog maps all 305 CAD stations through node agvSiteId and preserves isolated-signal provenance', () => {
+  const nodes = Array.from({ length: 305 }, (_, index) => {
+    const suffix = String(index + 1).padStart(3, '0');
+    return { id: `BUS-CNC-${suffix}`, agvSiteId: `CNC-${suffix}`, x: index, y: -index, type: 'Station', enabled: true };
+  });
+  const catalog = Array.from({ length: 305 }, (_, index) => {
+    const suffix = String(index + 1).padStart(3, '0');
+    return { stationId: `CNC-${suffix}`, offset: index * 2, signalSource: 'isolated-synthetic' as const, fieldConfirmed: false };
+  });
+  const result = simulationStationBindingsFromCatalog(nodes, catalog);
+  assert.equal(result.stations.length, 305);
+  assert.equal(new Set(result.stations.map(station => station.pickupSite)).size, 305);
+  assert.equal(result.stations[0]?.stationId, 'CNC-001');
+  assert.equal(result.stations[0]?.pickupSite, 'BUS-CNC-001');
+  assert.ok(result.stations.every(station => station.signalSource === 'isolated-synthetic'));
+  assert.deepEqual(result.unresolved, []);
+});
+
+test('automatic station mapping refuses ambiguous or missing CAD nodes instead of guessing', () => {
+  const result = simulationStationBindingsFromCatalog([
+    { id: 'A', agvSiteId: 'CNC-001', x: 0, y: 0, type: 'Station' },
+    { id: 'B', agvSiteId: 'CNC-001', x: 1, y: 0, type: 'Station' },
+  ], [
+    { stationId: 'CNC-001', signalSource: 'verified', fieldConfirmed: true },
+    { stationId: 'CNC-002', signalSource: 'isolated-synthetic', fieldConfirmed: false },
+  ]);
+  assert.deepEqual(result.stations, []);
+  assert.equal(result.unresolved.length, 2);
+  assert.match(result.unresolved[0]!.reason, /多个/);
+  assert.match(result.unresolved[1]!.reason, /没有/);
 });
 
 test('cubic curves preserve their real control points and remain inside the map viewport', () => {

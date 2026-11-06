@@ -346,6 +346,31 @@ public sealed class TransportTimeoutRecoveryService(
         return status;
     }
 
+    public async Task<string?> ValidateReplacementPreconditionsAsync(
+        string taskId,
+        string stepId,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(taskId) || string.IsNullOrWhiteSpace(stepId))
+            return "任务或运输步骤编号为空，禁止自动改道。";
+        var task = await database.Queryable<DispatchTaskEntity>()
+            .Where(row => row.TaskId == taskId)
+            .FirstAsync(cancellationToken);
+        var step = await database.Queryable<DispatchTaskStepEntity>()
+            .Where(row => row.TaskId == taskId && row.StepId == stepId)
+            .FirstAsync(cancellationToken);
+        if (task is null || step is null || !TransportStep(step.StepType) ||
+            step.Status is not ((int)DispatchTaskStepStatus.Executing or
+                (int)DispatchTaskStepStatus.ManualIntervention or
+                (int)DispatchTaskStepStatus.Failed))
+            return "原业务任务或执行中的运输步骤身份不一致，禁止自动改道。";
+        var work = new DispatchTaskStepWorkItem(task.TaskId, task.StationId, task.VehicleId,
+            (DispatchTaskStage)task.Stage, step.StepId, step.Sequence,
+            (DispatchTaskStepType)step.StepType, (DispatchTaskStepStatus)step.Status,
+            step.SourceSite, step.DestinationSite, new DateTimeOffset(step.UpdatedAt));
+        return await ValidateRecoveryPlcAsync(work, step, cancellationToken);
+    }
+
     private async Task<TransportTimeoutRecoveryResult> ReconcileExistingAsync(
         TransportTimeoutRecoveryEntity row,
         CancellationToken cancellationToken)

@@ -45,10 +45,12 @@ def snapshot(car):
                 speedMps=car.current_speed_mps,
                 distanceMeters=car.distance_meters,
                 moving=car.moving, motionEdge=car.motion_edge,
+                blocked=car.obstacle or car.blocked_by_vehicle is not None or car.motion_edge in car.blocked_edges,
                 blockedByVehicle=car.blocked_by_vehicle,
                 waitReason=(f'前方车辆 {car.blocked_by_vehicle} 距离较近，停车等待其离开；原运输任务保持。'
                             if car.blocked_by_vehicle else '当前道路被封锁，等待解除。'
-                            if car.motion_edge in car.blocked_edges else '车辆已暂停，等待继续。' if car.paused else None),
+                            if car.motion_edge in car.blocked_edges else '车端检测到前方障碍，正在等待自动恢复或后台安全改道。'
+                            if car.obstacle else '车辆已暂停，等待继续。' if car.paused else None),
                 simulationControl=car.control_snapshot())
 
 

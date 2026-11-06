@@ -26,6 +26,10 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get('X-Simulation-Token') != token:
             self.send_response(403);self.end_headers();return
         if self.path.startswith('/archive?id='):
+            if self.path.startswith('/archive?id=' + 'e'*32):
+                body=json.dumps(dict(error='evidence not found')).encode()
+                self.send_response(404);self.send_header('Content-Type','application/json')
+                self.end_headers();self.wfile.write(body);return
             body=b'PK\\x03\\x04simulation-evidence'
             self.send_response(200);self.send_header('Content-Type','application/zip')
             self.send_header('Content-Disposition','attachment; filename="evidence.zip"')
@@ -66,13 +70,13 @@ async Task<JsonElement> Execute(IResult result)
     using var parsed = await JsonDocument.ParseAsync(stream);
     return parsed.RootElement.Clone();
 }
-async Task<(byte[] Body, string? ContentType, string? Disposition)> ExecuteRaw(IResult result)
+async Task<(byte[] Body, int Status, string? ContentType, string? Disposition)> ExecuteRaw(IResult result)
 {
     using var services = new ServiceCollection().AddLogging().AddOptions().BuildServiceProvider();
     var context = new DefaultHttpContext { RequestServices = services };
     await using var stream = new MemoryStream(); context.Response.Body = stream;
     await result.ExecuteAsync(context);
-    return (stream.ToArray(), context.Response.ContentType, context.Response.Headers.ContentDisposition.ToString());
+    return (stream.ToArray(), context.Response.StatusCode, context.Response.ContentType, context.Response.Headers.ContentDisposition.ToString());
 }
 async Task Reject(Dictionary<string, string?> values, string message)
 {
@@ -122,6 +126,11 @@ await using (var bridge = new SimulationBridge(Config(Values(freePort))))
     var repeated = await Execute(await bridge.ForwardAsync(HttpMethod.Get, "/status", null, timeout.Token));
     Check(repeated.GetProperty("pid").GetInt32() == ownedPid, "status reuses only its already owned controller");
     Check((await Execute(await bridge.ForwardAsync(HttpMethod.Get, "/report", null, timeout.Token))).GetProperty("path").GetString() == "/report", "report proxy uses fixed route");
+    foreach (var path in new[] { "/snapshot", "/resources",
+                                 "/tasks?page=1&filter=Active&pageSize=10&search=CNC-002",
+                                 "/task?id=TASK-20261107012623978-a8ace5bc40f54fbd89a842be5e939001" })
+        Check((await Execute(await bridge.ForwardAsync(HttpMethod.Get, path, null, timeout.Token))).GetProperty("path").GetString() == path,
+            "read-only task proxy allowed: " + path);
     foreach (var path in new[] { "/configure", "/recover", "/recover-release", "/protocol-start", "/protocol-stop",
                                  "/equipment-start", "/equipment-control", "/equipment-stop", "/scheme-save", "/scheme-select", "/scheme-start" })
         Check((await Execute(await bridge.ForwardAsync(HttpMethod.Post, path, "{}", timeout.Token))).GetProperty("path").GetString() == path,
@@ -133,12 +142,25 @@ await using (var bridge = new SimulationBridge(Config(Values(freePort))))
         "/archive?id=" + new string('b', 32), "simulation-evidence.zip", timeout.Token));
     Check(archive.ContentType == "application/zip" && archive.Disposition?.Contains("simulation-evidence.zip") == true &&
           archive.Body.AsSpan().StartsWith(new byte[] { 0x50, 0x4b }), "archive proxy returns a bounded ZIP attachment");
+    var archiveError = await ExecuteRaw(await bridge.ForwardArchiveAsync(
+        "/archive?id=" + new string('e', 32), "simulation-evidence.zip", timeout.Token));
+    using var archiveErrorJson = JsonDocument.Parse(archiveError.Body);
+    Check(archiveError.Status == 404 &&
+          archiveErrorJson.RootElement.GetProperty("error").GetString() == "evidence not found",
+        "archive proxy materializes controller errors before the JSON document is disposed");
     foreach (var path in new[] { "/report?id=../../field", "/replay?id=" + new string('a', 32) + "&file=secret", "/replay?id=" + new string('A', 32) })
     {
         var invalidHistoryRejected = false;
         try { await bridge.ForwardAsync(HttpMethod.Get, path, null, timeout.Token); }
         catch (ArgumentException) { invalidHistoryRejected = true; }
         Check(invalidHistoryRejected, "history route rejects arbitrary identities and extra query: " + path);
+    }
+    foreach (var path in new[] { "/tasks?filter=Unknown", "/tasks?page=0&pageSize=10", "/tasks?pageSize=201", "/tasks?file=secret" })
+    {
+        var invalidTaskQueryRejected = false;
+        try { await bridge.ForwardAsync(HttpMethod.Get, path, null, timeout.Token); }
+        catch (ArgumentException) { invalidTaskQueryRejected = true; }
+        Check(invalidTaskQueryRejected, "task route rejects invalid query: " + path);
     }
     var rejected = false;
     try { await bridge.ForwardAsync(HttpMethod.Get, "http://example.com/", null, timeout.Token); }

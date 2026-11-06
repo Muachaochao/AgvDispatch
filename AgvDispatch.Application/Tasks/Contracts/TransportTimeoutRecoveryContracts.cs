@@ -83,4 +83,13 @@ public interface ITransportTimeoutRecoveryService
     Task<AgvTransportTaskStatus?> GetReplacementStatusAsync(
         DispatchTaskWorkItem task,
         CancellationToken cancellationToken);
+
+    /// <summary>Read-only revalidation shared by automatic obstacle recovery.
+    /// Returns a Chinese reason when load, PLC, handshake or step identity is not
+    /// safe for a replacement navigation; null means the evidence passed.</summary>
+    Task<string?> ValidateReplacementPreconditionsAsync(
+        string taskId,
+        string stepId,
+        CancellationToken cancellationToken) =>
+        Task.FromResult<string?>("当前后台未提供自动改道前置条件核验。");
 }

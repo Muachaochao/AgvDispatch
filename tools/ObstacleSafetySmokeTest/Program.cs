@@ -153,7 +153,6 @@ internal static class Program
     {
         var directory=Path.Combine(Path.GetTempPath(),"agv-timeout-recovery-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(directory);
         using var db=DatabaseFactory.Create(new(){DatabasePath=Path.Combine(directory,"test.db")});
-        var catalog=new TrafficResourceCatalog([]);await new DatabaseInitializer(db,catalog).InitializeAsync(default);
         var mapRuntime=new ActiveMapRuntime();
         var definition=new MapDefinition("TIMEOUT","test","RobotWorld","m",
             [
@@ -168,6 +167,8 @@ internal static class Program
                 new("E-HD","H","D",1,1,false,true,[]),
                 new("E-DX","D","X",1,1,false,true,[])
             ],[]);
+        var catalog=new TrafficResourceCatalog(MapCorridorResources.AllResources(definition));
+        await new DatabaseInitializer(db,catalog).InitializeAsync(default);
         mapRuntime.Replace(new("MAP-T","MAPV-T",definition,DateTimeOffset.UtcNow));
         var traffic=new TrafficResourceManager(db,catalog,new(TimeSpan.FromMinutes(1)));
         var cache=new AgvStateCache(Options("A"));

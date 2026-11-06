@@ -26,6 +26,13 @@ public sealed partial class TaskCenterReadRepository
         "AgvSendIntent" => "车辆命令发送意图已记录",
         "AgvSendAcknowledged" => "车辆适配器返回任务身份",
         "DumperExitBlocked" => "倒料区交接核验未通过",
+        "ObstacleRecoveryDetected" => "车端报告前方障碍",
+        "ObstacleDetourPlanned" => "已生成安全替代路线",
+        "ObstacleOriginalCancelRequested" => "已请求取消原车端导航",
+        "ObstacleAutomaticDetourSent" => "已发送自动改道任务",
+        "ObstacleDetourSendUncertain" => "改道发送结果待核对",
+        "ObstacleRecoveryFrozen" => "障碍恢复任务已冻结",
+        "ObstacleRecoveryObservationCleared" => "车端障碍信号已解除",
         _ => kind
     };
 
@@ -73,6 +80,13 @@ public sealed partial class TaskCenterReadRepository
             "AgvSendAcknowledged" => "仅证明适配器已返回身份；不等同于车辆运动或动作完成。",
             "PlcWriteIntent" => "写入前记录；不代表写入成功、PLC业务接收或机械动作完成。",
             "StepObservation" => "本次执行器观察，不代表步骤开始时间或物理到位。",
+            "ObstacleRecoveryDetected" => "这是车端先给出的Blocked/52200证据；后台尚未取消原任务或释放责任。",
+            "ObstacleDetourPlanned" => "候选路线已按当前地图、道路封锁和交通路权生成；发送前仍须复核停稳、载荷和PLC。",
+            "ObstacleOriginalCancelRequested" => "取消应答不代表原导航已经终止；必须等待全部3066分段终态。",
+            "ObstacleAutomaticDetourSent" => "替代导航已发送并绑定原业务任务；到点、取放箱和PLC完成仍需后续证据。",
+            "ObstacleDetourSendUncertain" => "只查询已持久化的新厂家编号，禁止重发；无法证明时冻结原任务。",
+            "ObstacleRecoveryFrozen" => "原业务任务、载荷、PLC责任和路权保持；按下一步指引人工处置。",
+            "ObstacleRecoveryObservationCleared" => "只证明车端当前不再报告受阻，不证明原任务继续、完成或可释放路权。",
             _ => "原始证据保存在后台；本条记录不单独证明机械动作完成。"
         };
     }

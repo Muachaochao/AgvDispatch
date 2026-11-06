@@ -27,7 +27,8 @@ public static class TransportRouteSnapshots
         var payload = JsonSerializer.Deserialize<AgvTransportCommandPayload>(payloadJson, JsonOptions)
             ?? throw new InvalidDataException("发送载荷无效。");
         var edges = JsonSerializer.Deserialize<string[]>(request.EdgeIds) ?? [];
-        if (payload.BusinessTaskId != stepId || payload.VehicleId != vehicleId || payload.Path is null ||
+        if ((payload.BusinessTaskId != stepId && !ObstacleRecoveryTaskIds.IsRecoveryTask(payload.BusinessTaskId)) ||
+            payload.VehicleId != vehicleId || payload.Path is null ||
             payload.Path.Count < 2 || edges.Length != payload.Path.Count - 1 ||
             payload.Source != payload.Path[0] || payload.Destination != payload.Path[^1])
             throw new InvalidDataException("发送路径与原步骤/有序路段不一致。");

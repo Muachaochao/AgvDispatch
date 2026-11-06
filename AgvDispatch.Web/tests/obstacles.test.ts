@@ -9,8 +9,8 @@ const at = (delta = 0) => new Date(now + delta).toISOString();
 const task: TaskRow = { taskId: 'original', stationId: 'P1', vehicleId: 'AGV-01', stage: 'Executing', priority: 50, createdAt: at(), updatedAt: at() };
 function observation(overrides: Partial<VehicleObstacle> = {}): VehicleObstacle {
   return { state: 'Blocked', since: at(-3000), durationSeconds: 3, lastClearedAt: null, source: 'Blocked / 52200',
-    message: '保留原任务，等待车端处理。', navigationPolicy: '指定路径；保留原任务，不自动取消或改道',
-    localDetourEvidence: '未采集车端局部轨迹，未验证自主绕障', ...overrides };
+    message: '保留原任务，等待安全改道核验。', navigationPolicy: '5秒搜索安全替代路线，安全条件通过后自动改道',
+    localDetourEvidence: '自动改道保留原任务、载荷、PLC责任和路权', ...overrides };
 }
 function vehicle(overrides: Partial<Vehicle> = {}): Vehicle {
   return { vehicleId: 'AGV-01', displayName: '测试车', connection: 'Online', quality: 'Good', batteryPercent: 80,
@@ -87,13 +87,13 @@ test('浏览器时钟不从开始时间外推受阻时长，未知或无效时�
   assert.equal(obstacleDuration(125), '2 分 5 秒');
 });
 
-test('旧后台兼容Blocked字段，不凭原始坐标移动宣布自主绕行', () => {
+test('旧后台兼容Blocked字段，不凭原始坐标移动宣布业务完成', () => {
   const v = vehicle({ blocked: true, x: 100, y: 50 });
   const view = vehicleObstacle(v, true, now);
   assert.equal(vehicleCategory(v, [task], true, now), 'blocked');
   assert.equal(view.duration, '时长未知');
-  assert.match(view.localDetourEvidence, /未验证自主绕障/);
-  assert.match(view.navigationPolicy, /不自动取消或改道/);
+  assert.match(view.localDetourEvidence, /保留原任务/);
+  assert.match(view.navigationPolicy, /自动改道/);
   assert.equal(vehicleCategory(vehicle({ blocked: null }), [], true, now), 'unknown');
 });
 

@@ -22,7 +22,8 @@ public sealed class SystemStatusSnapshotService(
     TrafficSecurityOptions securityOptions,
     NamedPipeDiagnostics pipeDiagnostics, HandshakeExecutionOptions? handshake = null,
     DispatchTaskCreationOptions? creation = null, DispatchTaskStepOptions? steps = null,
-    AgvCommandOutboxOptions? outbox = null) : ISystemStatusSnapshotService
+    AgvCommandOutboxOptions? outbox = null,
+    ObstacleRecoveryStore? obstacleRecovery = null) : ISystemStatusSnapshotService
 {
     private static readonly DateTimeOffset ProcessStartedAt =
         new(Process.GetCurrentProcess().StartTime);
@@ -44,6 +45,9 @@ public sealed class SystemStatusSnapshotService(
         var connection = plcConnection.Current;
         var agvs = agvStates.GetAll();
         var now = DateTimeOffset.Now;
+        var recoveries = obstacleRecovery is null
+            ? []
+            : await obstacleRecovery.ListSnapshotsAsync(cancellationToken);
 
         return new SystemStatusSnapshot(
             now,
@@ -117,7 +121,9 @@ public sealed class SystemStatusSnapshotService(
                     AngularVelocity = agv.AngularVelocity, Charging = agv.Charging,
                     BatteryVoltage = agv.BatteryVoltage, BatteryCurrent = agv.BatteryCurrent,
                     BatteryTemperature = agv.BatteryTemperature,
-                    Obstacle = AgvObstacleDiagnostics.Analyze(agv, now, TimeSpan.FromMilliseconds(agvOptions.StaleAfterMs))
+                    Obstacle = AgvObstacleDiagnostics.Analyze(agv, now, TimeSpan.FromMilliseconds(agvOptions.StaleAfterMs)),
+                    Recovery = recoveries.FirstOrDefault(row =>
+                        row.VehicleId.Equals(agv.VehicleId, StringComparison.OrdinalIgnoreCase))
                 };
             }).ToArray(),
             BuildTaskDiagnostic(activeTasks),

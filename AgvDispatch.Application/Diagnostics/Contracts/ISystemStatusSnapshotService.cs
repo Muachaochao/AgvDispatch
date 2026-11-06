@@ -68,6 +68,7 @@ public sealed record AgvDiagnostic(
     public double? BatteryCurrent { get; init; }
     public double? BatteryTemperature { get; init; }
     public AgvObstacleDiagnostic? Obstacle { get; init; }
+    public ObstacleRecoverySnapshot? Recovery { get; init; }
 }
 
 public sealed record AgvObstacleDiagnostic(

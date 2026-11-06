@@ -265,6 +265,31 @@ class DeviceNetworkTests(unittest.IsolatedAsyncioTestCase):
         finally:
             peer.journal.close()
 
+    async def test_vehicle_obstacle_signal_stops_and_preserves_original_task(self):
+        car = self.f.car
+        car.nodes['LM1']['x'] = 4
+        self.assertEqual(0, car.robokit_reply(3066, {'move_task_list': [
+            {'task_id': 'direct-obstacle', 'source_id': 'LM0', 'id': 'LM1'}]})['ret_code'])
+        driver = asyncio.create_task(car.drive())
+        try:
+            await self.wait_until(lambda: car.current == 'direct-obstacle', 'Driver did not start obstacle task')
+            self.f.control(vehicles={'A': {'speedScale': 2}})
+            await self.wait_until(lambda: car.x > .05, 'Vehicle did not begin moving')
+            self.f.control(vehicles={'A': {'obstacle': True, 'speedScale': 2}})
+            await self.wait_until(lambda: car.robokit_reply(1100, {}).get('blocked') is True,
+                                  'Vehicle did not report Blocked')
+            stopped = car.x
+            await asyncio.sleep(.25)
+            self.assertEqual(stopped, car.x)
+            self.assertEqual(2, car.tasks['direct-obstacle'],
+                             'Obstacle must not replace or cancel the original vendor task')
+            self.f.control(vehicles={'A': {'obstacle': False}})
+            await self.wait_until(lambda: car.x > stopped, 'Vehicle did not resume after obstacle clear')
+            self.assertEqual(2, car.tasks['direct-obstacle'])
+        finally:
+            driver.cancel()
+            await asyncio.gather(driver, return_exceptions=True)
+
     async def test_pause_block_and_cancel_during_jack(self):
         car = self.f.car
         jack_started, release_jack = asyncio.Event(), asyncio.Event()

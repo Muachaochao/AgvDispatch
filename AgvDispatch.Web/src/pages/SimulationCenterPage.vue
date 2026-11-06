@@ -1,19 +1,25 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import { IconPlayerPlay, IconPlayerStop, IconRefresh, IconDownload, IconFlask, IconRobot } from '@tabler/icons-vue';
 import { simulationApi, simulationFresh, simulationGeometry, simulationLabel, loadCurrentSimulationMap, simulationTone, scenarioActive, simulationVehicleOriginsFromLive,
   simulationMetricLabel, simulationMetricValue, simulationMetricComparison, simulationReplayCars,
+  simulationStationBindingsFromCatalog, simulationVehicleVisualState, simulationVehicleVisualColor,
+  simulationVehicleVisualLabel, simulationObstacleRecoveryLabel,
   type SimulationStatus, type SimulationRun, type SimulationControls, type SimulationReport,
   type SimulationConfigureRequest, type SimulationMapDefinition, type SimulationCall,
   type SimulationRecoveryItem, type SimulationReplay, type SimulationStationConfiguration,
   type SimulationPlcSignalTable, type SimulationStationCatalogEntry,
-  type ServicePlcPointTableSnapshot } from '../simulation';
+  type ServicePlcPointTableSnapshot, type SimulationNode, type SimulationVehicle } from '../simulation';
 import { importProfControlRpj } from '../profcontrol-rpj';
 import { actionStateLabel, equipmentDirectionLabel, industrialText } from '../operator-labels';
 import { useDispatchStore } from '../stores/dispatch';
+import type { Snapshot, TaskDetail, TaskPage, TaskRow, TrafficRequest } from '../types';
 
 const dispatchStore = useDispatchStore();
+const route = useRoute(), router = useRouter();
 const status = ref<SimulationStatus | null>(null), error = ref(''), actionError = ref(''), notice = ref('');
+const MAX_SIMULATION_STATIONS = 305;
 const reading = ref(false), busy = ref(false), connected = ref(false), now = ref(Date.now());
 const selectedVehicle = ref('');
 const newVehicleCount = ref(2);
@@ -25,6 +31,8 @@ const roadBlockHold = ref(5);
 const restartStage = ref<'pickup' | 'delivery'>('pickup');
 const mapDefinition = ref<SimulationMapDefinition | null>(null), mapFileName = ref('');
 const liveMapIdentity = ref('');
+const showCadReference = ref(false);
+const mapViewMode = ref<'all' | 'vehicles'>('all');
 const useFieldVehiclePositions = ref(true);
 const mapIdentityDraft = ref<SimulationConfigureRequest['mapIdentity']>(undefined);
 const plcTableText = ref(''), plcTableFileName = ref(''), plcTableSha256 = ref('');
@@ -39,6 +47,16 @@ const waitingSite = ref(''), dumpingSite = ref('');
 const schemeName = ref(''), selectedScheme = ref(''), selectedHistory = ref(''), comparisonId = ref('');
 const selectedReport = ref<SimulationReport | null>(null), comparisonReport = ref<SimulationReport | null>(null);
 const replay = ref<SimulationReplay | null>(null), replayIndex = ref(0), replayPlaying = ref(false), historyReading = ref(false);
+const simulationTasks = ref<TaskRow[]>([]), simulationTaskPage = ref<TaskPage | null>(null);
+const simulationTaskFilter = ref<'All' | 'Active' | 'Completed' | 'Failed'>('All');
+const simulationTaskSearch = ref('');
+const selectedTaskId = ref(''), selectedTaskDetail = ref<TaskDetail | null>(null);
+const taskReading = ref(false), taskDetailReading = ref(false), taskError = ref('');
+const selectedTaskRouteStepId = ref('');
+const taskRuntimeSnapshot = ref<Snapshot | null>(null), taskSnapshotError = ref('');
+const taskSnapshotFetchedAt = ref(0);
+const reportTaskDetailId = ref(''), reportTaskDetail = ref<TaskDetail | null>(null);
+const reportTaskReading = ref(false), reportTaskError = ref('');
 const recordingVideo = ref(false), videoProgress = ref(0);
 const additionalWaitingSites = ref<string[]>([]);
 const inspectionSite = ref(''), dumperResourceId = ref('');
@@ -78,13 +96,27 @@ const plcFeedback = computed(() => status.value?.device?.simulationControl);
 const appliedBlockedEdges = computed(() => vehicle.value?.simulationControl?.blockedEdges ?? []);
 const blockableEdges = computed(() => (status.value?.map?.edges ?? []).filter(edge => !!edge.id));
 const geometry = computed(() => simulationGeometry(status.value?.map?.nodes ?? [], status.value?.map?.edges ?? [], cars.value));
+const cadBackground = computed(() => simulationCadBackground(status.value?.map, geometry.value));
+const mapAreas = computed(() => simulationAreaOverlays(status.value?.map, geometry.value));
+const mapViewBox = computed(() => {
+  if (mapViewMode.value !== 'vehicles' || !geometry.value.cars.length) return '0 0 800 430';
+  const xs = geometry.value.cars.map(car => car.x);
+  const ys = geometry.value.cars.map(car => car.y);
+  const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+  const width = Math.min(760, Math.max(300, (maxX - minX) * 1.8));
+  const height = width / (800 / 430);
+  const centerX = (minX + maxX) / 2, centerY = (minY + maxY) / 2;
+  return `${Math.max(0, Math.min(800 - width, centerX - width / 2))} ${Math.max(0, Math.min(430 - height, centerY - height / 2))} ${width} ${height}`;
+});
+const denseMap = computed(() => geometry.value.nodes.length > 120);
 const progress = computed(() => Math.min(100, Math.max(0, (status.value?.scenario?.completedRounds ?? 0) / Math.max(1, status.value?.scenario?.totalRounds ?? 1) * 100)));
 const report = computed(() => selectedReport.value ?? status.value?.report);
 const historicalReport = computed(() => !!report.value?.id && !!status.value?.scenario?.id && report.value.id !== status.value.scenario.id);
 const scenarioNames: Record<string, string> = { 'normal-cycle': '完整业务循环', 'simultaneous-calls': '多工位同时呼叫',
   'custom-calls': '自定义呼叫计划', 'dispatch-backlog': '正式调度持续排队测试', 'disconnect-reconnect': '车辆断连与重连', 'plc-delay': 'PLC 反馈延迟',
   'plc-recovery': 'PLC卡位与恢复', 'service-restart': '后台重启与恢复屏障', 'resume-recovery': '恢复后继续原任务',
-  'vendor-cancel-return': '车端返程中途取消', 'response-loss': '运输命令回包丢失', 'road-block-recovery': '道路临时阻塞后恢复' };
+  'vendor-cancel-return': '车端返程中途取消', 'response-loss': '运输命令回包丢失', 'road-block-recovery': '道路临时阻塞后恢复',
+  'obstacle-auto-detour': '前方障碍自动改道' };
 const metrics = computed(() => Object.entries(report.value?.metrics ?? {}).filter(([, value]) => value !== null && typeof value !== 'object'));
 const metricComparison = computed(() => simulationMetricComparison(report.value?.metrics, comparisonReport.value?.metrics));
 const firstFailure = computed(() => typeof report.value?.firstFailure === 'string' ? report.value.firstFailure :
@@ -94,9 +126,12 @@ const configuredStationIds = computed(() => (status.value?.running ? status.valu
 const replayFrame = computed(() => replay.value?.timeline[replayIndex.value]);
 const replayGeometry = computed(() => simulationGeometry((replay.value?.map ?? status.value?.map)?.nodes ?? [],
   (replay.value?.map ?? status.value?.map)?.edges ?? [], simulationReplayCars(replayFrame.value)));
+const replayCadBackground = computed(() => simulationCadBackground(replay.value?.map ?? status.value?.map, replayGeometry.value));
+const replayMapAreas = computed(() => simulationAreaOverlays(replay.value?.map ?? status.value?.map, replayGeometry.value));
+const denseReplay = computed(() => replayGeometry.value.nodes.length > 120);
 const runValid = computed(() => Number.isInteger(run.value.rounds) && run.value.rounds >= 1 && run.value.rounds <= 100 &&
   Number.isFinite(run.value.intervalSeconds) && run.value.intervalSeconds >= 0 && run.value.intervalSeconds <= 60 &&
-  Number.isFinite(run.value.timeoutSeconds) && run.value.timeoutSeconds >= 30 && run.value.timeoutSeconds <= 3600);
+  Number.isFinite(run.value.timeoutSeconds) && run.value.timeoutSeconds >= 30 && run.value.timeoutSeconds <= 86400);
 const currentTask = computed(() => vehicle.value?.current_task || '当前无运输命令');
 const snapshotTime = computed(() => stamp(status.value?.device?.time));
 const mapNodes = computed(() => (mapDefinition.value?.nodes ?? []).filter(node => node.enabled !== false));
@@ -106,32 +141,487 @@ const selectedSchemeRecord = computed(() => (status.value?.schemes ?? []).find(s
 const selectedSchemeReady = computed(() => !!selectedSchemeRecord.value?.plcTableName && !!selectedSchemeRecord.value?.plcTableSha256);
 const protocol = computed(() => status.value?.protocol);
 const equipment = computed(() => status.value?.equipment);
-type SimulationStage = 'overview' | 'environment' | 'scenario' | 'faults' | 'results';
-const activeStage = ref<SimulationStage>('overview');
-const stageTabs: { id: SimulationStage; number: string; title: string; description: string }[] = [
-  { id: 'overview', number: '00', title: '运行总览', description: '当前状态、下一步和实时地图' },
-  { id: 'environment', number: '01', title: '环境与地图', description: '导入地图、车辆和扩展设备' },
-  { id: 'scenario', number: '02', title: '场景编排', description: '选择场景、轮次和呼叫计划' },
-  { id: 'faults', number: '03', title: '故障注入', description: '车辆、PLC、道路和通信异常' },
-  { id: 'results', number: '04', title: '恢复与报告', description: '现场式恢复和检查证据' }
+const taskCounts = computed(() => {
+  const summary = simulationTaskPage.value?.summary;
+  if (summary) return summary;
+  const rows = simulationTasks.value;
+  return {
+    total: rows.length,
+    running: rows.filter(task => ['Running', 'Dispatching', 'InProgress'].includes(task.stage)).length,
+    waiting: rows.filter(task => ['Created', 'WaitingForVehicle', 'WaitingForDumper', 'WaitingForPlcConfirmation'].includes(task.stage)).length,
+    completed: rows.filter(task => task.stage === 'Completed').length,
+    cancelled: rows.filter(task => task.stage === 'Cancelled').length,
+    failed: rows.filter(task => ['Faulted', 'Failed', 'CancellationReview'].includes(task.stage)).length,
+    other: 0
+  };
+});
+function taskWaitingRequest(taskId: string) {
+  return (taskRuntimeSnapshot.value?.traffic?.requests ?? [])
+    .filter(request => request.taskId === taskId && request.state === 'Waiting')
+    .sort((left, right) => Date.parse(right.updatedAt ?? '') - Date.parse(left.updatedAt ?? ''))[0];
+}
+function taskWaitingSeconds(taskId: string) {
+  const value = taskWaitingRequest(taskId)?.waitingSeconds;
+  return value !== null && value !== undefined && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : null;
+}
+type TaskRouteLegKind = 'completed' | 'current' | 'future';
+type TaskRouteLeg = {
+  stepId: string; sequence: number; stepType: string; stepStatus: string; kind: TaskRouteLegKind;
+  isCurrent: boolean; isReturn: boolean; label: string; action: string; sites: string[];
+  nodeIds: string[]; edgeIds: string[]; traffic?: TrafficRequest;
+};
+const taskRouteLegs = computed<TaskRouteLeg[]>(() => {
+  const detail = selectedTaskDetail.value;
+  if (!detail) return [];
+  const steps = new Map(detail.steps.filter(step => !!step.stepId).map(step => [step.stepId!, step]));
+  return (detail.commands ?? []).flatMap(command => {
+    const step = steps.get(command.stepId);
+    if (!step?.stepId || !command.route) return [];
+    const active = step.isCurrent || ['Ready', 'Executing', 'WaitingForTraffic'].includes(step.status);
+    const kind: TaskRouteLegKind = step.status === 'Completed' ? 'completed' : active ? 'current' : 'future';
+    const traffic = taskRuntimeSnapshot.value?.traffic?.requests?.find(request =>
+      request.taskId === detail.task.taskId && request.stepId === step.stepId);
+    return [{
+      stepId: step.stepId, sequence: step.sequence, stepType: step.stepType, stepStatus: step.status, kind,
+      isCurrent: active, isReturn: step.stepType === 'ReturnEmptyBox', label: taskStepLabel(step.stepType),
+      action: routeActionLabel(command.route.action), sites: command.route.vendorSites ?? [],
+      nodeIds: command.route.nodeIds ?? [], edgeIds: command.route.edgeIds ?? [], traffic
+    }];
+  }).sort((left, right) => left.sequence - right.sequence);
+});
+const selectedTaskRouteLeg = computed(() =>
+  taskRouteLegs.value.find(leg => leg.stepId === selectedTaskRouteStepId.value) ?? null);
+const selectedTaskCurrentStep = computed(() => {
+  const steps = selectedTaskDetail.value?.steps ?? [];
+  return steps.find(step => step.isCurrent) ??
+    steps.find(step => ['Ready', 'Executing', 'WaitingForTraffic'].includes(step.status)) ?? null;
+});
+const selectedTaskTrafficRequest = computed(() => {
+  const detail = selectedTaskDetail.value;
+  if (!detail) return null;
+  const requests = (taskRuntimeSnapshot.value?.traffic?.requests ?? [])
+    .filter(request => request.taskId === detail.task.taskId)
+    .sort((left, right) => Date.parse(right.updatedAt ?? '') - Date.parse(left.updatedAt ?? ''));
+  return requests.find(request => request.stepId === selectedTaskCurrentStep.value?.stepId) ?? requests[0] ?? null;
+});
+const selectedTaskWaitBlockers = computed(() => selectedTaskTrafficRequest.value?.blockers ?? []);
+const selectedTaskWaitGroups = computed(() => {
+  const groups = new Map<string, {
+    vehicleId: string; taskId: string; resources: string[]; heartbeatExpired: boolean;
+  }>();
+  for (const blocker of selectedTaskWaitBlockers.value) {
+    const key = `${blocker.vehicleId}|${blocker.taskId}`;
+    const group = groups.get(key) ?? {
+      vehicleId: blocker.vehicleId, taskId: blocker.taskId,
+      resources: [], heartbeatExpired: false
+    };
+    if (!group.resources.includes(blocker.resourceId)) group.resources.push(blocker.resourceId);
+    group.heartbeatExpired ||= blocker.heartbeatExpired;
+    groups.set(key, group);
+  }
+  return [...groups.values()];
+});
+const selectedTaskNamedResources = computed(() =>
+  (selectedTaskTrafficRequest.value?.resourceIds ?? []).filter(resourceId => !resourceId.startsWith('AUTO-CORRIDOR-')));
+const selectedTaskAutomaticResourceCount = computed(() =>
+  (selectedTaskTrafficRequest.value?.resourceIds ?? []).filter(resourceId => resourceId.startsWith('AUTO-CORRIDOR-')).length);
+const selectedTaskCurrentLeg = computed(() => taskRouteLegs.value.find(leg => leg.isCurrent) ?? null);
+
+function routeActionLabel(action?: string | null) {
+  return ({ JackLoad: '顶升取箱', JackUnload: '放下空箱', Wait: '导航/等待' } as Record<string, string>)[action ?? ''] ??
+    (action ? industrialText(action) : '运输移动');
+}
+function routeResourceLabel(resourceId?: string | null) {
+  if (!resourceId) return '未知资源';
+  if (resourceId.startsWith('AUTO-CORRIDOR-')) {
+    const map = status.value?.map;
+    const edges = (map?.edges ?? []).filter(edge => edge.resourceIds?.includes(resourceId));
+    const nodes = new Map((map?.nodes ?? []).map(node => [node.id, node.agvSiteId || node.id]));
+    const endpoints = [...new Set(edges.flatMap(edge => [nodes.get(edge.from) || edge.from, nodes.get(edge.to) || edge.to]))];
+    if (endpoints.length === 2) return `${endpoints[0]} ↔ ${endpoints[1]} 路段互斥路权`;
+    if (endpoints.length > 2) return `${endpoints.slice(0, 3).join('/')} 等路段组合互斥路权`;
+    return `路段互斥路权 ${resourceId.slice(-4).toUpperCase()}`;
+  }
+  if (resourceId.startsWith('TRAFFIC-')) return `${resourceId.replace('TRAFFIC-', '')} 交叉口路权`;
+  if (resourceId.startsWith('STANDBY-')) return `${resourceId.replace('STANDBY-', '')} 候车位`;
+  if (resourceId.startsWith('WAIT-')) return `${resourceId.replace('WAIT-', '')} 等待区`;
+  if (resourceId.startsWith('CNC-')) return `${resourceId.split('-').slice(0, 2).join('-')} 取箱位`;
+  if (resourceId.startsWith('DUMP-')) return '终端倒料区';
+  return resourceId;
+}
+function taskRouteEdgeClass(edgeId?: string | null) {
+  if (!edgeId) return {};
+  const legs = taskRouteLegs.value.filter(leg => leg.edgeIds.includes(edgeId));
+  if (!legs.length) return {};
+  const focused = selectedTaskRouteLeg.value?.edgeIds.includes(edgeId) ?? false;
+  const current = legs.some(leg => leg.isCurrent);
+  const future = legs.some(leg => leg.kind === 'future');
+  const returning = focused ? !!selectedTaskRouteLeg.value?.isReturn :
+    legs.some(leg => leg.isReturn && leg.kind !== 'completed');
+  const waiting = !!selectedTaskTrafficRequest.value &&
+    selectedTaskTrafficRequest.value.state === 'Waiting' &&
+    legs.some(leg => leg.isCurrent);
+  return {
+    'task-route': true,
+    'task-route-focus': focused,
+    'task-route-waiting': !focused && waiting,
+    'task-route-current': !focused && current,
+    'task-route-return': focused ? !!selectedTaskRouteLeg.value?.isReturn : !current && returning,
+    'task-route-future': !focused && !current && !returning && future,
+    'task-route-completed': !focused && !current && !returning && !future,
+    'task-route-dimmed': !!selectedTaskRouteStepId.value && !focused
+  };
+}
+function taskRouteNodeClass(nodeId?: string | null) {
+  if (!nodeId) return {};
+  const legs = taskRouteLegs.value.filter(leg => leg.nodeIds.includes(nodeId));
+  if (!legs.length) return {};
+  const focused = selectedTaskRouteLeg.value?.nodeIds.includes(nodeId) ?? false;
+  const waiting = !!selectedTaskTrafficRequest.value &&
+    selectedTaskTrafficRequest.value.state === 'Waiting' &&
+    legs.some(leg => leg.isCurrent);
+  return {
+    'task-node': true,
+    'task-node-focus': focused,
+    'task-node-waiting': !focused && waiting,
+    'task-node-current': !focused && legs.some(leg => leg.isCurrent),
+    'task-node-return': !focused && legs.some(leg => leg.isReturn && leg.kind !== 'completed'),
+    'task-node-completed': !focused && legs.every(leg => leg.kind === 'completed'),
+    'task-node-dimmed': !!selectedTaskRouteStepId.value && !focused
+  };
+}
+function isTaskRouteNode(nodeId?: string | null) {
+  return !!nodeId && taskRouteLegs.value.some(leg => leg.nodeIds.includes(nodeId));
+}
+function taskRouteMarker(edgeId?: string | null) {
+  if (!edgeId) return undefined;
+  if (selectedTaskRouteLeg.value?.edgeIds.includes(edgeId))
+    return selectedTaskRouteLeg.value.isReturn ? 'url(#task-return-arrow)' : 'url(#task-focus-arrow)';
+  const legs = taskRouteLegs.value.filter(leg => leg.edgeIds.includes(edgeId));
+  if (!legs.length) return undefined;
+  if (selectedTaskTrafficRequest.value?.state === 'Waiting' && legs.some(leg => leg.isCurrent))
+    return 'url(#task-waiting-arrow)';
+  if (legs.some(leg => leg.isCurrent)) return 'url(#task-current-arrow)';
+  if (legs.some(leg => leg.isReturn && leg.kind !== 'completed')) return 'url(#task-return-arrow)';
+  if (legs.some(leg => leg.kind === 'future')) return 'url(#task-future-arrow)';
+  return 'url(#task-completed-arrow)';
+}
+function selectTaskRouteLeg(stepId: string) {
+  selectedTaskRouteStepId.value = selectedTaskRouteStepId.value === stepId ? '' : stepId;
+}
+function trafficWaitingText(request?: TrafficRequest | null) {
+  if (!request) return '当前没有从后台读取到该步骤的路权申请。';
+  if (request.state === 'Waiting') {
+    if (request.waitingSeconds !== null && request.waitingSeconds !== undefined && Number.isFinite(request.waitingSeconds))
+      return `已等待 ${Math.floor(request.waitingSeconds)} 秒：${industrialText(request.reason)}`;
+    return industrialText(request.reason);
+  }
+  if (request.state === 'Leased') return `路权已取得，可以继续行驶。${industrialText(request.reason)}`;
+  if (request.state === 'Released') return `该步骤路权已释放：${industrialText(request.reason)}`;
+  return industrialText(request.reason || `路权状态：${request.state}`);
+}
+type TaskTimelineEntry = { id: string; occurredAt: string; title: string; summary: string; source: string };
+const taskTimeline = computed(() => {
+  const detail = selectedTaskDetail.value;
+  if (!detail) return [];
+  const entries: TaskTimelineEntry[] = [];
+  const add = (id: string | undefined, occurredAt: string | undefined, title: string, summary: string, source: string) => {
+    if (!occurredAt || !Number.isFinite(Date.parse(occurredAt))) return;
+    entries.push({ id: id || `${occurredAt}-${title}`, occurredAt, title, summary, source });
+  };
+  add(`${detail.task.taskId}-created`, detail.task.createdAt, '任务创建', `${detail.task.stationId} 工位呼叫进入正式调度队列`, '任务');
+  for (const event of detail.executionTimeline ?? [])
+    add(event.id, event.occurredAt, industrialText(event.title), industrialText(event.summary), event.source);
+  for (const step of detail.steps) {
+    add(step.stepId ? `${step.stepId}-start` : undefined, step.startedAt, `第${step.sequence}步开始`, taskStepLabel(step.stepType), '步骤');
+    add(step.stepId ? `${step.stepId}-done` : undefined, step.completedAt, `第${step.sequence}步完成`, taskStepLabel(step.stepType), '步骤');
+  }
+  for (const handshake of detail.handshakes ?? []) {
+    add(`${handshake.cycleId}-start`, handshake.startedAt, 'PLC握手开始', handshakePhaseLabel(handshake.phase), 'PLC');
+    add(`${handshake.cycleId}-update`, handshake.updatedAt,
+      handshake.pendingSignal ? `PLC等待${plcSignalLabel(handshake.pendingSignal)}` : 'PLC握手状态更新',
+      handshake.reason, 'PLC');
+  }
+  if (detail.waitingExplanation)
+    add(`${detail.task.taskId}-waiting`, detail.task.updatedAt, '当前等待原因', detail.waitingExplanation, '等待');
+  const unsatisfied = (detail.plcConditions ?? []).filter(signal => !signal.satisfied);
+  if (unsatisfied.length)
+    add(`${detail.task.taskId}-plc-waiting`, detail.task.updatedAt, 'PLC条件尚未满足',
+      unsatisfied.slice(0, 6).map(signal => `${plcSignalLabel(signal.variableName)}：${plcConditionLabel(signal.currentValue, signal.expectedValue)}`).join('；'),
+      'PLC');
+  if (detail.resources?.length)
+    add(`${detail.task.taskId}-resources`, detail.task.updatedAt, '道路与设备占用',
+      detail.resources.map(resource => `${resource.resourceId} 由 ${resource.vehicleId} 持有`).join('；'), '路权');
+  const unique = new Map<string, TaskTimelineEntry>();
+  for (const entry of entries) {
+    const signature = `${entry.occurredAt}|${entry.title}|${entry.summary}`;
+    if (!unique.has(signature)) unique.set(signature, entry);
+  }
+  return [...unique.values()].sort((left, right) => Date.parse(left.occurredAt) - Date.parse(right.occurredAt));
+});
+const denseLabelStations = new Set([1, 25, 50, 75, 100, 125, 150, 175, 200, 225, 250, 275, 300, 305]);
+type MapGeometry = ReturnType<typeof simulationGeometry>;
+function simulationCadBackground(map: SimulationMapDefinition | null | undefined, scene: MapGeometry) {
+  const annotation = map?.areaAnnotations?.find(item => item.sourceType === 'CadRasterBackground' && item.sourceJson);
+  if (!annotation?.sourceJson) return null;
+  try {
+    const metadata = JSON.parse(annotation.sourceJson) as {
+      asset?: string; opacity?: number;
+      viewBox?: { minX?: number; minY?: number; width?: number; height?: number };
+    };
+    const box = metadata.viewBox;
+    if (!metadata.asset || !box || ![box.minX, box.minY, box.width, box.height].every(Number.isFinite) || Number(box.width) <= 0 || Number(box.height) <= 0) return null;
+    const left = Number(box.minX) / 1000, right = (Number(box.minX) + Number(box.width)) / 1000;
+    const top = (Number(box.minY) + Number(box.height)) / 1000, bottom = Number(box.minY) / 1000;
+    const topLeft = scene.position({ x: left, y: top }), bottomRight = scene.position({ x: right, y: bottom });
+    return { href: '/' + metadata.asset.replace(/^\/+/, ''), x: topLeft.x, y: topLeft.y,
+      width: bottomRight.x - topLeft.x, height: bottomRight.y - topLeft.y,
+      opacity: Number.isFinite(metadata.opacity) ? Math.min(.4, Math.max(.05, Number(metadata.opacity))) : .2 };
+  } catch { return null; }
+}
+function simulationAreaOverlays(map: SimulationMapDefinition | null | undefined, scene: MapGeometry) {
+  return (map?.areaAnnotations ?? []).flatMap(item => {
+    if (item.sourceType !== 'CadSimulationEvidence' || !Array.isArray(item.boundary)) return [];
+    const boundary: { x: number; y: number }[] = [];
+    for (const value of item.boundary) {
+      if (!value || typeof value !== 'object' || !('x' in value) || !('y' in value)) continue;
+      const x = Number(value.x), y = Number(value.y);
+      if (Number.isFinite(x) && Number.isFinite(y)) boundary.push({ x, y });
+    }
+    if (boundary.length < 3) return [];
+    const points = boundary.map(scene.position);
+    const labelX = points.reduce((sum, point) => sum + point.x, 0) / points.length;
+    const labelY = points.reduce((sum, point) => sum + point.y, 0) / points.length;
+    const strokeColor = typeof item.strokeColor === 'string' ? item.strokeColor : '#38bdf8';
+    const fillColor = typeof item.fillColor === 'string' ? item.fillColor : strokeColor;
+    const fillOpacity = Number.isFinite(Number(item.fillOpacity))
+      ? Math.min(.25, Math.max(.03, Number(item.fillOpacity))) : .06;
+    return [{
+      id: item.id ?? item.text ?? 'map-area',
+      text: item.text ?? '仿真分区',
+      points: points.map(point => `${point.x},${point.y}`).join(' '),
+      labelX, labelY, strokeColor, fillColor, fillOpacity
+    }];
+  });
+}
+function mapNodeLabel(node: SimulationNode): string {
+  return node.agvSiteId || node.id;
+}
+function showMapAreaLabel(areaId: string): boolean {
+  return areaId.startsWith('SIM-AREA-G');
+}
+function showDenseNodeLabel(node: SimulationNode): boolean {
+  const label = mapNodeLabel(node);
+  if (label === 'DUMPER-001') return true;
+  const currentStation = vehicle.value?.station;
+  if (currentStation && (node.id === currentStation || node.agvSiteId === currentStation)) return true;
+  const station = /^BUS-CNC-(\d{3})$/.exec(node.id) ?? /^CNC-(\d{3})$/.exec(label);
+  return !!station && denseLabelStations.has(Number(station[1]));
+}
+function mapNodeRadius(node: SimulationNode): number {
+  if (!denseMap.value) return 4;
+  return showDenseNodeLabel(node) ? 2.8 : (node.id.startsWith('APPROACH-') ? 1.2 : 1.5);
+}
+function vehicleMapColor(car: SimulationVehicle): string {
+  return simulationVehicleVisualColor(car, fresh.value);
+}
+function vehicleVisualState(car: SimulationVehicle) {
+  return simulationVehicleVisualState(car, fresh.value);
+}
+function vehicleVisualLabel(car: SimulationVehicle) {
+  return simulationVehicleVisualLabel(car, fresh.value);
+}
+const taskStageLabels: Record<string, string> = {
+  Created: '已创建', WaitingForVehicle: '等待派车', Dispatching: '正在派车', GoingToPickup: '前往取货',
+  PickingUp: '执行取货', GoingToDumper: '送往倒料', WaitingForDumper: '等待倒料', Dumping: '倒料中',
+  ReturningEmptyBox: '返送空箱', WaitingForPlcConfirmation: '等待PLC确认', Completed: '已完成',
+  Faulted: '故障', Failed: '失败', Cancelled: '已取消', CancellationPending: '等待取消确认',
+  CancellationReview: '取消核对', Running: '执行中', InProgress: '执行中'
+};
+const taskStepLabels: Record<string, string> = {
+  GoToPickup: '前往工位取满箱', PickupFullBox: '确认取走满箱', DeliverFullBoxToDumper: '运送满箱到等待位',
+  WaitForDumperReady: '等待倒料机就绪', EnterDumpingPosition: '进入倒料位', DumpFullBox: '倒料并等待完成',
+  ReturnEmptyBox: '返送空箱', PlaceEmptyBox: '空箱放回工位', CompletePlcHandshake: 'PLC 握手收尾'
+};
+const taskStatusLabels: Record<string, string> = {
+  Pending: '待开始', Ready: '已就绪', Executing: '正在执行', Waiting: '等待中',
+  Completed: '已完成', Failed: '失败', Faulted: '故障', Cancelled: '已取消',
+  ManualIntervention: '需要人工处理'
+};
+const plcSignalLabels: Record<string, string> = {
+  FullBoxRequested: '满箱呼叫', FullBoxRequestAcknowledged: '满箱呼叫已应答',
+  FullBoxRemoved: '满箱已取走', EmptyBoxTaskAcknowledged: '空箱任务已应答',
+  EmptyBoxPlaced: '空箱已放回', BoxPresent: '箱体在位', DumperReady: '倒料机就绪',
+  DumperDone: '倒料完成', Faulted: '设备故障', CommunicationOnline: '设备通信正常'
+};
+const handshakePhaseLabels: Record<string, string> = {
+  Idle: '准备', BaselineCaptured: '已记录原始状态', Requesting: '正在请求',
+  WaitingRequest: '等待设备确认请求', RequestAcknowledged: '请求已确认',
+  WaitingCompletion: '等待设备完成', CompletionAcknowledged: '完成已确认',
+  Completed: '握手完成', Failed: '握手失败', Waiting: '等待条件'
+};
+function taskStageLabel(stage?: string | null) { return taskStageLabels[stage ?? ''] ?? stage ?? '状态待核对'; }
+function taskStepLabel(step?: string | null) { return taskStepLabels[step ?? ''] ?? step ?? '等待推进'; }
+function taskStatusLabel(status?: string | null) { return taskStatusLabels[status ?? ''] ?? (status ? industrialText(status) : '状态待核对'); }
+function plcSignalLabel(signal?: string | null) { return plcSignalLabels[signal ?? ''] ?? (signal ? industrialText(signal) : 'PLC条件'); }
+function handshakePhaseLabel(phase?: string | null) { return handshakePhaseLabels[phase ?? ''] ?? (phase ? industrialText(phase) : '等待握手状态'); }
+function plcConditionLabel(current: boolean | null, expected: boolean) {
+  const actual = current === null ? '尚未取得反馈' : current ? '当前已置位' : '当前未置位';
+  return `${actual}，要求${expected ? '置位' : '复位'}`;
+}
+function taskTone(stage?: string | null) {
+  if (stage === 'Completed') return 'pass';
+  if (['Faulted', 'Failed', 'CancellationReview'].includes(stage ?? '')) return 'fail';
+  if (['Created', 'WaitingForVehicle', 'WaitingForDumper', 'WaitingForPlcConfirmation', 'CancellationPending'].includes(stage ?? '')) return 'waiting';
+  return 'unknown';
+}
+function selectVehicleTask(vehicleId: string) {
+  selectedVehicle.value = vehicleId;
+  const task = simulationTasks.value.find(item => item.vehicleId === vehicleId && item.stage !== 'Completed') ??
+    simulationTasks.value.find(item => item.vehicleId === vehicleId);
+  if (task) void selectSimulationTask(task.taskId);
+}
+async function selectSimulationTask(taskId: string) {
+  if (!taskId || taskDetailReading.value) return;
+  if (selectedTaskId.value !== taskId) selectedTaskRouteStepId.value = '';
+  selectedTaskId.value = taskId;
+  taskDetailReading.value = true;
+  taskError.value = '';
+  try {
+    const detail = await simulationApi<TaskDetail>('/tasks/' + encodeURIComponent(taskId));
+    if (!disposed && selectedTaskId.value === taskId) {
+      selectedTaskDetail.value = detail;
+      if (detail.task.vehicleId) selectedVehicle.value = detail.task.vehicleId;
+      await refreshTaskRuntimeSnapshot();
+    }
+  } catch (reason) {
+    if (!disposed && selectedTaskId.value === taskId)
+      taskError.value = reason instanceof Error ? reason.message : String(reason);
+  } finally {
+    taskDetailReading.value = false;
+  }
+}
+async function refreshTaskRuntimeSnapshot(force = false) {
+  if (!status.value?.running) {
+    taskRuntimeSnapshot.value = null;
+    taskSnapshotError.value = '';
+    taskSnapshotFetchedAt.value = 0;
+    return;
+  }
+  if (!force && Date.now() - taskSnapshotFetchedAt.value < 1000) return;
+  try {
+    const snapshot = await simulationApi<Snapshot>('/snapshot');
+    if (!disposed) {
+      taskRuntimeSnapshot.value = snapshot;
+      taskSnapshotError.value = '';
+      taskSnapshotFetchedAt.value = Date.now();
+    }
+  } catch (reason) {
+    if (!disposed) {
+      taskRuntimeSnapshot.value = null;
+      taskSnapshotError.value = reason instanceof Error ? reason.message : String(reason);
+    }
+  }
+}
+async function loadSimulationTaskWindow(filter: typeof simulationTaskFilter.value, search: string): Promise<TaskPage> {
+  const query = new URLSearchParams({ filter, page: '1', pageSize: '200' });
+  if (search.trim()) query.set('search', search.trim());
+  const first = await simulationApi<TaskPage>('/tasks?' + query.toString());
+  const items = [...(first.items ?? [])];
+  const target = Math.min(first.totalCount, 500);
+  const pages = Math.ceil(target / 200);
+  for (let page = 2; page <= pages; page++) {
+    query.set('page', String(page));
+    const next = await simulationApi<TaskPage>('/tasks?' + query.toString());
+    items.push(...(next.items ?? []));
+  }
+  return { ...first, items: items.slice(0, target), page: 1, pageSize: 200 };
+}
+async function refreshSimulationTasks() {
+  if (taskReading.value || (!status.value?.running && !report.value)) return;
+  taskReading.value = true;
+  taskError.value = '';
+  try {
+    const page = await loadSimulationTaskWindow(simulationTaskFilter.value, simulationTaskSearch.value);
+    if (disposed) return;
+    simulationTaskPage.value = page;
+    simulationTasks.value = page.items ?? [];
+    if (status.value?.running && simulationTasks.value.length) await refreshTaskRuntimeSnapshot();
+    const preferredTask = simulationTasks.value.find(task => !!taskWaitingRequest(task.taskId)) ?? simulationTasks.value[0];
+    if (!selectedTaskId.value && preferredTask)
+      await selectSimulationTask(preferredTask.taskId);
+    else if (selectedTaskId.value && !taskDetailReading.value)
+      await selectSimulationTask(selectedTaskId.value);
+  } catch (reason) {
+    if (!disposed) taskError.value = reason instanceof Error ? reason.message : String(reason);
+  } finally {
+    taskReading.value = false;
+  }
+}
+async function toggleReportTask(taskId: string) {
+  if (reportTaskReading.value) return;
+  if (reportTaskDetailId.value === taskId) {
+    reportTaskDetailId.value = '';
+    reportTaskDetail.value = null;
+    reportTaskError.value = '';
+    return;
+  }
+  reportTaskDetailId.value = taskId;
+  reportTaskDetail.value = null;
+  reportTaskError.value = '';
+  reportTaskReading.value = true;
+  try {
+    const detail = await simulationApi<TaskDetail>('/tasks/' + encodeURIComponent(taskId));
+    if (!disposed && reportTaskDetailId.value === taskId) reportTaskDetail.value = detail;
+  } catch (reason) {
+    if (!disposed && reportTaskDetailId.value === taskId)
+      reportTaskError.value = reason instanceof Error ? reason.message : String(reason);
+  } finally {
+    reportTaskReading.value = false;
+  }
+}
+function vehicleBodySize(id: string) {
+  const profile = status.value?.configuration?.vehicles?.find(item => item.id === id);
+  const lengthMeters = profile?.lengthMeters ?? .8;
+  const widthMeters = profile?.widthMeters ?? .52;
+  const length = Math.min(28, Math.max(10, lengthMeters * geometry.value.scale));
+  const width = length * widthMeters / Math.max(.01, lengthMeters);
+  return { length, width };
+}
+type SimulationStage = 'overview' | 'tasks' | 'environment' | 'scenario' | 'faults' | 'results';
+const stageTabs: { id: SimulationStage; number: string; title: string; description: string; path: string }[] = [
+  { id: 'overview', number: '01', title: '运行总览', description: '看清车辆在哪、正在做什么和下一步', path: '' },
+  { id: 'tasks', number: '02', title: '任务运行', description: '查看真实任务、九步进度、命令、PLC和路权', path: 'tasks' },
+  { id: 'environment', number: '03', title: '环境与地图', description: '复制工程配置并准备干净仿真实例', path: 'environment' },
+  { id: 'scenario', number: '04', title: '场景编排', description: '安排测试目标、呼叫批次和运行轮次', path: 'scenario' },
+  { id: 'faults', number: '05', title: '故障处理', description: '模拟现场常见的断开、卡位和道路阻塞', path: 'faults' },
+  { id: 'results', number: '06', title: '恢复与报告', description: '查看发生了什么、为什么停和怎么恢复', path: 'results' }
 ];
+const activeStage = computed<SimulationStage>(() => {
+  const value = String(route.params.section ?? '');
+  return stageTabs.some(tab => tab.id === value) ? value as SimulationStage : 'overview';
+});
+const activeStageInfo = computed(() => stageTabs.find(tab => tab.id === activeStage.value) ?? stageTabs[0]!);
 const scenarioDescriptions: Record<SimulationRun['name'], string> = {
-  'normal-cycle': '从工位呼叫开始，经过取箱、等待、倒料、返空和28阶段握手，验证一次完整业务闭环。',
+  'normal-cycle': '模拟一台 CNC 发出满箱呼叫，车辆前去取箱、送终端倒料、返送空箱，最后回到工位完成收尾。',
   'simultaneous-calls': '两个呼叫工位在同一设备扫描周期置位，验证并发建单、车辆分配、交通资源等待和最终释放。',
   'custom-calls': '按指定次数、批次间隔、工位顺序和车辆运行呼叫计划，适合反复包场或定点压测。',
   'dispatch-backlog': '按时间表持续产生工位呼叫，不指定车辆。由正式后台建单、选择空闲车辆和维护队列，检查忙车排除、重复占车与等待链。',
   'disconnect-reconnect': '在正式运输命令执行中切断车端通信，再恢复连接，验证原任务和路权能否续接。',
-  'plc-delay': '延迟或阻止倒料机“就绪许可”和“倒料完成”反馈，验证握手阶段不会越级，恢复后仍能按原链路闭合。',
+  'plc-delay': '让倒料机晚一点回复“可以进入”或“倒料完成”，观察车辆是否原地等待，恢复后能否继续原任务。',
   'plc-recovery': '把指定 PLC 信号卡住一段时间后恢复，验证卡位期间任务保持等待且没有跳过步骤。',
-  'service-restart': '在活动运输持有路权时重启私有仿真后台，验证原任务、命令和路权保留，恢复屏障未自动放行。',
+  'service-restart': '车辆正在运输时重启仿真后台，观察原任务、原路线和占用是否会丢失，以及恢复页能否解释清楚。',
   'resume-recovery': '在逐项核对车辆、载荷和 PLC 周期后放行，只续接原任务编号，不创建替代任务。',
   'vendor-cancel-return': '在返箱 3066 任务链最后两段由车端返回取消，验证后台不会伪造完成、不会清掉原路权，并进入取消核对。',
   'response-loss': '丢弃一次 3066 传输响应，验证后台按原任务和原命令身份核对重试，生成重复任务或更换命令即失败。',
-  'road-block-recovery': '在取货运输途中临时封锁实际行驶道路，解除后验证原任务自动续接且路权不会提前释放。'
+  'road-block-recovery': '在取货运输途中临时封锁实际行驶道路，解除后验证原任务自动续接且路权不会提前释放。',
+  'obstacle-auto-detour': '虚拟车先上报前方障碍。后台连续观察后规划替代路线，安全条件全部通过时自动取消原导航、确认终态并发送一条替代路线；原业务任务、载荷、PLC责任和路权保持不变。'
 };
 const currentScenarioDescription = computed(() => scenarioDescriptions[run.value.name]);
 const modeledTaskCount = computed(() => Object.values(cars.value).filter(car => !!car.current_task).length);
 const offlineVehicleCount = computed(() => Object.values(cars.value).filter(car => !!car.offline).length);
+const onlineVehicleCount = computed(() => Object.values(cars.value).filter(car => !car.offline).length);
+const loadedVehicleCount = computed(() => Object.values(cars.value).filter(car => !!car.loaded).length);
 const requiresFreshInstance = computed(() => connected.value && !!status.value?.enabled && !status.value?.running &&
   !starting.value && Object.keys(cars.value).length > 0);
 const nextAction = computed(() => {
@@ -144,7 +634,7 @@ const nextAction = computed(() => {
   if (cleanupRequired.value) return { stage: 'overview' as const, kind: 'cleanup' as const, eyebrow: '启动失败',
     title: '先停止并清理失败环境', detail: status.value.error || '上次启动没有完成。保留日志和状态，再停止本实例的残留进程，然后新建干净实例。', button: '停止并清理' };
   if (requiresFreshInstance.value) return { stage: 'environment' as const, kind: 'configure' as const, eyebrow: '需要新建实例',
-    title: '当前实例保留了上次设备历史', detail: '为保证故障、载荷和路权不会串到下一轮，已经运行或停止过的实例不能原地重启。请拉取当前地图后创建新的隔离实例；车辆数量可继续设为 2 辆。', button: '去新建干净实例' };
+    title: '当前实例保留了上次设备历史', detail: '为保证故障、载荷和路权不会串到下一轮，已经运行或停止过的实例不能原地重启。请拉取当前地图后创建新的隔离实例；当前全厂方案可继续使用 5 辆车。', button: '去新建干净实例' };
   if (!status.value.running) return { stage: 'overview' as const, kind: 'start' as const, eyebrow: '准备完成',
     title: '启动当前隔离仿真环境', detail: `将启动实例 ${status.value.rootName || '—'} 的正式仿真后台、虚拟车辆和共享 PLC；不影响日常 5199 后台。`, button: '启动仿真环境' };
   if (active.value) return { stage: 'overview' as const, kind: 'observe' as const, eyebrow: '场景运行中',
@@ -152,11 +642,70 @@ const nextAction = computed(() => {
   if (report.value) return { stage: 'results' as const, kind: 'results' as const, eyebrow: '已有检查结果',
     title: '先核对上一次报告，再开始下一场景', detail: `最近报告为“${scenarioNames[report.value.name ?? ''] ?? report.value.name ?? '未知场景'}”。失败、中止和证据不足都不解释为通过。`, button: '查看报告与证据' };
   return { stage: 'scenario' as const, kind: 'scenario' as const, eyebrow: '设备已就绪',
-    title: '选择场景并运行', detail: '第一次建议选择“完整业务循环”、1轮和600秒超时。运行后页面会自动显示阶段、任务、车辆、PLC 与路权检查。', button: '开始编排场景' };
+    title: '选择场景并运行', detail: '第一次建议选择“完整业务循环”跑 1 轮。运行后页面会用业务语言显示车辆去哪、在做什么、为什么等待。', button: '开始编排场景' };
 });
-function openStage(stage: SimulationStage) { activeStage.value = stage; }
+function humanLocation(site?: string | null) {
+  if (!site) return '位置尚未反馈';
+  const normalized = site.replace(/^BUS-/, '');
+  if (/^CNC-\d{3}$/.test(normalized)) return `${normalized} 工位`;
+  if (/^WAIT-\d{2}$/.test(normalized)) return `待命位 ${Number(normalized.slice(-2))}`;
+  if (/^CHARGE-\d{2}$/.test(normalized)) return `充电位 ${Number(normalized.slice(-2))}`;
+  if (normalized === 'DUMPER-001') return '终端倒料位';
+  if (normalized === 'INSPECT-01') return '检修观察点';
+  if (site === '道路中') return '正在道路上行驶';
+  return normalized;
+}
+function recoveryBusinessSummary(item: SimulationRecoveryItem) {
+  const details: string[] = [];
+  if (item.vehicleSummary) details.push(/未取得|缺失|离线/.test(item.vehicleSummary) ? '车辆与位置信息尚未关联' : '车辆与位置信息已读取');
+  if (item.loadSummary) details.push(/未取得|缺失|未知/.test(item.loadSummary) ? '载荷信息仍需现场核对' : '载荷信息已读取');
+  if (item.plcSummary) {
+    const matches = [...item.plcSummary.matchAll(/([A-Za-z0-9-]+)\/([A-Za-z0-9]+)=(True|False)/g)];
+    const stations = new Set(matches.map(match => match[1])).size;
+    const faulted = matches.filter(match => match[2] === 'Faulted' && match[3] === 'True').length;
+    const offline = matches.filter(match => match[2] === 'CommunicationOnline' && match[3] === 'False').length;
+    details.push(`PLC反馈共 ${matches.length} 项，涉及 ${stations} 个工位；故障 ${faulted} 项，离线 ${offline} 项`);
+  }
+  return details.join('；') || '当前没有需要展开的技术字段';
+}
+const vehicleStories = computed(() => Object.entries(cars.value).map(([id, car]) => {
+  const tone = vehicleVisualState(car);
+  const state = vehicleVisualLabel(car);
+  const action = tone === 'offline' ? '继续保留任务和路权责任；恢复连接并刷新后再核对位置与载荷。' :
+    tone === 'fault' ? '检查暂停或设备故障注入；恢复后继续原任务。' :
+    tone === 'blocked' ? industrialText(car.waitReason || vehicleVisualLabel(car)) :
+    tone === 'running' ? `当前位置：${humanLocation(car.station)}，速度 ${car.speedMps?.toFixed(2) ?? '—'} m/s。` :
+    tone === 'waiting' ? industrialText(car.waitReason || (car.loaded ? '车上有箱，等待下一步作业条件。' : '车辆有任务，但当前没有移动。')) :
+    `已停在${humanLocation(car.station)}，${car.loaded ? '车上有箱' : '空载'}。`;
+  return { id, tone, state, action, location: humanLocation(car.station) };
+}));
+const overviewHeadline = computed(() => {
+  if (!connected.value) return '暂时看不到仿真环境';
+  if (!status.value?.enabled) return '还没有准备仿真环境';
+  if (requiresFreshInstance.value) return '这个实例已经跑过，需要新建一个干净环境';
+  if (!status.value?.running) return '仿真环境已停止';
+  if (active.value) return `正在运行：${scenarioNames[status.value.scenario?.name ?? run.value.name] ?? '仿真场景'}`;
+  if (report.value) return '上一轮测试已经生成结果';
+  return '环境和车辆已经准备好';
+});
+const overviewNarrative = computed(() => {
+  if (!connected.value) return '先刷新连接。页面恢复后，再判断车辆和任务状态。';
+  if (!status.value?.enabled) return '先到“环境与地图”选择方案，或者把当前工程带入一个隔离实例。';
+  if (requiresFreshInstance.value) return '为保证上一轮的任务、载荷和路权不会串到下一轮，请另建干净实例。';
+  if (!status.value?.running) return '当前没有运行中的仿真车辆。确认实例后，可以启动环境或按保存方案一键开测。';
+  if (active.value) return industrialText(status.value.scenario?.message || '地图会持续更新车辆位置，右侧显示每辆车正在做什么。');
+  if (report.value) return '先看结果和恢复建议，确认无残留任务、路权或载荷后，再开始下一轮。';
+  return `${onlineVehicleCount.value} 辆车已就绪，${loadedVehicleCount.value} 辆载箱，${modeledTaskCount.value} 辆正在执行任务。下一步进入“场景编排”选择这次要测什么。`;
+});
+function openStage(stage: SimulationStage) {
+  const target = stageTabs.find(tab => tab.id === stage) ?? stageTabs[0]!;
+  const location = target.path
+    ? { name: 'simulation-center', params: { section: target.path } }
+    : { name: 'simulation-center' };
+  if (route.name !== 'simulation-center' || activeStage.value !== stage) void router.push(location);
+}
 function followNextAction() {
-  activeStage.value = nextAction.value.stage;
+  openStage(nextAction.value.stage);
   if (nextAction.value.kind === 'refresh') void refresh();
   if (nextAction.value.kind === 'start') void action('start');
   if (nextAction.value.kind === 'cleanup') void action('stop');
@@ -175,7 +724,8 @@ const configurationProblems = computed(() => {
   const problems: string[] = [];
   if (!mapDefinition.value) problems.push('尚未载入地图。');
   if (!plcTableText.value || !plcTableMetadata.value) problems.push('尚未绑定并验证与当前地图对应的PLC点表CSV。');
-  if (stationDrafts.value.length < 1 || stationDrafts.value.length > 32) problems.push('工位数量须为1至32个。');
+  if (stationDrafts.value.length < 1 || stationDrafts.value.length > MAX_SIMULATION_STATIONS)
+    problems.push(`工位数量须为1至${MAX_SIMULATION_STATIONS}个。`);
   const boundStations = new Set(plcStationCatalog.value.map(item => item.stationId));
   const verified = new Set(plcStationCatalog.value.filter(item => item.signalSource === 'verified').map(item => item.stationId));
   stationDrafts.value.forEach((station, index) => {
@@ -298,6 +848,8 @@ function adoptPlcTable(table: SimulationPlcSignalTable, csvText: string) {
     if (confirmed.has(station.stationId)) station.signalSource = 'verified';
     else if (plcStationCatalog.value.some(item => item.stationId === station.stationId)) station.signalSource = 'isolated-synthetic';
   });
+  if (mapDefinition.value && stationDrafts.value.length <= 2 && stationDrafts.value.every(station => !station.pickupSite))
+    autoMapStations(false);
 }
 function clearPlcTableDraft() {
   plcTableText.value = ''; plcTableFileName.value = ''; plcTableSha256.value = '';
@@ -495,7 +1047,7 @@ function scenarioDraft(): SimulationRun {
   const payload: SimulationRun = { ...run.value };
   if (['custom-calls', 'dispatch-backlog'].includes(payload.name)) payload.calls = buildCustomCalls();
   if (payload.name === 'plc-recovery') { payload.plcFault = plcFault.value; payload.holdSeconds = plcFaultHold.value; }
-  if (payload.name === 'road-block-recovery') payload.holdSeconds = roadBlockHold.value;
+  if (payload.name === 'road-block-recovery' || payload.name === 'obstacle-auto-detour') payload.holdSeconds = roadBlockHold.value;
   if (payload.name === 'service-restart') payload.restartStage = restartStage.value;
   return payload;
 }
@@ -506,6 +1058,32 @@ function addStation() {
   const next = Array.from({ length: 999 }, (_, index) => `CNC-${String(index + 1).padStart(3, '0')}`).find(id => !used.has(id))!;
   stationDrafts.value.push({ stationId: verified?.stationId ?? bound?.stationId ?? next, pickupSite: '',
     signalSource: verified ? 'verified' : 'isolated-synthetic' });
+}
+function autoMapStations(notify = true) {
+  if (!mapDefinition.value) {
+    actionError.value = '请先载入仿真地图，再按 PLC 点表自动映射工位。';
+    return;
+  }
+  if (!plcStationCatalog.value.length) {
+    actionError.value = '请先载入并验证当前地图对应的 PLC 点表。';
+    return;
+  }
+  const mapped = simulationStationBindingsFromCatalog(mapDefinition.value.nodes, plcStationCatalog.value);
+  if (!mapped.stations.length) {
+    actionError.value = '地图与 PLC 点表没有可唯一对应的工位，请核对节点号和 agvSiteId。';
+    return;
+  }
+  stationDrafts.value = mapped.stations;
+  callPattern.value = mapped.stations.map(station => station.stationId).join(',');
+  callCount.value = Math.max(1, Math.min(500, callCount.value || mapped.stations.length));
+  callBatchSize.value = Math.min(Math.max(1, callBatchSize.value), mapped.stations.length);
+  actionError.value = '';
+  if (notify) {
+    notice.value = `已按地图与 PLC 点表自动映射 ${mapped.stations.length} 个工位；` +
+      (mapped.unresolved.length
+        ? `另有 ${mapped.unresolved.length} 个点未映射：${mapped.unresolved.slice(0, 8).map(item => `${item.stationId}（${item.reason}）`).join('、')}${mapped.unresolved.length > 8 ? '…' : ''}。`
+        : '全部点表工位均已唯一映射，可继续逐项修改。');
+  }
 }
 async function saveScheme() {
   if (!schemeName.value.trim()) return;
@@ -636,6 +1214,11 @@ function accept(next: SimulationStatus) {
     callPattern.value = stationDrafts.value.map(station => station.stationId).join(',');
     callBatchSize.value = Math.min(callBatchSize.value, stationDrafts.value.length);
     selectedHistory.value = ''; selectedReport.value = null; replay.value = null; replayPlaying.value = false;
+    simulationTasks.value = []; simulationTaskPage.value = null;
+    selectedTaskId.value = ''; selectedTaskDetail.value = null;
+    selectedTaskRouteStepId.value = ''; taskRuntimeSnapshot.value = null; taskSnapshotError.value = '';
+    taskSnapshotFetchedAt.value = 0;
+    reportTaskDetailId.value = ''; reportTaskDetail.value = null; reportTaskError.value = '';
   }
   if (!selectedScheme.value) selectedScheme.value = next.selectedSchemeId ?? next.schemes?.[0]?.id ?? '';
   status.value = next; connected.value = true;
@@ -645,7 +1228,14 @@ async function refresh(force = false) {
   if (disposed || reading.value || (busy.value && !force)) return;
   reading.value = true; const request = new AbortController(); controller = request;
   const timeout = setTimeout(() => request.abort(), 45000);
-  try { const next = await simulationApi<SimulationStatus>('', undefined, request.signal); if (!disposed) { accept(next); error.value = ''; } }
+  try {
+    const next = await simulationApi<SimulationStatus>('', undefined, request.signal);
+    if (!disposed) {
+      accept(next);
+      error.value = '';
+      if (next.running) void refreshSimulationTasks();
+    }
+  }
   catch (reason) { if (!disposed) { connected.value = false; error.value = reason instanceof Error ? reason.message : String(reason); } }
   finally { clearTimeout(timeout); reading.value = false; if (controller === request) controller = undefined; }
 }
@@ -683,6 +1273,7 @@ watch(selectedVehicle, () => {
   blockedEdgeIds.value = [...appliedBlockedEdges.value];
   if (Number.isFinite(vehicle.value?.speedScale)) speedScale.value = vehicle.value.speedScale!;
 });
+watch(activeStage, stage => { if (stage === 'tasks') void refreshSimulationTasks(); });
 watch(() => run.value.name, name => { if (name === 'dispatch-backlog') { callCount.value = Math.max(6, callCount.value); callInterval.value = 1; } });
 async function downloadReport() {
   if (busy.value || !report.value) return;
@@ -871,7 +1462,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
       <div>
         <p class="page-kicker">隔离环境 · 正式调度仿真</p>
         <h2><IconFlask :size="24" />仿真测试中心</h2>
-        <p>按“环境 → 场景 → 故障 → 证据”顺序操作。虚拟设备只通过正式调度接口回读，不使用改库或改动任务终态制造通过。</p>
+        <p>六个模块分别是独立页面。先在总览看车辆，再到任务运行核对九步、命令、PLC和路权。</p>
       </div>
       <div class="simulation-header-actions">
         <div class="mode-card"><small>当前仿真方式</small><b>设备回环 + 正式调度</b><span>虚拟车辆与设备通过正式通信链路参与测试</span></div>
@@ -882,81 +1473,249 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
     <p v-if="error || actionError" class="simulation-error" role="alert">{{ industrialText(actionError || error) }}</p>
     <p v-if="notice" class="simulation-notice" role="status">{{ industrialText(notice) }}</p>
 
-    <section class="mission-control" aria-labelledby="simulation-environment">
-      <div class="mission-identity">
-        <span class="mission-label">当前实例</span>
-        <h3 id="simulation-environment">{{ status?.rootName || '尚未选择仿真实例' }}</h3>
-        <p>{{ industrialText(status?.error || status?.message || '正在读取仿真环境配置…') }}</p>
+    <div class="simulation-workspace">
+      <div class="simulation-sidebar">
+        <nav class="stage-tabs module-nav" aria-label="仿真测试功能页面">
+          <button v-for="tab in stageTabs" :key="tab.id" :class="{ active: activeStage === tab.id }" :aria-current="activeStage === tab.id ? 'page' : undefined" @click="openStage(tab.id)">
+            <span>{{ tab.number }}</span><strong>{{ tab.title }}</strong>
+          </button>
+        </nav>
+        <aside v-if="activeStage === 'overview'" class="simulation-panel business-story sidebar-business-story">
+        <header><div><p class="section-kicker">当前运行</p><h3>车辆正在做什么</h3></div><span :class="['state-pill', active ? 'waiting' : report ? 'pass' : 'unknown']">{{ active ? '测试中' : report ? '有结果' : '待测试' }}</span></header>
+        <div class="overview-hero" :data-action="nextAction.kind" aria-live="polite">
+          <div class="overview-hero-copy">
+            <div class="overview-status-title"><span :class="['state-pill', cleanupRequired ? 'fail' : fresh ? 'pass' : 'unknown']">{{ !status?.enabled ? '未准备' : status?.running ? '运行正常' : '已停止' }}</span><b>{{ overviewHeadline }}</b></div>
+            <p>{{ onlineVehicleCount }} 辆车在线 · {{ loadedVehicleCount }} 辆载箱 · {{ modeledTaskCount }} 辆执行任务</p>
+          </div>
+          <button class="primary overview-next-action" @click="followNextAction">{{ nextAction.button }}</button>
+        </div>
+        <div class="vehicle-story-list">
+          <article v-for="item in vehicleStories" :key="item.id" :class="item.tone">
+            <div><b>{{ item.id }}</b><span>{{ item.state }}</span></div>
+            <small>{{ item.location }}</small>
+            <p>{{ item.action }}</p>
+          </article>
+        </div>
+        <div class="toolbar quick-actions"><button class="primary" @click="openStage('scenario')">选择场景</button><button @click="openStage('faults')">制造异常</button><button @click="openStage('results')">查看结果</button></div>
+        <p class="sidebar-simulation-note">隔离仿真 · 不连接真车或现场 PLC</p>
+        </aside>
+      </div>
+      <div class="simulation-workspace-content">
+
+    <section v-if="activeStage !== 'overview'" class="module-heading">
+      <div>
+        <p class="section-kicker">独立页面 {{ activeStageInfo.number }} / 06</p>
+        <h3 id="simulation-environment">{{ activeStageInfo.title }}</h3>
+        <p>{{ activeStageInfo.description }}</p>
+      </div>
+      <div class="module-heading-status">
+        <span :class="['state-pill', cleanupRequired ? 'fail' : fresh ? 'pass' : 'unknown']">{{ !connected ? '连接中' : !status?.enabled ? '未准备' : !status?.running ? '环境已停止' : fresh ? '运行正常' : '数据待刷新' }}</span>
+        <small>{{ vehicleIds.length }} 辆车 · {{ onlineVehicleCount }} 辆在线 · {{ configuredStationIds.length }} 个工位</small>
+      </div>
+      <div class="module-heading-actions">
+        <button class="primary" :disabled="!available || !!status?.running || starting || requiresFreshInstance || cleanupRequired" @click="action('start')"><IconPlayerPlay :size="16" />{{ starting ? '正在启动…' : cleanupRequired ? '启动失败待清理' : requiresFreshInstance ? '请先新建实例' : '启动环境' }}</button>
+        <button :disabled="!available || (!status?.running && !starting && !cleanupRequired)" @click="action('stop')"><IconPlayerStop :size="16" />{{ cleanupRequired ? '停止并清理' : '停止环境' }}</button>
+      </div>
+    </section>
+
+    <section v-if="activeStage === 'overview'" class="stage-surface overview-stage">
+      <details class="instance-details">
+        <summary>技术实例信息</summary>
+        <p>{{ status?.rootName || '尚未选择仿真实例' }} · 最近采样 {{ snapshotTime }}</p>
         <p v-if="status?.startupPlan?.message">{{ industrialText(status.startupPlan.message) }}</p>
         <p v-if="requiresFreshInstance" class="inline-warning">该实例已有历史状态，不能原地重启。请到“环境与地图”创建新的干净实例。</p>
-      </div>
-      <div class="mission-runtime">
-        <span :class="['state-pill', cleanupRequired ? 'fail' : fresh ? 'pass' : 'unknown']">{{ !connected ? '控制器未连接' : !status?.enabled ? '未配置' : starting ? '启动中 · 正在连接' : cleanupRequired ? '启动失败 · 待清理' : !status?.running ? '环境已停止' : fresh ? '运行中 · 反馈有效' : '运行中 · 反馈过期' }}</span>
-        <small>最近采样 {{ snapshotTime }}</small>
-      </div>
-      <div class="mission-metrics">
-        <div><small>车辆</small><b>{{ vehicleIds.length }}</b><span>{{ offlineVehicleCount }} 辆离线</span></div>
-        <div><small>执行任务</small><b>{{ modeledTaskCount }}</b><span>来自虚拟车端</span></div>
-        <div><small>场景</small><b>{{ simulationLabel(status?.scenario?.status) }}</b><span>{{ status?.scenario?.completedRounds ?? 0 }}/{{ status?.scenario?.totalRounds || run.rounds }} 轮</span></div>
-      </div>
-      <div class="mission-actions">
-        <button class="primary" :disabled="!available || !!status?.running || starting || requiresFreshInstance || cleanupRequired" @click="action('start')"><IconPlayerPlay :size="16" />{{ starting ? '正在启动…' : cleanupRequired ? '启动失败待清理' : requiresFreshInstance ? '请先新建实例' : '启动仿真环境' }}</button>
-        <button :disabled="!available || (!status?.running && !starting && !cleanupRequired)" @click="action('stop')"><IconPlayerStop :size="16" />{{ cleanupRequired ? '停止并清理' : '停止仿真环境' }}</button>
-      </div>
-    </section>
+      </details>
 
-    <section class="next-step-card" :data-action="nextAction.kind" aria-live="polite">
-      <div class="next-step-index">建议</div>
-      <div class="next-step-copy"><small>{{ nextAction.eyebrow }}</small><h3>{{ nextAction.title }}</h3><p>{{ industrialText(nextAction.detail) }}</p></div>
-      <button class="primary" @click="followNextAction">{{ nextAction.button }}</button>
-    </section>
-
-    <nav class="stage-tabs" aria-label="仿真工作步骤">
-      <button v-for="tab in stageTabs" :key="tab.id" :class="{ active: activeStage === tab.id }" :aria-selected="activeStage === tab.id" @click="openStage(tab.id)">
-        <span>{{ tab.number }}</span><strong>{{ tab.title }}</strong><small>{{ tab.description }}</small>
-      </button>
-    </nav>
-
-    <section v-show="activeStage === 'overview'" class="stage-surface overview-stage">
-      <div class="first-run-guide">
-        <header><div><p class="section-kicker">首次使用</p><h3>第一次仿真按这四步走</h3></div><span>先建干净实例，再启动和运行场景</span></header>
-        <div class="guide-grid">
-          <article :class="{ complete: !!status?.enabled, current: !status?.enabled || requiresFreshInstance }"><b>01</b><div><strong>拉取当前工程并新建实例</strong><p>一次带入当前地图、任务参数、启用车辆、PLC点表和业务拓扑；自动映射后仍可修改或删除不需要的工位和车辆。</p><button @click="openStage('environment')">配置地图、点表与车辆</button></div></article>
-          <article :class="{ complete: !!status?.running, current: !!status?.enabled && !status?.running && !requiresFreshInstance && !cleanupRequired }"><b>02</b><div><strong>启动隔离环境</strong><p>新建实例后点击启动。每个实例只从干净状态启动一次；如果启动失败，先停止并清理，再新建实例。</p><button :disabled="!available || !!status?.running || starting || requiresFreshInstance || cleanupRequired" @click="action('start')">启动仿真环境</button></div></article>
-          <article :class="{ complete: !!report, current: !!status?.running && !active && !report }"><b>03</b><div><strong>选择并运行场景</strong><p>先从完整业务循环 1 轮开始；双车排队测试可选择多工位同时呼叫，再按需设置轮次和呼叫计划。</p><button @click="openStage('scenario')">编排场景</button></div></article>
-          <article :class="{ current: !!report }"><b>04</b><div><strong>查看结果与现场恢复</strong><p>报告显示任务、命令、PLC、交通资源、残留占用和恢复屏障。异常场景结束后，再到恢复页逐项核对。</p><button @click="openStage('results')">查看恢复与报告</button></div></article>
-        </div>
-      </div>
-
-      <div class="overview-grid">
+      <div class="overview-grid business-overview-grid">
         <section class="simulation-panel map-panel" aria-labelledby="simulation-map">
-          <header><div><p class="section-kicker">实时位置</p><h3 id="simulation-map">车辆与交通实况</h3></div><span :class="['state-pill', fresh ? 'pass' : 'unknown']">{{ fresh ? '设备实际反馈' : '历史位置 / 尚无反馈' }}</span></header>
-          <svg v-if="geometry.nodes.length" class="simulation-map" viewBox="0 0 800 430" role="img" aria-label="仿真地图及虚拟车辆位置">
-            <g class="roads"><path v-for="edge in geometry.edges" :key="edge.key" :d="edge.path" :class="{ blocked: !!edge.id && appliedBlockedEdges.includes(edge.id) }" /></g>
-            <g v-for="node in geometry.nodes" :key="node.id" class="map-node"><circle :cx="node.x" :cy="node.y" r="4"/><text :x="node.x + 8" :y="node.y - 8">{{ node.id }}</text></g>
-            <g v-for="(car, index) in geometry.cars" :key="car.id" class="map-car" :class="{ stale: !fresh, offline: car.offline, selected: selectedVehicle === car.id }" :style="{ '--car-color': ['#41d9bf', '#6fb9ff', '#e8bf64', '#cb9aff'][index % 4] }" :transform="`translate(${car.x} ${car.y})`">
-              <circle r="17"/><rect x="-10" y="-7" width="20" height="14" rx="3" :transform="`rotate(${-(car.angle ?? 0) * 180 / Math.PI})`"/><text x="0" y="-26" text-anchor="middle">{{ car.id }}</text><title>{{ car.id }} · {{ car.station }} · {{ car.loaded ? '载箱' : '空载' }}</title>
+          <header><div><p class="section-kicker">车辆现在在哪</p><h3 id="simulation-map">全厂运行画面</h3></div><div class="toolbar map-header-actions"><span class="map-view-switch"><button :class="{ active: mapViewMode === 'all' }" :aria-pressed="mapViewMode === 'all'" @click="mapViewMode = 'all'">全厂</button><button :class="{ active: mapViewMode === 'vehicles' }" :aria-pressed="mapViewMode === 'vehicles'" :disabled="!geometry.cars.length" @click="mapViewMode = 'vehicles'">车辆附近</button></span><button v-if="cadBackground" class="map-layer-toggle" :aria-pressed="showCadReference" @click="showCadReference = !showCadReference">{{ showCadReference ? '关闭CAD参考' : '查看CAD参考' }}</button></div></header>
+          <svg v-if="geometry.nodes.length" class="simulation-map" :class="{ 'vehicle-focus': mapViewMode === 'vehicles' }" :viewBox="mapViewBox" role="img" aria-label="仿真地图及虚拟车辆位置">
+            <defs><pattern id="simulation-grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="#26364b" stroke-width="1"/></pattern><marker id="simulation-route-arrow" markerUnits="userSpaceOnUse" markerWidth="3.2" markerHeight="3.2" refX="2.6" refY="1.6" orient="auto"><path d="M0,0 L3.2,1.6 L0,3.2 Z" fill="#5fa8b8"/></marker></defs>
+            <rect width="800" height="430" fill="url(#simulation-grid)"/>
+            <image v-if="showCadReference && cadBackground" class="cad-reference" :href="cadBackground.href" :x="cadBackground.x" :y="cadBackground.y" :width="cadBackground.width" :height="cadBackground.height" :opacity="cadBackground.opacity" preserveAspectRatio="none" />
+            <g v-if="mapAreas.length" class="map-zones"><g v-for="area in mapAreas" :key="area.id"><polygon :points="area.points" :fill="area.fillColor" :fill-opacity="area.fillOpacity" :stroke="area.strokeColor" :stroke-opacity=".55" /><text v-if="showMapAreaLabel(area.id)" :x="area.labelX" :y="area.labelY" :fill="area.strokeColor">{{ area.text }}</text></g></g>
+            <g class="roads"><path v-for="edge in geometry.edges" :key="edge.key" :d="edge.path" :class="[taskRouteEdgeClass(edge.id), { blocked: !!edge.id && appliedBlockedEdges.includes(edge.id) }]" marker-end="url(#simulation-route-arrow)" /></g>
+            <g v-for="node in geometry.nodes" :key="node.id" class="map-node" :class="[taskRouteNodeClass(node.id), { dense: denseMap }]"><title>{{ mapNodeLabel(node) }} · {{ node.type || '地图节点' }}</title><circle :cx="node.x" :cy="node.y" :r="mapNodeRadius(node)"/><text v-if="!denseMap || showDenseNodeLabel(node)" :x="node.x + 7" :y="node.y - 7">{{ mapNodeLabel(node) }}</text></g>
+            <g v-for="car in geometry.cars" :key="car.id" class="map-car" :class="{ stale: !fresh, offline: car.offline, selected: selectedVehicle === car.id }" :style="{ '--car-color': vehicleMapColor(car) }" :transform="`translate(${car.x} ${car.y})`" role="button" tabindex="0" @click="selectVehicleTask(car.id)" @keydown.enter="selectVehicleTask(car.id)">
+              <circle :r="vehicleBodySize(car.id).length * .72"/><g :transform="`rotate(${-(car.angle ?? 0) * 180 / Math.PI})`"><rect :x="-vehicleBodySize(car.id).length / 2" :y="-vehicleBodySize(car.id).width / 2" :width="vehicleBodySize(car.id).length" :height="vehicleBodySize(car.id).width" rx="2"/><path :d="`M ${vehicleBodySize(car.id).length / 2 - 1} 0 l -4 -2.4 v 4.8 z`"/></g><g v-if="car.loaded" class="map-load-badge"><rect x="5" y="3" width="9" height="7" rx="1"/><text x="9.5" y="8.1" text-anchor="middle">箱</text></g><text x="0" :y="-vehicleBodySize(car.id).length / 2 - 6" text-anchor="middle">{{ car.id }}</text><title>{{ car.id }} · {{ humanLocation(car.station) }} · {{ vehicleVisualLabel(car) }} · {{ car.loaded ? '载箱' : '空载' }}</title>
             </g>
           </svg>
-          <div v-else class="map-empty"><strong>当前没有可显示的位置反馈</strong><span>启动已配置实例后，地图位置来自虚拟设备快照。</span></div>
-          <div class="map-caption"><span>道路、车辆和阻塞状态均来自设备模型反馈。</span><span>{{ vehicleIds.length }} 辆 · {{ offlineVehicleCount }} 辆离线</span></div>
+          <div v-else class="map-empty"><strong>当前没有可显示的位置反馈</strong><span>启动环境后，这里会显示车辆在全厂里的实际位置。</span></div>
+          <div class="map-run-legend"><span><i class="map-legend-dot running"></i>执行中</span><span><i class="map-legend-dot waiting"></i>作业等待/载箱待命</span><span><i class="map-legend-dot idle"></i>空载待命</span><span><i class="map-legend-dot blocked"></i>道路受阻</span><span><i class="map-legend-dot fault"></i>暂停/故障</span><span><i class="map-legend-dot offline"></i>离线/状态过期</span><span><i class="map-load-legend"></i>箱 = 当前载箱</span></div>
+          <div class="map-caption"><span>彩色分区依次为一组、二组、三组、四组和末组；站点详细名称可悬停查看。{{ showCadReference && cadBackground ? ' CAD参考层只用于核对位置。' : '' }}</span><span>{{ vehicleIds.length }} 辆 · {{ offlineVehicleCount }} 辆离线</span></div>
         </section>
 
-        <section class="simulation-panel live-operations">
-          <header><div><p class="section-kicker">当前状态</p><h3>当前运行</h3></div><span :class="['state-pill', simulationTone(status?.scenario?.status)]">{{ simulationLabel(status?.scenario?.status) }}</span></header>
-          <div class="live-facts">
-            <div><small>场景</small><b>{{ scenarioNames[status?.scenario?.name ?? run.name] ?? '待选择' }}</b></div>
-            <div><small>进度</small><b>{{ status?.scenario?.completedRounds ?? 0 }} / {{ status?.scenario?.totalRounds || run.rounds }} 轮</b></div>
-            <div><small>设备</small><b>{{ fresh ? '反馈有效' : '需要刷新' }}</b></div>
-            <div><small>扩展设备</small><b>{{ protocol?.running || equipment?.running ? '部分运行' : '未启用' }}</b></div>
-          </div>
-          <div class="scenario-progress compact"><div><b>{{ Math.round(progress) }}%</b><span>{{ active ? '执行中' : '当前未执行' }}</span></div><progress :value="progress" max="100" aria-label="场景完成进度"/><p>{{ industrialText(status?.scenario?.message || '进入场景编排选择测试目标；运行后此处显示实际阶段和等待原因。') }}</p></div>
-          <div class="toolbar quick-actions"><button class="primary" @click="openStage('scenario')">选择场景</button><button :disabled="!available || !active" @click="action('abort')">中止后续编排</button><button @click="openStage('faults')">注入故障</button></div>
-        </section>
       </div>
     </section>
 
-    <section v-show="activeStage === 'environment'" class="stage-surface environment-stage">
+    <section v-if="activeStage === 'tasks'" class="stage-surface tasks-stage">
+      <section class="simulation-panel task-command-panel">
+        <header>
+          <div><p class="section-kicker">隔离后台只读数据</p><h3>任务运行</h3><p>任务来自当前仿真实例自己的 Service 和数据库；点击任一任务只读查看九步、命令、PLC与路权。</p></div>
+          <span :class="['state-pill', status?.running ? 'pass' : simulationTasks.length ? 'waiting' : 'unknown']">{{ status?.running ? '隔离后台在线' : simulationTasks.length ? '最近报告证据' : '仿真未运行' }}</span>
+        </header>
+        <div class="task-counts">
+          <article><small>任务总数</small><b>{{ taskCounts.total }}</b></article>
+          <article><small>执行中</small><b>{{ taskCounts.running }}</b></article>
+          <article><small>等待中</small><b>{{ taskCounts.waiting }}</b></article>
+          <article><small>已完成</small><b>{{ taskCounts.completed }}</b></article>
+          <article :class="{ fault: taskCounts.failed > 0 }"><small>异常</small><b>{{ taskCounts.failed }}</b></article>
+        </div>
+        <div class="task-filter-row">
+          <label>状态<select v-model="simulationTaskFilter" @change="refreshSimulationTasks"><option value="All">全部</option><option value="Active">执行中</option><option value="Completed">已完成</option><option value="Failed">失败/异常</option></select></label>
+          <label class="task-search">搜索<input v-model.trim="simulationTaskSearch" placeholder="任务号、工位或车辆" @keyup.enter="refreshSimulationTasks" /></label>
+          <button :disabled="taskReading || !status?.running" @click="refreshSimulationTasks"><IconRefresh :size="15" />{{ taskReading ? '读取中' : '刷新任务' }}</button>
+        </div>
+        <p v-if="taskError" class="simulation-error" role="alert">{{ industrialText(taskError) }}</p>
+      </section>
+
+      <div class="task-workbench">
+        <section class="simulation-panel task-table-panel">
+          <header><div><h3>任务队列</h3><small>{{ simulationTasks.length }} 条 · 实际派车来自正式调度</small></div></header>
+          <div class="task-table-scroll">
+            <table class="task-table">
+              <thead><tr><th>工位</th><th>车辆</th><th>阶段</th><th>异常</th><th>更新时间</th></tr></thead>
+              <tbody>
+                <tr v-for="task in simulationTasks" :key="task.taskId" :class="{ selected: selectedTaskId === task.taskId, 'traffic-waiting': !!taskWaitingRequest(task.taskId) }" role="button" tabindex="0" @click="selectSimulationTask(task.taskId)" @keydown.enter="selectSimulationTask(task.taskId)">
+                  <td><b>{{ task.stationId || '未提供' }}</b><small>{{ task.taskId }}</small></td>
+                  <td>{{ task.vehicleId || '尚未派车' }}</td>
+                  <td><span :class="['state-pill', taskTone(task.stage)]">{{ taskStageLabel(task.stage) }}</span><small v-if="taskWaitingRequest(task.taskId)" class="task-waiting-signal">等待路权 · {{ taskWaitingSeconds(task.taskId) ?? '—' }} 秒</small></td>
+                  <td :class="{ 'task-error-text': !!task.errorMessage }">{{ task.errorMessage || '无' }}</td>
+                  <td>{{ stamp(task.updatedAt) }}</td>
+                </tr>
+                <tr v-if="!simulationTasks.length"><td colspan="5" class="task-empty">{{ status?.running ? '当前筛选没有任务。' : '启动隔离仿真后显示任务数据。' }}</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="simulation-panel task-detail-panel">
+          <template v-if="selectedTaskDetail">
+            <header><div><p class="section-kicker">{{ selectedTaskDetail.task.stationId }}</p><h3>{{ selectedTaskDetail.task.vehicleId || '等待派车' }} · {{ taskStageLabel(selectedTaskDetail.task.stage) }}</h3><small>{{ selectedTaskDetail.task.taskId }}</small></div><span :class="['state-pill', taskTone(selectedTaskDetail.task.stage)]">{{ taskStageLabel(selectedTaskDetail.task.stage) }}</span></header>
+            <p v-if="selectedTaskDetail.evidenceMessage" class="task-waiting-copy">{{ industrialText(selectedTaskDetail.evidenceMessage) }}</p>
+            <p v-if="selectedTaskDetail.waitingExplanation" class="task-waiting-copy">{{ industrialText(selectedTaskDetail.waitingExplanation) }}</p>
+            <ol class="task-step-list">
+              <li v-for="step in selectedTaskDetail.steps" :key="step.stepId || step.sequence" :class="{ current: step.isCurrent, completed: step.status === 'Completed', failed: ['Failed','ManualIntervention'].includes(step.status) }">
+                <span>{{ step.sequence }}</span>
+                <div><strong>{{ taskStepLabel(step.stepType) }}</strong><small>{{ taskStatusLabel(step.status) }} · {{ step.elapsedText || '未完成' }}<template v-if="step.startedAt"> · 开始 {{ stamp(step.startedAt) }}</template><template v-if="step.completedAt"> · 完成 {{ stamp(step.completedAt) }}</template></small><p v-if="step.waitingExplanation">{{ industrialText(step.waitingExplanation) }}</p><details v-if="step.observedPhase || step.completionRequirement"><summary>证据与完成条件</summary><p>{{ industrialText(step.observedPhase || step.completionRequirement) }}</p><p>{{ industrialText(step.evidenceBoundary || '') }}</p></details></div>
+              </li>
+            </ol>
+          </template>
+          <p v-else class="task-empty">{{ selectedTaskId ? '正在读取任务详情…' : '选择左侧任务查看详情。' }}</p>
+        </section>
+      </div>
+
+      <section v-if="selectedTaskDetail" class="simulation-panel task-route-panel">
+        <header>
+          <div><p class="section-kicker">地图联动</p><h3>任务路线与路权等待</h3><p>按步骤区分已完成、正在执行、后续和返程路段；点击右侧步骤可单独查看该段路线。</p></div>
+          <span class="scope-label">只读展示，不占用或修改路权</span>
+        </header>
+        <div class="task-route-layout">
+          <div class="task-route-map-wrap">
+            <svg v-if="geometry.nodes.length" class="simulation-map task-route-map" viewBox="0 0 800 430" role="img" aria-label="所选任务的分阶段规划路线和路权等待状态">
+              <defs>
+                <pattern id="task-grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="#26364b" stroke-width="1"/></pattern>
+                <marker id="task-completed-arrow" markerUnits="userSpaceOnUse" markerWidth="4" markerHeight="4" refX="3.2" refY="2" orient="auto"><path d="M0,0 L4,2 L0,4 Z" fill="#559f99"/></marker>
+                <marker id="task-future-arrow" markerUnits="userSpaceOnUse" markerWidth="4" markerHeight="4" refX="3.2" refY="2" orient="auto"><path d="M0,0 L4,2 L0,4 Z" fill="#55cfe6"/></marker>
+                <marker id="task-current-arrow" markerUnits="userSpaceOnUse" markerWidth="4" markerHeight="4" refX="3.2" refY="2" orient="auto"><path d="M0,0 L4,2 L0,4 Z" fill="#5ff5da"/></marker>
+                <marker id="task-return-arrow" markerUnits="userSpaceOnUse" markerWidth="4" markerHeight="4" refX="3.2" refY="2" orient="auto"><path d="M0,0 L4,2 L0,4 Z" fill="#ffc76b"/></marker>
+                <marker id="task-waiting-arrow" markerUnits="userSpaceOnUse" markerWidth="4" markerHeight="4" refX="3.2" refY="2" orient="auto"><path d="M0,0 L4,2 L0,4 Z" fill="#ff8a6c"/></marker>
+                <marker id="task-focus-arrow" markerUnits="userSpaceOnUse" markerWidth="4.4" markerHeight="4.4" refX="3.6" refY="2.2" orient="auto"><path d="M0,0 L4.4,2.2 L0,4.4 Z" fill="#f5ffff"/></marker>
+              </defs>
+              <rect width="800" height="430" fill="url(#task-grid)"/>
+              <g class="roads"><path v-for="edge in geometry.edges" :key="edge.key" :d="edge.path" :class="[taskRouteEdgeClass(edge.id), { blocked: !!edge.id && appliedBlockedEdges.includes(edge.id) }]" :marker-end="taskRouteMarker(edge.id)" /></g>
+              <g v-for="node in geometry.nodes" :key="node.id" class="map-node" :class="[taskRouteNodeClass(node.id), { dense: denseMap }]"><circle :cx="node.x" :cy="node.y" :r="isTaskRouteNode(node.id) ? 5.5 : mapNodeRadius(node)"/><text v-if="isTaskRouteNode(node.id)" :x="node.x + 7" :y="node.y - 7">{{ mapNodeLabel(node) }}</text><title>{{ mapNodeLabel(node) }}</title></g>
+              <g v-for="car in geometry.cars" :key="car.id" class="map-car" :class="{ selected: selectedVehicle === car.id }" :style="{ '--car-color': vehicleMapColor(car) }" :transform="`translate(${car.x} ${car.y})`"><circle :r="vehicleBodySize(car.id).length * .72"/><g :transform="`rotate(${-(car.angle ?? 0) * 180 / Math.PI})`"><rect :x="-vehicleBodySize(car.id).length / 2" :y="-vehicleBodySize(car.id).width / 2" :width="vehicleBodySize(car.id).length" :height="vehicleBodySize(car.id).width" rx="2"/></g><g v-if="car.loaded" class="map-load-badge"><rect x="5" y="3" width="9" height="7" rx="1"/><text x="9.5" y="8.1" text-anchor="middle">箱</text></g><text x="0" :y="-vehicleBodySize(car.id).length / 2 - 6" text-anchor="middle">{{ car.id }}</text><title>{{ car.id }} · {{ vehicleVisualLabel(car) }} · {{ car.loaded ? '载箱' : '空载' }}</title></g>
+            </svg>
+            <div class="task-route-legend">
+              <span><i class="route-swatch completed"></i>已经走过</span>
+              <span><i class="route-swatch future"></i>后续路线</span>
+              <span><i class="route-swatch current"></i>当前路段</span>
+              <span><i class="route-swatch waiting"></i>等待路权</span>
+              <span><i class="route-swatch returning"></i>返程路线</span>
+            </div>
+          </div>
+
+          <aside class="task-route-sidebar">
+            <section :class="['task-route-now', { waiting: selectedTaskTrafficRequest?.state === 'Waiting' }]">
+              <template v-if="selectedTaskCurrentStep">
+                <small>任务现在卡在哪里</small>
+                <h4>第{{ selectedTaskCurrentStep.sequence }}步 · {{ taskStepLabel(selectedTaskCurrentStep.stepType) }}</h4>
+                <p>{{ trafficWaitingText(selectedTaskTrafficRequest) }}</p>
+                <p v-if="taskSnapshotError" class="inline-warning">路权实时数据读取失败：{{ industrialText(taskSnapshotError) }}</p>
+                <div v-if="selectedTaskWaitGroups.length" class="route-blocker-list">
+                  <b>需要以下车辆先释放路权</b>
+                  <article v-for="group in selectedTaskWaitGroups" :key="`${group.vehicleId}-${group.taskId}`">
+                    <strong>{{ group.vehicleId }}</strong>
+                    <span>{{ group.resources.map(routeResourceLabel).join('、') }}</span>
+                    <small>任务 {{ simulationTasks.find(task => task.taskId === group.taskId)?.stationId || group.taskId }} · {{ group.heartbeatExpired ? '心跳已过期，责任仍保留' : '完成原任务后释放这些路权' }}</small>
+                  </article>
+                </div>
+                <div v-else-if="selectedTaskTrafficRequest?.state === 'Waiting'" class="route-blocker-list">
+                  <b>正在等待正式调度授予资源</b>
+                  <small>后台暂未返回具体占用车辆，先按上方等待原因核对候车位、交叉口和当前路权。</small>
+                </div>
+                <div v-if="selectedTaskTrafficRequest?.resourceIds?.length" class="route-resource-summary">
+                  <span>本步共申请 {{ selectedTaskTrafficRequest.resourceIds.length }} 项路权</span>
+                  <span v-if="selectedTaskAutomaticResourceCount">其中 {{ selectedTaskAutomaticResourceCount }} 项是调度器为双向道路和交叉汇入自动建立的路段互斥</span>
+                  <span v-for="resourceId in selectedTaskNamedResources" :key="resourceId">{{ routeResourceLabel(resourceId) }}</span>
+                  <small>“路段互斥”是运行时路权，不是地图站点或现场支援点。</small>
+                </div>
+                <p v-if="!selectedTaskCurrentLeg" class="route-stationary-note">{{ !selectedTaskDetail.task.vehicleId && selectedTaskCurrentStep.stepType === 'GoToPickup' ? '任务仍在正式调度队列中，尚未分配车辆，因此当前没有可执行路线。获得车辆和首段路权后，这里会显示第一段行驶路线。' : '当前步骤是车辆动作、倒料或PLC等待，不需要沿道路继续移动。完成本步后才会申请下一段路线。' }}</p>
+              </template>
+              <template v-else>
+                <small>任务状态</small>
+                <h4>{{ taskStageLabel(selectedTaskDetail.task.stage) }}</h4>
+                <p>任务已经结束。点击下方任一步骤，可以单独查看当时的规划路线；返程步骤使用琥珀色。</p>
+              </template>
+            </section>
+
+            <section class="task-route-selection">
+              <header><b>{{ selectedTaskRouteLeg ? '已选中的路线段' : '路线分段' }}</b><button v-if="selectedTaskRouteStepId" @click="selectedTaskRouteStepId = ''">查看全程</button></header>
+              <article v-if="selectedTaskRouteLeg" class="task-route-selected">
+                <b>第{{ selectedTaskRouteLeg.sequence }}步 · {{ selectedTaskRouteLeg.label }}</b>
+                <small>{{ selectedTaskRouteLeg.action }}</small>
+                <p>{{ selectedTaskRouteLeg.sites.join(' → ') }}</p>
+              </article>
+              <div class="task-route-leg-list">
+                <button v-for="leg in taskRouteLegs" :key="leg.stepId" :class="[leg.kind, { current: leg.isCurrent, returning: leg.isReturn, active: selectedTaskRouteStepId === leg.stepId }]" @click="selectTaskRouteLeg(leg.stepId)">
+                  <span>{{ leg.sequence }}</span>
+                  <div><b>{{ leg.label }}{{ leg.isReturn ? ' · 返程' : '' }}</b><small>{{ leg.kind === 'completed' ? '已完成' : leg.kind === 'current' ? '当前执行' : '后续计划' }} · {{ leg.action }}</small><em>{{ leg.sites.join(' → ') }}</em></div>
+                </button>
+                <p v-if="!taskRouteLegs.length" class="route-no-legs">该任务尚未分配车辆或尚未生成运输命令，暂时没有可显示的路线。</p>
+              </div>
+            </section>
+          </aside>
+        </div>
+      </section>
+
+      <section v-if="selectedTaskDetail" class="simulation-panel task-evidence-grid">
+        <article>
+          <header><h3>车辆与路权</h3><small>{{ selectedTaskDetail.resources?.length ?? 0 }} 条当前占用</small></header>
+          <p><b>车辆</b>{{ selectedTaskDetail.task.vehicleId || '尚未派车' }}</p>
+          <p v-for="resource in selectedTaskDetail.resources ?? []" :key="resource.resourceId"><b>{{ routeResourceLabel(resource.resourceId) }}</b>{{ resource.vehicleId }} · {{ resource.heartbeatExpired ? '心跳过期' : '占用中' }} · {{ stamp(resource.expiresAt) }}</p>
+        </article>
+        <article>
+          <header><h3>PLC 条件</h3><small>{{ selectedTaskDetail.plcConditions?.length ?? 0 }} 个信号</small></header>
+          <p v-for="signal in selectedTaskDetail.plcConditions ?? []" :key="`${signal.stationId}-${signal.variableName}`"><b>{{ plcSignalLabel(signal.variableName) }}</b>{{ plcConditionLabel(signal.currentValue, signal.expectedValue) }} · {{ signal.satisfied ? '条件已满足' : '继续等待' }}</p>
+        </article>
+        <article>
+          <header><h3>运输命令</h3><small>{{ selectedTaskDetail.commands?.length ?? 0 }} 条</small></header>
+          <p v-for="command in selectedTaskDetail.commands ?? []" :key="command.commandId"><b>{{ actionStateLabel(command.status) }}</b>{{ command.route?.vendorSites?.join(' → ') || command.stepId }} · 尝试 {{ command.attemptCount }} 次</p>
+        </article>
+        <article>
+          <header><h3>PLC 握手</h3><small>{{ selectedTaskDetail.handshakes?.length ?? 0 }} 个周期</small></header>
+          <template v-if="selectedTaskDetail.handshakes?.length"><p v-for="handshake in selectedTaskDetail.handshakes" :key="handshake.cycleId"><b>{{ handshakePhaseLabel(handshake.phase) }}</b>{{ industrialText(handshake.reason) }}<small>{{ handshake.pendingSignal ? `等待${plcSignalLabel(handshake.pendingSignal)}变为${handshake.pendingValue ? '置位' : '复位'}` : '当前没有待确认信号' }}</small></p></template>
+          <p v-else>当前任务没有额外握手周期。</p>
+        </article>
+        <article class="task-timeline-panel">
+          <header><h3>合并时间轴</h3><small>{{ taskTimeline.length }} 个事件 · 车辆、任务、PLC、等待与路权</small></header>
+          <ol class="task-timeline"><li v-for="event in taskTimeline.slice(-160)" :key="event.id"><time>{{ stamp(event.occurredAt) }}</time><b :title="industrialText(event.title)">{{ industrialText(event.title) }}</b><span class="task-timeline-copy" :title="industrialText(event.summary)"><em>{{ event.source }}</em><span>{{ industrialText(event.summary) }}</span></span></li></ol>
+        </article>
+      </section>
+    </section>
+
+    <section v-if="activeStage === 'environment'" class="stage-surface environment-stage">
       <section class="simulation-panel scheme-panel" aria-labelledby="simulation-schemes">
         <header><div><p class="section-kicker">日常开测</p><h3 id="simulation-schemes">保存方案，下次直接开测</h3></div><span class="scope-label">记住地图、车辆、工位和场景</span></header>
         <p>保存后可重复创建干净实例。控制器重开会记住最近选择；已有任务、故障和恢复决策仍保留在原实例中。</p>
@@ -987,7 +1746,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
           <div><b v-if="mapFileName">{{ mapFileName }}</b><span v-if="liveMapIdentity">{{ liveMapIdentity }}</span><span v-if="mapDefinition">{{ mapDefinition.nodes.length }} 节点 · {{ mapDefinition.edges.length }} 道路 · {{ mapDefinition.resources.length }} 资源</span><span v-if="mapIdentityDraft?.definitionHash">地图摘要 {{ mapIdentityDraft.definitionHash.slice(0, 12) }}…</span><span v-else-if="!mapDefinition">尚未载入自定义地图</span></div>
         </div>
         <div class="plc-table-binding">
-          <div class="designer-section-title"><span>PLC</span><div><b>绑定当前地图对应的点表</b><small>点表随方案保存；创建实例时复制为实例专属 simulation-signals.csv。</small></div></div>
+          <div class="designer-section-title"><span>PLC</span><div><b>绑定当前地图对应的点表</b><small>点表随方案保存；创建实例时复制为实例专属 simulation-signals.csv。载入后可按节点自动映射全部工位，再逐项修改。</small></div></div>
           <div class="form-row">
             <label class="file-picker">选择 PLC 点表 CSV<input type="file" accept=".csv,text/csv" :disabled="busy || !!status?.running || starting || active" @change="loadPlcTableFile" /></label>
             <button :disabled="busy || plcTableReading || !!status?.running || starting || active || !status?.plcSignalTable" @click="loadCurrentPlcTable">载入当前实例点表</button>
@@ -998,6 +1757,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
             <code v-if="plcTableMetadata.sourceSha256">原工程 SHA256 {{ plcTableMetadata.sourceSha256 }}</code>
             <code>仿真副本 SHA256 {{ plcTableSha256 }}</code>
             <small v-if="plcTableMetadata.sourceFile">来源：{{ plcTableMetadata.sourceDeviceName || plcTableMetadata.sourceDeviceId || '当前工程' }} · {{ plcTableMetadata.sourceFile }}</small>
+            <button :disabled="!mapDefinition || !plcStationCatalog.length" @click="autoMapStations()">按地图和点表自动映射全部工位</button>
           </div>
           <p v-else class="inline-warning">未选择点表。仿真不会使用仓库全局 PLC 点表，也不会悄悄沿用现场后台实验室文件。</p>
         </div>
@@ -1013,7 +1773,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
                 <button :disabled="stationDrafts.length <= 1" @click="stationDrafts.splice(index, 1); resetVehicleOrigins()">删除工位</button>
                 <small :class="{ 'inline-warning': station.signalSource === 'isolated-synthetic' }">{{ station.signalSource === 'isolated-synthetic' ? '仅用于隔离仿真，不代表现场已有此工位和地址。' : (status?.stationCatalog?.find(item => item.stationId === station.stationId && item.signalSource === 'verified')?.sourceLabel || '必须与当前已确认且启用的点表工位一致。') }}</small>
               </div>
-              <button :disabled="stationDrafts.length >= 32" @click="addStation">增加隔离仿真工位</button><small>本页最多配置32个工位；仅已确认且启用的点表工位可选择“当前有效点表”。优先级0–100，数值越大越优先。</small>
+              <button :disabled="stationDrafts.length >= MAX_SIMULATION_STATIONS" @click="addStation">增加隔离仿真工位</button><small>本页最多配置 {{ MAX_SIMULATION_STATIONS }} 个工位；可按当前 CAD 仿真图和点表一次自动映射，再逐项修改。现场未确认的点位会保留为“隔离合成点位”。</small>
             </div>
             <label>主等待位节点<select v-model="waitingSite" @change="additionalWaitingSites = additionalWaitingSites.filter(site => site !== waitingSite); resetVehicleOrigins()"><option v-for="node in mapNodes" :key="node.id" :value="node.id">{{ node.id }}</option></select></label>
             <label>其他等待位（可多选）<select v-model="additionalWaitingSites" multiple @change="resetVehicleOrigins"><option v-for="node in mapNodes.filter(node => node.id !== waitingSite && node.id !== dumpingSite)" :key="node.id" :value="node.id">{{ node.id }}</option></select><small>多车排队使用全部等待位；拉取当前地图时同步带入现场候车位配置。</small></label>
@@ -1099,14 +1859,14 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
       </div>
     </section>
 
-    <section v-show="activeStage === 'scenario'" class="stage-surface scenario-stage">
+    <section v-if="activeStage === 'scenario'" class="stage-surface scenario-stage">
       <div class="scenario-layout">
         <section class="simulation-panel scenario-panel" aria-labelledby="simulation-scenario">
           <header><div><p class="section-kicker">场景设置</p><h3 id="simulation-scenario">场景编排</h3></div><span :class="['state-pill', simulationTone(status?.scenario?.status)]">{{ simulationLabel(status?.scenario?.status) }}</span></header>
           <fieldset :disabled="busy || active">
-            <label>测试场景<select v-model="run.name" aria-label="测试场景"><option value="normal-cycle">完整业务循环</option><option value="simultaneous-calls">多工位同时呼叫</option><option value="dispatch-backlog">正式调度持续排队测试</option><option value="custom-calls">自定义呼叫计划</option><option value="disconnect-reconnect">车辆断连与重连</option><option value="plc-delay">PLC 反馈延迟</option><option value="plc-recovery">PLC卡位与恢复</option><option value="service-restart">后台重启与恢复屏障</option><option value="resume-recovery">恢复后继续原任务</option><option value="vendor-cancel-return">车端返程中途取消</option><option value="response-loss">运输命令回包丢失</option><option value="road-block-recovery">道路临时阻塞后恢复</option></select></label>
+            <label>测试场景<select v-model="run.name" aria-label="测试场景"><option value="normal-cycle">完整业务循环</option><option value="simultaneous-calls">多工位同时呼叫</option><option value="dispatch-backlog">正式调度持续排队测试</option><option value="custom-calls">自定义呼叫计划</option><option value="disconnect-reconnect">车辆断连与重连</option><option value="plc-delay">PLC 反馈延迟</option><option value="plc-recovery">PLC卡位与恢复</option><option value="service-restart">后台重启与恢复屏障</option><option value="resume-recovery">恢复后继续原任务</option><option value="vendor-cancel-return">车端返程中途取消</option><option value="response-loss">运输命令回包丢失</option><option value="road-block-recovery">道路临时阻塞后恢复</option><option value="obstacle-auto-detour">前方障碍自动改道</option></select></label>
             <div class="form-row"><label>循环轮数<input v-model.number="run.rounds" type="number" min="1" max="100" step="1" /></label><label>轮间隔 / 秒<input v-model.number="run.intervalSeconds" type="number" min="0" max="60" /></label></div>
-            <label>单轮超时 / 秒<input v-model.number="run.timeoutSeconds" type="number" min="30" max="3600" /></label>
+            <label>单轮超时 / 秒<input v-model.number="run.timeoutSeconds" type="number" min="30" max="86400" /></label>
             <div v-if="['custom-calls', 'dispatch-backlog'].includes(run.name)" class="call-plan">
               <div class="form-row"><label>呼叫总数<input v-model.number="callCount" type="number" min="1" max="500" step="1" /></label><label>批次间隔 / 秒<input v-model.number="callInterval" type="number" min="0" max="60" step="1" /></label></div>
               <div class="form-row"><label>每批同时呼叫<select v-model.number="callBatchSize"><option v-for="count in configuredStationIds.length" :key="count" :value="count">{{ count }}个工位</option></select></label><label v-if="run.name === 'custom-calls'">指定车辆<select v-model="callVehicleId"><option value="">场景选择可达车辆</option><option v-for="id in vehicleIds" :key="id" :value="id">{{ id }}</option></select></label><p v-else class="inline-warning">由正式后台自主派车；呼叫计划中不指定车辆。</p></div>
@@ -1114,49 +1874,49 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
               <small>{{ run.name === 'dispatch-backlog' ? '按时间持续追加，不等上一批完成；同一工位仍有原任务时，后续呼叫保留在计划队列。验证忙车排除建议1车2工位或2车3工位，第3工位须明确使用隔离合成点位。只有真正观察到全部车辆忙碌期间仍有正式待派任务，才证明覆盖了积压；2车2工位可能无法形成积压。工位优先级在新建环境前配置，并写入报告。' : '同一批次工位会在同一设备扫描中置位；指定车辆不可达时停止并报告。此场景按批次完成后继续。' }}</small>
             </div>
             <div v-if="run.name === 'plc-recovery'" class="form-row"><label>卡位信号<select v-model="plcFault"><option value="ready">倒料机就绪许可</option><option value="done">倒料完成，允许离开</option></select></label><label>卡位保持 / 秒<input v-model.number="plcFaultHold" type="number" min="1" max="120" /></label></div>
-            <label v-if="run.name === 'road-block-recovery'">道路阻塞保持 / 秒<input v-model.number="roadBlockHold" type="number" min="1" max="120" /></label>
+            <label v-if="run.name === 'road-block-recovery' || run.name === 'obstacle-auto-detour'">{{ run.name === 'road-block-recovery' ? '道路阻塞保持' : '车端障碍保持' }} / 秒<input v-model.number="roadBlockHold" type="number" min="1" max="120" /></label>
             <label v-if="run.name === 'service-restart'">重启注入阶段<select v-model="restartStage"><option value="pickup">原取料运输执行中（可验证到站补记后续接）</option><option value="delivery">满箱运输执行中（保留更复杂恢复现场）</option></select></label>
           </fieldset>
           <div class="toolbar"><button class="primary" :disabled="!canControl || active || !runValid || (['custom-calls', 'dispatch-backlog'].includes(run.name) && !callPlanValid)" @click="startScenario"><IconPlayerPlay :size="16" />运行场景</button><button :disabled="!available || !active" @click="action('abort')">中止后续场景</button></div>
           <p v-if="run.name === 'service-restart'" class="inline-warning">该场景结束时保留原任务和恢复屏障，不表示完整业务循环已完成。</p>
           <p v-if="run.name === 'vendor-cancel-return'" class="inline-warning">通过表示“预期取消已被正确识别并保留现场”，不表示业务完成；运行后会留有原任务路权，需按恢复页核对。</p>
           <p v-if="run.name === 'resume-recovery'" class="inline-warning">只有在恢复页逐项核对并放行后才能运行；它只续接原任务编号。</p>
-          <p v-if="!runValid" class="inline-warning">轮数 1–100、间隔 0–60 秒、超时 30–3600 秒。</p>
+          <p v-if="!runValid" class="inline-warning">轮数 1–100、间隔 0–60 秒、超时 30–86400 秒。</p>
         </section>
 
         <aside class="scenario-brief">
           <div><p class="section-kicker">验证目标</p><h3>{{ scenarioNames[run.name] }}</h3><p>{{ currentScenarioDescription }}</p></div>
-          <dl><dt>建议起点</dt><dd>{{ status?.running && fresh ? '环境与设备反馈已就绪，可以直接运行' : '先启动仿真环境，再运行场景' }}</dd><dt>观察重点</dt><dd>原任务步骤、运输命令、虚拟设备接收、PLC 电平、交通资源和残留占用</dd><dt>结束方式</dt><dd>通过、失败、中止、未知分别保留，不以旧报告代替本轮结果</dd></dl>
+          <dl><dt>建议起点</dt><dd>{{ status?.running && fresh ? '环境与车辆已准备好，可以直接运行' : '先启动仿真环境，再运行场景' }}</dd><dt>观察重点</dt><dd>车辆是否按顺序取箱、倒料、返空，是否发生抢路、长时间等待或漏做步骤</dd><dt>结束方式</dt><dd>通过、失败、中止和证据不足会分别保留，不会用上一轮结果代替本轮</dd></dl>
           <div class="scenario-progress"><div><b>{{ status?.scenario?.completedRounds ?? 0 }} / {{ status?.scenario?.totalRounds ?? run.rounds }} 轮</b><span>{{ Math.round(progress) }}%</span></div><progress :value="progress" max="100" aria-label="场景完成进度"/><p>{{ industrialText(status?.scenario?.message || '运行后显示当前阶段、等待原因和设备实际反馈。') }}</p></div>
           <button @click="openStage('faults')">运行中需要注入故障</button>
         </aside>
       </div>
     </section>
 
-    <section v-show="activeStage === 'faults'" class="stage-surface fault-stage">
+    <section v-if="activeStage === 'faults'" class="stage-surface fault-stage">
       <div class="fault-intro"><div><p class="section-kicker">故障控制</p><h3>先选择目标，再注入单点故障</h3></div><p>每次控制都会校验反馈编号。画面提交成功不等于故障已生效，须查看设备实际反馈和场景事件。</p></div>
       <div class="simulation-grid fault-grid">
         <section class="simulation-panel vehicle-panel" aria-labelledby="simulation-vehicle">
-          <header><div><p class="section-kicker">虚拟车辆</p><h3 id="simulation-vehicle"><IconRobot :size="18" />虚拟车辆与通信</h3></div><span v-if="!fresh" class="inline-warning">反馈无效，控制已禁用</span></header>
+          <header><div><p class="section-kicker">先选车</p><h3 id="simulation-vehicle"><IconRobot :size="18" />车辆现在怎么样</h3></div><span v-if="!fresh" class="inline-warning">反馈无效，控制已禁用</span></header>
           <label class="vehicle-select">选择车辆<select v-model="selectedVehicle" aria-label="选择虚拟车辆"><option v-if="!vehicleIds.length" value="">尚无车辆</option><option v-for="id in vehicleIds" :key="id" :value="id">{{ id }}</option></select></label>
-          <dl class="vehicle-facts"><dt>状态</dt><dd>{{ !fresh ? '未知 / 历史快照' : vehicle?.offline ? '通信断开' : vehicle?.paused ? '运动暂停' : vehicle?.blockedByVehicle ? '近障停车等待' : vehicle?.current_task ? '执行中' : '空闲' }}</dd><dt>位置</dt><dd>{{ vehicle?.station || '尚无反馈' }}</dd><dt>载箱</dt><dd>{{ !fresh ? '未知' : vehicle?.loaded ? '有箱' : '无箱' }}</dd><dt>电量 / 电压</dt><dd>{{ vehicle?.batteryPercent !== undefined ? `${vehicle.batteryPercent.toFixed(1)}%` : '未知' }} · {{ vehicle?.batteryVoltage !== undefined ? `${vehicle.batteryVoltage.toFixed(2)} V` : '未知' }}{{ vehicle?.charging ? ' · 充电中' : '' }}</dd><dt>速度 / 里程</dt><dd>{{ vehicle?.speedMps !== undefined ? `${vehicle.speedMps.toFixed(2)} m/s` : '未知' }} · {{ vehicle?.distanceMeters !== undefined ? `${vehicle.distanceMeters.toFixed(2)} m` : '未知' }}</dd><dt>原运输编号</dt><dd>{{ currentTask }}</dd><dt>当前等待原因</dt><dd>{{ industrialText(vehicle?.waitReason || status?.scenario?.message || '尚无等待原因反馈') }}</dd></dl>
-          <fieldset :disabled="!canControl || !selectedVehicle"><div class="toolbar"><button @click="carControl({ paused: true })">暂停运动</button><button @click="carControl({ paused: false })">恢复运动</button><button @click="carControl({ offline: true })">断开通信</button><button @click="carControl({ offline: false })">恢复通信</button><button @click="carControl({ charging: true })">开始充电</button><button @click="carControl({ charging: false })">停止充电</button><button @click="carControl({ dropNextResponse: true })">丢弃下一响应</button><button @click="carControl({ cancelFinalReturnSegments: 2 })">模拟返程末两段取消</button></div><div class="speed-control"><label>运动倍率<input v-model.number="speedScale" type="number" min="0.1" max="10" step="0.05" /><small>1 为方案配置速度；0.75 且道路限速 1 m/s 时为 0.75 m/s。</small></label><button :disabled="!Number.isFinite(speedScale) || speedScale < 0.1 || speedScale > 10" @click="carControl({ speedScale })">应用倍率</button></div></fieldset>
-          <small v-if="vehicle?.simulationControl">设备反馈控制编号：{{ vehicle.simulationControl.sequence || '尚无反馈' }} · 当前运动倍率 {{ vehicle.speedScale ?? '未知' }}<span v-if="vehicle.simulationControl.responseDropPending"> · 等待丢弃下一响应</span></small>
+          <dl class="vehicle-facts"><dt>现在</dt><dd>{{ vehicle ? vehicleVisualLabel(vehicle) : (!fresh ? '暂时没有新反馈' : '尚未选择车辆') }}</dd><dt>位置</dt><dd>{{ humanLocation(vehicle?.station) }}</dd><dt>载荷</dt><dd>{{ !fresh ? '待核对' : vehicle?.loaded ? '车上有箱' : '空载' }}</dd><dt>自动处置</dt><dd>{{ vehicle?.recovery ? simulationObstacleRecoveryLabel(vehicle.recovery.state) : '未进入障碍恢复流程' }}</dd><dt>下一步</dt><dd>{{ industrialText(vehicle?.recovery?.nextAction || vehicle?.waitReason || status?.scenario?.message || '目前没有等待原因') }}</dd></dl>
+          <fieldset :disabled="!canControl || !selectedVehicle"><div class="toolbar"><button @click="carControl({ paused: true })">暂停运动</button><button @click="carControl({ paused: false })">恢复运动</button><button @click="carControl({ obstacle: true })">注入前方障碍</button><button @click="carControl({ obstacle: false })">清除前方障碍</button><button @click="carControl({ offline: true })">断开通信</button><button @click="carControl({ offline: false })">恢复通信</button><button @click="carControl({ charging: true })">开始充电</button><button @click="carControl({ charging: false })">停止充电</button><button @click="carControl({ dropNextResponse: true })">丢弃下一响应</button><button @click="carControl({ cancelFinalReturnSegments: 2 })">模拟返程末两段取消</button></div><div class="speed-control"><label>运动倍率<input v-model.number="speedScale" type="number" min="0.1" max="10" step="0.05" /><small>1 为方案配置速度；0.75 且道路限速 1 m/s 时为 0.75 m/s。</small></label><button :disabled="!Number.isFinite(speedScale) || speedScale < 0.1 || speedScale > 10" @click="carControl({ speedScale })">应用倍率</button></div></fieldset>
+          <details v-if="vehicle" class="technical-details"><summary>更多车辆数据</summary><dl class="vehicle-facts"><dt>电量</dt><dd>{{ vehicle.batteryPercent !== undefined ? `${vehicle.batteryPercent.toFixed(1)}%` : '未知' }}{{ vehicle.charging ? ' · 充电中' : '' }}</dd><dt>电压</dt><dd>{{ vehicle.batteryVoltage !== undefined ? `${vehicle.batteryVoltage.toFixed(2)} V` : '未知' }}</dd><dt>速度</dt><dd>{{ vehicle.speedMps !== undefined ? `${vehicle.speedMps.toFixed(2)} m/s` : '未知' }}</dd><dt>当前运输</dt><dd>{{ currentTask }}</dd></dl><small v-if="vehicle.simulationControl">控制反馈编号：{{ vehicle.simulationControl.sequence || '尚无反馈' }} · 当前运动倍率 {{ vehicle.speedScale ?? '未知' }}<span v-if="vehicle.simulationControl.responseDropPending"> · 等待丢弃下一响应</span></small></details>
           <p v-if="vehicle?.simulationControl?.error" class="inline-warning">{{ vehicle.simulationControl.error }}</p>
           <details class="edge-controls"><summary>道路阻塞 · 已反馈 {{ appliedBlockedEdges.length }} 条</summary><fieldset :disabled="!canControl || !selectedVehicle"><p>选择道路，在所选虚拟车经过时阻止运动，观察调度等待与超时处理。</p><div class="edge-options"><label v-for="edge in blockableEdges" :key="edge.id"><input v-model="blockedEdgeIds" type="checkbox" :value="edge.id" />{{ edge.id }} · {{ edge.from }} → {{ edge.to }}</label><span v-if="!blockableEdges.length">当前地图没有可用道路。</span></div><div class="toolbar"><button :disabled="!blockableEdges.length" @click="carControl({ blockedEdges: blockedEdgeIds })">应用道路阻塞</button><button @click="blockedEdgeIds = []; carControl({ blockedEdges: [] })">解除所选车全部道路阻塞</button></div></fieldset></details>
           <small>断开通信只改变网络连接；车辆是否继续运动以设备模型反馈为准。</small>
         </section>
 
         <section class="simulation-panel plc-panel" aria-labelledby="simulation-plc">
-          <header><div><p class="section-kicker">PLC与倒料设备</p><h3 id="simulation-plc">虚拟 PLC 与倒料设备</h3></div><span class="scope-label">P 侧设备模型输入</span></header>
-          <fieldset :disabled="!canControl"><div class="form-row"><label>就绪许可延迟 / 秒<input v-model.number="readyDelay" type="number" min="0" max="300" /></label><label>倒料完成许可延迟 / 秒<input v-model.number="doneDelay" type="number" min="0" max="300" /></label></div><button :disabled="![readyDelay, doneDelay].every(value => Number.isFinite(value) && value >= 0 && value <= 300)" @click="plcControl({ readyDelaySeconds: readyDelay, doneDelaySeconds: doneDelay })">应用反馈延迟</button>
+          <header><div><p class="section-kicker">倒料设备反应</p><h3 id="simulation-plc">让设备晚一点回应</h3></div><span class="scope-label">模拟设备反应</span></header>
+          <fieldset :disabled="!canControl"><div class="form-row"><label>车辆到位后，多久允许进入？ / 秒<input v-model.number="readyDelay" type="number" min="0" max="300" /></label><label>倒料完成后，多久允许离开？ / 秒<input v-model.number="doneDelay" type="number" min="0" max="300" /></label></div><button :disabled="![readyDelay, doneDelay].every(value => Number.isFinite(value) && value >= 0 && value <= 300)" @click="plcControl({ readyDelaySeconds: readyDelay, doneDelaySeconds: doneDelay })">让设备按这个时间回应</button>
             <div class="toolbar plc-faults"><button @click="plcControl({ suppressReady: true })">阻止就绪许可</button><button @click="plcControl({ suppressReady: false })">恢复就绪许可</button><button @click="plcControl({ suppressDone: true })">阻止完成许可</button><button @click="plcControl({ suppressDone: false })">恢复完成许可</button><button @click="plcControl({ fault: true })">注入设备故障</button><button @click="plcControl({ fault: false })">撤销设备故障</button></div>
-          </fieldset><small v-if="plcFeedback">设备反馈控制编号：{{ plcFeedback.sequence || '尚无反馈' }} · 就绪许可延迟 {{ plcFeedback.plc?.readyDelaySeconds ?? 0 }} 秒 · 完成许可延迟 {{ plcFeedback.plc?.doneDelaySeconds ?? 5 }} 秒<span v-if="plcFeedback.plc?.suppressReady"> · 就绪许可已阻止</span><span v-if="plcFeedback.plc?.suppressDone"> · 完成许可已阻止</span><span v-if="plcFeedback.plc?.fault"> · 设备故障</span></small><p v-if="plcFeedback?.error" class="inline-warning">{{ plcFeedback.error }}</p><small>反馈由虚拟设备按实际到位、许可与动作产生，调度侧输出由正式后台负责。</small>
+          </fieldset><small>车辆会一直等待，直到设备给出允许进入或允许离开的反馈。</small><details v-if="plcFeedback" class="technical-details"><summary>更多设备数据</summary><small>控制反馈编号：{{ plcFeedback.sequence || '尚无反馈' }} · 就绪许可延迟 {{ plcFeedback.plc?.readyDelaySeconds ?? 0 }} 秒 · 完成许可延迟 {{ plcFeedback.plc?.doneDelaySeconds ?? 5 }} 秒<span v-if="plcFeedback.plc?.suppressReady"> · 就绪许可已阻止</span><span v-if="plcFeedback.plc?.suppressDone"> · 完成许可已阻止</span><span v-if="plcFeedback.plc?.fault"> · 设备故障</span></small></details><p v-if="plcFeedback?.error" class="inline-warning">{{ plcFeedback.error }}</p>
         </section>
       </div>
     </section>
 
-    <section v-show="activeStage === 'results'" class="stage-surface results-stage">
+    <section v-if="activeStage === 'results'" class="stage-surface results-stage">
       <section v-if="status?.recoveryGuidance?.length" class="simulation-panel recovery-guidance" aria-labelledby="recovery-guidance-title">
         <header><div><p class="section-kicker">当前阻塞</p><h3 id="recovery-guidance-title">卡在哪里，怎样恢复</h3></div><span :class="['state-pill', fresh ? 'waiting' : 'unknown']">{{ fresh ? '当前任务证据' : '历史证据，先刷新' }}</span></header>
         <article v-for="(guide, index) in status.recoveryGuidance" :key="guide.taskId + index">
@@ -1171,9 +1931,10 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
         <div class="recovery-items">
           <article v-for="item in recovery.items" :key="item.ticketId">
             <div class="recovery-title"><b>{{ item.taskId === '__SITE__' ? '全场核对' : item.taskId }}</b><span :class="['state-pill', item.verified ? 'pass' : 'waiting']">{{ item.verified ? '已核对' : '待核对' }}</span></div>
-            <p>{{ item.stepText }} · {{ actionStateLabel(item.state) }}</p><small>{{ industrialText(item.reason) }}</small>
-            <p v-if="item.vehicleSummary">{{ item.vehicleSummary }}</p><p v-if="item.plcSummary">{{ item.plcSummary }}</p>
-            <p v-if="item.loadSummary">{{ item.loadSummary }}</p>
+            <p class="recovery-step">{{ item.stepText }} · {{ actionStateLabel(item.state) }}</p>
+            <small class="recovery-reason">{{ industrialText(item.reason) }}</small>
+            <p class="recovery-business-summary">{{ recoveryBusinessSummary(item) }}</p>
+            <details v-if="item.vehicleSummary || item.plcSummary || item.loadSummary" class="technical-details"><summary>查看原始核对明细</summary><p v-if="item.vehicleSummary">{{ item.vehicleSummary }}</p><p v-if="item.plcSummary">{{ item.plcSummary }}</p><p v-if="item.loadSummary">{{ item.loadSummary }}</p></details>
             <button v-if="!recovery.released && !item.verified" :disabled="busy || !fresh || !vehicleConfirmed || !loadConfirmed || !plcConfirmed || recoveryMaterial.trim().length < 10 || recoveryReason.trim().length < 10" @click="submitRecovery(item)">提交此项恢复决策</button>
           </article>
         </div>
@@ -1192,7 +1953,53 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
         <p v-if="report?.recoveryHold" class="inline-warning">恢复屏障检查已结束，原活动任务保留待核对；该报告不表示完整业务循环已完成。</p>
         <p v-if="!report" class="report-empty">尚无报告。运行场景后显示任务、命令、PLC、交通和残留占用检查；未取得证据的项目保留为未核定。</p>
         <template v-else><p v-if="report.message">{{ industrialText(report.message) }}</p><p v-if="firstFailure" class="first-failure"><b>第一失败原因</b>{{ industrialText(firstFailure) }}</p><details v-if="report.versionComparison" class="report-version"><summary>本轮绑定的后台版本与配置</summary><p>{{ industrialText(report.versionComparison.message) }}</p><p>现场：{{ report.versionComparison.field?.informationalVersion || report.versionComparison.field?.buildId || '身份未核定' }} · 仿真：{{ report.versionComparison.simulation?.informationalVersion || report.versionComparison.simulation?.buildId || '身份未核定' }}</p><ul><li v-for="(difference, index) in report.versionComparison.differences ?? []" :key="index">{{ difference.label || '待核定项目' }}：现场 {{ industrialText(difference.field ?? '未取得') }}；仿真 {{ industrialText(difference.simulation ?? '未取得') }}</li></ul></details><dl v-if="metrics.length" class="report-metrics"><div v-for="[key, value] in metrics" :key="key"><dt>{{ simulationMetricLabel(key) }}</dt><dd>{{ simulationMetricValue(value) }}</dd></div></dl>
-          <div v-if="report.taskSummary?.length" class="report-table task-records"><h4>本轮任务清单 · {{ report.taskSummary.length }} 单</h4><table><thead><tr><th>任务编号</th><th>工位</th><th>车辆</th><th>状态</th><th>当前步骤 / 等待原因</th></tr></thead><tbody><tr v-for="task in report.taskSummary" :key="task.taskId"><td><code>{{ task.taskId }}</code></td><td>{{ task.stationId || '未提供' }}</td><td>{{ task.vehicleId || '尚未派车' }}</td><td><span :class="['state-pill', task.completed ? 'pass' : simulationTone(task.currentStepStatus)]">{{ task.completed ? '已完成' : simulationLabel(task.currentStepStatus) }}</span></td><td><b>{{ task.currentStepNumber ? `第${task.currentStepNumber}步 · ` : '' }}{{ task.currentStepName || '等待派车' }}</b><small v-if="task.waitingExplanation">{{ industrialText(task.waitingExplanation) }}</small></td></tr></tbody></table></div>
+          <div v-if="report.taskSummary?.length" class="report-table task-records">
+            <h4>本轮任务清单 · {{ report.taskSummary.length }} 单 <small>点击任一任务展开九步与交接证据</small></h4>
+            <table>
+              <thead><tr><th>任务编号</th><th>工位</th><th>车辆</th><th>状态</th><th>当前步骤 / 等待原因</th></tr></thead>
+              <tbody>
+                <template v-for="task in report.taskSummary" :key="task.taskId">
+                  <tr class="task-record-row" :class="{ expanded: reportTaskDetailId === task.taskId }" role="button" tabindex="0" @click="toggleReportTask(task.taskId)" @keydown.enter="toggleReportTask(task.taskId)">
+                    <td><code>{{ task.taskId }}</code><small>{{ reportTaskDetailId === task.taskId ? '收起证据' : '展开证据' }}</small></td>
+                    <td>{{ task.stationId || '未提供' }}</td>
+                    <td>{{ task.vehicleId || '尚未派车' }}</td>
+                    <td><span :class="['state-pill', task.completed ? 'pass' : simulationTone(task.currentStepStatus)]">{{ task.completed ? '已完成' : simulationLabel(task.currentStepStatus) }}</span></td>
+                    <td><b>{{ task.currentStepNumber ? `第${task.currentStepNumber}步 · ` : '' }}{{ task.currentStepType ? taskStepLabel(task.currentStepType) : industrialText(task.currentStepName || '等待派车') }}</b><small v-if="task.waitingExplanation">{{ industrialText(task.waitingExplanation) }}</small></td>
+                  </tr>
+                  <tr v-if="reportTaskDetailId === task.taskId" class="task-record-evidence-row">
+                    <td colspan="5">
+                      <div class="report-task-evidence">
+                        <header>
+                          <div><b>{{ task.stationId || '工位待核对' }} · {{ task.vehicleId || '尚未派车' }}</b><small>{{ taskStageLabel(reportTaskDetail?.task.stage ?? task.stage) }} · {{ (reportTaskDetail?.steps ?? task.steps ?? []).filter(step => step.status === 'Completed').length }}/{{ (reportTaskDetail?.steps ?? task.steps ?? []).length }} 步完成</small></div>
+                          <span :class="['state-pill', taskTone(reportTaskDetail?.task.stage ?? task.stage)]">{{ taskStageLabel(reportTaskDetail?.task.stage ?? task.stage) }}</span>
+                        </header>
+                        <p v-if="reportTaskDetail?.waitingExplanation || task.waitingExplanation" class="task-waiting-copy">{{ industrialText(reportTaskDetail?.waitingExplanation || task.waitingExplanation || '') }}</p>
+                        <ol v-if="reportTaskDetail" class="report-task-nine-steps">
+                          <li v-for="step in reportTaskDetail.steps" :key="step.stepId || step.sequence" :class="{ completed: step.status === 'Completed', failed: ['Failed','ManualIntervention'].includes(step.status) }">
+                            <span>{{ step.sequence }}</span>
+                            <div><b>{{ taskStepLabel(step.stepType) }}</b><small>{{ taskStatusLabel(step.status) }} · {{ step.elapsedText || '未完成' }}</small><p v-if="step.waitingExplanation">{{ industrialText(step.waitingExplanation) }}</p><details v-if="step.observedPhase || step.completionRequirement"><summary>完成条件与证据边界</summary><p>{{ industrialText(step.observedPhase || step.completionRequirement) }}</p><p>{{ industrialText(step.evidenceBoundary || '') }}</p></details></div>
+                          </li>
+                        </ol>
+                        <ol v-else-if="task.steps?.length" class="report-task-nine-steps report-task-nine-steps-summary">
+                          <li v-for="step in task.steps" :key="step.number" :class="{ completed: step.status === 'Completed', failed: ['Failed','ManualIntervention'].includes(step.status ?? '') }">
+                            <span>{{ step.number }}</span>
+                            <div><b>{{ taskStepLabel(step.stepType) }}</b><small>{{ taskStatusLabel(step.status) }}</small><p v-if="step.waitingExplanation">{{ industrialText(step.waitingExplanation) }}</p></div>
+                          </li>
+                        </ol>
+                        <div v-if="reportTaskReading" class="report-task-loading">正在补充实时命令、PLC握手与路权证据…</div>
+                        <p v-else-if="reportTaskError" class="inline-warning">报告内九步证据已显示；实时命令、PLC握手和路权明细目前不可读取：{{ industrialText(reportTaskError) }}</p>
+                        <div v-if="reportTaskDetail" class="report-task-evidence-grid">
+                          <article><h5>车辆与路权</h5><p><b>车辆</b>{{ reportTaskDetail.task.vehicleId || '尚未派车' }}</p><p v-for="resource in reportTaskDetail.resources ?? []" :key="resource.resourceId"><b>{{ routeResourceLabel(resource.resourceId) }}</b>{{ resource.vehicleId }} · {{ resource.heartbeatExpired ? '心跳已过期' : '占用正常' }}</p><p v-if="!reportTaskDetail.resources?.length">当前没有道路或设备占用。</p></article>
+                          <article><h5>PLC 与握手</h5><p v-for="signal in reportTaskDetail.plcConditions ?? []" :key="`${signal.stationId}-${signal.variableName}`"><b>{{ plcSignalLabel(signal.variableName) }}</b>{{ plcConditionLabel(signal.currentValue, signal.expectedValue) }}</p><p v-for="handshake in reportTaskDetail.handshakes ?? []" :key="handshake.cycleId"><b>{{ handshakePhaseLabel(handshake.phase) }}</b>{{ industrialText(handshake.reason) }}</p><p v-if="!reportTaskDetail.plcConditions?.length && !reportTaskDetail.handshakes?.length">该任务没有额外 PLC 证据。</p></article>
+                          <article><h5>运输命令与出区</h5><p v-for="command in reportTaskDetail.commands ?? []" :key="command.commandId"><b>{{ actionStateLabel(command.status) }}</b>{{ command.route?.vendorSites?.join(' → ') || command.stepId }} · 尝试 {{ command.attemptCount }} 次</p><p v-if="reportTaskDetail.handover"><b>出区核对</b>返程命令{{ reportTaskDetail.handover.returnCommandCompleted ? '已完成' : '未完成' }}；离开工位{{ reportTaskDetail.handover.exitPhysicallyVerified ? '已有物理证据' : '尚无物理证据' }}</p><p v-if="!reportTaskDetail.commands?.length">尚未生成运输命令。</p></article>
+                        </div>
+                      </div>
+                    </td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
           <div class="report-table check-records"><table><thead><tr><th>检查项</th><th>结果</th><th>证据 / 说明</th></tr></thead><tbody><tr v-for="(check, index) in report.checks ?? []" :key="index"><td>{{ industrialText(check.name) }}</td><td><span :class="['state-pill', simulationTone(check.status)]">{{ simulationLabel(check.status) }}</span></td><td>{{ industrialText(check.detail || '未提供说明') }}</td></tr></tbody></table></div>
           <div v-if="report.waitingChain?.length" class="waiting-chain"><h4>任务与车辆等待链</h4><ol><li v-for="(wait, index) in report.waitingChain" :key="index"><b>{{ wait.vehicleId || '尚未派车' }} · {{ wait.taskId || '待建单' }}</b><span>{{ wait.stationId }} · {{ wait.site || '位置未反馈' }} · {{ industrialText(wait.stepName || '等待分配') }}</span><p>{{ industrialText(wait.waitReason || wait.blockedBy || '等待原因未反馈') }}</p></li></ol></div>
         </template>
@@ -1206,7 +2013,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
         <div class="toolbar"><button :disabled="historyReading || !report?.id" @click="loadReplay">载入本报告时间轴</button><button :disabled="!replay?.timeline.length" @click="replayPlaying = !replayPlaying">{{ replayPlaying ? '暂停回放' : '播放回放' }}</button><button :disabled="historyReading || recordingVideo || !report?.id" @click="exportReplayVideo"><IconDownload :size="16" />{{ recordingVideo ? `正在录制 ${videoProgress}%` : '导出回放视频' }}</button></div>
         <p v-if="replay?.sampled" class="inline-warning">时间轴已按原始时间顺序抽样，保留最后一帧；完整观察记录仍保存在该轮证据文件中。</p>
         <template v-if="replay?.timeline.length"><label class="replay-slider">观察时间 · {{ stamp(replayFrame?.time) }} · {{ replayIndex + 1 }}/{{ replay.timeline.length }}<input v-model.number="replayIndex" aria-label="回放时间点" type="range" min="0" :max="replay.timeline.length - 1" step="1" @input="replayPlaying = false" /></label>
-          <svg v-if="replay.map && replayGeometry.nodes.length" class="simulation-map replay-map" viewBox="0 0 800 430" role="img" aria-label="历史任务位置回放"><g class="roads"><path v-for="edge in replayGeometry.edges" :key="edge.key" :d="edge.path" /></g><g v-for="node in replayGeometry.nodes" :key="node.id" class="map-node"><circle :cx="node.x" :cy="node.y" r="3"/><text :x="node.x + 7" :y="node.y - 7">{{ node.id }}</text></g><g v-for="(car, index) in replayGeometry.cars" :key="car.id" class="map-car" :style="{ '--car-color': ['#41d9bf', '#6fb9ff', '#e8bf64', '#cb9aff'][index % 4] }" :transform="`translate(${car.x} ${car.y})`"><circle r="16"/><text x="0" y="-23" text-anchor="middle">{{ car.id }}</text></g></svg>
+          <svg v-if="replay.map && replayGeometry.nodes.length" class="simulation-map replay-map" viewBox="0 0 800 430" role="img" aria-label="历史任务位置回放"><image v-if="showCadReference && replayCadBackground" class="cad-reference" :href="replayCadBackground.href" :x="replayCadBackground.x" :y="replayCadBackground.y" :width="replayCadBackground.width" :height="replayCadBackground.height" :opacity="replayCadBackground.opacity" preserveAspectRatio="none" /><g v-if="replayMapAreas.length" class="map-zones"><g v-for="area in replayMapAreas" :key="area.id"><polygon :points="area.points" :fill="area.fillColor" :fill-opacity="area.fillOpacity" :stroke="area.strokeColor" :stroke-opacity=".55" /><text :x="area.labelX" :y="area.labelY" :fill="area.strokeColor">{{ area.text }}</text></g></g><g class="roads"><path v-for="edge in replayGeometry.edges" :key="edge.key" :d="edge.path" /></g><g v-for="node in replayGeometry.nodes" :key="node.id" class="map-node" :class="{ dense: denseReplay }"><title>{{ mapNodeLabel(node) }} · {{ node.type || '地图节点' }}</title><circle :cx="node.x" :cy="node.y" :r="denseReplay ? (showDenseNodeLabel(node) ? 3 : 1.4) : 3"/><text v-if="!denseReplay || showDenseNodeLabel(node)" :x="node.x + 7" :y="node.y - 7">{{ mapNodeLabel(node) }}</text></g><g v-for="(car, index) in replayGeometry.cars" :key="car.id" class="map-car" :style="{ '--car-color': ['#41d9bf', '#6fb9ff', '#e8bf64', '#cb9aff'][index % 4] }" :transform="`translate(${car.x} ${car.y})`"><circle r="16"/><text x="0" y="-23" text-anchor="middle">{{ car.id }}</text></g></svg>
           <p v-else class="inline-warning">{{ replay.mapMessage || '该轮没有保存完整地图，只显示任务时间轴，不叠加到当前地图。' }}</p>
           <div class="waiting-chain"><ol><li v-for="car in replayFrame?.vehicles ?? []" :key="car.vehicleId"><b>{{ car.vehicleId }} · {{ car.site || '道路中' }}</b><span>{{ car.taskId || '空闲' }}</span><p>{{ industrialText(car.waitReason || '无阻塞反馈') }}</p></li><li v-for="task in replayFrame?.tasks ?? []" :key="task.taskId"><b>{{ task.taskId }} · {{ task.vehicleId || '等待派车' }}</b><span>{{ task.stationId }} · {{ industrialText(task.step || task.stage || '等待推进') }}</span><p>{{ industrialText(task.waitReason || '无阻塞反馈') }}</p></li></ol></div>
         </template><p v-else-if="replay" class="report-empty">本轮没有可回放的观察采样；不补造位置和任务轨迹。</p>
@@ -1215,10 +2022,13 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
     </section>
 
     <p class="simulation-boundary">仿真是否就绪，以本页实例、虚拟车辆和设备反馈为准；页面底部全局设备栏对应日常现场后台。本仿真采用统一启停、车辆物理模型、设备时间轴和独立故障注入。合成模型不代表真实固件、机械动作、定位误差与安全联锁已经验收；这些项目仍需现场测试。</p>
+      </div>
+    </div>
   </main>
 </template>
 
 <style scoped>
+.map-node.dense circle{fill:#55779a;stroke-width:1}.map-node.dense text{font-size:10px}.cad-reference{pointer-events:none;filter:grayscale(.35) brightness(1.08)}
 .simulation-page{flex:1;min-height:0;overflow:auto;padding:8px 12px 30px;color:#d3e2f3}.simulation-title{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:8px 0 18px}.simulation-title h2{display:flex;align-items:center;gap:9px;font-size:23px}.simulation-title p{margin-top:9px;color:#94abc8;line-height:1.6}.toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:8px}.new-vehicle-count{display:flex;align-items:center;gap:7px;color:#9cb1cb;font-size:11px}.new-vehicle-count input{width:60px}.scope-label{font-size:11px;color:#7ad4e7;border:1px solid #2b6676;background:#102e3e;padding:4px 8px;border-radius:4px;white-space:nowrap}.environment-panel,.simulation-panel,.configuration-guide{border:1px solid #2b4162;border-radius:6px;background:#101b32;padding:18px}.environment-panel{display:flex;align-items:center;flex-wrap:wrap;gap:20px;margin-bottom:14px}.environment-panel>div:first-child{flex:1;min-width:240px}.environment-panel h3{font-size:16px}.environment-panel p{color:#9cb1cb;line-height:1.6;margin-top:7px;overflow-wrap:anywhere}.environment-state{display:flex;flex-direction:column;gap:8px}.environment-state small{color:#89a0be}.simulation-grid{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(320px,1fr);gap:14px}.simulation-panel{min-width:0}.simulation-panel>header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}.simulation-panel h3{display:flex;align-items:center;gap:8px;font-size:15px}.simulation-panel small{display:block;color:#91a8c3;line-height:1.65;margin-top:12px}.simulation-map{width:100%;height:340px;background:#0c1529;border:1px solid #223654;border-radius:4px}.roads path{fill:none;stroke:#3b5475;stroke-width:4;stroke-linecap:round}.roads path.blocked{stroke:#ef947b;stroke-dasharray:8 6}.edge-controls{border-top:1px solid #2b4162;padding-top:12px;margin-top:15px}.edge-controls summary{cursor:pointer;color:#a9c7dc}.edge-controls p{line-height:1.6;color:#91a8c3;margin:12px 0}.edge-options{max-height:150px;overflow:auto;margin:12px 0}.edge-options label{display:flex;flex-direction:row;align-items:center;gap:8px;padding:5px}.edge-options input{width:15px;min-height:15px}.map-node circle{fill:#90abc8;stroke:#0c1529;stroke-width:2}.map-node text{font-size:12px;fill:#a5b7cc;paint-order:stroke;stroke:#0c1529;stroke-width:4;stroke-linejoin:round}.map-car{color:var(--car-color);transition:transform .5s linear}.map-car>circle{fill:var(--car-color);fill-opacity:.12;stroke:var(--car-color);stroke-width:1.5}.map-car rect{fill:var(--car-color);stroke:#091525;stroke-width:2}.map-car text{fill:var(--car-color);font-size:13px;font-weight:600;paint-order:stroke;stroke:#0c1529;stroke-width:4;stroke-linejoin:round}.map-car.selected>circle{stroke-width:3}.map-car.stale{opacity:.4}.map-car.offline>circle{stroke-dasharray:4 3}.map-caption{display:flex;justify-content:space-between;gap:12px;color:#86a0bf;padding-top:10px;line-height:1.6}.map-empty{min-height:340px;display:grid;place-content:center;color:#839bbb;background:#0c1529;padding:28px;text-align:center}.simulation-panel label{display:flex;flex-direction:column;gap:7px;color:#a5bad2;font-size:12px}.simulation-panel input,.simulation-panel select{width:100%;min-width:0}.simulation-panel fieldset{border:0;padding:0;margin:0 0 16px;min-width:0}.form-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:14px 0}.scenario-panel fieldset>label{margin-bottom:12px}.simulation-page .primary{color:#a6f0ff;border-color:#289db6;background:#134050}.state-pill{display:inline-flex;padding:4px 8px;border:1px solid #3f526d;border-radius:4px;font-size:11px;white-space:nowrap}.state-pill.pass{color:#67e1bb;background:#112f2e;border-color:#286a59}.state-pill.fail{color:#ffacb6;background:#3c2432;border-color:#865064}.state-pill.waiting{color:#f1d08f;background:#342e21;border-color:#75603a}.state-pill.unknown{color:#a2b1c6;background:#1a273c;border-color:#3c4f6a}.scenario-progress{border-top:1px solid #293c59;margin-top:19px;padding-top:16px}.scenario-progress>div{display:flex;justify-content:space-between;color:#a5d5e4}.scenario-progress progress{width:100%;height:6px;margin:12px 0;accent-color:#3ac5cf}.scenario-progress p{line-height:1.7;color:#b1c5dd;overflow-wrap:anywhere}.vehicle-select{max-width:320px}.vehicle-facts{display:grid;grid-template-columns:105px minmax(0,1fr);gap:9px 12px;line-height:1.5;margin:16px 0 19px}.vehicle-facts dt{color:#8fa6c3}.vehicle-facts dd{margin:0;overflow-wrap:anywhere}.speed-control{display:flex;align-items:flex-end;gap:10px;margin-top:15px}.speed-control label{max-width:130px}.plc-faults{margin-top:18px}.report-panel{margin-top:14px}.report-metrics{display:flex;flex-wrap:wrap;gap:12px 28px;padding-bottom:8px}.report-metrics dt{font-size:11px;color:#8da6c3}.report-metrics dd{margin:5px 0;font-size:19px;color:#b7e7ef;font-variant-numeric:tabular-nums}.report-identity{display:flex;flex-wrap:wrap;align-items:center;gap:10px 18px;padding:0 0 15px;color:#99b1ca;line-height:1.6}.report-identity b{color:#c2dbe8}.report-panel>.inline-warning{line-height:1.7;margin-bottom:12px}.report-table{overflow:auto}.report-panel table{width:100%;border-collapse:collapse;text-align:left;line-height:1.6}.report-panel th{font-weight:400;color:#8fa7c6;background:#12223a}.report-panel td,.report-panel th{padding:12px;border-bottom:1px solid #293b56}.report-panel td:first-child{min-width:150px}.report-panel td:last-child{overflow-wrap:anywhere}.report-empty{color:#91a8c3;line-height:1.8;padding:8px 0}.simulation-error,.simulation-notice{padding:12px 15px;line-height:1.6;margin-bottom:14px;border-radius:4px}.simulation-error{background:#402633;border:1px solid #865269;color:#ffbdc8}.simulation-notice{background:#143037;border:1px solid #2c626a;color:#9edfe0}.inline-warning{color:#eac17d;font-size:11px}.scenario-panel>.inline-warning{margin-top:10px}.configuration-guide{margin-bottom:14px}.configuration-guide h3{margin-bottom:10px}.configuration-guide p{line-height:1.8;color:#a0b8d0}.event-panel{margin-top:14px}.event-panel summary{cursor:pointer;color:#a8cedf}.event-panel ol{list-style:none;padding:0;max-height:250px;overflow:auto}.event-panel li{display:flex;gap:16px;line-height:1.7;border-top:1px solid #263a55;padding:9px 0;overflow-wrap:anywhere}.event-panel time{flex:none;color:#8ca5c1}.simulation-boundary{color:#8098b5;line-height:1.8;margin-top:16px;font-size:11px}@media(max-width:1050px){.simulation-grid{grid-template-columns:1fr}.simulation-title{align-items:flex-start}.map-panel{order:0}}@media(max-width:650px){.simulation-page{padding:5px}.simulation-title{flex-direction:column}.environment-panel{padding:14px}.simulation-panel{padding:14px}.simulation-panel>header{align-items:flex-start;flex-wrap:wrap}.simulation-map{height:280px}.form-row{grid-template-columns:1fr}.map-caption{flex-direction:column}.event-panel li{display:block}.event-panel time{display:block}.vehicle-facts{grid-template-columns:85px minmax(0,1fr)}}@media(prefers-reduced-motion:reduce){.map-car{transition:none}}
 .instance-designer{margin-bottom:14px}.designer-intro{line-height:1.75;color:#9db4ce;margin-bottom:14px}.designer-intro code{color:#8ce0e4}.map-import{display:flex;align-items:center;flex-wrap:wrap;gap:12px;padding:12px;background:#0c172b;border:1px solid #263d5b;margin-bottom:14px}.map-import>span{color:#8da7c4;line-height:1.55}.file-picker{max-width:330px}.file-picker input{padding:7px}.plc-table-binding{border:1px solid #294666;background:#0a1628;padding:13px;margin-bottom:14px}.plc-table-summary{display:grid;gap:5px;padding:10px;border:1px solid #23605d;background:#0a2427}.plc-table-summary span{color:#9ed6d0}.plc-table-summary code{display:block;overflow-wrap:anywhere;color:#77aee4;font-size:11px}.topology-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.vehicle-designer{border-top:1px solid #293e5d;margin-top:16px;padding-top:14px}.designer-subhead{display:flex;justify-content:space-between;gap:12px;align-items:baseline;margin-bottom:10px}.designer-subhead small,.designer-actions span{color:#8da4c0}.vehicle-config-row{display:grid;grid-template-columns:1fr 1.3fr .7fr auto;gap:9px;align-items:end;padding:9px 0;border-top:1px solid #223651}.agentel-config-row button{height:34px}.designer-actions{margin-top:15px}.call-plan{border-top:1px solid #2a405f;padding-top:13px;margin-top:14px}.recovery-panel{margin-top:14px}.recovery-panel>p{line-height:1.75;color:#a1b8d1}.recovery-items{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:10px;margin:14px 0}.recovery-items article{border:1px solid #304965;background:#0d192d;padding:12px}.recovery-title{display:flex;justify-content:space-between;gap:10px;margin-bottom:9px}.recovery-items p,.recovery-items small{display:block;color:#9fb6cf;line-height:1.6;overflow-wrap:anywhere;margin:5px 0}.recovery-items button{margin-top:8px}.recovery-confirmations{display:flex;flex-wrap:wrap;gap:18px;margin-top:12px}.recovery-confirmations label{display:flex;flex-direction:row;align-items:center;gap:8px}.recovery-confirmations input{width:16px;min-height:16px}.simulation-panel textarea{width:100%;min-width:0;resize:vertical}@media(max-width:1050px){.topology-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:650px){.topology-grid,.vehicle-config-row{grid-template-columns:1fr}}
 .vehicle-config-row{grid-template-columns:minmax(120px,1fr) minmax(150px,1.3fr) repeat(3,minmax(90px,.65fr)) auto auto}.vehicle-config-row .loaded-config{flex-direction:row;align-items:center;gap:7px}.vehicle-config-row .loaded-config input{width:16px;min-height:16px}.vehicle-config-row button{height:34px}.vehicle-advanced{grid-column:1/-1;border:1px solid #223651;padding:9px}.vehicle-advanced summary{cursor:pointer;color:#8db5ce}.vehicle-advanced .form-row{margin:10px 0 0}
@@ -1240,4 +2050,186 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
 @media(max-width:1180px){.mission-control{grid-template-columns:minmax(240px,1fr) minmax(240px,1fr) auto}.mission-runtime{grid-column:1}.mission-metrics{grid-column:2}.mission-actions{grid-column:3}.guide-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:900px){.simulation-header-actions{width:100%;justify-content:space-between}.simulation-title{flex-direction:column}.mission-control{grid-template-columns:1fr 1fr}.mission-actions{grid-column:1/-1;flex-direction:row}.stage-tabs{grid-template-columns:repeat(3,minmax(120px,1fr))}.overview-grid,.scenario-layout,.fault-grid{grid-template-columns:1fr}.scenario-brief{position:static}}
 @media(max-width:620px){.simulation-page{padding:6px 7px 20px}.mission-control,.next-step-card,.stage-tabs,.guide-grid,.new-instance-control{grid-template-columns:1fr}.mission-runtime,.mission-metrics,.mission-actions,.next-step-index{grid-column:auto}.mission-actions{flex-direction:column}.next-step-index{width:100%;height:26px}.stage-tabs{max-height:240px;overflow:auto}.stage-tabs button{min-height:54px}.first-run-guide>header,.fault-intro{align-items:flex-start;flex-direction:column}.guide-grid article{min-height:auto}.simulation-header-actions{align-items:stretch;flex-direction:column}.mode-card{min-width:0}}
+.simulation-page{max-width:1840px;margin:0 auto;padding-top:4px!important}
+.simulation-title{padding:2px 2px 8px!important;align-items:center!important}
+.simulation-title .page-kicker,.simulation-title>div:first-child>p:last-child,.simulation-title .mode-card{display:none!important}
+.simulation-title h2{margin:0!important;font-size:23px!important}
+.simulation-title .simulation-header-actions{gap:6px!important}
+.simulation-workspace{display:grid;grid-template-columns:270px minmax(0,1fr);gap:10px;align-items:stretch;min-height:calc(100vh - 140px)}
+.simulation-sidebar{display:flex;flex-direction:column;gap:9px;min-height:0;height:calc(100vh - 140px)}
+.simulation-workspace-content{min-width:0}
+.module-nav{grid-template-columns:repeat(5,minmax(0,1fr))!important;gap:6px!important;margin:0 0 12px!important;padding:6px;border:1px solid #263e59;border-radius:8px;background:#081425}
+.simulation-sidebar>.module-nav{grid-template-columns:1fr!important;margin:0!important;padding:7px;flex:none}
+.simulation-sidebar>.module-nav button{min-height:48px!important;padding:8px 10px!important}
+.module-nav button{display:flex!important;grid-template-columns:none!important;grid-template-rows:none!important;align-items:center!important;justify-content:flex-start!important;min-height:44px!important;padding:8px 12px!important;border-color:transparent!important;background:transparent!important;box-shadow:none!important}
+.module-nav button>span{display:grid;place-items:center;width:26px;height:26px;border-radius:5px;background:#10253b;color:#6fcbd7;font:600 9px Consolas,monospace;flex:none}
+.module-nav button strong{font-size:12px;color:#9fb6ca;white-space:nowrap}
+.module-nav button.active{border-color:#2d7185!important;background:#102b3c!important;box-shadow:inset 0 -2px #3cd1df!important}
+.module-nav button.active strong{color:#e4f8fb}
+.module-heading{display:grid;grid-template-columns:minmax(360px,1fr) auto auto;align-items:center;gap:20px;margin-bottom:14px;padding:16px 18px;border:1px solid #28506d;border-radius:8px;background:linear-gradient(105deg,#0d2037,#0b172b)}
+.module-heading h3{margin:3px 0 4px;font-size:24px;color:#e4f1f7}
+.module-heading p:last-child{margin:0;color:#92aac2;font-size:12px}
+.module-heading-status{display:flex;flex-direction:column;align-items:flex-start;gap:6px}
+.module-heading-status small{color:#7f9ab4;font-size:10px}
+.module-heading-actions{display:flex;gap:8px}
+.stage-surface{margin-top:0!important}
+.overview-stage{padding-bottom:0!important}
+.overview-hero{display:grid;grid-template-columns:1fr;gap:7px;padding:8px;border:1px solid #2b5a72;border-left:3px solid #36cfe0;border-radius:6px;background:#0b1d30}
+.overview-status-title{display:flex;align-items:center;gap:9px;min-width:0}
+.overview-status-title b{font-size:16px;color:#e8f6f8;white-space:nowrap}
+.overview-hero-copy>p:last-child{margin:4px 0 0;color:#8faebf;font-size:9px;line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.overview-kpis{display:grid;grid-template-columns:repeat(3,minmax(120px,1fr));border:1px solid #2b475f;background:#081522}
+.overview-kpis>div{display:flex;flex-direction:column;gap:2px;padding:11px 13px;border-right:1px solid #2b475f}
+.overview-kpis>div:last-child{border-right:0}
+.overview-kpis small,.overview-kpis span{color:#7f9bb4;font-size:9px}
+.overview-kpis b{color:#dff2f5;font-size:15px}
+.overview-next-action{width:100%;min-width:0;min-height:30px;padding:4px 8px}
+.instance-details{display:none}
+.instance-details summary{cursor:pointer;width:max-content}
+.instance-details p{margin:7px 0;overflow-wrap:anywhere}
+.business-overview-grid{display:block!important;position:relative;min-height:clamp(640px,calc(100vh - 175px),980px)}
+.business-overview-grid .map-panel{width:100%;min-height:inherit}
+.business-overview-grid .simulation-map{height:clamp(600px,calc(100vh - 205px),940px)}
+.business-overview-grid .roads path{stroke:#477f96;stroke-width:3.2}
+.business-overview-grid .roads path.blocked{stroke:#ff9b7d;stroke-width:5}
+.business-overview-grid .map-node.dense text{font-size:9px;font-weight:600}
+.business-overview-grid .map-node.dense circle{stroke-width:1.2}
+.simulation-map.vehicle-focus .roads path{stroke-width:4.2}
+.map-header-actions{gap:6px!important}
+.map-view-switch{display:inline-flex;border:1px solid #2b4b66;border-radius:4px;overflow:hidden}
+.map-view-switch button{border:0;border-radius:0;min-height:26px;padding:4px 9px;font-size:10px;background:#0a1729}
+.map-view-switch button+button{border-left:1px solid #2b4b66}
+.map-view-switch button.active{background:#18536a;color:#e7fbff}
+.business-story{display:flex;flex-direction:column;padding:9px!important;background:#091626!important;border-color:#31536f!important;overflow:hidden}
+.sidebar-business-story{position:static!important;width:auto!important;max-height:none!important;flex:1;min-height:0}
+.map-panel{position:relative}
+.business-story>header{margin-bottom:7px!important}
+.business-story>header h3{font-size:14px}
+.story-lead{padding:12px 13px;margin-bottom:10px;border:1px solid #2b4c62;background:#0a1a2b}
+.story-lead small{display:block;color:#57cfda;font-size:10px;margin-bottom:5px}
+.story-lead p{margin:0;color:#bed6e2;font-size:12px;line-height:1.7}
+.vehicle-story-list{display:grid;gap:5px;max-height:none;min-height:0;flex:1;overflow:auto;padding-right:2px}
+.vehicle-story-list article{padding:7px 8px;border:1px solid #293f59;border-left:3px solid #7e91a8;background:#0a1728}
+.vehicle-story-list article.running{border-left-color:#41d9bf}.vehicle-story-list article.waiting{border-left-color:#e8bf64}.vehicle-story-list article.idle{border-left-color:#6fb9ff}.vehicle-story-list article.blocked{border-left-color:#ee9c63}.vehicle-story-list article.fault{border-left-color:#ef7692}.vehicle-story-list article.offline{border-left-color:#65748a}
+.vehicle-story-list article>div{display:flex;justify-content:space-between;gap:10px}
+.vehicle-story-list article b{color:#d9edf4;font-size:12px}
+.vehicle-story-list article span{color:#6fd7df;font-size:10px}
+.vehicle-story-list article small{display:block;color:#7e9ab5;font-size:9px;margin-top:3px}
+.vehicle-story-list article p{margin:3px 0 0;color:#a5bdd0;font-size:10px;line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.business-story .quick-actions{margin-top:auto;padding-top:12px}
+.business-story .quick-actions button{min-width:0;padding-left:6px;padding-right:6px;font-size:10px}
+.sidebar-simulation-note{margin:8px 0 0;padding-top:7px;border-top:1px solid #29425c;color:#6f8ca6;font-size:9px;line-height:1.4;text-align:center}
+.technical-details{margin-top:12px;border-top:1px solid #263b55;padding-top:10px;color:#7894ad}
+.technical-details summary{cursor:pointer;color:#8fb9cf;font-size:11px}
+.technical-details p{max-height:180px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font-family:Consolas,"Microsoft YaHei",monospace}
+.recovery-step{margin:3px 0!important}
+.recovery-reason{display:block;color:#d8b978!important;line-height:1.55;margin:5px 0!important}
+.recovery-business-summary{margin:7px 0!important;padding:8px 10px;border-left:2px solid #3fc9d6;background:#0b2331;color:#a9dce4!important;line-height:1.55!important}
+.map-panel>header{margin-bottom:8px!important}
+.map-layer-toggle{font-size:10px;padding:4px 8px;min-height:26px}
+.map-zones polygon{stroke-width:1.2;stroke-dasharray:5 4}
+.map-zones text{display:block;font-size:9px;font-weight:600;text-anchor:middle;paint-order:stroke;stroke:#07101f;stroke-width:4;stroke-linejoin:round;pointer-events:none}
+.map-zones polygon{opacity:.85}
+.map-node circle{fill:#092534!important;stroke:#48d7cf!important;stroke-width:1.5!important}
+.map-node.dense circle{fill:#092534!important;stroke:#42bfc8!important}
+.vehicle-focus .map-zones text,.vehicle-focus .map-node text{display:none}
+.map-run-legend{position:absolute;left:20px;top:56px;z-index:5;display:flex;flex-wrap:wrap;gap:7px 13px;max-width:calc(100% - 40px);padding:6px 9px;border:1px solid #2b4058;border-radius:5px;background:#091526e8;color:#8ca8bd;font-size:9px;pointer-events:none}
+.map-run-legend span{display:flex;align-items:center;gap:5px}
+.map-legend-dot{width:6px;height:6px;border-radius:50%;background:#73879b}
+.map-legend-dot.running{background:#41d9bf}.map-legend-dot.waiting{background:#e8bf64}.map-legend-dot.idle{background:#6fb9ff}.map-legend-dot.blocked{background:#ee9c63}.map-legend-dot.fault{background:#ef7692}.map-legend-dot.offline{background:#65748a}
+.map-load-badge rect{fill:#e8bf64;stroke:#fff0b1;stroke-width:.8}.map-load-badge text{fill:#32230a!important;stroke:none!important;font-size:5.5px!important;font-weight:800}.map-load-legend{display:inline-block;width:8px;height:7px;border:1px solid #fff0b1;border-radius:1px;background:#e8bf64}
+.simulation-map.vehicle-focus .map-node text{display:none}
+.map-car path{fill:#ffffff;fill-opacity:.9}
+.map-car text{font-size:10px!important}
+@media(max-width:1180px){.module-heading{grid-template-columns:1fr auto}.module-heading-status{grid-column:1}.module-heading-actions{grid-column:2;grid-row:1/3}.overview-hero{grid-template-columns:1fr auto}.overview-next-action{grid-column:2;grid-row:1/3}.business-overview-grid{grid-template-columns:minmax(0,2.4fr) minmax(230px,.75fr)!important}.business-overview-grid .simulation-map{height:min(680px,calc(100vh - 245px))}}
+@media(max-width:900px){.simulation-workspace{grid-template-columns:1fr;min-height:0}.simulation-sidebar{height:auto}.simulation-sidebar>.module-nav{grid-template-columns:repeat(2,minmax(0,1fr))!important;margin-bottom:0!important}.sidebar-business-story{display:block}.business-overview-grid{min-height:0}.business-overview-grid .simulation-map{height:520px}.vehicle-story-list{max-height:360px;min-height:0}}
+@media(max-width:760px){.module-nav{grid-template-columns:repeat(2,minmax(0,1fr))!important}.module-heading,.overview-hero{grid-template-columns:1fr}.module-heading-actions,.overview-next-action{grid-column:auto;grid-row:auto}.module-heading-actions{flex-wrap:wrap}.overview-kpis{grid-template-columns:1fr}.overview-kpis>div{border-right:0;border-bottom:1px solid #2b475f}.overview-kpis>div:last-child{border-bottom:0}.business-overview-grid .simulation-map{height:360px}}
+@media(max-width:650px){.simulation-map{height:310px}}
+.tasks-stage{display:grid;gap:10px}
+.task-command-panel{padding:14px 16px}
+.task-command-panel>header{margin-bottom:12px}
+.task-command-panel>header p:last-child{max-width:880px;margin:4px 0 0;color:#8fa9bf;font-size:11px;line-height:1.55}
+.task-counts{display:grid;grid-template-columns:repeat(5,minmax(100px,1fr));gap:8px}
+.task-counts article{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 11px;border:1px solid #29455f;border-radius:5px;background:#091727}
+.task-counts small{margin:0!important;color:#88a1b7!important;font-size:10px}
+.task-counts b{color:#cce9ef;font-size:18px;font-variant-numeric:tabular-nums}
+.task-counts article.fault{border-color:#754354;background:#231726}.task-counts article.fault b{color:#ff9eb3}
+.task-filter-row{display:grid;grid-template-columns:150px minmax(240px,1fr) auto;gap:9px;align-items:end;margin-top:10px}
+.task-filter-row label{margin:0}
+.task-filter-row input,.task-filter-row select{height:34px}
+.task-search input{min-width:0}
+.task-workbench{display:grid;grid-template-columns:minmax(340px,.82fr) minmax(0,1.18fr);gap:10px;align-items:stretch}
+.task-table-panel,.task-detail-panel{padding:13px!important;min-height:520px}
+.task-table-panel>header,.task-detail-panel>header{margin-bottom:10px!important}
+.task-table-scroll{max-height:620px;overflow:auto;border:1px solid #253c57}
+.task-table{width:100%;border-collapse:collapse;text-align:left}
+.task-table th{position:sticky;top:0;z-index:1;padding:9px 8px;border-bottom:1px solid #2c4663;background:#10233a;color:#7f9ab4;font-size:10px;font-weight:500;white-space:nowrap}
+.task-table td{padding:9px 8px;border-bottom:1px solid #223750;color:#b5cad8;font-size:10px;vertical-align:top;line-height:1.45}
+.task-table tbody tr{cursor:pointer;transition:background .15s}.task-table tbody tr:hover{background:#10253a}.task-table tbody tr.selected{background:#113044;box-shadow:inset 3px 0 #37cbd9}.task-table tbody tr.traffic-waiting:not(.selected){background:#211a18;box-shadow:inset 3px 0 #e48a63}.task-waiting-signal{display:inline-block!important;margin:4px 0 0!important;padding:2px 5px;border:1px solid #8b5a43;border-radius:3px;color:#ffc196!important;background:#2b1d18;white-space:nowrap}
+.task-table td:first-child{min-width:140px}.task-table td:nth-child(2){white-space:nowrap}.task-table td:nth-child(4){max-width:180px;overflow-wrap:anywhere}
+.task-table td b{display:block;color:#dcecf2;font-size:11px}.task-table td small{margin:2px 0 0;color:#748fa9;font-size:9px;overflow-wrap:anywhere}
+.task-table .task-error-text{color:#f0a6b0}.task-empty{padding:32px 14px!important;text-align:center;color:#8099b1!important}
+.task-detail-panel{display:flex;flex-direction:column;min-width:0}
+.task-waiting-copy{margin:0 0 10px;padding:9px 11px;border-left:3px solid #e1b967;background:#211f18;color:#dfc985;line-height:1.6;font-size:11px}
+.task-step-list{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin:0;padding:0;list-style:none}
+.task-step-list>li{display:grid;grid-template-columns:26px minmax(0,1fr);gap:7px;min-height:104px;padding:9px;border:1px solid #263f59;border-radius:5px;background:#091626}
+.task-step-list>li>span{display:grid;place-items:center;width:24px;height:24px;border-radius:50%;background:#172d43;color:#7da9be;font:600 9px Consolas,monospace}
+.task-step-list strong{display:block;color:#c9dce6;font-size:11px;line-height:1.35}.task-step-list small{margin:3px 0 0;color:#829bb2;font-size:9px;line-height:1.35}.task-step-list p{margin:5px 0 0;color:#c2a771;font-size:9px;line-height:1.45}.task-step-list details{margin-top:5px}.task-step-list details p{color:#7e9bb1}.task-step-list details summary{font-size:9px}
+.task-step-list>li.current{border-color:#b18d43;background:#1b241f}.task-step-list>li.completed{border-color:#2a6658;background:#0b211f}.task-step-list>li.completed>span{background:#1c5c4f;color:#bff8e7}.task-step-list>li.failed{border-color:#814c5c;background:#281a27}
+.task-route-panel{padding:13px!important}.task-route-panel>header{margin-bottom:8px!important}.task-route-panel>header p:last-child{margin:3px 0 0;color:#859fb7;font-size:10px;line-height:1.45}
+.task-route-layout{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:10px;align-items:stretch}
+.task-route-map-wrap{position:relative;min-width:0;border:1px solid #253e58;border-radius:6px;overflow:hidden;background:#071321}
+.task-route-map{display:block;height:clamp(460px,52vh,700px)!important;min-height:460px;border:0!important;border-radius:0!important}
+.roads path.task-route{fill:none;stroke-linecap:round;stroke-linejoin:round;transition:stroke .2s,stroke-width .2s,opacity .2s}
+.roads path.task-route-completed{stroke:#4c938e;stroke-width:4.2;opacity:.72;filter:drop-shadow(0 0 2px #285f5b)}
+.roads path.task-route-future{stroke:#54cce3;stroke-width:4.2;stroke-dasharray:9 6;opacity:.78}
+.roads path.task-route-current{stroke:#5ff5da;stroke-width:7;opacity:1;filter:drop-shadow(0 0 5px #33cdb6);animation:task-route-flow 1.2s linear infinite}
+.roads path.task-route-waiting{stroke:#ff8a6c;stroke-width:7;stroke-dasharray:10 5;opacity:1;filter:drop-shadow(0 0 6px #e85f45);animation:task-route-wait .8s ease-in-out infinite alternate}
+.roads path.task-route-return{stroke:#ffc76b;stroke-width:5;stroke-dasharray:11 5;opacity:.9;filter:drop-shadow(0 0 4px #a9762e)}
+.roads path.task-route-focus{stroke:#f3ffff;stroke-width:8.5;stroke-dasharray:none;opacity:1;filter:drop-shadow(0 0 7px #68ffe6)}
+.roads path.task-route-focus.task-route-return{stroke:#ffd27d;filter:drop-shadow(0 0 7px #d59235)}
+.roads path.task-route-dimmed{stroke-width:3.2;opacity:.18;filter:none;stroke-dasharray:none;animation:none}
+.map-node.task-node circle{fill:#153c3b!important;stroke:#62c8c0!important;stroke-width:2!important}
+.map-node.task-node text{fill:#c9f4ee;font-weight:700;font-size:10px!important;opacity:1!important}
+.map-node.task-node-current circle{fill:#187763!important;stroke:#8effe5!important;stroke-width:3!important;filter:drop-shadow(0 0 4px #45dbc1)}
+.map-node.task-node-waiting circle{fill:#713a2d!important;stroke:#ff9b79!important;stroke-width:3.2!important;filter:drop-shadow(0 0 5px #ed6d50);animation:task-node-wait .8s ease-in-out infinite alternate}
+.map-node.task-node-return circle{fill:#61451f!important;stroke:#ffd27d!important;stroke-width:2.5!important}
+.map-node.task-node-focus circle{fill:#f2ffff!important;stroke:#68ffe6!important;stroke-width:3.5!important;filter:drop-shadow(0 0 6px #5ff5da)}
+.map-node.task-node-dimmed{opacity:.24}
+.task-route-panel .map-node:not(.task-node){opacity:.4}
+.task-route-panel .map-car{opacity:.96}
+.task-route-legend{position:absolute;left:12px;bottom:12px;z-index:3;display:flex;flex-wrap:wrap;gap:8px 13px;max-width:calc(100% - 24px);padding:7px 9px;border:1px solid #2a455e;border-radius:5px;background:#071321e8;color:#9bb2c5;font-size:9px;pointer-events:none}
+.task-route-legend span{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}.route-swatch{display:inline-block;width:24px;height:0;border-top:4px solid #4c938e}.route-swatch.future{border-top:3px dashed #54cce3}.route-swatch.current{border-top-color:#5ff5da;box-shadow:0 0 5px #5ff5da}.route-swatch.waiting{border-top:4px dashed #ff8a6c}.route-swatch.returning{border-top:4px dashed #ffc76b}
+.task-route-sidebar{display:flex;flex-direction:column;gap:8px;min-width:0;max-height:clamp(460px,52vh,700px)}
+.task-route-now{padding:12px;border:1px solid #356c67;border-left:3px solid #5ff5da;background:linear-gradient(145deg,#0c292c,#091726)}
+.task-route-now.waiting{border-color:#8a594b;border-left-color:#ff8a6c;background:linear-gradient(145deg,#2a1716,#111522)}
+.task-route-now>small,.task-route-selection header small{color:#76cfc8;font-size:9px}.task-route-now h4{margin:3px 0 5px;color:#e4f7f4;font-size:14px}.task-route-now>p{margin:5px 0;color:#a8c3cf;font-size:10px;line-height:1.55}.route-stationary-note{padding:7px;border:1px solid #3d5268;background:#0b1a2b;color:#99b4c8!important}
+.route-blocker-list{display:grid;gap:5px;margin-top:8px;padding-top:8px;border-top:1px solid #3d5660}.route-blocker-list>b{color:#ffd49d;font-size:10px}.route-blocker-list article{display:grid;grid-template-columns:60px minmax(0,1fr);gap:3px 7px;padding:7px;border:1px solid #805044;background:#241819}.route-blocker-list article strong{grid-row:1/3;align-self:center;color:#ffb497;font-size:11px}.route-blocker-list article span{color:#e8d3bd;font-size:10px;line-height:1.4}.route-blocker-list article small{grid-column:2;color:#9f8c85;font-size:9px;line-height:1.4}.route-blocker-list>small{color:#c7a99a;font-size:9px;line-height:1.5}.route-resource-summary{display:grid;gap:4px;margin-top:7px;padding:7px;border:1px solid #304b62;background:#091a28}.route-resource-summary span{padding:3px 5px;border:1px solid #355368;border-radius:3px;background:#0b2031;color:#8fb1c2;font-size:8px;line-height:1.4}.route-resource-summary small{padding:2px 1px 0;color:#718da2;font-size:8px;line-height:1.45}
+.task-route-selection{display:flex;flex-direction:column;min-height:0;padding:10px;border:1px solid #283f59;background:#081625}.task-route-selection>header{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:7px}.task-route-selection>header b{color:#cedfe8;font-size:11px}.task-route-selection>header button{min-height:25px;padding:3px 7px;font-size:9px}.task-route-selected{margin-bottom:7px;padding:8px;border:1px solid #55734f;background:#13261e}.task-route-selected>b{display:block;color:#d7eddf;font-size:10px}.task-route-selected small{display:block;margin-top:2px;color:#7fc3a2;font-size:9px}.task-route-selected p{margin:5px 0 0;color:#9fc0b1;font-size:9px;line-height:1.45}
+.task-route-leg-list{display:grid;gap:5px;min-height:0;overflow-y:auto;overflow-x:hidden;padding-right:2px}.task-route-leg-list button{display:grid;grid-template-columns:25px minmax(0,1fr);gap:7px;width:100%;min-width:0;max-width:100%;padding:7px;text-align:left;border:1px solid #29445f;border-left:3px solid #4c938e;background:#0a192a}.task-route-leg-list button.future{border-left-color:#54cce3}.task-route-leg-list button.current{border-left-color:#5ff5da;background:#0d2928}.task-route-leg-list button.returning{border-left-color:#ffc76b}.task-route-leg-list button.active{border-color:#d9ffff;box-shadow:inset 0 0 0 1px #5ff5da}.task-route-leg-list button>span{display:grid;place-items:center;width:23px;height:23px;border-radius:50%;background:#183248;color:#8eb7c8;font:600 9px Consolas,monospace}.task-route-leg-list button>div{min-width:0}.task-route-leg-list b{display:block;color:#cedee8;font-size:10px}.task-route-leg-list small{display:block;margin:2px 0 0;color:#7e9caf;font-size:8px}.task-route-leg-list em{display:block;margin-top:3px;color:#8eabbc;font-size:8px;font-style:normal;line-height:1.35;white-space:normal;overflow-wrap:anywhere;word-break:break-word}
+.route-no-legs{margin:0;padding:9px;border:1px dashed #3d566b;color:#8ca6b9;font-size:9px;line-height:1.5}
+@keyframes task-route-flow{to{stroke-dashoffset:-24}}@keyframes task-route-wait{from{stroke-opacity:.58}to{stroke-opacity:1}}@keyframes task-node-wait{from{opacity:.68}to{opacity:1}}
+.task-evidence-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0!important;padding:0!important;overflow:hidden}
+.task-evidence-grid>article{min-width:0;padding:13px;border-right:1px solid #263d58;border-bottom:1px solid #263d58}.task-evidence-grid>article:nth-child(2n){border-right:0}
+.task-evidence-grid article>header{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px}.task-evidence-grid h3{font-size:12px}.task-evidence-grid header small{margin:0}
+.task-evidence-grid article>p{display:flex;flex-direction:column;gap:2px;margin:0;padding:6px 0;border-top:1px solid #1e334b;color:#91abc1;font-size:10px;line-height:1.45}.task-evidence-grid article>p:first-of-type{border-top:0}.task-evidence-grid article>p b{color:#cfe2ea;font-size:10px}.task-evidence-grid article>p small{display:block;margin:3px 0 0}
+.task-timeline-panel{grid-column:1/-1;border-right:0!important;border-bottom:0!important}
+.task-timeline{max-height:330px;margin:0;padding:0;overflow-y:auto;overflow-x:hidden;list-style:none}
+.task-timeline li{display:grid;grid-template-columns:120px 180px minmax(0,1fr);gap:12px;align-items:center;min-width:0;min-height:40px;padding:7px 4px;border-top:1px solid #20364f;font-size:10px;line-height:1.45}
+.task-timeline time,.task-timeline b,.task-timeline-copy{min-width:0}.task-timeline time{color:#648198;font-variant-numeric:tabular-nums;white-space:nowrap}.task-timeline b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#cae1e9;font-weight:600}.task-timeline-copy{display:grid;grid-template-columns:48px minmax(0,1fr);gap:8px;align-items:center;color:#8fa9bf}.task-timeline-copy em{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#58cbd4;font-style:normal}.task-timeline-copy>span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.task-records>h4 small{display:inline;margin-left:8px;color:#758ea8;font-size:9px;font-weight:400}
+.task-record-row{cursor:pointer}.task-record-row:hover td{background:#10253a}.task-record-row.expanded td{border-bottom-color:#31546f;background:#0d2638}
+.task-record-row td:first-child small{display:block;margin-top:3px;color:#54c8d3}
+.task-record-evidence-row>td{padding:0!important;background:#071522!important;border-bottom:1px solid #31526d!important}
+.report-task-loading{padding:18px;color:#8fa9bf}.report-task-evidence{padding:13px;border-left:3px solid #38cbd7}
+.report-task-evidence>header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:9px}.report-task-evidence>header div{display:flex;flex-direction:column;gap:2px}.report-task-evidence>header b{color:#d7ebf2}.report-task-evidence>header small{display:block;margin:0;color:#7d99b2}
+.report-task-nine-steps{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin:9px 0;padding:0;list-style:none}
+.report-task-nine-steps>li{display:grid;grid-template-columns:24px minmax(0,1fr);gap:7px;padding:8px;border:1px solid #263f59;background:#091626}
+.report-task-nine-steps>li>span{display:grid;place-items:center;width:22px;height:22px;border-radius:50%;background:#193149;color:#78a7b8;font:600 9px Consolas,monospace}
+.report-task-nine-steps b{display:block;color:#c9dfe8;font-size:10px}.report-task-nine-steps small{display:block;margin:2px 0 0;color:#809bb3;font-size:9px}.report-task-nine-steps p{margin:4px 0 0;color:#bda66e;font-size:9px;line-height:1.45}.report-task-nine-steps details{margin-top:4px}.report-task-nine-steps summary{font-size:9px}.report-task-nine-steps>li.completed{border-color:#2b6558}.report-task-nine-steps>li.failed{border-color:#824d5d}
+.report-task-evidence-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.report-task-evidence-grid article{padding:9px;border:1px solid #253d58;background:#0a1727}.report-task-evidence-grid h5{margin:0 0 6px;color:#c3dae5;font-size:10px}.report-task-evidence-grid p{display:flex;flex-direction:column;gap:2px;margin:0;padding:5px 0;border-top:1px solid #1c3248;color:#88a3ba;font-size:9px;line-height:1.45}.report-task-evidence-grid p:first-of-type{border-top:0}.report-task-evidence-grid b{color:#c7dce5}
+@media(max-width:1180px){.task-counts{grid-template-columns:repeat(3,minmax(100px,1fr))}.task-workbench{grid-template-columns:minmax(310px,.9fr) minmax(0,1.1fr)}.task-step-list{grid-template-columns:repeat(2,minmax(0,1fr))}.task-timeline li{grid-template-columns:108px 150px minmax(0,1fr)}}
+@media(max-width:1180px){.task-route-layout{grid-template-columns:minmax(0,1fr) 300px}}
+@media(max-width:900px){.task-workbench{grid-template-columns:1fr}.task-table-panel,.task-detail-panel{min-height:0}.task-table-scroll{max-height:420px}.task-counts{grid-template-columns:repeat(2,minmax(100px,1fr))}.report-task-evidence-grid{grid-template-columns:1fr}.report-task-nine-steps{grid-template-columns:repeat(2,minmax(0,1fr))}.task-route-layout{grid-template-columns:1fr}.task-route-sidebar{max-height:none}.task-route-map{height:520px!important;min-height:520px}.task-route-leg-list{max-height:360px}}
+@media(max-width:650px){.task-filter-row{grid-template-columns:1fr}.task-counts{grid-template-columns:1fr 1fr}.task-step-list,.report-task-nine-steps{grid-template-columns:1fr}.task-evidence-grid{grid-template-columns:1fr}.task-evidence-grid>article{border-right:0}.task-timeline li{grid-template-columns:1fr;gap:3px}.task-timeline b,.task-timeline-copy>span{white-space:normal}.task-route-map{height:350px!important;min-height:350px}.task-route-legend{position:static;border:0;border-top:1px solid #253d52;border-radius:0}.report-task-evidence>header{align-items:flex-start;flex-direction:column}}
 </style>

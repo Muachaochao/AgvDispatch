@@ -7,6 +7,7 @@ param(
     [string]$SimulationRoot='',
     [string]$PythonPath='',
     [int]$SimulationPort=0,
+    [switch]$StaticOnly,
     [switch]$Apply
 )
 $ErrorActionPreference='Stop'
@@ -40,9 +41,12 @@ function DailyState {
     $config=Invoke-RestMethod 'http://127.0.0.1:5199/api/config' -TimeoutSec 10
     $snapshot=Invoke-RestMethod 'http://127.0.0.1:5199/api/snapshot' -TimeoutSec 15
     $recovery=Invoke-RestMethod 'http://127.0.0.1:5199/api/recovery' -TimeoutSec 10
-    if(!$snapshot.connected -or $snapshot.status.tasks.activeCount -ne 0 -or !$recovery.released){throw '5199后台未连接、存在活动任务或恢复未放行；不进行Web切换。'}
+    if(!$snapshot.connected -or $snapshot.status.tasks.activeCount -ne 0 -or (!$StaticOnly -and !$recovery.released)){
+        if($StaticOnly){throw '5199后台未连接或存在活动任务；不进行仅前端切换。'}
+        throw '5199后台未连接、存在活动任务或恢复未放行；不进行Web切换。'
+    }
     if($config.servicePipeName -ne $script:manifest.pipeName -or $snapshot.status.service.processId -ne $script:session.Service.Id -or $config.adapter.informationalVersion -ne $script:manifest.releaseId){throw '5199接口与发布目录、后台身份不匹配。'}
-    return @{projectStoreId=$config.projectStoreId;adapterSha=$config.adapter.sha256;mapId=$snapshot.status.safety.activeMapId;mapVersion=$snapshot.status.safety.activeMapVersionId;taskCount=$snapshot.tasks.totalCount;serviceId=$snapshot.status.service.processId}
+    return @{projectStoreId=$config.projectStoreId;adapterSha=$config.adapter.sha256;mapId=$snapshot.status.safety.activeMapId;mapVersion=$snapshot.status.safety.activeMapVersionId;taskCount=$snapshot.tasks.totalCount;serviceId=$snapshot.status.service.processId;recoveryReleased=$recovery.released}
 }
 $bundle=FullPath $BundleDirectory;$patchRoot=FullPath $PatchDirectory
 NoLinks $bundle;NoLinks $patchRoot
@@ -61,54 +65,71 @@ NoLinks $dailyRoot
 if($patchRoot -eq $dailyRoot -or $patchRoot.StartsWith($dailyRoot+'\',[StringComparison]::OrdinalIgnoreCase) -or $dailyRoot.StartsWith($patchRoot+'\',[StringComparison]::OrdinalIgnoreCase)){throw '补丁/备份目录不能包含或位于日常运行数据中。'}
 if(!$Apply){
     if(Test-Path -LiteralPath $patchRoot){throw '暂存目录已存在，拒绝覆盖；安装已核对的暂存补丁请显式使用-Apply。'}
-    foreach($required in @($WebPayloadDirectory,$StaticPayloadDirectory,$SimulationRoot,$PythonPath)){if(!$required){throw '暂存必须提供WebPayloadDirectory、StaticPayloadDirectory、SimulationRoot、PythonPath。'}}
-    $webSource=FullPath $WebPayloadDirectory;$staticSource=FullPath $StaticPayloadDirectory
-    $sim=FullPath $SimulationRoot;$python=FullPath $PythonPath
-    foreach($path in @($webSource,$staticSource,$sim,$python)){NoLinks $path}
-    foreach($sourceRoot in @($webSource,$staticSource,$sim)){
+    if(!$StaticPayloadDirectory){throw '暂存必须提供StaticPayloadDirectory。'}
+    if(!$StaticOnly -and (!$WebPayloadDirectory -or !$SimulationRoot -or !$PythonPath)){
+        throw '完整Web补丁暂存必须提供WebPayloadDirectory、StaticPayloadDirectory、SimulationRoot、PythonPath。'
+    }
+    $staticSource=FullPath $StaticPayloadDirectory
+    $sourceRoots=@($staticSource)
+    if(!$StaticOnly){
+        $webSource=FullPath $WebPayloadDirectory
+        $sim=FullPath $SimulationRoot;$python=FullPath $PythonPath
+        $sourceRoots+=@($webSource,$sim,$python)
+    }
+    foreach($path in $sourceRoots){NoLinks $path}
+    foreach($sourceRoot in $sourceRoots){
         if($patchRoot -eq $sourceRoot -or $patchRoot.StartsWith($sourceRoot+'\',[StringComparison]::OrdinalIgnoreCase) -or $sourceRoot.StartsWith($patchRoot+'\',[StringComparison]::OrdinalIgnoreCase)){throw '补丁/备份目录不能与源码暂存或实验目录互相包含。'}
     }
-    if($SimulationPort -lt 1024 -or $SimulationPort -gt 65535 -or $SimulationPort -in @(5198,5199)){throw '仿真控制器需要独立临时端口。'}
-    $controller=Join-Path $PSScriptRoot 'SimulationLab/controller.py'
-    $artifacts=FullPath (Join-Path $PSScriptRoot '../artifacts')
-    if((Split-Path $sim) -ne $artifacts -or (Split-Path $sim -Leaf) -notlike 'web-single-vehicle-*'){throw '仿真实例必须位于本工程artifacts/web-single-vehicle-*。'}
-    if(!(Test-Path -LiteralPath $python -PathType Leaf) -or !(Test-Path -LiteralPath $controller -PathType Leaf)){throw 'Python或仿真控制器不存在。'}
-    # Reuse the controller's complete loopback/data/pipe validation without starting it.
-    $validationCode='import sys; sys.path.insert(0,sys.argv[1]); from controller import validate_root; validate_root(sys.argv[2])'
-    & $python -c $validationCode (Split-Path $controller) $sim
-    if($LASTEXITCODE -ne 0){throw '仿真实例隔离检查失败。'}
-    $labConfig=Json (Join-Path $sim 'lab.json')
-    $deviceConfig=Json (Join-Path $sim 'service/appsettings.json')
-    $devicePorts=@($labConfig.webPort,$deviceConfig.Plc.Port)
-    foreach($robot in $deviceConfig.Agv.Robots){$devicePorts+=@($robot.Port,$robot.NavigationPort)}
-    if($SimulationPort -in $devicePorts){throw '仿真控制端口不能与实验Web或设备端口重复。'}
-    $probe=[Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,$SimulationPort)
-    try{$probe.Start()}finally{$probe.Stop()}
-    $newDll=Join-Path $webSource 'AgvDispatch.WebHost.dll'
-    if([Diagnostics.FileVersionInfo]::GetVersionInfo($newDll).ProductVersion -ne $manifest.releaseId){throw "WebHost必须用基线InformationalVersion=$($manifest.releaseId)构建。"}
-    $dependencies=@(Get-ChildItem -LiteralPath (Join-Path $bundle 'Web/host') -Filter 'AgvDispatch.*.dll' | Where-Object Name -ne 'AgvDispatch.WebHost.dll')
-    if(!$dependencies.Count){throw '缺少基线共享程序集。'}
-    foreach($dependency in $dependencies){
-        $candidate=Join-Path $webSource $dependency.Name
-        if(!(Test-Path -LiteralPath $candidate) -or (Hash $candidate) -ne (Hash $dependency.FullName)){throw "依赖程序集不同，需使用原发布引用编译WebHost：$($dependency.Name)"}
+    if(!$StaticOnly -and ($SimulationPort -lt 1024 -or $SimulationPort -gt 65535 -or $SimulationPort -in @(5198,5199))){throw '仿真控制器需要独立临时端口。'}
+    if(!$StaticOnly){
+        $controller=Join-Path $PSScriptRoot 'SimulationLab/controller.py'
+        $artifacts=FullPath (Join-Path $PSScriptRoot '../artifacts')
+        if((Split-Path $sim) -ne $artifacts -or (Split-Path $sim -Leaf) -notlike 'web-single-vehicle-*'){throw '仿真实例必须位于本工程artifacts/web-single-vehicle-*。'}
+        if(!(Test-Path -LiteralPath $python -PathType Leaf) -or !(Test-Path -LiteralPath $controller -PathType Leaf)){throw 'Python或仿真控制器不存在。'}
+        # Reuse the controller's complete loopback/data/pipe validation without starting it.
+        $validationCode='import sys; sys.path.insert(0,sys.argv[1]); from controller import validate_root; validate_root(sys.argv[2])'
+        & $python -c $validationCode (Split-Path $controller) $sim
+        if($LASTEXITCODE -ne 0){throw '仿真实例隔离检查失败。'}
+        $labConfig=Json (Join-Path $sim 'lab.json')
+        $deviceConfig=Json (Join-Path $sim 'service/appsettings.json')
+        $devicePorts=@($labConfig.webPort,$deviceConfig.Plc.Port)
+        foreach($robot in $deviceConfig.Agv.Robots){$devicePorts+=@($robot.Port,$robot.NavigationPort)}
+        if($SimulationPort -in $devicePorts){throw '仿真控制端口不能与实验Web或设备端口重复。'}
+        $probe=[Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,$SimulationPort)
+        try{$probe.Start()}finally{$probe.Stop()}
+        $newDll=Join-Path $webSource 'AgvDispatch.WebHost.dll'
+        if([Diagnostics.FileVersionInfo]::GetVersionInfo($newDll).ProductVersion -ne $manifest.releaseId){throw "WebHost必须用基线InformationalVersion=$($manifest.releaseId)构建。"}
+        $dependencies=@(Get-ChildItem -LiteralPath (Join-Path $bundle 'Web/host') -Filter 'AgvDispatch.*.dll' | Where-Object Name -ne 'AgvDispatch.WebHost.dll')
+        if(!$dependencies.Count){throw '缺少基线共享程序集。'}
+        foreach($dependency in $dependencies){
+            $candidate=Join-Path $webSource $dependency.Name
+            if(!(Test-Path -LiteralPath $candidate) -or (Hash $candidate) -ne (Hash $dependency.FullName)){throw "依赖程序集不同，需使用原发布引用编译WebHost：$($dependency.Name)"}
+        }
     }
     if(!(Test-Path -LiteralPath (Join-Path $staticSource 'index.html'))){throw '前端构建缺少index.html。'}
     foreach($file in Get-ChildItem -LiteralPath $staticSource -Recurse -Force){
         NoLinks $file.FullName
-        if(!$file.PSIsContainer -and [IO.Path]::GetRelativePath($staticSource,$file.FullName).Replace('\','/') -notmatch '^(index\.html|assets/[\w.-]+)$'){throw '静态暂存仅允许index.html和assets文件。'}
+        if(!$file.PSIsContainer -and [IO.Path]::GetRelativePath($staticSource,$file.FullName).Replace('\','/') -notmatch '^(index\.html|assets/[\w.-]+|cad/[\w.-]+)$'){throw '静态暂存仅允许index.html、assets和cad底图文件。'}
     }
-    New-Item -ItemType Directory -Path (Join-Path $patchRoot 'payload/Web/host'),(Join-Path $patchRoot 'payload/Web/wwwroot'),(Join-Path $patchRoot 'backup') -Force | Out-Null
-    foreach($name in @('AgvDispatch.WebHost.dll','AgvDispatch.WebHost.pdb')){
-        $source=Join-Path $webSource $name
-        if(Test-Path -LiteralPath $source){Copy-Item -LiteralPath $source -Destination (Join-Path $patchRoot "payload/Web/host/$name")}
+    New-Item -ItemType Directory -Path (Join-Path $patchRoot 'payload/Web/wwwroot'),(Join-Path $patchRoot 'backup') -Force | Out-Null
+    if(!$StaticOnly){
+        New-Item -ItemType Directory -Path (Join-Path $patchRoot 'payload/Web/host') -Force | Out-Null
+        foreach($name in @('AgvDispatch.WebHost.dll','AgvDispatch.WebHost.pdb')){
+            $source=Join-Path $webSource $name
+            if(Test-Path -LiteralPath $source){Copy-Item -LiteralPath $source -Destination (Join-Path $patchRoot "payload/Web/host/$name")}
+        }
     }
     Copy-Item -LiteralPath (Join-Path $staticSource 'index.html') -Destination (Join-Path $patchRoot 'payload/Web/wwwroot/index.html')
     Copy-Item -LiteralPath (Join-Path $staticSource 'assets') -Destination (Join-Path $patchRoot 'payload/Web/wwwroot/assets') -Recurse
-    $configPath=Join-Path $bundle 'Web/host/appsettings.json'
-    $config=if(Test-Path -LiteralPath $configPath){Json $configPath}else{@{}}
-    if(!$config.ContainsKey('Web')){$config.Web=@{}}
-    $config.Web.Simulation=@{Enabled=$true;Root=$sim;PythonPath=$python;ControllerPath=$controller;Port=$SimulationPort}
-    SaveJson (Join-Path $patchRoot 'payload/Web/host/appsettings.json') $config
+    $staticCad=Join-Path $staticSource 'cad'
+    if(Test-Path -LiteralPath $staticCad){Copy-Item -LiteralPath $staticCad -Destination (Join-Path $patchRoot 'payload/Web/wwwroot/cad') -Recurse}
+    if(!$StaticOnly){
+        $configPath=Join-Path $bundle 'Web/host/appsettings.json'
+        $config=if(Test-Path -LiteralPath $configPath){Json $configPath}else{@{}}
+        if(!$config.ContainsKey('Web')){$config.Web=@{}}
+        $config.Web.Simulation=@{Enabled=$true;Root=$sim;PythonPath=$python;ControllerPath=$controller;Port=$SimulationPort}
+        SaveJson (Join-Path $patchRoot 'payload/Web/host/appsettings.json') $config
+    }
     $entries=[Collections.Generic.Dictionary[string,object]]::new([StringComparer]::OrdinalIgnoreCase)
     foreach($entry in $manifest.files){
         $relative=$entry.path.Replace('\','/')
@@ -119,14 +140,18 @@ if(!$Apply){
         $relative=[IO.Path]::GetRelativePath((Join-Path $patchRoot 'payload'),$source.FullName).Replace('\','/')
         $target=Join-Path $bundle $relative;NoLinks $target
         $before=if(Test-Path -LiteralPath $target){Hash $target}else{$null}
-        if($entries.ContainsKey($relative) -and $before -ne $entries[$relative].sha256){throw "发布文件已变化：$relative"}
+        if($entries.ContainsKey($relative) -and $before -ne $entries[$relative].sha256 -and
+            (!$StaticOnly -or $relative -notlike 'Web/wwwroot/*')){
+            throw "发布文件已变化：$relative"
+        }
         $entry=@{path=$relative;bytes=$source.Length;sha256=(Hash $source.FullName)}
         $entries[$relative]=$entry
         @{path=$relative;beforeSha256=$before;afterSha256=$entry.sha256}
     })
     $patchId='simulation-web-'+(Get-Date -Format yyyyMMdd-HHmmss)+'-'+[guid]::NewGuid().ToString('N').Substring(0,6)
     $manifest.files=@($entries.Values)
-    $manifest.appliedPatches=@($manifest.appliedPatches | Where-Object {$_})+@(@{patchId=$patchId;createdAt=[DateTimeOffset]::Now.ToString('o');scope='WebHost and frontend only; original Service remains running'})
+    $scope=if($StaticOnly){'Frontend only; Service, WebHost, database, recovery and field configuration remain unchanged'}else{'WebHost and frontend only; original Service remains running'}
+    $manifest.appliedPatches=@($manifest.appliedPatches | Where-Object {$_})+@(@{patchId=$patchId;createdAt=[DateTimeOffset]::Now.ToString('o');scope=$scope})
     SaveJson (Join-Path $patchRoot 'payload/release-manifest.json') $manifest
     $changes+=@{path='release-manifest.json';beforeSha256=(Hash $manifestPath);afterSha256=(Hash (Join-Path $patchRoot 'payload/release-manifest.json'))}
     foreach($change in $changes){
@@ -141,24 +166,28 @@ if(!$Apply){
         Copy-Item -LiteralPath (Join-Path (Split-Path $bundle) $name) -Destination (Join-Path $patchRoot ('backup/'+$name))
     }
     # Back up live SQLite through its backup API, never copy a live main DB file.
-    $db=Join-Path $dailyRoot '后台5199/agv-dispatch.db'
-    $backupData=Join-Path $patchRoot 'backup/运行数据'
-    New-Item -ItemType Directory -Path (Join-Path $backupData '后台5199') -Force | Out-Null
-    $backupCode='import sqlite3,sys; s=sqlite3.connect("file:"+sys.argv[1].replace(chr(92),"/")+"?mode=ro",uri=True); d=sqlite3.connect(sys.argv[2]); s.backup(d); assert d.execute("pragma quick_check").fetchone()[0]=="ok"; d.close(); s.close()'
-    & $python -c $backupCode $db (Join-Path $backupData '后台5199/agv-dispatch.db')
-    if($LASTEXITCODE -ne 0){throw 'SQLite在线备份失败。'}
-    foreach($file in Get-ChildItem -LiteralPath (Join-Path $dailyRoot '后台5199') -File -Recurse){
-        if($file.Name -match '\.(db|sqlite3?)(-wal|-shm|-journal)?$'){continue}
-        NoLinks $file.FullName
-        $destination=Join-Path (Join-Path $backupData '后台5199') ([IO.Path]::GetRelativePath((Join-Path $dailyRoot '后台5199'),$file.FullName))
-        New-Item -ItemType Directory -Path (Split-Path $destination) -Force | Out-Null
-        Copy-Item -LiteralPath $file.FullName -Destination $destination
+    if(!$StaticOnly){
+        $db=Join-Path $dailyRoot '后台5199/agv-dispatch.db'
+        $backupData=Join-Path $patchRoot 'backup/运行数据'
+        New-Item -ItemType Directory -Path (Join-Path $backupData '后台5199') -Force | Out-Null
+        $backupCode='import sqlite3,sys; s=sqlite3.connect("file:"+sys.argv[1].replace(chr(92),"/")+"?mode=ro",uri=True); d=sqlite3.connect(sys.argv[2]); s.backup(d); assert d.execute("pragma quick_check").fetchone()[0]=="ok"; d.close(); s.close()'
+        & $python -c $backupCode $db (Join-Path $backupData '后台5199/agv-dispatch.db')
+        if($LASTEXITCODE -ne 0){throw 'SQLite在线备份失败。'}
     }
-    foreach($name in @('Web工程方案','engineering-center','vendor-map-sources','display-areas')){
-        $store=Join-Path $dailyRoot $name
-        if(Test-Path -LiteralPath $store){
-            foreach($file in Get-ChildItem -LiteralPath $store -Recurse -Force){NoLinks $file.FullName}
-            Copy-Item -LiteralPath $store -Destination (Join-Path $backupData $name) -Recurse
+    if(!$StaticOnly){
+        foreach($file in Get-ChildItem -LiteralPath (Join-Path $dailyRoot '后台5199') -File -Recurse){
+            if($file.Name -match '\.(db|sqlite3?)(-wal|-shm|-journal)?$'){continue}
+            NoLinks $file.FullName
+            $destination=Join-Path (Join-Path $backupData '后台5199') ([IO.Path]::GetRelativePath((Join-Path $dailyRoot '后台5199'),$file.FullName))
+            New-Item -ItemType Directory -Path (Split-Path $destination) -Force | Out-Null
+            Copy-Item -LiteralPath $file.FullName -Destination $destination
+        }
+        foreach($name in @('Web工程方案','engineering-center','vendor-map-sources','display-areas')){
+            $store=Join-Path $dailyRoot $name
+            if(Test-Path -LiteralPath $store){
+                foreach($file in Get-ChildItem -LiteralPath $store -Recurse -Force){NoLinks $file.FullName}
+                Copy-Item -LiteralPath $store -Destination (Join-Path $backupData $name) -Recurse
+            }
         }
     }
     # CommandLineToArgvW preserves exact existing launch arguments without shell evaluation.
@@ -174,7 +203,7 @@ public static class AgvSimulationPatchArgv {
     $arguments=[AgvSimulationPatchArgv]::Split($command)
     if($arguments[0] -ne $webExe){throw 'Web命令行身份不符。'}
     $null=Owned $session.Service;$null=Owned $session.Web
-    $patch=@{schema='agv-simulation-web-patch-v1';patchId=$patchId;baseReleaseId=$manifest.releaseId;bundle=$bundle;sessionHash=(Hash $sessionPath);session=$session;daily=$daily;webArguments=@($arguments | Select-Object -Skip 1);files=$changes;createdAt=[DateTimeOffset]::Now.ToString('o')}
+    $patch=@{schema='agv-simulation-web-patch-v1';patchId=$patchId;baseReleaseId=$manifest.releaseId;bundle=$bundle;sessionHash=(Hash $sessionPath);session=$session;daily=$daily;webArguments=@($arguments | Select-Object -Skip 1);files=$changes;staticOnly=$StaticOnly.IsPresent;createdAt=[DateTimeOffset]::Now.ToString('o')}
     SaveJson (Join-Path $patchRoot 'patch.json') $patch
     $backupHashes=@(Get-ChildItem -LiteralPath (Join-Path $patchRoot 'backup') -File -Recurse | ForEach-Object {@{path=[IO.Path]::GetRelativePath((Join-Path $patchRoot 'backup'),$_.FullName);sha256=(Hash $_.FullName)}})
     SaveJson (Join-Path $patchRoot 'backup-sha256.json') $backupHashes
@@ -192,7 +221,7 @@ try{
         if(!$path.StartsWith((Join-Path $patchRoot 'backup')+'\',[StringComparison]::OrdinalIgnoreCase) -or (Hash $path) -ne $entry.sha256){throw '原始备份已变化。'}
     }
     foreach($entry in $patch.files){
-        if($entry.path -notmatch '^(release-manifest\.json|Web/host/(AgvDispatch\.WebHost\.(dll|pdb)|appsettings\.json)|Web/wwwroot/(index\.html|assets/[\w.-]+))$'){throw '补丁超出Web范围。'}
+        if($entry.path -notmatch '^(release-manifest\.json|Web/host/(AgvDispatch\.WebHost\.(dll|pdb)|appsettings\.json)|Web/wwwroot/(index\.html|assets/[\w.-]+|cad/[\w.-]+))$'){throw '补丁超出Web范围。'}
         $target=Join-Path $bundle $entry.path;$source=Join-Path (Join-Path $patchRoot 'payload') $entry.path
         NoLinks $source;NoLinks $target
         if((Hash $source) -ne $entry.afterSha256){throw "补丁内容变化：$($entry.path)"}
@@ -216,8 +245,8 @@ try{
         if($newWeb.HasExited){throw '新Web进程提前退出。'}
         $null=Owned $session.Service
         try{
-            $config=Invoke-RestMethod 'http://127.0.0.1:5199/api/config' -TimeoutSec 3
-            $snapshot=Invoke-RestMethod 'http://127.0.0.1:5199/api/snapshot' -TimeoutSec 5
+            $config=Invoke-RestMethod 'http://127.0.0.1:5199/api/config' -TimeoutSec 10
+            $snapshot=Invoke-RestMethod 'http://127.0.0.1:5199/api/snapshot' -TimeoutSec 15
             if($snapshot.connected){
                 if($config.adapter.sha256 -ne (Hash (Join-Path $bundle 'Web/host/AgvDispatch.WebHost.dll')) -or $config.projectStoreId -ne $daily.projectStoreId -or $config.servicePipeName -ne $manifest.pipeName -or $snapshot.status.service.processId -ne $session.Service.Id -or $snapshot.status.safety.activeMapId -ne $daily.mapId -or $snapshot.status.safety.activeMapVersionId -ne $daily.mapVersion){throw '新Web版本、后台、工程路径或活动地图核对失败。'}
                 $simulation=Invoke-RestMethod 'http://127.0.0.1:5199/api/simulation' -TimeoutSec 15

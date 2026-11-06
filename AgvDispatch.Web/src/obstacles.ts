@@ -1,7 +1,7 @@
 import type { Vehicle, VehicleObstacle } from './types.ts';
 
-export const obstacleNavigationPolicy = '指定路径；保留原任务，不自动取消或改道';
-export const localDetourEvidence = '未采集车端局部轨迹，未验证自主绕障';
+export const obstacleNavigationPolicy = '车端先报Blocked/52200；5秒搜索安全替代路线，安全条件全部通过后自动改道；10秒预警、30秒报警、60秒建议封路';
+export const localDetourEvidence = '自动改道保留原任务、载荷、PLC责任和路权；位置、地图、车身包络或原任务终态未知时冻结';
 export interface ObstacleView extends VehicleObstacle { label: string; tone: 'blocked' | 'fault' | 'unknown' | 'idle'; duration: string }
 
 export function vehicleTelemetryCurrent(vehicle: Vehicle, current: boolean, now = Date.now()): boolean {

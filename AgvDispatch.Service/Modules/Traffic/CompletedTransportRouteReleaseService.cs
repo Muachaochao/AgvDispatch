@@ -52,7 +52,9 @@ public sealed class CompletedTransportRouteReleaseService(
             .Where(item => item.TaskId == taskId).FirstAsync(ct);
         var command = await database.Queryable<AgvCommandOutboxEntity>()
             .Where(item => item.TaskId == taskId && item.StepId == stepId &&
-                item.CommandType == (int)AgvCommandType.Transport).FirstAsync(ct);
+                item.CommandType == (int)AgvCommandType.Transport &&
+                item.Status == (int)AgvCommandStatus.Sent)
+            .OrderByDescending(item => item.CreatedAt).FirstAsync(ct);
         var request = await database.Queryable<TrafficRequestEntity>()
             .Where(item => item.TaskId == taskId && item.StepId == stepId).FirstAsync(ct);
         var leases = await database.Queryable<TrafficResourceLeaseEntity>()

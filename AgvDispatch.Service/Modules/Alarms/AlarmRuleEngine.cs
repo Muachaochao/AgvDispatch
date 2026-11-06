@@ -22,7 +22,8 @@ public sealed class AlarmRuleEngine(
     IActiveTaskLookup activeTasks,
     ITrafficResourceControlService trafficResources,
     ITrafficFlowMonitor trafficFlow,
-    IAlarmService alarms, IRoadClosureService? roadClosures = null) : IsolatedBackgroundService
+    IAlarmService alarms, IRoadClosureService? roadClosures = null,
+    ObstacleRecoveryStore? obstacleRecovery = null) : IsolatedBackgroundService
 {
     private readonly Dictionary<string, DateTimeOffset> _offRouteSince =
         new(StringComparer.OrdinalIgnoreCase);
@@ -91,7 +92,13 @@ public sealed class AlarmRuleEngine(
         }
         if (agvOptions.Enabled)
         {
-            AddAgvAlarms(result);
+            var recoveries = obstacleRecovery is null
+                ? new Dictionary<string, ObstacleRecoverySnapshot>(StringComparer.OrdinalIgnoreCase)
+                : (await obstacleRecovery.ListSnapshotsAsync(cancellationToken))
+                    .GroupBy(row => row.VehicleId, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(group => group.Key, group => group.OrderByDescending(row => row.UpdatedAt).First(),
+                        StringComparer.OrdinalIgnoreCase);
+            AddAgvAlarms(result, recoveries);
         }
         var tasks = await activeTasks.GetActiveTasksAsync(cancellationToken);
         foreach (var task in tasks.Where(item => item.Stage == DispatchTaskStage.Faulted))
@@ -185,7 +192,8 @@ public sealed class AlarmRuleEngine(
         }
     }
 
-    private void AddAgvAlarms(List<AlarmCandidate> result)
+    private void AddAgvAlarms(List<AlarmCandidate> result,
+        IReadOnlyDictionary<string, ObstacleRecoverySnapshot> recoveries)
     {
         var enabledIds = agvOptions.Robots.Where(robot => robot.Enabled)
             .Select(robot => robot.VehicleId).ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -227,10 +235,39 @@ public sealed class AlarmRuleEngine(
                     $"当前位置={agv.CurrentStation ?? "未知"}，来源={obstacle.Source}。{obstacle.Message}",
                     AlarmSeverity.Warning));
                 if (obstacle.State == "Prolonged")
+                {
+                    var severity = (obstacle.DurationSeconds ?? 0) >= 60
+                        ? AlarmSeverity.Critical : AlarmSeverity.Error;
                     result.Add(new AlarmCandidate(
                         $"AGV:{agv.VehicleId}:BLOCKED_PROLONGED", "AGV", agv.VehicleId,
                         "AGV_BLOCKED_PROLONGED", $"{agv.DisplayName}持续受阻超过30秒",
-                        $"本段连续观察时长={obstacle.DurationSeconds:F0}秒。{obstacle.Message}", AlarmSeverity.Warning));
+                        $"本段连续观察时长={obstacle.DurationSeconds:F0}秒。{obstacle.Message}", severity));
+                    if ((obstacle.DurationSeconds ?? 0) >= 60)
+                        result.Add(new AlarmCandidate(
+                            $"AGV:{agv.VehicleId}:BLOCKED_CLOSURE_SUGGESTED", "AGV", agv.VehicleId,
+                            "AGV_BLOCKED_CLOSURE_SUGGESTED", $"{agv.DisplayName}受阻建议封路",
+                            $"已连续受阻{obstacle.DurationSeconds:F0}秒。仅建议封锁实际受阻方向及必要上游汇入；其他无冲突任务继续，人员按现场安全规则处置。",
+                            AlarmSeverity.Critical));
+                }
+            }
+            if (recoveries.TryGetValue(agv.VehicleId, out var recovery))
+            {
+                var escalation = recovery.State switch
+                {
+                    ObstacleRecoveryStates.Warning => (AlarmSeverity.Warning, "障碍恢复持续受阻预警"),
+                    ObstacleRecoveryStates.Alarm => (AlarmSeverity.Error, "障碍恢复持续受阻报警"),
+                    ObstacleRecoveryStates.ClosureSuggested => (AlarmSeverity.Critical, "建议封锁实际受阻方向"),
+                    ObstacleRecoveryStates.Frozen => (AlarmSeverity.Critical, "无障碍替代路线，任务已冻结"),
+                    ObstacleRecoveryStates.SafetyHold => (AlarmSeverity.Error, "自动改道安全条件未通过"),
+                    ObstacleRecoveryStates.Uncertain => (AlarmSeverity.Critical, "自动改道结果待核对"),
+                    _ => (AlarmSeverity.Info, "")
+                };
+                if (escalation.Item1 != AlarmSeverity.Info)
+                    result.Add(new AlarmCandidate(
+                        $"AGV:{agv.VehicleId}:OBSTACLE_RECOVERY", "AGV", agv.VehicleId,
+                        "AGV_OBSTACLE_RECOVERY", $"{agv.DisplayName}{escalation.Item2}",
+                        $"{recovery.Message} 下一步：{recovery.NextAction}",
+                        escalation.Item1));
             }
             foreach (var alarm in agv.Alarms)
             {

@@ -5,15 +5,57 @@ import { isFresh } from './state.ts';
 export interface SimulationVehicle {
   x: number; y: number; angle?: number; station?: string; loaded?: boolean;
   current_task?: string | null; tasks?: Record<string, number>; offline?: boolean;
-  paused?: boolean; speedScale?: number; completed_segments?: number; waitReason?: string;
-  blockedByVehicle?: string | null;
+  paused?: boolean; speedScale?: number; completed_segments?: number; waitReason?: string; moving?: boolean;
+  blocked?: boolean; blockedByVehicle?: string | null;
+  recovery?: ObstacleRecoveryView;
   batteryPercent?: number; batteryVoltage?: number; charging?: boolean; speedMps?: number; distanceMeters?: number;
-  simulationControl?: { sequence?: string; error?: string | null; responseDropPending?: boolean; blockedEdges?: string[]; charging?: boolean; plc?: SimulationControls['plc'] };
+  simulationControl?: { sequence?: string; error?: string | null; responseDropPending?: boolean; blockedEdges?: string[]; obstacle?: boolean; obstacleAfterSegments?: number | null; charging?: boolean; plc?: SimulationControls['plc'] };
+}
+export interface ObstacleRecoveryView {
+  state: string; message: string; nextAction: string; blockedSince: string; durationSeconds: number;
+  candidatePath: string[]; blockedEdgeIds: string[]; safeSite?: string | null; sendAttempted?: boolean;
+}
+export function simulationObstacleRecoveryLabel(state?: string): string {
+  const labels: Record<string, string> = {
+    Blocked: '正在确认连续受阻', DetourReady: '替代路线已准备好', CancelIntent: '正在安全取消原导航',
+    AwaitingOriginalTerminal: '等待原导航确认结束', SendIntent: '正在准备替代路线', Executing: '正在执行替代路线',
+    NoRoute: '暂未找到替代路线', Warning: '持续受阻，已预警', Alarm: '持续受阻，已报警',
+    ClosureSuggested: '建议现场封路', SafetyHold: '安全条件未通过', Frozen: '任务已冻结',
+    Uncertain: '结果待核对，禁止重发', Recovered: '障碍影响已解除'
+  };
+  return labels[state ?? ''] ?? '正在核对自动处置状态';
+}
+export type SimulationVehicleVisualState = 'running' | 'waiting' | 'idle' | 'blocked' | 'fault' | 'offline';
+export function simulationVehicleVisualState(car: SimulationVehicle, fresh = true): SimulationVehicleVisualState {
+  if (!fresh || car.offline) return 'offline';
+  if (car.paused || !!car.simulationControl?.error) return 'fault';
+  if (car.blocked || car.blockedByVehicle || car.simulationControl?.obstacle) return 'blocked';
+  if (car.moving || (car.speedMps ?? 0) > .01) return 'running';
+  if (car.current_task || car.loaded) return 'waiting';
+  return 'idle';
+}
+export function simulationVehicleVisualColor(car: SimulationVehicle, fresh = true): string {
+  return {
+    running: '#41d9bf', waiting: '#e8bf64', blocked: '#ee9c63',
+    fault: '#ef7692', offline: '#65748a', idle: '#6fb9ff'
+  }[simulationVehicleVisualState(car, fresh)];
+}
+export function simulationVehicleVisualLabel(car: SimulationVehicle, fresh = true): string {
+  if (!fresh) return '状态反馈已过期';
+  return {
+    running: '正在执行行驶任务', waiting: car.current_task ? '正在等待作业条件' :
+      car.loaded ? '载箱待命' : '等待任务',
+    blocked: car.blockedByVehicle ? `前方被 ${car.blockedByVehicle} 占用` : '车端报告前方障碍',
+    fault: car.paused ? '车辆已暂停' : '车辆故障',
+    offline: '通讯中断，状态未知',
+    idle: '空载待命'
+  }[simulationVehicleVisualState(car, fresh)];
 }
 export interface SimulationNode { id: string; agvSiteId?: string | null; x: number; y: number; type?: string; enabled?: boolean; resourceIds?: string[] }
 export interface SimulationEdge { from: string; to: string; id?: string; enabled?: boolean; bidirectional?: boolean; distance?: number; speedLimit?: number; geometryKind?: string; controlPoints?: { x: number; y: number }[] | null; resourceIds?: string[]; vendorPath?: VendorPath | null }
 export interface SimulationResource { id: string; type?: string; capacity?: number; boundary?: { x: number; y: number }[] | null }
-export interface SimulationMapDefinition { name?: string; source?: string; coordinateSystem?: string; unit?: string; nodes: SimulationNode[]; edges: SimulationEdge[]; resources: SimulationResource[]; [key: string]: unknown }
+export interface SimulationAreaAnnotation { id?: string; sourceType?: string; text?: string; sourceJson?: string; [key: string]: unknown }
+export interface SimulationMapDefinition { name?: string; source?: string; coordinateSystem?: string; unit?: string; nodes: SimulationNode[]; edges: SimulationEdge[]; resources: SimulationResource[]; areaAnnotations?: SimulationAreaAnnotation[]; [key: string]: unknown }
 export interface SimulationMapWorkspace {
   project?: { mapId: string; isActive: boolean; activeVersionId?: string | null };
   published?: { mapId: string; versionId: string; status: string; definition: SimulationMapDefinition } | null;
@@ -131,6 +173,52 @@ export interface SimulationStationCatalogEntry {
   stationId: string; offset?: number; signalSource: 'verified' | 'isolated-synthetic';
   sourceLabel?: string; fieldConfirmed?: boolean;
 }
+/**
+ * Bind every explicit PLC station to one unambiguous pickup node. This is a
+ * read-only draft mapper: callers remain free to remove or reassign stations.
+ * A station ID is accepted directly or through the node's agvSiteId, which
+ * supports both engineering maps such as BUS-CNC-001/CNC-001 and standalone
+ * simulation maps that use the station ID directly.
+ */
+export function simulationStationBindingsFromCatalog(
+  nodes: SimulationNode[],
+  catalog: SimulationStationCatalogEntry[],
+) {
+  const enabled = nodes.filter(node => node.enabled !== false);
+  const stations: SimulationStationConfiguration[] = [];
+  const unresolved: { stationId: string; reason: string }[] = [];
+  const usedPickupSites = new Set<string>();
+  const ordered = [...catalog].sort((left, right) =>
+    (left.offset ?? Number.MAX_SAFE_INTEGER) - (right.offset ?? Number.MAX_SAFE_INTEGER) ||
+    left.stationId.localeCompare(right.stationId, 'zh-CN', { numeric: true }));
+  for (const entry of ordered) {
+    const matches = enabled.filter(node =>
+      node.id === entry.stationId || node.agvSiteId === entry.stationId ||
+      node.id === `BUS-${entry.stationId}` || node.agvSiteId === `BUS-${entry.stationId}`);
+    const typeless = enabled.every(node => !node.type);
+    const typed = matches.filter(node => !node.type || node.type === 'Station');
+    const candidates = typeless ? matches : typed;
+    if (candidates.length !== 1) {
+      unresolved.push({ stationId: entry.stationId,
+        reason: candidates.length === 0 ? '地图中没有对应的取货 Station 节点' : '地图中有多个同号节点，无法唯一映射' });
+      continue;
+    }
+    const pickup = candidates[0]!;
+    if (usedPickupSites.has(pickup.id)) {
+      unresolved.push({ stationId: entry.stationId, reason: `取货节点 ${pickup.id} 已映射给其他工位` });
+      continue;
+    }
+    usedPickupSites.add(pickup.id);
+    stations.push({
+      stationId: entry.stationId,
+      pickupSite: pickup.id,
+      signalSource: entry.signalSource === 'verified' && entry.fieldConfirmed !== false
+        ? 'verified' : 'isolated-synthetic',
+      priority: 0,
+    });
+  }
+  return { stations, unresolved };
+}
 export interface SimulationVehicleConfiguration {
   id: string; initialSite: string; radiusMeters: number; lengthMeters: number; widthMeters: number; initialLoaded?: boolean;
   batteryPercent?: number; speedScale?: number; voltageCurve?: { percent: number; voltage: number }[];
@@ -200,7 +288,8 @@ const metricNames: Record<string, string> = {
   maximumQueuedTasks: '最大排队任务数', maximumActiveTasks: '最大执行任务数', longestWaitSeconds: '最长派车等待（秒）',
   maxWaitingSeconds: '最长派车等待（秒）', duplicateVehicleAssignments: '同车重复分配次数', stationCount: '工位数',
   acceptedCalls: '已接收呼叫数', peakQueueLength: '最大积压任务数', maxQueueDepth: '最大积压任务数',
-  maximumWaitingTasks: '最多待派任务', maximumDuePlanCalls: '最多到期待发呼叫', maximumBusyWaitingTasks: '全部车辆忙碌时最多待派任务'
+  maximumWaitingTasks: '最多待派任务', maximumDuePlanCalls: '最多到期待发呼叫',
+  maximumBusyWaitingTasks: '全部车辆忙碌时最多待派任务', obstacleAutoDetourSends: '自动改道发送次数'
 };
 export function simulationMetricLabel(key: string): string {
   return metricNames[key] ?? (/[\u3400-\u9fff]/.test(key) ? key : '扩展检查指标');
@@ -250,13 +339,14 @@ export interface SimulationStatus {
 export interface SimulationControls {
   sequence: string;
   vehicles?: Record<string, { paused?: boolean; offline?: boolean; charging?: boolean; speedScale?: number;
-    cancelFinalReturnSegments?: number; dropNextResponse?: boolean; blockedEdges?: string[] }>;
+    cancelFinalReturnSegments?: number; dropNextResponse?: boolean; blockedEdges?: string[]; obstacle?: boolean;
+    obstacleAfterSegments?: number | null }>;
   plc?: { readyDelaySeconds?: number; doneDelaySeconds?: number; suppressReady?: boolean; suppressDone?: boolean; fault?: boolean };
 }
 export interface SimulationRun {
   name: 'normal-cycle' | 'simultaneous-calls' | 'custom-calls' | 'disconnect-reconnect' | 'plc-delay' |
     'service-restart' | 'plc-recovery' | 'resume-recovery' | 'dispatch-backlog' | 'vendor-cancel-return' |
-    'response-loss' | 'road-block-recovery';
+    'response-loss' | 'road-block-recovery' | 'obstacle-auto-detour';
   rounds: number; intervalSeconds: number; timeoutSeconds: number; calls?: SimulationCall[];
   plcFault?: 'ready' | 'done'; holdSeconds?: number; restartStage?: 'pickup' | 'delivery';
 }
@@ -299,13 +389,18 @@ export function simulationGeometry(nodes: SimulationNode[], edges: SimulationEdg
   const validNodes = nodes.filter(node => Number.isFinite(node.x) && Number.isFinite(node.y));
   const byId = new Map(validNodes.flatMap(node => [[node.id, node], ...(node.agvSiteId ? [[node.agvSiteId, node] as const] : [])] as const));
   const points = [...validNodes, ...edges.flatMap(edge => edge.controlPoints ?? []).filter(point => Number.isFinite(point.x) && Number.isFinite(point.y)), ...Object.values(cars).filter(car => Number.isFinite(car.x) && Number.isFinite(car.y))];
-  const minX = Math.min(0, ...points.map(point => point.x)), maxX = Math.max(1, ...points.map(point => point.x));
-  const minY = Math.min(0, ...points.map(point => point.y)), maxY = Math.max(1, ...points.map(point => point.y));
+  // CAD and vendor maps can use large translated coordinates. Including the
+  // origin as a synthetic bound compresses the entire factory into a corner.
+  // Use the actual scene extents, with a minimum span only for degenerate input.
+  const minX = points.length ? Math.min(...points.map(point => point.x)) : 0;
+  const minY = points.length ? Math.min(...points.map(point => point.y)) : 0;
+  const maxX = points.length ? Math.max(...points.map(point => point.x)) : 1;
+  const maxY = points.length ? Math.max(...points.map(point => point.y)) : 1;
   const scale = Math.min(700 / Math.max(1, maxX - minX), 330 / Math.max(1, maxY - minY));
   const offsetX = (800 - (maxX - minX) * scale) / 2;
   const offsetY = (430 - (maxY - minY) * scale) / 2;
   const position = (point: { x: number; y: number }) => ({ x: offsetX + (point.x - minX) * scale, y: 430 - offsetY - (point.y - minY) * scale });
-  return { scale, nodes: validNodes.map(node => ({ ...node, ...position(node) })),
+  return { scale, bounds: { minX, minY, maxX, maxY }, position, nodes: validNodes.map(node => ({ ...node, ...position(node) })),
     edges: edges.flatMap((edge, index) => {
       const from = byId.get(edge.from), to = byId.get(edge.to); if (!from || !to) return [];
       const a = position(from), b = position(to);

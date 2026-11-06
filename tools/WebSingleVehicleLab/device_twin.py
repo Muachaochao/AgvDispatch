@@ -56,6 +56,8 @@ class DeviceTwin:
         self.cancel_final_return_segments = 0
         self.task_chain_position = {}
         self.blocked_edges = set()
+        self.obstacle = False
+        self.obstacle_after_segments = None
         self.writers = set()
         self.plc_controls = dict(PLC_DEFAULTS)
         self.ready_requested_at = None
@@ -226,6 +228,8 @@ class DeviceTwin:
             self.offline, self.drop_next_response = car['offline'], car['dropNextResponse']
             self.cancel_final_return_segments = car['cancelFinalReturnSegments']
             self.blocked_edges = set(car['blockedEdges'])
+            self.obstacle = car['obstacle']
+            self.obstacle_after_segments = car.get('obstacleAfterSegments')
             self.plc_controls = value['plc']
             self.control_sequence, self.control_error = value['sequence'], None
             if self.offline:
@@ -244,7 +248,9 @@ class DeviceTwin:
                     speedScale=self.speed_scale, paused=self.paused,
                     offline=self.offline, responseDropPending=self.drop_next_response,
             cancelFinalReturnSegments=self.cancel_final_return_segments,
-                    blockedEdges=sorted(self.blocked_edges), charging=self.charging, plc=self.plc_controls)
+                    blockedEdges=sorted(self.blocked_edges), obstacle=self.obstacle,
+                    obstacleAfterSegments=self.obstacle_after_segments,
+                    charging=self.charging, plc=self.plc_controls)
 
     def at_site(self, site):
         node = self.nodes[site]
@@ -256,7 +262,7 @@ class DeviceTwin:
         while elapsed < seconds:
             if self.tasks[tid] == 6:
                 return False
-            if not self.paused and edge_id not in self.blocked_edges:
+            if not self.paused and not self.obstacle and edge_id not in self.blocked_edges:
                 elapsed += 0.1 * self.speed_scale
                 self.consume_battery(seconds=0.1 * self.speed_scale)
             await asyncio.sleep(0.1)
@@ -312,7 +318,7 @@ class DeviceTwin:
                     await asyncio.sleep(0.1)
                     continue
                 self.blocked_by_vehicle = None
-                if not self.paused and self.motion_edge not in self.blocked_edges:
+                if not self.paused and not self.obstacle and self.motion_edge not in self.blocked_edges:
                     target_speed = speed * self.speed_scale
                     self.current_speed_mps = min(target_speed, self.current_speed_mps + self.acceleration * 0.1)
                     budget = self.current_speed_mps * 0.1
@@ -365,6 +371,10 @@ class DeviceTwin:
                             self.setbit(station['offset'], 1, not self.loaded)
                 self.tasks[tid] = 4
                 self.steps += 1
+                if self.obstacle_after_segments is not None and not self.obstacle and self.steps >= self.obstacle_after_segments:
+                    self.obstacle = True
+                    self.log('vehicle-obstacle-triggered', task_id=tid, station=self.station,
+                             completed_segments=self.steps)
                 self.log('movement-complete', task_id=tid, station=self.station, operation=operation, loaded=self.loaded)
             self.current = None
             self.motion_edge = None
@@ -501,7 +511,7 @@ class DeviceTwin:
             return dict(x=self.x, y=self.y, angle=self.angle, confidence=0.99,
                         current_station=self.station, last_station=self.station,
                         battery_level=self.battery_percent, battery_voltage=self.battery_voltage(), emergency=False,
-                        blocked=self.blocked_by_vehicle is not None or self.motion_edge in self.blocked_edges,
+                        blocked=self.obstacle or self.blocked_by_vehicle is not None or self.motion_edge in self.blocked_edges,
                         navigation_status=2 if self.current else 0, errors=[], fatals=[], warnings=[],
                         vx=self.current_speed_mps if self.current and not self.paused else 0, vy=0, w=0, charging=self.charging)
         if api == 1110:
