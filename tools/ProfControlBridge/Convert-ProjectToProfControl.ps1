@@ -137,6 +137,8 @@ foreach ($node in $sourceNodes) {
 }
 
 $networkGuid = New-StableGuid "profcontrol/network/$mapId/$mapVersion"
+$loadAreaName = "VehicleLoadArea"
+$loadCargoName = "Payload"
 $payload = [ordered]@{
     networks = @(
         [ordered]@{
@@ -154,8 +156,17 @@ $payload = [ordered]@{
     beziers     = @()
     pictures    = @()
     texts       = @()
-    cargoAreaDefines = @()
-    cargoInfos       = @()
+    cargoAreaDefines = @(
+        [ordered]@{
+            name   = $loadAreaName
+            width  = $VehicleWidthMeters
+            length = $VehicleLengthMeters
+            height = 0.5
+        }
+    )
+    cargoInfos       = @(
+        [ordered]@{ name = $loadCargoName }
+    )
     containerInfos   = @()
 }
 
@@ -208,7 +219,13 @@ foreach ($vehicle in $sourceVehicles) {
         width       = $VehicleWidthMeters
         length      = $VehicleLengthMeters
         type        = [string](Get-PropertyValue $vehicle 'capability' 'AGV')
-        cargoAreas  = @()
+        cargoAreas  = @(
+            [ordered]@{
+                name       = $loadAreaName
+                cargos     = @()
+                containers = @()
+            }
+        )
     }
 }
 

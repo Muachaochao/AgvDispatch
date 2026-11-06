@@ -42,6 +42,45 @@ powershell -NoProfile -File .\Convert-ProjectToProfControl.ps1 `
 - 交通资源多边形、容量和边界：ProfControl `setMap` 公开结构没有对应字段。
 - 路段方向与单向/双向属性：公开结构没有对应字段。
 - 当前工程的 PLC 点表、业务握手、正式调度器、任务协议和故障注入：地图桥接不会迁移这些内容。
-- 车辆控制参数、加减速、电量与任务动作：需要在 ProfControl 对象属性或仿真配置中继续绑定。
+- 车辆控制参数、加减速、电量与实际取放货动作：需要在 ProfControl 对象属性或仿真配置中继续绑定。
 
 因此该桥接可用于地图、车辆初始位置和可视化核对；不能把“地图导入成功”当作业务仿真已经等价。
+
+## 实时状态桥
+
+按以下顺序操作：
+
+1. 启动隔离 ProfControl，并确认 `http://127.0.0.1:10001/swagger/index.html` 可访问。
+2. 用上面的地图桥接命令下发当前工程地图。
+3. 运行 `发布包\启动最新版Web.cmd`，打开 `http://127.0.0.1:5199/#/simulation-center`。
+4. 在“环境与地图”拉取当前工程，创建干净实例，再点击“启动仿真环境”。
+5. 另开一个 PowerShell 窗口运行下面的状态桥。
+
+状态桥命令：
+
+```powershell
+powershell -NoProfile -File .\Sync-SimulationToProfControl.ps1 `
+  -SimulationBaseUri 'http://127.0.0.1:5199' `
+  -ProfControlBaseUri 'http://127.0.0.1:10001'
+```
+
+状态桥每 500 ms 读取一次 `5199/api/simulation` 的 `device.cars`，同步：
+
+- 当前世界坐标
+- 当前角度
+- 空载/载货状态
+- 当前任务或等待原因
+- 当前站点的简短车辆标签
+
+车辆名称会显示为类似 `AGV-02 · 任务 TASK-001 | 载货 | @LM4`，任务、载荷和站点均来自 5199 的隔离仿真状态。状态桥只负责显示同步，不会向 5199 回传位置，也不会修改调度任务、PLC 握手或路权。
+
+调试时可以使用单次输出，不修改 ProfControl：
+
+```powershell
+powershell -NoProfile -File .\Sync-SimulationToProfControl.ps1 `
+  -InputPath '.\artifacts\status-sample.json' `
+  -DryRun `
+  -Once
+```
+
+默认 `ProfControlCoordinateScale=0.01`，对应 ProfControl 当前地图比例。状态桥只更新 `10001` 隔离实例，不参与正式派车、PLC 写入或路权判断。
