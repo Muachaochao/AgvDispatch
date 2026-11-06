@@ -18,6 +18,8 @@ param(
 
     [double]$VehicleLengthMeters = 0.52,
 
+    [bool]$InvertY = $true,
+
     [switch]$Send,
 
     [switch]$Force
@@ -94,7 +96,8 @@ function Get-TextSha256 {
 function Get-EdgeAngle {
     param(
         [object]$Edge,
-        [hashtable]$NodeById
+        [hashtable]$NodeById,
+        [double]$YFactor = 1.0
     )
 
     $from = $NodeById[[string](Get-PropertyValue $Edge 'from' '')]
@@ -117,7 +120,19 @@ function Get-EdgeAngle {
         return 0.0
     }
 
-    [Math]::Round([Math]::Atan2($deltaY, $deltaX) * 180.0 / [Math]::PI, 6)
+    [Math]::Round([Math]::Atan2($deltaY * $YFactor, $deltaX) * 180.0 / [Math]::PI, 6)
+}
+
+function Convert-ToProfControlPoint {
+    param(
+        [object]$Point,
+        [double]$YFactor
+    )
+
+    [ordered]@{
+        x = [double](Get-PropertyValue $Point 'x' 0)
+        y = [double](Get-PropertyValue $Point 'y' 0) * $YFactor
+    }
 }
 
 if (-not [string]::IsNullOrWhiteSpace($SimulationBaseUri)) {
@@ -185,6 +200,7 @@ $sourceResources = @(Get-PropertyValue $map 'resources' @())
 $sourceVehicles = @(Get-PropertyValue $plan 'vehicles' @())
 $mapId = [string](Get-PropertyValue $plan 'mapId' (Get-PropertyValue $map 'name' 'current-project'))
 $mapVersion = [string](Get-PropertyValue $plan 'mapVersion' '')
+$yFactor = if ($InvertY) { -1.0 } else { 1.0 }
 
 if ($sourceNodes.Count -eq 0) {
     throw 'The current map has no convertible navigation nodes.'
@@ -248,10 +264,7 @@ foreach ($node in $sourceNodes) {
         networkGuid = $networkGuid
         layerName   = ([string]::Concat([char]0x7AD9, [char]0x70B9, [char]0x5C42))
         mark        = if ([string]::IsNullOrWhiteSpace($siteId)) { $nodeId } else { $siteId }
-        position    = [ordered]@{
-            x = [double](Get-PropertyValue $node 'x' 0)
-            y = [double](Get-PropertyValue $node 'y' 0)
-        }
+        position    = Convert-ToProfControlPoint -Point $node -YFactor $yFactor
         cargoAreas  = @()
     }
 }
@@ -277,11 +290,8 @@ foreach ($vehicle in $sourceVehicles) {
         networkGuid = $networkGuid
         layerName   = ([string]::Concat([char]0x8BBE, [char]0x5907, [char]0x5C42))
         name        = $vehicleId
-        position    = [ordered]@{
-            x = [double](Get-PropertyValue $startNode 'x' 0)
-            y = [double](Get-PropertyValue $startNode 'y' 0)
-        }
-        angle       = if ($null -eq $angleEdge) { 0.0 } else { Get-EdgeAngle -Edge $angleEdge -NodeById $nodeById }
+        position    = Convert-ToProfControlPoint -Point $startNode -YFactor $yFactor
+        angle       = if ($null -eq $angleEdge) { 0.0 } else { Get-EdgeAngle -Edge $angleEdge -NodeById $nodeById -YFactor $yFactor }
         width       = $VehicleWidthMeters
         length      = $VehicleLengthMeters
         type        = [string](Get-PropertyValue $vehicle 'capability' 'AGV')
@@ -335,10 +345,10 @@ foreach ($edge in $sourceEdges) {
             layerName   = $base.layerName
             name        = $base.name
             strokeWidth = $base.strokeWidth
-            p1          = [ordered]@{ x = [double](Get-PropertyValue $from 'x' 0); y = [double](Get-PropertyValue $from 'y' 0) }
-            c1          = [ordered]@{ x = [double](Get-PropertyValue $controlPoints[0] 'x' 0); y = [double](Get-PropertyValue $controlPoints[0] 'y' 0) }
-            c2          = [ordered]@{ x = [double](Get-PropertyValue $controlPoints[1] 'x' 0); y = [double](Get-PropertyValue $controlPoints[1] 'y' 0) }
-            p2          = [ordered]@{ x = [double](Get-PropertyValue $to 'x' 0); y = [double](Get-PropertyValue $to 'y' 0) }
+            p1          = Convert-ToProfControlPoint -Point $from -YFactor $yFactor
+            c1          = Convert-ToProfControlPoint -Point $controlPoints[0] -YFactor $yFactor
+            c2          = Convert-ToProfControlPoint -Point $controlPoints[1] -YFactor $yFactor
+            p2          = Convert-ToProfControlPoint -Point $to -YFactor $yFactor
         }
     }
     else {
@@ -348,8 +358,8 @@ foreach ($edge in $sourceEdges) {
             layerName   = $base.layerName
             name        = $base.name
             strokeWidth = $base.strokeWidth
-            p1          = [ordered]@{ x = [double](Get-PropertyValue $from 'x' 0); y = [double](Get-PropertyValue $from 'y' 0) }
-            p2          = [ordered]@{ x = [double](Get-PropertyValue $to 'x' 0); y = [double](Get-PropertyValue $to 'y' 0) }
+            p1          = Convert-ToProfControlPoint -Point $from -YFactor $yFactor
+            p2          = Convert-ToProfControlPoint -Point $to -YFactor $yFactor
         }
     }
 }
@@ -405,6 +415,9 @@ $report = [ordered]@{
     vehicleDimensionsMeters = [ordered]@{
         width  = $VehicleWidthMeters
         length = $VehicleLengthMeters
+    }
+    axisTransform           = [ordered]@{
+        invertY = $InvertY
     }
     converted               = [ordered]@{
         stations = $payload.stations.Count

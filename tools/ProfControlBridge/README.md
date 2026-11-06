@@ -39,7 +39,9 @@ powershell -NoProfile -File .\Convert-ProjectToProfControl.ps1 `
   -Send
 ```
 
-该模式会从 `/api/simulation` 同时读取实际地图、地图版本、车辆数和各车起点。当前全厂方案应生成 647 个导航节点、305 个业务工位和 5 辆车。
+该模式会从 `/api/simulation` 同时读取实际地图、地图版本、车辆数和各车起点。当前全厂方案应生成 647 个导航节点、305 个业务工位和 5 辆车；三车四工位方案应生成 29 个导航节点、4 个业务工位和 3 辆车。
+
+项目地图采用 Y 轴向上，ProfControl 地图采用 Y 轴向下；桥接默认自动反转 Y，并在报告中记录 `invertY=true`。如果以后导入的地图本身已经是 ProfControl 坐标系，可显式传入 `-InvertY $false`。
 
 ## 已转换
 
@@ -74,7 +76,8 @@ powershell -NoProfile -File .\Convert-ProjectToProfControl.ps1 `
 ```powershell
 powershell -NoProfile -File .\Sync-SimulationToProfControl.ps1 `
   -SimulationBaseUri 'http://127.0.0.1:5199' `
-  -ProfControlBaseUri 'http://127.0.0.1:10001'
+  -ProfControlBaseUri 'http://127.0.0.1:10001' `
+  -EvidenceDirectory '..\..\artifacts\profcontrol-bridge\runs'
 ```
 
 状态桥每 500 ms 读取一次 `5199/api/simulation` 的 `device.cars`，同步：
@@ -85,7 +88,15 @@ powershell -NoProfile -File .\Sync-SimulationToProfControl.ps1 `
 - 当前任务或等待原因
 - 当前站点的简短车辆标签
 
-车辆名称会显示为类似 `AGV-02 · 任务 TASK-001 | 载货 | @LM4`，任务、载荷和站点均来自 5199 的隔离仿真状态。状态桥只负责显示同步，不会向 5199 回传位置，也不会修改调度任务、PLC 握手或路权。
+车辆名称使用短标签，例如 `AGV-02 · 载货执行`、`AGV-03 · 等待`；空闲车辆只显示车号。任务 GUID 和站点不会铺满地图。状态桥只负责显示同步，不会向 5199 回传位置，也不会修改调度任务、PLC 握手或路权。
+
+每次运行会在 `EvidenceDirectory` 下创建独立目录：
+
+- `metadata.json`：数据源、坐标比例及轴变换
+- `state-events.jsonl`：车辆位置、角度、载荷、任务、等待原因和场景状态的时间序列
+- `report.json`：场景结束或状态桥正常退出时保存的正式仿真报告
+
+如果只需要在场景结束时停止状态桥，可加 `-ExitOnScenarioComplete`。
 
 调试时可以使用单次输出，不修改 ProfControl：
 

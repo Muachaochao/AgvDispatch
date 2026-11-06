@@ -14,6 +14,14 @@ param(
 
     [double]$ProfControlCoordinateScale = 0.01,
 
+    [bool]$InvertY = $true,
+
+    [string]$EvidenceDirectory,
+
+    [bool]$CaptureEvidence = $true,
+
+    [switch]$ExitOnScenarioComplete,
+
     [string]$InputPath,
 
     [switch]$Once,
@@ -127,37 +135,37 @@ function Read-Status {
 }
 
 function Get-TaskLabel {
-    param([object]$Car)
+    param(
+        [string]$VehicleId,
+        [object]$Car
+    )
 
     $control = Get-PropertyValue $Car 'simulationControl' $null
     if ([bool](Get-PropertyValue $control 'offline' $false)) {
-        return (Join-CodePoints @(0x79BB, 0x7EBF))
+        return $VehicleId + ' ' + (Join-CodePoints @(0x00B7)) + ' ' + (Join-CodePoints @(0x79BB, 0x7EBF))
     }
 
     $taskId = [string](Get-PropertyValue $Car 'current_task' '')
-    $site = [string](Get-PropertyValue $Car 'station' '')
     $waitReason = [string](Get-PropertyValue $Car 'waitReason' '')
     $loaded = [bool](Get-PropertyValue $Car 'loaded' $false)
 
-    $parts = [Collections.Generic.List[string]]::new()
-    if (-not [string]::IsNullOrWhiteSpace($taskId)) {
-        $parts.Add((Join-CodePoints @(0x4EFB, 0x52A1)) + ' ' + $taskId)
+    $status = if (-not [string]::IsNullOrWhiteSpace($waitReason)) {
+        Join-CodePoints @(0x7B49, 0x5F85)
     }
-    elseif (-not [string]::IsNullOrWhiteSpace($waitReason)) {
-        $parts.Add((Join-CodePoints @(0x7B49, 0x5F85)) + ' ' + $waitReason)
+    elseif (-not [string]::IsNullOrWhiteSpace($taskId) -and $loaded) {
+        (Join-CodePoints @(0x8F7D, 0x8D27)) + (Join-CodePoints @(0x6267, 0x884C))
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($taskId)) {
+        Join-CodePoints @(0x6267, 0x884C, 0x4EFB, 0x52A1)
+    }
+    elseif ($loaded) {
+        Join-CodePoints @(0x8F7D, 0x8D27)
     }
     else {
-        $parts.Add((Join-CodePoints @(0x7A7A, 0x95F2)))
+        return $VehicleId
     }
 
-    if ($loaded) {
-        $parts.Add((Join-CodePoints @(0x8F7D, 0x8D27)))
-    }
-    if (-not [string]::IsNullOrWhiteSpace($site)) {
-        $parts.Add('@' + $site)
-    }
-
-    $parts -join ' | '
+    $VehicleId + ' ' + (Join-CodePoints @(0x00B7)) + ' ' + $status
 }
 
 function Test-InnerSuccess {
@@ -181,6 +189,29 @@ $suffixSeparator = ' ' + (Join-CodePoints @(0x00B7)) + ' '
 $profBase = $ProfControlBaseUri.TrimEnd('/')
 $simulationClient = New-JsonHttpClient
 $profClient = New-JsonHttpClient
+$yFactor = if ($InvertY) { -1.0 } else { 1.0 }
+$runStartedAt = Get-Date
+
+if ([string]::IsNullOrWhiteSpace($EvidenceDirectory)) {
+    $EvidenceDirectory = Join-Path $PSScriptRoot '..\..\artifacts\profcontrol-bridge\runs'
+}
+$runDirectory = Join-Path ([IO.Path]::GetFullPath($EvidenceDirectory)) ('run-' + $runStartedAt.ToString('yyyyMMdd-HHmmss'))
+$eventsPath = Join-Path $runDirectory 'state-events.jsonl'
+if ($CaptureEvidence) {
+    New-Item -ItemType Directory -Path $runDirectory -Force | Out-Null
+    $metadata = [ordered]@{
+        startedAt = $runStartedAt.ToString('o')
+        simulation = $SimulationBaseUri
+        profControl = $ProfControlBaseUri
+        invertY = $InvertY
+        coordinateScale = $ProfControlCoordinateScale
+    }
+    [IO.File]::WriteAllText(
+        (Join-Path $runDirectory 'metadata.json'),
+        ($metadata | ConvertTo-Json -Depth 10),
+        [Text.UTF8Encoding]::new($false)
+    )
+}
 
 if (-not $DryRun) {
     $loginValues = New-Object 'System.Collections.Generic.List[System.Collections.Generic.KeyValuePair[string,string]]'
@@ -252,9 +283,31 @@ if ($missingLoadAreas.Count -gt 0) {
     throw "ProfControl vehicles have no VehicleLoadArea: $($missingLoadAreas -join ', '). Re-run Convert-ProjectToProfControl.ps1 -Send on a clean isolated instance."
 }
 
+if (-not $DryRun) {
+    foreach ($vehicleId in $vehicleState.Keys) {
+        $currentName = $vehicleState[$vehicleId].CurrentName
+        foreach ($style in @(
+            [ordered]@{ propertyName = 'AgvViewAgvNameTextSize'; value = '12' },
+            [ordered]@{ propertyName = 'AgvViewAgvNameTextColor'; value = '#FF9AC8EA' }
+        )) {
+            $response = Invoke-JsonRequest -Client $profClient `
+                -Uri "$profBase/apiv2/setInfo/property" `
+                -Method Post `
+                -Body ([ordered]@{
+                    select = [ordered]@{ type = 'Agv'; name = $currentName }
+                    propertyName = $style.propertyName
+                    value = $style.value
+                })
+            Test-InnerSuccess -Response $response -Operation $style.propertyName
+        }
+    }
+}
+
 $startedAt = Get-Date
 $iterations = 0
 $lastSummary = ''
+$lastEvidence = ''
+$finalReportWritten = $false
 
 while ($true) {
     $iterations++
@@ -281,7 +334,12 @@ while ($true) {
     else {
         $cars = Get-PropertyValue (Get-PropertyValue $status 'device' $null) 'cars' $null
         if ($null -eq $cars) {
-            throw 'Simulation status does not contain device.cars.'
+            if ($Once) {
+                throw 'Simulation status does not contain device.cars.'
+            }
+            Write-Host 'Simulation has no active device state yet; waiting...'
+            Start-Sleep -Milliseconds $PollMilliseconds
+            continue
         }
 
         $updated = 0
@@ -300,13 +358,18 @@ while ($true) {
                 $skipped++
                 continue
             }
+            $targetY = $y * $yFactor
             $angle = [double](Get-PropertyValue $car 'angle' ($vehicleState[$vehicleId].LastAngle))
+            $displayAngle = $angle * $yFactor
+            while ($displayAngle -gt 180) { $displayAngle -= 360 }
+            while ($displayAngle -le -180) { $displayAngle += 360 }
+            $profControlAngleRadians = $displayAngle * [Math]::PI / 180.0
             $loaded = [bool](Get-PropertyValue $car 'loaded' $false)
-            $targetName = $vehicleId + $suffixSeparator + (Get-TaskLabel -Car $car)
+            $targetName = Get-TaskLabel -VehicleId $vehicleId -Car $car
 
             $positionChanged = [Math]::Abs($x - $vehicleState[$vehicleId].LastX) -gt 0.001 -or
-                [Math]::Abs($y - $vehicleState[$vehicleId].LastY) -gt 0.001
-            $angleChanged = [Math]::Abs($angle - $vehicleState[$vehicleId].LastAngle) -gt 0.1
+                [Math]::Abs($targetY - $vehicleState[$vehicleId].LastY) -gt 0.001
+            $angleChanged = [Math]::Abs($displayAngle - $vehicleState[$vehicleId].LastAngle) -gt 0.1
             $nameChanged = $targetName -ne $vehicleState[$vehicleId].CurrentName
             $loadChanged = $vehicleState[$vehicleId].LoadKnown -and
                 $loaded -ne $vehicleState[$vehicleId].Loaded
@@ -314,13 +377,13 @@ while ($true) {
             if ($DryRun) {
                 if ($positionChanged -or $angleChanged -or $nameChanged -or $loadChanged) {
                     Write-Host ("{0}: x={1:N3} y={2:N3} angle={3:N1} loaded={4} label={5}" -f
-                        $vehicleId, $x, $y, $angle, $loaded, (Get-TaskLabel -Car $car))
+                        $vehicleId, $x, $targetY, $displayAngle, $loaded, $targetName)
                 }
             }
             elseif ($positionChanged -or $angleChanged -or $nameChanged -or $loadChanged) {
                 if ($positionChanged) {
                     $pixelX = $x / $ProfControlCoordinateScale
-                    $pixelY = $y / $ProfControlCoordinateScale
+                    $pixelY = $targetY / $ProfControlCoordinateScale
                     $location = (ConvertTo-InvariantNumber $pixelX) + ',' + (ConvertTo-InvariantNumber $pixelY)
                     Invoke-JsonRequest -Client $profClient `
                         -Uri "$profBase/api/command/changeAgvLocation" `
@@ -332,7 +395,7 @@ while ($true) {
                     Invoke-JsonRequest -Client $profClient `
                         -Uri "$profBase/api/command/changeAgvAngle" `
                         -Method Post `
-                        -Body ([ordered]@{ agvName = $vehicleState[$vehicleId].CurrentName; angle = $angle }) | Out-Null
+                        -Body ([ordered]@{ agvName = $vehicleState[$vehicleId].CurrentName; angle = $profControlAngleRadians }) | Out-Null
                 }
 
                 if ($loadChanged) {
@@ -366,17 +429,82 @@ while ($true) {
             }
 
             $vehicleState[$vehicleId].LastX = $x
-            $vehicleState[$vehicleId].LastY = $y
-            $vehicleState[$vehicleId].LastAngle = $angle
+            $vehicleState[$vehicleId].LastY = $targetY
+            $vehicleState[$vehicleId].LastAngle = $displayAngle
             $vehicleState[$vehicleId].Loaded = $loaded
             $vehicleState[$vehicleId].LoadKnown = $true
         }
 
         $lastSummary = "Updated $updated vehicle(s); skipped $skipped."
         Write-Host $lastSummary
+
+        if ($CaptureEvidence) {
+            $evidence = [ordered]@{
+                capturedAt = [DateTimeOffset]::Now.ToString('o')
+                running = [bool](Get-PropertyValue $status 'running' $false)
+                fresh = [bool](Get-PropertyValue $status 'fresh' $false)
+                phase = [string](Get-PropertyValue $status 'phase' '')
+                scenario = [ordered]@{
+                    id = [string](Get-PropertyValue (Get-PropertyValue $status 'scenario' $null) 'id' '')
+                    status = [string](Get-PropertyValue (Get-PropertyValue $status 'scenario' $null) 'status' '')
+                    completedRounds = [int](Get-PropertyValue (Get-PropertyValue $status 'scenario' $null) 'completedRounds' 0)
+                    totalRounds = [int](Get-PropertyValue (Get-PropertyValue $status 'scenario' $null) 'totalRounds' 0)
+                    message = [string](Get-PropertyValue (Get-PropertyValue $status 'scenario' $null) 'message' '')
+                }
+                vehicles = @($cars.PSObject.Properties | ForEach-Object {
+                    [ordered]@{
+                        id = $_.Name
+                        x = [double](Get-PropertyValue $_.Value 'x' 0)
+                        y = [double](Get-PropertyValue $_.Value 'y' 0)
+                        angle = [double](Get-PropertyValue $_.Value 'angle' 0)
+                        station = [string](Get-PropertyValue $_.Value 'station' '')
+                        task = [string](Get-PropertyValue $_.Value 'current_task' '')
+                        loaded = [bool](Get-PropertyValue $_.Value 'loaded' $false)
+                        offline = [bool](Get-PropertyValue $_.Value 'offline' $false)
+                        waitReason = [string](Get-PropertyValue $_.Value 'waitReason' '')
+                    }
+                })
+            }
+            $evidenceText = $evidence | ConvertTo-Json -Depth 12 -Compress
+            if ($evidenceText -ne $lastEvidence) {
+                [IO.File]::AppendAllText($eventsPath, $evidenceText + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+                $lastEvidence = $evidenceText
+            }
+
+            $scenario = Get-PropertyValue $status 'scenario' $null
+            $scenarioStatus = ([string](Get-PropertyValue $scenario 'status' '')).ToLowerInvariant()
+            if (-not $finalReportWritten -and $scenarioStatus -in @('passed', 'failed', 'aborted', 'inconclusive')) {
+                $reportId = [string](Get-PropertyValue $scenario 'id' '')
+                $reportUri = if ([string]::IsNullOrWhiteSpace($reportId)) {
+                    "$($SimulationBaseUri.TrimEnd('/'))/api/simulation/report"
+                }
+                else {
+                    "$($SimulationBaseUri.TrimEnd('/'))/api/simulation/report?id=$reportId"
+                }
+                try {
+                    $completedReport = Invoke-JsonRequest -Client $simulationClient -Uri $reportUri
+                    if ($null -ne $completedReport) {
+                        [IO.File]::WriteAllText(
+                            (Join-Path $runDirectory 'report.json'),
+                            ($completedReport | ConvertTo-Json -Depth 50),
+                            [Text.UTF8Encoding]::new($false)
+                        )
+                        $finalReportWritten = $true
+                    }
+                }
+                catch {
+                    Write-Warning "Completed-scenario report was not captured: $($_.Exception.Message)"
+                }
+            }
+        }
     }
 
     if ($Once) {
+        break
+    }
+    if ($ExitOnScenarioComplete -and
+        ([string](Get-PropertyValue (Get-PropertyValue $status 'scenario' $null) 'status' '')).ToLowerInvariant() -in
+        @('passed', 'failed', 'aborted', 'inconclusive')) {
         break
     }
     if ($DurationSeconds -gt 0 -and ((Get-Date) - $startedAt).TotalSeconds -ge $DurationSeconds) {
@@ -390,6 +518,31 @@ while ($true) {
     lastSummary = $lastSummary
     dryRun = [bool]$DryRun
 } | ConvertTo-Json
+
+if ($CaptureEvidence) {
+    try {
+        $latestStatus = Read-Status
+        $latestScenario = Get-PropertyValue $latestStatus 'scenario' $null
+        $reportId = [string](Get-PropertyValue $latestScenario 'id' '')
+        $reportUri = if ([string]::IsNullOrWhiteSpace($reportId)) {
+            "$($SimulationBaseUri.TrimEnd('/'))/api/simulation/report"
+        }
+        else {
+            "$($SimulationBaseUri.TrimEnd('/'))/api/simulation/report?id=$reportId"
+        }
+        $report = Invoke-JsonRequest -Client $simulationClient -Uri $reportUri
+        if ($null -ne $report) {
+            [IO.File]::WriteAllText(
+                (Join-Path $runDirectory 'report.json'),
+                ($report | ConvertTo-Json -Depth 50),
+                [Text.UTF8Encoding]::new($false)
+            )
+        }
+    }
+    catch {
+        Write-Warning "Final simulation report was not captured: $($_.Exception.Message)"
+    }
+}
 
 $simulationClient.Dispose()
 $profClient.Dispose()
