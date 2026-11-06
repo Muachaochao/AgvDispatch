@@ -33,6 +33,8 @@ const selectedTask = ref('');
 const selectedEdge = ref('');
 const locatedResource=ref(''),locationMessage=ref('');
 const detail = ref<import('../types').TaskDetail | null>(null);
+const showFocusDetails=ref(false);
+const liveTasksExpanded=ref(false);
 const mapElement = ref<HTMLElement>();
 const mapView = ref<'top' | 'isometric'>('top');
 const mapLabels = ref<'auto'|'all'|'none'>('auto');
@@ -56,11 +58,13 @@ async function readAreas(){
 watch(()=>[store.demoMode,store.snapshot?.source,store.snapshot?.map?.id,store.snapshot?.map?.version,store.snapshot?.map?.definitionHash].join('|'),()=>{++areaEpoch;areaContext.value=null;chosenArea.value=null;areaMessage.value='';drawAreas();void readAreas();});
 
 const liveTasks=computed(()=>store.allTasks.filter(task=>!['Completed','Cancelled'].includes(task.stage)).map(task=>({task,wait:taskWait(store.snapshot,task,store.now)})));
+const visibleLiveTasks=computed(()=>liveTasks.value.slice(0,liveTasksExpanded.value?50:6));
 const chosenVehicle = computed(() => store.vehicles.find(v => v.vehicleId === selectedVehicle.value));
 const chosenObstacle = computed(() => chosenVehicle.value ? vehicleObstacle(chosenVehicle.value, store.fresh, store.now) : null);
 const selectedRoad = computed(() => store.snapshot?.map?.edges.find(edge => edge.id === selectedEdge.value));
 
 const focus=computed(()=>trafficFocus(store.snapshot,detail.value,store.now,store.demoMode));
+watch(focus,next=>{if(!next.taskId){showFocusDetails.value=false;}else if(next.blocked.length||next.blockers.length){showFocusDetails.value=true;}});
 const taskStatusTone=(stage:string,waiting=false)=>stage==='Faulted'?'fault':['Cancelled','CancellationPending','CancellationReview'].includes(stage)?'cancelled':stage==='Completed'?'completed':waiting||isWaitingStage(stage)?'waiting':'running';
 function draw() { scene?.update(store.snapshot, selectedVehicle.value, selectedEdge.value,focus.value,store.now); }
 watch([focus,()=>store.now],draw);
@@ -83,7 +87,7 @@ async function loadDetail(id: string) {
   } catch { if(selection===detailEpoch)detail.value = null; }
 }
 
-function selectTask(id: string) { autoSelectTask=false; ++detailEpoch;selectedTask.value = id; detail.value = null; if(id)void loadDetail(id); }
+function selectTask(id: string) { autoSelectTask=false; ++detailEpoch;selectedTask.value = id; detail.value = null; showFocusDetails.value=false; if(id)void loadDetail(id); }
 function openTask(id: string) { showTaskDialog.value = true; selectTask(id); }
 function setMapView(mode: 'top' | 'isometric') { mapView.value = mode; scene?.view(mode); }
 function clearLocation(){locatedResource.value='';locationMessage.value='';scene?.clearResourceFocus();}
@@ -171,20 +175,30 @@ onUnmounted(() => { ++detailEpoch;++areaEpoch;clearInterval(areaTimer);scene?.di
         <div class="traffic-focus-head">
           <label>联动任务 <select v-model="selectedTask" @change="selectTask(selectedTask)"><option value="">取消联动</option><option v-for="t in store.allTasks" :key="t.taskId" :value="t.taskId">{{t.taskId}} · {{label(t.stage)}}</option></select></label>
           <span v-if="focus.taskId" class="focus-state" :class="focus.routeMode.toLowerCase()">{{ focus.routeMode==='Current'?'当前执行路线':focus.routeMode==='Historical'?'历史命令路线':'无有效路线' }}</span>
+          <button v-if="focus.taskId" class="text-button" @click="showFocusDetails=!showFocusDetails">{{ showFocusDetails?'收起详情':'展开详情' }}</button>
           <button :disabled="!selectedTask" @click="showTaskDialog=true"><ActionIcon name="list"/>查看步骤与处置</button>
         </div>
         <template v-if="focus.taskId">
-          <div class="traffic-focus-grid">
-            <div><small>任务车辆</small><b>{{focus.vehicleId||'未分配'}}</b></div>
-            <div><small>原命令路线</small><b>{{focus.edgeIds.length?`${focus.edgeIds.length} 段 · ${focus.edgeIds.join('、')}`:'未提供'}}</b></div>
-            <div><small>持有资源</small><b>{{focus.held.join('、')||(focus.terminal?'无 · 任务已经结束并释放':'无同图当前占用')}}</b></div>
-            <div><small>阻塞资源</small><b v-if="!focus.blocked.length">{{focus.terminal?'无 · 任务已经结束':'无 · 当前未在等待资源'}}</b><span v-else><button v-for="id in focus.blocked" :key="id" @click="locateResource(id)">定位 {{id}}</button></span></div>
-            <div><small>阻塞车辆</small><b v-if="!focus.blockers.length">{{focus.terminal?'无 · 任务已经结束':'无 · 当前未发生车辆路权冲突'}}</b><span v-else><button v-for="id in focus.blockers" :key="id" @click="selectedVehicle=id">{{id}}</button></span></div>
+          <div class="focus-summary">
+            <span><small>车辆</small><b>{{focus.vehicleId||'未分配'}}</b></span>
+            <span><small>{{focus.routeMode==='Historical'?'历史路线':'当前路线'}}</small><b>{{focus.routeCount?`${focus.routeCount}/${focus.routeExpectedCount}段 · ${focus.edgeIds.length}条道路`:'未提供'}}</b></span>
+            <span><small>持有 / 阻塞</small><b>{{focus.held.length}} 资源 / {{focus.blocked.length}} 阻塞</b></span>
+            <span class="focus-alert" v-if="focus.unplotted.length">未画车体 {{focus.unplotted.join('、')}}</span>
+            <span class="focus-alert" v-if="focus.truncated">路权观察已截断</span>
           </div>
-          <p v-if="focus.unplotted.length" class="focus-warning">未画车体：{{focus.unplotted.join('、')}}。车辆位置未核定、连接无效或来自其他地图；不使用站点或路线端点代替位置。</p>
-          <p class="focus-reason">{{focus.reason}}</p>
-          <p v-if="focus.truncated" class="focus-warning">路权记录已截断，当前列表不代表全场。</p>
-          <p v-if="focus.terminal && !focus.blocked.length" class="focus-note">完成态没有“当前阻塞”属于正常结果；任务运行中发生等待或路权冲突时，这里才会出现红色资源和阻塞车辆。</p>
+          <div v-if="showFocusDetails" class="focus-details">
+            <div class="traffic-focus-grid">
+              <div><small>任务车辆</small><b>{{focus.vehicleId||'未分配'}}</b></div>
+              <div><small>原命令路线</small><b>{{focus.edgeIds.length?`${focus.edgeIds.join('、')}`:'未提供'}}</b></div>
+              <div><small>持有资源</small><b>{{focus.held.join('、')||(focus.terminal?'无 · 任务已经结束并释放':'无同图当前占用')}}</b></div>
+              <div><small>阻塞资源</small><b v-if="!focus.blocked.length">{{focus.terminal?'无 · 任务已经结束':'无 · 当前未在等待资源'}}</b><span v-else><button v-for="id in focus.blocked" :key="id" @click="locateResource(id)">定位 {{id}}</button></span></div>
+              <div><small>阻塞车辆</small><b v-if="!focus.blockers.length">{{focus.terminal?'无 · 任务已经结束':'无 · 当前未发生车辆路权冲突'}}</b><span v-else><button v-for="id in focus.blockers" :key="id" @click="selectedVehicle=id">{{id}}</button></span></div>
+            </div>
+            <p v-if="focus.unplotted.length" class="focus-warning">未画车体：{{focus.unplotted.join('、')}}。车辆位置未核定、连接无效或来自其他地图；不使用站点或路线端点代替位置。</p>
+            <p class="focus-reason">{{focus.reason}}</p>
+            <p v-if="focus.truncated" class="focus-warning">路权记录已截断，当前列表不代表全场。</p>
+            <p v-if="focus.terminal && !focus.blocked.length" class="focus-note">完成态没有“当前阻塞”属于正常结果；任务运行中发生等待或路权冲突时，这里才会出现红色资源和阻塞车辆。</p>
+          </div>
         </template>
         <p v-else class="focus-reason">{{focus.reason}}</p>
       </section>
@@ -202,11 +216,12 @@ onUnmounted(() => { ++detailEpoch;++areaEpoch;clearInterval(areaTimer);scene?.di
       <section class="control-panel live-tasks">
         <header class="section-heading"><h2>当前任务</h2><button class="text-button" @click="router.push('/tasks')"><ActionIcon name="list"/>全部</button></header>
         <div class="current-task-counts"><span>执行阶段 <b>{{ store.ringSegments[0].value }}</b></span><span>待派车 <b>{{ store.ringSegments[1].value }}</b></span></div>
-        <button v-for="{task,wait} in liveTasks.slice(0, 6)" :key="task.taskId" class="live-task" @click="openTask(task.taskId)">
+        <button v-for="{task,wait} in visibleLiveTasks" :key="task.taskId" class="live-task" @click="openTask(task.taskId)">
           <div><b>{{ task.taskId }}</b><span class="state-label" :class="taskStatusTone(task.stage, !!wait)">{{ wait?.label ?? label(task.stage) }}</span></div><small v-if="wait">业务阶段：{{label(task.stage)}} · {{wait.count}}项等待{{wait.truncated?'（观察已截断）':''}}</small>
           <p>{{ task.stationId }}<span>{{ task.vehicleId ?? '待分配' }}</span></p>
           <small>{{ wait?.reason || task.errorMessage || '点击查看步骤及PLC条件' }}</small>
         </button>
+        <button v-if="liveTasks.length > 6" class="text-button live-task-toggle" @click="liveTasksExpanded=!liveTasksExpanded">{{ liveTasksExpanded?'收起到 6 条':`展开全部 ${liveTasks.length} 条` }}</button>
         <p v-if="!liveTasks.length" class="empty-panel">当前没有未结束任务，历史任务可按时间查询。</p>
       </section>
 
@@ -254,7 +269,7 @@ onUnmounted(() => { ++detailEpoch;++areaEpoch;clearInterval(areaTimer);scene?.di
 </div>
 </template>
 
-<style scoped>.overview-page{flex:1;min-height:0;overflow:auto;padding-bottom:12px}.overview-page .control-grid{height:max(780px,calc(100dvh - 205px));flex:none;min-height:780px}.live-tasks,.shared-panel{overflow:auto}.live-tasks{min-height:290px}.right-column{min-height:760px}.distribution-panel>.panel-footnote{flex-shrink:0}.live-tasks>header,.live-tasks>.current-task-counts,.live-task{flex-shrink:0}.live-task>div{flex-wrap:wrap;gap:6px}.live-task b{overflow-wrap:anywhere;min-width:0;white-space:normal;flex:1 1 120px}.live-task small{white-space:normal;overflow-wrap:anywhere;display:block;-webkit-line-clamp:unset;overflow:visible}.shared-resource details{grid-column:1/-1;min-width:0;font-size:11px;overflow-wrap:anywhere}.shared-resource summary{cursor:pointer}.traffic-focus{padding:12px 16px;border-top:1px solid #2c4563;font-size:12px;line-height:1.8}.traffic-focus select{max-width:100%}.traffic-focus button{margin:4px}.traffic-focus-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.traffic-focus-head label{display:flex;align-items:center;gap:8px}.focus-state{font-size:10px;padding:2px 7px;border:1px solid #35536e;border-radius:10px;color:#91a9c4}.focus-state.current{color:#57d7ac;border-color:#2e765f;background:#102b2a}.focus-state.historical{color:#e2be70;border-color:#735b31;background:#2d2618}.focus-state.none{color:#8da0ba}.traffic-focus-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:7px;margin-top:10px}.traffic-focus-grid>div{min-width:0;border:1px solid #273c5d;background:#0d1832;padding:7px 8px}.traffic-focus-grid small,.focus-note{display:block;color:#7891b1;font-size:10px}.traffic-focus-grid b{display:block;margin-top:4px;color:#c9dbee;font-size:11px;line-height:1.55;overflow-wrap:anywhere}.traffic-focus-grid button{margin:0 5px 0 0}.focus-reason{padding:7px 0 0;border-top:1px solid #243958;color:#a8c1db}.focus-warning{margin-top:7px!important;padding:7px 9px;border-left:2px solid #d79a43;background:#2c2418;color:#d4b674}.focus-note{margin-top:7px!important;line-height:1.65}.resource-location{padding:0 16px;font-size:12px;line-height:1.8;color:#c5dbec}.traffic-focus p{overflow-wrap:anywhere;margin:5px 0}@media(max-width:1150px){.traffic-focus-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}@media(max-width:760px){.traffic-focus-grid{grid-template-columns:1fr}}@media(min-width:901px){.overview-page .control-grid{height:max(820px,calc(100dvh - 205px));min-height:820px}}</style>
+<style scoped>.overview-page{flex:1;min-height:0;overflow:auto;padding-bottom:12px}.overview-page .control-grid{height:max(900px,calc(100dvh - 175px));flex:none;min-height:900px}.live-tasks,.shared-panel{overflow:auto}.live-tasks{min-height:290px}.right-column{min-height:840px}.distribution-panel>.panel-footnote{flex-shrink:0}.live-tasks>header,.live-tasks>.current-task-counts,.live-task{flex-shrink:0}.live-task>div{flex-wrap:wrap;gap:6px}.live-task b{overflow-wrap:anywhere;min-width:0;white-space:normal;flex:1 1 120px}.live-task small{white-space:normal;overflow-wrap:anywhere;display:block;-webkit-line-clamp:unset;overflow:visible}.live-task-toggle{align-self:flex-start;margin:8px 12px!important}.shared-resource details{grid-column:1/-1;min-width:0;font-size:11px;overflow-wrap:anywhere}.shared-resource summary{cursor:pointer}.traffic-focus{padding:9px 16px 10px;border-top:1px solid #2c4563;font-size:12px;line-height:1.7}.traffic-focus select{max-width:100%}.traffic-focus button{margin:3px}.traffic-focus-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.traffic-focus-head label{display:flex;align-items:center;gap:8px}.focus-state{font-size:10px;padding:2px 7px;border:1px solid #35536e;border-radius:10px;color:#91a9c4}.focus-state.current{color:#57d7ac;border-color:#2e765f;background:#102b2a}.focus-state.historical{color:#e2be70;border-color:#735b31;background:#2d2618}.focus-state.none{color:#8da0ba}.focus-summary{display:flex;align-items:stretch;flex-wrap:wrap;gap:5px;margin-top:6px}.focus-summary>span{display:flex;align-items:center;gap:7px;min-height:27px;padding:3px 8px;border:1px solid #263a59;background:#0d1832}.focus-summary small{color:#7891b1;font-size:10px}.focus-summary b{color:#c9dbee;font-size:11px}.focus-summary .focus-alert{border-color:#6e5631;background:#2b2419;color:#d8b66e}.focus-details{margin-top:7px}.traffic-focus-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:7px}.traffic-focus-grid>div{min-width:0;border:1px solid #273c5d;background:#0d1832;padding:7px 8px}.traffic-focus-grid small,.focus-note{display:block;color:#7891b1;font-size:10px}.traffic-focus-grid b{display:block;margin-top:4px;color:#c9dbee;font-size:11px;line-height:1.55;overflow-wrap:anywhere}.traffic-focus-grid button{margin:0 5px 0 0}.focus-reason{padding:6px 0 0;color:#a8c1db}.focus-details .focus-reason{border-top:1px solid #243958}.focus-warning{margin-top:7px!important;padding:7px 9px;border-left:2px solid #d79a43;background:#2c2418;color:#d4b674}.focus-note{margin-top:7px!important;line-height:1.65}.resource-location{padding:0 16px;font-size:12px;line-height:1.8;color:#c5dbec}.traffic-focus p{overflow-wrap:anywhere;margin:5px 0}@media(max-width:1150px){.traffic-focus-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}@media(max-width:760px){.traffic-focus-grid{grid-template-columns:1fr}}@media(min-width:901px){.overview-page .control-grid{height:max(940px,calc(100dvh - 175px));min-height:940px}}</style>
 <style scoped>
 .obstacle-link{align-self:flex-start;margin:0 14px 12px}
 .right-column{grid-template-rows:326px minmax(180px,1fr) auto}

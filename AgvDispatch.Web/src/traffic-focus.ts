@@ -2,9 +2,9 @@ import type {Snapshot,TaskDetail} from './types.ts';
 import {isFresh,mayPlot} from './state.ts';
 import {diagnosticFresh} from './task-diagnostics.ts';
 import {taskRoute} from './task-route.ts';
-export interface TrafficFocus {taskId:string;vehicleId:string;edgeIds:string[];held:string[];blocked:string[];blockers:string[];unplotted:string[];reason:string;truncated:boolean;routeMode:'Current'|'Historical'|'None';terminal:boolean}
+export interface TrafficFocus {taskId:string;vehicleId:string;edgeIds:string[];held:string[];blocked:string[];blockers:string[];unplotted:string[];reason:string;truncated:boolean;routeMode:'Current'|'Historical'|'None';routeCount:number;routeExpectedCount:number;terminal:boolean}
 export function trafficFocus(s:Snapshot|null,d:TaskDetail|null,now:number,allowDemo=false):TrafficFocus {
- const empty:TrafficFocus={taskId:'',vehicleId:'',edgeIds:[],held:[],blocked:[],blockers:[],unplotted:[],reason:'选择任务后联动；需有效的同图后台观察',truncated:false,routeMode:'None',terminal:false};
+ const empty:TrafficFocus={taskId:'',vehicleId:'',edgeIds:[],held:[],blocked:[],blockers:[],unplotted:[],reason:'选择任务后联动；需有效的同图后台观察',truncated:false,routeMode:'None',routeCount:0,routeExpectedCount:0,terminal:false};
  if(!s?.map||!d||!isFresh(s,now)||!diagnosticFresh(true,d.diagnosticsObservedAt,now)||(s.source==='demo'&&!allowDemo))return empty;
  const current=s.tasks?.items.find(t=>t.taskId===d.task.taskId);if(!current||current.vehicleId!==d.task.vehicleId||current.stage!==d.task.stage)return empty;
  const f={...empty,taskId:d.task.taskId,vehicleId:d.task.vehicleId??''};
@@ -16,6 +16,8 @@ export function trafficFocus(s:Snapshot|null,d:TaskDetail|null,now:number,allowD
  const historicalEdges=[...new Set(historicalRoutes.flatMap(result=>result.route?.edgeIds??[]))];
  f.edgeIds=currentRoute?.route?.edgeIds??historicalEdges;
  f.routeMode=currentRoute?.route?'Current':historicalEdges.length?'Historical':'None';
+ f.routeCount=currentRoute?.route?1:historicalRoutes.length;
+ f.routeExpectedCount=currentRoute?.route?1:historicalSteps.length;
  f.reason=currentRoute?.route?currentRoute.reason:historicalEdges.length?`任务${d.task.stage==='Completed'?'已完成':d.task.stage==='Cancelled'?'已取消':'已故障'}，显示${historicalRoutes.length}/${historicalSteps.length}段可核对的历史命令路线；只用于追溯，不代表当前执行。`:terminal?'任务已结束，但没有可核对的原命令路线快照':'无当前步骤，原任务路线不自动回推';
  const traffic=s.traffic;const age=now-Date.parse(traffic?.capturedAt??'');
  if(traffic&&Number.isFinite(age)&&age>=-1000&&age<=7000){
