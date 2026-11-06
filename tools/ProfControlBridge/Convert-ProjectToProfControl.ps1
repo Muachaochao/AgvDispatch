@@ -1,0 +1,379 @@
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory)]
+    [string]$MapPath,
+
+    [Parameter(Mandatory)]
+    [string]$PlanPath,
+
+    [string]$BaseUri = 'http://127.0.0.1:10001',
+
+    [string]$OutputPath,
+
+    [double]$DefaultStrokeWidthMeters = 0.8,
+
+    [switch]$Send,
+
+    [switch]$Force
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+function Read-JsonFile {
+    param([string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "Input file not found: $Path"
+    }
+
+    [IO.File]::ReadAllText($Path, [Text.Encoding]::UTF8) | ConvertFrom-Json
+}
+
+function Get-PropertyValue {
+    param(
+        [object]$InputObject,
+        [string]$Name,
+        [object]$Default = $null
+    )
+
+    if ($null -eq $InputObject) {
+        return $Default
+    }
+
+    $property = $InputObject.PSObject.Properties[$Name]
+    if ($null -eq $property) {
+        return $Default
+    }
+
+    return $property.Value
+}
+
+function New-StableGuid {
+    param([string]$Identity)
+
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($Identity))
+        $bytes = [byte[]]::new(16)
+        [Array]::Copy($hash, 0, $bytes, 0, 16)
+        # RFC 4122 version 5-style marker; deterministic namespace UUID.
+        $bytes[6] = [byte](($bytes[6] -band 0x0f) -bor 0x50)
+        $bytes[8] = [byte](($bytes[8] -band 0x3f) -bor 0x80)
+        [guid]::new($bytes).ToString()
+    }
+    finally {
+        $sha.Dispose()
+    }
+}
+
+function Get-FileSha256 {
+    param([string]$Path)
+    (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
+function Get-EdgeAngle {
+    param(
+        [object]$Edge,
+        [hashtable]$NodeById
+    )
+
+    $from = $NodeById[[string](Get-PropertyValue $Edge 'from' '')]
+    $to = $NodeById[[string](Get-PropertyValue $Edge 'to' '')]
+    if ($null -eq $from -or $null -eq $to) {
+        return 0.0
+    }
+
+    $targetX = [double](Get-PropertyValue $to 'x' 0)
+    $targetY = [double](Get-PropertyValue $to 'y' 0)
+    $controlPoints = @(Get-PropertyValue $Edge 'controlPoints' @())
+    if ($controlPoints.Count -gt 0) {
+        $targetX = [double](Get-PropertyValue $controlPoints[0] 'x' $targetX)
+        $targetY = [double](Get-PropertyValue $controlPoints[0] 'y' $targetY)
+    }
+
+    $deltaX = $targetX - [double](Get-PropertyValue $from 'x' 0)
+    $deltaY = $targetY - [double](Get-PropertyValue $from 'y' 0)
+    if ([Math]::Abs($deltaX) -lt 1e-9 -and [Math]::Abs($deltaY) -lt 1e-9) {
+        return 0.0
+    }
+
+    [Math]::Round([Math]::Atan2($deltaY, $deltaX) * 180.0 / [Math]::PI, 6)
+}
+
+$mapFile = (Resolve-Path -LiteralPath $MapPath).Path
+$planFile = (Resolve-Path -LiteralPath $PlanPath).Path
+$map = Read-JsonFile -Path $mapFile
+$planDocument = Read-JsonFile -Path $planFile
+$plan = Get-PropertyValue $planDocument 'plan' $planDocument
+
+$sourceNodes = @(Get-PropertyValue $map 'nodes' @())
+$sourceEdges = @(Get-PropertyValue $map 'edges' @())
+$sourceResources = @(Get-PropertyValue $map 'resources' @())
+$sourceVehicles = @(Get-PropertyValue $plan 'vehicles' @())
+$mapId = [string](Get-PropertyValue $plan 'mapId' (Get-PropertyValue $map 'name' 'current-project'))
+$mapVersion = [string](Get-PropertyValue $plan 'mapVersion' '')
+
+if ($sourceNodes.Count -eq 0) {
+    throw 'The current map has no convertible navigation nodes.'
+}
+
+$nodeById = @{}
+foreach ($node in $sourceNodes) {
+    $nodeId = [string](Get-PropertyValue $node 'id' '')
+    if ([string]::IsNullOrWhiteSpace($nodeId)) {
+        throw 'The map contains a navigation node without an id.'
+    }
+    if ($nodeById.ContainsKey($nodeId)) {
+        throw "Duplicate map node: $nodeId"
+    }
+    $nodeById[$nodeId] = $node
+}
+
+$networkGuid = New-StableGuid "profcontrol/network/$mapId/$mapVersion"
+$payload = [ordered]@{
+    networks = @(
+        [ordered]@{
+            name      = [string](Get-PropertyValue $plan 'name' (Get-PropertyValue $map 'name' 'Current project'))
+            guid      = $networkGuid
+            floor     = ''
+        }
+    )
+    layers      = @()
+    agvTypes    = @()
+    agvs        = @()
+    stations    = @()
+    lines       = @()
+    arcs        = @()
+    beziers     = @()
+    pictures    = @()
+    texts       = @()
+    cargoAreaDefines = @()
+    cargoInfos       = @()
+    containerInfos   = @()
+}
+
+foreach ($node in $sourceNodes) {
+    if (-not [bool](Get-PropertyValue $node 'enabled' $true)) {
+        continue
+    }
+
+    $nodeId = [string](Get-PropertyValue $node 'id' '')
+    $siteId = [string](Get-PropertyValue $node 'agvSiteId' $nodeId)
+    $payload.stations += [ordered]@{
+        guid        = New-StableGuid "profcontrol/station/$mapId/$nodeId"
+        networkGuid = $networkGuid
+        layerName   = ([string]::Concat([char]0x7AD9, [char]0x70B9, [char]0x5C42))
+        mark        = if ([string]::IsNullOrWhiteSpace($siteId)) { $nodeId } else { $siteId }
+        position    = [ordered]@{
+            x = [double](Get-PropertyValue $node 'x' 0)
+            y = [double](Get-PropertyValue $node 'y' 0)
+        }
+        cargoAreas  = @()
+    }
+}
+
+foreach ($vehicle in $sourceVehicles) {
+    if (-not [bool](Get-PropertyValue $vehicle 'enabled' $true)) {
+        continue
+    }
+
+    $vehicleId = [string](Get-PropertyValue $vehicle 'id' '')
+    $startNodeId = [string](Get-PropertyValue $vehicle 'startNode' '')
+    if ([string]::IsNullOrWhiteSpace($vehicleId) -or -not $nodeById.ContainsKey($startNodeId)) {
+        throw "The start node $startNodeId for vehicle $vehicleId is not in the map."
+    }
+
+    $startNode = $nodeById[$startNodeId]
+    $angleEdge = $sourceEdges |
+        Where-Object { [string](Get-PropertyValue $_ 'from' '') -eq $startNodeId -and [bool](Get-PropertyValue $_ 'enabled' $true) } |
+        Select-Object -First 1
+
+    $payload.agvs += [ordered]@{
+        guid        = New-StableGuid "profcontrol/agv/$mapId/$vehicleId"
+        networkGuid = $networkGuid
+        layerName   = ([string]::Concat([char]0x8BBE, [char]0x5907, [char]0x5C42))
+        name        = $vehicleId
+        position    = [ordered]@{
+            x = [double](Get-PropertyValue $startNode 'x' 0)
+            y = [double](Get-PropertyValue $startNode 'y' 0)
+        }
+        angle       = if ($null -eq $angleEdge) { 0.0 } else { Get-EdgeAngle -Edge $angleEdge -NodeById $nodeById }
+        width       = 0.545
+        length      = 0.810
+        type        = [string](Get-PropertyValue $vehicle 'capability' 'AGV')
+        cargoAreas  = @()
+    }
+}
+
+$unsupportedDirectionEdges = 0
+$unsupportedResourceCount = $sourceResources.Count
+$skippedEdges = @()
+
+foreach ($edge in $sourceEdges) {
+    if (-not [bool](Get-PropertyValue $edge 'enabled' $true)) {
+        continue
+    }
+
+    $edgeId = [string](Get-PropertyValue $edge 'id' '')
+    $fromId = [string](Get-PropertyValue $edge 'from' '')
+    $toId = [string](Get-PropertyValue $edge 'to' '')
+    if (-not $nodeById.ContainsKey($fromId) -or -not $nodeById.ContainsKey($toId)) {
+        $skippedEdges += $edgeId
+        continue
+    }
+
+    if (-not [bool](Get-PropertyValue $edge 'bidirectional' $false)) {
+        $unsupportedDirectionEdges++
+    }
+
+    $from = $nodeById[$fromId]
+    $to = $nodeById[$toId]
+    $base = [ordered]@{
+        guid        = New-StableGuid "profcontrol/path/$mapId/$edgeId"
+        networkGuid = $networkGuid
+        layerName   = ([string]::Concat([char]0x7EBF, [char]0x8DEF, [char]0x5C42))
+        name        = $edgeId
+        strokeWidth = $DefaultStrokeWidthMeters
+    }
+
+    $geometryKind = [string](Get-PropertyValue $edge 'geometryKind' 'Line')
+    $controlPoints = @(Get-PropertyValue $edge 'controlPoints' @())
+    if ($geometryKind -eq 'CubicBezier' -and $controlPoints.Count -eq 2) {
+        $payload.beziers += [ordered]@{
+            guid        = $base.guid
+            networkGuid = $base.networkGuid
+            layerName   = $base.layerName
+            name        = $base.name
+            strokeWidth = $base.strokeWidth
+            p1          = [ordered]@{ x = [double](Get-PropertyValue $from 'x' 0); y = [double](Get-PropertyValue $from 'y' 0) }
+            c1          = [ordered]@{ x = [double](Get-PropertyValue $controlPoints[0] 'x' 0); y = [double](Get-PropertyValue $controlPoints[0] 'y' 0) }
+            c2          = [ordered]@{ x = [double](Get-PropertyValue $controlPoints[1] 'x' 0); y = [double](Get-PropertyValue $controlPoints[1] 'y' 0) }
+            p2          = [ordered]@{ x = [double](Get-PropertyValue $to 'x' 0); y = [double](Get-PropertyValue $to 'y' 0) }
+        }
+    }
+    else {
+        $payload.lines += [ordered]@{
+            guid        = $base.guid
+            networkGuid = $base.networkGuid
+            layerName   = $base.layerName
+            name        = $base.name
+            strokeWidth = $base.strokeWidth
+            p1          = [ordered]@{ x = [double](Get-PropertyValue $from 'x' 0); y = [double](Get-PropertyValue $from 'y' 0) }
+            p2          = [ordered]@{ x = [double](Get-PropertyValue $to 'x' 0); y = [double](Get-PropertyValue $to 'y' 0) }
+        }
+    }
+}
+
+function Get-ProfControlMap {
+    param([string]$Uri)
+    Invoke-RestMethod -Uri "$($Uri.TrimEnd('/'))/apiv2/getInfo/getMap" -Method Get -TimeoutSec 10
+}
+
+if ($Send) {
+    $currentMap = Get-ProfControlMap -Uri $BaseUri
+    $currentObjectCount =
+        @($currentMap.agvs).Count +
+        @($currentMap.stations).Count +
+        @($currentMap.lines).Count +
+        @($currentMap.arcs).Count +
+        @($currentMap.beziers).Count
+
+    $alreadyContainsNetwork = @($currentMap.networks) |
+        Where-Object { [string](Get-PropertyValue $_ 'guid' '') -eq $networkGuid }
+
+    if (($currentObjectCount -gt 0 -or $null -ne $alreadyContainsNetwork) -and -not $Force) {
+        throw "The target ProfControl instance is not an empty map (object count: $currentObjectCount). Use a clean instance, or explicitly pass -Force."
+    }
+}
+
+if ([string]::IsNullOrWhiteSpace($OutputPath)) {
+    $artifactRoot = Join-Path $PSScriptRoot '..\..\artifacts\profcontrol-bridge'
+    $OutputPath = Join-Path $artifactRoot 'current-project-setmap.json'
+}
+
+$outputFullPath = [IO.Path]::GetFullPath($OutputPath)
+$outputDirectory = Split-Path -Parent $outputFullPath
+if (-not [string]::IsNullOrWhiteSpace($outputDirectory)) {
+    New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
+}
+
+$payloadText = $payload | ConvertTo-Json -Depth 100
+[IO.File]::WriteAllText($outputFullPath, $payloadText, [Text.UTF8Encoding]::new($false))
+$payloadHash = Get-FileSha256 -Path $outputFullPath
+
+$report = [ordered]@{
+    generatedAt             = [DateTimeOffset]::Now.ToString('o')
+    sourceMap               = $mapFile
+    sourceMapSha256         = Get-FileSha256 -Path $mapFile
+    sourcePlan              = $planFile
+    sourcePlanSha256        = Get-FileSha256 -Path $planFile
+    mapId                   = $mapId
+    mapVersion              = $mapVersion
+    networkGuid             = $networkGuid
+    outputPayload           = $outputFullPath
+    outputPayloadSha256     = $payloadHash
+    converted               = [ordered]@{
+        stations = $payload.stations.Count
+        vehicles = $payload.agvs.Count
+        lines     = $payload.lines.Count
+        beziers   = $payload.beziers.Count
+        arcs      = $payload.arcs.Count
+    }
+    sourceCounts            = [ordered]@{
+        nodes     = $sourceNodes.Count
+        edges     = $sourceEdges.Count
+        resources = $sourceResources.Count
+        vehicles  = $sourceVehicles.Count
+    }
+    unsupported             = [ordered]@{
+        trafficResourcePolygons = $unsupportedResourceCount
+        nonBidirectionalEdges   = $unsupportedDirectionEdges
+        edgesWithMissingNode    = $skippedEdges.Count
+    }
+    warnings                = @(
+        'The ProfControl setMap API does not carry traffic-resource polygons; capacities and boundaries must be checked separately.',
+        'The ProfControl setMap API does not carry path direction; one-way and bidirectional flags are not written to the target map.',
+        'Only the map, stations and vehicle start positions are migrated. PLC signals, the production dispatcher and task protocols are out of scope.'
+    )
+    sent                    = $false
+    target                  = $BaseUri
+}
+
+if ($Send) {
+    $response = Invoke-RestMethod `
+        -Uri "$($BaseUri.TrimEnd('/'))/apiv2/setInfo/setMap" `
+        -Method Post `
+        -ContentType 'application/json; charset=utf-8' `
+        -Body ([IO.File]::ReadAllText($outputFullPath)) `
+        -TimeoutSec 30
+
+    $status = [int](Get-PropertyValue $response 'status' 0)
+    if ($status -ne 0 -and $status -ne 200) {
+        throw "ProfControl rejected the map: $($response | ConvertTo-Json -Depth 10 -Compress)"
+    }
+
+    Start-Sleep -Milliseconds 800
+    $targetMap = Get-ProfControlMap -Uri $BaseUri
+    $verified = [ordered]@{
+        network = @($targetMap.networks | Where-Object { [string](Get-PropertyValue $_ 'guid' '') -eq $networkGuid }).Count
+        stations = @($targetMap.stations | Where-Object { [string](Get-PropertyValue $_ 'networkGuid' '') -eq $networkGuid }).Count
+        vehicles = @($targetMap.agvs | Where-Object { [string](Get-PropertyValue $_ 'networkGuid' '') -eq $networkGuid }).Count
+        lines = @($targetMap.lines | Where-Object { [string](Get-PropertyValue $_ 'networkGuid' '') -eq $networkGuid }).Count
+        beziers = @($targetMap.beziers | Where-Object { [string](Get-PropertyValue $_ 'networkGuid' '') -eq $networkGuid }).Count
+    }
+
+    if ($verified.network -ne 1 -or
+        $verified.stations -ne $payload.stations.Count -or
+        $verified.vehicles -ne $payload.agvs.Count -or
+        $verified.lines -ne $payload.lines.Count -or
+        $verified.beziers -ne $payload.beziers.Count) {
+        throw "Map readback count mismatch: $($verified | ConvertTo-Json -Compress)"
+    }
+
+    $report.sent = $true
+    $report.response = $response
+    $report.verified = $verified
+}
+
+$report | ConvertTo-Json -Depth 20
