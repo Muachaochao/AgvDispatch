@@ -258,7 +258,17 @@ $lastSummary = ''
 
 while ($true) {
     $iterations++
-    $status = Read-Status
+    try {
+        $status = Read-Status
+    }
+    catch {
+        if ($Once) {
+            throw
+        }
+        Write-Warning "Simulation status read failed; retrying: $($_.Exception.Message)"
+        Start-Sleep -Milliseconds $PollMilliseconds
+        continue
+    }
     if (-not [bool](Get-PropertyValue $status 'enabled' $false)) {
         throw 'The current WebHost has no enabled isolated simulation environment.'
     }

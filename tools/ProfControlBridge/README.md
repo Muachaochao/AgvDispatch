@@ -28,6 +28,19 @@ powershell -NoProfile -File .\Convert-ProjectToProfControl.ps1 `
 
 `-Send` 默认要求目标 ProfControl 没有已有地图对象，避免重复添加。目标不是干净实例时必须先重启隔离实例；`-Force` 只用于明确理解重复对象风险后的测试。
 
+也可以直接读取 `5199` 当前选中的完整仿真实例，不再手工指定地图和方案文件：
+
+```powershell
+powershell -NoProfile -File .\Convert-ProjectToProfControl.ps1 `
+  -SimulationBaseUri 'http://127.0.0.1:5199' `
+  -VehicleWidthMeters 0.8 `
+  -VehicleLengthMeters 0.52 `
+  -BaseUri 'http://127.0.0.1:10001' `
+  -Send
+```
+
+该模式会从 `/api/simulation` 同时读取实际地图、地图版本、车辆数和各车起点。当前全厂方案应生成 647 个导航节点、305 个业务工位和 5 辆车。
+
 ## 已转换
 
 - 当前地图节点转换为 ProfControl 站点。

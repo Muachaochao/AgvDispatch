@@ -1,10 +1,10 @@
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)]
     [string]$MapPath,
 
-    [Parameter(Mandatory)]
     [string]$PlanPath,
+
+    [string]$SimulationBaseUri,
 
     [string]$BaseUri = 'http://127.0.0.1:10001',
 
@@ -78,6 +78,19 @@ function Get-FileSha256 {
     (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
+function Get-TextSha256 {
+    param([string]$Text)
+
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($Text))
+        ([BitConverter]::ToString($hash)).Replace('-', '').ToLowerInvariant()
+    }
+    finally {
+        $sha.Dispose()
+    }
+}
+
 function Get-EdgeAngle {
     param(
         [object]$Edge,
@@ -107,11 +120,64 @@ function Get-EdgeAngle {
     [Math]::Round([Math]::Atan2($deltaY, $deltaX) * 180.0 / [Math]::PI, 6)
 }
 
-$mapFile = (Resolve-Path -LiteralPath $MapPath).Path
-$planFile = (Resolve-Path -LiteralPath $PlanPath).Path
-$map = Read-JsonFile -Path $mapFile
-$planDocument = Read-JsonFile -Path $planFile
-$plan = Get-PropertyValue $planDocument 'plan' $planDocument
+if (-not [string]::IsNullOrWhiteSpace($SimulationBaseUri)) {
+    $simulationStatus = Invoke-RestMethod `
+        -Uri "$($SimulationBaseUri.TrimEnd('/'))/api/simulation" `
+        -Method Get `
+        -TimeoutSec 30
+    if (-not [bool](Get-PropertyValue $simulationStatus 'enabled' $false)) {
+        throw 'The selected WebHost does not expose an enabled isolated simulation.'
+    }
+
+    $map = Get-PropertyValue $simulationStatus 'map' $null
+    if ($null -eq $map -or @(Get-PropertyValue $map 'nodes' @()).Count -eq 0) {
+        throw 'The isolated simulation did not return a map with nodes.'
+    }
+
+    $configuration = Get-PropertyValue $simulationStatus 'configuration' $null
+    $mapIdentity = Get-PropertyValue $configuration 'mapIdentity' $null
+    $configuredVehicles = @(Get-PropertyValue $configuration 'vehicles' @())
+    $planVehicles = foreach ($configuredVehicle in $configuredVehicles) {
+        $vehicleId = [string](Get-PropertyValue $configuredVehicle 'id' '')
+        $initialSite = [string](Get-PropertyValue $configuredVehicle 'initialSite' '')
+        $startNodes = @((Get-PropertyValue $map 'nodes' @()) | Where-Object {
+            [string](Get-PropertyValue $_ 'id' '') -eq $initialSite -or
+            [string](Get-PropertyValue $_ 'agvSiteId' '') -eq $initialSite
+        })
+        if ([string]::IsNullOrWhiteSpace($vehicleId) -or $startNodes.Count -eq 0) {
+            throw "Simulation vehicle $vehicleId cannot be mapped to initial site $initialSite."
+        }
+        [pscustomobject]([ordered]@{
+            id         = $vehicleId
+            startNode  = [string](Get-PropertyValue $startNodes[0] 'id' '')
+            enabled    = $true
+            capability = 'AGV'
+        })
+    }
+
+    $plan = [pscustomobject]([ordered]@{
+        name       = [string](Get-PropertyValue $configuration 'mapName' (Get-PropertyValue $map 'name' 'Simulation'))
+        mapId      = [string](Get-PropertyValue $mapIdentity 'mapId' '')
+        mapVersion = [string](Get-PropertyValue $mapIdentity 'mapVersionId' '')
+        vehicles   = @($planVehicles)
+    })
+    $mapFile = "$($SimulationBaseUri.TrimEnd('/'))/api/simulation#map"
+    $planFile = "$($SimulationBaseUri.TrimEnd('/'))/api/simulation#configuration"
+    $mapSourceSha256 = Get-TextSha256 ($map | ConvertTo-Json -Depth 100 -Compress)
+    $planSourceSha256 = Get-TextSha256 ($plan | ConvertTo-Json -Depth 100 -Compress)
+}
+else {
+    if ([string]::IsNullOrWhiteSpace($MapPath) -or [string]::IsNullOrWhiteSpace($PlanPath)) {
+        throw 'Provide -SimulationBaseUri, or provide both -MapPath and -PlanPath.'
+    }
+    $mapFile = (Resolve-Path -LiteralPath $MapPath).Path
+    $planFile = (Resolve-Path -LiteralPath $PlanPath).Path
+    $map = Read-JsonFile -Path $mapFile
+    $planDocument = Read-JsonFile -Path $planFile
+    $plan = Get-PropertyValue $planDocument 'plan' $planDocument
+    $mapSourceSha256 = Get-FileSha256 -Path $mapFile
+    $planSourceSha256 = Get-FileSha256 -Path $planFile
+}
 
 $sourceNodes = @(Get-PropertyValue $map 'nodes' @())
 $sourceEdges = @(Get-PropertyValue $map 'edges' @())
@@ -328,9 +394,9 @@ $payloadHash = Get-FileSha256 -Path $outputFullPath
 $report = [ordered]@{
     generatedAt             = [DateTimeOffset]::Now.ToString('o')
     sourceMap               = $mapFile
-    sourceMapSha256         = Get-FileSha256 -Path $mapFile
+    sourceMapSha256         = $mapSourceSha256
     sourcePlan              = $planFile
-    sourcePlanSha256        = Get-FileSha256 -Path $planFile
+    sourcePlanSha256        = $planSourceSha256
     mapId                   = $mapId
     mapVersion              = $mapVersion
     networkGuid             = $networkGuid
