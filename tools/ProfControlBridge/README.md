@@ -9,7 +9,9 @@
 ```powershell
 powershell -NoProfile -File .\Convert-ProjectToProfControl.ps1 `
   -MapPath '..\..\..\发布包\运行数据\后台5199\merged-runtime-new-map.json' `
-  -PlanPath '..\..\..\发布包\运行数据\engineering-center\draft.json'
+  -PlanPath '..\..\..\发布包\运行数据\engineering-center\draft.json' `
+  -VehicleWidthMeters 0.8 `
+  -VehicleLengthMeters 0.52
 ```
 
 显式下发到隔离 ProfControl：
@@ -18,6 +20,8 @@ powershell -NoProfile -File .\Convert-ProjectToProfControl.ps1 `
 powershell -NoProfile -File .\Convert-ProjectToProfControl.ps1 `
   -MapPath '..\..\..\发布包\运行数据\后台5199\merged-runtime-new-map.json' `
   -PlanPath '..\..\..\发布包\运行数据\engineering-center\draft.json' `
+  -VehicleWidthMeters 0.8 `
+  -VehicleLengthMeters 0.52 `
   -BaseUri 'http://127.0.0.1:10001' `
   -Send
 ```
@@ -31,6 +35,7 @@ powershell -NoProfile -File .\Convert-ProjectToProfControl.ps1 `
 - 普通路段转换为 `Line`。
 - 有两个控制点的 `CubicBezier` 转换为 `Bezier`。
 - 输出源地图、方案、转换包 SHA256 和对象计数。
+- 默认车辆尺寸使用用户确认的 `800 mm × 520 mm`；可通过参数覆盖。
 
 ## 未转换
 

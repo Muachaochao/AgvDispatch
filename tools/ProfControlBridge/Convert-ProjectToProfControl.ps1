@@ -10,7 +10,13 @@ param(
 
     [string]$OutputPath,
 
+    [string]$ReportPath,
+
     [double]$DefaultStrokeWidthMeters = 0.8,
+
+    [double]$VehicleWidthMeters = 0.8,
+
+    [double]$VehicleLengthMeters = 0.52,
 
     [switch]$Send,
 
@@ -199,8 +205,8 @@ foreach ($vehicle in $sourceVehicles) {
             y = [double](Get-PropertyValue $startNode 'y' 0)
         }
         angle       = if ($null -eq $angleEdge) { 0.0 } else { Get-EdgeAngle -Edge $angleEdge -NodeById $nodeById }
-        width       = 0.545
-        length      = 0.810
+        width       = $VehicleWidthMeters
+        length      = $VehicleLengthMeters
         type        = [string](Get-PropertyValue $vehicle 'capability' 'AGV')
         cargoAreas  = @()
     }
@@ -313,6 +319,10 @@ $report = [ordered]@{
     networkGuid             = $networkGuid
     outputPayload           = $outputFullPath
     outputPayloadSha256     = $payloadHash
+    vehicleDimensionsMeters = [ordered]@{
+        width  = $VehicleWidthMeters
+        length = $VehicleLengthMeters
+    }
     converted               = [ordered]@{
         stations = $payload.stations.Count
         vehicles = $payload.agvs.Count
@@ -340,6 +350,11 @@ $report = [ordered]@{
     target                  = $BaseUri
 }
 
+if ([string]::IsNullOrWhiteSpace($ReportPath)) {
+    $ReportPath = [IO.Path]::ChangeExtension($outputFullPath, '.report.json')
+}
+$reportFullPath = [IO.Path]::GetFullPath($ReportPath)
+
 if ($Send) {
     $response = Invoke-RestMethod `
         -Uri "$($BaseUri.TrimEnd('/'))/apiv2/setInfo/setMap" `
@@ -362,13 +377,21 @@ if ($Send) {
         lines = @($targetMap.lines | Where-Object { [string](Get-PropertyValue $_ 'networkGuid' '') -eq $networkGuid }).Count
         beziers = @($targetMap.beziers | Where-Object { [string](Get-PropertyValue $_ 'networkGuid' '') -eq $networkGuid }).Count
     }
+    $targetVehicles = @($targetMap.agvs | Where-Object {
+        [string](Get-PropertyValue $_ 'networkGuid' '') -eq $networkGuid
+    })
+    $dimensionMismatch = @($targetVehicles | Where-Object {
+        [Math]::Abs([double](Get-PropertyValue $_ 'width' 0) - $VehicleWidthMeters) -gt 0.000001 -or
+        [Math]::Abs([double](Get-PropertyValue $_ 'length' 0) - $VehicleLengthMeters) -gt 0.000001
+    })
 
     if ($verified.network -ne 1 -or
         $verified.stations -ne $payload.stations.Count -or
         $verified.vehicles -ne $payload.agvs.Count -or
         $verified.lines -ne $payload.lines.Count -or
-        $verified.beziers -ne $payload.beziers.Count) {
-        throw "Map readback count mismatch: $($verified | ConvertTo-Json -Compress)"
+        $verified.beziers -ne $payload.beziers.Count -or
+        $dimensionMismatch.Count -ne 0) {
+        throw "Map readback validation mismatch: $($verified | ConvertTo-Json -Compress)"
     }
 
     $report.sent = $true
@@ -376,4 +399,12 @@ if ($Send) {
     $report.verified = $verified
 }
 
-$report | ConvertTo-Json -Depth 20
+$report.outputReport = $reportFullPath
+$reportText = $report | ConvertTo-Json -Depth 20
+$reportDirectory = Split-Path -Parent $reportFullPath
+if (-not [string]::IsNullOrWhiteSpace($reportDirectory)) {
+    New-Item -ItemType Directory -Path $reportDirectory -Force | Out-Null
+}
+[IO.File]::WriteAllText($reportFullPath, $reportText, [Text.UTF8Encoding]::new($false))
+
+$reportText
