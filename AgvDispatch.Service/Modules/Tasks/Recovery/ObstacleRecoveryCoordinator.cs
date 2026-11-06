@@ -760,6 +760,15 @@ public sealed class ObstacleRecoveryCoordinator(
         if (robot.LocalizationConfidence is not { } confidence ||
             confidence < options.MinimumLocalizationConfidence)
             return "车辆定位置信度不足。";
+        var map = activeMap.Current;
+        var station = map?.Definition.Nodes.Where(node => node.Enabled &&
+            string.Equals(node.AgvSiteId, robot.CurrentStation, StringComparison.OrdinalIgnoreCase)).ToArray();
+        if (map is null || station is not { Length: 1 } ||
+            robot.X is not { } x || !double.IsFinite(x) ||
+            robot.Y is not { } y || !double.IsFinite(y) ||
+            Math.Sqrt(Math.Pow(x - station[0].X, 2) + Math.Pow(y - station[0].Y, 2)) >
+                options.MaximumStationDeviationMeters)
+            return "车辆尚未停靠在可信命名站点，当前厂家接口不能从路段中间冒充站点重发；等待车端局部恢复或人工安全点处置。";
         var tolerance = options.StoppedVelocityToleranceMetersPerSecond;
         if (robot.VelocityX is not { } vx || !double.IsFinite(vx) || Math.Abs(vx) > tolerance ||
             robot.VelocityY is not { } vy || !double.IsFinite(vy) || Math.Abs(vy) > tolerance ||

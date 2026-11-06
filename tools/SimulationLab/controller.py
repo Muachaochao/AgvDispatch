@@ -991,7 +991,7 @@ class Runtime:
                 PollIntervalMs=500, DetourAfterSeconds=5, WarningAfterSeconds=10,
                 AlarmAfterSeconds=30, ClosureSuggestionAfterSeconds=60,
                 StableStopObservationMs=500, StoppedVelocityToleranceMetersPerSecond=0.02,
-                MinimumLocalizationConfidence=0.5)
+                MinimumLocalizationConfidence=0.5, MaximumStationDeviationMeters=0.3)
             lab.update(robotPort=robots[0]['Port'], navigationPort=robots[0]['NavigationPort'])
             from station_catalog import write_private_signal_table
             signal_target = target / 'service/config/simulation-signals.csv'

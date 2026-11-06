@@ -14,6 +14,7 @@ public sealed class ObstacleRecoveryOptions
     public int StableStopObservationMs { get; set; } = 500;
     public double StoppedVelocityToleranceMetersPerSecond { get; set; } = 0.02;
     public double MinimumLocalizationConfidence { get; set; } = 0.5;
+    public double MaximumStationDeviationMeters { get; set; } = 0.3;
 
     public void Validate()
     {
@@ -31,5 +32,7 @@ public sealed class ObstacleRecoveryOptions
             throw new InvalidOperationException("ObstacleRecovery:StoppedVelocityToleranceMetersPerSecond必须在0至0.2之间。");
         if (MinimumLocalizationConfidence is < 0 or > 1)
             throw new InvalidOperationException("ObstacleRecovery:MinimumLocalizationConfidence必须在0至1之间。");
+        if (MaximumStationDeviationMeters is <= 0 or > 5)
+            throw new InvalidOperationException("ObstacleRecovery:MaximumStationDeviationMeters必须在0至5米之间。");
     }
 }
