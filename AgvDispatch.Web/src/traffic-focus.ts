@@ -10,11 +10,13 @@ export function trafficFocus(s:Snapshot|null,d:TaskDetail|null,now:number,allowD
  const f={...empty,taskId:d.task.taskId,vehicleId:d.task.vehicleId??''};
  const terminal=['Completed','Cancelled','Faulted'].includes(d.task.stage);f.terminal=terminal;
  const currentStep=d.steps.find(x=>x.isCurrent);
- const latestRouteStep=terminal?[...d.steps].reverse().find(step=>[1,3,5,7].includes(step.sequence)&&(d.commands??[]).some(command=>command.stepId===step.stepId&&command.route)):undefined;
- const routeStep=currentStep??latestRouteStep;
- const r=routeStep?taskRoute(d,routeStep.sequence,s.map,true,now):{route:null,reason:terminal?'任务已结束，但没有可核对的原命令路线快照':'无当前步骤，原任务路线不自动回推'};
- f.edgeIds=r.route?.edgeIds??[];f.routeMode=r.route?(currentStep?'Current':'Historical'):'None';
- f.reason=currentStep||!r.route?r.reason:`任务${d.task.stage==='Completed'?'已完成':d.task.stage==='Cancelled'?'已取消':'已故障'}，显示最后一段已发送命令的历史路线；只用于追溯，不代表当前执行。${r.reason}`;
+ const currentRoute=currentStep?taskRoute(d,currentStep.sequence,s.map,true,now):null;
+ const historicalSteps=terminal?d.steps.filter(step=>[1,3,5,7].includes(step.sequence)&&(d.commands??[]).some(command=>command.stepId===step.stepId&&command.route)):[];
+ const historicalRoutes=historicalSteps.map(step=>taskRoute(d,step.sequence,s.map,true,now)).filter(result=>!!result.route);
+ const historicalEdges=[...new Set(historicalRoutes.flatMap(result=>result.route?.edgeIds??[]))];
+ f.edgeIds=currentRoute?.route?.edgeIds??historicalEdges;
+ f.routeMode=currentRoute?.route?'Current':historicalEdges.length?'Historical':'None';
+ f.reason=currentRoute?.route?currentRoute.reason:historicalEdges.length?`任务${d.task.stage==='Completed'?'已完成':d.task.stage==='Cancelled'?'已取消':'已故障'}，显示${historicalRoutes.length}/${historicalSteps.length}段可核对的历史命令路线；只用于追溯，不代表当前执行。`:terminal?'任务已结束，但没有可核对的原命令路线快照':'无当前步骤，原任务路线不自动回推';
  const traffic=s.traffic;const age=now-Date.parse(traffic?.capturedAt??'');
  if(traffic&&Number.isFinite(age)&&age>=-1000&&age<=7000){
   const same=(o:{mapId?:string|null;mapVersionId?:string|null})=>o.mapId===s.map!.id&&o.mapVersionId===s.map!.version;
