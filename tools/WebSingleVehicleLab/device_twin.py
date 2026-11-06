@@ -53,6 +53,8 @@ class DeviceTwin:
         self.current_speed_mps = 0.0
         self.distance_meters = 0.0
         self.paused = self.offline = self.drop_next_response = False
+        self.cancel_final_return_segments = 0
+        self.task_chain_position = {}
         self.blocked_edges = set()
         self.writers = set()
         self.plc_controls = dict(PLC_DEFAULTS)
@@ -222,6 +224,7 @@ class DeviceTwin:
             self.speed_scale, self.paused = car['speedScale'], car['paused']
             self.charging = car['charging']
             self.offline, self.drop_next_response = car['offline'], car['dropNextResponse']
+            self.cancel_final_return_segments = car['cancelFinalReturnSegments']
             self.blocked_edges = set(car['blockedEdges'])
             self.plc_controls = value['plc']
             self.control_sequence, self.control_error = value['sequence'], None
@@ -240,6 +243,7 @@ class DeviceTwin:
         return dict(sequence=self.control_sequence, error=self.control_error,
                     speedScale=self.speed_scale, paused=self.paused,
                     offline=self.offline, responseDropPending=self.drop_next_response,
+            cancelFinalReturnSegments=self.cancel_final_return_segments,
                     blockedEdges=sorted(self.blocked_edges), charging=self.charging, plc=self.plc_controls)
 
     def at_site(self, site):
@@ -263,6 +267,13 @@ class DeviceTwin:
             item = await self.queue.get()
             tid = item['task_id']
             if self.tasks[tid] == 6:
+                self.queue.task_done()
+                continue
+            chain = self.task_chain_position.get(tid)
+            if chain is not None and chain[0] >= chain[1]:
+                self.tasks[tid] = 6
+                self.log('vendor-segment-cancelled', task_id=tid, chain_index=chain[0], cancel_from=chain[1],
+                         station=self.station, operation=item.get('operation'))
                 self.queue.task_done()
                 continue
             if not self.at_site(item['source_id']):
@@ -528,9 +539,17 @@ class DeviceTwin:
             for item in items:
                 if item['task_id'] in self.tasks:
                     return dict(ret_code=400,err_msg='Duplicate id')
-            for item in items:
+            cancel_count = self.cancel_final_return_segments if items[-1].get('operation') == 'JackUnload' else 0
+            cancel_from = max(0, len(items) - cancel_count) if cancel_count else None
+            for index, item in enumerate(items):
                 self.tasks[item['task_id']]=1
+                if cancel_from is not None:
+                    self.task_chain_position[item['task_id']] = (index, cancel_from)
                 self.queue.put_nowait(item)
+            if cancel_from is not None:
+                self.cancel_final_return_segments = 0
+                self.log('vendor-chain-cancel-scheduled', task_ids=[item['task_id'] for item in items],
+                         cancel_from_segment=cancel_from, cancelled_segments=len(items) - cancel_from)
             return dict(ret_code=0)
         if api == 3003:
             tid=request.get('taskId')

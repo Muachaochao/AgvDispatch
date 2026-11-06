@@ -50,6 +50,37 @@ export interface SimulationCurrentMap {
   } } | null;
   parameterWarning: string;
 }
+
+export function simulationVehicleOriginsFromLive(
+  vehicles: { vehicleId?: string | null; currentStation?: string | null }[],
+  nodes: SimulationNode[],
+) {
+  const nodeBySite = new Map<string, SimulationNode>();
+  for (const node of nodes) {
+    if (node.id) nodeBySite.set(node.id, node);
+    if (node.agvSiteId) nodeBySite.set(node.agvSiteId, node);
+  }
+  const positions: Record<string, string> = {};
+  const used = new Set<string>();
+  const conflicts: string[] = [];
+  const unmatched: string[] = [];
+  for (const vehicle of vehicles) {
+    if (!vehicle.vehicleId) continue;
+    const node = vehicle.currentStation ? nodeBySite.get(vehicle.currentStation) : undefined;
+    if (!node) {
+      unmatched.push(vehicle.vehicleId);
+      continue;
+    }
+    if (used.has(node.id)) {
+      conflicts.push(`${vehicle.vehicleId}：${vehicle.currentStation}`);
+      continue;
+    }
+    used.add(node.id);
+    positions[vehicle.vehicleId] = node.id;
+  }
+  return { positions, matched: Object.keys(positions), conflicts, unmatched };
+}
+
 export async function loadCurrentSimulationMap(read: (path: string) => Promise<unknown>, now = () => Date.now()): Promise<SimulationCurrentMap> {
   const before = await read('/api/snapshot') as Snapshot;
   if (before?.source !== 'backend' || !isFresh(before, now()) || !before.map?.id || !before.map.version || !before.map.definitionHash)
@@ -218,12 +249,14 @@ export interface SimulationStatus {
 }
 export interface SimulationControls {
   sequence: string;
-  vehicles?: Record<string, { paused?: boolean; offline?: boolean; charging?: boolean; speedScale?: number; dropNextResponse?: boolean; blockedEdges?: string[] }>;
+  vehicles?: Record<string, { paused?: boolean; offline?: boolean; charging?: boolean; speedScale?: number;
+    cancelFinalReturnSegments?: number; dropNextResponse?: boolean; blockedEdges?: string[] }>;
   plc?: { readyDelaySeconds?: number; doneDelaySeconds?: number; suppressReady?: boolean; suppressDone?: boolean; fault?: boolean };
 }
 export interface SimulationRun {
   name: 'normal-cycle' | 'simultaneous-calls' | 'custom-calls' | 'disconnect-reconnect' | 'plc-delay' |
-    'service-restart' | 'plc-recovery' | 'resume-recovery' | 'dispatch-backlog';
+    'service-restart' | 'plc-recovery' | 'resume-recovery' | 'dispatch-backlog' | 'vendor-cancel-return' |
+    'response-loss' | 'road-block-recovery';
   rounds: number; intervalSeconds: number; timeoutSeconds: number; calls?: SimulationCall[];
   plcFault?: 'ready' | 'done'; holdSeconds?: number; restartStage?: 'pickup' | 'delivery';
 }

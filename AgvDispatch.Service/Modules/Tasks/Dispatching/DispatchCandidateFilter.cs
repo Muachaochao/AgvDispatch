@@ -46,6 +46,22 @@ public sealed class DispatchCandidateFilter(DispatchOrchestratorOptions options,
         return (travel, Math.Max(0, route.Cost - graphTravel));
     }
 
+    public static IReadOnlyList<string> PhysicalPickupOccupants(
+        string pickup,
+        MapDefinition? definition,
+        IEnumerable<AgvVehicleStatus> vehicles)
+    {
+        var pickupLogicalNode = definition is null ? pickup : MapRouteSiteMapper.ResolveLogicalNodeId(definition, pickup);
+        return vehicles
+            .Where(vehicle => !string.IsNullOrWhiteSpace(vehicle.CurrentStation))
+            .Where(vehicle => string.Equals(
+                definition is null ? vehicle.CurrentStation : MapRouteSiteMapper.ResolveLogicalNodeId(definition, vehicle.CurrentStation!),
+                pickupLogicalNode, StringComparison.OrdinalIgnoreCase))
+            .Select(vehicle => vehicle.VehicleId)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
     public async Task<DispatchCandidateGraph> BuildAsync(DispatchQueueWindow queue, DispatchAssignmentOptions policy,
         ActiveMapRuntimeSnapshot? map, CancellationToken ct)
     {
@@ -63,6 +79,11 @@ public sealed class DispatchCandidateFilter(DispatchOrchestratorOptions options,
             var pickup = options.GetPickupSite(task.StationId);
             if (pickup is null || !queue.Ready.TryGetValue(task.TaskId, out var step))
             { result.TaskReasons[task.TaskId] = pickup is null ? "未配置取货站点。" : "首步骤尚未就绪。"; continue; }
+            // Candidate builds can overlap the active-map refresh boundary. Use
+            // the live runtime definition as a fallback so vendor IDs are still
+            // resolved before the physical-occupancy guard runs.
+            var definition = map?.Definition ?? activeMap.Current?.Definition;
+            var physicalOccupants = PhysicalPickupOccupants(pickup, definition, vehicles);
             var unavailable = await trafficResources.GetUnavailableResourceIdsAsync(task.TaskId, ct);
             var returnRoute = policy.ReturnCostWeight == 0 ? null : options.StandbySites.Select(site => Plan(pickup, site, new HashSet<string>()))
                 .Where(r => r is not null).OrderBy(r => r!.Cost).FirstOrDefault();
@@ -79,6 +100,16 @@ public sealed class DispatchCandidateFilter(DispatchOrchestratorOptions options,
                 if (reason is null && taskSwitchGuard is not null && !await taskSwitchGuard.AllowsVehicleAsync(vehicle.VehicleId, task.TaskId, null, ct))
                     reason = "受控换单尚未交接。";
                 if (reason is not null) { rows.Add(new(vehicle.VehicleId, 0, 0, reason, false)); continue; }
+                var otherOccupants = physicalOccupants
+                    .Where(occupant => !string.Equals(occupant, vehicle.VehicleId, StringComparison.OrdinalIgnoreCase))
+                    .ToArray();
+                if (otherOccupants.Length > 0)
+                {
+                    rows.Add(new(vehicle.VehicleId, 0, 0,
+                        $"目标取货站被{string.Join('、', otherOccupants)}实际占用，等待其驶离后再派车；不得提前锁定目标站路权。",
+                        false));
+                    continue;
+                }
                 var route = Plan(vehicle.CurrentStation!, pickup, unavailable);
                 if (route is not { Nodes.Count: >= 2 })
                 {

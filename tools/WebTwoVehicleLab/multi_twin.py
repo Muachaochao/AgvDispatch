@@ -65,7 +65,9 @@ async def run(root):
     vehicle_ids = [robot['VehicleId'] for robot in robots]
     if len(set(vehicle_ids)) != len(vehicle_ids) or any(not isinstance(v, str) or not v or Path(v).name != v or v in ('.', '..') or '/' in v or '\\' in v for v in vehicle_ids):
         raise RuntimeError('Unique path-safe virtual vehicle IDs required')
-    sites = lab.get('initialSites')
+    # The controller uses a short-lived safe-stop set while the first authored
+    # map is activated, then changes this to the exact field-snapshot sites.
+    sites = lab.get('runtimeInitialSites') or lab.get('initialSites')
     if multi and (not isinstance(sites, dict) or set(sites) != set(vehicle_ids)):
         raise RuntimeError('Explicit initialSites for every virtual car required')
     if (root / 'device-state.json').exists():

@@ -71,6 +71,29 @@ Check(corridorGraph.Resources[corridorResourceId] is
     "automatic corridor is a capacity-one single lane with conservative boundary");
 Check(corridorGraph.FindShortestRoute("AUX", "R", new HashSet<string> { corridorResourceId }) is null,
     "occupied corridor cannot be used as an intermediate shortcut");
+var mergeDefinition = new MapDefinition(
+    "automatic-waypoint-merge", "", "LocalCartesian", "m",
+    [
+        Node("MERGE-WEST", 0, 0),
+        Node("MERGE", 2, 0) with { Type = MapNodeType.Waypoint },
+        Node("MERGE-EAST", 4, 0),
+        Node("MERGE-SOUTH", 2, -2)
+    ],
+    [
+        Edge("WEST-MERGE", "MERGE-WEST", "MERGE", 2),
+        Edge("MERGE-EAST", "MERGE", "MERGE-EAST", 2),
+        Edge("SOUTH-MERGE", "MERGE-SOUTH", "MERGE", 2)
+    ],
+    []);
+var mergeGraph = mergeDefinition.ToGraph();
+var westMerge = mergeGraph.FindShortestRoute("MERGE-WEST", "MERGE-EAST")!;
+var southMerge = mergeGraph.FindShortestRoute("MERGE-SOUTH", "MERGE-EAST")!;
+var sharedMergeIds = westMerge.ResourceIds.Intersect(southMerge.ResourceIds, StringComparer.OrdinalIgnoreCase).ToArray();
+Check(sharedMergeIds.Length == 1 && MapCorridorResources.IsAutomatic(sharedMergeIds[0]),
+    "one-way routes that merge at a Waypoint share a runtime capacity-one node guard");
+Check(mergeGraph.Resources[sharedMergeIds[0]].Type == TrafficResourceType.SingleLane &&
+      mergeGraph.Resources[sharedMergeIds[0]].Capacity == 1,
+    "the shared Waypoint guard is a single-lane capacity-one lease");
 var bidirectionalGraph = new MapDefinition(
     "auto-bidirectional", "", "LocalCartesian", "m",
     [Node("L", 0, 0), Node("R", 2, 0)],

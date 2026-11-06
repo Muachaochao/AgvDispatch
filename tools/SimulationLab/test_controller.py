@@ -33,6 +33,14 @@ class SimulationTests(unittest.TestCase):
         value = runtime._validate_configuration(self.custom_payload())
         self.assertEqual([s['stationId'] for s in value['stations']], ['CNC-001','CNC-002'])
         self.assertEqual([v['id'] for v in value['vehicles']], ['CAR-1','CAR-2'])
+        self.assertRegex(value['mapIdentity']['definitionHash'], r'^[A-F0-9]{64}$')
+        self.assertEqual(value['plcSignalTable']['mapDefinitionHash'], value['mapIdentity']['definitionHash'])
+        field_identity = self.custom_payload()
+        field_identity['mapIdentity'] = dict(mapId='MAP-V13', mapVersionId='MAPV-V13', sourceName='ZM-AGVPro',
+                                            definitionHash='26e5d66dab3ac5162f60e725fba09a1cfee fcb4eb1dcfc6c171fc7801be3b37e'.replace(' ', ''))
+        identified = runtime._validate_configuration(field_identity)
+        self.assertEqual(identified['mapIdentity']['definitionHash'], field_identity['mapIdentity']['definitionHash'].upper())
+        self.assertEqual(identified['plcSignalTable']['mapDefinitionHash'], identified['mapIdentity']['definitionHash'])
         self.assertEqual((value['vehicles'][0]['lengthMeters'], value['vehicles'][0]['widthMeters']), (1.0, 1.0))
         self.assertEqual(value['dumper']['resourceId'], 'R-DUMP')
         sized = self.custom_payload(); sized['vehicles'][0].update(lengthMeters=.8, widthMeters=.52)
@@ -60,6 +68,21 @@ class SimulationTests(unittest.TestCase):
             payload = self.custom_payload(); payload['dumper']['waitingSites'] = sites
             with self.assertRaises(ValueError): runtime._validate_configuration(payload)
 
+    def test_map_activation_bootstrap_uses_typed_safe_stops_before_field_waypoints(self):
+        runtime = object.__new__(Runtime)
+        payload = self.custom_payload()
+        for node in payload['mapDefinition']['nodes']:
+            node['type'] = {'P1': 'Station', 'P2': 'Station', 'WAIT': 'WaitingPoint',
+                            'DUMP': 'Station', 'PARK1': 'Station', 'PARK2': 'Waypoint'}[node['id']]
+        configuration = runtime._validate_configuration(payload)
+        sites = runtime._bootstrap_sites(configuration['mapDefinition'], configuration)
+        typed_safe = {node['id'] for node in configuration['mapDefinition']['nodes']
+                      if node.get('type') in ('Station', 'WaitingPoint', 'ChargingPoint')}
+        self.assertEqual(set(sites.values()) - typed_safe, set())
+        self.assertNotEqual(set(sites.values()), {'PARK1', 'PARK2'})
+        self.assertEqual({v['id']: v['initialSite'] for v in configuration['vehicles']},
+                         {'CAR-1': 'PARK1', 'CAR-2': 'PARK2'})
+
     def test_custom_call_plan_limits_duplicate_station_batches(self):
         value = validate_scenario(dict(name='custom-calls', rounds=1, intervalSeconds=0, timeoutSeconds=90,
             calls=[dict(stationId='CNC-001', atSeconds=0), dict(stationId='CNC-002', atSeconds=0),
@@ -72,8 +95,15 @@ class SimulationTests(unittest.TestCase):
             validate_scenario(dict(name='normal-cycle', calls=[dict(stationId='CNC-001', atSeconds=0)]))
         self.assertEqual(validate_scenario(dict(name='plc-recovery', rounds=1, plcFault='done', holdSeconds=12))['plcFault'], 'done')
         self.assertEqual(validate_scenario(dict(name='service-restart', rounds=1, restartStage='pickup'))['restartStage'], 'pickup')
+        self.assertEqual(validate_scenario(dict(name='vendor-cancel-return', rounds=1))['name'], 'vendor-cancel-return')
+        self.assertEqual(validate_scenario(dict(name='response-loss', rounds=1))['name'], 'response-loss')
+        self.assertEqual(validate_scenario(dict(name='road-block-recovery', rounds=1, holdSeconds=7))['holdSeconds'], 7)
         with self.assertRaises(ValueError):
             validate_scenario(dict(name='plc-recovery', rounds=1, plcFault='unknown'))
+        with self.assertRaises(ValueError):
+            validate_scenario(dict(name='vendor-cancel-return', rounds=2))
+        with self.assertRaises(ValueError):
+            validate_scenario(dict(name='road-block-recovery', rounds=1, holdSeconds=0))
 
     def test_scenario_rejects_nonfinite_and_invalid_inputs(self):
         for value in ({'rounds': True}, {'rounds': 101}, {'timeoutSeconds': math.nan}, {'intervalSeconds': math.inf}, {'name':'arbitrary-process'}, {'name':'service-restart','rounds':2}, {'script':'bad'}):

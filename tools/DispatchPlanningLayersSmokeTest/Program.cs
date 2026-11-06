@@ -192,6 +192,17 @@ var policy = new DispatchAssignmentOptions { WindowSize = 1 };
         "candidate layer exposes travel, traffic, return, zone, battery and bounded standby costs separately");
     Check(graph.WaitingRoutes.Count == 0 && traffic.Writes == 0 && gateway.Writes == 0,
         "candidate layer never persists traffic observations, acquires leases or sends vehicle commands");
+    gateway.Positions["V4"] = "PICK";
+    var occupiedPickup = await filter.BuildAsync(queue, costs with { Mode = "Global" }, map.Current, default);
+    Check(occupiedPickup.Edges.Count == 0 &&
+        occupiedPickup.Diagnostics["TASK"].Single(c => c.VehicleId == "V1").Reason.Contains("实际占用", StringComparison.Ordinal) &&
+        occupiedPickup.Diagnostics["TASK"].Single(c => c.VehicleId == "V1").Reason.Contains("V4", StringComparison.Ordinal),
+        "physically occupied pickup station is a hard candidate blocker before another car can reserve its destination resources");
+    var refreshBoundary = await filter.BuildAsync(queue, costs with { Mode = "Global" }, null, default);
+    Check(refreshBoundary.Edges.Count == 0 &&
+        refreshBoundary.Diagnostics["TASK"].Single(c => c.VehicleId == "V1").Reason.Contains("V4", StringComparison.Ordinal),
+        "physical pickup occupancy remains blocked when candidate input races an active-map snapshot refresh");
+    gateway.Positions["V4"] = "HOME4";
     var result = new DispatchAssignmentOptimizer().Optimize(queue.Input, graph.Edges, costs, now);
     Check(result.Assignments.Single().VehicleId == "V1" && result.Assignments.Single().TotalCostSeconds == 26.5,
         "pure layer-three optimizer consumes only hard-feasible layer-two edges");
@@ -239,8 +250,11 @@ Console.WriteLine($"Dispatch planning layers: {checks} checks passed; isolated p
 sealed class PlanningGateway : IAgvGateway
 {
     public int Writes;
+    public Dictionary<string,string> Positions { get; } = Enumerable.Range(1, 4)
+        .ToDictionary(i => "V" + i, i => "HOME" + i, StringComparer.OrdinalIgnoreCase);
     public Task<IReadOnlyList<AgvVehicleStatus>> GetVehiclesAsync(CancellationToken ct) => Task.FromResult<IReadOnlyList<AgvVehicleStatus>>(
-        Enumerable.Range(1, 4).Select(i => new AgvVehicleStatus("V" + i, ConnectionState.Online, "Idle", 75, "HOME" + i, DateTimeOffset.UtcNow)).ToArray());
+        Enumerable.Range(1, 4).Select(i => new AgvVehicleStatus("V" + i, ConnectionState.Online, "Idle", 75,
+            Positions["V" + i], DateTimeOffset.UtcNow)).ToArray());
     public Task<DeviceConnectionStatus> GetConnectionStatusAsync(CancellationToken ct) => Task.FromResult(new DeviceConnectionStatus("FAKE", "FAKE", ConnectionState.Online, DateTimeOffset.UtcNow));
     public Task<AgvTransportTaskStatus?> GetTransportTaskStatusAsync(string id, CancellationToken ct) => throw new NotSupportedException();
     public Task<string> CreateTransportTaskAsync(string id, string? vehicle, IReadOnlyList<string> path, AgvTransportAction? action, CancellationToken ct)

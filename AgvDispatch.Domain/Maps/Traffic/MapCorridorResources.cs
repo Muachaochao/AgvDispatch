@@ -90,6 +90,40 @@ public static class MapCorridorResources
             }
         }
 
+        // A pair of one-way edges can meet at a shared Waypoint without having
+        // identical geometry (for example V13 LM22->LM25 and LM24->LM25).
+        // Per-route corridor hashes then differ and both vehicles enter the same
+        // merge from opposite sides. Add one runtime-only capacity-one guard to
+        // every incident edge of non-station Waypoints so the merge is serialized
+        // by the formal traffic lease before any vehicle command is sent.
+        foreach (var node in nodeMap.Values.Where(node =>
+                     node.Enabled && node.Type == MapNodeType.Waypoint))
+        {
+            var incident = edgeArray.Where(edge => edge.Enabled &&
+                (edge.From.Equals(node.Id, StringComparison.OrdinalIgnoreCase) ||
+                 edge.To.Equals(node.Id, StringComparison.OrdinalIgnoreCase))).ToArray();
+            if (incident.Length < 2)
+                continue;
+            var resourceId = CreateResourceId("NODE|" + CoordinateKey(node), usedIds);
+            automaticResources.Add(new TrafficResourceDefinition(
+                resourceId,
+                TrafficResourceType.SingleLane,
+                1,
+                Boundary(incident, nodeMap))
+            {
+                LayerId = RuntimeLayerId
+            });
+            foreach (var edge in incident)
+            {
+                if (!additions.TryGetValue(edge.Id, out var ids))
+                {
+                    ids = [];
+                    additions[edge.Id] = ids;
+                }
+                ids.Add(resourceId);
+            }
+        }
+
         var enrichedEdges = edgeArray.Select(edge =>
             additions.TryGetValue(edge.Id, out var ids)
                 ? edge with { ResourceIds = edge.ResourceIds.Concat(ids).Distinct(StringComparer.OrdinalIgnoreCase).ToArray() }

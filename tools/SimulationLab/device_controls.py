@@ -8,6 +8,7 @@ import math
 
 
 VEHICLE_DEFAULTS = dict(speedScale=0.75, paused=False, offline=False,
+                        cancelFinalReturnSegments=0,
                         dropNextResponse=False, blockedEdges=[], charging=False)
 PLC_DEFAULTS = dict(readyDelaySeconds=0.0, doneDelaySeconds=5.0,
                     suppressReady=False, suppressDone=False, fault=False)
@@ -38,6 +39,10 @@ def validate_controls(value, vehicle_ids=None, edge_ids=None):
         for key, item in fields.items():
             if key == 'speedScale':
                 control[key] = _number(item, 0.1, 10, key)
+            elif key == 'cancelFinalReturnSegments':
+                if type(item) is not int or not 0 <= item <= 32:
+                    raise ValueError('cancelFinalReturnSegments must be an integer between 0 and 32')
+                control[key] = item
             elif key == 'blockedEdges':
                 if not isinstance(item, list) or len(item) > 2048 or any(not isinstance(edge, str) or not edge or (edge_ids is not None and edge not in edge_ids) for edge in item):
                     raise ValueError('blockedEdges must reference existing map edge IDs')

@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { simulationFresh, scenarioActive, simulationGeometry, simulationTone, simulationLabel, simulationMapFromPublishedVersion, loadCurrentSimulationMap,
-  simulationMetricLabel, simulationMetricValue, simulationMetricComparison, simulationReplayCars, type SimulationMapWorkspace, type SimulationStatus } from '../src/simulation.ts';
+  simulationMetricLabel, simulationMetricValue, simulationMetricComparison, simulationReplayCars, simulationVehicleOriginsFromLive,
+  type SimulationMapWorkspace, type SimulationStatus } from '../src/simulation.ts';
 import type { Snapshot, WebMap } from '../src/types.ts';
 
 const now = Date.parse('2026-11-04T10:00:00+08:00');
@@ -65,6 +66,23 @@ test('map joins edges by node ID or vehicle site ID and ignores invalid coordina
   assert.equal(result.cars[0].x, result.nodes[0].x); assert.equal(result.cars[0].y, result.nodes[0].y);
   assert.ok(result.nodes.every(node => Number.isFinite(node.x) && node.x >= 0 && node.x <= 800 && node.y >= 0 && node.y <= 430));
   assert.deepEqual(result.edges[0].a, result.edges[1].a);
+});
+
+test('live vehicle origins use current reported stations, require unique valid nodes and report missing positions', () => {
+  const result = simulationVehicleOriginsFromLive([
+    { vehicleId: 'AGV-01', currentStation: 'LM24' },
+    { vehicleId: 'AGV-02', currentStation: 'BUS-LM25' },
+    { vehicleId: 'AGV-03', currentStation: 'LM24' },
+    { vehicleId: 'AGV-04', currentStation: 'MISSING' },
+    { vehicleId: 'AGV-05', currentStation: null }
+  ], [
+    { id: 'BUS-LM24', agvSiteId: 'LM24', x: 1, y: 2 },
+    { id: 'BUS-LM25', agvSiteId: 'LM25', x: 3, y: 4 }
+  ]);
+  assert.deepEqual(result.positions, { 'AGV-01': 'BUS-LM24', 'AGV-02': 'BUS-LM25' });
+  assert.deepEqual(result.matched, ['AGV-01', 'AGV-02']);
+  assert.deepEqual(result.conflicts, ['AGV-03：LM24']);
+  assert.deepEqual(result.unmatched, ['AGV-04', 'AGV-05']);
 });
 
 test('cubic curves preserve their real control points and remain inside the map viewport', () => {

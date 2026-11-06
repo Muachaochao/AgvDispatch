@@ -278,6 +278,83 @@ class Runtime:
         raise last
 
     @staticmethod
+    def _bootstrap_sites(navigation, configuration):
+        """Choose unique safe-stop sites for the map activation gate only.
+
+        Field vehicles are often parked on ordinary Waypoints (V13 currently uses
+        LM24/LM25), while a first map activation requires Station/WaitingPoint/
+        ChargingPoint stops. Bootstrap the empty devices at reserved safe sites,
+        activate the authored map, then restart the twins at the exact configured
+        field-snapshot sites. This does not weaken or bypass the production gate.
+        """
+        vehicles = configuration['vehicles']
+        if len(vehicles) == 1:
+            return None
+        safe_types = {'Station', 'WaitingPoint', 'ChargingPoint'}
+        reserved = {
+            *(station['pickupSite'] for station in configuration['stations']),
+            configuration['dumper']['dumpingSite'],
+            *configuration['dumper']['waitingSites'],
+        }
+        typed = any(isinstance(node.get('type'), str) for node in navigation['nodes'])
+        if not typed:
+            return None
+        enabled = [node for node in navigation['nodes'] if node.get('enabled', True) and node.get('type') in safe_types]
+        candidates = [node for node in enabled if node['id'] not in reserved]
+        minimum_separation = 2 * max(vehicle['radiusMeters'] for vehicle in vehicles) + .1
+        selected = []
+        for node in sorted(candidates, key=lambda row: row['id']):
+            if all(math.hypot(node['x'] - other['x'], node['y'] - other['y']) >= minimum_separation
+                   for other in selected):
+                selected.append(node)
+                if len(selected) == len(vehicles):
+                    break
+        if len(selected) < len(vehicles):
+            # Some custom maps have few free waiting areas. Prefer another typed
+            # stop over changing or disabling the activation safety checks.
+            for node in sorted(enabled, key=lambda row: row['id']):
+                if node in selected:
+                    continue
+                if all(math.hypot(node['x'] - other['x'], node['y'] - other['y']) >= minimum_separation
+                       for other in selected):
+                    selected.append(node)
+                    if len(selected) == len(vehicles):
+                        break
+        if len(selected) < len(vehicles):
+            raise ValueError('地图没有足够的独立安全站点供首次地图激活；请增加Station或等待点。')
+        return {vehicle['id']: node['id'] for vehicle, node in zip(vehicles, selected)}
+
+    def _restart_twin_at_field_sites(self):
+        """Restart only the synthetic devices after the authored map is active."""
+        sites = (self.lab.get('initialSites') or {}).copy()
+        if not sites or sites == self.lab.get('runtimeInitialSites'):
+            return
+        twin = self.children.get('twin')
+        if twin is None or twin.poll() is not None:
+            raise RuntimeError('地图激活后虚拟设备已退出，无法切换到现场快照起点。')
+        twin.terminate(); twin.wait(timeout=10)
+        self.children.pop('twin')
+        # Keep bootstrap observations and journals instead of overwriting them.
+        replacements = []
+        for name in ('robots', 'multi-state.json', 'device-state.json', 'device-ready'):
+            source = self.root / name
+            if source.exists():
+                target = self.root / ('bootstrap-' + name)
+                if target.exists():
+                    raise RuntimeError('启动现场已出现同名引导证据：' + target.name)
+                shutil.move(str(source), str(target))
+                replacements.append((source, target))
+        for name in ('multi-state.json', 'device-state.json', 'device-ready'):
+            stale = self.root / name
+            if stale.exists() and stale.is_file():
+                stale.unlink()
+        self.lab['runtimeInitialSites'] = sites
+        write(self.root / 'lab.json', self.lab)
+        self.launch('twin', [sys.executable, str(WORKSPACE / 'tools/WebTwoVehicleLab/multi_twin.py'), str(self.root)], self.root)
+        self.wait('现场快照起点虚拟设备启动超时', lambda: self.device(), 15)
+        self.wait('现场快照起点车辆观测未就绪', self.devices_ready)
+
+    @staticmethod
     def _finite_number(value):
         return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
@@ -354,13 +431,25 @@ class Runtime:
             raise ValueError('地图必须是包含nodes、edges和resources的对象。')
         if not 3 <= len(navigation['nodes']) <= 10000 or not 1 <= len(navigation['edges']) <= 50000 or len(navigation['resources']) > 5000:
             raise ValueError('地图节点、道路或资源数量超出仿真范围。')
-        map_hash = hashlib.sha256(json.dumps(navigation, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        # A map copied from the running engineering runtime already carries the
+        # authoritative SHA256 computed over the complete C# MapDefinition.
+        # Re-hashing only the browser projection (nodes/edges/resources) produces
+        # a different value for the same V13 map and causes false mismatch reports.
+        # Imported maps without that identity still receive a deterministic local
+        # projection hash, but never claim to be the active field map.
+        navigation_hash = hashlib.sha256(json.dumps(navigation, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()).hexdigest().upper()
         identity_payload = payload.get('mapIdentity') or {}
         if not isinstance(identity_payload, dict) or set(identity_payload) - {'mapId', 'mapVersionId', 'sourceName', 'definitionHash'}:
             raise ValueError('地图身份字段无效。')
         for key in ('mapId', 'mapVersionId', 'sourceName'):
             if identity_payload.get(key) is not None and (not isinstance(identity_payload[key], str) or len(identity_payload[key]) > 256):
                 raise ValueError('地图身份字段长度或类型无效。')
+        identity_hash = identity_payload.get('definitionHash')
+        if identity_hash is not None:
+            if not isinstance(identity_hash, str) or not re.fullmatch(r'[A-Fa-f0-9]{64}', identity_hash):
+                raise ValueError('地图内容摘要格式无效。')
+            identity_hash = identity_hash.upper()
+        map_hash = identity_hash or navigation_hash
         map_identity = dict(mapId=identity_payload.get('mapId') or '', mapVersionId=identity_payload.get('mapVersionId') or '',
                             sourceName=identity_payload.get('sourceName') or navigation.get('name') or '自定义仿真地图',
                             definitionHash=map_hash)
@@ -457,8 +546,9 @@ class Runtime:
                 raise ValueError('车辆ID须唯一且只包含字母、数字、下划线或连字符。')
             vehicle_ids.add(vehicle_id)
             initial = node(vehicle.get('initialSite'), '车辆起点' + vehicle_id)
-            if any(isinstance(item.get('type'), str) for item in nodes.values()) and nodes[initial].get('type') != 'Station':
-                raise ValueError(f'车辆{vehicle_id}必须从地图Station类型节点起步，才能通过正式切图安全核验。')
+            # Current field positions are allowed to be waypoints. The isolated
+            # device must reproduce the reported vendor site, not relocate the
+            # vehicle to a nearby station just to satisfy a template assumption.
             if initial in initial_sites:
                 raise ValueError('每辆虚拟车必须使用不同的初始节点。')
             initial_sites.add(initial)
@@ -680,10 +770,12 @@ class Runtime:
                     with socket.socket() as sock:
                         sock.bind(('127.0.0.1', 0)); value = sock.getsockname()[1]
                     if value not in used and value not in (5198, 5199): used.add(value); return value
+            field_sites = {v['id']: v['initialSite'] for v in configuration['vehicles']}
+            bootstrap_sites = self._bootstrap_sites(navigation, configuration)
             lab.update(root=str(target), pipe='Agv28StageLab-' + target.name, webPort=port(), plcPort=port(),
                 multiVehicleSimulation=True, twoVehicleSimulation=len(configuration['vehicles']) == 2,
                 waitingBayProtection=True, mapName=navigation.get('name') or 'custom_simulation',
-                initialSites={v['id']: v['initialSite'] for v in configuration['vehicles']},
+                initialSites=field_sites, runtimeInitialSites=bootstrap_sites or field_sites, bootstrapSites=bootstrap_sites,
                 vehicleProfiles={v['id']: dict(initialLoaded=v['initialLoaded'], batteryPercent=v['batteryPercent'],
                     lengthMeters=v['lengthMeters'], widthMeters=v['widthMeters'],
                     speedScale=v['speedScale'], accelerationMetersPerSecondSquared=v['accelerationMetersPerSecondSquared'],
@@ -775,6 +867,7 @@ class Runtime:
                 self.launch(name, [str(self.root / name / (exe + '.exe'))], self.root / name)
             self.wait('正式后台连接超时', self.connected)
             self.bootstrap()
+            self._restart_twin_at_field_sites()
             self.phase = 'running'
         except Exception as error:
             self.phase = 'failed'; self.error = str(error)

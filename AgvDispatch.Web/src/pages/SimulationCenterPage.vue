@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { IconPlayerPlay, IconPlayerStop, IconRefresh, IconDownload, IconFlask, IconRobot } from '@tabler/icons-vue';
-import { simulationApi, simulationFresh, simulationGeometry, simulationLabel, loadCurrentSimulationMap, simulationTone, scenarioActive,
+import { simulationApi, simulationFresh, simulationGeometry, simulationLabel, loadCurrentSimulationMap, simulationTone, scenarioActive, simulationVehicleOriginsFromLive,
   simulationMetricLabel, simulationMetricValue, simulationMetricComparison, simulationReplayCars,
   type SimulationStatus, type SimulationRun, type SimulationControls, type SimulationReport,
   type SimulationConfigureRequest, type SimulationMapDefinition, type SimulationCall,
@@ -21,9 +21,11 @@ const blockedEdgeIds = ref<string[]>([]);
 const speedScale = ref(0.75), readyDelay = ref(0), doneDelay = ref(5);
 const run = ref<SimulationRun>({ name: 'normal-cycle', rounds: 1, intervalSeconds: 1, timeoutSeconds: 600 });
 const plcFault = ref<'ready' | 'done'>('ready'), plcFaultHold = ref(10);
+const roadBlockHold = ref(5);
 const restartStage = ref<'pickup' | 'delivery'>('pickup');
 const mapDefinition = ref<SimulationMapDefinition | null>(null), mapFileName = ref('');
 const liveMapIdentity = ref('');
+const useFieldVehiclePositions = ref(true);
 const mapIdentityDraft = ref<SimulationConfigureRequest['mapIdentity']>(undefined);
 const plcTableText = ref(''), plcTableFileName = ref(''), plcTableSha256 = ref('');
 const plcTableMetadata = ref<SimulationPlcSignalTable | null>(null);
@@ -81,7 +83,8 @@ const report = computed(() => selectedReport.value ?? status.value?.report);
 const historicalReport = computed(() => !!report.value?.id && !!status.value?.scenario?.id && report.value.id !== status.value.scenario.id);
 const scenarioNames: Record<string, string> = { 'normal-cycle': '完整业务循环', 'simultaneous-calls': '多工位同时呼叫',
   'custom-calls': '自定义呼叫计划', 'dispatch-backlog': '正式调度持续排队测试', 'disconnect-reconnect': '车辆断连与重连', 'plc-delay': 'PLC 反馈延迟',
-  'plc-recovery': 'PLC卡位与恢复', 'service-restart': '后台重启与恢复屏障', 'resume-recovery': '恢复后继续原任务' };
+  'plc-recovery': 'PLC卡位与恢复', 'service-restart': '后台重启与恢复屏障', 'resume-recovery': '恢复后继续原任务',
+  'vendor-cancel-return': '车端返程中途取消', 'response-loss': '运输命令回包丢失', 'road-block-recovery': '道路临时阻塞后恢复' };
 const metrics = computed(() => Object.entries(report.value?.metrics ?? {}).filter(([, value]) => value !== null && typeof value !== 'object'));
 const metricComparison = computed(() => simulationMetricComparison(report.value?.metrics, comparisonReport.value?.metrics));
 const firstFailure = computed(() => typeof report.value?.firstFailure === 'string' ? report.value.firstFailure :
@@ -121,7 +124,10 @@ const scenarioDescriptions: Record<SimulationRun['name'], string> = {
   'plc-delay': '延迟或阻止倒料机“就绪许可”和“倒料完成”反馈，验证握手阶段不会越级，恢复后仍能按原链路闭合。',
   'plc-recovery': '把指定 PLC 信号卡住一段时间后恢复，验证卡位期间任务保持等待且没有跳过步骤。',
   'service-restart': '在活动运输持有路权时重启私有仿真后台，验证原任务、命令和路权保留，恢复屏障未自动放行。',
-  'resume-recovery': '在逐项核对车辆、载荷和 PLC 周期后放行，只续接原任务编号，不创建替代任务。'
+  'resume-recovery': '在逐项核对车辆、载荷和 PLC 周期后放行，只续接原任务编号，不创建替代任务。',
+  'vendor-cancel-return': '在返箱 3066 任务链最后两段由车端返回取消，验证后台不会伪造完成、不会清掉原路权，并进入取消核对。',
+  'response-loss': '丢弃一次 3066 传输响应，验证后台按原任务和原命令身份核对重试，生成重复任务或更换命令即失败。',
+  'road-block-recovery': '在取货运输途中临时封锁实际行驶道路，解除后验证原任务自动续接且路权不会提前释放。'
 };
 const currentScenarioDescription = computed(() => scenarioDescriptions[run.value.name]);
 const modeledTaskCount = computed(() => Object.values(cars.value).filter(car => !!car.current_task).length);
@@ -395,7 +401,31 @@ async function loadCurrentMap() {
       newVehicleCount.value = customVehicles.value.length;
     }
     resetVehicleOrigins();
-    notice.value = `已拉取当前工程：地图、任务参数、${configuredVehicles.length || customVehicles.value.length}辆车辆和PLC点表 ${serviceTable.fileName}（${serviceTable.deviceName}）。${imported.parameterWarning || '已自动映射同一地图版本的工位与业务拓扑。'}请核对后创建隔离实例。`;
+    let positionNotice = '';
+    if (useFieldVehiclePositions.value) {
+      const origins = simulationVehicleOriginsFromLive(dispatchStore.snapshot?.status?.agvs ?? [], mapNodes.value);
+      const used = new Set<string>();
+      for (const vehicle of customVehicles.value) {
+        const liveSite = origins.positions[vehicle.id];
+        if (liveSite && !used.has(liveSite)) {
+          vehicle.initialSite = liveSite;
+          used.add(liveSite);
+        }
+      }
+      for (const vehicle of customVehicles.value) {
+        if (origins.positions[vehicle.id]) continue;
+        const fallback = mapNodes.value.find(node => !used.has(node.id));
+        if (fallback) {
+          vehicle.initialSite = fallback.id;
+          used.add(fallback.id);
+        }
+      }
+      positionNotice = ` 已按现场快照映射 ${origins.matched.length}/${configuredVehicles.length || customVehicles.value.length} 辆车的位置` +
+        (origins.conflicts.length ? `；位置冲突：${origins.conflicts.join('、')}，冲突车辆改用空闲起点。` : '') +
+        (origins.unmatched.length ? `；未取得有效位置：${origins.unmatched.join('、')}，改用空闲起点。` : '') +
+        (!dispatchStore.fresh || dispatchStore.demoMode ? ' 当前现场快照并非全部新鲜，创建前请核对。' : '');
+    }
+    notice.value = `已拉取当前工程：地图、任务参数、${configuredVehicles.length || customVehicles.value.length}辆车辆和PLC点表 ${serviceTable.fileName}（${serviceTable.deviceName}）。${imported.parameterWarning || '已自动映射同一地图版本的工位与业务拓扑。'}${positionNotice}请核对后创建隔离实例。`;
   } catch (reason) {
     if (!disposed) actionError.value = reason instanceof Error ? reason.message : String(reason);
   } finally { busy.value = false; }
@@ -465,6 +495,7 @@ function scenarioDraft(): SimulationRun {
   const payload: SimulationRun = { ...run.value };
   if (['custom-calls', 'dispatch-backlog'].includes(payload.name)) payload.calls = buildCustomCalls();
   if (payload.name === 'plc-recovery') { payload.plcFault = plcFault.value; payload.holdSeconds = plcFaultHold.value; }
+  if (payload.name === 'road-block-recovery') payload.holdSeconds = roadBlockHold.value;
   if (payload.name === 'service-restart') payload.restartStage = restartStage.value;
   return payload;
 }
@@ -951,7 +982,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
         <header><div><p class="section-kicker">环境配置</p><h3 id="simulation-instance-designer">地图、工位与虚拟车辆</h3></div><span class="scope-label">停止环境后创建新的隔离实例</span></header>
         <p class="designer-intro">支持本项目 <code>.agvmap.json</code>，并兼容只读 <code>.rpj</code> 工程包。导入后必须核对语义工位、资源边界和每辆车的唯一起点；这些数据只进入新实例。</p>
         <div class="map-import">
-          <button :disabled="busy || !dispatchStore.fresh || dispatchStore.demoMode || !dispatchStore.snapshot?.map || !!status?.running || starting || active" @click="loadCurrentMap"><IconRefresh :size="15" />拉取当前工程（地图+参数+点表）</button>
+          <div class="toolbar"><button :disabled="busy || !dispatchStore.fresh || dispatchStore.demoMode || !dispatchStore.snapshot?.map || !!status?.running || starting || active" @click="loadCurrentMap"><IconRefresh :size="15" />拉取当前工程（地图+参数+点表）</button><label class="loaded-config"><input v-model="useFieldVehiclePositions" type="checkbox" />同时按当前真车位置设置初始点</label></div>
           <label class="file-picker">选择地图文件<input type="file" accept=".json,.agvmap.json,.rpj,application/json" :disabled="busy || !!status?.running || starting || active" @change="loadMapFile" /></label>
           <div><b v-if="mapFileName">{{ mapFileName }}</b><span v-if="liveMapIdentity">{{ liveMapIdentity }}</span><span v-if="mapDefinition">{{ mapDefinition.nodes.length }} 节点 · {{ mapDefinition.edges.length }} 道路 · {{ mapDefinition.resources.length }} 资源</span><span v-if="mapIdentityDraft?.definitionHash">地图摘要 {{ mapIdentityDraft.definitionHash.slice(0, 12) }}…</span><span v-else-if="!mapDefinition">尚未载入自定义地图</span></div>
         </div>
@@ -1073,7 +1104,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
         <section class="simulation-panel scenario-panel" aria-labelledby="simulation-scenario">
           <header><div><p class="section-kicker">场景设置</p><h3 id="simulation-scenario">场景编排</h3></div><span :class="['state-pill', simulationTone(status?.scenario?.status)]">{{ simulationLabel(status?.scenario?.status) }}</span></header>
           <fieldset :disabled="busy || active">
-            <label>测试场景<select v-model="run.name" aria-label="测试场景"><option value="normal-cycle">完整业务循环</option><option value="simultaneous-calls">多工位同时呼叫</option><option value="dispatch-backlog">正式调度持续排队测试</option><option value="custom-calls">自定义呼叫计划</option><option value="disconnect-reconnect">车辆断连与重连</option><option value="plc-delay">PLC 反馈延迟</option><option value="plc-recovery">PLC卡位与恢复</option><option value="service-restart">后台重启与恢复屏障</option><option value="resume-recovery">恢复后继续原任务</option></select></label>
+            <label>测试场景<select v-model="run.name" aria-label="测试场景"><option value="normal-cycle">完整业务循环</option><option value="simultaneous-calls">多工位同时呼叫</option><option value="dispatch-backlog">正式调度持续排队测试</option><option value="custom-calls">自定义呼叫计划</option><option value="disconnect-reconnect">车辆断连与重连</option><option value="plc-delay">PLC 反馈延迟</option><option value="plc-recovery">PLC卡位与恢复</option><option value="service-restart">后台重启与恢复屏障</option><option value="resume-recovery">恢复后继续原任务</option><option value="vendor-cancel-return">车端返程中途取消</option><option value="response-loss">运输命令回包丢失</option><option value="road-block-recovery">道路临时阻塞后恢复</option></select></label>
             <div class="form-row"><label>循环轮数<input v-model.number="run.rounds" type="number" min="1" max="100" step="1" /></label><label>轮间隔 / 秒<input v-model.number="run.intervalSeconds" type="number" min="0" max="60" /></label></div>
             <label>单轮超时 / 秒<input v-model.number="run.timeoutSeconds" type="number" min="30" max="3600" /></label>
             <div v-if="['custom-calls', 'dispatch-backlog'].includes(run.name)" class="call-plan">
@@ -1083,10 +1114,12 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
               <small>{{ run.name === 'dispatch-backlog' ? '按时间持续追加，不等上一批完成；同一工位仍有原任务时，后续呼叫保留在计划队列。验证忙车排除建议1车2工位或2车3工位，第3工位须明确使用隔离合成点位。只有真正观察到全部车辆忙碌期间仍有正式待派任务，才证明覆盖了积压；2车2工位可能无法形成积压。工位优先级在新建环境前配置，并写入报告。' : '同一批次工位会在同一设备扫描中置位；指定车辆不可达时停止并报告。此场景按批次完成后继续。' }}</small>
             </div>
             <div v-if="run.name === 'plc-recovery'" class="form-row"><label>卡位信号<select v-model="plcFault"><option value="ready">倒料机就绪许可</option><option value="done">倒料完成，允许离开</option></select></label><label>卡位保持 / 秒<input v-model.number="plcFaultHold" type="number" min="1" max="120" /></label></div>
+            <label v-if="run.name === 'road-block-recovery'">道路阻塞保持 / 秒<input v-model.number="roadBlockHold" type="number" min="1" max="120" /></label>
             <label v-if="run.name === 'service-restart'">重启注入阶段<select v-model="restartStage"><option value="pickup">原取料运输执行中（可验证到站补记后续接）</option><option value="delivery">满箱运输执行中（保留更复杂恢复现场）</option></select></label>
           </fieldset>
           <div class="toolbar"><button class="primary" :disabled="!canControl || active || !runValid || (['custom-calls', 'dispatch-backlog'].includes(run.name) && !callPlanValid)" @click="startScenario"><IconPlayerPlay :size="16" />运行场景</button><button :disabled="!available || !active" @click="action('abort')">中止后续场景</button></div>
           <p v-if="run.name === 'service-restart'" class="inline-warning">该场景结束时保留原任务和恢复屏障，不表示完整业务循环已完成。</p>
+          <p v-if="run.name === 'vendor-cancel-return'" class="inline-warning">通过表示“预期取消已被正确识别并保留现场”，不表示业务完成；运行后会留有原任务路权，需按恢复页核对。</p>
           <p v-if="run.name === 'resume-recovery'" class="inline-warning">只有在恢复页逐项核对并放行后才能运行；它只续接原任务编号。</p>
           <p v-if="!runValid" class="inline-warning">轮数 1–100、间隔 0–60 秒、超时 30–3600 秒。</p>
         </section>
@@ -1107,7 +1140,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
           <header><div><p class="section-kicker">虚拟车辆</p><h3 id="simulation-vehicle"><IconRobot :size="18" />虚拟车辆与通信</h3></div><span v-if="!fresh" class="inline-warning">反馈无效，控制已禁用</span></header>
           <label class="vehicle-select">选择车辆<select v-model="selectedVehicle" aria-label="选择虚拟车辆"><option v-if="!vehicleIds.length" value="">尚无车辆</option><option v-for="id in vehicleIds" :key="id" :value="id">{{ id }}</option></select></label>
           <dl class="vehicle-facts"><dt>状态</dt><dd>{{ !fresh ? '未知 / 历史快照' : vehicle?.offline ? '通信断开' : vehicle?.paused ? '运动暂停' : vehicle?.blockedByVehicle ? '近障停车等待' : vehicle?.current_task ? '执行中' : '空闲' }}</dd><dt>位置</dt><dd>{{ vehicle?.station || '尚无反馈' }}</dd><dt>载箱</dt><dd>{{ !fresh ? '未知' : vehicle?.loaded ? '有箱' : '无箱' }}</dd><dt>电量 / 电压</dt><dd>{{ vehicle?.batteryPercent !== undefined ? `${vehicle.batteryPercent.toFixed(1)}%` : '未知' }} · {{ vehicle?.batteryVoltage !== undefined ? `${vehicle.batteryVoltage.toFixed(2)} V` : '未知' }}{{ vehicle?.charging ? ' · 充电中' : '' }}</dd><dt>速度 / 里程</dt><dd>{{ vehicle?.speedMps !== undefined ? `${vehicle.speedMps.toFixed(2)} m/s` : '未知' }} · {{ vehicle?.distanceMeters !== undefined ? `${vehicle.distanceMeters.toFixed(2)} m` : '未知' }}</dd><dt>原运输编号</dt><dd>{{ currentTask }}</dd><dt>当前等待原因</dt><dd>{{ industrialText(vehicle?.waitReason || status?.scenario?.message || '尚无等待原因反馈') }}</dd></dl>
-          <fieldset :disabled="!canControl || !selectedVehicle"><div class="toolbar"><button @click="carControl({ paused: true })">暂停运动</button><button @click="carControl({ paused: false })">恢复运动</button><button @click="carControl({ offline: true })">断开通信</button><button @click="carControl({ offline: false })">恢复通信</button><button @click="carControl({ charging: true })">开始充电</button><button @click="carControl({ charging: false })">停止充电</button><button @click="carControl({ dropNextResponse: true })">丢弃下一响应</button></div><div class="speed-control"><label>运动倍率<input v-model.number="speedScale" type="number" min="0.1" max="10" step="0.05" /><small>1 为方案配置速度；0.75 且道路限速 1 m/s 时为 0.75 m/s。</small></label><button :disabled="!Number.isFinite(speedScale) || speedScale < 0.1 || speedScale > 10" @click="carControl({ speedScale })">应用倍率</button></div></fieldset>
+          <fieldset :disabled="!canControl || !selectedVehicle"><div class="toolbar"><button @click="carControl({ paused: true })">暂停运动</button><button @click="carControl({ paused: false })">恢复运动</button><button @click="carControl({ offline: true })">断开通信</button><button @click="carControl({ offline: false })">恢复通信</button><button @click="carControl({ charging: true })">开始充电</button><button @click="carControl({ charging: false })">停止充电</button><button @click="carControl({ dropNextResponse: true })">丢弃下一响应</button><button @click="carControl({ cancelFinalReturnSegments: 2 })">模拟返程末两段取消</button></div><div class="speed-control"><label>运动倍率<input v-model.number="speedScale" type="number" min="0.1" max="10" step="0.05" /><small>1 为方案配置速度；0.75 且道路限速 1 m/s 时为 0.75 m/s。</small></label><button :disabled="!Number.isFinite(speedScale) || speedScale < 0.1 || speedScale > 10" @click="carControl({ speedScale })">应用倍率</button></div></fieldset>
           <small v-if="vehicle?.simulationControl">设备反馈控制编号：{{ vehicle.simulationControl.sequence || '尚无反馈' }} · 当前运动倍率 {{ vehicle.speedScale ?? '未知' }}<span v-if="vehicle.simulationControl.responseDropPending"> · 等待丢弃下一响应</span></small>
           <p v-if="vehicle?.simulationControl?.error" class="inline-warning">{{ vehicle.simulationControl.error }}</p>
           <details class="edge-controls"><summary>道路阻塞 · 已反馈 {{ appliedBlockedEdges.length }} 条</summary><fieldset :disabled="!canControl || !selectedVehicle"><p>选择道路，在所选虚拟车经过时阻止运动，观察调度等待与超时处理。</p><div class="edge-options"><label v-for="edge in blockableEdges" :key="edge.id"><input v-model="blockedEdgeIds" type="checkbox" :value="edge.id" />{{ edge.id }} · {{ edge.from }} → {{ edge.to }}</label><span v-if="!blockableEdges.length">当前地图没有可用道路。</span></div><div class="toolbar"><button :disabled="!blockableEdges.length" @click="carControl({ blockedEdges: blockedEdgeIds })">应用道路阻塞</button><button @click="blockedEdgeIds = []; carControl({ blockedEdges: [] })">解除所选车全部道路阻塞</button></div></fieldset></details>

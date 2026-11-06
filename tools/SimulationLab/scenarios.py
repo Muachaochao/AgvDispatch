@@ -15,7 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'WebSingleVehicleLa
 from footprint import swept_rectangles_overlap, vehicle_extents
 
 NAMES = ('normal-cycle', 'simultaneous-calls', 'custom-calls', 'dispatch-backlog', 'disconnect-reconnect',
-         'plc-delay', 'plc-recovery', 'service-restart', 'resume-recovery')
+         'plc-delay', 'plc-recovery', 'service-restart', 'resume-recovery', 'vendor-cancel-return',
+         'response-loss', 'road-block-recovery')
 STEP_NAMES = {'GoToPickup': '前往工位取满箱', 'PickupFullBox': '确认满箱已取走',
               'DeliverFullBoxToDumper': '运送满箱到等待位', 'WaitForDumperReady': '等待倒料机就绪',
               'EnterDumpingPosition': '进入倒料位', 'DumpFullBox': '等待倒料完成',
@@ -97,6 +98,10 @@ def validate_scenario(value):
         number = result[key]
         if type(number) not in (int, float) or not math.isfinite(number) or not low <= number <= high: raise ValueError('场景时间参数无效。')
     if result['name'] == 'service-restart' and result['rounds'] != 1: raise ValueError('重启故障场景仅运行一轮，保留恢复现场。')
+    if result['name'] == 'vendor-cancel-return' and result['rounds'] != 1:
+        raise ValueError('车端返程取消场景仅运行一轮，保留取消现场。')
+    if result['name'] in ('response-loss', 'road-block-recovery') and result['rounds'] != 1:
+        raise ValueError('单车通信或道路故障场景仅运行一轮。')
     if result['name'] == 'service-restart':
         stage = value.get('restartStage', 'pickup')
         if stage not in ('pickup', 'delivery'): raise ValueError('重启阶段须为取料运输或满箱运输。')
@@ -109,6 +114,11 @@ def validate_scenario(value):
         if type(hold) not in (int, float) or not math.isfinite(hold) or not 1 <= hold <= 120:
             raise ValueError('PLC卡位保持时间须为1至120秒。')
         result.update(plcFault=value['plcFault'], holdSeconds=float(hold))
+    elif result['name'] == 'road-block-recovery':
+        hold = value.get('holdSeconds', 5)
+        if type(hold) not in (int, float) or not math.isfinite(hold) or not 1 <= hold <= 120:
+            raise ValueError('道路阻塞保持时间须为1至120秒。')
+        result['holdSeconds'] = float(hold)
     calls = value.get('calls')
     if result['name'] in ('custom-calls', 'dispatch-backlog'):
         if not isinstance(calls, list) or not 1 <= len(calls) <= 500:
@@ -137,8 +147,10 @@ def validate_scenario(value):
         result['calls'] = normalized
     elif calls is not None:
         raise ValueError('仅自定义呼叫和持续积压场景接受calls参数。')
-    if result['name'] != 'plc-recovery' and ('plcFault' in value or 'holdSeconds' in value):
-        raise ValueError('仅PLC卡位恢复场景接受plcFault和holdSeconds。')
+    if result['name'] != 'plc-recovery' and 'plcFault' in value:
+        raise ValueError('仅PLC卡位恢复场景接受plcFault。')
+    if result['name'] not in ('plc-recovery', 'road-block-recovery') and 'holdSeconds' in value:
+        raise ValueError('仅PLC卡位或道路阻塞场景接受holdSeconds。')
     if result['name'] != 'service-restart' and 'restartStage' in value:
         raise ValueError('仅后台重启场景接受restartStage。')
     return result
@@ -396,15 +408,87 @@ def execute(runtime, request):
         write(evidence / ('completion-start-' + uuid.uuid4().hex + '.json'), dict(taskIds=list(ids), startedAt=time.time()))
         offline_at = None; fault_vehicle = None; held = set(); restored = False; offline_controls = None
         plc_fault_started = None; plc_recovery_controls = None
+        road_block_started = None; road_block_controls = None
         while time.monotonic() < deadline:
             if runtime.abort.is_set(): raise InterruptedError('场景已中止，原任务及占用保留；请核对后恢复。')
             details = {tid: runtime.api('/api/tasks/' + tid) for tid in ids}
             for tid, detail in details.items():
                 tasks[tid]['vehicle'] = detail['task'].get('vehicleId') or tasks[tid]['vehicle']
             leases = observer.sample(details)
-            if any(d['task']['stage'] in ('Faulted', 'Cancelled') for d in details.values()): raise RuntimeError('任务出现非预期故障或取消。')
             name = request['name']
+            if name == 'vendor-cancel-return' and not fault_observed:
+                candidate = next((tid for tid, detail in details.items()
+                                  if next((step for step in detail['steps']
+                                           if step.get('sequence') == 6), {}).get('status') == 'Executing'), None)
+                if candidate:
+                    fault_vehicle = details[candidate]['task'].get('vehicleId')
+                    if not fault_vehicle: raise RuntimeError('倒料完成阶段未取得车辆身份。')
+                    runtime.control(dict(vehicles={fault_vehicle: dict(cancelFinalReturnSegments=2)}))
+                    applied = runtime.wait('车端返程取消控制未被设备应用',
+                                           lambda: control_applied(runtime.device(), runtime.controls, fault_vehicle), 10)
+                    write(evidence / 'vendor-cancel-applied.json', dict(taskId=candidate, vehicleId=fault_vehicle, applied=applied))
+                    check('车端返程取消已在返程命令前武装到原车辆', True, fault_vehicle)
+                    fault_observed = True
+            if any(d['task']['stage'] in ('Faulted', 'Cancelled') for d in details.values()):
+                if name == 'vendor-cancel-return' and fault_observed:
+                    cancelled = next(d for d in details.values() if d['task']['stage'] == 'Cancelled')
+                    fault_vehicle = cancelled['task'].get('vehicleId') or tasks[cancelled['task']['taskId']].get('vehicle')
+                    return_step = next((step for step in cancelled['steps'] if step.get('sequence') == 7), None)
+                    held = query(runtime.root, 'select ResourceId,TaskId,VehicleId,OwnerStepId from traffic_resource_lease where TaskId=?',
+                                 (cancelled['task']['taskId'],))
+                    commands = query(runtime.root, 'select CommandId,Status from agv_command_outbox where TaskId=?',
+                                     (cancelled['task']['taskId'],))
+                    events = [
+                        runtime.root / 'device-events.jsonl',
+                        runtime.root / 'robots' / (fault_vehicle or '') / 'device-events.jsonl',
+                    ]
+                    cancelled_segments = []
+                    for event_path in events:
+                        if not event_path.is_file():
+                            continue
+                        for line in event_path.read_text(encoding='utf-8').splitlines():
+                            event = json.loads(line)
+                            if event.get('kind') == 'vendor-segment-cancelled':
+                                cancelled_segments.append(event)
+                    write(evidence / 'vendor-cancel-observed.json',
+                          dict(task=cancelled['task'], returnStep=return_step, held=held, commands=commands,
+                               cancelledSegments=cancelled_segments))
+                    check('车端返程3066后段实际取消', (return_step or {}).get('status') == 'Cancelled' and
+                          '=6' in str((return_step or {}).get('errorMessage') or '') and bool(cancelled_segments),
+                          cancelled['task']['taskId'])
+                    check('车端取消后保留原任务命令和路权', bool(commands) and bool(held) and commands[-1]['Status'] in (20, 30),
+                          dict(commands=commands, held=held))
+                    check('取消没有被伪造成业务完成', cancelled['task']['stage'] == 'Cancelled' and
+                          not bool(cancelled.get('handover', {}).get('returnCommandCompleted')), cancelled['task']['taskId'])
+                    return False
+                raise RuntimeError('任务出现非预期故障或取消。')
             state = runtime.device()
+            if name == 'road-block-recovery':
+                if road_block_started is None:
+                    active = next((tid for tid, detail in details.items()
+                                   if next((step for step in detail['steps']
+                                            if step.get('sequence') == 1), {}).get('status') == 'Executing'), None)
+                    if active:
+                        vehicle_id = details[active]['task'].get('vehicleId')
+                        edge = state.get('cars', {}).get(vehicle_id or '', {}).get('motionEdge')
+                        if vehicle_id and edge:
+                            runtime.control(dict(vehicles={vehicle_id: dict(blockedEdges=[edge])}))
+                            road_block_controls = json.loads(json.dumps(runtime.controls))
+                            applied = runtime.wait('道路阻塞控制未生效',
+                                                   lambda: control_applied(runtime.device(), road_block_controls, vehicle_id), 10)
+                            write(evidence / 'road-block-applied.json',
+                                  dict(taskId=active, vehicleId=vehicle_id, edge=edge, applied=applied))
+                            check('道路阻塞在正式运输途中实际生效', True, dict(vehicleId=vehicle_id, edge=edge))
+                            road_block_started = time.monotonic()
+                elif not fault_observed and time.monotonic() - road_block_started >= request['holdSeconds']:
+                    vehicle_id = next(tasks[tid]['vehicle'] for tid in ids if tasks[tid]['vehicle'])
+                    check('道路阻塞期间原任务未完成', any(d['task']['stage'] != 'Completed' for d in details.values()),
+                          dict(taskIds=list(ids), elapsed=time.monotonic() - road_block_started))
+                    runtime.control(dict(vehicles={vehicle_id: dict(blockedEdges=[])}))
+                    applied = runtime.wait('道路阻塞解除未生效',
+                                           lambda: control_applied(runtime.device(), runtime.controls, vehicle_id), 10)
+                    write(evidence / 'road-block-released.json', dict(vehicleId=vehicle_id, applied=applied))
+                    fault_observed = True
             if name == 'plc-recovery' and plc_fault_started is None:
                 target_index = 3 if request['plcFault'] == 'ready' else 5
                 target = next((tid for tid, detail in details.items()
@@ -473,12 +557,25 @@ def execute(runtime, request):
                 write(evidence / 'reconnect-applied.json', acknowledged)
                 restored = True; fault_observed = True
             if all(d['task']['stage'] == 'Completed' for d in details.values()):
+                if name == 'vendor-cancel-return' and fault_observed:
+                    raise RuntimeError('返程取消已注入但任务仍完成，取消未命中真实3066任务链。')
                 write(evidence / ('completion-observed-' + uuid.uuid4().hex + '.json'),
                       {tid: dict(stage=detail['task']['stage'], steps=[step['status'] for step in detail['steps']])
                        for tid, detail in details.items()})
                 write(evidence / ('completed-' + uuid.uuid4().hex + '.json'), details)
                 check('原任务九步完成', all(len(d['steps']) == 9 and all(s['status'] == 'Completed' for s in d['steps']) for d in details.values()), list(ids))
                 check('原任务出区证据', all(d.get('handover', {}).get('exitPhysicallyVerified') for d in details.values()), list(ids))
+                if name == 'response-loss' and not fault_observed:
+                    dropped = []
+                    for vehicle in {tasks[tid]['vehicle'] for tid in ids}:
+                        source = runtime.root / 'robots' / vehicle / 'device-events.jsonl'
+                        if not source.exists(): source = runtime.root / 'device-events.jsonl'
+                        if source.exists():
+                            dropped.extend(json.loads(line) for line in source.read_text(encoding='utf-8').splitlines()
+                                           if '"simulation-response-dropped"' in line)
+                    write(evidence / 'response-loss-observed.json', dropped)
+                    check('正式运输命令回包丢失已实际触发', bool(dropped), dropped)
+                    fault_observed = True
                 completed_tasks.update(ids)
                 return True
             runtime.scenario['message'] = '；'.join(describe_progress(tasks[t]['vehicle'], d) for t, d in details.items())
@@ -516,6 +613,17 @@ def execute(runtime, request):
             write(evidence / 'plc-delay-applied.json', applied)
             check('PLC延迟在建单前被设备确认', True, applied)
             fault_observed = True
+        if request['name'] == 'response-loss':
+            vehicle_ids = [robot['VehicleId'] for robot in runtime.settings['Agv']['Robots']]
+            runtime.control(dict(vehicles={vehicle_id: dict(dropNextResponse=True) for vehicle_id in vehicle_ids}))
+            loss_controls = json.loads(json.dumps(runtime.controls))
+            applied = {
+                vehicle_id: runtime.wait('运输回包丢失控制未生效',
+                                         lambda vehicle_id=vehicle_id: control_applied(runtime.device(), loss_controls, vehicle_id), 10)
+                for vehicle_id in vehicle_ids
+            }
+            write(evidence / 'response-loss-applied.json', applied)
+            check('运输回包丢失控制已应用到各虚拟车', all(applied.values()), applied)
         pairs = [(station, None) for station in runtime.settings['Dispatching']['StationPickupSites']] if automatic else list(zip(runtime.settings['Dispatching']['StationPickupSites'], [r['VehicleId'] for r in runtime.settings['Agv']['Robots']]))
         if not pairs: raise ValueError('没有可测试的车辆与工位配对。')
         if request['name'] == 'plc-recovery': pairs = pairs[:1]
@@ -532,6 +640,7 @@ def execute(runtime, request):
                 else:
                     grouped[-1][1].append(call)
             all_created = []
+            batch_timeline = []
             round_started = time.monotonic()
             station_offsets = {station['stationId']: station['offset'] for station in runtime.lab.get('simulationTopology', {}).get('stations', [])}
             def calls_closed(group_calls):
@@ -552,6 +661,8 @@ def execute(runtime, request):
                 if all_created:
                     closed_since = None
                     runtime.wait('上一轮工位握手尚未稳定闭合', lambda: cycles_stable(group), request['timeoutSeconds'])
+                previous_completed_at = batch_timeline[-1]['completedAt'] if batch_timeline else started
+                batch_issued_at = time.time()
                 stations = [call['stationId'] for call in group]
                 sequence = uuid.uuid4().hex
                 payload = dict(sequence=sequence, call=stations[0]) if len(stations) == 1 else dict(sequence=sequence, calls=stations)
@@ -563,9 +674,84 @@ def execute(runtime, request):
                 batch_ids = [create(call['stationId'], call.get('vehicleId'), trigger=False) for call in group]
                 all_created.extend(batch_ids)
                 complete(batch_ids)
+                batch_timeline.append(dict(
+                    batchNumber=len(batch_timeline) + 1,
+                    issuedAt=batch_issued_at,
+                    completedAt=time.time(),
+                    previousBatchCompletedAt=previous_completed_at,
+                    taskIds=list(batch_ids),
+                    stations=list(stations)))
+                write(evidence / 'batch-timeline.json', batch_timeline)
                 runtime.scenario['completedRounds'] = len(all_created)
+            check('自定义呼叫严格按批次串行推进',
+                  all(row['batchNumber'] == 1 or row['issuedAt'] >= batch_timeline[index - 1]['completedAt']
+                      for index, row in enumerate(batch_timeline)),
+                  batch_timeline)
             check('全部自定义呼叫均已创建并完成原任务', len(all_created) == len(request['calls']), f'{len(all_created)}个任务')
             runtime.scenario['completedRounds'] = len(all_created)
+        elif request['name'] == 'vendor-cancel-return':
+            station, vehicle = pairs[0]
+            task_id = create(station, vehicle)
+            detail = runtime.api('/api/tasks/' + task_id)
+            assigned = detail['task'].get('vehicleId')
+            if not assigned:
+                assigned = runtime.wait('返程取消任务未取得车辆身份',
+                                        lambda: runtime.api('/api/tasks/' + task_id)['task'].get('vehicleId'), 20)
+            # Arm the one-shot fault before the return command is sent. The
+            # previous timing waited for step 7 "Executing", by which point the
+            # complete 3066 chain had already been accepted by the virtual car.
+            runtime.control(dict(vehicles={assigned: dict(cancelFinalReturnSegments=2)}))
+            applied = runtime.wait('返程取消控制未被设备应用',
+                                   lambda: control_applied(runtime.device(), runtime.controls, assigned), 10)
+            write(evidence / 'vendor-cancel-armed.json',
+                  dict(taskId=task_id, vehicleId=assigned, applied=applied))
+            check('车端返程取消已在任何返程命令前武装', True, assigned)
+            fault_observed = True
+            complete([task_id])
+            runtime.scenario['completedRounds'] = 0
+        elif request['name'] == 'plc-recovery':
+            station, vehicle = pairs[0]
+            signal = 'suppressReady' if request['plcFault'] == 'ready' else 'suppressDone'
+            target_index = 3 if request['plcFault'] == 'ready' else 5
+            runtime.control(dict(plc={signal: True}))
+            applied = runtime.wait('PLC卡位控制未被设备应用',
+                                   lambda: control_applied(runtime.device(), runtime.controls), 10)
+            write(evidence / 'plc-fault-armed.json', dict(signal=signal, applied=applied))
+            task_id = create(station, vehicle)
+            reached = runtime.wait(
+                '原任务未到达指定PLC卡位步骤',
+                lambda: next((detail for detail in [
+                    runtime.api('/api/tasks/' + task_id)]
+                    if len(detail['steps']) > target_index and
+                    detail['steps'][target_index]['status'] in ('Ready', 'Executing') and
+                    detail['task']['stage'] not in ('Completed', 'Cancelled', 'Faulted')),
+                    None), 90)
+            blocked_at = reached['steps'][target_index]
+            write(evidence / 'plc-fault-observed.json',
+                  dict(taskId=task_id, signal=signal, step=blocked_at))
+            start = time.monotonic()
+            while time.monotonic() - start < request['holdSeconds']:
+                if runtime.abort.wait(.25):
+                    raise InterruptedError('PLC卡位保持期间场景已中止。')
+            held = runtime.api('/api/tasks/' + task_id)
+            check('卡位期间原任务保持等待且未跳步',
+                  len(held['steps']) > target_index and
+                  held['steps'][target_index]['status'] in ('Ready', 'Executing') and
+                  held['task']['stage'] not in ('Completed', 'Cancelled', 'Faulted'),
+                  held['steps'][target_index])
+            runtime.control(dict(plc={signal: False}))
+            released = runtime.wait('PLC卡位解除未被设备确认',
+                                    lambda: control_applied(runtime.device(), runtime.controls), 10)
+            write(evidence / 'plc-fault-released.json',
+                  dict(taskId=task_id, signal=signal, applied=released))
+            fault_observed = True
+            complete([task_id])
+            runtime.scenario['completedRounds'] = 1
+        elif request['name'] in ('response-loss', 'road-block-recovery'):
+            station, vehicle = pairs[0]
+            task_id = create(station, vehicle)
+            complete([task_id])
+            runtime.scenario['completedRounds'] = 1
         elif request['name'] != 'resume-recovery':
             for iteration in range(request['rounds']):
                 if request['name'] in ('simultaneous-calls', 'disconnect-reconnect'):
@@ -588,7 +774,9 @@ def execute(runtime, request):
                 check('本轮PLC握手闭合', True, '工位箱体/在线初态，H输出和倒料周期复位')
                 runtime.scenario['completedRounds'] = iteration + 1
                 if runtime.abort.wait(request['intervalSeconds']): raise InterruptedError('场景已中止。')
-        if request['name'] != 'service-restart':
+        if request['name'] == 'vendor-cancel-return':
+            check('预期车端取消已形成独立故障结果', fault_observed, '取消任务、原命令和原路权已保留待核对')
+        elif request['name'] != 'service-restart':
             check('最终无残留路权', not query(runtime.root, 'select ResourceId from traffic_resource_lease'), '所有资源租约已释放')
             commands = query(runtime.root, 'select TaskId,StepId,CommandId,Status,AttemptCount from agv_command_outbox')
             commands = [c for c in commands if c['TaskId'] in tasks]
@@ -613,7 +801,8 @@ def execute(runtime, request):
                         sends.append(dict(vehicle=vehicle, **event))
             write(evidence / 'accepted-3066.json', sends)
             check('设备实际接收原运输命令', len(sends) == len(tasks) * 4, f'{len(sends)}次成功接收')
-        if request['name'] in ('disconnect-reconnect', 'service-restart', 'plc-recovery'):
+        if request['name'] in ('disconnect-reconnect', 'service-restart', 'plc-recovery', 'response-loss',
+                               'road-block-recovery', 'vendor-cancel-return'):
             check('指定阶段故障实际触发', fault_observed, request['name'])
         if request['name'] == 'plc-delay':
             applied = control_applied(runtime.device(), plc_fault_controls)
@@ -629,7 +818,10 @@ def execute(runtime, request):
             selected = [row for row in automatic_rows if row['TaskId'] in tasks]
             check('仅PLC呼叫建单且车辆由正式调度选择', len(selected) == len(tasks) and all(not row['RequestedVehicleId'] and not row['CreateRequestId'] for row in selected),
                   '场景没有提交人工任务、指定车辆或修改调度数据库。')
-        result_status = 'passed'; message = '恢复屏障已验证，保留活动任务待核对。' if request['name'] == 'service-restart' else '场景及闭环检查通过。'
+        result_status = 'passed'
+        message = ('恢复屏障已验证，保留活动任务待核对。' if request['name'] == 'service-restart' else
+                   '已复现车端返程3066后段取消；任务、命令和路权按异常现场保留。' if request['name'] == 'vendor-cancel-return' else
+                   '场景及闭环检查通过。')
     except InterruptedError as error:
         result_status = 'aborted'; message = str(error)
         checks.append(dict(name='场景中止', status='unknown', detail=message))
@@ -656,7 +848,8 @@ def execute(runtime, request):
             callMode='plc-automatic' if automatic else 'legacy-manual',
             completedBusinessCycle=result_status == 'passed' and bool(tasks) and completed_tasks == set(tasks) and not recovery_hold,
             recoveryHold=recovery_hold, faultApplied=fault_observed if request['name'] in
-                ('disconnect-reconnect', 'service-restart', 'plc-delay', 'plc-recovery') else None,
+                ('disconnect-reconnect', 'service-restart', 'plc-delay', 'plc-recovery', 'vendor-cancel-return',
+                 'response-loss', 'road-block-recovery') else None,
             taskSummary=summarize_tasks(all_details),
             startedAt=started, finishedAt=time.time(), evidenceDirectory=evidence.name,
             metrics=dict(taskCount=len(tasks), completedRounds=runtime.scenario['completedRounds'], durationSeconds=time.time()-started,

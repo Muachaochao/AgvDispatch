@@ -230,6 +230,8 @@ public sealed partial class DispatchTaskOrchestrator(
                 task.TaskId,
                 cancellationToken);
             var planningMap = activeMap.Current;
+            var physicalPickupOccupants = DispatchCandidateFilter.PhysicalPickupOccupants(
+                pickupSite, planningMap?.Definition, vehicles);
             var ownableVehicles = new List<AgvVehicleStatus>();
             foreach (var vehicle in idleVehicles
                          .Where(vehicle => options.AllowsVehicle(task.StationId, vehicle.VehicleId))
@@ -240,6 +242,11 @@ public sealed partial class DispatchTaskOrchestrator(
                     ownableVehicles.Add(vehicle);
             var routeCandidates = ownableVehicles
                 .Where(vehicle => !string.IsNullOrWhiteSpace(vehicle.CurrentStation))
+                // A station already occupied by another car keeps the original
+                // task unassigned and takes no path resources. Its current occupant
+                // remains eligible for its own exit/return cycle.
+                .Where(vehicle => physicalPickupOccupants.All(occupant =>
+                    string.Equals(occupant, vehicle.VehicleId, StringComparison.OrdinalIgnoreCase)))
                 .Select(vehicle => new
                 {
                     Vehicle = vehicle,
@@ -251,6 +258,23 @@ public sealed partial class DispatchTaskOrchestrator(
                 .ToArray();
             if (routeCandidates.Length == 0)
             {
+                if (physicalPickupOccupants.Count > 0)
+                {
+                    var occupiedReason =
+                        $"目标取货站{task.StationId}被{string.Join('、', physicalPickupOccupants)}实际占用，等待其驶离后再派车；不得提前锁定目标站路权。";
+                    await trafficResources.RecordRouteAsync(new(
+                        readyStep.StepId, task.TaskId, physicalPickupOccupants[0],
+                        pickupSite, pickupSite, [], [], true, occupiedReason)
+                    {
+                        MapId = planningMap?.MapId,
+                        MapVersionId = planningMap?.VersionId
+                    }, cancellationToken);
+                    if (await ApplySelectAgvConditionAsync(
+                            task, readyStep, TaskTemplateExecutionPolicy.VehicleUnavailable,
+                            occupiedReason, cancellationToken))
+                        continue;
+                    continue;
+                }
                 var diagnostic = idleVehicles.Where(v => options.AllowsVehicle(task.StationId, v.VehicleId) && fleetTest?.Allows(task.TaskId,v.VehicleId)!=false && TaskVehicleSelection.Accepts(task, v.VehicleId) && !selectedVehicles.Contains(v.VehicleId) && !string.IsNullOrWhiteSpace(v.CurrentStation)).Select(v => new
                 { Vehicle = v, Source = v.CurrentStation!, Route = routePlanner.Plan(v.CurrentStation!, pickupSite, new HashSet<string>()) })
                     .OrderBy(v => v.Route?.Cost ?? double.MaxValue).FirstOrDefault();

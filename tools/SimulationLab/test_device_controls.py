@@ -321,6 +321,26 @@ class DeviceNetworkTests(unittest.IsolatedAsyncioTestCase):
             driver.cancel()
             await asyncio.gather(driver, return_exceptions=True)
 
+    async def test_vendor_can_cancel_final_return_segments_without_fake_completion(self):
+        car = self.f.car
+        car.nodes['LM4'] = dict(id='LM4', agvSiteId='LM4', x=.4, y=0)
+        car.edges['LM1', 'LM4'] = (dict(id='E1', **{'from': 'LM1', 'to': 'LM4'}, bidirectional=False, speedLimit=1), False)
+        self.f.control(vehicles={'A': {'cancelFinalReturnSegments': 1, 'speedScale': 10}})
+        self.assertEqual(0, car.robokit_reply(3066, {'move_task_list': [
+            {'task_id': 'return-01', 'source_id': 'LM0', 'id': 'LM1', 'operation': 'Wait'},
+            {'task_id': 'return-02', 'source_id': 'LM1', 'id': 'LM4', 'operation': 'JackUnload'}]})['ret_code'])
+        driver = asyncio.create_task(car.drive())
+        try:
+            await self.wait_until(lambda: car.tasks['return-02'] == 6 and car.current is None,
+                                  'Final return segment was not cancelled')
+            self.assertEqual(4, car.tasks['return-01'])
+            self.assertEqual('LM1', car.station, 'Preceding successful segments remain complete')
+            self.assertEqual('LM1', car.station, 'Cancelled final segment cannot teleport to destination')
+            self.assertEqual(0, car.cancel_final_return_segments)
+        finally:
+            driver.cancel()
+            await asyncio.gather(driver, return_exceptions=True)
+
 
 class MultiVehicleRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_three_independent_tcp_cars_one_shared_plc(self):
