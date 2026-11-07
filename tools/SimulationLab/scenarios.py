@@ -39,6 +39,22 @@ STEP_NAMES = {'GoToPickup': '前往工位取满箱', 'PickupFullBox': '确认满
               'EnterDumpingPosition': '进入倒料位', 'DumpFullBox': '等待倒料完成',
               'ReturnEmptyBox': '返送空箱到原工位', 'PlaceEmptyBox': '确认空箱已放到位',
               'CompletePlcHandshake': '完成工位握手收尾'}
+TASK_STAGE_NAMES = {
+    0: 'Created', 10: 'WaitingForVehicle', 15: 'SubmittingToAgv', 20: 'GoingToPickup',
+    30: 'PickingUp', 40: 'GoingToDumper', 50: 'WaitingForDumper', 60: 'Dumping',
+    70: 'ReturningEmptyBox', 80: 'WaitingForPlcConfirmation', 90: 'Completed',
+    100: 'Faulted', 110: 'Cancelled', 120: 'CancellationPending', 130: 'CancellationReview',
+}
+STEP_TYPE_NAMES = {
+    10: 'GoToPickup', 20: 'PickupFullBox', 30: 'DeliverFullBoxToDumper',
+    40: 'WaitForDumperReady', 50: 'EnterDumpingPosition', 60: 'DumpFullBox',
+    70: 'ReturnEmptyBox', 80: 'PlaceEmptyBox', 90: 'CompletePlcHandshake',
+}
+STEP_STATUS_NAMES = {
+    0: 'Pending', 10: 'Ready', 20: 'CommandPending', 30: 'Sending', 40: 'Executing',
+    50: 'Completed', 60: 'RetryScheduled', 90: 'Failed', 100: 'Cancelled',
+    110: 'ManualIntervention',
+}
 
 
 def has_alternate_connection(navigation, edge_id):
@@ -291,7 +307,7 @@ class Observer:
             p['VehicleId']: vehicle_extents(p)
             for p in runtime.settings['HandshakeExecution']['DumperExit']['BodyProfiles']}
 
-    def sample(self, details):
+    def sample(self, details, compact=False):
         self.last_details = details
         self.seen_details.update(details)
         state = fresh_device_state(self.runtime)
@@ -351,11 +367,36 @@ class Observer:
             if not prior or prior[0] != signature: self.wait_started[tid] = (signature, now)
             self.max_wait = max(self.max_wait, now - self.wait_started[tid][1])
         self.samples += 1; self.previous = state
+        task_observation = ({
+            'total': len(details),
+            'stageCounts': {
+                stage: sum(1 for detail in details.values() if detail['task']['stage'] == stage)
+                for stage in sorted({detail['task']['stage'] for detail in details.values()})
+            },
+            'activeVehicles': sorted({
+                detail['task'].get('vehicleId') for detail in details.values()
+                if detail['task'].get('vehicleId') and detail['task'].get('stage') not in ('Completed', 'Cancelled')
+            }),
+            'sampleMode': 'bounded-large-batch',
+        } if compact else {
+            t: dict(
+                stage=d['task']['stage'],
+                stationId=d['task'].get('stationId'),
+                vehicleId=d['task'].get('vehicleId'),
+                progress=describe_progress(d['task'].get('vehicleId') or '待派车', d),
+                waitingExplanation=d.get('waitingExplanation'),
+                steps=[s['status'] for s in d['steps']],
+            )
+            for t, d in details.items()
+        })
         with (self.evidence / 'observations.jsonl').open('a', encoding='utf-8') as stream:
-            stream.write(json.dumps(dict(time=time.time(), device=state, leases=leases, vehicleTaskOwnership=ownership,
-                tasks={t:dict(stage=d['task']['stage'], stationId=d['task'].get('stationId'), vehicleId=d['task'].get('vehicleId'),
-                    progress=describe_progress(d['task'].get('vehicleId') or '待派车', d),
-                    waitingExplanation=d.get('waitingExplanation'), steps=[s['status'] for s in d['steps']]) for t, d in details.items()}), ensure_ascii=False) + '\n')
+            stream.write(json.dumps(dict(
+                time=time.time(),
+                device=state,
+                leases=leases,
+                vehicleTaskOwnership=ownership,
+                tasks=task_observation,
+            ), ensure_ascii=False) + '\n')
         mutual = next((item for item in self.violations if item.get('kind') == 'mutual-vehicle-wait'), None)
         if mutual:
             raise RuntimeError(f"互锁等待：{mutual['vehicles'][0]} 与 {mutual['vehicles'][1]} 连续45秒互相阻塞；"
@@ -460,32 +501,71 @@ def execute(runtime, request):
         """
         ordered = list(dict.fromkeys(stations))
         found = {}
-        timeout = max(40.0, min(float(request['timeoutSeconds']), 30.0 + len(ordered) * 1.5))
+        # A 305-station wave is acknowledged by the production PLC coordinator
+        # sequentially. The previous 1.5 seconds per station allowance expired
+        # while the coordinator was still safely persisting valid calls. Keep
+        # the shared deadline capacity-based, while a separate no-progress
+        # guard still fails quickly if the queue truly stops advancing.
+        timeout = max(120.0, min(float(request['timeoutSeconds']), 120.0 + len(ordered) * 3.0))
+        stall_timeout = 120.0 if len(ordered) > 32 else 60.0
         deadline = time.monotonic() + timeout
         last_progress = time.monotonic()
         last_count = -1
+        progress_path = evidence / 'batch-creation-progress.jsonl'
         while time.monotonic() < deadline:
             if runtime.abort.is_set():
                 raise InterruptedError('批量呼叫建单已中止；已经建出的原任务保留。')
-            for station in ordered:
-                if station in found:
-                    continue
-                task_id = discover(station)
-                if task_id:
-                    found[station] = task_id
+            placeholders = ','.join('?' for _ in ordered)
+            rows = query(
+                runtime.root,
+                'select TaskId,StationId,VehicleId,RequestedVehicleId,CreateRequestId '
+                f'from dispatch_task where StationId in ({placeholders}) order by CreatedAt',
+                ordered,
+            )
+            new_rows = [
+                row for row in rows
+                if row['TaskId'] not in baseline
+                and row['TaskId'] not in tasks
+                and row['StationId'] not in found
+            ]
+            by_station = {}
+            for row in new_rows:
+                by_station.setdefault(row['StationId'], []).append(row)
+            duplicates = [station for station, station_rows in by_station.items() if len(station_rows) > 1]
+            if duplicates:
+                raise RuntimeError('一次工位呼叫出现多个新任务，保留现场核查：' + duplicates[0])
+            for station, station_rows in by_station.items():
+                row = station_rows[0]
+                if row.get('RequestedVehicleId') or row.get('CreateRequestId'):
+                    raise RuntimeError('呼叫未经过正式PLC自动建单通道：' + station)
+                task_id = row['TaskId']
+                tasks[task_id] = dict(vehicle=row.get('VehicleId'), station=station)
+                found[station] = task_id
+            if by_station:
+                write(evidence / 'task-identities.json', tasks)
             if len(found) != last_count:
                 last_count = len(found)
                 last_progress = time.monotonic()
                 runtime.scenario['message'] = f'同时呼叫 {len(ordered)} 个工位；正式后台已建单 {len(found)} 个，等待 {len(ordered) - len(found)} 个。'
+                with progress_path.open('a', encoding='utf-8') as stream:
+                    stream.write(json.dumps(
+                        dict(
+                            elapsedSeconds=timeout - max(0.0, deadline - time.monotonic()),
+                            createdCount=len(found),
+                            requestedCount=len(ordered),
+                            firstMissing=next((station for station in ordered if station not in found), None),
+                        ),
+                        ensure_ascii=False,
+                    ) + '\n')
             if len(found) == len(ordered):
                 write(evidence / 'batch-creation.json', dict(
                     requestedStations=ordered, createdStations=list(found),
                     elapsedSeconds=timeout - max(0.0, deadline - time.monotonic()),
                     waitTimeoutSeconds=timeout))
                 return [found[station] for station in ordered]
-            # If no new task appears for 60 seconds, report the exact stations
+            # If no new task appears for the bounded stall window, report the exact stations
             # instead of waiting until the global scenario deadline.
-            if time.monotonic() - last_progress >= 60:
+            if time.monotonic() - last_progress >= stall_timeout:
                 break
             runtime.abort.wait(.25)
         missing = [station for station in ordered if station not in found]
@@ -498,6 +578,81 @@ def execute(runtime, request):
     def complete(ids):
         nonlocal fault_observed, recovery_hold, auto_detour_sends
         deadline = time.monotonic() + request['timeoutSeconds']
+        large_batch = request['name'] in ('custom-calls', 'dispatch-backlog') and len(ids) > 32
+
+        def batch_task_details():
+            placeholders = ','.join('?' for _ in ids)
+            task_rows = query(
+                runtime.root,
+                'select TaskId,StationId,VehicleId,Stage,CreatedAt,UpdatedAt,ErrorMessage '
+                f'from dispatch_task where TaskId in ({placeholders})',
+                ids,
+            )
+            step_rows = query(
+                runtime.root,
+                'select StepId,TaskId,Sequence,StepType,Status,SourceSite,DestinationSite,VehicleId,'
+                'VendorTaskId,ErrorMessage,UpdatedAt '
+                f'from dispatch_task_step where TaskId in ({placeholders}) order by TaskId,Sequence',
+                ids,
+            )
+            completed_exit_ids = {
+                row['TaskId'] for row in query(
+                    runtime.root,
+                    'select distinct TaskId from task_runtime_event '
+                    f'where Kind=? and TaskId in ({placeholders})',
+                    ('ExitVerified', *ids),
+                )
+            }
+            steps_by_task = {}
+            for row in step_rows:
+                steps_by_task.setdefault(row['TaskId'], []).append(dict(
+                    stepId=row['StepId'],
+                    sequence=row['Sequence'],
+                    stepType=STEP_TYPE_NAMES.get(row['StepType'], str(row['StepType'])),
+                    status=STEP_STATUS_NAMES.get(row['Status'], str(row['Status'])),
+                    sourceSite=row.get('SourceSite'),
+                    destinationSite=row.get('DestinationSite'),
+                    vehicleId=row.get('VehicleId'),
+                    vendorTaskId=row.get('VendorTaskId'),
+                    errorMessage=row.get('ErrorMessage'),
+                    updatedAt=row.get('UpdatedAt'),
+                ))
+            for task_steps in steps_by_task.values():
+                task_steps.sort(key=lambda step: step['sequence'])
+                current = next(
+                    (
+                        step for step in task_steps
+                        if step['status'] in (
+                            'Ready', 'CommandPending', 'Sending', 'Executing',
+                            'RetryScheduled', 'Failed', 'ManualIntervention',
+                        )
+                    ),
+                    None,
+                )
+                if current is not None:
+                    current['isCurrent'] = True
+            values = {}
+            for row in task_rows:
+                tid = row['TaskId']
+                values[tid] = dict(
+                    task=dict(
+                        taskId=tid,
+                        stationId=row['StationId'],
+                        vehicleId=row.get('VehicleId'),
+                        stage=TASK_STAGE_NAMES.get(row['Stage'], str(row['Stage'])),
+                        createdAt=row.get('CreatedAt'),
+                        updatedAt=row.get('UpdatedAt'),
+                        errorMessage=row.get('ErrorMessage'),
+                    ),
+                    steps=steps_by_task.get(tid, []),
+                    handover=dict(exitPhysicallyVerified=tid in completed_exit_ids),
+                )
+            return {tid: values.get(tid, dict(
+                task=dict(taskId=tid, stationId=tasks.get(tid, {}).get('station'), vehicleId=None, stage='Unknown'),
+                steps=[],
+                handover=dict(exitPhysicallyVerified=False),
+            )) for tid in ids}
+
         write(evidence / ('completion-start-' + uuid.uuid4().hex + '.json'), dict(taskIds=list(ids), startedAt=time.time()))
         offline_at = None; fault_vehicle = None; held = set(); restored = False; offline_controls = None
         plc_fault_started = None; plc_recovery_controls = None
@@ -506,10 +661,12 @@ def execute(runtime, request):
         obstacle_controls = None; obstacle_recovery = None
         while time.monotonic() < deadline:
             if runtime.abort.is_set(): raise InterruptedError('场景已中止，原任务及占用保留；请核对后恢复。')
-            details = {tid: runtime.api('/api/tasks/' + tid) for tid in ids}
+            details = batch_task_details() if large_batch else {
+                tid: runtime.api('/api/tasks/' + tid) for tid in ids
+            }
             for tid, detail in details.items():
                 tasks[tid]['vehicle'] = detail['task'].get('vehicleId') or tasks[tid]['vehicle']
-            leases = observer.sample(details)
+            leases = observer.sample(details, compact=large_batch)
             name = request['name']
             if name == 'vendor-cancel-return' and not fault_observed:
                 candidate = next((tid for tid, detail in details.items()
@@ -750,7 +907,18 @@ def execute(runtime, request):
                     fault_observed = True
                 completed_tasks.update(ids)
                 return True
-            runtime.scenario['message'] = '；'.join(describe_progress(tasks[t]['vehicle'], d) for t, d in details.items())
+            if large_batch:
+                stage_counts = {}
+                for detail in details.values():
+                    stage = detail['task']['stage']
+                    stage_counts[stage] = stage_counts.get(stage, 0) + 1
+                assigned = sum(1 for detail in details.values() if detail['task'].get('vehicleId'))
+                runtime.scenario['message'] = (
+                    f'{len(details)} 单压力批次：已派车 {assigned} 单；'
+                    + '，'.join(f'{stage} {count}' for stage, count in sorted(stage_counts.items()))
+                )
+            else:
+                runtime.scenario['message'] = '；'.join(describe_progress(tasks[t]['vehicle'], d) for t, d in details.items())
             runtime.abort.wait(.5)
         raise TimeoutError('任务未在期限内闭合，可能存在长期等待；保留全部现场。')
 

@@ -80,7 +80,7 @@ powershell -NoProfile -File .\Sync-SimulationToProfControl.ps1 `
   -EvidenceDirectory '..\..\artifacts\profcontrol-bridge\runs'
 ```
 
-状态桥每 500 ms 读取一次 `5199/api/simulation` 的 `device.cars`，同步：
+状态桥每 500 ms 读取一次 `5199/api/simulation/live` 的 `device.cars`，同步：
 
 - 当前世界坐标
 - 当前角度
@@ -89,6 +89,8 @@ powershell -NoProfile -File .\Sync-SimulationToProfControl.ps1 `
 - 当前站点的简短车辆标签
 
 车辆名称使用短标签，例如 `AGV-02 · 载货执行`、`AGV-03 · 等待`；空闲车辆只显示车号。任务 GUID 和站点不会铺满地图。状态桥只负责显示同步，不会向 5199 回传位置，也不会修改调度任务、PLC 握手或路权。
+
+`/api/simulation/live` 只返回新鲜设备遥测和场景摘要，不重复序列化 647 节点地图、305 工位点表、历史报告和恢复指导，适合 305 工位满规模测试时持续刷新动画。旧版 WebHost 尚未提供该路由时，状态桥会自动回退到 `/api/simulation`。
 
 每次运行会在 `EvidenceDirectory` 下创建独立目录：
 

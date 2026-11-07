@@ -348,6 +348,42 @@ class Runtime:
                         versionComparison=self.version_comparison.snapshot() if hasattr(self, 'version_comparison') else None,
                         message='回环设备仿真；合成模型不代表真实固件、机械及安全联锁验收。')
 
+    def live_status(self):
+        """Small read path for high-frequency map animation bridges.
+
+        The full status payload also contains the map, PLC catalog, history,
+        recovery guidance and scheme catalog. Rebuilding that payload every
+        500 ms competes with the production task coordinator during large
+        station-wave tests. This route returns only fresh device telemetry and
+        a compact scenario summary; it never changes scheduling state.
+        """
+        device = self.device()
+        scenario = self.scenario or {}
+        with self.lock:
+            children_running = bool(self.children) and all(p.poll() is None for p in self.children.values())
+            return dict(
+                enabled=True,
+                rootName=self.root.name,
+                running=self.phase == 'running',
+                phase=self.phase,
+                fresh=(
+                    self.phase == 'running'
+                    and 0 <= time.time() - device.get('time', 0) < 5
+                    and children_running
+                ),
+                device=device,
+                scenario=dict(
+                    id=scenario.get('id'),
+                    name=scenario.get('name'),
+                    status=scenario.get('status'),
+                    completedRounds=scenario.get('completedRounds', 0),
+                    totalRounds=scenario.get('totalRounds', 0),
+                    message=scenario.get('message'),
+                ),
+                error=self.error,
+                message='轻量实时状态；正式派车、PLC和路权仍由生产仿真后台负责。',
+            )
+
     def launch(self, name, arguments, cwd):
         env = os.environ.copy()
         env['AGV_DISPATCH_DATABASE_PATH'] = str(self.root / 'data/agv-dispatch.db')
@@ -1293,6 +1329,7 @@ def serve(root, port, token):
                     elif query:
                         raise ValueError('只读查询参数无效。')
                     elif parsed.path == '/status': result = runtime.status()
+                    elif parsed.path == '/live': result = runtime.live_status()
                     elif parsed.path == '/point-table': result = runtime.current_point_table()
                     else: result = None
                 else:

@@ -109,7 +109,7 @@ public sealed class SimulationBridge : IAsyncDisposable
 
     private static bool AllowedReadPath(string path)
     {
-        if (path is "/status" or "/report" or "/replay" or "/point-table" or "/snapshot" or "/resources" or "/tasks" ||
+        if (path is "/status" or "/live" or "/report" or "/replay" or "/point-table" or "/snapshot" or "/resources" or "/tasks" ||
             Regex.IsMatch(path, @"^/(report|replay|archive)\?id=[a-f0-9]{32}$", RegexOptions.CultureInvariant) ||
             Regex.IsMatch(path, @"^/task\?id=[A-Za-z0-9_-]{1,128}$", RegexOptions.CultureInvariant) ||
             Regex.IsMatch(path, @"^/timeout-recovery\?id=[A-Za-z0-9_-]{1,128}$", RegexOptions.CultureInvariant))

@@ -9,6 +9,8 @@ public static class SimulationApi
         app.MapGet("/api/simulation", async (SimulationBridge bridge, CancellationToken ct) =>
             bridge.Enabled ? await bridge.ForwardAsync(HttpMethod.Get, "/status", null, ct) :
                 Results.Ok(new { enabled = false, message = "尚未配置隔离仿真环境，请先创建仿真实验。现场通信配置不会被替换。" }));
+        app.MapGet("/api/simulation/live", async (SimulationBridge bridge, CancellationToken ct) =>
+            bridge.Enabled ? await bridge.ForwardAsync(HttpMethod.Get, "/live", null, ct) : Disabled());
         app.MapGet("/api/simulation/report", async (string? id, SimulationBridge bridge, CancellationToken ct) =>
             bridge.Enabled ? await bridge.ForwardAsync(HttpMethod.Get, id is null ? "/report" : "/report?id=" + id, null, ct) : Disabled());
         app.MapGet("/api/simulation/replay", async (string? id, SimulationBridge bridge, CancellationToken ct) =>

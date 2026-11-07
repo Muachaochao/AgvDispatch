@@ -80,7 +80,7 @@ class Runtime:
 class Observer:
     def __init__(self, runtime, evidence):
         self.runtime = runtime; self.samples = 0; self.minimum = None; self.max_wait = 0; self.violations = []
-    def sample(self, details):
+    def sample(self, details, compact=False):
         self.samples += 1
         return [dict(ResourceId='bay', TaskId='original-task')]
 

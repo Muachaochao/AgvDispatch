@@ -126,7 +126,7 @@ await using (var bridge = new SimulationBridge(Config(Values(freePort))))
     var repeated = await Execute(await bridge.ForwardAsync(HttpMethod.Get, "/status", null, timeout.Token));
     Check(repeated.GetProperty("pid").GetInt32() == ownedPid, "status reuses only its already owned controller");
     Check((await Execute(await bridge.ForwardAsync(HttpMethod.Get, "/report", null, timeout.Token))).GetProperty("path").GetString() == "/report", "report proxy uses fixed route");
-    foreach (var path in new[] { "/snapshot", "/resources",
+    foreach (var path in new[] { "/live", "/snapshot", "/resources",
                                  "/tasks?page=1&filter=Active&pageSize=10&search=CNC-002",
                                  "/task?id=TASK-20261107012623978-a8ace5bc40f54fbd89a842be5e939001" })
         Check((await Execute(await bridge.ForwardAsync(HttpMethod.Get, path, null, timeout.Token))).GetProperty("path").GetString() == path,

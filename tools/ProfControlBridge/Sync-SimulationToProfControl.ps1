@@ -68,7 +68,7 @@ function New-JsonHttpClient {
     $handler.CookieContainer = New-Object System.Net.CookieContainer
     $handler.AllowAutoRedirect = $true
     $client = New-Object System.Net.Http.HttpClient($handler)
-    $client.Timeout = [TimeSpan]::FromSeconds(15)
+    $client.Timeout = [TimeSpan]::FromSeconds(30)
     $client
 }
 
@@ -131,7 +131,24 @@ function Read-Status {
         }
     }
 
-    Invoke-JsonRequest -Client $simulationClient -Uri "$($SimulationBaseUri.TrimEnd('/'))/api/simulation"
+    $base = $SimulationBaseUri.TrimEnd('/')
+    try {
+        # The live endpoint contains only device telemetry and a compact
+        # scenario summary. It avoids rebuilding the map, PLC catalog,
+        # guidance and history payload on every animation frame.
+        return Invoke-JsonRequest -Client $simulationClient -Uri "$base/api/simulation/live"
+    }
+    catch {
+        $liveError = $_.Exception.Message
+        try {
+            # Compatibility with WebHost versions deployed before the live
+            # endpoint was introduced.
+            return Invoke-JsonRequest -Client $simulationClient -Uri "$base/api/simulation"
+        }
+        catch {
+            throw "仿真实时状态读取失败。轻量接口：$liveError；兼容接口：$($_.Exception.Message)"
+        }
+    }
 }
 
 function Get-TaskLabel {
