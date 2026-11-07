@@ -49,6 +49,25 @@ public static class SimulationApi
                 return Results.BadRequest(new { error = "任务编号无效。" });
             return await bridge.ForwardAsync(HttpMethod.Get, "/task?id=" + Uri.EscapeDataString(id), null, ct);
         });
+        app.MapGet("/api/simulation/timeout-recovery/{id}", async (string id, SimulationBridge bridge, CancellationToken ct) =>
+        {
+            if (!bridge.Enabled) return Disabled();
+            if (string.IsNullOrWhiteSpace(id) || id.Length > 128 || id.Any(ch => !(char.IsLetterOrDigit(ch) || ch is '-' or '_')))
+                return Results.BadRequest(new { error = "任务编号无效。" });
+            return await bridge.ForwardAsync(HttpMethod.Get, "/timeout-recovery?id=" + Uri.EscapeDataString(id), null, ct);
+        });
+        app.MapPost("/api/simulation/timeout-recovery/{id}/execute", async (string id, HttpRequest request,
+            SimulationBridge bridge, CancellationToken ct) =>
+        {
+            if (!bridge.Enabled) return Disabled();
+            if (string.IsNullOrWhiteSpace(id) || id.Length > 128 || id.Any(ch => !(char.IsLetterOrDigit(ch) || ch is '-' or '_')))
+                return Results.BadRequest(new { error = "任务编号无效。" });
+            if (request.ContentLength == 0) return Results.BadRequest(new { error = "必须提交人工恢复核对条件。" });
+            using var json = await JsonDocument.ParseAsync(request.Body, cancellationToken: ct);
+            if (json.RootElement.ValueKind != JsonValueKind.Object)
+                return Results.BadRequest(new { error = "人工恢复参数必须为JSON对象。" });
+            return await bridge.ForwardAsync(HttpMethod.Post, "/timeout-recovery-execute", json.RootElement.GetRawText(), ct);
+        });
         app.MapPost("/api/simulation/{action}", async (string action, HttpRequest request, SimulationBridge bridge, CancellationToken ct) =>
         {
             if (!bridge.Enabled) return Disabled();

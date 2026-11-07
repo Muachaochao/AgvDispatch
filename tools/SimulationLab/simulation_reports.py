@@ -37,7 +37,8 @@ def guidance(details, device):
         if task.get('stage') in ('Completed', 'Cancelled'): continue
         steps = detail.get('steps', [])
         current = next((step for step in steps if step.get('isCurrent')), None)
-        current = current or next((step for step in steps if step.get('status') in ('Ready','Executing','WaitingForTraffic')), {})
+        current = current or next((step for step in steps if step.get('status') in (
+            'Ready','Executing','WaitingForTraffic','ManualIntervention','Failed')), {})
         vehicle = task.get('vehicleId')
         car = device.get('cars', {}).get(vehicle, {})
         unmet = [condition for condition in (current.get('progressConditions') or detail.get('plcConditions', []))
@@ -49,7 +50,9 @@ def guidance(details, device):
             quality = condition.get('quality')
             conditions.append(f"{condition.get('stationId') or task.get('stationId') or '设备'}的{label}需{expected}" +
                               ('，当前通讯数据不可靠' if quality not in (None, 'Good') else ''))
-        blocked = '；'.join(conditions) or current.get('waitingExplanation') or detail.get('waitingExplanation') or '等待正式调度与设备反馈'
+        blocked = ('；'.join(conditions) or current.get('waitingExplanation') or
+                   current.get('errorMessage') or detail.get('waitingExplanation') or
+                   '等待正式调度与设备反馈')
         action = '按当前步骤核对车辆位置、载荷归属和设备周期；恢复后继续原任务。'
         feedback = '原任务编号保持不变，当前步骤完成后推进下一步；路权由正式后台按证据释放。'
         if car.get('offline'):
@@ -59,10 +62,12 @@ def guidance(details, device):
         elif car.get('paused'):
             blocked = f'{vehicle}处于暂停'
             action = '先确认路线可通行，再解除该车暂停。'
-        elif car.get('blockedByVehicle'):
-            blocked = f"前方车辆{car['blockedByVehicle']}占用通行空间"
-            action = '在地图查看前车原任务及等待链，恢复前车的实际阻塞条件。'
-            feedback = '前车驶离后，后车自动继续原命令；无需删除任务或人工释放路权。'
+        elif car.get('obstacle') or car.get('blocked') or car.get('blockedByVehicle'):
+            blocked = (f"前方车辆{car['blockedByVehicle']}占用通行空间"
+                       if car.get('blockedByVehicle') else '车端仍报告障碍或任务已进入受阻冻结')
+            action = ('先清除虚拟障碍并确认车辆停稳；如果任务已进入状态7，必须重新评估恢复候选，'
+                      '不能直接恢复运动。')
+            feedback = ('若存在可信站点和安全路线，由原车发送一次替代导航；否则先移动到安全点或转人工处置。')
         elif conditions:
             action = '核对并恢复：' + '；'.join(conditions) + '。先解除故障注入，按设备实际周期恢复条件。'
             feedback = '对应设备条件全部满足、数据新鲜，当前步骤自动推进；结束态信号保持复位，不额外置位。'

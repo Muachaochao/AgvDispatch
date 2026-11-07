@@ -247,6 +247,16 @@ export interface SimulationRecoveryItem {
 export interface SimulationRecovery {
   sessionId?: string; released: boolean; message?: string; items: SimulationRecoveryItem[]; error?: string;
 }
+export interface SimulationTimeoutRecovery {
+  recoveryId?: string; taskId: string; stepId?: string; vehicleId?: string | null; stepType?: string;
+  state?: string; outcome?: string; originalVendorTaskId?: string | null; newVendorTaskId?: string | null;
+  currentStation?: string | null; destinationSite?: string | null; originalPath?: string[];
+  candidatePath?: string[]; mapId?: string; mapVersionId?: string; previewHash?: string;
+  sendAttempted?: boolean; message?: string; revision?: number; updatedAt?: string;
+}
+export interface SimulationTimeoutRecoveryResult {
+  accepted: boolean; message?: string; snapshot?: SimulationTimeoutRecovery | null;
+}
 export interface SimulationProtocolStatus {
   running: boolean; name?: string; transport?: string; framing?: string; port?: number; rules?: number;
   requests?: number; state?: Record<string, unknown>; counters?: Record<string, number>;

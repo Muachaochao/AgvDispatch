@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 WORKSPACE = Path(__file__).resolve().parents[2]
 STATION_IDS = ('CNC-001', 'CNC-002')
 VEHICLE_ID = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$')
+TASK_ID = re.compile(r'^[A-Za-z0-9_-]{1,128}$')
 SOURCE_SHA256 = re.compile(r'^[a-f0-9]{64}$')
 POINT_TABLE_SOURCE_FIELDS = ('sourceSha256', 'sourceFile', 'sourceDeviceId', 'sourceDeviceName')
 
@@ -311,13 +312,27 @@ class Runtime:
                 except Exception as error: recovery = dict(error=str(error), items=[], released=False)
             if now - self.history_cache[0] > 15:
                 self.history_cache = (now, history(self))
-            if self.phase == 'running' and recovery and not recovery.get('released') and now-self.guidance_cache[0] > 4:
+            if self.phase == 'running' and now-self.guidance_cache[0] > 4:
                 details = {}
-                for item in recovery.get('items', []):
+                for item in (recovery or {}).get('items', []):
                     tid = item.get('taskId')
                     if tid and tid != '__SITE__':
                         try: details[tid] = self.api('/api/tasks/' + tid)
-                        except (OSError, ValueError): pass
+                        except (OSError, ValueError, RuntimeError, AttributeError): pass
+                # A timeout task can be Faulted after the startup recovery
+                # barrier has already been released. Build the manual-recovery
+                # page from every unfinished task, not only startup tickets.
+                try:
+                    page = self.task_page(dict(filter=['All'], page=['1'], pageSize=['200']))
+                    unfinished = [row for row in page.get('items', [])
+                                  if row.get('taskId') and row.get('stage') not in ('Completed', 'Cancelled')][:40]
+                    for row in unfinished:
+                        tid = row['taskId']
+                        if tid in details: continue
+                        try: details[tid] = self.api('/api/tasks/' + tid)
+                        except (OSError, ValueError, RuntimeError, AttributeError): pass
+                except (OSError, ValueError, RuntimeError, AttributeError):
+                    pass
                 self.guidance_cache = (now, guidance(details, device))
             plc_table = self._bound_plc_table()
             return dict(enabled=True, rootName=self.root.name, running=self.phase == 'running', phase=self.phase,
@@ -1265,6 +1280,10 @@ def serve(root, port, token):
                     elif parsed.path == '/task':
                         if set(query) != {'id'} or len(query['id']) != 1: raise ValueError('任务查询参数无效。')
                         result = runtime.task_detail(query['id'][0])
+                    elif parsed.path == '/timeout-recovery':
+                        if set(query) != {'id'} or len(query['id']) != 1 or not TASK_ID.fullmatch(query['id'][0]):
+                            raise ValueError('超时恢复任务编号无效。')
+                        result = runtime.api('/api/timeout-recovery/' + query['id'][0])
                     elif parsed.path == '/resources': result = runtime.task_resources()
                     elif parsed.path == '/snapshot': result = runtime.api('/api/snapshot')
                     elif parsed.path in ('/report', '/replay'):
@@ -1292,6 +1311,14 @@ def serve(root, port, token):
                     elif self.path == '/scheme-start': result = runtime.select_scheme(payload, start=True)
                     elif self.path == '/scheme-delete': result = runtime.delete_scheme(payload)
                     elif self.path == '/point-table-validate': result = runtime.validate_point_table(payload)
+                    elif self.path == '/timeout-recovery-execute':
+                        allowed = {'taskId', 'expectedRevision', 'executeConfirmed',
+                                   'vehicleAndLocationConfirmed', 'loadAndOwnershipConfirmed',
+                                   'plcConditionsConfirmed', 'reason'}
+                        if set(payload) != allowed or not isinstance(payload.get('taskId'), str) or not TASK_ID.fullmatch(payload['taskId']):
+                            raise ValueError('人工恢复确认参数无效。')
+                        result = runtime.api('/api/timeout-recovery/' + payload['taskId'] + '/execute',
+                                             payload, allow_rejection=True)
                     elif self.path == '/recover': result = runtime.decide_recovery(payload)
                     elif self.path == '/recover-release': result = runtime.release_recovery(payload)
                     elif self.path == '/protocol-start': result = runtime.start_protocol(payload)

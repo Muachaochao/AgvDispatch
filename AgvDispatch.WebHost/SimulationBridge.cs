@@ -57,7 +57,7 @@ public sealed class SimulationBridge : IAsyncDisposable
             (method != HttpMethod.Post || path is not ("/start" or "/stop" or "/run" or "/abort" or "/control" or
                 "/new-instance" or "/configure" or "/recover" or "/recover-release" or "/protocol-start" or "/protocol-stop" or
                 "/equipment-start" or "/equipment-control" or "/equipment-stop" or "/scheme-save" or "/scheme-select" or
-                "/scheme-start" or "/scheme-delete" or "/point-table-validate")))
+                "/scheme-start" or "/scheme-delete" or "/point-table-validate" or "/timeout-recovery-execute")))
             throw new ArgumentException("不支持的仿真操作。");
         await gate.WaitAsync(ct);
         try
@@ -111,7 +111,8 @@ public sealed class SimulationBridge : IAsyncDisposable
     {
         if (path is "/status" or "/report" or "/replay" or "/point-table" or "/snapshot" or "/resources" or "/tasks" ||
             Regex.IsMatch(path, @"^/(report|replay|archive)\?id=[a-f0-9]{32}$", RegexOptions.CultureInvariant) ||
-            Regex.IsMatch(path, @"^/task\?id=[A-Za-z0-9_-]{1,128}$", RegexOptions.CultureInvariant))
+            Regex.IsMatch(path, @"^/task\?id=[A-Za-z0-9_-]{1,128}$", RegexOptions.CultureInvariant) ||
+            Regex.IsMatch(path, @"^/timeout-recovery\?id=[A-Za-z0-9_-]{1,128}$", RegexOptions.CultureInvariant))
             return true;
         if (!Uri.TryCreate("http://127.0.0.1" + path, UriKind.Absolute, out var uri) ||
             uri.AbsolutePath != "/tasks")

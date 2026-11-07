@@ -10,7 +10,8 @@ import { simulationApi, simulationFresh, simulationGeometry, simulationLabel, lo
   type SimulationConfigureRequest, type SimulationMapDefinition, type SimulationCall,
   type SimulationRecoveryItem, type SimulationReplay, type SimulationStationConfiguration,
   type SimulationPlcSignalTable, type SimulationStationCatalogEntry,
-  type ServicePlcPointTableSnapshot, type SimulationNode, type SimulationVehicle } from '../simulation';
+  type ServicePlcPointTableSnapshot, type SimulationNode, type SimulationVehicle,
+  type SimulationGuidance, type SimulationTimeoutRecovery, type SimulationTimeoutRecoveryResult } from '../simulation';
 import { importProfControlRpj } from '../profcontrol-rpj';
 import { actionStateLabel, equipmentDirectionLabel, industrialText } from '../operator-labels';
 import { useDispatchStore } from '../stores/dispatch';
@@ -47,6 +48,10 @@ const waitingSite = ref(''), dumpingSite = ref('');
 const schemeName = ref(''), selectedScheme = ref(''), selectedHistory = ref(''), comparisonId = ref('');
 const selectedReport = ref<SimulationReport | null>(null), comparisonReport = ref<SimulationReport | null>(null);
 const replay = ref<SimulationReplay | null>(null), replayIndex = ref(0), replayPlaying = ref(false), historyReading = ref(false);
+const manualGuide = ref<SimulationGuidance | null>(null), manualRecovery = ref<SimulationTimeoutRecovery | null>(null);
+const manualRecoveryReading = ref(false), manualRecoveryError = ref('');
+const manualRecoveryReason = ref('仿真中已核对车辆、载荷、PLC和原任务，条件一致后继续');
+const manualVehicleConfirmed = ref(false), manualLoadConfirmed = ref(false), manualPlcConfirmed = ref(false);
 const simulationTasks = ref<TaskRow[]>([]), simulationTaskPage = ref<TaskPage | null>(null);
 const simulationTaskFilter = ref<'All' | 'Active' | 'Completed' | 'Failed'>('All');
 const simulationTaskSearch = ref('');
@@ -151,6 +156,13 @@ const snapshotTime = computed(() => stamp(status.value?.device?.time));
 const mapNodes = computed(() => (mapDefinition.value?.nodes ?? []).filter(node => node.enabled !== false));
 const mapResources = computed(() => (mapDefinition.value?.resources ?? []).filter(resource => (resource.boundary?.length ?? 0) >= 3));
 const recovery = computed(() => status.value?.recovery);
+const manualCar = computed(() => manualGuide.value?.vehicleId ? cars.value[manualGuide.value.vehicleId] ?? null : null);
+const manualRecoveryReady = computed(() => manualRecovery.value?.outcome === 'ReadyForControlledDetour' &&
+  !manualRecovery.value.sendAttempted && (manualRecovery.value.candidatePath?.length ?? 0) >= 2);
+const manualRecoveryCanExecute = computed(() => manualRecoveryReady.value && !!manualRecovery.value?.taskId &&
+  Number.isInteger(manualRecovery.value.revision) && manualVehicleConfirmed.value &&
+  manualLoadConfirmed.value && manualPlcConfirmed.value && manualRecoveryReason.value.trim().length >= 10 &&
+  fresh.value && !busy.value);
 const selectedSchemeRecord = computed(() => (status.value?.schemes ?? []).find(scheme => scheme.id === selectedScheme.value));
 const selectedSchemeReady = computed(() => !!selectedSchemeRecord.value?.plcTableName && !!selectedSchemeRecord.value?.plcTableSha256);
 const protocol = computed(() => status.value?.protocol);
@@ -602,18 +614,19 @@ function vehicleBodySize(id: string) {
   const width = length * widthMeters / Math.max(.01, lengthMeters);
   return { length, width };
 }
-type SimulationStage = 'overview' | 'tasks' | 'environment' | 'scenario' | 'faults' | 'results';
+type SimulationStage = 'overview' | 'tasks' | 'environment' | 'scenario' | 'faults' | 'manual' | 'results';
 const stageTabs: { id: SimulationStage; number: string; title: string; description: string; path: string }[] = [
   { id: 'overview', number: '01', title: '运行总览', description: '看清车辆在哪、正在做什么和下一步', path: '' },
   { id: 'tasks', number: '02', title: '任务运行', description: '查看真实任务、九步进度、命令、PLC和路权', path: 'tasks' },
   { id: 'environment', number: '03', title: '环境与地图', description: '复制工程配置并准备干净仿真实例', path: 'environment' },
   { id: 'scenario', number: '04', title: '场景编排', description: '安排测试目标、呼叫批次和运行轮次', path: 'scenario' },
   { id: 'faults', number: '05', title: '故障处理', description: '模拟现场常见的断开、卡位和道路阻塞', path: 'faults' },
-  { id: 'results', number: '06', title: '恢复与报告', description: '查看发生了什么、为什么停和怎么恢复', path: 'results' }
+  { id: 'manual', number: '06', title: '人工处置', description: '集中核对车辆、载荷、PLC和恢复条件', path: 'manual-recovery' },
+  { id: 'results', number: '07', title: '监测与报告', description: '查看检查结果、历史对比和问题回放', path: 'results' }
 ];
 const activeStage = computed<SimulationStage>(() => {
   const value = String(route.params.section ?? '');
-  return stageTabs.some(tab => tab.id === value) ? value as SimulationStage : 'overview';
+  return stageTabs.find(tab => tab.id === value || tab.path === value)?.id ?? 'overview';
 });
 const activeStageInfo = computed(() => stageTabs.find(tab => tab.id === activeStage.value) ?? stageTabs[0]!);
 const scenarioDescriptions: Record<SimulationRun['name'], string> = {
@@ -659,6 +672,8 @@ const nextAction = computed(() => {
     title: '启动当前隔离仿真环境', detail: `将启动实例 ${status.value.rootName || '—'} 的正式仿真后台、虚拟车辆和共享 PLC；不影响日常 5199 后台。`, button: '启动仿真环境' };
   if (active.value) return { stage: 'overview' as const, kind: 'observe' as const, eyebrow: '场景运行中',
     title: '观察任务、车辆和 PLC 的实际反馈', detail: status.value.scenario?.message || '场景正在执行；可从下方地图、车辆状态和场景事件核对现场反馈。', button: '查看运行总览' };
+  if (status.value.recoveryGuidance?.length) return { stage: 'manual' as const, kind: 'manual' as const, eyebrow: '需要人工处置',
+    title: `${status.value.recoveryGuidance.length} 个任务仍在等待恢复`, detail: '先核对车辆位置、载荷、PLC和原任务，再决定受控续接、取消或保留现场后重测。', button: '进入人工处置' };
   if (report.value) return { stage: 'results' as const, kind: 'results' as const, eyebrow: '已有检查结果',
     title: '先核对上一次报告，再开始下一场景', detail: `最近报告为“${scenarioNames[report.value.name ?? ''] ?? report.value.name ?? '未知场景'}”。失败、中止和证据不足都不解释为通过。`, button: '查看报告与证据' };
   return { stage: 'scenario' as const, kind: 'scenario' as const, eyebrow: '设备已就绪',
@@ -1120,6 +1135,80 @@ async function deleteScheme() {
   await action('scheme-delete', { id: selectedScheme.value });
   selectedScheme.value = '';
 }
+function manualRecoveryLabel(state?: string | null) {
+  return ({
+    AwaitingObstacleClear: '等待清除障碍',
+    ManualRelocationRequired: '需要移动到可信安全站点',
+    ReadyForControlledDetour: '安全条件已满足，可核对后继续',
+    SafetyHold: '安全条件不足，保持人工处置',
+    Executing: '已发送替代导航，正在执行',
+    Recovered: '原任务已恢复'
+  } as Record<string, string>)[state ?? ''] ?? (state ? industrialText(state) : '尚未读取恢复候选');
+}
+function manualVehicleSummary(guide: SimulationGuidance) {
+  const car = guide.vehicleId ? cars.value[guide.vehicleId] : null;
+  if (!car) return '未取得该车辆的实时状态';
+  return `${humanLocation(car.station)} · ${car.loaded ? '车上有箱' : '空载'} · ${car.offline ? '通信中断' :
+    car.paused ? '车辆暂停' : car.blocked || car.blockedByVehicle ? '仍受阻' : '车辆在线'}`;
+}
+function manualNextStep() {
+  if (!manualGuide.value) return '先从上方列表选择一个待处置任务。';
+  const car = manualCar.value;
+  if (!car) return '先恢复车辆通信并刷新实时状态，禁止直接发送新导航。';
+  if (car.offline) return '进入故障处理，恢复该车通信；确认定位新鲜、车辆停稳后再读取恢复候选。';
+  if (car.simulationControl?.obstacle) return '进入故障处理清除前方障碍；如果已到状态7，清障后仍需重新评估，不能直接续跑。';
+  if (manualRecovery.value?.outcome === 'ManualRelocationRequired')
+    return '先把车辆受控移动到原路线中的安全站点，再重新读取候选；不要使用最近站点冒充当前位置。';
+  if (manualRecovery.value?.outcome === 'SafetyHold')
+    return '通信、定位、载荷或PLC条件仍不安全。保留任务和路权，完成现场核对后再评估。';
+  if (manualRecoveryReady.value)
+    return '车辆、载荷和PLC核对后执行受控续接；系统只允许原车继续原业务任务。';
+  return '核对原任务、车辆位置、载荷、PLC和受影响道路，再决定续接、取消或停止后新建实例。';
+}
+async function selectManualGuide(guide: SimulationGuidance) {
+  manualGuide.value = guide;
+  if (guide.vehicleId) selectedVehicle.value = guide.vehicleId;
+  manualRecovery.value = null; manualRecoveryError.value = '';
+  manualVehicleConfirmed.value = false; manualLoadConfirmed.value = false; manualPlcConfirmed.value = false;
+  if (!guide.taskId) return;
+  manualRecoveryReading.value = true;
+  try {
+    manualRecovery.value = await simulationApi<SimulationTimeoutRecovery>('/timeout-recovery/' + encodeURIComponent(guide.taskId));
+  } catch (reason) {
+    manualRecoveryError.value = reason instanceof Error ? reason.message : String(reason);
+  } finally {
+    manualRecoveryReading.value = false;
+  }
+}
+async function executeManualRecovery() {
+  const recovery = manualRecovery.value;
+  if (!recovery || !manualRecoveryCanExecute.value || recovery.revision === undefined) return;
+  busy.value = true; actionError.value = ''; notice.value = '';
+  try {
+    const result = await simulationApi<SimulationTimeoutRecoveryResult>(
+      '/timeout-recovery/' + encodeURIComponent(recovery.taskId) + '/execute',
+      { taskId: recovery.taskId, expectedRevision: recovery.revision, executeConfirmed: true,
+        vehicleAndLocationConfirmed: true, loadAndOwnershipConfirmed: true,
+        plcConditionsConfirmed: true, reason: manualRecoveryReason.value.trim() });
+    if (!result.accepted) throw new Error(result.message || '人工恢复未被后台接受。');
+    notice.value = '人工恢复已接受。只由原车续接原业务任务，请到任务运行和监测报告核对后续反馈。';
+    await refresh(true);
+    if (manualGuide.value) await selectManualGuide(manualGuide.value);
+  } catch (reason) {
+    actionError.value = reason instanceof Error ? reason.message : String(reason);
+  } finally {
+    busy.value = false;
+  }
+}
+function openManualGuideFaults() {
+  if (manualGuide.value?.vehicleId) selectedVehicle.value = manualGuide.value.vehicleId;
+  openStage('faults');
+}
+async function stopForCleanRetest() {
+  if (status.value?.running) await action('stop');
+  notice.value = '当前故障现场和报告已保留。请在“环境与地图”按方案新建干净实例，再从场景编排选择要重测的阻挡场景。';
+  openStage('environment');
+}
 async function selectHistory() {
   replayPlaying.value = false; replay.value = null; replayIndex.value = 0;
   if (!selectedHistory.value) { selectedReport.value = null; return; }
@@ -1244,6 +1333,8 @@ function accept(next: SimulationStatus) {
     selectedTaskRouteStepId.value = ''; taskRuntimeSnapshot.value = null; taskSnapshotError.value = '';
     taskSnapshotFetchedAt.value = 0;
     reportTaskDetailId.value = ''; reportTaskDetail.value = null; reportTaskError.value = '';
+    manualGuide.value = null; manualRecovery.value = null; manualRecoveryError.value = '';
+    manualVehicleConfirmed.value = false; manualLoadConfirmed.value = false; manualPlcConfirmed.value = false;
   }
   if (!selectedScheme.value) selectedScheme.value = next.selectedSchemeId ?? next.schemes?.[0]?.id ?? '';
   status.value = next; connected.value = true;
@@ -1487,7 +1578,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
       <div>
         <p class="page-kicker">隔离环境 · 正式调度仿真</p>
         <h2><IconFlask :size="24" />仿真测试中心</h2>
-        <p>六个模块分别是独立页面。先在总览看车辆，再到任务运行核对九步、命令、PLC和路权。</p>
+        <p>七个模块分别是独立页面。先在总览看车辆，再到任务运行核对九步、命令、PLC和路权。</p>
       </div>
       <div class="simulation-header-actions">
         <div class="mode-card"><small>当前仿真方式</small><b>设备回环 + 正式调度</b><span>虚拟车辆与设备通过正式通信链路参与测试</span></div>
@@ -1529,7 +1620,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
 
     <section v-if="activeStage !== 'overview'" class="module-heading">
       <div>
-        <p class="section-kicker">独立页面 {{ activeStageInfo.number }} / 06</p>
+        <p class="section-kicker">独立页面 {{ activeStageInfo.number }} / 07</p>
         <h3 id="simulation-environment">{{ activeStageInfo.title }}</h3>
         <p>{{ activeStageInfo.description }}</p>
       </div>
@@ -1963,14 +2054,42 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
       </div>
     </section>
 
-    <section v-if="activeStage === 'results'" class="stage-surface results-stage">
-      <section v-if="status?.recoveryGuidance?.length" class="simulation-panel recovery-guidance" aria-labelledby="recovery-guidance-title">
-        <header><div><p class="section-kicker">当前阻塞</p><h3 id="recovery-guidance-title">卡在哪里，怎样恢复</h3></div><span :class="['state-pill', fresh ? 'waiting' : 'unknown']">{{ fresh ? '当前任务证据' : '历史证据，先刷新' }}</span></header>
-        <article v-for="(guide, index) in status.recoveryGuidance" :key="guide.taskId + index">
-          <b>{{ guide.vehicleId || '尚未派车' }} · {{ guide.stationId || '工位待核对' }} · {{ guide.taskId }}</b>
-          <dl><dt>当前步骤</dt><dd>{{ guide.stepNumber ? `第${guide.stepNumber}步 · ` : '' }}{{ industrialText(guide.stepName || '等待派车') }}</dd><dt>等待什么</dt><dd>{{ industrialText(guide.blockedBy || '尚无明确阻塞证据') }}</dd><dt>需要恢复</dt><dd>{{ industrialText(guide.restoreAction || '先核对当前反馈，勿跳过原任务') }}</dd><dt>恢复后确认</dt><dd>{{ industrialText(guide.expectedFeedback || '同一原任务继续推进且占用正常释放') }}</dd></dl>
+    <section v-if="activeStage === 'manual'" class="stage-surface manual-stage">
+      <section class="simulation-panel manual-hero">
+        <div><p class="section-kicker">先保安全，再恢复责任</p><h3>现场式人工处置</h3><p>把“哪辆车、哪一步、什么载荷、为什么停、需要谁动作、恢复后看什么”放在一起。系统不会用一个通用按钮掩盖现场条件。</p></div>
+        <div class="manual-hero-actions"><button @click="openStage('faults')">清除障碍或恢复通信</button><button @click="openStage('results')">查看本轮报告</button><button :disabled="!status?.running || busy" @click="stopForCleanRetest">保留现场并准备重测</button></div>
+      </section>
+      <section v-if="status?.recoveryGuidance?.length" class="simulation-panel recovery-guidance manual-guidance" aria-labelledby="recovery-guidance-title">
+        <header><div><p class="section-kicker">待处置任务</p><h3 id="recovery-guidance-title">卡在哪里，怎样恢复</h3></div><span :class="['state-pill', fresh ? 'waiting' : 'unknown']">{{ fresh ? `${status.recoveryGuidance.length} 个任务待核对` : '历史证据，先刷新' }}</span></header>
+        <article v-for="(guide, index) in status.recoveryGuidance" :key="guide.taskId + index" :class="{selected: manualGuide?.taskId === guide.taskId}">
+          <div class="manual-guide-title"><b>{{ guide.vehicleId || '尚未派车' }} · {{ guide.stationId || '工位待核对' }}</b><code>{{ guide.taskId }}</code><span class="state-pill waiting">需要处置</span></div>
+          <dl><dt>车辆与载荷</dt><dd>{{ manualVehicleSummary(guide) }}</dd><dt>当前步骤</dt><dd>{{ guide.stepNumber ? `第${guide.stepNumber}步 · ` : '' }}{{ industrialText(guide.stepName || '等待派车') }}</dd><dt>为什么停</dt><dd>{{ industrialText(guide.blockedBy || '尚无明确阻塞证据') }}</dd><dt>现在要做什么</dt><dd>{{ industrialText(guide.restoreAction || '先核对当前反馈，勿跳过原任务') }}</dd><dt>恢复后确认</dt><dd>{{ industrialText(guide.expectedFeedback || '同一原任务继续推进且占用正常释放') }}</dd></dl>
+          <div class="toolbar"><button class="primary" @click="selectManualGuide(guide)">核对这个任务</button><button @click="selectedVehicle = guide.vehicleId || selectedVehicle; openStage('faults')">去清除现场条件</button><button @click="openStage('results')">查看报告证据</button></div>
         </article>
       </section>
+      <p v-else class="simulation-panel report-empty">当前没有待人工处置的任务。完整业务任务会正常结束；受阻超时场景则应在这里出现原任务、载荷责任和恢复建议。</p>
+
+      <section v-if="manualGuide" class="simulation-panel manual-decision" aria-labelledby="manual-recovery-decision">
+        <header><div><p class="section-kicker">当前处置对象</p><h3 id="manual-recovery-decision">{{ manualGuide.vehicleId || '车辆待核对' }} · {{ manualGuide.stationId || '工位待核对' }}</h3></div><span :class="['state-pill', manualRecoveryReady ? 'pass' : 'waiting']">{{ manualRecoveryLabel(manualRecovery?.outcome) }}</span></header>
+        <p class="manual-next-step"><b>下一步</b>{{ manualNextStep() }}</p>
+        <div class="manual-facts">
+          <article><small>车辆与位置</small><b>{{ manualVehicleSummary(manualGuide) }}</b></article>
+          <article><small>原运输任务</small><b>{{ manualRecovery?.originalVendorTaskId || manualGuide.taskId }}</b></article>
+          <article><small>原目的站</small><b>{{ manualRecovery?.destinationSite || '待恢复候选读取' }}</b></article>
+          <article><small>候选路线</small><b>{{ manualRecovery?.candidatePath?.length ? manualRecovery.candidatePath.join(' → ') : '尚无可执行路线' }}</b></article>
+        </div>
+        <p v-if="manualRecovery?.message" class="manual-recovery-message">{{ industrialText(manualRecovery.message) }}</p>
+        <p v-if="manualRecoveryError" class="inline-warning">{{ industrialText(manualRecoveryError) }}</p>
+        <div class="toolbar"><button :disabled="manualRecoveryReading || !fresh" @click="selectManualGuide(manualGuide)">{{ manualRecoveryReading ? '读取中…' : '刷新恢复候选' }}</button><button @click="openManualGuideFaults">打开故障控制</button></div>
+        <fieldset v-if="manualRecoveryReady" :disabled="busy || !fresh">
+          <legend>受控续接核对</legend>
+          <label>处置依据<textarea v-model.trim="manualRecoveryReason" rows="2" minlength="10"></textarea></label>
+          <div class="recovery-confirmations"><label><input v-model="manualVehicleConfirmed" type="checkbox" />车辆已停稳且在可信站点</label><label><input v-model="manualLoadConfirmed" type="checkbox" />载荷、箱体和原任务归属一致</label><label><input v-model="manualPlcConfirmed" type="checkbox" />PLC周期和路权条件一致</label></div>
+          <button class="primary" :disabled="!manualRecoveryCanExecute" @click="executeManualRecovery">由原车受控续接原任务</button>
+        </fieldset>
+        <p v-else class="inline-warning">当前没有可发送的替代路线。先按“下一步”完成现场条件，再刷新候选；系统不会从道路中间直接冒充站点发车。</p>
+      </section>
+
       <section v-if="recovery" class="simulation-panel recovery-panel" aria-labelledby="simulation-recovery">
         <header><div><p class="section-kicker">现场恢复</p><h3 id="simulation-recovery">现场式恢复核对</h3></div><span :class="['state-pill', recovery.released ? 'pass' : 'waiting']">{{ recovery.released ? '已放行' : '恢复屏障保持' }}</span></header>
         <p>恢复操作直接走私有 Service 的恢复接口。每次决策必须绑定当前会话、条目修订号和显式人工确认；未全部核对时不能放行，放行后也只能续接原任务编号。</p>
@@ -1992,7 +2111,9 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
         </fieldset>
         <div class="toolbar"><button class="primary" :disabled="busy || !fresh || recovery.released || !recovery.items.length || !recovery.items.every(item => item.verified) || recoveryReason.trim().length < 10" @click="releaseRecovery">全部核对后放行恢复</button><small>放行后可运行“恢复后继续原任务”场景，核对九步、运输命令和资源最终闭合。</small></div>
       </section>
+    </section>
 
+    <section v-if="activeStage === 'results'" class="stage-surface results-stage">
       <section class="simulation-panel report-panel" aria-labelledby="simulation-report">
         <header><div><p class="section-kicker">检查结果</p><h3 id="simulation-report">自动检查与报告</h3></div><div class="toolbar"><span :class="['state-pill', simulationTone(report?.status)]">{{ simulationLabel(report?.status) }}</span><button :disabled="!report || busy" @click="downloadReport"><IconDownload :size="16" />导出报告 JSON</button><button :disabled="!report?.id || busy" @click="downloadEvidenceArchive"><IconDownload :size="16" />导出完整证据包</button></div></header>
         <div v-if="report" class="report-identity"><span v-if="historicalReport" class="state-pill waiting">上一场景报告 · 与当前场景不同</span><b>{{ scenarioNames[report.name ?? ''] ?? report.name ?? '未提供场景名称' }}</b><span>报告编号：{{ report.id || '未提供' }}</span><span>完成时间：{{ stamp(report.finishedAt ?? report.generatedAt) }}</span></div>
@@ -2279,4 +2400,14 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
 @media(max-width:1180px){.task-route-layout{grid-template-columns:minmax(0,1fr) 300px}}
 @media(max-width:900px){.task-workbench{grid-template-columns:1fr}.task-table-panel,.task-detail-panel{min-height:0}.task-table-scroll{max-height:420px}.task-counts{grid-template-columns:repeat(2,minmax(100px,1fr))}.report-task-evidence-grid{grid-template-columns:1fr}.report-task-nine-steps{grid-template-columns:repeat(2,minmax(0,1fr))}.task-route-layout{grid-template-columns:1fr}.task-route-sidebar{max-height:none}.task-route-map{height:520px!important;min-height:520px}.task-route-leg-list{max-height:360px}}
 @media(max-width:650px){.task-filter-row{grid-template-columns:1fr}.task-counts{grid-template-columns:1fr 1fr}.task-step-list,.report-task-nine-steps{grid-template-columns:1fr}.task-evidence-grid{grid-template-columns:1fr}.task-evidence-grid>article{border-right:0}.task-timeline li{grid-template-columns:1fr;gap:3px}.task-timeline b,.task-timeline-copy>span{white-space:normal}.task-route-map{height:350px!important;min-height:350px}.task-route-legend{position:static;border:0;border-top:1px solid #253d52;border-radius:0}.report-task-evidence>header{align-items:flex-start;flex-direction:column}}
+.manual-stage{display:grid;gap:14px}
+.manual-hero{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:18px 20px;border-left:3px solid #5dd8df;background:linear-gradient(120deg,#102839,#0c1729)}
+.manual-hero h3{font-size:21px;margin:3px 0 7px;color:#e2f4f7}.manual-hero p{max-width:820px;line-height:1.75;color:#b2c9d6}.manual-hero-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.manual-guidance>article.selected{border-color:#65d9df;background:linear-gradient(110deg,#102a37,#0a1928);box-shadow:inset 3px 0 #65d9df}
+.manual-guide-title{display:grid;grid-template-columns:minmax(210px,auto) minmax(0,1fr) auto;align-items:center;gap:12px}.manual-guide-title code{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#729eb0;font-size:10px}
+.manual-decision{padding:18px;border-color:#3f6c78}.manual-next-step{display:grid;grid-template-columns:110px minmax(0,1fr);gap:14px;padding:14px 16px;border:1px solid #8a6b3c;background:#2a241b;color:#f0d6a8;line-height:1.75}.manual-next-step b{color:#ffd88f}
+.manual-facts{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px;margin:14px 0}.manual-facts article{min-width:0;padding:12px;border:1px solid #29445e;background:#0a1828}.manual-facts small{display:block;color:#7896ad;font-size:9px;margin-bottom:5px}.manual-facts b{display:block;color:#c7e0e8;font-size:11px;line-height:1.55;overflow-wrap:anywhere}
+.manual-recovery-message{margin:12px 0;padding:12px 14px;border-left:2px solid #54cbd4;background:#0b2030;color:#a9d1dc!important;line-height:1.7}
+@media(max-width:980px){.manual-hero{align-items:flex-start;flex-direction:column}.manual-hero-actions{justify-content:flex-start}.manual-facts{grid-template-columns:repeat(2,minmax(0,1fr))}.manual-guide-title{grid-template-columns:1fr}.manual-guide-title code{white-space:normal;overflow-wrap:anywhere}}
+@media(max-width:650px){.manual-facts{grid-template-columns:1fr}.manual-next-step{grid-template-columns:1fr}}
 </style>
