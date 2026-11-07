@@ -1124,7 +1124,11 @@ async function selectHistory() {
   replayPlaying.value = false; replay.value = null; replayIndex.value = 0;
   if (!selectedHistory.value) { selectedReport.value = null; return; }
   historyReading.value = true;
-  try { selectedReport.value = await simulationApi<SimulationReport>('/report?id=' + encodeURIComponent(selectedHistory.value)); }
+  try {
+    selectedReport.value = await simulationApi<SimulationReport>('/report?id=' + encodeURIComponent(selectedHistory.value));
+    replay.value = await simulationApi<SimulationReplay>('/replay?id=' + encodeURIComponent(selectedHistory.value));
+    replayIndex.value = 0;
+  }
   catch (reason) { actionError.value = reason instanceof Error ? reason.message : String(reason); }
   finally { historyReading.value = false; }
 }
