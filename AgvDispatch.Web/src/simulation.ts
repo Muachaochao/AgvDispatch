@@ -233,7 +233,11 @@ export interface SimulationConfigureRequest {
 }
 export interface SimulationCall { stationId: string; atSeconds: number; vehicleId?: string | null }
 export interface SimulationScheme { id: string; name: string; updatedAt?: number; mapName?: string; mapId?: string; mapVersionId?: string; mapDefinitionHash?: string; vehicleCount?: number; stationCount?: number; scenarioName?: string; plcTableName?: string; plcTableSha256?: string; plcSourceSha256?: string }
-export interface SimulationGuidance { taskId: string; vehicleId?: string; stationId?: string; stepNumber?: number; stepName?: string; blockedBy?: string; restoreAction?: string; expectedFeedback?: string }
+export interface SimulationGuidance {
+  taskId: string; vehicleId?: string; stationId?: string; stepNumber?: number; stepName?: string;
+  blockedBy?: string; restoreAction?: string; expectedFeedback?: string; site?: string | null;
+  x?: number | null; y?: number | null; taskStage?: string; currentStepStatus?: string; historical?: boolean;
+}
 export interface SimulationReplayFrame {
   time: number; vehicles?: { vehicleId: string; x: number; y: number; angle?: number; site?: string; waitReason?: string; taskId?: string }[];
   tasks?: { taskId: string; stationId?: string; vehicleId?: string; stage?: string; step?: string | number; waitReason?: string }[];
@@ -286,7 +290,8 @@ export interface SimulationReport {
   id?: string; name?: string; message?: string; generatedAt?: string | number; finishedAt?: string | number;
   recoveryHold?: boolean; completedBusinessCycle?: boolean; [key: string]: unknown;
   firstFailure?: string | { message?: string; taskId?: string; vehicleId?: string; stepName?: string };
-  waitingChain?: { taskId?: string; vehicleId?: string; stationId?: string; stepName?: string; waitReason?: string; blockedBy?: string; site?: string }[];
+  waitingChain?: { taskId?: string; vehicleId?: string; stationId?: string; stepName?: string; waitReason?: string;
+    blockedBy?: string; site?: string; restoreAction?: string; expectedFeedback?: string; x?: number; y?: number }[];
   taskSummary?: SimulationTaskRecord[];
   versionComparison?: SimulationVersionComparison;
 }
