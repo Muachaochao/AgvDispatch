@@ -33,6 +33,9 @@ public sealed partial class TaskCenterReadRepository
         "ObstacleDetourSendUncertain" => "改道发送结果待核对",
         "ObstacleRecoveryFrozen" => "障碍恢复任务已冻结",
         "ObstacleRecoveryObservationCleared" => "车端障碍信号已解除",
+        "TransportTimeoutRecoveryCaptured" => "运输超时现场已捕获",
+        "TransportTimeoutRecoveryReassessed" => "运输超时恢复候选已刷新",
+        "TransportTimeoutReplacementSent" => "运输超时替代导航已发送",
         _ => kind
     };
 
@@ -87,6 +90,9 @@ public sealed partial class TaskCenterReadRepository
             "ObstacleDetourSendUncertain" => "只查询已持久化的新厂家编号，禁止重发；无法证明时冻结原任务。",
             "ObstacleRecoveryFrozen" => "原业务任务、载荷、PLC责任和路权保持；按下一步指引人工处置。",
             "ObstacleRecoveryObservationCleared" => "只证明车端当前不再报告受阻，不证明原任务继续、完成或可释放路权。",
+            "TransportTimeoutRecoveryCaptured" => "原任务已冻结，载荷、PLC责任和路权保持；首次捕获不会自动发送新导航。",
+            "TransportTimeoutRecoveryReassessed" => "只根据新鲜障碍、位置和地图证据刷新候选，不发送车辆命令。",
+            "TransportTimeoutReplacementSent" => "替代导航已绑定原业务任务；到点、动作、PLC和路权闭合仍需后续证据。",
             _ => "原始证据保存在后台；本条记录不单独证明机械动作完成。"
         };
     }

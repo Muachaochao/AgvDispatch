@@ -24,6 +24,7 @@ internal static class Program
         TimingAndPolicy();
         await CommandGateAsync();
         await TransportTimeoutRecoveryAsync();
+        await ObstacleClearClosesRecoveryAsync();
         await CompletionGateAsync();
         Console.WriteLine($"PASS: {checks} obstacle safety checks; isolated database and loopback protocol only; no physical AGV or PLC.");
     }
@@ -221,6 +222,27 @@ internal static class Program
         var blockedAssessment=await recovery.CaptureAsync(blockedTask,blockedStatus,default);
         Check(blockedAssessment is {Outcome:TransportTimeoutRecoveryOutcome.AwaitingObstacleClear},"active obstacle remains a hold instead of sending a detour");
         Check(!db.Queryable<AgvCommandOutboxEntity>().Any(c=>c.Status==(int)AgvCommandStatus.Pending),"timeout recovery sends no replacement command");
+        await Task.Delay(15);
+        cache.ApplyTelemetry("A",Telemetry(DateTimeOffset.UtcNow) with
+        {
+            X=1.5,Y=0,CurrentStation="H",VelocityX=0,VelocityY=0,AngularVelocity=0
+        },TimeSpan.Zero);
+        await recovery.ReassessPendingAsync(default);
+        var midroad=await recovery.GetAsync(blocked.Task,default);
+        Check(midroad is {Outcome:"ManualRelocationRequired"}&&!midroad.SendAttempted,
+              "clear telemetry away from the named station never impersonates the nearest site");
+        await Task.Delay(15);
+        cache.ApplyTelemetry("A",Telemetry(DateTimeOffset.UtcNow) with
+        {
+            X=1,Y=0,CurrentStation="H",VelocityX=0,VelocityY=0,AngularVelocity=0
+        },TimeSpan.Zero);
+        await recovery.ReassessPendingAsync(default);
+        var reopened=await recovery.GetAsync(blocked.Task,default);
+        Check(reopened is {State:"ReadyForControlledDetour",Outcome:"ReadyForControlledDetour"}&&
+              reopened.CandidatePath.SequenceEqual(new[]{"H","D","X"}),
+              "fresh clear telemetry at a trusted station reopens the timeout candidate without sending");
+        Check(!db.Queryable<AgvCommandOutboxEntity>().Any(c=>c.Status==(int)AgvCommandStatus.Pending),
+              "reassessment remains read-only");
         var executable=await Seed(DispatchTaskStepType.GoToPickup);
         cache.ApplyTelemetry("A",Telemetry(DateTimeOffset.UtcNow) with
         {
@@ -263,6 +285,54 @@ internal static class Program
             request with { ExpectedRevision=execution.Snapshot!.Revision },default);
         Check(!duplicate.Accepted&&sentGateway.Writes==1,"repeating confirmation never resends the replacement navigation");
         Console.WriteLine("Timeout evidence: "+directory);
+    }
+    static async Task ObstacleClearClosesRecoveryAsync()
+    {
+        var directory=Path.Combine(Path.GetTempPath(),"agv-obstacle-clear-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(directory);
+        using var db=DatabaseFactory.Create(new(){DatabasePath=Path.Combine(directory,"test.db")});
+        await new DatabaseInitializer(db,new TrafficResourceCatalog([])).InitializeAsync(default);
+        var now=DateTime.UtcNow;
+        const string taskId="TASK-OBSTACLE-CLEAR";
+        const string stepId="STEP-OBSTACLE-CLEAR";
+        await db.Insertable(new DispatchTaskEntity{TaskId=taskId,StationId="CNC-001",VehicleId="A",
+            VendorTaskId=stepId,Stage=(int)DispatchTaskStage.GoingToDumper,Priority=0,
+            CreatedAt=now.AddMinutes(-2),UpdatedAt=now.AddMinutes(-2)}).ExecuteCommandAsync();
+        await db.Insertable(new DispatchTaskStepEntity{StepId=stepId,TaskId=taskId,Sequence=3,
+            StepType=(int)DispatchTaskStepType.DeliverFullBoxToDumper,
+            Status=(int)DispatchTaskStepStatus.Executing,SourceSite="S",DestinationSite="D",
+            VehicleId="A",VendorTaskId=stepId,CreatedAt=now.AddMinutes(-2),UpdatedAt=now.AddMinutes(-2),
+            StartedAt=now.AddMinutes(-2)}).ExecuteCommandAsync();
+        await db.Insertable(new ObstacleRecoveryEntity{RecoveryId="RECOVERY-OBSTACLE-CLEAR",
+            TaskId=taskId,StepId=stepId,VehicleId="A",OriginalVendorTaskId=stepId,
+            State=ObstacleRecoveryStates.NoRoute,Message="旧障碍记录",NextAction="等待新观察",
+            BlockedSinceUtc=now.AddSeconds(-61),OriginalPathJson="[\"S\",\"H\",\"D\"]",
+            CandidatePathJson="[]",BlockedEdgeIdsJson="[]",MapId="",MapVersionId="",
+            DefinitionHash="",Revision=30,CreatedAt=now.AddMinutes(-2),UpdatedAt=now.AddSeconds(-1)})
+            .ExecuteCommandAsync();
+
+        var options=new ObstacleRecoveryOptions();
+        var cache=new AgvStateCache(Options("A"));
+        cache.ApplyTelemetry("A",Telemetry(DateTimeOffset.UtcNow),TimeSpan.Zero);
+        var store=new ObstacleRecoveryStore(db,options);
+        var coordinator=new ObstacleRecoveryCoordinator(db,cache,new ActiveMapRuntime(),
+            new DispatchOrchestrationRepository(db),new AgvTransportChainLookup(db),null!,null!,null!,
+            new MapExecutionGate(),new TerminalGateway(),null!,store,options,new MapOptions(),
+            new DispatchOrchestratorOptions(),clock:new ManualClock(DateTimeOffset.UtcNow));
+
+        await coordinator.ObserveOnceAsync(default);
+
+        var recovery=db.Queryable<ObstacleRecoveryEntity>().Single(row=>row.RecoveryId=="RECOVERY-OBSTACLE-CLEAR");
+        var task=db.Queryable<DispatchTaskEntity>().Single(item=>item.TaskId==taskId);
+        var evidence=db.Queryable<ExecutionEvidenceEntity>()
+            .Where(item=>item.TaskId==taskId&&item.Kind=="ObstacleRecoveryObservationCleared").ToList();
+        Check(recovery.State==ObstacleRecoveryStates.Recovered,
+            "fresh obstacle clear closes the old recovery lifecycle before the 60-second threshold");
+        Check(task.Stage==(int)DispatchTaskStage.GoingToDumper&&
+              !db.Queryable<ExecutionEvidenceEntity>().Any(item=>item.TaskId==taskId&&item.Kind=="ObstacleRecoveryFrozen"),
+            "a cleared obstacle cannot later freeze a task that already resumed or completed under a replacement navigation");
+        Check(evidence.Count==1,
+            "obstacle clear is recorded once instead of being overwritten by the old no-route timer");
+        Console.WriteLine("Obstacle clear evidence: "+directory);
     }
 }
 

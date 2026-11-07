@@ -16,7 +16,24 @@ from footprint import swept_rectangles_overlap, vehicle_extents
 
 NAMES = ('normal-cycle', 'simultaneous-calls', 'custom-calls', 'dispatch-backlog', 'disconnect-reconnect',
          'plc-delay', 'plc-recovery', 'service-restart', 'resume-recovery', 'vendor-cancel-return',
-         'response-loss', 'road-block-recovery', 'obstacle-auto-detour')
+         'response-loss', 'road-block-recovery', 'obstacle-auto-detour',
+         'obstacle-timeout-pickup', 'obstacle-timeout-fullbox', 'obstacle-timeout-return',
+         'obstacle-timeout-midroad', 'obstacle-timeout-safe-site', 'obstacle-timeout-manual')
+OBSTACLE_TIMEOUT_CASES = {
+    'obstacle-timeout-pickup': dict(index=0, step_type='GoToPickup', full_load=False,
+                                     stage='GoingToPickup'),
+    'obstacle-timeout-fullbox': dict(index=2, step_type='DeliverFullBoxToDumper', full_load=True,
+                                      stage='GoingToDumper'),
+    'obstacle-timeout-return': dict(index=6, step_type='ReturnEmptyBox', full_load=False,
+                                     stage='ReturningEmptyBox'),
+    'obstacle-timeout-midroad': dict(index=0, step_type='GoToPickup', full_load=False,
+                                      stage='GoingToPickup'),
+    'obstacle-timeout-safe-site': dict(index=2, step_type='DeliverFullBoxToDumper', full_load=True,
+                                        stage='GoingToDumper'),
+    'obstacle-timeout-manual': dict(index=0, step_type='GoToPickup', full_load=False,
+                                     stage='GoingToPickup'),
+}
+TIMEOUT_OBSTACLE_NAMES = tuple(OBSTACLE_TIMEOUT_CASES)
 STEP_NAMES = {'GoToPickup': '前往工位取满箱', 'PickupFullBox': '确认满箱已取走',
               'DeliverFullBoxToDumper': '运送满箱到等待位', 'WaitForDumperReady': '等待倒料机就绪',
               'EnterDumpingPosition': '进入倒料位', 'DumpFullBox': '等待倒料完成',
@@ -128,7 +145,8 @@ def validate_scenario(value):
     if result['name'] == 'service-restart' and result['rounds'] != 1: raise ValueError('重启故障场景仅运行一轮，保留恢复现场。')
     if result['name'] == 'vendor-cancel-return' and result['rounds'] != 1:
         raise ValueError('车端返程取消场景仅运行一轮，保留取消现场。')
-    if result['name'] in ('response-loss', 'road-block-recovery', 'obstacle-auto-detour') and result['rounds'] != 1:
+    if result['name'] in ('response-loss', 'road-block-recovery', 'obstacle-auto-detour',
+                          *TIMEOUT_OBSTACLE_NAMES) and result['rounds'] != 1:
         raise ValueError('单车通信或道路故障场景仅运行一轮。')
     if result['name'] == 'service-restart':
         stage = value.get('restartStage', 'pickup')
@@ -142,10 +160,10 @@ def validate_scenario(value):
         if type(hold) not in (int, float) or not math.isfinite(hold) or not 1 <= hold <= 120:
             raise ValueError('PLC卡位保持时间须为1至120秒。')
         result.update(plcFault=value['plcFault'], holdSeconds=float(hold))
-    elif result['name'] in ('road-block-recovery', 'obstacle-auto-detour'):
+    elif result['name'] in ('road-block-recovery', 'obstacle-auto-detour', *TIMEOUT_OBSTACLE_NAMES):
         hold = value.get('holdSeconds', 5)
         if type(hold) not in (int, float) or not math.isfinite(hold) or not 1 <= hold <= 120:
-            raise ValueError('道路阻塞保持时间须为1至120秒。')
+            raise ValueError('故障保持或车端超时触发时间须为1至120秒。')
         result['holdSeconds'] = float(hold)
     calls = value.get('calls')
     if result['name'] in ('custom-calls', 'dispatch-backlog'):
@@ -177,8 +195,9 @@ def validate_scenario(value):
         raise ValueError('仅自定义呼叫和持续积压场景接受calls参数。')
     if result['name'] != 'plc-recovery' and 'plcFault' in value:
         raise ValueError('仅PLC卡位恢复场景接受plcFault。')
-    if result['name'] not in ('plc-recovery', 'road-block-recovery', 'obstacle-auto-detour') and 'holdSeconds' in value:
-        raise ValueError('仅PLC卡位、道路阻塞或车端障碍场景接受holdSeconds。')
+    if result['name'] not in ('plc-recovery', 'road-block-recovery', 'obstacle-auto-detour',
+                              *TIMEOUT_OBSTACLE_NAMES) and 'holdSeconds' in value:
+        raise ValueError('仅PLC卡位、道路阻塞、车端障碍或超时恢复场景接受holdSeconds。')
     if result['name'] != 'service-restart' and 'restartStage' in value:
         raise ValueError('仅后台重启场景接受restartStage。')
     return result
@@ -734,6 +753,205 @@ def execute(runtime, request):
             runtime.scenario['message'] = '；'.join(describe_progress(tasks[t]['vehicle'], d) for t, d in details.items())
             runtime.abort.wait(.5)
         raise TimeoutError('任务未在期限内闭合，可能存在长期等待；保留全部现场。')
+
+    def run_obstacle_timeout(task_id, scenario_name):
+        nonlocal fault_observed, recovery_hold, auto_detour_sends
+        case = OBSTACLE_TIMEOUT_CASES[scenario_name]
+        target_index = case['index']
+        deadline = time.monotonic() + request['timeoutSeconds']
+        armed = False
+        timeout_controls = None
+        obstacle_safe_site = None
+        vehicle_id = tasks[task_id]['vehicle']
+        detail = None
+        step = None
+        while time.monotonic() < deadline:
+            if runtime.abort.is_set():
+                raise InterruptedError('障碍超时场景已中止；原任务和现场占用保留。')
+            detail = runtime.api('/api/tasks/' + task_id)
+            observer.sample({task_id: detail})
+            if len(detail.get('steps', [])) <= target_index:
+                runtime.abort.wait(.2)
+                continue
+            step = detail['steps'][target_index]
+            state = fresh_device_state(runtime)
+            car = (state.get('cars') or {}).get(vehicle_id, {})
+            runtime.scenario['message'] = (
+                f'等待{STEP_NAMES[case["step_type"]]}；'
+                f'步骤={step.get("status")}，车辆任务={car.get("current_task") or "无"}，'
+                f'运动中={"是" if car.get("moving") else "否"}')
+            if not armed:
+                requires_midroad = scenario_name in (
+                    'obstacle-timeout-midroad', 'obstacle-timeout-manual', 'obstacle-timeout-safe-site')
+                midroad_ready = True
+                if requires_midroad:
+                    navigation = read(runtime.root / 'navigation.agvmap.json')
+                    station_node = next((item for item in navigation.get('nodes', [])
+                                         if item.get('agvSiteId') == car.get('station')), None)
+                    midroad_ready = bool(
+                        station_node and car.get('current_task') and car.get('moving') and
+                        math.hypot(float(car.get('x', 0)) - station_node['x'],
+                                   float(car.get('y', 0)) - station_node['y']) > 0.3)
+                    if scenario_name == 'obstacle-timeout-safe-site':
+                        midroad_ready = midroad_ready and has_alternate_connection(
+                            navigation, car.get('motionEdge'))
+                if (step.get('stepType') == case['step_type'] and step.get('status') == 'Executing'
+                        and midroad_ready):
+                    check(f'车辆已进入{STEP_NAMES[case["step_type"]]}运输'
+                          + ('且处于道路中段' if requires_midroad else '且原任务身份有效'),
+                          True, dict(taskId=task_id, station=car.get('station'),
+                                     x=car.get('x'), y=car.get('y')))
+                    runtime.control(dict(vehicles={vehicle_id: dict(
+                        speedScale=0.2, obstacle=True,
+                        navigationTimeoutAfterBlockedSeconds=request['holdSeconds'])}))
+                    timeout_controls = json.loads(json.dumps(runtime.controls))
+                    applied = runtime.wait('车端障碍与导航超时控制未生效',
+                                           lambda: control_applied(runtime.device(), timeout_controls, vehicle_id), 10)
+                    write(evidence / 'obstacle-timeout-armed.json',
+                          dict(taskId=task_id, vehicleId=vehicle_id, stepType=case['step_type'],
+                               timeoutAfterBlockedSeconds=request['holdSeconds'], applied=applied,
+                               safeSite=car.get('station') if scenario_name == 'obstacle-timeout-safe-site' else None))
+                    if scenario_name == 'obstacle-timeout-safe-site':
+                        obstacle_safe_site = car.get('station')
+                    check('障碍保持到车端状态7的超时注入已生效', True, applied)
+                    armed = True
+                else:
+                    runtime.abort.wait(.1)
+                    continue
+            failed_status = next((item for item in (car.get('tasks') or {}).values() if item == 7), None)
+            if (detail['task'].get('stage') == 'Faulted' and
+                    step.get('status') == 'ManualIntervention' and failed_status == 7):
+                write(evidence / 'obstacle-timeout-observed.json',
+                      dict(task=detail['task'], step=step, vehicle=car))
+                break
+            runtime.abort.wait(.2)
+        else:
+            raise TimeoutError('车辆未在场景期限内形成“持续受阻并返回状态7”的故障。')
+
+        recovery = runtime.wait(
+            '后台未记录运输超时恢复现场',
+            lambda: (lambda current: current if current.get('taskId') == task_id else None)(
+                runtime.api('/api/timeout-recovery/' + task_id)),
+            20)
+        write(evidence / 'timeout-recovery-captured.json', recovery)
+        check('状态7已进入原任务冻结而不是伪完成',
+              detail['task']['stage'] == 'Faulted' and step['status'] == 'ManualIntervention', step)
+        check('超时恢复记录绑定原任务、原步骤和原车辆',
+              recovery.get('taskId') == task_id and recovery.get('stepId') == step.get('stepId') and
+              recovery.get('vehicleId') == vehicle_id, recovery)
+        check('首次超时没有自动发送第二条导航',
+              recovery.get('sendAttempted') is False and not recovery.get('newVendorTaskId'),
+              recovery)
+        leases = query(runtime.root, 'select ResourceId from traffic_resource_lease where TaskId=?', (task_id,))
+        write(evidence / 'timeout-held-resources.json', leases)
+
+        car = (fresh_device_state(runtime).get('cars') or {}).get(vehicle_id, {})
+        if scenario_name == 'obstacle-timeout-pickup':
+            check('取料途中故障时车辆为空载', car.get('loaded') is False, car)
+            check('取料超时后原任务和路权仍保留',
+                  bool(leases) and recovery.get('originalVendorTaskId') == step.get('vendorTaskId'), leases)
+        elif scenario_name == 'obstacle-timeout-fullbox':
+            check('满箱运输故障时车辆仍持有满箱', car.get('loaded') is True, car)
+            check('满箱运输没有自动换车',
+                  recovery.get('vehicleId') == vehicle_id and detail['task'].get('vehicleId') == vehicle_id,
+                  detail['task'])
+        elif scenario_name == 'obstacle-timeout-return':
+            dump_done = target_index > 0 and detail['steps'][target_index - 1].get('status') == 'Completed'
+            check('空箱返程故障前倒料步骤已经结束', dump_done, detail['steps'][target_index - 1])
+            check('返程超时没有提前完成返箱或放箱',
+                  detail['steps'][target_index]['status'] == 'ManualIntervention' and
+                  all(item.get('status') != 'Completed' for item in detail['steps'][target_index + 1:]),
+                  detail['steps'][target_index:])
+        elif scenario_name in ('obstacle-timeout-midroad', 'obstacle-timeout-manual',
+                               'obstacle-timeout-safe-site'):
+            navigation = read(runtime.root / 'navigation.agvmap.json')
+            station = car.get('station')
+            node = next((item for item in navigation.get('nodes', [])
+                         if item.get('agvSiteId') == station), None)
+            if node is None:
+                raise RuntimeError('故障车辆没有可用于核对的当前厂家站点。')
+            deviation = math.hypot(float(car.get('x', 0)) - node['x'],
+                                   float(car.get('y', 0)) - node['y'])
+            check('道路中段故障没有被最近站点冒充为可信起点',
+                  deviation > 0.3 and recovery.get('outcome') != 'ReadyForControlledDetour',
+                  dict(station=station, deviationMeters=deviation, recovery=recovery))
+
+        if scenario_name == 'obstacle-timeout-safe-site':
+            original_path = recovery.get('originalPath') or []
+            if len(original_path) < 2:
+                raise RuntimeError('原路线快照缺失，不能验证安全点续接。')
+            navigation = read(runtime.root / 'navigation.agvmap.json')
+            current_site = recovery.get('currentStation')
+            position = (original_path.index(current_site)
+                        if current_site in original_path else -1)
+            safe_types = {'Station', 'WaitingPoint', 'ChargingPoint'}
+            safe_candidates = [
+                site for site in original_path[position + 1:-1]
+                if next((node for node in navigation.get('nodes', [])
+                         if node.get('agvSiteId') == site), {}).get('type') in safe_types]
+            safe_site = (safe_candidates[0] if safe_candidates else
+                         obstacle_safe_site or original_path[position if position >= 0 else 0])
+            runtime.control(dict(vehicles={vehicle_id: dict(
+                obstacle=False, navigationTimeoutAfterBlockedSeconds=None,
+                manualRelocationSite=safe_site, speedScale=0.75)}))
+            relocated_controls = json.loads(json.dumps(runtime.controls))
+            relocated = runtime.wait(
+                '受控安全点转移控制未生效',
+                lambda: control_applied(runtime.device(), relocated_controls, vehicle_id), 10)
+            write(evidence / 'safe-site-relocated.json',
+                  dict(vehicleId=vehicle_id, safeSite=safe_site, applied=relocated))
+            ready = runtime.wait(
+                '障碍清除并到达安全点后未重新形成可执行候选',
+                lambda: (lambda current: current if current.get('state') == 'ReadyForControlledDetour'
+                         else None)(runtime.api('/api/timeout-recovery/' + task_id)), 30)
+            write(evidence / 'safe-site-ready.json', ready)
+            check('车辆到安全点、停稳且障碍清除后可以受控续接',
+                  ready.get('currentStation') == safe_site and
+                  ready.get('outcome') == 'ReadyForControlledDetour' and
+                  len(ready.get('candidatePath') or []) >= 2, ready)
+            executed = runtime.api('/api/timeout-recovery/' + task_id + '/execute', dict(
+                taskId=task_id, expectedRevision=ready['revision'], executeConfirmed=True,
+                vehicleAndLocationConfirmed=True, loadAndOwnershipConfirmed=True,
+                plcConditionsConfirmed=True,
+                reason=f'仿真确认：车辆已受控转移到安全点{safe_site}，载荷、PLC和原任务一致。'
+            ))
+            write(evidence / 'safe-site-recovery-executed.json', executed)
+            check('安全点续接由原车发送一次替代导航并绑定原任务',
+                  executed.get('accepted') is True and
+                  (executed.get('snapshot') or {}).get('vehicleId') == vehicle_id, executed)
+            auto_detour_sends += 1
+            task_after = runtime.api('/api/tasks/' + task_id)
+            check('安全点续接后原业务任务仍在且已重新执行',
+                  task_after.get('task', {}).get('vehicleId') == vehicle_id and
+                  task_after.get('task', {}).get('stage') not in ('Faulted', 'Cancelled', 'Completed'),
+                  task_after.get('task'))
+            complete([task_id])
+            runtime.scenario['completedRounds'] = 1
+            fault_observed = True
+            return
+
+        if scenario_name in ('obstacle-timeout-midroad', 'obstacle-timeout-manual'):
+            runtime.control(dict(vehicles={vehicle_id: dict(
+                obstacle=False, navigationTimeoutAfterBlockedSeconds=None,
+                offline=scenario_name == 'obstacle-timeout-manual')}))
+            cleared_controls = json.loads(json.dumps(runtime.controls))
+            runtime.wait('障碍清除或离线注入未生效',
+                         lambda: control_applied(runtime.device(), cleared_controls, vehicle_id), 10)
+            expected = 'SafetyHold' if scenario_name == 'obstacle-timeout-manual' else 'ManualRelocationRequired'
+            reassessed = runtime.wait(
+                '超时恢复状态未重新评估',
+                lambda: (lambda current: current if current.get('outcome') == expected else None)(
+                    runtime.api('/api/timeout-recovery/' + task_id)), 30)
+            write(evidence / 'timeout-recovery-reassessed.json', reassessed)
+            check('无法安全自动恢复时进入明确的人工处置而不是自动发车',
+                  reassessed.get('sendAttempted') is False and
+                  reassessed.get('state') == 'ManualIntervention' and
+                  reassessed.get('outcome') == expected, reassessed)
+
+        fault_observed = True
+        recovery_hold = True
+        runtime.scenario['completedRounds'] = 0
+
     try:
         if hasattr(runtime, 'version_comparison'):
             version_start = runtime.version_comparison.refresh()
@@ -758,7 +976,9 @@ def execute(runtime, request):
             runtime.idle_review()
             check('运行前无残留路权', not query(runtime.root, 'select ResourceId from traffic_resource_lease'), '只读数据库核对')
         if any(v.get('offline') or v.get('paused') or v.get('dropNextResponse') or v.get('blockedEdges') or
-               v.get('obstacle') or v.get('obstacleAfterSegments') is not None
+               v.get('obstacle') or v.get('obstacleAfterSegments') is not None or
+               v.get('navigationTimeoutAfterBlockedSeconds') is not None or
+               v.get('manualRelocationSite') is not None
                for v in runtime.controls['vehicles'].values()) or any(value != PLC_DEFAULTS.get(key) for key, value in runtime.controls['plc'].items()):
             raise RuntimeError('开始场景前请解除人工故障；不自动覆盖控制。')
         if request['name'] == 'plc-delay':
@@ -907,6 +1127,15 @@ def execute(runtime, request):
             fault_observed = True
             complete([task_id])
             runtime.scenario['completedRounds'] = 1
+        elif request['name'] in TIMEOUT_OBSTACLE_NAMES:
+            station, vehicle = pairs[0]
+            task_id = create(station, vehicle)
+            assigned = runtime.wait(
+                '障碍超时场景未取得正式调度车辆',
+                lambda: runtime.api('/api/tasks/' + task_id)['task'].get('vehicleId'),
+                40)
+            tasks[task_id]['vehicle'] = assigned
+            run_obstacle_timeout(task_id, request['name'])
         elif request['name'] in ('response-loss', 'road-block-recovery', 'obstacle-auto-detour'):
             station, vehicle = pairs[0]
             task_id = create(station, vehicle)
@@ -936,7 +1165,8 @@ def execute(runtime, request):
                 if runtime.abort.wait(request['intervalSeconds']): raise InterruptedError('场景已中止。')
         if request['name'] == 'vendor-cancel-return':
             check('预期车端取消已形成独立故障结果', fault_observed, '取消任务、原命令和原路权已保留待核对')
-        elif request['name'] != 'service-restart':
+        elif request['name'] != 'service-restart' and request['name'] not in (
+                set(TIMEOUT_OBSTACLE_NAMES) - {'obstacle-timeout-safe-site'}):
             check('最终无残留路权', not query(runtime.root, 'select ResourceId from traffic_resource_lease'), '所有资源租约已释放')
             commands = query(runtime.root, 'select TaskId,StepId,CommandId,Status,AttemptCount,VendorCommandId,LastError from agv_command_outbox')
             commands = [c for c in commands if c['TaskId'] in tasks]
@@ -976,7 +1206,8 @@ def execute(runtime, request):
                   len(sends) == len(tasks) * 4 + auto_detour_sends,
                   f'{len(sends)}次成功接收；原任务{len(tasks) * 4}次，自动改道{auto_detour_sends}次')
         if request['name'] in ('disconnect-reconnect', 'service-restart', 'plc-recovery', 'response-loss',
-                               'road-block-recovery', 'vendor-cancel-return', 'obstacle-auto-detour'):
+                               'road-block-recovery', 'vendor-cancel-return', 'obstacle-auto-detour',
+                               *TIMEOUT_OBSTACLE_NAMES):
             check('指定阶段故障实际触发', fault_observed, request['name'])
         if request['name'] == 'plc-delay':
             applied = control_applied(runtime.device(), plc_fault_controls)
@@ -995,6 +1226,9 @@ def execute(runtime, request):
         result_status = 'passed'
         message = ('恢复屏障已验证，保留活动任务待核对。' if request['name'] == 'service-restart' else
                    '已复现车端返程3066后段取消；任务、命令和路权按异常现场保留。' if request['name'] == 'vendor-cancel-return' else
+                   '已完成安全点受控转移、候选重评估和原车续接。' if request['name'] == 'obstacle-timeout-safe-site' else
+                   '已复现持续受阻后的车端状态7；原任务、载荷、PLC和路权按处置现场保留。'
+                   if request['name'] in TIMEOUT_OBSTACLE_NAMES else
                    '场景及闭环检查通过。')
     except InterruptedError as error:
         result_status = 'aborted'; message = str(error)
@@ -1023,7 +1257,7 @@ def execute(runtime, request):
             completedBusinessCycle=result_status == 'passed' and bool(tasks) and completed_tasks == set(tasks) and not recovery_hold,
             recoveryHold=recovery_hold, faultApplied=fault_observed if request['name'] in
                 ('disconnect-reconnect', 'service-restart', 'plc-delay', 'plc-recovery', 'vendor-cancel-return',
-                 'response-loss', 'road-block-recovery', 'obstacle-auto-detour') else None,
+                 'response-loss', 'road-block-recovery', 'obstacle-auto-detour', *TIMEOUT_OBSTACLE_NAMES) else None,
             taskSummary=summarize_tasks(all_details),
             startedAt=started, finishedAt=time.time(), evidenceDirectory=evidence.name,
             metrics=dict(taskCount=len(tasks), completedRounds=runtime.scenario['completedRounds'], durationSeconds=time.time()-started,

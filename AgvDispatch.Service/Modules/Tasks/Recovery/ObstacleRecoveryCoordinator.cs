@@ -229,6 +229,11 @@ public sealed class ObstacleRecoveryCoordinator(
                 await MarkRecoveredAsync(row, robot,
                     "车端Blocked/52200已清除；继续查询原任务，障碍清除本身不证明任务完成。",
                     cancellationToken);
+                // A fresh clear closes this recovery lifecycle. Falling through
+                // would reuse the old blocked-since interval and later freeze a
+                // task that has already resumed or completed under a verified
+                // replacement navigation.
+                return;
             }
             else
             {

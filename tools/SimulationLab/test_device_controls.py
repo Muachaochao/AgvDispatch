@@ -116,6 +116,8 @@ class ControlValidationTests(unittest.TestCase):
             {'vehicles': {'C': {'paused': True}}},
             {'vehicles': {'A': {'blockedEdges': ['missing']}}},
             {'vehicles': {'A': {'speedScale': float('nan')}}},
+            {'vehicles': {'A': {'navigationTimeoutAfterBlockedSeconds': 0}}},
+            {'vehicles': {'A': {'manualRelocationSite': ''}}},
             {'plc': {'readyDelaySeconds': True}},
             {'plc': {'suppressReady': 1}},
         ]:
@@ -289,6 +291,48 @@ class DeviceNetworkTests(unittest.IsolatedAsyncioTestCase):
         finally:
             driver.cancel()
             await asyncio.gather(driver, return_exceptions=True)
+
+    async def test_blocked_navigation_transitions_to_status_seven_without_completion(self):
+        car = self.f.car
+        car.nodes['LM1']['x'] = 4
+        self.assertEqual(0, car.robokit_reply(3066, {'move_task_list': [
+            {'task_id': 'timeout-obstacle', 'source_id': 'LM0', 'id': 'LM1'}]})['ret_code'])
+        driver = asyncio.create_task(car.drive())
+        scanner = asyncio.create_task(car.plc_scan())
+        try:
+            await self.wait_until(lambda: car.current == 'timeout-obstacle' and car.x > .05,
+                                  'Driver did not start timeout task')
+            self.f.control(vehicles={'A': {'obstacle': True,
+                                          'navigationTimeoutAfterBlockedSeconds': .5,
+                                          'speedScale': 1}})
+            stopped = car.x
+            await self.wait_until(lambda: car.tasks['timeout-obstacle'] == 7,
+                                  'Blocked navigation did not become status 7')
+            self.assertTrue(car.robokit_reply(1100, {})['blocked'])
+            self.assertIsNone(car.current)
+            self.assertLess(car.x, 4)
+            await asyncio.sleep(.2)
+            self.assertEqual(stopped, car.x)
+            self.assertEqual(7, car.tasks['timeout-obstacle'])
+            status = car.robokit_reply(1110, {'task_ids': ['timeout-obstacle']})
+            self.assertEqual(7, status['task_status_package']['task_status_list'][0]['status'])
+        finally:
+            scanner.cancel()
+            await asyncio.gather(scanner, return_exceptions=True)
+            driver.cancel()
+            await asyncio.gather(driver, return_exceptions=True)
+
+    async def test_manual_relocation_control_requires_idle_and_updates_trusted_site(self):
+        car = self.f.car
+        self.f.control(vehicles={'A': {'manualRelocationSite': 'LM2'}})
+        self.assertEqual(('LM2', car.nodes['LM2']['x'], car.nodes['LM2']['y']),
+                         (car.station, car.x, car.y))
+        self.assertTrue(car.at_source)
+        self.assertEqual('LM2', car.control_snapshot()['manualRelocationSite'])
+        car.current = 'busy-relocation'
+        self.f.control(vehicles={'A': {'manualRelocationSite': 'LM1'}})
+        self.assertIn('idle', car.control_error)
+        self.assertEqual('LM2', car.station)
 
     async def test_pause_block_and_cancel_during_jack(self):
         car = self.f.car

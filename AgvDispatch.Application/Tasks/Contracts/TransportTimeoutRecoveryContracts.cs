@@ -80,6 +80,14 @@ public interface ITransportTimeoutRecoveryService
         TransportTimeoutRecoveryRequest request,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Re-evaluates unresolved timeout holds after fresh telemetry or a
+    /// controlled relocation. This only updates read-only eligibility and
+    /// never sends a navigation command or releases the original task.
+    /// </summary>
+    Task ReassessPendingAsync(CancellationToken cancellationToken) =>
+        Task.CompletedTask;
+
     Task<AgvTransportTaskStatus?> GetReplacementStatusAsync(
         DispatchTaskWorkItem task,
         CancellationToken cancellationToken);

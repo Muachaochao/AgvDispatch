@@ -130,6 +130,13 @@ await chainGateway.CancelTaskAsync("CHAIN",default);
 Check(robot.LastCancel=="CHAIN-02" && (await chainGateway.GetTransportTaskStatusAsync("CHAIN",default))?.State==AgvTransportTaskState.Cancelled,"模拟级联取消确认所有原段已结束");
 robot.SetTask("CHAIN-01",5);robot.SetTask("CHAIN-02",6);robot.SetTask("CHAIN",6);
 Check((await chainGateway.GetTransportTaskStatusAsync("CHAIN",default))?.State==AgvTransportTaskState.Failed,"首段失败和后段级联取消保留失败语义");
+robot.SetTask("CHAIN-01",4);robot.SetTask("CHAIN-02",7);robot.SetTask("CHAIN",7);
+var mixedTimeout=await chainGateway.GetTransportTaskStatusAsync("CHAIN",default);
+Check(mixedTimeout is {State:AgvTransportTaskState.Failed,VendorStatusCode:7},
+    "已完成前段加当前状态7仍识别为明确导航超时");
+robot.SetTask("CHAIN-02",5);
+Check((await chainGateway.GetTransportTaskStatusAsync("CHAIN",default))?.VendorStatusCode is null,
+    "状态4/5/7混合不能被伪装成唯一超时码");
 robot.SetTask("CHAIN-01",404);robot.SetTask("CHAIN",4);
 Check((await chainGateway.GetTransportTaskStatusAsync("CHAIN",default))?.State==AgvTransportTaskState.Unknown,"历史段缺失不能凭末段完成放行");
 robot.AcceptLimit=1;

@@ -102,6 +102,7 @@ async def run(root):
                     raise RuntimeError('Virtual device worker stopped')
             for car in cars:
                 car.refresh_controls()
+                car.apply_navigation_timeout()
             control = root / 'network-input.json'
             if control.exists():
                 event = json.loads(control.read_text(encoding='utf-8'))

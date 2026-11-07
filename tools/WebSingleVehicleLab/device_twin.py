@@ -58,6 +58,10 @@ class DeviceTwin:
         self.blocked_edges = set()
         self.obstacle = False
         self.obstacle_after_segments = None
+        self.navigation_timeout_after_blocked_seconds = None
+        self.manual_relocation_site = None
+        self.navigation_blocked_since = None
+        self.navigation_timeout_tripped = False
         self.writers = set()
         self.plc_controls = dict(PLC_DEFAULTS)
         self.ready_requested_at = None
@@ -230,8 +234,26 @@ class DeviceTwin:
             self.blocked_edges = set(car['blockedEdges'])
             self.obstacle = car['obstacle']
             self.obstacle_after_segments = car.get('obstacleAfterSegments')
+            self.navigation_timeout_after_blocked_seconds = car.get('navigationTimeoutAfterBlockedSeconds')
+            self.manual_relocation_site = car.get('manualRelocationSite')
             self.plc_controls = value['plc']
             self.control_sequence, self.control_error = value['sequence'], None
+            if self.manual_relocation_site is not None:
+                if self.current is not None or not self.queue.empty():
+                    raise ValueError('manualRelocationSite requires an idle virtual vehicle')
+                if self.manual_relocation_site not in self.nodes:
+                    raise ValueError('manualRelocationSite is not present in the active map')
+                self.station = self.manual_relocation_site
+                node = self.nodes[self.station]
+                self.x, self.y = node['x'], node['y']
+                self.angle = 0.0
+                self.at_source = True
+                self.moving = False
+                self.current_speed_mps = 0.0
+                self.motion_edge = None
+                self.blocked_by_vehicle = None
+                self.log('simulation-manual-relocation', station=self.station,
+                         x=self.x, y=self.y)
             if self.offline:
                 for writer in tuple(self.writers):
                     writer.close()
@@ -250,6 +272,8 @@ class DeviceTwin:
             cancelFinalReturnSegments=self.cancel_final_return_segments,
                     blockedEdges=sorted(self.blocked_edges), obstacle=self.obstacle,
                     obstacleAfterSegments=self.obstacle_after_segments,
+                    navigationTimeoutAfterBlockedSeconds=self.navigation_timeout_after_blocked_seconds,
+                    manualRelocationSite=self.manual_relocation_site,
                     charging=self.charging, plc=self.plc_controls)
 
     def at_site(self, site):
@@ -260,7 +284,7 @@ class DeviceTwin:
         """Physical time stops on pause/block, but networking and PLC keep scanning."""
         elapsed = 0.0
         while elapsed < seconds:
-            if self.tasks[tid] == 6:
+            if self.tasks[tid] in (6, 7):
                 return False
             if not self.paused and not self.obstacle and edge_id not in self.blocked_edges:
                 elapsed += 0.1 * self.speed_scale
@@ -272,7 +296,7 @@ class DeviceTwin:
         while True:
             item = await self.queue.get()
             tid = item['task_id']
-            if self.tasks[tid] == 6:
+            if self.tasks[tid] in (6, 7):
                 self.queue.task_done()
                 continue
             chain = self.task_chain_position.get(tid)
@@ -308,7 +332,7 @@ class DeviceTwin:
             segment, progress = 0, 0.0
             moved_meters = 0.0
             while segment < len(points) - 1:
-                if self.tasks[tid] == 6:
+                if self.tasks[tid] in (6, 7):
                     break
                 self.moving = False
                 prior_blocker = next((p for p in self.peers if p.vehicle_id == self.blocked_by_vehicle), None)
@@ -354,7 +378,7 @@ class DeviceTwin:
             self.distance_meters += moved_meters
             self.consume_battery(distance=moved_meters)
             self.current_speed_mps = 0.0
-            if self.tasks[tid] != 6:
+            if self.tasks[tid] not in (6, 7):
                 self.station = item['id']
                 self.moving = False
                 self.at_source = True
@@ -381,6 +405,44 @@ class DeviceTwin:
             self.moving = False
             self.blocked_by_vehicle = None
             self.queue.task_done()
+
+    def blocked_now(self):
+        return self.obstacle or self.blocked_by_vehicle is not None or self.motion_edge in self.blocked_edges
+
+    def apply_navigation_timeout(self):
+        """Turn a persistent local obstacle wait into the vendor's status 7."""
+        seconds = self.navigation_timeout_after_blocked_seconds
+        active = self.current is not None and self.tasks.get(self.current) in (1, 2, 3)
+        if seconds is None or not active or not self.blocked_now():
+            self.navigation_blocked_since = None
+            return
+        now = time.monotonic()
+        if self.navigation_blocked_since is None:
+            self.navigation_blocked_since = now
+            self.log('vehicle-navigation-timeout-waiting', task_id=self.current,
+                     station=self.station, x=self.x, y=self.y,
+                     timeout_after_seconds=seconds)
+        if now - self.navigation_blocked_since < seconds:
+            return
+        failed = []
+        for task_id, status in list(self.tasks.items()):
+            if status in (1, 2, 3):
+                self.tasks[task_id] = 7
+                failed.append(task_id)
+        self.navigation_timeout_tripped = True
+        self.current_speed_mps = 0.0
+        self.moving = False
+        self.current = None
+        self.navigation_blocked_since = None
+        while not self.queue.empty():
+            try:
+                self.queue.get_nowait()
+                self.queue.task_done()
+            except asyncio.QueueEmpty:
+                break
+        self.log('vehicle-navigation-timeout-triggered', task_ids=failed,
+                 station=self.station, x=self.x, y=self.y,
+                 blocked=self.blocked_now())
 
     def body_radius(self):
         profiles = [p for p in self.body_profiles if p.get('VehicleId') == self.vehicle_id]
@@ -487,6 +549,7 @@ class DeviceTwin:
                 except (OSError, ValueError, KeyError):
                     pass
             self.scan_handshakes()
+            self.apply_navigation_timeout()
             state = dict(station=self.station, x=self.x, y=self.y, angle=self.angle,
                          loaded=self.loaded, current_task=self.current, tasks=self.tasks,
                          completed_segments=self.steps, db1=list(self.memory[:4]), dumper=list(self.memory[610:611]), memory_hex=self.memory.hex(),
@@ -560,6 +623,7 @@ class DeviceTwin:
                 self.cancel_final_return_segments = 0
                 self.log('vendor-chain-cancel-scheduled', task_ids=[item['task_id'] for item in items],
                          cancel_from_segment=cancel_from, cancelled_segments=len(items) - cancel_from)
+            self.navigation_timeout_tripped = False
             return dict(ret_code=0)
         if api == 3003:
             tid=request.get('taskId')

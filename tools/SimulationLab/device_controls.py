@@ -10,7 +10,8 @@ import math
 VEHICLE_DEFAULTS = dict(speedScale=0.75, paused=False, offline=False,
                         cancelFinalReturnSegments=0,
                         dropNextResponse=False, blockedEdges=[], obstacle=False,
-                        obstacleAfterSegments=None, charging=False)
+                        obstacleAfterSegments=None, navigationTimeoutAfterBlockedSeconds=None,
+                        manualRelocationSite=None, charging=False)
 PLC_DEFAULTS = dict(readyDelaySeconds=0.0, doneDelaySeconds=5.0,
                     suppressReady=False, suppressDone=False, fault=False)
 
@@ -55,6 +56,12 @@ def validate_controls(value, vehicle_ids=None, edge_ids=None):
                     raise ValueError('obstacleAfterSegments must be null or an integer between 0 and 10000')
                 else:
                     control[key] = item
+            elif key == 'navigationTimeoutAfterBlockedSeconds':
+                control[key] = None if item is None else _number(item, 0.5, 120, key)
+            elif key == 'manualRelocationSite':
+                if item is not None and (not isinstance(item, str) or not item.strip() or len(item) > 128):
+                    raise ValueError('manualRelocationSite must be null or a nonempty site ID')
+                control[key] = None if item is None else item.strip()
             elif not isinstance(item, bool):
                 raise ValueError(f'{key} must be boolean')
             else:

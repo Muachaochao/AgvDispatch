@@ -116,7 +116,13 @@ const scenarioNames: Record<string, string> = { 'normal-cycle': '完整业务循
   'custom-calls': '自定义呼叫计划', 'dispatch-backlog': '正式调度持续排队测试', 'disconnect-reconnect': '车辆断连与重连', 'plc-delay': 'PLC 反馈延迟',
   'plc-recovery': 'PLC卡位与恢复', 'service-restart': '后台重启与恢复屏障', 'resume-recovery': '恢复后继续原任务',
   'vendor-cancel-return': '车端返程中途取消', 'response-loss': '运输命令回包丢失', 'road-block-recovery': '道路临时阻塞后恢复',
-  'obstacle-auto-detour': '前方障碍自动改道' };
+  'obstacle-auto-detour': '前方障碍自动改道',
+  'obstacle-timeout-pickup': '取料途中受阻并超时',
+  'obstacle-timeout-fullbox': '满箱运输受阻并超时',
+  'obstacle-timeout-return': '空箱返程受阻并超时',
+  'obstacle-timeout-midroad': '道路中段受阻并超时',
+  'obstacle-timeout-safe-site': '安全点转移后继续',
+  'obstacle-timeout-manual': '无法恢复转人工处置' };
 const metrics = computed(() => Object.entries(report.value?.metrics ?? {}).filter(([, value]) => value !== null && typeof value !== 'object'));
 const metricComparison = computed(() => simulationMetricComparison(report.value?.metrics, comparisonReport.value?.metrics));
 const firstFailure = computed(() => typeof report.value?.firstFailure === 'string' ? report.value.firstFailure :
@@ -129,7 +135,15 @@ const replayGeometry = computed(() => simulationGeometry((replay.value?.map ?? s
 const replayCadBackground = computed(() => simulationCadBackground(replay.value?.map ?? status.value?.map, replayGeometry.value));
 const replayMapAreas = computed(() => simulationAreaOverlays(replay.value?.map ?? status.value?.map, replayGeometry.value));
 const denseReplay = computed(() => replayGeometry.value.nodes.length > 120);
+const singleRoundScenarios = new Set<SimulationRun['name']>(['service-restart', 'resume-recovery', 'vendor-cancel-return',
+  'response-loss', 'plc-recovery', 'road-block-recovery', 'obstacle-auto-detour', 'obstacle-timeout-pickup',
+  'obstacle-timeout-fullbox', 'obstacle-timeout-return', 'obstacle-timeout-midroad',
+  'obstacle-timeout-safe-site', 'obstacle-timeout-manual']);
+const obstacleTimeoutScenarios = new Set<SimulationRun['name']>(['obstacle-timeout-pickup',
+  'obstacle-timeout-fullbox', 'obstacle-timeout-return', 'obstacle-timeout-midroad',
+  'obstacle-timeout-safe-site', 'obstacle-timeout-manual']);
 const runValid = computed(() => Number.isInteger(run.value.rounds) && run.value.rounds >= 1 && run.value.rounds <= 100 &&
+  (!singleRoundScenarios.has(run.value.name) || run.value.rounds === 1) &&
   Number.isFinite(run.value.intervalSeconds) && run.value.intervalSeconds >= 0 && run.value.intervalSeconds <= 60 &&
   Number.isFinite(run.value.timeoutSeconds) && run.value.timeoutSeconds >= 30 && run.value.timeoutSeconds <= 86400);
 const currentTask = computed(() => vehicle.value?.current_task || '当前无运输命令');
@@ -615,7 +629,13 @@ const scenarioDescriptions: Record<SimulationRun['name'], string> = {
   'vendor-cancel-return': '在返箱 3066 任务链最后两段由车端返回取消，验证后台不会伪造完成、不会清掉原路权，并进入取消核对。',
   'response-loss': '丢弃一次 3066 传输响应，验证后台按原任务和原命令身份核对重试，生成重复任务或更换命令即失败。',
   'road-block-recovery': '在取货运输途中临时封锁实际行驶道路，解除后验证原任务自动续接且路权不会提前释放。',
-  'obstacle-auto-detour': '虚拟车先上报前方障碍。后台连续观察后规划替代路线，安全条件全部通过时自动取消原导航、确认终态并发送一条替代路线；原业务任务、载荷、PLC责任和路权保持不变。'
+  'obstacle-auto-detour': '虚拟车先上报前方障碍。后台连续观察后规划替代路线，安全条件全部通过时自动取消原导航、确认终态并发送一条替代路线；原业务任务、载荷、PLC责任和路权保持不变。',
+  'obstacle-timeout-pickup': '空载前往取料时持续受阻，车辆随后返回状态7。验证原任务冻结、空载状态可查、没有任何第二条导航被自动发送。',
+  'obstacle-timeout-fullbox': '满箱运往倒料机时持续受阻并返回状态7。验证满箱责任、原倒料机和原车辆不被替换，任务与路权保持现场。',
+  'obstacle-timeout-return': '倒料完成后的空箱返程持续受阻并返回状态7。验证返箱、放箱和PLC收尾不会提前完成。',
+  'obstacle-timeout-midroad': '车辆在道路中间受阻并超时。验证后台不会把最近站点冒充成可信起点，清除障碍后仍要求车辆先到安全站点。',
+  'obstacle-timeout-safe-site': '车辆在道路中段超时后，仿真台模拟现场受控转移到安全站点；后台重新评估障碍、位置和原路线，再由原车续接原业务任务。',
+  'obstacle-timeout-manual': '车辆通信或位置无法安全恢复时，验证原任务进入明确的人工处置状态，不自动发车、不假完成、不释放占用。'
 };
 const currentScenarioDescription = computed(() => scenarioDescriptions[run.value.name]);
 const modeledTaskCount = computed(() => Object.values(cars.value).filter(car => !!car.current_task).length);
@@ -1047,7 +1067,8 @@ function scenarioDraft(): SimulationRun {
   const payload: SimulationRun = { ...run.value };
   if (['custom-calls', 'dispatch-backlog'].includes(payload.name)) payload.calls = buildCustomCalls();
   if (payload.name === 'plc-recovery') { payload.plcFault = plcFault.value; payload.holdSeconds = plcFaultHold.value; }
-  if (payload.name === 'road-block-recovery' || payload.name === 'obstacle-auto-detour') payload.holdSeconds = roadBlockHold.value;
+  if (payload.name === 'road-block-recovery' || payload.name === 'obstacle-auto-detour' ||
+      obstacleTimeoutScenarios.has(payload.name)) payload.holdSeconds = roadBlockHold.value;
   if (payload.name === 'service-restart') payload.restartStage = restartStage.value;
   return payload;
 }
@@ -1864,7 +1885,27 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
         <section class="simulation-panel scenario-panel" aria-labelledby="simulation-scenario">
           <header><div><p class="section-kicker">场景设置</p><h3 id="simulation-scenario">场景编排</h3></div><span :class="['state-pill', simulationTone(status?.scenario?.status)]">{{ simulationLabel(status?.scenario?.status) }}</span></header>
           <fieldset :disabled="busy || active">
-            <label>测试场景<select v-model="run.name" aria-label="测试场景"><option value="normal-cycle">完整业务循环</option><option value="simultaneous-calls">多工位同时呼叫</option><option value="dispatch-backlog">正式调度持续排队测试</option><option value="custom-calls">自定义呼叫计划</option><option value="disconnect-reconnect">车辆断连与重连</option><option value="plc-delay">PLC 反馈延迟</option><option value="plc-recovery">PLC卡位与恢复</option><option value="service-restart">后台重启与恢复屏障</option><option value="resume-recovery">恢复后继续原任务</option><option value="vendor-cancel-return">车端返程中途取消</option><option value="response-loss">运输命令回包丢失</option><option value="road-block-recovery">道路临时阻塞后恢复</option><option value="obstacle-auto-detour">前方障碍自动改道</option></select></label>
+            <label>测试场景<select v-model="run.name" aria-label="测试场景">
+              <option value="normal-cycle">完整业务循环</option>
+              <option value="simultaneous-calls">多工位同时呼叫</option>
+              <option value="dispatch-backlog">正式调度持续排队测试</option>
+              <option value="custom-calls">自定义呼叫计划</option>
+              <option value="disconnect-reconnect">车辆断连与重连</option>
+              <option value="plc-delay">PLC 反馈延迟</option>
+              <option value="plc-recovery">PLC卡位与恢复</option>
+              <option value="service-restart">后台重启与恢复屏障</option>
+              <option value="resume-recovery">恢复后继续原任务</option>
+              <option value="vendor-cancel-return">车端返程中途取消</option>
+              <option value="response-loss">运输命令回包丢失</option>
+              <option value="road-block-recovery">道路临时阻塞后恢复</option>
+              <option value="obstacle-auto-detour">前方障碍自动改道</option>
+              <option value="obstacle-timeout-pickup">取料途中受阻并超时</option>
+              <option value="obstacle-timeout-fullbox">满箱运输受阻并超时</option>
+              <option value="obstacle-timeout-return">空箱返程受阻并超时</option>
+              <option value="obstacle-timeout-midroad">道路中段受阻并超时</option>
+              <option value="obstacle-timeout-safe-site">安全点转移后继续</option>
+              <option value="obstacle-timeout-manual">无法恢复转人工处置</option>
+            </select></label>
             <div class="form-row"><label>循环轮数<input v-model.number="run.rounds" type="number" min="1" max="100" step="1" /></label><label>轮间隔 / 秒<input v-model.number="run.intervalSeconds" type="number" min="0" max="60" /></label></div>
             <label>单轮超时 / 秒<input v-model.number="run.timeoutSeconds" type="number" min="30" max="86400" /></label>
             <div v-if="['custom-calls', 'dispatch-backlog'].includes(run.name)" class="call-plan">
@@ -1874,12 +1915,14 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
               <small>{{ run.name === 'dispatch-backlog' ? '按时间持续追加，不等上一批完成；同一工位仍有原任务时，后续呼叫保留在计划队列。验证忙车排除建议1车2工位或2车3工位，第3工位须明确使用隔离合成点位。只有真正观察到全部车辆忙碌期间仍有正式待派任务，才证明覆盖了积压；2车2工位可能无法形成积压。工位优先级在新建环境前配置，并写入报告。' : '同一批次工位会在同一设备扫描中置位；指定车辆不可达时停止并报告。此场景按批次完成后继续。' }}</small>
             </div>
             <div v-if="run.name === 'plc-recovery'" class="form-row"><label>卡位信号<select v-model="plcFault"><option value="ready">倒料机就绪许可</option><option value="done">倒料完成，允许离开</option></select></label><label>卡位保持 / 秒<input v-model.number="plcFaultHold" type="number" min="1" max="120" /></label></div>
-            <label v-if="run.name === 'road-block-recovery' || run.name === 'obstacle-auto-detour'">{{ run.name === 'road-block-recovery' ? '道路阻塞保持' : '车端障碍保持' }} / 秒<input v-model.number="roadBlockHold" type="number" min="1" max="120" /></label>
+            <label v-if="run.name === 'road-block-recovery' || run.name === 'obstacle-auto-detour' || obstacleTimeoutScenarios.has(run.name)">{{ obstacleTimeoutScenarios.has(run.name) ? '障碍持续到车端超时' : (run.name === 'road-block-recovery' ? '道路阻塞保持' : '车端障碍保持') }} / 秒<input v-model.number="roadBlockHold" type="number" min="1" max="120" /></label>
             <label v-if="run.name === 'service-restart'">重启注入阶段<select v-model="restartStage"><option value="pickup">原取料运输执行中（可验证到站补记后续接）</option><option value="delivery">满箱运输执行中（保留更复杂恢复现场）</option></select></label>
           </fieldset>
           <div class="toolbar"><button class="primary" :disabled="!canControl || active || !runValid || (['custom-calls', 'dispatch-backlog'].includes(run.name) && !callPlanValid)" @click="startScenario"><IconPlayerPlay :size="16" />运行场景</button><button :disabled="!available || !active" @click="action('abort')">中止后续场景</button></div>
           <p v-if="run.name === 'service-restart'" class="inline-warning">该场景结束时保留原任务和恢复屏障，不表示完整业务循环已完成。</p>
           <p v-if="run.name === 'vendor-cancel-return'" class="inline-warning">通过表示“预期取消已被正确识别并保留现场”，不表示业务完成；运行后会留有原任务路权，需按恢复页核对。</p>
+          <p v-if="obstacleTimeoutScenarios.has(run.name) && run.name !== 'obstacle-timeout-safe-site'" class="inline-warning">通过表示“车辆持续受阻并返回状态7后，系统正确冻结或转入人工处置”，不表示业务已完成；运行后应导出证据并建立干净实例再继续。</p>
+          <p v-if="run.name === 'obstacle-timeout-safe-site'" class="inline-warning">安全点移动由仿真台模拟现场受控转移；通过条件是后台重新核验安全位置、载荷、PLC和原路线后，由原车续接且最终完成原业务任务。</p>
           <p v-if="run.name === 'resume-recovery'" class="inline-warning">只有在恢复页逐项核对并放行后才能运行；它只续接原任务编号。</p>
           <p v-if="!runValid" class="inline-warning">轮数 1–100、间隔 0–60 秒、超时 30–86400 秒。</p>
         </section>

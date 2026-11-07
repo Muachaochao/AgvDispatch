@@ -340,13 +340,16 @@ export interface SimulationControls {
   sequence: string;
   vehicles?: Record<string, { paused?: boolean; offline?: boolean; charging?: boolean; speedScale?: number;
     cancelFinalReturnSegments?: number; dropNextResponse?: boolean; blockedEdges?: string[]; obstacle?: boolean;
-    obstacleAfterSegments?: number | null }>;
+    obstacleAfterSegments?: number | null; navigationTimeoutAfterBlockedSeconds?: number | null;
+    manualRelocationSite?: string | null }>;
   plc?: { readyDelaySeconds?: number; doneDelaySeconds?: number; suppressReady?: boolean; suppressDone?: boolean; fault?: boolean };
 }
 export interface SimulationRun {
   name: 'normal-cycle' | 'simultaneous-calls' | 'custom-calls' | 'disconnect-reconnect' | 'plc-delay' |
     'service-restart' | 'plc-recovery' | 'resume-recovery' | 'dispatch-backlog' | 'vendor-cancel-return' |
-    'response-loss' | 'road-block-recovery' | 'obstacle-auto-detour';
+    'response-loss' | 'road-block-recovery' | 'obstacle-auto-detour' |
+    'obstacle-timeout-pickup' | 'obstacle-timeout-fullbox' | 'obstacle-timeout-return' |
+    'obstacle-timeout-midroad' | 'obstacle-timeout-safe-site' | 'obstacle-timeout-manual';
   rounds: number; intervalSeconds: number; timeoutSeconds: number; calls?: SimulationCall[];
   plcFault?: 'ready' | 'done'; holdSeconds?: number; restartStage?: 'pickup' | 'delivery';
 }

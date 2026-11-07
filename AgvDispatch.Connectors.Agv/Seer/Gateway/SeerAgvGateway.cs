@@ -200,7 +200,7 @@ public sealed partial class SeerAgvGateway(
         return new(vendorTaskId,vendorTaskId,state,client.Robot.VehicleId,DateTimeOffset.Now,
             $"原车导航全链：{rows.Count}/{ids.Count}段有记录；状态{string.Join(',',rows.Select(r=>$"{r.TaskId}={r.Status}"))}；缺失或仍运行不确认结束。")
         {
-            VendorStatusCode = UnambiguousRawCode(rows.Select(r => r.Status))
+            VendorStatusCode = UnambiguousChainRawCode(rows.Select(r => r.Status))
         };
     }
 
@@ -221,7 +221,7 @@ public sealed partial class SeerAgvGateway(
             return new(vendorTaskId,vendorTaskId,state,evidence.Client.Robot.VehicleId,DateTimeOffset.Now,
                 $"整条3066任务链：{known.Length}/{evidence.Ids.Count}段有记录；状态 {string.Join(",",evidence.Rows.Select(r=>$"{r.TaskId}={r.Status}"))}；缺失/仍运行时不确认结束。")
             {
-                VendorStatusCode = UnambiguousRawCode(evidence.Rows.Select(r => r.Status))
+                VendorStatusCode = UnambiguousChainRawCode(evidence.Rows.Select(r => r.Status))
             };
         }
         Exception? lastError = null;
@@ -400,6 +400,18 @@ public sealed partial class SeerAgvGateway(
     {
         var distinct = statuses.Where(status => status != 404).Distinct().ToArray();
         return distinct.Length == 1 ? distinct[0] : null;
+    }
+
+    private static int? UnambiguousChainRawCode(IEnumerable<int> statuses)
+    {
+        var known = statuses.Where(status => status != 404).ToArray();
+        var distinct = known.Distinct().ToArray();
+        if (distinct.Length == 1) return distinct[0];
+        // A segmented 3066 chain may have already completed leading segments
+        // (4) before one of the remaining active segments reports navigation
+        // timeout (7). This is an unambiguous timeout, not an unknown mix.
+        return known.Length > 0 && distinct.All(status => status is 4 or 7) &&
+               distinct.Contains(7) ? 7 : null;
     }
 
     private static string GetOperatingState(AgvRobotSnapshot robot)

@@ -385,6 +385,7 @@ builder.Services.AddSingleton<ITrafficResourceManager>(p=>p.GetRequiredService<T
 builder.Services.AddSingleton<ITaskWaitingBayAllocator>(p=>p.GetRequiredService<TrafficResourceManager>());
 builder.Services.AddSingleton<CompletedTransportRouteReleaseService>();
 builder.Services.AddSingleton<ITransportTimeoutRecoveryService, TransportTimeoutRecoveryService>();
+builder.Services.AddHostedService<TransportTimeoutRecoveryMonitor>();
 var obstacleRecoveryOptions = new ObstacleRecoveryOptions();
 builder.Configuration.GetSection(ObstacleRecoveryOptions.SectionName).Bind(obstacleRecoveryOptions);
 obstacleRecoveryOptions.Validate();

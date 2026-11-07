@@ -99,6 +99,18 @@ class SimulationTests(unittest.TestCase):
         self.assertEqual(validate_scenario(dict(name='response-loss', rounds=1))['name'], 'response-loss')
         self.assertEqual(validate_scenario(dict(name='road-block-recovery', rounds=1, holdSeconds=7))['holdSeconds'], 7)
         self.assertEqual(validate_scenario(dict(name='obstacle-auto-detour', rounds=1, holdSeconds=8))['holdSeconds'], 8)
+        self.assertEqual(validate_scenario(dict(name='obstacle-timeout-pickup', rounds=1,
+                                                holdSeconds=3))['holdSeconds'], 3)
+        self.assertEqual(validate_scenario(dict(name='obstacle-timeout-fullbox', rounds=1))['name'],
+                         'obstacle-timeout-fullbox')
+        self.assertEqual(validate_scenario(dict(name='obstacle-timeout-return', rounds=1))['name'],
+                         'obstacle-timeout-return')
+        self.assertEqual(validate_scenario(dict(name='obstacle-timeout-midroad', rounds=1))['name'],
+                         'obstacle-timeout-midroad')
+        self.assertEqual(validate_scenario(dict(name='obstacle-timeout-safe-site', rounds=1))['name'],
+                         'obstacle-timeout-safe-site')
+        self.assertEqual(validate_scenario(dict(name='obstacle-timeout-manual', rounds=1))['name'],
+                         'obstacle-timeout-manual')
         with self.assertRaises(ValueError):
             validate_scenario(dict(name='plc-recovery', rounds=1, plcFault='unknown'))
         with self.assertRaises(ValueError):
@@ -107,6 +119,8 @@ class SimulationTests(unittest.TestCase):
             validate_scenario(dict(name='road-block-recovery', rounds=1, holdSeconds=0))
         with self.assertRaises(ValueError):
             validate_scenario(dict(name='obstacle-auto-detour', rounds=2))
+        with self.assertRaises(ValueError):
+            validate_scenario(dict(name='obstacle-timeout-pickup', rounds=2))
 
     def test_scenario_rejects_nonfinite_and_invalid_inputs(self):
         for value in ({'rounds': True}, {'rounds': 101}, {'timeoutSeconds': math.nan}, {'intervalSeconds': math.inf}, {'name':'arbitrary-process'}, {'name':'service-restart','rounds':2}, {'script':'bad'}):
