@@ -153,9 +153,8 @@ def validate_scenario(value):
     if result['name'] not in NAMES: raise ValueError('场景不存在。')
     if type(result['rounds']) is not int or not 1 <= result['rounds'] <= 100: raise ValueError('轮次须为1至100。')
     # Full-factory campaigns can queue 305 stations across five vehicles and
-    # therefore need a bounded but longer observation window than the original
-    # single-cell scenarios.
-    for key, low, high in [('intervalSeconds', 0, 60), ('timeoutSeconds', 30, 86400)]:
+    # therefore need a bounded multi-day observation window.
+    for key, low, high in [('intervalSeconds', 0, 60), ('timeoutSeconds', 30, 604800)]:
         number = result[key]
         if type(number) not in (int, float) or not math.isfinite(number) or not low <= number <= high: raise ValueError('场景时间参数无效。')
     if result['name'] == 'service-restart' and result['rounds'] != 1: raise ValueError('重启故障场景仅运行一轮，保留恢复现场。')
@@ -426,7 +425,8 @@ def execute(runtime, request):
         stations=simulation_configuration.get('stations'),
         dumper=simulation_configuration.get('dumper'),
         vehicles=simulation_configuration.get('vehicles')))
-    execution_configuration = {key: runtime.settings.get(key) for key in ('TaskCreation', 'Dispatching', 'TrafficSegmentRelease')}
+    execution_configuration = {key: runtime.settings.get(key) for key in
+                               ('TaskCreation', 'Dispatching', 'DispatchOptimization', 'TrafficSegmentRelease')}
     execution_configuration['plcSignalTable'] = plc_signal_table
     write(evidence / 'execution-configuration.json', execution_configuration)
     checks = []

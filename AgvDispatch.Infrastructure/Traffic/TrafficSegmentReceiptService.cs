@@ -26,7 +26,7 @@ public sealed partial class TrafficSegmentReceiptService(ISqlSugarClient databas
         if(pending.Count>=256)return Refuse("未过期凭据达到上限，请稍后重新采集。");
         var now=Now;
         if(now<proof.AssessedAt)return Refuse("签发时钟早于证据评估时刻。");
-        var expires=new[]{now.AddSeconds(2),proof.Evidence.First.ObservedAt.AddSeconds(proof.MaximumAgeSeconds),
+        var expires=new[]{now.AddSeconds(commitOptions?.ReceiptValiditySeconds??2),proof.Evidence.First.ObservedAt.AddSeconds(proof.MaximumAgeSeconds),
             proof.Evidence.Second.ObservedAt.AddSeconds(proof.MaximumAgeSeconds)}.Min();
         if(expires<=now)return Refuse("证据已过期。");
         var id="SR-"+Guid.NewGuid().ToString("N");

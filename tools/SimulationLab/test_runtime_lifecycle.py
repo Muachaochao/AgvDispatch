@@ -170,6 +170,8 @@ class LifecycleTests(unittest.TestCase):
             self.assertEqual(runtime.lab['simulationConfiguration']['dumper']['waitingSites'], ['等待','停车C'])
             self.assertTrue(runtime.settings['TrafficSegmentRelease']['Enabled'])
             self.assertTrue(runtime.settings['TrafficSegmentRelease']['CommitEnabled'])
+            self.assertEqual(runtime.settings['TrafficSegmentRelease']['FrameWaitSeconds'], 1)
+            self.assertEqual(runtime.settings['TrafficSegmentRelease']['ReceiptValiditySeconds'], 15)
             self.assertAlmostEqual(runtime.settings['Dispatching']['DumperTransitClearanceMeters'], 1.13)
 
     def test_clone_rejects_running_instance_and_nonloopback_saved_endpoint(self):

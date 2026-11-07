@@ -1027,8 +1027,24 @@ class Runtime:
             # Use the production two-frame/body-envelope verifier, never remove
             # traffic leases merely because the visual car reached a station.
             settings['TrafficSegmentRelease'] = dict(Enabled=True, CommitEnabled=True,
-                PollIntervalMs=250, MaximumStepsPerCycle=32, FrameWaitSeconds=2)
+                PollIntervalMs=250, MaximumStepsPerCycle=32, FrameWaitSeconds=1,
+                ReceiptValiditySeconds=15)
             settings['Dispatching']['MaxConcurrentTasks'] = len(robots)
+            if len(configuration['stations']) > 32 and len(robots) > 1:
+                # A no-op Shadow optimizer still plans dozens of tasks times
+                # every vehicle while holding the single map/execution mutex.
+                # On a 305-station wave that gate hold exceeds the two-second
+                # segment receipt lifetime and starves confirmed partial
+                # releases. The isolated large-project profile uses the formal
+                # production dispatch orchestrator's legacy selection path,
+                # which still performs health, route, traffic, command and
+                # safety checks for every selected vehicle.
+                settings['DispatchOptimization'] = dict(
+                    Mode='Disabled',
+                    IntervalMs=2000,
+                    WindowSize=20,
+                )
+                settings['TrafficSegmentRelease']['MaximumAgeSeconds'] = 15
             # Only loopback PLC calls enter the production creation coordinator.
             # Scenarios never choose a car or fabricate a queued database row.
             settings['TaskCreation']['AutomaticCreationEnabled'] = True

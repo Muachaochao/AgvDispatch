@@ -9,7 +9,18 @@ public sealed record TrafficSegmentReceiptView(string? ReceiptId,TrafficSegmentR
     public TrafficSegmentProgressSummary? Progress { get; init; }
 }
 
-public sealed class TrafficSegmentCommitOptions { public bool Enabled { get; set; } }
+public sealed class TrafficSegmentCommitOptions
+{
+    public bool Enabled { get; set; }
+    public int ReceiptValiditySeconds { get; set; } = 2;
+
+    public void Validate()
+    {
+        if (ReceiptValiditySeconds is < 2 or > 30)
+            throw new InvalidOperationException(
+                "TrafficSegmentRelease:ReceiptValiditySeconds 必须在2～30秒之间。");
+    }
+}
 public sealed record TrafficSegmentCommitRequest(string ReceiptId,string RequestId);
 public sealed record TrafficSegmentCommitResult(bool Accepted,bool Replayed,string Reason,IReadOnlyList<string> ReleasedLeaseIds)
 {

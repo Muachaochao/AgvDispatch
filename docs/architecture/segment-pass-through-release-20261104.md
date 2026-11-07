@@ -9,7 +9,7 @@
 3. 只把当前段之前的路段声明为已经通过；当前段和后续段仍视为未通过。
 4. 两帧在线、同周期、序号递增且进度不倒退的定位样本证明整车及最大载荷包络已离开资源边界。
 5. 资源在原路线上的最后一次使用已经通过，并且后续路线不会再次进入。
-6. 签发短时凭据后再次采集更新两帧，仍满足同样的任务、地图、租约和包络条件。
+6. 签发短时凭据后再次采集更新两帧，仍满足同样的任务、地图、租约和包络条件。默认凭据有效期为 2 秒；满规模隔离仿真可在有界范围内延长，提交时仍会重新核验当前门禁和最新证据。
 
 终点资源继续保留到正常交接。取消、恢复屏障关闭、车辆报警、定位质量不足、包络未核定或证据读取超时都会保持原路权。
 
@@ -17,7 +17,7 @@
 
 - `AgvTrafficProgressReader` 从 Robokit 任务状态读取当前指定路径段，并从车辆缓存取得定位、置信度和采样序号。
 - `TrafficSegmentReleaseInspector` 构造原发送路线、租约、地图和车体上下文，只做只读评估。
-- `TrafficSegmentReceiptService` 为合格资源签发最长两秒的凭据。
+- `TrafficSegmentReceiptService` 为合格资源签发默认两秒、可配置为 2～30 秒的凭据。
 - `RouteSegmentPassThroughReleaseWorker` 在后台周期内消费凭据；提交时会重新采样。
 - 租约删除、逐资源审计、释放事件和剩余占用展示更新在同一个数据库事务中完成。任一条件失败，整笔事务回滚，原租约保留。
 
@@ -33,6 +33,7 @@
   "TrafficSegmentRelease": {
     "Enabled": true,
     "CommitEnabled": true,
+    "ReceiptValiditySeconds": 2,
     "PollIntervalMs": 750,
     "FrameWaitSeconds": 4,
     "MinimumObservationIntervalSeconds": 0.2,
@@ -45,6 +46,16 @@
 ```
 
 `Enabled` 只允许只读评估；`CommitEnabled` 才允许后台删除租约。两项及任务、地图、恢复门禁必须同时有效。
+
+### 305 工位满规模隔离仿真
+
+全厂仿真包含 305 个等待任务和 5 台虚拟车时，隔离实例自动采用
+`FrameWaitSeconds=1`、`ReceiptValiditySeconds=15`、`MaximumAgeSeconds=15`，
+并关闭只产生建议、随后仍走传统派车路径的
+`DispatchOptimization` 影子计算。正式调度器的车辆健康、路线、路权、
+命令登记和发车前安全复核保持不变。这样可避免每轮为 80 个影子候选重复
+规划数百条路线并长时间占用共享执行门，导致 2 秒逐段凭据尚未提交就过期。
+该性能配置只写入隔离仿真实例，不改变 `5199` 现场服务配置。
 
 ## 六层监控
 

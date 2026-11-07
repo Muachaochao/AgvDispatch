@@ -59,6 +59,16 @@ Check((await receipts.ReadAsync(issued.ReceiptId!,default)).State==TrafficSegmen
 clock.UtcNow=now.AddSeconds(2);
 Check((await receipts.ReadAsync(issued.ReceiptId!,default)).State==TrafficSegmentReceiptState.Expired&&LeaseCount()==1,"过期边界拒绝凭据且保持占用");
 Check((await receipts.ReadAsync("FAKE",default)).State==TrafficSegmentReceiptState.Unavailable,"客户端自造编号不可用");
+Reset();source.Evidence=source.Evidence! with{First=first with{ObservedAt=now.AddSeconds(-.2)},
+    Second=first with{Sequence=11,ObservedAt=now}};
+var extendedReceipts=new TrafficSegmentReceiptService(db,inspector,gate,clock,
+    new TrafficSegmentCommitOptions{Enabled=true,ReceiptValiditySeconds=15});
+var extended=await extendedReceipts.IssueAsync("STEP",default);
+Check(extended.ExpiresAt>now.AddSeconds(4)&&extended.ExpiresAt<now.AddSeconds(5),
+    "延长配置仍受原两帧最大年龄约束，不延长证据本身");
+var invalidValidity=false;try{new TrafficSegmentCommitOptions{ReceiptValiditySeconds=31}.Validate();}
+catch(InvalidOperationException){invalidValidity=true;}
+Check(invalidValidity,"凭据有效期配置限制在2至30秒");
 
 Reset();issued=await receipts.IssueAsync("STEP",default);
 var restarted=new TrafficSegmentReceiptService(db,inspector,gate,clock);

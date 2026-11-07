@@ -401,10 +401,9 @@ builder.Configuration.GetSection("TrafficSegmentRelease").Bind(segmentReleaseWor
 segmentReleaseWorkerOptions.Validate();
 var segmentReleasePolicy = new TrafficSegmentReleasePolicy();
 builder.Configuration.GetSection("TrafficSegmentRelease").Bind(segmentReleasePolicy);
-var segmentCommitOptions = new TrafficSegmentCommitOptions
-{
-    Enabled = builder.Configuration.GetValue("TrafficSegmentRelease:CommitEnabled", false)
-};
+var segmentCommitOptions = new TrafficSegmentCommitOptions();
+builder.Configuration.GetSection("TrafficSegmentRelease").Bind(segmentCommitOptions);
+segmentCommitOptions.Validate();
 builder.Services.AddSingleton(segmentReleaseWorkerOptions);
 builder.Services.AddSingleton(segmentReleasePolicy);
 builder.Services.AddSingleton(new TrafficSegmentReleaseMonitor());

@@ -130,8 +130,12 @@ class SimulationTests(unittest.TestCase):
             validate_scenario({'name':'dispatch-backlog','timeoutSeconds':86400,
                                'calls':[{'stationId':'CNC-001','atSeconds':0}]})['timeoutSeconds'],
             86400)
+        self.assertEqual(
+            validate_scenario({'name':'dispatch-backlog','timeoutSeconds':604800,
+                               'calls':[{'stationId':'CNC-001','atSeconds':0}]})['timeoutSeconds'],
+            604800)
         with self.assertRaises(ValueError):
-            validate_scenario({'name':'normal-cycle','timeoutSeconds':86401})
+            validate_scenario({'name':'normal-cycle','timeoutSeconds':604801})
 
     def test_continuous_sample_collision_detects_crossing_not_just_endpoints(self):
         point = lambda x,y: dict(x=x,y=y)
