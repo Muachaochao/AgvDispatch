@@ -253,7 +253,9 @@ class DeviceNetworkTests(unittest.IsolatedAsyncioTestCase):
             try:
                 peer.x = 1.4
                 await self.wait_until(lambda: car.blocked_by_vehicle == 'B', 'Missing obstacle stop')
-                self.assertTrue(car.robokit_reply(1100, {})['blocked'])
+                self.assertFalse(car.robokit_reply(1100, {})['blocked'],
+                                 'following another vehicle is queueing, not an external obstacle signal')
+                self.assertTrue(car.blocked_now(), 'physical following must still stop motion')
                 self.assertGreaterEqual(peer.x-car.x, car.body_radius()+peer.body_radius())
                 stopped = car.x
                 await asyncio.sleep(.2)

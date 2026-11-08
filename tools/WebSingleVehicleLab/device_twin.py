@@ -406,14 +406,20 @@ class DeviceTwin:
             self.blocked_by_vehicle = None
             self.queue.task_done()
 
+    def external_blocked_now(self):
+        return self.obstacle or self.motion_edge in self.blocked_edges
+
     def blocked_now(self):
-        return self.obstacle or self.blocked_by_vehicle is not None or self.motion_edge in self.blocked_edges
+        return self.external_blocked_now() or self.blocked_by_vehicle is not None
 
     def apply_navigation_timeout(self):
         """Turn a persistent local obstacle wait into the vendor's status 7."""
         seconds = self.navigation_timeout_after_blocked_seconds
         active = self.current is not None and self.tasks.get(self.current) in (1, 2, 3)
-        if seconds is None or not active or not self.blocked_now():
+        # Vehicle-to-vehicle following is normal queueing and remains owned by
+        # traffic/dispatch. Only an injected external obstacle or blocked road
+        # may escalate into a vendor navigation timeout.
+        if seconds is None or not active or not self.external_blocked_now():
             self.navigation_blocked_since = None
             return
         now = time.monotonic()
@@ -574,7 +580,7 @@ class DeviceTwin:
             return dict(x=self.x, y=self.y, angle=self.angle, confidence=0.99,
                         current_station=self.station, last_station=self.station,
                         battery_level=self.battery_percent, battery_voltage=self.battery_voltage(), emergency=False,
-                        blocked=self.obstacle or self.blocked_by_vehicle is not None or self.motion_edge in self.blocked_edges,
+                        blocked=self.external_blocked_now(),
                         navigation_status=2 if self.current else 0, errors=[], fatals=[], warnings=[],
                         vx=self.current_speed_mps if self.current and not self.paused else 0, vy=0, w=0, charging=self.charging)
         if api == 1110:

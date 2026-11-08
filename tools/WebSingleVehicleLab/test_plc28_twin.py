@@ -71,6 +71,28 @@ class Plc28TwinTests(unittest.TestCase):
         self.assertTrue(twin.bit(0, 5))
         self.assertTrue(twin.bit(0, 6))
 
+    def test_vehicle_following_is_not_an_external_obstacle_timeout(self):
+        twin = self.make_twin()
+        twin.tasks['TASK'] = 2
+        twin.current = 'TASK'
+        twin.blocked_by_vehicle = 'AGV-OTHER'
+        twin.navigation_timeout_after_blocked_seconds = 5
+        twin.navigation_blocked_since = 1.0
+
+        twin.apply_navigation_timeout()
+
+        self.assertEqual(2, twin.tasks['TASK'])
+        self.assertFalse(twin.navigation_timeout_tripped)
+        self.assertIsNone(twin.navigation_blocked_since)
+        self.assertFalse(twin.robokit_reply(1100, {})['blocked'])
+        self.assertTrue(twin.blocked_now())
+
+        twin.obstacle = True
+        twin.navigation_blocked_since = 1.0
+        twin.apply_navigation_timeout()
+        self.assertEqual(7, twin.tasks['TASK'])
+        self.assertTrue(twin.navigation_timeout_tripped)
+
 
 if __name__ == '__main__':
     unittest.main()
