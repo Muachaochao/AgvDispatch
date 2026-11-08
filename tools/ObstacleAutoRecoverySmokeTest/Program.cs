@@ -32,13 +32,13 @@ try
             new("S", 0, 0, MapNodeType.Station, true, [], "S"),
             new("H", 1, 0, MapNodeType.Waypoint, true, [], "H"),
             new("D", 0, 1, MapNodeType.Waypoint, true, [], "D"),
-            new("X", 1, 1, MapNodeType.Station, true, [], "X")
+            new("BUS-X", 1, 1, MapNodeType.Station, true, [], "X")
         ],
         [
             new("E-SH", "S", "H", 1, 1, false, true, []),
-            new("E-HX", "H", "X", 1, 1, false, true, []),
+            new("E-HX", "H", "BUS-X", 1, 1, false, true, []),
             new("E-SD", "S", "D", 1, 1, false, true, []),
-            new("E-DX", "D", "X", 1, 1, false, true, [])
+            new("E-DX", "D", "BUS-X", 1, 1, false, true, [])
         ], []);
     var map = new ActiveMapRuntime();
     map.Replace(new("MAP-O", "V1", definition, start));
@@ -159,6 +159,20 @@ try
     await coordinator.ObserveOnceAsync(default);
     Check(gateway.CancelCalls == 1 && gateway.RecoverySendCalls == 1,
           "后续周期不会重复取消或重复发送替代导航");
+
+    var originalRecoveryId = row.RecoveryId;
+    var originalRevision = row.Revision;
+    row.RecoveryId = Guid.NewGuid().ToString("N");
+    row.State = ObstacleRecoveryStates.Blocked;
+    row.Message = "same task/step blocked again after restart";
+    row.Revision = 1;
+    await store.SaveAsync(row, default);
+    var reopened = db.Queryable<ObstacleRecoveryEntity>()
+        .Where(item => item.TaskId == taskId && item.StepId == stepId)
+        .ToList();
+    Check(reopened.Count == 1 && reopened[0].RecoveryId == originalRecoveryId &&
+          reopened[0].Revision == originalRevision + 1,
+          "同一任务步骤再次受阻时复用唯一恢复记录，不触发复合唯一键异常");
 }
 finally
 {
@@ -191,7 +205,7 @@ static async Task SeedTask(ISqlSugarClient db, string taskId, string stepId)
         StepType = (int)DispatchTaskStepType.GoToPickup,
         Status = (int)DispatchTaskStepStatus.Executing,
         SourceSite = "S",
-        DestinationSite = "X",
+        DestinationSite = "BUS-X",
         VehicleId = "A",
         VendorTaskId = stepId,
         CreatedAt = now,

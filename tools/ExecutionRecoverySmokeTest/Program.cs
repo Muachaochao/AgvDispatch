@@ -1,3 +1,4 @@
+using System.Text.Json;
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Domain.Agvs;
 using AgvDispatch.Domain.Devices;
@@ -71,6 +72,66 @@ await using (var f = await Fixture.Create())
     Check((await f.Recovery.DecideAsync(admin, await Request(f, id), ct)).Accepted, "车辆接受但应答未落库，按原StepId核对并补绑定");
     Check(f.Gateway.Sends == 0 && (await f.Step(id)).Status == (int)DispatchTaskStepStatus.Executing, "绑定原厂家任务，没有重复发送运动命令");
     Check(f.Db.Queryable<AgvCommandOutboxEntity>().Single().Status == (int)AgvCommandStatus.Sent, "命令、步骤、任务和审计原子补记");
+}
+await using (var f = await Fixture.Create())
+{
+    var id = await f.Prepare();
+    var step = await f.Step(id);
+    var command = (await f.Outbox.GetDueCommandsAsync(DateTimeOffset.Now, 10, ct)).Single();
+    var mid = new AgvTransportRouteWindow(0, "SITE-A", "SITE-MID",
+        ["SITE-A", "SITE-MID"], ["A-MID"], [], false);
+    var final = new AgvTransportRouteWindow(1, "SITE-MID", "SITE-B",
+        ["SITE-MID", "SITE-B"], ["MID-B"], [], true);
+    var payload = new AgvTransportCommandPayload(step.StepId, "AGV-01", "SITE-A", "SITE-B",
+        ["SITE-A", "SITE-MID"], null)
+    {
+        BusinessStepId = step.StepId,
+        WindowIndex = 0,
+        WindowCount = 2,
+        FinalAction = null,
+        Windows = [mid, final]
+    };
+    var now = DateTime.Now;
+    await f.Db.Updateable<AgvCommandOutboxEntity>()
+        .SetColumns(c => new AgvCommandOutboxEntity
+        {
+            Status = (int)AgvCommandStatus.Sent,
+            AttemptCount = 1,
+            SentAt = now,
+            UpdatedAt = now,
+            VendorCommandId = step.StepId,
+            PayloadJson = JsonSerializer.Serialize(payload)
+        }).Where(c => c.CommandId == command.CommandId).ExecuteCommandAsync();
+    await f.Db.Updateable<DispatchTaskStepEntity>()
+        .SetColumns(s => new DispatchTaskStepEntity
+        {
+            Status = (int)DispatchTaskStepStatus.Executing,
+            VendorTaskId = s.StepId,
+            StartedAt = now,
+            UpdatedAt = now
+        }).Where(s => s.StepId == step.StepId).ExecuteCommandAsync();
+    await f.Db.Updateable<DispatchTaskEntity>()
+        .SetColumns(t => new DispatchTaskEntity
+        {
+            Stage = (int)DispatchTaskStage.GoingToPickup,
+            VendorTaskId = step.StepId,
+            VehicleId = "AGV-01",
+            UpdatedAt = now
+        }).Where(t => t.TaskId == id).ExecuteCommandAsync();
+    f.Gateway.Status = new(step.StepId, step.StepId, AgvTransportTaskState.Completed,
+        "AGV-01", DateTimeOffset.Now);
+    await f.Boot();
+    f.Fresh("SITE-MID");
+    await f.Recovery.InspectAsync(ct);
+    var request = await Request(f, id);
+    Check((await f.Recovery.DecideAsync(admin, request, ct)).Accepted,
+        "滚动运输当前窗口已完成时可在安全点续接下一窗口");
+    var status = await f.Recovery.GetAsync(ct);
+    Check(status.Items.Single(i => i.TaskId == id).Verified,
+        "中间安全点核对不会误把整条业务步骤标记完成");
+    Check((await f.Recovery.ReleaseAsync(admin,
+        new(status.SessionId, "中间窗口已停稳，恢复由原任务申请下一窗口"), ct)).Accepted,
+        "中间安全点核对后可放行，且不重发已完成的当前窗口");
 }
 await using (var f = await Fixture.Create())
 {

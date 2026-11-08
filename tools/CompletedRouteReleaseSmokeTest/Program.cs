@@ -62,7 +62,7 @@ var request = new TrafficRequestEntity
     Source = "A",
     Destination = "C",
     EdgeIds = "[\"AB\",\"BC\"]",
-    ResourceIds = "[\"CORRIDOR\",\"FINAL\",\"INTERSECTION\"]",
+    ResourceIds = "[\"CORRIDOR\",\"FINAL\",\"INTERSECTION\",\"AUTO-CORRIDOR-SYNTHETIC\"]",
     State = "Held",
     MapId = "MAP",
     MapVersionId = "V1"
@@ -119,6 +119,7 @@ foreach (var (leaseId, resourceId) in new[]
 {
     ("LEASE-CORRIDOR", "CORRIDOR"),
     ("LEASE-INTERSECTION", "INTERSECTION"),
+    ("LEASE-AUTO-CORRIDOR", "AUTO-CORRIDOR-SYNTHETIC"),
     ("LEASE-FINAL", "FINAL")
 })
 {
@@ -162,10 +163,11 @@ var service = new CompletedTransportRouteReleaseService(database, runtime, vehic
     new TrafficSegmentReleasePolicy { Enabled = true }, manager);
 
 var released = await service.ReleaseAsync("TASK", "STEP", default);
-Check(released.ReleasedCount == 2, "完成到站后释放两个已走过资源");
+Check(released.ReleasedCount == 3, "完成到站后释放两个有边界资源及一个自动生成路段资源");
 Check(!database.Queryable<TrafficResourceLeaseEntity>().Any(item =>
-    item.LeaseId == "LEASE-CORRIDOR" || item.LeaseId == "LEASE-INTERSECTION"),
-    "前序路段物理租约已删除");
+    item.LeaseId == "LEASE-CORRIDOR" || item.LeaseId == "LEASE-INTERSECTION" ||
+    item.LeaseId == "LEASE-AUTO-CORRIDOR"),
+    "前序有边界路段及自动生成路段租约均已删除");
 Check(database.Queryable<TrafficResourceLeaseEntity>().Any(item =>
     item.LeaseId == "LEASE-FINAL"), "终点资源继续保留");
 request = database.Queryable<TrafficRequestEntity>().Single();

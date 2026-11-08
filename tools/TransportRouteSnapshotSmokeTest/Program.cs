@@ -67,6 +67,43 @@ var backfillRefused=false;try{db.Updateable<AgvCommandOutboxEntity>().Where(x=>x
 Seed("NO-RESOURCES");
 db.Updateable<TrafficRequestEntity>().Where(x=>x.StepId=="NO-RESOURCES-STEP").SetColumns(x=>x.State=="NotRequired").ExecuteCommand();
 Check(await repository.TryPrepareTransportStepAsync("NO-RESOURCES","NO-RESOURCES-STEP",Vehicle("NO-RESOURCES"),["P1","P2"],null,default),"无资源路径NotRequired仍生成完整发送快照");
+var vendorMap=map with
+{
+    Nodes=map.Nodes.Append(new("C",4,0,MapNodeType.WaitingPoint,true,[]){AgvSiteId="P3"}).ToArray(),
+    Edges=map.Edges.Append(new("BC","B","C",2,1,false,true,[])).ToArray()
+};
+active.Replace(new("M","V1",vendorMap,DateTimeOffset.UtcNow));
+var windowTask="WINDOW-MAP";
+var windowStep=windowTask+"-STEP";
+var windowVehicle=Vehicle(windowTask);
+db.Insertable(new DispatchTaskEntity{TaskId=windowTask,StationId=windowTask,VehicleId=windowVehicle,
+    VendorTaskId="PREV",Stage=(int)DispatchTaskStage.PickingUp}).ExecuteCommand();
+db.Insertable(new DispatchTaskStepEntity{StepId=windowStep,TaskId=windowTask,VehicleId=windowVehicle,
+    VendorTaskId="PREV",Status=(int)DispatchTaskStepStatus.Executing,
+    StepType=(int)DispatchTaskStepType.DeliverFullBoxToDumper,Sequence=3,
+    SourceSite="A",DestinationSite="C"}).ExecuteCommand();
+db.Insertable(new TrafficRequestEntity{StepId=windowStep,TaskId=windowTask,VehicleId=windowVehicle,
+    Source="P2",Destination="P3",MapId="M",MapVersionId="V1",EdgeIds="[\"BC\"]",
+    ResourceIds="[]",State="Acquired"}).ExecuteCommand();
+var vendorWindows=new[]
+{
+    new AgvTransportRouteWindow(0,"P1","P2",["P1","P2"],["AB"],[],false),
+    new AgvTransportRouteWindow(1,"P2","P3",["P2","P3"],["BC"],[],true)
+};
+Check(await repository.TryPrepareTransportWindowAsync(windowTask,windowStep,windowVehicle,"P1","P3",
+        vendorWindows[1],vendorWindows,"PREV",null,default),
+    "滚动窗口续接按逻辑节点核验步骤起终点，同时下发厂家站点ID");
+var windowCommand=db.Queryable<AgvCommandOutboxEntity>()
+    .Where(x=>x.TaskId==windowTask && x.StepId==windowStep).Single();
+var windowSnapshot=TransportRouteSnapshots.Read(windowCommand);
+var windowPayload=JsonSerializer.Deserialize<AgvTransportCommandPayload>(
+    windowCommand.PayloadJson,new JsonSerializerOptions(JsonSerializerDefaults.Web));
+Check(windowSnapshot.NodeIds.SequenceEqual(["A","B","C"]) &&
+      windowSnapshot.EdgeIds.SequenceEqual(["AB","BC"]) &&
+      windowSnapshot.AgvSites.SequenceEqual(["P1","P2","P3"]) &&
+      windowPayload?.Path.SequenceEqual(["P2","P3"])==true,
+    "滚动窗口命令保存整单路线快照，并只向车端发送当前窗口");
+active.Replace(new("M","V1",map,DateTimeOffset.UtcNow));
 foreach(var nodeResource in new[]{false,true})
 {
     var id=nodeResource?"HIDDEN-NODE-RESOURCE":"HIDDEN-EDGE-RESOURCE";Seed(id);

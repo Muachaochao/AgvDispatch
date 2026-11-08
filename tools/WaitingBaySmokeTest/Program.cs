@@ -89,7 +89,7 @@ var multiMap = map with { Nodes=map.Nodes.Append(new("WAIT2",5,3,MapNodeType.Wai
 Check(DumperWaitingBaySafety.GetError(multiMap,multiOptions,true)==null,"两个独立容量1候车位均受保护");
 Check(DumperWaitingBaySafety.GetError(multiMap with {Nodes=multiMap.Nodes.Select(n=>n.Id=="WAIT2"?n with{ResourceIds=["BAY"]}:n).ToArray()},multiOptions,true)!=null,
     "两个候车点不能共用一个资源冒充两个独立泊位");
-catalog.Replace(multiMap.Resources);
+catalog.Replace(MapCorridorResources.AllResources(multiMap));
 var runtime=new ActiveMapRuntimeSnapshot("MULTI","V1",multiMap,DateTimeOffset.Now);
 var planner=new BayPlanner(multiMap);
 var stepOptions=new DispatchTaskStepOptions();
@@ -135,7 +135,7 @@ Check(departed==1&&
     db.Queryable<TrafficResourceLeaseEntity>().Where(l=>l.TaskId==ma.TaskId&&l.ResourceId=="DUMPER").Count()==1,
     "候车位离位后仅释放独立候车资源，后续倒料资源继续保留");
 Check(await managerAfterRestart.GetAsync(ma.TaskId,default)==savedA,"提前释放候车租约不删除原任务候车位绑定");
-catalog.Replace(multiMap.Resources.Append(new("ATOMIC-BAY",TrafficResourceType.Station)));
+catalog.Replace(MapCorridorResources.AllResources(multiMap).Append(new("ATOMIC-BAY",TrafficResourceType.Station)));
 var atomicA=await MultiStep("ATOMIC-A","VEHICLE-A");var atomicB=await MultiStep("ATOMIC-B","VEHICLE-B");
 foreach(var step in new[]{atomicA,atomicB})
     await manager.RecordRouteAsync(new(step.StepId,step.TaskId,step.VehicleId!,"P1","WAIT",["E1"],["ATOMIC-BAY"],false,"concurrent fixture") {MapId="MULTI",MapVersionId="V1"},default);

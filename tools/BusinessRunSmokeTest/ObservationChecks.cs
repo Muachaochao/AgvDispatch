@@ -47,8 +47,13 @@ internal static class ObservationChecks
         var gate = new MapExecutionGate(); gate.SetMode(MapExecutionMode.Running);
         var dispatch = new DispatchOrchestratorOptions { Enabled = true, DumperWaitingSite = "WAIT", DumperDumpingSite = "DUMP" };
         var creation = new DispatchTaskCreationOptions { AutomaticCreationEnabled = false };
-        var port = new BusinessRunPort(null!, tasks, signals, cache, map, gate, new(dispatch, creation), creation,
-            dispatch, new(), new(), gateway, null!, resources, null!, null!, traffic, null!, true, null!, new());
+        var port = new BusinessRunPort(
+            manual: null!, tasks: tasks, activeTasks: null!, signals: signals, vehicles: cache,
+            map: map, gate: gate, parameters: new(dispatch, creation), creation: creation,
+            dispatch: dispatch, steps: new(), isolated: new(), gateway: gateway,
+            planner: null!, resources: resources, preflight: null!, chains: null!,
+            traffic: traffic, navigation: null!, simulatorOnly: true, receipts: null!,
+            ownership: new());
         var run = new BusinessRunRecord("run", new("request", "Cycle", "A", ["CNC-001"], 1, "PARK", true),
             "M", "V", "initial", "test", "Returning", "", 1, null, Guid.NewGuid().ToString("N"),
             "original", false, DateTimeOffset.UtcNow);

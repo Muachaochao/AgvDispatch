@@ -111,6 +111,42 @@ using (var f = await Fixture.Create("Shadow"))
         "shadow calculation does not create commands, leases, or traffic-queue mutations");
 }
 
+using (var f = await Fixture.Create("Global", shared: true))
+{
+    var original = f.Map.Current!.Definition;
+    var approach = new MapNode("APPROACH", 25, 0, MapNodeType.Station, true, []);
+    var safe = new MapNode("SAFE", 50, 0, MapNodeType.Intersection, true, []);
+    var nodes = original.Nodes.Append(approach).Append(safe).ToArray();
+    var targetEdges = new[]
+    {
+        new MapEdge("HOME1-APPROACH", "HOME1", "APPROACH", 1, 1, false, true, []),
+        new MapEdge("APPROACH-SAFE", "APPROACH", "SAFE", 1, 1, false, true, ["R"]),
+        new MapEdge("SAFE-PICK1", "SAFE", "PICK1", 1, 1, false, true, ["DOWNSTREAM"])
+    };
+    f.Planner.Routes[("HOME1", "PICK1")] =
+        new RoutePlan(["HOME1", "APPROACH", "SAFE", "PICK1"],
+            ["HOME1-APPROACH", "APPROACH-SAFE", "SAFE-PICK1"], ["R", "DOWNSTREAM"], 3);
+    f.Map.Replace(new("M", "V2",
+        new("optimization-window-test", "", "LocalCartesian", "m", nodes, targetEdges,
+            [new TrafficResourceDefinition("R", TrafficResourceType.NarrowAisle),
+             new TrafficResourceDefinition("DOWNSTREAM", TrafficResourceType.NarrowAisle)]),
+        DateTimeOffset.UtcNow));
+    f.Dispatch.StationVehiclePools["CNC1"] = ["V1"];
+    var task = await f.Call("CNC1", 80);
+    await f.Cycle();
+    var command = (await f.Due()).Single();
+    var payload = JsonSerializer.Deserialize<AgvTransportCommandPayload>(
+        command.PayloadJson, new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+    Check(payload.WindowCount == 2 && payload.Windows.Count == 2 &&
+          payload.Windows[0].Destination == "SAFE" &&
+          payload.Windows[0].EdgeIds.SequenceEqual(["HOME1-APPROACH", "APPROACH-SAFE"]) &&
+          !payload.Windows[0].ResourceIds.Contains("DOWNSTREAM"),
+        "global first-leg dispatch reserves only its nearest safe window; downstream exit remains free");
+    Check(f.Db.Queryable<TrafficResourceLeaseEntity>().Where(x => x.TaskId == task).ToList()
+            .Select(x => x.ResourceId).SequenceEqual(["R"]),
+        "global first-leg dispatch does not pre-lease a later shared corridor");
+}
+
 using (var f = await Fixture.Create("Global"))
 {
     var a = await f.Call("CNC1", 80); var b = await f.Call("CNC2", 50);

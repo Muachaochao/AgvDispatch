@@ -73,12 +73,17 @@ var windows = new AgvTransportRouteWindow[]
     new(0, "A", "B", ["A", "B"], ["AB"], ["R"], false),
     new(1, "B", "A", ["B", "A"], ["AB"], ["R"], true)
 };
+// The traffic request records the currently acquired A→B window. The command
+// still freezes the complete A→B→A route in payload.Windows, while the current
+// send and reservation must agree on only the first window.
 Check(await outbox.TryPrepareTransportWindowAsync(step.TaskId, step.StepId, "V", "BUS-A", "BUS-A",
         windows[0], windows, null, null, default),
     "first prepared command is persisted atomically");
 var pending = (await outbox.GetDueCommandsAsync(DateTimeOffset.UtcNow.AddSeconds(1), 10, default)).Single();
-Check(await guard.CheckPendingCommandAsync(pending, default) == null,
-    "logical full-route endpoints and a later-window final destination pass the shared final preclaim check");
+var pendingReason = await guard.CheckPendingCommandAsync(pending, default);
+Check(pendingReason == null,
+    "logical full-route endpoints and a later-window final destination pass the shared final preclaim check" +
+    (pendingReason is null ? "" : "：" + pendingReason));
 gate.Mode = MapExecutionMode.Draining;
 Check(await guard.CheckPendingCommandAsync(pending, default) == null, "draining permits an already prepared existing command"); gate.Mode = MapExecutionMode.Running;
 gate.Mode = MapExecutionMode.Held;

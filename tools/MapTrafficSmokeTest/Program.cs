@@ -101,6 +101,30 @@ var mappedDefinition = new MapDefinition(
     ],
     []);
 var logicalSource = MapRouteSiteMapper.ResolveLogicalNodeId(mappedDefinition, "LM-A");
+Require(MapRouteSiteMapper.IsSameNode(mappedDefinition, "LM-D", "D") &&
+        MapRouteSiteMapper.IsSameNode(mappedDefinition, "  lm-d  ", "D") &&
+        !MapRouteSiteMapper.IsSameNode(mappedDefinition, "LM-X", "D") &&
+        !MapRouteSiteMapper.IsSameNode(mappedDefinition, null, "D"),
+    "滚动窗口到达核验必须同时接受车端站点ID与业务逻辑节点ID，但不能混用相邻站点。");
+var ambiguousDefinition = mappedDefinition with
+{
+    Nodes =
+    [
+        mappedDefinition.Nodes[0],
+        mappedDefinition.Nodes[1],
+        mappedDefinition.Nodes[2],
+        new MapNode("D2", 3, 0, MapNodeType.Station, true, [], "LM-D")
+    ],
+    Edges =
+    [
+        mappedDefinition.Edges[0],
+        mappedDefinition.Edges[1],
+        new MapEdge("D-D2", "D", "D2", 1, 1, true, true, [])
+    ]
+};
+Require(!MapRouteSiteMapper.TryResolveNode(ambiguousDefinition, "lm-d", out _) &&
+        !MapRouteSiteMapper.IsSameNode(ambiguousDefinition, "LM-D", "D"),
+    "同一厂家站点映射到两个逻辑节点时必须拒绝猜测");
 var logicalPlan = mappedDefinition.ToGraph().FindShortestRoute(logicalSource, "D")!;
 var agvPlan = MapRouteSiteMapper.ToAgvSitePlan(mappedDefinition, logicalPlan);
 Require(agvPlan.Nodes.First() == "LM-A" && agvPlan.Nodes.Last() == "LM-D",

@@ -105,6 +105,7 @@ foreach (var (station, signal) in new[] { ("CNC-001", "FullBoxRequested"), ("DUM
 Check(!PlcCycleTestPort.AllPlcsAreLoopback([]), "empty PLC configuration is not a simulator");
 Check(!PlcCycleTestPort.AllPlcsAreLoopback([new() { Enabled = true, IpAddress = "127.0.0.1", Port = 102 }]), "production port not allowed");
 Check(PlcCycleTestPort.AllPlcsAreLoopback([new() { Enabled = true, IpAddress = "127.0.0.1", Port = 10200 }]), "dedicated simulator endpoint allowed");
+Check(PlcCycleTestPort.AllPlcsAreLoopback([new() { Enabled = false, IpAddress = "127.0.0.1", Port = 10200 }]), "runtime-enabled daily loopback endpoint remains identified as simulator");
 var unhealthy = await Create(); unhealthy.Port.Healthy = false;
 await Tick(unhealthy.Service); unhealthy.Port.Healthy = true; unhealthy.Port.Set("CNC-001", "FullBoxRequested", true);
 await Tick(unhealthy.Service);

@@ -27,6 +27,27 @@ void Check(bool condition, string label)
     checks++;
     Console.WriteLine("PASS " + label);
 }
+PlcSignalSnapshot Signal(string name, bool value) =>
+    new("CNC-005", name, name, "DB1.DBX0.0", "Bool",
+        "PlcToHost", "Read", true, value, SignalQuality.Good,
+        DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, 1);
+var idleSignals = new[]
+{
+    Signal("FullBoxRequested", false),
+    Signal("BoxPresent", false),
+    Signal("Faulted", false),
+    Signal("CommunicationOnline", true),
+    Signal("FullBoxRequestAcknowledged", false),
+    Signal("FullBoxRemoved", false),
+    Signal("EmptyBoxTaskAcknowledged", false),
+    Signal("EmptyBoxPlaced", false)
+};
+Check(StationStateEvaluator.Evaluate("CNC-005", idleSignals, []).State == StationOperationalState.Idle,
+    "空工位、无任务且握手已清理时保持正常待料，不产生信号冲突");
+var staleHandshake = idleSignals.Select(signal =>
+    signal.VariableName == "EmptyBoxTaskAcknowledged" ? signal with { Value = true } : signal).ToArray();
+Check(StationStateEvaluator.Evaluate("CNC-005", staleHandshake, []).State == StationOperationalState.SignalConflict,
+    "空工位仍有历史握手输出时继续报告信号冲突");
 async Task Until(Func<bool> condition, string label)
 {
     var deadline = DateTime.UtcNow.AddSeconds(8);

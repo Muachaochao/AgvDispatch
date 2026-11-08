@@ -213,8 +213,12 @@ var retirementGate = new AgvDispatch.Infrastructure.Maps.MapExecutionGate();
 retirementGate.SetMode(MapExecutionMode.Running);
 var receiptStore = new ReceiptStore();
 var chains = new BusinessStandbyChains(Path.Combine(root, "chains"));
-var realPort = new BusinessRunPort(null!, null!, null!, null!, null!, retirementGate, null!, null!, null!, null!, null!,
-    null!, null!, null!, null!, chains, null!, null!, true, receiptStore, owner);
+var realPort = new BusinessRunPort(
+    manual: null!, tasks: null!, activeTasks: null!, signals: null!, vehicles: null!,
+    map: null!, gate: retirementGate, parameters: null!, creation: null!, dispatch: null!,
+    steps: null!, isolated: null!, gateway: null!, planner: null!, resources: null!,
+    preflight: null!, chains: chains, traffic: null!, navigation: null!,
+    simulatorOnly: true, receipts: receiptStore, ownership: owner);
 var acceptedId = Guid.NewGuid().ToString("N");
 var acceptedRun = pendingRun with { PendingRequestId = acceptedId };
 using (var heldGate = await retirementGate.EnterControlAsync(default))

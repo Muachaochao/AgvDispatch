@@ -203,6 +203,10 @@ var policy = new DispatchAssignmentOptions { WindowSize = 1 };
         refreshBoundary.Diagnostics["TASK"].Single(c => c.VehicleId == "V1").Reason.Contains("V4", StringComparison.Ordinal),
         "physical pickup occupancy remains blocked when candidate input races an active-map snapshot refresh");
     gateway.Positions["V4"] = "HOME4";
+    Check(DispatchCandidateFilter.PhysicalIntermediateOccupants(
+            new RoutePlan(["HOME1", "HOME4", "PICK"], ["TO-PICK-1", "TO-PICK-2"], ["R"], 10),
+            definition, await gateway.GetVehiclesAsync(default), "V1").SequenceEqual(["V4"]),
+        "an occupied intermediate junction blocks the candidate route so vehicles cannot deadlock head-to-tail");
     var result = new DispatchAssignmentOptimizer().Optimize(queue.Input, graph.Edges, costs, now);
     Check(result.Assignments.Single().VehicleId == "V1" && result.Assignments.Single().TotalCostSeconds == 26.5,
         "pure layer-three optimizer consumes only hard-feasible layer-two edges");

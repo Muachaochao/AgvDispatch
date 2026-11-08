@@ -34,6 +34,18 @@ internal static class FeedbackTests
         Check(BusinessRunPort.SelectFeedbackStep(demand, detail)?.StepId == "step-0");
         var outOfOrder = detail with { Task = detail.Task with { StationId = "CNC-002" } };
         Check(BusinessRunPort.SelectFeedbackStep(demand, outOfOrder)?.StepId == "step-0");
+        var finalWindow = steps[0] with { VendorTaskId = "vendor-final" };
+        var multiWindowDetail = detail with
+        {
+            Commands =
+            [
+                new TaskCommandDetail("command-w01", "step-0", "AGV-01", AgvCommandStatus.Sent, 1, now,
+                    now.AddSeconds(-2), "vendor-w01", null),
+                new TaskCommandDetail("command-w02", "step-0", "AGV-01", AgvCommandStatus.Sent, 1, now,
+                    now.AddSeconds(-1), "vendor-final", null)
+            ]
+        };
+        Check(BusinessRunPort.SelectFeedbackCommand(finalWindow, multiWindowDetail)?.CommandId == "command-w02");
         Check(BusinessRunPort.SelectFeedbackStep(run with { Stage = "Hold" }, detail) is null);
         foreach (var state in new[] { DispatchTaskStage.Completed, DispatchTaskStage.Cancelled, DispatchTaskStage.CancellationPending, DispatchTaskStage.CancellationReview, DispatchTaskStage.Faulted })
             Check(BusinessRunPort.SelectFeedbackStep(run, detail with { Task = detail.Task with { Stage = state } }) is null);

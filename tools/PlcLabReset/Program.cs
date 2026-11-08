@@ -1,13 +1,15 @@
 using AgvDispatch.Connectors.Plc;
 
-if (args.Length != 3 || args[1] != "--apply" || args[2] != "RESET-LAB-SIGNALS")
+if (args.Length < 3 || args[1] != "--apply" || args[2] != "RESET-LAB-SIGNALS")
 {
-    Console.Error.WriteLine("Usage: PlcLabReset <release-root> --apply RESET-LAB-SIGNALS");
+    Console.Error.WriteLine("Usage: PlcLabReset <release-root> --apply RESET-LAB-SIGNALS [station-id ...]");
     return 2;
 }
 
 var root = Path.GetFullPath(args[0]);
-var csv = Path.Combine(root, "Service", "config", "plc-lab-nine-cnc-signals.csv");
+var csv = File.Exists(root)
+    ? root
+    : Path.Combine(root, "Service", "config", "plc-lab-nine-cnc-signals.csv");
 if (!File.Exists(csv))
 {
     throw new FileNotFoundException("PLC lab signal CSV was not found.", csv);
@@ -34,20 +36,27 @@ var options = new PlcOptions
 };
 
 var catalog = PlcSignalCatalog.Load(csv);
-var targets = Enumerable.Range(1, 4)
-    .SelectMany(index => new[]
-    {
-        $"CNC-{index:000}/FullBoxRequestAcknowledged",
-        $"CNC-{index:000}/FullBoxRemoved",
-        $"CNC-{index:000}/EmptyBoxTaskAcknowledged",
-        $"CNC-{index:000}/EmptyBoxPlaced"
-    })
-    .Concat(new[]
-    {
-        "DUMPER-001/AgvAtWaitingPosition",
-        "DUMPER-001/AgvAtDumpingPosition"
-    })
+var stationFilter = args.Skip(3).ToHashSet(StringComparer.OrdinalIgnoreCase);
+var outputNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+{
+    "FullBoxRequestAcknowledged",
+    "FullBoxRemoved",
+    "EmptyBoxTaskAcknowledged",
+    "EmptyBoxPlaced",
+    "AgvAtWaitingPosition",
+    "AgvAtDumpingPosition"
+};
+var targets = catalog.Signals
+    .Where(signal => outputNames.Contains(signal.VariableName))
+    .Where(signal => stationFilter.Count == 0 || stationFilter.Contains(signal.StationId))
+    .OrderBy(signal => signal.StationId, StringComparer.OrdinalIgnoreCase)
+    .ThenBy(signal => signal.VariableName, StringComparer.OrdinalIgnoreCase)
+    .Select(signal => $"{signal.StationId}/{signal.VariableName}")
     .ToArray();
+if (targets.Length == 0)
+{
+    throw new InvalidDataException("PLC lab signal CSV contains no writable H outputs.");
+}
 
 foreach (var target in targets)
 {
@@ -56,7 +65,9 @@ foreach (var target in targets)
     {
         throw new InvalidDataException($"Missing PLC lab output: {target}.");
     }
-    if (!signal.Enabled || signal.Access != "Write" || signal.AddressStatus != "LabOnly" || signal.DataType != "Bool")
+    if (!signal.Enabled || signal.Access != "Write" ||
+        signal.AddressStatus is not ("LabOnly" or "Confirmed" or "EngineeringBundle") ||
+        signal.DataType != "Bool")
     {
         throw new InvalidDataException($"Refusing non-lab or non-writable signal: {target}.");
     }

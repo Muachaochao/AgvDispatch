@@ -446,6 +446,10 @@ Check(await fixture.LeaseCountAsync(a, "DUMP-AREA") == 0 && await fixture.LeaseC
 Check(fixture.Signals.Get("CNC-001", "FullBoxRemoved") && fixture.Signals.Get("CNC-001", "EmptyBoxTaskAcknowledged"), "倒料交接后取箱记录与返箱责任继续保持");
 Check((await fixture.Writer.GetStepsAsync(a, default)).Single(s => s.StepType == DispatchTaskStepType.ReturnEmptyBox).Status == DispatchTaskStepStatus.Executing,
     "设备已经可交接时第一车仍在返程中");
+var continuedReturn = (await fixture.Writer.GetStepsAsync(a, default)).Single(s => s.StepType == DispatchTaskStepType.ReturnEmptyBox);
+await fixture.Engine.ValidatePendingTransportAsync(a, continuedReturn.StepId, (await fixture.TaskAsync(a)).VehicleId!, true, default);
+Check(await fixture.EquipmentOwnerAsync() is null,
+    "完成实际出区交接后，后续返程窗口不再错误要求本车继续持有倒料设备");
 var writesAfterHandover = fixture.Signals.Writes.Count;
 fixture.RestartEngine();
 await fixture.ExitAsync(a);
@@ -690,6 +694,14 @@ sealed class Fixture : IDisposable
     }
     public async Task FinishReadyAsync(string task, DispatchTaskStepType type)
     {
+        // Production station-level business steps do not carry VehicleId.
+        // Keep the fixture faithful so return evidence regression coverage does
+        // not accidentally pass by relying on a vehicle id injected by the test.
+        if (type is DispatchTaskStepType.PlaceEmptyBox or DispatchTaskStepType.CompletePlcHandshake)
+            await Db.Updateable<DispatchTaskStepEntity>()
+                .SetColumns(s => new DispatchTaskStepEntity { VehicleId = null })
+                .Where(s => s.TaskId == task && s.StepType == (int)type)
+                .ExecuteCommandAsync();
         for (var i = 0; i < 30; i++)
         {
             var step = (await Writer.GetStepsAsync(task, default)).Single(s => s.StepType == type);
