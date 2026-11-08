@@ -41,10 +41,20 @@ var plan = TransportRouteWindows.Plan(
 
 Check(plan.Count == 2, "路线应在中间安全路口拆成两个窗口。");
 Check(plan[0].Path.SequenceEqual(["A", "B", "C"]), "首个窗口必须止于安全路口 C。");
-Check(plan[0].ResourceIds.Order().SequenceEqual(new[] { "R1", "R2" }.Order()), "首个窗口只应占用已覆盖路段资源。");
+Check(plan[0].ResourceIds.Contains("R1") && plan[0].ResourceIds.Contains("R2") &&
+      !plan[0].ResourceIds.Contains("R3") && !plan[0].ResourceIds.Contains("R4") &&
+      !plan[0].ResourceIds.Contains("WAIT-E"),
+    "首个窗口只应占用已覆盖路段及安全点资源。");
 Check(plan[0].Final == false && plan[1].Final, "只有末窗口可以在终点执行车辆动作。");
 Check(plan[1].Path.SequenceEqual(["C", "D", "E"]), "后续窗口必须从安全停靠点连续接续。");
 Check(plan[1].ResourceIds.Contains("WAIT-E"), "末窗口应保留目标等待位资源。");
+var automaticCorridors = MapCorridorResources.Enrich(
+        new MapDefinition("TEST", "", "RobotWorld", "m", nodes, edges, resources))
+    .Resources.Where(resource => MapCorridorResources.IsAutomatic(resource.Id))
+    .Select(resource => resource.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+Check(automaticCorridors.Count > 0 &&
+      plan.SelectMany(window => window.ResourceIds).Any(automaticCorridors.Contains),
+    "滚动窗口必须携带运行时自动路段资源，不能只保留显式站点资源。");
 
 var disabled = TransportRouteWindows.Plan(
     new RoutePlan(["A", "B", "C", "D", "E"], ["AB", "BC", "CD", "DE"], ["R1", "R2", "R3", "R4"], 4),
@@ -90,7 +100,7 @@ Check(beyondPreferredMaximum.Count == 2 &&
     "最大窗口内没有安全点时必须继续搜索到最近安全点，不能在普通路径点截断。");
 
 var unsafeNodes = longNodes.Take(6).Select(node => node with { Type = MapNodeType.Waypoint }).ToArray();
-var unsafeMap = longMap with { Nodes = unsafeNodes };
+var unsafeMap = longMap with { Nodes = unsafeNodes, Edges = longEdges.Take(5).ToArray() };
 var noSafeInterior = TransportRouteWindows.Plan(
     new RoutePlan(["A", "B", "C", "D", "E", "F"], ["AB", "BC", "CD", "DE", "EF"],
         ["R1", "R2", "R3", "R4", "R5"], 5),

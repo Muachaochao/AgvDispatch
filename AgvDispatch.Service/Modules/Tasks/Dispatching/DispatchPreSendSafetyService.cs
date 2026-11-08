@@ -3,6 +3,7 @@ using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Application.Maps;
 using AgvDispatch.Domain.Agvs;
 using AgvDispatch.Domain.Devices;
+using AgvDispatch.Domain.Maps;
 using AgvDispatch.Domain.Tasks;
 
 namespace AgvDispatch.Service;
@@ -45,6 +46,8 @@ public sealed class DispatchPreSendSafetyService(
             if (payload is null || businessStepId != command.StepId || payload.VehicleId != command.VehicleId ||
                 payload.Path is not { Count: >= 2 } || payload.Source != payload.Path[0] || payload.Destination != payload.Path[^1])
                 return "待发命令负载与原步骤、车辆或路径端点不一致。";
+            var businessSource = payload.Windows.Count > 0 ? payload.Windows[0].Source : payload.Source;
+            var businessDestination = payload.Windows.Count > 0 ? payload.Windows[^1].Destination : payload.Destination;
             var task = (await CurrentTasksAsync(ct)).SingleOrDefault(t => t.TaskId == command.TaskId);
             var original = (await taskReader.GetStepsAsync(command.TaskId, ct)).SingleOrDefault(s => s.StepId == command.StepId);
             if (task is null || original is null) return "原任务或运输步骤不在有效执行队列。";
@@ -53,12 +56,14 @@ public sealed class DispatchPreSendSafetyService(
                 original.SourceSite, original.DestinationSite, original.UpdatedAt);
             return await CheckCoreAsync(step, payload.Path, activeMap.Current, preparing: false,
                 recovering: command.AttemptCount > 0 && payload.WindowIndex == 0, ct,
-                payload.WindowIndex > 0, payload.PreviousVendorTaskId);
+                payload.WindowIndex > 0, payload.PreviousVendorTaskId,
+                businessSource, businessDestination);
         }, ct);
 
     private async Task<string?> CheckCoreAsync(DispatchTaskStepWorkItem step, IReadOnlyList<string> path,
         ActiveMapRuntimeSnapshot? expectedMap, bool preparing, bool recovering, CancellationToken ct,
-        bool continuationWindow = false, string? continuationFromVendorTaskId = null)
+        bool continuationWindow = false, string? continuationFromVendorTaskId = null,
+        string? businessSource = null, string? businessDestination = null)
     {
         if (path.Count < 2 || path.Any(string.IsNullOrWhiteSpace) || string.IsNullOrWhiteSpace(step.VehicleId))
             return "运输路径或指定车辆不完整。";
@@ -92,7 +97,8 @@ public sealed class DispatchPreSendSafetyService(
                     ? !continuationStateMatches
                     : original.Status is not (DispatchTaskStepStatus.CommandPending or DispatchTaskStepStatus.RetryScheduled) ||
                         task.Stage != DispatchTaskStage.SubmittingToAgv ||
-                        original.SourceSite != path[0] || original.DestinationSite != path[^1])
+                        !SameSite(expectedMap.Definition, original.SourceSite, businessSource ?? path[0]) ||
+                        !SameSite(expectedMap.Definition, original.DestinationSite, businessDestination ?? path[^1]))
             return "原任务或步骤状态已经变化，不准备或认领新命令。";
         var firstPreparation = preparing && step.StepType == DispatchTaskStepType.GoToPickup;
         // Later transport steps become Ready before the command binds them, so their
@@ -134,6 +140,11 @@ public sealed class DispatchPreSendSafetyService(
             return "核验期间地图或执行门禁已变化。";
         return null;
     }
+
+    private static bool SameSite(MapDefinition map, string? recorded, string? current) =>
+        !string.IsNullOrWhiteSpace(recorded) && !string.IsNullOrWhiteSpace(current) &&
+        string.Equals(MapRouteSiteMapper.ResolveLogicalNodeId(map, recorded),
+            MapRouteSiteMapper.ResolveLogicalNodeId(map, current), StringComparison.OrdinalIgnoreCase);
 
     private async Task<string?> CheckVehicleAsync(string vehicleId, string source, bool newBusiness, CancellationToken ct)
     {

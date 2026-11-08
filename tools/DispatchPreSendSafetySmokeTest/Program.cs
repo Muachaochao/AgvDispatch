@@ -66,9 +66,19 @@ gate.Mode = MapExecutionMode.Draining;
 Check(await Prepare() != null, "draining map cannot start new business"); gate.Mode = MapExecutionMode.Running;
 var previousMap = map.Current!; map.Replace(new("M", "V1", previousMap.Definition, DateTimeOffset.UtcNow));
 Check(await Prepare() != null, "same-version runtime reactivation invalidates a prepared route"); map.Replace(previousMap);
-Check(await outbox.TryPrepareTransportStepAsync(step.TaskId, step.StepId, "V", ["A", "B"], null, default), "first prepared command is persisted atomically");
+// Production steps persist logical BUS-* endpoints while the current window carries
+// vendor LM* endpoints. The final destination may be in a later window.
+var windows = new AgvTransportRouteWindow[]
+{
+    new(0, "A", "B", ["A", "B"], ["AB"], ["R"], false),
+    new(1, "B", "A", ["B", "A"], ["AB"], ["R"], true)
+};
+Check(await outbox.TryPrepareTransportWindowAsync(step.TaskId, step.StepId, "V", "BUS-A", "BUS-A",
+        windows[0], windows, null, null, default),
+    "first prepared command is persisted atomically");
 var pending = (await outbox.GetDueCommandsAsync(DateTimeOffset.UtcNow.AddSeconds(1), 10, default)).Single();
-Check(await guard.CheckPendingCommandAsync(pending, default) == null, "first physical attempt passes the shared final preclaim check");
+Check(await guard.CheckPendingCommandAsync(pending, default) == null,
+    "logical full-route endpoints and a later-window final destination pass the shared final preclaim check");
 gate.Mode = MapExecutionMode.Draining;
 Check(await guard.CheckPendingCommandAsync(pending, default) == null, "draining permits an already prepared existing command"); gate.Mode = MapExecutionMode.Running;
 gate.Mode = MapExecutionMode.Held;

@@ -16,13 +16,18 @@ public static class TransportRouteWindows
         ArgumentNullException.ThrowIfNull(route);
         ArgumentNullException.ThrowIfNull(map);
         ArgumentNullException.ThrowIfNull(options);
+        // Routing uses the runtime-enriched graph, where reciprocal/merge edges
+        // receive AUTO-CORRIDOR-* guards. The published map remains unchanged, so
+        // window resources must be calculated against the same enriched topology.
+        var topology = MapCorridorResources.Enrich(map);
+        var resourceMap = map with { Edges = topology.Edges, Resources = topology.Resources };
         // A 3051 GotargetCommissioning task carries only source and destination in
         // the vendor request. Splitting it into several stops changes the operation
         // contract, so only SpecifiedPath/3066 may use rolling route windows.
         var modeSupportsWindows = navigationCommandMode is null ||
             navigationCommandMode.Equals("SpecifiedPath", StringComparison.OrdinalIgnoreCase);
         if (!options.RollingReservationEnabled || !modeSupportsWindows || route.Nodes.Count < 3)
-            return [Window(route, map, 0, route.Nodes.Count - 1, true)];
+            return [Window(route, resourceMap, 0, route.Nodes.Count - 1, true)];
 
         var minimum = Math.Clamp(options.RollingWindowMinimumEdges, 1, 100);
         var windows = new List<AgvTransportRouteWindow>();
@@ -32,7 +37,7 @@ public static class TransportRouteWindows
             var remainingEdges = route.Nodes.Count - 1 - start;
             if (remainingEdges <= minimum)
             {
-                windows.Add(Window(route, map, start, route.Nodes.Count - 1, true));
+                windows.Add(Window(route, resourceMap, start, route.Nodes.Count - 1, true));
                 break;
             }
 
@@ -44,23 +49,23 @@ public static class TransportRouteWindows
             var boundary = -1;
             for (var index = lower; index < route.Nodes.Count - 1; index++)
             {
-                if (!IsStableStop(route.Nodes[index], map)) continue;
+                if (!IsStableStop(route.Nodes[index], resourceMap)) continue;
                 boundary = index;
                 break;
             }
 
             if (boundary < 0)
             {
-                windows.Add(Window(route, map, start, route.Nodes.Count - 1, true));
+                windows.Add(Window(route, resourceMap, start, route.Nodes.Count - 1, true));
                 break;
             }
 
-            windows.Add(Window(route, map, start, boundary, false));
+            windows.Add(Window(route, resourceMap, start, boundary, false));
             start = boundary;
         }
 
         if (windows.Count == 0 || windows[^1].Final is false)
-            windows.Add(Window(route, map, start, route.Nodes.Count - 1, true));
+            windows.Add(Window(route, resourceMap, start, route.Nodes.Count - 1, true));
         return windows.Select((window, index) => window with { Index = index }).ToArray();
     }
 
