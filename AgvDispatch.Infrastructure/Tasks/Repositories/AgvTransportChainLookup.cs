@@ -10,8 +10,13 @@ public sealed class AgvTransportChainLookup(ISqlSugarClient database) : IAgvTran
 {
     public async Task<AgvTransportChain?> FindAsync(string businessTaskId,CancellationToken ct)
     {
+        var windowMarker=businessTaskId.LastIndexOf("-W",StringComparison.Ordinal);
+        var stepId=windowMarker>0&&businessTaskId[(windowMarker+2)..].All(char.IsDigit)
+            ?businessTaskId[..windowMarker]
+            :businessTaskId;
         var rows=await database.Queryable<AgvCommandOutboxEntity>()
-            .Where(c=>c.StepId==businessTaskId && c.CommandType==(int)AgvCommandType.Transport).Take(2).ToListAsync(ct);
+            .Where(c=>c.StepId==stepId && c.CommandType==(int)AgvCommandType.Transport)
+            .OrderBy(c=>c.CreatedAt,OrderByType.Asc).ToListAsync(ct);
         if(rows.Count==0)
         {
             var recovery=await database.Queryable<ObstacleRecoveryEntity>()
@@ -26,10 +31,15 @@ public sealed class AgvTransportChainLookup(ISqlSugarClient database) : IAgvTran
             return new(businessTaskId,recovery.VehicleId,recoveryPath.ToArray(),
                 recovery.SendAttemptedAtUtc is null?0:1,recovery.SendAttemptedAtUtc is null);
         }
-        if(rows.Count!=1)throw new InvalidOperationException("原运输任务链记录不唯一。");
-        var row=rows[0];
-        var payload=JsonSerializer.Deserialize<AgvTransportCommandPayload>(row.PayloadJson,new JsonSerializerOptions(JsonSerializerDefaults.Web))
-            ?? throw new InvalidOperationException("原运输负载为空。");
+        var matches=new List<(AgvCommandOutboxEntity Row,AgvTransportCommandPayload Payload)>();
+        foreach(var candidate in rows)
+        {
+            var candidatePayload=JsonSerializer.Deserialize<AgvTransportCommandPayload>(candidate.PayloadJson,
+                new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            if(candidatePayload?.BusinessTaskId==businessTaskId)matches.Add((candidate,candidatePayload));
+        }
+        if(matches.Count!=1)throw new InvalidOperationException("原运输任务链记录不唯一。");
+        var (row,payload)=matches[0];
         if(payload.BusinessTaskId!=businessTaskId || payload.VehicleId!=row.VehicleId || payload.Path is null ||
             payload.Path.Count is < 2 or > 2048 || payload.Path.Any(string.IsNullOrWhiteSpace))
             throw new InvalidOperationException("原运输任务链身份或路径无效。");

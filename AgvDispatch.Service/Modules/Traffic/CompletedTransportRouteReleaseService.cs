@@ -83,7 +83,10 @@ public sealed class CompletedTransportRouteReleaseService(
 
         var payload = JsonSerializer.Deserialize<AgvTransportCommandPayload>(
             command.PayloadJson, JsonOptions);
-        if (payload?.Path is not { Count: >= 2 } || payload.BusinessTaskId != stepId ||
+        var businessStepId = payload is null
+            ? ""
+            : string.IsNullOrWhiteSpace(payload.BusinessStepId) ? payload.BusinessTaskId : payload.BusinessStepId;
+        if (payload?.Path is not { Count: >= 2 } || businessStepId != stepId ||
             payload.VehicleId != step.VehicleId || step.SourceSite != payload.Source ||
             step.DestinationSite != payload.Destination)
             return new(0, "原运输载荷与原步骤不一致。");

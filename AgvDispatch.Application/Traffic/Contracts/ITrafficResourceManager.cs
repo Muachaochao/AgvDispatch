@@ -33,6 +33,10 @@ public interface ITrafficResourceManager
 
     Task ReleaseStepAsync(string ownerStepId, CancellationToken cancellationToken);
 
+    Task<int> ReleaseStepExceptResourcesAsync(string ownerStepId,
+        IReadOnlyCollection<string> keepResourceIds, string reason, CancellationToken cancellationToken) =>
+        Task.FromResult(0);
+
     Task ReleaseTaskExceptStepAsync(
         string taskId,
         string ownerStepId,

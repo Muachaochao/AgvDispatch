@@ -91,6 +91,13 @@ internal static class Program
         Check(rolledBack && db.Queryable<TrafficResourceLeaseEntity>().Any(l=>l.OwnerStepId=="STEP-C"), "正常释放记录失败时占用原子回滚");
         await db.Ado.ExecuteCommandAsync("DROP TRIGGER reject_traffic_release;");
         await manager.TryAcquireAsync("STEP-A2","TASK-A","AGV-A",["NARROW"],default);
+        await manager.TryAcquireAsync("STEP-A2","TASK-A","AGV-A",["NARROW","CROSS"],default);
+        var transitionReleased = await manager.ReleaseStepExceptResourcesAsync("STEP-A2",
+            ["NARROW"], "滚动窗口续约，仅释放已通过资源。", default);
+        Check(transitionReleased == 1 &&
+            db.Queryable<TrafficResourceLeaseEntity>().Any(l => l.OwnerStepId == "STEP-A2" && l.ResourceId == "NARROW") &&
+            !db.Queryable<TrafficResourceLeaseEntity>().Any(l => l.OwnerStepId == "STEP-A2" && l.ResourceId == "CROSS"),
+            "滚动窗口原子保留下一窗资源并释放已完整通过资源");
         await manager.ReleaseTaskExceptStepAsync("TASK-A","STEP-A2",default);
         Check(!db.Queryable<TrafficResourceLeaseEntity>().Any(l=>l.OwnerStepId=="STEP-A") && db.Queryable<TrafficResourceLeaseEntity>().Any(l=>l.OwnerStepId=="STEP-A2"), "新步骤取得路权后释放旧步骤并保留新占用");
         Check((await control.GetLifecycleAsync(default)).Events.Any(e=>e.StepId=="STEP-A" && e.Kind=="Released" && e.Reason.Contains("前序")), "正常交接释放保存独立过程依据");

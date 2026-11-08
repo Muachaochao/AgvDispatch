@@ -43,17 +43,26 @@ using (var fixture = await Fixture.Create(DispatchTaskStepType.DeliverFullBoxToD
         [new("P", 0, 0, MapNodeType.Station, true, []),
          new("W1", 1, 0, MapNodeType.WaitingPoint, true, ["WAIT-1"]),
          new("W2", 1, 1, MapNodeType.WaitingPoint, true, ["WAIT-2"]),
-         new("D", 2, 0, MapNodeType.Station, true, [])], [],
-        [new("WAIT-1", TrafficResourceType.Station, 1), new("WAIT-2", TrafficResourceType.Station, 1)]), fixture.Clock.Now);
+         new("D", 2, 0, MapNodeType.Station, true, [])],
+        [new("PW1", "P", "W1", 1, 1, false, true, ["R"]),
+         new("PW2", "P", "W2", 1, 1, false, true, ["R"])],
+        [new("R", TrafficResourceType.NarrowAisle, 1),
+         new("WAIT-1", TrafficResourceType.Station, 1),
+         new("WAIT-2", TrafficResourceType.Station, 1)]), fixture.Clock.Now);
     var options = new DispatchOrchestratorOptions { DumperWaitingSite = "W1", DumperWaitingSites = ["W1", "W2"], DumperDumpingSite = "D" };
     var planner = new Planner();
     var low = fixture.Step("LOW"); var high = fixture.Step("HIGH");
-    await TaskWaitingBayRouter.ObserveWaitingAsync(low, "P", options, map, planner, fixture.Manager, fixture.Manager, fixture.Layer, default);
-    await TaskWaitingBayRouter.ObserveWaitingAsync(high, "P", options, map, planner, fixture.Manager, fixture.Manager, fixture.Layer, default);
-    var denied = await TaskWaitingBayRouter.AcquireAsync(low, "P", options, map, planner, fixture.Manager, fixture.Manager, default, fixture.Layer);
+    var stepOptions = new DispatchTaskStepOptions();
+    await TaskWaitingBayRouter.ObserveWaitingAsync(low, "P", options, map, planner, fixture.Manager,
+        fixture.Manager, stepOptions, fixture.Layer, default);
+    await TaskWaitingBayRouter.ObserveWaitingAsync(high, "P", options, map, planner, fixture.Manager,
+        fixture.Manager, stepOptions, fixture.Layer, default);
+    var denied = await TaskWaitingBayRouter.AcquireAsync(low, "P", options, map, planner, fixture.Manager,
+        fixture.Manager, stepOptions, default, fixture.Layer);
     Check(denied is null && await fixture.Manager.GetAsync("LOW", default) is null,
         "waiting-bay transaction cannot bind a low-priority contender ahead of a ready high-priority shared-route contender");
-    var granted = await TaskWaitingBayRouter.AcquireAsync(high, "P", options, map, planner, fixture.Manager, fixture.Manager, default, fixture.Layer);
+    var granted = await TaskWaitingBayRouter.AcquireAsync(high, "P", options, map, planner, fixture.Manager,
+        fixture.Manager, stepOptions, default, fixture.Layer);
     Check(granted is not null && (await fixture.Manager.GetAsync("HIGH", default)) is { WaitingSite: "W1" },
         "higher-priority waiting bay and its entire route are bound atomically to the original task");
     Check(await fixture.Db.Queryable<AgvCommandOutboxEntity>().CountAsync() == 0,

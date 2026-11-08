@@ -63,18 +63,17 @@ internal static class Program
             Check(vm.CreationStepPreview.Count==9&&vm.CreationStepPreview.All(s=>!s.HasErrors),"独立进程九步预览校验通过");Await(vm.SubmitTaskAsync());
             Check(vm.Detail?.Task.StationId=="CNC001","前端实际提交与详情读回");var first=vm.Detail!.Task.TaskId;
             var second=Await(client.CreateTaskAsync(new(Guid.NewGuid().ToString("N"),"CNC002","AGV-02",20,options.MapId!,options.MapVersionId!){ParameterRevision=options.ParameterRevision},default));Check(second.Accepted,"第二工位任务经真实IPC提交");
-            var waiting=Await(Until(()=>client.GetTrafficWaitingAsync(new(),default),p=>p.Items.Any(i=>i.TaskId==second.TaskId),process));
-            var blocked=waiting.Items.Single(i=>i.TaskId==second.TaskId);
-            Check(blocked.Blockers.Any(b=>b.TaskId==first&&b.VehicleId=="AGV-01"),"真实后台周期产生两车冲突与阻塞关联");
+            var queued=Await(Until(()=>client.GetTaskDetailAsync(second.TaskId!,default),
+                d=>d?.Task.Stage==DispatchTaskStage.WaitingForVehicle,process));
+            Check(queued?.Task.TaskId==second.TaskId,"旧执行器独立进程夹具按单任务闸门保持第二单等待");
             Check((Await(client.GetTaskDetailAsync(second.TaskId!,default))!.Commands).Count==0,"冲突车辆等待期间未产生运输命令");
-            File.WriteAllText(Path.Combine(root,"waiting.json"),JsonSerializer.Serialize(waiting,new JsonSerializerOptions{WriteIndented=true}));
+            File.WriteAllText(Path.Combine(root,"waiting.json"),JsonSerializer.Serialize(queued,new JsonSerializerOptions{WriteIndented=true}));
             Await(Until(()=>client.GetTaskDetailAsync(second.TaskId!,default),d=>d?.Task.Stage==DispatchTaskStage.Completed,process));
             var a=Await(client.GetTaskDetailAsync(first,default))!;var b=Await(client.GetTaskDetailAsync(second.TaskId!,default))!;
             Check(a.Task.Stage==DispatchTaskStage.Completed&&b.Task.Stage==DispatchTaskStage.Completed,"两任务由后台连续周期完成");
             Check(a.Steps.Count==9&&b.Steps.Count==9&&a.Steps.All(s=>s.Status==DispatchTaskStepStatus.Completed)&&b.Steps.All(s=>s.Status==DispatchTaskStepStatus.Completed),"两车完整九步均完成");
             Check(a.Commands.Count==4&&b.Commands.Count==4&&a.Commands.Concat(b.Commands).All(c=>c.AttemptCount==1),"每车四段运输仅发送一次");
             Check(Await(client.GetResourcesAsync(default)).All(r=>r.OccupiedCount==0),"PLC收尾后共享路权全部释放");
-            Check(Await(client.GetTrafficWaitingAsync(new(),default)).TotalWaiting==0,"完成后等待队列为空");
             Await(Until(()=>Task.FromResult(File.Exists(Path.Combine(root,"devices.json"))),v=>v,process));
             using var devices=JsonDocument.Parse(File.ReadAllText(Path.Combine(root,"devices.json")));
             Check(devices.RootElement.GetProperty("First").EnumerateObject().Count()==4&&devices.RootElement.GetProperty("Second").EnumerateObject().Count()==4,"真实3066模拟端每车只接受四个唯一步骤");

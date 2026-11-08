@@ -92,6 +92,7 @@ Check(DumperWaitingBaySafety.GetError(multiMap with {Nodes=multiMap.Nodes.Select
 catalog.Replace(multiMap.Resources);
 var runtime=new ActiveMapRuntimeSnapshot("MULTI","V1",multiMap,DateTimeOffset.Now);
 var planner=new BayPlanner(multiMap);
+var stepOptions=new DispatchTaskStepOptions();
 async Task<DispatchTaskStepWorkItem> MultiStep(string id,string vehicle)
 {
     await db.Insertable(new DispatchTaskEntity{TaskId=id,StationId=id,VehicleId=vehicle,Stage=(int)DispatchTaskStage.PickingUp,CreatedAt=DateTime.Now,UpdatedAt=DateTime.Now}).ExecuteCommandAsync();
@@ -102,25 +103,29 @@ async Task<DispatchTaskStepWorkItem> MultiStep(string id,string vehicle)
 await db.Updateable<DispatchTaskEntity>().SetColumns(t=>t.Stage==(int)DispatchTaskStage.Completed).Where(t=>t.TaskId=="OWNER").ExecuteCommandAsync();
 await manager.GetUnavailableResourceIdsAsync("MULTI-A",default);
 var ma=await MultiStep("MULTI-A","CAR-A");var mb=await MultiStep("MULTI-B","CAR-B");var mc=await MultiStep("MULTI-C","CAR-C");
-var a=await TaskWaitingBayRouter.AcquireAsync(ma,"P1",multiOptions,runtime,planner,manager,manager,default);
-var b=await TaskWaitingBayRouter.AcquireAsync(mb,"P2",multiOptions,runtime,planner,manager,manager,default);
+var a=await TaskWaitingBayRouter.AcquireAsync(ma,"P1",multiOptions,runtime,planner,manager,manager,stepOptions,default);
+var b=await TaskWaitingBayRouter.AcquireAsync(mb,"P2",multiOptions,runtime,planner,manager,manager,stepOptions,default);
 Check(a is not null&&b is not null&&a.Value.Site!=b.Value.Site,"前两台车选择不同空候车位并在同事务持久占用");
-Check(await TaskWaitingBayRouter.AcquireAsync(mc,"P1",multiOptions,runtime,planner,manager,manager,default) is null&&await manager.GetAsync(mc.TaskId,default) is null,
+Check(await TaskWaitingBayRouter.AcquireAsync(mc,"P1",multiOptions,runtime,planner,manager,manager,stepOptions,default) is null&&await manager.GetAsync(mc.TaskId,default) is null,
     "第三台无空位时保持原工位，不生成伪候车绑定");
 var savedA=await manager.GetAsync(ma.TaskId,default);
 var managerAfterRestart=new TrafficResourceManager(db,catalog,new(TimeSpan.FromSeconds(1)));
 Check(await managerAfterRestart.GetAsync(ma.TaskId,default)==savedA,"重建服务后保留原任务、车辆、地图及候车位");
 await manager.ReleaseStepAsync(ma.StepId,default);
-var retried=await TaskWaitingBayRouter.AcquireAsync(ma,"P2",multiOptions,runtime,planner,managerAfterRestart,managerAfterRestart,default);
+var retried=await TaskWaitingBayRouter.AcquireAsync(ma,"P2",multiOptions,runtime,planner,managerAfterRestart,managerAfterRestart,stepOptions,default);
 Check(retried?.Site==savedA!.WaitingSite,"命令准备回滚后再次规划仍只使用原绑定候车位");
 var refused=false;
-try { await TaskWaitingBayRouter.AcquireAsync(ma with{VehicleId="OTHER"},"P1",multiOptions,runtime,planner,managerAfterRestart,managerAfterRestart,default); }
+try { await TaskWaitingBayRouter.AcquireAsync(ma with{VehicleId="OTHER"},"P1",multiOptions,runtime,planner,managerAfterRestart,managerAfterRestart,stepOptions,default); }
 catch(InvalidOperationException){refused=true;}
 Check(refused,"重试换车被拒绝，不能继承另一车的候车位");
 refused=false;
-try { await managerAfterRestart.TryAcquireAsync(savedA! with{WaitingSite="WAIT2",ResourceId="BAY2"},["BAY2"],default); }
+var alternateSite=savedA!.WaitingSite=="WAIT" ? "WAIT2" : "WAIT";
+var alternateResource=savedA.ResourceId=="BAY" ? "BAY2" : "BAY";
+try { await managerAfterRestart.TryAcquireAsync(savedA with{WaitingSite=alternateSite,ResourceId=alternateResource},[alternateResource],default); }
 catch(InvalidOperationException){refused=true;}
-Check(refused&&await managerAfterRestart.GetAsync(ma.TaskId,default)==savedA,"禁止原任务改绑候车点，事务失败不改变原绑定");
+var bindingAfterRejectedRebind=await managerAfterRestart.GetAsync(ma.TaskId,default);
+Check(refused&&bindingAfterRejectedRebind==savedA,
+    $"禁止原任务改绑候车点，事务失败不改变原绑定；refused={refused}; saved={savedA}; actual={bindingAfterRejectedRebind}");
 Check((await managerAfterRestart.TryAcquireAsync(ma.StepId,ma.TaskId,ma.VehicleId!,["DUMPER"],default)).Acquired,
     "离位释放夹具同时持有后续倒料资源");
 var departed=await managerAfterRestart.ReleaseDepartedWaitingBaysAsync(ma.TaskId,new HashSet<string>(["BAY","BAY2"]),

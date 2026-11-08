@@ -20,15 +20,36 @@ public sealed class AgvCommandOutboxRepository(ISqlSugarClient database, IActive
         IReadOnlyList<string> path,
         AgvTransportAction? action,
         CancellationToken cancellationToken)
+        => await TryPrepareTransportWindowAsync(taskId, stepId, vehicleId, path[0], path[^1],
+            new AgvTransportRouteWindow(0, path[0], path[^1], path, [], [], true),
+            [], null, action, cancellationToken);
+
+    public async Task<bool> TryPrepareTransportWindowAsync(
+        string taskId,
+        string stepId,
+        string vehicleId,
+        string fullSource,
+        string fullDestination,
+        AgvTransportRouteWindow window,
+        IReadOnlyList<AgvTransportRouteWindow> windows,
+        string? previousVendorTaskId,
+        AgvTransportAction? action,
+        CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(taskId);
         ArgumentException.ThrowIfNullOrWhiteSpace(stepId);
         ArgumentException.ThrowIfNullOrWhiteSpace(vehicleId);
-        ArgumentNullException.ThrowIfNull(path);
+        ArgumentException.ThrowIfNullOrWhiteSpace(fullSource);
+        ArgumentException.ThrowIfNullOrWhiteSpace(fullDestination);
+        ArgumentNullException.ThrowIfNull(window);
+        var path = window.Path;
         if (path.Count < 2 || path.Any(string.IsNullOrWhiteSpace))
         {
             throw new ArgumentException("AGV路径至少需要两个有效站点。", nameof(path));
         }
+        if (window.Source != path[0] || window.Destination != path[^1] ||
+            (window.EdgeIds.Count > 0 && window.EdgeIds.Count != path.Count - 1) || window.Index < 0)
+            throw new ArgumentException("运输窗口的起终点或有序路段不一致。", nameof(window));
 
         if (path.Zip(path.Skip(1)).Any(pair =>
                 string.Equals(pair.First, pair.Second, StringComparison.OrdinalIgnoreCase)))
@@ -46,8 +67,7 @@ public sealed class AgvCommandOutboxRepository(ISqlSugarClient database, IActive
             var step = await database.Queryable<DispatchTaskStepEntity>()
                 .Where(item =>
                     item.TaskId == taskId &&
-                    item.StepId == stepId &&
-                    item.Status == (int)DispatchTaskStepStatus.Ready)
+                    item.StepId == stepId)
                 .FirstAsync(cancellationToken);
             if (step is null)
             {
@@ -74,49 +94,74 @@ public sealed class AgvCommandOutboxRepository(ISqlSugarClient database, IActive
             };
 
             var now = DateTime.Now;
-            var taskAffected = await database.Updateable<DispatchTaskEntity>()
-                .SetColumns(task => new DispatchTaskEntity
-                {
-                    Stage = (int)DispatchTaskStage.SubmittingToAgv,
-                    VehicleId = vehicleId,
-                    UpdatedAt = now,
-                    ErrorMessage = null
-                })
-                .Where(task =>
-                    task.TaskId == taskId &&
-                    task.Stage == (int)expectedTaskStage)
-                .ExecuteCommandAsync(cancellationToken);
-            if (taskAffected != 1)
+            if (window.Index == 0)
             {
-                return;
+                if (step.Status != (int)DispatchTaskStepStatus.Ready) return;
+                var taskAffected = await database.Updateable<DispatchTaskEntity>()
+                    .SetColumns(task => new DispatchTaskEntity
+                    {
+                        Stage = (int)DispatchTaskStage.SubmittingToAgv,
+                        VehicleId = vehicleId,
+                        UpdatedAt = now,
+                        ErrorMessage = null
+                    })
+                    .Where(task =>
+                        task.TaskId == taskId &&
+                        task.Stage == (int)expectedTaskStage)
+                    .ExecuteCommandAsync(cancellationToken);
+                if (taskAffected != 1) return;
+
+                var stepAffected = await database.Updateable<DispatchTaskStepEntity>()
+                    .SetColumns(item => new DispatchTaskStepEntity
+                    {
+                        Status = (int)DispatchTaskStepStatus.CommandPending,
+                        SourceSite = fullSource,
+                        DestinationSite = fullDestination,
+                        VehicleId = vehicleId,
+                        UpdatedAt = now,
+                        ErrorMessage = null
+                    })
+                    .Where(item =>
+                        item.StepId == step.StepId &&
+                        item.Status == (int)DispatchTaskStepStatus.Ready)
+                    .ExecuteCommandAsync(cancellationToken);
+                if (stepAffected != 1)
+                    throw new InvalidOperationException($"任务{taskId}的运输步骤已被并发修改。");
+            }
+            else
+            {
+                if (step.Status != (int)DispatchTaskStepStatus.Executing ||
+                    string.IsNullOrWhiteSpace(previousVendorTaskId) ||
+                    step.VendorTaskId != previousVendorTaskId || step.VehicleId != vehicleId ||
+                    step.SourceSite != fullSource || step.DestinationSite != fullDestination) return;
+                var task = await database.Queryable<DispatchTaskEntity>()
+                    .Where(item => item.TaskId == taskId)
+                    .FirstAsync(cancellationToken);
+                if (task is null || task.VehicleId != vehicleId || task.VendorTaskId != previousVendorTaskId) return;
+                var open = await database.Queryable<AgvCommandOutboxEntity>().AnyAsync(item =>
+                    item.TaskId == taskId && item.StepId == stepId &&
+                    (item.Status == (int)AgvCommandStatus.Pending ||
+                     item.Status == (int)AgvCommandStatus.Sending ||
+                     item.Status == (int)AgvCommandStatus.RetryScheduled), cancellationToken);
+                if (open) return;
             }
 
-            var stepAffected = await database.Updateable<DispatchTaskStepEntity>()
-                .SetColumns(item => new DispatchTaskStepEntity
-                {
-                    Status = (int)DispatchTaskStepStatus.CommandPending,
-                    SourceSite = sourceSite,
-                    DestinationSite = destinationSite,
-                    VehicleId = vehicleId,
-                    UpdatedAt = now,
-                    ErrorMessage = null
-                })
-                .Where(item =>
-                    item.StepId == step.StepId &&
-                    item.Status == (int)DispatchTaskStepStatus.Ready)
-                .ExecuteCommandAsync(cancellationToken);
-            if (stepAffected != 1)
-            {
-                throw new InvalidOperationException($"任务{taskId}的运输步骤已被并发修改。");
-            }
-
+            var windowTaskId = windows.Count > 1 ? $"{stepId}-W{window.Index + 1:D2}" : stepId;
             var payload = new AgvTransportCommandPayload(
-                step.StepId,
+                windowTaskId,
                 vehicleId,
                 sourceSite,
                 destinationSite,
                 path.ToArray(),
-                action);
+                window.Final ? action : null)
+            {
+                BusinessStepId = stepId,
+                WindowIndex = window.Index,
+                WindowCount = Math.Max(windows.Count, window.Index + 1),
+                PreviousVendorTaskId = previousVendorTaskId,
+                FinalAction = action,
+                Windows = windows
+            };
             var commandId = $"CMD-{Guid.NewGuid():N}";
             var payloadJson = JsonSerializer.Serialize(payload, JsonOptions);
             var mapSnapshot = activeMap?.Current;
@@ -129,7 +174,9 @@ public sealed class AgvCommandOutboxRepository(ISqlSugarClient database, IActive
             await database.Insertable(new AgvCommandOutboxEntity
             {
                 CommandId = commandId,
-                IdempotencyKey = $"STEP:{step.StepId}:TRANSPORT",
+                IdempotencyKey = window.Index == 0
+                    ? $"STEP:{step.StepId}:TRANSPORT"
+                    : $"STEP:{step.StepId}:TRANSPORT:W{window.Index + 1:D2}",
                 TaskId = taskId,
                 StepId = step.StepId,
                 VehicleId = vehicleId,
@@ -162,6 +209,31 @@ public sealed class AgvCommandOutboxRepository(ISqlSugarClient database, IActive
         }
 
         return prepared;
+    }
+
+    public async Task<AgvCommandOutboxItem?> GetTransportCommandByVendorAsync(string taskId,
+        string vendorTaskId, CancellationToken cancellationToken)
+    {
+        var row = await database.Queryable<AgvCommandOutboxEntity>()
+            .Where(item => item.TaskId == taskId && item.VendorCommandId == vendorTaskId &&
+                item.CommandType == (int)AgvCommandType.Transport)
+            .OrderBy(item => item.CreatedAt, OrderByType.Desc)
+            .FirstAsync(cancellationToken);
+        return row is null ? null : ToItem(row);
+    }
+
+    public async Task<AgvCommandOutboxItem?> GetOpenTransportCommandAsync(string taskId,
+        CancellationToken cancellationToken)
+    {
+        var row = await database.Queryable<AgvCommandOutboxEntity>()
+            .Where(item => item.TaskId == taskId &&
+                item.CommandType == (int)AgvCommandType.Transport &&
+                (item.Status == (int)AgvCommandStatus.Pending ||
+                 item.Status == (int)AgvCommandStatus.Sending ||
+                 item.Status == (int)AgvCommandStatus.RetryScheduled))
+            .OrderBy(item => item.CreatedAt, OrderByType.Desc)
+            .FirstAsync(cancellationToken);
+        return row is null ? null : ToItem(row);
     }
 
     public async Task<IReadOnlyList<AgvCommandOutboxItem>> GetDueCommandsAsync(
@@ -273,6 +345,8 @@ public sealed class AgvCommandOutboxRepository(ISqlSugarClient database, IActive
             {
                 throw new InvalidOperationException($"AGV命令{commandId}不在发送中状态。");
             }
+            var payload = JsonSerializer.Deserialize<AgvTransportCommandPayload>(command.PayloadJson, JsonOptions)
+                ?? throw new InvalidOperationException("AGV运输命令负载为空。");
 
             var step = await database.Queryable<DispatchTaskStepEntity>()
                 .Where(item => item.StepId == command.StepId)
@@ -312,19 +386,36 @@ public sealed class AgvCommandOutboxRepository(ISqlSugarClient database, IActive
                 })
                 .Where(step => step.StepId == command.StepId)
                 .ExecuteCommandAsync(cancellationToken);
-            var taskAffected = await database.Updateable<DispatchTaskEntity>()
-                .SetColumns(task => new DispatchTaskEntity
-                {
-                    Stage = (int)targetStage,
-                    VendorTaskId = vendorCommandId,
-                    VehicleId = command.VehicleId,
-                    UpdatedAt = now,
-                    ErrorMessage = null
-                })
-                .Where(task =>
-                    task.TaskId == command.TaskId &&
-                    task.Stage == (int)DispatchTaskStage.SubmittingToAgv)
-                .ExecuteCommandAsync(cancellationToken);
+            var taskAffected = payload.WindowIndex > 0
+                ? await database.Updateable<DispatchTaskEntity>()
+                    .SetColumns(task => new DispatchTaskEntity
+                    {
+                        VendorTaskId = vendorCommandId,
+                        VehicleId = command.VehicleId,
+                        UpdatedAt = now,
+                        ErrorMessage = null
+                    })
+                    .Where(task =>
+                        task.TaskId == command.TaskId &&
+                        task.VendorTaskId == payload.PreviousVendorTaskId &&
+                        task.VehicleId == command.VehicleId &&
+                        task.Stage != (int)DispatchTaskStage.Completed &&
+                        task.Stage != (int)DispatchTaskStage.Cancelled &&
+                        task.Stage != (int)DispatchTaskStage.Faulted)
+                    .ExecuteCommandAsync(cancellationToken)
+                : await database.Updateable<DispatchTaskEntity>()
+                    .SetColumns(task => new DispatchTaskEntity
+                    {
+                        Stage = (int)targetStage,
+                        VendorTaskId = vendorCommandId,
+                        VehicleId = command.VehicleId,
+                        UpdatedAt = now,
+                        ErrorMessage = null
+                    })
+                    .Where(task =>
+                        task.TaskId == command.TaskId &&
+                        task.Stage == (int)DispatchTaskStage.SubmittingToAgv)
+                    .ExecuteCommandAsync(cancellationToken);
             if (commandAffected != 1 || stepAffected != 1 || taskAffected != 1)
             {
                 throw new InvalidOperationException(

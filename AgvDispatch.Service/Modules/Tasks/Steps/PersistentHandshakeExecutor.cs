@@ -154,12 +154,17 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
             throw new InvalidOperationException("恢复首段缺少原任务28阶段绑定，禁止直接发送替代导航。");
     }
 
-    public async Task ValidatePendingTransportAsync(string taskId,string stepId,string vehicleId,CancellationToken ct)
+    public async Task ValidatePendingTransportAsync(string taskId,string stepId,string vehicleId,
+        bool continuationWindow,CancellationToken ct)
     {
         var task=(await tasks.GetAssignedTasksAsync(ct)).Concat(await tasks.GetSubmittingTasksAsync(ct)).SingleOrDefault(t=>t.TaskId==taskId)
             ??throw new InvalidOperationException("原任务已冻结或不在可发送阶段。");
         var original=(await taskReader.GetStepsAsync(taskId,ct)).Single(s=>s.StepId==stepId);
-        if(task.VehicleId!=vehicleId||original.VehicleId!=vehicleId||original.Status is not (DispatchTaskStepStatus.CommandPending or DispatchTaskStepStatus.RetryScheduled))throw new InvalidOperationException("待发命令车辆或原步骤状态不一致。");
+        var validStatus = continuationWindow
+            ? original.Status is DispatchTaskStepStatus.Executing or DispatchTaskStepStatus.CommandPending or
+                DispatchTaskStepStatus.Sending or DispatchTaskStepStatus.RetryScheduled
+            : original.Status is DispatchTaskStepStatus.CommandPending or DispatchTaskStepStatus.RetryScheduled;
+        if(task.VehicleId!=vehicleId||original.VehicleId!=vehicleId||!validStatus)throw new InvalidOperationException("待发命令车辆或原步骤状态不一致。");
         var step=new DispatchTaskStepWorkItem(taskId,task.StationId,vehicleId,task.Stage,stepId,original.Sequence,original.StepType,original.Status,original.SourceSite,original.DestinationSite,original.UpdatedAt);
         if(dispatch.GetDumperWaitingSites().Count>1 && original.StepType is DispatchTaskStepType.DeliverFullBoxToDumper or DispatchTaskStepType.EnterDumpingPosition)
         {

@@ -154,10 +154,13 @@ public sealed class TrafficSegmentReleaseInspector(ISqlSugarClient database, IAc
         if (TransportRouteSnapshots.Serialize(frozen) != TransportRouteSnapshots.Serialize(recaptured))
             throw new InvalidDataException("活动地图/路径记录与发送时路线快照不一致。");
         var edges = frozen.EdgeIds;
-        if (payload.BusinessTaskId != stepId || payload.VehicleId != vehicle || payload.Path is null ||
+        var businessStepId = string.IsNullOrWhiteSpace(payload.BusinessStepId)
+            ? payload.BusinessTaskId
+            : payload.BusinessStepId;
+        if (businessStepId != stepId || payload.VehicleId != vehicle || payload.Path is null ||
             payload.Path.Count < 2 || edges.Length != payload.Path.Count - 1 ||
             payload.Source != payload.Path[0] || payload.Destination != payload.Path[^1] ||
-            step.SourceSite != payload.Source || step.DestinationSite != payload.Destination)
+            step.SourceSite is null || step.DestinationSite is null)
             throw new InvalidDataException("原命令路径和步骤不一致。");
         var nodes = payload.Path.Select(site =>
         {

@@ -132,14 +132,53 @@ try
         steps[1].StepId,
         CancellationToken.None);
     steps = await tasks.GetStepsAsync(created.Task.TaskId, CancellationToken.None);
-    await PrepareAndSendAsync(
-        outbox, created.Task.TaskId, steps[2].StepId,
-        "AGV-01", "CNC001-PICKUP", "DUMPER-WAIT", "VENDOR-TASK-002");
+    var windows = new[]
+    {
+        new AgvTransportRouteWindow(0, "CNC001-PICKUP", "SAFE-01",
+            ["CNC001-PICKUP", "SAFE-01"], [], [], false),
+        new AgvTransportRouteWindow(1, "SAFE-01", "DUMPER-WAIT",
+            ["SAFE-01", "DUMPER-WAIT"], [], [], true)
+    };
+    Ensure(await outbox.TryPrepareTransportWindowAsync(
+            created.Task.TaskId, steps[2].StepId, "AGV-01", "CNC001-PICKUP", "DUMPER-WAIT",
+            windows[0], windows, null, null, CancellationToken.None),
+        "首个滚动路权窗口应成功写入Outbox。");
+    var dueWindow = await outbox.GetDueCommandsAsync(
+        DateTimeOffset.Now.AddSeconds(1), 10, CancellationToken.None);
+    var firstWindowCommand = await outbox.TryClaimAsync(
+        dueWindow.Single().CommandId, DateTimeOffset.Now, CancellationToken.None);
+    Ensure(firstWindowCommand is not null,
+        "首个滚动路权窗口命令应可领取。");
+    await outbox.MarkSentAsync(firstWindowCommand!.CommandId, "VENDOR-TASK-002-W01",
+        CancellationToken.None);
+    Ensure((await outbox.GetTransportCommandByVendorAsync(created.Task.TaskId,
+            "VENDOR-TASK-002-W01", CancellationToken.None))?.StepId == steps[2].StepId,
+        "首窗口厂家编号必须可反查原业务步骤。");
+    Ensure(await outbox.TryPrepareTransportWindowAsync(
+            created.Task.TaskId, steps[2].StepId, "AGV-01", "CNC001-PICKUP", "DUMPER-WAIT",
+            windows[1], windows, "VENDOR-TASK-002-W01", null, CancellationToken.None),
+        "车辆停稳后应允许同一业务步骤续约下一窗口。");
+    dueWindow = await outbox.GetDueCommandsAsync(
+        DateTimeOffset.Now.AddSeconds(1), 10, CancellationToken.None);
+    var secondWindowCommand = await outbox.TryClaimAsync(
+        dueWindow.Single().CommandId, DateTimeOffset.Now, CancellationToken.None);
+    Ensure(secondWindowCommand is not null,
+        "下一路权窗口命令应可领取。");
+    await outbox.MarkSentAsync(secondWindowCommand!.CommandId, "VENDOR-TASK-002-W02",
+        CancellationToken.None);
+    var chain = await new AgvTransportChainLookup(database).FindAsync(
+        steps[2].StepId + "-W02", CancellationToken.None);
+    Ensure(chain is { VehicleId: "AGV-01" } &&
+        chain.Path.SequenceEqual(["SAFE-01", "DUMPER-WAIT"]),
+        "下一窗口必须可按业务步骤和窗口编号恢复原发送路径。");
     Ensure((await orchestration.GetExecutingTasksAsync(CancellationToken.None))
             .Single().Stage == DispatchTaskStage.GoingToDumper,
-        "送满箱命令发送后应进入GoingToDumper。");
+        "滚动窗口续接后任务应保持GoingToDumper且进入下一厂家任务。");
+    Ensure((await orchestration.GetExecutingTasksAsync(CancellationToken.None))
+            .Single().VendorTaskId == "VENDOR-TASK-002-W02",
+        "父任务必须切换到最新有效的窗口厂家任务编号。");
     await orchestration.CompleteExecutingStepAsync(
-        created.Task.TaskId, "VENDOR-TASK-002", CancellationToken.None);
+        created.Task.TaskId, "VENDOR-TASK-002-W02", CancellationToken.None);
 
     steps = await tasks.GetStepsAsync(created.Task.TaskId, CancellationToken.None);
     await orchestration.CompleteReadyStepAsync(

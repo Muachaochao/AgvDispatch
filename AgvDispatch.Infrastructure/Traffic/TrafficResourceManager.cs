@@ -238,6 +238,36 @@ public sealed partial class TrafficResourceManager(
         ArgumentException.ThrowIfNullOrWhiteSpace(ownerStepId); ct.ThrowIfCancellationRequested();
         return ReleaseAsync(null, ownerStepId, false, "运输命令未准备成功，回滚本步骤申请的路权。", ct);
     }
+    public async Task<int> ReleaseStepExceptResourcesAsync(string ownerStepId,
+        IReadOnlyCollection<string> keepResourceIds, string reason, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(ownerStepId);
+        ArgumentNullException.ThrowIfNull(keepResourceIds);
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+        ct.ThrowIfCancellationRequested();
+        var keep = keepResourceIds.Where(id => !string.IsNullOrWhiteSpace(id))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var released = 0;
+        var transaction = await database.Ado.UseTranAsync(async () =>
+        {
+            var leases = await database.Queryable<TrafficResourceLeaseEntity>()
+                .Where(lease => lease.OwnerStepId == ownerStepId).ToListAsync(ct);
+            var remove = leases.Where(lease => !keep.Contains(lease.ResourceId)).ToArray();
+            if (remove.Length == 0) return;
+            await database.Deleteable<TrafficResourceLeaseEntity>()
+                .Where(lease => remove.Select(item => item.LeaseId).Contains(lease.LeaseId))
+                .ExecuteCommandAsync(ct);
+            var remaining = leases.Except(remove).ToArray();
+            var first = leases[0];
+            await WriteStateAsync(ownerStepId, first.TaskId, first.VehicleId,
+                remaining.Length == 0 ? "Released" : "Held", reason,
+                remaining.Select(item => item.ResourceId).ToArray(), ct);
+            released = remove.Length;
+        });
+        if (!transaction.IsSuccess)
+            throw new InvalidOperationException("滚动路权窗口交接释放失败，原占用保持不变。", transaction.ErrorException);
+        return released;
+    }
     public Task ReleaseTaskExceptStepAsync(string taskId, string ownerStepId, CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(taskId); ArgumentException.ThrowIfNullOrWhiteSpace(ownerStepId); ct.ThrowIfCancellationRequested();

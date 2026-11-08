@@ -222,7 +222,7 @@ public sealed partial class PersistentHandshakeExecutor
         if(!mapCheck.Accepted)throw new InvalidOperationException("实际出区车端地图核验未通过："+mapCheck.Message);
         var vendor=await agvGateway!.GetTransportTaskStatusAsync(vendorTaskId,ct);
         var now=DateTimeOffset.UtcNow;
-        if(vendor==null||vendor.VendorTaskId!=vendorTaskId||vendor.BusinessTaskId!=step.StepId||vendor.VehicleId!=vehicleId||
+        if(vendor==null||vendor.VendorTaskId!=vendorTaskId||vendor.BusinessTaskId!=vendorTaskId||vendor.VehicleId!=vehicleId||
             vendor.State is not (AgvTransportTaskState.GoingToDestination or AgvTransportTaskState.AtDestination or AgvTransportTaskState.Completed)||
             vendor.UpdatedAt>now.AddSeconds(1)||now-vendor.UpdatedAt>TimeSpan.FromSeconds(options.DumperExit.MaximumAgeSeconds))
             throw new InvalidOperationException("原返程任务身份、执行状态或新鲜查询不成立，不能以其他任务/未知状态交接。");

@@ -119,7 +119,7 @@ public sealed class TaskCancellationService(ISqlSugarClient database, IMapExecut
                 }
                 var status = await gateway.GetTransportTaskStatusAsync(task.CancelVendorId, ct);
                 var now = DateTimeOffset.Now;
-                if (status == null || status.VendorTaskId != task.CancelVendorId || status.BusinessTaskId != task.CancelStepId ||
+                if (status == null || status.VendorTaskId != task.CancelVendorId || status.BusinessTaskId != task.CancelVendorId ||
                     status.VehicleId != task.CancelVehicleId || status.UpdatedAt < new DateTimeOffset(task.CancelRequestedAt!.Value) ||
                     status.UpdatedAt > now.AddSeconds(1) || now - status.UpdatedAt > TimeSpan.FromSeconds(10))
                 { task.ErrorMessage = "车辆原任务记录缺失、过期或归属不符；不能把404或接口返回当作取消成功。"; await SaveAsync(task, ct); continue; }

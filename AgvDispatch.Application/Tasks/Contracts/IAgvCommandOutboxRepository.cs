@@ -13,6 +13,27 @@ public interface IAgvCommandOutboxRepository
         AgvTransportAction? action,
         CancellationToken cancellationToken);
 
+    Task<bool> TryPrepareTransportWindowAsync(
+        string taskId,
+        string stepId,
+        string vehicleId,
+        string fullSource,
+        string fullDestination,
+        AgvTransportRouteWindow window,
+        IReadOnlyList<AgvTransportRouteWindow> windows,
+        string? previousVendorTaskId,
+        AgvTransportAction? action,
+        CancellationToken cancellationToken) =>
+        window.Index == 0
+            ? TryPrepareTransportStepAsync(taskId, stepId, vehicleId, window.Path, action, cancellationToken)
+            : Task.FromResult(false);
+
+    Task<AgvCommandOutboxItem?> GetTransportCommandByVendorAsync(string taskId,
+        string vendorTaskId, CancellationToken cancellationToken) => Task.FromResult<AgvCommandOutboxItem?>(null);
+
+    Task<AgvCommandOutboxItem?> GetOpenTransportCommandAsync(string taskId,
+        CancellationToken cancellationToken) => Task.FromResult<AgvCommandOutboxItem?>(null);
+
     Task<IReadOnlyList<AgvCommandOutboxItem>> GetDueCommandsAsync(
         DateTimeOffset now,
         int maximumCount,

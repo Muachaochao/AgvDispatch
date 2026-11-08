@@ -1,5 +1,6 @@
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Application.Tasks;
+using AgvDispatch.Connectors.Agv;
 using AgvDispatch.Domain.Agvs;
 using AgvDispatch.Domain.Devices;
 using AgvDispatch.Domain.Tasks;
@@ -21,7 +22,8 @@ public sealed class DispatchTaskStepCoordinator(
     IExecutionEvidenceJournal? journal = null,
     IAgvStateCache? vehicleStates = null, IActiveMapRuntime? activeMap = null, PersistentHandshakeExecutor? handshake = null,
     IDispatchPreSendSafetyService? preSendSafety = null, DispatchTrafficReservationService? trafficLayer = null,
-    IDispatchPipelineMonitor? pipeline = null, DispatchOptimizationService? optimization = null, MapOptions? mapOptions = null) : IsolatedBackgroundService
+    IDispatchPipelineMonitor? pipeline = null, DispatchOptimizationService? optimization = null, MapOptions? mapOptions = null,
+    AgvOptions? agvOptions = null) : IsolatedBackgroundService
 {
     private readonly DispatchTrafficReservationService _trafficLayer = trafficLayer ?? new(trafficResources, pipeline, tasks, optimization);
     private readonly Dictionary<string, string> _conditionFingerprints = new(StringComparer.Ordinal);
@@ -38,6 +40,10 @@ public sealed class DispatchTaskStepCoordinator(
         {
             throw new InvalidOperationException("DispatchTaskSteps配置无效。");
         }
+        if (options.RollingWindowMinimumEdges < 1 ||
+            options.RollingWindowMaximumEdges < options.RollingWindowMinimumEdges ||
+            options.RollingWindowMaximumEdges > 1000)
+            throw new InvalidOperationException("滚动路权窗口边数配置无效。");
 
         var configurationError = dispatchOptions.GetConfigurationError();
         if (configurationError is not null)
@@ -289,7 +295,7 @@ public sealed class DispatchTaskStepCoordinator(
             if (!VehicleReadyAt(step.VehicleId, pickup, current)) return;
             if (trafficResources is ITaskWaitingBayAllocator allocator)
                 await TaskWaitingBayRouter.ObserveWaitingAsync(step, pickup, dispatchOptions, current, routePlanner,
-                    trafficResources, allocator, _trafficLayer, ct);
+                    trafficResources, allocator, options, _trafficLayer, ct, agvOptions?.NavigationCommandMode);
             return;
         }
         var waiting = dispatchOptions.GetDumperWaitingSite()!;
@@ -309,8 +315,11 @@ public sealed class DispatchTaskStepCoordinator(
         var plan = routePlanner.Plan(route.Item1, route.Item2, unavailable) ??
             routePlanner.Plan(route.Item1, route.Item2, new HashSet<string>());
         if (plan is not { Nodes.Count: >= 2 } || !VehicleReadyAt(step.VehicleId, route.Item1, current)) return;
-        await _trafficLayer.ObserveAsync(new(step.StepId, step.TaskId, step.VehicleId, plan.Nodes[0], plan.Nodes[^1],
-            plan.EdgeIds, plan.ResourceIds, true, "后续运输候选已核对，按原任务有效优先级等待整组路权。")
+        var firstWindow = TransportRouteWindows.Plan(
+            plan, current.Definition, options, agvOptions?.NavigationCommandMode)[0];
+        await _trafficLayer.ObserveAsync(new(step.StepId, step.TaskId, step.VehicleId,
+            firstWindow.Source, firstWindow.Destination, firstWindow.EdgeIds, firstWindow.ResourceIds, true,
+            "后续运输候选已核对，按原任务优先级等待首个安全路权窗口。")
             { MapId = current.MapId, MapVersionId = current.VersionId }, ct);
     }
 
@@ -356,6 +365,8 @@ public sealed class DispatchTaskStepCoordinator(
             throw new InvalidOperationException($"工位{step.StationId}未配置AGV地图站点。");
         var waitingSite = dispatchOptions.GetDumperWaitingSite()!;
         AgvDispatch.Domain.Maps.RoutePlan? selectedPlan = null;
+        IReadOnlyList<AgvTransportRouteWindow>? selectedWindows = null;
+        string? retainedWaitingResource = null;
         if (dispatchOptions.GetDumperWaitingSites().Count > 1)
         {
             var allocator = trafficResources as ITaskWaitingBayAllocator ??
@@ -364,10 +375,14 @@ public sealed class DispatchTaskStepCoordinator(
             if (step.StepType == DispatchTaskStepType.DeliverFullBoxToDumper)
             {
                 var chosen = await TaskWaitingBayRouter.AcquireAsync(step, pickupSite, dispatchOptions, current,
-                    routePlanner, trafficResources, allocator, cancellationToken, _trafficLayer);
+                    routePlanner, trafficResources, allocator, options, cancellationToken, _trafficLayer,
+                    agvOptions?.NavigationCommandMode);
                 if (chosen is null) return;
                 waitingSite = chosen.Value.Site;
                 selectedPlan = chosen.Value.Plan;
+                selectedWindows = chosen.Value.Windows;
+                retainedWaitingResource = await allocator.GetAsync(step.TaskId, cancellationToken) is { } binding
+                    ? binding.ResourceId : null;
             }
             else
             {
@@ -411,10 +426,34 @@ public sealed class DispatchTaskStepCoordinator(
         {
             throw new InvalidOperationException($"AGV路径节点不足：{route.Item1}->{route.Item2}。");
         }
-        var observation = new TrafficRouteObservation(step.StepId, step.TaskId, step.VehicleId, plan.Nodes[0], plan.Nodes[^1],
-            plan.EdgeIds, plan.ResourceIds, false, "规划完成，申请本运输路径资源。") { MapId = planningMap?.MapId, MapVersionId = planningMap?.VersionId };
+        var windows = selectedWindows;
+        if (windows is null)
+        {
+            windows = planningMap is null
+                ? [new AgvTransportRouteWindow(0, plan.Nodes[0], plan.Nodes[^1], plan.Nodes,
+                    plan.EdgeIds, plan.ResourceIds, true)]
+                : TransportRouteWindows.Plan(
+                    plan, planningMap.Definition, options, agvOptions?.NavigationCommandMode);
+        }
+        if (!string.IsNullOrWhiteSpace(retainedWaitingResource))
+        {
+            // A selected capacity-1 waiting bay stays reserved while the vehicle
+            // advances through later route windows.
+            windows = windows.Select(window => window with
+            {
+                ResourceIds = window.ResourceIds.Append(retainedWaitingResource)
+                    .Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase).ToArray()
+            }).ToArray();
+        }
+        var firstWindow = windows[0];
+        var observation = new TrafficRouteObservation(step.StepId, step.TaskId, step.VehicleId,
+            firstWindow.Source, firstWindow.Destination, firstWindow.EdgeIds, firstWindow.ResourceIds, false,
+            "规划完成，申请首个安全路权窗口；后续窗口在车辆停稳后续约。")
+            { MapId = planningMap?.MapId, MapVersionId = planningMap?.VersionId };
 
-        var reservation = await _trafficLayer.AcquireAsync(observation, cancellationToken);
+        var reservation = selectedWindows is not null
+            ? new TrafficReservationResult(true)
+            : await _trafficLayer.AcquireAsync(observation, cancellationToken);
         if (!reservation.Acquired)
         {
             logger.LogDebug(
@@ -429,7 +468,7 @@ public sealed class DispatchTaskStepCoordinator(
         var commandPrepared = false;
         try
         {
-            if (preSendSafety is not null && await preSendSafety.CheckPreparationAsync(step, step.VehicleId, plan.Nodes,
+            if (preSendSafety is not null && await preSendSafety.CheckPreparationAsync(step, step.VehicleId, firstWindow.Path,
                 planningMap, cancellationToken) is { } rejection)
             {
                 await trafficResources.ReleaseStepAsync(step.StepId, cancellationToken);
@@ -437,11 +476,15 @@ public sealed class DispatchTaskStepCoordinator(
                 logger.LogDebug("后续运输步骤等待安全复核。StepId={StepId}, Reason={Reason}", step.StepId, rejection);
                 return;
             }
-            commandPrepared = await outbox.TryPrepareTransportStepAsync(
+            commandPrepared = await outbox.TryPrepareTransportWindowAsync(
                     step.TaskId,
                     step.StepId,
                     step.VehicleId,
-                    plan.Nodes,
+                    route.Item1,
+                    route.Item2,
+                    firstWindow,
+                    windows,
+                    null,
                     dispatchOptions.GetAction(step.StepType),
                     cancellationToken);
             if (commandPrepared)
@@ -458,9 +501,9 @@ public sealed class DispatchTaskStepCoordinator(
                     step.TaskId,
                     step.StepType,
                     step.VehicleId,
-                    route.Item1,
-                    route.Item2,
-                    string.Join(',', plan.ResourceIds));
+                    firstWindow.Source,
+                    firstWindow.Destination,
+                    string.Join(',', firstWindow.ResourceIds));
             }
             else
             {

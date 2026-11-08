@@ -552,6 +552,13 @@ public sealed partial class DispatchTaskOrchestrator(
                         robot.Blocked != false || robot.EmergencyStopped != false ||
                         AgvObstaclePolicy.IsBlocked(robot) || AgvObstaclePolicy.HasBlockingAlarm(robot))
                         continue;
+                    if (await TryAdvanceTransportWindowAsync(task, cancellationToken))
+                    {
+                        logger.LogInformation(
+                            "AGV已到达滚动路权安全点，下一窗口已进入申请/发送流程。TaskId={TaskId}, VendorTaskId={VendorTaskId}, VehicleId={VehicleId}",
+                            task.TaskId, task.VendorTaskId, task.VehicleId);
+                        continue;
+                    }
                     var completedStepId = await tasks.CompleteExecutingStepAsync(
                         task.TaskId,
                         task.VendorTaskId,
@@ -620,6 +627,57 @@ public sealed partial class DispatchTaskOrchestrator(
                     task.VendorTaskId);
             }
         }
+    }
+
+    private async Task<bool> TryAdvanceTransportWindowAsync(DispatchTaskWorkItem task,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(task.VendorTaskId) || string.IsNullOrWhiteSpace(task.VehicleId))
+            return false;
+        var command = await outbox.GetTransportCommandByVendorAsync(task.TaskId, task.VendorTaskId, cancellationToken);
+        if (command is null) return false;
+        var payload = System.Text.Json.JsonSerializer.Deserialize<AgvTransportCommandPayload>(
+            command.PayloadJson, new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
+        if (payload is null || payload.Windows.Count == 0 ||
+            payload.WindowIndex < 0 || payload.WindowIndex >= payload.Windows.Count - 1)
+            return false;
+
+        var open = await outbox.GetOpenTransportCommandAsync(task.TaskId, cancellationToken);
+        if (open is not null) return true;
+
+        if (!agvStates.TryGet(task.VehicleId, out var robot) ||
+            robot.Connection != ConnectionState.Online || robot.Quality != SignalQuality.Good ||
+            robot.CurrentStation != payload.Destination ||
+            robot.LastSuccessfulPollAt is not { } observed ||
+            observed > DateTimeOffset.UtcNow.AddSeconds(1) ||
+            DateTimeOffset.UtcNow - observed >= TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds) ||
+            robot.Blocked != false || robot.EmergencyStopped != false ||
+            Math.Abs(robot.VelocityX ?? double.NaN) > 0.02 ||
+            Math.Abs(robot.VelocityY ?? double.NaN) > 0.02 ||
+            Math.Abs(robot.AngularVelocity ?? double.NaN) > 0.02)
+            return true;
+
+        var next = payload.Windows[payload.WindowIndex + 1];
+        var observation = new TrafficRouteObservation(command.StepId, task.TaskId, task.VehicleId,
+            next.Source, next.Destination, next.EdgeIds, next.ResourceIds, false,
+            "车辆已在安全点停稳，原任务申请下一滚动路权窗口。")
+            { MapId = activeMap.Current?.MapId, MapVersionId = activeMap.Current?.VersionId };
+        var acquired = await _trafficLayer.AcquireAsync(observation, cancellationToken);
+        if (!acquired.Acquired) return true;
+        // Acquire first, then release resources not reused by the next window.
+        // This keeps an overlapping intersection or waiting-bay anchor leased
+        // without a gap while freeing corridors already fully passed.
+        await trafficResources.ReleaseStepExceptResourcesAsync(command.StepId, next.ResourceIds,
+            "车辆已完整通过上一路权窗口，释放不再复用的资源并保留下一窗口资源。", cancellationToken);
+
+        var fullSource = payload.Windows[0].Source;
+        var fullDestination = payload.Windows[^1].Destination;
+        var prepared = await outbox.TryPrepareTransportWindowAsync(
+            task.TaskId, command.StepId, task.VehicleId, fullSource, fullDestination,
+            next, payload.Windows, task.VendorTaskId, payload.FinalAction, cancellationToken);
+        if (!prepared)
+            await trafficResources.ReleaseStepAsync(command.StepId, cancellationToken);
+        return true;
     }
 
 }

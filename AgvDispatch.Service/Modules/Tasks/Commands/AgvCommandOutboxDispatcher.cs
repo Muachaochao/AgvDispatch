@@ -162,7 +162,9 @@ public sealed class AgvCommandOutboxDispatcher(
                 try
                 {
                     if(handshake==null||handshakes==null||taskReader==null)throw new InvalidOperationException("28阶段发送缺少持久化执行及契约核验依赖。");
-                    await handshake.ValidatePendingTransportAsync(candidate.TaskId,candidate.StepId,candidate.VehicleId,cancellationToken);
+                    var payload = JsonSerializer.Deserialize<AgvTransportCommandPayload>(candidate.PayloadJson, JsonOptions);
+                    await handshake.ValidatePendingTransportAsync(candidate.TaskId,candidate.StepId,candidate.VehicleId,
+                        payload?.WindowIndex > 0,cancellationToken);
                     _blockedReasons.Remove(candidate.CommandId);
                 }
                 catch(OperationCanceledException)when(cancellationToken.IsCancellationRequested){throw;}

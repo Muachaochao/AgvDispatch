@@ -47,7 +47,9 @@ internal static class TestBackend
         var definition=new MapDefinition("integration","","LocalCartesian","m",nodes,edges,[resource]);
         map.Replace(new("MAP-INTEGRATION","V1",definition,DateTimeOffset.Now));
         var gate=new MapExecutionGate(); gate.SetMode(MapExecutionMode.Running);
-        var dispatch=new DispatchOrchestratorOptions { Enabled=true,MaxConcurrentTasks=2,DumperWaitingSite="WAIT",DumperDumpingSite="DUMP",
+        // The hosted fixture uses the legacy simulated PLC handshake. Keep it serial
+        // because multi-task route ownership is gated by the current 28-stage contract.
+        var dispatch=new DispatchOrchestratorOptions { Enabled=true,MaxConcurrentTasks=1,DumperWaitingSite="WAIT",DumperDumpingSite="DUMP",
             StationPickupSites=new() { ["CNC001"]="PICK1",["CNC002"]="PICK2" } };
         foreach(var (step,action) in new[]{("GoToPickup","JackLoad"),("DeliverFullBoxToDumper","Wait"),("EnterDumpingPosition","Wait"),("ReturnEmptyBox","JackUnload")}) dispatch.StepActions[step]=new(){Operation=action};
         var creation=new DispatchTaskCreationOptions { AcknowledgementRetryIntervalMs=500 }; var parameters=new TaskParameterRuntime(dispatch,creation);

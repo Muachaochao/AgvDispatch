@@ -39,7 +39,10 @@ public sealed class DispatchPreSendSafetyService(
             if (command.CommandType != AgvCommandType.Transport || command.Status is not (AgvCommandStatus.Pending or AgvCommandStatus.RetryScheduled))
                 return "待发命令类型或持久化状态不允许认领。";
             var payload = JsonSerializer.Deserialize<AgvTransportCommandPayload>(command.PayloadJson, JsonOptions);
-            if (payload is null || payload.BusinessTaskId != command.StepId || payload.VehicleId != command.VehicleId ||
+            var businessStepId = payload is null
+                ? ""
+                : string.IsNullOrWhiteSpace(payload.BusinessStepId) ? payload.BusinessTaskId : payload.BusinessStepId;
+            if (payload is null || businessStepId != command.StepId || payload.VehicleId != command.VehicleId ||
                 payload.Path is not { Count: >= 2 } || payload.Source != payload.Path[0] || payload.Destination != payload.Path[^1])
                 return "待发命令负载与原步骤、车辆或路径端点不一致。";
             var task = (await CurrentTasksAsync(ct)).SingleOrDefault(t => t.TaskId == command.TaskId);
@@ -49,11 +52,13 @@ public sealed class DispatchPreSendSafetyService(
                 original.StepId, original.Sequence, original.StepType, original.Status,
                 original.SourceSite, original.DestinationSite, original.UpdatedAt);
             return await CheckCoreAsync(step, payload.Path, activeMap.Current, preparing: false,
-                recovering: command.AttemptCount > 0, ct);
+                recovering: command.AttemptCount > 0 && payload.WindowIndex == 0, ct,
+                payload.WindowIndex > 0, payload.PreviousVendorTaskId);
         }, ct);
 
     private async Task<string?> CheckCoreAsync(DispatchTaskStepWorkItem step, IReadOnlyList<string> path,
-        ActiveMapRuntimeSnapshot? expectedMap, bool preparing, bool recovering, CancellationToken ct)
+        ActiveMapRuntimeSnapshot? expectedMap, bool preparing, bool recovering, CancellationToken ct,
+        bool continuationWindow = false, string? continuationFromVendorTaskId = null)
     {
         if (path.Count < 2 || path.Any(string.IsNullOrWhiteSpace) || string.IsNullOrWhiteSpace(step.VehicleId))
             return "运输路径或指定车辆不完整。";
@@ -77,9 +82,17 @@ public sealed class DispatchPreSendSafetyService(
             DispatchTaskStepType.ReturnEmptyBox => DispatchTaskStage.Dumping,
             _ => (DispatchTaskStage)(-1)
         };
-        if (preparing ? original.Status != DispatchTaskStepStatus.Ready || task.Stage != expectedStage :
-            original.Status is not (DispatchTaskStepStatus.CommandPending or DispatchTaskStepStatus.RetryScheduled) ||
-                task.Stage != DispatchTaskStage.SubmittingToAgv || original.SourceSite != path[0] || original.DestinationSite != path[^1])
+        var continuationStateMatches = continuationWindow &&
+            original.Status is DispatchTaskStepStatus.Executing or DispatchTaskStepStatus.CommandPending or DispatchTaskStepStatus.Sending or DispatchTaskStepStatus.RetryScheduled &&
+            !string.IsNullOrWhiteSpace(continuationFromVendorTaskId) &&
+            task.VendorTaskId == continuationFromVendorTaskId;
+        if (preparing
+                ? original.Status != DispatchTaskStepStatus.Ready || task.Stage != expectedStage
+                : continuationWindow
+                    ? !continuationStateMatches
+                    : original.Status is not (DispatchTaskStepStatus.CommandPending or DispatchTaskStepStatus.RetryScheduled) ||
+                        task.Stage != DispatchTaskStage.SubmittingToAgv ||
+                        original.SourceSite != path[0] || original.DestinationSite != path[^1])
             return "原任务或步骤状态已经变化，不准备或认领新命令。";
         var firstPreparation = preparing && step.StepType == DispatchTaskStepType.GoToPickup;
         // Later transport steps become Ready before the command binds them, so their
@@ -110,7 +123,7 @@ public sealed class DispatchPreSendSafetyService(
         {
             if (await CheckVehicleAsync(step.VehicleId!, path[0], step.StepType == DispatchTaskStepType.GoToPickup, ct) is { } vehicleError)
                 return vehicleError;
-            if (await CheckPlcAsync(step, preparing, ct) is { } plcError) return plcError;
+            if (await CheckPlcAsync(step, preparing, continuationWindow, ct) is { } plcError) return plcError;
         }
         // Traffic requests and command payloads are both written from the same
         // planned AGV route. Preserve the route's site ids here so preparation,
@@ -148,7 +161,8 @@ public sealed class DispatchPreSendSafetyService(
         return null;
     }
 
-    private async Task<string?> CheckPlcAsync(DispatchTaskStepWorkItem step, bool preparing, CancellationToken ct)
+    private async Task<string?> CheckPlcAsync(DispatchTaskStepWorkItem step, bool preparing,
+        bool continuationWindow, CancellationToken ct)
     {
         var allSteps = await taskReader.GetStepsAsync(step.TaskId, ct);
         var first = allSteps.FirstOrDefault(s => s.StepType == DispatchTaskStepType.GoToPickup);
@@ -157,7 +171,8 @@ public sealed class DispatchPreSendSafetyService(
         {
             if (handshake is null || handshakes is null || handshakeOptions.PlcContractVersion != HandshakeExecutionOptions.Version)
                 return "已启用的28阶段契约缺少匹配执行器、持久化绑定或版本。";
-            if (!preparing) await handshake.ValidatePendingTransportAsync(step.TaskId, step.StepId, step.VehicleId!, ct);
+            if (!preparing) await handshake.ValidatePendingTransportAsync(step.TaskId, step.StepId, step.VehicleId!,
+                continuationWindow, ct);
             else if (step.StepType == DispatchTaskStepType.GoToPickup) await handshake.BindBeforeTransportAsync(step, ct);
             else await handshake.ValidateTransportAsync(step, ct);
             return null;

@@ -337,7 +337,7 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
                 return await RejectAsync(user, ticket.TicketId, "车辆仍有活动任务，不能关闭取消。", ct);
         }
         if (task.CancelVendorId != null && (observed.Vendor == null || observed.Vendor.VendorTaskId != task.CancelVendorId ||
-            observed.Vendor.BusinessTaskId != task.CancelStepId || observed.Vendor.VehicleId != task.CancelVehicleId ||
+            observed.Vendor.BusinessTaskId != task.CancelVendorId || observed.Vendor.VehicleId != task.CancelVehicleId ||
             observed.Vendor.UpdatedAt < _started || DateTimeOffset.Now - observed.Vendor.UpdatedAt > settings.StateMaxAge ||
             observed.Vendor.UpdatedAt > DateTimeOffset.Now.AddSeconds(1) ||
             observed.Vendor.State is not (AgvTransportTaskState.Cancelled or AgvTransportTaskState.Completed or AgvTransportTaskState.Failed)))
@@ -423,7 +423,11 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
         var task = await database.Queryable<DispatchTaskEntity>().Where(t => t.TaskId == ticket.TaskId).FirstAsync(ct);
         var step = await CurrentStepAsync(ticket.TaskId, ct);
         var commands = await database.Queryable<AgvCommandOutboxEntity>().Where(c => c.TaskId == ticket.TaskId).ToListAsync(ct);
-        var command = commands.FirstOrDefault(c => c.StepId == step?.StepId);
+        var command = commands.Where(c => c.StepId == step?.StepId)
+            .OrderByDescending(c => c.CreatedAt)
+            .FirstOrDefault(c => !string.IsNullOrWhiteSpace(step?.VendorTaskId) &&
+                c.VendorCommandId == step!.VendorTaskId)
+            ?? commands.Where(c => c.StepId == step?.StepId).OrderByDescending(c => c.CreatedAt).FirstOrDefault();
         var leases = await database.Queryable<TrafficResourceLeaseEntity>().Where(l => l.TaskId == ticket.TaskId).ToListAsync(ct);
         if (task is null && chargingRecovery is not null && await chargingRecovery.ReadRecoverySessionAsync(ticket.TaskId, ct) is { } charging)
             return await ObserveChargingAsync(ticket, charging, commands, leases, ct);
@@ -627,7 +631,8 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
     private static bool Running(AgvTransportTaskState state) => state is AgvTransportTaskState.Suspended or AgvTransportTaskState.Queued or AgvTransportTaskState.Assigned or
         AgvTransportTaskState.GoingToSource or AgvTransportTaskState.AtSource or AgvTransportTaskState.Loading or AgvTransportTaskState.GoingToDestination or AgvTransportTaskState.AtDestination;
     private bool VendorMatches(DispatchTaskStepEntity step, DispatchTaskEntity task, AgvTransportTaskStatus? status) =>
-        status != null && status.BusinessTaskId == step.StepId && status.VendorTaskId == (step.VendorTaskId ?? step.StepId) &&
+        status != null && status.BusinessTaskId == (step.VendorTaskId ?? step.StepId) &&
+        status.VendorTaskId == (step.VendorTaskId ?? step.StepId) &&
         (task.VendorTaskId == null || task.VendorTaskId == status.VendorTaskId) &&
         status.VehicleId == (step.VehicleId ?? task.VehicleId) && (task.VehicleId == null || status.VehicleId == task.VehicleId) &&
         status.UpdatedAt >= _started && status.UpdatedAt <= DateTimeOffset.Now.AddSeconds(1) && DateTimeOffset.Now - status.UpdatedAt <= settings.StateMaxAge;

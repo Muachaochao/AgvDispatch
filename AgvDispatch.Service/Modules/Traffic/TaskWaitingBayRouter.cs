@@ -8,7 +8,9 @@ public static class TaskWaitingBayRouter
 {
     public static async Task ObserveWaitingAsync(DispatchTaskStepWorkItem step, string pickup, DispatchOrchestratorOptions options,
         ActiveMapRuntimeSnapshot map, IRoutePlanner planner, ITrafficResourceManager traffic,
-        ITaskWaitingBayAllocator allocator, DispatchTrafficReservationService trafficLayer, CancellationToken ct)
+        ITaskWaitingBayAllocator allocator, DispatchTaskStepOptions stepOptions,
+        DispatchTrafficReservationService trafficLayer, CancellationToken ct,
+        string? navigationCommandMode = null)
     {
         var selected = await allocator.GetAsync(step.TaskId, ct);
         if (selected is not null && (selected.VehicleId != step.VehicleId || selected.StepId != step.StepId ||
@@ -21,17 +23,27 @@ public static class TaskWaitingBayRouter
             candidate = sites.Select(site => (Site: site, Plan: planner.Plan(pickup, site, new HashSet<string>())))
                 .Where(c => c.Plan is { Nodes.Count: >= 2 }).OrderBy(c => c.Plan!.Cost).ThenBy(c => c.Site, StringComparer.Ordinal).FirstOrDefault();
         if (candidate.Plan is null) return;
-        await trafficLayer.ObserveAsync(new(step.StepId, step.TaskId, step.VehicleId!, pickup, candidate.Site,
-            candidate.Plan.EdgeIds, candidate.Plan.ResourceIds, true, "独立候车位候选按原任务有效优先级排队；尚未选位或授予路权。")
+        var first = TransportRouteWindows.Plan(
+            candidate.Plan, map.Definition, stepOptions, navigationCommandMode)[0];
+        var waitingResource = selected?.ResourceId ??
+            DumperWaitingBaySafety.ExclusiveResourceIds(map.Definition, options, candidate.Site)
+                .Order(StringComparer.Ordinal).FirstOrDefault();
+        var resources = string.IsNullOrWhiteSpace(waitingResource)
+            ? first.ResourceIds
+            : first.ResourceIds.Append(waitingResource).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        await trafficLayer.ObserveAsync(new(step.StepId, step.TaskId, step.VehicleId!, first.Source, first.Destination,
+            first.EdgeIds, resources, true, "独立候车位和首个路权窗口按原任务优先级排队；尚未选位或授予路权。")
             { MapId = map.MapId, MapVersionId = map.VersionId }, ct);
     }
 
     // Choose and reserve together before registering a vehicle command. A failed command
     // preparation can release its leases, but cannot change the task's recorded bay.
-    public static async Task<(string Site, RoutePlan Plan)?> AcquireAsync(
+    public static async Task<(string Site, RoutePlan Plan, IReadOnlyList<AgvTransportRouteWindow> Windows)?> AcquireAsync(
         DispatchTaskStepWorkItem step, string pickup, DispatchOrchestratorOptions options,
         ActiveMapRuntimeSnapshot map, IRoutePlanner planner, ITrafficResourceManager traffic,
-        ITaskWaitingBayAllocator allocator, CancellationToken ct, DispatchTrafficReservationService? trafficLayer = null)
+        ITaskWaitingBayAllocator allocator, DispatchTaskStepOptions stepOptions,
+        CancellationToken ct, DispatchTrafficReservationService? trafficLayer = null,
+        string? navigationCommandMode = null)
     {
         var selected = await allocator.GetAsync(step.TaskId, ct);
         if (selected is not null && (selected.VehicleId != step.VehicleId || selected.StepId != step.StepId ||
@@ -48,14 +60,22 @@ public static class TaskWaitingBayRouter
                 .Order(StringComparer.Ordinal).FirstOrDefault();
             if (resource is null || !candidate.Plan!.ResourceIds.Contains(resource, StringComparer.OrdinalIgnoreCase))
                 throw new InvalidOperationException("候车路线未包含该等待节点的独立容量1资源。");
-            var observation = new TrafficRouteObservation(step.StepId, step.TaskId, step.VehicleId!, pickup, candidate.Site,
-                candidate.Plan.EdgeIds, candidate.Plan.ResourceIds, false, "申请独立候车位；选位与占用在同一事务保存。")
+            var windows = TransportRouteWindows.Plan(
+                    candidate.Plan, map.Definition, stepOptions, navigationCommandMode)
+                .Select(window => window with
+                {
+                    ResourceIds = window.ResourceIds.Append(resource).Distinct(StringComparer.OrdinalIgnoreCase)
+                        .Order(StringComparer.OrdinalIgnoreCase).ToArray()
+                }).ToArray();
+            var first = windows[0];
+            var observation = new TrafficRouteObservation(step.StepId, step.TaskId, step.VehicleId!, first.Source, first.Destination,
+                first.EdgeIds, first.ResourceIds, false, "申请独立候车位和首个安全路权窗口；候车位在整段任务内保持。")
                 { MapId = map.MapId, MapVersionId = map.VersionId };
             var binding = selected ?? new(step.TaskId, step.VehicleId!, step.StepId, map.MapId, map.VersionId, candidate.Site, resource);
             var result = await (trafficLayer ?? new DispatchTrafficReservationService(traffic))
                 .AcquireWaitingBayAsync(observation, binding, allocator, ct);
             if (result.Acquired)
-                return (candidate.Site, candidate.Plan);
+                return (candidate.Site, candidate.Plan, windows);
         }
         if (candidates.Length == 0)
         {
