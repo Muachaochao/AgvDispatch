@@ -44,7 +44,7 @@ public sealed partial class ManualTaskCreationService
         stepSource=station.PreviewSteps.ToArray();
         current=vehicle.CurrentSite;geometrySource=map;sourceAvailable=options.Available;sourceVehicle=vehicle.Available;sourceStation=station.Available;sourceConfiguration=station.ConfigurationValid;
         var nodes=map.Definition.Nodes.ToDictionary(n=>n.Id,StringComparer.Ordinal);
-        MapNode? Resolve(string id){var found=map.Definition.Nodes.Where(n=>n.Enabled&&(n.Id.Equals(id,StringComparison.OrdinalIgnoreCase)||n.AgvSiteId==id)).ToArray();return found.Length==1?found[0]:null;}
+        MapNode? Resolve(string id){var found=map.Definition.Nodes.Where(n=>n.Enabled&&MapRouteSiteMapper.IsSameNode(map.Definition,n.Id,id)).ToArray();return found.Length==1?found[0]:null;}
         var pairs=new[]{(1,"车位 → 取货",current,station.PickupSite),(3,"取货 → 等待",station.PickupSite,options.WaitingSite),(5,"等待 → 倒料",options.WaitingSite,options.DumpingSite),(7,"倒料 → 取货",options.DumpingSite,station.PickupSite)};
         var localValid=true;
         foreach(var (sequence,name,source,target) in pairs)
@@ -52,12 +52,12 @@ public sealed partial class ManualTaskCreationService
             token.ThrowIfCancellationRequested();var from=Resolve(source);var to=Resolve(target);var route=from is null||to is null?null:sequence==1?map.Graph.FindShortestTransportRoute(from.Id,to.Id,forbiddenIntermediateNodes:PickupExcludedNodes(map,request.VehicleId,from.Id)):map.Graph.FindShortestRoute(from.Id,to.Id);
             if(route is null||route.Nodes.Count is <2 or >129||route.EdgeIds.Count!=route.Nodes.Count-1){legs.Add(new(sequence,name,source+" → "+target,"",route is null&&sequence==1&&from is not null&&from.Id==to?.Id?"车辆已在取货点；缺少避开等待/倒料节点的真实已启用进出闭合路线，禁止同点空路径代替取箱动作。":"无可执行本地路线、端点不唯一或超过本页每段运输128子段的显示预算。"));localValid=false;continue;}
             var path=route.Nodes.Select(id=>nodes[id]).ToArray();
-            var mapping=path.All(n=>!string.IsNullOrWhiteSpace(n.AgvSiteId)&&map.Definition.Nodes.Count(other=>other.Enabled&&other.AgvSiteId==n.AgvSiteId)==1);
+            var mapping=path.All(n=>!string.IsNullOrWhiteSpace(n.AgvSiteId)&&map.Definition.Nodes.Count(other=>other.Enabled&&other.AgvSiteId is not null&&MapRouteSiteMapper.IsSameNode(map.Definition,other.AgvSiteId,n.AgvSiteId))==1);
             legs.Add(new(sequence,name,string.Join(" → ",path.Select(n=>n.Id)),string.Join(" → ",path.Select(n=>n.AgvSiteId??"[未映射]")),mapping?(sequence==1&&from!.Id==to!.Id?"实际进出闭合路线；沿真实相邻边离开并返回，在末点执行取箱动作；厂家核验见逐段结果。":"本地静态路线；厂家核验见逐段结果。"):"存在缺失/重复厂家站点映射。"));
             localValid&=mapping;
             for(var i=0;i<path.Length-1;i++)
             {
-                var invalid=path.Skip(i).Take(2).Where(n=>string.IsNullOrWhiteSpace(n.AgvSiteId)||map.Definition.Nodes.Count(other=>other.Enabled&&other.AgvSiteId==n.AgvSiteId)!=1).Select(n=>n.Id).ToArray();
+                var invalid=path.Skip(i).Take(2).Where(n=>string.IsNullOrWhiteSpace(n.AgvSiteId)||map.Definition.Nodes.Count(other=>other.Enabled&&other.AgvSiteId is not null&&MapRouteSiteMapper.IsSameNode(map.Definition,other.AgvSiteId,n.AgvSiteId))!=1).Select(n=>n.Id).ToArray();
                 segments.Add(new(sequence,i+1,route.EdgeIds[i],path[i].Id,path[i+1].Id,path[i].AgvSiteId??"",path[i+1].AgvSiteId??"",invalid.Length>0?"不符":"未核验",invalid.Length>0?"本地厂家映射缺失/重复："+string.Join("、",invalid)+"；尚未查询车端。":"尚未取得本次厂家直接线路观察。"));
             }
         }
@@ -69,7 +69,7 @@ public sealed partial class ManualTaskCreationService
         ManualTaskCreationOptions latest;
         using(await gate.EnterControlAsync(token)){latest=await GetOptionsCoreAsync(token);}
         var latestVehicle=latest.Vehicles.FirstOrDefault(v=>v.VehicleId==request.VehicleId);var latestStation=latest.Stations.FirstOrDefault(s=>s.StationId==request.StationId);
-        if(!ReferenceEquals(map,activeMap.Current)||parameters.Revision!=request.ParameterRevision||!gate.CanStartNewWork||!latest.Available||latestStation is not {Available:true,ConfigurationValid:true}||latestVehicle is not {Available:true}||latestVehicle.CurrentSite!=current)
+        if(!ReferenceEquals(map,activeMap.Current)||parameters.Revision!=request.ParameterRevision||!gate.CanStartNewWork||!latest.Available||latestStation is not {Available:true,ConfigurationValid:true}||latestVehicle is not {Available:true}||!MapRouteSiteMapper.IsSameNode(map.Definition,latestVehicle.CurrentSite,current))
         {
             geometrySource=null;
             segments=segments.Select(s=>s with{Status="已失效",Message="查询期间地图、参数、工位或车辆状态变化，请重查。"}).ToList();

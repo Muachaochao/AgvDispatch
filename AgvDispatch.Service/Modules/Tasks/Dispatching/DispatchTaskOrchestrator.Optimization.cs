@@ -170,7 +170,8 @@ public sealed partial class DispatchTaskOrchestrator
         busy.UnionWith(await trafficResources.GetHeldVehicleIdsAsync(ct));
         var exclusion = current is null ? "车辆状态已丢失。" : VehicleExclusion(current, busy, policy);
         if (exclusion is not null) return Reject("safety", exclusion);
-        if (current!.CurrentStation != vehicle.CurrentStation) return Reject("safety", "车辆起点已变化，留待下一周期重新规划。");
+        if (!MapRouteSiteMapper.IsSameNode(map?.Definition, current!.CurrentStation, vehicle.CurrentStation))
+            return Reject("safety", "车辆起点已变化，留待下一周期重新规划。");
         if (fleetTest?.Allows(task.TaskId, vehicle.VehicleId) == false || charging?.AllowsNewBusiness(vehicle.VehicleId) == false ||
             taskSwitchGuard is not null && !await taskSwitchGuard.AllowsVehicleAsync(vehicle.VehicleId, task.TaskId, null, ct)) return Reject("safety", "车辆责任门禁已变化。");
         var unavailable = await trafficResources.GetUnavailableResourceIdsAsync(task.TaskId, ct);
@@ -182,33 +183,56 @@ public sealed partial class DispatchTaskOrchestrator
         var route = routePlanner.Plan(current.CurrentStation!, planned.Nodes[^1], unavailable);
         if (route is null || !route.Nodes.SequenceEqual(planned.Nodes) || !route.EdgeIds.SequenceEqual(planned.EdgeIds) ||
             !route.ResourceIds.SequenceEqual(planned.ResourceIds) || !ReferenceEquals(map, activeMap.Current)) return Reject("traffic", "道路、地图或公共资源已变化，重新进入匹配。");
-        var reservation = await _trafficLayer.AcquireAsync(new(step.StepId, task.TaskId, vehicle.VehicleId, route.Nodes[0], route.Nodes[^1],
-            route.EdgeIds, route.ResourceIds, false, "滚动全局匹配完成，按有效优先级申请路权。")
+        var windows = PlanInitialTransportWindows(route, map);
+        var firstWindow = windows[0];
+        var reservation = await _trafficLayer.AcquireAsync(new(step.StepId, task.TaskId, vehicle.VehicleId,
+            firstWindow.Source, firstWindow.Destination, firstWindow.EdgeIds, firstWindow.ResourceIds,
+            false, "滚动全局匹配完成，仅按有效优先级申请首个安全路权窗口。")
             { MapId = map?.MapId, MapVersionId = map?.VersionId, QueuePriority = priority }, ct);
         if (!reservation.Acquired) return Reject("traffic", "等待公共资源 " + reservation.BlockingResourceId + "；已取得的有效路权继续保留。");
         var commandPrepared = false;
         try
         {
             if (!executionGate.CanStartNewWork || !ReferenceEquals(map, activeMap.Current) ||
-                !agvStates.TryGet(vehicle.VehicleId, out var fresh) || fresh.CurrentStation != current.CurrentStation ||
+                !agvStates.TryGet(vehicle.VehicleId, out var fresh) ||
+                !MapRouteSiteMapper.IsSameNode(map?.Definition, fresh.CurrentStation, current.CurrentStation) ||
                 VehicleExclusion(current, busy, policy) is not null) return Reject("safety", "路权取得后实时状态变化，未登记命令。");
             optimization?.ReportLayer("safety", "Running", "发车前复核当前地图、车辆、PLC 许可及实际路权。");
-            if (preSendSafety is not null && await preSendSafety.CheckPreparationAsync(step, vehicle.VehicleId, route.Nodes, map, ct) is { } rejected)
+            if (preSendSafety is not null && await preSendSafety.CheckPreparationAsync(step, vehicle.VehicleId, firstWindow.Path, map, ct) is { } rejected)
                 return Reject("safety", rejected);
             if (preSendSafety is null && handshake is not null) await handshake.BindBeforeTransportAsync(step with { VehicleId = vehicle.VehicleId }, ct);
             optimization?.ReportLayer("safety", "Ready", "本候选通过发车前复核；命令将以原步骤编号原子登记。");
-            commandPrepared = await outbox.TryPrepareTransportStepAsync(task.TaskId, step.StepId, vehicle.VehicleId, route.Nodes,
-                options.GetAction(DispatchTaskStepType.GoToPickup), ct);
+            commandPrepared = await outbox.TryPrepareTransportWindowAsync(
+                task.TaskId, step.StepId, vehicle.VehicleId, route.Nodes[0], route.Nodes[^1],
+                firstWindow, windows, null, options.GetAction(DispatchTaskStepType.GoToPickup), ct);
             if (!commandPrepared) return Reject("execution", "任务或首步骤已变化，首段命令未重复登记。");
             if (handshakeOptions?.Enabled != true) await _trafficLayer.HandoffAsync(task.TaskId, step.StepId, ct);
             optimization?.ReportLayer("execution", "Waiting", "首段命令已持久化，等待发送前再次复核；恢复与重试沿用原步骤编号。", 1);
-            logger.LogInformation("滚动全局匹配已登记首段命令。TaskId={TaskId}, VehicleId={VehicleId}, EffectivePriority={Priority}", task.TaskId, vehicle.VehicleId, priority);
+            logger.LogInformation(
+                "滚动全局匹配已登记首段命令。TaskId={TaskId}, VehicleId={VehicleId}, WindowTo={WindowDestination}, WindowCount={WindowCount}, EffectivePriority={Priority}",
+                task.TaskId, vehicle.VehicleId, firstWindow.Destination, windows.Count, priority);
             return null;
         }
         finally
         {
             if (!commandPrepared) await _trafficLayer.RollbackUncommittedAsync(step.StepId, CancellationToken.None);
         }
+    }
+
+    private IReadOnlyList<AgvTransportRouteWindow> PlanInitialTransportWindows(
+        RoutePlan route, ActiveMapRuntimeSnapshot? map)
+    {
+        if (map is null)
+        {
+            return
+            [
+                new AgvTransportRouteWindow(
+                    0, route.Nodes[0], route.Nodes[^1], route.Nodes, route.EdgeIds, route.ResourceIds, true)
+            ];
+        }
+
+        return TransportRouteWindows.Plan(
+            route, map.Definition, _stepOptions, agvOptions?.NavigationCommandMode);
     }
 
     private static string? BindingVehicle(HandshakeCheckpoint? checkpoint)

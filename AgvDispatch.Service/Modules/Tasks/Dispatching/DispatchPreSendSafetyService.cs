@@ -141,10 +141,8 @@ public sealed class DispatchPreSendSafetyService(
         return null;
     }
 
-    private static bool SameSite(MapDefinition map, string? recorded, string? current) =>
-        !string.IsNullOrWhiteSpace(recorded) && !string.IsNullOrWhiteSpace(current) &&
-        string.Equals(MapRouteSiteMapper.ResolveLogicalNodeId(map, recorded),
-            MapRouteSiteMapper.ResolveLogicalNodeId(map, current), StringComparison.OrdinalIgnoreCase);
+    private static bool SameSite(MapDefinition? map, string? recorded, string? current) =>
+        MapRouteSiteMapper.IsSameNode(map, recorded, current);
 
     private async Task<string?> CheckVehicleAsync(string vehicleId, string source, bool newBusiness, CancellationToken ct)
     {
@@ -159,8 +157,10 @@ public sealed class DispatchPreSendSafetyService(
             return "车辆急停、阻挡、阻塞报警或健康状态未知。";
         if (robot.Tasks.Any(t => t.Status is 1 or 2 or 3) ||
             !dispatch.IdleOperatingStates.Contains(vehicle.OperatingState, StringComparer.OrdinalIgnoreCase)) return "车辆存在未结束的车端任务或尚未空闲。";
-        if (!string.Equals(vehicle.CurrentStation, source, StringComparison.OrdinalIgnoreCase) ||
-            !string.Equals(robot.CurrentStation, source, StringComparison.OrdinalIgnoreCase)) return "车辆实际起点与待发送路径不一致。";
+        var definition = activeMap.Current?.Definition;
+        if (!SameSite(definition, vehicle.CurrentStation, source) ||
+            !SameSite(definition, robot.CurrentStation, source))
+            return "车辆实际起点与待发送路径不一致。";
         var position = AgvMapPositionAnalyzer.Analyze(robot.X, robot.Y, robot.LocalizationConfidence,
             robot.LastSuccessfulPollAt, activeMap.Current?.Definition, now, TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds),
             mapOptions.MinimumLocalizationConfidence, mapOptions.MaximumRouteDeviationMeters);

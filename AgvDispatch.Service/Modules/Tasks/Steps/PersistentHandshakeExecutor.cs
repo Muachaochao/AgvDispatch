@@ -69,8 +69,10 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
                 vehicle.Tasks.Any(t => t.Status is 1 or 2 or 3) ||
                 vehicle.LastSuccessfulPollAt is not { } observed || observed > DateTimeOffset.UtcNow.AddSeconds(1) ||
                 DateTimeOffset.UtcNow - observed > TimeSpan.FromSeconds(Math.Clamp(options.StateMaxAgeSeconds, 1, 60)) ||
-                !current.Definition.Nodes.Any(n => n.Enabled && (n.Id == waiting || n.AgvSiteId == waiting) &&
-                    (n.Id == vehicle.CurrentStation || n.AgvSiteId == vehicle.CurrentStation))) return null;
+                !current.Definition.Nodes.Any(n => n.Enabled &&
+                    MapRouteSiteMapper.IsSameNode(current.Definition, n.Id, waiting) &&
+                    MapRouteSiteMapper.IsSameNode(current.Definition,
+                        n.Id, vehicle.CurrentStation))) return null;
         }
         return new(step.StepId, step.TaskId, step.VehicleId, waiting, dispatch.DumperDumpingSite,
             [], options.DumperExit.ResourceIds, true, "倒料设备与倒料区按原任务有效优先级排队；已有归属保持不变。")
@@ -112,7 +114,8 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
                 throw new InvalidOperationException("首段原点表地址已变化，保留原绑定和命令，禁止静默改用新地址发车。");
     }
 
-    public async Task ValidateTransportAsync(DispatchTaskStepWorkItem step,CancellationToken ct)
+    public async Task ValidateTransportAsync(DispatchTaskStepWorkItem step,CancellationToken ct,
+        bool dumperExitHandoverComplete=false)
     {
         if(!Enabled)return;
         if(options.PlcContractVersion!=HandshakeExecutionOptions.Version)throw new InvalidOperationException("当前不是28阶段契约，禁止准备/发送运输。");
@@ -125,9 +128,15 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
             throw new InvalidOperationException("前序持久化握手或契约绑定尚未核对，禁止准备新运输。");
         if(!Is(creation.DumperStationId,"Faulted",false))throw new InvalidOperationException("倒料机故障或反馈无效，禁止准备后续运输。");
         if(!Is(step.StationId,"Faulted",false)||!Is(step.StationId,"CommunicationOnline",true)||!Is(step.StationId,"FullBoxRemoved",true)||!Is(step.StationId,"EmptyBoxTaskAcknowledged",true))throw new InvalidOperationException("原工位故障/通讯或取箱、返箱保持责任不成立，禁止后续运输。");
-        if(step.StepType is DispatchTaskStepType.EnterDumpingPosition or DispatchTaskStepType.ReturnEmptyBox)
+        // ReturnEmptyBox is validated before the first leaving window and again for
+        // each later rolling-window command. Once the persisted exit handover has
+        // transferred the dumper to the next task, later windows must no longer
+        // require this task to keep equipment ownership or at-position outputs.
+        if(step.StepType is DispatchTaskStepType.EnterDumpingPosition or DispatchTaskStepType.ReturnEmptyBox &&
+            !(step.StepType==DispatchTaskStepType.ReturnEmptyBox&&dumperExitHandoverComplete))
             if(!await store.OwnsEquipmentAsync(step.TaskId,creation.DumperStationId,ct))throw new InvalidOperationException("原任务倒料设备归属缺失，禁止进入或离开指令准备/发送。");
-        if(step.StepType==DispatchTaskStepType.ReturnEmptyBox&&(!Is(creation.DumperStationId,"DumpingCompletedMayLeave",true)||!Is(creation.DumperStationId,"AgvAtDumpingPosition",true)))
+        if(step.StepType==DispatchTaskStepType.ReturnEmptyBox&&!dumperExitHandoverComplete&&
+            (!Is(creation.DumperStationId,"DumpingCompletedMayLeave",true)||!Is(creation.DumperStationId,"AgvAtDumpingPosition",true)))
             throw new InvalidOperationException("本轮离开许可或倒料位保持未成立，禁止准备返程。");
     }
 
@@ -181,7 +190,15 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
                 throw new InvalidOperationException("待发命令与原任务持久候车位不一致，禁止发送。");
         }
         if(original.StepType==DispatchTaskStepType.GoToPickup)await BindBeforeTransportAsync(step,ct);
-        else await ValidateTransportAsync(step,ct);
+        else
+        {
+            var checkpoint=await store.GetAsync(taskId,stepId,ct);
+            var dumperExitHandoverComplete=continuationWindow&&
+                original.StepType==DispatchTaskStepType.ReturnEmptyBox&&
+                checkpoint?.ContractVersion==HandshakeExecutionOptions.Version&&
+                checkpoint.Phase=="ExitHandoverComplete";
+            await ValidateTransportAsync(step,ct,dumperExitHandoverComplete);
+        }
     }
     private bool Is(string station,string variable,bool expected)
     {
@@ -203,7 +220,12 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
         var binding=root==null?null:await store.GetAsync(step.TaskId,root.StepId,ct);
         if(binding?.ContractVersion!=HandshakeExecutionOptions.Version||!BindingMatches(binding,step))
             throw new InvalidOperationException("缺少本任务首段原契约绑定；旧任务禁止自动迁入新握手。");
-        if(step.StepType==DispatchTaskStepType.PlaceEmptyBox&&(!await HandoverVerifiedAsync(step.TaskId,ct)||!await ReturnVerifiedAsync(step,ct)))return true;
+        var checkpoint=await store.GetAsync(step.TaskId,step.StepId,ct);
+        // These proofs gate creation of a new placement/closure checkpoint. Once
+        // the durable checkpoint exists, a restart must continue the audited phase
+        // instead of requiring a completed return command to remain observable.
+        if(step.StepType==DispatchTaskStepType.PlaceEmptyBox&&checkpoint==null&&
+            (!await HandoverVerifiedAsync(step.TaskId,ct)||!await ReturnVerifiedAsync(step,ct)))return true;
         // Acquire ownership before interpreting shared signals as this task's initial baseline.
         // A waiting vehicle must never mark another owner's high notification as its own orphan cycle.
         if(step.StepType==DispatchTaskStepType.WaitForDumperReady)
@@ -236,7 +258,6 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
             if(owner!=null)return true;
         }
         if(step.StepType==DispatchTaskStepType.DumpFullBox&&!await store.OwnsEquipmentAsync(step.TaskId,creation.DumperStationId,ct))throw new InvalidOperationException("本轮倒料设备归属缺失，禁止重新认领并开启周期。");
-        var checkpoint=await store.GetAsync(step.TaskId,step.StepId,ct);
         if(checkpoint==null)
         {
             // Any prior notification on first encounter is ambiguous: do not reset/reissue it.
@@ -256,6 +277,8 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
             };
             checkpoint=await store.BeginAsync(step,HandshakeExecutionOptions.Version,orphan?"ReviewRequired":initial,baseline,ct);
         }
+        if(checkpoint is null)
+            throw new InvalidOperationException("握手检查点创建失败，禁止继续执行当前步骤。");
         if(checkpoint.ContractVersion!=HandshakeExecutionOptions.Version||checkpoint.PendingSignal!=null||checkpoint.Phase=="ReviewRequired")
             throw new InvalidOperationException("原握手存在版本冲突、写入结果未知或缺少原始阶段；保留原周期，进入恢复核对，禁止自动重发。");
         if(!BindingMatches(checkpoint,step))
@@ -270,9 +293,9 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
             if(!Is(dumper,"Faulted",false))throw new InvalidOperationException("倒料机故障或故障反馈无效，保持握手阶段。");
         Task Move(string phase,string reason)=>MoveAsync(checkpoint,phase,reason,ct);
         Task Write(string device,string signal,bool value,string next)=>WriteAsync(checkpoint,device,signal,value,next,ct);
-        if(step.StepType==DispatchTaskStepType.CompletePlcHandshake&&(!await ReturnVerifiedAsync(step,ct)||!await HandoverVerifiedAsync(step.TaskId,ct)||!Is(station,"BoxPresent",true)||
-            checkpoint.Phase is not ("VerifyClosure" or "ReadyToComplete")&&!Is(station,"FullBoxRequested",false)))return true;
-        switch(checkpoint.Phase)
+        if(step.StepType==DispatchTaskStepType.CompletePlcHandshake&&checkpoint==null&&
+            (!await ReturnVerifiedAsync(step,ct)||!await HandoverVerifiedAsync(step.TaskId,ct)||!Is(station,"BoxPresent",true)||!Is(station,"FullBoxRequested",false)))return true;
+        switch(checkpoint!.Phase)
         {
             case "AwaitBoxAbsent":
                 if(Is(station,"BoxPresent",false))await Move("NotifyRemoved","观察本轮取箱步骤箱体不存在；不替代车端取货终态。");break;
@@ -407,8 +430,12 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
     private async Task<TaskExitEvidence?> ReturnEvidenceAsync(DispatchTaskStepWorkItem step,CancellationToken ct)
     {
         var returned=(await taskReader.GetStepsAsync(step.TaskId,ct)).FirstOrDefault(s=>s.StepType==DispatchTaskStepType.ReturnEmptyBox);
-        if(returned?.Status!=DispatchTaskStepStatus.Completed||string.IsNullOrWhiteSpace(returned.VendorTaskId)||step.VehicleId==null||
-            !vehicles.TryGet(step.VehicleId,out var vehicle)||vehicle.Connection!=ConnectionState.Online||vehicle.Quality!=SignalQuality.Good||vehicle.LastSuccessfulPollAt is not {} time||
+        // PlaceEmptyBox and CompletePlcHandshake are station-level business steps
+        // and do not carry VehicleId. The owning vehicle is recorded on the
+        // original ReturnEmptyBox step, so use that identity for return evidence.
+        if(returned?.Status!=DispatchTaskStepStatus.Completed||string.IsNullOrWhiteSpace(returned.VendorTaskId)||
+            string.IsNullOrWhiteSpace(returned.VehicleId)||
+            !vehicles.TryGet(returned.VehicleId,out var vehicle)||vehicle.Connection!=ConnectionState.Online||vehicle.Quality!=SignalQuality.Good||vehicle.LastSuccessfulPollAt is not {} time||
             DateTimeOffset.UtcNow-time>TimeSpan.FromSeconds(Math.Clamp(options.StateMaxAgeSeconds,1,60))||time>DateTimeOffset.UtcNow.AddSeconds(1))return null;
         var pickup=dispatch.GetPickupSite(step.StationId);
         var definition=map.Current?.Definition;
@@ -421,7 +448,7 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
         if(definition.Nodes.Count(n=>n.Enabled&&string.Equals(string.IsNullOrWhiteSpace(n.AgvSiteId)?n.Id:n.AgvSiteId,vendorSite,StringComparison.OrdinalIgnoreCase))!=1||
             !string.Equals(vehicle.CurrentStation,vendorSite,StringComparison.OrdinalIgnoreCase)||vehicle.EmergencyStopped!=false||vehicle.Blocked!=false||
             AgvObstaclePolicy.IsBlocked(vehicle)||AgvObstaclePolicy.HasBlockingAlarm(vehicle))return null;
-        return new(step.TaskId,step.StepId,step.VehicleId,returned.StepId,returned.VendorTaskId!,vendorSite,node.Id,map.Current!.MapId,map.Current.VersionId,time,DateTimeOffset.UtcNow);
+        return new(step.TaskId,step.StepId,returned.VehicleId,returned.StepId,returned.VendorTaskId!,vendorSite,node.Id,map.Current!.MapId,map.Current.VersionId,time,DateTimeOffset.UtcNow);
     }
 
     private async Task WriteAsync(HandshakeCheckpoint checkpoint,string station,string signal,bool value,string next,CancellationToken ct)

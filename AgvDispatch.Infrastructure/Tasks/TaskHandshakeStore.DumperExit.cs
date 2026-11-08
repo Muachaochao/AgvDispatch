@@ -102,11 +102,19 @@ public sealed partial class TaskHandshakeStore
         if(task==null || task.VehicleId!=proof.VehicleId || task.Stage is not (70 or 80) || task.CancelRequestId!=null)
             throw new InvalidOperationException("返程任务已冻结、取消或归属变化。");
         var commands=await database.Queryable<AgvCommandOutboxEntity>().Where(c=>c.TaskId==proof.TaskId && c.StepId==proof.StepId).ToListAsync(ct);
-        if(commands.Count!=1 || commands[0].Status!=(int)AgvCommandStatus.Sent || commands[0].VendorCommandId!=proof.VendorTaskId || commands[0].SentAt is not {} sent)
+        var finalCommands=commands.Where(c=>c.Status==(int)AgvCommandStatus.Sent &&
+            c.VendorCommandId==proof.VendorTaskId && c.SentAt is not null).ToArray();
+        // A return step may legitimately span several committed rolling windows.
+        // Every window must be sent, and the proof must identify exactly one final
+        // vendor command; requiring the whole step to contain one command breaks
+        // valid multi-window returns.
+        if(commands.Count==0 || commands.Any(c=>c.Status!=(int)AgvCommandStatus.Sent) || finalCommands.Length!=1)
             throw new InvalidOperationException("返程原命令未唯一确认发送。");
+        var originalCommand=finalCommands[0];
+        var sent=originalCommand.SentAt!.Value;
         if(proof.First.ObservedAt<new DateTimeOffset(sent) || proof.VendorObservedAt<new DateTimeOffset(sent))
             throw new InvalidOperationException("出区观测早于本轮返程发送。");
-        var route=TransportRouteSnapshots.Read(commands[0]);
+        var route=TransportRouteSnapshots.Read(originalCommand);
         var hash=EngineeringRuntimeIdentity.MapHash(map.Definition);
         var legacyHash=TransportRouteSnapshots.Hash(JsonSerializer.Serialize(map.Definition,new JsonSerializerOptions(JsonSerializerDefaults.Web)));
         if(route.MapId!=map.MapId || route.MapVersionId!=map.VersionId || route.MapDefinitionHash!=hash || proof.MapDefinitionHash!=hash)

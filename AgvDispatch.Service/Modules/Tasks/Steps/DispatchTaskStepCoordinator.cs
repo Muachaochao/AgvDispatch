@@ -3,6 +3,7 @@ using AgvDispatch.Application.Tasks;
 using AgvDispatch.Connectors.Agv;
 using AgvDispatch.Domain.Agvs;
 using AgvDispatch.Domain.Devices;
+using AgvDispatch.Domain.Maps;
 using AgvDispatch.Domain.Tasks;
 
 namespace AgvDispatch.Service;
@@ -331,8 +332,9 @@ public sealed class DispatchTaskStepCoordinator(
             AgvObstaclePolicy.IsBlocked(vehicle) || AgvObstaclePolicy.HasBlockingAlarm(vehicle) ||
             vehicle.LastSuccessfulPollAt is not { } observed || observed > DateTimeOffset.UtcNow.AddSeconds(1) ||
             DateTimeOffset.UtcNow - observed > TimeSpan.FromSeconds(mapOptions?.PositionStaleSeconds ?? 5) || vehicle.Tasks.Any(t => t.Status is 1 or 2 or 3)) return false;
-        return current.Definition.Nodes.Any(n => n.Enabled && (n.Id == source || n.AgvSiteId == source) &&
-            (n.Id == vehicle.CurrentStation || n.AgvSiteId == vehicle.CurrentStation));
+        return current.Definition.Nodes.Any(n => n.Enabled &&
+            MapRouteSiteMapper.IsSameNode(current.Definition, n.Id, source) &&
+            MapRouteSiteMapper.IsSameNode(current.Definition, n.Id, vehicle.CurrentStation));
     }
 
     private Task ProcessStepAsync(
@@ -466,12 +468,25 @@ public sealed class DispatchTaskStepCoordinator(
         }
 
         var commandPrepared = false;
+        async Task ReleaseUncommittedAsync(string reason)
+        {
+            if ((string.IsNullOrWhiteSpace(retainedWaitingResource)))
+            {
+                await trafficResources.ReleaseStepAsync(step.StepId, cancellationToken);
+                return;
+            }
+            await trafficResources.ReleaseStepExceptResourcesAsync(
+                step.StepId,
+                [retainedWaitingResource],
+                reason + "；保留本任务已绑定的独立候车位。",
+                cancellationToken);
+        }
         try
         {
             if (preSendSafety is not null && await preSendSafety.CheckPreparationAsync(step, step.VehicleId, firstWindow.Path,
                 planningMap, cancellationToken) is { } rejection)
             {
-                await trafficResources.ReleaseStepAsync(step.StepId, cancellationToken);
+                await ReleaseUncommittedAsync("安全条件不满足，撤回未授予的公共路段建议");
                 await _trafficLayer.SuspendRecommendationAsync(observation with { Reason = "安全条件不满足，撤回未授予的排队推荐：" + rejection }, cancellationToken);
                 logger.LogDebug("后续运输步骤等待安全复核。StepId={StepId}, Reason={Reason}", step.StepId, rejection);
                 return;
@@ -507,14 +522,14 @@ public sealed class DispatchTaskStepCoordinator(
             }
             else
             {
-                await trafficResources.ReleaseStepAsync(step.StepId, cancellationToken);
+                await ReleaseUncommittedAsync("运输命令未准备成功，释放未提交的公共路段");
             }
         }
         catch
         {
             if (!commandPrepared)
             {
-                await trafficResources.ReleaseStepAsync(step.StepId, cancellationToken);
+                await ReleaseUncommittedAsync("运输命令准备异常，释放未提交的公共路段");
             }
             throw;
         }

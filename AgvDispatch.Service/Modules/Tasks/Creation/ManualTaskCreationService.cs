@@ -202,7 +202,10 @@ public sealed partial class ManualTaskCreationService(IManualTaskCreationReposit
             var latestVehicle=latest.Vehicles.FirstOrDefault(v=>v.VehicleId==vehicle.VehicleId);
             var latestStation=latest.Stations.FirstOrDefault(s=>s.StationId==request.StationId);
             if(!ReferenceEquals(mapBefore,activeMap.Current) || parameters.Revision!=request.ParameterRevision ||
-                !latest.Available || latestVehicle is not {Available:true} || latestVehicle.CurrentSite!=vehicle.CurrentSite || latestStation is not {Available:true})
+                !latest.Available || latestVehicle is not {Available:true} ||
+                !MapRouteSiteMapper.IsSameNode(activeMap.Current?.Definition,
+                    latestVehicle.CurrentSite,vehicle.CurrentSite) ||
+                latestStation is not {Available:true})
                 return new(false,false,null,"车端核验期间运行地图、参数、工位或车辆状态变化；未创建任务，请刷新。");
         }
         var result = await repository.TryCreateManualAsync(request, creation.DumperStationId, user.WindowsIdentity, ct,

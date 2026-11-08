@@ -42,11 +42,40 @@ public sealed class ObstacleRecoveryStore(
     public async Task SaveAsync(ObstacleRecoveryEntity row, CancellationToken cancellationToken)
     {
         row.UpdatedAt = _clock.GetUtcNow().UtcDateTime;
-        if (await database.Queryable<ObstacleRecoveryEntity>().AnyAsync(
-                item => item.RecoveryId == row.RecoveryId, cancellationToken))
-            await database.Updateable(row).ExecuteCommandAsync(cancellationToken);
-        else
-            await database.Insertable(row).ExecuteCommandAsync(cancellationToken);
+        var existing = await database.Queryable<ObstacleRecoveryEntity>()
+            .Where(item => item.TaskId == row.TaskId && item.StepId == row.StepId)
+            .FirstAsync(cancellationToken);
+        if (existing is null)
+        {
+            try
+            {
+                await database.Insertable(row).ExecuteCommandAsync(cancellationToken);
+                return;
+            }
+            catch
+            {
+                // A second process may have inserted the same logical lifecycle
+                // between the read and insert. Only absorb that race when the
+                // unique TaskId+StepId row is now observable.
+                existing = await database.Queryable<ObstacleRecoveryEntity>()
+                    .Where(item => item.TaskId == row.TaskId && item.StepId == row.StepId)
+                    .FirstAsync(cancellationToken);
+                if (existing is null) throw;
+            }
+        }
+
+        // obstacle_recovery is unique by TaskId+StepId. A later block on the
+        // same original step reopens the existing audit identity instead of
+        // inserting a second row and failing the coordinator every cycle.
+        if (!existing.RecoveryId.Equals(row.RecoveryId, StringComparison.OrdinalIgnoreCase))
+        {
+            row.RecoveryId = existing.RecoveryId;
+            row.CreatedAt = existing.CreatedAt;
+            row.Revision = Math.Max(existing.Revision + 1, row.Revision);
+        }
+        await database.Updateable(row)
+            .Where(item => item.RecoveryId == existing.RecoveryId)
+            .ExecuteCommandAsync(cancellationToken);
     }
 
     public ObstacleRecoverySnapshot Snapshot(ObstacleRecoveryEntity row)

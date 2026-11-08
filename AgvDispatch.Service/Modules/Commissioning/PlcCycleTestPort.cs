@@ -86,7 +86,7 @@ public sealed class PlcCycleTestPort(
             MapNode Resolve(string site)
             {
                 var nodes = mapDefinition.Nodes.Where(node => node.Enabled &&
-                    (node.Id == site || node.AgvSiteId == site)).ToArray();
+                    MapRouteSiteMapper.IsSameNode(mapDefinition,node.Id,site)).ToArray();
                 return nodes.Length == 1 ? nodes[0]
                     : throw new InvalidOperationException($"站点 {site} 的启用地图映射不是唯一项。");
             }
@@ -114,7 +114,10 @@ public sealed class PlcCycleTestPort(
 
     public static bool AllPlcsAreLoopback(IEnumerable<AgvDispatch.Connectors.Plc.PlcOptions> connections)
     {
-        var enabled = connections.Where(connection => connection.Enabled).ToArray();
-        return enabled.Length == 1 && enabled[0].IpAddress == "127.0.0.1" && enabled[0].Port == 10200;
+        // Runtime communication settings may enable the loopback PLC after the
+        // dependency graph has been built. Identify the simulator from the complete
+        // configured endpoint set instead of the startup Enabled flag.
+        var configured = connections.ToArray();
+        return configured.Length == 1 && configured[0].IpAddress == "127.0.0.1" && configured[0].Port == 10200;
     }
 }

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using AgvDispatch.Application.Abstractions;
+using AgvDispatch.Domain.Maps;
 using Microsoft.Extensions.Hosting;
 
 namespace AgvDispatch.Service;
@@ -7,7 +8,8 @@ namespace AgvDispatch.Service;
 // A durable session, not a second task executor. Nine-step tasks retain their own
 // outbox, handshake and cancellation rules. Uncertain sends never auto retry.
 public sealed class BusinessRunService(IBusinessRunPort port, BusinessRunOwnership ownership, string path,
-    IChargingDispatchGuard? charging=null, ITaskSwitchGuard? taskSwitchGuard=null)
+    IChargingDispatchGuard? charging=null, ITaskSwitchGuard? taskSwitchGuard=null,
+    IActiveMapRuntime? map=null)
     : IsolatedBackgroundService, IBusinessRunService
 {
     private readonly SemaphoreSlim mutex = new(1, 1);
@@ -129,7 +131,9 @@ public sealed class BusinessRunService(IBusinessRunPort port, BusinessRunOwnersh
                 string.IsNullOrWhiteSpace(o.CurrentSite) || run.TaskId is not null && o.CurrentTaskState is not ("Completed" or "Cancelled") ||
                 run.VendorTaskId is not null && !o.StandbyCompleted)
                 throw new InvalidOperationException(o.Block ?? "原任务、呼叫、握手或待机停靠尚未核对闭合，不解除占用。");
-            if (run.ChargeResumePending && o.CurrentSite != run.Plan.StandbySite)
+            if (run.ChargeResumePending &&
+                !MapRouteSiteMapper.IsSameNode(map?.Current?.Definition,
+                    o.CurrentSite, run.Plan.StandbySite))
                 throw new InvalidOperationException("充电交接尚未返回原待机点，不能关闭业务等待记录。");
             if (run.PendingRequestId is not null && run.TaskId is null && run.VendorTaskId is null)
             {
@@ -237,7 +241,9 @@ public sealed class BusinessRunService(IBusinessRunPort port, BusinessRunOwnersh
             }
             if (run.Stage == "Returning")
             {
-                if (!o.StandbyCompleted || !o.Stopped || o.CurrentSite != run.Plan.StandbySite) return;
+                if (!o.StandbyCompleted || !o.Stopped ||
+                    !MapRouteSiteMapper.IsSameNode(map?.Current?.Definition,
+                        o.CurrentSite, run.Plan.StandbySite)) return;
                 await port.ReleaseReturnAsync(run, ct);
                 run = run with { VendorTaskId = null, PendingRequestId = null }; ownership.Returning = false;
                 Move("Waiting", "已核对到达待机点，检查途中新增呼叫。");
@@ -290,7 +296,8 @@ public sealed class BusinessRunService(IBusinessRunPort port, BusinessRunOwnersh
                 return;
             }
             if (!o.AllClosed || o.AnyActiveTasks || !o.Stopped) return;
-            if (o.CurrentSite != run.Plan.StandbySite)
+            if (!MapRouteSiteMapper.IsSameNode(
+                    map?.Current?.Definition, o.CurrentSite, run.Plan.StandbySite))
             {
                 run = run with { PendingRequestId = Guid.NewGuid().ToString("N") };
                 ownership.Returning = true; Move("ReturnSending", "原任务闭合且无呼叫，准备返回待机点。");
@@ -322,7 +329,9 @@ public sealed class BusinessRunService(IBusinessRunPort port, BusinessRunOwnersh
         if (observation.Block is not null) throw new InvalidOperationException(observation.Block);
         if (observation.MapId != run.MapId || observation.MapVersionId != run.MapVersionId || observation.ParameterRevision != run.ParameterRevision)
             throw new InvalidOperationException("充电期间地图或参数版本变化，不能自动恢复业务。");
-        if (!observation.AllClosed || observation.AnyActiveTasks || !observation.Stopped || observation.CurrentSite != run.Plan.StandbySite) return;
+        if (!observation.AllClosed || observation.AnyActiveTasks || !observation.Stopped ||
+            !MapRouteSiteMapper.IsSameNode(map?.Current?.Definition,
+                observation.CurrentSite, run.Plan.StandbySite)) return;
         await port.ValidateAsync(run.Plan, ct);
         // Validation can outlast the first snapshot. Recheck the same conditions
         // under the charging lease before accepting the original business plan.
@@ -330,7 +339,9 @@ public sealed class BusinessRunService(IBusinessRunPort port, BusinessRunOwnersh
         if (observation.Block is not null || observation.MapId != run.MapId || observation.MapVersionId != run.MapVersionId || observation.ParameterRevision != run.ParameterRevision)
             throw new InvalidOperationException(observation.Block ?? "恢复业务前地图或参数版本变化。");
         if (!charging.AllowsNewBusiness(run.Plan.VehicleId) || charging.OwnsVehicle(run.Plan.VehicleId) ||
-            !observation.AllClosed || observation.AnyActiveTasks || !observation.Stopped || observation.CurrentSite != run.Plan.StandbySite) return;
+            !observation.AllClosed || observation.AnyActiveTasks || !observation.Stopped ||
+            !MapRouteSiteMapper.IsSameNode(map?.Current?.Definition,
+                observation.CurrentSite, run.Plan.StandbySite)) return;
         if (run.StopRequested)
         {
             run = run with { ChargeResumePending = false, ChargeSimulatorPaused = false, ChargeSimulatorResumeAttempted = false };

@@ -67,7 +67,11 @@ public sealed partial class BusinessRunPort(IManualTaskCreationService manual, I
         !gate.CanStartNewWork ? gate.NewWorkBlockReason : dispatch.GetConfigurationError();
     private MapNode Resolve(string site)
     {
-        var nodes = map.Current?.Definition.Nodes.Where(n => n.Enabled && (n.Id == site || n.AgvSiteId == site)).ToArray() ?? [];
+        var definition = map.Current?.Definition;
+        var nodes = definition is null
+            ? []
+            : definition.Nodes.Where(n =>
+                n.Enabled && MapRouteSiteMapper.IsSameNode(definition, n.Id, site)).ToArray();
         return nodes.Length == 1 && !string.IsNullOrWhiteSpace(nodes[0].AgvSiteId) ? nodes[0]
             : throw new InvalidOperationException("启用站点映射不唯一或缺少厂家编号：" + site);
     }
@@ -83,10 +87,16 @@ public sealed partial class BusinessRunPort(IManualTaskCreationService manual, I
         var standby = Resolve(plan.StandbySite);
         await CheckEmptyAsync(plan.VehicleId, ct);
         var config = parameters.Capture();
-        if (config.Standbys.Count > 0 && !config.Standbys.Any(b => (b.Site == standby.Id || b.Site == standby.AgvSiteId) &&
+        if (config.Standbys.Count > 0 && !config.Standbys.Any(b =>
+            MapRouteSiteMapper.IsSameNode(map.Current?.Definition, b.Site, standby.Id) &&
             b.AllowedVehicleIds.Contains(plan.VehicleId, StringComparer.OrdinalIgnoreCase)))
             throw new InvalidOperationException("所选待机位未配置给当前车辆所属车辆池，请在工程配置中心核对待机位。");
-        if (dispatch.GetDumperWaitingSites().Contains(plan.StandbySite) || config.DumpingSite == plan.StandbySite || config.Pickups.Any(p => p.PickupSite == plan.StandbySite))
+        var definition = map.Current?.Definition;
+        if (dispatch.GetDumperWaitingSites().Any(site =>
+                MapRouteSiteMapper.IsSameNode(definition, site, plan.StandbySite)) ||
+            MapRouteSiteMapper.IsSameNode(definition, config.DumpingSite, plan.StandbySite) ||
+            config.Pickups.Any(pickup =>
+                MapRouteSiteMapper.IsSameNode(definition, pickup.PickupSite, plan.StandbySite)))
             throw new InvalidOperationException("待机点必须独立于取放箱、倒料及倒料等待点。");
         foreach (var pickup in config.Pickups.Where(p => plan.Stations.Contains(p.StationId)))
         {
@@ -265,7 +275,10 @@ public sealed partial class BusinessRunPort(IManualTaskCreationService manual, I
         if (!(await resources.TryAcquireAsync(StandbyId(run), StandbyId(run), run.Plan.VehicleId, route.ResourceIds, ct)).Acquired)
             throw new InvalidOperationException("待机路线资源尚未取得。");
         var latest = await ObserveAsync(run, ct);
-        if (latest.Block is not null || latest.Calls.Length != 0 || latest.AnyActiveTasks || !latest.AllClosed || !latest.Stopped || latest.CurrentSite != observed.CurrentSite)
+        if (latest.Block is not null || latest.Calls.Length != 0 || latest.AnyActiveTasks ||
+            !latest.AllClosed || !latest.Stopped ||
+            !MapRouteSiteMapper.IsSameNode(map.Current?.Definition,
+                latest.CurrentSite, observed.CurrentSite))
             throw new InvalidOperationException("发送前现场状态变化，保留待机意图和路权待核对，未发送车辆。");
         // Intent already persisted by BusinessRunService. On timeout retain reservation; never retry.
         var chain = new AgvTransportChain(StandbyId(run), run.Plan.VehicleId, path, 1, true);

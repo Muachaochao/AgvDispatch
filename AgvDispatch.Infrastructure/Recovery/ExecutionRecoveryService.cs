@@ -5,6 +5,7 @@ using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Application.Maps;
 using AgvDispatch.Domain.Agvs;
 using AgvDispatch.Domain.Devices;
+using AgvDispatch.Domain.Maps;
 using AgvDispatch.Domain.Tasks;
 using AgvDispatch.Infrastructure.Persistence.Entities;
 using SqlSugar;
@@ -191,6 +192,8 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
             return await RejectAsync(user, request.TicketId, "设备返回承载容器 " + load.ContainerId + "，请填写同一容器编号，不能用其他编号或说明替代。", ct);
         var task = observed.Task;
         var step = observed.Step;
+        var completedIntermediateWindow = task is not null && step is not null &&
+            CompletedIntermediateWindowAtSafePoint(step, observed.Command, observed.Vendor, observed.Vehicle);
         if (request.Decision == RecoveryDecision.CloseCancelled)
             return await CloseCancelledAsync(user, request, ticket, observed, ct);
         var recoveringFault = task?.Stage == (int)DispatchTaskStage.Faulted && step?.Status == (int)DispatchTaskStepStatus.Failed &&
@@ -214,7 +217,8 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
             }
             else if (step.Status == (int)DispatchTaskStepStatus.Executing)
             {
-                if (!VendorMatches(step, task, observed.Vendor) || !Running(observed.Vendor!.State))
+                if (!VendorMatches(step, task, observed.Vendor) ||
+                    (!Running(observed.Vendor!.State) && !completedIntermediateWindow))
                     return await RejectAsync(user, request.TicketId, "原运输任务未获车辆确认，不能继续。已完成运输请使用到站补记；历史缺失保持等待。", ct);
             }
             else if (observed.Command != null)
@@ -224,7 +228,8 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
                     if (!VendorMatches(step, task, observed.Vendor) || (!Running(observed.Vendor!.State) && observed.Vendor.State != AgvTransportTaskState.Completed))
                         return await RejectAsync(user, request.TicketId, "发送结果不明且车辆原任务记录不可核对，禁止重发。不能把历史404当成未执行。", ct);
                 }
-                else if (observed.Vehicle?.CurrentStation != step.SourceSite)
+                else if (!MapRouteSiteMapper.IsSameNode(map.Current?.Definition,
+                             observed.Vehicle?.CurrentStation, step.SourceSite))
                     return await RejectAsync(user, request.TicketId, "未发送命令的车辆已离开原起点，需保留等待并重新核对路线。", ct);
             }
             else if (step.Status != (int)DispatchTaskStepStatus.Ready)
@@ -234,7 +239,9 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
                 var previous = await database.Queryable<DispatchTaskStepEntity>().Where(s => s.TaskId == task.TaskId && s.Sequence < step.Sequence && s.DestinationSite != null && s.Status == 50 &&
                     (s.StepType == 10 || s.StepType == 30 || s.StepType == 50 || s.StepType == 70))
                     .OrderByDescending(s => s.Sequence).FirstAsync(ct);
-                if (previous?.DestinationSite != null && observed.Vehicle?.CurrentStation != previous.DestinationSite)
+                if (previous?.DestinationSite != null &&
+                    !MapRouteSiteMapper.IsSameNode(map.Current?.Definition,
+                        observed.Vehicle?.CurrentStation, previous.DestinationSite))
                     return await RejectAsync(user, request.TicketId, "车辆已离开原流程停靠站，不能继续PLC节点或下一段运输。", ct);
                 var plcBlock = await PlcContinuationBlockAsync(task, step, ct);
                 if (plcBlock != null) return await RejectAsync(user, request.TicketId, plcBlock, ct);
@@ -262,8 +269,13 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
             }
             else
             {
-                ticket.Verified = observed.Vendor?.State != AgvTransportTaskState.Completed;
-                ticket.Reason = ticket.Verified ? "人工核对：继续原节点，原任务/步骤/命令编号保留。" : "原命令已确认接受且完成，请刷新后补记已到站；禁止重发。";
+                ticket.Verified = observed.Vendor?.State != AgvTransportTaskState.Completed ||
+                    completedIntermediateWindow;
+                ticket.Reason = completedIntermediateWindow
+                    ? "当前滚动窗口已到安全点并停稳；恢复放行后由原任务申请下一窗口，不重发当前命令。"
+                    : ticket.Verified
+                        ? "人工核对：继续原节点，原任务/步骤/命令编号保留。"
+                        : "原命令已确认接受且完成，请刷新后补记已到站；禁止重发。";
             }
             ticket.MaterialReference = request.MaterialReference.Trim();
             ticket.VerifiedAt = DateTime.Now;
@@ -294,7 +306,10 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
                 (ticket.MaterialReference != null && (ticket.PhysicalFingerprint != PhysicalFingerprint(observed) || ticket.VerifiedAt == null || DateTime.Now - ticket.VerifiedAt > TimeSpan.FromMinutes(5))))
                 return new(false, observed.HardBlock ?? $"{ticket.TaskId}执行节点已变化，需重新核对。");
             if (observed.Step?.Status == (int)DispatchTaskStepStatus.Executing &&
-                (!VendorMatches(observed.Step, observed.Task!, observed.Vendor) || !Running(observed.Vendor!.State)))
+                (!VendorMatches(observed.Step, observed.Task!, observed.Vendor) ||
+                 (!Running(observed.Vendor!.State) &&
+                  !CompletedIntermediateWindowAtSafePoint(
+                      observed.Step, observed.Command, observed.Vendor, observed.Vehicle))))
                 return new(false, "放行前原运输状态发生变化，请重新核对并补记到站。");
         }
         var result = await database.Ado.UseTranAsync(() => MarkReleasedAsync(user.WindowsIdentity, request.Reason.Trim(), ct));
@@ -543,21 +558,23 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
                     s.StepType == (int)DispatchTaskStepType.DeliverFullBoxToDumper &&
                     s.Status == (int)DispatchTaskStepStatus.Completed)
                 .OrderByDescending(s => s.Sequence).FirstAsync(ct);
-            var waitingLeases = delivery is null ? [] : await database.Queryable<TrafficResourceLeaseEntity>()
-                .Where(l => l.TaskId == task.TaskId && l.OwnerStepId == delivery.StepId &&
-                    l.ResourceId.StartsWith("WAIT-"))
+            var taskLeases = await database.Queryable<TrafficResourceLeaseEntity>()
+                .Where(l => l.TaskId == task.TaskId)
                 .ToListAsync(ct);
-            var ownsDump = await database.Queryable<TrafficResourceLeaseEntity>()
-                .Where(l => l.TaskId == task.TaskId && l.ResourceId.StartsWith("DUMP-"))
-                .AnyAsync(ct);
+            var waitingLeases = delivery is null ? [] : taskLeases.Where(l =>
+                l.OwnerStepId == delivery.StepId &&
+                (l.ResourceId.StartsWith("WAIT-", StringComparison.OrdinalIgnoreCase) ||
+                 l.ResourceId.StartsWith("DUMPER-WAIT-", StringComparison.OrdinalIgnoreCase))).ToArray();
+            var ownsDump = taskLeases.Any(l =>
+                l.ResourceId.StartsWith("DUMP-", StringComparison.OrdinalIgnoreCase) ||
+                l.ResourceId.StartsWith("DUMPER-AREA-", StringComparison.OrdinalIgnoreCase));
             var onDeliveryDestination = task.VehicleId is { } vehicleId &&
                 vehicles.TryGet(vehicleId, out var vehicle) &&
                 vehicle.Connection == ConnectionState.Online &&
                 vehicle.Quality == SignalQuality.Good &&
                 delivery?.DestinationSite is { } destination &&
-                string.Equals(vehicle.CurrentStation, destination,
-                    StringComparison.OrdinalIgnoreCase);
-            if (onDeliveryDestination && waitingLeases.Count > 0 && !ownsDump) return null;
+                MapRouteSiteMapper.IsSameNode(map.Current?.Definition, vehicle.CurrentStation, destination);
+            if (onDeliveryDestination && waitingLeases.Length > 0 && !ownsDump) return null;
         }
         var checkpoint=await database.Queryable<TaskHandshakeEntity>().Where(h=>h.TaskId==task.TaskId&&h.StepId==step.StepId).FirstAsync(ct);
         if(checkpoint!=null)
@@ -630,6 +647,31 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
     }
     private static bool Running(AgvTransportTaskState state) => state is AgvTransportTaskState.Suspended or AgvTransportTaskState.Queued or AgvTransportTaskState.Assigned or
         AgvTransportTaskState.GoingToSource or AgvTransportTaskState.AtSource or AgvTransportTaskState.Loading or AgvTransportTaskState.GoingToDestination or AgvTransportTaskState.AtDestination;
+    private bool CompletedIntermediateWindowAtSafePoint(DispatchTaskStepEntity step,
+        AgvCommandOutboxEntity? command, AgvTransportTaskStatus? vendor, AgvRobotSnapshot? vehicle)
+    {
+        if (step.Status != (int)DispatchTaskStepStatus.Executing || command is null ||
+            command.AttemptCount <= 0 || vendor?.State != AgvTransportTaskState.Completed ||
+            vehicle is null || VehicleBlock(vehicle, true) is not null ||
+            string.IsNullOrWhiteSpace(vehicle.CurrentStation))
+            return false;
+        try
+        {
+            var payload = JsonSerializer.Deserialize<AgvTransportCommandPayload>(
+                command.PayloadJson, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            if (payload?.Windows is not { Count: > 1 } ||
+                payload.WindowIndex < 0 || payload.WindowIndex >= payload.Windows.Count - 1)
+                return false;
+            var currentWindow = payload.Windows[payload.WindowIndex];
+            return !currentWindow.Final &&
+                MapRouteSiteMapper.IsSameNode(map.Current?.Definition,
+                    vehicle.CurrentStation, currentWindow.Destination);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
     private bool VendorMatches(DispatchTaskStepEntity step, DispatchTaskEntity task, AgvTransportTaskStatus? status) =>
         status != null && status.BusinessTaskId == (step.VendorTaskId ?? step.StepId) &&
         status.VendorTaskId == (step.VendorTaskId ?? step.StepId) &&
@@ -642,11 +684,14 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
         if (physical != null) return physical;
         if (step.Status == (int)DispatchTaskStepStatus.Executing)
         {
-            if (!VendorMatches(step, task, vendor) || vendor!.State != AgvTransportTaskState.Completed || vehicle!.CurrentStation != step.DestinationSite)
+            if (!VendorMatches(step, task, vendor) || vendor!.State != AgvTransportTaskState.Completed ||
+                !MapRouteSiteMapper.IsSameNode(map.Current?.Definition,
+                    vehicle!.CurrentStation, step.DestinationSite))
                 return "运输补记需要原任务完成记录、同一车辆、目的站和停车证据一致。";
             if (map.Current is { } current)
             {
-                var destination = current.Definition.Nodes.FirstOrDefault(n => n.Enabled && (n.Id == step.DestinationSite || n.AgvSiteId == step.DestinationSite));
+                var destination = current.Definition.Nodes.FirstOrDefault(n =>
+                    n.Enabled && MapRouteSiteMapper.IsSameNode(current.Definition, n.Id, step.DestinationSite));
                 if (destination == null || Math.Sqrt(Math.Pow(vehicle.X!.Value - destination.X, 2) + Math.Pow(vehicle.Y!.Value - destination.Y, 2)) > settings.MaximumStationDeviationMeters)
                     return "目的站编号与实际坐标不一致，不能补记到站。";
             }

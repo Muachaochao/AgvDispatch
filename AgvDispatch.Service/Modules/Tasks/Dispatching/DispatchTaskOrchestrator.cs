@@ -1,6 +1,8 @@
 using AgvDispatch.Application.Abstractions;
+using AgvDispatch.Connectors.Agv;
 using AgvDispatch.Domain.Agvs;
 using AgvDispatch.Domain.Devices;
+using AgvDispatch.Domain.Maps;
 using AgvDispatch.Domain.Tasks;
 using AgvDispatch.Application.Maps;
 
@@ -25,12 +27,14 @@ public sealed partial class DispatchTaskOrchestrator(
     IDispatchQueueWindowService? queueLayer=null, IDispatchCandidateFilter? candidateLayer=null,
     DispatchTrafficReservationService? trafficLayer=null, IDispatchPreSendSafetyService? preSendSafety=null,
     ITaskHandshakeStore? handshakes=null, ITransportTimeoutRecoveryService? timeoutRecovery=null,
-    CompletedTransportRouteReleaseService? completedRouteRelease=null) : IsolatedBackgroundService
+    CompletedTransportRouteReleaseService? completedRouteRelease=null,
+    DispatchTaskStepOptions? stepOptions=null, AgvOptions? agvOptions=null) : IsolatedBackgroundService
 {
     private readonly IDispatchQueueWindowService _queueLayer = queueLayer ?? new DispatchQueueWindowService(tasks, trafficResources);
     private readonly IDispatchCandidateFilter _candidateLayer = candidateLayer ?? new DispatchCandidateFilter(options, agvGateway, agvStates,
         activeMap, mapOptions, routePlanner, trafficResources, routeCache, businessRun, fleetTest, charging, taskSwitchGuard);
     private readonly DispatchTrafficReservationService _trafficLayer = trafficLayer ?? new(trafficResources, optimization, tasks, optimization);
+    private readonly DispatchTaskStepOptions _stepOptions = stepOptions ?? new();
     private readonly HashSet<string> _missingRouteWarnings =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _selectWaitTimeouts =
@@ -258,6 +262,8 @@ public sealed partial class DispatchTaskOrchestrator(
                     Route = routePlanner.Plan(vehicle.CurrentStation!, pickupSite, unavailable)
                 })
                 .Where(candidate => candidate.Route is { Nodes.Count: >= 2 })
+                .Where(candidate => DispatchCandidateFilter.PhysicalIntermediateOccupants(
+                    candidate.Route!, planningMap?.Definition, idleVehicles, candidate.Vehicle.VehicleId).Count == 0)
                 .OrderBy(candidate => candidate.Route!.Cost)
                 .ThenByDescending(candidate => candidate.Vehicle.BatteryPercent)
                 .ToArray();
@@ -315,6 +321,8 @@ public sealed partial class DispatchTaskOrchestrator(
                 var vehicle = candidate.Vehicle;
                 if(fleetTest?.Allows(task.TaskId,vehicle.VehicleId)==false)continue;
                 var route = candidate.Route!;
+                var windows = PlanInitialTransportWindows(route, planningMap);
+                var firstWindow = windows[0];
                 if(robokitMap is not null)
                 {
                     var checkedMap=new RobokitTaskMapCheck(planningMap is not null,"运行地图不存在。");
@@ -339,8 +347,8 @@ public sealed partial class DispatchTaskOrchestrator(
                     }
                 }
                 var reservation = await _trafficLayer.AcquireAsync(new(readyStep.StepId, task.TaskId, vehicle.VehicleId,
-                    route.Nodes[0], route.Nodes[^1], route.EdgeIds, route.ResourceIds,
-                    false, "规划完成，申请到取货站路径资源。") { MapId = planningMap?.MapId, MapVersionId = planningMap?.VersionId }, cancellationToken);
+                    firstWindow.Source, firstWindow.Destination, firstWindow.EdgeIds, firstWindow.ResourceIds,
+                    false, "规划完成，仅申请到取货站的首个安全路权窗口。") { MapId = planningMap?.MapId, MapVersionId = planningMap?.VersionId }, cancellationToken);
                 if (!reservation.Acquired)
                 {
                     logger.LogDebug(
@@ -357,21 +365,27 @@ public sealed partial class DispatchTaskOrchestrator(
                 {
                     var currentVehicle = (await agvGateway.GetVehiclesAsync(cancellationToken))
                         .SingleOrDefault(v => v.VehicleId == vehicle.VehicleId);
-                    if (currentVehicle is null || currentVehicle.CurrentStation != vehicle.CurrentStation ||
+                    if (currentVehicle is null ||
+                        !MapRouteSiteMapper.IsSameNode(planningMap?.Definition,
+                            currentVehicle.CurrentStation, vehicle.CurrentStation) ||
                         VehicleExclusion(currentVehicle, occupiedVehicles, optimization?.Options ?? new DispatchAssignmentOptions()) is not null ||
                         !executionGate.CanStartNewWork || !ReferenceEquals(planningMap, activeMap.Current))
                     { await trafficResources.ReleaseStepAsync(readyStep.StepId, cancellationToken); continue; }
                     if(fleetTest?.Allows(task.TaskId,vehicle.VehicleId)==false)
                     {await trafficResources.ReleaseStepAsync(readyStep.StepId,cancellationToken);continue;}
-                    if (preSendSafety is not null && await preSendSafety.CheckPreparationAsync(readyStep, vehicle.VehicleId, route.Nodes,
+                    if (preSendSafety is not null && await preSendSafety.CheckPreparationAsync(readyStep, vehicle.VehicleId, firstWindow.Path,
                         planningMap, cancellationToken) is { } rejected)
                     { await trafficResources.ReleaseStepAsync(readyStep.StepId, cancellationToken); continue; }
                     if(preSendSafety is null && handshake!=null)await handshake.BindBeforeTransportAsync(readyStep with {VehicleId=vehicle.VehicleId},cancellationToken);
-                    commandPrepared = await outbox.TryPrepareTransportStepAsync(
+                    commandPrepared = await outbox.TryPrepareTransportWindowAsync(
                         task.TaskId,
                         readyStep.StepId,
                         vehicle.VehicleId,
-                        route.Nodes,
+                        route.Nodes[0],
+                        route.Nodes[^1],
+                        firstWindow,
+                        windows,
+                        null,
                         options.GetAction(DispatchTaskStepType.GoToPickup),
                         cancellationToken);
                     if (!commandPrepared)
@@ -380,7 +394,7 @@ public sealed partial class DispatchTaskOrchestrator(
                             readyStep.StepId,
                             cancellationToken);
                         await trafficResources.RecordRouteAsync(new(readyStep.StepId, task.TaskId,
-                            vehicle.VehicleId, vehicle.CurrentStation!, pickupSite, route.EdgeIds, route.ResourceIds,
+                            vehicle.VehicleId, vehicle.CurrentStation!, pickupSite, firstWindow.EdgeIds, firstWindow.ResourceIds,
                             false, "首段车端命令未能登记，未发送；请核对任务、步骤和命令队列。")
                             { MapId = planningMap?.MapId, MapVersionId = planningMap?.VersionId }, cancellationToken);
                         logger.LogWarning(
@@ -406,7 +420,7 @@ public sealed partial class DispatchTaskOrchestrator(
                             readyStep.StepId,
                             cancellationToken);
                         await trafficResources.RecordRouteAsync(new(readyStep.StepId, task.TaskId,
-                            vehicle.VehicleId, vehicle.CurrentStation!, pickupSite, route.EdgeIds, route.ResourceIds,
+                            vehicle.VehicleId, vehicle.CurrentStation!, pickupSite, firstWindow.EdgeIds, firstWindow.ResourceIds,
                             false, "派车前准备失败，未发送：" + exception.Message)
                             { MapId = planningMap?.MapId, MapVersionId = planningMap?.VersionId }, cancellationToken);
                         logger.LogWarning(exception,
@@ -421,13 +435,15 @@ public sealed partial class DispatchTaskOrchestrator(
                 dispatchedCount++;
                 dispatched = true;
                 logger.LogInformation(
-                    "已按路径成本选择AGV并写入首步骤。TaskId={TaskId}, VehicleId={VehicleId}, From={Source}, To={Destination}, Cost={Cost}, Resources={Resources}",
+                    "已按路径成本选择AGV并写入首步骤。TaskId={TaskId}, VehicleId={VehicleId}, From={Source}, WindowTo={WindowDestination}, FinalDestination={Destination}, WindowCount={WindowCount}, Cost={Cost}, Resources={Resources}",
                     task.TaskId,
                     vehicle.VehicleId,
                     route.Nodes[0],
+                    firstWindow.Destination,
                     route.Nodes[^1],
+                    windows.Count,
                     route.Cost,
-                    string.Join(',', route.ResourceIds));
+                    string.Join(',', firstWindow.ResourceIds));
                 break;
             }
 
@@ -552,11 +568,15 @@ public sealed partial class DispatchTaskOrchestrator(
                         robot.Blocked != false || robot.EmergencyStopped != false ||
                         AgvObstaclePolicy.IsBlocked(robot) || AgvObstaclePolicy.HasBlockingAlarm(robot))
                         continue;
-                    if (await TryAdvanceTransportWindowAsync(task, cancellationToken))
+                    var windowOutcome = await TryAdvanceTransportWindowAsync(task, cancellationToken);
+                    if (windowOutcome != TransportWindowAdvanceOutcome.NotApplicable)
                     {
-                        logger.LogInformation(
-                            "AGV已到达滚动路权安全点，下一窗口已进入申请/发送流程。TaskId={TaskId}, VendorTaskId={VendorTaskId}, VehicleId={VehicleId}",
-                            task.TaskId, task.VendorTaskId, task.VehicleId);
+                        if (windowOutcome == TransportWindowAdvanceOutcome.Prepared)
+                        {
+                            logger.LogInformation(
+                                "AGV下一滚动窗口已取得路权并写入Outbox。TaskId={TaskId}, VendorTaskId={VendorTaskId}, VehicleId={VehicleId}",
+                                task.TaskId, task.VendorTaskId, task.VehicleId);
+                        }
                         continue;
                     }
                     var completedStepId = await tasks.CompleteExecutingStepAsync(
@@ -629,33 +649,36 @@ public sealed partial class DispatchTaskOrchestrator(
         }
     }
 
-    private async Task<bool> TryAdvanceTransportWindowAsync(DispatchTaskWorkItem task,
+    private async Task<TransportWindowAdvanceOutcome> TryAdvanceTransportWindowAsync(DispatchTaskWorkItem task,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(task.VendorTaskId) || string.IsNullOrWhiteSpace(task.VehicleId))
-            return false;
+            return TransportWindowAdvanceOutcome.NotApplicable;
         var command = await outbox.GetTransportCommandByVendorAsync(task.TaskId, task.VendorTaskId, cancellationToken);
-        if (command is null) return false;
+        if (command is null) return TransportWindowAdvanceOutcome.NotApplicable;
         var payload = System.Text.Json.JsonSerializer.Deserialize<AgvTransportCommandPayload>(
             command.PayloadJson, new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
         if (payload is null || payload.Windows.Count == 0 ||
             payload.WindowIndex < 0 || payload.WindowIndex >= payload.Windows.Count - 1)
-            return false;
+            return TransportWindowAdvanceOutcome.NotApplicable;
 
         var open = await outbox.GetOpenTransportCommandAsync(task.TaskId, cancellationToken);
-        if (open is not null) return true;
+        if (open is not null) return TransportWindowAdvanceOutcome.ExistingOpenCommand;
 
         if (!agvStates.TryGet(task.VehicleId, out var robot) ||
-            robot.Connection != ConnectionState.Online || robot.Quality != SignalQuality.Good ||
-            robot.CurrentStation != payload.Destination ||
             robot.LastSuccessfulPollAt is not { } observed ||
+            robot.Connection != ConnectionState.Online || robot.Quality != SignalQuality.Good ||
+            string.IsNullOrWhiteSpace(robot.CurrentStation) ||
+            (activeMap.Current?.Definition is { } definition
+                ? !MapRouteSiteMapper.IsSameNode(definition, robot.CurrentStation, payload.Destination)
+                : !string.Equals(robot.CurrentStation, payload.Destination, StringComparison.OrdinalIgnoreCase)) ||
             observed > DateTimeOffset.UtcNow.AddSeconds(1) ||
             DateTimeOffset.UtcNow - observed >= TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds) ||
             robot.Blocked != false || robot.EmergencyStopped != false ||
             Math.Abs(robot.VelocityX ?? double.NaN) > 0.02 ||
             Math.Abs(robot.VelocityY ?? double.NaN) > 0.02 ||
             Math.Abs(robot.AngularVelocity ?? double.NaN) > 0.02)
-            return true;
+            return TransportWindowAdvanceOutcome.WaitingAtSafePoint;
 
         var next = payload.Windows[payload.WindowIndex + 1];
         var observation = new TrafficRouteObservation(command.StepId, task.TaskId, task.VehicleId,
@@ -663,7 +686,7 @@ public sealed partial class DispatchTaskOrchestrator(
             "车辆已在安全点停稳，原任务申请下一滚动路权窗口。")
             { MapId = activeMap.Current?.MapId, MapVersionId = activeMap.Current?.VersionId };
         var acquired = await _trafficLayer.AcquireAsync(observation, cancellationToken);
-        if (!acquired.Acquired) return true;
+        if (!acquired.Acquired) return TransportWindowAdvanceOutcome.WaitingForTraffic;
         // Acquire first, then release resources not reused by the next window.
         // This keeps an overlapping intersection or waiting-bay anchor leased
         // without a gap while freeing corridors already fully passed.
@@ -676,8 +699,31 @@ public sealed partial class DispatchTaskOrchestrator(
             task.TaskId, command.StepId, task.VehicleId, fullSource, fullDestination,
             next, payload.Windows, task.VendorTaskId, payload.FinalAction, cancellationToken);
         if (!prepared)
-            await trafficResources.ReleaseStepAsync(command.StepId, cancellationToken);
-        return true;
+        {
+            var waiting = trafficResources is ITaskWaitingBayAllocator allocator
+                ? await allocator.GetAsync(task.TaskId, cancellationToken)
+                : null;
+            if (waiting is null)
+                await trafficResources.ReleaseStepAsync(command.StepId, cancellationToken);
+            else
+                await trafficResources.ReleaseStepExceptResourcesAsync(
+                    command.StepId, [waiting.ResourceId],
+                    "下一窗口命令准备失败；释放公共路段，但保留本任务已绑定的独立候车位。",
+                    cancellationToken);
+        }
+        return prepared
+            ? TransportWindowAdvanceOutcome.Prepared
+            : TransportWindowAdvanceOutcome.PreparationFailed;
+    }
+
+    private enum TransportWindowAdvanceOutcome
+    {
+        NotApplicable,
+        ExistingOpenCommand,
+        WaitingAtSafePoint,
+        WaitingForTraffic,
+        PreparationFailed,
+        Prepared
     }
 
 }

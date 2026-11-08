@@ -1,5 +1,6 @@
 using System.Text.Json;
 using AgvDispatch.Application.Abstractions;
+using AgvDispatch.Domain.Maps;
 using Microsoft.Extensions.Hosting;
 
 namespace AgvDispatch.Service;
@@ -12,6 +13,7 @@ public sealed partial class PlcCycleTestService : BackgroundService, IPlcCycleTe
     private readonly IPlcCycleTestPort _port;
     private readonly ISingleNavigationTestService _navigation;
     private readonly string _path;
+    private readonly IActiveMapRuntime? _map;
     private readonly SemaphoreSlim _mutex = new(1, 1);
     private PlcCycleTestRecord? _record;
     private static readonly string[] PickupSignals = ["FullBoxRequested", "BoxPresent", "Faulted", "CommunicationOnline", "FullBoxRequestAcknowledged", "FullBoxRemoved", "EmptyBoxTaskAcknowledged", "EmptyBoxPlaced"];
@@ -20,9 +22,10 @@ public sealed partial class PlcCycleTestService : BackgroundService, IPlcCycleTe
     private static bool Terminal(string stage) => stage is "Completed" or "Disarmed" or "Hold";
 
     public PlcCycleTestService(PlcCycleTestOptions options, IPlcCycleTestPort port,
-        ISingleNavigationTestService navigation, string storagePath)
+        ISingleNavigationTestService navigation, string storagePath, IActiveMapRuntime? map = null)
     {
-        _options = options; _port = port; _navigation = navigation; _path = Path.GetFullPath(storagePath);
+        _options = options; _port = port; _navigation = navigation;
+        _path = Path.GetFullPath(storagePath); _map = map;
         if (options.MaximumAgeSeconds is < 1 or > 30 || options.StageTimeoutSeconds is < 10 or > 3600)
             throw new ArgumentException("PLC空载联调采样有效期或阶段超时无效。");
         if (!File.Exists(_path)) return;
@@ -105,7 +108,13 @@ public sealed partial class PlcCycleTestService : BackgroundService, IPlcCycleTe
         {
             if (_record?.RequestId == request.RequestId)
             {
-                if (_record.PickupSite != request.PickupSite || _record.WaitingSite != request.WaitingSite || _record.DumpingSite != request.DumpingSite)
+                var requestedDefinition = _map?.Current?.Definition;
+                if (!MapRouteSiteMapper.IsSameNode(requestedDefinition,
+                        _record.PickupSite, request.PickupSite) ||
+                    !MapRouteSiteMapper.IsSameNode(requestedDefinition,
+                        _record.WaitingSite, request.WaitingSite) ||
+                    !MapRouteSiteMapper.IsSameNode(requestedDefinition,
+                        _record.DumpingSite, request.DumpingSite))
                     throw new InvalidOperationException("同一请求编号不能用于其他路线。");
                 return Status();
             }
@@ -136,12 +145,24 @@ public sealed partial class PlcCycleTestService : BackgroundService, IPlcCycleTe
             var proof = await _port.CheckRoutesAsync(new(_options.VehicleId, environment.CurrentStation!, request.PickupSite, request.WaitingSite, request.DumpingSite), ct);
             if (!Fresh(proof.ObservedAt) || proof.RobotMap != environment.RobotMap || proof.RobotMapMd5 != environment.RobotMapMd5 || string.IsNullOrWhiteSpace(proof.RobotMap) ||
                 proof.RobotMapMd5.Length != 32 || proof.RobotMapMd5.Any(c => !Uri.IsHexDigit(c))) throw new InvalidOperationException("车端路线核验与当前地图身份不一致。");
-            foreach (var pair in new[] { (environment.CurrentStation!, request.PickupSite), (request.PickupSite, request.WaitingSite), (request.WaitingSite, request.DumpingSite), (request.DumpingSite, request.PickupSite) }.Where(p => p.Item1 != p.Item2))
-                if (!proof.Routes.Any(r => r.SourceSite == pair.Item1 && r.TargetSite == pair.Item2 && r.Stations.Count >= 2 && r.Stations[0] == pair.Item1 && r.Stations[^1] == pair.Item2))
+            var definition = _map?.Current?.Definition;
+            foreach (var pair in new[] { (environment.CurrentStation!, request.PickupSite), (request.PickupSite, request.WaitingSite), (request.WaitingSite, request.DumpingSite), (request.DumpingSite, request.PickupSite) }
+                         .Where(p => !MapRouteSiteMapper.IsSameNode(definition, p.Item1, p.Item2)))
+                if (!proof.Routes.Any(r =>
+                        MapRouteSiteMapper.IsSameNode(definition, r.SourceSite, pair.Item1) &&
+                        MapRouteSiteMapper.IsSameNode(definition, r.TargetSite, pair.Item2) &&
+                        r.Stations.Count >= 2 &&
+                        MapRouteSiteMapper.IsSameNode(definition, r.Stations[0], pair.Item1) &&
+                        MapRouteSiteMapper.IsSameNode(definition, r.Stations[^1], pair.Item2)))
                     throw new InvalidOperationException($"车端路线未核验通过：{pair.Item1} → {pair.Item2}。");
             var fresh = await _port.ObserveAsync(ct);
             if (EnvironmentBlock(fresh, true, true) is { } freshBlock) throw new InvalidOperationException(freshBlock);
-            if (fresh.MapId != environment.MapId || fresh.MapVersionId != environment.MapVersionId || fresh.RobotMap != proof.RobotMap || fresh.RobotMapMd5 != proof.RobotMapMd5 || fresh.CurrentStation != environment.CurrentStation)
+            if (fresh.MapId != environment.MapId ||
+                fresh.MapVersionId != environment.MapVersionId ||
+                fresh.RobotMap != proof.RobotMap ||
+                fresh.RobotMapMd5 != proof.RobotMapMd5 ||
+                !MapRouteSiteMapper.IsSameNode(definition,
+                    fresh.CurrentStation, environment.CurrentStation))
                 throw new InvalidOperationException("武装期间地图或车辆站点变化，请重新核对。");
             ArchiveCurrent();
             var now = DateTimeOffset.UtcNow;
@@ -185,7 +206,9 @@ public sealed partial class PlcCycleTestService : BackgroundService, IPlcCycleTe
             var environment = await _port.ObserveAsync(ct);
             var block = EnvironmentBlock(environment, requireStopped: true, baseline: false);
             if (block is not null) throw new InvalidOperationException(block);
-            if (environment.CurrentStation != _record.PickupSite)
+            var definition = _map?.Current?.Definition;
+            if (!MapRouteSiteMapper.IsSameNode(
+                    definition, environment.CurrentStation, _record.PickupSite))
                 throw new InvalidOperationException("车辆未返回本轮取料站，不能重置记录。");
             if (!environment.VehicleEmpty)
                 throw new InvalidOperationException("车辆顶升未下降到位或载荷状态异常，不能重置记录。");
@@ -317,7 +340,8 @@ public sealed partial class PlcCycleTestService : BackgroundService, IPlcCycleTe
                     break;
                 case "AwaitCallCleared":
                     if (!Signal(environment, _options.StationId, "FullBoxRequested", false)) return;
-                    if (environment.CurrentStation == _record.PickupSite)
+                    if (MapRouteSiteMapper.IsSameNode(
+                            _map?.Current?.Definition, environment.CurrentStation, _record.PickupSite))
                         Transition("JackUpStart", "车辆已在LM2，省略空驶段，准备顶升。");
                     else
                         await StartNavigationAsync(_record.PickupSite, "AwaitNavigationToPickup", ct);
@@ -339,7 +363,8 @@ public sealed partial class PlcCycleTestService : BackgroundService, IPlcCycleTe
                         "NavigateWaiting", "记录本轮返箱责任，准备前往等待点。", ct);
                     break;
                 case "NavigateWaiting":
-                    if (environment.CurrentStation == _record.WaitingSite)
+                    if (MapRouteSiteMapper.IsSameNode(
+                            _map?.Current?.Definition, environment.CurrentStation, _record.WaitingSite))
                         Transition("NotifyWaiting", "车辆已在LM5，通知倒料设备等待位申请。");
                     else
                         await StartNavigationAsync(_record.WaitingSite, "AwaitNavigationToWaiting", ct);
@@ -365,7 +390,8 @@ public sealed partial class PlcCycleTestService : BackgroundService, IPlcCycleTe
                     Transition("NavigateDumping", "等待位许可已闭合，准备进入倒料点。");
                     break;
                 case "NavigateDumping":
-                    if (environment.CurrentStation == _record.DumpingSite)
+                    if (MapRouteSiteMapper.IsSameNode(
+                            _map?.Current?.Definition, environment.CurrentStation, _record.DumpingSite))
                         Transition("NotifyDumping", "车辆已在LM6，准备通知倒料周期。");
                     else
                         await StartNavigationAsync(_record.DumpingSite, "AwaitNavigationToDumping", ct);

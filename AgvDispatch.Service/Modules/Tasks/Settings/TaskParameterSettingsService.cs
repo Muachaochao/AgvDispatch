@@ -1,6 +1,7 @@
 using System.Text.Json;
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Application.Maps;
+using AgvDispatch.Domain.Maps;
 
 namespace AgvDispatch.Service;
 
@@ -54,12 +55,13 @@ public sealed class TaskParameterSettingsService(TaskParameterStorageOptions sto
             return new(false, "工程绑定的地图内容摘要已变化，未应用参数。", []);
         foreach (var standby in request.Configuration.Standbys)
         {
-            var nodes = map.Definition.Nodes.Where(n => n.Enabled && (n.Id == standby.Site || n.AgvSiteId == standby.Site)).ToArray();
+            var nodes = map.Definition.Nodes.Where(n =>
+                n.Enabled && MapRouteSiteMapper.IsSameNode(map.Definition, n.Id, standby.Site)).ToArray();
             if (nodes.Length != 1 || nodes[0].Type is not (AgvDispatch.Domain.Maps.MapNodeType.Station or AgvDispatch.Domain.Maps.MapNodeType.WaitingPoint))
                 return new(false, $"待机位 {standby.Id} 未绑定唯一启用的停靠站点。", []);
             var businessSites = request.Configuration.Pickups.Select(p => p.PickupSite)
                 .Concat(request.Configuration.WaitingSites).Concat(new[] { request.Configuration.WaitingSite, request.Configuration.DumpingSite });
-            if (businessSites.Any(site => site == nodes[0].Id || site == nodes[0].AgvSiteId))
+            if (businessSites.Any(site => MapRouteSiteMapper.IsSameNode(map.Definition, site, nodes[0].Id)))
                 return new(false, $"待机位 {standby.Id} 与业务取放箱或倒料站点重叠。", []);
         }
         var preview = validator.ValidateParameters(request.Configuration);

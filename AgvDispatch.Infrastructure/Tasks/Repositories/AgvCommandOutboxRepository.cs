@@ -1,6 +1,7 @@
 using System.Text.Json;
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Domain.Agvs;
+using AgvDispatch.Domain.Maps;
 using AgvDispatch.Domain.Tasks;
 using AgvDispatch.Infrastructure.Persistence.Entities;
 using AgvDispatch.Infrastructure.Traffic;
@@ -130,10 +131,15 @@ public sealed class AgvCommandOutboxRepository(ISqlSugarClient database, IActive
             }
             else
             {
+                var definition = activeMap?.Current?.Definition;
+                var sameSource = MapRouteSiteMapper.IsSameNode(
+                    definition, step.SourceSite, fullSource);
+                var sameDestination = MapRouteSiteMapper.IsSameNode(
+                    definition, step.DestinationSite, fullDestination);
                 if (step.Status != (int)DispatchTaskStepStatus.Executing ||
                     string.IsNullOrWhiteSpace(previousVendorTaskId) ||
                     step.VendorTaskId != previousVendorTaskId || step.VehicleId != vehicleId ||
-                    step.SourceSite != fullSource || step.DestinationSite != fullDestination) return;
+                    !sameSource || !sameDestination) return;
                 var task = await database.Queryable<DispatchTaskEntity>()
                     .Where(item => item.TaskId == taskId)
                     .FirstAsync(cancellationToken);

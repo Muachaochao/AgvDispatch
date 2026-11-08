@@ -3,6 +3,7 @@ using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Application.Tasks;
 using AgvDispatch.Domain.Agvs;
 using AgvDispatch.Domain.Devices;
+using AgvDispatch.Domain.Maps;
 using AgvDispatch.Domain.Tasks;
 using AgvDispatch.Infrastructure.Traffic;
 
@@ -22,7 +23,8 @@ public sealed partial class PersistentHandshakeExecutor
         if(!assessment.Verified)throw new InvalidOperationException(assessment.Reason);
         if(!double.IsFinite(options.DumperExit.MaximumRouteDeviationMeters)||options.DumperExit.MaximumRouteDeviationMeters<=0||options.DumperExit.MaximumRouteDeviationMeters>2)
             throw new InvalidOperationException("原返程路线偏离阈值无效。");
-        var dump=current.Definition.Nodes.FirstOrDefault(n=>n.Id==dispatch.DumperDumpingSite||n.AgvSiteId==dispatch.DumperDumpingSite);
+        var dump=current.Definition.Nodes.FirstOrDefault(n=>
+            MapRouteSiteMapper.IsSameNode(current.Definition,n.Id,dispatch.DumperDumpingSite));
         if(dump==null||!dump.ResourceIds.Any(id=>options.DumperExit.ResourceIds.Contains(id,StringComparer.OrdinalIgnoreCase)))
             throw new InvalidOperationException("实际倒料节点未关联指定出区资源，禁止把无关区域当作倒料区交接。");
     }

@@ -63,7 +63,8 @@ public sealed class TransportTimeoutRecoveryService(
             if (chain is not null &&
                 (!string.Equals(chain.VehicleId, task.VehicleId, StringComparison.OrdinalIgnoreCase) ||
                  originalPath.Length < 2 ||
-                 !string.Equals(originalPath[^1], step.DestinationSite, StringComparison.OrdinalIgnoreCase)))
+                 !MapRouteSiteMapper.IsSameNode(activeMap.Current?.Definition,
+                     originalPath[^1], step.DestinationSite)))
                 originalPath = [];
 
             assessment = await AssessAsync(task.TaskId, (DispatchTaskStepType)step.StepType,
@@ -246,7 +247,8 @@ public sealed class TransportTimeoutRecoveryService(
                     ? "ReadyForControlledDetour" : "ManualIntervention";
                 if (row.State == nextState &&
                     row.Outcome == assessment.Outcome.ToString() &&
-                    string.Equals(row.CurrentStation, assessment.CurrentStation, StringComparison.OrdinalIgnoreCase) &&
+                    MapRouteSiteMapper.IsSameNode(activeMap.Current?.Definition,
+                        row.CurrentStation, assessment.CurrentStation) &&
                     row.CandidatePathJson == candidate &&
                     row.LastError == Truncate(assessment.Message))
                     continue;
@@ -357,7 +359,8 @@ public sealed class TransportTimeoutRecoveryService(
                 row.VehicleId, row.OriginalVendorTaskId, row.DestinationSite, originalPath,
                 cancellationToken);
             if (current.Outcome != TransportTimeoutRecoveryOutcome.ReadyForControlledDetour ||
-                !current.CandidatePath.SequenceEqual(storedCandidate, StringComparer.OrdinalIgnoreCase))
+                !MapRouteSiteMapper.IsSameSequence(map.Definition,
+                    current.CandidatePath, storedCandidate))
                 return new(false, "车辆位置、障碍或道路状态已变化，请重新读取恢复候选：" + current.Message, Snapshot(row));
 
             var original = await gateway.GetTransportTaskStatusAsync(row.OriginalVendorTaskId, row.VehicleId,
@@ -370,7 +373,8 @@ public sealed class TransportTimeoutRecoveryService(
                 return new(false, "车辆未连续停稳、定位不新鲜或与候选起点不一致。", Snapshot(row));
 
             var route = await PlanReplacementAsync(map, row, originalPath, cancellationToken);
-            if (route is null || !route.Nodes.SequenceEqual(storedCandidate, StringComparer.OrdinalIgnoreCase))
+            if (route is null || !MapRouteSiteMapper.IsSameSequence(map.Definition,
+                    route.Nodes, storedCandidate))
                 return new(false, "新路线资源、道路或地图复核未通过，请重新读取。", Snapshot(row));
             var reservation = await traffic.TryAcquireAsync(row.StepId, row.TaskId, row.VehicleId,
                 route.ResourceIds, cancellationToken);
@@ -545,11 +549,12 @@ public sealed class TransportTimeoutRecoveryService(
 
     private async Task<bool> ConfirmStoppedAsync(string vehicleId, string? station, CancellationToken cancellationToken)
     {
-        static bool Stopped(AgvRobotSnapshot robot, string? station) =>
+        var definition = activeMap.Current?.Definition;
+        bool Stopped(AgvRobotSnapshot robot, string? expectedStation) =>
             robot.Connection == ConnectionState.Online && robot.Quality == SignalQuality.Good &&
             robot.EmergencyStopped == false && !AgvObstaclePolicy.IsBlocked(robot) &&
             !AgvObstaclePolicy.HasBlockingAlarm(robot) &&
-            string.Equals(robot.CurrentStation, station, StringComparison.OrdinalIgnoreCase) &&
+            MapRouteSiteMapper.IsSameNode(definition, robot.CurrentStation, expectedStation) &&
             robot.VelocityX is { } vx && Math.Abs(vx) < 0.02 &&
             robot.VelocityY is { } vy && Math.Abs(vy) < 0.02 &&
             robot.AngularVelocity is { } w && Math.Abs(w) < 0.02;
@@ -574,7 +579,8 @@ public sealed class TransportTimeoutRecoveryService(
         var source = MapRouteSiteMapper.ResolveLogicalNodeId(map.Definition, row.CurrentStation!);
         var destination = MapRouteSiteMapper.ResolveLogicalNodeId(map.Definition, row.DestinationSite);
         var index = originalPath.Select((site, idx) => (site, idx))
-            .Single(item => string.Equals(item.site, row.CurrentStation, StringComparison.OrdinalIgnoreCase)).idx;
+            .Single(item => MapRouteSiteMapper.IsSameNode(map.Definition,
+                item.site, row.CurrentStation)).idx;
         var next = MapRouteSiteMapper.ResolveLogicalNodeId(map.Definition, originalPath[index + 1]);
         var blocked = map.Definition.Edges.Where(edge => edge.Enabled &&
                 (edge.From == source && edge.To == next || edge.Bidirectional && edge.From == next && edge.To == source))
@@ -755,7 +761,7 @@ public sealed class TransportTimeoutRecoveryService(
                 "车辆当前站点未知；须现场核实并移动到明确安全站点后再恢复。");
 
         var matches = map.Definition.Nodes.Where(node => node.Enabled &&
-            string.Equals(node.AgvSiteId, robot.CurrentStation, StringComparison.OrdinalIgnoreCase)).ToArray();
+            MapRouteSiteMapper.IsSameNode(map.Definition, node.Id, robot.CurrentStation)).ToArray();
         if (matches.Length != 1)
             return Result(TransportTimeoutRecoveryOutcome.ManualRelocationRequired, robot.CurrentStation, [],
                 "当前站点在运行地图中不是唯一有效站点；禁止自动生成改道路线。");
@@ -766,7 +772,7 @@ public sealed class TransportTimeoutRecoveryService(
                 "车辆仍在路段中间或偏离命名站点超过0.3米；禁止把最近站点冒充为实际起点。");
 
         var destinationMatches = map.Definition.Nodes.Where(node => node.Enabled &&
-            string.Equals(node.AgvSiteId, destination, StringComparison.OrdinalIgnoreCase)).ToArray();
+            MapRouteSiteMapper.IsSameNode(map.Definition, node.Id, destination)).ToArray();
         if (destinationMatches.Length != 1)
             return Result(TransportTimeoutRecoveryOutcome.ManualIntervention, robot.CurrentStation, [],
                 "原任务目的站在当前运行地图中不是唯一有效站点；任务保持冻结并等待人工核对。");
@@ -776,7 +782,8 @@ public sealed class TransportTimeoutRecoveryService(
                 "原导航任务链或路线快照缺失，不能可靠判断受影响道路；任务保持冻结，禁止重发。");
 
         var positions = originalPath.Select((site, index) => (site, index))
-            .Where(row => string.Equals(row.site, robot.CurrentStation, StringComparison.OrdinalIgnoreCase))
+            .Where(row => MapRouteSiteMapper.IsSameNode(map.Definition,
+                row.site, robot.CurrentStation))
             .ToArray();
         if (positions.Length != 1 || positions[0].index + 1 >= originalPath.Count)
             return Result(TransportTimeoutRecoveryOutcome.ManualRelocationRequired, robot.CurrentStation, [],
@@ -835,8 +842,10 @@ public sealed class TransportTimeoutRecoveryService(
                 $"已推断受阻道路为 {robot.CurrentStation}→{originalPath[positions[0].index + 1]}，但当前没有可达替代路线；原任务保持冻结，禁止重复发送。");
         var candidate = MapRouteSiteMapper.ToAgvSitePlan(map.Definition, route);
         if (candidate.Nodes.Count < 2 ||
-            !string.Equals(candidate.Nodes[0], robot.CurrentStation, StringComparison.OrdinalIgnoreCase) ||
-            !string.Equals(candidate.Nodes[^1], destination, StringComparison.OrdinalIgnoreCase))
+            !MapRouteSiteMapper.IsSameNode(map.Definition,
+                candidate.Nodes[0], robot.CurrentStation) ||
+            !MapRouteSiteMapper.IsSameNode(map.Definition,
+                candidate.Nodes[^1], destination))
             return Result(TransportTimeoutRecoveryOutcome.ManualIntervention, robot.CurrentStation, [],
                 "规划结果与实际起点或原目的站不一致；保持原任务，禁止发送。");
         return Result(TransportTimeoutRecoveryOutcome.ReadyForControlledDetour, robot.CurrentStation,

@@ -2,6 +2,7 @@ using System.Net.Http.Json;
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Domain.Agvs;
 using AgvDispatch.Domain.Devices;
+using AgvDispatch.Domain.Maps;
 using AgvDispatch.Domain.Tasks;
 
 namespace AgvDispatch.Service;
@@ -41,18 +42,21 @@ public sealed partial class BusinessRunPort
         if (step is null) return;
         var pickup = parameters.Capture().Pickups.Single(p => p.StationId == detail.Task.StationId);
         var node = Resolve(pickup.PickupSite);
-        if (step.DestinationSite != node.Id && step.DestinationSite != node.AgvSiteId)
+        var definition = map.Current?.Definition;
+        if (!MapRouteSiteMapper.IsSameNode(definition, step.DestinationSite, node.Id))
             throw new InvalidOperationException("原取放箱步骤目的地与本工位不符。");
-        var command = detail.Commands.SingleOrDefault(c => c.StepId == step.StepId && c.Status == AgvCommandStatus.Sent);
+        var command = SelectFeedbackCommand(step, detail);
         var action = step.StepType == DispatchTaskStepType.GoToPickup ? "JackLoad" : "JackUnload";
         if (command?.Route is not { } route || command.VehicleId != run.Plan.VehicleId ||
             route.TaskId != run.TaskId || route.StepId != step.StepId || route.CommandId != command.CommandId ||
             route.VehicleId != run.Plan.VehicleId || route.MapId != run.MapId || route.MapVersionId != run.MapVersionId ||
-            route.Action != action || route.VendorSites.LastOrDefault() != node.AgvSiteId)
+            route.Action != action ||
+            !MapRouteSiteMapper.IsSameNode(definition, route.VendorSites.LastOrDefault(), node.AgvSiteId))
             throw new InvalidOperationException("模拟箱体反馈缺少原车端取放动作及路线证据；纯导航不能代替取放箱。");
         bool AtOriginalStation() => vehicles.TryGet(run.Plan.VehicleId, out var vehicle) &&
             Fresh(vehicle.LastSuccessfulPollAt) && vehicle.Connection == ConnectionState.Online &&
-            vehicle.Quality == SignalQuality.Good && Stopped(vehicle) && vehicle.CurrentStation == node.AgvSiteId &&
+            vehicle.Quality == SignalQuality.Good && Stopped(vehicle) &&
+            MapRouteSiteMapper.IsSameNode(definition, vehicle.CurrentStation, node.AgvSiteId) &&
             vehicle.X is { } x && vehicle.Y is { } y && double.IsFinite(x) && double.IsFinite(y) &&
             Math.Sqrt(Math.Pow(x - node.X, 2) + Math.Pow(y - node.Y, 2)) <= .3;
         if (!AtOriginalStation()) return;
@@ -103,5 +107,15 @@ public sealed partial class BusinessRunPort
             return transport;
         }
         return null;
+    }
+
+    public static TaskCommandDetail? SelectFeedbackCommand(TaskStepDetail step, TaskCenterDetail detail)
+    {
+        if (string.IsNullOrWhiteSpace(step.VendorTaskId)) return null;
+        var matches = detail.Commands.Where(c =>
+            c.StepId == step.StepId &&
+            c.Status == AgvCommandStatus.Sent &&
+            string.Equals(c.VendorCommandId, step.VendorTaskId, StringComparison.Ordinal)).ToArray();
+        return matches.Length == 1 ? matches[0] : null;
     }
 }

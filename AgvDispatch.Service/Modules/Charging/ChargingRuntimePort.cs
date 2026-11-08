@@ -43,9 +43,9 @@ public sealed class ChargingRuntimePort(ChargingOptions options, IAgvStateCache 
     }
     private MapNode? Node(string id)
     {
-        var matches=map.Current?.Definition.Nodes.Where(n=>n.Enabled&&(n.Id.Equals(id,StringComparison.OrdinalIgnoreCase)||
-            n.AgvSiteId?.Equals(id,StringComparison.OrdinalIgnoreCase)==true)).ToArray()??[];
-        return matches.Length==1&&!string.IsNullOrWhiteSpace(matches[0].AgvSiteId)?matches[0]:null;
+        var definition=map.Current?.Definition;
+        return definition is not null&&MapRouteSiteMapper.TryResolveNode(definition,id,out var node)&&
+            node is {Enabled:true}&&!string.IsNullOrWhiteSpace(node.AgvSiteId)?node:null;
     }
     private string? SiteError(ChargingSite site)
     {

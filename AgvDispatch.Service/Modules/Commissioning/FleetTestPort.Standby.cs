@@ -26,7 +26,8 @@ public sealed partial class FleetTestPort
     private MapNode StandbyNode(string site)
     {
         var current=map.Current??throw new InvalidOperationException("运行地图不存在。");
-        var nodes=current.Definition.Nodes.Where(n=>n.Enabled&&(n.Id==site||n.AgvSiteId==site)).ToArray();
+        var nodes=current.Definition.Nodes.Where(n=>n.Enabled&&
+            MapRouteSiteMapper.IsSameNode(current.Definition,n.Id,site)).ToArray();
         return nodes.Length==1&&!string.IsNullOrWhiteSpace(nodes[0].AgvSiteId)?nodes[0]
             :throw new InvalidOperationException("待机站点映射不唯一或缺少厂家编号："+site);
     }
@@ -34,8 +35,7 @@ public sealed partial class FleetTestPort
     private bool StandbyOccupiedByOtherVehicle(MapNode target,string vehicleId)=>vehicles.GetAll().Any(vehicle=>
         !vehicle.VehicleId.Equals(vehicleId,StringComparison.OrdinalIgnoreCase)&&
         !string.IsNullOrWhiteSpace(vehicle.CurrentStation)&&
-        (target.Id.Equals(vehicle.CurrentStation,StringComparison.OrdinalIgnoreCase)||
-         string.Equals(target.AgvSiteId,vehicle.CurrentStation,StringComparison.OrdinalIgnoreCase)));
+        MapRouteSiteMapper.IsSameNode(map.Current?.Definition,target.Id,vehicle.CurrentStation));
 
     public Task<FleetTestStandbyReturn[]> PlanStandbyReturnsAsync(FleetTestRun run,CancellationToken ct)
     {

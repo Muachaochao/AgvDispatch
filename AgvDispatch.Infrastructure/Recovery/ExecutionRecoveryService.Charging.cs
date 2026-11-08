@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Domain.Agvs;
+using AgvDispatch.Domain.Maps;
 using AgvDispatch.Infrastructure.Persistence.Entities;
 
 namespace AgvDispatch.Infrastructure.Persistence;
@@ -42,9 +43,10 @@ public sealed partial class ExecutionRecoveryService
                     hard ??= "充电关闭记录与当前运行地图版本不一致。";
                 else
                 {
-                    var exits = active.Definition.Nodes.Where(n => n.Enabled && (n.Id == site.ExitSiteId || n.AgvSiteId == site.ExitSiteId)).ToArray();
+                    var exits = active.Definition.Nodes.Where(n =>
+                        n.Enabled && MapRouteSiteMapper.IsSameNode(active.Definition, n.Id, site.ExitSiteId)).ToArray();
                     if (exits.Length != 1 || vehicle is null || string.IsNullOrWhiteSpace(vehicle.CurrentStation) ||
-                        vehicle.CurrentStation != exits[0].Id && vehicle.CurrentStation != exits[0].AgvSiteId ||
+                        !MapRouteSiteMapper.IsSameNode(active.Definition, vehicle.CurrentStation, exits[0].Id) ||
                         vehicle.X is not { } x || vehicle.Y is not { } y ||
                         Math.Sqrt(Math.Pow(x - exits[0].X, 2) + Math.Pow(y - exits[0].Y, 2)) > settings.MaximumStationDeviationMeters)
                         hard ??= "充电关闭后车辆实际位置与原退出点不一致，不能核定离位。";

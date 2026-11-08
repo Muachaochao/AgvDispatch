@@ -62,6 +62,30 @@ public sealed class DispatchCandidateFilter(DispatchOrchestratorOptions options,
             .ToArray();
     }
 
+    public static IReadOnlyList<string> PhysicalIntermediateOccupants(
+        RoutePlan route,
+        MapDefinition? definition,
+        IEnumerable<AgvVehicleStatus> vehicles,
+        string movingVehicleId)
+    {
+        if (route.Nodes.Count <= 2) return [];
+        var intermediate = route.Nodes
+            .Skip(1)
+            .Take(route.Nodes.Count - 2)
+            .Select(node => definition is null ? node : MapRouteSiteMapper.ResolveLogicalNodeId(definition, node))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return vehicles
+            .Where(vehicle => !vehicle.VehicleId.Equals(movingVehicleId, StringComparison.OrdinalIgnoreCase))
+            .Where(vehicle => !string.IsNullOrWhiteSpace(vehicle.CurrentStation))
+            .Where(vehicle => intermediate.Contains(
+                definition is null
+                    ? vehicle.CurrentStation!
+                    : MapRouteSiteMapper.ResolveLogicalNodeId(definition, vehicle.CurrentStation!)))
+            .Select(vehicle => vehicle.VehicleId)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
     public async Task<DispatchCandidateGraph> BuildAsync(DispatchQueueWindow queue, DispatchAssignmentOptions policy,
         ActiveMapRuntimeSnapshot? map, CancellationToken ct)
     {
@@ -89,7 +113,8 @@ public sealed class DispatchCandidateFilter(DispatchOrchestratorOptions options,
                 .Where(r => r is not null).OrderBy(r => r!.Cost).FirstOrDefault();
             var returnEstimate = returnRoute is null ? (Travel: 0d, TrafficWait: 0d) : EstimateRoute(returnRoute, map, policy);
             var returnSeconds = (returnEstimate.Travel + returnEstimate.TrafficWait) * policy.ReturnCostWeight;
-            var targetZone = policy.SiteZones.FirstOrDefault(p => p.Key.Equals(pickup, StringComparison.OrdinalIgnoreCase)).Value;
+            var targetZone = policy.SiteZones.FirstOrDefault(p =>
+                MapRouteSiteMapper.IsSameNode(definition, p.Key, pickup)).Value;
             (AgvVehicleStatus Vehicle, RoutePlan Route)? blocked = null;
             foreach (var vehicle in vehicles)
             {
@@ -116,6 +141,14 @@ public sealed class DispatchCandidateFilter(DispatchOrchestratorOptions options,
                     var nominal = unavailable.Count == 0 ? null : Plan(vehicle.CurrentStation!, pickup, new HashSet<string>());
                     if (nominal is { Nodes.Count: >= 2 } && (blocked is null || nominal.Cost < blocked.Value.Route.Cost)) blocked = (vehicle, nominal);
                     rows.Add(new(vehicle.VehicleId, 0, 0, nominal is null ? "无合法可达路线（含封路、同点取货闭合路径检查）。" : "必要公共资源容量已占用，等待释放。", false));
+                    continue;
+                }
+                var intermediateOccupants = PhysicalIntermediateOccupants(route, definition, vehicles, vehicle.VehicleId);
+                if (intermediateOccupants.Count > 0)
+                {
+                    rows.Add(new(vehicle.VehicleId, 0, 0,
+                        $"路径中间节点被{string.Join('、', intermediateOccupants)}实际占用；先让当前车辆按原任务驶离，禁止驶入占用节点等待。",
+                        false));
                     continue;
                 }
                 var battery = Math.Min(vehicle.BatteryPercent, agvStates.TryGet(vehicle.VehicleId, out var state) ? state.BatteryPercent ?? 0 : 0);

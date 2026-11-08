@@ -1,6 +1,7 @@
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Application.Maps;
 using AgvDispatch.Application.Tasks;
+using AgvDispatch.Domain.Maps;
 using AgvDispatch.Domain.Tasks;
 
 namespace AgvDispatch.Service;
@@ -24,7 +25,8 @@ public sealed partial class ManualTaskCreationService
         var validated=DumperExitEvaluator.ValidateConfiguration(map.Definition,vehicleId,profiles[0],exit.Policy);
         if(!validated.Verified)return "28阶段出区配置："+validated.Reason;
         if(!double.IsFinite(exit.MaximumRouteDeviationMeters)||exit.MaximumRouteDeviationMeters<=0||exit.MaximumRouteDeviationMeters>2)return "28阶段出区路线偏差阈值无效。";
-        var dumping=map.Definition.Nodes.Where(n=>n.Enabled&&(n.Id.Equals(dispatch.DumperDumpingSite,StringComparison.OrdinalIgnoreCase)||n.AgvSiteId==dispatch.DumperDumpingSite)).ToArray();
+        var dumping=map.Definition.Nodes.Where(n=>n.Enabled&&
+            MapRouteSiteMapper.IsSameNode(map.Definition,n.Id,dispatch.DumperDumpingSite)).ToArray();
         if(dumping.Length!=1||!dumping[0].ResourceIds.Any(id=>exit.ResourceIds.Contains(id,StringComparer.OrdinalIgnoreCase)))return "28阶段倒料节点未关联指定出区资源。";
         return null;
     }

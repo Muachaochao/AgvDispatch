@@ -153,10 +153,31 @@ public static class StationStateEvaluator
 
         if (!boxPresent)
         {
+            // An empty station with no active task is a normal waiting-for-box
+            // state. It is a conflict only when a dispatcher output from an
+            // earlier cycle is still asserted and therefore needs PLC cleanup.
+            var residualHandshake = new[]
+            {
+                "FullBoxRequestAcknowledged",
+                "FullBoxRemoved",
+                "EmptyBoxTaskAcknowledged",
+                "EmptyBoxPlaced"
+            }.Any(name => byName.TryGetValue(name, out var signal) &&
+                          signal.Quality == SignalQuality.Good && signal.Value == true);
+            if (!residualHandshake)
+            {
+                return Result(
+                    StationOperationalState.Idle,
+                    false,
+                    "未检测到箱体，工位空闲，等待满箱上料。",
+                    byName,
+                    quality,
+                    activeTasks);
+            }
             return Result(
                 StationOperationalState.SignalConflict,
                 false,
-                "未检测到箱体，且工位没有未完成任务。",
+                "未检测到箱体，但上一轮PLC握手输出尚未清理。",
                 byName,
                 quality,
                 activeTasks);

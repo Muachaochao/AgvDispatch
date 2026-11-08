@@ -682,14 +682,15 @@ public sealed class ObstacleRecoveryCoordinator(
         if (string.IsNullOrWhiteSpace(robot.CurrentStation))
             return RouteAssessment.Refuse("车辆当前站点未知。");
         var current = map.Definition.Nodes.Where(node => node.Enabled &&
-            string.Equals(node.AgvSiteId, robot.CurrentStation, StringComparison.OrdinalIgnoreCase)).ToArray();
+            MapRouteSiteMapper.IsSameNode(map.Definition, node.Id, robot.CurrentStation)).ToArray();
         var destination = map.Definition.Nodes.Where(node => node.Enabled &&
             !string.IsNullOrWhiteSpace(step.DestinationSite) &&
-            string.Equals(node.AgvSiteId, step.DestinationSite, StringComparison.OrdinalIgnoreCase)).ToArray();
+            MapRouteSiteMapper.IsSameNode(map.Definition, node.Id, step.DestinationSite)).ToArray();
         if (current.Length != 1 || destination.Length != 1)
             return RouteAssessment.Refuse("当前站点或原任务目的站在运行地图中不是唯一有效点。");
         var positions = originalPath.Select((site, index) => (site, index))
-            .Where(item => string.Equals(item.site, robot.CurrentStation, StringComparison.OrdinalIgnoreCase))
+            .Where(item => MapRouteSiteMapper.IsSameNode(
+                map.Definition, item.site, robot.CurrentStation))
             .ToArray();
         if (positions.Length != 1 || positions[0].index + 1 >= originalPath.Count)
             return RouteAssessment.Refuse("车辆当前点不在原路线中段，无法唯一确定实际受阻下一段。");
@@ -731,8 +732,8 @@ public sealed class ObstacleRecoveryCoordinator(
                 [], unavailableTraversals.Select(item => item.EdgeId).Distinct().ToArray(), safeSite);
         var sitePlan = MapRouteSiteMapper.ToAgvSitePlan(map.Definition, route);
         if (sitePlan.Nodes.Count < 2 ||
-            !string.Equals(sitePlan.Nodes[0], robot.CurrentStation, StringComparison.OrdinalIgnoreCase) ||
-            !string.Equals(sitePlan.Nodes[^1], step.DestinationSite, StringComparison.OrdinalIgnoreCase) ||
+            !MapRouteSiteMapper.IsSameNode(map.Definition, sitePlan.Nodes[0], robot.CurrentStation) ||
+            !MapRouteSiteMapper.IsSameNode(map.Definition, sitePlan.Nodes[^1], step.DestinationSite) ||
             sitePlan.Nodes.SequenceEqual(originalPath, StringComparer.OrdinalIgnoreCase))
             return new(false, "规划结果与实际起点、原目的站或避障要求不一致。",
                 sitePlan.Nodes, unavailableTraversals.Select(item => item.EdgeId).Distinct().ToArray(), safeSite);
@@ -752,7 +753,8 @@ public sealed class ObstacleRecoveryCoordinator(
     {
         if (executionGate.Mode != MapExecutionMode.Running || !executionGate.CanStartNewWork)
             return executionGate.NewWorkBlockReason ?? "地图执行门禁未放行。";
-        if (candidate.Count < 2 || !string.Equals(candidate[0], robot.CurrentStation, StringComparison.OrdinalIgnoreCase))
+        if (candidate.Count < 2 || !MapRouteSiteMapper.IsSameNode(
+                activeMap.Current?.Definition, candidate[0], robot.CurrentStation))
             return "替代路线起点与当前可信站点不一致。";
         if (robot.Connection != ConnectionState.Online || robot.Quality != SignalQuality.Good ||
             robot.LastSuccessfulPollAt is not { } observed ||
@@ -767,7 +769,7 @@ public sealed class ObstacleRecoveryCoordinator(
             return "车辆定位置信度不足。";
         var map = activeMap.Current;
         var station = map?.Definition.Nodes.Where(node => node.Enabled &&
-            string.Equals(node.AgvSiteId, robot.CurrentStation, StringComparison.OrdinalIgnoreCase)).ToArray();
+            MapRouteSiteMapper.IsSameNode(map.Definition, node.Id, robot.CurrentStation)).ToArray();
         if (map is null || station is not { Length: 1 } ||
             robot.X is not { } x || !double.IsFinite(x) ||
             robot.Y is not { } y || !double.IsFinite(y) ||

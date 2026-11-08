@@ -86,9 +86,12 @@ public sealed class CompletedTransportRouteReleaseService(
         var businessStepId = payload is null
             ? ""
             : string.IsNullOrWhiteSpace(payload.BusinessStepId) ? payload.BusinessTaskId : payload.BusinessStepId;
+        var businessSource = payload?.Windows.Count > 0 ? payload.Windows[0].Source : payload?.Source;
+        var businessDestination = payload?.Windows.Count > 0 ? payload.Windows[^1].Destination : payload?.Destination;
         if (payload?.Path is not { Count: >= 2 } || businessStepId != stepId ||
-            payload.VehicleId != step.VehicleId || step.SourceSite != payload.Source ||
-            step.DestinationSite != payload.Destination)
+            payload.VehicleId != step.VehicleId ||
+            !MapRouteSiteMapper.IsSameNode(map.Definition, step.SourceSite, businessSource) ||
+            !MapRouteSiteMapper.IsSameNode(map.Definition, step.DestinationSite, businessDestination))
             return new(0, "原运输载荷与原步骤不一致。");
         var frozen = TransportRouteSnapshots.Read(command);
         var recaptured = TransportRouteSnapshots.Capture(taskId, stepId, command.CommandId,
@@ -112,11 +115,12 @@ public sealed class CompletedTransportRouteReleaseService(
             return new(0, "车辆实时状态、定位或安全状态不满足到站释放条件。");
 
         var destinationMatches = map.Definition.Nodes.Where(node => node.Enabled &&
-            (string.Equals(node.Id, frozen.NodeIds[^1], StringComparison.OrdinalIgnoreCase) ||
-             string.Equals(node.AgvSiteId, payload.Path[^1], StringComparison.OrdinalIgnoreCase))).ToArray();
+            MapRouteSiteMapper.IsSameNode(map.Definition, node.Id, frozen.NodeIds[^1]) &&
+            MapRouteSiteMapper.IsSameNode(map.Definition,
+                node.AgvSiteId ?? node.Id, frozen.AgvSites[^1])).ToArray();
         if (destinationMatches.Length != 1 ||
-            !string.Equals(vehicle.CurrentStation, destinationMatches[0].AgvSiteId ?? destinationMatches[0].Id,
-                StringComparison.OrdinalIgnoreCase))
+            !MapRouteSiteMapper.IsSameNode(map.Definition, vehicle.CurrentStation,
+                destinationMatches[0].AgvSiteId ?? destinationMatches[0].Id))
             return new(0, "车辆当前站点尚未与已完成运输终点一致。");
 
         var body = await envelopes.ReadAsync(step.VehicleId, ct);
@@ -133,6 +137,8 @@ public sealed class CompletedTransportRouteReleaseService(
 
         var destination = destinationMatches[0];
         var protectedResources = destination.ResourceIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var requestedResources = (JsonSerializer.Deserialize<string[]>(request.ResourceIds) ?? [])
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var definitions = map.Definition.Resources.ToDictionary(item => item.Id,
             StringComparer.OrdinalIgnoreCase);
         var radius = body.RadiusFromReportedReferenceMeters +
@@ -143,21 +149,31 @@ public sealed class CompletedTransportRouteReleaseService(
             if (string.IsNullOrWhiteSpace(lease.LeaseId) ||
                 lease.MapId != map.MapId || lease.MapVersionId != map.VersionId ||
                 protectedResources.Contains(lease.ResourceId) ||
-                !definitions.TryGetValue(lease.ResourceId, out var definition) ||
-                definition.Capacity < 1 || !ValidBoundary(definition.Boundary) ||
-                !Outside(x, y, radius, definition.Boundary!))
+                !requestedResources.Contains(lease.ResourceId))
                 continue;
+            // The completed vendor step and exact destination arrival are
+            // authoritative for route resources generated from map edges or
+            // station roles without a polygon (for example AUTO-CORRIDOR-*,
+            // STANDBY-* and DUMPER-WAIT-*). They are still constrained to the
+            // immutable request resource set and destination resources remain
+            // protected. Polygon resources retain the independent envelope check.
+            if (definitions.TryGetValue(lease.ResourceId, out var definition))
+            {
+                if (definition.Capacity < 1 || !ValidBoundary(definition.Boundary) ||
+                    !Outside(x, y, radius, definition.Boundary!))
+                    continue;
+            }
             candidates.Add(lease.LeaseId);
         }
         if (candidates.Count == 0)
             return new(0, "前序路段仍被车体覆盖或只剩终点资源，继续保留。");
 
         var released = await resources.ReleasePassedLeasesAsync(taskId, stepId, candidates,
-            "车辆已完成原运输到站，完整车体、载荷包络与定位误差均在资源边界之外；释放已走过的前序路段，终点资源继续保留。",
+            "车辆已完成原运输并停到明确终点；释放该步骤已走过的全部前序路权，终点资源继续保留。",
             ct);
         return new(released, released == 0
             ? "并发状态已变化，本轮未删除路权。"
-            : $"已释放{released}项已走过的前序路段，终点和仍被车体覆盖的资源继续保留。");
+            : $"已释放{released}项已走过的前序路段，终点资源继续保留。");
     }
 
     private static bool ValidBoundary(IReadOnlyList<MapPoint2D>? polygon) =>
