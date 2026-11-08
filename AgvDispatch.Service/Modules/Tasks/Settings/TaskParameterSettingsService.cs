@@ -103,4 +103,56 @@ public sealed class TaskParameterSettingsService(TaskParameterStorageOptions sto
         runtime.Apply(saved); _saved = saved;
         return new(true, "任务参数配置已保存并立即生效；后台重启后继续使用。配置保存不会放行启动恢复、PLC 写入或车辆动作。", validation.Steps, await SnapshotAsync(ct));
     }
+
+    public async Task<TaskParameterResult> SaveEngineeringBundleAsync(
+        TrafficUserContext user, TaskParameterRequest request, CancellationToken ct)
+    {
+        if (!user.Has(TrafficPermission.View)) throw new UnauthorizedAccessException("当前会话不能保存工程包参数。");
+        using var lease = await gate.EnterControlAsync(ct);
+        if (_saved?.RequestId == request.RequestId)
+            return JsonSerializer.Serialize(_saved.Configuration) == JsonSerializer.Serialize(request.Configuration) &&
+                _saved.MapId == request.MapId && _saved.MapVersionId == request.MapVersionId
+                ? new(true, "该工程包请求已保存并生效，未重复保存。", [], await SnapshotAsync(ct))
+                : new(false, "请求编号已用于不同工程包参数。", []);
+
+        // This path is used only after the matching map version has been activated.
+        // The execution gate intentionally remains Held/AwaitingResume, so the
+        // engineering package can be committed without reopening dispatch.
+        if (gate.Mode == MapExecutionMode.Starting)
+            return new(false, "后台地图尚未初始化，不能保存工程包参数。", []);
+        if (maps.Current is not { } map || map.MapId != request.MapId || map.VersionId != request.MapVersionId)
+            return new(false, "工程包目标地图尚未成为当前运行地图；未保存参数。", []);
+        if ((await tasks.GetActiveTasksAsync(ct)).Count > 0)
+            return new(false, "存在未结束任务，不能在地图切换中提交工程包参数。", []);
+        try { TaskParameterRuntime.CheckStructure(request.Configuration); }
+        catch (ArgumentException error) { return new(false, error.Message, []); }
+        request = request with { Configuration = TaskParameterRuntime.Clone(request.Configuration) };
+        var validation = ValidateCore(request);
+        if (!validation.Accepted) return validation;
+
+        var revision = Guid.NewGuid().ToString("N");
+        var saved = new TaskParameterDocument(1, revision, request.RequestId, request.MapId, request.MapVersionId,
+            request.Configuration,
+            new[] { new TaskParameterAudit(DateTimeOffset.Now, user.WindowsIdentity, revision) }
+                .Concat(_saved?.Audits ?? []).Take(100).ToArray());
+        var path = Path.GetFullPath(storage.Path);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            await File.WriteAllTextAsync(temporary,
+                JsonSerializer.Serialize(saved, new JsonSerializerOptions { WriteIndented = true }), ct);
+            ct.ThrowIfCancellationRequested();
+            File.Move(temporary, path, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(temporary)) File.Delete(temporary);
+        }
+        runtime.Apply(saved);
+        _saved = saved;
+        return new(true,
+            "工程包任务参数已与目标地图版本一起保存；执行门禁仍保持暂停，须完成通信生效、现场核对和启动恢复后方可派单。",
+            validation.Steps, await SnapshotAsync(ct));
+    }
 }

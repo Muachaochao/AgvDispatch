@@ -51,4 +51,6 @@ public interface ITaskParameterService
     Task<TaskParameterSnapshot> GetAsync(CancellationToken ct);
     Task<TaskParameterResult> ValidateAsync(TaskParameterRequest request, CancellationToken ct);
     Task<TaskParameterResult> SaveAsync(TrafficUserContext user, TaskParameterRequest request, CancellationToken ct);
+    Task<TaskParameterResult> SaveEngineeringBundleAsync(TrafficUserContext user, TaskParameterRequest request, CancellationToken ct)
+        => throw new NotSupportedException("当前后台不支持工程包地图切换后的参数提交，请更新后台。");
 }

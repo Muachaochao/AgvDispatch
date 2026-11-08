@@ -335,6 +335,7 @@ public sealed class TrafficControlNamedPipeServer(
             TrafficControlOperations.GetTaskParameters => Success(await taskParameters.GetAsync(cancellationToken)),
             TrafficControlOperations.ValidateTaskParameters => Success(await taskParameters.ValidateAsync(Deserialize<TaskParameterRequest>(request.Payload), cancellationToken)),
             TrafficControlOperations.SaveTaskParameters => Success(await taskParameters.SaveAsync(user, Deserialize<TaskParameterRequest>(request.Payload), cancellationToken)),
+            TrafficControlOperations.SaveEngineeringTaskParameters => Success(await taskParameters.SaveEngineeringBundleAsync(user, Deserialize<TaskParameterRequest>(request.Payload), cancellationToken)),
             TrafficControlOperations.CreateTask => Success(await taskCreation.CreateAsync(user, Deserialize<ManualTaskCreationRequest>(request.Payload), cancellationToken)),
             TrafficControlOperations.GetTaskHistoryExportProgress => Success(await historyExports.GetProgressAsync(user, Deserialize<TaskHistoryExportJobRequest>(request.Payload), cancellationToken)),
             TrafficControlOperations.CancelTaskHistoryExport => Success(await historyExports.CancelAsync(user, Deserialize<TaskHistoryExportJobRequest>(request.Payload), cancellationToken)),
