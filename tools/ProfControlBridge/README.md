@@ -39,13 +39,14 @@ powershell -NoProfile -File .\Convert-ProjectToProfControl.ps1 `
   -Send
 ```
 
-该模式会从 `/api/simulation` 同时读取实际地图、地图版本、车辆数和各车起点。当前全厂方案应生成 647 个导航节点、305 个业务工位和 5 辆车；三车四工位方案应生成 29 个导航节点、4 个业务工位和 3 辆车。
+该模式会从 `/api/simulation` 同时读取实际地图、地图版本、车辆数和各车起点。当前全厂方案生成 647 个可通行导航节点、305 个 CNC 业务工位和 5 辆车；补充 CAD 完整部署参考版还会把 25 个码头、5T、总控和终端工艺点作为不参与派车的参考站显示，因此 ProfControl 可出现 672 个站点。三车四工位方案应生成 29 个导航节点、4 个业务工位和 3 辆车。
 
 项目地图采用 Y 轴向上，ProfControl 地图采用 Y 轴向下；桥接默认自动反转 Y，并在报告中记录 `invertY=true`。如果以后导入的地图本身已经是 ProfControl 坐标系，可显式传入 `-InvertY $false`。
 
 ## 已转换
 
 - 当前地图节点转换为 ProfControl 站点。
+- `CadReferencePoint` 转换为无连线的参考站点，只显示 CAD 中的码头、5T、总控和终端设备，不代表可派车停站。
 - 工程方案中的启用车辆转换为 ProfControl `Agv`，使用方案中的起点。
 - 普通路段转换为 `Line`。
 - 有两个控制点的 `CubicBezier` 转换为 `Bezier`。

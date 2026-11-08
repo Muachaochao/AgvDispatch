@@ -197,6 +197,15 @@ else {
 $sourceNodes = @(Get-PropertyValue $map 'nodes' @())
 $sourceEdges = @(Get-PropertyValue $map 'edges' @())
 $sourceResources = @(Get-PropertyValue $map 'resources' @())
+$sourceReferencePoints = @((Get-PropertyValue $map 'areaAnnotations' @()) | Where-Object {
+    [string](Get-PropertyValue $_ 'sourceType' '') -eq 'CadReferencePoint' -and
+    @(Get-PropertyValue $_ 'boundary' @()).Count -ge 3
+})
+$sourceAreaLabels = @((Get-PropertyValue $map 'areaAnnotations' @()) | Where-Object {
+    [string](Get-PropertyValue $_ 'sourceType' '') -eq 'CadSimulationEvidence' -and
+    -not [string]::IsNullOrWhiteSpace([string](Get-PropertyValue $_ 'text' '')) -and
+    @(Get-PropertyValue $_ 'boundary' @()).Count -ge 3
+})
 $sourceVehicles = @(Get-PropertyValue $plan 'vehicles' @())
 $mapId = [string](Get-PropertyValue $plan 'mapId' (Get-PropertyValue $map 'name' 'current-project'))
 $mapVersion = [string](Get-PropertyValue $plan 'mapVersion' '')
@@ -265,6 +274,46 @@ foreach ($node in $sourceNodes) {
         layerName   = ([string]::Concat([char]0x7AD9, [char]0x70B9, [char]0x5C42))
         mark        = if ([string]::IsNullOrWhiteSpace($siteId)) { $nodeId } else { $siteId }
         position    = Convert-ToProfControlPoint -Point $node -YFactor $yFactor
+        cargoAreas  = @()
+    }
+}
+
+foreach ($referencePoint in $sourceReferencePoints) {
+    $referenceId = [string](Get-PropertyValue $referencePoint 'id' '')
+    $boundary = @(Get-PropertyValue $referencePoint 'boundary' @())
+    if ([string]::IsNullOrWhiteSpace($referenceId) -or $boundary.Count -lt 3) {
+        continue
+    }
+    $point = [ordered]@{
+        x = ($boundary | Measure-Object -Property x -Average).Average
+        y = ($boundary | Measure-Object -Property y -Average).Average
+    }
+    $payload.stations += [ordered]@{
+        guid        = New-StableGuid "profcontrol/cad-reference/$mapId/$referenceId"
+        networkGuid = $networkGuid
+        layerName   = ([string]::Concat([char]0x53C2, [char]0x8003, [char]0x70B9, [char]0x5C42))
+        mark        = [string](Get-PropertyValue $referencePoint 'text' $referenceId)
+        position    = Convert-ToProfControlPoint -Point $point -YFactor $yFactor
+        cargoAreas  = @()
+    }
+}
+
+foreach ($areaLabel in $sourceAreaLabels) {
+    $labelId = [string](Get-PropertyValue $areaLabel 'id' '')
+    $boundary = @(Get-PropertyValue $areaLabel 'boundary' @())
+    if ([string]::IsNullOrWhiteSpace($labelId) -or $boundary.Count -lt 3) {
+        continue
+    }
+    $point = [ordered]@{
+        x = ($boundary | Measure-Object -Property x -Average).Average
+        y = ($boundary | Measure-Object -Property y -Average).Average
+    }
+    $payload.stations += [ordered]@{
+        guid        = New-StableGuid "profcontrol/area-label/$mapId/$labelId"
+        networkGuid = $networkGuid
+        layerName   = ([string]::Concat([char]0x533A, [char]0x57DF, [char]0x6807, [char]0x6CE8, [char]0x5C42))
+        mark        = [string](Get-PropertyValue $areaLabel 'text' $labelId)
+        position    = Convert-ToProfControlPoint -Point $point -YFactor $yFactor
         cargoAreas  = @()
     }
 }
@@ -430,6 +479,8 @@ $report = [ordered]@{
         nodes     = $sourceNodes.Count
         edges     = $sourceEdges.Count
         resources = $sourceResources.Count
+        cadReferencePoints = $sourceReferencePoints.Count
+        cadAreaLabels = $sourceAreaLabels.Count
         vehicles  = $sourceVehicles.Count
     }
     unsupported             = [ordered]@{
@@ -440,6 +491,7 @@ $report = [ordered]@{
     warnings                = @(
         'The ProfControl setMap API does not carry traffic-resource polygons; capacities and boundaries must be checked separately.',
         'The ProfControl setMap API does not carry path direction; one-way and bidirectional flags are not written to the target map.',
+        'CAD deployment reference markers are display-only stations; they are not dispatch destinations or proof of an AGV route.',
         'Only the map, stations and vehicle start positions are migrated. PLC signals, the production dispatcher and task protocols are out of scope.'
     )
     sent                    = $false
