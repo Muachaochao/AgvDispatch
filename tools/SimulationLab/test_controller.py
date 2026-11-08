@@ -224,6 +224,27 @@ class SimulationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '任务查询参数无效'):
             runtime.task_page({'pageSize': ['201']})
 
+    def test_active_task_page_merges_waiting_and_running_live_queries(self):
+        runtime = object.__new__(Runtime)
+        runtime.lock = threading.RLock()
+        waiting = dict(taskId='TASK-WAIT', stationId='CNC-001', vehicleId=None,
+                       stage='WaitingForVehicle', createdAt='2026-11-07T17:00:00+08:00')
+        running = dict(taskId='TASK-RUN', stationId='CNC-002', vehicleId='AGV-01',
+                       stage='PickingUp', createdAt='2026-11-07T17:01:00+08:00')
+        summary = dict(total=3, running=1, waiting=1, completed=1,
+                       cancelled=0, failed=0, other=0)
+        responses = {
+            '/api/tasks?filter=Waiting&page=1&pageSize=200':
+                dict(items=[waiting], totalCount=1, summary=summary),
+            '/api/tasks?filter=Running&page=1&pageSize=200':
+                dict(items=[running], totalCount=1, summary=summary),
+        }
+        runtime.api = lambda path: responses[path]
+        page = runtime.task_page({'filter': ['Active'], 'page': ['1'], 'pageSize': ['20']})
+        self.assertEqual([row['taskId'] for row in page['items']], ['TASK-RUN', 'TASK-WAIT'])
+        self.assertEqual(page['totalCount'], 2)
+        self.assertEqual(page['summary'], summary)
+
     def test_readonly_observer_detects_overcapacity(self):
         with tempfile.TemporaryDirectory() as name:
             runtime = object.__new__(Runtime); runtime.root=Path(name)

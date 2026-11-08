@@ -42,6 +42,19 @@ public static class MapCorridorResources
         var nodeMap = nodes.ToDictionary(node => node.Id, StringComparer.OrdinalIgnoreCase);
         var edgeArray = edges.ToArray();
         var resourceArray = resources.ToArray();
+        // Some reviewed simulation maps declare their complete directional
+        // lane topology explicitly. In those maps main-road NarrowAisle
+        // capacities and intersection capacities are already authored. Adding
+        // a second implicit capacity-one guard would silently serialise the
+        // whole factory again. This is opt-in by the explicit prefix, so maps
+        // without it keep the conservative automatic guards.
+        if (resourceArray.Any(resource =>
+                resource.Id.StartsWith("DUAL-LANE-", StringComparison.OrdinalIgnoreCase)))
+        {
+            return new MapCorridorTopology(
+                Array.AsReadOnly(edgeArray),
+                Array.AsReadOnly(resourceArray));
+        }
         var additions = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
         var automaticResources = new List<TrafficResourceDefinition>();
         var usedIds = resourceArray.Select(resource => resource.Id)

@@ -42,6 +42,7 @@ public sealed class RobokitTaskMapPreflight(AgvOptions options,AgvConnectionMana
     {
         var map=runtime.Current;
         RobokitTaskMapCheck Refuse(string reason)=>new(false,"实际发送路线车端核验："+reason);
+        var simulationLocal=string.Equals(options.TaskMapPreflightMode,"SimulationLocal",StringComparison.OrdinalIgnoreCase);
         if(map is null)return Refuse("没有运行地图。");
         var binding=options.MapBindings?.Where(b=>b.VehicleId==vehicleId && b.LocalMapId==map.MapId && b.LocalMapVersion==map.VersionId).ToArray();
         if(binding is not {Length:1} || !binding[0].CoordinatesVerified)return Refuse("缺少唯一已核定地图/坐标绑定。");
@@ -55,21 +56,38 @@ public sealed class RobokitTaskMapPreflight(AgvOptions options,AgvConnectionMana
                 string.IsNullOrWhiteSpace(binding[0].RobotMapMd5) || binding[0].RobotMapMd5.Length!=32 || binding[0].RobotMapMd5.Any(c=>!Uri.IsHexDigit(c)) || evidence.Issues.Any(i=>i.Contains("1302")))
                 return Refuse("车端地图身份或载入状态未通过核验。");
             if(path.Count is < 2 or > 2048)return Refuse("路径节点数量无效。");
+            var pathNodes=new List<MapNode>(path.Count);
             foreach(var id in path)
-                if(string.IsNullOrWhiteSpace(id) || evidence.Stations.Count(s=>s.Id==id)!=1 || map.Definition.Nodes.Count(n=>n.Enabled && n.AgvSiteId==id)!=1)
-                    return Refuse("发送路径含缺失或不唯一厂家映射："+id);
-            foreach(var pair in path.Zip(path.Skip(1)).Distinct())
             {
-                using var response=await client.RequestAsync(1303,new{source_id=pair.First,target_id=pair.Second},budget.Token);
-                if(!response.RootElement.TryGetProperty("list",out var list) || list.ValueKind!=JsonValueKind.Array || list.GetArrayLength()!=2 ||
-                    list[0].GetString()!=pair.First || list[1].GetString()!=pair.Second)return Refuse("实际线路未确认直接连接："+pair.First+"→"+pair.Second);
+                var nodes=string.IsNullOrWhiteSpace(id) ? [] :
+                    map.Definition.Nodes.Where(n=>n.Enabled && n.AgvSiteId==id).ToArray();
+                if(string.IsNullOrWhiteSpace(id) || evidence.Stations.Count(s=>s.Id==id)!=1 || nodes.Length!=1)
+                    return Refuse("发送路径含缺失或不唯一厂家映射："+id);
+                pathNodes.Add(nodes[0]);
+            }
+            if(simulationLocal)
+            {
+                for(var index=0;index<pathNodes.Count-1;index++)
+                    if(!map.Definition.Edges.Any(e=>e.Enabled && e.From==pathNodes[index].Id && e.To==pathNodes[index+1].Id))
+                        return Refuse($"隔离仿真同源地图缺少有向直接边：{path[index]}→{path[index+1]}。");
+            }
+            else
+            {
+                foreach(var pair in path.Zip(path.Skip(1)).Distinct())
+                {
+                    using var response=await client.RequestAsync(1303,new{source_id=pair.First,target_id=pair.Second},budget.Token);
+                    if(!response.RootElement.TryGetProperty("list",out var list) || list.ValueKind!=JsonValueKind.Array || list.GetArrayLength()!=2 ||
+                        list[0].GetString()!=pair.First || list[1].GetString()!=pair.Second)return Refuse("实际线路未确认直接连接："+pair.First+"→"+pair.Second);
+                }
             }
             using var after=await client.RequestAsync(1300,null,budget.Token);
             using var load=await client.RequestAsync(1022,null,budget.Token);
             if(!ReferenceEquals(map,runtime.Current) || after.RootElement.GetProperty("current_map").GetString()!=binding[0].RobotMap ||
                 !string.Equals(after.RootElement.GetProperty("current_map_md5").GetString(),binding[0].RobotMapMd5,StringComparison.OrdinalIgnoreCase) ||
                 load.RootElement.GetProperty("loadmap_status").GetInt32()!=1)return Refuse("采集期间地图变化或未完成载入。");
-            return new(true,"实际发送路径核验通过。");
+            return new(true,simulationLocal
+                ? "隔离仿真车端地图身份通过；路线由同一已载入地图版本的有向边逐段核验。"
+                : "实际发送路径核验通过。");
         }
         catch(OperationCanceledException)when(ct.IsCancellationRequested){throw;}
         catch(Exception ex){return Refuse(ex.Message);}
@@ -80,6 +98,7 @@ public sealed class RobokitTaskMapPreflight(AgvOptions options,AgvConnectionMana
         var checks=new List<RobokitTaskRouteCheck>();
         RobokitTaskMapCheck Refuse(string reason)=>new(false,"车端地图提交前核验："+reason){RouteChecks=checks.ToArray()};
         var map=runtime.Current;
+        var simulationLocal=string.Equals(options.TaskMapPreflightMode,"SimulationLocal",StringComparison.OrdinalIgnoreCase);
         if(map is null || map.MapId!=mapId || map.VersionId!=versionId)return Refuse("后台运行地图已变化。");
         var matches=(options.MapBindings ?? []).Where(b=>b.VehicleId==vehicleId && b.LocalMapId==mapId && b.LocalMapVersion==versionId).ToArray();
         if(matches.Length!=1)return Refuse("缺少唯一的车辆/本地地图版本与车端地图绑定，请配置Agv:MapBindings。");
@@ -122,6 +141,18 @@ public sealed class RobokitTaskMapPreflight(AgvOptions options,AgvConnectionMana
                 foreach(var pair in path.Zip(path.Skip(1)))
                 {
                     if(!checkedPairs.Add(pair)){checks.Add(new(new[]{1,3,5,7}[step],pair.First,pair.Second,true,"本次同批直接路径已观察；整体核验另见总结果。"));continue;}
+                    if(simulationLocal)
+                    {
+                        var sourceNode=map.Definition.Nodes.Single(n=>n.Enabled && n.AgvSiteId==pair.First);
+                        var targetNode=map.Definition.Nodes.Single(n=>n.Enabled && n.AgvSiteId==pair.Second);
+                        if(!map.Definition.Edges.Any(e=>e.Enabled && e.From==sourceNode.Id && e.To==targetNode.Id))
+                        {
+                            checks.Add(new(new[]{1,3,5,7}[step],pair.First,pair.Second,false,"隔离仿真同源地图中不存在该有向直接边。"));
+                            return Refuse($"第{new[]{1,3,5,7}[step]}步隔离仿真地图路线{pair.First}→{pair.Second}不是有向直接边。");
+                        }
+                        checks.Add(new(new[]{1,3,5,7}[step],pair.First,pair.Second,true,"车端地图身份已核验；相邻有向边由同一已载入地图版本确认。"));
+                        continue;
+                    }
                     using var response=await client.RequestAsync(1303,new{source_id=pair.First,target_id=pair.Second},token);
                     if(!response.RootElement.TryGetProperty("list",out var list) || list.ValueKind!=JsonValueKind.Array || list.GetArrayLength()!=2 ||
                         list[0].ValueKind!=JsonValueKind.String || list[1].ValueKind!=JsonValueKind.String ||
@@ -139,7 +170,9 @@ public sealed class RobokitTaskMapPreflight(AgvOptions options,AgvConnectionMana
                 !after.RootElement.TryGetProperty("current_map_md5",out var hash) || !string.Equals(hash.GetString(),binding.RobotMapMd5,StringComparison.OrdinalIgnoreCase) ||
                 !loaded.RootElement.TryGetProperty("loadmap_status",out var status) || !status.TryGetInt32(out var value) || value!=1)
                 return Refuse("路线采集期间地图身份变化或载入未完成。");
-            return new(true,"车端地图绑定、明确站点及四段运输的逐段路径核验通过；执行时仍需重新取得路权。"){RouteChecks=checks.ToArray()};
+            return new(true,simulationLocal
+                ? "隔离仿真车端地图身份、明确站点及四段运输的同源有向边核验通过；执行时仍需重新取得路权。"
+                : "车端地图绑定、明确站点及四段运输的逐段路径核验通过；执行时仍需重新取得路权。"){RouteChecks=checks.ToArray()};
         }
         catch(OperationCanceledException)when(ct.IsCancellationRequested){throw;}
         catch(Exception ex){return Refuse(ex is OperationCanceledException?"查询超时，未创建任务。":ex.Message);}

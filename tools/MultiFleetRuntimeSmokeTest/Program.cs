@@ -155,10 +155,15 @@ sealed class RuntimeFixture(int carCount, int stationCount) : IDisposable
         }
         Edge("BUFFER","TIP",["BUFFER-BAY","TIP-AREA"]); Edge("TIP","OUT",["TIP-AREA"]);
         var definition = new MapDefinition("synthetic fleet","in-process only","LocalCartesian","m",nodes,edges,resources);
+        // The route planner enriches bidirectional/merge geometry with runtime-only
+        // single-lane guards. Register the same expanded resource topology with the
+        // persistent traffic manager; otherwise the fixture passes planning but fails
+        // the first real lease with an unknown AUTO-CORRIDOR-* resource.
+        var runtimeResources = MapCorridorResources.AllResources(definition);
         map.Replace(new("SYNTHETIC","R1",definition,DateTimeOffset.UtcNow)); Gateway.Nodes = nodes;
-        await new DatabaseInitializer(Db,new TrafficResourceCatalog(resources)).InitializeAsync(default);
+        await new DatabaseInitializer(Db,new TrafficResourceCatalog(runtimeResources)).InitializeAsync(default);
         Writer = new(Db); Repository = new(Db); outbox = new(Db,map); store = new(Db,map,Signals);
-        traffic = new(Db,new(resources),new(TimeSpan.FromMinutes(2))); Control = new(Db,new(resources));
+        traffic = new(Db,new(runtimeResources),new(TimeSpan.FromMinutes(2))); Control = new(Db,new(runtimeResources));
         foreach (var kind in TaskParameterRuntime.TransportSteps) dispatch.StepActions[kind.ToString()] = new() { Operation = kind == DispatchTaskStepType.GoToPickup ? "JackLoad" : kind == DispatchTaskStepType.ReturnEmptyBox ? "JackUnload" : "Wait" };
         planner = new(new MapDefinitionProvider(new MapOptions(),new MapImportService(),new MapValidationService()),map,dispatch,new NoFlow());
         gate.SetMode(MapExecutionMode.Running); Restart();
@@ -234,7 +239,11 @@ sealed class SyntheticFleet : IAgvGateway,IAgvStateCache
             if (next.Ticks < 3) continue;
             Positions[c.Vehicle] = c.Path[^1]; commands[c.Id] = next with { Done = true };
             var station = dispatch.StationPickupSites.SingleOrDefault(p => p.Value == c.Path[^1]).Key;
-            if (station != null && c.Action?.Operation is "JackLoad" or "JackUnload") plc.Set(station,"BoxPresent",c.Action.Operation == "JackUnload");
+            if (station != null && c.Action?.Operation is "JackLoad" or "JackUnload")
+            {
+                plc.Set(station,"BoxPresent",c.Action.Operation == "JackUnload");
+                if (c.Action.Operation == "JackUnload") plc.Set(station,"EmptyBoxPlaced",true);
+            }
         }
     }
     public Task<DeviceConnectionStatus> GetConnectionStatusAsync(CancellationToken ct) => Task.FromResult(new DeviceConnectionStatus("SYNTHETIC","in-process AGVs",Offline == null ? ConnectionState.Online : ConnectionState.Degraded,DateTimeOffset.UtcNow));

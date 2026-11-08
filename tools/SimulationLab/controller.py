@@ -180,6 +180,48 @@ class Runtime:
         suffix = ('?' + urlencode(values)) if values else ''
         with self.lock:
             try:
+                if values.get('filter', 'All') == 'Active':
+                    # The production task API exposes disjoint Waiting and Running
+                    # filters. "Active" is a presentation-level union; forwarding it
+                    # directly returns 400 and hides every active task.
+                    rows = []
+                    summary = None
+                    for filter_name in ('Waiting', 'Running'):
+                        source_page = 1
+                        while True:
+                            live = self.api('/api/tasks?' + urlencode({
+                                'filter': filter_name,
+                                'page': str(source_page),
+                                'pageSize': '200',
+                            }))
+                            rows.extend(live.get('items') or [])
+                            summary = summary or live.get('summary')
+                            total = int(live.get('totalCount') or 0)
+                            if source_page * 200 >= total:
+                                break
+                            source_page += 1
+                    search = values.get('search', '').strip().casefold()
+                    if search:
+                        rows = [row for row in rows if search in ' '.join(
+                            str(row.get(key) or '') for key in
+                            ('taskId', 'stationId', 'vehicleId', 'stage')).casefold()]
+                    rows.sort(key=lambda row: row.get('createdAt') or '', reverse=True)
+                    start = (page - 1) * page_size
+                    return dict(
+                        items=rows[start:start + page_size],
+                        totalCount=len(rows),
+                        page=page,
+                        pageSize=page_size,
+                        summary=summary or dict(
+                            total=len(rows),
+                            running=len(rows),
+                            waiting=0,
+                            completed=0,
+                            cancelled=0,
+                            failed=0,
+                            other=0,
+                        ),
+                    )
                 return self.api('/api/tasks' + suffix)
             except Exception as live_error:
                 rows = self._report_task_rows()
@@ -1021,6 +1063,11 @@ class Runtime:
                                LengthMeters=vehicle['lengthMeters'], WidthMeters=vehicle['widthMeters'])
                 profiles.append(profile)
             settings['Agv']['Robots'] = robots
+            # The loopback vehicle is loaded from exactly the authored map file.
+            # Keep the full identity checks, but avoid hundreds of serial 1303
+            # requests on large CAD maps. Production communication settings
+            # remain on the default Full mode and are not changed by this branch.
+            settings['Agv']['TaskMapPreflightMode'] = 'SimulationLocal'
             settings['HandshakeExecution']['DumperExit']['BodyProfiles'] = profiles
             settings['HandshakeExecution']['DumperExit']['ResourceIds'] = [configuration['dumper']['resourceId']]
             # Isolated synthetic devices provide exact segment identity and pose.

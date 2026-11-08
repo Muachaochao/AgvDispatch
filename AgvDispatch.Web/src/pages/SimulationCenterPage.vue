@@ -424,7 +424,7 @@ function simulationCadBackground(map: SimulationMapDefinition | null | undefined
 }
 function simulationAreaOverlays(map: SimulationMapDefinition | null | undefined, scene: MapGeometry) {
   return (map?.areaAnnotations ?? []).flatMap(item => {
-    if (item.sourceType !== 'CadSimulationEvidence' || !Array.isArray(item.boundary)) return [];
+    if (!['CadSimulationEvidence', 'CadReferencePoint'].includes(item.sourceType ?? '') || !Array.isArray(item.boundary)) return [];
     const boundary: { x: number; y: number }[] = [];
     for (const value of item.boundary) {
       if (!value || typeof value !== 'object' || !('x' in value) || !('y' in value)) continue;
@@ -451,7 +451,7 @@ function mapNodeLabel(node: SimulationNode): string {
   return node.agvSiteId || node.id;
 }
 function showMapAreaLabel(areaId: string): boolean {
-  return areaId.startsWith('SIM-AREA-G');
+  return areaId.startsWith('SIM-AREA-G') || areaId.startsWith('SIM-CAD-POINT-');
 }
 function showDenseNodeLabel(node: SimulationNode): boolean {
   const label = mapNodeLabel(node);

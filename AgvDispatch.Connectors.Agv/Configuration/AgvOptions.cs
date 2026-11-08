@@ -18,6 +18,10 @@ public sealed class AgvOptions
     public int MaximumFrameBytes { get; set; } = 4 * 1024 * 1024;
     public int RequestIntervalMs { get; set; } = 100;
     public byte ProtocolVersion { get; set; } = 1;
+    // Full is the production default and keeps the per-edge 1303 vehicle-map
+    // verification. SimulationLocal is only selected by the isolated simulator
+    // whose virtual vehicle is loaded from the same authored map file.
+    public string TaskMapPreflightMode { get; set; } = "Full";
     public List<RobokitMapBinding> MapBindings { get; set; } = [];
     public List<AgvRobotOptions> Robots { get; set; } = [];
 
@@ -41,6 +45,12 @@ public sealed class AgvOptions
         if (ProtocolVersion is not (1 or 2))
         {
             return "Agv:ProtocolVersion只支持1（RBK 3.4）或2（RBK 3.5）。";
+        }
+
+        if (!string.Equals(TaskMapPreflightMode, "Full", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(TaskMapPreflightMode, "SimulationLocal", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Agv:TaskMapPreflightMode只支持Full或SimulationLocal。";
         }
 
         var enabled = Robots.Where(robot => robot.Enabled).ToArray();

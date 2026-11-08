@@ -14,6 +14,11 @@ def run_backlog(runtime, request, evidence, observer, tasks, completed, discover
     pending.sort(key=lambda call: (call['atSeconds'], call['planIndex']))
     inflight, stable_since, details = {}, {}, {}
     started = time.monotonic()
+    # Full-factory startup and the first multi-station PLC scan can exceed the
+    # legacy 40-second window when 305-station topology and several vehicles
+    # initialise together. Keep the default for small scenarios, but allow a
+    # bounded larger acknowledgement window for multi-round campaigns.
+    call_acceptance_timeout = max(40, min(120, 10 + len(request['calls']) * 4))
     deadline = started + max(call['atSeconds'] for call in pending) + request['timeoutSeconds']
     maximum_waiting = maximum_active = maximum_pending = maximum_busy_waiting = 0
     assignments = {}
@@ -34,8 +39,9 @@ def run_backlog(runtime, request, evidence, observer, tasks, completed, discover
                 if tid:
                     active['taskId'] = tid
                     event('created', stationId=station, taskId=tid, planIndex=active['call']['planIndex'])
-                elif now - active['emittedAt'] > 40:
-                    raise TimeoutError('PLC呼叫已发出，正式后台40秒未接单：' + station)
+                elif now - active['emittedAt'] > call_acceptance_timeout:
+                    raise TimeoutError(
+                        f'PLC呼叫已发出，正式后台{call_acceptance_timeout}秒未接单：{station}')
         for tid in list(tasks):
             if tid not in completed:
                 details[tid] = runtime.api('/api/tasks/' + tid)

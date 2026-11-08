@@ -30,6 +30,7 @@ var legacy=JsonSerializer.Deserialize<AgvRobotOptions>("{\"VehicleId\":\"legacy\
 Check(legacy.Port==23456 && legacy.NavigationPort==19206,"旧Port仅兼容状态端口，不推导导航端口");
 config.NavigationPort=0;Check(options.GetConfigurationError()!=null,"无效导航端口拒绝");config.NavigationPort=robot.NavigationPort;
 options.RequestIntervalMs=99;Check(options.GetConfigurationError()!=null,"过快请求间隔拒绝");options.RequestIntervalMs=100;
+options.TaskMapPreflightMode="Typo";Check(options.GetConfigurationError()!=null,"未知任务地图核验模式拒绝");options.TaskMapPreflightMode="Full";
 await using var manager=new AgvConnectionManager(options);
 var client=manager.Clients.Single();
 await client.PollAsync(default);
@@ -156,6 +157,18 @@ options.MapBindings=[new(){VehicleId="SIM",LocalMapId="MAP",LocalMapVersion="V2"
 var bound=await preflight.CheckAsync("SIM","N1","N2","N3","N1","MAP","V2",default);
 Check(bound.RouteChecks.Count==4&&bound.RouteChecks.All(r=>r.DirectConfirmed)&&bound.RouteChecks.Select(r=>r.Sequence).SequenceEqual(new[]{1,3,5,7}),"四运输步骤逐段只读观察结构完整");
 Check(bound.Accepted,"绑定明确后四运输段与直接厂家路径核验通过："+bound.Message);
+options.TaskMapPreflightMode="SimulationLocal";robot.ResetRead();
+var simulationLocal=await preflight.CheckAsync("SIM","N1","N2","N3","N1","MAP","V2",default);
+Check(simulationLocal.Accepted && simulationLocal.RouteChecks.Count==4,"隔离仿真使用同源地图完成四段路线核验");
+Check(!robot.ReadTypes.Contains(1303),"隔离仿真大图核验不再串行发送数百个1303");
+robot.ResetRead();
+Check((await preflight.CheckRouteAsync("SIM",new[]{"LM1","LM2","LM3"},default)).Accepted &&
+      !robot.ReadTypes.Contains(1303),"隔离仿真实际发送前仍核验地图身份且不做逐边远程探测");
+local.Replace(new("MAP","V2",linked with{Edges=linked.Edges.Where(e=>e.Id!="E").ToArray()},DateTimeOffset.Now));
+Check(!(await preflight.CheckRouteAsync("SIM",new[]{"LM1","LM2","LM3"},default)).Accepted,
+    "隔离仿真同源地图缺少有向边时仍拒绝发送");
+local.Replace(new("MAP","V2",linked,DateTimeOffset.Now));
+options.TaskMapPreflightMode="Full";robot.ResetRead();
 options.MapBindings[0].RobotMapMd5=new string('f',32);
 Check(!(await preflight.CheckAsync("SIM","N1","N2","N3","N1","MAP","V2",default)).Accepted,"车端MD5不符拒绝提交");options.MapBindings[0].RobotMapMd5=robot.Md5;
 options.MapBindings[0].CoordinatesVerified=false;

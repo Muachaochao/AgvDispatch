@@ -119,6 +119,10 @@ public sealed partial class DispatchTaskOrchestrator(
         }
         var occupiedSlots = submitting.Count + assigned.Count;
         var availableSlots = options.MaxConcurrentTasks - occupiedSlots;
+        if (availableSlots <= 0)
+        {
+            return;
+        }
         if (optimization is not null && !optimization.Options.Mode.Equals("Disabled", StringComparison.OrdinalIgnoreCase))
         {
             if (DateTimeOffset.UtcNow < _nextOptimizationAt) return;
@@ -128,11 +132,6 @@ public sealed partial class DispatchTaskOrchestrator(
             await RunOptimizationAsync(policy, Math.Max(0, availableSlots), submitting.Concat(assigned).ToArray(), cancellationToken);
             if (global) return;
         }
-        if (availableSlots <= 0)
-        {
-            return;
-        }
-
         var occupiedVehicles = submitting
             .Concat(assigned)
             .Select(task => task.VehicleId)
@@ -158,7 +157,16 @@ public sealed partial class DispatchTaskOrchestrator(
             return;
         }
 
-        var candidates = await tasks.GetDispatchCandidatesAsync(int.MaxValue, cancellationToken);
+        // A full-factory wave can hold hundreds of waiting tasks. Planning the
+        // entire queue in every control-gate cycle starves step execution and
+        // traffic release work. The repository returns candidates in stable
+        // priority/call-time order, so a bounded window is sufficient to fill
+        // the currently available vehicle slots without changing their order.
+        var candidateLimit = Math.Max(25, Math.Min(200, availableSlots * 25));
+        var candidates = await tasks.GetDispatchCandidatesAsync(candidateLimit, cancellationToken);
+        var readySteps = (await tasks.GetReadyStepsAsync(200, cancellationToken))
+            .Where(step => step.StepType == DispatchTaskStepType.GoToPickup)
+            .ToDictionary(step => step.TaskId, StringComparer.OrdinalIgnoreCase);
         var dependencyIds = candidates.SelectMany(task => task.DependsOnTaskIds)
             .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         var dependencyStates = dependencyIds.Length == 0
@@ -192,10 +200,7 @@ public sealed partial class DispatchTaskOrchestrator(
             foreach (var dependencyId in task.DependsOnTaskIds)
                 _dependencyWaitWarnings.Remove(task.TaskId + ":" + dependencyId);
 
-            var readyStep = (await tasks.GetReadyStepsAsync(100, cancellationToken))
-                .FirstOrDefault(step =>
-                    step.TaskId == task.TaskId &&
-                    step.StepType == DispatchTaskStepType.GoToPickup);
+            var readyStep = readySteps.GetValueOrDefault(task.TaskId);
             if (readyStep is null)
             {
                 continue;
