@@ -92,7 +92,7 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
             unavailableTraversals = (unavailableTraversals ?? []).Concat(
                 DumperTransitClearance.BlockedTraversals(definition, logicalSource, logicalDestination,
                     _legacyOptions.DumperDumpingSite, _legacyOptions.DumperTransitClearanceMeters))
-                .Concat(OccupiedCorridorTraversals(definition))
+                .Concat(OccupiedCorridorTraversals(definition, logicalSource))
                 .Distinct().ToArray();
         }
         catch (ArgumentException) { return null; }
@@ -133,13 +133,20 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
         return plan is null ? null : MapRouteSiteMapper.ToAgvSitePlan(definition, plan);
     }
 
-    private IReadOnlyList<MapDirectedTraversal> OccupiedCorridorTraversals(MapDefinition definition)
+    private IReadOnlyList<MapDirectedTraversal> OccupiedCorridorTraversals(MapDefinition definition, string logicalSource)
     {
         if (_vehicleStates is null || _mapOptions is null) return [];
         var now = DateTimeOffset.UtcNow;
         var maximumAge = TimeSpan.FromSeconds(_mapOptions.PositionStaleSeconds);
         var blocked = new List<MapDirectedTraversal>();
-        foreach (var vehicle in _vehicleStates.GetAll())
+        var vehicles = _vehicleStates.GetAll();
+        var sourceNode = definition.Nodes.SingleOrDefault(n => n.Id.Equals(logicalSource, StringComparison.OrdinalIgnoreCase));
+        var departing = vehicles.Where(v => sourceNode is not null &&
+            v.X is { } x && v.Y is { } y && Distance(x, y, sourceNode.X, sourceNode.Y) <= .15 &&
+            MapRouteSiteMapper.ResolveLogicalNodeId(definition, v.CurrentStation ?? "").Equals(logicalSource, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        var departingId = departing.Length == 1 ? departing[0].VehicleId : null;
+        foreach (var vehicle in vehicles)
         {
             if (vehicle.Connection != ConnectionState.Online || vehicle.Quality != SignalQuality.Good ||
                 vehicle.X is not { } x || vehicle.Y is not { } y ||
@@ -147,6 +154,28 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
                 vehicle.LastSuccessfulPollAt is not { } observed || observed > now.AddSeconds(1) ||
                 now - observed > maximumAge)
                 continue;
+            // Completing a business task releases its leases, not its physical
+            // body. A fresh parked peer still blocks its bay and the explicitly
+            // modelled adjacent-road envelope resources. The unique vehicle at
+            // the actual source may depart; a nearest point is never substituted.
+            var parked = definition.Nodes.SingleOrDefault(n => n.Enabled &&
+                (n.Id.Equals(vehicle.CurrentStation, StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(n.AgvSiteId, vehicle.CurrentStation, StringComparison.OrdinalIgnoreCase)) &&
+                Distance(x, y, n.X, n.Y) <= .15);
+            if (parked is not null && !string.Equals(vehicle.VehicleId, departingId, StringComparison.OrdinalIgnoreCase))
+            {
+                var exclusive = definition.Resources.Where(r => r.Capacity == 1 &&
+                    parked.ResourceIds.Contains(r.Id, StringComparer.OrdinalIgnoreCase))
+                    .Select(r => r.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                foreach (var edge in definition.Edges.Where(e => e.Enabled &&
+                    (e.From.Equals(parked.Id, StringComparison.OrdinalIgnoreCase) ||
+                     e.To.Equals(parked.Id, StringComparison.OrdinalIgnoreCase) ||
+                     e.ResourceIds.Any(exclusive.Contains))))
+                {
+                    blocked.Add(new(edge.Id, edge.From, edge.To));
+                    if (edge.Bidirectional) blocked.Add(new(edge.Id, edge.To, edge.From));
+                }
+            }
             var position = AgvMapPositionAnalyzer.Analyze(x, y, confidence, observed, definition, now,
                 maximumAge, _mapOptions.MinimumLocalizationConfidence,
                 _mapOptions.MaximumRouteDeviationMeters);

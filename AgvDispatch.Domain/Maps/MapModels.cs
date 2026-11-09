@@ -31,6 +31,11 @@ public sealed record MapNode(
     // A standby/stop role may also be a mandatory transit point on a corridor.
     // Traffic resources still block the node when that resource is unavailable.
     public bool AllowTransitThrough { get; init; }
+    // A graph intersection is not necessarily a physical waiting bay. An
+    // explicit veto prevents rolling navigation from stopping in a shared
+    // corridor. Null preserves existing, already commissioned map behaviour.
+    [System.Text.Json.Serialization.JsonIgnore(Condition=System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public bool? AllowTrafficStop { get; init; }
 }
 
 public enum MapEdgeGeometryKind

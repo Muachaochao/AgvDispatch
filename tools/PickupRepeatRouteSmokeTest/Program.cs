@@ -1,4 +1,4 @@
-using System.Reflection;
+﻿using System.Reflection;
 using System.Text.Json;
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Application.Tasks;
@@ -158,6 +158,27 @@ var occupancyAwarePlanner = new ConfiguredRoutePlanner(
     mapOptions: new MapOptions());
 Check(occupancyAwarePlanner.Plan("LM-PICK", "LM-EXIT", new HashSet<string>()) is null,
     "车体位于双向走廊内部时，不允许另一任务规划对向或同向穿越");
+var parkedRuntime = new ActiveMapRuntime();
+var parkedMap = new MapDefinition("parked-body", "", "LocalCartesian", "m",
+    [Node("A",0,0),Node("B",2,0),Node("PARK",1,.6,resources:["PARKED"]),Node("DETOUR",1,-2)],
+    [Edge("AB","A","B",2,true,resources:["PARKED"]),Edge("PA","PARK","A",2,true)],
+    [new TrafficResourceDefinition("PARKED",TrafficResourceType.Station)]);
+parkedRuntime.Replace(new("MAP","V1",parkedMap,DateTimeOffset.Now));
+var parkedStates = new RouteStates { CurrentSite="LM-PARK",X=1,Y=.6 };
+var parkedPlanner = new ConfiguredRoutePlanner(
+    new MapDefinitionProvider(new(),new MapImportService(),new MapValidationService()),
+    parkedRuntime,new DispatchOrchestratorOptions(),flow,vehicleStates:parkedStates,mapOptions:new MapOptions());
+Check(parkedPlanner.Plan("LM-A","LM-B",new HashSet<string>()) is null,
+    "completed idle peer still blocks an adjacent envelope road even after all task leases are released");
+Check(parkedPlanner.Plan("LM-PARK","LM-A",new HashSet<string>()) is not null,
+    "the unique vehicle at its actual parked source can depart without self-blocking");
+parkedRuntime.Replace(new("MAP","V1",parkedMap with { Edges=[..parkedMap.Edges,Edge("AD","A","DETOUR",3,true),Edge("DB","DETOUR","B",3,true)] },DateTimeOffset.Now));
+Check(parkedPlanner.Plan("LM-A","LM-B",new HashSet<string>())!.Nodes.Contains("LM-DETOUR"),
+    "route search chooses a real alternative around a parked peer instead of treating a completed task as empty space");
+parkedStates.X=10; parkedStates.Y=10;
+Check(parkedPlanner.Plan("LM-A","LM-B",new HashSet<string>())!.Nodes.SequenceEqual(["LM-A","LM-B"]),
+    "old station labels do not retain physical occupancy after fresh coordinates show departure");
+
 var parkResource=new TrafficResourceDefinition("PARK-R",TrafficResourceType.Station);
 var withParking=definition with { Nodes=definition.Nodes.Append(Node("PARK",1,1,resources:["PARK-R"])).ToArray(),
     Edges=definition.Edges.Concat([Edge("PS","PICK","PARK",.1,true),Edge("SX","PARK","EXIT",.1,true)]).ToArray(),

@@ -128,7 +128,12 @@ public sealed class MapImportService : IMapImportService
             EnumValue(row, "Type", MapNodeType.Waypoint),
             Boolean(row, "Enabled", true),
             List(row, "ResourceIds"),
-            Optional(row, "AgvSiteId"))).ToArray();
+            Optional(row, "AgvSiteId"))
+        {
+            AllowTransitThrough = Boolean(row, "AllowTransitThrough", false),
+            AllowTrafficStop = string.IsNullOrWhiteSpace(Optional(row, "AllowTrafficStop"))
+                ? null : Boolean(row, "AllowTrafficStop", true)
+        }).ToArray();
         var nodeById = nodes
             .GroupBy(node => node.Id, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
@@ -184,7 +189,11 @@ public sealed class MapImportService : IMapImportService
             node.Type,
             node.Enabled,
             CleanList(node.ResourceIds),
-            string.IsNullOrWhiteSpace(node.AgvSiteId) ? null : node.AgvSiteId.Trim()) { LayerId = node.LayerId }).ToArray();
+            string.IsNullOrWhiteSpace(node.AgvSiteId) ? null : node.AgvSiteId.Trim()) {
+                LayerId = node.LayerId,
+                AllowTransitThrough = node.AllowTransitThrough,
+                AllowTrafficStop = node.AllowTrafficStop
+            }).ToArray();
         var nodeById = nodes
             .GroupBy(node => node.Id, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
@@ -456,6 +465,8 @@ public sealed class MapImportService : IMapImportService
 
     private sealed class MapNodeDto
     {
+        public bool AllowTransitThrough { get; set; }
+        public bool? AllowTrafficStop { get; set; }
         public string LayerId { get; set; } = "navigation";
         public string Id { get; set; } = string.Empty;
         public double X { get; set; }

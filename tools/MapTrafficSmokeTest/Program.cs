@@ -1,4 +1,4 @@
-using AgvDispatch.Application.Abstractions;
+﻿using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Application.Maps;
 using AgvDispatch.Domain.Maps;
 using AgvDispatch.Domain.Tasks;
@@ -31,6 +31,8 @@ if (args.Length == 2 && (args[0] == "--cad-inspect" || args[0] == "--cad-render"
     }
     return;
 }
+MapTrafficStopImportSmokeTests.Run();
+if (args.Contains("--traffic-stop-import-only", StringComparer.OrdinalIgnoreCase)) return;
 await MapGeometrySmokeTests.RunAsync();
 if (args.Contains("--geometry-only", StringComparer.OrdinalIgnoreCase)) return;
 

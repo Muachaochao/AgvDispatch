@@ -396,6 +396,62 @@ def complete_command_set(commands, tasks, recoveries=None):
     return True
 
 
+def resource_wait_cycles(requests, leases, ownership, capacities, cars):
+    """Only durable assigned tasks and currently held, saturated leases count.
+
+    A dispatch candidate is not the owner of its suggested vehicle. Historical
+    BlockingKey text is deliberately ignored because leases may already have
+    changed. Moving vehicles are excluded from persistent stopped wait cycles.
+    """
+    assigned = {r['TaskId']: r['VehicleId'] for r in ownership}
+    dependencies = {}
+    for request in requests:
+        task, vehicle = request.get('TaskId'), request.get('VehicleId')
+        if request.get('State') != 'Waiting' or not vehicle or assigned.get(task) != vehicle:
+            continue
+        if vehicle not in cars or cars[vehicle].get('moving') is not False:
+            continue
+        try:
+            resource_ids = json.loads(request.get('ResourceIds') or '[]')
+        except (ValueError, TypeError):
+            continue
+        for resource in resource_ids:
+            holders = [l for l in leases if l.get('ResourceId') == resource]
+            tasks = {l.get('TaskId') for l in holders}
+            if task in tasks or len(tasks) < capacities.get(resource, 1):
+                continue
+            owners = {l['VehicleId'] for l in holders if l.get('VehicleId') and l['VehicleId'] != vehicle}
+            if owners:
+                dependencies.setdefault(vehicle, []).append(owners)
+    # A running vendor navigation can be physically stopped by a parked car
+    # that is itself waiting on this navigation's leases (mixed wait cycle).
+    assigned_vehicles = set(assigned.values())
+    for vehicle, car in cars.items():
+        blocker = car.get('blockedByVehicle')
+        if (vehicle in assigned_vehicles and car.get('moving') is False
+                and blocker in cars and blocker != vehicle):
+            dependencies.setdefault(vehicle, []).append({blocker})
+    # Capacity > 1 is an AND dependency: one progressing outside owner can free
+    # a slot. A simple pairwise cycle alone is not proof of a closed wait set.
+    stuck = set(dependencies)
+    while True:
+        reduced = {v for v in stuck if any(owners <= stuck for owners in dependencies[v])}
+        if reduced == stuck:
+            break
+        stuck = reduced
+    graph = {v: set().union(*(owners for owners in dependencies[v] if owners <= stuck)) for v in stuck}
+    cycles = set()
+    def walk(start, current, path):
+        for target in graph.get(current, ()):
+            if target == start and len(path) > 1:
+                cycles.add(tuple(sorted(path)))
+            elif target not in path and target in graph:
+                walk(start, target, (*path, target))
+    for start in graph:
+        walk(start, start, (start,))
+    return cycles
+
+
 class Observer:
     def __init__(self, runtime, evidence):
         self.runtime, self.evidence = runtime, evidence
@@ -407,6 +463,7 @@ class Observer:
         self.max_wait = 0
         self.wait_started = {}
         self.mutual_wait_started = {}
+        self.resource_cycle_started = {}
         self.overlap_pairs = set()
         self.last_details = {}
         self.seen_details = {}
@@ -457,6 +514,19 @@ class Observer:
                         marginMeters=.05))
         now = time.monotonic()
         current_pairs = set(mutual_wait_pairs(cars))
+        requests = query(self.runtime.root,
+                         "select TaskId,VehicleId,State,ResourceIds from traffic_request where State='Waiting'")
+        cycles = resource_wait_cycles(requests, leases, ownership, self.resources, cars)
+        for cycle in tuple(self.resource_cycle_started):
+            if cycle not in cycles:
+                self.resource_cycle_started.pop(cycle)
+        for cycle in cycles:
+            started = self.resource_cycle_started.setdefault(cycle, now)
+            if now - started >= 45:
+                self.violations.append(dict(kind='traffic-resource-cycle', vehicles=list(cycle),
+                    seconds=round(now-started, 1), tasks=sorted(
+                        r['TaskId'] for r in ownership if r['VehicleId'] in cycle),
+                    sites={v: cars[v].get('station') for v in cycle}))
         for pair in tuple(self.mutual_wait_started):
             if pair not in current_pairs: self.mutual_wait_started.pop(pair)
         for pair in current_pairs:
@@ -502,12 +572,14 @@ class Observer:
                 time=time.time(),
                 device=state,
                 leases=leases,
+                trafficWaitRequests=requests,
                 vehicleTaskOwnership=ownership,
                 tasks=task_observation,
             ), ensure_ascii=False) + '\n')
-        mutual = next((item for item in self.violations if item.get('kind') == 'mutual-vehicle-wait'), None)
+        mutual = next((item for item in self.violations if item.get('kind') in
+                       ('mutual-vehicle-wait', 'traffic-resource-cycle')), None)
         if mutual:
-            raise RuntimeError(f"互锁等待：{mutual['vehicles'][0]} 与 {mutual['vehicles'][1]} 连续45秒互相阻塞；"
+            raise RuntimeError(f"互锁等待：{'、'.join(mutual['vehicles'])} 连续45秒形成车辆或路权等待环；"
                                f"任务 {', '.join(mutual['tasks']) or '未绑定'}。先检查共享路口路权和候选路线，"
                                "原任务及路权已保留，禁止删除任务或人工改信号绕过。")
         if self.violations: raise RuntimeError('独立交通检查发现资源超容量或合成包络重叠。')

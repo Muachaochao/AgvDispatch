@@ -126,3 +126,16 @@ Check(legacy3051.Count == 1 && legacy3051[0].Final,
     "3051两点任务必须保持单窗口，不能发送中间停靠任务。");
 
 Console.WriteLine("PASS rolling reservation windows: safe-only boundaries, dumper exit clearance, forward fallback, single-window fallback, 3051 compatibility.");
+
+var transitOnlyMap = new MapDefinition("TRANSIT", "", "RobotWorld", "m",
+    nodes.Select(n => n.Id == "C" ? n with { AllowTrafficStop = false } : n).ToArray(), edges, resources);
+var transitOnlyPlan = TransportRouteWindows.Plan(
+    new RoutePlan(["A", "B", "C", "D", "E"], ["AB", "BC", "CD", "DE"], [], 4), transitOnlyMap, options);
+Check(transitOnlyPlan.Count == 1 && transitOnlyPlan[0].Destination == "E",
+    "共用通道路口即使标为Intersection，也不能在明确禁止停车时拆窗；必须取得到下一个可停点的完整路权。");
+var bypassUnsafeJunction = TransportRouteWindows.Plan(
+    new RoutePlan(longNodes.Select(n => n.Id).ToArray(), longEdges.Select(e => e.Id).ToArray(), [], 6),
+    longMap with { Nodes = longNodes.Select(n => n.Id == "C" ? n with { Type = MapNodeType.Intersection, AllowTrafficStop = false } : n).ToArray() }, options);
+Check(bypassUnsafeJunction.Count == 2 && bypassUnsafeJunction[0].Destination == "F",
+    "禁止停车的中途路口不能成为窗口终点，应继续搜索真正允许停车的后续站点。");
+Console.WriteLine("PASS explicit transit-only intersections: no unsafe stop, forward search, existing-map compatibility.");

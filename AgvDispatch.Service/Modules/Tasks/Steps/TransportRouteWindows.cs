@@ -110,7 +110,7 @@ public static class TransportRouteWindows
     {
         var logical = MapRouteSiteMapper.ResolveLogicalNodeId(map, site);
         var node = map.Nodes.SingleOrDefault(item => item.Id.Equals(logical, StringComparison.OrdinalIgnoreCase));
-        return node is { Enabled: true } &&
+        return node is { Enabled: true, AllowTrafficStop: not false } &&
             node.Type is MapNodeType.Station or MapNodeType.WaitingPoint or MapNodeType.ChargingPoint or MapNodeType.Intersection;
     }
 

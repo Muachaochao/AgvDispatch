@@ -735,6 +735,8 @@ class Runtime:
         nodes = {}
         vendor_ids = set()
         for node in navigation['nodes']:
+            if node.get('allowTrafficStop') is not None and type(node['allowTrafficStop']) is not bool:
+                raise ValueError('路口是否允许交通停车必须为布尔值，不能用文字或数字替代。')
             if not isinstance(node, dict) or any(not isinstance(node.get(key), str) or not node[key].strip() for key in ('id', 'agvSiteId')):
                 raise ValueError('地图节点缺少id或agvSiteId。')
             if node['id'] in nodes or node['agvSiteId'] in vendor_ids:

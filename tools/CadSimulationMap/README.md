@@ -51,7 +51,7 @@ python DispatchingSystem/tools/CadSimulationMap/build_full_map.py `
 
 ## 输出
 
-- `cad-simulation-map-definition.json`：647 节点、1304 条有向道路、332 个资源。
+- `cad-simulation-map-definition.json`：647 节点、1304 条有向道路、752 个资源（含双向共线道路的对向互斥资源）。
 - `areaAnnotations`：8 个业务分区、25 个 CAD 部署参考点和 1 个 CAD 原布局底图引用。
 - `cad/b07-1f-lower-layout-reference.png`：随地图产物复制的下方有效 CAD 底图。
 - `cad-station-points.json`：305 个 CNC 的预览像素、CAD 毫米和米制坐标。
@@ -66,3 +66,31 @@ python DispatchingSystem/tools/CadSimulationMap/build_full_map.py `
 - `cad-reference-points.json`：码头、5T、总控和终端工艺点的 CAD 坐标、实体句柄及“仅参考显示”权限。
 
 PLC 点表全部标记为 `LabOnly`，只用于隔离仿真，不能作为现场 PLC 写入依据。
+
+## 全厂工程复核
+
+安装 `ezdxf` 后，可以不启动设备，独立重查源文件摘要、CAD 机台识别、25 个参考实体、待命/充电文字锚点、305 工位握手覆盖、车辆尺寸和全程有向可达性：
+
+```powershell
+python tools/CadSimulationMap/audit_project.py `
+  --root artifacts/chengdu-full-review-20261110/map-envelope-safe `
+  --output artifacts/chengdu-full-review-20261110/project-audit.json
+```
+
+检查包含五个起点到各机台、机台至倒料机、倒料机返机台、机台至候车位及充电位共 4270 条有向路线，并禁止借其他业务站点抄近路。通过只表示仿真输入自洽；CNC 顺序编号、预览识别精度（约 69.44 mm/像素）、1.1 m 取货偏移、道路几何及充电对接姿态仍需现场确认。当前尺寸按用户最新确认的长 800 mm、宽 520 mm，优先于早期 PDF 的暂定尺寸。
+
+新生成的地图显式设置 `allowTrafficStop`：未经会让空间核验的公共通道路口为 `false`，业务停靠位为 `true`。它不改变节点拓扑或允许穿行的规则；JSON 与 CSV 导入均保留该字段，旧图缺省为 `null`，沿用既有策略。路段互斥只能阻止对向同时占用，不能单独证明多路段无死锁。
+
+保存完整场景后，可直接从该次证据目录生成 1920×1080 中文回放（不是第三方软件录像）：
+
+```powershell
+python tools/CadSimulationMap/export_run_video.py `
+  --run artifacts/<实例>/simulation-run-<场景编号> `
+  --output artifacts/<回放目录>/run.mp4
+```
+
+输出包含 MP4、按原始采样抽取的 JSON 和首/中/末三张核对图。车辆尺寸、位置、弧度朝向、载荷及任务状态来自本次证据，原始日志不会被覆盖。视频只用于观察，不能替代报告、路权和 PLC 闭环断言。
+
+停靠包络还按当前 800×520 mm 车型检查机台停靠点与邻近道路的距离。两车外接圆半径之和加 0.1 m 裕量内的道路关联该 CNC 资源，防止车辆停靠时旁边通道仍向另一车开放。这是保守的仿真约束，不替代现场转弯及停靠姿态核定。
+
+审计还检查停靠车体是否侵入其他道路的包络。2026-11-10 的原 1.1 m 偏移工程在该项未通过；即使路网可达、资源绑定完整，也不能据此判全厂验收通过。不得把停靠点移入机台中心来取得仿真通过，需核定真实对接姿态、停靠空间或受控空闲车让位策略。

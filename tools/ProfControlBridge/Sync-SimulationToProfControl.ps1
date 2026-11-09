@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$SimulationBaseUri = 'http://127.0.0.1:5199',
 
@@ -32,6 +32,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Net.Http
+. (Join-Path $PSScriptRoot 'BridgeGeometry.ps1')
 
 function Get-PropertyValue {
     param(
@@ -222,6 +223,9 @@ if ($CaptureEvidence) {
         profControl = $ProfControlBaseUri
         invertY = $InvertY
         coordinateScale = $ProfControlCoordinateScale
+        sourceHeadingUnit = 'radians'
+        targetHeadingUnit = 'radians'
+        headingTransform = 'Y reflection, then normalize to [-pi, pi]'
     }
     [IO.File]::WriteAllText(
         (Join-Path $runDirectory 'metadata.json'),
@@ -369,31 +373,44 @@ while ($true) {
                 continue
             }
 
-            $x = [double](Get-PropertyValue $car 'x' ([double]::NaN))
-            $y = [double](Get-PropertyValue $car 'y' ([double]::NaN))
-            if ([double]::IsNaN($x) -or [double]::IsNaN($y)) {
+            $sourceX = Get-PropertyValue $car 'x' $null
+            $sourceY = Get-PropertyValue $car 'y' $null
+            if ($null -eq $sourceX -or $null -eq $sourceY) {
+                $skipped++
+                continue
+            }
+            $x = [double]$sourceX
+            $y = [double]$sourceY
+            if ([double]::IsNaN($x) -or [double]::IsNaN($y) -or
+                [double]::IsInfinity($x) -or [double]::IsInfinity($y)) {
                 $skipped++
                 continue
             }
             $targetY = $y * $yFactor
-            $angle = [double](Get-PropertyValue $car 'angle' ($vehicleState[$vehicleId].LastAngle))
-            $displayAngle = $angle * $yFactor
-            while ($displayAngle -gt 180) { $displayAngle -= 360 }
-            while ($displayAngle -le -180) { $displayAngle += 360 }
-            $profControlAngleRadians = $displayAngle * [Math]::PI / 180.0
+            # device.cars.angle and the ProfControl command both use radians.
+            # LastAngle is already in display coordinates; never mirror it twice
+            # as a fallback for a missing source observation.
+            $angle = Get-PropertyValue $car 'angle' $null
+            if ($null -eq $angle -or [double]::IsNaN([double]$angle) -or [double]::IsInfinity([double]$angle)) {
+                $skipped++
+                continue
+            }
+            $displayAngle = Convert-SimulationHeadingToDisplayRadians -AngleRadians ([double]$angle) -InvertY $InvertY
+            $profControlAngleRadians = $displayAngle
             $loaded = [bool](Get-PropertyValue $car 'loaded' $false)
             $targetName = Get-TaskLabel -VehicleId $vehicleId -Car $car
 
             $positionChanged = [Math]::Abs($x - $vehicleState[$vehicleId].LastX) -gt 0.001 -or
                 [Math]::Abs($targetY - $vehicleState[$vehicleId].LastY) -gt 0.001
-            $angleChanged = [Math]::Abs($displayAngle - $vehicleState[$vehicleId].LastAngle) -gt 0.1
+            $headingDelta = $displayAngle - $vehicleState[$vehicleId].LastAngle
+            $angleChanged = [Math]::Abs([Math]::Atan2([Math]::Sin($headingDelta), [Math]::Cos($headingDelta))) -gt (0.1 * [Math]::PI / 180.0)
             $nameChanged = $targetName -ne $vehicleState[$vehicleId].CurrentName
             $loadChanged = $vehicleState[$vehicleId].LoadKnown -and
                 $loaded -ne $vehicleState[$vehicleId].Loaded
 
             if ($DryRun) {
                 if ($positionChanged -or $angleChanged -or $nameChanged -or $loadChanged) {
-                    Write-Host ("{0}: x={1:N3} y={2:N3} angle={3:N1} loaded={4} label={5}" -f
+                    Write-Host ("{0}: x={1:N3} y={2:N3} angleRadians={3:N3} loaded={4} label={5}" -f
                         $vehicleId, $x, $targetY, $displayAngle, $loaded, $targetName)
                 }
             }
@@ -547,7 +564,9 @@ if ($CaptureEvidence) {
         else {
             "$($SimulationBaseUri.TrimEnd('/'))/api/simulation/report?id=$reportId"
         }
-        $report = Invoke-JsonRequest -Client $simulationClient -Uri $reportUri
+        $terminal = ([string](Get-PropertyValue $latestScenario 'status' '')).ToLowerInvariant() -in
+            @('passed', 'failed', 'aborted', 'inconclusive')
+        $report = if ($terminal) { Invoke-JsonRequest -Client $simulationClient -Uri $reportUri } else { $null }
         if ($null -ne $report) {
             [IO.File]::WriteAllText(
                 (Join-Path $runDirectory 'report.json'),

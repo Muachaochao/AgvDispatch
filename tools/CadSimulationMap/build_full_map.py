@@ -291,6 +291,10 @@ def build_graph(stations: list[StationPoint]) -> tuple[dict[str, Any], dict[str,
                 "agvSiteId": site_id,
                 "layerId": layer_id,
                 "allowTransitThrough": allow_transit_through,
+                # CAD junctions have no surveyed off-line waiting envelope.
+                # Keep their graph role, but reserve through to a business bay
+                # rather than stopping two opposing windows in a shared aisle.
+                "allowTrafficStop": node_type in ("Station", "WaitingPoint", "ChargingPoint"),
             }
         )
 
@@ -910,7 +914,8 @@ def apply_dual_lane_topology(definition: dict[str, Any], lane_offset_m: float = 
         # The reviewed CAD has no separated physical carriageway. Both
         # directional lanes therefore still overlap on the same centreline.
         # Give that physical segment a capacity-one guard so opposing traffic
-        # cannot acquire the segment simultaneously and deadlock nose-to-nose.
+        # cannot acquire the segment simultaneously. This alone does not prevent
+        # multi-segment hold-and-wait cycles.
         head_on_guard_id = "HEAD-ON-GUARD-" + hashlib.sha256(("guard|" + pair_key).encode()).hexdigest()[:20].upper()
         if head_on_guard_id not in resources_by_id:
             guard = {
@@ -960,10 +965,45 @@ def apply_dual_lane_topology(definition: dict[str, Any], lane_offset_m: float = 
         "headOnGuardCount": head_on_guards,
         "approachJunctionsConverted": approach_junctions,
         "sharedMainIntersectionsCapacity": 5,
-        "reason": "CAD does not provide verified lane width; logical direction lanes share the vetted centreline and a capacity-one head-on guard prevents opposing deadlock.",
+        "reason": "CAD does not provide verified lane width; logical direction lanes share the vetted centreline and a capacity-one head-on guard prevents simultaneous opposing use of each segment; multi-segment deadlock requires separate prevention.",
         "stationSpursRemainCentred": True,
         "terminalAndStationCapacity": 1,
     }
+
+
+def station_envelope_conflicts(definition, length_m=0.8, width_m=0.52, margin_m=0.1):
+    """Conservative rotation-independent parked-body clearance in metres.
+
+    A stopped CNC vehicle can intrude into a neighbouring through lane even
+    when the graph edges do not cross. Both vehicles' circumscribed radii plus
+    a margin bound their possible headings; this trades throughput for safety.
+    """
+    if not all(math.isfinite(v) and v > 0 for v in (length_m, width_m, margin_m)):
+        raise ValueError('车辆包络参数必须为正有限数。')
+    radius = math.hypot(length_m, width_m) + margin_m
+    nodes = {n['id']: n for n in definition['nodes']}
+    stations = [n for n in nodes.values() if n.get('agvSiteId', '').startswith('CNC-')]
+    for edge in definition['edges']:
+        a, b = nodes[edge['from']], nodes[edge['to']]
+        dx, dy = b['x']-a['x'], b['y']-a['y']
+        squared = dx*dx+dy*dy
+        for station in stations:
+            t = max(0., min(1., ((station['x']-a['x'])*dx+(station['y']-a['y'])*dy)/squared)) if squared else 0.
+            distance = math.hypot(station['x']-a['x']-t*dx, station['y']-a['y']-t*dy)
+            if distance <= radius:
+                yield edge, station['agvSiteId']
+
+
+def apply_station_envelope_guards(definition):
+    added = 0
+    for edge, resource in station_envelope_conflicts(definition):
+        resources = edge.setdefault('resourceIds', [])
+        if resource not in resources:
+            resources.append(resource)
+            added += 1
+    return dict(addedEdgeResourceBindings=added, lengthMeters=.8, widthMeters=.52,
+                marginMeters=.1, method='two-circumscribed-radii',
+                authority='simulation-design-only')
 
 
 def valid_graph(definition: dict[str, Any], initial_sites: list[str]) -> dict[str, Any]:
@@ -1382,7 +1422,7 @@ def render_preview(
         f"纳入行：{row_counts}",
         "合计：305 台",
         "R1-R2 的 73 个重复设备图形不纳入",
-        "工位取货点向相邻CAD巷道偏移 1.1 m",
+        "工位取货偏移 1.1 m（净空待核定）",
         "PLC地址全部标记 LabOnly",
     ):
         draw.text((panel_x + 34, y), text, fill="#a8bdd2", font=small)
@@ -1564,6 +1604,8 @@ def build(args: argparse.Namespace) -> None:
     stations, rows = detect_station_points(args.cad_preview, viewbox)
     definition, summary = build_graph(stations)
     lane_summary = apply_dual_lane_topology(definition)
+    summary['stationEnvelopeGuards'] = apply_station_envelope_guards(definition)
+    summary['resourceCount'] = len(definition['resources'])
     station_ids = [station.station_id for station in stations]
     graph_check = valid_graph(definition, [f"WAIT-{index:02d}" for index in range(1, 6)])
     departure_check = check_wait_departure_clearance(definition)
@@ -1730,15 +1772,16 @@ def build(args: argparse.Namespace) -> None:
 - 前两排共 73 个重复设备图形不纳入已确认的 305 台 CNC 数量。
 - 五台 AGV、两个充电桩和倒料工位使用 CAD 中的实际文字/设备锚点。
 - 另纳入 {len(CAD_REFERENCE_POINTS)} 个 CAD 下方有效布局参考点：10 个码头、8 个 5T 点位、总控/调度及终端处理设备；它们只用于画面核对，未自动成为可派车业务站。
-- 地图包含 {graph_check['nodeCount']} 个节点、{graph_check['edgeCount']} 条有向道路、{graph_check['resourceCount']} 个容量 1 资源。
+- 地图包含 {graph_check['nodeCount']} 个节点、{graph_check['edgeCount']} 条有向道路、{graph_check['resourceCount']} 个资源（各自容量见定义）。
 - 五辆车从 CAD 标注的五个 AGV 待命位置出发，{graph_check['directedReachabilityChecks']} 个有向可达性组合通过。
 
 ## 拓扑
 
-- CNC 取货点：每台 CNC 的 CAD 中心点向相邻机台通道偏移 1.1 m，避免把车端停点放在机台几何中心。
+- CNC 取货点：每台 CNC 的 CAD 中心点向相邻机台通道偏移 1.1 m；这是待现场核定的仿真设计，部分停靠位会侵入通道包络，不能作为测量级停靠点或最终验收依据。
 - 横向通道：按 CAD 机台中背靠背行之间的空档建立五条取货通道。
 - 外围通道：使用 CAD 机台区左右边界和南侧边界建立双回路。
-- 多车主通道：{lane_summary['lanePairCount']} 对主路段保留已校核中心线，并分别记录东/西、南/北方向车道角色；方向逻辑车道容量 5，中心线尚未物理分离的每对反向路段另有容量 1 的防对向死锁护栏，工位、等待位和终端倒料仍为容量 1。
+- 多车主通道：{lane_summary['lanePairCount']} 对主路段记录东/西、南/北方向角色；共用中心线不是实测双车道。每对反向路段容量 1 保护相向占用，但单靠它不能证明无死锁。
+- 无独立会让空间的主路口与取货支线路口均设置 `allowTrafficStop=false`；滚动窗口需继续延伸到可停靠业务位，不能在共用中心线上持有前一段路权等待对向车辆。
 - 终端区：五个 CAD 标注 AGV 待命位各增加独立离位点和南北汇入脊线，避免相邻空载车体挡住出场路线；再连接两个充电位、倒料工位和检修点。
 - 所有道路使用 0.75 m/s，每个工位、待命位、倒料位和充电位均为容量 1 资源。
 

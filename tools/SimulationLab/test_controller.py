@@ -98,6 +98,19 @@ class SimulationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '必须明确绑定PLC点表'):
             runtime._validate_configuration(missing_table)
 
+    def test_traffic_stop_veto_is_typed_and_survives_configuration(self):
+        runtime = object.__new__(Runtime)
+        for flag in (False, True, None):
+            payload = self.custom_payload()
+            payload['mapDefinition']['nodes'][0]['allowTrafficStop'] = flag
+            normalized = runtime._validate_configuration(payload)
+            self.assertIs(normalized['mapDefinition']['nodes'][0]['allowTrafficStop'], flag)
+        for invalid in ('false', 'true', 0, 1, []):
+            payload = self.custom_payload()
+            payload['mapDefinition']['nodes'][0]['allowTrafficStop'] = invalid
+            with self.assertRaisesRegex(ValueError, '布尔值'):
+                runtime._validate_configuration(payload)
+
     def test_multiple_waiting_bays_survive_configuration_and_reject_duplicates(self):
         runtime = object.__new__(Runtime)
         payload = self.custom_payload()

@@ -10,8 +10,8 @@
 powershell -NoProfile -File .\Convert-ProjectToProfControl.ps1 `
   -MapPath '..\..\..\发布包\运行数据\后台5199\merged-runtime-new-map.json' `
   -PlanPath '..\..\..\发布包\运行数据\engineering-center\draft.json' `
-  -VehicleWidthMeters 0.8 `
-  -VehicleLengthMeters 0.52
+  -VehicleWidthMeters 0.52 `
+  -VehicleLengthMeters 0.8
 ```
 
 显式下发到隔离 ProfControl：
@@ -20,26 +20,26 @@ powershell -NoProfile -File .\Convert-ProjectToProfControl.ps1 `
 powershell -NoProfile -File .\Convert-ProjectToProfControl.ps1 `
   -MapPath '..\..\..\发布包\运行数据\后台5199\merged-runtime-new-map.json' `
   -PlanPath '..\..\..\发布包\运行数据\engineering-center\draft.json' `
-  -VehicleWidthMeters 0.8 `
-  -VehicleLengthMeters 0.52 `
+  -VehicleWidthMeters 0.52 `
+  -VehicleLengthMeters 0.8 `
   -BaseUri 'http://127.0.0.1:10001' `
   -Send
 ```
 
-`-Send` 默认要求目标 ProfControl 没有已有地图对象，避免重复添加。目标不是干净实例时必须先重启隔离实例；`-Force` 只用于明确理解重复对象风险后的测试。
+`-Send` 默认要求目标 ProfControl 没有已有地图对象，避免重复添加。目标不是干净实例时必须先重启隔离实例；`setMap` 是追加接口，`-Force` 也不能覆盖非空地图；脚本现在一律在写入前拒绝非空目标。
 
 也可以直接读取 `5199` 当前选中的完整仿真实例，不再手工指定地图和方案文件：
 
 ```powershell
 powershell -NoProfile -File .\Convert-ProjectToProfControl.ps1 `
   -SimulationBaseUri 'http://127.0.0.1:5199' `
-  -VehicleWidthMeters 0.8 `
-  -VehicleLengthMeters 0.52 `
+  -VehicleWidthMeters 0.52 `
+  -VehicleLengthMeters 0.8 `
   -BaseUri 'http://127.0.0.1:10001' `
   -Send
 ```
 
-该模式会从 `/api/simulation` 同时读取实际地图、地图版本、车辆数和各车起点。当前全厂方案生成 647 个可通行导航节点、305 个 CNC 业务工位和 5 辆车；补充 CAD 完整部署参考版还会把 25 个码头、5T、总控和终端工艺点作为不参与派车的参考站显示，因此 ProfControl 可出现 672 个站点。三车四工位方案应生成 29 个导航节点、4 个业务工位和 3 辆车。
+该模式会从 `/api/simulation` 同时读取实际地图、地图版本、车辆数和各车起点。当前全厂方案生成 647 个可通行导航节点、305 个 CNC 业务工位和 5 辆车；补充 CAD 完整部署参考版还会把 25 个码头、5T、总控和终端工艺点作为不参与派车的参考站显示，再加 8 个业务分区标签，因此 ProfControl 可出现 680 个站点。三车四工位方案应生成 29 个导航节点、4 个业务工位和 3 辆车。
 
 项目地图采用 Y 轴向上，ProfControl 地图采用 Y 轴向下；桥接默认自动反转 Y，并在报告中记录 `invertY=true`。如果以后导入的地图本身已经是 ProfControl 坐标系，可显式传入 `-InvertY $false`。
 
@@ -111,3 +111,9 @@ powershell -NoProfile -File .\Sync-SimulationToProfControl.ps1 `
 ```
 
 默认 `ProfControlCoordinateScale=0.01`，对应 ProfControl 当前地图比例。状态桥只更新 `10001` 隔离实例，不参与正式派车、PLC 写入或路权判断。
+
+车辆遥测 `device.cars.angle` 和目标 `changeAgvAngle` 均使用弧度；Y 轴反转时角度取反，不做度到弧度的二次换算。`Test-BridgeGeometry.ps1` 覆盖东南西北、跨周归一化及无效角度。缺失或非有限的位置/朝向不会写入显示端。
+
+全厂隔离测试请把 `SimulationBaseUri` 指向该次控制台实际端口（例如 `59130`），记录地图和方案身份，不能把日常真车遥测混作虚拟车辆证据。使用当前 800×520 mm 车型时显式传入 `-VehicleLengthMeters 0.8 -VehicleWidthMeters 0.52`；地图转换报告记录本次使用的尺寸。
+
+默认车体长 0.8 m、宽 0.52 m。`Test-ProjectConversion.ps1` 可在 Windows PowerShell 5.1 和 PowerShell 7 验证参考点/分区层、长宽、轴变换及稳定标识；只转换临时夹具，不写显示端。场景尚在运行时，单次状态桥保留采样，不提前请求不存在的最终报告。

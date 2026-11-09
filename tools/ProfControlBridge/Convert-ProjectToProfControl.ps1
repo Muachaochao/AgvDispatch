@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$MapPath,
 
@@ -14,9 +14,9 @@ param(
 
     [double]$DefaultStrokeWidthMeters = 0.8,
 
-    [double]$VehicleWidthMeters = 0.8,
+    [double]$VehicleWidthMeters = 0.52,
 
-    [double]$VehicleLengthMeters = 0.52,
+    [double]$VehicleLengthMeters = 0.8,
 
     [bool]$InvertY = $true,
 
@@ -120,7 +120,7 @@ function Get-EdgeAngle {
         return 0.0
     }
 
-    [Math]::Round([Math]::Atan2($deltaY * $YFactor, $deltaX) * 180.0 / [Math]::PI, 6)
+    [Math]::Atan2($deltaY * $YFactor, $deltaX)
 }
 
 function Convert-ToProfControlPoint {
@@ -271,7 +271,7 @@ foreach ($node in $sourceNodes) {
     $payload.stations += [ordered]@{
         guid        = New-StableGuid "profcontrol/station/$mapId/$nodeId"
         networkGuid = $networkGuid
-        layerName   = ([string]::Concat([char]0x7AD9, [char]0x70B9, [char]0x5C42))
+        layerName   = (-join @([char]0x7AD9, [char]0x70B9, [char]0x5C42))
         mark        = if ([string]::IsNullOrWhiteSpace($siteId)) { $nodeId } else { $siteId }
         position    = Convert-ToProfControlPoint -Point $node -YFactor $yFactor
         cargoAreas  = @()
@@ -291,7 +291,7 @@ foreach ($referencePoint in $sourceReferencePoints) {
     $payload.stations += [ordered]@{
         guid        = New-StableGuid "profcontrol/cad-reference/$mapId/$referenceId"
         networkGuid = $networkGuid
-        layerName   = ([string]::Concat([char]0x53C2, [char]0x8003, [char]0x70B9, [char]0x5C42))
+        layerName   = (-join @([char]0x53C2, [char]0x8003, [char]0x70B9, [char]0x5C42))
         mark        = [string](Get-PropertyValue $referencePoint 'text' $referenceId)
         position    = Convert-ToProfControlPoint -Point $point -YFactor $yFactor
         cargoAreas  = @()
@@ -311,7 +311,7 @@ foreach ($areaLabel in $sourceAreaLabels) {
     $payload.stations += [ordered]@{
         guid        = New-StableGuid "profcontrol/area-label/$mapId/$labelId"
         networkGuid = $networkGuid
-        layerName   = ([string]::Concat([char]0x533A, [char]0x57DF, [char]0x6807, [char]0x6CE8, [char]0x5C42))
+        layerName   = (-join @([char]0x533A, [char]0x57DF, [char]0x6807, [char]0x6CE8, [char]0x5C42))
         mark        = [string](Get-PropertyValue $areaLabel 'text' $labelId)
         position    = Convert-ToProfControlPoint -Point $point -YFactor $yFactor
         cargoAreas  = @()
@@ -337,7 +337,7 @@ foreach ($vehicle in $sourceVehicles) {
     $payload.agvs += [ordered]@{
         guid        = New-StableGuid "profcontrol/agv/$mapId/$vehicleId"
         networkGuid = $networkGuid
-        layerName   = ([string]::Concat([char]0x8BBE, [char]0x5907, [char]0x5C42))
+        layerName   = (-join @([char]0x8BBE, [char]0x5907, [char]0x5C42))
         name        = $vehicleId
         position    = Convert-ToProfControlPoint -Point $startNode -YFactor $yFactor
         angle       = if ($null -eq $angleEdge) { 0.0 } else { Get-EdgeAngle -Edge $angleEdge -NodeById $nodeById -YFactor $yFactor }
@@ -380,7 +380,7 @@ foreach ($edge in $sourceEdges) {
     $base = [ordered]@{
         guid        = New-StableGuid "profcontrol/path/$mapId/$edgeId"
         networkGuid = $networkGuid
-        layerName   = ([string]::Concat([char]0x7EBF, [char]0x8DEF, [char]0x5C42))
+        layerName   = (-join @([char]0x7EBF, [char]0x8DEF, [char]0x5C42))
         name        = $edgeId
         strokeWidth = $DefaultStrokeWidthMeters
     }
@@ -430,8 +430,8 @@ if ($Send) {
     $alreadyContainsNetwork = @($currentMap.networks) |
         Where-Object { [string](Get-PropertyValue $_ 'guid' '') -eq $networkGuid }
 
-    if (($currentObjectCount -gt 0 -or $null -ne $alreadyContainsNetwork) -and -not $Force) {
-        throw "The target ProfControl instance is not an empty map (object count: $currentObjectCount). Use a clean instance, or explicitly pass -Force."
+    if ($currentObjectCount -gt 0 -or $null -ne $alreadyContainsNetwork) {
+        throw "The target ProfControl instance is not an empty map (object count: $currentObjectCount). The setMap API appends objects and cannot replace a map, even with -Force. Use a clean display instance."
     }
 }
 
