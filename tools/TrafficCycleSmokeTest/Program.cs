@@ -109,6 +109,21 @@ await using (var f = await Fixture.Create(("A", 1), ("B", 1), ("C", 1), ("D", 1)
     Check((await f.Control.GetWaitingAsync(new(), default)).CycleRisks.Count == 0,
         "占用车辆与当前任务身份冲突时不拼出确定循环证据");
 }
+await using (var f = await Fixture.Create(("A", 1), ("B", 1)))
+{
+    await f.Task("A"); await f.Task("B"); await f.Hold("A", "A"); await f.Hold("B", "B");
+    await f.Wait("A", "B"); await f.Wait("B", "A");
+    await f.Db.Updateable<DispatchTaskStepEntity>()
+        .SetColumns(s => s.Status == (int)DispatchTaskStepStatus.Executing)
+        .Where(s => s.StepId == "WAIT-A" || s.StepId == "WAIT-B").ExecuteCommandAsync();
+    Check((await f.Control.GetWaitingAsync(new(), default)).CycleRisks.Single().TaskIds.Count == 2,
+        "滚动窗口执行中的步骤仍参与资源等待闭环诊断");
+    await f.Db.Updateable<DispatchTaskStepEntity>()
+        .SetColumns(s => s.Status == (int)DispatchTaskStepStatus.Completed)
+        .Where(s => s.StepId == "WAIT-B").ExecuteCommandAsync();
+    Check((await f.Control.GetWaitingAsync(new(), default)).CycleRisks.Count == 0,
+        "执行中步骤结束后不再沿用闭环风险");
+}
 Console.WriteLine($"Traffic cycle analysis: {checks} checks passed. Isolated SQLite only; no vehicle or PLC connection.");
 
 sealed class Fixture : IAsyncDisposable

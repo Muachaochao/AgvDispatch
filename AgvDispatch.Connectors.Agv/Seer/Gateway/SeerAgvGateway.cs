@@ -10,7 +10,8 @@ public sealed partial class SeerAgvGateway(
     IAgvStateCache stateCache,
     AgvConnectionManager connections,
     AgvOptions options, IAgvTransportChainLookup? chains = null, IRobokitTaskMapPreflight? routeGuard = null,
-    IRoadClosureService? roadClosures = null) : IAgvGateway, IAgvObstacleRecoveryGateway
+    IRoadClosureService? roadClosures = null) : IAgvGateway, IAgvObstacleRecoveryGateway,
+    IAgvSafetyPointRecoveryGateway
 {
     public Task<DeviceConnectionStatus> GetConnectionStatusAsync(CancellationToken cancellationToken)
     {
@@ -62,29 +63,50 @@ public sealed partial class SeerAgvGateway(
 
         var useSpecifiedPath = string.Equals(options.NavigationCommandMode,"SpecifiedPath",StringComparison.OrdinalIgnoreCase);
         var ids = useSpecifiedPath ? AgvTransportSegmentIds.For(businessTaskId,path.Count) : new[] { businessTaskId };
-        var persisted=chains is null ? null : await chains.FindAsync(businessTaskId,cancellationToken);
-        if(persisted is not null && (persisted.VehicleId!=preferredVehicleId || !persisted.Path.SequenceEqual(path)))
-            throw new AgvPartialAcceptanceException("请求与原持久化运输路径/车辆不符，禁止发送。");
-        var existing = await ReadAcceptanceBeforeSendAsync(client, ids, cancellationToken);
-        if (existing) return businessTaskId;
-        if(persisted is { MaySend:false }) throw new AgvPartialAcceptanceException("原Outbox不是发送认领状态，禁止重新发送。");
-        if(persisted?.AttemptCount>1)
-            throw new AgvPartialAcceptanceException("原发送已经尝试且车端全部404；无法排除执行后历史丢失，停止自动补发并保留路权。");
-
-        EnsureVehicleCanAcceptCommand(preferredVehicleId, path);
-        if(routeGuard is not null)
+        IDisposable? roadLease = null;
+        try
         {
-            var check=await routeGuard.CheckRouteAsync(preferredVehicleId,path,cancellationToken);
-            if(!check.Accepted)throw new InvalidOperationException(check.Message);
-            EnsureVehicleCanAcceptCommand(preferredVehicleId,path);
+            var persisted=chains is null ? null : await chains.FindAsync(businessTaskId,cancellationToken);
+            if(persisted is not null && (persisted.VehicleId!=preferredVehicleId || !persisted.Path.SequenceEqual(path)))
+                throw new AgvPartialAcceptanceException("请求与原持久化运输路径/车辆不符，禁止发送。");
+            var existing = await ReadAcceptanceBeforeSendAsync(client, ids, cancellationToken);
+            if (existing) return businessTaskId;
+            if(persisted is { MaySend:false }) throw new AgvPartialAcceptanceException("原Outbox不是发送认领状态，禁止重新发送。");
+            if(persisted?.AttemptCount>1)
+                throw new AgvPartialAcceptanceException("原发送已经尝试且车端全部404；无法排除执行后历史丢失，停止自动补发并保留路权。");
+
+            EnsureVehicleCanAcceptCommand(preferredVehicleId, path);
+            if(routeGuard is not null)
+            {
+                var check=await routeGuard.CheckRouteAsync(preferredVehicleId,path,cancellationToken);
+                if(!check.Accepted)throw new InvalidOperationException(check.Message);
+                EnsureVehicleCanAcceptCommand(preferredVehicleId,path);
+            }
+            // Reconcile previously accepted IDs first. A newly closed road must stop a
+            // new send without hiding the receipt of a command already on the robot.
+            roadLease = roadClosures is null ? null :
+                await roadClosures.EnterRouteSendAsync(path, cancellationToken);
+            if (!useSpecifiedPath && roadClosures?.GetSnapshot().BlockedTraversals.Count > 0)
+                throw new InvalidOperationException("当前地图有道路封锁，3051无法约束车端中间路线；请使用已核验的指定路径导航。");
+            EnsureVehicleCanAcceptCommand(preferredVehicleId, path);
         }
-        // Reconcile previously accepted IDs first. A newly closed road must stop a
-        // new send without hiding the receipt of a command already on the robot.
-        using var roadLease = roadClosures is null ? null :
-            await roadClosures.EnterRouteSendAsync(path, cancellationToken);
-        if (!useSpecifiedPath && roadClosures?.GetSnapshot().BlockedTraversals.Count > 0)
-            throw new InvalidOperationException("当前地图有道路封锁，3051无法约束车端中间路线；请使用已核验的指定路径导航。");
-        EnsureVehicleCanAcceptCommand(preferredVehicleId, path);
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            roadLease?.Dispose();
+            throw;
+        }
+        catch (AgvPartialAcceptanceException)
+        {
+            roadLease?.Dispose();
+            throw;
+        }
+        catch (Exception exception)
+        {
+            roadLease?.Dispose();
+            throw new AgvPreSendDeferredException(exception.Message);
+        }
+
+        using var sendLease = roadLease;
         try
         {
             await client.GoToTargetAsync(

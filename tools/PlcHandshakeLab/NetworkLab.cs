@@ -27,6 +27,11 @@ public sealed class NetworkLabConfig
     public string AllowedClient { get; set; } = "127.0.0.1";
     public string DumperStationId { get; set; } = "DUMPER-001";
     public double AutoDoneSeconds { get; set; } = 5;
+    /// <summary>
+    /// Explicitly allow a trusted lab snapshot to restore latched H outputs.
+    /// Normal sessions keep this false so every new cycle starts from a clean baseline.
+    /// </summary>
+    public bool AllowInitialHighOutputs { get; set; }
     public List<PointMapping> Points { get; set; } = [];
     public const string Shared = "共享倒料";
 
@@ -61,7 +66,9 @@ public sealed class NetworkLabConfig
         var stationNames = Points.Select(p => p.Station).Distinct().ToArray();
         if (stationNames.Distinct(StringComparer.OrdinalIgnoreCase).Count() != stationNames.Length || Points.Any(p => p.Station != p.Station.Trim()))
             throw new ArgumentException("工位名称不能含首尾空白或仅大小写不同的重复名称。");
-        if (string.IsNullOrWhiteSpace(DumperStationId) || DumperStationId != DumperStationId.Trim() || Points.Any(p => string.Equals(p.Station, DumperStationId, StringComparison.OrdinalIgnoreCase)) || Points.Any(p => p.Owner == "H" && p.Initial))
+        if (string.IsNullOrWhiteSpace(DumperStationId) || DumperStationId != DumperStationId.Trim() ||
+            Points.Any(p => string.Equals(p.Station, DumperStationId, StringComparison.OrdinalIgnoreCase)) ||
+            (!AllowInitialHighOutputs && Points.Any(p => p.Owner == "H" && p.Initial)))
             throw new ArgumentException("倒料设备编号不能为空或与工位重名；H输出启动初值必须为0。");
         var shared = Points.Where(p => p.Station == Shared).Select(p => p.Signal).Order().ToArray();
         if (!shared.SequenceEqual(new[] { 6, 7, 8, 9, 12 })) throw new ArgumentException("共享倒料必须且只能包含6、7、8、9、12号信号。");

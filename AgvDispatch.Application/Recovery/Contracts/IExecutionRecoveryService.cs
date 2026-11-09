@@ -42,6 +42,7 @@ public sealed record RecoveryDecisionRequest(string SessionId, string TicketId, 
     bool VehicleAndLocationConfirmed, bool LoadAndOwnershipConfirmed, bool PlcCycleConfirmed)
 {
     public bool HandshakePendingWriteConfirmed { get; init; }
+    public bool VehicleOfflineConfirmed { get; init; }
 }
 public sealed record RecoveryReleaseRequest(string SessionId, string Reason);
 public sealed record RecoveryResult(bool Accepted, string Message);

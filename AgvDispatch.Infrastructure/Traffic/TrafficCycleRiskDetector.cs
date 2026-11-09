@@ -24,7 +24,7 @@ internal static class TrafficCycleRiskDetector
             !string.IsNullOrWhiteSpace(r.VehicleId) && tasks.TryGetValue(r.TaskId, out var task) &&
             Enum.IsDefined(typeof(DispatchTaskStage), task.Stage) && task.Stage is >= 0 and < 90 && comparer.Equals(task.VehicleId, r.VehicleId) &&
             steps.TryGetValue(r.StepId, out var step) && comparer.Equals(step.TaskId, r.TaskId) &&
-            step.Status is 0 or 10 or 60).ToArray();
+            step.Status is 0 or 10 or 40 or 60).ToArray();
         // Conflicting vehicle identities cannot establish a cycle. Retained leases still
         // remain visible through the normal waiting/ownership queries.
         var byTask = waiting.GroupBy(r => r.TaskId, comparer)

@@ -101,7 +101,8 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
         {
             var before = ticket.Reason;
             var fingerprint = ticket.Fingerprint;
-            var observation = await ObserveAsync(ticket, ct);
+            var observation = await ObserveAsync(
+                ticket, ct, allowOfflineVehicle: ticket.OfflineVehicleConfirmed);
             if (ticket.Verified && (fingerprint != observation.Fingerprint || observation.HardBlock != null || observation.SegmentContinuationBlock != null ||
                 (ticket.MaterialReference != null && (ticket.PhysicalFingerprint != PhysicalFingerprint(observation) ||
                     ticket.VerifiedAt == null || DateTime.Now - ticket.VerifiedAt > TimeSpan.FromMinutes(5)))))
@@ -183,7 +184,10 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
         if (!Enum.IsDefined(request.Decision) || !request.VehicleAndLocationConfirmed || !request.LoadAndOwnershipConfirmed || !request.PlcCycleConfirmed ||
             string.IsNullOrWhiteSpace(request.MaterialReference) || request.MaterialReference.Length > 128 || string.IsNullOrWhiteSpace(request.Reason) || request.Reason.Length > 4000)
             return await RejectAsync(user, request.TicketId, "须确认车辆定位、载荷归属和PLC周期，填写物料/容器编号（无载荷填明确的空载核对说明）及非空现场依据。", ct);
-        var observed = await ObserveAsync(ticket, ct);
+        var observed = await ObserveAsync(
+            ticket,
+            ct,
+            allowOfflineVehicle: request.VehicleOfflineConfirmed);
         if(request.Decision==RecoveryDecision.ContinueOriginal&&observed.SegmentContinuationBlock is not null)
             return await RejectAsync(user,request.TicketId,observed.SegmentContinuationBlock,ct);
         if (observed.Fingerprint != ticket.Fingerprint) return await RejectAsync(user, request.TicketId, "数据库执行节点已变化，请刷新。", ct);
@@ -285,7 +289,15 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
             ticket.Fingerprint = await FingerprintAsync(ticket.TaskId, ct);
             await database.Updateable(ticket).ExecuteCommandAsync(ct);
             await AuditAsync(ticket.TaskId, step?.StepId ?? "", user.WindowsIdentity, request.Decision.ToString(), request.Reason.Trim(),
-                JsonSerializer.Serialize(new { request.MaterialReference, request.VehicleAndLocationConfirmed, request.LoadAndOwnershipConfirmed, request.PlcCycleConfirmed, Observation = observed.Evidence }), ct);
+                JsonSerializer.Serialize(new
+                {
+                    request.MaterialReference,
+                    request.VehicleAndLocationConfirmed,
+                    request.LoadAndOwnershipConfirmed,
+                    request.PlcCycleConfirmed,
+                    request.VehicleOfflineConfirmed,
+                    Observation = observed.Evidence
+                }), ct);
         });
         if (!transaction.IsSuccess) throw new InvalidOperationException("恢复决定未提交，执行继续保持关闭。", transaction.ErrorException);
         return new(true, ticket.Reason);
@@ -300,10 +312,19 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
         foreach (var ticket in await TicketsAsync(ct))
         {
             if (!ticket.Verified) return new(false, $"{ticket.TaskId}尚未核对。");
-            var observed = await ObserveAsync(ticket, ct);
+            var observed = await ObserveAsync(
+                ticket, ct, allowOfflineVehicle: ticket.OfflineVehicleConfirmed);
             if(observed.SegmentContinuationBlock is not null)return new(false,observed.SegmentContinuationBlock);
-            if (observed.HardBlock != null || observed.Fingerprint != ticket.Fingerprint ||
-                (ticket.MaterialReference != null && (ticket.PhysicalFingerprint != PhysicalFingerprint(observed) || ticket.VerifiedAt == null || DateTime.Now - ticket.VerifiedAt > TimeSpan.FromMinutes(5))))
+            var closedOffline =
+                ticket.OfflineVehicleConfirmed &&
+                observed.Task?.Stage == (int)DispatchTaskStage.Cancelled &&
+                observed.Step == null;
+            if (observed.HardBlock != null ||
+                (!closedOffline && observed.Fingerprint != ticket.Fingerprint) ||
+                (!closedOffline && ticket.MaterialReference != null &&
+                 (ticket.PhysicalFingerprint != PhysicalFingerprint(observed) ||
+                  ticket.VerifiedAt == null ||
+                  DateTime.Now - ticket.VerifiedAt > TimeSpan.FromMinutes(5))))
                 return new(false, observed.HardBlock ?? $"{ticket.TaskId}执行节点已变化，需重新核对。");
             if (observed.Step?.Status == (int)DispatchTaskStepStatus.Executing &&
                 (!VendorMatches(observed.Step, observed.Task!, observed.Vendor) ||
@@ -328,6 +349,14 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
             task.ErrorMessage?.StartsWith("原运输命令未发送", StringComparison.Ordinal) == true;
         var stoppedOrUnassigned = observed.Vehicle is { Blocked: false, EmergencyStopped: false } ||
             task is { VehicleId: null, CancelVehicleId: null };
+        var vehicleIsOffline =
+            observed.Vehicle is null ||
+            observed.Vehicle.Connection != ConnectionState.Online ||
+            observed.Vehicle.Quality != SignalQuality.Good;
+        var offlineCloseConfirmed =
+            request.VehicleOfflineConfirmed &&
+            vehicleIsOffline &&
+            task is { Stage: (int)DispatchTaskStage.CancellationReview, CancelConfirmedAt: not null };
         var fieldConfirmedOfflineClose = task?.Stage == (int)DispatchTaskStage.CancellationReview &&
             (task.CancelRequestId != null || legacyUnsentReviewed) && request.VehicleAndLocationConfirmed &&
             request.LoadAndOwnershipConfirmed && stoppedOrUnassigned;
@@ -346,16 +375,27 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
         }
         else if (task.CancelVehicleId != null)
         {
-            var vehicleBlock = VehicleBlock(observed.Vehicle, true);
-            if (vehicleBlock != null) return await RejectAsync(user, ticket.TicketId, vehicleBlock, ct);
-            if (observed.Vehicle!.Tasks.Any(t => t.Status is 1 or 2 or 3))
-                return await RejectAsync(user, ticket.TicketId, "车辆仍有活动任务，不能关闭取消。", ct);
+            if (request.VehicleOfflineConfirmed)
+            {
+                if (!vehicleIsOffline)
+                    return await RejectAsync(user, ticket.TicketId,
+                        "车辆仍在线或状态新鲜，不能按离线方式关闭；请先确认车辆关机或通信确实断开。", ct);
+            }
+            else
+            {
+                var vehicleBlock = VehicleBlock(observed.Vehicle, true);
+                if (vehicleBlock != null) return await RejectAsync(user, ticket.TicketId, vehicleBlock, ct);
+                if (observed.Vehicle!.Tasks.Any(t => t.Status is 1 or 2 or 3))
+                    return await RejectAsync(user, ticket.TicketId, "车辆仍有活动任务，不能关闭取消。", ct);
+            }
         }
-        if (task.CancelVendorId != null && (observed.Vendor == null || observed.Vendor.VendorTaskId != task.CancelVendorId ||
-            observed.Vendor.BusinessTaskId != task.CancelVendorId || observed.Vendor.VehicleId != task.CancelVehicleId ||
-            observed.Vendor.UpdatedAt < _started || DateTimeOffset.Now - observed.Vendor.UpdatedAt > settings.StateMaxAge ||
-            observed.Vendor.UpdatedAt > DateTimeOffset.Now.AddSeconds(1) ||
-            observed.Vendor.State is not (AgvTransportTaskState.Cancelled or AgvTransportTaskState.Completed or AgvTransportTaskState.Failed)))
+        var confirmedNoVendor = IsConfirmedPreSendRejection(task, observed.Step, observed.Command);
+        if (!offlineCloseConfirmed && !confirmedNoVendor && task.CancelVendorId != null &&
+            (observed.Vendor == null || observed.Vendor.VendorTaskId != task.CancelVendorId ||
+             observed.Vendor.BusinessTaskId != task.CancelVendorId || observed.Vendor.VehicleId != task.CancelVehicleId ||
+             observed.Vendor.UpdatedAt < _started || DateTimeOffset.Now - observed.Vendor.UpdatedAt > settings.StateMaxAge ||
+             observed.Vendor.UpdatedAt > DateTimeOffset.Now.AddSeconds(1) ||
+             observed.Vendor.State is not (AgvTransportTaskState.Cancelled or AgvTransportTaskState.Completed or AgvTransportTaskState.Failed)))
             return await RejectAsync(user, ticket.TicketId, "缺少新鲜、同编号和同车辆的原任务结束记录。", ct);
         if (!settings.CheckPlcSignals) return await RejectAsync(user, ticket.TicketId, "关闭取消必须启用PLC采集并核对原握手清理。", ct);
         var steps = await database.Queryable<DispatchTaskStepEntity>().Where(s => s.TaskId == task.TaskId).ToListAsync(ct);
@@ -382,7 +422,9 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
             if (!alreadyClosed)
             {
                 task.Stage = (int)DispatchTaskStage.Cancelled; task.UpdatedAt = DateTime.Now;
-                task.ErrorMessage = "取消已关闭：车辆、载荷、PLC握手和路权均完成现场核对。";
+                task.ErrorMessage = request.VehicleOfflineConfirmed
+                    ? "取消已关闭：车辆已确认关机离线，安全位置、载荷、PLC握手和路权均完成现场核对。"
+                    : "取消已关闭：车辆、载荷、PLC握手和路权均完成现场核对。";
                 await database.Updateable(task).ExecuteCommandAsync(ct);
                 await database.Updateable<DispatchTaskStepEntity>().SetColumns(s => new DispatchTaskStepEntity
                     { Status = (int)DispatchTaskStepStatus.Cancelled, CompletedAt = DateTime.Now, UpdatedAt = DateTime.Now })
@@ -391,7 +433,9 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
             if (observed.Step != null) observed.Step.Status = (int)DispatchTaskStepStatus.Cancelled;
             var equipmentReleased=await database.Deleteable<TaskEquipmentClaimEntity>().Where(e=>e.TaskId==task.TaskId).ExecuteCommandAsync(ct);
             if(equipmentReleased>0)await database.Insertable(new TaskRuntimeEventEntity{TaskId=task.TaskId,StepId=ticket.StepId,Kind="EquipmentReleased",RecordedAtUtc=DateTime.UtcNow,Reason="原恢复流程核对取消闭合后释放设备归属；操作人："+user.WindowsIdentity}).ExecuteCommandAsync(ct);
-            ticket.Verified = true; ticket.MaterialReference = request.MaterialReference.Trim(); ticket.VerifiedAt = DateTime.Now;
+            ticket.Verified = true; ticket.MaterialReference = request.MaterialReference.Trim();
+            ticket.OfflineVehicleConfirmed = request.VehicleOfflineConfirmed;
+            ticket.VerifiedAt = DateTime.Now;
             ticket.Revision++; ticket.Fingerprint = await FingerprintAsync(task.TaskId, ct);
             ticket.PhysicalFingerprint = PhysicalFingerprint(observed);
             await database.Updateable(ticket).ExecuteCommandAsync(ct);
@@ -433,7 +477,10 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
                 .Where(s => s.Enabled).OrderBy(s => s.StationId).ThenBy(s => s.VariableName).Select(s => new { s.StationId, s.VariableName, s.Value, s.Quality }) });
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(data)));
     }
-    private async Task<Observation> ObserveAsync(ExecutionRecoveryTicketEntity ticket, CancellationToken ct)
+    private async Task<Observation> ObserveAsync(
+        ExecutionRecoveryTicketEntity ticket,
+        CancellationToken ct,
+        bool allowOfflineVehicle = false)
     {
         var task = await database.Queryable<DispatchTaskEntity>().Where(t => t.TaskId == ticket.TaskId).FirstAsync(ct);
         var step = await CurrentStepAsync(ticket.TaskId, ct);
@@ -459,8 +506,13 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
              task.ErrorMessage?.StartsWith("原运输命令未发送", StringComparison.Ordinal) == true);
         string? hard = null;
         AgvTransportTaskStatus? vendor = null;
-        if (ticket.TaskId == SiteTask) hard = await SiteBlockAsync(ct);
-        else if (vehicleId != null) hard = VehicleBlock(vehicle, false);
+        if (ticket.TaskId == SiteTask) hard = await SiteBlockAsync(ct, allowOfflineVehicle);
+        else if (vehicleId != null &&
+                 !(allowOfflineVehicle &&
+                   task?.Stage is (int)DispatchTaskStage.CancellationReview or (int)DispatchTaskStage.Cancelled &&
+                   task.CancelConfirmedAt != null &&
+                   vehicle is { Connection: not ConnectionState.Online }))
+            hard = VehicleBlock(vehicle, false);
         if (ticket.TaskId != SiteTask && task != null && settings.CheckPlcSignals && !closingCancelled)
             hard ??= PlcBlock(PlcStation(task, step));
         if (task?.CancelRequestId != null && settings.CheckPlcSignals && !closingCancelled &&
@@ -474,7 +526,8 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
         if (leases.Any(l => !taskSteps.Contains(l.OwnerStepId) || l.VehicleId != vehicleId))
             hard = "路权占用与原步骤或原车辆归属不一致，禁止继续执行。";
         var id = task?.CancelVendorId ?? step?.VendorTaskId ?? command?.VendorCommandId ?? (command?.AttemptCount > 0 ? step?.StepId : null);
-        if (id != null && hard == null)
+        var confirmedNoVendor = IsConfirmedPreSendRejection(task, step, command);
+        if (id != null && hard == null && !confirmedNoVendor)
         {
             try { vendor = await gateway.GetTransportTaskStatusAsync(id, ct); }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
@@ -503,7 +556,10 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
             Vehicles = ticket.TaskId == SiteTask ? vehicles.GetAll().Where(v => v.Quality != SignalQuality.Disabled).ToArray() : null,
             MapId = map.Current?.MapId, MapVersion = map.Current?.VersionId, Identity = identity, SegmentReleases=segmentReleases, SegmentCommitResults=segmentCommits, SegmentContinuationBlock=segmentBlock,
             LoadQuality = identity.Vehicle?.Quality.ToString() ?? "Unknown: identity adapter not connected", PlcCycleQuality = identity.State });
-        return new(task, step, command, vehicle, vendor, unstarted && hard == null, reason, hard, evidence, await FingerprintAsync(ticket.TaskId, ct), identity,segmentBlock);
+        var closedWithoutVendor = task is { Stage: (int)DispatchTaskStage.Cancelled, CancelConfirmedAt: not null } &&
+                                  confirmedNoVendor;
+        return new(task, step, command, vehicle, vendor, (unstarted || closedWithoutVendor) && hard == null,
+            reason, hard, evidence, await FingerprintAsync(ticket.TaskId, ct), identity, segmentBlock);
     }
     private string? VehicleBlock(AgvRobotSnapshot? vehicle, bool stopped)
     {
@@ -533,6 +589,14 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
         if (relevant.Any(s => s.VariableName == "Faulted" && s.Value != false)) return "PLC存在故障，保持等待。";
         return null;
     }
+    private static bool IsConfirmedPreSendRejection(DispatchTaskEntity? task, DispatchTaskStepEntity? step,
+        AgvCommandOutboxEntity? command) =>
+        task is { CancelConfirmedAt: not null } &&
+        task.Stage is (int)DispatchTaskStage.CancellationReview or (int)DispatchTaskStage.Cancelled &&
+        step is not null && string.IsNullOrWhiteSpace(step.VendorTaskId) &&
+        command is not null && command.SentAt is null && string.IsNullOrWhiteSpace(command.VendorCommandId) &&
+        (command.LastError?.StartsWith("AGV_PRE_SEND_REJECTED;", StringComparison.Ordinal) == true ||
+         step.ErrorMessage?.StartsWith("AGV_PRE_SEND_REJECTED;", StringComparison.Ordinal) == true);
     private static string PlcStation(DispatchTaskEntity task, DispatchTaskStepEntity? step) =>
         step?.StepType is (int)DispatchTaskStepType.DumpFullBox or (int)DispatchTaskStepType.WaitForDumperReady ? step.SourceSite ?? task.StationId : task.StationId;
     private async Task<bool> ExitHandoverCompleteAsync(string taskId,CancellationToken ct)
@@ -631,19 +695,52 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
         };
         return safe ? null : "PLC原握手没有保持，或物理条件冲突。禁止重新置位触发动作；保持等待，需现场PLC周期核对及握手恢复。";
     }
-    private async Task<string?> SiteBlockAsync(CancellationToken ct)
+    private async Task<string?> SiteBlockAsync(
+        CancellationToken ct,
+        bool allowOfflineVehicles = false)
     {
-        var active = await database.Queryable<DispatchTaskStepEntity>().Where(s => s.Status != 50 && s.Status != 0).ToListAsync(ct);
+        var active = await database.Queryable<DispatchTaskStepEntity>()
+            .Where(s => s.Status != (int)DispatchTaskStepStatus.Pending &&
+                        s.Status != (int)DispatchTaskStepStatus.Completed &&
+                        s.Status != (int)DispatchTaskStepStatus.Cancelled)
+            .ToListAsync(ct);
         foreach (var id in settings.RequiredVehicleIds.Concat(vehicles.GetAll().Where(v => v.Tasks.Any(t => t.Status is 1 or 2 or 3)).Select(v => v.VehicleId)).Distinct())
         {
             vehicles.TryGet(id, out var v);
             var matching = active.Where(s => s.VehicleId == id).ToArray();
-            var error = VehicleBlock(v, matching.Length == 0);
+            if (allowOfflineVehicles &&
+                (v is null || v.Connection != ConnectionState.Online || v.Quality != SignalQuality.Good) &&
+                matching.Length == 0)
+                continue;
+            var error = v?.Charging == true && matching.Length == 0
+                ? ParkedChargingVehicleBlock(v)
+                : VehicleBlock(v, matching.Length == 0);
             if (error != null) return id + "：" + error;
             if (v!.Tasks.Any(t => t.Status is 1 or 2 or 3 && !matching.Any(s => s.StepId == t.TaskId || s.VendorTaskId == t.TaskId)))
                 return id + "存在不能关联原任务的车辆任务。";
         }
         return settings.CheckPlcSignals ? PlcBlock() : null;
+    }
+    private string? ParkedChargingVehicleBlock(AgvRobotSnapshot? vehicle)
+    {
+        if (vehicle == null || vehicle.Connection != ConnectionState.Online || vehicle.Quality != SignalQuality.Good ||
+            vehicle.LastSuccessfulPollAt == null || vehicle.LastSuccessfulPollAt < _started ||
+            DateTimeOffset.Now - vehicle.LastSuccessfulPollAt > settings.StateMaxAge || vehicle.LastSuccessfulPollAt > DateTimeOffset.Now.AddSeconds(1))
+            return "充电车辆状态缺失、离线或不是本次启动后的新鲜采集。";
+        if (vehicle.EmergencyStopped != false || vehicle.Blocked != false || vehicle.Alarms.Any(a => a.Severity >= AgvAlarmSeverity.Error))
+            return "充电车辆急停、阻塞或报警状态未通过。";
+        if (vehicle.X == null || vehicle.Y == null || !double.IsFinite(vehicle.X.Value) || !double.IsFinite(vehicle.Y.Value) ||
+            vehicle.LocalizationConfidence == null || !double.IsFinite(vehicle.LocalizationConfidence.Value) ||
+            vehicle.LocalizationConfidence < settings.MinimumLocalizationConfidence)
+            return "充电车辆定位证据不足。";
+        if (vehicle.VelocityX == null || vehicle.VelocityY == null || vehicle.AngularVelocity == null ||
+            !double.IsFinite(vehicle.VelocityX.Value) || !double.IsFinite(vehicle.VelocityY.Value) ||
+            !double.IsFinite(vehicle.AngularVelocity.Value) ||
+            Math.Abs(vehicle.VelocityX.Value) > settings.StoppedVelocityTolerance ||
+            Math.Abs(vehicle.VelocityY.Value) > settings.StoppedVelocityTolerance ||
+            Math.Abs(vehicle.AngularVelocity.Value) > settings.StoppedVelocityTolerance)
+            return "充电车辆未确认静止。";
+        return null;
     }
     private static bool Running(AgvTransportTaskState state) => state is AgvTransportTaskState.Suspended or AgvTransportTaskState.Queued or AgvTransportTaskState.Assigned or
         AgvTransportTaskState.GoingToSource or AgvTransportTaskState.AtSource or AgvTransportTaskState.Loading or AgvTransportTaskState.GoingToDestination or AgvTransportTaskState.AtDestination;

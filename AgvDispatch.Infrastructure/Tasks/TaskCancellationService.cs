@@ -80,25 +80,18 @@ public sealed class TaskCancellationService(ISqlSugarClient database, IMapExecut
                 var cancelCommand = await database.Queryable<AgvCommandOutboxEntity>()
                     .Where(c => c.TaskId == task.TaskId && c.StepId == task.CancelStepId &&
                         c.CommandType == (int)AgvCommandType.Transport).FirstAsync(ct);
-                AgvRobotSnapshot? cancelVehicle = null;
-                var vehicleStopped = vehicles is not null &&
-                    vehicles.TryGet(task.CancelVehicleId, out cancelVehicle) &&
-                    cancelVehicle.Connection == ConnectionState.Online &&
-                    cancelVehicle.Quality == SignalQuality.Good &&
-                    cancelVehicle.Blocked == false &&
-                    cancelVehicle.EmergencyStopped == false &&
-                    !cancelVehicle.Tasks.Any(status => status.Status is 1 or 2 or 3);
                 var noVendorTaskWasCreated =
                     string.Equals(task.CancelVendorId, task.CancelStepId, StringComparison.Ordinal) &&
                     cancelStep is not null && string.IsNullOrWhiteSpace(cancelStep.VendorTaskId) &&
                     cancelCommand is not null && string.IsNullOrWhiteSpace(cancelCommand.VendorCommandId) &&
                     cancelCommand.SentAt is null &&
-                    cancelCommand.LastError?.StartsWith("AGV_PRE_SEND_REJECTED;", StringComparison.Ordinal) == true &&
-                    vehicleStopped;
+                    (cancelCommand.LastError?.StartsWith("AGV_PRE_SEND_REJECTED;", StringComparison.Ordinal) == true ||
+                     cancelStep.ErrorMessage?.StartsWith("AGV_PRE_SEND_REJECTED;", StringComparison.Ordinal) == true);
                 if (noVendorTaskWasCreated)
                 {
                     task.Stage = (int)DispatchTaskStage.CancellationReview;
                     task.CancelConfirmedAt = DateTime.Now;
+                    task.CancelVendorId = null;
                     task.ErrorMessage = "车端未创建任务：发送被明确拒绝或无厂家任务号，车辆无活动任务且已停稳；进入现场核对关闭，禁止补发原命令。";
                     var result = await database.Ado.UseTranAsync(async () =>
                     {
@@ -106,7 +99,7 @@ public sealed class TaskCancellationService(ISqlSugarClient database, IMapExecut
                         await AuditAsync(task, "TaskCancellationNoVendorTaskConfirmed", "service",
                             new { task.CancelVendorId, task.CancelStepId, task.CancelVehicleId,
                                 CommandStatus = cancelCommand!.Status, cancelCommand.AttemptCount,
-                                cancelCommand.LastError, VehicleTasks = cancelVehicle!.Tasks },
+                                cancelCommand.LastError, StepError = cancelStep.ErrorMessage },
                             ct);
                     });
                     if (!result.IsSuccess)

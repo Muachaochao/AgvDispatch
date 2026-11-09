@@ -7,7 +7,7 @@ interface RecoveryItem{ticketId:string;taskId:string;stepId:string;stepText:stri
 interface RecoveryStatus{sessionId:string;released:boolean;message:string;recoveryEnabled:boolean;items:RecoveryItem[];audits:{id:string;taskId:string;decisionText:string;reason:string;occurredAt:string}[]}
 const props=defineProps<{taskId:string;fresh:boolean;now:number}>();
 const status=ref<RecoveryStatus|null>(null),busy=ref(false),message=ref(''),ticket=ref(''),reason=ref('现场已核对'),material=ref(''),decision=ref('ContinueOriginal');
-const locationConfirmed=ref(false),loadConfirmed=ref(false),plcConfirmed=ref(false),pendingConfirmed=ref(false),globalImpact=ref(false),loadedAt=ref(0);let epoch=0;
+const locationConfirmed=ref(false),loadConfirmed=ref(false),plcConfirmed=ref(false),pendingConfirmed=ref(false),offlineVehicleConfirmed=ref(false),globalImpact=ref(false),loadedAt=ref(0);let epoch=0;
 const item=computed(()=>status.value?.items.find(i=>i.ticketId===ticket.value));
 const current=computed(()=>props.fresh&&props.now-loadedAt.value>=-1000&&props.now-loadedAt.value<=30000);
 const allowed=computed(()=>current.value&&status.value?.recoveryEnabled&&!busy.value&&reason.value.trim().length>0);
@@ -36,9 +36,10 @@ const nextText=computed(()=>{
   if(item.value.identityBlocksRecovery)return '设备或容器身份尚未闭合。先核对原任务、PLC周期和箱体归属，身份不闭合时禁止续接。';
   if(!locationConfirmed.value||!loadConfirmed.value||!plcConfirmed.value)return '按下方顺序核对车辆位置、载荷与箱体归属、本轮PLC周期，再提交本条目。';
   if(!material.value.trim())return '填写物料/容器编号，或明确填写“空载”；缺少现场依据时不会允许提交。';
+  if(decision.value==='CloseCancelled'&&offlineVehicleConfirmed.value)return '将按车辆已正常关机离线收尾；后台仍会核验原任务确认、零路权、PLC基线和设备归属，任一不符即拒绝。';
   return '现场条件已填写。提交后等待后台核验；结果不确定时刷新原批次，不能直接重发。';
 });
-function clearConfirmations(){locationConfirmed.value=false;loadConfirmed.value=false;plcConfirmed.value=false;pendingConfirmed.value=false;globalImpact.value=false;}
+function clearConfirmations(){locationConfirmed.value=false;loadConfirmed.value=false;plcConfirmed.value=false;pendingConfirmed.value=false;offlineVehicleConfirmed.value=false;globalImpact.value=false;}
 watch(()=>props.taskId,()=>{epoch++;status.value=null;message.value='';ticket.value='';busy.value=false;clearConfirmations();});watch(ticket,clearConfirmations);
 async function load(){
   if(busy.value)return;const mine=++epoch;busy.value=true;
@@ -48,7 +49,7 @@ async function load(){
 async function act(action:'begin'|'decisions'|'release'){
   if(!allowed.value)return;if(action==='begin'&&!props.taskId.trim())return;if(action!=='decisions'&&!globalImpact.value)return;
   if(action==='decisions'&&(!item.value||!locationConfirmed.value||!loadConfirmed.value||!plcConfirmed.value||!material.value.trim()))return;
-  const body=action==='begin'?{taskId:props.taskId,reason:[reason.value,note.value.trim()].filter(Boolean).join("：")}:action==='release'?{sessionId:status.value!.sessionId,reason:[reason.value,note.value.trim()].filter(Boolean).join("：")}:{sessionId:status.value!.sessionId,ticketId:item.value!.ticketId,revision:item.value!.revision,decision:decision.value,materialReference:material.value,reason:[reason.value,note.value.trim()].filter(Boolean).join("："),vehicleAndLocationConfirmed:locationConfirmed.value,loadAndOwnershipConfirmed:loadConfirmed.value,plcCycleConfirmed:plcConfirmed.value,handshakePendingWriteConfirmed:pendingConfirmed.value};
+  const body=action==='begin'?{taskId:props.taskId,reason:[reason.value,note.value.trim()].filter(Boolean).join("：")}:action==='release'?{sessionId:status.value!.sessionId,reason:[reason.value,note.value.trim()].filter(Boolean).join("：")}:{sessionId:status.value!.sessionId,ticketId:item.value!.ticketId,revision:item.value!.revision,decision:decision.value,materialReference:material.value,reason:[reason.value,note.value.trim()].filter(Boolean).join("："),vehicleAndLocationConfirmed:locationConfirmed.value,loadAndOwnershipConfirmed:loadConfirmed.value,plcCycleConfirmed:plcConfirmed.value,handshakePendingWriteConfirmed:pendingConfirmed.value,vehicleOfflineConfirmed:(decision.value==='CloseCancelled'||item.value!.taskId==='__SITE__')&&offlineVehicleConfirmed.value};
   const mine=++epoch;busy.value=true;
   try{const r=await fetch('/api/recovery/'+action,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(35000)}),data=await r.json();if(!r.ok||data.accepted===false)throw new Error(data.message??data.detail??data.error??'恢复请求失败');if(mine===epoch){message.value=data.message;if(action==='decisions'&&globalImpact.value){const check=await fetch('/api/recovery',{signal:AbortSignal.timeout(35000)});const latest=await check.json();if(!check.ok)throw new Error('核对已提交，放行状态读取失败，请刷新');if(!latest.released&&latest.sessionId===body.sessionId&&latest.items.every((i:RecoveryItem)=>i.verified)){const release=await fetch('/api/recovery/release',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:latest.sessionId,reason:[reason.value,note.value.trim()].filter(Boolean).join("：")}),signal:AbortSignal.timeout(35000)});const result=await release.json();if(!release.ok||!result.accepted)throw new Error(result.message??'放行未通过');message.value=result.message;}else if(!latest.released){message.value+='；还有其他异常待核对，尚未恢复全场运行。';}}}}
   catch(e){if(mine===epoch)message.value='请求结果需核对：'+String(e)+'。请刷新批次，勿直接重复提交。';}
@@ -77,7 +78,7 @@ onMounted(()=>{void load();});
 <label v-if="!emptyLoad">箱体编号／载荷核对说明<input v-model="material" maxlength="128" :disabled="busy" placeholder="载箱填写实际箱号；未知时先核对" /></label>
 <label><input v-model="plcConfirmed" type="checkbox" :disabled="busy">本轮 PLC 周期与现场条件已核对 <a href="#plc-review">查看信号</a></label>
 <label v-if="item.requiresPendingWriteConfirmation"><input v-model="pendingConfirmed" type="checkbox" :disabled="busy">原 PLC 写入已按期望值执行，续接时不重发</label>
-<details><summary>其他处理与补充说明</summary><label>处置方式<select v-model="decision" :disabled="busy"><option value="ContinueOriginal">继续原任务</option><option value="RecordPhysicalCompletion">现场动作已完成，申请补记</option><option value="CloseCancelled">核对后关闭已取消任务</option></select></label><label>补充说明（选填）<input v-model="note" maxlength="600" :disabled="busy" /></label><p>补记与关闭仍须后台核验；不会跳过步骤或直接释放占用。</p></details>
+<details><summary>其他处理与补充说明</summary><label>处置方式<select v-model="decision" :disabled="busy"><option value="ContinueOriginal">继续原任务</option><option value="RecordPhysicalCompletion">现场动作已完成，申请补记</option><option value="CloseCancelled">核对后关闭已取消任务</option></select></label><label v-if="decision==='CloseCancelled'||item.taskId==='__SITE__'"><input v-model="offlineVehicleConfirmed" type="checkbox" :disabled="busy">相关车辆已正常关机且通信离线（仅用于安全位置、载荷和PLC已核对的全场收尾）</label><label>补充说明（选填）<input v-model="note" maxlength="600" :disabled="busy" /></label><p>补记与关闭仍须后台核验；不会跳过步骤或直接释放占用。</p></details>
 <label class="recovery-warning"><input v-model="globalImpact" type="checkbox" :disabled="busy">全部异常核对通过后恢复全场后续执行（已接受的动作不会自动停止）</label>
 <button :disabled="!allowed||item.identityBlocksRecovery||!locationConfirmed||!loadConfirmed||!plcConfirmed||!material.trim()||(item.requiresPendingWriteConfirmation&&!pendingConfirmed)" @click="act('decisions')">{{ busy?'核验中…':globalImpact?'确认并请求恢复运行':'提交本项核对' }}</button>
 </div>

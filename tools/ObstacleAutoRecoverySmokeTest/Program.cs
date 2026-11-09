@@ -1,4 +1,5 @@
-using System.Text.Json;
+﻿using System.Text.Json;
+using System.Buffers.Binary;
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Connectors.Agv;
 using AgvDispatch.Domain.Agvs;
@@ -8,6 +9,7 @@ using AgvDispatch.Domain.Tasks;
 using AgvDispatch.Infrastructure.Maps;
 using AgvDispatch.Infrastructure.Persistence;
 using AgvDispatch.Infrastructure.Persistence.Entities;
+using AgvDispatch.Infrastructure.Traffic;
 using AgvDispatch.Service;
 using Microsoft.Extensions.Logging.Abstractions;
 using SqlSugar;
@@ -66,10 +68,10 @@ try
     {
         Enabled = true,
         AutomaticDetourEnabled = true,
-        DetourAfterSeconds = 5,
-        WarningAfterSeconds = 10,
-        AlarmAfterSeconds = 30,
-        ClosureSuggestionAfterSeconds = 60,
+        DetourAfterSeconds = 10,
+        WarningAfterSeconds = 30,
+        AlarmAfterSeconds = 60,
+        ClosureSuggestionAfterSeconds = 120,
         StableStopObservationMs = 500
     };
     var mapOptions = new MapOptions { PositionStaleSeconds = 30, MinimumLocalizationConfidence = 0.5 };
@@ -92,15 +94,47 @@ try
     await coordinator.ObserveOnceAsync(default);
     var row = db.Queryable<ObstacleRecoveryEntity>().Single(item => item.TaskId == taskId);
     Check(row.State == ObstacleRecoveryStates.Blocked && gateway.CancelCalls == 0 &&
-          gateway.RecoverySendCalls == 0, "障碍初期只观察，不取消也不重发");
+          gateway.RecoverySendCalls == 0 &&
+          Decode(row.OriginalPathJson).SequenceEqual(["S", "H", "X"]),
+          "障碍初期只观察，并使用发送时冻结的完整路线识别后续路段");
 
-    clock.Advance(TimeSpan.FromSeconds(6));
+    clock.Advance(TimeSpan.FromSeconds(9));
+    states.ApplyTelemetry("A", Telemetry(clock.GetUtcNow(), blocked: true), TimeSpan.Zero);
+    await coordinator.ObserveOnceAsync(default);
+    row = db.Queryable<ObstacleRecoveryEntity>().Single(item => item.TaskId == taskId);
+    Check(row.State == ObstacleRecoveryStates.Blocked &&
+          gateway.CancelCalls == 0 && gateway.RecoverySendCalls == 0,
+          "受阻未满10秒时保留车端恢复窗口，不提前取消任务或生成可发送改道");
+
+    clock.Advance(TimeSpan.FromSeconds(2));
     states.ApplyTelemetry("A", Telemetry(clock.GetUtcNow(), blocked: true), TimeSpan.Zero);
     await coordinator.ObserveOnceAsync(default);
     row = db.Queryable<ObstacleRecoveryEntity>().Single(item => item.TaskId == taskId);
     Check(row.State == ObstacleRecoveryStates.DetourReady &&
           Decode(row.CandidatePathJson).SequenceEqual(["S", "D", "X"]) &&
-          gateway.CancelCalls == 0, "受阻5秒后生成避开S→H的安全候选，等待停稳门槛");
+          row.StableStopSinceUtc is not null && row.StableStopKey == "S" &&
+          gateway.CancelCalls == 0, "受阻10秒后生成避开S→H的安全候选，并持久化停稳观察起点");
+
+    await coordinator.ObserveOnceAsync(default);
+    row = db.Queryable<ObstacleRecoveryEntity>().Single(item => item.TaskId == taskId);
+    Check(gateway.CancelCalls == 0 && row.StableStopSamples == 1,
+          "重复读取同一遥测不得累计停稳样本或提前取消原导航");
+    clock.Advance(TimeSpan.FromMilliseconds(100));
+    states.ApplyTelemetry("A", Telemetry(clock.GetUtcNow(), blocked: true), TimeSpan.Zero);
+    await coordinator.ObserveOnceAsync(default);
+    Check(gateway.CancelCalls == 0,
+          "连续样本数满足但实际停稳不足500毫秒时仍不得放行");
+
+    clock.Advance(TimeSpan.FromMilliseconds(100));
+    states.ApplyTelemetry("A", Telemetry(clock.GetUtcNow(), blocked: true) with { VelocityX = 0.2 }, TimeSpan.Zero);
+    await coordinator.ObserveOnceAsync(default);
+    row = db.Queryable<ObstacleRecoveryEntity>().Single(item => item.TaskId == taskId);
+    Check(gateway.CancelCalls == 0 && row.StableStopSamples == 0,
+          "停稳观察途中移动会清除旧样本，不能沿用移动前的停稳时间");
+    clock.Advance(TimeSpan.FromSeconds(1));
+    states.ApplyTelemetry("A", Telemetry(clock.GetUtcNow(), blocked: true), TimeSpan.Zero);
+    await coordinator.ObserveOnceAsync(default);
+    Check(gateway.CancelCalls == 0, "移动后重新停车必须重新累计停稳证据");
 
     clock.Advance(TimeSpan.FromSeconds(1));
     states.ApplyTelemetry("A", Telemetry(clock.GetUtcNow(), blocked: true), TimeSpan.Zero);
@@ -109,6 +143,9 @@ try
     Check(gateway.CancelCalls == 1 && gateway.RecoverySendCalls == 0 &&
           row.State == ObstacleRecoveryStates.AwaitingOriginalTerminal,
           "连续停稳和安全条件通过后，只取消一次原3066任务");
+    Check(gateway.StatusPaths.Count > 0 &&
+          gateway.StatusPaths.All(path => path.SequenceEqual(["S", "H"])),
+          "原3066取消核验只使用当前W窗口路径，不使用完整业务路线猜造分段编号");
     await db.Updateable<DispatchTaskEntity>()
         .SetColumns(item => new DispatchTaskEntity
         {
@@ -134,6 +171,23 @@ try
     Check(gateway.RecoverySendCalls == 0 &&
           row.State == ObstacleRecoveryStates.SafetyHold,
           "取消后的第一次安全复核只开始停稳计时，不立即发送");
+
+    clock.Advance(TimeSpan.FromMilliseconds(100));
+    states.ApplyTelemetry("A", Telemetry(clock.GetUtcNow(), blocked: true) with
+        { Tasks = [new SeerTaskSnapshot("EXTERNAL-ACTIVE", 2, null)] }, TimeSpan.Zero);
+    await coordinator.ObserveOnceAsync(default);
+    Check(gateway.RecoverySendCalls == 0,
+          "原链终态后发现其他活动厂家任务时不得并发发送替代导航");
+    clock.Advance(TimeSpan.FromMilliseconds(100));
+    states.ApplyTelemetry("A", Telemetry(clock.GetUtcNow(), blocked: true) with
+        { LocalizationConfidence = double.NaN }, TimeSpan.Zero);
+    await coordinator.ObserveOnceAsync(default);
+    Check(gateway.RecoverySendCalls == 0,
+          "定位置信度NaN不得绕过阈值校验或形成停稳证据");
+    clock.Advance(TimeSpan.FromSeconds(1));
+    states.ApplyTelemetry("A", Telemetry(clock.GetUtcNow(), blocked: true), TimeSpan.Zero);
+    await coordinator.ObserveOnceAsync(default);
+    Check(gateway.RecoverySendCalls == 0, "定位恢复后重新开始停稳观察，不沿用失效前证据");
 
     clock.Advance(TimeSpan.FromSeconds(1));
     states.ApplyTelemetry("A", Telemetry(clock.GetUtcNow(), blocked: true), TimeSpan.Zero);
@@ -181,6 +235,280 @@ finally
             StringComparison.OrdinalIgnoreCase))
         Directory.Delete(directory, true);
 }
+
+foreach (var terminalBeforeCancellation in new[] { false, true })
+{
+    var directory2 = Path.Combine(
+        Path.GetTempPath(), "agv-safety-retreat-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory2);
+    try
+    {
+        var start2 = new DateTimeOffset(2026, 11, 9, 3, 0, 0, TimeSpan.Zero);
+        var clock2 = new ManualClock(start2);
+        using var db2 = DatabaseFactory.Create(new()
+        {
+            DatabasePath = Path.Combine(directory2, "test.db")
+        });
+        var definition2 = new MapDefinition("MAP-R", "retreat", "RobotWorld", "m",
+            [
+                new("S", 0, 0, MapNodeType.Station, true, [], "S"),
+                new("H", 1, 0, MapNodeType.Waypoint, true, [], "H"),
+                new("BUS-X", 1, 1, MapNodeType.Station, true, [], "X")
+            ],
+            [
+                new("E-SH", "S", "H", 1, 1, false, true, []),
+                new("E-HX", "H", "BUS-X", 1, 1, false, true, [])
+            ], []);
+        var map2 = new ActiveMapRuntime();
+        map2.Replace(new("MAP-R", "V1", definition2, start2));
+        var catalog2 = new TrafficResourceCatalog(
+            MapCorridorResources.AllResources(definition2));
+        await new DatabaseInitializer(db2, catalog2).InitializeAsync(default);
+        var gate2 = new MapExecutionGate();
+        gate2.SetMode(MapExecutionMode.Running);
+        var closures2 = new RoadClosureService(db2, map2, gate2);
+        await closures2.InitializeAsync(default);
+        var traffic2 = new TrafficResourceManager(
+            db2, catalog2, new(TimeSpan.FromMinutes(1)), clock2);
+        var agvOptions2 = new AgvOptions
+        {
+            Enabled = true,
+            AllowCommands = true,
+            StaleAfterMs = 10000,
+            Robots =
+            [
+                new AgvRobotOptions
+                {
+                    VehicleId = "A",
+                    IpAddress = "127.0.0.1",
+                    Enabled = true
+                }
+            ]
+        };
+        var states2 = new AgvStateCache(agvOptions2, clock2);
+        var tasks2 = new DispatchOrchestrationRepository(db2);
+        var chains2 = new AgvTransportChainLookup(db2);
+        var gateway2 = new RecoveryGateway();
+        if (terminalBeforeCancellation) gateway2.OriginalState = AgvTransportTaskState.Failed;
+        var expectedCancelCount = terminalBeforeCancellation ? 0 : 1;
+        var recoveryOptions2 = new ObstacleRecoveryOptions
+        {
+            Enabled = true,
+            AutomaticDetourEnabled = true,
+            AutomaticSafetyPointRetreatEnabled = true,
+            DetourAfterSeconds = 10,
+            WarningAfterSeconds = 30,
+            AlarmAfterSeconds = 60,
+            ClosureSuggestionAfterSeconds = 120,
+            StableStopObservationMs = 500,
+            SafetyPointMaximumRetreatDistanceMeters = 5,
+            SafetyPointRetreatMaximumSpeedMetersPerSecond = .1,
+            SafetyPointRetreatMaximumAccelerationMetersPerSecondSquared = .15
+        };
+        var store2 = new ObstacleRecoveryStore(db2, recoveryOptions2, clock2);
+        var coordinator2 = new ObstacleRecoveryCoordinator(
+            db2, states2, map2, tasks2, chains2, closures2, traffic2,
+            new Envelope(), gate2, gateway2, new Preconditions(), store2,
+            recoveryOptions2, new MapOptions { PositionStaleSeconds = 30 },
+            new DispatchOrchestratorOptions
+            {
+                StandbySites = ["S"],
+                DumperWaitingSite = "X",
+                DumperDumpingSite = "X"
+            },
+            clock2, NullLogger<ObstacleRecoveryCoordinator>.Instance);
+
+        const string taskId2 = "TASK-RETREAT";
+        const string stepId2 = "STEP-RETREAT";
+        await SeedTask(db2, taskId2, stepId2);
+        states2.ApplyTelemetry(
+            "A", Telemetry(clock2.GetUtcNow(), true, .4, 0, "S", "S", "H")
+                with { Tasks = [new SeerTaskSnapshot(stepId2, 2, 1)] },
+            TimeSpan.Zero);
+        await coordinator2.ObserveOnceAsync(default);
+        clock2.Advance(TimeSpan.FromSeconds(9));
+        states2.ApplyTelemetry(
+            "A", Telemetry(clock2.GetUtcNow(), true, .4, 0, "S", "S", "H")
+                with { Tasks = [new SeerTaskSnapshot(stepId2, 2, 1)] },
+            TimeSpan.Zero);
+        await coordinator2.ObserveOnceAsync(default);
+        var retreatRow2 = db2.Queryable<ObstacleRecoveryEntity>()
+            .Single(item => item.TaskId == taskId2);
+        Check(retreatRow2.State == ObstacleRecoveryStates.Blocked &&
+              gateway2.CancelCalls == 0 &&
+              gateway2.RetreatSendCalls == 0,
+              "道路中段未满10秒时仅保留原任务并等待车端释放");
+
+        clock2.Advance(TimeSpan.FromSeconds(2));
+        states2.ApplyTelemetry(
+            "A", Telemetry(clock2.GetUtcNow(), true, .4, 0, "S", "S", "H")
+                with { Tasks = [new SeerTaskSnapshot(stepId2, 2, 1)] },
+            TimeSpan.Zero);
+        await coordinator2.ObserveOnceAsync(default);
+        retreatRow2 = db2.Queryable<ObstacleRecoveryEntity>()
+            .Single(item => item.TaskId == taskId2);
+        Check(retreatRow2.State == ObstacleRecoveryStates.SafetyPointReady &&
+              retreatRow2.SafetyPointTarget == "S" &&
+              gateway2.CancelCalls == 0,
+              "道路中段受阻10秒后选择后方安全站，尚未越过停稳门槛发送");
+
+        clock2.Advance(TimeSpan.FromMilliseconds(100));
+        states2.ApplyTelemetry("A",
+            Telemetry(clock2.GetUtcNow(), true, .4, 0, "S", "S", "H") with { Angle = Math.PI }, TimeSpan.Zero);
+        await coordinator2.ObserveOnceAsync(default);
+        Check(gateway2.CancelCalls == 0 && gateway2.RetreatSendCalls == 0,
+              "车头反向时禁止把3055负速度当成沿原边后退");
+        clock2.Advance(TimeSpan.FromMilliseconds(100));
+        states2.ApplyTelemetry("A",
+            Telemetry(clock2.GetUtcNow(), true, .4, .08, "S", "S", "H"), TimeSpan.Zero);
+        await coordinator2.ObserveOnceAsync(default);
+        Check(gateway2.CancelCalls == 0 && gateway2.RetreatSendCalls == 0,
+              "短退横向偏差过大时不得发送直线平动后退");
+        clock2.Advance(TimeSpan.FromMilliseconds(100));
+        states2.ApplyTelemetry("A",
+            Telemetry(clock2.GetUtcNow(), true, .4, 0, "S", "S", "H"), TimeSpan.Zero);
+        await coordinator2.ObserveOnceAsync(default);
+
+        clock2.Advance(TimeSpan.FromSeconds(1));
+        states2.ApplyTelemetry(
+            "A", Telemetry(clock2.GetUtcNow(), true, .4, 0, "S", "S", "H")
+                with { Tasks = [new SeerTaskSnapshot(stepId2, 2, 1)] },
+            TimeSpan.Zero);
+        await coordinator2.ObserveOnceAsync(default);
+        retreatRow2 = db2.Queryable<ObstacleRecoveryEntity>()
+            .Single(item => item.TaskId == taskId2);
+        Check(gateway2.CancelCalls == expectedCancelCount &&
+              retreatRow2.State == ObstacleRecoveryStates.AwaitingOriginalTerminal,
+              $"安全点退回前只按原3066任务编号取消一次: {gateway2.CancelCalls}, {retreatRow2.State}, {retreatRow2.Message}");
+
+        for (var index = 0; index < 4; index++)
+        {
+            clock2.Advance(TimeSpan.FromSeconds(1));
+            states2.ApplyTelemetry(
+                "A", Telemetry(clock2.GetUtcNow(), true, .4, 0, "S"),
+                TimeSpan.Zero);
+            await coordinator2.ObserveOnceAsync(default);
+        }
+        retreatRow2 = db2.Queryable<ObstacleRecoveryEntity>()
+            .Single(item => item.TaskId == taskId2);
+        Check(gateway2.RetreatSendCalls == 1 &&
+              gateway2.RetreatTarget == "S" &&
+              Math.Abs(gateway2.RetreatSpeed - .1) < 1e-9 &&
+              Math.Abs(gateway2.RetreatDistance - .4) < 1e-6 &&
+              retreatRow2.SafetyPointRetreatMethod == "3055-Translation" &&
+              retreatRow2.State == ObstacleRecoveryStates.SafetyPointMoving,
+              "同一短直边、原链终态和连续停稳后只发送一次3055平动后退");
+
+        gateway2.RetreatState = AgvTransportTaskState.Completed;
+        clock2.Advance(TimeSpan.FromSeconds(1));
+        states2.ApplyTelemetry(
+            "A", Telemetry(clock2.GetUtcNow(), false, 0, 0, "S"),
+            TimeSpan.Zero);
+        await coordinator2.ObserveOnceAsync(default);
+        retreatRow2 = db2.Queryable<ObstacleRecoveryEntity>()
+            .Single(item => item.TaskId == taskId2);
+        Check(retreatRow2.State == ObstacleRecoveryStates.SafetyPointReached &&
+              retreatRow2.SafetyPointReachedAtUtc is not null,
+              "车辆到后方安全站并停稳后才核定为已退站");
+
+        for (var index = 0; index < 2; index++)
+        {
+            clock2.Advance(TimeSpan.FromSeconds(1));
+            states2.ApplyTelemetry(
+                "A", Telemetry(clock2.GetUtcNow(), false, 0, 0, "S"),
+                TimeSpan.Zero);
+            await coordinator2.ObserveOnceAsync(default);
+        }
+        retreatRow2 = db2.Queryable<ObstacleRecoveryEntity>()
+            .Single(item => item.TaskId == taskId2);
+        Check(gateway2.CancelCalls == expectedCancelCount &&
+              gateway2.RetreatSendCalls == 1 &&
+              gateway2.RecoverySendCalls == 1 &&
+              retreatRow2.State == ObstacleRecoveryStates.Executing,
+              "退站完成后由原车发送一条替代3066，不重发取消或3055");
+        Check(db2.Queryable<ExecutionEvidenceEntity>().Any(item =>
+                  item.TaskId == taskId2 &&
+                  item.Kind == "ObstacleSafetyPointRetreatSent") &&
+              db2.Queryable<ExecutionEvidenceEntity>().Any(item =>
+                  item.TaskId == taskId2 &&
+                  item.Kind == "ObstacleSafetyPointReached"),
+              "3055退站、到站和后续替代路线均留有审计证据");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        if (Path.GetFullPath(directory2).StartsWith(
+                Path.GetFullPath(Path.GetTempPath()),
+                StringComparison.OrdinalIgnoreCase))
+            Directory.Delete(directory2, true);
+    }
+}
+
+{
+    var listener = new System.Net.Sockets.TcpListener(
+        System.Net.IPAddress.Loopback, 0);
+    listener.Start();
+    var port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+    var capture = Task.Run(async () =>
+    {
+        using var tcp = await listener.AcceptTcpClientAsync();
+        using var stream = tcp.GetStream();
+        var requests = new List<(int Type, JsonElement Payload)>();
+        for (var index = 0; index < 2; index++)
+        {
+            var header = new byte[16];
+            await stream.ReadExactlyAsync(header);
+            var payload = new byte[BinaryPrimitives.ReadInt32BigEndian(header.AsSpan(4, 4))];
+            await stream.ReadExactlyAsync(payload);
+            var type = BinaryPrimitives.ReadUInt16BigEndian(header.AsSpan(8, 2));
+            using var request = JsonDocument.Parse(payload);
+            requests.Add((type, request.RootElement.Clone()));
+            var response = JsonSerializer.SerializeToUtf8Bytes(new { ret_code = 0 });
+            BinaryPrimitives.WriteInt32BigEndian(header.AsSpan(4, 4), response.Length);
+            BinaryPrimitives.WriteUInt16BigEndian(header.AsSpan(8, 2), (ushort)(type + 10000));
+            await stream.WriteAsync(header);
+            await stream.WriteAsync(response);
+        }
+        return requests;
+    });
+    var protocolOptions = new AgvOptions
+    {
+        Enabled = true,
+        AllowCommands = true,
+        Robots =
+        [
+            new AgvRobotOptions
+            {
+                VehicleId = "A",
+                IpAddress = "127.0.0.1",
+                Port = port,
+                NavigationPort = port,
+                Enabled = true
+            }
+        ]
+    };
+    await using var protocolClient = new SeerRobotClient(
+        protocolOptions.Robots[0], protocolOptions);
+    await protocolClient.TranslateBackwardAsync(.75, .1, default);
+    await protocolClient.GoFromCurrentPoseBackwardAsync(
+        "SAFETY-3051", "S", .1, .15, default);
+    var sent = await capture;
+    listener.Stop();
+    Check(sent[0].Type == 3055 &&
+          sent[0].Payload.GetProperty("dist").GetDouble() == .75 &&
+          sent[0].Payload.GetProperty("vx").GetDouble() == -.1 &&
+          sent[0].Payload.GetProperty("vy").GetDouble() == 0 &&
+          sent[0].Payload.GetProperty("mode").GetInt32() == 1,
+          "一米内短直边使用3055直线后退，不要求车端重新规划整圈路线");
+    Check(sent[1].Type == 3051 &&
+          sent[1].Payload.GetProperty("source_id").GetString() == "SELF_POSITION" &&
+          sent[1].Payload.GetProperty("id").GetString() == "S" &&
+          sent[1].Payload.GetProperty("task_id").GetString() == "SAFETY-3051" &&
+          sent[1].Payload.GetProperty("method").GetString() == "backward" &&
+          sent[1].Payload.GetProperty("max_speed").GetDouble() == .1 &&
+          sent[1].Payload.GetProperty("max_acc").GetDouble() == .15,
+          "3051实际报文只携带当前位置、后方站、唯一任务号、倒走和受限速度");
+}
 Console.WriteLine($"PASS: {checks} obstacle automatic recovery checks; isolated database and synthetic dispatcher only.");
 
 static async Task SeedTask(ISqlSugarClient db, string taskId, string stepId)
@@ -212,7 +540,15 @@ static async Task SeedTask(ISqlSugarClient db, string taskId, string stepId)
         UpdatedAt = now,
         StartedAt = now
     }).ExecuteCommandAsync();
-    var payload = new AgvTransportCommandPayload(stepId, "A", "S", "X", ["S", "H", "X"], null);
+    // The current rolling window only covers S→H. The immutable send snapshot
+    // retains the complete S→H→X route and is the recovery source of truth.
+    var payload = new AgvTransportCommandPayload(stepId, "A", "S", "H", ["S", "H"], null);
+    var payloadJson = JsonSerializer.Serialize(payload,
+        new JsonSerializerOptions(JsonSerializerDefaults.Web));
+    var snapshotJson = JsonSerializer.Serialize(new TransportRouteSnapshot(
+        1, taskId, stepId, "CMD-1", "A", "MAP-O", "V1", "RobotWorld", "DEFINITION",
+        TransportRouteSnapshots.Hash(payloadJson), ["S", "H", "X"], ["E-SH", "E-HX"],
+        ["S", "H", "X"]), new JsonSerializerOptions(JsonSerializerDefaults.Web));
     await db.Insertable(new AgvCommandOutboxEntity
     {
         CommandId = "CMD-1",
@@ -222,7 +558,11 @@ static async Task SeedTask(ISqlSugarClient db, string taskId, string stepId)
         VehicleId = "A",
         CommandType = (int)AgvCommandType.Transport,
         Status = (int)AgvCommandStatus.Sent,
-        PayloadJson = JsonSerializer.Serialize(payload, new JsonSerializerOptions(JsonSerializerDefaults.Web)),
+        PayloadJson = payloadJson,
+        ExecutionMapId = "MAP-O",
+        ExecutionMapVersionId = "V1",
+        ExecutionRouteSnapshotJson = snapshotJson,
+        ExecutionRouteSnapshotHash = TransportRouteSnapshots.Hash(snapshotJson),
         NextAttemptAt = now,
         CreatedAt = now,
         UpdatedAt = now,
@@ -234,9 +574,22 @@ static async Task SeedTask(ISqlSugarClient db, string taskId, string stepId)
 static string[] Decode(string json) =>
     JsonSerializer.Deserialize<string[]>(json, new JsonSerializerOptions(JsonSerializerDefaults.Web)) ?? [];
 
-static AgvRobotTelemetry Telemetry(DateTimeOffset at, bool blocked) =>
-    new(0, 0, 0, .99, "S", null, 80, blocked, false, "Running", null, null, null,
-        [], [], at) { VelocityX = 0, VelocityY = 0, AngularVelocity = 0, Charging = false };
+static AgvRobotTelemetry Telemetry(
+    DateTimeOffset at,
+    bool blocked,
+    double x = 0,
+    double y = 0,
+    string current = "S",
+    string? source = null,
+    string? target = null) =>
+    new(x, y, 0, .99, current, null, 80, blocked, false, "Running",
+        source, target, null, [], [], at)
+    {
+        VelocityX = 0,
+        VelocityY = 0,
+        AngularVelocity = 0,
+        Charging = false
+    };
 
 sealed class ManualClock(DateTimeOffset start) : TimeProvider
 {
@@ -245,13 +598,22 @@ sealed class ManualClock(DateTimeOffset start) : TimeProvider
     public void Advance(TimeSpan span) => current += span;
 }
 
-sealed class RecoveryGateway : IAgvGateway, IAgvObstacleRecoveryGateway
+sealed class RecoveryGateway : IAgvGateway, IAgvObstacleRecoveryGateway,
+    IAgvSafetyPointRecoveryGateway
 {
     public int CancelCalls { get; private set; }
     public int RecoverySendCalls { get; private set; }
     public string? NewVendorTaskId { get; private set; }
     public IReadOnlyList<string> SentPath { get; private set; } = [];
+    public List<string[]> StatusPaths { get; } = [];
+    public int RetreatSendCalls { get; private set; }
+    public string? RetreatTaskId { get; private set; }
+    public string? RetreatTarget { get; private set; }
+    public double RetreatSpeed { get; private set; }
+    public double RetreatDistance { get; private set; }
+    public AgvTransportTaskState RetreatState { get; set; } = AgvTransportTaskState.GoingToDestination;
     private AgvTransportTaskState original = AgvTransportTaskState.GoingToDestination;
+    public AgvTransportTaskState OriginalState { set => original = value; }
     public Task<string> CreateTransportTaskAsync(string businessTaskId, string? preferredVehicleId,
         IReadOnlyList<string> path, AgvTransportAction? action, CancellationToken cancellationToken) =>
         throw new InvalidOperationException("通用发送口在受阻状态必须被拒绝。");
@@ -260,9 +622,18 @@ sealed class RecoveryGateway : IAgvGateway, IAgvObstacleRecoveryGateway
     public Task<IReadOnlyList<AgvVehicleStatus>> GetVehiclesAsync(CancellationToken cancellationToken) =>
         throw new NotSupportedException();
     public Task<AgvTransportTaskStatus?> GetTransportTaskStatusAsync(string vendorTaskId,
-        CancellationToken cancellationToken) => Status(vendorTaskId);
+        CancellationToken cancellationToken) =>
+        string.Equals(vendorTaskId, RetreatTaskId, StringComparison.Ordinal)
+            ? Task.FromResult<AgvTransportTaskStatus?>(new(
+                vendorTaskId, vendorTaskId, RetreatState, "A",
+                DateTimeOffset.UtcNow, "synthetic retreat"))
+            : Status(vendorTaskId);
     public Task<AgvTransportTaskStatus?> GetTransportTaskStatusAsync(string vendorTaskId, string vehicleId,
-        IReadOnlyList<string> originalPath, CancellationToken cancellationToken) => Status(vendorTaskId);
+        IReadOnlyList<string> originalPath, CancellationToken cancellationToken)
+    {
+        StatusPaths.Add(originalPath.ToArray());
+        return Status(vendorTaskId);
+    }
     public Task CancelTaskAsync(string vendorTaskId, CancellationToken cancellationToken)
     {
         CancelCalls++;
@@ -277,6 +648,21 @@ sealed class RecoveryGateway : IAgvGateway, IAgvObstacleRecoveryGateway
         NewVendorTaskId = newVendorTaskId;
         SentPath = path.ToArray();
         return Task.FromResult(newVendorTaskId);
+    }
+    public Task<string> CreateObstacleSafetyPointRetreatAsync(string retreatVendorTaskId,
+        string vehicleId, string targetSite, string blockedSourceSite,
+        string blockedTargetSite, double maximumSpeedMetersPerSecond,
+        double maximumAccelerationMetersPerSecondSquared, double remainingDistanceMeters,
+        DateTimeOffset blockedSince,
+        string originalVendorTaskId, CancellationToken cancellationToken)
+    {
+        RetreatSendCalls++;
+        RetreatTaskId = retreatVendorTaskId;
+        RetreatTarget = targetSite;
+        RetreatSpeed = maximumSpeedMetersPerSecond;
+        RetreatDistance = remainingDistanceMeters;
+        RetreatState = AgvTransportTaskState.GoingToDestination;
+        return Task.FromResult(retreatVendorTaskId);
     }
     private Task<AgvTransportTaskStatus?> Status(string id) =>
         Task.FromResult<AgvTransportTaskStatus?>(new(id, id, original, "A", DateTimeOffset.UtcNow, "synthetic"));

@@ -9,12 +9,51 @@ import time
 import unittest
 from unittest.mock import patch
 
-from controller import Runtime, WORKSPACE, validate_root, write
-from scenarios import Observer, separation, validate_scenario
+from controller import OBSTACLE_RECOVERY_TIMING, Runtime, WORKSPACE, validate_root, write, rename_evidence
+from scenarios import Observer, obstacle_detour_send_observed, separation, validate_scenario
 from test_runtime_lifecycle import SOURCE_PLC_TABLE
 
 
 class SimulationTests(unittest.TestCase):
+    def test_isolated_instances_use_field_tuned_obstacle_timing(self):
+        self.assertEqual(OBSTACLE_RECOVERY_TIMING, {
+            'DetourAfterSeconds': 10,
+            'WarningAfterSeconds': 30,
+            'AlarmAfterSeconds': 60,
+            'ClosureSuggestionAfterSeconds': 120,
+        })
+
+    def test_detour_scenario_requires_a_replacement_navigation_receipt(self):
+        self.assertTrue(obstacle_detour_send_observed(
+            dict(state='Executing', newVendorTaskId='NEW', sendAttempted=True)))
+        self.assertFalse(obstacle_detour_send_observed(
+            dict(state='SendIntent', newVendorTaskId='NEW', sendAttempted=True)))
+        self.assertFalse(obstacle_detour_send_observed(
+            dict(state='Uncertain', newVendorTaskId='NEW', sendAttempted=True)))
+        self.assertFalse(obstacle_detour_send_observed(
+            dict(state='DetourReady', sendAttempted=False)))
+        self.assertFalse(obstacle_detour_send_observed(
+            dict(state='AwaitingOriginalTerminal', sendAttempted=False)))
+
+    def test_bootstrap_evidence_rename_retries_file_lock_without_copying(self):
+        with tempfile.TemporaryDirectory() as name:
+            source, target = Path(name) / 'state.json', Path(name) / 'bootstrap-state.json'
+            source.write_text('original-evidence', encoding='utf-8')
+            original = Path.rename
+            calls = []
+            def locked_once(path, dest):
+                calls.append(path)
+                if len(calls) == 1:
+                    raise PermissionError('sharing violation')
+                return original(path, dest)
+            with patch.object(Path, 'rename', locked_once), patch('controller.time.sleep'):
+                rename_evidence(source, target)
+            self.assertEqual(len(calls), 2)
+            self.assertFalse(source.exists())
+            self.assertEqual(target.read_text(encoding='utf-8'), 'original-evidence')
+            with self.assertRaises(ValueError):
+                rename_evidence(target, Path(name) / 'other' / 'moved.json')
+
     def custom_payload(self):
         nodes = [dict(id=name, agvSiteId='LM'+str(index), x=index, y=index % 2, enabled=True, resourceIds=[])
                  for index,name in enumerate(('P1','P2','WAIT','DUMP','PARK1','PARK2'))]
@@ -99,6 +138,8 @@ class SimulationTests(unittest.TestCase):
         self.assertEqual(validate_scenario(dict(name='response-loss', rounds=1))['name'], 'response-loss')
         self.assertEqual(validate_scenario(dict(name='road-block-recovery', rounds=1, holdSeconds=7))['holdSeconds'], 7)
         self.assertEqual(validate_scenario(dict(name='obstacle-auto-detour', rounds=1, holdSeconds=8))['holdSeconds'], 8)
+        self.assertEqual(validate_scenario(dict(name='obstacle-auto-safety-return', rounds=1,
+                                                holdSeconds=6))['holdSeconds'], 6)
         self.assertEqual(validate_scenario(dict(name='obstacle-timeout-pickup', rounds=1,
                                                 holdSeconds=3))['holdSeconds'], 3)
         self.assertEqual(validate_scenario(dict(name='obstacle-timeout-fullbox', rounds=1))['name'],
@@ -119,6 +160,8 @@ class SimulationTests(unittest.TestCase):
             validate_scenario(dict(name='road-block-recovery', rounds=1, holdSeconds=0))
         with self.assertRaises(ValueError):
             validate_scenario(dict(name='obstacle-auto-detour', rounds=2))
+        with self.assertRaises(ValueError):
+            validate_scenario(dict(name='obstacle-auto-safety-return', rounds=2))
         with self.assertRaises(ValueError):
             validate_scenario(dict(name='obstacle-timeout-pickup', rounds=2))
 

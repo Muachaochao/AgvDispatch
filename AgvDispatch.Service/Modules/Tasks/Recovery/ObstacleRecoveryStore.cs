@@ -91,9 +91,21 @@ public sealed class ObstacleRecoveryStore(
         {
             DurationSeconds = duration,
             NextAction = row.NextAction ?? "",
-            AutomaticDetourEnabled = options.AutomaticDetourEnabled
+            AutomaticDetourEnabled = options.AutomaticDetourEnabled,
+            AutomaticSafetyPointRetreatEnabled = options.AutomaticSafetyPointRetreatEnabled,
+            SafetyPointTarget = row.SafetyPointTarget,
+            SafetyPointBlockedSource = row.SafetyPointBlockedSource,
+            SafetyPointBlockedTarget = row.SafetyPointBlockedTarget,
+            SafetyPointRetreatTaskId = row.SafetyPointRetreatTaskId,
+            SafetyPointRetreatMethod = row.SafetyPointRetreatMethod,
+            SafetyPointRetreatAttemptedAt = ToUtc(row.SafetyPointRetreatAttemptedAtUtc),
+            SafetyPointReachedAt = ToUtc(row.SafetyPointReachedAtUtc)
         };
     }
+
+    private static DateTimeOffset? ToUtc(DateTime? value) => value is null
+        ? null
+        : new DateTimeOffset(DateTime.SpecifyKind(value.Value, DateTimeKind.Utc));
 
     private static string[] Deserialize(string value)
     {

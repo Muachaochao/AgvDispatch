@@ -129,6 +129,7 @@ public sealed class DispatchPreSendSafetyService(
         {
             if (await CheckVehicleAsync(step.VehicleId!, path[0], step.StepType == DispatchTaskStepType.GoToPickup, ct) is { } vehicleError)
                 return vehicleError;
+            if (await CheckForwardClearanceAsync(step, path, ct) is { } forwardError) return forwardError;
             if (await CheckPlcAsync(step, preparing, continuationWindow, ct) is { } plcError) return plcError;
         }
         // Traffic requests and command payloads are both written from the same
@@ -138,6 +139,65 @@ public sealed class DispatchPreSendSafetyService(
             expectedMap.MapId, expectedMap.VersionId, path[0], path[^1], ct) is { } trafficError) return trafficError;
         if (!ReferenceEquals(expectedMap, activeMap.Current) || executionGate.Mode is not (MapExecutionMode.Running or MapExecutionMode.Draining))
             return "核验期间地图或执行门禁已变化。";
+        return null;
+    }
+
+    private async Task<string?> CheckForwardClearanceAsync(DispatchTaskStepWorkItem step,
+        IReadOnlyList<string> path, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var runtime = activeMap.Current;
+        if (runtime is null || path.Count < 2) return "当前运行地图缺失，不能核对前方车辆占用。";
+        var logicalNodes = path.Select(site =>
+            MapRouteSiteMapper.ResolveLogicalNodeId(runtime.Definition, site)).ToArray();
+        var routeEdges = new string[logicalNodes.Length - 1];
+        for (var index = 0; index < routeEdges.Length; index++)
+        {
+            var source = logicalNodes[index];
+            var destination = logicalNodes[index + 1];
+            var edge = runtime.Definition.Edges.FirstOrDefault(candidate =>
+                string.Equals(candidate.From, source, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(candidate.To, destination, StringComparison.OrdinalIgnoreCase) ||
+                candidate.Bidirectional &&
+                string.Equals(candidate.From, destination, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(candidate.To, source, StringComparison.OrdinalIgnoreCase));
+            if (edge is null) return "下方路线包含无法解析的相邻路段，不能核对前方车辆占用。";
+            routeEdges[index] = edge.Id;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        foreach (var other in vehicleStates.GetAll().Where(vehicle =>
+                     !string.Equals(vehicle.VehicleId, step.VehicleId, StringComparison.OrdinalIgnoreCase)))
+        {
+            if (other.Connection != ConnectionState.Online || other.Quality != SignalQuality.Good ||
+                other.LastSuccessfulPollAt is not { } observed || observed > now.AddSeconds(1) ||
+                now - observed > TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds))
+                continue;
+
+            var stationIndex = -1;
+            if (!string.IsNullOrWhiteSpace(other.CurrentStation))
+            {
+                var logicalStation = MapRouteSiteMapper.ResolveLogicalNodeId(runtime.Definition, other.CurrentStation);
+                stationIndex = Array.FindIndex(logicalNodes, node =>
+                    string.Equals(node, logicalStation, StringComparison.OrdinalIgnoreCase));
+            }
+            if (stationIndex > 0)
+                return $"前方路线已有{other.VehicleId}占用：当前车辆{step.VehicleId}必须等待前车通过{path[stationIndex]}后再申请路权。";
+
+            // During motion the vendor may return an empty current_station. Use the
+            // same bounded map projection as traffic monitoring so a vehicle on one
+            // of this window's directed edges still blocks the vehicle behind it.
+            if (stationIndex < 0)
+            {
+                var position = AgvMapPositionAnalyzer.Analyze(other.X, other.Y, other.LocalizationConfidence,
+                    other.LastSuccessfulPollAt, runtime.Definition, now,
+                    TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds),
+                    mapOptions.MinimumLocalizationConfidence, mapOptions.MaximumRouteDeviationMeters);
+                if (position.State == AgvMapPositionState.Normal && position.NearestEdgeId is { } edgeId &&
+                    routeEdges.Contains(edgeId, StringComparer.OrdinalIgnoreCase))
+                    return $"前方路线已有{other.VehicleId}在路段{edgeId}行驶：当前车辆{step.VehicleId}必须等待前车通过后再申请路权。";
+            }
+        }
         return null;
     }
 

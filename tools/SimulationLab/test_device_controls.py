@@ -392,6 +392,92 @@ class DeviceNetworkTests(unittest.IsolatedAsyncioTestCase):
             driver.cancel()
             await asyncio.gather(driver, return_exceptions=True)
 
+    async def test_self_position_backward_retreat_returns_to_current_edge_source(self):
+        car = self.f.car
+        car.nodes['LM1']['x'] = 4
+        self.f.control(vehicles={'A': {'speedScale': 1}})
+        self.assertEqual(0, car.robokit_reply(3066, {'move_task_list': [
+            {'task_id': 'blocked-forward', 'source_id': 'LM0', 'id': 'LM1'}]})['ret_code'])
+        driver = asyncio.create_task(car.drive())
+        try:
+            await self.wait_until(lambda: car.x > .8, 'Vehicle did not enter the road segment')
+            car.robokit_reply(3003, {'taskId': 'blocked-forward'})
+            await self.wait_until(lambda: car.current is None,
+                                  'Cancelled forward task did not leave the road middle')
+            middle = car.x
+            self.assertGreater(middle, 0)
+            self.assertLess(middle, 4)
+            self.assertEqual(400, car.robokit_reply(3051, {
+                'source_id': 'LM0',
+                'id': 'LM0',
+                'task_id': 'unsafe-return',
+                'method': 'backward',
+                'max_speed': .1,
+            })['ret_code'])
+            self.assertEqual(400, car.robokit_reply(3051, {
+                'source_id': 'SELF_POSITION',
+                'id': 'LM0',
+                'task_id': 'unsafe-speed',
+                'method': 'backward',
+                'max_speed': .5,
+            })['ret_code'])
+            accepted = car.robokit_reply(3051, {
+                'source_id': 'SELF_POSITION',
+                'id': 'LM0',
+                'task_id': 'safety-return-1',
+                'method': 'backward',
+                'max_speed': .1,
+                'max_acc': .15,
+            })
+            self.assertEqual(0, accepted['ret_code'], accepted)
+            await self.wait_until(lambda: car.tasks['safety-return-1'] == 4,
+                                  'Guarded backward retreat did not complete', timeout=12)
+            self.assertEqual('LM0', car.station)
+            self.assertAlmostEqual(car.nodes['LM0']['x'], car.x)
+            self.assertFalse(car.obstacle)
+        finally:
+            driver.cancel()
+            await asyncio.gather(driver, return_exceptions=True)
+
+    async def test_3055_translation_moves_straight_back_without_route_planning(self):
+        car = self.f.car
+        car.nodes['LM1']['x'] = 4
+        self.f.control(vehicles={'A': {'speedScale': 1}})
+        self.assertEqual(0, car.robokit_reply(3066, {'move_task_list': [
+            {'task_id': 'blocked-short-edge', 'source_id': 'LM0', 'id': 'LM1'}]})['ret_code'])
+        driver = asyncio.create_task(car.drive())
+        try:
+            await self.wait_until(lambda: car.x > .8, 'Vehicle did not enter the short-edge scenario')
+            car.robokit_reply(3003, {'taskId': 'blocked-short-edge'})
+            await self.wait_until(lambda: car.current is None,
+                                  'Cancelled short-edge task did not stop')
+            car.x = car.nodes[car.motion_source]['x'] + .5
+            car.y = 0
+            self.assertEqual(400, car.robokit_reply(3055, {
+                'dist': 1.2, 'vx': -.1, 'vy': 0, 'mode': 1
+            })['ret_code'])
+            self.assertEqual(400, car.robokit_reply(3055, {
+                'dist': .5, 'vx': -.2, 'vy': 0, 'mode': 1
+            })['ret_code'])
+            accepted = car.robokit_reply(3055, {
+                'dist': .5, 'vx': -.1, 'vy': 0, 'mode': 1
+            })
+            self.assertEqual(
+                0,
+                accepted['ret_code'],
+                (accepted, car.motion_source, car.motion_target, car.x,
+                 car.retreat_path_to_source()[1]))
+            task_id = next(task_id for task_id in car.tasks
+                           if task_id.startswith('TRANSLATION-'))
+            await self.wait_until(lambda: car.tasks[task_id] == 4,
+                                  '3055 translation did not complete', timeout=12)
+            self.assertEqual('LM0', car.station)
+            self.assertAlmostEqual(car.nodes['LM0']['x'], car.x)
+            self.assertEqual('LM0', car.motion_target)
+        finally:
+            driver.cancel()
+            await asyncio.gather(driver, return_exceptions=True)
+
     async def test_vendor_can_cancel_final_return_segments_without_fake_completion(self):
         car = self.f.car
         car.nodes['LM4'] = dict(id='LM4', agvSiteId='LM4', x=.4, y=0)

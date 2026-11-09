@@ -38,6 +38,7 @@ public partial class NetworkWindow : Window
     private string _resultSignature = "";
     private StageResultRow[] _resultRows = [];
     private int _inspectionStage = 1;
+    private bool _allowInitialHighOutputs;
     private CancellationTokenSource? _exportCancellation;
     private Task? _exportTask;
 
@@ -92,6 +93,7 @@ public partial class NetworkWindow : Window
     private void LoadConfig(NetworkLabConfig config)
     {
         config.Validate();
+        _allowInitialHighOutputs = config.AllowInitialHighOutputs;
         BindIp.Text = config.BindAddress; PortText.Text = config.Port.ToString(); PeerIp.Text = config.AllowedClient;
         DelayText.Text = config.AutoDoneSeconds.ToString(CultureInfo.InvariantCulture);
         DumperId.Text = config.DumperStationId;
@@ -128,6 +130,7 @@ public partial class NetworkWindow : Window
             BindAddress = BindIp.Text.Trim(), Port = int.Parse(PortText.Text, CultureInfo.InvariantCulture),
             AllowedClient = PeerIp.Text.Trim(), AutoDoneSeconds = double.Parse(DelayText.Text, CultureInfo.InvariantCulture),
             DumperStationId = DumperId.Text.Trim(),
+            AllowInitialHighOutputs = _allowInitialHighOutputs,
             Points = _mapping.Select(p => p.Copy()).ToList()
         };
         config.Validate(); return config;

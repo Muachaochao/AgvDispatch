@@ -8,6 +8,12 @@ public interface IAgvTransportChainLookup
 public sealed class AgvPartialAcceptanceException(string message) : InvalidOperationException(message);
 
 /// <summary>
+/// The local pre-send checks failed before any navigation write was attempted.
+/// This attempt may be rolled back without weakening uncertain-send recovery.
+/// </summary>
+public sealed class AgvPreSendDeferredException(string message) : InvalidOperationException(message);
+
+/// <summary>
 /// Robokit explicitly rejected a navigation write before creating a task.
 /// Unlike a timeout or partial acceptance, this result is terminal and must
 /// never be retried under the same business id.

@@ -69,6 +69,43 @@ public static class TransportRouteWindows
         return windows.Select((window, index) => window with { Index = index }).ToArray();
     }
 
+    /// <summary>
+    /// The first return window alone may end in an intersection immediately outside
+    /// the dumper. If another vehicle enters the next window while the returning
+    /// vehicle is still there, both can block each other. Join the first two safe
+    /// windows for the dumper return so its exit corridor is reserved atomically.
+    /// The remaining route stays rolling and is still acquired only at the next
+    /// verified safe point.
+    /// </summary>
+    public static IReadOnlyList<AgvTransportRouteWindow> IncludeDumperExitClearance(
+        IReadOnlyList<AgvTransportRouteWindow> windows, MapDefinition map, string dumpingSite)
+    {
+        ArgumentNullException.ThrowIfNull(windows);
+        ArgumentNullException.ThrowIfNull(map);
+        if (windows.Count < 2 || windows[0].Final ||
+            !MapRouteSiteMapper.IsSameNode(map, windows[0].Source, dumpingSite) ||
+            !MapRouteSiteMapper.IsSameNode(map, windows[0].Destination, windows[1].Source))
+            return windows;
+
+        var first = windows[0];
+        var second = windows[1];
+        var merged = new AgvTransportRouteWindow(
+            0,
+            first.Source,
+            second.Destination,
+            first.Path.Concat(second.Path.Skip(1)).ToArray(),
+            first.EdgeIds.Concat(second.EdgeIds).ToArray(),
+            first.ResourceIds.Concat(second.ResourceIds)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Order(StringComparer.OrdinalIgnoreCase)
+                .ToArray(),
+            second.Final);
+
+        return windows.Skip(2).Prepend(merged)
+            .Select((window, index) => window with { Index = index })
+            .ToArray();
+    }
+
     private static bool IsStableStop(string site, MapDefinition map)
     {
         var logical = MapRouteSiteMapper.ResolveLogicalNodeId(map, site);

@@ -102,15 +102,7 @@ public sealed partial class TaskHandshakeStore
         if(task==null || task.VehicleId!=proof.VehicleId || task.Stage is not (70 or 80) || task.CancelRequestId!=null)
             throw new InvalidOperationException("返程任务已冻结、取消或归属变化。");
         var commands=await database.Queryable<AgvCommandOutboxEntity>().Where(c=>c.TaskId==proof.TaskId && c.StepId==proof.StepId).ToListAsync(ct);
-        var finalCommands=commands.Where(c=>c.Status==(int)AgvCommandStatus.Sent &&
-            c.VendorCommandId==proof.VendorTaskId && c.SentAt is not null).ToArray();
-        // A return step may legitimately span several committed rolling windows.
-        // Every window must be sent, and the proof must identify exactly one final
-        // vendor command; requiring the whole step to contain one command breaks
-        // valid multi-window returns.
-        if(commands.Count==0 || commands.Any(c=>c.Status!=(int)AgvCommandStatus.Sent) || finalCommands.Length!=1)
-            throw new InvalidOperationException("返程原命令未唯一确认发送。");
-        var originalCommand=finalCommands[0];
+        var originalCommand=ValidateReturnCommandChain(commands,proof);
         var sent=originalCommand.SentAt!.Value;
         if(proof.First.ObservedAt<new DateTimeOffset(sent) || proof.VendorObservedAt<new DateTimeOffset(sent))
             throw new InvalidOperationException("出区观测早于本轮返程发送。");
@@ -138,6 +130,74 @@ public sealed partial class TaskHandshakeStore
             if(suffix.WaitingForPhysicalExit)throw new DumperExitPendingException(suffix.Reason);
             throw new InvalidOperationException(suffix.Reason);
         }
+    }
+
+    private static AgvCommandOutboxEntity ValidateReturnCommandChain(
+        IReadOnlyList<AgvCommandOutboxEntity> commands, TaskDumperExitProof proof)
+    {
+        if (commands.Count == 0)
+            throw new InvalidOperationException("返程原命令未唯一确认发送。");
+
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        var parsed = new List<(AgvCommandOutboxEntity Command, AgvTransportCommandPayload Payload)>(commands.Count);
+        foreach (var command in commands)
+        {
+            AgvTransportCommandPayload? payload;
+            try
+            {
+                payload = JsonSerializer.Deserialize<AgvTransportCommandPayload>(command.PayloadJson, options);
+            }
+            catch (JsonException exception)
+            {
+                throw new InvalidOperationException("返程原命令载荷无效。", exception);
+            }
+            if (payload is null || payload.VehicleId != proof.VehicleId ||
+                (string.IsNullOrWhiteSpace(payload.BusinessStepId)
+                    ? payload.BusinessTaskId
+                    : payload.BusinessStepId) != proof.StepId ||
+                payload.WindowIndex < 0 || payload.WindowCount <= payload.WindowIndex)
+                throw new InvalidOperationException("返程多窗口命令链的步骤、车辆或窗口身份不一致。");
+            parsed.Add((command, payload));
+        }
+
+        var current = parsed.Where(item => item.Command.Status == (int)AgvCommandStatus.Sent &&
+            item.Command.VendorCommandId == proof.VendorTaskId && item.Command.SentAt is not null).ToArray();
+        if (current.Length != 1)
+            throw new InvalidOperationException("返程原命令未唯一确认发送。");
+
+        var currentIndex = current[0].Payload.WindowIndex;
+        var windowCount = current[0].Payload.WindowCount;
+        if (parsed.Any(item => item.Payload.WindowCount != windowCount))
+            throw new InvalidOperationException("返程多窗口命令链声明的窗口数量不一致。");
+
+        var sentByIndex = new Dictionary<int, (AgvCommandOutboxEntity Command, AgvTransportCommandPayload Payload)>();
+        foreach (var item in parsed.Where(item => item.Command.Status == (int)AgvCommandStatus.Sent))
+        {
+            if (item.Command.SentAt is null || string.IsNullOrWhiteSpace(item.Command.VendorCommandId) ||
+                !sentByIndex.TryAdd(item.Payload.WindowIndex, item))
+                throw new InvalidOperationException("返程多窗口命令链存在重复已发送窗口。");
+        }
+        for (var index = 0; index <= currentIndex; index++)
+        {
+            if (!sentByIndex.TryGetValue(index, out var sent))
+                throw new InvalidOperationException("返程多窗口命令链缺少已确认发送的前序窗口。");
+            if (sent.Command.VendorCommandId != sent.Payload.BusinessTaskId)
+                throw new InvalidOperationException("返程窗口的厂家任务身份与持久化载荷不一致。");
+            if (index > 0 && sent.Payload.PreviousVendorTaskId != sentByIndex[index - 1].Command.VendorCommandId)
+                throw new InvalidOperationException("返程多窗口命令链的前序命令关联断开。");
+        }
+
+        // Future rolling windows are intentionally prepared but not sent until the
+        // vehicle reaches their safe boundary. They are evidence of the original
+        // route plan, not evidence that the return has already started.
+        if (parsed.Any(item => item.Payload.WindowIndex > currentIndex &&
+            item.Command.Status != (int)AgvCommandStatus.Pending))
+            throw new InvalidOperationException("返程未来窗口已开始发送或状态异常。");
+        if (parsed.Any(item => item.Payload.WindowIndex <= currentIndex &&
+            item.Command.Status is (int)AgvCommandStatus.Sending or (int)AgvCommandStatus.RetryScheduled))
+            throw new InvalidOperationException("返程已到达窗口仍存在发送中或待重试命令。");
+
+        return current[0].Command;
     }
 
     private static bool PolicyEvidenceCompatible(DumperExitConfiguration original,DumperExitPolicy proof,double proofMaximumRouteDeviationMeters)

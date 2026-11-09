@@ -56,6 +56,12 @@ public interface IAgvCommandOutboxRepository
         int maximumAttempts,
         CancellationToken cancellationToken);
 
+    Task DeferBeforeSendAsync(
+        string commandId,
+        string errorMessage,
+        DateTimeOffset nextAttemptAt,
+        CancellationToken cancellationToken);
+
     Task<int> RecoverStaleClaimsAsync(
         DateTimeOffset staleBefore,
         CancellationToken cancellationToken);

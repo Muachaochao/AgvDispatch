@@ -2,6 +2,7 @@ using System.Text.Json;
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Domain.Agvs;
 using AgvDispatch.Domain.Devices;
+using AgvDispatch.Domain.Maps;
 using AgvDispatch.Domain.Stations;
 using AgvDispatch.Domain.Tasks;
 using AgvDispatch.Infrastructure.Maps;
@@ -163,6 +164,7 @@ await using (var f = await Fixture.Create())
 foreach (var physicalStep in new[] { DispatchTaskStepType.PickupFullBox, DispatchTaskStepType.DumpFullBox })
 await using (var f = await Fixture.Create(new MapSwitchSafetySettings { CheckPlcSignals = true }))
 {
+    await f.Boot();
     var id = await f.Prepare();
     await f.Db.Deleteable<AgvCommandOutboxEntity>().ExecuteCommandAsync();
     await f.Db.Updateable<DispatchTaskStepEntity>().SetColumns(s => new DispatchTaskStepEntity { Status = 50 }).Where(s => s.TaskId == id && s.StepType < (int)physicalStep).ExecuteCommandAsync();
@@ -198,6 +200,39 @@ await using (var f = await Fixture.Create(new MapSwitchSafetySettings { Required
     await f.Recovery.InspectAsync(ct);
     Check((await f.Recovery.DecideAsync(admin, await Request(f, "__SITE__"), ct)).Accepted,
         "停用车辆的未初始化无穷坐标不破坏活跃车辆的全场恢复指纹");
+}
+await using (var f = await Fixture.Create(new MapSwitchSafetySettings { RequiredVehicleIds = ["AGV-01", "AGV-03"] }))
+{
+    await f.Boot(); f.Fresh();
+    await f.Db.Insertable(new DispatchTaskStepEntity
+    {
+        StepId = "OLD-CANCELLED-STEP",
+        TaskId = "OLD-CANCELLED-TASK",
+        Sequence = 1,
+        StepType = (int)DispatchTaskStepType.ReturnEmptyBox,
+        Status = (int)DispatchTaskStepStatus.Cancelled,
+        VehicleId = "AGV-03",
+        CreatedAt = DateTime.Now.AddDays(-1),
+        UpdatedAt = DateTime.Now.AddDays(-1),
+        CompletedAt = DateTime.Now.AddDays(-1)
+    }).ExecuteCommandAsync();
+    f.Vehicles.Items.Add(SwitchVehicleCache.Ready("AGV-03") with
+    {
+        X = 50, Y = 50, CurrentStation = null, Charging = false
+    });
+    await f.Recovery.InspectAsync(ct);
+    Check((await f.Recovery.GetAsync(ct)).Items.Single(i => i.TaskId == "__SITE__").Reason.Contains("AGV-03"),
+        "未充电车辆离开运行地图时仍阻止全场恢复");
+
+    f.Vehicles.Items[^1] = f.Vehicles.Items[^1] with { Charging = true };
+    await f.Recovery.InspectAsync(ct);
+    Check((await f.Recovery.DecideAsync(admin, await Request(f, "__SITE__"), ct)).Accepted,
+        "在线、静止、零任务的充电车辆可在充电位外完成全场现场核对");
+
+    f.Vehicles.Items[^1] = f.Vehicles.Items[^1] with { Blocked = true };
+    await f.Recovery.InspectAsync(ct);
+    Check(!(await f.Recovery.GetAsync(ct)).Items.Single(i => i.TaskId == "__SITE__").Verified,
+        "充电车辆出现阻挡后重新封锁，不能沿用已核对状态");
 }
 await using (var f = await Fixture.Create())
 {
@@ -252,6 +287,70 @@ await using (var f = await Fixture.Create())
     Check((await f.Outbox.GetDueCommandsAsync(DateTimeOffset.Now, 10, ct)).Count == 0 && (await new DispatchOrchestrationRepository(f.Db).GetReadyStepsAsync(10, ct)).Count == 0, "冻结步骤及Outbox不会继续发送或PLC推进");
     Check((await cancellation.RequestAsync(admin, request, ct)).Accepted && !(await cancellation.RequestAsync(admin, request with { Reason = "同编号改变取消操作依据会被拒绝处理" }, ct)).Accepted, "取消回执幂等且拒绝同编号不同参数");
     Check((await new DispatchTaskReadRepository(f.Db).GetActiveTasksAsync(ct)).Count == 1 && !(await f.Tasks.TryCreateAsync("PLC-01", "DUMPER", 1, ct)).Created, "现场核对阶段保留活动任务并阻止重复工位任务");
+}
+await using (var f = await Fixture.Create(new MapSwitchSafetySettings
+{
+    RequiredVehicleIds = ["AGV-01"],
+    CheckPlcSignals = true
+}))
+{
+    var id = await f.Prepare(); f.Fresh();
+    var step = await f.Step(id);
+    var command = f.Db.Queryable<AgvCommandOutboxEntity>().Where(c => c.StepId == step.StepId).Single();
+    const string rejected = "AGV_PRE_SEND_REJECTED; Robokit API 3066返回错误40020：control is preempted";
+    await f.Db.Updateable<AgvCommandOutboxEntity>().SetColumns(c => new AgvCommandOutboxEntity
+    {
+        Status = (int)AgvCommandStatus.Failed,
+        AttemptCount = 1,
+        LastError = rejected
+    }).Where(c => c.CommandId == command.CommandId).ExecuteCommandAsync();
+    await f.Db.Updateable<DispatchTaskStepEntity>().SetColumns(s => new DispatchTaskStepEntity
+    {
+        Status = (int)DispatchTaskStepStatus.Failed,
+        ErrorMessage = rejected
+    }).Where(s => s.StepId == step.StepId).ExecuteCommandAsync();
+    await f.Db.Updateable<DispatchTaskEntity>().SetColumns(t => new DispatchTaskEntity
+    {
+        Stage = (int)DispatchTaskStage.Faulted,
+        ErrorMessage = rejected
+    }).Where(t => t.TaskId == id).ExecuteCommandAsync();
+
+    var cancellation = new TaskCancellationService(f.Db, f.Gate, f.Gateway);
+    var request = new TaskCancelRequest(Guid.NewGuid().ToString("N"), id, DispatchTaskStage.Faulted,
+        "厂家控制器已释放，发送前明确拒绝且车端未创建任务，申请取消并保留原失败证据。");
+    Check((await cancellation.RequestAsync(admin, request, ct)).Accepted,
+        "40020发送前拒绝任务允许进入取消冻结");
+    await cancellation.ProcessAsync(ct);
+    var reviewed = f.Db.Queryable<DispatchTaskEntity>().Where(t => t.TaskId == id).Single();
+    Check(reviewed.Stage == (int)DispatchTaskStage.CancellationReview && reviewed.CancelConfirmedAt != null &&
+          reviewed.CancelVendorId == null &&
+          f.Gateway.Cancels == 0,
+        "取消冻结覆盖Outbox说明后仍保留步骤40020证据，确认无车端任务、清空伪厂家编号且不发送取消");
+
+    // Older persisted rows may still contain the pre-fix synthetic vendor id.
+    await f.Db.Updateable<DispatchTaskEntity>().SetColumns(t => new DispatchTaskEntity
+    {
+        CancelVendorId = reviewed.CancelStepId
+    }).Where(t => t.TaskId == id).ExecuteCommandAsync();
+    await f.Boot();
+    f.Fresh();
+    foreach (var (station, signal) in new[]
+    {
+        ("PLC-01", "FullBoxRequestAcknowledged"), ("PLC-01", "FullBoxRemoved"),
+        ("PLC-01", "EmptyBoxTaskAcknowledged"), ("PLC-01", "EmptyBoxPlaced"),
+        ("DUMPER", "AgvAtWaitingPosition"), ("DUMPER", "AgvAtDumpingPosition")
+    })
+        f.Signals.Items.Add(SwitchSignalCache.Ready() with
+        {
+            StationId = station,
+            VariableName = signal,
+            Value = false,
+            UpdatedAt = DateTimeOffset.Now
+        });
+    await f.Recovery.InspectAsync(ct);
+    var close = await f.Recovery.DecideAsync(admin, await Request(f, id, RecoveryDecision.CloseCancelled), ct);
+    Check(close.Accepted,
+        "既有伪厂家编号不再触发任务链查询，保留原失败证据后可关闭取消：" + close.Message);
 }
 await using (var f = await Fixture.Create())
 {
@@ -646,12 +745,109 @@ foreach (var scenario in new[] { "disabled-bound", "wrong-version", "enabled-unb
     Check(f.Gateway.Sends == 0 && (await f.Outbox.GetDueCommandsAsync(DateTimeOffset.Now, 10, ct)).Single().AttemptCount == 0,
         "契约模式不匹配不领取或发送原Outbox：" + scenario);
 }
+await using (var f = await Fixture.Create(new MapSwitchSafetySettings { CheckPlcSignals = true }))
+{
+    var id = await f.Prepare();
+    var current = await f.Step(id);
+    var task = await f.Db.Queryable<DispatchTaskEntity>().Where(t => t.TaskId == id).FirstAsync();
+    task.Stage = (int)DispatchTaskStage.CancellationReview;
+    task.VehicleId = "AGV-01";
+    task.CancelRequestId = Guid.NewGuid().ToString("N");
+    task.CancelVehicleId = "AGV-01";
+    task.CancelVendorId = current.StepId;
+    task.CancelConfirmedAt = DateTime.Now;
+    task.ErrorMessage = "车辆原任务确认：Cancelled；现场已确认车辆关机。";
+    await f.Db.Updateable(task).ExecuteCommandAsync();
+    await f.Db.Updateable<DispatchTaskStepEntity>()
+        .SetColumns(s => new DispatchTaskStepEntity { Status = (int)DispatchTaskStepStatus.ManualIntervention })
+        .Where(s => s.StepId == current.StepId).ExecuteCommandAsync();
+    await f.Db.Insertable(new TaskEquipmentClaimEntity
+    {
+        EquipmentId = "DUMPER",
+        TaskId = id,
+        AcquiredAtUtc = DateTime.UtcNow
+    }).ExecuteCommandAsync();
+
+    f.Fresh();
+    foreach (var name in new[] { "FullBoxRequestAcknowledged", "FullBoxRemoved", "EmptyBoxTaskAcknowledged", "EmptyBoxPlaced" })
+        f.Signals.Items.Add(SwitchSignalCache.Ready() with { VariableName = name, Value = false });
+    foreach (var name in new[] { "AgvAtWaitingPosition", "AgvAtDumpingPosition", "DumperReady", "DumpingCompletedMayLeave" })
+        f.Signals.Items.Add(SwitchSignalCache.Ready() with { StationId = "DUMPER", VariableName = name, Value = false });
+    f.Vehicles.Items[0] = f.Vehicles.Items[0] with
+    {
+        Connection = ConnectionState.Disconnected,
+        Quality = SignalQuality.Disabled,
+        ErrorMessage = "车辆已正常关机"
+    };
+    Check((await f.Recovery.BeginReviewAsync(
+            admin,
+            new(id, "现场确认车辆正常关机、LM5空载、原任务终态和PLC基线清零"),
+            ct)).Accepted,
+        "运行中离线车辆可从已结束原任务进入专项取消核对");
+    f.Signals.Items.Clear();
+    f.Signals.Items.Add(SwitchSignalCache.Ready());
+    foreach (var name in new[] { "FullBoxRequestAcknowledged", "FullBoxRemoved", "EmptyBoxTaskAcknowledged", "EmptyBoxPlaced" })
+        f.Signals.Items.Add(SwitchSignalCache.Ready() with { VariableName = name, Value = false });
+    foreach (var name in new[] { "AgvAtWaitingPosition", "AgvAtDumpingPosition", "DumperReady", "DumpingCompletedMayLeave" })
+        f.Signals.Items.Add(SwitchSignalCache.Ready() with { StationId = "DUMPER", VariableName = name, Value = false });
+    f.Vehicles.Items[0] = f.Vehicles.Items[0] with
+    {
+        LastSuccessfulPollAt = DateTimeOffset.Now,
+        UpdatedAt = DateTimeOffset.Now
+    };
+    await f.Recovery.InspectAsync(ct);
+
+    var withoutOfflineConfirmation =
+        await f.Recovery.DecideAsync(
+            admin,
+            (await Request(f, id, RecoveryDecision.CloseCancelled)) with
+            {
+                MaterialReference = "空载"
+            },
+            ct);
+    Check(!withoutOfflineConfirmation.Accepted,
+        "车辆关机离线时未明确确认离线，不能关闭取消或释放设备归属。");
+
+    var offlineClose =
+        await f.Recovery.DecideAsync(
+            admin,
+            (await Request(f, id, RecoveryDecision.CloseCancelled)) with
+            {
+                MaterialReference = "空载",
+                VehicleOfflineConfirmed = true
+            },
+            ct);
+    Check(offlineClose.Accepted &&
+          f.Db.Queryable<DispatchTaskEntity>().Single(t => t.TaskId == id).Stage == (int)DispatchTaskStage.Cancelled &&
+          !f.Db.Queryable<TaskEquipmentClaimEntity>().Any(e => e.TaskId == id),
+        "车辆关机离线、载荷与PLC基线核对后可原子关闭取消并释放历史设备归属：" + offlineClose.Message);
+
+    var siteReview = await f.Recovery.DecideAsync(
+        admin,
+        (await Request(f, "__SITE__")) with
+        {
+            MaterialReference = "相关车辆均空载且正常关机",
+            VehicleOfflineConfirmed = true
+        },
+        ct);
+    Check(siteReview.Accepted,
+        "全场核对明确确认相关车辆正常关机后，不以最后采集过期阻塞恢复：" + siteReview.Message);
+
+    var recovery = await f.Recovery.GetAsync(ct);
+    var release = await f.Recovery.ReleaseAsync(
+        admin,
+        new(recovery.SessionId, "离线车辆取消核对完成，放行仿真后续任务"),
+        ct);
+    Check(release.Accepted,
+        "离线取消条目放行时保留明确的关机确认，不以在线新鲜度误判失败：" + release.Message);
+}
 Console.WriteLine($"Execution recovery: {checks} checks passed.");
 
 sealed class Fixture : IAsyncDisposable
 {
     public required ISqlSugarClient Db;
     public RecoveryBarrier Barrier = new();
+    public ActiveMapRuntime Map = new();
     public required MapExecutionGate Gate;
     public SwitchVehicleCache Vehicles = new(); public SwitchSignalCache Signals = new();
     public RecoveryGateway Gateway = new(); public MapSwitchSafetySettings Settings = new();
@@ -664,7 +860,19 @@ sealed class Fixture : IAsyncDisposable
         var f = new Fixture { Db = db, Gate = null!, Tasks = new(db), Outbox = new(db), Recovery = null! };
         if (settings != null) f.Settings = settings;
         f.Gate = new MapExecutionGate(f.Barrier); f.Gate.SetMode(MapExecutionMode.Running);
-        f.Recovery = new(db, f.Barrier, f.Gate, f.Gateway, f.Vehicles, f.Signals, f.Settings, new ActiveMapRuntime());
+        var nodes = new List<MapNode>
+        {
+            new("SITE-A", 0, 0, MapNodeType.Station, true, [], "SITE-A"),
+            new("SITE-MID", 0.05, 0, MapNodeType.WaitingPoint, true, [], "SITE-MID"),
+            new("SITE-B", 0.10, 0, MapNodeType.Station, true, [], "SITE-B")
+        };
+        f.Map.Replace(new ActiveMapRuntimeSnapshot("MAP-TEST", "V1", new MapDefinition(
+            "MAP-TEST", "recovery-test", "LocalCartesian", "m", nodes,
+            [
+                new("A-MID", "SITE-A", "SITE-MID", 0.05, 1, true, true, []),
+                new("MID-B", "SITE-MID", "SITE-B", 0.05, 1, true, true, [])
+            ], []), DateTimeOffset.Now));
+        f.Recovery = new(db, f.Barrier, f.Gate, f.Gateway, f.Vehicles, f.Signals, f.Settings, f.Map);
         return f;
     }
     public Task Boot() => Recovery.InitializeAsync(CancellationToken.None);

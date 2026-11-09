@@ -24,6 +24,7 @@ public sealed class ExecutionRecoveryTicketEntity
     [SugarColumn(ColumnDataType = "TEXT")] public string PhysicalFingerprint { get; set; } = "";
     [SugarColumn(IsNullable = true)] public DateTime? VerifiedAt { get; set; }
     [SugarColumn(IsNullable = true, Length = 128)] public string? MaterialReference { get; set; }
+    public bool OfflineVehicleConfirmed { get; set; }
 }
 [SugarTable("execution_evidence")]
 public sealed class ExecutionEvidenceEntity

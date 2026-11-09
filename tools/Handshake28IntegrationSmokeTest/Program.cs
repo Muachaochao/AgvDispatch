@@ -31,6 +31,46 @@ async Task ExpectHold(Func<Task> action, string name)
     Check(held, name);
 }
 
+{
+    const string taskId = "TASK-WINDOW-CHAIN";
+    const string stepId = "STEP-WINDOW-CHAIN";
+    const string vehicleId = "AGV-1";
+    var now = DateTimeOffset.UtcNow;
+    string Payload(int index, string? previous) => JsonSerializer.Serialize(new AgvTransportCommandPayload(
+        $"{stepId}-W{index + 1:D2}", vehicleId, index == 0 ? "LM39" : "LM40",
+        index == 0 ? "LM40" : "LM1", index == 0 ? ["LM39", "LM40"] : ["LM40", "LM1"], null)
+    {
+        BusinessStepId = stepId, WindowIndex = index, WindowCount = 3,
+        PreviousVendorTaskId = previous
+    });
+    var first = new AgvCommandOutboxEntity
+    {
+        CommandId = "CMD-W01", TaskId = taskId, StepId = stepId, VehicleId = vehicleId,
+        Status = (int)AgvCommandStatus.Sent, SentAt = now.UtcDateTime,
+        VendorCommandId = $"{stepId}-W01", PayloadJson = Payload(0, null)
+    };
+    var future = new AgvCommandOutboxEntity
+    {
+        CommandId = "CMD-W02", TaskId = taskId, StepId = stepId, VehicleId = vehicleId,
+        Status = (int)AgvCommandStatus.Pending, PayloadJson = Payload(1, $"{stepId}-W01")
+    };
+    var proof = new TaskDumperExitProof(taskId, stepId, vehicleId, $"{stepId}-W01", "MAP", "V1", "HASH",
+        new(vehicleId, "MAP", "V1", 4, 0, .99, now, SignalQuality.Good, true, false, false),
+        new(vehicleId, "MAP", "V1", 4, 0, .99, now.AddSeconds(.2), SignalQuality.Good, true, false, false),
+        new("BODY", vehicleId, .5, .05, true, true),
+        new(["DUMP"], .1, 3, .9, .15), .25, now, now);
+    var method = typeof(TaskHandshakeStore).GetMethod("ValidateReturnCommandChain",
+        BindingFlags.Static | BindingFlags.NonPublic)!;
+    var accepted = (AgvCommandOutboxEntity)method.Invoke(null, [new[] { first, future }, proof])!;
+    Check(accepted.CommandId == first.CommandId,
+        "返程出区校验接受同步骤已发送当前窗口和尚未到安全点的未来窗口");
+    future.Status = (int)AgvCommandStatus.RetryScheduled;
+    var refused = false;
+    try { method.Invoke(null, [new[] { first, future }, proof]); }
+    catch (TargetInvocationException exception) when (exception.InnerException is InvalidOperationException) { refused = true; }
+    Check(refused, "返程出区校验仍拒绝已开始发送或待重试的未来窗口");
+}
+
 await EndpointAliasChecks.RunAsync(Check);
 
 using (var waitingExit = new Fixture())

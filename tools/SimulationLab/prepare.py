@@ -18,6 +18,14 @@ def prepare(name, vehicles=2, publish=True):
     if root.exists(): raise ValueError('实例已存在，不覆盖。请使用新名字以保留故障现场。')
     subprocess.run([sys.executable, str(WORKSPACE / 'tools/WebTwoVehicleLab/prepare.py'), '--name', name], cwd=WORKSPACE, check=True)
     settings = read(root / 'service/appsettings.json'); lab = read(root / 'lab.json')
+    settings.setdefault('ObstacleRecovery', {}).update(
+        Enabled=True,
+        AutomaticDetourEnabled=True,
+        AutomaticSafetyPointRetreatEnabled=True,
+        SafetyPointMaximumRetreatDistanceMeters=10,
+        SafetyPointRetreatMaximumSpeedMetersPerSecond=.1,
+        SafetyPointRetreatMaximumAccelerationMetersPerSecondSquared=.15,
+    )
     ports = {lab[k] for k in ('robotPort', 'navigationPort', 'plcPort', 'webPort')}
     for robot in settings['Agv']['Robots']: ports.update((robot['Port'], robot['NavigationPort']))
     def port():

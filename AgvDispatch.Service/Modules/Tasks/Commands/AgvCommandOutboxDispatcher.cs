@@ -230,6 +230,27 @@ public sealed class AgvCommandOutboxDispatcher(
         {
             throw;
         }
+        catch (AgvPreSendDeferredException exception)
+        {
+            var delay = GetRetryDelay(command.AttemptCount);
+            await outbox.DeferBeforeSendAsync(
+                command.CommandId,
+                exception.Message,
+                DateTimeOffset.Now.Add(delay),
+                cancellationToken);
+            pipeline?.ReportLayer(
+                "execution",
+                "Waiting",
+                "车辆在本机发送前复核中暂时不可用；未向厂家发送命令，恢复健康后沿用原命令编号重试：" +
+                exception.Message,
+                1);
+            logger.LogWarning(
+                exception,
+                "AGV命令在本地发送前复核失败，已回滚尝试次数。CommandId={CommandId}, StepId={StepId}, RetryAfterMs={RetryAfterMs}",
+                command.CommandId,
+                command.StepId,
+                delay.TotalMilliseconds);
+        }
         catch (Exception exception)
         {
             var delay = GetRetryDelay(command.AttemptCount);

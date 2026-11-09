@@ -1,4 +1,4 @@
-using SqlSugar;
+﻿using SqlSugar;
 
 namespace AgvDispatch.Infrastructure.Persistence.Entities;
 
@@ -55,11 +55,43 @@ public sealed class ObstacleRecoveryEntity
     [SugarColumn(Length = 128, IsNullable = true)]
     public string? NewVendorTaskId { get; set; }
 
+    [SugarColumn(Length = 128, IsNullable = true)]
+    public string? SafetyPointTarget { get; set; }
+
+    [SugarColumn(Length = 128, IsNullable = true)]
+    public string? SafetyPointBlockedSource { get; set; }
+
+    [SugarColumn(Length = 128, IsNullable = true)]
+    public string? SafetyPointBlockedTarget { get; set; }
+
+    [SugarColumn(Length = 128, IsNullable = true)]
+    public string? SafetyPointRetreatTaskId { get; set; }
+
+    [SugarColumn(Length = 32, IsNullable = true)]
+    public string? SafetyPointRetreatMethod { get; set; }
+
+    [SugarColumn(IsNullable = true)]
+    public DateTime? SafetyPointRetreatAttemptedAtUtc { get; set; }
+
+    [SugarColumn(IsNullable = true)]
+    public DateTime? SafetyPointReachedAtUtc { get; set; }
+
     [SugarColumn(IsNullable = true)]
     public DateTime? CancelRequestedAtUtc { get; set; }
 
     [SugarColumn(IsNullable = true)]
     public DateTime? OriginalTerminalAtUtc { get; set; }
+
+    [SugarColumn(Length = 256, IsNullable = true)]
+    public string? StableStopKey { get; set; }
+
+    [SugarColumn(IsNullable = true)]
+    public DateTime? StableStopSinceUtc { get; set; }
+
+    [SugarColumn(IsNullable = true)]
+    public DateTime? StableStopLastObservedAtUtc { get; set; }
+
+    public int StableStopSamples { get; set; }
 
     [SugarColumn(IsNullable = true)]
     public DateTime? SendAttemptedAtUtc { get; set; }

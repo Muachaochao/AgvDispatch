@@ -8,6 +8,7 @@ import asyncio
 import hashlib
 import json
 import math
+import secrets
 import struct
 import sys
 import time
@@ -216,6 +217,39 @@ class DeviceTwin:
             points.append((end['x'], end['y']))
         return list(reversed(points)) if reverse else points
 
+    def retreat_path_to_source(self):
+        if self.motion_source is None or self.motion_target is None:
+            raise ValueError('No prior edge evidence for a SELF_POSITION retreat')
+        points = self.path_points(self.motion_source, self.motion_target)
+        best = None
+        accumulated = 0.0
+        for index, (a, b) in enumerate(zip(points, points[1:])):
+            dx, dy = b[0] - a[0], b[1] - a[1]
+            length = math.hypot(dx, dy)
+            if length <= 1e-12:
+                continue
+            t = max(0.0, min(1.0, ((self.x-a[0])*dx + (self.y-a[1])*dy) /
+                                  (length*length)))
+            projected = (a[0]+dx*t, a[1]+dy*t)
+            lateral = math.hypot(self.x-projected[0], self.y-projected[1])
+            if best is None or lateral < best[0]:
+                best = (lateral, index, t, accumulated + length*t)
+            accumulated += length
+        if best is None or best[0] > 0.35:
+            raise ValueError('Current pose is not on the current edge')
+        _, index, t, travelled = best
+        a, b = points[index], points[index+1]
+        projected = (a[0] + (b[0]-a[0])*t, a[1] + (b[1]-a[1])*t)
+        route = [(self.x, self.y), projected]
+        route.extend(reversed(points[:index+1]))
+        deduplicated = [route[0]]
+        for point in route[1:]:
+            if math.hypot(point[0]-deduplicated[-1][0], point[1]-deduplicated[-1][1]) > 1e-9:
+                deduplicated.append(point)
+        return deduplicated, max(0.0, sum(
+            math.hypot(bx-ax, by-ay)
+            for (ax, ay), (bx, by) in zip(points, points[1:])) - travelled)
+
     def refresh_controls(self):
         control = self.control_root / 'simulation-control.json'
         if not control.exists():
@@ -297,6 +331,10 @@ class DeviceTwin:
             item = await self.queue.get()
             tid = item['task_id']
             if self.tasks[tid] in (6, 7):
+                self.queue.task_done()
+                continue
+            if item.get('kind') == 'safety_retreat':
+                await self.drive_safety_retreat(tid, item)
                 self.queue.task_done()
                 continue
             chain = self.task_chain_position.get(tid)
@@ -405,6 +443,89 @@ class DeviceTwin:
             self.moving = False
             self.blocked_by_vehicle = None
             self.queue.task_done()
+
+    async def drive_safety_retreat(self, tid, item):
+        """Backtrack along the current edge without cutting through the map."""
+        self.current = tid
+        self.tasks[tid] = 2
+        points, remaining = self.retreat_path_to_source()
+        self.motion_source, self.motion_target = 'SELF_POSITION', item['id']
+        self.motion_edge = 'safety-retreat'
+        self.motion_percentage = 0.0
+        total = max(remaining, 1e-9)
+        moved = 0.0
+        segment, progress = 0, 0.0
+        speed = min(float(item.get('max_speed', 0.1)), 0.1, self.speed_scale)
+        if speed <= 0:
+            self.tasks[tid] = 5
+            self.log('safety-retreat-rejected', task_id=tid, reason='non-positive speed')
+            self.current = None
+            self.motion_edge = None
+            return
+        self.log('safety-retreat-start', task_id=tid, target=item['id'],
+                 speed=speed, remaining=remaining)
+        while segment < len(points)-1:
+            if self.tasks[tid] in (6, 7):
+                break
+            self.moving = False
+            blocker = self.movement_blocker(
+                points[segment+1][0], points[segment+1][1])
+            if blocker is not None:
+                self.blocked_by_vehicle = blocker
+                self.current_speed_mps = 0.0
+                await asyncio.sleep(0.1)
+                continue
+            self.blocked_by_vehicle = None
+            if self.paused:
+                self.current_speed_mps = max(
+                    0.0, self.current_speed_mps-self.acceleration*0.1)
+                await asyncio.sleep(0.1)
+                continue
+            self.current_speed_mps = min(
+                speed, self.current_speed_mps+self.acceleration*0.1)
+            budget = self.current_speed_mps*0.1
+            while segment < len(points)-1:
+                a, b = points[segment], points[segment+1]
+                distance = math.hypot(b[0]-a[0], b[1]-a[1])
+                advance = min(budget, distance-progress)
+                nx = a[0]+(b[0]-a[0])*(progress+advance)/distance if distance else b[0]
+                ny = a[1]+(b[1]-a[1])*(progress+advance)/distance if distance else b[1]
+                peer = self.movement_blocker(nx, ny)
+                if peer is not None:
+                    self.blocked_by_vehicle = peer
+                    self.current_speed_mps = 0.0
+                    break
+                moved += advance
+                self.x, self.y = nx, ny
+                self.at_source = False
+                self.moving = advance > 0
+                progress += advance
+                budget -= advance
+                if progress >= distance-1e-10:
+                    segment, progress = segment+1, 0.0
+                if budget <= 1e-10:
+                    break
+            self.motion_percentage = min(1.0, moved/total)
+            await asyncio.sleep(0.1)
+        self.distance_meters += moved
+        self.consume_battery(distance=moved)
+        self.current_speed_mps = 0.0
+        if self.tasks[tid] not in (6, 7):
+            target = self.nodes[item['id']]
+            self.station = item['id']
+            self.x, self.y = target['x'], target['y']
+            if self.motion_target != self.station:
+                # target should be the source returned by the last forward edit.
+                pass
+            self.tasks[tid] = 4
+            self.at_source = True
+            self.moving = False
+            self.obstacle = False
+            self.log('safety-retreat-complete', task_id=tid, station=self.station)
+        self.current = None
+        self.motion_edge = None
+        self.moving = False
+        self.blocked_by_vehicle = None
 
     def external_blocked_now(self):
         return self.obstacle or self.motion_edge in self.blocked_edges
@@ -631,6 +752,53 @@ class DeviceTwin:
                          cancel_from_segment=cancel_from, cancelled_segments=len(items) - cancel_from)
             self.navigation_timeout_tripped = False
             return dict(ret_code=0)
+        if api == 3051:
+            if (request.get('source_id') != 'SELF_POSITION' or
+                    request.get('method') != 'backward'):
+                return dict(ret_code=400, err_msg='Only guarded SELF_POSITION backward recovery is supported')
+            tid, target = request.get('task_id'), request.get('id')
+            if not isinstance(tid, str) or not tid or target not in self.nodes:
+                return dict(ret_code=400, err_msg='Invalid recovery task or target')
+            if self.current is not None or not self.queue.empty():
+                return dict(ret_code=400, err_msg='Vehicle busy')
+            if self.motion_source != target:
+                return dict(ret_code=400, err_msg='Retreat target is not the source of the current edge')
+            if tid in self.tasks:
+                return dict(ret_code=400, err_msg='Duplicate id')
+            max_speed = request.get('max_speed', 0.1)
+            if (type(max_speed) not in (int, float) or not math.isfinite(max_speed)
+                    or not 0 < max_speed <= 0.3):
+                return dict(ret_code=400, err_msg='Invalid recovery speed')
+            self.tasks[tid] = 1
+            self.queue.put_nowait(dict(
+                task_id=tid, source_id='SELF_POSITION', id=target,
+                kind='safety_retreat', max_speed=max_speed))
+            return dict(ret_code=0)
+        if api == 3055:
+            distance = request.get('dist')
+            vx, vy = request.get('vx'), request.get('vy')
+            if (type(distance) not in (int, float) or not math.isfinite(distance)
+                    or not 0 < distance <= 1):
+                return dict(ret_code=400, err_msg='Invalid translation distance')
+            if (type(vx) not in (int, float) or not math.isfinite(vx)
+                    or vx != -0.1 or vy != 0 or request.get('mode') != 1):
+                return dict(ret_code=400, err_msg='Only guarded 0.1m/s backward translation is supported')
+            if self.current is not None or not self.queue.empty():
+                return dict(ret_code=400, err_msg='Vehicle busy')
+            if self.motion_source is None or self.motion_target is None:
+                return dict(ret_code=400, err_msg='No current edge for translation')
+            points, _ = self.retreat_path_to_source()
+            translation_length = sum(
+                math.hypot(bx-ax, by-ay)
+                for (ax, ay), (bx, by) in zip(points, points[1:]))
+            if abs(translation_length-distance) > 0.08:
+                return dict(ret_code=400, err_msg='Translation distance does not reach current edge source')
+            tid = 'TRANSLATION-' + secrets.token_hex(16)
+            self.tasks[tid] = 1
+            self.queue.put_nowait(dict(
+                task_id=tid, source_id='SELF_POSITION', id=self.motion_source,
+                kind='safety_retreat', max_speed=abs(vx), translation_3055=True))
+            return dict(ret_code=0, task_id=tid)
         if api == 3003:
             tid=request.get('taskId')
             if tid not in self.tasks:

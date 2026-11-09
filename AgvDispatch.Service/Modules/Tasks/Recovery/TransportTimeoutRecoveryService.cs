@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Application.Maps;
 using AgvDispatch.Domain.Agvs;
@@ -7,6 +7,7 @@ using AgvDispatch.Domain.Maps;
 using AgvDispatch.Domain.Tasks;
 using AgvDispatch.Infrastructure.Maps;
 using AgvDispatch.Infrastructure.Persistence.Entities;
+using AgvDispatch.Infrastructure.Traffic;
 using SqlSugar;
 
 namespace AgvDispatch.Service;
@@ -58,14 +59,8 @@ public sealed class TransportTimeoutRecoveryService(
         TransportTimeoutRecoveryAssessment assessment;
         try
         {
-            var chain = await chains.FindAsync(status.VendorTaskId, cancellationToken);
-            var originalPath = chain?.Path?.ToArray() ?? [];
-            if (chain is not null &&
-                (!string.Equals(chain.VehicleId, task.VehicleId, StringComparison.OrdinalIgnoreCase) ||
-                 originalPath.Length < 2 ||
-                 !MapRouteSiteMapper.IsSameNode(activeMap.Current?.Definition,
-                     originalPath[^1], step.DestinationSite)))
-                originalPath = [];
+            var originalPath = await ResolveFullOriginalPathAsync(task.TaskId, step.StepId,
+                task.VehicleId, step.DestinationSite ?? "", status.VendorTaskId, cancellationToken);
 
             assessment = await AssessAsync(task.TaskId, (DispatchTaskStepType)step.StepType,
                 task.VehicleId, status.VendorTaskId, step.DestinationSite ?? "", originalPath,
@@ -204,6 +199,29 @@ public sealed class TransportTimeoutRecoveryService(
         return captured ? assessment : null;
     }
 
+    private async Task<string[]> ResolveFullOriginalPathAsync(string taskId, string stepId,
+        string vehicleId, string destination, string vendorTaskId, CancellationToken cancellationToken)
+    {
+        var commands = await database.Queryable<AgvCommandOutboxEntity>()
+            .Where(item => item.TaskId == taskId && item.StepId == stepId &&
+                           item.CommandType == (int)AgvCommandType.Transport)
+            .OrderByDescending(item => item.CreatedAt).ToListAsync(cancellationToken);
+        foreach (var command in commands)
+        {
+            if (string.IsNullOrWhiteSpace(command.ExecutionRouteSnapshotJson)) continue;
+            var snapshot = TransportRouteSnapshots.Read(command);
+            if (!string.Equals(snapshot.VehicleId, vehicleId, StringComparison.OrdinalIgnoreCase) ||
+                snapshot.AgvSites.Length is < 2 or > 2048 || snapshot.AgvSites.Any(string.IsNullOrWhiteSpace) ||
+                !MapRouteSiteMapper.IsSameNode(activeMap.Current?.Definition, snapshot.AgvSites[^1], destination))
+                throw new InvalidOperationException("完整业务路线快照与原车或目的站不一致，禁止推测恢复路线。");
+            return snapshot.AgvSites;
+        }
+        var chain = await chains.FindAsync(vendorTaskId, cancellationToken);
+        return chain is not null && string.Equals(chain.VehicleId, vehicleId, StringComparison.OrdinalIgnoreCase) &&
+            chain.Path.Count >= 2 && MapRouteSiteMapper.IsSameNode(activeMap.Current?.Definition, chain.Path[^1], destination)
+            ? chain.Path.ToArray() : [];
+    }
+
     public async Task<TransportTimeoutRecoverySnapshot?> GetAsync(string taskId, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(taskId)) return null;
@@ -220,9 +238,7 @@ public sealed class TransportTimeoutRecoveryService(
         try
         {
             var rows = await database.Queryable<TransportTimeoutRecoveryEntity>()
-                .Where(item => item.SendAttemptedAt == null &&
-                               item.NewVendorTaskId == null &&
-                               item.State != "ReadyForControlledDetour")
+                .Where(item => item.SendAttemptedAt == null && item.NewVendorTaskId == null)
                 .ToListAsync(cancellationToken);
             foreach (var row in rows)
             {
@@ -238,7 +254,21 @@ public sealed class TransportTimeoutRecoveryService(
                     continue;
 
                 var originalPath = JsonSerializer.Deserialize<string[]>(row.OriginalPathJson, Json) ?? [];
-                if (originalPath.Length < 2) continue;
+                // Missing route evidence must not stop communication/obstacle/
+                // position reassessment. It still prevents sending in AssessAsync.
+                if (originalPath.Length < 2)
+                {
+                    try
+                    {
+                        originalPath = await ResolveFullOriginalPathAsync(row.TaskId, row.StepId,
+                            row.VehicleId, row.DestinationSite, row.OriginalVendorTaskId, cancellationToken);
+                    }
+                    catch (Exception error) when (error is InvalidOperationException or InvalidDataException or JsonException)
+                    {
+                        logger?.LogWarning(error, "超时恢复原路线证据无效，保持人工处置：{TaskId}", row.TaskId);
+                    }
+                    row.OriginalPathJson = JsonSerializer.Serialize(originalPath, Json);
+                }
                 var assessment = await AssessAsync(row.TaskId, (DispatchTaskStepType)row.StepType,
                     row.VehicleId, row.OriginalVendorTaskId, row.DestinationSite, originalPath,
                     cancellationToken);
@@ -363,8 +393,12 @@ public sealed class TransportTimeoutRecoveryService(
                     current.CandidatePath, storedCandidate))
                 return new(false, "车辆位置、障碍或道路状态已变化，请重新读取恢复候选：" + current.Message, Snapshot(row));
 
+            var vendorWindow = await chains.FindAsync(row.OriginalVendorTaskId, cancellationToken);
+            if (vendorWindow is null || vendorWindow.Path.Count < 2 ||
+                !string.Equals(vendorWindow.VehicleId, row.VehicleId, StringComparison.OrdinalIgnoreCase))
+                return new(false, "原导航窗口发送证据缺失，禁止按完整业务路线猜造车端任务编号。", Snapshot(row));
             var original = await gateway.GetTransportTaskStatusAsync(row.OriginalVendorTaskId, row.VehicleId,
-                originalPath, cancellationToken);
+                vendorWindow.Path, cancellationToken);
             if (original is null || original.State != AgvTransportTaskState.Failed ||
                 !string.Equals(original.VehicleId, row.VehicleId, StringComparison.OrdinalIgnoreCase))
                 return new(false, "原厂家任务链未确认全部超时终结，禁止发送替代导航。", Snapshot(row));

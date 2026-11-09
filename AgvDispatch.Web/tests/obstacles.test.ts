@@ -9,7 +9,7 @@ const at = (delta = 0) => new Date(now + delta).toISOString();
 const task: TaskRow = { taskId: 'original', stationId: 'P1', vehicleId: 'AGV-01', stage: 'Executing', priority: 50, createdAt: at(), updatedAt: at() };
 function observation(overrides: Partial<VehicleObstacle> = {}): VehicleObstacle {
   return { state: 'Blocked', since: at(-3000), durationSeconds: 3, lastClearedAt: null, source: 'Blocked / 52200',
-    message: '保留原任务，等待安全改道核验。', navigationPolicy: '5秒搜索安全替代路线，安全条件通过后自动改道',
+    message: '保留原任务，等待安全改道核验。', navigationPolicy: '10秒开始核验原任务终态和安全替代路线',
     localDetourEvidence: '自动改道保留原任务、载荷、PLC责任和路权', ...overrides };
 }
 function vehicle(overrides: Partial<Vehicle> = {}): Vehicle {
@@ -93,7 +93,7 @@ test('旧后台兼容Blocked字段，不凭原始坐标移动宣布业务完成'
   assert.equal(vehicleCategory(v, [task], true, now), 'blocked');
   assert.equal(view.duration, '时长未知');
   assert.match(view.localDetourEvidence, /保留原任务/);
-  assert.match(view.navigationPolicy, /自动改道/);
+  assert.match(view.navigationPolicy, /原任务全链终态.*自动改道/);
   assert.equal(vehicleCategory(vehicle({ blocked: null }), [], true, now), 'unknown');
 });
 

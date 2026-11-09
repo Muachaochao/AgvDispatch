@@ -1,4 +1,4 @@
-using System.Buffers.Binary;
+﻿using System.Buffers.Binary;
 using System.Net;
 using System.Net.Sockets;
 using System.Reflection;
@@ -12,6 +12,7 @@ using AgvDispatch.Domain.Tasks;
 using AgvDispatch.Infrastructure.Maps;
 using AgvDispatch.Infrastructure.Persistence;
 using AgvDispatch.Infrastructure.Persistence.Entities;
+using AgvDispatch.Infrastructure.Traffic;
 using AgvDispatch.Service;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -186,12 +187,18 @@ internal static class Program
             await db.Insertable(new DispatchTaskStepEntity{StepId=stepId,TaskId=taskId,Sequence=1,StepType=(int)type,
                 Status=(int)DispatchTaskStepStatus.Executing,SourceSite="S",DestinationSite="X",VehicleId="A",
                 VendorTaskId=stepId,CreatedAt=now,UpdatedAt=now,StartedAt=now}).ExecuteCommandAsync();
-            var payload=new AgvTransportCommandPayload(stepId,"A","S","X",["S","H","X"],null);
-            await db.Insertable(new AgvCommandOutboxEntity{CommandId="CMD-"+Guid.NewGuid().ToString("N"),
+            var payload=new AgvTransportCommandPayload(stepId,"A","S","H",["S","H"],null);
+            var commandId="CMD-"+Guid.NewGuid().ToString("N");
+            var payloadJson=JsonSerializer.Serialize(payload,json);
+            var snapshotJson=JsonSerializer.Serialize(new TransportRouteSnapshot(1,taskId,stepId,commandId,"A",
+                "MAP-T","MAPV-T","RobotWorld",EngineeringRuntimeIdentity.MapHash(definition),
+                TransportRouteSnapshots.Hash(payloadJson),["S","H","X"],["E-SH","E-HX"],["S","H","X"]),json);
+            await db.Insertable(new AgvCommandOutboxEntity{CommandId=commandId,
                 IdempotencyKey="TEST:"+stepId,TaskId=taskId,StepId=stepId,VehicleId="A",
                 CommandType=(int)AgvCommandType.Transport,Status=(int)AgvCommandStatus.Sent,
-                PayloadJson=JsonSerializer.Serialize(payload,json),NextAttemptAt=now,CreatedAt=now,UpdatedAt=now,
-                SentAt=now,VendorCommandId=stepId}).ExecuteCommandAsync();
+                PayloadJson=payloadJson,ExecutionMapId="MAP-T",ExecutionMapVersionId="MAPV-T",
+                ExecutionRouteSnapshotJson=snapshotJson,ExecutionRouteSnapshotHash=TransportRouteSnapshots.Hash(snapshotJson),
+                NextAttemptAt=now,CreatedAt=now,UpdatedAt=now,SentAt=now,VendorCommandId=stepId}).ExecuteCommandAsync();
             return(taskId,stepId,station);
         }
         var observed=DateTimeOffset.UtcNow;
@@ -227,8 +234,13 @@ internal static class Program
         {
             X=1.5,Y=0,CurrentStation="H",VelocityX=0,VelocityY=0,AngularVelocity=0
         },TimeSpan.Zero);
+        await db.Updateable<TransportTimeoutRecoveryEntity>()
+            .SetColumns(row=>new TransportTimeoutRecoveryEntity {OriginalPathJson="[]"})
+            .Where(row=>row.TaskId==blocked.Task).ExecuteCommandAsync();
         await recovery.ReassessPendingAsync(default);
         var midroad=await recovery.GetAsync(blocked.Task,default);
+        Check(midroad?.OriginalPath.SequenceEqual(new[]{"S","H","X"})==true,
+              "rolling-window timeout recovers full frozen route even for a historical empty-route hold");
         Check(midroad is {Outcome:"ManualRelocationRequired"}&&!midroad.SendAttempted,
               "clear telemetry away from the named station never impersonates the nearest site");
         await Task.Delay(15);
@@ -243,6 +255,16 @@ internal static class Program
               "fresh clear telemetry at a trusted station reopens the timeout candidate without sending");
         Check(!db.Queryable<AgvCommandOutboxEntity>().Any(c=>c.Status==(int)AgvCommandStatus.Pending),
               "reassessment remains read-only");
+        await Task.Delay(15);
+        cache.ApplyTelemetry("A",Telemetry(DateTimeOffset.UtcNow,true) with {X=1,Y=0,CurrentStation="H"},TimeSpan.Zero);
+        await recovery.ReassessPendingAsync(default);
+        var blockedAgain=await recovery.GetAsync(blocked.Task,default);
+        Check(blockedAgain is {Outcome:"AwaitingObstacleClear",State:"ManualIntervention"},
+              "a previously ready recovery candidate is invalidated when the obstacle returns");
+        await Task.Delay(15);
+        cache.ApplyTelemetry("A",Telemetry(DateTimeOffset.UtcNow) with {X=1,Y=0,CurrentStation="H"},TimeSpan.Zero);
+        await recovery.ReassessPendingAsync(default);
+
         var executable=await Seed(DispatchTaskStepType.GoToPickup);
         cache.ApplyTelemetry("A",Telemetry(DateTimeOffset.UtcNow) with
         {

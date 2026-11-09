@@ -68,7 +68,7 @@ public sealed class RobokitTaskMapPreflight(AgvOptions options,AgvConnectionMana
             if(simulationLocal)
             {
                 for(var index=0;index<pathNodes.Count-1;index++)
-                    if(!map.Definition.Edges.Any(e=>e.Enabled && e.From==pathNodes[index].Id && e.To==pathNodes[index+1].Id))
+                    if(!HasEnabledTraversal(map.Definition,pathNodes[index].Id,pathNodes[index+1].Id))
                         return Refuse($"隔离仿真同源地图缺少有向直接边：{path[index]}→{path[index+1]}。");
             }
             else
@@ -145,7 +145,7 @@ public sealed class RobokitTaskMapPreflight(AgvOptions options,AgvConnectionMana
                     {
                         var sourceNode=map.Definition.Nodes.Single(n=>n.Enabled && n.AgvSiteId==pair.First);
                         var targetNode=map.Definition.Nodes.Single(n=>n.Enabled && n.AgvSiteId==pair.Second);
-                        if(!map.Definition.Edges.Any(e=>e.Enabled && e.From==sourceNode.Id && e.To==targetNode.Id))
+                        if(!HasEnabledTraversal(map.Definition,sourceNode.Id,targetNode.Id))
                         {
                             checks.Add(new(new[]{1,3,5,7}[step],pair.First,pair.Second,false,"隔离仿真同源地图中不存在该有向直接边。"));
                             return Refuse($"第{new[]{1,3,5,7}[step]}步隔离仿真地图路线{pair.First}→{pair.Second}不是有向直接边。");
@@ -177,4 +177,9 @@ public sealed class RobokitTaskMapPreflight(AgvOptions options,AgvConnectionMana
         catch(OperationCanceledException)when(ct.IsCancellationRequested){throw;}
         catch(Exception ex){return Refuse(ex is OperationCanceledException?"查询超时，未创建任务。":ex.Message);}
     }
+
+    private static bool HasEnabledTraversal(MapDefinition definition,string sourceId,string targetId) =>
+        definition.Edges.Any(e=>e.Enabled &&
+            (e.From==sourceId && e.To==targetId ||
+             e.Bidirectional && e.From==targetId && e.To==sourceId));
 }

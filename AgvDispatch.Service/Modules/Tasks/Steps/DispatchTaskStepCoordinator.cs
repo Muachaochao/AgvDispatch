@@ -436,6 +436,9 @@ public sealed class DispatchTaskStepCoordinator(
                     plan.EdgeIds, plan.ResourceIds, true)]
                 : TransportRouteWindows.Plan(
                     plan, planningMap.Definition, options, agvOptions?.NavigationCommandMode);
+            if (planningMap is not null && step.StepType == DispatchTaskStepType.ReturnEmptyBox)
+                windows = TransportRouteWindows.IncludeDumperExitClearance(
+                    windows, planningMap.Definition, dumpingSite);
         }
         if (!string.IsNullOrWhiteSpace(retainedWaitingResource))
         {

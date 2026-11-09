@@ -501,6 +501,58 @@ public sealed class AgvCommandOutboxRepository(ISqlSugarClient database, IActive
         }
     }
 
+    public async Task DeferBeforeSendAsync(
+        string commandId,
+        string errorMessage,
+        DateTimeOffset nextAttemptAt,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var transaction = await database.Ado.UseTranAsync(async () =>
+        {
+            var command = await database.Queryable<AgvCommandOutboxEntity>()
+                .Where(item => item.CommandId == commandId)
+                .FirstAsync(cancellationToken) ??
+                throw new KeyNotFoundException($"找不到AGV命令{commandId}。");
+            if (command.Status != (int)AgvCommandStatus.Sending)
+            {
+                return;
+            }
+
+            var previousAttempts = Math.Max(0, command.AttemptCount - 1);
+            var now = DateTime.Now;
+            var message = Truncate(errorMessage);
+            await database.Updateable<AgvCommandOutboxEntity>()
+                .SetColumns(item => new AgvCommandOutboxEntity
+                {
+                    Status = (int)AgvCommandStatus.RetryScheduled,
+                    AttemptCount = previousAttempts,
+                    NextAttemptAt = nextAttemptAt.LocalDateTime,
+                    ClaimedAt = null,
+                    UpdatedAt = now,
+                    LastError = message
+                })
+                .Where(item => item.CommandId == commandId && item.Status == (int)AgvCommandStatus.Sending)
+                .ExecuteCommandAsync(cancellationToken);
+            await database.Updateable<DispatchTaskStepEntity>()
+                .SetColumns(step => new DispatchTaskStepEntity
+                {
+                    Status = (int)DispatchTaskStepStatus.RetryScheduled,
+                    RetryCount = previousAttempts,
+                    UpdatedAt = now,
+                    ErrorMessage = message
+                })
+                .Where(step => step.StepId == command.StepId)
+                .ExecuteCommandAsync(cancellationToken);
+        });
+        if (!transaction.IsSuccess)
+        {
+            throw new InvalidOperationException(
+                $"回滚AGV命令{commandId}的发送前临时失败失败。",
+                transaction.ErrorException);
+        }
+    }
+
     public async Task<int> RecoverStaleClaimsAsync(
         DateTimeOffset staleBefore,
         CancellationToken cancellationToken)

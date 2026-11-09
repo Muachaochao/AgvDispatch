@@ -13,6 +13,7 @@ public sealed class SeerRobotClient : IAsyncDisposable
     private const ushort ResumeTask = 3002;
     private const ushort CancelTask = 3003;
     private const ushort GoToTarget = 3051;
+    private const ushort Translate = 3055;
     private const ushort GoToTargetList = 3066;
 
     private readonly AgvOptions _options;
@@ -128,6 +129,73 @@ public sealed class SeerRobotClient : IAsyncDisposable
         };
         AddAction(payload, action);
         using var directResponse = await RequestAsync(GoToTarget, payload, cancellationToken);
+    }
+
+    /// <summary>
+    /// One isolated recovery move from the current pose to a named station.
+    /// Robokit 3051 supports SELF_POSITION as source_id, but its manual marks
+    /// this API as unsuitable for ordinary multi-vehicle scheduling. Callers
+    /// must hold the traffic and execution gates and use it only as a guarded,
+    /// single-vehicle fallback after the original navigation is terminal.
+    /// </summary>
+    public async Task GoFromCurrentPoseBackwardAsync(
+        string taskId,
+        string targetSite,
+        double maximumSpeedMetersPerSecond,
+        double maximumAccelerationMetersPerSecondSquared,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(taskId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(targetSite);
+        if (!double.IsFinite(maximumSpeedMetersPerSecond) ||
+            maximumSpeedMetersPerSecond is <= 0 or > 0.3)
+            throw new ArgumentOutOfRangeException(nameof(maximumSpeedMetersPerSecond),
+                "路段中段退回安全站点的3051限速必须在0至0.3m/s之间。");
+        if (!double.IsFinite(maximumAccelerationMetersPerSecondSquared) ||
+            maximumAccelerationMetersPerSecondSquared is <= 0 or > 1)
+            throw new ArgumentOutOfRangeException(nameof(maximumAccelerationMetersPerSecondSquared),
+                "路段中段退回安全站点的3051限加速度必须在0至1m/s²之间。");
+
+        var payload = new Dictionary<string, object?>
+        {
+            ["source_id"] = "SELF_POSITION",
+            ["id"] = targetSite,
+            ["task_id"] = taskId,
+            ["method"] = "backward",
+            ["max_speed"] = maximumSpeedMetersPerSecond,
+            ["max_acc"] = maximumAccelerationMetersPerSecondSquared
+        };
+        using var response = await RequestAsync(GoToTarget, payload, cancellationToken);
+    }
+
+    /// <summary>
+    /// Move straight backwards along the current edge without asking Robokit to
+    /// plan a new route. This is limited to one metre because 3055 is a local
+    /// translation primitive, not a replacement for route navigation.
+    /// </summary>
+    public async Task TranslateBackwardAsync(
+        double distanceMeters,
+        double maximumSpeedMetersPerSecond,
+        CancellationToken cancellationToken)
+    {
+        if (!double.IsFinite(distanceMeters) || distanceMeters is <= 0 or > 1.0)
+            throw new ArgumentOutOfRangeException(nameof(distanceMeters),
+                "3055平动后退距离必须在0至1米之间。");
+        if (!double.IsFinite(maximumSpeedMetersPerSecond) ||
+            maximumSpeedMetersPerSecond is <= 0 or > 0.1)
+            throw new ArgumentOutOfRangeException(nameof(maximumSpeedMetersPerSecond),
+                "3055平动后退速度必须在0至0.1m/s之间。");
+
+        using var response = await RequestAsync(
+            Translate,
+            new
+            {
+                dist = distanceMeters,
+                vx = -maximumSpeedMetersPerSecond,
+                vy = 0.0,
+                mode = 1
+            },
+            cancellationToken);
     }
 
     public async Task CancelNavigationAsync(

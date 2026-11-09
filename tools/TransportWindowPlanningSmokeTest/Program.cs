@@ -55,6 +55,15 @@ var automaticCorridors = MapCorridorResources.Enrich(
 Check(automaticCorridors.Count > 0 &&
       plan.SelectMany(window => window.ResourceIds).Any(automaticCorridors.Contains),
     "滚动窗口必须携带运行时自动路段资源，不能只保留显式站点资源。");
+var protectedExit = TransportRouteWindows.IncludeDumperExitClearance(
+    plan, new MapDefinition("TEST", "", "RobotWorld", "m", nodes, edges, resources), "A");
+Check(protectedExit.Count == 1 && protectedExit[0].Source == "A" && protectedExit[0].Destination == "E" &&
+      protectedExit[0].Path.SequenceEqual(["A", "B", "C", "D", "E"]) &&
+      protectedExit[0].ResourceIds.Contains("R1") && protectedExit[0].ResourceIds.Contains("R4"),
+    "倒料返程首窗必须合并下一安全窗，原子保留出口走廊且不改变完整路线。");
+Check(ReferenceEquals(plan, TransportRouteWindows.IncludeDumperExitClearance(
+          plan, new MapDefinition("TEST", "", "RobotWorld", "m", nodes, edges, resources), "OTHER")),
+    "非倒料起点不能触发出口清空合并。");
 
 var disabled = TransportRouteWindows.Plan(
     new RoutePlan(["A", "B", "C", "D", "E"], ["AB", "BC", "CD", "DE"], ["R1", "R2", "R3", "R4"], 4),
@@ -116,4 +125,4 @@ var legacy3051 = TransportRouteWindows.Plan(
 Check(legacy3051.Count == 1 && legacy3051[0].Final,
     "3051两点任务必须保持单窗口，不能发送中间停靠任务。");
 
-Console.WriteLine("PASS rolling reservation windows: safe-only boundaries, forward fallback, single-window fallback, 3051 compatibility.");
+Console.WriteLine("PASS rolling reservation windows: safe-only boundaries, dumper exit clearance, forward fallback, single-window fallback, 3051 compatibility.");

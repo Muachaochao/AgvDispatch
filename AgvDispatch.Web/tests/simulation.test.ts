@@ -24,6 +24,9 @@ test('vehicle colors follow the operational legend while load stays a separate b
   assert.equal(simulationVehicleVisualColor({ x: 0, y: 0 }), '#6fb9ff');
   assert.equal(simulationVehicleVisualLabel({ x: 0, y: 0, loaded: true }), '载箱待命');
   assert.equal(simulationObstacleRecoveryLabel('AwaitingOriginalTerminal'), '等待原导航确认结束');
+  assert.equal(simulationObstacleRecoveryLabel('SafetyPointReady'), '正在核对后方安全站');
+  assert.equal(simulationObstacleRecoveryLabel('SafetyPointMoving'), '车辆正在退回安全站');
+  assert.equal(simulationObstacleRecoveryLabel('SafetyPointReached'), '车辆已到达安全站');
   assert.equal(simulationObstacleRecoveryLabel('Frozen'), '任务已冻结');
 });
 

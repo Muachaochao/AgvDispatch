@@ -39,6 +39,14 @@ await traffic.TryAcquireAsync(step.StepId, step.TaskId, "V", ["R"], default);
 Task<string?> Prepare() => guard.CheckPreparationAsync(step, "V", ["A", "B"], currentMap, default);
 Check(await Prepare() == null,
     "shared preparation compares the planned AGV site ids used by the traffic request instead of remapping them to logical BUS-* ids");
+cache.Other = new AgvRobotSnapshot("AHEAD", "fixture", "127.0.0.1", 1, ConnectionState.Online,
+    SignalQuality.Good, 10, 0, 0, 1, "B", "A", 80, false, false, "Idle", null, null, 0,
+    [], [], DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, 0, 1, null, 1);
+var forwardReason = await Prepare();
+Check(forwardReason?.Contains("前方路线已有AHEAD占用", StringComparison.Ordinal) == true,
+    "a vehicle already ahead on the same directed window blocks the rear vehicle before dispatch");
+cache.Other = null;
+Check(await Prepare() == null, "removing the forward vehicle permits the original preparation again");
 var goodVehicle = cache.Row;
 cache.Row = goodVehicle with { LastSuccessfulPollAt = DateTimeOffset.UtcNow.AddMinutes(-1) };
 Check(await Prepare() != null, "stale robot observation blocks preparation"); cache.Row = goodVehicle;
@@ -136,9 +144,17 @@ Check(!await db.Queryable<AgvCommandOutboxEntity>().AnyAsync(c => c.TaskId == pi
     !await db.Queryable<TrafficResourceLeaseEntity>().AnyAsync(l => l.TaskId == pipelineTask.Task.TaskId),
     "actual global orchestrator calls shared PLC safety and rolls back uncommitted rights before command preparation");
 signalCache.Put("PIPELINE-ST", "FullBoxRequestAcknowledged", true);
+cache.Other = new AgvRobotSnapshot("AHEAD", "fixture", "127.0.0.1", 1, ConnectionState.Online,
+    SignalQuality.Good, 10, 0, 0, 1, "B", "A", 80, false, false, "Idle", null, null, 0,
+    [], [], DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, 0, 1, null, 1);
+await (Task)optimizationCycle.Invoke(orchestrator, [policy, 1, Array.Empty<DispatchTaskWorkItem>(), CancellationToken.None])!;
+Check(!await db.Queryable<AgvCommandOutboxEntity>().AnyAsync(c => c.TaskId == pipelineTask.Task.TaskId) &&
+    !await db.Queryable<TrafficResourceLeaseEntity>().AnyAsync(l => l.TaskId == pipelineTask.Task.TaskId),
+    "actual global orchestrator rolls back a prepared route when another fresh vehicle is already ahead");
+cache.Other = null;
 await (Task)optimizationCycle.Invoke(orchestrator, [policy, 1, Array.Empty<DispatchTaskWorkItem>(), CancellationToken.None])!;
 Check(await db.Queryable<AgvCommandOutboxEntity>().CountAsync(c => c.TaskId == pipelineTask.Task.TaskId) == 1,
-    "actual global pipeline prepares exactly one original command when current PLC permission becomes valid");
+    "actual global pipeline prepares exactly one original command after the forward route clears");
 signalCache.Put("PIPELINE-ST", "BoxPresent", false);
 var dispatcher = new AgvCommandOutboxDispatcher(Microsoft.Extensions.Logging.Abstractions.NullLogger<AgvCommandOutboxDispatcher>.Instance,
     new() { Enabled = true }, outbox, gateway, gate, trafficResources: traffic, activeMap: map, preSendSafety: guard);
@@ -167,8 +183,14 @@ sealed class VehicleCache : IAgvStateCache
     public long Version => 1;
     public AgvRobotSnapshot Row = new("V", "fixture", "127.0.0.1", 1, ConnectionState.Online, SignalQuality.Good,
         0, 0, 0, 1, "A", "A", 80, false, false, "Idle", null, null, 0, [], [], DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, 0, 1, null, 1);
-    public IReadOnlyList<AgvRobotSnapshot> GetAll() => [Row];
-    public bool TryGet(string id, out AgvRobotSnapshot row) { row = Row; return id == Row.VehicleId; }
+    public AgvRobotSnapshot? Other;
+    public IReadOnlyList<AgvRobotSnapshot> GetAll() => Other is null ? [Row] : [Row, Other];
+    public bool TryGet(string id, out AgvRobotSnapshot row)
+    {
+        if (id == Row.VehicleId) { row = Row; return true; }
+        if (Other is not null && id == Other.VehicleId) { row = Other; return true; }
+        row = null!; return false;
+    }
 }
 public class Gateway : DispatchProxy
 {
@@ -176,9 +198,10 @@ public class Gateway : DispatchProxy
     protected override object? Invoke(MethodInfo? method, object?[]? args) => method?.Name switch
     {
         "GetConnectionStatusAsync" => Task.FromResult(new DeviceConnectionStatus("fleet", "fixture", ConnectionState.Online, DateTimeOffset.UtcNow)),
-        "GetVehiclesAsync" => Task.FromResult<IReadOnlyList<AgvVehicleStatus>>([new("V", Cache.Row.Connection,
-            Cache.Row.Tasks.Any(t => t.Status is 1 or 2 or 3) ? "Busy" : "Idle", Cache.Row.BatteryPercent ?? 0,
-            Cache.Row.CurrentStation, Cache.Row.UpdatedAt)]),
+        "GetVehiclesAsync" => Task.FromResult<IReadOnlyList<AgvVehicleStatus>>(Cache.GetAll().Select(row =>
+            new AgvVehicleStatus(row.VehicleId, row.Connection,
+                row.Tasks.Any(t => t.Status is 1 or 2 or 3) ? "Busy" : "Idle",
+                row.BatteryPercent ?? 0, row.CurrentStation, row.UpdatedAt)).ToArray()),
         _ => throw new NotSupportedException("This safety test never sends device commands: " + method?.Name)
     };
 }

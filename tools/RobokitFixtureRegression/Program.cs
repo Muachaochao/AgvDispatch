@@ -70,7 +70,9 @@ Check(unknown?.State==AgvTransportTaskState.Unknown,"1110全404是未知，不�
 lookup.Attempts=2;var sends=robot.Requests.Count(x=>x.Type==3066);
 try{await gateway.CreateTransportTaskAsync("FIXTURE-ROOT","FIXTURE",["LM1","LM2","AP1"],null,default);throw new Exception("历史清除后重发");}catch(AgvPartialAcceptanceException){Check(true,"已尝试原发送且全404禁止自动补发");}
 Check(robot.Requests.Count(x=>x.Type==3066)==sends,"历史清除夹具不产生新的3066");
-lookup.Attempts=0;robot.PartialAfterSend=true;robot.Scenario="unknown";
+lookup.Attempts=0;
+cache.ApplyTelemetry("FIXTURE",t with{ReadAt=DateTimeOffset.Now,CurrentStation="LM1",Tasks=[]},TimeSpan.FromMinutes(1));
+robot.PartialAfterSend=true;robot.Scenario="unknown";
 try{await gateway.CreateTransportTaskAsync("FIXTURE-ROOT","FIXTURE",["LM1","LM2","AP1"],null,default);throw new Exception("部分接收未识别");}catch(AgvPartialAcceptanceException){Check(true,"3066成功应答后仅部分原段可见仍拒绝确认");}
 Check(robot.Requests.Count(x=>x.Type==3066)==sends+1,"部分接收不会在一次调用中反复发包");
 var rebuilt=new SeerAgvGateway(cache,manager,options,lookup);

@@ -10,8 +10,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--url', required=True, help='仿真控制台URL，仅允许127.0.0.1。')
     parser.add_argument('--scenarios', nargs='+', default=['normal-cycle', 'simultaneous-calls', 'disconnect-reconnect', 'plc-delay', 'service-restart'])
+    parser.add_argument('--speed-scale', type=float, default=3.0,
+                        help='虚拟车辆速度倍率；现场对齐测试使用0.75。')
     args = parser.parse_args(); url = urlsplit(args.url)
     if url.scheme != 'http' or url.hostname != '127.0.0.1' or url.username or url.password: raise ValueError('回环URL必需。')
+    if not 0.1 <= args.speed_scale <= 10:
+        raise ValueError('仿真速度倍率必须在0.1至10之间。')
     base = f'http://127.0.0.1:{url.port}'
     def api(action='', body=None):
         request = Request(base + '/api/simulation' + action, data=json.dumps(body).encode() if body is not None else None, headers={'Content-Type':'application/json'})
@@ -30,7 +34,7 @@ def main():
         # New-instance intentionally preserves any previous fault state.
         api('/new-instance', {}); api('/start', {})
         status = wait(lambda s:s.get('running') and s.get('fresh'), 180)
-    api('/control', dict(vehicles={key:dict(speedScale=3) for key in status['device']['cars']}))
+    api('/control', dict(vehicles={key:dict(speedScale=args.speed_scale) for key in status['device']['cars']}))
     for name in args.scenarios:
         print('RUN ' + name, flush=True)
         api('/run', dict(name=name, rounds=1, intervalSeconds=0, timeoutSeconds=720))

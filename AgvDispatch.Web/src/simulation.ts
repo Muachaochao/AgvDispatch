@@ -14,11 +14,17 @@ export interface SimulationVehicle {
 export interface ObstacleRecoveryView {
   state: string; message: string; nextAction: string; blockedSince: string; durationSeconds: number;
   candidatePath: string[]; blockedEdgeIds: string[]; safeSite?: string | null; sendAttempted?: boolean;
+  automaticSafetyPointRetreatEnabled?: boolean; safetyPointTarget?: string | null;
+  safetyPointBlockedSource?: string | null; safetyPointBlockedTarget?: string | null;
+  safetyPointRetreatTaskId?: string | null; safetyPointRetreatAttemptedAt?: string | null;
+  safetyPointReachedAt?: string | null;
 }
 export function simulationObstacleRecoveryLabel(state?: string): string {
   const labels: Record<string, string> = {
     Blocked: '正在确认连续受阻', DetourReady: '替代路线已准备好', CancelIntent: '正在安全取消原导航',
-    AwaitingOriginalTerminal: '等待原导航确认结束', SendIntent: '正在准备替代路线', Executing: '正在执行替代路线',
+    AwaitingOriginalTerminal: '等待原导航确认结束', SafetyPointReady: '正在核对后方安全站',
+    SafetyPointSendIntent: '正在准备低速退回安全站', SafetyPointMoving: '车辆正在退回安全站',
+    SafetyPointReached: '车辆已到达安全站', SendIntent: '正在准备替代路线', Executing: '正在执行替代路线',
     NoRoute: '暂未找到替代路线', Warning: '持续受阻，已预警', Alarm: '持续受阻，已报警',
     ClosureSuggested: '建议现场封路', SafetyHold: '安全条件未通过', Frozen: '任务已冻结',
     Uncertain: '结果待核对，禁止重发', Recovered: '障碍影响已解除'
@@ -362,7 +368,7 @@ export interface SimulationControls {
 export interface SimulationRun {
   name: 'normal-cycle' | 'simultaneous-calls' | 'custom-calls' | 'disconnect-reconnect' | 'plc-delay' |
     'service-restart' | 'plc-recovery' | 'resume-recovery' | 'dispatch-backlog' | 'vendor-cancel-return' |
-    'response-loss' | 'road-block-recovery' | 'obstacle-auto-detour' |
+    'response-loss' | 'road-block-recovery' | 'obstacle-auto-detour' | 'obstacle-auto-safety-return' |
     'obstacle-timeout-pickup' | 'obstacle-timeout-fullbox' | 'obstacle-timeout-return' |
     'obstacle-timeout-midroad' | 'obstacle-timeout-safe-site' | 'obstacle-timeout-manual';
   rounds: number; intervalSeconds: number; timeoutSeconds: number; calls?: SimulationCall[];

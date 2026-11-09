@@ -139,6 +139,7 @@ const scenarioNames: Record<string, string> = { 'normal-cycle': '完整业务循
   'plc-recovery': 'PLC卡位与恢复', 'service-restart': '后台重启与恢复屏障', 'resume-recovery': '恢复后继续原任务',
   'vendor-cancel-return': '车端返程中途取消', 'response-loss': '运输命令回包丢失', 'road-block-recovery': '道路临时阻塞后恢复',
   'obstacle-auto-detour': '前方障碍自动改道',
+  'obstacle-auto-safety-return': '道路中段自动退回安全站',
   'obstacle-timeout-pickup': '取料途中受阻并超时',
   'obstacle-timeout-fullbox': '满箱运输受阻并超时',
   'obstacle-timeout-return': '空箱返程受阻并超时',
@@ -158,7 +159,8 @@ const replayCadBackground = computed(() => simulationCadBackground(replay.value?
 const replayMapAreas = computed(() => simulationAreaOverlays(replay.value?.map ?? status.value?.map, replayGeometry.value));
 const denseReplay = computed(() => replayGeometry.value.nodes.length > 120);
 const singleRoundScenarios = new Set<SimulationRun['name']>(['service-restart', 'resume-recovery', 'vendor-cancel-return',
-  'response-loss', 'plc-recovery', 'road-block-recovery', 'obstacle-auto-detour', 'obstacle-timeout-pickup',
+  'response-loss', 'plc-recovery', 'road-block-recovery', 'obstacle-auto-detour',
+  'obstacle-auto-safety-return', 'obstacle-timeout-pickup',
   'obstacle-timeout-fullbox', 'obstacle-timeout-return', 'obstacle-timeout-midroad',
   'obstacle-timeout-safe-site', 'obstacle-timeout-manual']);
 const obstacleTimeoutScenarios = new Set<SimulationRun['name']>(['obstacle-timeout-pickup',
@@ -660,6 +662,7 @@ const scenarioDescriptions: Record<SimulationRun['name'], string> = {
   'response-loss': '丢弃一次 3066 传输响应，验证后台按原任务和原命令身份核对重试，生成重复任务或更换命令即失败。',
   'road-block-recovery': '在取货运输途中临时封锁实际行驶道路，解除后验证原任务自动续接且路权不会提前释放。',
   'obstacle-auto-detour': '虚拟车先上报前方障碍。后台连续观察后规划替代路线，安全条件全部通过时自动取消原导航、确认终态并发送一条替代路线；原业务任务、载荷、PLC责任和路权保持不变。',
+  'obstacle-auto-safety-return': '满箱车辆在道路中段真实上报障碍。后台精确取消原3066，在停稳和全部安全门通过后，短直边使用一次3055低速后退，长距离使用受控3051退至后方安全站，到站后再由原车续接3066。',
   'obstacle-timeout-pickup': '空载前往取料时持续受阻，车辆随后返回状态7。验证原任务冻结、空载状态可查、没有任何第二条导航被自动发送。',
   'obstacle-timeout-fullbox': '满箱运往倒料机时持续受阻并返回状态7。验证满箱责任、原倒料机和原车辆不被替换，任务与路权保持现场。',
   'obstacle-timeout-return': '倒料完成后的空箱返程持续受阻并返回状态7。验证返箱、放箱和PLC收尾不会提前完成。',
@@ -1100,6 +1103,7 @@ function scenarioDraft(): SimulationRun {
   if (['custom-calls', 'dispatch-backlog'].includes(payload.name)) payload.calls = buildCustomCalls();
   if (payload.name === 'plc-recovery') { payload.plcFault = plcFault.value; payload.holdSeconds = plcFaultHold.value; }
   if (payload.name === 'road-block-recovery' || payload.name === 'obstacle-auto-detour' ||
+      payload.name === 'obstacle-auto-safety-return' ||
       obstacleTimeoutScenarios.has(payload.name)) payload.holdSeconds = roadBlockHold.value;
   if (payload.name === 'service-restart') payload.restartStage = restartStage.value;
   return payload;
@@ -2066,7 +2070,15 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
         <section class="simulation-panel vehicle-panel" aria-labelledby="simulation-vehicle">
           <header><div><p class="section-kicker">先选车</p><h3 id="simulation-vehicle"><IconRobot :size="18" />车辆现在怎么样</h3></div><span v-if="!fresh" class="inline-warning">反馈无效，控制已禁用</span></header>
           <label class="vehicle-select">选择车辆<select v-model="selectedVehicle" aria-label="选择虚拟车辆"><option v-if="!vehicleIds.length" value="">尚无车辆</option><option v-for="id in vehicleIds" :key="id" :value="id">{{ id }}</option></select></label>
-          <dl class="vehicle-facts"><dt>现在</dt><dd>{{ vehicle ? vehicleVisualLabel(vehicle) : (!fresh ? '暂时没有新反馈' : '尚未选择车辆') }}</dd><dt>位置</dt><dd>{{ humanLocation(vehicle?.station) }}</dd><dt>载荷</dt><dd>{{ !fresh ? '待核对' : vehicle?.loaded ? '车上有箱' : '空载' }}</dd><dt>自动处置</dt><dd>{{ vehicle?.recovery ? simulationObstacleRecoveryLabel(vehicle.recovery.state) : '未进入障碍恢复流程' }}</dd><dt>下一步</dt><dd>{{ industrialText(vehicle?.recovery?.nextAction || vehicle?.waitReason || status?.scenario?.message || '目前没有等待原因') }}</dd></dl>
+          <dl class="vehicle-facts">
+            <dt>现在</dt><dd>{{ vehicle ? vehicleVisualLabel(vehicle) : (!fresh ? '暂时没有新反馈' : '尚未选择车辆') }}</dd>
+            <dt>位置</dt><dd>{{ humanLocation(vehicle?.station) }}</dd>
+            <dt>载荷</dt><dd>{{ !fresh ? '待核对' : vehicle?.loaded ? '车上有箱' : '空载' }}</dd>
+            <dt>自动处置</dt><dd>{{ vehicle?.recovery ? simulationObstacleRecoveryLabel(vehicle.recovery.state) : '未进入障碍恢复流程' }}</dd>
+            <dt v-if="vehicle?.recovery?.safetyPointTarget">退站目标</dt>
+            <dd v-if="vehicle?.recovery?.safetyPointTarget">{{ humanLocation(vehicle.recovery.safetyPointTarget) }} · 低速倒走，到站后再续接业务</dd>
+            <dt>下一步</dt><dd>{{ industrialText(vehicle?.recovery?.nextAction || vehicle?.waitReason || status?.scenario?.message || '目前没有等待原因') }}</dd>
+          </dl>
           <fieldset :disabled="!canControl || !selectedVehicle"><div class="toolbar"><button @click="carControl({ paused: true })">暂停运动</button><button @click="carControl({ paused: false })">恢复运动</button><button @click="carControl({ obstacle: true })">注入前方障碍</button><button @click="carControl({ obstacle: false })">清除前方障碍</button><button @click="carControl({ offline: true })">断开通信</button><button @click="carControl({ offline: false })">恢复通信</button><button @click="carControl({ charging: true })">开始充电</button><button @click="carControl({ charging: false })">停止充电</button><button @click="carControl({ dropNextResponse: true })">丢弃下一响应</button><button @click="carControl({ cancelFinalReturnSegments: 2 })">模拟返程末两段取消</button></div><div class="speed-control"><label>运动倍率<input v-model.number="speedScale" type="number" min="0.1" max="10" step="0.05" /><small>1 为方案配置速度；0.75 且道路限速 1 m/s 时为 0.75 m/s。</small></label><button :disabled="!Number.isFinite(speedScale) || speedScale < 0.1 || speedScale > 10" @click="carControl({ speedScale })">应用倍率</button></div></fieldset>
           <details v-if="vehicle" class="technical-details"><summary>更多车辆数据</summary><dl class="vehicle-facts"><dt>电量</dt><dd>{{ vehicle.batteryPercent !== undefined ? `${vehicle.batteryPercent.toFixed(1)}%` : '未知' }}{{ vehicle.charging ? ' · 充电中' : '' }}</dd><dt>电压</dt><dd>{{ vehicle.batteryVoltage !== undefined ? `${vehicle.batteryVoltage.toFixed(2)} V` : '未知' }}</dd><dt>速度</dt><dd>{{ vehicle.speedMps !== undefined ? `${vehicle.speedMps.toFixed(2)} m/s` : '未知' }}</dd><dt>当前运输</dt><dd>{{ currentTask }}</dd></dl><small v-if="vehicle.simulationControl">控制反馈编号：{{ vehicle.simulationControl.sequence || '尚无反馈' }} · 当前运动倍率 {{ vehicle.speedScale ?? '未知' }}<span v-if="vehicle.simulationControl.responseDropPending"> · 等待丢弃下一响应</span></small></details>
           <p v-if="vehicle?.simulationControl?.error" class="inline-warning">{{ vehicle.simulationControl.error }}</p>

@@ -1,6 +1,6 @@
 import type { Vehicle, VehicleObstacle } from './types.ts';
 
-export const obstacleNavigationPolicy = '车端先报Blocked/52200；5秒搜索安全替代路线，安全条件全部通过后自动改道；10秒预警、30秒报警、60秒建议封路';
+export const obstacleNavigationPolicy = '车端先报Blocked/52200；10秒开始核验原任务终态，30秒预警、60秒报警、120秒建议封路；仅原任务全链终态且安全条件通过后自动改道';
 export const localDetourEvidence = '自动改道保留原任务、载荷、PLC责任和路权；位置、地图、车身包络或原任务终态未知时冻结';
 export interface ObstacleView extends VehicleObstacle { label: string; tone: 'blocked' | 'fault' | 'unknown' | 'idle'; duration: string }
 

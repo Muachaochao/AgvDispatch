@@ -48,11 +48,13 @@ const recoveryStateLabel = computed(() => ({
         <dt>下一步</dt><dd>{{ recovery.nextAction }}</dd>
         <dt>替代路线</dt><dd>{{ recovery.candidatePath.length ? recovery.candidatePath.join(' → ') : '尚未形成或当前没有安全替代路线' }}</dd>
         <dt>推荐安全点</dt><dd>{{ recovery.safeSite || '当前无需或暂未找到' }}</dd>
+        <dt>退站方式</dt><dd>{{ recovery.safetyPointRetreatMethod === '3055-Translation' ? '3055 直线后退' : recovery.safetyPointRetreatMethod === '3051-Backward' ? '3051 低速倒走' : '当前无需或尚未发送' }}</dd>
+        <dt>退站完成</dt><dd>{{ recovery.safetyPointReachedAt ? shortTime(recovery.safetyPointReachedAt) : '尚未完成' }}</dd>
         <dt>原任务</dt><dd>{{ recovery.taskId }}</dd>
       </dl>
     </template>
     <h3>安全边界</h3><p>{{ obstacle.localDetourEvidence }}</p>
-    <p>5秒开始规划；10秒预警；30秒报警；60秒建议封锁实际受阻方向。无路线时推荐安全点并冻结原任务，载荷、PLC责任和路权不会自动释放。</p>
+    <p>10秒开始核验原任务终态和安全替代路线；30秒预警；60秒报警；120秒建议封锁实际受阻方向。无路线时推荐安全点并冻结原任务，载荷、PLC责任和路权不会自动释放。</p>
   </div>
 </template>
 

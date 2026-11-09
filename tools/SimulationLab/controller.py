@@ -26,6 +26,12 @@ VEHICLE_ID = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$')
 TASK_ID = re.compile(r'^[A-Za-z0-9_-]{1,128}$')
 SOURCE_SHA256 = re.compile(r'^[a-f0-9]{64}$')
 POINT_TABLE_SOURCE_FIELDS = ('sourceSha256', 'sourceFile', 'sourceDeviceId', 'sourceDeviceName')
+OBSTACLE_RECOVERY_TIMING = {
+    'DetourAfterSeconds': 10,
+    'WarningAfterSeconds': 30,
+    'AlarmAfterSeconds': 60,
+    'ClosureSuggestionAfterSeconds': 120,
+}
 
 
 class CleanupPending(RuntimeError):
@@ -65,6 +71,21 @@ def write(path, value):
             temporary.unlink(missing_ok=True)
         except OSError:
             pass
+
+
+def rename_evidence(source, target):
+    """Same-directory rename only: never copy then delete a locked evidence file."""
+    source, target = Path(source), Path(target)
+    if source.resolve().parent != target.resolve().parent:
+        raise ValueError('启动证据只允许在原实例目录内重命名。')
+    for attempt in range(20):
+        try:
+            source.rename(target)
+            return
+        except OSError as error:
+            if not _transient_file_lock(error) or attempt == 19:
+                raise
+            time.sleep(.02 * (attempt + 1))
 
 
 def validate_root(root):
@@ -600,7 +621,7 @@ class Runtime:
                 target = self.root / ('bootstrap-' + name)
                 if target.exists():
                     raise RuntimeError('启动现场已出现同名引导证据：' + target.name)
-                shutil.move(str(source), str(target))
+                rename_evidence(source, target)
                 replacements.append((source, target))
         for name in ('multi-state.json', 'device-state.json', 'device-ready'):
             stale = self.root / name
@@ -901,9 +922,23 @@ class Runtime:
                       waitingSites=self.settings['Dispatching'].get('DumperWaitingSites') or [self.settings['Dispatching']['DumperWaitingSite']],
                       resourceId=self.settings['HandshakeExecution']['DumperExit']['ResourceIds'][0])
         excluded = {s['pickupSite'] for s in stations} | {dumper['dumpingSite'], *dumper['waitingSites']}
-        typed = any(isinstance(n.get('type'), str) for n in navigation['nodes'])
-        origins = [n['id'] for n in navigation['nodes'] if n.get('enabled', True) and n['id'] not in excluded
-                   and (not typed or n.get('type') == 'Station')]
+        available_origins = [
+            n['id'] for n in navigation['nodes']
+            if n.get('enabled', True) and n['id'] not in excluded
+        ]
+        station_origins = [
+            n['id'] for n in navigation['nodes']
+            if n.get('enabled', True) and n['id'] not in excluded and
+            n.get('type') == 'Station'
+        ]
+        preferred = [
+            self.lab.get('initialSites', {}).get(robot['VehicleId'])
+            for robot in self.settings['Agv']['Robots']
+        ]
+        origins = []
+        for origin in [*preferred, *station_origins, *available_origins]:
+            if origin in available_origins and origin not in origins:
+                origins.append(origin)
         if count > len(origins): raise ValueError('地图没有足够的独立起点。')
         vehicles = [dict(id=f'AGV-LOCAL-{index+1:02}', initialSite=origins[index],
                          radiusMeters=.49, lengthMeters=.8, widthMeters=.52)
@@ -1102,10 +1137,13 @@ class Runtime:
             settings['Dispatching']['DumperDumpingSite'] = configuration['dumper']['dumpingSite']
             settings['Dispatching']['DumperTransitClearanceMeters'] = 2 * max(v['radiusMeters'] for v in configuration['vehicles']) + 0.15
             settings['ObstacleRecovery'] = dict(Enabled=True, AutomaticDetourEnabled=True,
-                PollIntervalMs=500, DetourAfterSeconds=5, WarningAfterSeconds=10,
-                AlarmAfterSeconds=30, ClosureSuggestionAfterSeconds=60,
+                AutomaticSafetyPointRetreatEnabled=True,
+                PollIntervalMs=500, **OBSTACLE_RECOVERY_TIMING,
                 StableStopObservationMs=500, StoppedVelocityToleranceMetersPerSecond=0.02,
-                MinimumLocalizationConfidence=0.5, MaximumStationDeviationMeters=0.3)
+                MinimumLocalizationConfidence=0.5, MaximumStationDeviationMeters=0.3,
+                SafetyPointMaximumRetreatDistanceMeters=10,
+                SafetyPointRetreatMaximumSpeedMetersPerSecond=0.1,
+                SafetyPointRetreatMaximumAccelerationMetersPerSecondSquared=0.15)
             lab.update(robotPort=robots[0]['Port'], navigationPort=robots[0]['NavigationPort'])
             from station_catalog import write_private_signal_table
             signal_target = target / 'service/config/simulation-signals.csv'

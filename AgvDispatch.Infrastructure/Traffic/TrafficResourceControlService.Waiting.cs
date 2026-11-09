@@ -18,7 +18,9 @@ public sealed partial class TrafficResourceControlService
             var stepIds = requests.Select(r => r.StepId).Distinct().ToArray();
             var tasks = taskIds.Length == 0 ? [] : await database.Queryable<DispatchTaskEntity>().Where(t => taskIds.Contains(t.TaskId)).ToListAsync(ct);
             var steps = stepIds.Length == 0 ? [] : await database.Queryable<DispatchTaskStepEntity>().Where(s => stepIds.Contains(s.StepId)).ToListAsync(ct);
-            var pending = steps.Where(s => s.Status is 0 or 10 or 60).ToDictionary(s => s.StepId);
+            // Rolling transport windows remain in Executing while the next window
+            // waits for traffic. Excluding status 40 hides real reservation cycles.
+            var pending = steps.Where(s => s.Status is 0 or 10 or 40 or 60).ToDictionary(s => s.StepId);
             var leases = await database.Queryable<TrafficResourceLeaseEntity>().ToListAsync(ct);
             var now = (clock ?? TimeProvider.System).GetUtcNow();
             var byTask = tasks.ToDictionary(t => t.TaskId);

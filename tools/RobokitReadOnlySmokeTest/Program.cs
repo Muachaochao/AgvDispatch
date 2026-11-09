@@ -162,6 +162,13 @@ var simulationLocal=await preflight.CheckAsync("SIM","N1","N2","N3","N1","MAP","
 Check(simulationLocal.Accepted && simulationLocal.RouteChecks.Count==4,"隔离仿真使用同源地图完成四段路线核验");
 Check(!robot.ReadTypes.Contains(1303),"隔离仿真大图核验不再串行发送数百个1303");
 robot.ResetRead();
+Check((await preflight.CheckRouteAsync("SIM",new[]{"LM2","LM1"},default)).Accepted,
+    "隔离仿真允许双向边按存储方向反向通行");
+local.Replace(new("MAP","V2",linked with{Edges=linked.Edges.Select(e=>e.Id=="E"?e with{Bidirectional=false}:e).ToArray()},DateTimeOffset.Now));
+Check(!(await preflight.CheckRouteAsync("SIM",new[]{"LM2","LM1"},default)).Accepted,
+    "隔离仿真仍拒绝单向边的反向通行");
+local.Replace(new("MAP","V2",linked,DateTimeOffset.Now));
+robot.ResetRead();
 Check((await preflight.CheckRouteAsync("SIM",new[]{"LM1","LM2","LM3"},default)).Accepted &&
       !robot.ReadTypes.Contains(1303),"隔离仿真实际发送前仍核验地图身份且不做逐边远程探测");
 local.Replace(new("MAP","V2",linked with{Edges=linked.Edges.Where(e=>e.Id!="E").ToArray()},DateTimeOffset.Now));
@@ -238,10 +245,38 @@ using(var db=DatabaseFactory.Create(new(){DatabasePath=Path.Combine(directory,"t
     robot.SetTask(step.StepId+"-01",404);
     try{await restarted.CreateTransportTaskAsync(step.StepId,"SIM",new[]{"LM1","LM2","LM3"},null,default);throw new Exception("失败命令历史全丢后重发");}catch(AgvPartialAcceptanceException){checks++;}
     Check(robot.Types.Count(t=>t.Type==3066)==beforeRebuild,"原命令失败且历史全404仍不重新发送");
+
+    var deferTask=await tasks.TryCreateAsync("PRESEND-DEFER","SIM-DUMPER",20,default);
+    await tasks.MarkAcknowledgedAsync(deferTask.Task.TaskId,default);
+    var deferStep=(await tasks.GetStepsAsync(deferTask.Task.TaskId,default))[0];
+    Check(await outbox.TryPrepareTransportStepAsync(deferTask.Task.TaskId,deferStep.StepId,"DEFER",new[]{"LM1","LM2"},null,default),"发送前临时失败测试持久化原命令");
+    Check(await outbox.TryClaimAsync((await db.Queryable<AgvCommandOutboxEntity>().Where(c=>c.StepId==deferStep.StepId).FirstAsync()).CommandId,DateTimeOffset.Now,default) is not null,"发送前临时失败可模拟一次租约领取");
+    var deferCommand=await db.Queryable<AgvCommandOutboxEntity>().Where(c=>c.StepId==deferStep.StepId).FirstAsync();
+    Check(deferCommand.AttemptCount==1,"领取时先记录可能发送次数");
+    await outbox.DeferBeforeSendAsync(deferCommand.CommandId,"本机发送前车辆状态暂时不可用",DateTimeOffset.Now,default);
+    deferCommand=await db.Queryable<AgvCommandOutboxEntity>().Where(c=>c.CommandId==deferCommand.CommandId).FirstAsync();
+    var deferStepRow=await db.Queryable<DispatchTaskStepEntity>().Where(s=>s.StepId==deferStep.StepId).FirstAsync();
+    Check(deferCommand.Status==(int)AgvCommandStatus.RetryScheduled&&deferCommand.AttemptCount==0&&deferStepRow.Status==(int)DispatchTaskStepStatus.RetryScheduled,"确认未写车端的发送前失败回滚尝试次数并保留原命令");
+
+    cache.MarkFailure("SIM",new TimeoutException("synthetic pre-send polling timeout"),TimeSpan.Zero);
+    var preSendChain=new PresendChain();
+    var preSendGateway=new SeerAgvGateway(cache,manager,options,preSendChain);
+    var beforePreSend=robot.Types.Count(t=>t.Type==3066);
+    try{await preSendGateway.CreateTransportTaskAsync("PRESEND-ROOT","SIM",new[]{"LM1","LM2","LM3"},null,default);throw new Exception("发送前状态不可用仍写车端");}
+    catch(AgvPreSendDeferredException){checks++;}
+    Check(robot.Types.Count(t=>t.Type==3066)==beforePreSend,"本机发送前车辆状态检查失败没有3066副作用");
     File.WriteAllText(Path.Combine(directory,"result.json"),JsonSerializer.Serialize(new{created.Task.TaskId,step.StepId,command.CommandId,command.Status,command.AttemptCount}));
 }
 Console.WriteLine("Private SQLite evidence: "+directory);
 Console.WriteLine($"RobokitReadOnlySmokeTest: {checks} checks passed");
+
+sealed class PresendChain : IAgvTransportChainLookup
+{
+    public Task<AgvTransportChain?> FindAsync(string businessTaskId,CancellationToken ct) =>
+        Task.FromResult<AgvTransportChain?>(businessTaskId=="PRESEND-ROOT"
+            ? new(businessTaskId,"SIM",new[]{"LM1","LM2","LM3"},1,true)
+            : null);
+}
 
 sealed class Robot : IAsyncDisposable
 {

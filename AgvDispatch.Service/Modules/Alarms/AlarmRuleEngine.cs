@@ -234,19 +234,23 @@ public sealed class AlarmRuleEngine(
                     "AGV_BLOCKED", $"{agv.DisplayName}运行受阻",
                     $"当前位置={agv.CurrentStation ?? "未知"}，来源={obstacle.Source}。{obstacle.Message}",
                     AlarmSeverity.Warning));
-                if (obstacle.State == "Prolonged")
+                var obstacleSeconds = obstacle.DurationSeconds ?? 0;
+                // Prolonged begins at the 30-second warning tier. Keep the
+                // generic blocked warning there and only create the error
+                // alarm when the 60-second tier is actually reached.
+                if (obstacle.State == "Prolonged" && obstacleSeconds >= 60)
                 {
-                    var severity = (obstacle.DurationSeconds ?? 0) >= 60
+                    var severity = obstacleSeconds >= 120
                         ? AlarmSeverity.Critical : AlarmSeverity.Error;
                     result.Add(new AlarmCandidate(
                         $"AGV:{agv.VehicleId}:BLOCKED_PROLONGED", "AGV", agv.VehicleId,
-                        "AGV_BLOCKED_PROLONGED", $"{agv.DisplayName}持续受阻超过30秒",
-                        $"本段连续观察时长={obstacle.DurationSeconds:F0}秒。{obstacle.Message}", severity));
-                    if ((obstacle.DurationSeconds ?? 0) >= 60)
+                        "AGV_BLOCKED_PROLONGED", $"{agv.DisplayName}持续受阻超过60秒",
+                        $"本段连续观察时长={obstacleSeconds:F0}秒。{obstacle.Message}", severity));
+                    if (obstacleSeconds >= 120)
                         result.Add(new AlarmCandidate(
                             $"AGV:{agv.VehicleId}:BLOCKED_CLOSURE_SUGGESTED", "AGV", agv.VehicleId,
                             "AGV_BLOCKED_CLOSURE_SUGGESTED", $"{agv.DisplayName}受阻建议封路",
-                            $"已连续受阻{obstacle.DurationSeconds:F0}秒。仅建议封锁实际受阻方向及必要上游汇入；其他无冲突任务继续，人员按现场安全规则处置。",
+                            $"已连续受阻{obstacleSeconds:F0}秒。仅建议封锁实际受阻方向及必要上游汇入；其他无冲突任务继续，人员按现场安全规则处置。",
                             AlarmSeverity.Critical));
                 }
             }

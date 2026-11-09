@@ -183,6 +183,37 @@ class VerdictTests(unittest.TestCase):
         rows = commands() + [dict(c, CommandId='other-'+c['CommandId']) for c in commands()]
         self.assertFalse(complete_command_set(rows, {'original-task': {}, 'missing-task': {}}))
 
+    def test_rolling_windows_require_a_complete_contiguous_chain_per_business_step(self):
+        windows = [
+            dict(index=0, source='A', destination='B', path=['A', 'B'], final=False),
+            dict(index=1, source='B', destination='C', path=['B', 'C'], final=True),
+        ]
+        def row(index):
+            previous = None if index == 0 else 'STEP-0-W01'
+            return dict(TaskId='original-task', StepId='STEP-0', CommandId=f'window-{index}',
+                        Status=30, AttemptCount=1, VendorCommandId=f'STEP-0-W{index + 1:02d}',
+                        PayloadJson=json.dumps(dict(businessTaskId=f'STEP-0-W{index + 1:02d}',
+                            businessStepId='STEP-0', windowIndex=index, windowCount=2,
+                            previousVendorTaskId=previous, source=windows[index]['source'],
+                            destination=windows[index]['destination'], path=windows[index]['path'],
+                            windows=windows)))
+        rows = commands()[1:] + [row(0), row(1)]
+        self.assertTrue(complete_command_set(rows, {'original-task': {}}))
+        partial = rows[:-1]
+        task = {'original-task': {'vehicle': 'car'}}
+        recovery = dict(TaskId='original-task', StepId='STEP-0', VehicleId='car',
+                        OriginalVendorTaskId='STEP-0-W01', NewVendorTaskId='TIMEOUTRECOVERY-OK',
+                        State='Completed', SendAttemptedAt='observed')
+        self.assertFalse(complete_command_set(partial, task))
+        self.assertTrue(complete_command_set(partial, task, [recovery]))
+        self.assertFalse(complete_command_set(partial, task, [recovery, recovery]))
+        self.assertFalse(complete_command_set(partial, task, [dict(recovery, VehicleId='other')]))
+        self.assertFalse(complete_command_set(partial, task, [dict(recovery, State='Executing')]))
+        self.assertFalse(complete_command_set(partial, task, [dict(recovery, OriginalVendorTaskId='STEP-0-W02')]))
+        rows[-1]['PayloadJson'] = json.dumps(dict(json.loads(rows[-1]['PayloadJson']),
+                                                   previousVendorTaskId='WRONG'))
+        self.assertFalse(complete_command_set(rows, {'original-task': {}}))
+
     def test_mutual_blockers_are_distinguished_from_a_one_way_queue(self):
         self.assertEqual(mutual_wait_pairs({'b': dict(blockedByVehicle='a'), 'a': dict(blockedByVehicle='b')}),
                          [('a', 'b')])

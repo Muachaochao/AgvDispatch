@@ -9,7 +9,7 @@ public static class AgvObstacleDiagnostics
 {
     public static AgvObstacleDiagnostic Analyze(AgvRobotSnapshot vehicle, DateTimeOffset now, TimeSpan staleAfter)
     {
-        const string policy = "车端Blocked/52200优先；5秒搜索安全替代路线，安全条件全部通过后自动改道；10秒预警、30秒报警、60秒建议封路";
+        const string policy = "车端Blocked/52200优先；10秒开始核验原任务终态，30秒预警、60秒报警、120秒建议封路；仅原任务全链终态且安全条件通过后自动改道";
         const string evidence = "自动改道必须保留原任务、载荷、PLC责任和路权；位置、地图、车身包络或车端终态未知时冻结";
         var source = vehicle.Blocked == true ? "Blocked" : "";
         if (vehicle.Alarms.Any(AgvObstaclePolicy.IsLocalObstacle))
@@ -25,15 +25,15 @@ public static class AgvObstacleDiagnostics
         var message = state switch
         {
             "SafetyStop" => "急停或严重报警优先，相关流程须按恢复条件核对。",
-            "Prolonged" => duration >= 60
-                ? "已连续受阻至少60秒；建议正式封锁实际受阻方向及必要上游汇入，并核对安全点、载荷和PLC。其他无冲突任务继续。"
+            "Prolonged" => duration >= 120
+                ? "已连续受阻至少120秒；建议正式封锁实际受阻方向及必要上游汇入，并核对安全点、载荷和PLC。其他无冲突任务继续。"
+                : duration >= 60
+                    ? "已连续受阻至少60秒；系统持续报警并保留原任务及路权，核对无替代路线时转入安全点或人工处置。"
                 : duration >= 30
-                    ? "已连续受阻至少30秒；后台应持续报警，保留原任务及路权，并继续核验安全替代路线或人工安全点方案。"
+                    ? "已连续受阻至少30秒；系统进入预警，保留原任务及路权，并继续核验安全替代路线或人工安全点方案。"
                     : "已连续受阻；后台正在检查替代路线和车辆停稳证据，保留原任务、载荷、PLC责任和路权。",
             "Blocked" => duration >= 10
-                ? "车端持续受阻已进入预警；后台正在搜索并复核替代路线，仍不得发送第二条导航。"
-                : duration >= 5
-                    ? "车端持续受阻已满5秒；后台开始安全改道核验，原任务和路权保持不变。"
+                ? "车端持续受阻已满10秒；后台开始检查原任务终态、停稳和替代路线，原任务及路权保持不变。"
                     : "车辆受阻等待；车端先报Blocked/52200，后台保留原任务并等待安全改道门槛。",
             "Clear" => vehicle.LastObstacleClearedAt is null ? "当前未报告障碍受阻。" :
                 "已观察到受阻信号清除；原任务是否继续或完成，以后续车端任务反馈为准。",

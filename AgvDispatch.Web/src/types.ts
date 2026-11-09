@@ -12,7 +12,11 @@ export interface VehicleObstacle { state: 'Clear' | 'Blocked' | 'Prolonged' | 'S
   lastClearedAt: string | null; source: string; message: string; navigationPolicy: string; localDetourEvidence: string }
 export interface ObstacleRecovery { recoveryId: string; taskId: string; stepId: string; state: string; message: string; nextAction: string;
   blockedSince: string; durationSeconds: number; originalPath: string[]; candidatePath: string[]; blockedEdgeIds: string[]; safeSite: string | null;
-  newVendorTaskId: string | null; sendAttempted: boolean; updatedAt: string }
+  newVendorTaskId: string | null; sendAttempted: boolean;
+  automaticSafetyPointRetreatEnabled?: boolean; safetyPointTarget?: string | null;
+  safetyPointRetreatMethod?: string | null; safetyPointRetreatTaskId?: string | null;
+  safetyPointRetreatAttemptedAt?: string | null; safetyPointReachedAt?: string | null;
+  updatedAt: string }
 export interface TaskRow { taskId: string; stationId: string; vehicleId: string | null; stage: string; priority: number; createdAt: string; updatedAt: string; errorMessage?: string }
 export interface TaskListSummary { total: number; running: number; waiting: number; completed: number; cancelled: number; failed: number; other: number }
 export interface TaskPage { items: TaskRow[]; totalCount: number; page: number; pageSize: number; summary?: TaskListSummary | null; evidenceSource?: 'live-service' | 'saved-report' }
