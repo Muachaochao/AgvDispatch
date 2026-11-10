@@ -241,7 +241,11 @@ public static class DumperExitEvaluator
         if(endpointConfirmed)
             candidates.Add((segments.Count,1));
         if (candidates.Count == 0) return Reject("当前定位偏离原冻结返程，无法确定后续路径。");
-        if (candidates.Count > 2 || candidates.Count == 2 && candidates[1].Index != candidates[0].Index + 1)
+        // A dense map can split the same local corridor into several short
+        // consecutive edges inside the localization tolerance. Edge count alone
+        // is not a progress ambiguity. Keep every candidate and check every
+        // remaining suffix below; reject separated occurrences on the route.
+        if (candidates.Zip(candidates.Skip(1), (a, b) => b.Index != a.Index + 1).Any(gap => gap))
             return Reject("定位同时对应冻结返程的多个非相邻位置，路径进度有歧义。");
         // The manufacturer completion and original endpoint jointly remove the
         // radial "possibly earlier" interval on the final segment. Earlier

@@ -192,6 +192,13 @@ var policy = new DispatchAssignmentOptions { WindowSize = 1 };
         "candidate layer exposes travel, traffic, return, zone, battery and bounded standby costs separately");
     Check(graph.WaitingRoutes.Count == 0 && traffic.Writes == 0 && gateway.Writes == 0,
         "candidate layer never persists traffic observations, acquires leases or sends vehicle commands");
+    planner.PickupCost = 270; planner.ComparisonCost = 10;
+    var deferred = await filter.BuildAsync(queue, costs, null, default);
+    Check(deferred.Edges.Count == 0 && deferred.Plans.Count == 0 &&
+        deferred.Diagnostics["TASK"].Single(c => c.VehicleId == "V1").Reason.Contains("大幅绕行") &&
+        traffic.Writes == 0 && gateway.Writes == 0,
+        "large temporary detour remains queued without reserving a vehicle or exposing the comparison route for execution");
+    planner.PickupCost = 8; planner.ComparisonCost = null;
     gateway.Positions["V4"] = "PICK";
     var occupiedPickup = await filter.BuildAsync(queue, costs with { Mode = "Global" }, map.Current, default);
     Check(occupiedPickup.Edges.Count == 0 &&
@@ -267,10 +274,14 @@ sealed class PlanningGateway : IAgvGateway
 }
 sealed class PlanningRoutes : IRoutePlanner
 {
+    public double PickupCost = 8;
+    public double? ComparisonCost;
+    public RoutePlan? PlanWithoutVehicleOccupancyForComparison(string source, string destination) =>
+        ComparisonCost is {} cost ? new([source,destination], [], [], cost) : null;
     public RoutePlan? Plan(string source, string destination, IReadOnlySet<string> unavailable) =>
         (source, destination) switch
         {
-            ("HOME1", "PICK") when !unavailable.Contains("R") => new([source, destination], ["TO-PICK"], ["R"], 8),
+            ("HOME1", "PICK") when !unavailable.Contains("R") => new([source, destination], ["TO-PICK"], ["R"], PickupCost),
             ("PICK", "HOME1") => new([source, destination], ["RETURN"], [], 4),
             _ => null
         };

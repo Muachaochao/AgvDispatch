@@ -17,6 +17,23 @@ DispatchAssignmentResult Solve(DispatchAssignmentTask[] tasks, DispatchAssignmen
     optimizer.Optimize(tasks, pairs, settings ?? options, now, slots);
 
 Check(options.Mode == "Shadow" && options.GetConfigurationError() is null, "defaults recommend in shadow mode");
+var detours = new AgvDispatch.Application.Tasks.TemporaryDetourDeferral();
+Check(detours.RemainingSeconds("T", "V", "M", 270, 10, now) == 120,
+    "temporary 27x detour first waits without granting a route");
+Check(detours.RemainingSeconds("T", "V", "M", 270, 10, now.AddSeconds(119)) == 1 &&
+    detours.RemainingSeconds("T", "V", "M", 270, 10, now.AddSeconds(120)) == 0,
+    "temporary detour wait is bounded and does not restart on every dispatch cycle");
+Check(detours.RemainingSeconds("T", "V", "M", 11, 10, now.AddSeconds(121)) == 0 &&
+    detours.RemainingSeconds("T", "V", "M", 270, 10, now.AddSeconds(122)) == 120,
+    "restored short route clears the old congestion episode");
+Check(detours.RemainingSeconds("T", "V2", "M", 270, 10, now.AddSeconds(180)) == 120,
+    "different candidate vehicles keep independent congestion windows");
+Check(detours.RemainingSeconds("SMALL", "V", "M", 30, 2, now) == 0 &&
+    detours.RemainingSeconds("RATIO", "V", "M", 100, 40, now) == 0,
+    "small absolute detours and ordinary alternative routes remain immediately eligible");
+detours.RetainTasks(new HashSet<string>());
+Check(detours.RemainingSeconds("T", "V", "M", 270, 10, now.AddSeconds(300)) == 120,
+    "finished or removed tasks leave no stale detour timer");
 Check((options with { IntervalMs = 1999 }).GetConfigurationError() is not null &&
       (options with { IntervalMs = 5001 }).GetConfigurationError() is not null, "rolling interval constrained to 2–5 seconds");
 Check((options with { StandbyBonusSeconds = 2 }).GetConfigurationError() is not null &&

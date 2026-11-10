@@ -301,6 +301,22 @@ using (var changedMap = new Fixture())
         "地图变化明确保留原阶段、设备归属及倒料路权");
 }
 
+using (var badReturnRecord = new Fixture())
+{
+    await badReturnRecord.InitializeAsync();
+    var task = await badReturnRecord.PrepareReleaseAsync();
+    await badReturnRecord.Db.Updateable<TrafficResourceLeaseEntity>()
+        .SetColumns(c => new TrafficResourceLeaseEntity { MapVersionId = "OTHER-VERSION" })
+        .Where(c => c.TaskId == task && c.ResourceId == "DUMP-AREA").ExecuteCommandAsync();
+    await ExpectHold(() => badReturnRecord.ExitAsync(task, false, pollVehicle: true),
+        "倒料区域租约地图身份冲突时交接事务回滚并保持原责任");
+    var checkpoint = await badReturnRecord.ReturnCheckpointAsync(task);
+    Check(checkpoint.Phase == "ReleaseDumper" && checkpoint.Reason.StartsWith("倒料交接等待：") &&
+        !checkpoint.Reason.Contains("待原子交接") && await badReturnRecord.EquipmentOwnerAsync() == task &&
+        await badReturnRecord.LeaseCountAsync(task, "DUMP-AREA") > 0 && await badReturnRecord.ReleaseCountAsync(task) == 0,
+        "交接事务失败的具体原因持久化供任务页展示，不删除设备和区域占用");
+}
+
 using (var repeatedCycles = new Fixture())
 {
     await repeatedCycles.InitializeAsync();

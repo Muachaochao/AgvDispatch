@@ -100,7 +100,17 @@ public sealed partial class PersistentHandshakeExecutor
                 if(DumperClosed()&&await CaptureExitProofAsync(checkpoint,step,returned.VendorTaskId!,ct) is {} finalProof)
                 {
                     if(!DumperClosed()||!Is(dumper,"Faulted",false)||!await store.OwnsEquipmentAsync(task.TaskId,dumper,ct))return;
-                    await store.ReleaseDumperAfterExitAsync(checkpoint,dumper,finalProof,ct);
+                    try { await store.ReleaseDumperAfterExitAsync(checkpoint,dumper,finalProof,ct); }
+                    catch(OperationCanceledException){throw;}
+                    catch(Exception exception)
+                    {
+                        // A rolled-back handover must retain ownership, but its
+                        // concrete reason must reach the task/recovery page too.
+                        var reason="倒料交接等待："+exception.GetBaseException().Message;
+                        if(checkpoint.Reason!=reason)
+                            await store.MoveAsync(checkpoint,checkpoint.Phase,reason,null,null,null,ct);
+                        throw;
+                    }
                 }
                 break;
             default:throw new InvalidOperationException("未知实际出区阶段，禁止重新解释："+checkpoint.Phase);

@@ -170,6 +170,9 @@ var parkedPlanner = new ConfiguredRoutePlanner(
     parkedRuntime,new DispatchOrchestratorOptions(),flow,vehicleStates:parkedStates,mapOptions:new MapOptions());
 Check(parkedPlanner.Plan("LM-A","LM-B",new HashSet<string>()) is null,
     "completed idle peer still blocks an adjacent envelope road even after all task leases are released");
+Check(parkedPlanner.PlanWithoutVehicleOccupancyForComparison("LM-A","LM-B") is not null &&
+    parkedPlanner.Plan("LM-A","LM-B",new HashSet<string>()) is null,
+    "read-only detour comparison sees the unoccupied reference without changing executable physical occupancy guards");
 Check(parkedPlanner.Plan("LM-PARK","LM-A",new HashSet<string>()) is not null,
     "the unique vehicle at its actual parked source can depart without self-blocking");
 parkedRuntime.Replace(new("MAP","V1",parkedMap with { Edges=[..parkedMap.Edges,Edge("AD","A","DETOUR",3,true),Edge("DB","DETOUR","B",3,true)] },DateTimeOffset.Now));

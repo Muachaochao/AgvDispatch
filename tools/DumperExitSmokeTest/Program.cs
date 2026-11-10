@@ -1,8 +1,30 @@
 using AgvDispatch.Application.Tasks;
 using AgvDispatch.Domain.Devices;
 using AgvDispatch.Domain.Maps;
+using System.Text.Json;
 
 var checks = 0;
+if (args.Length == 1)
+{
+    using var replay = JsonDocument.Parse(File.ReadAllText(args[0]));
+    var json = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+    json.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
+    var input = replay.RootElement;
+    var proof = input.GetProperty("proof");
+    var route = input.GetProperty("route");
+    var result = DumperExitEvaluator.VerifyReturnRouteAfterExit(
+        input.GetProperty("map").Deserialize<MapDefinition>(json)!,
+        route.GetProperty("nodeIds").Deserialize<string[]>(json)!,
+        route.GetProperty("edgeIds").Deserialize<string[]>(json)!,
+        proof.GetProperty("Second").Deserialize<DumperExitFrame>(json)!,
+        proof.GetProperty("Body").Deserialize<DumperExitBodyProfile>(json)!,
+        proof.GetProperty("Policy").Deserialize<DumperExitPolicy>(json)!,
+        proof.GetProperty("MaximumRouteDeviationMeters").GetDouble(),
+        proof.GetProperty("EndpointArrivalConfirmed").GetBoolean());
+    Console.WriteLine(JsonSerializer.Serialize(result, json));
+    if (!result.Verified) throw new InvalidOperationException(result.Reason);
+    return;
+}
 void Check(bool condition, string name)
 {
     if (!condition) throw new InvalidOperationException(name);
@@ -192,6 +214,13 @@ void RouteRefuse(string name, MapDefinition routeMap, DumperExitFrame? position 
     Check(!result.Verified && result.ResourceIds.Count == 0, name);
 }
 var straightReturn = ReturnMap(("D", 1, 1), ("EXIT", 5, 1), ("HOME", 8, 1));
+var denseReturn = ReturnMap(("D", 1, 1), ("EXIT", 4, 1), ("A", 4.2, 1), ("B", 4.4, 1), ("HOME", 4.6, 1));
+Check(Route(denseReturn, first with { X = 4.6 }, endpointConfirmed: true).Verified,
+    "密集切分终点附近多个连续短边均在倒料区外，不因候选数量超过二误拒交接");
+Check(Route(denseReturn, first with { X = 4.3 }).Verified,
+    "连续短边定位保留所有候选并逐一校验剩余路线");
+var denseReentry = ReturnMap(("D", 1, 1), ("EXIT", 4, 1), ("A", 4.2, 1), ("B", 4.4, 1), ("AGAIN", 1, 1), ("HOME", 8, 1));
+RouteRefuse("连续短边仍不能绕过后续返入倒料区校验", denseReentry, first with { X = 4.3 });
 Check(Route(straightReturn).Verified, "原冻结返程后续直线路径不再进入倒料区允许");
 Check(Route(straightReturn, first with { X = 5 }).Verified, "相邻路段共有端点的两种可能进度均安全允许");
 Check(Route(straightReturn, first with { X = 8 }).Verified, "冻结返程终点外且全部未来位置安全允许");

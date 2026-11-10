@@ -55,6 +55,8 @@ try
         "same request is idempotent without duplicated closure or revision");
     Check(!(await closure.CreateAsync(user, request with { Reason = "different intent" }, default)).Accepted, "request ID cannot be reused for a different closure intent");
     Check(planner.Plan("LM1", "LM3", new HashSet<string>())!.Nodes.SequenceEqual(["LM1", "LM2", "LM3"]), "new planning detours LM1 through LM2 to LM3");
+    Check(planner.PlanWithoutVehicleOccupancyForComparison("LM1", "LM3")!.Nodes.SequenceEqual(["LM1", "LM2", "LM3"]),
+        "temporary-occupancy comparison still respects official road closures");
     Check(planner.Plan("LM3", "LM1", new HashSet<string>())!.Nodes.SequenceEqual(["LM3", "LM2", "LM1"]), "bidirectional physical channel blocks opposite direction too");
     var preview = await closure.PreviewAsync(Preview(), default);
     Check(preview.Available && preview.Route!.Nodes.SequenceEqual(["LM1", "LM2", "LM3"]) && preview.Revision == created.Revision,
@@ -71,6 +73,8 @@ try
     send.Dispose();
     var isolated = await secondCreate;
     Check(isolated.Accepted && planner.Plan("LM1", "LM3", new HashSet<string>()) is null, "sealing the only alternate produces no route instead of unsafe fallback");
+    Check(planner.PlanWithoutVehicleOccupancyForComparison("LM1", "LM3") is null,
+        "comparison cannot invent a route through an officially sealed network");
     Check(!(await closure.PreviewAsync(Preview(), default)).Available, "no-path preview reports unavailable without fabricating progress");
     Check(!(await closure.ReleaseAsync(user, new("stale-release", isolated.Closure!.ClosureId, 1, "cleaned", true), default)).Accepted,
         "release requires current closure revision");

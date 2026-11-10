@@ -41,7 +41,13 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
     public RoutePlan? Plan(
         string source,
         string destination,
-        IReadOnlySet<string> unavailableResourceIds)
+        IReadOnlySet<string> unavailableResourceIds) => PlanCore(source, destination, unavailableResourceIds, false);
+
+    public RoutePlan? PlanWithoutVehicleOccupancyForComparison(string source, string destination) =>
+        PlanCore(source, destination, new HashSet<string>(), true);
+
+    private RoutePlan? PlanCore(string source, string destination,
+        IReadOnlySet<string> unavailableResourceIds, bool comparisonOnly)
     {
         var snapshot = _activeMap.Current;
         var closures = _roadClosures?.GetSnapshot();
@@ -54,7 +60,7 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
                 !string.Equals(closures.DefinitionHash, EngineeringRuntimeIdentity.MapHash(activeDefinition), StringComparison.OrdinalIgnoreCase)))
                 return null;
             return PlanAndMap(activeGraph, activeDefinition, source, destination,
-                unavailableResourceIds, _trafficFlow.GetEdgePenalties(), closures?.BlockedTraversals);
+                unavailableResourceIds, _trafficFlow.GetEdgePenalties(), closures?.BlockedTraversals, comparisonOnly);
         }
         if (_configuredGraph is not null)
         {
@@ -62,7 +68,7 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
             // configuration graph cannot silently stand in for that identity.
             if (closures?.Closures.Any(c => c.Active) == true) return null;
             return PlanAndMap(_configuredGraph, _configuredDefinition!, source, destination,
-                unavailableResourceIds, _trafficFlow.GetEdgePenalties());
+                unavailableResourceIds, _trafficFlow.GetEdgePenalties(), comparisonOnly: comparisonOnly);
         }
 
         if (closures?.Closures.Any(c => c.Active) == true) return null;
@@ -83,7 +89,7 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
         string destination,
         IReadOnlySet<string> unavailableResourceIds,
         IReadOnlyDictionary<string, double> edgePenalties,
-        IReadOnlyCollection<MapDirectedTraversal>? unavailableTraversals = null)
+        IReadOnlyCollection<MapDirectedTraversal>? unavailableTraversals = null, bool comparisonOnly = false)
     {
         var logicalSource = MapRouteSiteMapper.ResolveLogicalNodeId(definition, source);
         var logicalDestination = MapRouteSiteMapper.ResolveLogicalNodeId(definition, destination);
@@ -92,7 +98,7 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
             unavailableTraversals = (unavailableTraversals ?? []).Concat(
                 DumperTransitClearance.BlockedTraversals(definition, logicalSource, logicalDestination,
                     _legacyOptions.DumperDumpingSite, _legacyOptions.DumperTransitClearanceMeters))
-                .Concat(OccupiedCorridorTraversals(definition, logicalSource))
+                .Concat(comparisonOnly ? [] : OccupiedCorridorTraversals(definition, logicalSource))
                 .Distinct().ToArray();
         }
         catch (ArgumentException) { return null; }

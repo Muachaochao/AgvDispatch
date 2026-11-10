@@ -13,6 +13,7 @@ public sealed class DispatchCandidateFilter(DispatchOrchestratorOptions options,
     BusinessRunOwnership? businessRun = null, FleetTestOwnership? fleetTest = null,
     IChargingDispatchGuard? charging = null, ITaskSwitchGuard? taskSwitchGuard = null) : IDispatchCandidateFilter
 {
+    private readonly AgvDispatch.Application.Tasks.TemporaryDetourDeferral detours = new();
     public string? CheckVehicle(AgvVehicleStatus vehicle, IReadOnlySet<string> occupied, DispatchAssignmentOptions policy)
     {
         if (occupied.Contains(vehicle.VehicleId)) return "已有派发任务或有效路权，保持原车辆责任。";
@@ -95,6 +96,7 @@ public sealed class DispatchCandidateFilter(DispatchOrchestratorOptions options,
         var result = new DispatchCandidateGraph { Vehicles = vehicles, GeneralReasons = reasons };
         var waitingRoutes = new List<TrafficRouteObservation>();
         var work = queue.Work.ToDictionary(t => t.TaskId, StringComparer.OrdinalIgnoreCase);
+        detours.RetainTasks(work.Keys.ToHashSet(StringComparer.OrdinalIgnoreCase));
         foreach (var score in queue.Window)
         {
             ct.ThrowIfCancellationRequested();
@@ -154,6 +156,19 @@ public sealed class DispatchCandidateFilter(DispatchOrchestratorOptions options,
                 var battery = Math.Min(vehicle.BatteryPercent, agvStates.TryGet(vehicle.VehicleId, out var state) ? state.BatteryPercent ?? 0 : 0);
                 var sourceZone = policy.SiteZones.FirstOrDefault(p => p.Key.Equals(vehicle.CurrentStation, StringComparison.OrdinalIgnoreCase)).Value;
                 var estimate = EstimateRoute(route, map, policy);
+                // Compare only; the reference deliberately ignores temporary peers
+                // and leases and must never enter Plans, Outbox or reservations.
+                var reference = routePlanner.PlanWithoutVehicleOccupancyForComparison(vehicle.CurrentStation!, pickup);
+                var referenceTravel = reference is null ? estimate.Travel : EstimateRoute(reference, map, policy).Travel;
+                var deferral = detours.RemainingSeconds(task.TaskId, vehicle.VehicleId, map?.VersionId ?? "",
+                    estimate.Travel, referenceTravel, DateTimeOffset.UtcNow);
+                if (deferral > 0)
+                {
+                    rows.Add(new(vehicle.VehicleId, estimate.Travel, estimate.Travel,
+                        $"临时占用导致大幅绕行：可行路线预计{estimate.Travel:0}秒，通道空闲参考{referenceTravel:0}秒；" +
+                        $"先等待并重新匹配，最多再等{Math.Ceiling(deferral):0}秒。未给该候选分配车辆或锁定路线。", false));
+                    continue;
+                }
                 var candidate = new DispatchAssignmentCandidate(task.TaskId, vehicle.VehicleId, estimate.Travel)
                 {
                     TrafficWaitSeconds = estimate.TrafficWait, ReturnSeconds = returnSeconds,
