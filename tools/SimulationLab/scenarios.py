@@ -117,6 +117,11 @@ def summarize_tasks(details):
         task = detail.get('task') if isinstance(detail.get('task'), dict) else {}
         steps = detail.get('steps') if isinstance(detail.get('steps'), list) else []
         current = next((step for step in steps if step.get('isCurrent')), None)
+        stage = task.get('stage')
+        if stage in ('Completed', 'Cancelled'):
+            current = None
+        fallback_name = {'Completed': '已完成', 'Cancelled': '已取消', 'Faulted': '任务故障',
+                         'WaitingForVehicle': '等待派车'}.get(stage, '等待任务反馈')
         steps_out = []
         for index, step in enumerate(steps):
             if not isinstance(step, dict):
@@ -129,11 +134,25 @@ def summarize_tasks(details):
             taskId=task_id, stationId=task.get('stationId'), vehicleId=task.get('vehicleId'),
             stage=task.get('stage'), currentStepNumber=current.get('sequence') if current else None,
             currentStepType=current.get('stepType') if current else None,
-            currentStepName=STEP_NAMES.get(current.get('stepType'), '等待派车') if current else '等待派车',
+            currentStepName=STEP_NAMES.get(current.get('stepType'), fallback_name) if current else fallback_name,
             currentStepStatus=current.get('status') if current else None,
             waitingExplanation=detail.get('waitingExplanation') or (current or {}).get('waitingExplanation'),
             completed=task.get('stage') == 'Completed', steps=steps_out))
     return result
+
+
+def active_step_wait_seconds(details, starts, now):
+    longest = 0
+    for tid, detail in details.items():
+        if detail.get('task', {}).get('stage') in ('Completed', 'Cancelled'):
+            starts.pop(tid, None)
+            continue
+        signature = tuple(step['status'] for step in detail['steps'])
+        prior = starts.get(tid)
+        if not prior or prior[0] != signature:
+            starts[tid] = (signature, now)
+        longest = max(longest, now - starts[tid][1])
+    return longest
 
 
 def submit_original_task(runtime, payload, evidence):
@@ -539,11 +558,7 @@ class Observer:
                 if not any(item.get('kind') == 'mutual-vehicle-wait' and item.get('vehicles') == list(pair)
                            for item in self.violations):
                     self.violations.append(detail)
-        for tid, detail in details.items():
-            signature = tuple(s['status'] for s in detail['steps'])
-            prior = self.wait_started.get(tid)
-            if not prior or prior[0] != signature: self.wait_started[tid] = (signature, now)
-            self.max_wait = max(self.max_wait, now - self.wait_started[tid][1])
+        self.max_wait = max(self.max_wait, active_step_wait_seconds(details, self.wait_started, now))
         self.samples += 1; self.previous = state
         task_observation = ({
             'total': len(details),
@@ -1806,6 +1821,7 @@ def execute(runtime, request):
             metrics=dict(taskCount=len(tasks), completedRounds=runtime.scenario['completedRounds'], durationSeconds=time.time()-started,
                          samples=observer.samples if observer else 0, minimumSeparationMeters=observer.minimum if observer else None,
                          longestUnchangedStepSeconds=observer.max_wait if observer else 0,
+                         longestUnchangedStepScope='active-tasks-only-v2',
                          obstacleAutoDetourSends=auto_detour_sends,
                          **{key:queue_metrics[key] for key in ('maximumWaitingTasks','maximumActiveTasks','maximumDuePlanCalls','maximumBusyWaitingTasks') if key in queue_metrics}),
             violations=observer.violations if observer else [], scope='正式后台 + 回环Robokit/S7合成模型；碰撞按车辆长宽与朝向的旋转矩形包络检查，并保留5厘米合成余量；超时可发现长期等待，不构成死锁/公平性证明；不代替现场固件、机械及安全验收。')

@@ -5,7 +5,9 @@ import re
 
 REPORT_ID = re.compile(r'^[a-f0-9]{32}$')
 MAX_REPORT_BYTES = 2 * 1024 * 1024
-MAX_REPLAY_BYTES = 256 * 1024 * 1024
+# Long factory campaigns retain large raw observations. Read twice in a stream;
+# keep the independent per-line, frame-count and response-size bounds below.
+MAX_REPLAY_BYTES = 2 * 1024 * 1024 * 1024
 MAX_LINE_BYTES = 4 * 1024 * 1024
 MAX_RESPONSE_BYTES = 7 * 1024 * 1024
 
@@ -131,14 +133,27 @@ def find_run(runtime, identity):
     raise ValueError('历史报告不存在或未保存在最近实例中。')
 
 
+def _present_report(value):
+    if not isinstance(value, dict) or not isinstance(value.get('taskSummary'), list):
+        return value
+    rows = []
+    for original in value['taskSummary']:
+        row = dict(original) if isinstance(original, dict) else original
+        if isinstance(row, dict) and row.get('stage') in ('Completed', 'Cancelled'):
+            row.update(currentStepNumber=None, currentStepType=None, currentStepStatus=None,
+                       currentStepName='已完成' if row['stage'] == 'Completed' else '已取消')
+        rows.append(row)
+    return dict(value, taskSummary=rows)
+
+
 def report(runtime, identity=None):
     from controller import read
-    if identity is None: return runtime.report
+    if identity is None: return _present_report(runtime.report)
     path = find_run(runtime, identity) / 'report.json'
     value = read(_bounded_file(path, MAX_REPORT_BYTES))
     if not isinstance(value, dict) or value.get('id') != identity:
         raise ValueError('报告编号与证据目录不一致。')
-    return value
+    return _present_report(value)
 
 
 def replay(runtime, identity):

@@ -140,6 +140,23 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(value['map']['name'], '当前地图')
         self.assertTrue(value['sampled'])
 
+    def test_replay_enforces_total_byte_limit_in_addition_to_line_and_response_limits(self):
+        self.observations(2)
+        with patch('simulation_reports.MAX_REPLAY_BYTES', 1):
+            with self.assertRaisesRegex(ValueError, '读取边界'):
+                replay(self.runtime, self.identity)
+
+    def test_terminal_history_label_is_corrected_without_rewriting_original_evidence(self):
+        original = dict(id=self.identity, taskSummary=[dict(stage='Completed',
+            currentStepName='等待派车', currentStepNumber=1, currentStepType='GoToPickup')])
+        write(self.run / 'report.json', original)
+        self.assertEqual(report(self.runtime, self.identity)['taskSummary'][0]['currentStepName'], '已完成')
+        self.assertIsNone(report(self.runtime, self.identity)['taskSummary'][0]['currentStepNumber'])
+        self.assertEqual(read(self.run / 'report.json'), original)
+        self.runtime.report = original
+        self.assertEqual(report(self.runtime)['taskSummary'][0]['currentStepName'], '已完成')
+        self.assertEqual(self.runtime.report, original)
+
     def test_replay_retains_actual_station_load_and_obstacle_evidence(self):
         car = dict(x=1, y=2, angle=1.5707963267948966, station='CNC-024',
                    loaded=True, blocked=True, blockedByVehicle='AGV-02', paused=False, offline=False)

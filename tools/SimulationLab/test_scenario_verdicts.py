@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from controller import read, write
-from scenarios import complete_command_set, control_applied, describe_progress, execute, fresh_device_state, has_alternate_connection, mutual_wait_pairs, submit_original_task, summarize_tasks, validate_scenario
+from scenarios import active_step_wait_seconds, complete_command_set, control_applied, describe_progress, execute, fresh_device_state, has_alternate_connection, mutual_wait_pairs, submit_original_task, summarize_tasks, validate_scenario
 
 
 class Event:
@@ -233,6 +233,26 @@ class VerdictTests(unittest.TestCase):
         self.assertEqual(result[0]['currentStepName'], '运送满箱到等待位')
         self.assertEqual(result[0]['waitingExplanation'], '等待倒料区资源')
         self.assertEqual(result[0]['steps'][1]['stepName'], '运送满箱到等待位')
+
+    def test_terminal_summary_does_not_show_waiting_dispatch_or_stale_current_step(self):
+        for stage, label in [('Completed', '已完成'), ('Cancelled', '已取消')]:
+            detail = dict(task=dict(stage=stage), steps=[dict(sequence=1,
+                stepType='GoToPickup', status='Completed', isCurrent=True)])
+            result = summarize_tasks({'T': detail})[0]
+            self.assertEqual(result['currentStepName'], label)
+            self.assertIsNone(result['currentStepNumber'])
+            self.assertIsNone(result['currentStepStatus'])
+
+    def test_completed_task_retention_does_not_inflate_active_step_wait(self):
+        details = dict(done=dict(task=dict(stage='Completed'), steps=[dict(status='Completed')]),
+                       active=dict(task=dict(stage='GoingToDumper'), steps=[dict(status='Executing')]))
+        starts = dict(done=(('Completed',), 0), active=(('Executing',), 90))
+        self.assertEqual(active_step_wait_seconds(details, starts, 100), 10)
+        self.assertNotIn('done', starts)
+        details['active']['steps'][0]['status'] = 'Completed'
+        self.assertEqual(active_step_wait_seconds(details, starts, 101), 0)
+        details['active']['task']['stage'] = 'Completed'
+        self.assertEqual(active_step_wait_seconds(details, starts, 200), 0)
 
     def run_case(self, root, scenario, mode='complete', **parameters):
         runtime = Runtime(root, mode)
