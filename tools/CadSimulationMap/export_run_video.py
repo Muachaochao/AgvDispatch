@@ -139,8 +139,10 @@ def frame_image(navigation, fleet, frames, index, report, trails):
             color = COLORS[number % len(COLORS)]
             if label.startswith('全厂'):
                 pts = [point(a, b) for a, b in trails[car['vehicleId']]]
-                if len(pts) > 1:
-                    draw.line(pts, fill=color, width=2)
+                # Sample decimation can straddle several turns; a straight
+                # chord would invent movement across machines or other lanes.
+                for tx, ty in pts:
+                    draw.ellipse((tx-1,ty-1,tx+1,ty+1),fill=color)
             angle = -car['angle']
             c, s = math.cos(angle), math.sin(angle)
             length, width = profile['lengthMeters']*scale, profile['widthMeters']*scale
