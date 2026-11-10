@@ -1357,9 +1357,12 @@ def render_preview(
         return 20 + px * cad_width / viewbox["pixelWidth"], 20 + py * cad_height / viewbox["pixelHeight"]
 
     nodes = {node["id"]: node for node in definition["nodes"]}
+    drawn_pairs = set()
     for edge in definition["edges"]:
-        if edge["id"].endswith("00000") or int(edge["id"].split("-")[-1]) % 2 != 0:
+        pair = tuple(sorted((edge['from'], edge['to'])))
+        if pair in drawn_pairs:
             continue
+        drawn_pairs.add(pair)
         a = nodes[edge["from"]]
         b = nodes[edge["to"]]
         p1 = pixel_from_cad_m(a["x"], a["y"])
@@ -1602,8 +1605,15 @@ def build(args: argparse.Namespace) -> None:
     viewbox = read_json(args.viewbox) if args.viewbox else DEFAULT_VIEWBOX
     viewbox = {key: float(viewbox[key]) for key in DEFAULT_VIEWBOX}
     stations, rows = detect_station_points(args.cad_preview, viewbox)
-    definition, summary = build_graph(stations)
-    lane_summary = apply_dual_lane_topology(definition)
+    if getattr(args, 'physical_lanes', False):
+        from physical_lanes import build_physical_graph
+        definition, summary = build_physical_graph(stations, args.cad_dxf, build_graph)
+        lane_summary = dict(lanePairCount=6, laneOffsetMeters=None, separatedPhysicalGeometry=True,
+                            directedMainEdges=sum(e.get('laneRole') in ('eastbound','westbound','northbound','southbound') for e in definition['edges']),
+                            **summary['physicalLanes'])
+    else:
+        definition, summary = build_graph(stations)
+        lane_summary = apply_dual_lane_topology(definition)
     summary['stationEnvelopeGuards'] = apply_station_envelope_guards(definition)
     summary['resourceCount'] = len(definition['resources'])
     station_ids = [station.station_id for station in stations]
@@ -1706,6 +1716,8 @@ def build(args: argparse.Namespace) -> None:
         ])
         writer.writeheader()
         for node_id, role in terminal_roles.items():
+            if node_id not in node_map:
+                continue
             node = node_map[node_id]
             writer.writerow({
                 "nodeId": node_id,
@@ -1755,6 +1767,10 @@ def build(args: argparse.Namespace) -> None:
         "summary": summary,
         "plcTable": {key: value for key, value in plc_table.items() if key not in ("csvText", "stations", "headers")},
     }
+    if getattr(args, 'physical_lanes', False):
+        manifest['navigationAuthority'].update(
+            cadLineworkUsedAsDesignReference=True,
+            reason='User 2026-11-10 authorised separated double-row routing following CAD magenta linework. Directions and terminal docking connections are simulation design, not certified vendor paths.')
     if args.map_id:
         manifest["backendPublication"] = {
             "mapId": args.map_id,
@@ -1799,6 +1815,25 @@ def build(args: argparse.Namespace) -> None:
 - 本图的横向通道和外围联络线依据 CAD 设备空档与蓝色包围区生成，可用于仿真分析，不能直接作为真车导航或地图传输依据。
 - 实车前仍应导入厂家 SMAP、核对车端 MD5、逐站确认业务角色、校准安全停点和现场路权。
 """
+    if getattr(args, 'physical_lanes', False):
+        report = f'''# 成都全厂分离双车道仿真设计
+
+按用户2026-11-10提供的两张截图和授权，沿有效DXF的12条横线建立六组物理分离车道，
+上侧向东、下侧向西。西侧外线向南内线向北，东侧外线向北内线向南。
+每组在两端和中部配置受控双向连接，所有平面交叉切分为共享图节点及容量1路口。
+这些方向为本次仿真设计，不冒充厂家已核定路线。
+
+- CNC数量保持305，机台坐标不移动；取箱位向最近CAD通道偏移1.1m。
+- 两线间距最小{summary['physicalLanes']['minimumSeparationMeters']:.3f}m，几何确实分开，不是同一线上的方向标签。
+- 终端以CAD两条竖线x=981.90318/983.50192m建立双通道；独立环路连接五待命位。
+- 两个充电位保留文字锚点坐标，提升倒料机本体与车辆对接位分别标注。
+- 节点{len(definition['nodes'])}、有向道路{len(definition['edges'])}、资源{len(definition['resources'])}。
+- 图示dual-lane-layout.png包含方向箭头及终端放大；全部原始坐标、点表、来源摘要同时保留。
+
+部分取箱位会占用近侧车道，已把该站容量1资源绑定到邻道包络，不能把业务完成当成车体消失。
+是否能经另一条车道通过仍由正式规划器结合车辆占位、路权、封路计算；无安全路线就等待。
+机台设备轮廓、充电/倒料对接姿态和转弯半径尚未测量核定；不能直接下发给现场车辆。
+'''
     (args.output / "README.md").write_text(report, encoding="utf-8")
     render_preview(
         args.output / "cad-full-map-preview.png",
@@ -1834,6 +1869,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--map-id")
     parser.add_argument("--map-version-id")
     parser.add_argument("--definition-hash")
+    parser.add_argument("--physical-lanes", action="store_true", help="按CAD双排线构建实际分离的仿真路线，方向为用户授权的仿真设计。")
     return parser.parse_args()
 
 

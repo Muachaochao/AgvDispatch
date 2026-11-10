@@ -21,12 +21,13 @@ try {
     $reportPath = Join-Path $folder 'report.json'
     $null = & (Join-Path $PSScriptRoot 'Convert-ProjectToProfControl.ps1') -MapPath $mapPath -PlanPath $planPath -OutputPath $payloadPath -ReportPath $reportPath
     $first = Get-Content -LiteralPath $payloadPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ($first.stations.Count -ne 4 -or $first.agvs.Count -ne 1 -or $first.lines.Count -ne 1) { throw 'Incomplete display map.' }
+    if ($first.stations.Count -ne 2 -or $first.texts.Count -ne 2 -or $first.agvs.Count -ne 1 -or $first.lines.Count -ne 1) { throw 'Incomplete display map or captions exported as stations.' }
     if ($first.agvs[0].length -ne .8 -or $first.agvs[0].width -ne .52) { throw 'Vehicle dimensions reversed.' }
     if ($first.agvs[0].position.x -ne 1 -or $first.agvs[0].position.y -ne -2) { throw 'Axis reflection incorrect.' }
     if ([Math]::Abs($first.agvs[0].angle + [Math]::PI/2) -gt .000001) { throw 'Initial heading must be mirrored radians.' }
-    $reference = $first.stations | Where-Object mark -eq 'reference'
+    $reference = $first.texts | Where-Object name -eq 'reference'
     if ($reference.layerName -ne (-join @([char]0x53C2,[char]0x8003,[char]0x70B9,[char]0x5C42))) { throw 'Reference layer lost.' }
+    if ([Math]::Abs($reference.position.x - 1.0/3) -gt .000001 -or [Math]::Abs($reference.position.y + 1.0/3) -gt .000001) { throw 'OrderedDictionary reference point collapsed to origin.' }
     $null = & (Join-Path $PSScriptRoot 'Convert-ProjectToProfControl.ps1') -MapPath $mapPath -PlanPath $planPath -OutputPath $payloadPath -ReportPath $reportPath
     $second = Get-Content -LiteralPath $payloadPath -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($first.agvs[0].guid -ne $second.agvs[0].guid -or $first.networks[0].guid -ne $second.networks[0].guid) { throw 'Display identity changed.' }

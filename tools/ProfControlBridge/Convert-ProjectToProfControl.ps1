@@ -48,6 +48,10 @@ function Get-PropertyValue {
     if ($null -eq $InputObject) {
         return $Default
     }
+    if ($InputObject -is [System.Collections.IDictionary]) {
+        if ($InputObject.Contains($Name)) { return $InputObject[$Name] }
+        return $Default
+    }
 
     $property = $InputObject.PSObject.Properties[$Name]
     if ($null -eq $property) {
@@ -288,13 +292,15 @@ foreach ($referencePoint in $sourceReferencePoints) {
         x = ($boundary | Measure-Object -Property x -Average).Average
         y = ($boundary | Measure-Object -Property y -Average).Average
     }
-    $payload.stations += [ordered]@{
+    $payload.texts += [ordered]@{
         guid        = New-StableGuid "profcontrol/cad-reference/$mapId/$referenceId"
         networkGuid = $networkGuid
         layerName   = (-join @([char]0x53C2, [char]0x8003, [char]0x70B9, [char]0x5C42))
-        mark        = [string](Get-PropertyValue $referencePoint 'text' $referenceId)
+        name        = [string](Get-PropertyValue $referencePoint 'text' $referenceId)
         position    = Convert-ToProfControlPoint -Point $point -YFactor $yFactor
-        cargoAreas  = @()
+        angle       = 0
+        width       = 2.0
+        height      = 0.22
     }
 }
 
@@ -308,13 +314,15 @@ foreach ($areaLabel in $sourceAreaLabels) {
         x = ($boundary | Measure-Object -Property x -Average).Average
         y = ($boundary | Measure-Object -Property y -Average).Average
     }
-    $payload.stations += [ordered]@{
+    $payload.texts += [ordered]@{
         guid        = New-StableGuid "profcontrol/area-label/$mapId/$labelId"
         networkGuid = $networkGuid
         layerName   = (-join @([char]0x533A, [char]0x57DF, [char]0x6807, [char]0x6CE8, [char]0x5C42))
-        mark        = [string](Get-PropertyValue $areaLabel 'text' $labelId)
+        name        = [string](Get-PropertyValue $areaLabel 'text' $labelId)
         position    = Convert-ToProfControlPoint -Point $point -YFactor $yFactor
-        cargoAreas  = @()
+        angle       = 0
+        width       = 5.0
+        height      = 0.28
     }
 }
 
@@ -474,6 +482,7 @@ $report = [ordered]@{
         lines     = $payload.lines.Count
         beziers   = $payload.beziers.Count
         arcs      = $payload.arcs.Count
+        texts     = $payload.texts.Count
     }
     sourceCounts            = [ordered]@{
         nodes     = $sourceNodes.Count
@@ -491,7 +500,7 @@ $report = [ordered]@{
     warnings                = @(
         'The ProfControl setMap API does not carry traffic-resource polygons; capacities and boundaries must be checked separately.',
         'The ProfControl setMap API does not carry path direction; one-way and bidirectional flags are not written to the target map.',
-        'CAD deployment reference markers are display-only stations; they are not dispatch destinations or proof of an AGV route.',
+        'CAD deployment references and zone captions are display-only texts, not navigation stations.',
         'Only the map, stations and vehicle start positions are migrated. PLC signals, the production dispatcher and task protocols are out of scope.'
     )
     sent                    = $false
@@ -524,6 +533,7 @@ if ($Send) {
         vehicles = @($targetMap.agvs | Where-Object { [string](Get-PropertyValue $_ 'networkGuid' '') -eq $networkGuid }).Count
         lines = @($targetMap.lines | Where-Object { [string](Get-PropertyValue $_ 'networkGuid' '') -eq $networkGuid }).Count
         beziers = @($targetMap.beziers | Where-Object { [string](Get-PropertyValue $_ 'networkGuid' '') -eq $networkGuid }).Count
+        texts = @($targetMap.texts | Where-Object { [string](Get-PropertyValue $_ 'networkGuid' '') -eq $networkGuid }).Count
     }
     $targetVehicles = @($targetMap.agvs | Where-Object {
         [string](Get-PropertyValue $_ 'networkGuid' '') -eq $networkGuid
@@ -538,6 +548,7 @@ if ($Send) {
         $verified.vehicles -ne $payload.agvs.Count -or
         $verified.lines -ne $payload.lines.Count -or
         $verified.beziers -ne $payload.beziers.Count -or
+        $verified.texts -ne $payload.texts.Count -or
         $dimensionMismatch.Count -ne 0) {
         throw "Map readback validation mismatch: $($verified | ConvertTo-Json -Compress)"
     }

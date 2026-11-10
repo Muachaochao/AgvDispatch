@@ -39,14 +39,14 @@ powershell -NoProfile -File .\Convert-ProjectToProfControl.ps1 `
   -Send
 ```
 
-该模式会从 `/api/simulation` 同时读取实际地图、地图版本、车辆数和各车起点。当前全厂方案生成 647 个可通行导航节点、305 个 CNC 业务工位和 5 辆车；补充 CAD 完整部署参考版还会把 25 个码头、5T、总控和终端工艺点作为不参与派车的参考站显示，再加 8 个业务分区标签，因此 ProfControl 可出现 680 个站点。三车四工位方案应生成 29 个导航节点、4 个业务工位和 3 辆车。
+该模式会从 `/api/simulation` 同时读取实际地图、地图版本、车辆数和各车起点。对象数量随方案变化；2026-11-10 双车道版本为 1096 个导航节点、1874 条有向道路、305 个 CNC 业务工位和 5 辆车。CAD 设备说明和分区标签转换为普通文本，不再作为无连线的导航站点。
 
 项目地图采用 Y 轴向上，ProfControl 地图采用 Y 轴向下；桥接默认自动反转 Y，并在报告中记录 `invertY=true`。如果以后导入的地图本身已经是 ProfControl 坐标系，可显式传入 `-InvertY $false`。
 
 ## 已转换
 
 - 当前地图节点转换为 ProfControl 站点。
-- `CadReferencePoint` 转换为无连线的参考站点，只显示 CAD 中的码头、5T、总控和终端设备，不代表可派车停站。
+- `CadReferencePoint` 和分区说明转换为普通文本，保持各自坐标，不参与导航站点分析。
 - 工程方案中的启用车辆转换为 ProfControl `Agv`，使用方案中的起点。
 - 普通路段转换为 `Line`。
 - 有两个控制点的 `CubicBezier` 转换为 `Bezier`。
@@ -61,6 +61,16 @@ powershell -NoProfile -File .\Convert-ProjectToProfControl.ps1 `
 - 车辆控制参数、加减速、电量与实际取放货动作：需要在 ProfControl 对象属性或仿真配置中继续绑定。
 
 因此该桥接可用于地图、车辆初始位置和可视化核对；不能把“地图导入成功”当作业务仿真已经等价。
+
+### 密集路网的站点显示与分析
+
+在导入干净的隔离实例后执行：
+
+```powershell
+python tools/ProfControlBridge/configure_display.py --output artifacts/display-analysis.json
+```
+
+该脚本仅连接本机 10001，通过公开属性接口把站点符号调整为 2 像素，并立即还原、回读每个站点的世界坐标。原软件改变符号大小会改变中心点，因此不能只改大小。脚本检查重叠点、接近而未连接的端点及坐标偏移，再调用原地图分析接口；不会关闭分析选项，也不改变车辆的 800×520 mm 尺寸。`--check-only` 只读核对。原接口返回成功不等于人工目视验收或业务回归通过，仍需核对运行报告。
 
 ## 实时状态桥
 

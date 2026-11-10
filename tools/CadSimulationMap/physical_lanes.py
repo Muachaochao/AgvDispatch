@@ -1,0 +1,165 @@
+"""Separated CAD linework for the user-authorised two-lane simulation design.
+
+Magenta CAD lines are design references, not certified vendor navigation paths.
+Direction, crossovers and terminal connections are explicitly simulation choices.
+All intersections are split before publication, including terminal bay access.
+"""
+from __future__ import annotations
+from collections import defaultdict
+import math
+import ezdxf
+
+
+def build_physical_graph(stations, cad_dxf, base_builder):
+    definition, summary = base_builder(stations)
+    original = {n['id']: n for n in definition['nodes']}
+    doc = ezdxf.readfile(cad_dxf)
+    lines = [e for e in doc.modelspace().query('LINE') if e.dxf.layer == '管道']
+    horizontal = sorted((e for e in lines if abs(e.dxf.start.y-e.dxf.end.y)<.1
+                         and abs(e.dxf.start.x-e.dxf.end.x)>120000
+                         and -426000<e.dxf.start.y<-388000), key=lambda e:-e.dxf.start.y)
+    if len(horizontal)!=12:
+        raise ValueError(f'需找到CAD的六组平行线，实际{len(horizontal)}条')
+    ys = [round(e.dxf.start.y/1000,6) for e in horizontal]
+    west,east = 910.916525,1031.462795
+    inner_w,inner_e=west+1,east-1
+    segments=[]
+    # Every tuple is an actual geometric segment, not a visual offset.
+    def line(a,b,kind,both=False):
+        if math.dist(a,b)>1e-5: segments.append((tuple(a),tuple(b),kind,both))
+    for i,y in enumerate(ys):
+        a,b=(west,y),(east,y)
+        line(a,b,'eastbound' if i%2==0 else 'westbound',False) if i%2==0 else line(b,a,'westbound')
+    # Paired perimeter spines, all four captured in the CAD.
+    for x,northbound in ((west,False),(inner_w,True),(inner_e,False),(east,True)):
+        a,b=(x,ys[0]),(x,ys[-1])
+        line(b,a,'northbound') if northbound else line(a,b,'southbound')
+    crossovers=[]
+    # Keep the middle connector away from near-coincident machine branches;
+    # a 3 cm segment cannot represent an executable turn and some viewers
+    # merge its endpoints. Move the connector, never the machine/docking point.
+    machine_x=[s.cad_x_mm/1000 for s in stations]
+    middle=max((969+i*.1 for i in range(61)),key=lambda x:min(abs(x-sx) for sx in machine_x))
+    for i in range(0,12,2):
+        # The supplied drawing also has repeated cross-connections, not just
+        # end turns. Provide a controlled connector in every usable gap between
+        # CNC approaches. Otherwise a parked bay on the eastbound lane isolates
+        # the next CNC even though an unobstructed westbound lane exists.
+        branch_x=sorted(set(s.cad_x_mm/1000 for s in stations
+            if min(range(len(ys)),key=lambda j:abs(ys[j]-s.cad_y_mm/1000))//2==i//2))
+        gaps=[(a+b)/2 for a,b in zip(branch_x,branch_x[1:]) if b-a>=.6]
+        extras=[middle] if all(abs(middle-x)>.3 for x in gaps) else []
+        for x in sorted(set((inner_w,inner_e,*extras,*gaps))):
+            line((x,ys[i]),(x,ys[i+1]),'crossover',True)
+            crossovers.append(dict(pair=i//2+1,x=x,upper=ys[i],lower=ys[i+1]))
+    business=[]
+    for s in stations:
+        sx,sy=s.cad_x_mm/1000,s.cad_y_mm/1000
+        closest=min(ys,key=lambda y:abs(y-sy))
+        py=round(sy+math.copysign(1.1,closest-sy),6)
+        node=dict(original['BUS-'+s.station_id],x=sx,y=py)
+        business.append(node)
+        line((sx,py),(sx,closest),'cnc-access',True)
+        summary['stationRelations'][s.station_id].update(cadPickupMm=dict(x=sx*1000,y=py*1000),
+                                                        approachNode='',laneY=closest)
+    # Terminal double spine follows CAD 844F7 / 8CB89. Main loop stays west
+    # of the waiting bays and machine body. Bay collection roads do not cut
+    # through another parked vehicle.
+    tw,te=981.90318,983.50192
+    top,bottom=ys[-1],-431.36636
+    line((tw,top),(tw,bottom),'terminal-in')
+    line((te,bottom),(te,ys[-2]),'terminal-out')
+    line((tw,bottom),(te,bottom),'terminal-turn')
+    line((tw,top),(te,top),'terminal-turn')
+    # North and south collector form a loop around the five CAD waiting bays.
+    north,south,rx=-427.3,-431.36636,988.5
+    line((te,north),(rx,north),'waiting-in')
+    line((rx,north),(rx,south),'waiting-out')
+    line((rx,south),(te,south),'waiting-out')
+    for i in range(1,6):
+        node=dict(original[f'WAIT-{i:02}']);business.append(node)
+        exit_y=north if i in (1,2,5) else south
+        line((node['x'],node['y']),(node['x'],exit_y),'waiting-bay',True)
+    for i in range(1,3):
+        node=dict(original[f'CHARGE-{i:02}']);business.append(node)
+        # Dedicated perpendicular branches off the lower collector, separate
+        # from the dumper approach. Charger anchors remain CAD text anchors.
+        line((node['x'],node['y']),(node['x'],south),'charging-access',True)
+    line((981.426486,south),(te,south),'charging-collector',True)
+    for key in ('DUMPER-001','INSPECT-01'):
+        node=dict(original[key]);business.append(node)
+        line((node['x'],node['y']),(node['x'],south),'dumper-access' if key=='DUMPER-001' else 'inspection-access',True)
+    # Axis-aligned splitting includes collinear overlaps. There can be no
+    # invisible crossing where two vehicles use different graph node IDs.
+    def key(p):return (round(p[0],6),round(p[1],6))
+    points={key(p) for a,b,_,_ in segments for p in (a,b)}
+    for a,b,_,_ in segments:
+        for c,d,_,_ in segments:
+            if abs(a[1]-b[1])<1e-5 and abs(c[0]-d[0])<1e-5:
+                if min(a[0],b[0])-1e-5<=c[0]<=max(a[0],b[0])+1e-5 and min(c[1],d[1])-1e-5<=a[1]<=max(c[1],d[1])+1e-5:
+                    points.add(key((c[0],a[1])))
+    nodes=[];by_point={}
+    business_points={key((n['x'],n['y'])):n for n in business}
+    for i,p in enumerate(sorted(points)):
+        n=business_points.get(p)
+        if n is None:
+            nid=f'CAD2-J{i:04}'
+            n=dict(id=nid,agvSiteId=nid,x=p[0],y=p[1],type='Waypoint',enabled=True,
+                   layerId='navigation',resourceIds=[],allowTransitThrough=True,allowTrafficStop=False)
+        else:n=dict(n,x=p[0],y=p[1])
+        by_point[p]=n;nodes.append(n)
+    edges=[];seen=set()
+    for a,b,kind,both in segments:
+        a,b=key(a),key(b)
+        horizontal=abs(a[1]-b[1])<1e-5
+        ps=sorted((p for p in points if abs(p[1]-a[1])<1e-5 and min(a[0],b[0])-1e-5<=p[0]<=max(a[0],b[0])+1e-5),key=lambda p:p[0]) if horizontal else sorted((p for p in points if abs(p[0]-a[0])<1e-5 and min(a[1],b[1])-1e-5<=p[1]<=max(a[1],b[1])+1e-5),key=lambda p:p[1])
+        if (b[0],b[1])<(a[0],a[1]):ps.reverse()
+        for p,q in zip(ps,ps[1:]):
+            for src,dst in ((p,q),(q,p)) if both else ((p,q),):
+                sid,tid=by_point[src]['id'],by_point[dst]['id']
+                if (sid,tid) in seen:continue
+                seen.add((sid,tid));edges.append(dict(id=f'CAD2-E{len(edges):05}',**{'from':sid,'to':tid},
+                    distance=round(math.dist(src,dst),6),speedLimit=.75,bidirectional=False,enabled=True,
+                    geometryKind='Line',layerId='navigation',resourceIds=[],displayName=kind,laneRole=kind))
+    resources=[r for r in definition['resources'] if r['id'] in {r for n in business for r in n['resourceIds']}]
+    # A shared junction/segment lease covers crossing and reciprocal branches.
+    # Capacity is one at junctions and business bays, without global lane locks.
+    neighbours=defaultdict(set)
+    for e in edges:
+        neighbours[e['from']].add(e['to']);neighbours[e['to']].add(e['from'])
+    by_id={n['id']:n for n in nodes}
+    for n in nodes:
+        if len(neighbours[n['id']])>=3 and not n['resourceIds']:
+            rid='X-'+n['id'];n['resourceIds']=[rid]
+            resources.append(dict(id=rid,type='Intersection',capacity=1,layerId='navigation',boundary=[
+                dict(x=n['x']+dx,y=n['y']+dy) for dx,dy in ((-.55,-.55),(.55,-.55),(.55,.55),(-.55,.55))]))
+    pair_resources={}
+    for e in edges:
+        reverse=(e['to'],e['from']) in seen
+        if reverse:
+            pair=tuple(sorted((e['from'],e['to'])))
+            if pair not in pair_resources:
+                rid=f'SEG-{len(pair_resources):04}';pair_resources[pair]=rid
+                a,b=by_id[pair[0]],by_id[pair[1]]
+                x0,x1=min(a['x'],b['x'])-.55,max(a['x'],b['x'])+.55
+                y0,y1=min(a['y'],b['y'])-.55,max(a['y'],b['y'])+.55
+                resources.append(dict(id=rid,type='Intersection',capacity=1,layerId='navigation',boundary=[
+                    dict(x=x,y=y) for x,y in ((x0,y0),(x1,y0),(x1,y1),(x0,y1))]))
+            e['resourceIds'].append(pair_resources[pair])
+        for nid in (e['from'],e['to']):e['resourceIds'].extend(by_id[nid]['resourceIds'])
+        e['resourceIds']=sorted(set(e['resourceIds']))
+    for sid,r in summary['stationRelations'].items():
+        n=next(n for n in business if n['agvSiteId']==sid)
+        r['approachNode']=by_point[key((n['x'],r['laneY']))]['id']
+    definition.update(nodes=nodes,edges=edges,resources=resources)
+    definition['areaAnnotations']=[a for a in definition.get('areaAnnotations',[]) if not a['id'].startswith('SIM-AREA-G')]
+    for i in range(6):
+        definition['areaAnnotations'].append(dict(id=f'SIM-LANES-{i+1}',sourceType='CadSimulationEvidence',
+            text=f'通道{i+1} · 上行向东 / 下行向西',boundary=[dict(x=x,y=y) for x,y in (
+                (west,ys[i*2]+.2),(east,ys[i*2]+.2),(east,ys[i*2+1]-.2),(west,ys[i*2+1]-.2))],
+            strokeColor='#37d8cb',fillColor='#0b1e30',fillOpacity=.02,layerId='cad-zones',sourceJson=''))
+    summary.update(nodeCount=len(nodes),edgeCount=len(edges),resourceCount=len(resources),
+                   physicalLanes=dict(pairs=6,crossovers=crossovers,minimumSeparationMeters=min(abs(ys[i]-ys[i+1]) for i in range(0,12,2)),
+                                      cadLineHandles=[e.dxf.handle for e in sorted((e for e in lines if e.dxf.handle in {f'843B{i:X}' for i in range(4,16)}),key=lambda e:e.dxf.handle)],
+                                      terminalSpineX=[tw,te],directionAuthority='user-authorised simulation design'))
+    return definition,summary
