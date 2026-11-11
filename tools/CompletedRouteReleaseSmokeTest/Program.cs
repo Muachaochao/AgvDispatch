@@ -10,6 +10,8 @@ using AgvDispatch.Infrastructure.Persistence;
 using AgvDispatch.Infrastructure.Persistence.Entities;
 using AgvDispatch.Infrastructure.Traffic;
 using AgvDispatch.Service;
+using Microsoft.Data.Sqlite;
+using System.Text.Json.Serialization;
 
 var checks = 0;
 void Check(bool value, string description)
@@ -217,6 +219,42 @@ Check(boundaryReleased.ReleasedCount==2,"下一窗口被占用时，先按完整
 Check(windowDb.Queryable<TrafficResourceLeaseEntity>().Any(l=>l.ResourceId=="FINAL")&&windowDb.Queryable<TrafficResourceLeaseEntity>().Any(l=>l.LeaseId=="OTHER-NEXT")&&windowDb.Queryable<TrafficResourceLeaseEntity>().Any(l=>l.ResourceId=="AUTO-CORRIDOR-SYNTHETIC"),"保留当前停点、他车下一窗口和无几何依据的未知走廊，未删他车路权");
 Check((await windowManager.TryAcquireAsync("OTHER-STEP","OTHER","OTHER-CAR",["CORRIDOR"],default)).Acquired,"返箱车可取得前车真正释放的路权，不再被已走过路段挡住");
 Check(windowDb.Queryable<DispatchTaskStepEntity>().Single(s=>s.StepId=="STEP").Status==(int)DispatchTaskStepStatus.Executing&&windowDb.Queryable<AgvCommandOutboxEntity>().Count()==1,"只释放前序资源，不完成业务步骤、不伪造PLC、不提前发送下一窗口");
+if(args.Length==1)
+{
+    // Read-only archive -> private SQLite replay. This exercises actual CAD
+    // geometry; timestamps/terminal telemetry are explicit fixture inputs,
+    // never live vehicle evidence or permission to release original leases.
+    var archive=Path.GetFullPath(args[0]);var replayPath=Path.Combine(root,"cad-replay.db");
+    using(var source=new SqliteConnection(new SqliteConnectionStringBuilder{DataSource=Path.Combine(archive,"data","agv-dispatch.db"),Mode=SqliteOpenMode.ReadOnly}.ToString()))
+    using(var target=new SqliteConnection("Data Source="+replayPath)){source.Open();target.Open();source.BackupDatabase(target);}
+    using var cadDb=DatabaseFactory.Create(new(){DatabasePath=replayPath});
+    var cadTask=cadDb.Queryable<DispatchTaskEntity>().Single(t=>t.VehicleId=="AGV-02"&&t.Stage==(int)DispatchTaskStage.GoingToDumper);
+    var cadStep=cadDb.Queryable<DispatchTaskStepEntity>().Single(s=>s.TaskId==cadTask.TaskId&&s.Status==(int)DispatchTaskStepStatus.Executing);
+    var cadCommand=cadDb.Queryable<AgvCommandOutboxEntity>().Single(c=>c.StepId==cadStep.StepId&&c.VendorCommandId==cadTask.VendorTaskId);
+    var jsonOptions=new JsonSerializerOptions(JsonSerializerDefaults.Web);jsonOptions.Converters.Add(new JsonStringEnumConverter());
+    var cadPayload=JsonSerializer.Deserialize<AgvTransportCommandPayload>(cadCommand.PayloadJson,jsonOptions)!;
+    var cadVersion=cadDb.Queryable<MapVersionEntity>().Single(v=>v.VersionId==cadCommand.ExecutionMapVersionId);
+    var cadMap=JsonSerializer.Deserialize<MapDefinition>(cadVersion.DefinitionJson,jsonOptions)!;
+    var cadRuntime=new ActiveMapRuntime();cadRuntime.Replace(new(cadVersion.MapId,cadVersion.VersionId,cadMap,DateTimeOffset.UtcNow));
+    var cadRequest=cadDb.Queryable<TrafficRequestEntity>().Single(r=>r.StepId==cadStep.StepId);
+    // Reconstruct the ORIGINAL window request before the failed next-window
+    // attempt, only in this private fixture. Keep all archived leases intact.
+    var originalWindow=cadPayload.Windows[cadPayload.WindowIndex];
+    cadRequest.Source=originalWindow.Source;cadRequest.Destination=originalWindow.Destination;
+    cadRequest.EdgeIds=JsonSerializer.Serialize(originalWindow.EdgeIds);cadRequest.ResourceIds=JsonSerializer.Serialize(originalWindow.ResourceIds);cadRequest.State="Held";cadDb.Updateable(cadRequest).ExecuteCommand();
+    using var device=JsonDocument.Parse(File.ReadAllText(Path.Combine(archive,"multi-state.json")));
+    var car=device.RootElement.GetProperty("cars").GetProperty("AGV-02");
+    var cadVehicle=vehicle with {VehicleId="AGV-02",CurrentStation=car.GetProperty("station").GetString(),X=car.GetProperty("x").GetDouble(),Y=car.GetProperty("y").GetDouble(),LastSuccessfulPollAt=DateTimeOffset.UtcNow,UpdatedAt=DateTimeOffset.UtcNow,VelocityX=0,VelocityY=0,AngularVelocity=0};
+    using var settings=JsonDocument.Parse(File.ReadAllText(Path.Combine(archive,"service-settings.json")));
+    var cadHandshake=settings.RootElement.GetProperty("HandshakeExecution").Deserialize<HandshakeExecutionOptions>(jsonOptions)!;
+    var cadProfile=cadHandshake.DumperExit.BodyProfiles.Single(p=>p.VehicleId=="AGV-02");
+    var cadManager=new TrafficResourceManager(cadDb,new TrafficResourceCatalog(cadMap.Resources),new(TimeSpan.FromMinutes(2)));
+    var cadService=new CompletedTransportRouteReleaseService(cadDb,cadRuntime,new Vehicles(cadVehicle),new BodyProvider(new(cadProfile.ProfileId,"AGV-02",cadMap.CoordinateSystem,cadProfile.RadiusFromReportedReferenceMeters,cadProfile.CalibrationVerified,cadProfile.IncludesMaximumPermittedLoad)),cadHandshake,new MapOptions(),new TrafficSegmentReleasePolicy{Enabled=true},cadManager);
+    var cadReleased=await cadService.ReleaseWindowAsync(cadTask.TaskId,cadStep.StepId,new(cadTask.VendorTaskId!,cadTask.TaskId,AgvTransportTaskState.Completed,"AGV-02",DateTimeOffset.UtcNow),default);
+    var cleared=new[]{"SEG-0203","X-CAD2-J0640","X-CAD2-J0641","AUTO-CORRIDOR-7223E762A27394A1B200","AUTO-CORRIDOR-A9035B3BCBCC062F62B8"};
+    Check(cadReleased.ReleasedCount>0&&!cadDb.Queryable<TrafficResourceLeaseEntity>().Any(l=>l.TaskId==cadTask.TaskId&&cleared.Contains(l.ResourceId)),"真实失败档案的CAD回放：完整包络已离开的五项返箱阻塞资源均可核验释放（仅私有副本）");
+    Check(cadDb.Queryable<TrafficResourceLeaseEntity>().Any(l=>l.VehicleId=="AGV-04"&&l.ResourceId=="X-CAD2-J0652")&&cadDb.Queryable<TrafficResourceLeaseEntity>().Any(l=>l.TaskId==cadTask.TaskId&&l.ResourceId=="SIM-STOP-SIM-SAFE-CAD2-E01832"),"CAD回放仍保留倒料车当前资源及满箱车安全点，不删除另一辆车路权");
+}
 Console.WriteLine($"PASS {checks} completed-route release checks. Database: {root}");
 
 sealed class Vehicles(AgvRobotSnapshot snapshot) : IAgvStateCache
