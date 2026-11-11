@@ -7,6 +7,9 @@ public sealed record TaskWaitingBayBinding(string TaskId, string VehicleId, stri
 public interface ITaskWaitingBayAllocator
 {
     Task<TaskWaitingBayBinding?> GetAsync(string taskId, CancellationToken ct);
+    // Historical use is a preference, never proof that a physical bay is free.
+    Task<IReadOnlyDictionary<string, int>> GetSelectionCountsAsync(string mapId, string versionId, CancellationToken ct) =>
+        Task.FromResult<IReadOnlyDictionary<string, int>>(new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase));
     Task<TrafficReservationResult> TryAcquireAsync(TaskWaitingBayBinding binding,
         IReadOnlyCollection<string> routeResources, CancellationToken ct);
 }

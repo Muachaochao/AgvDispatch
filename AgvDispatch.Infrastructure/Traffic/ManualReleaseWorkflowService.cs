@@ -97,6 +97,13 @@ public sealed class ManualReleaseWorkflowService(
                 .Where(item => item.LeaseId == lease.LeaseId)
                 .ExecuteCommandAsync(cancellationToken);
             if (deleted != 1) throw new InvalidOperationException("路权已被并发修改，解锁事务已回滚。");
+            await database.Insertable(new TrafficLifecycleEventEntity
+            {
+                EventId=Guid.NewGuid().ToString("N"), StepId=lease.OwnerStepId, TaskId=lease.TaskId,
+                VehicleId=lease.VehicleId, Kind="ResourceReleased",
+                Reason="人工核验释放（审计另存）："+Truncate(request.Reason.Trim(),1000),
+                ResourceIds=System.Text.Json.JsonSerializer.Serialize(new[]{lease.ResourceId}), OccurredAt=now
+            }).ExecuteCommandAsync(cancellationToken);
             await database.Insertable(new ManualTrafficReleaseRequestEntity
             {
                 RequestId = requestId,

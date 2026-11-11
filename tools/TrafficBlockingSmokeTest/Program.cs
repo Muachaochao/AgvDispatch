@@ -46,6 +46,24 @@ await using(var f=await Fixture.Create()){
  for(var i=0;i<210;i++)f.Db.Insertable(new TrafficRequestEntity{TaskId="Q"+i,StepId="Q"+i,VehicleId="Q",State="Waiting",RequestedAt=DateTime.Now.AddDays(2),UpdatedAt=DateTime.Now.AddDays(2)}).ExecuteCommand();
  var lifecycle=await f.Control.GetLifecycleAsync(default);d=await f.Control.GetBlockingAsync(new("A","SA"),default);Check(!lifecycle.Requests.Any(r=>r.StepId=="SA")&&d.Available&&d.Links.Count>0,"详情按原步骤查询，不受生命周期最近200条截断限制");
 }
+await using(var f=await Fixture.Create()){
+ await f.Task("OLD","SO","CAR-OLD");await f.Task("NEXT","SN","CAR-NEXT");await f.Task("ASK","SQ","CAR-ASK");
+ await f.Hold("OLD","SO","CAR-OLD","RA");await f.Wait("ASK","SQ","CAR-ASK","RA");
+ var manager=new TrafficResourceManager(f.Db,new TrafficResourceCatalog([new("RA",TrafficResourceType.NarrowAisle)]),new(TimeSpan.FromMinutes(10)));
+ await manager.ReleaseTaskAsync("OLD",default);await f.Hold("NEXT","SN","CAR-NEXT","RA");
+ await f.Wait("ASK","SQ","CAR-ASK","RA");
+ var d=await f.Control.GetBlockingAsync(new("ASK","SQ"),default);
+ Check(d.ResourceHistory.Any(e=>e.VehicleId=="CAR-OLD"&&e.Kind=="ResourceAcquired")&&
+       d.ResourceHistory.Any(e=>e.VehicleId=="CAR-OLD"&&e.Kind=="ResourceReleased")&&
+       d.ResourceHistory.Any(e=>e.VehicleId=="CAR-NEXT"&&e.Kind=="ResourceAcquired"),
+       "当前挡路方变化后仍可看前车实际释放和后车取得，不依赖当前阻塞链");
+ Check(d.Links.Single().VehicleId=="CAR-NEXT"&&!d.Links.Any(l=>l.VehicleId=="CAR-OLD"),"历史占用方不会被当作当前挡路车辆");
+ await f.Db.Insertable(new TrafficRequestEntity{TaskId="OTHER",StepId="OTHER",VehicleId="OTHER",MapId="M",MapVersionId="OTHER"}).ExecuteCommandAsync();
+ await f.Db.Insertable(new TrafficLifecycleEventEntity{EventId="OTHER-MAP",TaskId="OTHER",StepId="OTHER",VehicleId="OTHER",Kind="ResourceAcquired",ResourceIds="[\"RA\"]",OccurredAt=DateTime.Now}).ExecuteCommandAsync();
+ await f.Db.Insertable(new TrafficLifecycleEventEntity{EventId="SUBSTRING",TaskId="NEXT",StepId="SN",VehicleId="CAR-NEXT",Kind="ResourceAcquired",ResourceIds="[\"RA-OTHER\"]",OccurredAt=DateTime.Now}).ExecuteCommandAsync();
+ d=await f.Control.GetBlockingAsync(new("ASK","SQ"),default);
+ Check(!d.ResourceHistory.Any(e=>e.EventId is "OTHER-MAP" or "SUBSTRING"),"交接历史不混用其他地图或仅名称前缀相同的资源");
+}
 Console.WriteLine($"Traffic blocking: {checks} checks passed; isolated SQLite only.");
 sealed class Fixture:IAsyncDisposable{
  public ISqlSugarClient Db=null!;public TrafficResourceControlService Control=null!;TrafficResourceManager manager=null!;

@@ -154,6 +154,14 @@ public sealed partial class DispatchTaskOrchestrator
         string Reject(string layer, string reason)
         { rejectedLayer?.Invoke(layer); optimization?.ReportLayer(layer, layer == "traffic" ? "Waiting" : "Blocked", reason); return reason; }
         if (!executionGate.CanStartNewWork || !ReferenceEquals(map, activeMap.Current)) return Reject("safety", "运行地图或新增派车门禁已变化。");
+        var admissionState = await outbox.GetPickupAdmissionAsync(task.TaskId, ct);
+        if (!admissionState.Allowed)
+        {
+            await _trafficLayer.SuspendRecommendationAsync(new(step.StepId, task.TaskId, vehicle.VehicleId,
+                planned.Nodes[0], planned.Nodes[^1], [], [], true, admissionState.Reason)
+                { MapId=map?.MapId, MapVersionId=map?.VersionId }, ct);
+            return Reject("traffic", admissionState.Reason);
+        }
         if (robokitMap is not null)
         {
             if (map is null) return Reject("safety", "运行地图不存在。");

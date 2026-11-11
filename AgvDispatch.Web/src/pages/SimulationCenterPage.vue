@@ -16,6 +16,7 @@ import { importProfControlRpj } from '../profcontrol-rpj';
 import { actionStateLabel, equipmentDirectionLabel, industrialText } from '../operator-labels';
 import { useDispatchStore } from '../stores/dispatch';
 import type { Snapshot, TaskDetail, TaskPage, TaskRow, TrafficRequest } from '../types';
+import { resourceHandovers } from '../traffic-display';
 
 const dispatchStore = useDispatchStore();
 const route = useRoute(), router = useRouter();
@@ -64,6 +65,7 @@ const reportTaskDetailId = ref(''), reportTaskDetail = ref<TaskDetail | null>(nu
 const reportTaskReading = ref(false), reportTaskError = ref('');
 const recordingVideo = ref(false), videoProgress = ref(0);
 const additionalWaitingSites = ref<string[]>([]);
+const downstreamAdmissionCapacity = ref(0);
 const inspectionSite = ref(''), dumperResourceId = ref('');
 const customVehicles = ref([
   { id: 'AGV-SIM-01', initialSite: '', radiusMeters: 0.49, lengthMeters: 0.8, widthMeters: 0.52, initialLoaded: false, batteryPercent: 86, speedScale: 0.75,
@@ -250,6 +252,7 @@ const selectedTaskTrafficRequest = computed(() => {
   return requests.find(request => request.stepId === selectedTaskCurrentStep.value?.stepId) ?? requests[0] ?? null;
 });
 const selectedTaskWaitBlockers = computed(() => selectedTaskTrafficRequest.value?.blockers ?? []);
+const selectedTaskHandovers = computed(() => resourceHandovers(taskRuntimeSnapshot.value, selectedTaskTrafficRequest.value));
 const selectedTaskWaitGroups = computed(() => {
   const groups = new Map<string, {
     vehicleId: string; taskId: string; resources: string[]; heartbeatExpired: boolean;
@@ -801,6 +804,8 @@ const configurationProblems = computed(() => {
   if (!dumpingSite.value) problems.push('未选择倒料位。');
   if (!inspectionSite.value) problems.push('未选择检修或设备观察点。');
   if (!dumperResourceId.value) problems.push('未选择倒料资源边界。');
+  if (!Number.isInteger(downstreamAdmissionCapacity.value) || downstreamAdmissionCapacity.value < 0 || downstreamAdmissionCapacity.value > 8)
+    problems.push('同时放行取箱任务数须为0至8的整数。');
   if (waitingSite.value && waitingSite.value === dumpingSite.value) problems.push('主等待位与倒料位不能相同。');
   if (additionalWaitingSites.value.some(site => site === waitingSite.value || site === dumpingSite.value || !mapNodes.value.some(node => node.id === site)))
     problems.push('其他等待位包含重复、无效或与倒料位相同的节点。');
@@ -1083,6 +1088,7 @@ function configurationDraft(): SimulationConfigureRequest | null {
       voltageCurve: [...vehicle.voltageCurve].sort((left, right) => left.percent - right.percent) })),
     dumper: { dumpingSite: dumpingSite.value, waitingSite: waitingSite.value, waitingSites: [waitingSite.value, ...additionalWaitingSites.value], resourceId: dumperResourceId.value },
     inspectionSite: inspectionSite.value,
+    downstreamAdmissionCapacity: downstreamAdmissionCapacity.value,
     plcSignalTable: { ...plcTableMetadata.value, csvText: plcTableText.value },
     mapIdentity: mapIdentityDraft.value
   };
@@ -1345,6 +1351,7 @@ function accept(next: SimulationStatus) {
     additionalWaitingSites.value = (next.configuration.dumper.waitingSites ?? []).filter(site => site !== waitingSite.value);
     dumpingSite.value = next.configuration.dumper.dumpingSite; dumperResourceId.value = next.configuration.dumper.resourceId;
     inspectionSite.value = next.configuration.inspectionSite;
+    downstreamAdmissionCapacity.value = next.configuration.downstreamAdmissionCapacity ?? 0;
     const boundTable = next.configuration.plcSignalTable ?? next.plcSignalTable ?? null;
     if (boundTable) {
       plcTableFileName.value = boundTable.fileName;
@@ -1797,7 +1804,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
                   <article v-for="group in selectedTaskWaitGroups" :key="`${group.vehicleId}-${group.taskId}`">
                     <strong>{{ group.vehicleId }}</strong>
                     <span>{{ group.resources.map(routeResourceLabel).join('、') }}</span>
-                    <small>任务 {{ simulationTasks.find(task => task.taskId === group.taskId)?.stationId || group.taskId }} · {{ group.heartbeatExpired ? '心跳已过期，责任仍保留' : '完成原任务后释放这些路权' }}</small>
+                    <small>任务 {{ simulationTasks.find(task => task.taskId === group.taskId)?.stationId || group.taskId }} · {{ group.heartbeatExpired ? '心跳已过期，责任仍保留' : '整车通过或交接核验后逐项释放；尚无确认的释放时间' }}</small>
                   </article>
                 </div>
                 <div v-else-if="selectedTaskTrafficRequest?.state === 'Waiting'" class="route-blocker-list">
@@ -1810,6 +1817,11 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
                   <span v-for="resourceId in selectedTaskNamedResources" :key="resourceId">{{ routeResourceLabel(resourceId) }}</span>
                   <small>“路段互斥”是运行时路权，不是地图站点或现场支援点。</small>
                 </div>
+                <details class="route-resource-summary"><summary>这些路权刚才由谁释放、谁又取得？</summary>
+                  <p v-for="event in selectedTaskHandovers.slice(0, 12)" :key="event.eventId"><b>{{ event.vehicleId }}</b> · {{ event.kind === 'ResourceAcquired' ? '取得' : '核验后释放' }} · {{ new Date(event.occurredAt).toLocaleString('zh-CN', { hour12: false }) }}<br/>{{ event.resourceIds.map(routeResourceLabel).join('、') }}</p>
+                  <p v-if="!selectedTaskHandovers.length">最近快照尚无匹配的实际交接记录；不能据此判断已释放。</p>
+                  <small>这里只显示最近全场100条事件中匹配当前地图和资源的记录，最多展开12条。完整交接查看后台交通页或本轮原始日志；不是预计释放时间。</small>
+                </details>
                 <p v-if="!selectedTaskCurrentLeg" class="route-stationary-note">{{ !selectedTaskDetail.task.vehicleId && selectedTaskCurrentStep.stepType === 'GoToPickup' ? '任务仍在正式调度队列中，尚未分配车辆，因此当前没有可执行路线。获得车辆和首段路权后，这里会显示第一段行驶路线。' : '当前步骤是车辆动作、倒料或PLC等待，不需要沿道路继续移动。完成本步后才会申请下一段路线。' }}</p>
               </template>
               <template v-else>
@@ -1929,6 +1941,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
             <label>倒料位节点<select v-model="dumpingSite" @change="resetVehicleOrigins"><option v-for="node in mapNodes" :key="node.id" :value="node.id">{{ node.id }}</option></select></label>
             <label>检修 / 设备观察点<select v-model="inspectionSite" @change="resetVehicleOrigins"><option value="">请选择检修或观察点</option><option v-for="node in mapNodes" :key="node.id" :value="node.id">{{ node.id }}</option></select></label>
             <label>倒料资源边界<select v-model="dumperResourceId"><option value="">请选择倒料资源边界</option><option v-for="resource in mapResources" :key="resource.id" :value="resource.id">{{ resource.id }} · 容量 {{ resource.capacity ?? 1 }}</option></select></label>
+            <label>同时放行取箱任务数<input v-model.number="downstreamAdmissionCapacity" type="number" min="0" max="8" step="1"/><small>0表示沿用车队并发上限。单倒料设备可先试3；超出的呼叫先不取箱，已有任务在核验收尾后腾出名额。倒料机始终只允许1辆。</small></label>
           </fieldset>
           <div class="vehicle-designer">
             <div class="designer-section-title"><span>02</span><div><b>车辆画像 · {{ customVehicles.length }} 辆</b><small>配置车辆、电机、电池和动作模型参数。</small></div></div>

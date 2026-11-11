@@ -67,6 +67,47 @@ await (Task)method.Invoke(roadSender,[CancellationToken.None])!;
 var roadResumed = db.Queryable<AgvCommandOutboxEntity>().Single(c=>c.StepId==queuedStep.StepId);
 Check(roadResumed.CommandId==roadHeld.CommandId&&roadResumed.Status==(int)AgvCommandStatus.Sent&&roadResumed.AttemptCount==1&&gateway.Sends.Count==3,
     "人工解封后同一Outbox首次发送一次，未重建业务步骤");
+// Isolated downstream tickets are committed together with the first command.
+using(var admissionDb=DatabaseFactory.Create(new(){DatabasePath=Path.Combine(root,"admission.db")}))
+{
+ await new DatabaseInitializer(admissionDb,new TrafficResourceCatalog([])).InitializeAsync(default);
+ var repo=new DispatchTaskRepository(admissionDb);
+ var policy=new DownstreamAdmissionOptions{Enabled=true,Capacity=1};
+ var guarded=new AgvCommandOutboxRepository(admissionDb,admission:policy);
+ async Task<(string Task,string Step)> Create(string station){var created=await repo.TryCreateAsync(station,"DUMPER",0,default);await repo.MarkAcknowledgedAsync(created.Task.TaskId,default);return(created.Task.TaskId,(await repo.GetStepsAsync(created.Task.TaskId,default))[0].StepId);}
+ var first=await Create("FIRST");var next=await Create("NEXT");
+ Check(await guarded.TryPrepareTransportStepAsync(first.Task,first.Step,"C1",["A","B"],null,default),"首个取箱命令与下游准入票在同一事务提交");
+ Check(!(await guarded.TryPrepareTransportStepAsync(next.Task,next.Step,"C2",["A","B"],null,default))&&
+       admissionDb.Queryable<AgvCommandOutboxEntity>().Count()==1&&
+       admissionDb.Queryable<DispatchTaskEntity>().Single(t=>t.TaskId==next.Task).VehicleId==null,"准入已满时不抢车辆、不建命令、不提前取箱");
+ guarded=new AgvCommandOutboxRepository(admissionDb,admission:policy);
+ Check(!(await guarded.GetPickupAdmissionAsync(next.Task,default)).Allowed,"重建仓储后准入票从原持久化责任恢复");
+ foreach(var stage in new[]{DispatchTaskStage.Faulted,DispatchTaskStage.CancellationPending,DispatchTaskStage.CancellationReview}){
+  await admissionDb.Updateable<DispatchTaskEntity>().SetColumns(t=>t.Stage==(int)stage).Where(t=>t.TaskId==first.Task).ExecuteCommandAsync();
+  Check(!(await guarded.GetPickupAdmissionAsync(next.Task,default)).Allowed,$"{stage}仍保留准入票，不因故障自动多取箱");
+ }
+ await admissionDb.Updateable<DispatchTaskEntity>().SetColumns(t=>t.Stage==(int)DispatchTaskStage.Completed).Where(t=>t.TaskId==first.Task).ExecuteCommandAsync();
+ await admissionDb.Insertable(new TrafficResourceLeaseEntity{LeaseId="retained",ResourceId="BAY",TaskId=first.Task,
+  OwnerStepId=first.Step,VehicleId="C1",AcquiredAt=DateTime.Now,RenewedAt=DateTime.Now,ExpiresAt=DateTime.Now.AddMinutes(-1)}).ExecuteCommandAsync();
+ foreach(var closed in new[]{DispatchTaskStage.Completed,DispatchTaskStage.Cancelled}){
+  await admissionDb.Updateable<DispatchTaskEntity>().SetColumns(t=>t.Stage==(int)closed).Where(t=>t.TaskId==first.Task).ExecuteCommandAsync();
+  Check(!(await guarded.GetPickupAdmissionAsync(next.Task,default)).Allowed,$"{closed}但路权尚未核验释放时仍保留准入票，过期不自动腾位");
+ }
+ await admissionDb.Deleteable<TrafficResourceLeaseEntity>().Where(l=>l.LeaseId=="retained").ExecuteCommandAsync();
+ Check(await guarded.TryPrepareTransportStepAsync(next.Task,next.Step,"C2",["A","B"],null,default),"原业务完成后下一单可取得准入票；全过程未修改九步或PLC电平");
+ await admissionDb.Updateable<DispatchTaskEntity>().SetColumns(t=>t.Stage==(int)DispatchTaskStage.Completed).Where(t=>t.TaskId==next.Task).ExecuteCommandAsync();
+ var contenders=new[]{await Create("RACE-A"),await Create("RACE-B")};
+ var ready=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);var arrivals=0;
+ var grants=await Task.WhenAll(contenders.Select((entry,index)=>Task.Run(async()=>{
+  using var connection=DatabaseFactory.Create(new(){DatabasePath=Path.Combine(root,"admission.db")});
+  var contender=new AgvCommandOutboxRepository(connection,admission:policy);
+  if(Interlocked.Increment(ref arrivals)==2)ready.SetResult();await ready.Task;
+  try{return await contender.TryPrepareTransportStepAsync(entry.Task,entry.Step,"RACE-C"+index,["A","B"],null,default);}
+  catch(InvalidOperationException error)when(error.InnerException?.Message.Contains("locked",StringComparison.OrdinalIgnoreCase)==true){return false;}
+ })));
+ Check(grants.Count(g=>g)==1&&admissionDb.Queryable<DispatchTaskEntity>().Count(t=>t.Stage==(int)DispatchTaskStage.SubmittingToAgv)==1,
+  "两个独立数据库连接并发取箱只提交一张准入票，不超卖容量1");
+}
 Console.WriteLine("Evidence: " + root);
 
 sealed class Fleet : IAgvGateway

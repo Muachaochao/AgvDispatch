@@ -1026,7 +1026,7 @@ def valid_graph(definition: dict[str, Any], initial_sites: list[str]) -> dict[st
     targets = [
         node_id
         for node_id, node in nodes.items()
-        if node["type"] == "Station" or node["id"].startswith(("WAIT-", "CHARGE-"))
+        if node["type"] == "Station" or node["id"].startswith(("WAIT-", "CHARGE-", "SIM-SAFE-"))
     ]
     checks = 0
     for source in initial_sites:
@@ -1046,7 +1046,12 @@ def valid_graph(definition: dict[str, Any], initial_sites: list[str]) -> dict[st
     station_resources = [
         resource for resource in definition["resources"] if resource["type"] == "Station"
     ]
-    expected_station_resources = 311 + int(any(n["id"] == "INSPECT-01" for n in nodes.values()))
+    safe_resources = [r for r in station_resources if r['id'].startswith('SIM-STOP-')]
+    for resource in safe_resources:
+        owners = [n for n in nodes.values() if resource['id'] in n.get('resourceIds', [])]
+        if resource.get('capacity', 1) != 1 or len(owners) != 1 or owners[0].get('allowTrafficStop') is not True:
+            raise ValueError('仿真停点必须独占容量1且明确允许停车：' + resource['id'])
+    expected_station_resources = 311 + int(any(n["id"] == "INSPECT-01" for n in nodes.values())) + len(safe_resources)
     if len(station_resources) != expected_station_resources:
         # 305 CNC + five waiting points + dumping; legacy graph has inspection.
         raise ValueError(f"Station资源数应为{expected_station_resources}，实际 {len(station_resources)}")
@@ -1063,6 +1068,7 @@ def valid_graph(definition: dict[str, Any], initial_sites: list[str]) -> dict[st
         "directedReachabilityPassed": True,
         "stationResourceCount": len(station_resources),
         "chargingResourceCount": len(charging_resources),
+        "simulationStoppingResourceCount": len(safe_resources),
     }
 
 

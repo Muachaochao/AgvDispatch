@@ -624,12 +624,13 @@ def execute(runtime, request):
             (evidence / 'plc-signals.source.csv').write_bytes(source_table.read_bytes())
     write(evidence / 'simulation-configuration.json', dict(
         mapIdentity=simulation_configuration.get('mapIdentity'),
+        downstreamAdmissionCapacity=simulation_configuration.get('downstreamAdmissionCapacity', 0),
         plcSignalTable=plc_signal_table,
         stations=simulation_configuration.get('stations'),
         dumper=simulation_configuration.get('dumper'),
         vehicles=simulation_configuration.get('vehicles')))
     execution_configuration = {key: runtime.settings.get(key) for key in
-                               ('TaskCreation', 'Dispatching', 'DispatchOptimization', 'TrafficSegmentRelease')}
+                               ('TaskCreation', 'Dispatching', 'DispatchOptimization', 'TrafficSegmentRelease', 'DownstreamAdmission')}
     execution_configuration['plcSignalTable'] = plc_signal_table
     write(evidence / 'execution-configuration.json', execution_configuration)
     checks = []
@@ -1830,7 +1831,7 @@ def execute(runtime, request):
                          longestUnchangedStepSeconds=observer.max_wait if observer else 0,
                          longestUnchangedStepScope='active-tasks-only-v2',
                          obstacleAutoDetourSends=auto_detour_sends,
-                         **{key:queue_metrics[key] for key in ('maximumWaitingTasks','maximumActiveTasks','maximumDuePlanCalls','maximumBusyWaitingTasks') if key in queue_metrics}),
+                         **{key:queue_metrics[key] for key in ('maximumWaitingTasks','maximumActiveTasks','maximumDuePlanCalls','maximumBusyWaitingTasks', 'downstreamAdmissionCapacity', 'maximumAdmissionWaitingTasks') if key in queue_metrics}),
             violations=observer.violations if observer else [], scope='正式后台 + 回环Robokit/S7合成模型；碰撞按车辆长宽与朝向的旋转矩形包络检查，并保留5厘米合成余量；超时可发现长期等待，不构成死锁/公平性证明；不代替现场固件、机械及安全验收。')
         write(evidence / 'report.json', report)
         files = [dict(path=p.name, sha256=hashlib.sha256(p.read_bytes()).hexdigest(), bytes=p.stat().st_size) for p in sorted(evidence.iterdir()) if p.is_file()]

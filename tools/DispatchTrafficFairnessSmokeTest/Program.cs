@@ -268,6 +268,20 @@ planner.Result = null; cache.Plan("C", "D", new HashSet<string>()); cache.Plan("
 Check(planner.Calls == 6, "unreachable route is cached under the complete context");
 planner.Result = route; planner.BeforeReturn = () => roads.Snapshot = roads.Snapshot with { Revision = roads.Snapshot.Revision + 1 };
 Check(cache.Plan("E", "F", new HashSet<string>()) == null, "context changing during route calculation discards result");
+using(var fixture=await Fixture.Create())
+{
+    await fixture.Call("EMPTY",50,-10);await fixture.Call("FULL",50,-5);await fixture.Call("HIGH",90,0);
+    await fixture.Db.Updateable<DispatchTaskEntity>().SetColumns(t=>t.Stage==(int)DispatchTaskStage.GoingToDumper).Where(t=>t.TaskId=="FULL").ExecuteCommandAsync();
+    await fixture.Db.Updateable<DispatchTaskStepEntity>().SetColumns(s=>new DispatchTaskStepEntity{
+        StepType=(int)DispatchTaskStepType.DeliverFullBoxToDumper,Status=(int)DispatchTaskStepStatus.Executing}).Where(s=>s.StepId=="FULL").ExecuteCommandAsync();
+    await fixture.Observe("FULL",50,true);await fixture.Observe("EMPTY",50,true);
+    Check(!(await fixture.Acquire("EMPTY")).Acquired,"同有效优先级下，满箱续接优先于未取箱任务，执行中的下一窗口仍参与公平排队");
+    await fixture.Observe("HIGH",90,true);
+    Check(!(await fixture.Acquire("FULL")).Acquired,"满箱续接不覆盖更高的既有优先级");
+    Check((await fixture.Acquire("HIGH")).Acquired,"更高优先级仍按原规则取得路权");
+    await fixture.Manager.ReleaseTaskAsync("HIGH",default);
+    Check((await fixture.Acquire("FULL")).Acquired,"高优先级释放后满箱原车正常取得下一窗口");
+}
 Console.WriteLine($"PASS {checks} rolling traffic fairness/cache checks; isolated database and synthetic maps only.");
 
 sealed class Fixture : IDisposable

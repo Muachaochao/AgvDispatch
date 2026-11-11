@@ -22,7 +22,7 @@ public sealed partial class TrafficResourceManager
                 Resources(r).Contains(resourceId, StringComparer.OrdinalIgnoreCase)).ToArray();
         if (requests.Length == 0) return null;
         var taskIds = requests.Select(r => r.TaskId).Append(taskId).Distinct().ToArray();
-        var stepIds = requests.Select(r => r.StepId).ToArray();
+        var stepIds = requests.Select(r => r.StepId).Append(current.StepId).Distinct().ToArray();
         var tasks = (await database.Queryable<DispatchTaskEntity>().Where(t => taskIds.Contains(t.TaskId))
             .ToListAsync(ct)).ToDictionary(t => t.TaskId, StringComparer.OrdinalIgnoreCase);
         var steps = (await database.Queryable<DispatchTaskStepEntity>().Where(s => stepIds.Contains(s.StepId))
@@ -38,14 +38,21 @@ public sealed partial class TrafficResourceManager
         bool ValidOwner(TrafficRequestEntity row) => tasks.TryGetValue(row.TaskId, out var task)
             ? Enum.IsDefined(typeof(DispatchTaskStage), task.Stage) && task.Stage is >= 0 and < 90 &&
                 (string.IsNullOrWhiteSpace(task.VehicleId) || string.Equals(task.VehicleId, row.VehicleId, StringComparison.OrdinalIgnoreCase)) &&
-                steps.TryGetValue(row.StepId, out var step) && step.TaskId == row.TaskId && step.Status is 0 or 10 or 60
+                steps.TryGetValue(row.StepId, out var step) && step.TaskId == row.TaskId && step.Status is 0 or 10 or 40 or 60
             // A missing business task with an explicit optimizer score must not
             // become a new system owner. Only ordinary system requests lack it.
             : row.QueuePriority is null;
+        // No priority bonus: carrying a full box is a tie-break only. The original
+        // effective priority/age policy and existing physical ownership remain authoritative.
+        bool FullBoxContinuation(TrafficRequestEntity row) => tasks.TryGetValue(row.TaskId, out var task) &&
+            steps.TryGetValue(row.StepId, out var step) && step.TaskId == row.TaskId &&
+            (step.StepType == (int)DispatchTaskStepType.DeliverFullBoxToDumper && task.Stage is 30 or 40 ||
+             step.StepType == (int)DispatchTaskStepType.EnterDumpingPosition && task.Stage == 50);
         bool Ahead(TrafficRequestEntity row) =>
             Priority(row) > Priority(current) || Priority(row) == Priority(current) &&
+                (FullBoxContinuation(row) && !FullBoxContinuation(current) || FullBoxContinuation(row) == FullBoxContinuation(current) &&
                 (CalledAt(row) < CalledAt(current) || CalledAt(row) == CalledAt(current) &&
-                    StringComparer.Ordinal.Compare(row.TaskId, taskId) < 0);
+                    StringComparer.Ordinal.Compare(row.TaskId, taskId) < 0));
         // Do not reserve a free resource for a predecessor that is still blocked
         // by a different full resource: acquisition remains all-or-nothing.
         bool CanAcquireAll(TrafficRequestEntity row) => Resources(row).All(id =>
@@ -57,7 +64,7 @@ public sealed partial class TrafficResourceManager
                 !leases.Any(l => string.Equals(l.ResourceId, resourceId, StringComparison.OrdinalIgnoreCase) &&
                     string.Equals(l.TaskId, r.TaskId, StringComparison.OrdinalIgnoreCase)) &&
                 Ahead(r) && CanAcquireAll(r))
-            .OrderByDescending(Priority).ThenBy(CalledAt)
+            .OrderByDescending(Priority).ThenByDescending(FullBoxContinuation).ThenBy(CalledAt)
             .ThenBy(r => r.TaskId, StringComparer.Ordinal).DistinctBy(r => r.TaskId, StringComparer.OrdinalIgnoreCase).ToArray();
         return ahead.Length >= freeSlots ? ahead[0].TaskId : null;
     }

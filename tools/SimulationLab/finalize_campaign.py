@@ -43,6 +43,8 @@ def render_markdown(metrics, vehicle_lines, task_lines, final_states):
 | 最大执行任务 | {metrics.get('maximumActiveTasks')} |
 | 最大待派任务 | {metrics.get('maximumWaitingTasks')} |
 | 全部车辆忙碌时最大待派 | {metrics.get('maximumBusyWaitingTasks')} |
+| 下游准入上限（与全车忙碌分别统计） | {metrics.get('downstreamAdmissionCapacity') or '未另限流'} |
+| 准入满额时最大待派 | {metrics.get('maximumAdmissionWaitingTasks', '未配置')} |
 | 九步全部完成 | {counts['allStepsCompleted']} |
 | 出区证据通过/检查数 | {counts['exitEvidencePassed']}/{counts['exitEvidenceChecks']} |
 | 故障 / 取消 / 未闭合任务 | {counts['faultedTasks']} / {counts['cancelledTasks']} / {counts['activeTasks']} |
@@ -220,6 +222,8 @@ def build(root: Path, run_id: str, output: Path) -> dict:
         "maximumWaitingTasks": report.get("metrics", {}).get("maximumWaitingTasks"),
         "maximumActiveTasks": report.get("metrics", {}).get("maximumActiveTasks"),
         "maximumBusyWaitingTasks": report.get("metrics", {}).get("maximumBusyWaitingTasks"),
+        "downstreamAdmissionCapacity": report.get("metrics", {}).get("downstreamAdmissionCapacity"),
+        "maximumAdmissionWaitingTasks": report.get("metrics", {}).get("maximumAdmissionWaitingTasks"),
         "taskDurationMinSeconds": min(task_durations),
         "taskDurationAvgSeconds": round(sum(task_durations) / len(task_durations), 1),
         "taskDurationMaxSeconds": max(task_durations),

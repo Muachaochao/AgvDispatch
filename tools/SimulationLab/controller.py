@@ -705,7 +705,7 @@ class Runtime:
         return table
 
     def _validate_configuration(self, payload):
-        if not isinstance(payload, dict) or set(payload) - {'name', 'mapDefinition', 'stations', 'vehicles', 'dumper', 'inspectionSite', 'plcSignalTable', 'mapIdentity'}:
+        if not isinstance(payload, dict) or set(payload) - {'name', 'mapDefinition', 'stations', 'vehicles', 'dumper', 'inspectionSite', 'plcSignalTable', 'mapIdentity', 'downstreamAdmissionCapacity'}:
             raise ValueError('新实例配置包含未知字段。')
         navigation = payload.get('mapDefinition')
         if not isinstance(navigation, dict) or not all(isinstance(navigation.get(key), list) for key in ('nodes', 'edges', 'resources')):
@@ -905,10 +905,14 @@ class Runtime:
         for vehicle in normalized_vehicles:
             if any(not reachable(vehicle['initialSite'], target) for target in targets):
                 raise ValueError(f"{vehicle['id']}与地图工位、等待点或倒料点不连通。")
+        admission = payload.get('downstreamAdmissionCapacity', 0)
+        if type(admission) is not int or not 0 <= admission <= 8:
+            raise ValueError('下游准入数量须为0至8的整数，0表示不另行限流。')
         return dict(name=payload.get('name') or navigation.get('name') or 'custom-simulation',
                     mapDefinition=navigation, stations=normalized_stations,
                     vehicles=normalized_vehicles, dumper=dict(dumpingSite=dumping, waitingSite=waiting, waitingSites=waiting_sites, resourceId=resource_id),
-                    inspectionSite=inspection, plcSignalTable=table, mapIdentity=map_identity)
+                    inspectionSite=inspection, plcSignalTable=table, mapIdentity=map_identity,
+                    downstreamAdmissionCapacity=admission)
 
     def _default_configuration(self, count):
         table = self._bound_plc_table()
@@ -1139,6 +1143,8 @@ class Runtime:
             settings['Dispatching']['DumperWaitingSite'] = configuration['dumper']['waitingSite']
             settings['Dispatching']['DumperWaitingSites'] = configuration['dumper']['waitingSites']
             settings['Dispatching']['DumperDumpingSite'] = configuration['dumper']['dumpingSite']
+            capacity = configuration.get('downstreamAdmissionCapacity', 0)
+            settings['DownstreamAdmission'] = dict(Enabled=capacity > 0, Capacity=max(1, capacity))
             settings['Dispatching']['DumperTransitClearanceMeters'] = 2 * max(v['radiusMeters'] for v in configuration['vehicles']) + 0.15
             settings['ObstacleRecovery'] = dict(Enabled=True, AutomaticDetourEnabled=True,
                 AutomaticSafetyPointRetreatEnabled=True,

@@ -63,7 +63,28 @@ public sealed partial class TrafficResourceControlService
                 .Concat(audits.Where(a=>pairs.Contains((a.TaskId,a.OwnerStepId))).Select(a=>new TrafficLifecycleEvent("audit:"+a.AuditId,a.OwnerStepId,a.TaskId,a.VehicleId,"ManualReleaseAudit",a.Reason,[a.ResourceId],new(a.ReleasedAt)))).OrderByDescending(e=>e.OccurredAt).ThenBy(e=>e.EventId,StringComparer.Ordinal).ToArray();
             var colors=new Dictionary<string,int>();bool Cycle(string id){if(colors.TryGetValue(id,out var color))return color==1;colors[id]=1;foreach(var link in links.Where(l=>l.FromStepId==id))if(Cycle(link.ToStepId))return true;colors[id]=2;return false;}
             var cycle=nodes.Any(n=>!colors.ContainsKey(n.StepId)&&Cycle(n.StepId));
-            result=new(now,query.TaskId,query.StepId,true,nodes[0].State=="Waiting"?"只读阻塞关系与规则要求；不是释放许可或死锁自动判定。":"原记录状态已变化，请核对当前状态；不沿用旧等待结论。",nodes,links,history.Take(50).ToArray(),limited,events.Count>50||audits.Count>50||history.Length>50,cycle);
+            var resourceHistory = new List<TrafficLifecycleEventEntity>();
+            if (!string.IsNullOrWhiteSpace(root.MapId) && !string.IsNullOrWhiteSpace(root.MapVersionId))
+            {
+                // Exact JSON membership, scoped to the original request's map version.
+                // No LIKE substring matches (e.g. WAIT-01 vs WAIT-010), no cross-map stitching.
+                resourceHistory = await database.Ado.SqlQueryAsync<TrafficLifecycleEventEntity>("""
+                    SELECT e.* FROM traffic_lifecycle_event e
+                    JOIN traffic_request r ON r.StepId=e.StepId AND r.TaskId=e.TaskId AND r.VehicleId=e.VehicleId
+                    WHERE r.MapId=@map AND r.MapVersionId=@version
+                      AND e.Kind IN ('ResourceAcquired','ResourceReleased','SegmentReleased')
+                      AND EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(e.ResourceIds) THEN e.ResourceIds ELSE '[]' END) a
+                                  JOIN json_each(@resources) b ON a.value=b.value COLLATE NOCASE)
+                    ORDER BY e.OccurredAt DESC,e.rowid DESC LIMIT 51
+                    """, new SugarParameter("@map",root.MapId), new SugarParameter("@version",root.MapVersionId),
+                    new SugarParameter("@resources",root.ResourceIds));
+            }
+            result=new(now,query.TaskId,query.StepId,true,nodes[0].State=="Waiting"?"只读阻塞关系与规则要求；不是释放许可或死锁自动判定。":"原记录状态已变化，请核对当前状态；不沿用旧等待结论。",nodes,links,history.Take(50).ToArray(),limited,events.Count>50||audits.Count>50||history.Length>50,cycle)
+            {
+                ResourceHistory=resourceHistory.Take(50).Select(e=>new TrafficLifecycleEvent(e.EventId,e.StepId,e.TaskId,e.VehicleId,
+                    e.Kind,e.Reason,System.Text.Json.JsonSerializer.Deserialize<string[]>(e.ResourceIds)??[],new(e.OccurredAt))).ToArray(),
+                ResourceHistoryTruncated=resourceHistory.Count>50
+            };
         });
         if(!transaction.IsSuccess)throw new InvalidOperationException("读取阻塞链快照失败。",transaction.ErrorException);return result!;
     }

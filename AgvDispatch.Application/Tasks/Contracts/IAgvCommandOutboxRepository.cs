@@ -5,6 +5,8 @@ namespace AgvDispatch.Application.Abstractions;
 
 public interface IAgvCommandOutboxRepository
 {
+    Task<DownstreamAdmissionSnapshot> GetPickupAdmissionAsync(string taskId, CancellationToken ct) =>
+        Task.FromResult(new DownstreamAdmissionSnapshot(false, true, 0, [], "未启用下游准入限流。"));
     Task<bool> TryPrepareTransportStepAsync(
         string taskId,
         string stepId,

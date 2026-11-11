@@ -17,8 +17,8 @@ public static class TaskWaitingBayRouter
             selected.MapId != map.MapId || selected.MapVersionId != map.VersionId)) return;
         var sites = selected is null ? options.GetDumperWaitingSites() : [selected.WaitingSite];
         var unavailable = await traffic.GetUnavailableResourceIdsAsync(step.TaskId, ct);
-        var candidate = sites.Select(site => (Site: site, Plan: planner.Plan(pickup, site, unavailable)))
-            .Where(c => c.Plan is { Nodes.Count: >= 2 }).OrderBy(c => c.Plan!.Cost).ThenBy(c => c.Site, StringComparer.Ordinal).FirstOrDefault();
+        var counts = await allocator.GetSelectionCountsAsync(map.MapId, map.VersionId, ct);
+        var candidate = Rank(sites, pickup, planner, unavailable, counts).FirstOrDefault();
         if (candidate.Plan is null)
             candidate = sites.Select(site => (Site: site, Plan: planner.Plan(pickup, site, new HashSet<string>())))
                 .Where(c => c.Plan is { Nodes.Count: >= 2 }).OrderBy(c => c.Plan!.Cost).ThenBy(c => c.Site, StringComparer.Ordinal).FirstOrDefault();
@@ -52,8 +52,8 @@ public static class TaskWaitingBayRouter
             throw new InvalidOperationException("原任务候车位与车辆、步骤、地图或当前配置不一致，保持原占用待核对。");
         var sites = selected is null ? options.GetDumperWaitingSites() : [selected.WaitingSite];
         var unavailable = await traffic.GetUnavailableResourceIdsAsync(step.TaskId, ct);
-        var candidates = sites.Select(site => (Site: site, Plan: planner.Plan(pickup, site, unavailable)))
-            .Where(c => c.Plan is { Nodes.Count: >= 2 }).OrderBy(c => c.Plan!.Cost).ThenBy(c => c.Site, StringComparer.Ordinal).ToArray();
+        var counts = await allocator.GetSelectionCountsAsync(map.MapId, map.VersionId, ct);
+        var candidates = Rank(sites, pickup, planner, unavailable, counts);
         foreach (var candidate in candidates)
         {
             var resource = selected?.ResourceId ?? DumperWaitingBaySafety.ExclusiveResourceIds(map.Definition, options, candidate.Site)
@@ -69,7 +69,7 @@ public static class TaskWaitingBayRouter
                 }).ToArray();
             var first = windows[0];
             var observation = new TrafficRouteObservation(step.StepId, step.TaskId, step.VehicleId!, first.Source, first.Destination,
-                first.EdgeIds, first.ResourceIds, false, "申请独立候车位和首个安全路权窗口；候车位在整段任务内保持。")
+                first.EdgeIds, first.ResourceIds, false, $"选择候车位{candidate.Site}（本地图已选{counts.GetValueOrDefault(candidate.Site)}次）；仅在可达且路权可申请的泊位中均衡选择，保留原绑定和离位核验。")
                 { MapId = map.MapId, MapVersionId = map.VersionId };
             var binding = selected ?? new(step.TaskId, step.VehicleId!, step.StepId, map.MapId, map.VersionId, candidate.Site, resource);
             var result = await (trafficLayer ?? new DispatchTrafficReservationService(traffic))
@@ -79,13 +79,38 @@ public static class TaskWaitingBayRouter
         }
         if (candidates.Length == 0)
         {
-            var site = selected?.WaitingSite ?? sites[0];
-            var diagnostic = planner.Plan(pickup, site, new HashSet<string>());
+            var diagnostics = sites.Select(site => (Site: site, Plan: planner.Plan(pickup, site, new HashSet<string>())))
+                .Where(c => c.Plan is { Nodes.Count: >= 2 }).OrderBy(c => c.Plan!.Cost).ToArray();
+            var diagnosticCandidate = diagnostics.FirstOrDefault();
+            var site = diagnosticCandidate.Site ?? selected?.WaitingSite ?? sites[0];
+            var diagnostic = diagnosticCandidate.Plan;
+            var reasons = string.Join("；", sites.Select(s =>
+            {
+                var plan = diagnostics.FirstOrDefault(d => d.Site == s).Plan;
+                var blocked = plan?.ResourceIds.Where(unavailable.Contains).ToArray() ?? [];
+                return plan is null ? $"{s}无可执行地图路线" : $"{s}受占用资源{string.Join('、', blocked)}影响";
+            }));
             await (trafficLayer ?? new DispatchTrafficReservationService(traffic)).ObserveAsync(new(step.StepId, step.TaskId, step.VehicleId!, pickup, site,
                 diagnostic?.EdgeIds ?? [], diagnostic?.ResourceIds ?? [], true,
-                "候车位或其路径不可用，保持在原取箱点；未准备或发送命令，取消和心跳过期不自动腾位。")
+                "候车位或其路径不可用，保持在原取箱点；" + reasons + "。未发送命令，取消和心跳过期不自动腾位。")
                 { MapId = map.MapId, MapVersionId = map.VersionId }, ct);
         }
         return null;
+    }
+
+    // Balance only among near-equivalent feasible routes. A history preference
+    // must never select a long detour, ignore an occupied resource or rebind a task.
+    private static (string Site, RoutePlan? Plan)[] Rank(IReadOnlyList<string> sites, string pickup,
+        IRoutePlanner planner, IReadOnlySet<string> unavailable, IReadOnlyDictionary<string, int> counts)
+    {
+        var candidates = sites.Select(site => (Site: site, Plan: planner.Plan(pickup, site, unavailable)))
+            .Where(c => c.Plan is { Nodes.Count: >= 2 } && double.IsFinite(c.Plan.Cost)).ToArray();
+        if (candidates.Length == 0) return [];
+        var minimum = candidates.Min(c => c.Plan!.Cost);
+        // Cost is supplied by the active planner; use a relative band, not metres/seconds assumptions.
+        var band = Math.Max(Math.Abs(minimum) * 0.15, 0.001);
+        return candidates.OrderBy(c => c.Plan!.Cost > minimum + band)
+            .ThenBy(c => c.Plan!.Cost <= minimum + band ? counts.GetValueOrDefault(c.Site) : int.MaxValue)
+            .ThenBy(c => c.Plan!.Cost).ThenBy(c => c.Site, StringComparer.Ordinal).ToArray();
     }
 }

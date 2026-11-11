@@ -15,6 +15,16 @@ from test_runtime_lifecycle import SOURCE_PLC_TABLE
 
 
 class SimulationTests(unittest.TestCase):
+    def test_downstream_admission_is_explicit_and_saved_with_configuration(self):
+        runtime = Runtime.__new__(Runtime)
+        payload = self.custom_payload()
+        self.assertEqual(runtime._validate_configuration(payload)['downstreamAdmissionCapacity'], 0)
+        payload['downstreamAdmissionCapacity'] = 3
+        self.assertEqual(runtime._validate_configuration(payload)['downstreamAdmissionCapacity'], 3)
+        for value in (True, -1, 9, 1.5, '3'):
+            payload['downstreamAdmissionCapacity'] = value
+            with self.assertRaises(ValueError): runtime._validate_configuration(payload)
+
     def test_isolated_instances_use_field_tuned_obstacle_timing(self):
         self.assertEqual(OBSTACLE_RECOVERY_TIMING, {
             'DetourAfterSeconds': 30,

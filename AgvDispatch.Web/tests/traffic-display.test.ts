@@ -1,7 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {taskWait,leaseOwners,blockerOwners} from '../src/traffic-display.ts';
+import {taskWait,leaseOwners,blockerOwners,resourceHandovers} from '../src/traffic-display.ts';
 import {rehearsalSnapshot} from '../src/traffic-rehearsal.ts';
+test('资源交接只取同图精确资源，并保留实际占用车辆和时间',()=>{
+ const s=rehearsalSnapshot(0),r=s.traffic!.requests[1]!;
+ r.resourceIds=['RA'];r.mapId=s.map!.id;r.mapVersionId=s.map!.version;
+ const owner={...r,taskId:'OWNER',stepId:'OWNER-S',vehicleId:'OLD'};
+ s.traffic!.requests.push(owner);
+ const event={eventId:'RELEASE',taskId:owner.taskId,stepId:owner.stepId,vehicleId:owner.vehicleId,
+  kind:'ResourceReleased',reason:'verified',resourceIds:['RA','OTHER'],occurredAt:new Date().toISOString()};
+ s.traffic!.events=[event,{...event,eventId:'PREFIX',resourceIds:['RA-OTHER']},
+  {...event,eventId:'MISSING-OWNER',stepId:'UNKNOWN'}];
+ const before=JSON.stringify(s);const result=resourceHandovers(s,r);
+ assert.equal(result.length,1);assert.equal(result[0]!.vehicleId,'OLD');assert.deepEqual(result[0]!.resourceIds,['RA']);
+ assert.equal(JSON.stringify(s),before);
+ owner.mapVersionId='OTHER';assert.equal(resourceHandovers(s,r).length,0);
+});
 function fixture(){const s=rehearsalSnapshot(0),r=s.traffic!.requests.find(r=>r.state==='Waiting')!;const t=s.tasks!.items.find(t=>t.taskId===r.taskId)!;return {s,r,t,now:Date.parse(s.receivedAt)};}
 test('候车原因覆盖显示而不改业务阶段和原始快照',()=>{const {s,t,now}=fixture(),before=JSON.stringify(s);assert.equal(taskWait(s,t,now)?.label,'路权／候车位等待');assert.equal(JSON.stringify(s),before);});
 test('设备与混合等待及截断分别说明',()=>{const {s,r,t,now}=fixture();r.waitingCategory='Equipment';assert.equal(taskWait(s,t,now)?.label,'倒料设备许可等待');s.traffic!.requests.push({...r,stepId:'OTHER',waitingCategory:'Route',reason:'候车位被占用'});s.traffic!.requestsTruncated=true;const w=taskWait(s,t,now)!;assert.equal(w.label,'多项条件等待');assert.equal(w.count,2);assert.equal(w.truncated,true);assert.match(w.reason,/候车位/);});

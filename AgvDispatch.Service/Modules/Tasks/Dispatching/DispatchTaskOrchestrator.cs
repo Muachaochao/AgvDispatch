@@ -235,6 +235,15 @@ public sealed partial class DispatchTaskOrchestrator(
                 continue;
             }
 
+            var admissionState = await outbox.GetPickupAdmissionAsync(task.TaskId, cancellationToken);
+            if (!admissionState.Allowed)
+            {
+                optimization?.ReportLayer("traffic", "Waiting", admissionState.Reason);
+                await _trafficLayer.SuspendRecommendationAsync(new(readyStep.StepId, task.TaskId, "", pickupSite, pickupSite,
+                    [], [], true, admissionState.Reason) { MapId=activeMap.Current?.MapId, MapVersionId=activeMap.Current?.VersionId }, cancellationToken);
+                continue;
+            }
+
             var unavailable = await trafficResources.GetUnavailableResourceIdsAsync(
                 task.TaskId,
                 cancellationToken);

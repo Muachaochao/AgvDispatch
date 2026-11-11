@@ -42,6 +42,11 @@ builder.Services.AddSingleton<IManualTaskCreationRepository>(p => p.GetRequiredS
 builder.Services.AddSingleton<IManualTaskCreationService, ManualTaskCreationService>();
 builder.Services.AddSingleton<IDispatchOrchestrationRepository, DispatchOrchestrationRepository>();
 builder.Services.AddSingleton<IAgvCommandOutboxRepository, AgvCommandOutboxRepository>();
+var downstreamAdmission = new DownstreamAdmissionOptions();
+builder.Configuration.GetSection("DownstreamAdmission").Bind(downstreamAdmission);
+if (downstreamAdmission.Enabled && downstreamAdmission.Capacity < 1)
+    throw new InvalidOperationException("DownstreamAdmission:Capacity必须大于0。");
+builder.Services.AddSingleton(downstreamAdmission);
 builder.Services.AddSingleton<ExecutionIdentityCache>();
 builder.Services.AddSingleton<IExecutionIdentityCache>(p => p.GetRequiredService<ExecutionIdentityCache>());
 var recoveryIdentityOptions = new RecoveryIdentityOptions();

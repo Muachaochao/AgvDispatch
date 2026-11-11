@@ -5,6 +5,16 @@ namespace AgvDispatch.Infrastructure.Persistence;
 
 public sealed partial class TrafficResourceManager
 {
+    private Task<int> RecordLeaseChangeAsync(string step, string task, string vehicle, string kind,
+        IEnumerable<string> ids, string reason, CancellationToken ct) =>
+        database.Insertable(new TrafficLifecycleEventEntity
+        {
+            EventId = Guid.NewGuid().ToString("N"), StepId = step, TaskId = task, VehicleId = vehicle,
+            Kind = kind, Reason = reason,
+            ResourceIds = JsonSerializer.Serialize(ids.Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase)),
+            OccurredAt = (clock ?? TimeProvider.System).GetUtcNow().LocalDateTime
+        }).ExecuteCommandAsync(ct);
+
     public async Task RecordRouteAsync(TrafficRouteObservation route, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
@@ -129,6 +139,8 @@ public sealed partial class TrafficResourceManager
             foreach (var group in leases.GroupBy(l => l.OwnerStepId))
             {
                 var lease = group.First();
+                await RecordLeaseChangeAsync(group.Key, taskId, lease.VehicleId, "ResourceReleased",
+                    group.Select(l => l.ResourceId), reason, ct);
                 var remaining = await database.Queryable<TrafficResourceLeaseEntity>()
                     .Where(l => l.OwnerStepId == group.Key && l.TaskId == taskId)
                     .ToListAsync(ct);
@@ -162,6 +174,8 @@ public sealed partial class TrafficResourceManager
             foreach (var group in leases.GroupBy(l => l.OwnerStepId))
             {
                 var lease = group.First();
+                await RecordLeaseChangeAsync(lease.OwnerStepId, lease.TaskId, lease.VehicleId, "ResourceReleased",
+                    group.Select(l => l.ResourceId), reason, ct);
                 await WriteStateAsync(lease.OwnerStepId, lease.TaskId, lease.VehicleId, "Released", reason, group.Select(l => l.ResourceId).ToArray(), ct);
             }
         });

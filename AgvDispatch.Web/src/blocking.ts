@@ -10,4 +10,4 @@ export function demoBlocking(s:Snapshot,r:TrafficRequest):BlockingPage{
 }
 
 export function blockingStateLabel(state:string){return({Waiting:'等待',Held:'持有',Retained:'异常/取消保留',NoLease:'无当前占用',Released:'已释放记录',Inactive:'非活动请求',Missing:'原记录缺失',Requested:'申请观察'} as Record<string,string>)[state]??(/[\u3400-\u9fff]/.test(state)?state:'状态待核对');}
-export function trafficEventLabel(kind:string){return({BlockingStarted:'资源阻塞开始',BlockersChanged:'占用方变化',BlockingCleared:'阻塞关系解除',Requested:'路权申请',Acquired:'取得路权',Waiting:'等待资源',Released:'释放记录',Retained:'保留占用',ManualReleaseAudit:'人工解锁审计',DemoWaiting:'合成等待'} as Record<string,string>)[kind]??(/[\u3400-\u9fff]/.test(kind)?kind:'交通事件待核对');}
+export function trafficEventLabel(kind:string){return({ResourceAcquired:'实际取得资源',ResourceReleased:'实际释放资源',SegmentReleased:'经过核验后释放路段',BlockingStarted:'资源阻塞开始',BlockersChanged:'占用方变化',BlockingCleared:'阻塞关系解除',Requested:'路权申请',Acquired:'取得路权',Waiting:'等待资源',Released:'释放记录',Retained:'保留占用',ManualReleaseAudit:'人工解锁审计',DemoWaiting:'合成等待'} as Record<string,string>)[kind]??(/[\u3400-\u9fff]/.test(kind)?kind:'交通事件待核对');}

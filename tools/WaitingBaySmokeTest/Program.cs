@@ -150,6 +150,59 @@ var atomic=await Task.WhenAll(new[]{atomicA,atomicB}.Select(step=>Task.Run(async
 })));
 Check(atomic.Count(success=>success)==1&&db.Queryable<TaskWaitingBayEntity>().Where(b=>b.ResourceId=="ATOMIC-BAY").Count()==1&&
     db.Queryable<TrafficResourceLeaseEntity>().Where(l=>l.ResourceId=="ATOMIC-BAY").Count()==1,"双连接并发选同一候车位只提交一个绑定及一个占用，无失败方残留");
+// Five available physical bays must not collapse to a single shortest destination.
+var fiveSites = Enumerable.Range(1, 5).Select(i => $"FIVE-W{i}").ToArray();
+var fiveMap = map with
+{
+    Nodes = map.Nodes.Concat(fiveSites.Select((id, i) => new MapNode(id, 5, i * 2,
+        MapNodeType.WaitingPoint, true, [id], id))).ToArray(),
+    Edges = map.Edges.Concat(fiveSites.Select((id, i) => new MapEdge($"FIVE-E{i}", "P1", id,
+        5 + i * .1, 1, false, true, []))).ToArray(),
+    Resources = map.Resources.Concat(fiveSites.Select(id => new TrafficResourceDefinition(id, TrafficResourceType.Station))).ToArray()
+};
+catalog.Replace(MapCorridorResources.AllResources(fiveMap));
+var fiveOptions = new DispatchOrchestratorOptions { DumperWaitingSite=fiveSites[0], DumperWaitingSites=fiveSites, DumperDumpingSite="DUMP" };
+var fiveRuntime = new ActiveMapRuntimeSnapshot("FIVE", "V1", fiveMap, DateTimeOffset.Now);
+var chosen = new List<string>();
+for (var i = 0; i < 5; i++)
+{
+    var step = await MultiStep($"FIVE-T{i}", $"FIVE-C{i}");
+    var result = await TaskWaitingBayRouter.AcquireAsync(step, "P1", fiveOptions, fiveRuntime,
+        new BayPlanner(fiveMap), manager, manager, stepOptions, default);
+    Check(result is not null, $"第{i+1}辆车有独立可用泊位");
+    chosen.Add(result!.Value.Site);
+    // Model verified departure: all roads/bays free again. Historical selection remains durable.
+    await manager.ReleaseTaskAsync(step.TaskId, default);
+}
+Check(chosen.Distinct().Count()==5, "连续五辆车在每次泊位全空时仍均衡使用五个位置，不总选最短WAIT-01");
+var history = await new TrafficResourceManager(db,catalog,new(TimeSpan.FromSeconds(1)))
+    .GetSelectionCountsAsync("FIVE", "V1", default);
+Check(history.Count==5 && history.Values.All(c=>c==1), "均衡记录按地图版本持久化，服务重建不遗忘");
+Check((await manager.GetSelectionCountsAsync("FIVE", "V2", default)).Count==0, "旧地图选位次数不污染新地图");
+if (args.Length == 1)
+{
+    var jsonOptions = new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web);
+    jsonOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
+    var cad = System.Text.Json.JsonSerializer.Deserialize<MapDefinition>(await File.ReadAllTextAsync(args[0]),jsonOptions)!;
+    var cadRuntime = new ActiveMapRuntimeSnapshot("CAD-BALANCE", "V1", cad, DateTimeOffset.Now);
+    var cadOptions = new DispatchOrchestratorOptions { DumperWaitingSite="WAIT-01",
+        DumperWaitingSites=Enumerable.Range(1,5).Select(i=>$"WAIT-{i:00}").ToArray(), DumperDumpingSite="DUMPER-001" };
+    catalog.Replace(MapCorridorResources.AllResources(cad));
+    var cadSites = new List<string>();
+    for (var i=0;i<5;i++)
+    {
+        var step = await MultiStep($"CAD-B{i}",$"CAD-C{i}");
+        var source = cad.Nodes.Single(n=>n.AgvSiteId==$"CNC-{282+i:000}").Id;
+        var result = await TaskWaitingBayRouter.AcquireAsync(step, source, cadOptions, cadRuntime,
+            new BayPlanner(cad),manager,manager,stepOptions,default);
+        Check(result is not null, $"成都地图CNC-{282+i:000}可选真实地图候车路线");
+        cadSites.Add(result!.Value.Site);
+        Check(result.Value.Windows.All(w=>w.ResourceIds.Contains(result.Value.Site)),"成都候车资源贯穿全部窗口，不因拆窗漏锁");
+        await manager.ReleaseTaskAsync(step.TaskId,default);
+    }
+    Console.WriteLine("CAD bay selection: "+string.Join(",",cadSites));
+    Check(cadSites.Distinct().Count()==5,"成都地图五辆车的选位均衡使用五个泊位（静态路权回归，不冒充动态到站）");
+}
 DepartureReleaseChecks.Run(Check);
 Console.WriteLine($"PASS {checks} waiting-bay/route/equipment checks. Evidence: {root}");
 

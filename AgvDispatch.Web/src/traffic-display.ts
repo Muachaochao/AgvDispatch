@@ -1,5 +1,17 @@
-import type {Snapshot, TaskRow, TrafficBlocker} from './types.ts';
+import type {Snapshot, TaskRow, TrafficBlocker, TrafficRequest} from './types.ts';
 import {isFresh} from './state.ts';
+
+export function resourceHandovers(snapshot:Snapshot|null, request:TrafficRequest|null){
+ if(!snapshot?.map||!request||request.mapId!==snapshot.map.id||request.mapVersionId!==snapshot.map.version)return [];
+ const ids=new Set(request.resourceIds.map(id=>id.toLowerCase()));
+ const identity=(task:string,step:string,vehicle:string)=>JSON.stringify([task,step,vehicle]);
+ const owners=new Set((snapshot.traffic?.requests??[]).filter(r=>r.mapId===request.mapId&&r.mapVersionId===request.mapVersionId)
+  .map(r=>identity(r.taskId,r.stepId,r.vehicleId)));
+ return (snapshot.traffic?.events??[]).filter(e=>['ResourceAcquired','ResourceReleased','SegmentReleased'].includes(e.kind)&&
+  owners.has(identity(e.taskId,e.stepId,e.vehicleId))&&e.resourceIds.some(id=>ids.has(id.toLowerCase())))
+  .map(e=>({...e,resourceIds:e.resourceIds.filter(id=>ids.has(id.toLowerCase()))}))
+  .sort((a,b)=>Date.parse(b.occurredAt)-Date.parse(a.occurredAt));
+}
 
 // Display evidence only: never change task stage, occupancy counts or release policy.
 export function taskWait(s:Snapshot|null,t:TaskRow,now:number){

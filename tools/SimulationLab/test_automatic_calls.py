@@ -18,7 +18,10 @@ class Clock:
 
 
 class BacklogTests(unittest.TestCase):
-    def test_calls_continue_while_car_is_busy_and_repeated_station_waits_its_own_cycle(self):
+    def test_admission_queue_is_distinct_from_all_fleet_busy(self):
+        self.test_calls_continue_while_car_is_busy_and_repeated_station_waits_its_own_cycle(admission=True)
+
+    def test_calls_continue_while_car_is_busy_and_repeated_station_waits_its_own_cycle(self, admission=False):
         with tempfile.TemporaryDirectory() as name:
             clock = Clock()
             tasks, completed, original, events = {}, set(), {}, []
@@ -65,6 +68,9 @@ class BacklogTests(unittest.TestCase):
                     if not value: raise AssertionError(label)
                     return value
             runtime = Runtime(); runtime.root=root
+            if admission:
+                runtime.settings = dict(runtime.settings, DownstreamAdmission=dict(Enabled=True, Capacity=1),
+                    Agv=dict(Robots=[dict(VehicleId='car'),dict(VehicleId='idle-car')]))
             runtime.memory[0] = runtime.memory[2] = 10
             class Observer:
                 def sample(self, details): pass
@@ -87,7 +93,13 @@ class BacklogTests(unittest.TestCase):
             self.assertGreaterEqual(events[2][1],4.5)
             self.assertLess(events[2][1],6, 'repeat station may continue while the other station is executing')
             summary=read(root/'queue-summary.json')
-            self.assertGreater(summary['maximumBusyWaitingTasks'],0)
+            if admission:
+                self.assertEqual(summary['maximumBusyWaitingTasks'],0)
+                self.assertGreater(summary['maximumAdmissionWaitingTasks'],0)
+                self.assertEqual(summary['maximumActiveTasks'],1)
+                self.assertTrue(any(name=='下游准入满额时呼叫保持未取箱排队' for name,_ in checks))
+            else:
+                self.assertGreater(summary['maximumBusyWaitingTasks'],0)
             self.assertTrue(all(passed for _,passed in checks))
             accepted=[json.loads(line) for line in (root/'call-queue.jsonl').read_text(encoding='utf-8').splitlines()]
             self.assertEqual(sum(item['kind']=='assigned' for item in accepted),3)

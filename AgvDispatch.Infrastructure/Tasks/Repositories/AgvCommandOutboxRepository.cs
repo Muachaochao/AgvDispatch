@@ -9,10 +9,29 @@ using SqlSugar;
 
 namespace AgvDispatch.Infrastructure.Persistence;
 
-public sealed class AgvCommandOutboxRepository(ISqlSugarClient database, IActiveMapRuntime? activeMap = null)
+public sealed class AgvCommandOutboxRepository(ISqlSugarClient database, IActiveMapRuntime? activeMap = null,
+    DownstreamAdmissionOptions? admission = null)
     : IAgvCommandOutboxRepository
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    public async Task<DownstreamAdmissionSnapshot> GetPickupAdmissionAsync(string taskId, CancellationToken ct)
+    {
+        if (admission?.Enabled != true) return new(false, true, 0, [], "未启用下游准入限流。");
+        if (admission.Capacity < 1) throw new InvalidOperationException("下游准入容量必须大于0。");
+        // Admission is committed by the first-command transaction below. A restart
+        // cannot forget tickets; a fault/cancellation review does not free one.
+        // Conservatively retain through verified business closure (including return).
+        var leaseTasks = await database.Queryable<TrafficResourceLeaseEntity>().Select(l => l.TaskId).Distinct().ToListAsync(ct);
+        var owners = await database.Queryable<DispatchTaskEntity>()
+            .Where(t => t.VehicleId != null && (t.Stage >= (int)DispatchTaskStage.SubmittingToAgv &&
+                t.Stage != (int)DispatchTaskStage.Completed && t.Stage != (int)DispatchTaskStage.Cancelled || leaseTasks.Contains(t.TaskId)))
+            .Select(t => t.TaskId).ToListAsync(ct);
+        var allowed = owners.Contains(taskId, StringComparer.OrdinalIgnoreCase) || owners.Count < admission.Capacity;
+        return new(true, allowed, admission.Capacity, owners,
+            allowed ? $"下游准入{owners.Count}/{admission.Capacity}，发车仍须独立核验路权和PLC。" :
+                $"下游准入已满{owners.Count}/{admission.Capacity}，等待原任务核验收尾；本单保持未取箱，不提前占用候车位或倒料路权。占用任务：{string.Join('、', owners)}");
+    }
 
     public async Task<bool> TryPrepareTransportStepAsync(
         string taskId,
@@ -74,6 +93,8 @@ public sealed class AgvCommandOutboxRepository(ISqlSugarClient database, IActive
             {
                 return;
             }
+            if (window.Index == 0 && step.StepType == (int)DispatchTaskStepType.GoToPickup &&
+                !(await GetPickupAdmissionAsync(taskId, cancellationToken)).Allowed) return;
 
             // Assignment snapshots are advisory. Enforce vehicle ownership in
             // the same transaction that registers the persistent command.

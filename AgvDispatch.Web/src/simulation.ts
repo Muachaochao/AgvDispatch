@@ -231,6 +231,7 @@ export interface SimulationVehicleConfiguration {
   chargingGainPercentPerHour?: number;
 }
 export interface SimulationConfigureRequest {
+  downstreamAdmissionCapacity?: number;
   name: string; mapDefinition: SimulationMapDefinition; stations: SimulationStationConfiguration[];
   vehicles: SimulationVehicleConfiguration[];
   dumper: { dumpingSite: string; waitingSite: string; waitingSites?: string[]; resourceId: string };
@@ -341,6 +342,7 @@ export interface SimulationStatus {
   map?: SimulationMapDefinition | null;
   scenario?: SimulationScenario | null; report?: SimulationReport | null; phase?: string; controls?: Partial<SimulationControls>;
   configuration?: {
+    downstreamAdmissionCapacity?: number;
     stations: SimulationStationConfiguration[]; vehicles: SimulationVehicleConfiguration[]; inspectionSite: string;
     dumper: { dumpingSite: string; waitingSite: string; waitingSites?: string[]; resourceId: string }; mapName: string;
     plcSignalTable?: SimulationPlcSignalTable | null;

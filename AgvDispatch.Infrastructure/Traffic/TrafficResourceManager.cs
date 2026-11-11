@@ -63,6 +63,15 @@ public sealed partial class TrafficResourceManager(
         return row is null ? null : new(row.TaskId,row.VehicleId,row.StepId,row.MapId,row.MapVersionId,row.WaitingSite,row.ResourceId);
     }
 
+    public async Task<IReadOnlyDictionary<string, int>> GetSelectionCountsAsync(string mapId, string versionId, CancellationToken ct)
+    {
+        var rows = await database.Queryable<TaskWaitingBayEntity>()
+            .Where(b => b.MapId == mapId && b.MapVersionId == versionId)
+            .GroupBy(b => b.WaitingSite)
+            .Select(b => new { Site = b.WaitingSite, Count = SqlFunc.AggregateCount(b.TaskId) }).ToListAsync(ct);
+        return rows.ToDictionary(r => r.Site, r => r.Count, StringComparer.OrdinalIgnoreCase);
+    }
+
     public Task<TrafficReservationResult> TryAcquireAsync(TaskWaitingBayBinding binding,
         IReadOnlyCollection<string> routeResources, CancellationToken ct)
     {
@@ -176,6 +185,7 @@ public sealed partial class TrafficResourceManager(
                 }
             }
 
+            var newlyAcquired = new List<string>();
             foreach (var resourceId in requested)
             {
                 var exists = await database.Queryable<TrafficResourceLeaseEntity>()
@@ -214,7 +224,11 @@ public sealed partial class TrafficResourceManager(
                     RenewedAt = now,
                     ExpiresAt = now.Add(settings.LeaseDuration)
                 }).ExecuteCommandAsync(cancellationToken);
+                newlyAcquired.Add(resourceId);
             }
+            if (newlyAcquired.Count > 0)
+                await RecordLeaseChangeAsync(ownerStepId, taskId, vehicleId, "ResourceAcquired", newlyAcquired,
+                    "实际取得所列资源；原占用已在本事务中核对，后续按车体与交接证据释放。", cancellationToken);
             if(binding is not null && await GetAsync(taskId,cancellationToken) is null)
                 await database.Insertable(new TaskWaitingBayEntity{TaskId=taskId,VehicleId=vehicleId,StepId=ownerStepId,
                     MapId=binding.MapId,MapVersionId=binding.MapVersionId,WaitingSite=binding.WaitingSite,ResourceId=binding.ResourceId,
@@ -259,6 +273,8 @@ public sealed partial class TrafficResourceManager(
                 .ExecuteCommandAsync(ct);
             var remaining = leases.Except(remove).ToArray();
             var first = leases[0];
+            await RecordLeaseChangeAsync(ownerStepId, first.TaskId, first.VehicleId, "ResourceReleased",
+                remove.Select(l => l.ResourceId), reason, ct);
             await WriteStateAsync(ownerStepId, first.TaskId, first.VehicleId,
                 remaining.Length == 0 ? "Released" : "Held", reason,
                 remaining.Select(item => item.ResourceId).ToArray(), ct);
@@ -311,6 +327,8 @@ public sealed partial class TrafficResourceManager(
                 .Where(l => l.TaskId == taskId && l.OwnerStepId == stepId)
                 .ToListAsync(ct);
             var first = leases[0];
+            await RecordLeaseChangeAsync(stepId, taskId, first.VehicleId, "ResourceReleased",
+                leases.Select(l => l.ResourceId), reason, ct);
             await WriteStateAsync(stepId, taskId, first.VehicleId,
                 remaining.Count == 0 ? "Released" : "Held",
                 remaining.Count == 0
