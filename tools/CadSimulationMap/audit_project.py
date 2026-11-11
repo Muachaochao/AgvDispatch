@@ -145,7 +145,9 @@ def audit(root: Path):
                 limitations=["CNC编号为仿真顺序编号，须与现场铭牌和厂家站点表核对。",
                              "CNC坐标来自CAD预览像素识别，约69.44mm/像素，不是测量级CAD实体中心。",
                              "取货点偏移1.1m、终端对接点、道路及其方向/容量属于待确认仿真设计。",
-                             "充电点为CAD文字锚点，尚不等于充电桩实际对接姿态。",
+                             ("充电点采用CAD泊位轮廓中心，充电桩实际对接姿态仍待标定。"
+                              if manifest.get("summary",{}).get("physicalLanes",{}).get("terminalLayout") else
+                              "充电点为CAD文字锚点，尚不等于充电桩实际对接姿态。"),
                              "PLC地址、初始电量、耗电及电压曲线为隔离合成数据，不能作为现场验收依据。",
                              ("本图为实际分离的CAD双排线，方向由用户授权设计；尚未核定现场转弯、机台轮廓和对接姿态。"
                               if manifest.get('dualLaneTopology',{}).get('separatedPhysicalGeometry') else

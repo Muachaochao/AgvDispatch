@@ -71,7 +71,8 @@ class PhysicalLaneTests(unittest.TestCase):
             self.assertEqual((self.ns[name]['x'],self.ns[name]['y']),point)
         self.assertNotEqual(self.ns['WAIT-01']['x'],984.4508609652442)
         self.assertLess(self.ns['DUMPER-001']['x'],985.028)
-        self.assertLess(self.ns['INSPECT-01']['x'],981)
+        self.assertNotIn('INSPECT-01',self.ns)
+        self.assertFalse(any(e['laneRole']=='inspection-access' for e in self.m['edges']))
 
     def test_waiting_central_crossing_and_shared_column_hubs(self):
         # Upper/lower symbols differ by millimetres; use one collector junction.
@@ -95,6 +96,23 @@ class PhysicalLaneTests(unittest.TestCase):
                     t0,t1=sorted(((minimum-a[field])/delta,(maximum-a[field])/delta))
                     lo=max(lo,t0);hi=min(hi,t1)
             self.assertGreater(lo,hi,f"道路穿过设备平台: {e['id']}")
+
+    def test_reciprocal_crossovers_share_capacity_one_resource(self):
+        pairs={(e['from'],e['to']):e for e in self.m['edges']}
+        capacities={r['id']:r['capacity'] for r in self.m['resources']}
+        for e in self.m['edges']:
+            if e['laneRole'] not in ('crossover','dumper-access'):continue
+            reverse=pairs[(e['to'],e['from'])]
+            shared=set(e['resourceIds']) & set(reverse['resourceIds'])
+            self.assertTrue(any(r.startswith('SEG-') and capacities[r]==1 for r in shared))
+        turns=[e for e in self.m['edges'] if e['laneRole']=='terminal-turn']
+        self.assertTrue(turns)
+        for e in turns:
+            self.assertGreater(self.ns[e['to']]['x'],self.ns[e['from']]['x'])
+            self.assertNotIn((e['to'],e['from']),pairs)
+        outgoing=[e for e in self.m['edges'] if e['from']=='DUMPER-001']
+        self.assertEqual(len(outgoing),1)
+        self.assertLess(self.ns[outgoing[0]['to']]['x'],self.ns['DUMPER-001']['x'])
 
     def test_missing_cad_symbols_fail_instead_of_using_labels(self):
         from terminal_layout import terminal_layout

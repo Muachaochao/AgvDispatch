@@ -1046,9 +1046,10 @@ def valid_graph(definition: dict[str, Any], initial_sites: list[str]) -> dict[st
     station_resources = [
         resource for resource in definition["resources"] if resource["type"] == "Station"
     ]
-    if len(station_resources) != 312:
-        # 305 CNC + five waiting points + dumping + inspection stations.
-        raise ValueError(f"Station资源数应为312，实际 {len(station_resources)}")
+    expected_station_resources = 311 + int(any(n["id"] == "INSPECT-01" for n in nodes.values()))
+    if len(station_resources) != expected_station_resources:
+        # 305 CNC + five waiting points + dumping; legacy graph has inspection.
+        raise ValueError(f"Station资源数应为{expected_station_resources}，实际 {len(station_resources)}")
     charging_resources = [
         resource for resource in definition["resources"] if resource["type"] == "ChargingBay"
     ]
@@ -1304,7 +1305,7 @@ def build_configuration(
             "waitingSites": [f"WAIT-{index:02d}" for index in range(1, 6)],
             "resourceId": "DUMPER-001",
         },
-        "inspectionSite": "INSPECT-01",
+        "inspectionSite": "INSPECT-01" if any(n["id"] == "INSPECT-01" for n in definition["nodes"]) else "WAIT-01",
         "plcSignalTable": plc_table,
         "mapIdentity": {
             "mapId": map_id,

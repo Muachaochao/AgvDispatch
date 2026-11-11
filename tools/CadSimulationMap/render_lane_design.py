@@ -58,9 +58,42 @@ def render(root):
     for i,(color,text) in enumerate((('#37d8cb','青色箭头：横向向东 / 纵向向北'),('#ffa75c','橙色箭头：横向向西 / 纵向向南'),('#7298b7','灰蓝：工位支线、换道与进出泊位'),('#cee9fa','白点：机台取放箱位置，部分会占用近侧车道'))):
         d.text((1070,1015+i*50),text,font=f(22),fill=color)
     d.text((1070,1245),'按用户授权设计仿真方向；未作为实车可下发地图。',font=f(20),fill='#a8bfce')
-    d.text((1070,1285),'保持原机台点位，转弯与停靠包络继续由仿真检查。',font=f(20),fill='#a8bfce')
+    d.text((1070,1285),'换道短段双向互斥；本轮仅静态检查，未运行仿真。',font=f(20),fill='#a8bfce')
     out=root/'dual-lane-layout.png';image.save(out);print(str(out.resolve()))
 
 
+
+def render_crossover_detail(root):
+    m=json.loads((root/'cad-simulation-map-definition.json').read_text(encoding='utf-8-sig'))
+    ns={n['id']:n for n in m['nodes']};anchor=next(n for n in ns.values() if n.get('agvSiteId')=='CNC-209')
+    near=min((e for e in m['edges'] if e.get('laneRole')=='eastbound'),key=lambda e:abs(ns[e['from']]['y']-anchor['y']))
+    upper=ns[near['from']]['y'];lower=max(n['y'] for e in m['edges'] if e.get('laneRole')=='westbound' for n in [ns[e['from']]] if n['y']<upper)
+    left=anchor['x']-2;right=left+16;top=upper+1.3;bottom=lower-1.3
+    im=Image.new('RGB',(2200,800),'#071522');d=ImageDraw.Draw(im)
+    def f(n):return ImageFont.truetype('C:/Windows/Fonts/msyh.ttc',n)
+    def pos(n):return 80+(n['x']-left)*125,180+(top-n['y'])*125
+    d.text((60,25),'上下排连接详图 · 主线单向，换道短段双向互斥',font=f(38),fill='#edf6ff')
+    # Clip main lanes to this viewport; don't omit long segments crossing bounds.
+    for e in m['edges']:
+        a,b=ns[e['from']],ns[e['to']]
+        if not all(bottom<=n['y']<=top for n in (a,b)):continue
+        if max(a['x'],b['x'])<left or min(a['x'],b['x'])>right:continue
+        a=dict(a,x=max(left,min(right,a['x'])));b=dict(b,x=max(left,min(right,b['x'])))
+        ax,ay=pos(a);bx,by=pos(b);length=math.hypot(bx-ax,by-ay)
+        if length<1:continue
+        color='#37d8c2' if e.get('laneRole')=='eastbound' else '#ffb064' if e.get('laneRole')=='westbound' else '#82b8e8'
+        d.line((ax,ay,bx,by),fill=color,width=5);ux,uy=(bx-ax)/length,(by-ay)/length
+        for t in ([.4] if length<180 else [.3,.7]):
+            x,y=ax+t*(bx-ax),ay+t*(by-ay)
+            d.polygon([(x+ux*11,y+uy*11),(x-ux*9-uy*6,y-uy*9+ux*6),(x-ux*9+uy*6,y-uy*9-ux*6)],fill=color)
+    for n in ns.values():
+        if left<=n['x']<=right and bottom<=n['y']<=top:
+            x,y=pos(n);d.ellipse((x-4,y-4,x+4,y+4),fill='#daeafa')
+            if n.get('agvSiteId') in ('CNC-209','CNC-233'):
+                d.text((x+8,y+18 if n['y']<lower else y-38),n['agvSiteId'],font=f(24),fill='#edf6ff')
+    d.text((70,650),'灰蓝短段：允许上→下和下→上；同一时刻只放行一辆，交叉口共用节点。',font=f(29),fill='#b8d3e9')
+    d.text((70,705),'双向是道路许可；不代表车端会自动倒车或已通过转弯净空验证。当前为静态设计。',font=f(26),fill='#a4becf')
+    im.save(root/'lane-crossover-detail.png')
+
 if __name__=='__main__':
-    p=argparse.ArgumentParser();p.add_argument('--root',type=Path,required=True);render(p.parse_args().root)
+    p=argparse.ArgumentParser();p.add_argument('--root',type=Path,required=True);root=p.parse_args().root;render(root);render_crossover_detail(root)

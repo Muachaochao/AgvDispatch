@@ -70,7 +70,7 @@ def build_physical_graph(stations, cad_dxf, base_builder, *, allow_terminal_fixt
     top,bottom=ys[-1],terminal['dumperApproach'][1]
     line((tw,top),(tw,bottom),'terminal-in')
     line((te,bottom),(te,ys[-2]),'terminal-out')
-    line((tw,bottom),(te,bottom),'terminal-turn',True)
+    line((tw,bottom),(te,bottom),'terminal-turn')
     mid=terminal['centralY']
     # One controlled reversible waiting collector between the three/two bays.
     # Do not add an east/south bypass through the lifting platform footprint.
@@ -97,11 +97,15 @@ def build_physical_graph(stations, cad_dxf, base_builder, *, allow_terminal_fixt
         line((x,bottom),(node['x'],node['y']),'charging-access',True)
     dump=terminal_node('DUMPER-001',terminal['dumperApproach'])
     line((te,bottom),(dump['x'],dump['y']),'dumper-access',True)
-    inspect=terminal_node('INSPECT-01',(tw-1.6,bottom))
-    line((tw,bottom),(inspect['x'],inspect['y']),'inspection-access',True)
+    # No surveyed handling bay exists west of the entry lane. Do not invent one.
+    summary['inspectionSite']='WAIT-01'
+    terminal['inspectionPolicy']='Reuse existing WAIT-01 for software topology only; not a certified emergency safe point'
+    terminal['dumperManeuver']={'entry':'eastbound short spur', 'exit':'reverse along same short spur to terminal-out',
+        'reverseDistanceMeters':round(dump['x']-te,6), 'requires':'vehicle reverse support, confirmed docking heading, clear spur and reserved exit junction',
+        'navigationCommandValidated':False}
     terminal['adjustments']=adjustments
     terminal['directionRules']=['上横线向东、下横线向西','左竖线进区、右竖线出区',
-        '待命中间横道和泊位支线双向互斥','双充电位各自独立尽端支线','倒料从西侧专用支线进退，容量1']
+        '底部横段仅由进区线向返回线单向连接','各组上下排换道短段双向互斥','待命中间横道和泊位支线双向互斥','双充电位各自独立尽端支线','倒料从西侧专用支线进退，容量1']
     # Split arbitrary straight segments as well as orthogonal crossings. Slight
     # offsets between upper/lower CAD bay symbols must not create 7mm junctions.
     def key(p):return (round(p[0],6),round(p[1],6))
