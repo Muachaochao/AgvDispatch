@@ -1,7 +1,7 @@
 import tempfile,unittest
 from pathlib import Path
 import ezdxf
-from build_full_map import StationPoint,build_graph,check_wait_departure_clearance
+from build_full_map import StationPoint,build_graph,check_wait_departure_clearance,build_configuration
 from physical_lanes import build_physical_graph
 
 
@@ -22,6 +22,11 @@ class PhysicalLaneTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):cls.temp.cleanup()
+
+    def test_configuration_preserves_road_speed_without_second_scale(self):
+        configuration = build_configuration(self.m, ['CNC-001'], {})
+        self.assertEqual(5, len(configuration['vehicles']))
+        self.assertTrue(all(v['speedScale'] == 1 for v in configuration['vehicles']))
 
     def test_parallel_geometry_and_opposite_directions(self):
         self.assertEqual(6,self.summary['physicalLanes']['pairs'])

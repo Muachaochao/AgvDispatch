@@ -439,6 +439,50 @@ class DeviceNetworkTests(unittest.IsolatedAsyncioTestCase):
             driver.cancel()
             await asyncio.gather(driver, return_exceptions=True)
 
+    async def test_road_limit_and_multiplier_produce_measured_speed(self):
+        car = self.f.car
+        car.nodes['LM1']['x'] = 10
+        car.edges['LM0', 'LM1'][0]['speedLimit'] = .75
+        car.speed_scale = 1
+        car.robokit_reply(3066, {'move_task_list': [
+            {'task_id': 'speed-proof', 'source_id': 'LM0', 'id': 'LM1'}]})
+        driver = asyncio.create_task(car.drive())
+        try:
+            await self.wait_until(lambda: abs(car.current_speed_mps - .75) < 1e-8,
+                                  'Road 0.75 and multiplier 1 must reach 0.75 m/s')
+            car.speed_scale = .75
+            await self.wait_until(lambda: abs(car.current_speed_mps - .5625) < 1e-8,
+                                  'Multiplier 0.75 is not physical speed 0.75 m/s')
+        finally:
+            driver.cancel()
+            await asyncio.gather(driver, return_exceptions=True)
+
+    async def test_dumper_short_exit_3055_keeps_heading_and_load(self):
+        import math
+        car=self.f.car
+        car.nodes['LM1']['x']=.9
+        car.x=.9;car.y=0;car.station='LM1';car.motion_source='LM0';car.motion_target='LM1'
+        car.loaded=True;car.angle=math.pi
+        request={'dist':.9,'vx':-.1,'vy':0,'mode':1}
+        self.assertEqual(400,car.robokit_reply(3055,request)['ret_code'])
+        car.angle=0
+        self.assertEqual(0,car.robokit_reply(3055,request)['ret_code'])
+        task=next(k for k in car.tasks if k.startswith('TRANSLATION-'))
+        driver=asyncio.create_task(car.drive())
+        headings=[]
+        try:
+            end=time.monotonic()+14
+            while car.tasks[task]!=4 and time.monotonic()<end:
+                headings.append(car.angle);await asyncio.sleep(.1)
+            self.assertEqual(4,car.tasks[task])
+            self.assertAlmostEqual(0,car.x,places=3)
+            self.assertAlmostEqual(0,car.y,places=3)
+            self.assertTrue(car.loaded)
+            self.assertTrue(all(abs(a)<1e-8 for a in headings))
+            self.assertEqual('LM0',car.station)
+        finally:
+            driver.cancel();await asyncio.gather(driver,return_exceptions=True)
+
     async def test_3055_translation_moves_straight_back_without_route_planning(self):
         car = self.f.car
         car.nodes['LM1']['x'] = 4

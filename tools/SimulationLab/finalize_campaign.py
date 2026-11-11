@@ -19,6 +19,58 @@ def duration_text(seconds: float) -> str:
     return f"{rounded // 60}分{rounded % 60:02d}秒"
 
 
+
+def render_markdown(metrics, vehicle_lines, task_lines, final_states):
+    """Render only measured results; task closure never overrides scenario failure."""
+    counts = metrics['counts']
+    status = metrics.get('status')
+    verdict = {'passed': '通过', 'failed': '未通过', 'aborted': '已中止'}.get(status, '未完成')
+    return f"""# 隔离仿真运行报告
+
+本轮场景**{verdict}**。业务任务完成 **{counts['completedTasks']}/{counts['taskRows']}**；业务完成数与场景验收结论分别记录。
+
+场景说明：{metrics.get('message') or '无附加说明'}
+
+| 项目 | 实测结果 |
+| --- | --- |
+| 原始场景状态 | {status} |
+| 报告编号 | {metrics.get('reportId')} |
+| 场景耗时 | {duration_text(metrics.get('durationSeconds') or 0)} |
+| 速度配置值 | {metrics.get('speedScales')}（原始配置值，不推定物理单位） |
+| 道路限速（米/秒） | {metrics.get('routeSpeedLimits')} |
+| 模型各档速度上限（米/秒） | {metrics.get('modelSpeedUpperBounds')} |
+| 最大执行任务 | {metrics.get('maximumActiveTasks')} |
+| 最大待派任务 | {metrics.get('maximumWaitingTasks')} |
+| 全部车辆忙碌时最大待派 | {metrics.get('maximumBusyWaitingTasks')} |
+| 九步全部完成 | {counts['allStepsCompleted']} |
+| 出区证据通过/检查数 | {counts['exitEvidencePassed']}/{counts['exitEvidenceChecks']} |
+| 故障 / 取消 / 未闭合任务 | {counts['faultedTasks']} / {counts['cancelledTasks']} / {counts['activeTasks']} |
+| 结束时路权记录数 | {counts['remainingLeases']} |
+| 地图节点 / 有向道路 / 资源 | {counts['mapNodes']} / {counts['mapEdges']} / {counts['mapResources']} |
+| 场景检查统计 | {metrics.get('checks')} |
+
+## 车辆参与情况
+
+| 车辆 | 任务数 | 轨迹累计里程 |
+| --- | ---: | ---: |
+{vehicle_lines}
+
+| 车辆 | 最终站点 | 载荷 | 通讯 | 状态 |
+| --- | --- | --- | --- | --- |
+{final_states}
+
+## 任务证据
+
+| 工位 | 车辆 | 建单至完成耗时 | 步骤闭环 | 交通回执 |
+| --- | --- | ---: | ---: | ---: |
+{task_lines}
+
+## 结果边界
+
+本报告从本次保存的地图、数据库和原始场景报告生成，不改写原始判定。地图包含的工位数量不等于本次已覆盖的呼叫工位数量；任务完成不代表积压、全部工位压力或物理净空验收通过。仿真不替代真车定位、倒车对接、机械动作及现场安全验收。可回放视频为仿真证据重放，不是现场录像。
+"""
+
+
 def build(root: Path, run_id: str, output: Path) -> dict:
     run = root / ("simulation-run-" + run_id)
     report = load(run / "report.json")
@@ -175,6 +227,9 @@ def build(root: Path, run_id: str, output: Path) -> dict:
             for key, value in sorted(vehicle_distances.items())
         },
         "speedScales": speeds,
+        "routeSpeedLimits": sorted({float(edge.get('speedLimit', .5)) for edge in map_definition['edges']}),
+        "modelSpeedUpperBounds": sorted({min(1.0, float(edge.get('speedLimit', .5))) * scale
+                                          for edge in map_definition['edges'] for scale in speeds}),
         "checks": dict(checks),
         "counts": counts,
         "queueSummary": queue,
@@ -202,81 +257,7 @@ def build(root: Path, run_id: str, output: Path) -> dict:
             f"{'在线' if not car['offline'] else '离线'} | "
             f"{'有任务' if car['current_task'] else '空闲'} |"
         )
-    check_status = (
-        str(exit_checks[0].get("status") if exit_checks else "missing").upper()
-    )
-    speed_text = "、".join(f"{speed:g}×" for speed in speeds) or "未记录"
-    markdown = f"""# 5 车 20 单连续呼叫仿真验收报告
-
-## 结论
-
-本轮隔离仿真**通过**：正式调度器完成 **20/20** 个九步闭环任务，车辆最大并发 **5** 台，最大待派队列 **15** 单，任务故障、取消、残留路权、障碍误恢复均为 **0**。5 台车都参与了多轮复用，没有出现同一车辆同时承担两个未完成任务。
-
-本轮使用完整 CAD 仿真地图（647 个节点、1304 条有向道路、752 个资源），但 PLC 点表只启用 20 个演示工位，因此结论证明多车排队、连续派车、28 阶段业务握手和交通释放逻辑，不冒充 305 工位满规模 PLC 最终验收。
-
-## 关键结果
-
-| 项目 | 结果 |
-| --- | ---: |
-| 场景状态 | {report['status']} |
-| 报告编号 | `{report['id']}` |
-| 计划/完成 | 20 / 20 |
-| 总耗时 | {duration_text(report.get('metrics', {}).get('durationSeconds', 0))} |
-| 速度设置 | 基准 0.75 m/s，仿真倍率 {speed_text} |
-| 最大执行车辆 | {report['metrics'].get('maximumActiveTasks')} |
-| 最大排队任务 | {report['metrics'].get('maximumWaitingTasks')} |
-| 最大“车辆全忙时等待” | {report['metrics'].get('maximumBusyWaitingTasks')} |
-| 九步完成步骤 | 180 / 180 |
-| 出区证据检查 | {len(exit_checks)} 项，全部 {check_status} |
-| 命令与唯一命令步骤 | {command_summary['total']} / {command_summary['distinct_steps']} |
-| 交通回执 | {receipt_summary['total']} 条，覆盖 {receipt_summary['tasks']} 单、{receipt_summary['vehicles']} 车 |
-| 结束时残留路权 | {counts['remainingLeases']} |
-| 障碍自动改道发送 | {report['metrics'].get('obstacleAutoDetourSends')} |
-| 最小车辆间距 | {report['metrics'].get('minimumSeparationMeters'):.3f} m |
-| 场景检查 | {checks.get('passed', 0)} passed / {checks.get('failed', 0)} failed |
-
-## 车辆复用
-
-| 车辆 | 承担任务数 | 轨迹累计里程 |
-| --- | ---: | ---: |
-{vehicle_lines}
-
-最终 5 台车全部在线、空载、无当前任务、无阻断：
-
-| 车辆 | 最终站点 | 载荷 | 通讯 | 状态 |
-| --- | --- | --- | --- | --- |
-{chr(10).join(final_states)}
-
-## 任务结果
-
-| 工位 | 车辆 | 建单至完成耗时 | 步骤闭环 | 交通回执 |
-| --- | --- | ---: | ---: | ---: |
-{task_lines}
-
-## 本轮修复并验证的问题
-
-1. **大图派车前逐边查询超时**：隔离仿真实例改用“车端地图身份 + 同一已载入版本有向边”核验，正式现场仍默认保留完整 1303 逐边核验。
-2. **前后车排队被误判为外部障碍**：前车占道只作为物理跟车等待，不再上报车端 `Blocked`，也不会触发 5 秒障碍超时和 3003 取消。
-3. **反向车辆共用中心线导致对向死锁**：210 对反向路段各增加容量 1 的 `HEAD-ON-GUARD-*` 共享资源；方向逻辑车道仍为 5 容量，设备工位仍为 1。
-4. **旧恢复票据混入新实例**：本实例启动核对使用独立数据库并正常自动放行空载闭合初态；整轮执行期间没有出现旧票据恢复屏障。
-
-## 地图与线路边界
-
-- CAD 未提供经过确认的 AGV 物理车道中心线、车道宽度、转弯半径和现场避障层。
-- 本轮“双道”是方向逻辑车道，反向中心线仍共用已核验轨迹，因此额外加了防对向死锁护栏。
-- 码头、5T、总控和终端工艺点仍是画面参考点，没有自动变成派车工位。
-- 该结果可用于调度逻辑和多车压力验证，不能替代厂家 SMAP、真车定位、机械动作、PLC 固件和安全联锁验收。
-
-## 文件
-
-- `仿真回放-5车20单-20of20.mp4`：完整时间轴加速回放。
-- `simulation-report.json`：原始机器报告。
-- `task-results.csv`：20 单逐单结果和证据摘要。
-- `metrics-summary.json`：结构化指标。
-- `final-live.json` / `final-snapshot.json`：最终车辆、设备、任务状态。
-- `simulation-replay.json`：1012 帧压缩回放数据。
-- `simulation-evidence.zip`：精选证据包；原始 309 MB 观测文件仍保留在运行目录。
-"""
+    markdown = render_markdown(metrics, vehicle_lines, task_lines, "\n".join(final_states))
     (output / "仿真验收报告.md").write_text(markdown, encoding="utf-8")
     return {
         "status": report.get("status"),

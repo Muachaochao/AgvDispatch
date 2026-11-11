@@ -1281,7 +1281,7 @@ def build_configuration(
             "widthMeters": 0.52,
             "initialLoaded": False,
             "batteryPercent": 86.0,
-            "speedScale": 0.75,
+            "speedScale": 1.0,
             "accelerationMetersPerSecondSquared": 0.6,
             "operationSeconds": 3.0,
             "travelCostPercentPerMeter": 0.01,

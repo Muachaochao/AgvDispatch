@@ -793,6 +793,12 @@ class DeviceTwin:
                 for (ax, ay), (bx, by) in zip(points, points[1:]))
             if abs(translation_length-distance) > 0.08:
                 return dict(ret_code=400, err_msg='Translation distance does not reach current edge source')
+            # 3055 is body-frame translation: it cannot rotate to follow a
+            # curved reverse route or ignore a reversed vehicle heading.
+            for (ax,ay),(bx,by) in zip(points,points[1:]):
+                length=math.hypot(bx-ax,by-ay)
+                if length>1e-8 and ((bx-ax)*(-math.cos(self.angle))+(by-ay)*(-math.sin(self.angle)))/length < math.cos(math.radians(10)):
+                    return dict(ret_code=400, err_msg='Backward translation is not aligned with vehicle heading')
             tid = 'TRANSLATION-' + secrets.token_hex(16)
             self.tasks[tid] = 1
             self.queue.put_nowait(dict(

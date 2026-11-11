@@ -218,7 +218,7 @@ def main():
                 sampledFrames=len(frames), map=navigation, vehicles=config['vehicles'], timeline=frames)
     args.output.with_suffix('.json').write_text(json.dumps(replay,ensure_ascii=False),encoding='utf-8')
     process=subprocess.Popen(['ffmpeg','-hide_banner','-loglevel','error','-y','-f','image2pipe',
-        '-framerate',str(args.fps),'-i','-','-c:v','libx264','-preset','fast','-crf','22','-pix_fmt','yuv420p',
+        '-threads','2','-framerate',str(args.fps),'-i','-','-threads','2','-filter_threads','1','-c:v','libx264','-preset','fast','-crf','22','-pix_fmt','yuv420p',
         '-movflags','+faststart',str(args.output)],stdin=subprocess.PIPE)
     trails=defaultdict(lambda:deque(maxlen=90))
     try:

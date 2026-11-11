@@ -118,7 +118,7 @@ def main() -> None:
             "widthMeters": width,
             "initialLoaded": False,
             "batteryPercent": float(vehicle.get("battery") or 86),
-            "speedScale": 0.75,
+            "speedScale": 1.0,
             "accelerationMetersPerSecondSquared": 0.6,
             "operationSeconds": 5.0,
             "travelCostPercentPerMeter": 0.01,

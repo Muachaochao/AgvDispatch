@@ -10,8 +10,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--url', required=True, help='仿真控制台URL，仅允许127.0.0.1。')
     parser.add_argument('--scenarios', nargs='+', default=['normal-cycle', 'simultaneous-calls', 'disconnect-reconnect', 'plc-delay', 'service-restart'])
-    parser.add_argument('--speed-scale', type=float, default=3.0,
-                        help='虚拟车辆速度倍率；现场对齐测试使用0.75。')
+    parser.add_argument('--speed-scale', type=float, default=1.0,
+                        help='虚拟车辆速度倍率；道路限速0.75m/s时用1.0得到最高0.75m/s；0.75倍率实际为0.5625m/s。')
     args = parser.parse_args(); url = urlsplit(args.url)
     if url.scheme != 'http' or url.hostname != '127.0.0.1' or url.username or url.password: raise ValueError('回环URL必需。')
     if not 0.1 <= args.speed_scale <= 10:
