@@ -36,6 +36,7 @@ def render_markdown(metrics, vehicle_lines, task_lines, final_states):
 | 原始场景状态 | {status} |
 | 报告编号 | {metrics.get('reportId')} |
 | 场景耗时 | {duration_text(metrics.get('durationSeconds') or 0)} |
+| 最长活动步骤停留 | {duration_text(metrics['longestUnchangedStepSeconds']) if metrics.get('longestUnchangedStepSeconds') is not None else '未记录'} |
 | 速度配置值 | {metrics.get('speedScales')}（原始配置值，不推定物理单位） |
 | 道路限速（米/秒） | {metrics.get('routeSpeedLimits')} |
 | 模型各档速度上限（米/秒） | {metrics.get('modelSpeedUpperBounds')} |
@@ -47,7 +48,7 @@ def render_markdown(metrics, vehicle_lines, task_lines, final_states):
 | 故障 / 取消 / 未闭合任务 | {counts['faultedTasks']} / {counts['cancelledTasks']} / {counts['activeTasks']} |
 | 结束时路权记录数 | {counts['remainingLeases']} |
 | 地图节点 / 有向道路 / 资源 | {counts['mapNodes']} / {counts['mapEdges']} / {counts['mapResources']} |
-| 场景检查统计 | {metrics.get('checks')} |
+| 场景检查统计 | 通过 {metrics.get('checks', {}).get('passed', 0)} 项，失败 {metrics.get('checks', {}).get('failed', 0)} 项 |
 
 ## 车辆参与情况
 
@@ -214,6 +215,7 @@ def build(root: Path, run_id: str, output: Path) -> dict:
         "message": report.get("message"),
         "reportId": report.get("id"),
         "durationSeconds": report.get("metrics", {}).get("durationSeconds"),
+        "longestUnchangedStepSeconds": report.get("metrics", {}).get("longestUnchangedStepSeconds"),
         "minimumSeparationMeters": report.get("metrics", {}).get("minimumSeparationMeters"),
         "maximumWaitingTasks": report.get("metrics", {}).get("maximumWaitingTasks"),
         "maximumActiveTasks": report.get("metrics", {}).get("maximumActiveTasks"),
