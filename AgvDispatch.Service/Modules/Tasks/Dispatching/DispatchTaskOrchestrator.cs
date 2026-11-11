@@ -577,7 +577,7 @@ public sealed partial class DispatchTaskOrchestrator(
                         robot.Blocked != false || robot.EmergencyStopped != false ||
                         AgvObstaclePolicy.IsBlocked(robot) || AgvObstaclePolicy.HasBlockingAlarm(robot))
                         continue;
-                    var windowOutcome = await TryAdvanceTransportWindowAsync(task, cancellationToken);
+                    var windowOutcome = await TryAdvanceTransportWindowAsync(task, status, cancellationToken);
                     if (windowOutcome != TransportWindowAdvanceOutcome.NotApplicable)
                     {
                         if (windowOutcome == TransportWindowAdvanceOutcome.Prepared)
@@ -658,7 +658,7 @@ public sealed partial class DispatchTaskOrchestrator(
         }
     }
 
-    private async Task<TransportWindowAdvanceOutcome> TryAdvanceTransportWindowAsync(DispatchTaskWorkItem task,
+    private async Task<TransportWindowAdvanceOutcome> TryAdvanceTransportWindowAsync(DispatchTaskWorkItem task, AgvTransportTaskStatus terminal,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(task.VendorTaskId) || string.IsNullOrWhiteSpace(task.VehicleId))
@@ -684,12 +684,17 @@ public sealed partial class DispatchTaskOrchestrator(
             observed > DateTimeOffset.UtcNow.AddSeconds(1) ||
             DateTimeOffset.UtcNow - observed >= TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds) ||
             robot.Blocked != false || robot.EmergencyStopped != false ||
-            Math.Abs(robot.VelocityX ?? double.NaN) > 0.02 ||
-            Math.Abs(robot.VelocityY ?? double.NaN) > 0.02 ||
-            Math.Abs(robot.AngularVelocity ?? double.NaN) > 0.02)
+            robot.VelocityX is not { } vx || !double.IsFinite(vx) || Math.Abs(vx) > 0.02 ||
+            robot.VelocityY is not { } vy || !double.IsFinite(vy) || Math.Abs(vy) > 0.02 ||
+            robot.AngularVelocity is not { } va || !double.IsFinite(va) || Math.Abs(va) > 0.02)
             return TransportWindowAdvanceOutcome.WaitingAtSafePoint;
 
         var next = payload.Windows[payload.WindowIndex + 1];
+        // Free only geometrically cleared OLD resources before requesting the
+        // next window. Waiting for the next grant first creates hold-and-wait
+        // cycles with a vehicle returning from the dumper.
+        if (completedRouteRelease is not null)
+            await completedRouteRelease.ReleaseWindowAsync(task.TaskId, command.StepId, terminal, cancellationToken);
         var observation = new TrafficRouteObservation(command.StepId, task.TaskId, task.VehicleId,
             next.Source, next.Destination, next.EdgeIds, next.ResourceIds, false,
             "车辆已在安全点停稳，原任务申请下一滚动路权窗口。")

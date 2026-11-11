@@ -178,17 +178,57 @@ Check(replay.ReleasedCount == 0 &&
     database.Queryable<TrafficResourceLeaseEntity>().Count() == 1,
     "重复扫描幂等且不删除终点");
 
+// Reproduce hold-and-wait at a rolling boundary: our old CORRIDOR is clear,
+// while another car owns NEXT and needs CORRIDOR to leave the dumper.
+using var windowDb=DatabaseFactory.Create(new(){DatabasePath=Path.Combine(root,"window.db")});
+await new DatabaseInitializer(windowDb).InitializeAsync(default);
+var extended = map with { Nodes = map.Nodes.Append(new MapNode("D",20,0,MapNodeType.Station,true,["NEXT"])).ToArray(),
+    Edges=map.Edges.Append(new MapEdge("CD","C","D",10,1,false,true,["NEXT"])).ToArray(),
+    Resources=map.Resources.Append(new TrafficResourceDefinition("NEXT",TrafficResourceType.Station)).ToArray() };
+runtime.Replace(new("MAP","V1",extended,DateTimeOffset.UtcNow));
+var currentWindow=new AgvTransportRouteWindow(0,"A","C",["A","B","C"],["AB","BC"],
+    ["CORRIDOR","FINAL","INTERSECTION","AUTO-CORRIDOR-SYNTHETIC"],false);
+var nextWindow=new AgvTransportRouteWindow(1,"C","D",["C","D"],["CD"],["FINAL","NEXT"],true);
+payload=JsonSerializer.Serialize(new AgvTransportCommandPayload("STEP","AGV","A","C",["A","B","C"],null)
+    {BusinessStepId="STEP",WindowCount=2,Windows=[currentWindow,nextWindow]},new JsonSerializerOptions(JsonSerializerDefaults.Web));
+request.ResourceIds=JsonSerializer.Serialize(currentWindow.ResourceIds);request.State="Held";
+snapshotJson=TransportRouteSnapshots.Serialize(TransportRouteSnapshots.Capture("TASK","STEP","CMD","AGV",payload,runtime.Current!,request));
+windowDb.Insertable(request).ExecuteCommand();
+var windowTask=database.Queryable<DispatchTaskEntity>().Single();windowTask.Stage=(int)DispatchTaskStage.GoingToPickup;windowTask.VendorTaskId="STEP";windowDb.Insertable(windowTask).ExecuteCommand();
+var windowStep=database.Queryable<DispatchTaskStepEntity>().Single();windowStep.Status=(int)DispatchTaskStepStatus.Executing;windowStep.DestinationSite="D";windowDb.Insertable(windowStep).ExecuteCommand();
+var windowCommand=database.Queryable<AgvCommandOutboxEntity>().Single();windowCommand.PayloadJson=payload;windowCommand.ExecutionRouteSnapshotJson=snapshotJson;windowCommand.ExecutionRouteSnapshotHash=TransportRouteSnapshots.Hash(snapshotJson);windowDb.Insertable(windowCommand).ExecuteCommand();
+foreach(var resource in new[]{"FINAL","CORRIDOR","INTERSECTION","AUTO-CORRIDOR-SYNTHETIC"})
+ windowDb.Insertable(new TrafficResourceLeaseEntity{LeaseId="BOUNDARY-"+resource,ResourceId=resource,TaskId="TASK",OwnerStepId="STEP",VehicleId="AGV",MapId="MAP",MapVersionId="V1",AcquiredAt=DateTime.Now,RenewedAt=DateTime.Now,ExpiresAt=DateTime.Now.AddMinutes(2)}).ExecuteCommand();
+windowDb.Insertable(new TrafficResourceLeaseEntity{LeaseId="OTHER-NEXT",ResourceId="NEXT",TaskId="OTHER",OwnerStepId="OTHER-STEP",VehicleId="OTHER-CAR",MapId="MAP",MapVersionId="V1",AcquiredAt=DateTime.Now,RenewedAt=DateTime.Now,ExpiresAt=DateTime.Now.AddMinutes(2)}).ExecuteCommand();
+var windowManager=new TrafficResourceManager(windowDb,new TrafficResourceCatalog(extended.Resources),new(TimeSpan.FromMinutes(2)));
+var windowService=new CompletedTransportRouteReleaseService(windowDb,runtime,vehicles,provider,options,new MapOptions{MinimumLocalizationConfidence=.5},new TrafficSegmentReleasePolicy{Enabled=true},windowManager);
+void Refresh(double speed=0,double offset=0)=>vehicles.Snapshot=vehicle with {X=10+offset,LastSuccessfulPollAt=DateTimeOffset.UtcNow,UpdatedAt=DateTimeOffset.UtcNow,VelocityX=speed,VelocityY=0,AngularVelocity=0};
+AgvTransportTaskStatus Terminal(AgvTransportTaskState state=AgvTransportTaskState.Completed,string id="STEP")=>new(id,"TASK",state,"AGV",DateTimeOffset.UtcNow);
+Refresh();
+Check((await windowService.ReleaseWindowAsync("TASK","STEP",Terminal(AgvTransportTaskState.GoingToDestination),default)).ReleasedCount==0,"原厂家窗口未完成时不释放旧窗口");
+Check((await windowService.ReleaseWindowAsync("TASK","STEP",Terminal(id:"WRONG"),default)).ReleasedCount==0,"其他命令终态不能作为原窗口释放证据");
+Refresh(speed:.1);
+Check((await windowService.ReleaseWindowAsync("TASK","STEP",Terminal(),default)).ReleasedCount==0,"仍在移动时不因站点字段相同释放旧资源");
+Refresh(offset:1);
+Check((await windowService.ReleaseWindowAsync("TASK","STEP",Terminal(),default)).ReleasedCount==0,"坐标未到安全站点时不释放，不能冒用最近站点");
+Refresh();
+var boundaryReleased=await windowService.ReleaseWindowAsync("TASK","STEP",Terminal(),default);
+Check(boundaryReleased.ReleasedCount==2,"下一窗口被占用时，先按完整包络释放已通过的旧路段和路口");
+Check(windowDb.Queryable<TrafficResourceLeaseEntity>().Any(l=>l.ResourceId=="FINAL")&&windowDb.Queryable<TrafficResourceLeaseEntity>().Any(l=>l.LeaseId=="OTHER-NEXT")&&windowDb.Queryable<TrafficResourceLeaseEntity>().Any(l=>l.ResourceId=="AUTO-CORRIDOR-SYNTHETIC"),"保留当前停点、他车下一窗口和无几何依据的未知走廊，未删他车路权");
+Check((await windowManager.TryAcquireAsync("OTHER-STEP","OTHER","OTHER-CAR",["CORRIDOR"],default)).Acquired,"返箱车可取得前车真正释放的路权，不再被已走过路段挡住");
+Check(windowDb.Queryable<DispatchTaskStepEntity>().Single(s=>s.StepId=="STEP").Status==(int)DispatchTaskStepStatus.Executing&&windowDb.Queryable<AgvCommandOutboxEntity>().Count()==1,"只释放前序资源，不完成业务步骤、不伪造PLC、不提前发送下一窗口");
 Console.WriteLine($"PASS {checks} completed-route release checks. Database: {root}");
 
 sealed class Vehicles(AgvRobotSnapshot snapshot) : IAgvStateCache
 {
+    public AgvRobotSnapshot Snapshot= snapshot;
     public event Action<AgvRobotStateChanged>? StateChanged;
-    public long Version => snapshot.Version;
-    public IReadOnlyList<AgvRobotSnapshot> GetAll() => [snapshot];
+    public long Version => Snapshot.Version;
+    public IReadOnlyList<AgvRobotSnapshot> GetAll() => [Snapshot];
     public bool TryGet(string vehicleId, out AgvRobotSnapshot value)
     {
-        value = snapshot;
-        return vehicleId == snapshot.VehicleId;
+        value = Snapshot;
+        return vehicleId == Snapshot.VehicleId;
     }
 }
 

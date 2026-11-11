@@ -41,7 +41,18 @@ public sealed class CompletedTransportRouteReleaseService(
 
     public async Task<CompletedTransportRouteReleaseResult> ReleaseAsync(
         string taskId, string stepId, CancellationToken ct)
+        => await ReleaseCoreAsync(taskId, stepId, null, ct);
+
+    // The business step remains Executing. Only the original vendor window has
+    // completed; this never marks pickup, dumping, return or PLC work complete.
+    public Task<CompletedTransportRouteReleaseResult> ReleaseWindowAsync(
+        string taskId, string stepId, AgvTransportTaskStatus terminal, CancellationToken ct)
+        => ReleaseCoreAsync(taskId, stepId, terminal, ct);
+
+    private async Task<CompletedTransportRouteReleaseResult> ReleaseCoreAsync(
+        string taskId, string stepId, AgvTransportTaskStatus? terminal, CancellationToken ct)
     {
+        var windowBoundary = terminal is not null;
         if (string.IsNullOrWhiteSpace(taskId) || string.IsNullOrWhiteSpace(stepId))
             return new(0, "缺少原任务或已完成运输步骤。");
         var map = activeMap.Current;
@@ -61,7 +72,7 @@ public sealed class CompletedTransportRouteReleaseService(
             .Where(item => item.TaskId == taskId && item.OwnerStepId == stepId).ToListAsync(ct);
         if (step is null || task is null || command is null || request is null || leases.Count == 0)
             return new(0, "已完成步骤没有可释放的原路线租约。");
-        if (step.Status != (int)DispatchTaskStepStatus.Completed ||
+        if (step.Status != (int)(windowBoundary ? DispatchTaskStepStatus.Executing : DispatchTaskStepStatus.Completed) ||
             !TransportSteps.Contains((DispatchTaskStepType)step.StepType))
             return new(0, "原步骤尚未确认运输完成。");
         var expectedStage = (DispatchTaskStepType)step.StepType switch
@@ -70,6 +81,14 @@ public sealed class CompletedTransportRouteReleaseService(
             DispatchTaskStepType.DeliverFullBoxToDumper => DispatchTaskStage.WaitingForDumper,
             DispatchTaskStepType.EnterDumpingPosition => DispatchTaskStage.Dumping,
             DispatchTaskStepType.ReturnEmptyBox => DispatchTaskStage.WaitingForPlcConfirmation,
+            _ => (DispatchTaskStage)(-1)
+        };
+        if (windowBoundary) expectedStage = (DispatchTaskStepType)step.StepType switch
+        {
+            DispatchTaskStepType.GoToPickup => DispatchTaskStage.GoingToPickup,
+            DispatchTaskStepType.DeliverFullBoxToDumper => DispatchTaskStage.GoingToDumper,
+            DispatchTaskStepType.EnterDumpingPosition => DispatchTaskStage.Dumping,
+            DispatchTaskStepType.ReturnEmptyBox => DispatchTaskStage.ReturningEmptyBox,
             _ => (DispatchTaskStage)(-1)
         };
         if (task.Stage != (int)expectedStage || task.CancelRequestId is not null ||
@@ -83,6 +102,13 @@ public sealed class CompletedTransportRouteReleaseService(
 
         var payload = JsonSerializer.Deserialize<AgvTransportCommandPayload>(
             command.PayloadJson, JsonOptions);
+        if (windowBoundary && (terminal!.State != AgvTransportTaskState.Completed ||
+            terminal.VendorTaskId != command.VendorCommandId || terminal.VehicleId != step.VehicleId ||
+            task.VendorTaskId != command.VendorCommandId || step.VendorTaskId != command.VendorCommandId ||
+            terminal.UpdatedAt > (clock ?? TimeProvider.System).GetUtcNow().AddSeconds(1) ||
+            (clock ?? TimeProvider.System).GetUtcNow() - terminal.UpdatedAt > TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds) ||
+            payload is null || payload.WindowIndex < 0 || payload.WindowIndex >= payload.Windows.Count - 1))
+            return new(0, "当前窗口未取得新鲜的原厂家命令完成证据，保留路权。");
         var businessStepId = payload is null
             ? ""
             : string.IsNullOrWhiteSpace(payload.BusinessStepId) ? payload.BusinessTaskId : payload.BusinessStepId;
@@ -115,13 +141,20 @@ public sealed class CompletedTransportRouteReleaseService(
             return new(0, "车辆实时状态、定位或安全状态不满足到站释放条件。");
 
         var destinationMatches = map.Definition.Nodes.Where(node => node.Enabled &&
-            MapRouteSiteMapper.IsSameNode(map.Definition, node.Id, frozen.NodeIds[^1]) &&
+            MapRouteSiteMapper.IsSameNode(map.Definition, node.Id, windowBoundary ? payload.Destination : frozen.NodeIds[^1]) &&
             MapRouteSiteMapper.IsSameNode(map.Definition,
-                node.AgvSiteId ?? node.Id, frozen.AgvSites[^1])).ToArray();
+                node.AgvSiteId ?? node.Id, windowBoundary ? payload.Destination : frozen.AgvSites[^1])).ToArray();
         if (destinationMatches.Length != 1 ||
             !MapRouteSiteMapper.IsSameNode(map.Definition, vehicle.CurrentStation,
                 destinationMatches[0].AgvSiteId ?? destinationMatches[0].Id))
             return new(0, "车辆当前站点尚未与已完成运输终点一致。");
+        if (windowBoundary && (destinationMatches[0].AllowTrafficStop == false ||
+            destinationMatches[0].Type is not (MapNodeType.Station or MapNodeType.WaitingPoint or MapNodeType.ChargingPoint or MapNodeType.Intersection) ||
+            double.Hypot(x - destinationMatches[0].X, y - destinationMatches[0].Y) > 0.3 ||
+            vehicle.VelocityX is not { } vx || !double.IsFinite(vx) || Math.Abs(vx) > 0.02 ||
+            vehicle.VelocityY is not { } vy || !double.IsFinite(vy) || Math.Abs(vy) > 0.02 ||
+            vehicle.AngularVelocity is not { } va || !double.IsFinite(va) || Math.Abs(va) > 0.02))
+            return new(0, "窗口安全点、实时坐标或停稳证据不满足释放条件。");
 
         var body = await envelopes.ReadAsync(step.VehicleId, ct);
         var profile = handshake.DumperExit.BodyProfiles.Where(item =>
@@ -137,13 +170,19 @@ public sealed class CompletedTransportRouteReleaseService(
 
         var destination = destinationMatches[0];
         var protectedResources = destination.ResourceIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (windowBoundary) protectedResources.UnionWith(payload.Windows[payload.WindowIndex + 1].ResourceIds);
         var requestedResources = (JsonSerializer.Deserialize<string[]>(request.ResourceIds) ?? [])
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var definitions = map.Definition.Resources.ToDictionary(item => item.Id,
             StringComparer.OrdinalIgnoreCase);
         var radius = body.RadiusFromReportedReferenceMeters +
             releasePolicy.SafetyMarginMeters + profile[0].MaximumPositionUncertaintyMeters;
+        if (!double.IsFinite(radius) || radius <= 0 ||
+            !double.IsFinite(releasePolicy.SafetyMarginMeters) || releasePolicy.SafetyMarginMeters < 0.1)
+            return new(0, "包络安全余量无效，保留路权。");
         var candidates = new List<string>();
+        var topology = windowBoundary ? MapCorridorResources.Enrich(map.Definition) : null;
+        var graphNodes = windowBoundary ? map.Definition.Nodes.ToDictionary(n => n.Id, StringComparer.OrdinalIgnoreCase) : null;
         foreach (var lease in leases)
         {
             if (string.IsNullOrWhiteSpace(lease.LeaseId) ||
@@ -163,13 +202,26 @@ public sealed class CompletedTransportRouteReleaseService(
                     !Outside(x, y, radius, definition.Boundary!))
                     continue;
             }
+            else if (windowBoundary)
+            {
+                // Generated corridor guards have no polygon. Keep any guard
+                // touching the current body, even if it is absent from the stop node.
+                var guarded = topology!.Edges.Where(e => e.ResourceIds.Contains(lease.ResourceId, StringComparer.OrdinalIgnoreCase)).ToArray();
+                if (guarded.Length == 0 || guarded.Any(e =>
+                {
+                    if (!MapEdgeGeometry.TryValidate(e, graphNodes![e.From], graphNodes[e.To], out _)) return true;
+                    var distance = MapEdgeGeometry.DistanceTo(e, graphNodes[e.From], graphNodes[e.To], x, y);
+                    return !double.IsFinite(distance) || distance <= radius;
+                })) continue;
+            }
             candidates.Add(lease.LeaseId);
         }
         if (candidates.Count == 0)
             return new(0, "前序路段仍被车体覆盖或只剩终点资源，继续保留。");
 
         var released = await resources.ReleasePassedLeasesAsync(taskId, stepId, candidates,
-            "车辆已完成原运输并停到明确终点；释放该步骤已走过的全部前序路权，终点资源继续保留。",
+            windowBoundary ? "原厂家窗口已完成且车辆在安全点停稳，按完整包络释放已通过的旧窗口资源；当前停点和下一窗口重用资源继续保留，原业务步骤未完成。" :
+                "车辆已完成原运输并停到明确终点；释放该步骤已走过的全部前序路权，终点资源继续保留。",
             ct);
         return new(released, released == 0
             ? "并发状态已变化，本轮未删除路权。"
