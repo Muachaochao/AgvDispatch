@@ -10,7 +10,7 @@ import math
 import ezdxf
 
 
-def build_physical_graph(stations, cad_dxf, base_builder):
+def build_physical_graph(stations, cad_dxf, base_builder, *, allow_terminal_fixture=False):
     definition, summary = base_builder(stations)
     original = {n['id']: n for n in definition['nodes']}
     doc = ezdxf.readfile(cad_dxf)
@@ -62,42 +62,59 @@ def build_physical_graph(stations, cad_dxf, base_builder):
         line((sx,py),(sx,closest),'cnc-access',True)
         summary['stationRelations'][s.station_id].update(cadPickupMm=dict(x=sx*1000,y=py*1000),
                                                         approachNode='',laneY=closest)
-    # Terminal double spine follows CAD 844F7 / 8CB89. Main loop stays west
-    # of the waiting bays and machine body. Bay collection roads do not cut
-    # through another parked vehicle.
-    tw,te=981.90318,983.50192
-    top,bottom=ys[-1],-431.36636
+    # The user's 2026-11-11 markup takes priority over the old rectangular loop.
+    # Preserve actual bay-symbol centres; text insertion points are labels only.
+    from terminal_layout import terminal_layout
+    terminal=terminal_layout(doc, allow_terminal_fixture)
+    tw,te=terminal['spineX']
+    top,bottom=ys[-1],terminal['dumperApproach'][1]
     line((tw,top),(tw,bottom),'terminal-in')
     line((te,bottom),(te,ys[-2]),'terminal-out')
-    line((tw,bottom),(te,bottom),'terminal-turn')
-    line((tw,top),(te,top),'terminal-turn')
-    # North and south collector form a loop around the five CAD waiting bays.
-    north,south,rx=-427.3,-431.36636,988.5
-    line((te,north),(rx,north),'waiting-in')
-    line((rx,north),(rx,south),'waiting-out')
-    line((rx,south),(te,south),'waiting-out')
+    line((tw,bottom),(te,bottom),'terminal-turn',True)
+    mid=terminal['centralY']
+    # One controlled reversible waiting collector between the three/two bays.
+    # Do not add an east/south bypass through the lifting platform footprint.
+    hub_x={1:terminal['bays']['WAIT-01'][0],
+           2:round((terminal['bays']['WAIT-02'][0]+terminal['bays']['WAIT-04'][0])/2,6),
+           3:round((terminal['bays']['WAIT-05'][0]+terminal['bays']['WAIT-03'][0])/2,6)}
+    line((tw,mid),(hub_x[3],mid),'waiting-collector',True)
+    adjustments=[]
+    def terminal_node(name, point):
+        node=dict(original[name]);dx,dy=point[0]-node['x'],point[1]-node['y']
+        node.update(x=point[0],y=point[1]);business.append(node)
+        for resource in definition['resources']:
+            if resource['id'] in node['resourceIds']:
+                for p in resource.get('boundary',[]):p['x']+=dx;p['y']+=dy
+        adjustments.append(dict(id=name,old=[original[name]['x'],original[name]['y']],
+                                point=list(point),distanceMeters=round(math.hypot(dx,dy),6)))
+        return node
     for i in range(1,6):
-        node=dict(original[f'WAIT-{i:02}']);business.append(node)
-        exit_y=north if i in (1,2,5) else south
-        line((node['x'],node['y']),(node['x'],exit_y),'waiting-bay',True)
-    for i in range(1,3):
-        node=dict(original[f'CHARGE-{i:02}']);business.append(node)
-        # Dedicated perpendicular branches off the lower collector, separate
-        # from the dumper approach. Charger anchors remain CAD text anchors.
-        line((node['x'],node['y']),(node['x'],south),'charging-access',True)
-    line((981.426486,south),(te,south),'charging-collector',True)
-    for key in ('DUMPER-001','INSPECT-01'):
-        node=dict(original[key]);business.append(node)
-        line((node['x'],node['y']),(node['x'],south),'dumper-access' if key=='DUMPER-001' else 'inspection-access',True)
-    # Axis-aligned splitting includes collinear overlaps. There can be no
-    # invisible crossing where two vehicles use different graph node IDs.
+        name=f'WAIT-{i:02}';node=terminal_node(name,terminal['bays'][name])
+        column={1:1,2:2,3:3,4:2,5:3}[i]
+        line((node['x'],node['y']),(hub_x[column],mid),'waiting-bay',True)
+    for i,x in ((1,tw),(2,te)):
+        name=f'CHARGE-{i:02}';node=terminal_node(name,terminal['bays'][name])
+        line((x,bottom),(node['x'],node['y']),'charging-access',True)
+    dump=terminal_node('DUMPER-001',terminal['dumperApproach'])
+    line((te,bottom),(dump['x'],dump['y']),'dumper-access',True)
+    inspect=terminal_node('INSPECT-01',(tw-1.6,bottom))
+    line((tw,bottom),(inspect['x'],inspect['y']),'inspection-access',True)
+    terminal['adjustments']=adjustments
+    terminal['directionRules']=['上横线向东、下横线向西','左竖线进区、右竖线出区',
+        '待命中间横道和泊位支线双向互斥','双充电位各自独立尽端支线','倒料从西侧专用支线进退，容量1']
+    # Split arbitrary straight segments as well as orthogonal crossings. Slight
+    # offsets between upper/lower CAD bay symbols must not create 7mm junctions.
     def key(p):return (round(p[0],6),round(p[1],6))
+    def cross(a,b):return a[0]*b[1]-a[1]*b[0]
     points={key(p) for a,b,_,_ in segments for p in (a,b)}
     for a,b,_,_ in segments:
+        r=(b[0]-a[0],b[1]-a[1])
         for c,d,_,_ in segments:
-            if abs(a[1]-b[1])<1e-5 and abs(c[0]-d[0])<1e-5:
-                if min(a[0],b[0])-1e-5<=c[0]<=max(a[0],b[0])+1e-5 and min(c[1],d[1])-1e-5<=a[1]<=max(c[1],d[1])+1e-5:
-                    points.add(key((c[0],a[1])))
+            v=(d[0]-c[0],d[1]-c[1]);den=cross(r,v)
+            if abs(den)<1e-10:continue
+            delta=(c[0]-a[0],c[1]-a[1]);t=cross(delta,v)/den;u=cross(delta,r)/den
+            if -1e-8<=t<=1+1e-8 and -1e-8<=u<=1+1e-8:
+                points.add(key((a[0]+t*r[0],a[1]+t*r[1])))
     nodes=[];by_point={}
     business_points={key((n['x'],n['y'])):n for n in business}
     for i,p in enumerate(sorted(points)):
@@ -111,9 +128,10 @@ def build_physical_graph(stations, cad_dxf, base_builder):
     edges=[];seen=set()
     for a,b,kind,both in segments:
         a,b=key(a),key(b)
-        horizontal=abs(a[1]-b[1])<1e-5
-        ps=sorted((p for p in points if abs(p[1]-a[1])<1e-5 and min(a[0],b[0])-1e-5<=p[0]<=max(a[0],b[0])+1e-5),key=lambda p:p[0]) if horizontal else sorted((p for p in points if abs(p[0]-a[0])<1e-5 and min(a[1],b[1])-1e-5<=p[1]<=max(a[1],b[1])+1e-5),key=lambda p:p[1])
-        if (b[0],b[1])<(a[0],a[1]):ps.reverse()
+        dx,dy=b[0]-a[0],b[1]-a[1];squared=dx*dx+dy*dy
+        def progress(p):return ((p[0]-a[0])*dx+(p[1]-a[1])*dy)/squared
+        ps=sorted((p for p in points if abs((p[0]-a[0])*dy-(p[1]-a[1])*dx)<=2e-6*math.sqrt(squared)
+                   and -1e-8<=progress(p)<=1+1e-8),key=progress)
         for p,q in zip(ps,ps[1:]):
             for src,dst in ((p,q),(q,p)) if both else ((p,q),):
                 sid,tid=by_point[src]['id'],by_point[dst]['id']
@@ -151,15 +169,19 @@ def build_physical_graph(stations, cad_dxf, base_builder):
     for sid,r in summary['stationRelations'].items():
         n=next(n for n in business if n['agvSiteId']==sid)
         r['approachNode']=by_point[key((n['x'],r['laneY']))]['id']
-    definition.update(nodes=nodes,edges=edges,resources=resources)
+    definition.update(name='B07-1F·305CNC·现场双线终端修订',nodes=nodes,edges=edges,resources=resources)
     definition['areaAnnotations']=[a for a in definition.get('areaAnnotations',[]) if not a['id'].startswith('SIM-AREA-G')]
     for i in range(6):
         definition['areaAnnotations'].append(dict(id=f'SIM-LANES-{i+1}',sourceType='CadSimulationEvidence',
             text=f'通道{i+1} · 上行向东 / 下行向西',boundary=[dict(x=x,y=y) for x,y in (
                 (west,ys[i*2]+.2),(east,ys[i*2]+.2),(east,ys[i*2+1]-.2),(west,ys[i*2+1]-.2))],
             strokeColor='#37d8cb',fillColor='#0b1e30',fillOpacity=.02,layerId='cad-zones',sourceJson=''))
+    x0,y0,x1,y1=terminal['platformBounds']
+    definition['areaAnnotations'].append(dict(id='CAD-TERMINAL-PLATFORM',sourceType='CadSimulationEvidence',
+        text='倒料设备平台轮廓 · 禁止穿行',boundary=[dict(x=x,y=y) for x,y in ((x0,y0),(x1,y0),(x1,y1),(x0,y1))],
+        strokeColor='#ff778a',fillColor='#532b3b',fillOpacity=.25,layerId='terminal-zones',sourceJson=''))
     summary.update(nodeCount=len(nodes),edgeCount=len(edges),resourceCount=len(resources),
                    physicalLanes=dict(pairs=6,crossovers=crossovers,minimumSeparationMeters=min(abs(ys[i]-ys[i+1]) for i in range(0,12,2)),
                                       cadLineHandles=[e.dxf.handle for e in sorted((e for e in lines if e.dxf.handle in {f'843B{i:X}' for i in range(4,16)}),key=lambda e:e.dxf.handle)],
-                                      terminalSpineX=[tw,te],directionAuthority='user-authorised simulation design'))
+                                      terminalSpineX=[tw,te],terminalLayout=terminal,directionAuthority='user-authorised simulation design'))
     return definition,summary

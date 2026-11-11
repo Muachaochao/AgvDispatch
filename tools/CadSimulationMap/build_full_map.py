@@ -1294,7 +1294,7 @@ def build_configuration(
         for index in range(1, 6)
     ]
     return {
-        "name": MAP_NAME,
+        "name": definition.get("name", MAP_NAME),
         "mapDefinition": definition,
         "stations": stations,
         "vehicles": vehicles,
@@ -1309,7 +1309,7 @@ def build_configuration(
         "mapIdentity": {
             "mapId": map_id,
             "mapVersionId": map_version_id,
-            "sourceName": MAP_NAME,
+            "sourceName": definition.get("name", MAP_NAME),
             "definitionHash": definition_hash,
         },
     }
@@ -1377,15 +1377,17 @@ def render_preview(
         py = 20 + station.pixel_y * cad_height / viewbox["pixelHeight"]
         draw.ellipse((px - 4, py - 4, px + 4, py + 4), fill=color, outline="#06111f", width=1)
 
-    for index, (x_mm, y_mm) in enumerate(WAIT_MM, 1):
-        px, py = pixel_from_cad_m(x_mm / 1000, y_mm / 1000)
+    for index in range(1,6):
+        node=nodes[f'WAIT-{index:02d}']
+        px, py = pixel_from_cad_m(node['x'],node['y'])
         draw.ellipse((px - 10, py - 10, px + 10, py + 10), fill="#22d3ee", outline="#ecfeff", width=2)
         draw.text((px + 13, py - 13), f"AGV-{index:02d}", font=tiny, fill="#a5f3fc")
-    for index, (x_mm, y_mm) in enumerate(CHARGER_MM, 1):
-        px, py = pixel_from_cad_m(x_mm / 1000, y_mm / 1000)
+    for index in range(1,3):
+        node=nodes[f'CHARGE-{index:02d}']
+        px, py = pixel_from_cad_m(node['x'],node['y'])
         draw.ellipse((px - 10, py - 10, px + 10, py + 10), fill="#a78bfa", outline="#f5f3ff", width=2)
         draw.text((px + 13, py - 13), f"充电{index}", font=tiny, fill="#ddd6fe")
-    px, py = pixel_from_cad_m(DUMPER_MM[0] / 1000, DUMPER_MM[1] / 1000)
+    px, py = pixel_from_cad_m(nodes['DUMPER-001']['x'],nodes['DUMPER-001']['y'])
     draw.rounded_rectangle((px - 12, py - 12, px + 12, py + 12), radius=4, fill="#fb7185", outline="#fff1f2", width=2)
     draw.text((px + 15, py - 13), "倒料工位", font=tiny, fill="#fecdd3")
     for point in CAD_REFERENCE_POINTS:
@@ -1701,7 +1703,7 @@ def build(args: argparse.Namespace) -> None:
                 "plcFirstAddress": f"DB1.DBX{plc_offset}.0",
             })
     terminal_roles = {
-        **{f"WAIT-{index:02d}": "AGV CAD待命位" for index in range(1, 6)},
+        **{f"WAIT-{index:02d}": "AGV待命位（新双线图采用CAD泊位轮廓中心）" for index in range(1, 6)},
         "CHARGE-01": "充电位1",
         "CHARGE-02": "充电位2",
         "DUMPER-001": "终端倒料工位",
@@ -1734,7 +1736,7 @@ def build(args: argparse.Namespace) -> None:
     manifest = {
         "schemaVersion": 1,
         "generatedAt": args.generated_at,
-        "mapName": MAP_NAME,
+        "mapName": definition.get("name", MAP_NAME),
         "sources": source_records,
         "viewBox": viewbox,
         "coordinateMapping": {
@@ -1770,7 +1772,7 @@ def build(args: argparse.Namespace) -> None:
     if getattr(args, 'physical_lanes', False):
         manifest['navigationAuthority'].update(
             cadLineworkUsedAsDesignReference=True,
-            reason='User 2026-11-10 authorised separated double-row routing following CAD magenta linework. Directions and terminal docking connections are simulation design, not certified vendor paths.')
+            reason='User 2026-11-11 marked paired terminal roads, waiting/charging area and dumper approach; CAD bay symbol centres replace text anchors. Directions and docking connections are design proposals, not certified vendor paths.')
     if args.map_id:
         manifest["backendPublication"] = {
             "mapId": args.map_id,

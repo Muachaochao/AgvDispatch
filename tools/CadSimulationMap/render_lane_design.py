@@ -47,12 +47,13 @@ def render(root):
                 d.multiline_text((x-(21 if site=='DUMPER-001' else 14),y+12),label,font=f(14),fill=color,align='center',spacing=0)
         if terminal:
             # Equipment body remains a reference separate from AGV docking.
-            x,y=pos(986.630667,-432.704638)
-            d.rectangle((x-14,y-22,x+14,y+22),outline='#ef7899',width=2)
-            d.text((x+20,y-5),'提升倒料机本体',font=f(16),fill='#ef7899')
+            x,y=pos(986.6155,-431.329)
+            a=pos(985.028,-432.036);b=pos(988.203,-430.622)
+            d.rectangle((a[0],b[1],b[0],a[1]),outline='#ef7899',width=2)
+            d.text((x-35,y-5),'设备平台',font=f(16),fill='#ef7899')
             d.text((x0+20,y1-55),'设备本体与车辆对接位分别标注；不穿越机房设备区',font=f(15),fill='#a6bdcc')
     panel((25,125,2375,905),(909.8,-426.4,1032.5,-387.5),'全厂通道：六组上下双线，外围左右双线；中间连接为受控换道口')
-    panel((25,925,1015,1350),(980.5,-434,991.5,-424),'终端放大：双通道接入、五待命位、双充电位及实际倒料区域',True)
+    panel((25,925,1015,1350),(979.8,-434,989,-424),'终端放大：双通道接入、五待命位、双充电位及实际倒料区域',True)
     d.text((1070,960),'线路规则',font=f(27),fill='#d8edfc')
     for i,(color,text) in enumerate((('#37d8cb','青色箭头：横向向东 / 纵向向北'),('#ffa75c','橙色箭头：横向向西 / 纵向向南'),('#7298b7','灰蓝：工位支线、换道与进出泊位'),('#cee9fa','白点：机台取放箱位置，部分会占用近侧车道'))):
         d.text((1070,1015+i*50),text,font=f(22),fill=color)

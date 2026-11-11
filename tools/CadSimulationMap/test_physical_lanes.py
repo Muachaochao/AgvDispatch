@@ -17,7 +17,7 @@ class PhysicalLaneTests(unittest.TestCase):
         doc.saveas(path)
         rows=(-391375.898,-394986.878,-398528.416,-402139.397,-408805.822,-412277.919,-415958.341,-419569.321,-423110.86)
         stations=[StationPoint(f'CNC-{i+1:03}',i,1,0,0,970767.85,y) for i,y in enumerate(rows)]
-        cls.m,cls.summary=build_physical_graph(stations,path,build_graph)
+        cls.m,cls.summary=build_physical_graph(stations,path,build_graph,allow_terminal_fixture=True)
         cls.ns={n['id']:n for n in cls.m['nodes']}
 
     @classmethod
@@ -64,6 +64,42 @@ class PhysicalLaneTests(unittest.TestCase):
             for nid in (e['from'],e['to']):
                 self.assertTrue(set(self.ns[nid]['resourceIds']).issubset(e['resourceIds']))
         self.assertTrue(all(len(r['boundary'])>=4 for r in self.m['resources']))
+
+    def test_terminal_uses_bay_centres_not_text_labels(self):
+        from terminal_layout import FIXTURE_CENTRES
+        for name,point in FIXTURE_CENTRES.items():
+            self.assertEqual((self.ns[name]['x'],self.ns[name]['y']),point)
+        self.assertNotEqual(self.ns['WAIT-01']['x'],984.4508609652442)
+        self.assertLess(self.ns['DUMPER-001']['x'],985.028)
+        self.assertLess(self.ns['INSPECT-01']['x'],981)
+
+    def test_waiting_central_crossing_and_shared_column_hubs(self):
+        # Upper/lower symbols differ by millimetres; use one collector junction.
+        for upper,lower in [('WAIT-02','WAIT-04'),('WAIT-05','WAIT-03')]:
+            def hubs(name):
+                return {e['to'] for e in self.m['edges'] if e['from']==name and e['laneRole']=='waiting-bay'}
+            self.assertEqual(hubs(upper),hubs(lower))
+            self.assertEqual(len(hubs(upper)),1)
+        self.assertTrue(any(e['laneRole']=='waiting-collector' for e in self.m['edges']))
+        self.assertFalse(any(e['laneRole'] in ('waiting-in','waiting-out') for e in self.m['edges']))
+
+    def test_no_road_centreline_crosses_equipment_platform(self):
+        box=self.summary['physicalLanes']['terminalLayout']['platformBounds']
+        for e in self.m['edges']:
+            a,b=self.ns[e['from']],self.ns[e['to']];lo,hi=0.,1.
+            for field,minimum,maximum in [('x',box[0],box[2]),('y',box[1],box[3])]:
+                delta=b[field]-a[field]
+                if abs(delta)<1e-10:
+                    if not minimum<=a[field]<=maximum:hi=-1;break
+                else:
+                    t0,t1=sorted(((minimum-a[field])/delta,(maximum-a[field])/delta))
+                    lo=max(lo,t0);hi=min(hi,t1)
+            self.assertGreater(lo,hi,f"道路穿过设备平台: {e['id']}")
+
+    def test_missing_cad_symbols_fail_instead_of_using_labels(self):
+        from terminal_layout import terminal_layout
+        with self.assertRaisesRegex(ValueError,'缺少CAD泊位轮廓'):
+            terminal_layout(ezdxf.new())
 
     def test_missing_middle_crossover_is_detected_as_real_bypass_failure(self):
         from check_parked_bypass import check
