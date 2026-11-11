@@ -75,6 +75,16 @@ class SimulationTests(unittest.TestCase):
             mapDefinition=dict(name='custom', nodes=nodes, edges=edges, resources=[
                 dict(id='R-DUMP', capacity=1, boundary=[dict(x=2,y=0),dict(x=3,y=0),dict(x=3,y=1)])]))
 
+    def test_inspection_reference_accepts_existing_waiting_bay_but_not_waypoint(self):
+        payload=self.custom_payload()
+        for n in payload['mapDefinition']['nodes']:
+            n['type']='WaitingPoint' if n['id']=='PARK1' else 'Station'
+        runtime=object.__new__(Runtime)
+        self.assertEqual(runtime._validate_configuration(payload)['inspectionSite'],'PARK1')
+        next(n for n in payload['mapDefinition']['nodes'] if n['id']=='PARK1')['type']='Waypoint'
+        with self.assertRaisesRegex(ValueError,'检修停放引用'):
+            runtime._validate_configuration(payload)
+
     def test_custom_map_vehicles_stations_and_resource_are_validated(self):
         runtime = object.__new__(Runtime)
         value = runtime._validate_configuration(self.custom_payload())

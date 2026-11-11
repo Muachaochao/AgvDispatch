@@ -114,6 +114,30 @@ class PhysicalLaneTests(unittest.TestCase):
         self.assertEqual(len(outgoing),1)
         self.assertLess(self.ns[outgoing[0]['to']]['x'],self.ns['DUMPER-001']['x'])
 
+    def test_exported_configuration_has_local_hash_and_existing_inspection_reference(self):
+        import hashlib,json
+        from build_full_map import build_configuration
+        c=build_configuration(self.m,['CNC-001'],{})
+        expected=hashlib.sha256(json.dumps(self.m,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest().upper()
+        self.assertEqual(c['mapIdentity']['definitionHash'],expected)
+        self.assertEqual(c['inspectionSite'],'WAIT-01')
+        self.assertIn(c['inspectionSite'],self.ns)
+
+    def test_dumper_admission_protects_shared_return_crossing(self):
+        guard=self.summary['physicalLanes']['terminalLayout']['protectedExitJunction']
+        shared=set(guard['resourceIds'])
+        self.assertTrue(shared)
+        self.assertTrue(shared.issubset(self.ns['DUMPER-001']['resourceIds']))
+        approach=[e for e in self.m['edges'] if e['to']=='DUMPER-001']
+        follower_crossing=[e for e in self.m['edges'] if e['laneRole']=='waiting-collector' and guard['nodeId'] in (e['from'],e['to'])]
+        self.assertTrue(approach and follower_crossing)
+        self.assertTrue(all(shared.issubset(e['resourceIds']) for e in approach+follower_crossing))
+
+    def test_return_merge_uses_gap_separate_from_entry_rail(self):
+        layout=self.summary['physicalLanes']['terminalLayout']
+        self.assertGreater(layout['returnMerge']['x']-layout['spineX'][0],2)
+        self.assertGreater(layout['returnMerge']['x']-layout['spineX'][1],1)
+
     def test_missing_cad_symbols_fail_instead_of_using_labels(self):
         from terminal_layout import terminal_layout
         with self.assertRaisesRegex(ValueError,'缺少CAD泊位轮廓'):

@@ -69,7 +69,14 @@ def build_physical_graph(stations, cad_dxf, base_builder, *, allow_terminal_fixt
     tw,te=terminal['spineX']
     top,bottom=ys[-1],terminal['dumperApproach'][1]
     line((tw,top),(tw,bottom),'terminal-in')
-    line((te,bottom),(te,ys[-2]),'terminal-out')
+    # Join the main pair in a machine gap, not alongside a parked CNC bay.
+    # Keep the east return riser well separated from the west entry rail.
+    merge_x=min((c['x'] for c in crossovers if c['pair']==6 and c['x']>te+1),key=lambda x:x-te)
+    bend_y=round(ys[-1]-.9,6)
+    line((te,bottom),(te,bend_y),'terminal-out')
+    line((te,bend_y),(merge_x,bend_y),'terminal-out')
+    line((merge_x,bend_y),(merge_x,ys[-2]),'terminal-out')
+    terminal['returnMerge']=dict(x=merge_x,bendY=bend_y,reason='Join between CNC bays; avoid occupied CNC-291 blocking the merge')
     line((tw,bottom),(te,bottom),'terminal-turn')
     mid=terminal['centralY']
     # One controlled reversible waiting collector between the three/two bays.
@@ -155,6 +162,15 @@ def build_physical_graph(stations, cad_dxf, base_builder, *, allow_terminal_fixt
             rid='X-'+n['id'];n['resourceIds']=[rid]
             resources.append(dict(id=rid,type='Intersection',capacity=1,layerId='navigation',boundary=[
                 dict(x=n['x']+dx,y=n['y']+dy) for dx,dy in ((-.55,-.55),(.55,-.55),(.55,.55),(-.55,.55))]))
+    # Reserve the first return-lane crossing before admitting a vehicle to dump.
+    # A following full-box route crosses this same junction on its way to WAIT;
+    # without the guard it can reserve the front vehicle's exit for minutes.
+    exit_junction=by_point[key((te,mid))]
+    exit_resources=list(exit_junction['resourceIds'])
+    if not exit_resources:raise ValueError('倒料返回交叉口缺少互斥资源')
+    by_id['DUMPER-001']['resourceIds']=sorted(set(by_id['DUMPER-001']['resourceIds']+exit_resources))
+    terminal['protectedExitJunction']=dict(nodeId=exit_junction['id'],resourceIds=exit_resources,
+        policy='Acquire with dumper approach; retain until body-clear release evidence')
     pair_resources={}
     for e in edges:
         reverse=(e['to'],e['from']) in seen

@@ -1311,7 +1311,7 @@ def build_configuration(
             "mapId": map_id,
             "mapVersionId": map_version_id,
             "sourceName": definition.get("name", MAP_NAME),
-            "definitionHash": definition_hash,
+            "definitionHash": definition_hash or hashlib.sha256(json.dumps(definition, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest().upper(),
         },
     }
 

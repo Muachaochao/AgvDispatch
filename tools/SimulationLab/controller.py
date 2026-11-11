@@ -809,8 +809,8 @@ class Runtime:
         if resource_id not in (nodes[dumping].get('resourceIds') or []):
             nodes[dumping]['resourceIds'] = list(dict.fromkeys([*(nodes[dumping].get('resourceIds') or []), resource_id]))
         inspection = node(payload.get('inspectionSite') or next(iter(nodes)), '检修点')
-        if typed_topology and nodes[inspection].get('type') != 'Station':
-            raise ValueError('检修点必须是Station类型节点。')
+        if typed_topology and nodes[inspection].get('type') not in ('Station','WaitingPoint'):
+            raise ValueError('检修停放引用必须是Station或WaitingPoint类型节点，不能使用道路中间点。')
         vehicles = payload.get('vehicles')
         if not isinstance(vehicles, list) or not 1 <= len(vehicles) <= 8:
             raise ValueError('车辆数量须为1至8辆。')
