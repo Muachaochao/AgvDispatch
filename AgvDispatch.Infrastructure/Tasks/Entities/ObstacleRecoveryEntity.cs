@@ -1,4 +1,4 @@
-﻿using SqlSugar;
+using SqlSugar;
 
 namespace AgvDispatch.Infrastructure.Persistence.Entities;
 
@@ -78,6 +78,13 @@ public sealed class ObstacleRecoveryEntity
 
     [SugarColumn(IsNullable = true)]
     public DateTime? CancelRequestedAtUtc { get; set; }
+
+    // Gateway call boundaries, not individual TCP packet timestamps.
+    [SugarColumn(IsNullable = true)]
+    public DateTime? CancelAttemptedAtUtc { get; set; }
+
+    [SugarColumn(IsNullable = true)]
+    public DateTime? CancelAcknowledgedAtUtc { get; set; }
 
     [SugarColumn(IsNullable = true)]
     public DateTime? OriginalTerminalAtUtc { get; set; }

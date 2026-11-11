@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Domain.Agvs;
 using AgvDispatch.Domain.Devices;
@@ -46,8 +46,9 @@ public sealed class ObstacleRecoveryCoordinator(
     {
         if (!options.Enabled) return;
         logger?.LogInformation(
-            "车端障碍恢复已启用。AutomaticDetour={AutomaticDetour}, DetourAfter={DetourAfter}s, WarningAfter={WarningAfter}s, AlarmAfter={AlarmAfter}s, ClosureAfter={ClosureAfter}s",
+            "车端障碍恢复已启用。AutomaticDetour={AutomaticDetour}, AssessmentAfter={DetourAfter}s, CancelAfter={CancelAfter}s, CancelWaitWarning={CancelWaitWarning}s, WarningAfter={WarningAfter}s, AlarmAfter={AlarmAfter}s, ClosureAfter={ClosureAfter}s",
             options.AutomaticDetourEnabled, options.DetourAfterSeconds,
+            options.CancelAfterSeconds, options.CancelTerminalWaitWarningSeconds,
             options.WarningAfterSeconds, options.AlarmAfterSeconds,
             options.ClosureSuggestionAfterSeconds);
         using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(options.PollIntervalMs));
@@ -292,7 +293,9 @@ public sealed class ObstacleRecoveryCoordinator(
             else
             {
                 row.State = ObstacleRecoveryStates.AwaitingOriginalTerminal;
-                row.Message = "障碍已清除，但原车端任务已请求取消；继续等待原所有分段终态。";
+                row.Message = row.CancelRequestedAtUtc is null
+                    ? "障碍已清除，原车端窗口已有终态；仍须核验停稳后续接剩余业务路线。"
+                    : "障碍已清除，但原车端任务已请求取消；继续等待原所有分段终态。";
                 row.NextAction = "原任务全链终态且车辆在可信站点连续停稳后，发送已核验替代路线以续接原业务任务。";
                 row.Revision++;
                 await SaveAsync(row, cancellationToken);
@@ -302,7 +305,7 @@ public sealed class ObstacleRecoveryCoordinator(
         if (elapsed < options.DetourAfterSeconds)
         {
             await SetStateAsync(row, elapsed,
-                $"车端连续受阻{elapsed:0.0}秒，尚在车端自动恢复窗口。",
+                $"车端连续受阻{elapsed:0.0}秒，仍在保留原导航的阻挡观察期。",
                 $"保留原任务和路权；{options.DetourAfterSeconds}秒后自动搜索替代路线。",
                 cancellationToken);
             return;
@@ -327,6 +330,9 @@ public sealed class ObstacleRecoveryCoordinator(
                     return;
                 }
 
+                var retreatChanged = row.SafetyPointTarget != retreat.TargetSite ||
+                    row.SafetyPointBlockedSource != retreat.BlockedSource ||
+                    row.SafetyPointBlockedTarget != retreat.BlockedTarget;
                 row.SafetyPointTarget = retreat.TargetSite;
                 row.SafetyPointBlockedSource = retreat.BlockedSource;
                 row.SafetyPointBlockedTarget = retreat.BlockedTarget;
@@ -343,7 +349,8 @@ public sealed class ObstacleRecoveryCoordinator(
                     new[] { retreat.BlockedEdgeId }, Json);
                 row.Revision++;
                 await SaveAsync(row, cancellationToken);
-                await AddEvidenceAsync(row, "ObstacleSafetyPointRetreatPlanned",
+                if (retreatChanged)
+                    await AddEvidenceAsync(row, "ObstacleSafetyPointRetreatPlanned",
                     "道路中段受阻；普通替代路线不得冒用历史站点起点，已形成隔离单车低速退站候选。",
                     new
                     {
@@ -374,7 +381,7 @@ public sealed class ObstacleRecoveryCoordinator(
                 row.State = ObstacleRecoveryStates.DetourReady;
                 row.Message = $"已生成并复核候选路线：{string.Join(" → ", plan.Route)}。";
                 row.NextAction = options.AutomaticDetourEnabled
-                    ? "正在复核停稳、车身包络、PLC、路权与厂家原任务终态；全部通过后自动取消原导航并改道。"
+                    ? "正在复核停稳、车身包络、PLC、路权与厂家原任务终态；并满足独立取消观察时间后，才允许请求取消；取消后仍须全链终态才能改道。"
                     : "自动改道未启用；候选已保存，原任务和路权继续保留。";
                 row.Revision++;
                 await SaveAsync(row, cancellationToken);
@@ -459,16 +466,25 @@ public sealed class ObstacleRecoveryCoordinator(
             await SaveAsync(row, cancellationToken);
             return;
         }
+        var observationSeconds = (_clock.GetUtcNow().UtcDateTime - row.BlockedSinceUtc).TotalSeconds;
+        if (observationSeconds < options.CancelAfterSeconds)
+        {
+            row.Message = $"已只读核对原任务为{original.State}，候选方案尚未发送；连续受阻{observationSeconds:0}秒。";
+            row.NextAction = $"保留原导航、载荷、PLC和路权；受阻满{options.CancelAfterSeconds}秒才允许考虑受控取消，并重新核验全部安全条件。";
+            row.Revision++;
+            await SaveAsync(row, cancellationToken);
+            return;
+        }
         if (original.State == AgvTransportTaskState.Completed)
         {
             if (AtBusinessDestination(robot, step))
             {
+                await RecordOriginalTerminalAsync(row, original, cancellationToken);
                 await MarkRecoveredAsync(row, robot, "原导航已完整到达业务目的站，障碍未造成未完成运输。",
                     cancellationToken);
                 return;
             }
-            row.OriginalTerminalAtUtc = _clock.GetUtcNow().UtcDateTime;
-            row.CancelRequestedAtUtc = _clock.GetUtcNow().UtcDateTime;
+            await RecordOriginalTerminalAsync(row, original, cancellationToken);
             row.State = ObstacleRecoveryStates.AwaitingOriginalTerminal;
             row.Message = "当前车端滚动窗口已完成，但原业务步骤尚未到达目的站；无第二条导航正在运行。";
             row.NextAction = "重新累计停稳证据后，从当前可信站点仅发送一条剩余路线，继续原业务任务。";
@@ -480,7 +496,7 @@ public sealed class ObstacleRecoveryCoordinator(
         {
             // The vendor may terminate before we request cancellation. Continue
             // through the terminal recovery gate without inventing a cancel request.
-            row.OriginalTerminalAtUtc = _clock.GetUtcNow().UtcDateTime;
+            await RecordOriginalTerminalAsync(row, original, cancellationToken);
             ClearStableStop(row);
             row.State = ObstacleRecoveryStates.AwaitingOriginalTerminal;
             row.Message = "原车端任务已终态，等待连续停稳后发送替代路线。";
@@ -497,9 +513,18 @@ public sealed class ObstacleRecoveryCoordinator(
         row.NextAction = "等待原所有厂家分段终态；取消应答本身不证明任务结束。";
         row.Revision++;
         await SaveAsync(row, cancellationToken);
+        await AddEvidenceAsync(row, "ObstacleOriginalCancelIntent",
+            "取消意图已持久化；尚不能证明厂家已收到或任务已释放。",
+            new { row.CancelRequestedAtUtc, Candidate = candidate }, cancellationToken);
         try
         {
+            row.CancelAttemptedAtUtc = _clock.GetUtcNow().UtcDateTime;
+            await SaveAsync(row, cancellationToken);
+            await AddEvidenceAsync(row, "ObstacleOriginalCancelAttempted",
+                "开始调用网关精确取消；这是调用边界，不是逐报文发送时间。",
+                new { row.CancelAttemptedAtUtc }, cancellationToken);
             await gateway.CancelTaskAsync(row.OriginalVendorTaskId, cancellationToken);
+            row.CancelAcknowledgedAtUtc = _clock.GetUtcNow().UtcDateTime;
             row.State = ObstacleRecoveryStates.AwaitingOriginalTerminal;
             row.Message = "原3066取消请求已应答，等待全部分段终态和连续停稳。";
             row.NextAction = "只读查询原任务链；任何缺失、未知或仍活动状态均阻止替代导航。";
@@ -569,7 +594,7 @@ public sealed class ObstacleRecoveryCoordinator(
                 ? ObstacleRecoveryStates.Uncertain
                 : ObstacleRecoveryStates.AwaitingOriginalTerminal;
             row.Message = "原3066任务全链尚未确认终态。";
-            row.NextAction = "保持原任务和路权，只读查询所有分段；不得发送第二条导航。";
+            row.NextAction = CancellationWaitAction(row);
             row.Revision++;
             await SaveAsync(row, cancellationToken);
             return;
@@ -578,13 +603,14 @@ public sealed class ObstacleRecoveryCoordinator(
         {
             if (AtBusinessDestination(robot, step))
             {
+                await RecordOriginalTerminalAsync(row, original, cancellationToken);
                 await MarkRecoveredAsync(row, robot, "原导航已完整到达业务目的站，无需替代任务。",
                     cancellationToken);
                 return;
             }
             if (row.OriginalTerminalAtUtc is null)
             {
-                row.OriginalTerminalAtUtc = _clock.GetUtcNow().UtcDateTime;
+                await RecordOriginalTerminalAsync(row, original, cancellationToken);
                 row.State = ObstacleRecoveryStates.AwaitingOriginalTerminal;
                 row.Message = "当前滚动窗口已终态；等待重新累计停稳后发送剩余业务路线。";
                 row.NextAction = "只读核对车辆位于可信中间站、载荷、PLC、路权和车辆包络。";
@@ -598,16 +624,14 @@ public sealed class ObstacleRecoveryCoordinator(
         {
             row.State = ObstacleRecoveryStates.AwaitingOriginalTerminal;
             row.Message = $"取消请求后原任务仍为{original.State}，已在途任务不能重发。";
-            row.NextAction = elapsed >= options.ClosureSuggestionAfterSeconds
-                ? $"持续取消等待已超过{options.ClosureSuggestionAfterSeconds}秒；核对是否封锁实际受阻方向，并人工核对控制器任务状态。"
-                : "继续只读等待原全部分段终态；保留原业务任务、载荷和路权。";
+            row.NextAction = CancellationWaitAction(row);
             row.Revision++;
             await SaveAsync(row, cancellationToken);
             return;
         }
         if (row.OriginalTerminalAtUtc is null)
         {
-            row.OriginalTerminalAtUtc = _clock.GetUtcNow().UtcDateTime;
+            await RecordOriginalTerminalAsync(row, original, cancellationToken);
             row.State = ObstacleRecoveryStates.AwaitingOriginalTerminal;
             row.Message = "原3066全链已确认终态，重新等待取消后的连续停稳和车端队列清空。";
             row.NextAction = "再次核验车辆无活动任务、位置与起点一致、PLC、路权和车辆包络；通过后才发送替代路线。";
@@ -1638,10 +1662,50 @@ public sealed class ObstacleRecoveryCoordinator(
         await SaveAsync(row, cancellationToken);
     }
 
+    private string CancellationWaitAction(ObstacleRecoveryEntity row)
+    {
+        var since = row.CancelRequestedAtUtc;
+        var seconds = since is null ? 0 : Math.Max(0, (_clock.GetUtcNow().UtcDateTime - since.Value).TotalSeconds);
+        return since is not null && seconds >= options.CancelTerminalWaitWarningSeconds
+            ? $"自取消意图起已等待{seconds:0}秒，超过{options.CancelTerminalWaitWarningSeconds}秒提醒线；请核对控制器原任务链。继续只读等待，不重发取消或导航，不释放载荷、PLC和路权。"
+            : "继续只读等待原全部分段终态；保留原业务任务、载荷和路权，不重发取消或导航。";
+    }
+
+    private async Task RecordOriginalTerminalAsync(ObstacleRecoveryEntity row,
+        AgvTransportTaskStatus original, CancellationToken cancellationToken)
+    {
+        if (row.OriginalTerminalAtUtc is not null) return;
+        row.OriginalTerminalAtUtc = _clock.GetUtcNow().UtcDateTime;
+        ClearStableStop(row);
+        var result = await database.Ado.UseTranAsync(async () =>
+        {
+            await SaveAsync(row, cancellationToken);
+            await AddEvidenceAsync(row, "ObstacleOriginalTerminalObserved",
+                "只读查询已观察到原任务全链终态；仍须独立核验连续停稳及其他安全条件。",
+                new { row.CancelRequestedAtUtc, row.CancelAttemptedAtUtc, row.CancelAcknowledgedAtUtc,
+                    row.OriginalTerminalAtUtc, Status = original }, cancellationToken);
+        });
+        if (!result.IsSuccess)
+        {
+            row.OriginalTerminalAtUtc = null;
+            throw new InvalidOperationException("原导航终态和审计未同时保存，继续保持恢复核对。", result.ErrorException);
+        }
+    }
+
     private async Task SaveAsync(ObstacleRecoveryEntity row, CancellationToken cancellationToken)
     {
         row.UpdatedAt = _clock.GetUtcNow().UtcDateTime;
         await store.SaveAsync(row, cancellationToken);
+    }
+
+    private static string SerializeEvidence(ObstacleRecoveryEntity row, object evidence)
+    {
+        var data = JsonSerializer.SerializeToNode(evidence, Json)!.AsObject();
+        data["RecoveryId"] = row.RecoveryId;
+        data["VehicleId"] = row.VehicleId;
+        data["OriginalVendorTaskId"] = row.OriginalVendorTaskId;
+        data["BlockedSinceUtc"] = JsonSerializer.SerializeToNode(row.BlockedSinceUtc, Json);
+        return data.ToJsonString(Json);
     }
 
     private Task AddEvidenceAsync(ObstacleRecoveryEntity row, string kind, string reason,
@@ -1655,7 +1719,7 @@ public sealed class ObstacleRecoveryCoordinator(
             Operator = "service:obstacle-recovery",
             Kind = kind,
             Reason = Truncate(reason),
-            Evidence = JsonSerializer.Serialize(evidence, Json),
+            Evidence = SerializeEvidence(row, evidence),
             OccurredAt = _clock.GetUtcNow().UtcDateTime
         }).ExecuteCommandAsync(cancellationToken);
 

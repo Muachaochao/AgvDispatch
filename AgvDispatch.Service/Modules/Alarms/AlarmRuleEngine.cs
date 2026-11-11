@@ -1,4 +1,4 @@
-﻿using AgvDispatch.Application.Abstractions;
+using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Connectors.Agv;
 using AgvDispatch.Connectors.Plc;
 using AgvDispatch.Domain.Agvs;
@@ -23,7 +23,7 @@ public sealed class AlarmRuleEngine(
     ITrafficResourceControlService trafficResources,
     ITrafficFlowMonitor trafficFlow,
     IAlarmService alarms, IRoadClosureService? roadClosures = null,
-    ObstacleRecoveryStore? obstacleRecovery = null) : IsolatedBackgroundService
+    ObstacleRecoveryStore? obstacleRecovery = null, ObstacleRecoveryOptions? recoveryOptions = null) : IsolatedBackgroundService
 {
     private readonly Dictionary<string, DateTimeOffset> _offRouteSince =
         new(StringComparer.OrdinalIgnoreCase);
@@ -226,7 +226,7 @@ public sealed class AlarmRuleEngine(
                     "AGV上报急停状态，禁止继续派发动作。", AlarmSeverity.Critical));
             }
             var obstacle = AgvObstacleDiagnostics.Analyze(agv, DateTimeOffset.UtcNow,
-                TimeSpan.FromMilliseconds(agvOptions.StaleAfterMs));
+                TimeSpan.FromMilliseconds(agvOptions.StaleAfterMs), recoveryOptions);
             if (obstacle.State is "Blocked" or "Prolonged")
             {
                 result.Add(new AlarmCandidate(
@@ -235,18 +235,17 @@ public sealed class AlarmRuleEngine(
                     $"当前位置={agv.CurrentStation ?? "未知"}，来源={obstacle.Source}。{obstacle.Message}",
                     AlarmSeverity.Warning));
                 var obstacleSeconds = obstacle.DurationSeconds ?? 0;
-                // Prolonged begins at the 30-second warning tier. Keep the
-                // generic blocked warning there and only create the error
-                // alarm when the 60-second tier is actually reached.
-                if (obstacle.State == "Prolonged" && obstacleSeconds >= 60)
+                var policy = recoveryOptions ?? new ObstacleRecoveryOptions();
+                if (obstacleSeconds >= policy.WarningAfterSeconds)
                 {
-                    var severity = obstacleSeconds >= 120
-                        ? AlarmSeverity.Critical : AlarmSeverity.Error;
+                    var severity = obstacleSeconds >= policy.ClosureSuggestionAfterSeconds
+                        ? AlarmSeverity.Critical : obstacleSeconds >= policy.AlarmAfterSeconds
+                            ? AlarmSeverity.Error : AlarmSeverity.Warning;
                     result.Add(new AlarmCandidate(
                         $"AGV:{agv.VehicleId}:BLOCKED_PROLONGED", "AGV", agv.VehicleId,
-                        "AGV_BLOCKED_PROLONGED", $"{agv.DisplayName}持续受阻超过60秒",
+                        "AGV_BLOCKED_PROLONGED", $"{agv.DisplayName}持续受阻超过{policy.WarningAfterSeconds}秒",
                         $"本段连续观察时长={obstacleSeconds:F0}秒。{obstacle.Message}", severity));
-                    if (obstacleSeconds >= 120)
+                    if (obstacleSeconds >= policy.ClosureSuggestionAfterSeconds)
                         result.Add(new AlarmCandidate(
                             $"AGV:{agv.VehicleId}:BLOCKED_CLOSURE_SUGGESTED", "AGV", agv.VehicleId,
                             "AGV_BLOCKED_CLOSURE_SUGGESTED", $"{agv.DisplayName}受阻建议封路",

@@ -1,6 +1,6 @@
 import type { Vehicle, VehicleObstacle } from './types.ts';
 
-export const obstacleNavigationPolicy = '车端先报Blocked/52200；10秒开始核验原任务终态，30秒预警、60秒报警、120秒建议封路；仅原任务全链终态且安全条件通过后自动改道';
+export const obstacleNavigationPolicy = '车端先报Blocked/52200；默认30秒只读评估、不取消；60秒提醒；120秒才允许考虑受控取消；300秒升级人工及封路建议；仅原任务全链终态且安全条件通过后自动改道';
 export const localDetourEvidence = '自动改道保留原任务、载荷、PLC责任和路权；位置、地图、车身包络或原任务终态未知时冻结';
 export interface ObstacleView extends VehicleObstacle { label: string; tone: 'blocked' | 'fault' | 'unknown' | 'idle'; duration: string }
 
@@ -35,9 +35,9 @@ export function vehicleObstacle(vehicle: Vehicle, current: boolean, now = Date.n
   if (observation?.state === 'Blocked' || observation?.state === 'Prolonged' || vehicle.blocked === true) {
     const seconds = observation?.durationSeconds;
     const durationSeconds = typeof seconds === 'number' && Number.isFinite(seconds) && seconds >= 0 ? seconds : null;
-    const prolonged = observation?.state === 'Prolonged' || (durationSeconds !== null && durationSeconds >= 30);
+    const prolonged = observation?.state === 'Prolonged';
     return { ...base, ...observation, state: prolonged ? 'Prolonged' : 'Blocked', durationSeconds,
-      label: prolonged ? '持续受阻（≥30秒）' : '受阻等待', tone: 'blocked', duration: obstacleDuration(durationSeconds),
+      label: prolonged ? '持续受阻' : '受阻等待', tone: 'blocked', duration: obstacleDuration(durationSeconds),
       message: observation?.message || '该车保留原任务等待车端处理；障碍移开后的继续执行须由车端状态确认。' };
   }
   if (!observation && vehicle.blocked !== false) return { ...base,

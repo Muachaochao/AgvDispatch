@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using System.Buffers.Binary;
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Connectors.Agv;
@@ -14,6 +14,8 @@ using AgvDispatch.Service;
 using Microsoft.Extensions.Logging.Abstractions;
 using SqlSugar;
 
+var defaults = new ObstacleRecoveryOptions();
+defaults.Validate();
 var checks = 0;
 void Check(bool valid, string label)
 {
@@ -22,6 +24,10 @@ void Check(bool valid, string label)
     Console.WriteLine("PASS " + label);
 }
 
+Check(defaults.DetourAfterSeconds == 30 && defaults.CancelAfterSeconds == 120 &&
+      defaults.WarningAfterSeconds == 60 && defaults.AlarmAfterSeconds == 120 &&
+      defaults.ClosureSuggestionAfterSeconds == 300 && defaults.CancelTerminalWaitWarningSeconds == 30,
+      "生产默认拆分30秒只读评估、120秒取消观察期和独立取消等待提醒");
 var directory = Path.Combine(Path.GetTempPath(), "agv-obstacle-auto-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(directory);
 try
@@ -68,10 +74,11 @@ try
     {
         Enabled = true,
         AutomaticDetourEnabled = true,
-        DetourAfterSeconds = 10,
-        WarningAfterSeconds = 30,
-        AlarmAfterSeconds = 60,
-        ClosureSuggestionAfterSeconds = 120,
+        DetourAfterSeconds = 30,
+        CancelAfterSeconds = 120,
+        WarningAfterSeconds = 60,
+        AlarmAfterSeconds = 120,
+        ClosureSuggestionAfterSeconds = 300,
         StableStopObservationMs = 500
     };
     var mapOptions = new MapOptions { PositionStaleSeconds = 30, MinimumLocalizationConfidence = 0.5 };
@@ -98,13 +105,13 @@ try
           Decode(row.OriginalPathJson).SequenceEqual(["S", "H", "X"]),
           "障碍初期只观察，并使用发送时冻结的完整路线识别后续路段");
 
-    clock.Advance(TimeSpan.FromSeconds(9));
+    clock.Advance(TimeSpan.FromSeconds(29));
     states.ApplyTelemetry("A", Telemetry(clock.GetUtcNow(), blocked: true), TimeSpan.Zero);
     await coordinator.ObserveOnceAsync(default);
     row = db.Queryable<ObstacleRecoveryEntity>().Single(item => item.TaskId == taskId);
     Check(row.State == ObstacleRecoveryStates.Blocked &&
           gateway.CancelCalls == 0 && gateway.RecoverySendCalls == 0,
-          "受阻未满10秒时保留车端恢复窗口，不提前取消任务或生成可发送改道");
+          "受阻未满30秒时保留车端恢复窗口，不提前取消任务或生成可发送改道");
 
     clock.Advance(TimeSpan.FromSeconds(2));
     states.ApplyTelemetry("A", Telemetry(clock.GetUtcNow(), blocked: true), TimeSpan.Zero);
@@ -113,7 +120,7 @@ try
     Check(row.State == ObstacleRecoveryStates.DetourReady &&
           Decode(row.CandidatePathJson).SequenceEqual(["S", "D", "X"]) &&
           row.StableStopSinceUtc is not null && row.StableStopKey == "S" &&
-          gateway.CancelCalls == 0, "受阻10秒后生成避开S→H的安全候选，并持久化停稳观察起点");
+          gateway.CancelCalls == 0, "受阻30秒后只读生成避开S→H的安全候选，并持久化停稳观察起点");
 
     await coordinator.ObserveOnceAsync(default);
     row = db.Queryable<ObstacleRecoveryEntity>().Single(item => item.TaskId == taskId);
@@ -140,12 +147,44 @@ try
     states.ApplyTelemetry("A", Telemetry(clock.GetUtcNow(), blocked: true), TimeSpan.Zero);
     await coordinator.ObserveOnceAsync(default);
     row = db.Queryable<ObstacleRecoveryEntity>().Single(item => item.TaskId == taskId);
+    Check(gateway.CancelCalls == 0 && row.CancelRequestedAtUtc is null,
+          "只读评估和连续停稳通过也不能在120秒观察期前取消");
+    foreach (var second in new[] { 60, 119 })
+    {
+        clock.Advance(start.AddSeconds(second) - clock.GetUtcNow());
+        states.ApplyTelemetry("A", Telemetry(clock.GetUtcNow(), blocked: true), TimeSpan.Zero);
+        await coordinator.ObserveOnceAsync(default);
+        row = db.Queryable<ObstacleRecoveryEntity>().Single(item => item.TaskId == taskId);
+        Check(gateway.CancelCalls == 0 && gateway.RecoverySendCalls == 0 &&
+              row.CancelRequestedAtUtc is null, $"受阻{second}秒仍只读，不取消、不发送替代导航");
+    }
+    clock.Advance(start.AddSeconds(120) - clock.GetUtcNow());
+    states.ApplyTelemetry("A", Telemetry(clock.GetUtcNow(), blocked: true), TimeSpan.Zero);
+    await coordinator.ObserveOnceAsync(default);
+    row = db.Queryable<ObstacleRecoveryEntity>().Single(item => item.TaskId == taskId);
     Check(gateway.CancelCalls == 1 && gateway.RecoverySendCalls == 0 &&
           row.State == ObstacleRecoveryStates.AwaitingOriginalTerminal,
           "连续停稳和安全条件通过后，只取消一次原3066任务");
     Check(gateway.StatusPaths.Count > 0 &&
           gateway.StatusPaths.All(path => path.SequenceEqual(["S", "H"])),
           "原3066取消核验只使用当前W窗口路径，不使用完整业务路线猜造分段编号");
+    Check(row.CancelRequestedAtUtc == start.AddSeconds(120).UtcDateTime &&
+          row.CancelAttemptedAtUtc is not null && row.CancelAcknowledgedAtUtc is not null &&
+          row.OriginalTerminalAtUtc is null, "取消意图、网关调用及应答持久化；应答不伪造终态");
+    gateway.OriginalState = AgvTransportTaskState.GoingToDestination;
+    clock.Advance(TimeSpan.FromSeconds(31));
+    states.ApplyTelemetry("A", Telemetry(clock.GetUtcNow(), blocked: true), TimeSpan.Zero);
+    await coordinator.ObserveOnceAsync(default);
+    row = db.Queryable<ObstacleRecoveryEntity>().Single(item => item.TaskId == taskId);
+    Check(gateway.CancelCalls == 1 && gateway.RecoverySendCalls == 0 &&
+          row.OriginalTerminalAtUtc is null && row.NextAction!.Contains("超过30秒提醒线"),
+          "取消应答后原链持续活动超过独立等待提醒，只提示、不重发、不续接");
+    gateway.OriginalState = AgvTransportTaskState.Unknown;
+    await coordinator.ObserveOnceAsync(default);
+    row = db.Queryable<ObstacleRecoveryEntity>().Single(item => item.TaskId == taskId);
+    Check(gateway.CancelCalls == 1 && gateway.RecoverySendCalls == 0 && row.NextAction!.Contains("提醒线"),
+          "原链未知仍保留取消等待提醒且不重发");
+    gateway.OriginalState = AgvTransportTaskState.Cancelled;
     await db.Updateable<DispatchTaskEntity>()
         .SetColumns(item => new DispatchTaskEntity
         {
@@ -164,6 +203,14 @@ try
           row.State == ObstacleRecoveryStates.AwaitingOriginalTerminal,
           "原链终态后先重新累计停稳，不在同一周期发送替代路线");
 
+    var restored = await new ObstacleRecoveryStore(db, recoveryOptions, clock).GetForVehicleAsync("A", default);
+    Check(restored is { CancelRequestedAt: not null, CancelAttemptedAt: not null,
+            CancelAcknowledgedAt: not null, OriginalTerminalAt: not null, CancelAfterSeconds: 120 } &&
+          restored.OriginalTerminalAt > restored.CancelAcknowledgedAt,
+          "恢复页重新读取保留取消到终态独立时间链和有效策略");
+    Check(db.Queryable<ExecutionEvidenceEntity>().Count(item => item.TaskId == taskId &&
+          (item.Kind == "ObstacleOriginalCancelIntent" || item.Kind == "ObstacleOriginalCancelAttempted" ||
+           item.Kind == "ObstacleOriginalTerminalObserved")) == 3, "取消意图、调用和终态均有独立追加审计");
     clock.Advance(TimeSpan.FromSeconds(1));
     states.ApplyTelemetry("A", Telemetry(clock.GetUtcNow(), blocked: true), TimeSpan.Zero);
     await coordinator.ObserveOnceAsync(default);
@@ -236,8 +283,13 @@ finally
         Directory.Delete(directory, true);
 }
 
-foreach (var terminalBeforeCancellation in new[] { false, true })
+foreach (var (initialVendorState, loseCancelResponse) in new[] {
+    (AgvTransportTaskState.GoingToDestination, false),
+    (AgvTransportTaskState.Failed, false),
+    (AgvTransportTaskState.Completed, false),
+    (AgvTransportTaskState.GoingToDestination, true) })
 {
+    var terminalBeforeCancellation = initialVendorState is AgvTransportTaskState.Failed or AgvTransportTaskState.Completed;
     var directory2 = Path.Combine(
         Path.GetTempPath(), "agv-safety-retreat-" + Guid.NewGuid().ToString("N"));
     Directory.CreateDirectory(directory2);
@@ -289,7 +341,8 @@ foreach (var terminalBeforeCancellation in new[] { false, true })
         var tasks2 = new DispatchOrchestrationRepository(db2);
         var chains2 = new AgvTransportChainLookup(db2);
         var gateway2 = new RecoveryGateway();
-        if (terminalBeforeCancellation) gateway2.OriginalState = AgvTransportTaskState.Failed;
+        gateway2.OriginalState = initialVendorState;
+        gateway2.LoseCancelResponse = loseCancelResponse;
         var expectedCancelCount = terminalBeforeCancellation ? 0 : 1;
         var recoveryOptions2 = new ObstacleRecoveryOptions
         {
@@ -297,6 +350,7 @@ foreach (var terminalBeforeCancellation in new[] { false, true })
             AutomaticDetourEnabled = true,
             AutomaticSafetyPointRetreatEnabled = true,
             DetourAfterSeconds = 10,
+        CancelAfterSeconds = 10,
             WarningAfterSeconds = 30,
             AlarmAfterSeconds = 60,
             ClosureSuggestionAfterSeconds = 120,
@@ -378,8 +432,20 @@ foreach (var terminalBeforeCancellation in new[] { false, true })
         retreatRow2 = db2.Queryable<ObstacleRecoveryEntity>()
             .Single(item => item.TaskId == taskId2);
         Check(gateway2.CancelCalls == expectedCancelCount &&
-              retreatRow2.State == ObstacleRecoveryStates.AwaitingOriginalTerminal,
+              retreatRow2.State == (loseCancelResponse ? ObstacleRecoveryStates.Uncertain : ObstacleRecoveryStates.AwaitingOriginalTerminal),
               $"安全点退回前只按原3066任务编号取消一次: {gateway2.CancelCalls}, {retreatRow2.State}, {retreatRow2.Message}");
+
+        Check(db2.Queryable<ExecutionEvidenceEntity>().Count(item => item.TaskId == taskId2 &&
+              item.Kind == "ObstacleSafetyPointRetreatPlanned") == 1,
+              "同一退站候选持续观察时只记一次规划事件，避免时间轴重复刷屏");
+        if (terminalBeforeCancellation)
+            Check(retreatRow2.CancelRequestedAtUtc is null && retreatRow2.CancelAttemptedAtUtc is null &&
+                  retreatRow2.CancelAcknowledgedAtUtc is null && retreatRow2.OriginalTerminalAtUtc is not null,
+                  $"原窗口自然{initialVendorState}只记录终态，不伪造取消时间");
+        if (loseCancelResponse)
+            Check(retreatRow2.CancelRequestedAtUtc is not null && retreatRow2.CancelAttemptedAtUtc is not null &&
+                  retreatRow2.CancelAcknowledgedAtUtc is null && gateway2.RetreatSendCalls == 0,
+                  "取消响应丢失保存调用时间，保持结果未知且不提前退站");
 
         for (var index = 0; index < 4; index++)
         {
@@ -601,6 +667,7 @@ sealed class ManualClock(DateTimeOffset start) : TimeProvider
 sealed class RecoveryGateway : IAgvGateway, IAgvObstacleRecoveryGateway,
     IAgvSafetyPointRecoveryGateway
 {
+    public bool LoseCancelResponse { get; set; }
     public int CancelCalls { get; private set; }
     public int RecoverySendCalls { get; private set; }
     public string? NewVendorTaskId { get; private set; }
@@ -638,6 +705,7 @@ sealed class RecoveryGateway : IAgvGateway, IAgvObstacleRecoveryGateway,
     {
         CancelCalls++;
         original = AgvTransportTaskState.Cancelled;
+        if (LoseCancelResponse) throw new TimeoutException("synthetic lost cancellation response");
         return Task.CompletedTask;
     }
     public Task<string> CreateObstacleRecoveryTransportTaskAsync(string newVendorTaskId, string vehicleId,

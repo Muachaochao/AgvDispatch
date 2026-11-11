@@ -16,6 +16,9 @@ export interface ObstacleRecovery { recoveryId: string; taskId: string; stepId: 
   automaticSafetyPointRetreatEnabled?: boolean; safetyPointTarget?: string | null;
   safetyPointRetreatMethod?: string | null; safetyPointRetreatTaskId?: string | null;
   safetyPointRetreatAttemptedAt?: string | null; safetyPointReachedAt?: string | null;
+  cancelRequestedAt?: string | null; cancelAttemptedAt?: string | null;
+  cancelAcknowledgedAt?: string | null; originalTerminalAt?: string | null;
+  assessmentAfterSeconds?: number; cancelAfterSeconds?: number; cancelTerminalWaitWarningSeconds?: number;
   updatedAt: string }
 export interface TaskRow { taskId: string; stationId: string; vehicleId: string | null; stage: string; priority: number; createdAt: string; updatedAt: string; errorMessage?: string }
 export interface TaskListSummary { total: number; running: number; waiting: number; completed: number; cancelled: number; failed: number; other: number }

@@ -23,7 +23,7 @@ public sealed class SystemStatusSnapshotService(
     NamedPipeDiagnostics pipeDiagnostics, HandshakeExecutionOptions? handshake = null,
     DispatchTaskCreationOptions? creation = null, DispatchTaskStepOptions? steps = null,
     AgvCommandOutboxOptions? outbox = null,
-    ObstacleRecoveryStore? obstacleRecovery = null) : ISystemStatusSnapshotService
+    ObstacleRecoveryStore? obstacleRecovery = null, ObstacleRecoveryOptions? recoveryOptions = null) : ISystemStatusSnapshotService
 {
     private static readonly DateTimeOffset ProcessStartedAt =
         new(Process.GetCurrentProcess().StartTime);
@@ -121,7 +121,7 @@ public sealed class SystemStatusSnapshotService(
                     AngularVelocity = agv.AngularVelocity, Charging = agv.Charging,
                     BatteryVoltage = agv.BatteryVoltage, BatteryCurrent = agv.BatteryCurrent,
                     BatteryTemperature = agv.BatteryTemperature,
-                    Obstacle = AgvObstacleDiagnostics.Analyze(agv, now, TimeSpan.FromMilliseconds(agvOptions.StaleAfterMs)),
+                    Obstacle = AgvObstacleDiagnostics.Analyze(agv, now, TimeSpan.FromMilliseconds(agvOptions.StaleAfterMs), recoveryOptions),
                     Recovery = recoveries.FirstOrDefault(row =>
                         row.VehicleId.Equals(agv.VehicleId, StringComparison.OrdinalIgnoreCase))
                 };

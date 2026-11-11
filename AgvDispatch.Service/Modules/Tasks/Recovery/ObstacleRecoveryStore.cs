@@ -89,6 +89,13 @@ public sealed class ObstacleRecoveryStore(
             row.DefinitionHash, row.NewVendorTaskId, row.SendAttemptedAtUtc is not null,
             new DateTimeOffset(DateTime.SpecifyKind(row.UpdatedAt, DateTimeKind.Utc)))
         {
+            CancelRequestedAt = ToUtc(row.CancelRequestedAtUtc),
+            CancelAttemptedAt = ToUtc(row.CancelAttemptedAtUtc),
+            CancelAcknowledgedAt = ToUtc(row.CancelAcknowledgedAtUtc),
+            OriginalTerminalAt = ToUtc(row.OriginalTerminalAtUtc),
+            AssessmentAfterSeconds = options.DetourAfterSeconds,
+            CancelAfterSeconds = options.CancelAfterSeconds,
+            CancelTerminalWaitWarningSeconds = options.CancelTerminalWaitWarningSeconds,
             DurationSeconds = duration,
             NextAction = row.NextAction ?? "",
             AutomaticDetourEnabled = options.AutomaticDetourEnabled,

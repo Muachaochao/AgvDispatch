@@ -11,14 +11,15 @@ public sealed class ObstacleRecoveryOptions
     // and route profile have been signed off on site.
     public bool AutomaticSafetyPointRetreatEnabled { get; set; }
     public int PollIntervalMs { get; set; } = 1000;
-    // Alarm escalation is time-based, but automatic detour still additionally
-    // requires the original vendor task to be terminal and the vehicle to be
-    // stationary at a trusted pose. These defaults leave the controller enough
-    // time to release its original task without issuing a premature second move.
-    public int DetourAfterSeconds { get; set; } = 10;
-    public int WarningAfterSeconds { get; set; } = 30;
-    public int AlarmAfterSeconds { get; set; } = 60;
-    public int ClosureSuggestionAfterSeconds { get; set; } = 120;
+    // DetourAfterSeconds starts read-only assessment, never cancellation.
+    // These are observation thresholds, not a vendor task-release SLA.
+    public int DetourAfterSeconds { get; set; } = 30;
+    public int CancelAfterSeconds { get; set; } = 120;
+    // Measured from the persisted cancellation intent; reminder only, no retry.
+    public int CancelTerminalWaitWarningSeconds { get; set; } = 30;
+    public int WarningAfterSeconds { get; set; } = 60;
+    public int AlarmAfterSeconds { get; set; } = 120;
+    public int ClosureSuggestionAfterSeconds { get; set; } = 300;
     public int StableStopObservationMs { get; set; } = 500;
     public double StoppedVelocityToleranceMetersPerSecond { get; set; } = 0.02;
     public double MinimumLocalizationConfidence { get; set; } = 0.5;
@@ -36,7 +37,11 @@ public sealed class ObstacleRecoveryOptions
         if (WarningAfterSeconds < DetourAfterSeconds ||
             AlarmAfterSeconds <= WarningAfterSeconds ||
             ClosureSuggestionAfterSeconds <= AlarmAfterSeconds)
-            throw new InvalidOperationException("障碍恢复升级阈值必须依次为改道、预警、报警、建议封路。");
+            throw new InvalidOperationException("障碍恢复升级阈值必须依次为只读评估、预警、报警、建议封路。");
+        if (CancelAfterSeconds < DetourAfterSeconds || CancelAfterSeconds > 3600)
+            throw new InvalidOperationException("取消观察时间必须不小于只读评估时间且不超过3600秒。");
+        if (CancelTerminalWaitWarningSeconds is < 1 or > 3600)
+            throw new InvalidOperationException("取消终态等待提醒必须在1至3600秒之间；该时间不代表厂家释放时限。");
         if (StableStopObservationMs is < 250 or > 10000)
             throw new InvalidOperationException("ObstacleRecovery:StableStopObservationMs必须在250至10000毫秒之间。");
         if (StoppedVelocityToleranceMetersPerSecond is <= 0 or > 0.2)

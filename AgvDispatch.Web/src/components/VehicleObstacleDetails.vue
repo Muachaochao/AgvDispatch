@@ -54,7 +54,8 @@ const recoveryStateLabel = computed(() => ({
       </dl>
     </template>
     <h3>安全边界</h3><p>{{ obstacle.localDetourEvidence }}</p>
-    <p>10秒开始核验原任务终态和安全替代路线；30秒预警；60秒报警；120秒建议封锁实际受阻方向。无路线时推荐安全点并冻结原任务，载荷、PLC责任和路权不会自动释放。</p>
+    <p v-if="recovery?.cancelRequestedAt">取消意图：{{ shortTime(recovery.cancelRequestedAt) }}；网关应答：{{ shortTime(recovery.cancelAcknowledgedAt) }}；原导航全链终态：{{ shortTime(recovery.originalTerminalAt) }}。未取得终态会继续停车核对，不会按等待秒数认定已释放。</p>
+    <p>默认30秒只读评估、不取消导航；60秒提醒；120秒才允许考虑受控取消；300秒升级人工及封路建议。取消应答后仍须原任务全链终态及安全核验通过才能续接，实际阈值以后台策略说明为准。无路线时推荐安全点并冻结原任务，载荷、PLC责任和路权不会自动释放。</p>
   </div>
 </template>
 

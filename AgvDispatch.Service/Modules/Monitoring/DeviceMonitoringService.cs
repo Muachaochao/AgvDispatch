@@ -9,7 +9,7 @@ using AgvDispatch.Domain.Stations;
 namespace AgvDispatch.Service;
 
 public sealed class DeviceMonitoringService(IAgvStateCache vehicles, AgvOptions options,
-    PlcFleet fleet, IPlcSignalCache signals, IStationStateService stations, IActiveTaskLookup tasks) : IDeviceMonitoringService
+    PlcFleet fleet, IPlcSignalCache signals, IStationStateService stations, IActiveTaskLookup tasks, ObstacleRecoveryOptions? recoveryOptions = null) : IDeviceMonitoringService
 {
     public async Task<DeviceMonitoringSnapshot> GetSnapshotAsync(CancellationToken cancellationToken)
     {
@@ -21,7 +21,7 @@ public sealed class DeviceMonitoringService(IAgvStateCache vehicles, AgvOptions 
             cachedVehicles.TryGetValue(robot.VehicleId, out var v);
             var enabled = options.Enabled && robot.Enabled;
             var quality = Effective(v?.Quality ?? SignalQuality.Unknown, v?.LastSuccessfulPollAt, enabled, now, options.StaleAfterMs);
-            var obstacle = v is null ? null : AgvObstacleDiagnostics.Analyze(v, now, TimeSpan.FromMilliseconds(options.StaleAfterMs));
+            var obstacle = v is null ? null : AgvObstacleDiagnostics.Analyze(v, now, TimeSpan.FromMilliseconds(options.StaleAfterMs), recoveryOptions);
             var fields = new List<MonitoringField>();
             void Add(string name, object? value) => fields.Add(new(name, Format(value), Quality(quality), "—", Time(v?.LastSuccessfulPollAt)));
             Add("当前位置 X / Y（米）", v?.X is { } x && v.Y is { } y ? $"{x:F3} / {y:F3}" : null);

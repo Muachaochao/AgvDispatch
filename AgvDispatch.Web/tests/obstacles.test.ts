@@ -9,7 +9,7 @@ const at = (delta = 0) => new Date(now + delta).toISOString();
 const task: TaskRow = { taskId: 'original', stationId: 'P1', vehicleId: 'AGV-01', stage: 'Executing', priority: 50, createdAt: at(), updatedAt: at() };
 function observation(overrides: Partial<VehicleObstacle> = {}): VehicleObstacle {
   return { state: 'Blocked', since: at(-3000), durationSeconds: 3, lastClearedAt: null, source: 'Blocked / 52200',
-    message: '保留原任务，等待安全改道核验。', navigationPolicy: '10秒开始核验原任务终态和安全替代路线',
+    message: '保留原任务，等待安全改道核验。', navigationPolicy: '30秒只读核验、120秒才允许考虑受控取消',
     localDetourEvidence: '自动改道保留原任务、载荷、PLC责任和路权', ...overrides };
 }
 function vehicle(overrides: Partial<Vehicle> = {}): Vehicle {
@@ -26,13 +26,13 @@ test('短时障碍使执行车辆显示受阻等待，保留原任务分类依�
   assert.equal(task.stage, 'Executing');
 });
 
-test('仅车端52200诊断也显示受阻，30秒升级为持续受阻', () => {
+test('仅车端52200也显示受阻，升级使用后台有效策略', () => {
   const v = vehicle({ obstacle: observation({ durationSeconds: 29.9 }) });
   assert.equal(vehicleCategory(v, [task], true, now), 'blocked');
   assert.equal(vehicleObstacle(v, true, now).state, 'Blocked');
-  v.obstacle = observation({ durationSeconds: 30 });
+  v.obstacle = observation({ state: 'Prolonged', durationSeconds: 60 });
   assert.equal(vehicleObstacle(v, true, now).state, 'Prolonged');
-  assert.equal(vehicleObstacle(v, true, now).label, '持续受阻（≥30秒）');
+  assert.equal(vehicleObstacle(v, true, now).label, '持续受阻');
 });
 
 test('严重报警与急停优先于受阻，即使仍在执行原任务', () => {
@@ -104,4 +104,9 @@ test('解除观察单独显示，原任务仍由任务反馈决定是否执行�
   assert.equal(view.duration, '—');
   assert.equal(vehicleCategory(v, [task], true, now), 'running');
   assert.equal(vehicleCategory(v, [{ ...task, stage: 'Completed' }], true, now), 'unknown');
+});
+
+test('只读评估时长不由前端擅自升级，后台自定义阈值优先', () => {
+  const v = vehicle({ obstacle: observation({ state: 'Blocked', durationSeconds: 119 }) });
+  assert.equal(vehicleObstacle(v, true, now).state, 'Blocked');
 });

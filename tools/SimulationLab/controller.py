@@ -27,10 +27,12 @@ TASK_ID = re.compile(r'^[A-Za-z0-9_-]{1,128}$')
 SOURCE_SHA256 = re.compile(r'^[a-f0-9]{64}$')
 POINT_TABLE_SOURCE_FIELDS = ('sourceSha256', 'sourceFile', 'sourceDeviceId', 'sourceDeviceName')
 OBSTACLE_RECOVERY_TIMING = {
-    'DetourAfterSeconds': 10,
-    'WarningAfterSeconds': 30,
-    'AlarmAfterSeconds': 60,
-    'ClosureSuggestionAfterSeconds': 120,
+    'DetourAfterSeconds': 30,
+    'CancelAfterSeconds': 120,
+    'CancelTerminalWaitWarningSeconds': 30,
+    'WarningAfterSeconds': 60,
+    'AlarmAfterSeconds': 120,
+    'ClosureSuggestionAfterSeconds': 300,
 }
 
 

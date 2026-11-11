@@ -52,6 +52,13 @@ public sealed record ObstacleRecoverySnapshot(
     bool SendAttempted,
     DateTimeOffset UpdatedAt)
 {
+    public DateTimeOffset? CancelRequestedAt { get; init; }
+    public DateTimeOffset? CancelAttemptedAt { get; init; }
+    public DateTimeOffset? CancelAcknowledgedAt { get; init; }
+    public DateTimeOffset? OriginalTerminalAt { get; init; }
+    public int AssessmentAfterSeconds { get; init; }
+    public int CancelAfterSeconds { get; init; }
+    public int CancelTerminalWaitWarningSeconds { get; init; }
     public double DurationSeconds { get; init; }
     public string NextAction { get; init; } = "";
     public bool AutomaticDetourEnabled { get; init; }

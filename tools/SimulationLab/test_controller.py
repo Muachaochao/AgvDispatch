@@ -10,18 +10,26 @@ import unittest
 from unittest.mock import patch
 
 from controller import OBSTACLE_RECOVERY_TIMING, Runtime, WORKSPACE, validate_root, write, rename_evidence
-from scenarios import Observer, obstacle_detour_send_observed, separation, validate_scenario
+from scenarios import obstacle_detour_observation_deadline, Observer, obstacle_detour_send_observed, separation, validate_scenario
 from test_runtime_lifecycle import SOURCE_PLC_TABLE
 
 
 class SimulationTests(unittest.TestCase):
     def test_isolated_instances_use_field_tuned_obstacle_timing(self):
         self.assertEqual(OBSTACLE_RECOVERY_TIMING, {
-            'DetourAfterSeconds': 10,
-            'WarningAfterSeconds': 30,
-            'AlarmAfterSeconds': 60,
-            'ClosureSuggestionAfterSeconds': 120,
+            'DetourAfterSeconds': 30,
+            'CancelAfterSeconds': 120,
+            'CancelTerminalWaitWarningSeconds': 30,
+            'WarningAfterSeconds': 60,
+            'AlarmAfterSeconds': 120,
+            'ClosureSuggestionAfterSeconds': 300,
         })
+
+    def test_detour_observation_budget_honours_independent_cancel_gate(self):
+        self.assertEqual(obstacle_detour_observation_deadline(
+            {'ObstacleRecovery': OBSTACLE_RECOVERY_TIMING}, 5), 180)
+        self.assertEqual(obstacle_detour_observation_deadline(
+            {'ObstacleRecovery': {'CancelAfterSeconds': 240, 'CancelTerminalWaitWarningSeconds': 60}}, 5), 330)
 
     def test_detour_scenario_requires_a_replacement_navigation_receipt(self):
         self.assertTrue(obstacle_detour_send_observed(

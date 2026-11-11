@@ -83,6 +83,13 @@ def has_alternate_connection(navigation, edge_id):
     return False
 
 
+def obstacle_detour_observation_deadline(settings, hold_seconds):
+    """Test budget, not permission to cancel or move; honour the backend gate."""
+    timing = settings.get('ObstacleRecovery') or {}
+    return max(hold_seconds + 20, timing.get('CancelAfterSeconds', 120) +
+               timing.get('CancelTerminalWaitWarningSeconds', 30) + 30)
+
+
 def obstacle_detour_send_observed(recovery):
     """A blocked test may clear only after the replacement command exists.
 
@@ -988,7 +995,7 @@ def execute(runtime, request):
                               obstacle_recovery.get('latest'))
                         auto_detour_sends += 1
                         fault_observed = True
-                    elif elapsed >= request['holdSeconds'] + 20:
+                    elif elapsed >= obstacle_detour_observation_deadline(runtime.settings, request['holdSeconds']):
                         check('后台等待原3066终态并发送替代导航', False,
                               dict(state=(observed or {}).get('state'),
                                    message=(observed or {}).get('message'),
