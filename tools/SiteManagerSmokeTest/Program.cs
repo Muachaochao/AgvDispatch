@@ -20,6 +20,11 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (args.Length == 2 && args[0] == "--stop-site")
+        {
+            Console.WriteLine(new SiteOperations(SiteEnvironment.Find(args[1])).LaunchAsync(true).GetAwaiter().GetResult());
+            return 0;
+        }
         if (args.Length == 2 && args[0] == "--inspect-site")
         {
             var actual = new ManagementViewModel(SiteEnvironment.Find(args[1]));
@@ -74,6 +79,13 @@ internal static class Program
             Reject(() => SiteOperations.ValidateCharging(new(false,new(),null,[new("CHARGE-test","AGV-01",ChargingPhase.Hold,now,now,"review")],now)), "Held charging workflow prevents stop");
             var vehicle=JsonSerializer.Deserialize<AgvDiagnostic>("""{"vehicleId":"AGV-01","connection":"Online","quality":"Good","lastSuccessfulPollAt":"NOW","taskCount":0,"velocityX":null,"velocityY":0,"angularVelocity":0}""".Replace("NOW",now.ToString("O")),new JsonSerializerOptions(JsonSerializerDefaults.Web){Converters={new System.Text.Json.Serialization.JsonStringEnumConverter()}})!;
             Reject(() => SiteOperations.ValidateIdleStatus(status with {Agvs=[vehicle],Safety=status.Safety with{AgvCommunicationEnabled=true}},123), "Unknown velocity is never treated as stopped");
+            var offline = vehicle with { Connection = ConnectionState.Disconnected, Quality = SignalQuality.Unknown };
+            var communicating = status with { Agvs = [offline], Safety = status.Safety with { AgvCommunicationEnabled = true } };
+            SiteOperations.ValidateIdleStatus(communicating, 123); Check(true, "Offline telemetry does not prevent idle software shutdown");
+            Reject(() => SiteOperations.ValidateIdleStatus(communicating with { Agvs = [offline with { TaskCount = 1 }] }, 123), "Offline vehicle with reported work still prevents shutdown");
+            Reject(() => SiteOperations.ValidateIdleStatus(communicating with { Agvs = [offline with { Charging = true }] }, 123), "Offline vehicle with reported charging still prevents shutdown");
+            Reject(() => SiteOperations.ValidateIdleStatus(communicating with { Agvs = [vehicle with { VelocityX = .5, VelocityY = 0, AngularVelocity = 0 }] }, 123), "Online moving vehicle still prevents shutdown");
+            Reject(() => SiteOperations.ValidateIdleStatus(communicating with { Agvs = [vehicle with { Connection = ConnectionState.Degraded }] }, 123), "Degraded live connection still requires stop evidence");
             VerifyPipe(status);
             var diagnostics = archives.ExportDiagnostics("offline fixture", "smoke test");
             using (var zip = ZipFile.OpenRead(diagnostics)) Check(zip.Entries.All(e => !e.FullName.EndsWith(".db") && !e.FullName.Contains("appsettings")), "Diagnostics do not include raw database or device configuration");

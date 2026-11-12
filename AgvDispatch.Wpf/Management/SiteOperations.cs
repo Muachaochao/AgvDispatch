@@ -57,7 +57,12 @@ public sealed class SiteOperations(SiteEnvironment site)
         foreach (var agv in status.Agvs)
         {
             if (!status.Safety.AgvCommunicationEnabled) break;
-            if (agv.Connection != ConnectionState.Online || agv.Quality != SignalQuality.Good ||
+            if (agv.TaskCount != 0 || agv.Charging == true)
+                throw new InvalidOperationException($"{agv.VehicleId} 仍有车辆任务或正在充电，未停止程序。");
+            // Closing an idle software service does not assert that an offline vehicle is stopped.
+            // Persistent task/lease/outbox checks below fence all dispatch obligations.
+            if (agv.Connection is not (ConnectionState.Online or ConnectionState.Degraded)) continue;
+            if (agv.Quality != SignalQuality.Good ||
                 agv.LastSuccessfulPollAt is not { } at || DateTimeOffset.UtcNow - at > TimeSpan.FromSeconds(5) ||
                 agv.TaskCount != 0 || !Stopped(agv.VelocityX) || !Stopped(agv.VelocityY) || !Stopped(agv.AngularVelocity) || agv.Charging == true)
                 throw new InvalidOperationException($"{agv.VehicleId} 尚未确认空闲停稳，或正在充电，未停止程序。");

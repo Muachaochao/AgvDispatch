@@ -48,8 +48,8 @@ public sealed class ManagementViewModel : INotifyPropertyChanged
         _site = site; _operations = new(site); _archives = new(site);
         RefreshCommand = new AsyncAction(async () => { await RefreshAsync(); await ReadConnectionsAsync(); }, () => !IsBusy);
         StartCommand = Operation(async () => SetMessage(await _operations.LaunchAsync(false)));
-        StopCommand = Operation(async () => { if (Confirm("停止当前日常后台和 Web？\n程序会先核对任务、路权、待发命令及车辆状态，条件不满足时拒绝停止。")) SetMessage(await _operations.LaunchAsync(true)); });
-        RestartCommand = Operation(async () => { if (!Confirm("重启当前日常系统？\n只有完成空闲与停稳核验后才会停止；重新启动沿用原有配置。")) return; SetMessage(await _operations.LaunchAsync(true)); SetMessage(await _operations.LaunchAsync(false)); });
+        StopCommand = Operation(async () => { if (Confirm("停止当前日常后台和 Web？\n核对任务、路权、待发命令、充电及在线车辆停稳状态；离线车辆不阻止空闲系统停止。\n此操作不向车辆发送停车指令。")) SetMessage(await _operations.LaunchAsync(true)); });
+        RestartCommand = Operation(async () => { if (!Confirm("重启当前日常系统？\n先核对任务清场、充电及在线车辆状态；离线车辆不阻止空闲系统停止。重新启动沿用原有配置。")) return; SetMessage(await _operations.LaunchAsync(true)); SetMessage(await _operations.LaunchAsync(false)); });
         OpenWebCommand = new RelayAction(() => Open(SiteEnvironment.WebUrl));
         OpenEngineeringCommand = new RelayAction(() => Open(SiteEnvironment.WebUrl + "#/engineering?tab=communication"));
         OpenPipelineCommand = new RelayAction(() => Open(SiteEnvironment.WebUrl + "#/dispatch-pipeline"));
