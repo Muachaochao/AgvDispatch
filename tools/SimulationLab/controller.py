@@ -134,6 +134,8 @@ def validate_root(root):
 class Runtime:
     def __init__(self, root, template_root=None, scheme_store=None):
         self.root, self.lab, self.settings, self.web, self.ports = validate_root(root)
+        from loopback_http import LoopbackJsonClient
+        self.api_client = LoopbackJsonClient(self.web['Port'])
         self.template_root = Path(template_root or self.root)
         self.lock = threading.RLock()
         self.children = {}
@@ -160,14 +162,10 @@ class Runtime:
     def api(self, path, data=None, allow_rejection=False):
         if self.abort.is_set():
             raise InterruptedError('场景已停止，拒绝继续提交后台操作。')
-        request = Request(f"http://127.0.0.1:{self.web['Port']}" + path,
-                          data=json.dumps(data, ensure_ascii=False).encode() if data is not None else None,
-                          headers={'Content-Type': 'application/json'})
         # The normal WebHost pipe operation is bounded at 25 seconds. A shorter
         # client timeout can abandon a successful task creation before its receipt.
         try:
-            with urlopen(request, timeout=35) as response:
-                result = json.load(response)
+            result = self.api_client.request(path, data)
         except TimeoutError as error:
             raise TimeoutError(f'等待仿真后台接口 {path} 返回超时，请核对原请求结果。') from error
         if not allow_rejection and isinstance(result, dict) and result.get('accepted') is False:
