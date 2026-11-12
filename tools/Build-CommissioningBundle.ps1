@@ -107,7 +107,7 @@ popd
 @'
 @echo off
 pushd "%~dp0WPF"
-start "" "AgvDispatch.Wpf.exe"
+start "" "AgvDispatch.Wpf.exe" --site-root "%~dp0.."
 popd
 '@ | Set-Content -LiteralPath (Join-Path $bundleOutput 'Start-WPF.cmd') -Encoding ascii
 @"
@@ -117,7 +117,7 @@ popd
 
 1. 首选双击Start-Latest-Web.cmd：启动本版后台与Web，等待就绪并打开浏览器；重复点击复用原进程。
 2. 需要停止本入口启动的程序时，双击Stop-Latest-Web.cmd；仅核对并停止本版记录的进程，不关闭浏览器。不要与分组件启动入口混用。
-3. 页面地址 http://127.0.0.1:$WebPort/ 。WPF仅在需未迁移配置时使用Start-WPF.cmd。
+3. 页面地址 http://127.0.0.1:$WebPort/ 。Start-WPF.cmd 打开现场管理工具，日常业务统一使用 Web；管理工具须部署在具有最新版Web.json的日常发布包下。
 4. 分组件Start-Service/Start-Web.cmd保留作工程排查，它们需分别管理窗口；不属于一键启动记录。
 
 单次导航现场测试使用显式入口 Start-Navigation-Test.cmd AGV-01；它仅针对指定测试车启用导航发送许可，保留业务任务和PLC执行关闭。需要验证自动受阻改道时再明确追加 --auto-navigation-detour；路径规划、精确取消、原任务终态、连续停稳和一次性3066发送仍由后台重新核验。默认启动不启用此功能，详见 Docs/道路封锁与叉车受控改道-20261030.md。启动本身不会发车。

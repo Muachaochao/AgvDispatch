@@ -8,6 +8,6 @@
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="../../AgvDispatch.Wpf/AgvDispatch.Wpf.csproj" />
+    <ProjectReference Include="../LegacyWpf/LegacyWpf.csproj" />
   </ItemGroup>
 </Project>

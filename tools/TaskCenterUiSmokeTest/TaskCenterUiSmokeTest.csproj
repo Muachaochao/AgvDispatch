@@ -4,5 +4,5 @@
     <UseWPF>true</UseWPF><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
   </PropertyGroup>
-  <ItemGroup><ProjectReference Include="../../AgvDispatch.Wpf/AgvDispatch.Wpf.csproj" /></ItemGroup>
+  <ItemGroup><ProjectReference Include="../LegacyWpf/LegacyWpf.csproj" /></ItemGroup>
 </Project>

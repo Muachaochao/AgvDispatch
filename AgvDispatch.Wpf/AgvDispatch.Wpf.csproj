@@ -3,14 +3,10 @@
   <ItemGroup>
     <ProjectReference Include="..\AgvDispatch.Domain\AgvDispatch.Domain.csproj" />
     <ProjectReference Include="..\AgvDispatch.Application\AgvDispatch.Application.csproj" />
-    <ProjectReference Include="..\AgvDispatch.Infrastructure\AgvDispatch.Infrastructure.csproj" />
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="HandyControl" Version="3.5.1" />
-    <PackageReference Include="LiveChartsCore.SkiaSharpView.WPF" Version="2.0.5" />
-    <PackageReference Include="NLog.Extensions.Logging" Version="6.2.1" />
-    <PackageReference Include="Prism.DryIoc" Version="8.1.97" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.11" />
   </ItemGroup>
 
   <PropertyGroup>
@@ -23,15 +19,18 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <EnableDefaultPageItems>false</EnableDefaultPageItems>
+    <EnableDefaultApplicationDefinition>false</EnableDefaultApplicationDefinition>
+    <Product>AGV 现场管理工具</Product>
     <ApplicationIcon>Assets\Icons\AppIcon.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
+    <ApplicationDefinition Include="Management\ManagementApp.xaml" />
+    <Compile Include="Management\**\*.cs" />
+    <Page Include="Management\**\*.xaml" Exclude="Management\ManagementApp.xaml" />
     <Resource Include="Assets\Icons\AppIcon.ico" />
-    <Resource Include="Assets\Icons\Png\*.png" />
-    <Resource Include="Assets\Icons\Svg\*.svg" />
-    <None Update="NLog.config" CopyToOutputDirectory="PreserveNewest" />
-    <None Update="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>
