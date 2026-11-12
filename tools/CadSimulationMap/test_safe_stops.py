@@ -1,5 +1,5 @@
 import unittest
-from add_safe_stops import add_stops
+from add_safe_stops import add_stops, localize_split_intersections
 
 
 class SafeStopTests(unittest.TestCase):
@@ -42,6 +42,24 @@ class SafeStopTests(unittest.TestCase):
         self.assertTrue(all(e['resourceIds']==['ROAD'] for e in result['edges']))
         self.assertEqual(sum(e['distance'] for e in result['edges']),20)
         self.assertEqual(result['nodes'][:2],original['nodes'])
+
+    def test_half_edge_retains_near_junction_and_shared_road_only(self):
+        nodes = dict(A=dict(x=0,y=0), S=dict(x=5,y=0), B=dict(x=10,y=0))
+        def junction(x):
+            return dict(type='Intersection',boundary=[dict(x=x-.55,y=-.55),dict(x=x+.55,y=-.55),
+                                                       dict(x=x+.55,y=.55),dict(x=x-.55,y=.55)])
+        resources = dict(JA=junction(0), JB=junction(10), ROAD=dict(type='Corridor'))
+        edge = dict(id='second',**{'from':'S','to':'B'}, resourceIds=['JA','JB','ROAD','UNKNOWN'])
+        self.assertEqual(localize_split_intersections(edge,nodes,resources),['JB','ROAD','UNKNOWN'])
+        edge.update(**{'from':'A','to':'S'})
+        self.assertEqual(localize_split_intersections(edge,nodes,resources),['JA','ROAD','UNKNOWN'])
+
+    def test_near_and_invalid_boundaries_are_not_dropped(self):
+        nodes = dict(A=dict(x=0,y=0), B=dict(x=2,y=0))
+        edge = dict(**{'from':'A','to':'B'},resourceIds=['NEAR','INVALID'])
+        resources = dict(NEAR=dict(type='Intersection',boundary=[dict(x=1,y=1),dict(x=2,y=1),dict(x=1,y=2)]),
+                         INVALID=dict(type='Intersection',boundary=[dict(x=float('nan'),y=1)]*3))
+        self.assertEqual(localize_split_intersections(edge,nodes,resources),['NEAR','INVALID'])
 
 
 if __name__=='__main__':unittest.main()

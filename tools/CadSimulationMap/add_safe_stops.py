@@ -12,6 +12,35 @@ from collections import defaultdict
 from pathlib import Path
 
 
+def localize_split_intersections(edge, nodes, resources, clearance=1.13):
+    """Drop only bounded junction guards provably outside a straight half-edge.
+
+    The bounding box over-approximates the polygon. Unknown, shared road and
+    corridor resources remain intact. Clearance includes two simulation vehicle
+    envelopes; this does not certify a physical map or a larger load profile.
+    """
+    a, b = nodes[edge['from']], nodes[edge['to']]
+    kept = []
+    for key in edge.get('resourceIds', []):
+        resource = resources.get(key, {})
+        boundary = resource.get('boundary')
+        if resource.get('type') != 'Intersection' or not boundary or len(boundary) < 3:
+            kept.append(key); continue
+        try:
+            xs = [float(p['x']) for p in boundary]; ys = [float(p['y']) for p in boundary]
+            coordinates = xs + ys + [a['x'], a['y'], b['x'], b['y']]
+            if not all(math.isfinite(v) for v in coordinates):
+                kept.append(key); continue
+            # Distance between AABBs is a lower bound on segment/polygon distance.
+            dx = max(min(xs)-max(a['x'], b['x']), min(a['x'], b['x'])-max(xs), 0)
+            dy = max(min(ys)-max(a['y'], b['y']), min(a['y'], b['y'])-max(ys), 0)
+            if math.hypot(dx, dy) <= clearance:
+                kept.append(key)
+        except (KeyError, TypeError, ValueError):
+            kept.append(key)
+    return kept
+
+
 def add_stops(source, clearance=1.5, spacing=6.0):
     if source.get('unit') != 'm':
         raise ValueError('Only metre maps are supported.')
@@ -62,7 +91,8 @@ def add_stops(source, clearance=1.5, spacing=6.0):
     for edge in result['edges']:
         if edge.get('enabled', True) and edge.get('geometryKind', 'Line') in ('Line',0) and not edge.get('vendorPath'):
             groups[tuple(sorted((edge['from'], edge['to'])))].append(edge)
-    split_ids = set(); additions = []
+    split_ids = set(); additions = []; localized = []
+    resource_definitions = {r['id']: r for r in result['resources']}
     for (a,b), edges in sorted(groups.items()):
         start, end = nodes[a], nodes[b]
         if math.dist(point(start), point(end)) < clearance * 2:
@@ -85,8 +115,14 @@ def add_stops(source, clearance=1.5, spacing=6.0):
             first=copy.deepcopy(edge); second=copy.deepcopy(edge)
             first.update(id=edge['id']+'-S1',to=node['id'],distance=edge['distance']/2)
             second.update(id=edge['id']+'-S2',**{'from':node['id']},distance=edge['distance']/2)
-            # Keep existing protections on both halves, including opposite-direction capacity.
-            # A window split is never permission to delete a shared corridor resource.
+            # Shared road capacity stays on BOTH halves. Local junction protection
+            # follows its actual boundary rather than occupying the far junction
+            # from a stopped vehicle on the other half of the original edge.
+            for half in (first, second):
+                before = half.get('resourceIds', [])
+                half['resourceIds'] = localize_split_intersections(half, nodes, resource_definitions)
+                if before != half['resourceIds']:
+                    localized.append(dict(edgeId=half['id'], removed=sorted(set(before)-set(half['resourceIds']))))
             additions.extend((first,second))
     if split_ids:
         result['edges']=[e for e in result['edges'] if e['id'] not in split_ids]+additions
@@ -95,7 +131,8 @@ def add_stops(source, clearance=1.5, spacing=6.0):
                  vehicleLengthMeters=.8, vehicleWidthMeters=.52,
                  addedStops=[dict(id=n['id'], x=n['x'], y=n['y'], resourceId='SIM-STOP-'+n['id']) for n in chosen],
                  originalNodeCount=len(source['nodes']), addedNodeCount=len(result['nodes'])-len(source['nodes']),
-                 splitEdges=sorted(split_ids), existingCoordinatesUnchanged=True)
+                 splitEdges=sorted(split_ids), localizedIntersectionBindings=localized,
+                 junctionClearanceMeters=1.13, existingCoordinatesUnchanged=True)
     return result, audit
 
 
