@@ -527,7 +527,11 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
             hard = "路权占用与原步骤或原车辆归属不一致，禁止继续执行。";
         var id = task?.CancelVendorId ?? step?.VendorTaskId ?? command?.VendorCommandId ?? (command?.AttemptCount > 0 ? step?.StepId : null);
         var confirmedNoVendor = IsConfirmedPreSendRejection(task, step, command);
-        if (id != null && hard == null && !confirmedNoVendor)
+        var confirmedOfflineCancellation = allowOfflineVehicle && leases.Count == 0 &&
+            task?.Stage is (int)DispatchTaskStage.CancellationReview or (int)DispatchTaskStage.Cancelled &&
+            task.CancelRequestId != null && task.CancelConfirmedAt != null &&
+            (vehicle is null || vehicle.Connection != ConnectionState.Online || vehicle.Quality != SignalQuality.Good);
+        if (id != null && hard == null && !confirmedNoVendor && !confirmedOfflineCancellation)
         {
             try { vendor = await gateway.GetTransportTaskStatusAsync(id, ct); }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }

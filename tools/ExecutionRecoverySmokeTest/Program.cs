@@ -808,14 +808,16 @@ await using (var f = await Fixture.Create(new MapSwitchSafetySettings { CheckPlc
     Check(!withoutOfflineConfirmation.Accepted,
         "车辆关机离线时未明确确认离线，不能关闭取消或释放设备归属。");
 
+    var offlineRequest = (await Request(f, id, RecoveryDecision.CloseCancelled)) with
+    {
+        MaterialReference = "空载",
+        VehicleOfflineConfirmed = true
+    };
+    f.Gateway.FailStatusQuery = true;
     var offlineClose =
         await f.Recovery.DecideAsync(
             admin,
-            (await Request(f, id, RecoveryDecision.CloseCancelled)) with
-            {
-                MaterialReference = "空载",
-                VehicleOfflineConfirmed = true
-            },
+            offlineRequest,
             ct);
     Check(offlineClose.Accepted &&
           f.Db.Queryable<DispatchTaskEntity>().Single(t => t.TaskId == id).Stage == (int)DispatchTaskStage.Cancelled &&
@@ -895,11 +897,12 @@ sealed class Fixture : IAsyncDisposable
 }
 sealed class RecoveryGateway : IAgvGateway
 {
-    public int Sends, Cancels; public bool FailCancelResponse; public AgvTransportTaskStatus? Status;
+    public int Sends, Cancels; public bool FailCancelResponse, FailStatusQuery; public AgvTransportTaskStatus? Status;
     public Task<DeviceConnectionStatus> GetConnectionStatusAsync(CancellationToken ct) => Task.FromResult(new DeviceConnectionStatus("fleet", "fleet", ConnectionState.Online, DateTimeOffset.Now));
     public Task<IReadOnlyList<AgvVehicleStatus>> GetVehiclesAsync(CancellationToken ct) => Task.FromResult<IReadOnlyList<AgvVehicleStatus>>([]);
     public Task<string> CreateTransportTaskAsync(string business, string? vehicle, IReadOnlyList<string> path, AgvTransportAction? action, CancellationToken ct) { Sends++; return Task.FromResult(business); }
-    public Task<AgvTransportTaskStatus?> GetTransportTaskStatusAsync(string id, CancellationToken ct) => Task.FromResult(Status);
+    public Task<AgvTransportTaskStatus?> GetTransportTaskStatusAsync(string id, CancellationToken ct) =>
+        FailStatusQuery ? Task.FromException<AgvTransportTaskStatus?>(new IOException("offline status query unavailable")) : Task.FromResult(Status);
     public Task CancelTaskAsync(string id, CancellationToken ct)
     { Cancels++; if (FailCancelResponse) { FailCancelResponse = false; throw new IOException("lost cancellation reply"); } return Task.CompletedTask; }
 }
