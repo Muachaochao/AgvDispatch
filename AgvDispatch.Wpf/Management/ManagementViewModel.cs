@@ -9,6 +9,7 @@ using System.Windows;
 using System.Windows.Input;
 using AgvDispatch.Application.Abstractions;
 using Microsoft.Win32;
+using Microsoft.Data.Sqlite;
 
 namespace AgvDispatch.Wpf.Management;
 
@@ -35,6 +36,9 @@ public sealed class ManagementViewModel : INotifyPropertyChanged
     private string _maximum = "3";
     private string _policy = "—";
     private string _probeResult = "测试只建立 TCP 连接，不发送 PLC 写入或车辆命令。";
+    private string _databaseState = "尚未检查";
+    private bool _canStart;
+    private bool _canStop;
     public event PropertyChangedEventHandler? PropertyChanged;
     private void Changed([CallerMemberName] string? name = null) => PropertyChanged?.Invoke(this, new(name));
     private void Set<T>(ref T field, T value, [CallerMemberName] string? name = null) { if (EqualityComparer<T>.Default.Equals(field, value)) return; field = value; Changed(name); }
@@ -50,6 +54,19 @@ public sealed class ManagementViewModel : INotifyPropertyChanged
         OpenEngineeringCommand = new RelayAction(() => Open(SiteEnvironment.WebUrl + "#/engineering?tab=communication"));
         OpenPipelineCommand = new RelayAction(() => Open(SiteEnvironment.WebUrl + "#/dispatch-pipeline"));
         OpenRecoveryCommand = new RelayAction(() => Open(SiteEnvironment.WebUrl + "#/recovery"));
+        OpenSettingsCommand = new RelayAction(() => SelectedPage = 4);
+        OpenInformationCommand = new RelayAction(() => SelectedPage = 2);
+        OpenBackupPageCommand = new RelayAction(() => SelectedPage = 1);
+        CheckDatabaseCommand = Operation(async () =>
+        {
+            _databaseState = await Task.Run(() =>
+            {
+                using var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = _site.DatabasePath, Mode = SqliteOpenMode.ReadOnly, Pooling = false, DefaultTimeout = 3 }.ToString());
+                connection.Open(); using var command = connection.CreateCommand(); command.CommandText = "PRAGMA quick_check";
+                return string.Equals(command.ExecuteScalar()?.ToString(), "ok", StringComparison.Ordinal) ? "检查通过" : "完整性异常";
+            });
+            Changed(nameof(DatabaseState)); SetMessage("SQLite 数据库：" + _databaseState);
+        });
         OpenDataCommand = new RelayAction(() => OpenExisting(_site.DataRoot));
         OpenBackupCommand = new RelayAction(() => OpenFolder(_site.BackupRoot));
         OpenDiagnosticCommand = new RelayAction(() => OpenFolder(_site.DiagnosticRoot));
@@ -74,18 +91,27 @@ public sealed class ManagementViewModel : INotifyPropertyChanged
         });
     }
 
-    public string[] Pages { get; } = ["运行概览", "服务管理", "网络检查", "通信诊断", "备份恢复", "日志诊断"];
-    public int SelectedPage { get => _selectedPage; set { Set(ref _selectedPage, value); foreach (var name in new[] { nameof(PageTitle), nameof(PageDescription), nameof(OverviewVisibility), nameof(ServiceVisibility), nameof(NetworkVisibility), nameof(ConnectionVisibility), nameof(BackupVisibility), nameof(LogVisibility) }) Changed(name); } }
+    public string[] Pages { get; } = ["服务管理", "版本与备份", "软件信息", "日志管理", "系统设置"];
+    public int SelectedPage { get => _selectedPage; set { if (value < 0 || value >= Pages.Length) return; Set(ref _selectedPage, value); foreach (var name in new[] { nameof(PageTitle), nameof(PageDescription), nameof(OverviewVisibility), nameof(ServiceVisibility), nameof(NetworkVisibility), nameof(ConnectionVisibility), nameof(BackupVisibility), nameof(LogVisibility) }) Changed(name); } }
     public string PageTitle => Pages[SelectedPage];
-    public string PageDescription => SelectedPage switch { 0 => "核对实际版本、连接状态与运行数据。", 1 => "通过统一日常入口管理后台和 Web。", 2 => "识别现场网卡，检查地址和端口连接。", 3 => "观察当前设备连接，进入 Web 维护现场配置。", 4 => "在系统停止后备份或恢复完整运行数据。", _ => "查看后台日志，打包现场排查所需信息。" };
+    public string PageDescription => SelectedPage switch { 0 => "", 1 => "核对当前发布版本，备份与恢复现场数据。", 2 => "查看软件版本、后台观察和数据位置。", 3 => "查看后台日志，导出现场诊断信息。", _ => "维护启动配置，检查网络和设备连接。" };
     private Visibility Show(int index) => SelectedPage == index ? Visibility.Visible : Visibility.Collapsed;
-    public Visibility OverviewVisibility => Show(0);
-    public Visibility ServiceVisibility => Show(1);
-    public Visibility NetworkVisibility => Show(2);
-    public Visibility ConnectionVisibility => Show(3);
-    public Visibility BackupVisibility => Show(4);
-    public Visibility LogVisibility => Show(5);
-    public bool IsBusy { get => _busy; private set { Set(ref _busy, value); Changed(nameof(CanOperate)); CommandManager.InvalidateRequerySuggested(); } }
+    public Visibility OverviewVisibility => Show(2);
+    public Visibility ServiceVisibility => Show(0);
+    public Visibility NetworkVisibility => Show(4);
+    public Visibility ConnectionVisibility => Show(4);
+    public Visibility BackupVisibility => Show(1);
+    public Visibility LogVisibility => Show(3);
+    public string AssistantVersion => typeof(ManagementViewModel).Assembly.GetName().Version?.ToString(3) ?? "—";
+    public string DatabaseState => _databaseState;
+    public string DatabaseConnection => File.Exists(_site.DatabasePath) ? "文件可用" : "文件缺失";
+    public string ProjectConnection => Directory.Exists(Path.Combine(_site.DataRoot, "Web工程方案")) ? "目录可用" : "目录缺失";
+    public string BackendConnection => _serviceState.StartsWith("运行中") ? "已连接" : _serviceState.StartsWith("未运行") ? "未连接" : "未就绪";
+    public string WebConnection => _webState.StartsWith("已就绪") ? "已连接" : _webState.StartsWith("未运行") ? "未连接" : "未就绪";
+    public bool CanStartSystem => CanOperate && _canStart;
+    public bool CanStopSystem => CanOperate && _canStop;
+    public bool CanRestartSystem => CanOperate && _canStop;
+    public bool IsBusy { get => _busy; private set { Set(ref _busy, value); Changed(nameof(CanOperate)); Changed(nameof(CanStartSystem)); Changed(nameof(CanStopSystem)); Changed(nameof(CanRestartSystem)); CommandManager.InvalidateRequerySuggested(); } }
     public bool CanOperate => !IsBusy;
     public string Message => _message;
     public string ServiceState => _serviceState;
@@ -112,6 +138,10 @@ public sealed class ManagementViewModel : INotifyPropertyChanged
     public ICommand OpenEngineeringCommand { get; }
     public ICommand OpenPipelineCommand { get; }
     public ICommand OpenRecoveryCommand { get; }
+    public ICommand OpenSettingsCommand { get; }
+    public ICommand OpenInformationCommand { get; }
+    public ICommand OpenBackupPageCommand { get; }
+    public ICommand CheckDatabaseCommand { get; }
     public ICommand OpenDataCommand { get; }
     public ICommand OpenBackupCommand { get; }
     public ICommand OpenDiagnosticCommand { get; }
@@ -138,6 +168,8 @@ public sealed class ManagementViewModel : INotifyPropertyChanged
             var session = ProcessIdentity.Read(release);
             var serviceAlive = ProcessIdentity.Matches(session?.Service);
             var webAlive = ProcessIdentity.Matches(session?.Web);
+            _canStart = !serviceAlive && !webAlive; _canStop = serviceAlive || webAlive;
+            if (!File.Exists(_site.DatabasePath)) _databaseState = "文件缺失";
             _serviceState = serviceAlive ? $"运行中 · PID {session!.Service.Id}" : "未运行 / 非当前受管进程";
             _webState = webAlive ? $"运行中 · PID {session!.Web.Id}" : "未运行 / 非当前受管进程";
             _runtime = "后台未连接，任务、车辆和路权状态未知。";
@@ -164,11 +196,11 @@ public sealed class ManagementViewModel : INotifyPropertyChanged
             _network = SiteOperations.ReadNetwork();
             _lastCheck = DateTime.Now.ToString("HH:mm:ss") + " 已检查";
         }
-        catch (Exception ex) { _serviceState = "配置检查失败"; _webState = "未确认"; _runtime = ex.Message; _connectionsState = "配置无效，设备状态未确认。"; Connections.Clear(); }
+        catch (Exception ex) { _canStart = false; _canStop = false; _serviceState = "配置检查失败"; _webState = "未确认"; _runtime = ex.Message; _connectionsState = "配置无效，设备状态未确认。"; Connections.Clear(); }
         finally
         {
             _refreshing = false;
-            foreach (var name in new[] { nameof(Release), nameof(Paths), nameof(Policy), nameof(ServiceState), nameof(WebState), nameof(Runtime), nameof(Network), nameof(LastCheck), nameof(ConnectionsState) }) Changed(name);
+            foreach (var name in new[] { nameof(Release), nameof(Paths), nameof(Policy), nameof(ServiceState), nameof(WebState), nameof(Runtime), nameof(Network), nameof(LastCheck), nameof(ConnectionsState), nameof(DatabaseState), nameof(DatabaseConnection), nameof(ProjectConnection), nameof(BackendConnection), nameof(WebConnection), nameof(CanStartSystem), nameof(CanStopSystem), nameof(CanRestartSystem) }) Changed(name);
         }
     }
 

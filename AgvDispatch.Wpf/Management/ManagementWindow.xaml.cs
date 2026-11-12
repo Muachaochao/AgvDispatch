@@ -15,7 +15,7 @@ public partial class ManagementWindow : Window
         {
             if (!viewModel.IsBusy) return;
             e.Cancel = true;
-            MessageBox.Show("管理操作正在进行，请等待结果后再关闭窗口。", "AGV 现场管理工具", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show("管理操作正在进行，请等待结果后再关闭窗口。", "AGV 软件助手", MessageBoxButton.OK, MessageBoxImage.Information);
         };
         Closed += (_, _) => _timer.Stop();
     }

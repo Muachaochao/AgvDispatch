@@ -18,6 +18,7 @@ $managerEntry=Join-Path $managerSiteRoot '启动现场管理工具.cmd'
 if(Test-Path -LiteralPath $managerEntry){Copy-Item -LiteralPath $managerEntry -Destination (Join-Path $managerEvidence 'previous-entry.cmd')}
 $managerCmd="@echo off`r`nchcp 65001 >nul`r`nstart `"`" `"%~dp0$managerFolder\AgvDispatch.Wpf.exe`" --site-root `"%~dp0.`"`r`n"
 [IO.File]::WriteAllText($managerEntry,$managerCmd,[Text.UTF8Encoding]::new($false))
+[IO.File]::WriteAllText((Join-Path $managerSiteRoot '启动软件助手.cmd'),$managerCmd,[Text.UTF8Encoding]::new($false))
 # No service/Web replacement or stop: the manager is an independent local control surface.
 Write-Output "已发布：$managerEntry"
 if($Open){Start-Process -FilePath (Join-Path $managerOutput 'AgvDispatch.Wpf.exe') -ArgumentList @('--site-root',('"'+$managerSiteRoot+'"'))}

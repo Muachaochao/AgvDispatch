@@ -16,7 +16,7 @@ public partial class ManagementApp : System.Windows.Application
         }
         catch (Exception exception)
         {
-            MessageBox.Show($"无法打开现场管理工具：{exception.Message}\n\n请从发布包根目录启动，或使用 --site-root 指定包含最新版Web.json的目录。", "AGV 现场管理工具", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show($"无法打开软件助手：{exception.Message}\n\n请从发布包根目录启动，或使用 --site-root 指定包含最新版Web.json的目录。", "AGV 软件助手", MessageBoxButton.OK, MessageBoxImage.Error);
             Shutdown(1);
         }
     }

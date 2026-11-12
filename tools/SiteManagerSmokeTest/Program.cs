@@ -127,11 +127,12 @@ internal static class Program
 
     private static void RenderPages(SiteEnvironment site,string evidence)
     {
+        var vm=new ManagementViewModel(site); vm.RefreshAsync().GetAwaiter().GetResult();
         var app=new ManagementApp { ShutdownMode=ShutdownMode.OnExplicitShutdown }; app.InitializeComponent();
-        var vm=new ManagementViewModel(site); var window=new ManagementWindow(vm) { Width=1180,Height=800 };
+        var window=new ManagementWindow(vm) { Width=1180,Height=800 };
         var root=(FrameworkElement)window.Content;
         // Render the content without showing/starting Loaded: no device, browser or service actions.
-        for(var index=0;index<6;index++)
+        for(var index=0;index<vm.Pages.Length;index++)
         {
             vm.SelectedPage=index; root.Measure(new Size(1180,800)); root.Arrange(new Rect(0,0,1180,800)); root.UpdateLayout();
             Dispatcher.CurrentDispatcher.Invoke(()=>{},DispatcherPriority.Render);
@@ -139,7 +140,7 @@ internal static class Program
             var pixels=new byte[1180*800*4];image.CopyPixels(pixels,1180*4,0);if(!pixels.Where((_,i)=>i%4==3).Any(a=>a>0))throw new Exception("Blank rendered page");
             var encoder=new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(image)); using var file=File.Create(Path.Combine(evidence,$"page-{index}.png")); encoder.Save(file);
         }
-        window.Close(); app.Shutdown(); Check(true,"All six WPF pages load and render without a running backend");
+        window.Close(); app.Shutdown(); Check(true,"All software assistant pages load and render without a running backend");
     }
     private static void Check(bool condition,string name) { if(!condition)throw new Exception(name); _checks++; Console.WriteLine("PASS "+name); }
     private static void Reject(Action action,string name) { try{action();}catch(Exception e) when(e is InvalidDataException or ArgumentException or IOException or InvalidOperationException){Check(true,name);return;}throw new Exception("Expected rejection: "+name); }
