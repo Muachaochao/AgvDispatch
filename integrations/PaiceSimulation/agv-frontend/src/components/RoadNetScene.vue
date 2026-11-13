@@ -25,6 +25,9 @@ let resizeObserver: ResizeObserver | null = null;
 const netGroup = new THREE.Group();
 const agvGroup = new THREE.Group();
 const pathGroup = new THREE.Group();
+const rawNodes = new Map<string, { id: string; x: number; y: number; type: string }>();
+const displayNodes = new Map<string, { id: string; x: number; y: number; type: string }>();
+let renderedPoints: Array<{ x: number; y: number }> = [];
 
 interface AgvMesh {
   group: THREE.Group;
@@ -153,11 +156,48 @@ function rebuildRoadNet(net: RoadNetPayload | null) {
 
   const nodeMap = new Map(net.nodes.map((n) => [n.id, n]));
   const dense = net.nodes.length > 200;
+  rawNodes.clear();
+  displayNodes.clear();
+  renderedPoints = [];
+  for (const node of net.nodes) {
+    const value = { id: node.id, x: node.x, y: node.y, type: node.type };
+    rawNodes.set(node.id, value);
+    displayNodes.set(node.id, { ...value });
+  }
+  if (dense) {
+    for (const node of net.nodes) {
+      if (node.type !== "WORKSTATION") continue;
+      const connection = net.edges.find((edge) => {
+        if (edge.from !== node.id && edge.to !== node.id) return false;
+        const other = nodeMap.get(edge.from === node.id ? edge.to : edge.from);
+        return other?.type === "JUNCTION";
+      });
+      if (!connection) continue;
+      const junction = nodeMap.get(
+        connection.from === node.id ? connection.to : connection.from,
+      );
+      if (!junction) continue;
+      const dx = node.x - junction.x;
+      const dy = node.y - junction.y;
+      const length = Math.hypot(dx, dy);
+      const minimumDisplayLength = 1.2;
+      if (length >= minimumDisplayLength) continue;
+      const ux = length > 1e-6 ? dx / length : 0;
+      const uy = length > 1e-6 ? dy / length : (node.y >= junction.y ? 1 : -1);
+      displayNodes.set(node.id, {
+        ...displayNodes.get(node.id)!,
+        x: junction.x + ux * minimumDisplayLength,
+        y: junction.y + uy * minimumDisplayLength,
+      });
+    }
+  }
 
   for (const edge of net.edges) {
     const from = nodeMap.get(edge.from);
     const to = nodeMap.get(edge.to);
     if (!from || !to) continue;
+    const displayFrom = displayNodes.get(edge.from) ?? from;
+    const displayTo = displayNodes.get(edge.to) ?? to;
     const isStationBranch =
       from.type === "WORKSTATION" || to.type === "WORKSTATION";
     const isServiceBranch =
@@ -173,9 +213,13 @@ function rebuildRoadNet(net: RoadNetPayload | null) {
     const lineHeight = isStationBranch || isServiceBranch ? 0.12 : 0.06;
 
     if (edge.points?.length) {
+      const points = edge.points.map((point) => ({ ...point }));
+      points[0] = { x: displayFrom.x, y: displayFrom.y };
+      points[points.length - 1] = { x: displayTo.x, y: displayTo.y };
       const geometry = new THREE.BufferGeometry().setFromPoints(
-        edge.points.map((p) => new THREE.Vector3(p.x, lineHeight, p.y)),
+        points.map((p) => new THREE.Vector3(p.x, lineHeight, p.y)),
       );
+      renderedPoints.push(...points);
       netGroup.add(
         new THREE.Line(
           geometry,
@@ -188,8 +232,9 @@ function rebuildRoadNet(net: RoadNetPayload | null) {
       );
       continue;
     }
-    const start = new THREE.Vector3(from.x, lineHeight, from.y);
-    const end = new THREE.Vector3(to.x, lineHeight, to.y);
+    const start = new THREE.Vector3(displayFrom.x, lineHeight, displayFrom.y);
+    const end = new THREE.Vector3(displayTo.x, lineHeight, displayTo.y);
+    renderedPoints.push({ x: start.x, y: start.z }, { x: end.x, y: end.z });
     const dirVec = end.clone().sub(start);
     const len = dirVec.length();
     if (len < 0.01) continue;
@@ -248,6 +293,7 @@ function rebuildRoadNet(net: RoadNetPayload | null) {
   }
 
   for (const node of net.nodes) {
+    const display = displayNodes.get(node.id) ?? node;
     const isWaitingNode = /^WAIT/.test(node.id);
     if (dense && node.type === "JUNCTION" && !isWaitingNode) continue;
     const color = isWaitingNode ? 0xe7aa42 : NODE_COLORS[node.type] ?? 0x909399;
@@ -268,12 +314,12 @@ function rebuildRoadNet(net: RoadNetPayload | null) {
         roughness: 0.5,
       }),
     );
-    mesh.position.set(node.x, height / 2, node.y);
+    mesh.position.set(display.x, height / 2, display.y);
     netGroup.add(mesh);
 
     if (!dense) {
       const sprite = makeLabel(node.id);
-      sprite.position.set(node.x, dense ? 0.8 : 1.9, node.y);
+      sprite.position.set(display.x, dense ? 0.8 : 1.9, display.y);
       netGroup.add(sprite);
     }
   }
@@ -379,7 +425,20 @@ function updateAgvs(list: AgvView[] | undefined) {
       mesh.group.position.set(agv.x, 0.45, agv.y);
       agvMeshes.set(agv.id, mesh);
     }
-    mesh.target.set(agv.x, 0.45, agv.y);
+    let x = agv.x;
+    let y = agv.y;
+    const station = agv.station ? displayNodes.get(agv.station) : undefined;
+    const rawStation = agv.station ? rawNodes.get(agv.station) : undefined;
+    if (
+      station &&
+      rawStation &&
+      ["WAITING", "LOADING", "IDLE", "CHARGING"].includes(agv.status) &&
+      Math.hypot(agv.x - rawStation.x, agv.y - rawStation.y) < 1.2
+    ) {
+      x += station.x - rawStation.x;
+      y += station.y - rawStation.y;
+    }
+    mesh.target.set(x, 0.45, y);
     mesh.targetHeading = -THREE.MathUtils.degToRad(agv.heading || 0);
 
     if (mesh.status !== agv.status) {
@@ -421,10 +480,7 @@ function clearPath() {
 
 function fitView() {
   if (!props.roadnet || props.roadnet.nodes.length === 0 || !camera) return;
-  const points = [
-    ...props.roadnet.nodes,
-    ...props.roadnet.edges.flatMap((edge) => edge.points ?? []),
-  ];
+  const points = renderedPoints.length ? renderedPoints : props.roadnet.nodes;
   const xs = points.map((point) => point.x);
   const ys = points.map((point) => point.y);
   const minX = Math.min(...xs), maxX = Math.max(...xs);

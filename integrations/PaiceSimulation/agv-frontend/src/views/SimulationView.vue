@@ -79,7 +79,8 @@ const agvViews = computed<AgvView[]>(() =>
     y: a.y,
     heading: a.heading,
     status: a.status,
-    taskId: a.taskId
+    taskId: a.taskId,
+    station: a.nodeId
   }))
 )
 

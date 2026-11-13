@@ -181,6 +181,38 @@ const hasSelectedOneWay = computed(() =>
 const nodeMap = computed(() => new Map(nodes.value.map((n) => [n.id, n])))
 const denseGraph = computed(() => nodes.value.length > 30)
 const cleanDensePreview = computed(() => denseGraph.value && !editable.value)
+const displayNodeMap = computed(() => {
+  const result = new Map(nodes.value.map((node) => [node.id, { ...node }]))
+  if (!cleanDensePreview.value) return result
+  for (const node of nodes.value) {
+    if (node.type !== 'WORKSTATION') continue
+    const connection = edges.value.find((edge) => {
+      if (edge.from !== node.id && edge.to !== node.id) return false
+      const other = nodeMap.value.get(edge.from === node.id ? edge.to : edge.from)
+      return other?.type === 'JUNCTION'
+    })
+    if (!connection) continue
+    const junction = nodeMap.value.get(
+      connection.from === node.id ? connection.to : connection.from
+    )
+    if (!junction) continue
+    const dx = node.x - junction.x
+    const dy = node.y - junction.y
+    const length = Math.hypot(dx, dy)
+    if (length >= 1.2) continue
+    const ux = length > 1e-6 ? dx / length : 0
+    const uy = length > 1e-6 ? dy / length : (node.y >= junction.y ? 1 : -1)
+    result.set(node.id, {
+      ...result.get(node.id)!,
+      x: junction.x + ux * 1.2,
+      y: junction.y + uy * 1.2
+    })
+  }
+  return result
+})
+function displayNode(id: string) {
+  return displayNodeMap.value.get(id)
+}
 const visibleMapAreaLabels = new Set(['SIM-AREA-WAIT', 'SIM-AREA-CHARGE', 'CAD-TERMINAL-PLATFORM'])
 const mapAreaOverlays = computed(() => {
   if (!cleanDensePreview.value) return []
@@ -431,8 +463,8 @@ const taskFlows = computed(() => {
   }
   const list = [...groups.values()]
   return list.map((group, index) => {
-    const from = nodeMap.value.get(group.from)!
-    const to = nodeMap.value.get(group.to)!
+    const from = displayNode(group.from)!
+    const to = displayNode(group.to)!
     const x1 = from.x * SCALE
     const y1 = from.y * SCALE
     const x2 = to.x * SCALE
@@ -469,7 +501,7 @@ const taskBadges = computed(() => {
   return [...counts.entries()]
     .filter(([id]) => nodeMap.value.has(id))
     .map(([id, count]) => {
-      const node = nodeMap.value.get(id)!
+      const node = displayNode(id)!
       return { id, ...count, x: node.x * SCALE + 14, y: node.y * SCALE - 16 }
     })
 })
@@ -657,8 +689,8 @@ interface RenderArrow {
 }
 
 function edgeLanes(edge: NetEdge): RenderLane[] {
-  const from = nodeMap.value.get(edge.from)
-  const to = nodeMap.value.get(edge.to)
+  const from = displayNode(edge.from)
+  const to = displayNode(edge.to)
   if (!from || !to) return []
   const x1 = px(from.x)
   const y1 = px(from.y)
@@ -709,8 +741,8 @@ function arrowAt(
 }
 
 function edgeArrows(edge: NetEdge): RenderArrow[] {
-  const from = nodeMap.value.get(edge.from)
-  const to = nodeMap.value.get(edge.to)
+  const from = displayNode(edge.from)
+  const to = displayNode(edge.to)
   if (!from || !to) return []
   const x1 = px(from.x)
   const y1 = px(from.y)
@@ -1624,8 +1656,8 @@ function edgeMarker(edge: NetEdge) {
 }
 
 function edgeMid(edge: NetEdge) {
-  const from = nodeMap.value.get(edge.from)
-  const to = nodeMap.value.get(edge.to)
+  const from = displayNode(edge.from)
+  const to = displayNode(edge.to)
   if (!from || !to) return { x: 0, y: 0 }
   return { x: ((from.x + to.x) / 2) * SCALE, y: ((from.y + to.y) / 2) * SCALE }
 }
@@ -2473,10 +2505,10 @@ defineExpose({
                 pointer-events="none"
               />
               <line
-                :x1="px(nodeMap.get(edge.from)?.x ?? 0)"
-                :y1="px(nodeMap.get(edge.from)?.y ?? 0)"
-                :x2="px(nodeMap.get(edge.to)?.x ?? 0)"
-                :y2="px(nodeMap.get(edge.to)?.y ?? 0)"
+                :x1="px(displayNode(edge.from)?.x ?? 0)"
+                :y1="px(displayNode(edge.from)?.y ?? 0)"
+                :x2="px(displayNode(edge.to)?.x ?? 0)"
+                :y2="px(displayNode(edge.to)?.y ?? 0)"
                 class="edge-hit"
                 @mousedown="onEdgeMouseDown($event, edge)"
                 @dblclick="onEdgeDoubleClick($event, edge)"
@@ -2486,10 +2518,10 @@ defineExpose({
               />
               <line
                 v-if="searchHitEdgeIds.has(edge.id)"
-                :x1="px(nodeMap.get(edge.from)?.x ?? 0)"
-                :y1="px(nodeMap.get(edge.from)?.y ?? 0)"
-                :x2="px(nodeMap.get(edge.to)?.x ?? 0)"
-                :y2="px(nodeMap.get(edge.to)?.y ?? 0)"
+                :x1="px(displayNode(edge.from)?.x ?? 0)"
+                :y1="px(displayNode(edge.from)?.y ?? 0)"
+                :x2="px(displayNode(edge.to)?.x ?? 0)"
+                :y2="px(displayNode(edge.to)?.y ?? 0)"
                 class="search-hit-edge"
                 pointer-events="none"
               />
@@ -2509,15 +2541,15 @@ defineExpose({
             <g v-for="node in nodes" :key="node.id">
               <circle
                 v-if="searchHitNodeIds.has(node.id)"
-                :cx="px(node.x)"
-                :cy="px(node.y)"
+                :cx="px(displayNode(node.id)?.x ?? node.x)"
+                :cy="px(displayNode(node.id)?.y ?? node.y)"
                 r="14"
                 class="search-ring"
                 pointer-events="none"
               />
               <circle
-                :cx="px(node.x)"
-                :cy="px(node.y)"
+                :cx="px(displayNode(node.id)?.x ?? node.x)"
+                :cy="px(displayNode(node.id)?.y ?? node.y)"
                 :r="visualNodeRadius(node)"
                 :fill="errorNodeIds.has(node.id) ? '#f56c6c' : TYPE_COLOR[node.type]"
                 :stroke="
@@ -2546,8 +2578,8 @@ defineExpose({
               />
               <text
                 v-if="showNodeLabels && showNodeLabel(node)"
-                :x="px(node.x) + 12"
-                :y="px(node.y) + 4"
+                :x="px(displayNode(node.id)?.x ?? node.x) + 12"
+                :y="px(displayNode(node.id)?.y ?? node.y) + 4"
                 font-size="11"
                 fill="#606266"
                 pointer-events="none"
@@ -2674,18 +2706,18 @@ defineExpose({
             <line
               v-for="edge in edges"
               :key="`mini-${edge.id}`"
-              :x1="(nodeMap.get(edge.from)?.x ?? 0) * SCALE * miniScale"
-              :y1="(nodeMap.get(edge.from)?.y ?? 0) * SCALE * miniScale"
-              :x2="(nodeMap.get(edge.to)?.x ?? 0) * SCALE * miniScale"
-              :y2="(nodeMap.get(edge.to)?.y ?? 0) * SCALE * miniScale"
+              :x1="(displayNode(edge.from)?.x ?? 0) * SCALE * miniScale"
+              :y1="(displayNode(edge.from)?.y ?? 0) * SCALE * miniScale"
+              :x2="(displayNode(edge.to)?.x ?? 0) * SCALE * miniScale"
+              :y2="(displayNode(edge.to)?.y ?? 0) * SCALE * miniScale"
               stroke="#b6cbe8"
               stroke-width="1"
             />
             <circle
               v-for="node in nodes"
               :key="`mini-${node.id}`"
-              :cx="node.x * SCALE * miniScale"
-              :cy="node.y * SCALE * miniScale"
+              :cx="(displayNode(node.id)?.x ?? node.x) * SCALE * miniScale"
+              :cy="(displayNode(node.id)?.y ?? node.y) * SCALE * miniScale"
               r="1.8"
               :fill="TYPE_COLOR[node.type]"
             />

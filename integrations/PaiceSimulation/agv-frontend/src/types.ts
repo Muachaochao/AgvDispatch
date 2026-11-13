@@ -6,4 +6,5 @@ export interface AgvView {
   heading: number
   status: string
   taskId: number
+  station?: string
 }

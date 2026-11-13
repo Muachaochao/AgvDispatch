@@ -415,6 +415,7 @@ export function dispatchViews(
       y: -car.y,
       heading: ((car.angle ?? 0) * 180) / Math.PI,
       taskId: 0,
+      station: car.station,
       status:
         !fresh || car.offline
           ? "OFFLINE"
