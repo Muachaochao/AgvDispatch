@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { defineAsyncComponent, computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { IconPlayerPlay, IconPlayerStop, IconRefresh, IconDownload, IconFlask, IconRobot } from '@tabler/icons-vue';
 import { simulationApi, simulationFresh, simulationGeometry, simulationLabel, loadCurrentSimulationMap, simulationTone, scenarioActive, simulationVehicleOriginsFromLive,
@@ -18,6 +18,16 @@ import { useDispatchStore } from '../stores/dispatch';
 import type { Snapshot, TaskDetail, TaskPage, TaskRow, TrafficRequest } from '../types';
 import { resourceHandovers } from '../traffic-display';
 
+const SimulationThreeView = defineAsyncComponent(() => import('../components/SimulationThreeView.vue'));
+const sceneDimension = ref<'2d' | '3d'>('2d');
+const threeEdgeColors = computed(() => Object.fromEntries(geometry.value.edges.map(edge => {
+  const classes = taskRouteEdgeClass(edge.id);
+  const color = appliedBlockedEdges.value.includes(edge.id ?? '') ? '#ff8a6c' :
+    classes['task-route-waiting'] ? '#ff8a6c' : classes['task-route-focus'] ? '#ffffff' :
+    classes['task-route-current'] ? '#5ff5da' : classes['task-route-return'] ? '#ffc76b' :
+    classes['task-route-future'] ? '#54cce3' : classes['task-route-completed'] ? '#4c938e' : '#3e8da8';
+  return [edge.key, color];
+})));
 const dispatchStore = useDispatchStore();
 const route = useRoute(), router = useRouter();
 const status = ref<SimulationStatus | null>(null), error = ref(''), actionError = ref(''), notice = ref('');
@@ -1684,8 +1694,9 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
 
       <div class="overview-grid business-overview-grid">
         <section class="simulation-panel map-panel" aria-labelledby="simulation-map">
-          <header><div><p class="section-kicker">车辆现在在哪</p><h3 id="simulation-map">全厂运行画面</h3></div><div class="toolbar map-header-actions"><span class="map-view-switch"><button :class="{ active: mapViewMode === 'all' }" :aria-pressed="mapViewMode === 'all'" @click="mapViewMode = 'all'">全厂</button><button :class="{ active: mapViewMode === 'vehicles' }" :aria-pressed="mapViewMode === 'vehicles'" :disabled="!geometry.cars.length" @click="mapViewMode = 'vehicles'">车辆附近</button></span><button v-if="cadBackground" class="map-layer-toggle" :aria-pressed="showCadReference" @click="showCadReference = !showCadReference">{{ showCadReference ? '关闭CAD参考' : '查看CAD参考' }}</button></div></header>
-          <svg v-if="geometry.nodes.length" class="simulation-map" :class="{ 'vehicle-focus': mapViewMode === 'vehicles' }" :viewBox="mapViewBox" role="img" aria-label="仿真地图及虚拟车辆位置">
+          <header><div><p class="section-kicker">车辆现在在哪</p><h3 id="simulation-map">全厂运行画面</h3></div><div class="toolbar map-header-actions"><span class="map-view-switch"><button :aria-pressed="sceneDimension === '2d'" :class="{ active: sceneDimension === '2d' }" @click="sceneDimension = '2d'">二维</button><button :aria-pressed="sceneDimension === '3d'" :class="{ active: sceneDimension === '3d' }" @click="sceneDimension = '3d'">三维</button></span><span class="map-view-switch"><button :class="{ active: mapViewMode === 'all' }" :aria-pressed="mapViewMode === 'all'" @click="mapViewMode = 'all'">全厂</button><button :class="{ active: mapViewMode === 'vehicles' }" :aria-pressed="mapViewMode === 'vehicles'" :disabled="!geometry.cars.length" @click="mapViewMode = 'vehicles'">车辆附近</button></span><button v-if="cadBackground" class="map-layer-toggle" :aria-pressed="showCadReference" @click="showCadReference = !showCadReference">{{ showCadReference ? '关闭CAD参考' : '查看CAD参考' }}</button></div></header>
+          <SimulationThreeView v-if="geometry.nodes.length && sceneDimension === '3d'" :geometry="geometry" :fresh="fresh" :selected="selectedVehicle" :focus-vehicles="mapViewMode === 'vehicles'" :edge-colors="threeEdgeColors" @select="selectVehicleTask" />
+          <svg v-else-if="geometry.nodes.length" class="simulation-map" :class="{ 'vehicle-focus': mapViewMode === 'vehicles' }" :viewBox="mapViewBox" role="img" aria-label="仿真地图及虚拟车辆位置">
             <defs><pattern id="simulation-grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="#26364b" stroke-width="1"/></pattern><marker id="simulation-route-arrow" markerUnits="userSpaceOnUse" markerWidth="3.2" markerHeight="3.2" refX="2.6" refY="1.6" orient="auto"><path d="M0,0 L3.2,1.6 L0,3.2 Z" fill="#5fa8b8"/></marker></defs>
             <rect width="800" height="430" fill="url(#simulation-grid)"/>
             <image v-if="showCadReference && cadBackground" class="cad-reference" :href="cadBackground.href" :x="cadBackground.x" :y="cadBackground.y" :width="cadBackground.width" :height="cadBackground.height" :opacity="cadBackground.opacity" preserveAspectRatio="none" />

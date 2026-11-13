@@ -1,5 +1,6 @@
 import type { Snapshot, WebMap } from './types.ts';
 import type { VendorPath } from './vendor-path.ts';
+import { arcInfo } from './map-editing.ts';
 import { isFresh } from './state.ts';
 
 export interface SimulationVehicle {
@@ -433,7 +434,23 @@ export function simulationGeometry(nodes: SimulationNode[], edges: SimulationEdg
       const controls = (edge.controlPoints ?? []).filter(point => Number.isFinite(point.x) && Number.isFinite(point.y)).map(position);
       const path = `M ${a.x} ${a.y} ` + (edge.geometryKind === 'CubicBezier' && controls.length === 2
         ? `C ${controls[0].x} ${controls[0].y} ${controls[1].x} ${controls[1].y} ${b.x} ${b.y}` : `L ${b.x} ${b.y}`);
-      return [{ ...edge, key: edge.id ?? String(index), a, b, path }];
+      const samples = Array.from({ length: 49 }, (_, i) => {
+        const t = i / 48, u = 1 - t;
+        if (edge.geometryKind === 'CubicBezier' && controls.length === 2)
+          return { x: u*u*u*a.x + 3*u*u*t*controls[0]!.x + 3*u*t*t*controls[1]!.x + t*t*t*b.x,
+            y: u*u*u*a.y + 3*u*u*t*controls[0]!.y + 3*u*t*t*controls[1]!.y + t*t*t*b.y };
+        return { x: a.x + (b.x-a.x)*t, y: a.y + (b.y-a.y)*t };
+      });
+      let displayPath = path;
+      if (edge.geometryKind === 'CircularArc' && edge.controlPoints?.length === 1) {
+        const arc = arcInfo(from, edge.controlPoints[0]!, to);
+        if (arc) {
+          samples.forEach((_, i) => { const angle = arc.start + arc.sweep*i/48;
+            samples[i] = position({ x: arc.x + arc.r*Math.cos(angle), y: arc.y + arc.r*Math.sin(angle) }); });
+          displayPath = samples.map((point, i) => `${i ? 'L' : 'M'} ${point.x} ${point.y}`).join(' ');
+        }
+      }
+      return [{ ...edge, key: edge.id ?? String(index), a, b, path: displayPath, samples }];
     }),
     cars: Object.entries(cars).filter(([, car]) => Number.isFinite(car.x) && Number.isFinite(car.y)).map(([id, car]) => ({ ...car, id, ...position(car) })) };
 }

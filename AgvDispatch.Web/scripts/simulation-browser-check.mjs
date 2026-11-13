@@ -185,20 +185,30 @@ try {
   check('Map can focus on the current vehicle area without removing the full-factory view',
     await evaluate(`document.querySelector('.simulation-map').getAttribute('viewBox')!=='0 0 800 430'`));
   await click('全厂');
+  await click('三维');
+  await wait(() => evaluate(`!!document.querySelector('.three-canvas canvas')`), 'Three dimensional canvas');
+  check('Three dimensional view lists both observed vehicles', await evaluate(`document.querySelectorAll('.three-vehicles button').length===2&&!document.querySelector('.three-error')`));
+  await evaluate(`document.querySelector('.three-vehicles button').click()`);
+  await wait(() => evaluate(`document.querySelector('.three-vehicles button[aria-pressed=true] small')?.textContent.includes('X 1.000 m')`), 'Shared world coordinates');
+  check('Selected three dimensional vehicle preserves observed XY coordinates', await evaluate(`document.querySelector('.three-vehicles button[aria-pressed=true] small').textContent.includes('Y 2.000 m')`));
+  const threeShot = await rpc('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+  writeFileSync(resolve(profile, 'simulation-three.png'), Buffer.from(threeShot.data, 'base64'));
+  await click('二维');
+  await wait(() => evaluate(`document.querySelectorAll('.map-car').length===2&&!document.querySelector('.three-canvas')`), 'Return to two dimensional map');
   const overviewShot = await rpc('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
   writeFileSync(resolve(profile, 'simulation-overview.png'), Buffer.from(overviewShot.data, 'base64'));
   await click('查看CAD参考');
   check('CAD reference can be enabled only as a separate inspection layer', await evaluate(`document.querySelectorAll('.cad-reference').length===1&&document.querySelector('.map-caption').textContent.includes('只用于核对位置')`));
   await click('关闭CAD参考');
-  for (const [index, stage, name] of [['2', '.tasks-stage', 'tasks'], ['3', '.environment-stage', 'environment'], ['4', '.scenario-stage', 'scenario'], ['5', '.fault-stage', 'faults'], ['6', '.results-stage', 'results']]) {
-    await evaluate(`document.querySelector('.stage-tabs button:nth-child(${index})').click()`);
+  for (const [index, stage, name] of [['2', '.tasks-stage', 'tasks'], ['3', '.environment-stage', 'environment'], ['4', '.scenario-stage', 'scenario'], ['5', '.fault-stage', 'faults'], ['7', '.results-stage', 'results']]) {
+    await evaluate(`[...document.querySelectorAll('.stage-tabs button')].find(button=>button.textContent.includes(${JSON.stringify({tasks:'任务运行',environment:'环境与地图',scenario:'场景编排',faults:'故障处理',results:'监测与报告'}[name])})).click()`);
     await wait(() => evaluate(`document.querySelector('${stage}')?.offsetParent!==null`), 'Stage visible: ' + stage);
     await wait(() => evaluate(`location.hash==='#/simulation-center/${name}'`), 'Independent route: ' + name);
     const stageShot = await rpc('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
     writeFileSync(resolve(profile, `simulation-${name}.png`), Buffer.from(stageShot.data, 'base64'));
   }
-  check('Six modules have independent URLs and only the selected workflow is mounted', true);
-  await evaluate(`document.querySelector('.stage-tabs button:nth-child(2)').click()`);
+  check('Workflow modules have independent URLs and only the selected workflow is mounted', true);
+  await evaluate(`[...document.querySelectorAll('.stage-tabs button')].find(button=>button.textContent.includes('任务运行')).click()`);
   await wait(() => evaluate(`document.querySelector('.tasks-stage')?.offsetParent!==null&&document.querySelectorAll('.task-table tbody tr').length===2&&document.querySelectorAll('.task-step-list li').length===9`), 'Task page and nine-step detail');
   check('Task page reads the isolated task API and highlights the selected task route',
     await evaluate(`document.querySelector('.task-command-panel').textContent.includes('隔离后台在线')&&document.querySelector('.task-route-panel .roads path.task-route')&&document.querySelector('.task-route-panel .map-node.task-node')&&document.querySelector('.task-timeline').textContent.includes('PLC')`));
@@ -211,12 +221,16 @@ try {
   await evaluate(`document.querySelector('.task-route-panel').scrollIntoView({block:'start'})`);
   const routeShot = await rpc('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
   writeFileSync(resolve(profile, 'simulation-task-route.png'), Buffer.from(routeShot.data, 'base64'));
-  await evaluate(`document.querySelector('.stage-tabs button:nth-child(3)').click()`);
+  await evaluate(`[...document.querySelectorAll('.stage-tabs button')].find(button=>button.textContent.includes('环境与地图')).click()`);
   await wait(() => evaluate(`document.querySelector('.environment-stage')?.offsetParent!==null&&!!document.querySelector('.version-panel')`), 'Version panel on environment page');
   check('Build differences stay on the environment page', await evaluate(`document.querySelector('.version-panel').textContent.includes('field-original')&&document.querySelector('.version-panel').textContent.includes('自动建单')`));
-  await evaluate(`document.querySelector('.stage-tabs button:nth-child(6)').click()`);
+  await evaluate(`[...document.querySelectorAll('.stage-tabs button')].find(button=>button.textContent.includes('监测与报告')).click()`);
   await wait(() => evaluate(`document.querySelector('.results-stage')?.offsetParent!==null`), 'Return to results page');
+  await evaluate(`[...document.querySelectorAll('.stage-tabs button')].find(button=>button.textContent.includes('人工处置')).click()`);
+  await wait(() => evaluate(`!!document.querySelector('.recovery-guidance')`), 'Manual recovery guidance');
   check('Recovery guidance is readable without raw configuration keys', await evaluate(`document.querySelector('.recovery-guidance').textContent.includes('第8步')&&document.querySelector('.recovery-guidance').textContent.includes('解除就绪许可阻止')`));
+  await evaluate(`[...document.querySelectorAll('.stage-tabs button')].find(button=>button.textContent.includes('监测与报告')).click()`);
+  await wait(() => evaluate(`!!document.querySelector('.report-panel')`), 'Results report');
   check('Report highlights task records, first failure, waiting chain and Chinese metrics', await evaluate(`document.querySelector('.first-failure').textContent.includes('倒料机就绪等待超时')&&document.querySelector('.task-records').textContent.includes('TASK-ORIGINAL')&&document.querySelector('.task-records').textContent.includes('等待倒料就绪')&&document.querySelector('.report-panel .waiting-chain').textContent.includes('等待倒料资源释放')&&document.querySelector('.report-metrics').textContent.includes('运行时长（秒）')&&!document.querySelector('.report-metrics').textContent.includes('durationSeconds')`));
   await evaluate(`document.querySelector('.task-record-row').click()`);
   await wait(() => evaluate(`document.querySelectorAll('.report-task-nine-steps li').length===9`), 'Expanded report task evidence');
@@ -238,14 +252,14 @@ try {
   await wait(() => evaluate(`document.querySelector('.report-identity').textContent.includes('history-baseline')`), 'Read selected historical report');
   check('History selection reads the requested report rather than replacing it with current status polling', await evaluate(`document.querySelector('.report-panel').textContent.includes('history-baseline')`));
   await evaluate(`(()=>{const e=document.querySelector('.history-panel select');e.value='';e.dispatchEvent(new Event('change',{bubbles:true}))})()`);
-  await evaluate(`document.querySelector('.stage-tabs button:nth-child(4)').click()`);
+  await evaluate(`[...document.querySelectorAll('.stage-tabs button')].find(button=>button.textContent.includes('场景编排')).click()`);
   await wait(() => evaluate(`document.querySelector('.scenario-stage')?.offsetParent!==null`), 'Scenario page');
   await evaluate(`(()=>{const e=document.querySelector('[aria-label="测试场景"]');e.value='dispatch-backlog';e.dispatchEvent(new Event('change',{bubbles:true}))})()`);
   await click('运行场景');
   check('Formal-dispatch backlog emits station calls continuously without any vehicle selection', mutations.at(-1).body.name === 'dispatch-backlog' && mutations.at(-1).body.calls.length === 6 && mutations.at(-1).body.calls.every(call => !Object.hasOwn(call, 'vehicleId')));
   await click('中止后续场景');
   await evaluate(`(()=>{const e=document.querySelector('[aria-label="测试场景"]');e.value='normal-cycle';e.dispatchEvent(new Event('change',{bubbles:true}))})()`);
-  await evaluate(`document.querySelector('.stage-tabs button:nth-child(3)').click()`);
+  await evaluate(`[...document.querySelectorAll('.stage-tabs button')].find(button=>button.textContent.includes('环境与地图')).click()`);
   await wait(() => evaluate(`document.querySelector('.environment-stage')?.offsetParent!==null`), 'Environment page for protocol controls');
   await click('启动协议服务器');
   check('Declarative protocol server starts only on loopback and reports its assigned endpoint',
@@ -260,7 +274,7 @@ try {
   await click('停止设备模型');
   const screenshot = await rpc('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
   const screenshotPath = resolve(profile, 'simulation-center.png'); writeFileSync(screenshotPath, Buffer.from(screenshot.data, 'base64')); console.log('Preview ' + screenshotPath);
-  await evaluate(`document.querySelector('.stage-tabs button:nth-child(5)').click()`);
+  await evaluate(`[...document.querySelectorAll('.stage-tabs button')].find(button=>button.textContent.includes('故障处理')).click()`);
   await wait(() => evaluate(`document.querySelector('.fault-stage')?.offsetParent!==null`), 'Fault page');
   await evaluate(`(()=>{const e=document.querySelector('[aria-label="选择虚拟车辆"]');e.value='AGV-02';e.dispatchEvent(new Event('change',{bubbles:true}))})()`);
   await click('断开通信');
@@ -278,28 +292,28 @@ try {
   check('Stale evidence disables device controls and keeps scenario controls on their own page',
     await disabled('暂停运动') && await disabled('注入设备故障') && !(await evaluate(`!!document.querySelector('.scenario-panel')`)));
   fresh = true; await click('刷新状态');
-  await evaluate(`document.querySelector('.stage-tabs button:nth-child(4)').click()`);
+  await evaluate(`[...document.querySelectorAll('.stage-tabs button')].find(button=>button.textContent.includes('场景编排')).click()`);
   await wait(() => evaluate(`document.querySelector('.scenario-stage')?.offsetParent!==null`), 'Scenario page after fault checks');
   await evaluate(`(()=>{const e=document.querySelector('[aria-label="测试场景"]');e.value='simultaneous-calls';e.dispatchEvent(new Event('change',{bubbles:true}));const n=document.querySelector('.scenario-panel input');n.value='2';n.dispatchEvent(new Event('input',{bubbles:true}))})()`);
   await click('运行场景');
   check('Scenario preserves selected kind and round count', mutations.at(-1).body.name === 'simultaneous-calls' && mutations.at(-1).body.rounds === 2);
   check('Running scenario prevents a second start', await disabled('运行场景'));
-  await evaluate(`document.querySelector('.stage-tabs button:nth-child(6)').click()`);
+  await evaluate(`[...document.querySelectorAll('.stage-tabs button')].find(button=>button.textContent.includes('监测与报告')).click()`);
   await wait(() => evaluate(`document.querySelector('.results-stage')?.offsetParent!==null`), 'Results page while scenario runs');
   check('A prior report is identified separately from the current running scenario', await evaluate(`document.querySelector('.report-identity').textContent.includes('上一场景报告')&&document.querySelector('.report-identity').textContent.includes('previous-scenario')&&document.querySelector('.report-panel').textContent.includes('当前场景仍在运行')`));
-  await evaluate(`document.querySelector('.stage-tabs button:nth-child(4)').click()`);
+  await evaluate(`[...document.querySelectorAll('.stage-tabs button')].find(button=>button.textContent.includes('场景编排')).click()`);
   await wait(() => evaluate(`document.querySelector('.scenario-stage')?.offsetParent!==null`), 'Return to scenario page');
   await click('中止后续场景');
   check('Abort does not mutate original tasks or clear evidence', mutations.at(-1).path.endsWith('/abort'));
-  await evaluate(`document.querySelector('.stage-tabs button:nth-child(3)').click()`);
+  await evaluate(`[...document.querySelectorAll('.stage-tabs button')].find(button=>button.textContent.includes('环境与地图')).click()`);
   await wait(() => evaluate(`document.querySelector('.environment-stage')?.offsetParent!==null`), 'Environment page before stop');
   check('A running environment cannot be replaced with a fresh instance', await disabled('沿用当前地图新建'));
   await click('停止环境');
-  await evaluate(`document.querySelector('.stage-tabs button:nth-child(1)').click()`);
+  await evaluate(`[...document.querySelectorAll('.stage-tabs button')].find(button=>button.textContent.includes('运行总览')).click()`);
   await wait(() => evaluate(`document.querySelector('.overview-hero')?.textContent.includes('这个实例已经跑过')`), 'Historical instance guidance');
   check('A stopped instance with device history requires a fresh instance instead of silently failing to restart',
     await evaluate(`document.querySelector('.overview-hero').textContent.includes('需要新建一个干净环境')&&document.querySelector('.overview-hero button').textContent.includes('去新建干净实例')`));
-  await evaluate(`document.querySelector('.stage-tabs button:nth-child(3)').click()`);
+  await evaluate(`[...document.querySelectorAll('.stage-tabs button')].find(button=>button.textContent.includes('环境与地图')).click()`);
   await wait(() => evaluate(`document.querySelector('.environment-stage')?.offsetParent!==null`), 'Environment page for custom map');
   await evaluate(`(()=>{const map={name:'custom-mock',nodes:[
     {id:'PICK-A',agvSiteId:'LA',x:1,y:1,enabled:true},{id:'PICK-B',agvSiteId:'LB',x:2,y:1,enabled:true},
@@ -334,10 +348,10 @@ try {
   await click('沿用当前地图新建');
   check('A stopped environment can prepare a fresh sibling without clearing old records', mutations.at(-1).path.endsWith('/new-instance'));
   await click('启动环境');
-  await evaluate(`document.querySelector('.stage-tabs button:nth-child(6)').click()`);
+  await evaluate(`[...document.querySelectorAll('.stage-tabs button')].find(button=>button.textContent.includes('监测与报告')).click()`);
   await wait(() => evaluate(`document.querySelector('.results-stage')?.offsetParent!==null`), 'Results after fresh environment starts');
   check('Unknown report evidence is never styled as passed', await evaluate(`document.querySelector('.check-records .state-pill').textContent==='未核定'&&!document.querySelector('.check-records .state-pill').classList.contains('pass')`));
-  await evaluate(`document.querySelector('.stage-tabs button:nth-child(3)').click()`);
+  await evaluate(`[...document.querySelectorAll('.stage-tabs button')].find(button=>button.textContent.includes('环境与地图')).click()`);
   await wait(() => evaluate(`document.querySelector('.environment-stage')?.offsetParent!==null`), 'Environment for saved scheme');
   await evaluate(`(()=>{const e=document.querySelector('.scheme-panel input');e.value='当前地图双车方案';e.dispatchEvent(new Event('input',{bubbles:true}))})()`);
   await click('保存当前方案');
@@ -351,7 +365,7 @@ try {
   check('Slow polling has no overlapping status requests', maximum === 1);
   requestDelay = 0; offline = true;
   await wait(() => evaluate(`document.querySelector('.simulation-error')?.textContent.includes('controller unavailable')`), 'Controller outage');
-  await evaluate(`document.querySelector('.stage-tabs button:nth-child(5)').click()`);
+  await evaluate(`[...document.querySelectorAll('.stage-tabs button')].find(button=>button.textContent.includes('故障处理')).click()`);
   await wait(() => evaluate(`document.querySelector('.fault-stage')?.offsetParent!==null`), 'Fault page after controller outage');
   check('Controller outage blocks controls despite retained prior device data', await disabled('启动环境') && await disabled('恢复通信'));
   assert.deepEqual(errors, []); console.log('PASS simulation browser regression; mock HTTP only');

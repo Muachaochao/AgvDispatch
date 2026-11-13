@@ -265,3 +265,18 @@ test('demo snapshots cannot supply a current map and mismatched parameters are n
   assert.equal(result.parameters, null);
   assert.match(result.parameterWarning, /手动选择/);
 });
+
+
+test('shared 2D and 3D samples preserve translated endpoints, Bezier and circular arcs', () => {
+  const nodes = [{id:'A',x:10001,y:20000},{id:'B',x:9999,y:20000}];
+  const g = simulationGeometry(nodes, [{id:'arc',from:'A',to:'B',geometryKind:'CircularArc',controlPoints:[{x:10000,y:20001}]}], {one:{x:10001,y:20000},two:{x:9999,y:20000}});
+  assert.deepEqual(g.edges[0]!.samples[0], g.position(nodes[0]!));
+  const midpoint = g.edges[0]!.samples[24]!;
+  assert.ok(Math.abs(midpoint.x-g.position({x:10000,y:20001}).x)<1e-6);
+  assert.ok(Math.abs(midpoint.y-g.position({x:10000,y:20001}).y)<1e-6);
+  assert.ok(g.edges[0]!.path.includes('L'));
+  assert.equal(g.cars[0]!.x,g.nodes[0]!.x);
+  const b = simulationGeometry(nodes,[{from:'A',to:'B',geometryKind:'CubicBezier',controlPoints:[{x:10001,y:20002},{x:9999,y:20002}]}],{});
+  assert.ok(b.edges[0]!.path.includes('C'));
+  assert.deepEqual(b.edges[0]!.samples[24], b.position({x:10000,y:20001.5}));
+});
