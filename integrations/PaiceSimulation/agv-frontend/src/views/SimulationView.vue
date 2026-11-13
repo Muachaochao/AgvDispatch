@@ -105,8 +105,12 @@ async function loadOptions() {
     taskSets.value = await listTaskSets()
     algorithms.value = await listDict('algorithm')
     if (maps.value.length > 0) {
-      selectedRoadnetId.value = maps.value[0].id
-      await loadRoadNet(maps.value[0].id)
+      const preferred =
+        maps.value.find((map) => map.name.includes('全厂五车')) ??
+        maps.value.find((map) => map.name.includes('305') && map.name.includes('五车')) ??
+        maps.value[0]
+      selectedRoadnetId.value = preferred.id
+      await loadRoadNet(preferred.id)
       selectDefaultTaskSet()
     }
   } catch (error: any) {

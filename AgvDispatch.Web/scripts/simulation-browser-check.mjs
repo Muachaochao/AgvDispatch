@@ -12,7 +12,7 @@ const profile = resolve(project, '.codex-tmp', `simulation-browser-${Date.now()}
 mkdirSync(profile, { recursive: true });
 const binary = ['C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', 'C:/Program Files/Google/Chrome/Application/chrome.exe'].find(existsSync);
 assert.ok(binary, 'Chromium browser required');
-let enabled = false, running = true, deviceCars = true, rootName = 'mock-private-lab', offline = false, fresh = true, active = false, protocolRunning = false, equipmentRunning = false, requestDelay = 0, inflight = 0, maximum = 0, taskDetailUnavailable = false;
+let enabled = false, running = true, deviceCars = true, rootName = 'mock-private-lab', offline = false, fresh = true, active = false, protocolRunning = false, equipmentRunning = false, requestDelay = 0, statusInflight = 0, statusMaximum = 0, liveInflight = 0, liveMaximum = 0, taskDetailUnavailable = false;
 let child, ws, seq = 0;
 const pending = new Map(), mutations = [], errors = [];
 const sleep = ms => new Promise(ok => setTimeout(ok, ms));
@@ -94,8 +94,23 @@ const server = createServer(async (req, res) => {
     const path = new URL(req.url, 'http://127.0.0.1').pathname;
     const json = (code, data) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(data)); };
     if (path === '/api/simulation') {
-      inflight++; maximum = Math.max(maximum, inflight);
-      try { await sleep(requestDelay); return offline ? json(503, { error: 'controller unavailable fixture' }) : json(200, status()); } finally { inflight--; }
+      if (req.method !== 'GET') return offline ? json(503, { error: 'controller unavailable fixture' }) : json(200, status());
+      statusInflight++; statusMaximum = Math.max(statusMaximum, statusInflight);
+      if (statusInflight > 1) console.error('OVERLAP', req.method, path, statusInflight);
+      try { await sleep(requestDelay); return offline ? json(503, { error: 'controller unavailable fixture' }) : json(200, status()); } finally { statusInflight--; }
+    }
+    if (path === '/api/simulation/live') {
+      liveInflight++; liveMaximum = Math.max(liveMaximum, liveInflight);
+      if (liveInflight > 1) console.error('OVERLAP', req.method, path, liveInflight);
+      try {
+        await sleep(requestDelay);
+        const current = status();
+        return offline ? json(503, { error: 'controller unavailable fixture' }) : json(200, {
+          enabled: current.enabled, rootName: current.rootName, running: current.running,
+          phase: current.phase, fresh: current.fresh, device: current.device,
+          scenario: current.scenario, error: current.error ?? null
+        });
+      } finally { liveInflight--; }
     }
     if (path === '/api/simulation/report') return json(200, new URL(req.url, 'http://127.0.0.1').searchParams.get('id') === priorReport.id ? priorReport : status().report);
     if (path === '/api/simulation/replay') return json(200, { id: 'previous-scenario', map: status().map, timeline: [
@@ -361,8 +376,10 @@ try {
   check('Saved scheme creates a clean instance only after the current environment stops', mutations.at(-1).path.endsWith('/scheme-select') && mutations.at(-1).body.id === 'scheme-1');
   await click('一键开测');
   check('One-click testing submits only the selected saved scheme identity', mutations.at(-1).path.endsWith('/scheme-start') && mutations.at(-1).body.id === 'scheme-1');
-  requestDelay = 2200; maximum = 0; await sleep(6500);
-  check('Slow polling has no overlapping status requests', maximum === 1);
+  await sleep(2500);
+  await wait(() => statusInflight === 0 && liveInflight === 0, 'Status polling idle');
+  requestDelay = 2200; statusMaximum = 0; liveMaximum = 0; await sleep(6500);
+  check('Slow polling has no overlapping status requests', statusMaximum <= 1 && liveMaximum === 1);
   requestDelay = 0; offline = true;
   await wait(() => evaluate(`document.querySelector('.simulation-error')?.textContent.includes('controller unavailable')`), 'Controller outage');
   await evaluate(`[...document.querySelectorAll('.stage-tabs button')].find(button=>button.textContent.includes('故障处理')).click()`);

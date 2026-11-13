@@ -390,19 +390,25 @@ function fitView() {
   const ys = props.roadnet.nodes.map((n) => n.y);
   const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
   const cy = (Math.min(...ys) + Math.max(...ys)) / 2;
-  const span = Math.max(
-    Math.max(...xs) - Math.min(...xs),
-    Math.max(...ys) - Math.min(...ys),
-    10,
-  );
-  camera.far = Math.max(1000, span * 20);
+  const width = Math.max(Math.max(...xs) - Math.min(...xs), 10);
+  const depth = Math.max(Math.max(...ys) - Math.min(...ys), 10);
+  const span = Math.max(width, depth);
+  const aspect = Math.max(camera.aspect || 1, 0.5);
+  const viewHeight = Math.max(depth, width / aspect);
+  const distance = (viewHeight / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)))) * 1.2;
+  const viewDirection = new THREE.Vector3(0.04, 1.05, 0.72).normalize();
+
+  camera.near = Math.max(0.1, span / 10000);
+  camera.far = Math.max(1000, distance + span * 4);
   camera.updateProjectionMatrix();
   if (scene.fog instanceof THREE.Fog) {
-    scene.fog.near = span * 2;
-    scene.fog.far = span * 8;
+    scene.fog.near = distance * 1.5;
+    scene.fog.far = distance * 4.5;
   }
   controls.target.set(cx, 0, cy);
-  camera.position.set(cx + span * 0.6, span * 1.1, cy + span * 1.1);
+  camera.position.copy(controls.target).addScaledVector(viewDirection, distance);
+  controls.minDistance = span * 0.25;
+  controls.maxDistance = span * 4;
   controls.update();
 }
 

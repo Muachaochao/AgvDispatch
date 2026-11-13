@@ -31,6 +31,7 @@ const threeEdgeColors = computed(() => Object.fromEntries(geometry.value.edges.m
 const dispatchStore = useDispatchStore();
 const route = useRoute(), router = useRouter();
 const status = ref<SimulationStatus | null>(null), error = ref(''), actionError = ref(''), notice = ref('');
+let metadataLoaded = false, lastMetadataRefresh = 0;
 const MAX_SIMULATION_STATIONS = 305;
 const reading = ref(false), busy = ref(false), connected = ref(false), now = ref(Date.now());
 const selectedVehicle = ref('');
@@ -1395,8 +1396,16 @@ async function refresh(force = false) {
   reading.value = true; const request = new AbortController(); controller = request;
   const timeout = setTimeout(() => request.abort(), 45000);
   try {
-    const next = await simulationApi<SimulationStatus>('', undefined, request.signal);
+    const readMetadata = force || !metadataLoaded || !status.value ||
+      Date.now() - lastMetadataRefresh > 60_000;
+    const received = await simulationApi<SimulationStatus>(
+      readMetadata ? '' : '/live', undefined, request.signal);
     if (!disposed) {
+      const next = readMetadata ? received : { ...status.value!, ...received };
+      if (readMetadata) {
+        metadataLoaded = true;
+        lastMetadataRefresh = Date.now();
+      }
       accept(next);
       error.value = '';
       if (next.running) void refreshSimulationTasks();

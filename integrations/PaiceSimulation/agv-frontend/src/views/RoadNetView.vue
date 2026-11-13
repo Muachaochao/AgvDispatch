@@ -454,7 +454,11 @@ onMounted(async () => {
   await loadList()
   await loadTaskSets()
   if (roadnets.value.length > 0) {
-    await open(roadnets.value[0].id)
+    const preferred =
+      roadnets.value.find((map) => map.name.includes('全厂五车')) ??
+      roadnets.value.find((map) => map.name.includes('305') && map.name.includes('五车')) ??
+      roadnets.value[0]
+    await open(preferred.id)
   } else {
     await createNew()
   }
