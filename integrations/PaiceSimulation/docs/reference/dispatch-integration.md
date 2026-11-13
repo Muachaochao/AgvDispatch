@@ -35,3 +35,7 @@ node --experimental-strip-types --test agv-frontend/tests/dispatch-adapter.test.
 ## 集成版运行依赖
 
 保留原模板页面和功能契约，前端构建工具使用 Vite 7.3.8、Vue 插件 6、vue-tsc 3.3.14，图表使用 ECharts 6.1.0。版本由 package-lock.json 锁定。安装完成后执行类型检查、构建、原模板浏览器检查和新增接口回归，核对兼容性。
+
+## 来源记录持久化
+
+导入路网的 integration 字段随 roadnet_json 存入独立 H2，包含来源身份、原始定义、坐标偏移、道路映射、排除清单和导入图指纹。字段可为空，旧路网和旧构造方法继续支持。地图编辑页保存时保留来源记录，任务导入以当前图指纹核对编辑结果。浏览器缓存仅兼容早期副本，服务端来源记录优先。

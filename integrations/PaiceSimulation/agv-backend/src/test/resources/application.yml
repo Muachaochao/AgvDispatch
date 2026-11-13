@@ -1,0 +1,23 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:agvtest;MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  # 测试用 validate：迁移脚本和实体不一致时直接失败，而不是悄悄多一列
+  flyway:
+    enabled: true
+    baseline-on-migrate: false
+    locations: classpath:db/migration/common,classpath:db/migration/h2
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  h2:
+    console:
+      enabled: false
+
+agv:
+  jwt:
+    secret: test-secret-key-for-unit-tests-0123456789
+    expire-hours: 1

@@ -1,0 +1,31 @@
+spring:
+  application:
+    name: agv-backend
+  profiles:
+    active: dev
+  # 库结构以迁移脚本为准：已有库自动 baseline，空库从 V1 开始执行
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    baseline-version: 1
+    locations: classpath:db/migration/common,classpath:db/migration/h2
+  jpa:
+    hibernate:
+      ddl-auto: none
+    open-in-view: false
+
+server:
+  port: 8080
+
+logging:
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%X{traceId:-}] %logger{36} - %msg%n"
+
+agv:
+  jwt:
+    secret: ${AGV_JWT_SECRET:agv-sim-secret-key-change-me-in-production-2026-11}
+    expire-hours: 12
+  id:
+    worker-id: ${AGV_WORKER_ID:0}
+  sim:
+    max-concurrent: ${AGV_SIM_MAX_CONCURRENT:5}

@@ -1,0 +1,751 @@
+{
+  "repository": "https://github.com/yearzen1/AGV",
+  "commit": "1d58236fe63c69c5f11b9eb3e1ff2099285caa74",
+  "importDate": "2026-11-13",
+  "files": [
+    {
+      "path": ".agents/skills/conventional-commit/SKILL.md",
+      "sha256": "d144f5650566945700afee035adeda035ad35f5b9f62dbd80d90f67d74853d72"
+    },
+    {
+      "path": ".agents/skills/diataxis/SKILL.md",
+      "sha256": "31fb81c9640f3bac428054ee551b45985ad08e9147d5add3dfc5a9aa2925f7bb"
+    },
+    {
+      "path": ".agents/skills/diataxis/references/audit-checklist.md",
+      "sha256": "1496f21f15750210fb05450248826afb2d43f4f5bae9eaa1241a85eec6d79487"
+    },
+    {
+      "path": ".agents/skills/diataxis/references/explanation-template.md",
+      "sha256": "75e211722eeb38f7fb42cfd013ead79d62d7d5fcfca5f62ec99f745e59fd4c39"
+    },
+    {
+      "path": ".agents/skills/diataxis/references/how-to-template.md",
+      "sha256": "f0ccfc446cc17c5cc0e36f9564b886cb9354c3520349cdd2050914659496d803"
+    },
+    {
+      "path": ".agents/skills/diataxis/references/reference-template.md",
+      "sha256": "98f0d9180d75886aa3f0c713b0037806cbc3818ca8f9519c81c146a7f02a2c6a"
+    },
+    {
+      "path": ".agents/skills/diataxis/references/tutorial-template.md",
+      "sha256": "137c6a82cce30f29e62a9758e78e140cd7aa1c59c988d85be265d07dea0e8a2b"
+    },
+    {
+      "path": ".agents/skills/document-driven-develop/SKILL.md",
+      "sha256": "7494b89dc522dcf8541fc983dc20f43a663a6ab36d1f4a936b40b68bdf4bf73e"
+    },
+    {
+      "path": ".agents/skills/tdd/SKILL.md",
+      "sha256": "332f389455fe5cf5c2703115a78d8bd4bd8b62a82448de0b9a70e393970b8f1b"
+    },
+    {
+      "path": ".gitattributes",
+      "sha256": "5a1110352abb8a3eedb93b9bda5ff80e6709b71c90bd7381edac13b03907ca8b"
+    },
+    {
+      "path": ".gitignore",
+      "sha256": "f07ef75daa84d37e00343458d55a51a97ead8e719220c54cf3a5fc369b732a54"
+    },
+    {
+      "path": "AGENTS.md",
+      "sha256": "7de9feeb2a085eca566ba760328a5e401b9e6a3583d1ff1e9714481a6662a9c8"
+    },
+    {
+      "path": "README.md",
+      "sha256": "68c741b9b4790c01d1512c584d9df20bd03c51da58089c5957b44cc5b8093bec"
+    },
+    {
+      "path": "agv-algorithm/pom.xml",
+      "sha256": "892eb9e79b68634c2f30886b004d96057a30a2f87b65877d305dd2540fe2c18f"
+    },
+    {
+      "path": "agv-algorithm/src/main/java/com/agv/algorithm/model/Arc.java",
+      "sha256": "0b4b4ec47dc5d576571eda33f63d8c208449d77bfd8e5263d9192f5dc7b7ab88"
+    },
+    {
+      "path": "agv-algorithm/src/main/java/com/agv/algorithm/model/EdgeDirection.java",
+      "sha256": "97f29257599e272a7c01fd704f76bc019bb70959d02e33b528a8612ca18d020d"
+    },
+    {
+      "path": "agv-algorithm/src/main/java/com/agv/algorithm/model/LaneMode.java",
+      "sha256": "9a8e3dfd78905d74cfb80bda4356fa7fd031a9e8d7d244b2d9b340c460680851"
+    },
+    {
+      "path": "agv-algorithm/src/main/java/com/agv/algorithm/model/NetEdge.java",
+      "sha256": "e956bb268e264a92c8bfe226fd3e4bbad3d2edbd98cd4ad9588e0629dce83cb8"
+    },
+    {
+      "path": "agv-algorithm/src/main/java/com/agv/algorithm/model/NetNode.java",
+      "sha256": "83e7e14049a190e75931d94f5b5ccc768befb7ef34dd615afd8852bae0b4f0da"
+    },
+    {
+      "path": "agv-algorithm/src/main/java/com/agv/algorithm/model/NodeType.java",
+      "sha256": "f6775d125667c712930b0eaddada2d7cb56c39997f0c2861c12688caea726779"
+    },
+    {
+      "path": "agv-algorithm/src/main/java/com/agv/algorithm/model/RoadNet.java",
+      "sha256": "ee0117885ec8b334b9ffb0c1e36ef8196cc514de69874943776027e61a617c4e"
+    },
+    {
+      "path": "agv-algorithm/src/main/java/com/agv/algorithm/model/RoadNetValidator.java",
+      "sha256": "10932cbfb41973ad8b3b28d4f1b26e5d9edf786a790323058491ba10a59078a7"
+    },
+    {
+      "path": "agv-algorithm/src/main/java/com/agv/algorithm/model/ValidationError.java",
+      "sha256": "015350f13d2256e93a5fde8beef8971cf1bb5b7c02d655d48610bde9aad14bbd"
+    },
+    {
+      "path": "agv-algorithm/src/main/java/com/agv/algorithm/model/ValidationResult.java",
+      "sha256": "a05191157ad053730df065fbe0ecc4026080fca7b586c49955ebf2466e1ae778"
+    },
+    {
+      "path": "agv-algorithm/src/main/java/com/agv/algorithm/path/AStarPlanner.java",
+      "sha256": "9f7745813844303e54d30c6b534524ea226a193663ac63e043dcbb151f2d9fb4"
+    },
+    {
+      "path": "agv-algorithm/src/main/java/com/agv/algorithm/path/PathResult.java",
+      "sha256": "bd92f9ac5b965b7d45dbe1b9cb7508c991cce992bc352b43b201a1b73fb8518a"
+    },
+    {
+      "path": "agv-algorithm/src/main/java/com/agv/algorithm/path/SearchState.java",
+      "sha256": "4172ab09f939a6fbe3b5a82c1cc55b8023d6da61ed3dfb51df8ac129c47ab45d"
+    },
+    {
+      "path": "agv-algorithm/src/main/java/com/agv/algorithm/sim/AgvSnapshot.java",
+      "sha256": "fb0a585ad1eb39ac8415522719d36bffabe87960e7f089230c455ea24504c4c3"
+    },
+    {
+      "path": "agv-algorithm/src/main/java/com/agv/algorithm/sim/AgvStatus.java",
+      "sha256": "f63786ee76225f34862468d88590877c0983a68befbd50309fc21c31297d2551"
+    },
+    {
+      "path": "agv-algorithm/src/main/java/com/agv/algorithm/sim/GreedyEtaAssigner.java",
+      "sha256": "7e6ac55fb619010b40bfb6a2327f4d5336919b9757f260cdadd3798ea77a2c22"
+    },
+    {
+      "path": "agv-algorithm/src/main/java/com/agv/algorithm/sim/Interval.java",
+      "sha256": "7eece3286a2a90e3d0e5ec7813e64a94945835404347d78bb92f65f30c66ccea"
+    },
+    {
+      "path": "agv-algorithm/src/main/java/com/agv/algorithm/sim/NearestAssigner.java",
+      "sha256": "3d98bc5688cc27f10641f328e394231fd76bc8bcbf9a82922abc7d28d73ae0b4"
+    },
+    {
+      "path": "agv-algorithm/src/main/java/com/agv/algorithm/sim/ReservationTable.java",
+      "sha256": "611a065a90cd7a04b4f0a16b1567c64de044bdb817799de0079be7a9811ae444"
+    },
+    {
+      "path": "agv-algorithm/src/main/java/com/agv/algorithm/sim/SimConfig.java",
+      "sha256": "1c392f0c142b5acb7946c4cefd2c57a8d8124cbedb0a9b10cbf5e81b7f335716"
+    },
+    {
+      "path": "agv-algorithm/src/main/java/com/agv/algorithm/sim/SimEvent.java",
+      "sha256": "71175eb78148ef9f8921cc0733a640cef0d577b29ec54e312bc795bfac9a1afa"
+    },
+    {
+      "path": "agv-algorithm/src/main/java/com/agv/algorithm/sim/SimFrame.java",
+      "sha256": "e775bac294eb6d47378e79f60f3fff15e00e85007bf22ebece3733e3fc66545f"
+    },
+    {
+      "path": "agv-algorithm/src/main/java/com/agv/algorithm/sim/SimulationEngine.java",
+      "sha256": "6b69d9ae5bbda04fdf6843e1fd8eca22d34a618e60feda44a7509a995735bc4c"
+    },
+    {
+      "path": "agv-algorithm/src/main/java/com/agv/algorithm/sim/SimulationResult.java",
+      "sha256": "e42491964562bcc3c65c0a15c8663fc7ac07112aecc43bfac95f13669f6e7943"
+    },
+    {
+      "path": "agv-algorithm/src/main/java/com/agv/algorithm/sim/Task.java",
+      "sha256": "4cf68b8084395573537d6301cf2a370fed338ba9133461892738c2335a9cdba3"
+    },
+    {
+      "path": "agv-algorithm/src/main/java/com/agv/algorithm/sim/TaskAssigner.java",
+      "sha256": "808809d2e8f7b4e758597c868f2c0f0f09cc2c5b9f66606d03712ba4f35f7ce2"
+    },
+    {
+      "path": "agv-algorithm/src/main/java/com/agv/algorithm/sim/TaskAssigners.java",
+      "sha256": "a5a25d5d4748e8621d771c6634c8608d75641630e0461fc1cf3f42a8cb4af2c5"
+    },
+    {
+      "path": "agv-algorithm/src/test/java/com/agv/algorithm/model/RoadNetValidatorTest.java",
+      "sha256": "8d009d8bc0a92cdea37b40e2186e76143f8ad05d9d73c8fb51169ec9c1298098"
+    },
+    {
+      "path": "agv-algorithm/src/test/java/com/agv/algorithm/path/AStarPlannerTest.java",
+      "sha256": "64d7236ec4d84adc8f253e4d3b187adf3bce479d9f9913f9bc6b1a387c541239"
+    },
+    {
+      "path": "agv-algorithm/src/test/java/com/agv/algorithm/sim/LaneModeTest.java",
+      "sha256": "c8b8a1d7a10b3770ba626f04911b97e4640d29b8e0c3ecda1412300622c0601b"
+    },
+    {
+      "path": "agv-algorithm/src/test/java/com/agv/algorithm/sim/SimulationEngineTest.java",
+      "sha256": "6731bcb2728b484f2481155ace38859154a699301326fed679dca0e60facbf70"
+    },
+    {
+      "path": "agv-backend/pom.xml",
+      "sha256": "377869cd559c5598f6688b7beb059c905814d5b13cf393b55a4c021ddd9322ce"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/AgvBackendApplication.java",
+      "sha256": "fea0f4a3b630bd6f7e2830894ac92aa7dd75452e60c0c1836a4519cb92738748"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/common/ApiResponse.java",
+      "sha256": "c19895e058f2caae7d918a1272c15c45f20c2dd8cc6378ff8bc8633efa5a9295"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/common/BusinessException.java",
+      "sha256": "c5c3f68d5d1d7a307bcb67510d41af82d632e07314a2e0a5591bf845646cf5f6"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/common/GlobalExceptionHandler.java",
+      "sha256": "d52e0c966eed15a67e4d5a0c613653df36dcb7cb1beced6c2f08384d70e066aa"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/common/RoadNetInvalidException.java",
+      "sha256": "445c7ce59896a65700e69a3d3d1ebb7eeea2d264026003c2e75cb32d27d8f83e"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/common/TraceIdFilter.java",
+      "sha256": "ec13be33269975cabbb3ba5a2fe84aabd97f04d13076a19b174bf560471f30d0"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/controller/AdminAuditController.java",
+      "sha256": "c8a5d4ec67375fce492ab2c209d9844511a1b9012b14cec723d92824a55061ba"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/controller/AdminDictController.java",
+      "sha256": "686edfdfe8131dcd23f7b1e945857589273b2cfd1acca4248c5c3c84c546afef"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/controller/AdminUserController.java",
+      "sha256": "03bc48c8f7250a3699702051228ab8f708c8c328ddc59eefe823c11117c06d97"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/controller/AuthController.java",
+      "sha256": "9c378cebc479516c64bfcee196843d25dcb7899d2fa51b7fd295e353223f2295"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/controller/DictController.java",
+      "sha256": "854c8361a6756284edf7f8aa9a37223bfb37b73cf525f28af4e7480b9a907181"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/controller/ExperimentController.java",
+      "sha256": "a62af16e9a0f85f410333b1f99230e8b577c73772ca6a8dfe2f883176f45e2e8"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/controller/HealthController.java",
+      "sha256": "d13b4ceee330aa2bb197c24b4b9e72d6da9181828dcfef4869996bc18d13c36b"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/controller/RoadNetController.java",
+      "sha256": "d6c9b58ec8f7008c055716225ea4187f2ed9572cc5a8d03694af780893c536a3"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/controller/SimulationController.java",
+      "sha256": "06cea6e22da6a4fb926e2bc3132c33cf28eeb4f660d0e761e427e59eaea060e5"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/controller/TaskSetController.java",
+      "sha256": "44e03b353c80ea40a6d061e7b29836a2416dfac31a8becea31bd6f17d2f72320"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/dto/DictRequest.java",
+      "sha256": "831d7f94f9ecefc3d2905f15e1e1b16c1383efe85bec934b020a751e4aa722ec"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/dto/EdgeDto.java",
+      "sha256": "496da97cfeb3f83f3118df89c4ea20e9e4720afae5cddcd038d068503d8674ad"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/dto/ExperimentReplayResult.java",
+      "sha256": "d5a67a531d61beef10486777febdd3807dfe118835008b8bad10cc9659d97a2d"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/dto/ExperimentReport.java",
+      "sha256": "4cc0ab4ed4abf269365cf3e5fe95bfe4ea84848e070ff2d95c68c0dfd28b5613"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/dto/ExperimentRequest.java",
+      "sha256": "303eb21322c4d18f6266499fbd68ce7a5756bdafdab6c07a59c5c616e706b43a"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/dto/LoginRequest.java",
+      "sha256": "643dfa4ee8313324a0c8b8b58b1d6877e549b52b63cd917603c4f4ceb6b6d8f7"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/dto/LoginResponse.java",
+      "sha256": "4726da84b41e9bfa1a6925b5441ea62b4b9c62be97306ce3bdc920dcb5b3a657"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/dto/NodeDto.java",
+      "sha256": "d70d53eefe1ba77c721bc96769f47780ecc6688d57a65e6e79dc5002c554dd1e"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/dto/PageResponse.java",
+      "sha256": "70cc994cf4482278ae70bd01cbb3e824170e6e69b4a101749628c37462287710"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/dto/RoadNetPayload.java",
+      "sha256": "0b418793e6833b7a4e3e9693ad41ed1f9f7f544f81b08c619d6426967137d7b7"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/dto/RoadNetSummary.java",
+      "sha256": "efffd7a2d15b7715fb0e95381ecaec8d92e22af8a5a2c473ed76153de3d1011f"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/dto/SaveRoadNetRequest.java",
+      "sha256": "8f350eb6c8b5b465328a52c819bffda79da49f84285724ca7e8664b4a2730df3"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/dto/SaveTaskSetRequest.java",
+      "sha256": "efc5c62049410ed4e2df16e0022412c3b2f1490c44ab29688fe44710da94bbc5"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/dto/StartSimRequest.java",
+      "sha256": "89005d8c0846883ce4fab992c47644069be0a98537221fff4b22400b7a3f57d2"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/dto/TaskDto.java",
+      "sha256": "dc62942130dcd387232910444fefd9594f8214227510b759af6f645d4040a86d"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/dto/TaskSetPayload.java",
+      "sha256": "d0e7d5c811556b83adcc28bb307779b105daafa934c6b57bd633e53b1dd1e471"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/dto/TaskSetSummary.java",
+      "sha256": "6f9a673e8fc8ed4e46a7cf26c0da38e54709d64f09d08b984ea0f6050e190ea7"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/dto/UserCreateRequest.java",
+      "sha256": "4ad9715c02592efe78794f902d59ebdf9ca3a77e6f1d07f0ddc9786d5720d913"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/dto/UserInfo.java",
+      "sha256": "79c026dd001d18558c578a754abdf88419794d6cc7cd83a5774201712a3bfb25"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/dto/UserUpdateRequest.java",
+      "sha256": "8e8f41017996746c420faa36be5f2ae35c316c3d068cbf8866be2354a4a04b7a"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/entity/AuditLog.java",
+      "sha256": "a0d13d17ba4072d38c45d0515d1de0a3411dd61112e3935f526f57657b1ddd1a"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/entity/BaseEntity.java",
+      "sha256": "deb32b5200f366ed0ea9d853657c838895546e5eff69d0b06edd1f3c1a382ac5"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/entity/Experiment.java",
+      "sha256": "c8716c16cebff26cff9ebb9fad175092e07970fc9706784e655e556879fa020e"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/entity/ExperimentMetric.java",
+      "sha256": "e33fe860b672c4c1b7f2180b96629dd5062c62918649e5b3d9faa2a3a4ab65f3"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/entity/RoadNetEntity.java",
+      "sha256": "1850eb5260bc18c0c76d9256f1cb89da4b1685bb871418933e5ba679522a957a"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/entity/SysDict.java",
+      "sha256": "2176d9d0046328868414fdb83cdbe743380d6da2ca68b2079f34d9d26418e4c1"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/entity/SysUser.java",
+      "sha256": "6ef05df36e0f863a1983b392d05daf5d573b1c2bb0fcadb70436f084f241509a"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/entity/TaskSet.java",
+      "sha256": "35a989fa81402a824b4e8a73084cc7db85e80e1eb4207917f33ab13fc9bc1963"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/repository/AuditLogRepository.java",
+      "sha256": "6eff66871c73cf6a7f7709339fb747f7d472687ff50bd7e5639d635172c0764c"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/repository/ExperimentMetricRepository.java",
+      "sha256": "707dd88473843dc38a12e961772af678e0effbf3f3e336a25e8fe1be860899e3"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/repository/ExperimentRepository.java",
+      "sha256": "768ca76e7c90e83b630aa3cb9df73c04b168c7d2282d21c4d34a02dbc614b4e5"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/repository/RoadNetRepository.java",
+      "sha256": "5a767ac7adac148e6df18aebc1f7a028fa7bd9edee5b505612c41f5365f382b6"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/repository/SysDictRepository.java",
+      "sha256": "626d4a4dc1ed28d8f140be36365d400407af88e479ba085ff0c1b040fd73a499"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/repository/SysUserRepository.java",
+      "sha256": "042d1304aa830d17f22f316c2820fc3f65149802f273ee047d81546532571359"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/repository/TaskSetRepository.java",
+      "sha256": "e2d26842fd4f39202d83e273658442cf09460ecfe6b1e4994b37961a5944edee"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/security/CurrentUser.java",
+      "sha256": "c769a9e7b72592b49d3fd9af8f5037dc64b8a7aa8087a9d21f97bdcbb8e7e1e2"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/security/JwtAuthFilter.java",
+      "sha256": "90c8b6cfd2b0896b1f8e647610d993fd004bb00748df264801e888ef5440d0f4"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/security/JwtService.java",
+      "sha256": "f155972e20921a87ac36fa9f6a5b9bb688279738d9f50d911d93c425ebe4d169"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/security/SecurityConfig.java",
+      "sha256": "8951e612e8fcdf7a042747714928eb7fc7a55c64950340cc150afd3158867bae"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/service/AuditService.java",
+      "sha256": "b92712b8569dac22bc44825a1cee1153f7c10531e50fb5f66f0adc493e280413"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/service/AuthService.java",
+      "sha256": "89df7f8b92ae72619f4f9788ab536bac4725a98ae73d307020e9caa1caf53747"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/service/DictService.java",
+      "sha256": "4b62dbd38e47719f927b1609b1c633af5694adaf573efd5096b48e264fa68bad"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/service/ExperimentService.java",
+      "sha256": "a472ba6a549d638ff441bf0df3591533f44949018003126abfeb7610fd7063b8"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/service/RoadNetService.java",
+      "sha256": "b86791159784313439ae1f0be3e85426feca69c7862a82cbc9b5b3b5c2be54c8"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/service/SimulationRunner.java",
+      "sha256": "be1448163993aafee67d12eb40b154d938633e2afb6bca443c679c404e987a8c"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/service/SimulationService.java",
+      "sha256": "e223392e04b2e265e1c3124d3120a50f6b7f30565443c99841658689d36fbab3"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/service/TaskSetService.java",
+      "sha256": "7ff149205f25c29ab9b3f9ed784a86a7e04326ac4247311a7e1b1fa16f5c16f2"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/service/UserService.java",
+      "sha256": "a64cf34bda2603baec2a61d01746f1026fa354d7f5858053896e182655f50b3a"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/support/DataInitializer.java",
+      "sha256": "aa9fe489827f7f7aab177efea996ba247e0294b14e72a0d6b8661e4cf9efe979"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/support/RoadNetTemplates.java",
+      "sha256": "2032c3d50cf50dabe9f5abd51473f8d93c4084db6b500a594f1f1de4509c4f35"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/support/SnowflakeIdConfiguration.java",
+      "sha256": "0b68e8b9ca06a7a988120d00d0475d015edae46050593cc237a9598f0ae9e615"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/support/SnowflakeIdGenerator.java",
+      "sha256": "e02098a739d8c7ab0e9b460a9a2f59a9292de5f2fb6f95c42138ffc836a06ee2"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/support/TaskSetValidator.java",
+      "sha256": "cb99ac26316c4d082892ad07ef73e4fa2c2110c3fb73717c013300cb0ad5872a"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/ws/JwtHandshakeInterceptor.java",
+      "sha256": "57915cd924297644f9f0dac7f6b5d339881ec17d9c291230d9a8ea6c70ff4163"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/ws/SimSocketHandler.java",
+      "sha256": "0acaf31cacba03ca060f3a4dee83ba245845e31b1d229c40a18a6b29bfee0802"
+    },
+    {
+      "path": "agv-backend/src/main/java/com/agv/backend/ws/WebSocketConfig.java",
+      "sha256": "725f3f9bcb250467de3a6ee00d13f45203f5edaef0498526acfd00ce99e4cb5c"
+    },
+    {
+      "path": "agv-backend/src/main/resources/application-dev.yml",
+      "sha256": "866199303fdc122e09511454703db3e1cc283cc71bd8d1d616992cba27936747"
+    },
+    {
+      "path": "agv-backend/src/main/resources/application-mysql.yml",
+      "sha256": "7cd824afc60495374c16551b11bd5067a48db4aea0488ee34a64d823602089e6"
+    },
+    {
+      "path": "agv-backend/src/main/resources/application.yml",
+      "sha256": "77bf992571a9a8ed8bfb8187ec2a32bccf797368eeaaa6b06af0e3ef7152efde"
+    },
+    {
+      "path": "agv-backend/src/main/resources/db/migration/common/V3__audit_log.sql",
+      "sha256": "ca6733a9c671a83384bfe9536cada64bf6993d89a81c99882b6093dbd4a2194e"
+    },
+    {
+      "path": "agv-backend/src/main/resources/db/migration/h2/V1__init.sql",
+      "sha256": "3a46af010aed23ef9742c08bc88eea3c7990dcab52a253b2fa9f15a4b8e7a449"
+    },
+    {
+      "path": "agv-backend/src/main/resources/db/migration/h2/V2__experiment_snapshot.sql",
+      "sha256": "ccea917025f2bd24788687969ae8cf887e6fc7e035c532dd48b33851be62b774"
+    },
+    {
+      "path": "agv-backend/src/main/resources/db/migration/mysql/V1__init.sql",
+      "sha256": "f1b33cbb783aa073902c476c9f51e3d6d809dc70d8903414ef4ab5239ef2eafd"
+    },
+    {
+      "path": "agv-backend/src/main/resources/db/migration/mysql/V2__experiment_snapshot.sql",
+      "sha256": "fbd933bb23eab84dac94dd815c4899585a27d896610877c91ca73a8015c382b5"
+    },
+    {
+      "path": "agv-backend/src/test/java/com/agv/backend/ApiSmokeTest.java",
+      "sha256": "7d0be87c28f929b750e0c4d1dff3927cca0b25c0ca8ed13bf8861dd1c6e57035"
+    },
+    {
+      "path": "agv-backend/src/test/java/com/agv/backend/AuditLogTest.java",
+      "sha256": "bc02efa9063b8ed8d1f26bf6c8aff5d262ea17da514bfa18ff82a65fd7ce4187"
+    },
+    {
+      "path": "agv-backend/src/test/java/com/agv/backend/EngineScaleTest.java",
+      "sha256": "2917d229f6e00df8abd5f97b2b79eca4cf07d420bf5e070d89d7a5e3cc94bd2b"
+    },
+    {
+      "path": "agv-backend/src/test/java/com/agv/backend/ExperimentReplayTest.java",
+      "sha256": "286729890604c28f5c1f2a2930c47c678a53347231021f853bd0edd6d5d751a5"
+    },
+    {
+      "path": "agv-backend/src/test/java/com/agv/backend/MultiUserSimulationTest.java",
+      "sha256": "3d66da87c105a716b1c23e2edb0c7c02ac2097ca29f1d1aa449bfe3d4c06749d"
+    },
+    {
+      "path": "agv-backend/src/test/java/com/agv/backend/PrimaryKeySchemaTest.java",
+      "sha256": "be315f629b099eae5aad4d50277af7af302bdf4b7fdbd29888ee99e666ec43be"
+    },
+    {
+      "path": "agv-backend/src/test/java/com/agv/backend/SimulationConcurrencyLimitTest.java",
+      "sha256": "18254bb74e7218b8e22ceb30e5ef200c07d4a13a6683e8d8822e4db74f930114"
+    },
+    {
+      "path": "agv-backend/src/test/java/com/agv/backend/TaskSetValidationTest.java",
+      "sha256": "c126cdeecae8244034d9b1fc7f30eb909f75903707632a9fd92dd63abeac0e65"
+    },
+    {
+      "path": "agv-backend/src/test/java/com/agv/backend/service/SimulationRunnerTest.java",
+      "sha256": "51ef0793da053e172d3ede12eb1e77a6ee62311178ca4c562af9d35040830804"
+    },
+    {
+      "path": "agv-backend/src/test/java/com/agv/backend/support/SnowflakeIdGeneratorTest.java",
+      "sha256": "f0148d10bdf843090c64b68f8e7b89932858f6feb546ac8e9a060949cdff6981"
+    },
+    {
+      "path": "agv-backend/src/test/java/com/agv/backend/ws/JwtHandshakeInterceptorTest.java",
+      "sha256": "7e7a9496015be00c7091a38cdbfb0dbefe3012f02fa3ce7a6f5413bc3f5b82ba"
+    },
+    {
+      "path": "agv-backend/src/test/java/com/agv/backend/ws/SimSocketHandlerTest.java",
+      "sha256": "8a28f574127a5ed4f710a01f45b620d6e90dfb5dfeb579095529d3e9ae33d719"
+    },
+    {
+      "path": "agv-backend/src/test/resources/application.yml",
+      "sha256": "3efe01b4a7caa517cf5731925740999b25e15e0e09c6146e550660bed67f5190"
+    },
+    {
+      "path": "agv-frontend/index.html",
+      "sha256": "ed8163e7ffde3abd8543b7dde436dd3f02dfc624a12cefc6b3d99509d5abc87f"
+    },
+    {
+      "path": "agv-frontend/package-lock.json",
+      "sha256": "e4c54195cf2764754528bdf79a7c70b283e94eca837e560d85db4aee884dbd6f"
+    },
+    {
+      "path": "agv-frontend/package.json",
+      "sha256": "0fe74ceeb0922990e63d443b89c8de222b897763a8c771b3ecc3ff8c99dd2948"
+    },
+    {
+      "path": "agv-frontend/public/favicon.svg",
+      "sha256": "0578d0da6276a2d8ae8efa5192f7af6971e644831ad19bf4b9f6fe2290c81d31"
+    },
+    {
+      "path": "agv-frontend/src/App.vue",
+      "sha256": "a2ee744d348e4dffd2821d24f8cbeebe6e1bd96209cbfba7a502c70ea4cdc741"
+    },
+    {
+      "path": "agv-frontend/src/api/admin.ts",
+      "sha256": "95035db63a4395ab2f005072e926d2969039b4c233793af8297b271f01325ff9"
+    },
+    {
+      "path": "agv-frontend/src/api/auth.ts",
+      "sha256": "cd99a68ea298690e2d5f5d058bbd04025c9c8e3f97b5af4d48fa4da00d6b7228"
+    },
+    {
+      "path": "agv-frontend/src/api/http.ts",
+      "sha256": "9c80c42c18ba2e65e50b882fcacd235fa6d36389b5bd42b795e2f9547545c0d9"
+    },
+    {
+      "path": "agv-frontend/src/api/roadnet.ts",
+      "sha256": "ca812a6cd0fb8bea199da291356ad58854359eaf315b0160a3b0e7a8bdb462dc"
+    },
+    {
+      "path": "agv-frontend/src/api/sim.ts",
+      "sha256": "6fedf3592ec8726fa256e252db12c94a5f99e4ed58af3874562af61c3bdeee65"
+    },
+    {
+      "path": "agv-frontend/src/components/RoadNetEditor.vue",
+      "sha256": "9b53a1a3657488a387c90865b25715d8d458b55ebc6c6fbaa4e8ed8a7cab70eb"
+    },
+    {
+      "path": "agv-frontend/src/components/RoadNetScene.vue",
+      "sha256": "f76ea29df5c53f985b8fbf1e7c32dbcaa8b7bae252eae75438db2559fa66bef7"
+    },
+    {
+      "path": "agv-frontend/src/components/StationPicker.vue",
+      "sha256": "29fe04b141ca194bb5a4c387e7c895731ebd2b9073b4c012c39c1b5051a60c92"
+    },
+    {
+      "path": "agv-frontend/src/composables/useSimSocket.ts",
+      "sha256": "df5d6293c6ece32f9799e6a4ae3ec002b2382859f076e5f4cb162a8021474712"
+    },
+    {
+      "path": "agv-frontend/src/main.ts",
+      "sha256": "377f150b7fed9a5bc081c8034b8888c51c3e6ceffbf69248b752101259552c88"
+    },
+    {
+      "path": "agv-frontend/src/router/index.ts",
+      "sha256": "59eec06965c23b25893a455c161232d0a7c0fa93e04d05ef2cdcd770d714b4b7"
+    },
+    {
+      "path": "agv-frontend/src/stores/auth.ts",
+      "sha256": "0ddb59fbbfaec4f11713b2b963ed87497e91e8b16d3263f199a37312239df0f0"
+    },
+    {
+      "path": "agv-frontend/src/styles/global.css",
+      "sha256": "b5d9c6fc77660ee5dac01a94677d848f7f8fb16e259cab7ea79f0885a7deb7b1"
+    },
+    {
+      "path": "agv-frontend/src/types.ts",
+      "sha256": "5025f5065ada21c23e1a23f7726a66c0a094390f49a6c957511cf43a8c4d8e57"
+    },
+    {
+      "path": "agv-frontend/src/utils/format.ts",
+      "sha256": "6cdb81999c8e437bb63fe345d6c7ed3bcd3a24b2f77c540da4aa6d27fcb97db3"
+    },
+    {
+      "path": "agv-frontend/src/utils/ws.ts",
+      "sha256": "94a93245732c8286c8929f0dccf0c98aa7434d19c82766094b434e6179acd07f"
+    },
+    {
+      "path": "agv-frontend/src/views/DashboardView.vue",
+      "sha256": "69de2e02e8c66864d0296337a8d8a7f55d92637577597ecec8c6c270aaf51023"
+    },
+    {
+      "path": "agv-frontend/src/views/ExperimentView.vue",
+      "sha256": "bb9fab3b0828d6419b2fb173d508614d351096f7b40ad1c5e91106317692c959"
+    },
+    {
+      "path": "agv-frontend/src/views/LayoutView.vue",
+      "sha256": "f57c30f4732292870a85cecff6d1acf7cde70b2049867703d6a75e0fff736f03"
+    },
+    {
+      "path": "agv-frontend/src/views/LoginView.vue",
+      "sha256": "22cffad09e3b601f9f9eea779b198ef0e137064ba50fc2781e1b0517f97befff"
+    },
+    {
+      "path": "agv-frontend/src/views/RoadNetView.vue",
+      "sha256": "e09a03945c83ef45459745f8a5a96f7c9dc000ac6006041fbf8566b0f12b0efe"
+    },
+    {
+      "path": "agv-frontend/src/views/SimulationView.vue",
+      "sha256": "93174a19e11849bf2cb6c0c28d0218e781afa2391d1c4a6ed93c5ec18cfff118"
+    },
+    {
+      "path": "agv-frontend/src/views/TaskSetView.vue",
+      "sha256": "b865a95b6d69ed08a8e68b4d089b2c07582f2d5d74df5aba2985b9e2df2dec4b"
+    },
+    {
+      "path": "agv-frontend/src/views/admin/DictManageView.vue",
+      "sha256": "905a7af14022e312b9bc0f2b8e7eb64ab0cfcf9f1dbe99f843c19b1ad429ca5f"
+    },
+    {
+      "path": "agv-frontend/src/views/admin/UserManageView.vue",
+      "sha256": "326065312e6145675986f079ace649423da532e4f3324d805b5b3f7e02541dfe"
+    },
+    {
+      "path": "agv-frontend/src/vite-env.d.ts",
+      "sha256": "b5015e6573deb5719501ce671b0475d318ac4f41d27c9dd1ad4e68a4769260a0"
+    },
+    {
+      "path": "agv-frontend/tsconfig.json",
+      "sha256": "3d6ed736b862315aadc201b15b47bcc6afd40ebe686ad6a06e82c0c48e001d33"
+    },
+    {
+      "path": "agv-frontend/vite.config.ts",
+      "sha256": "3868ab90b01477f4ddde2bd9bcf8f215758f5c2c9f95dd30d3cb927b29efddb4"
+    },
+    {
+      "path": "docs/explanation/领域模型说明.md",
+      "sha256": "e929ad9ac9572f08d1d2cbd2e884ef2427f94bc48fff87c5abbbc38d5fd0d66f"
+    },
+    {
+      "path": "docs/how-to/统一领域命名.md",
+      "sha256": "11772c795e527370c7750c1b2e2853f678974d2ceef9dce543a2a8e1209738df"
+    },
+    {
+      "path": "docs/how-to/维护任务集.md",
+      "sha256": "361cd3f8d18f97e5a6387109d1ad1474b613fdc95ea6d6d9931c083a4cd40b1f"
+    },
+    {
+      "path": "docs/how-to/编辑车间地图.md",
+      "sha256": "4a9972f40b518ff646a556f6067cbe4b541d406dfc0715c11f1dd074ed4d649c"
+    },
+    {
+      "path": "docs/reference/多用户仿真.md",
+      "sha256": "246871898d0c761c6fd2f417056928abba611307bd035a317bfd5a92409611d8"
+    },
+    {
+      "path": "docs/reference/实验快照与回放.md",
+      "sha256": "3ce742f8104b62779e23fd6e2b7d8f273746f484e8ad27040113cc8af1704ec5"
+    },
+    {
+      "path": "docs/reference/审计日志.md",
+      "sha256": "914435f6f2b330a7834d3d8dcb7726e381e1ac2fc5946ef8abdbe0d922e0ecdd"
+    },
+    {
+      "path": "docs/reference/数据库设计.md",
+      "sha256": "f268677bf92bec746499f5f227f2655b6976faa6653484601bd2b1b1e411a8ce"
+    },
+    {
+      "path": "docs/reference/领域模型与术语.md",
+      "sha256": "f0541996961438c956f10fa2b29f5c615dc6ecf1033c33678e76d521e98d5e83"
+    },
+    {
+      "path": "docs/tutorials/01-运行项目.md",
+      "sha256": "1f9f2b247ce7821659ce22362cc7dcd1c7115a3a51add11b6f167755080c57ec"
+    },
+    {
+      "path": "pom.xml",
+      "sha256": "a927d99c28a671e004f6f6755c0e3c9cec017757d10cb09af89358b6271c6404"
+    },
+    {
+      "path": "scripts/e2e-roadnet.mjs",
+      "sha256": "6cbff6dd401c281e61fcbdf7bfe26659fd8cdca7a21ef2048767e64577bf678b"
+    },
+    {
+      "path": "scripts/e2e-simulation.mjs",
+      "sha256": "18ce9a5378323a53951a77a231c87d1bf59d7464da8bd14430706d4fd73793fd"
+    },
+    {
+      "path": "scripts/e2e-taskset.mjs",
+      "sha256": "d3f6ac243ef1ad6eee47771a3f93afcde61422d65b23fda5e89404a581c7a90a"
+    }
+  ]
+}
