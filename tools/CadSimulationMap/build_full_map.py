@@ -857,6 +857,8 @@ def apply_dual_lane_topology(definition: dict[str, Any], lane_offset_m: float = 
     for node in definition["nodes"]:
         if str(node.get("id", "")).startswith("APPROACH-") and node.get("type") == "Waypoint":
             node["type"] = "Intersection"
+            node["allowTrafficStop"] = False
+            node["allowTransitThrough"] = True
             approach_junctions += 1
     outgoing: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for edge in definition["edges"]:

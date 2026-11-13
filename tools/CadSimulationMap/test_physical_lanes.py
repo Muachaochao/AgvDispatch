@@ -1,7 +1,7 @@
 import tempfile,unittest
 from pathlib import Path
 import ezdxf
-from build_full_map import StationPoint,build_graph,check_wait_departure_clearance,build_configuration
+from build_full_map import StationPoint,build_graph,apply_dual_lane_topology,check_wait_departure_clearance,build_configuration
 from physical_lanes import build_physical_graph
 
 
@@ -69,6 +69,16 @@ class PhysicalLaneTests(unittest.TestCase):
             for nid in (e['from'],e['to']):
                 self.assertTrue(set(self.ns[nid]['resourceIds']).issubset(e['resourceIds']))
         self.assertTrue(all(len(r['boundary'])>=4 for r in self.m['resources']))
+
+    def test_machine_approach_nodes_never_become_traffic_stops(self):
+        core,_=build_graph([StationPoint(f'CNC-{i+1:03}',i,1,0,0,970767.85,y)
+                            for i,y in enumerate((-391375.898,-394986.878,-398528.416,-402139.397,
+                                                  -408805.822,-412277.919,-415958.341,-419569.321,-423110.86))])
+        apply_dual_lane_topology(core)
+        approaches=[n for n in core['nodes'] if n['id'].startswith('APPROACH-')]
+        self.assertTrue(approaches)
+        self.assertTrue(all(n['type']=='Intersection' and n.get('allowTrafficStop') is False
+                            and n.get('allowTransitThrough') is True for n in approaches))
 
     def test_terminal_uses_bay_centres_not_text_labels(self):
         from terminal_layout import FIXTURE_CENTRES

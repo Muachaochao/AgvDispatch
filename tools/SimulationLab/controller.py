@@ -705,11 +705,22 @@ class Runtime:
     def _validate_configuration(self, payload):
         if not isinstance(payload, dict) or set(payload) - {'name', 'mapDefinition', 'stations', 'vehicles', 'dumper', 'inspectionSite', 'plcSignalTable', 'mapIdentity', 'downstreamAdmissionCapacity'}:
             raise ValueError('新实例配置包含未知字段。')
-        navigation = payload.get('mapDefinition')
+        navigation = copy.deepcopy(payload.get('mapDefinition'))
         if not isinstance(navigation, dict) or not all(isinstance(navigation.get(key), list) for key in ('nodes', 'edges', 'resources')):
             raise ValueError('地图必须是包含nodes、edges和resources的对象。')
         if not 3 <= len(navigation['nodes']) <= 10000 or not 1 <= len(navigation['edges']) <= 50000 or len(navigation['resources']) > 5000:
             raise ValueError('地图节点、道路或资源数量超出仿真范围。')
+        # Legacy CAD maps represented machine approach junctions without the
+        # explicit stop veto. The transport window planner treats null as the
+        # commissioned legacy default (allowed), splitting nearly every factory
+        # route at APPROACH-* nodes. These nodes are graph junctions, never
+        # physical waiting bays. Normalize a private copy so saved schemes are
+        # repaired without mutating the browser payload.
+        for node in navigation['nodes']:
+            if not isinstance(node, dict):
+                raise ValueError('地图节点必须是对象。')
+            if str(node.get('id', '')).startswith('APPROACH-') and node.get('allowTrafficStop') is None:
+                node['allowTrafficStop'] = False
         # A map copied from the running engineering runtime already carries the
         # authoritative SHA256 computed over the complete C# MapDefinition.
         # Re-hashing only the browser projection (nodes/edges/resources) produces

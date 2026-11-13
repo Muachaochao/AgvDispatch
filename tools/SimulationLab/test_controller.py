@@ -139,6 +139,22 @@ class SimulationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, '布尔值'):
                 runtime._validate_configuration(payload)
 
+    def test_legacy_approach_nodes_cannot_become_route_windows(self):
+        runtime = object.__new__(Runtime)
+        payload = self.custom_payload()
+        for node in payload['mapDefinition']['nodes']:
+            node['type'] = 'Station' if node['id'] in ('P1', 'P2', 'DUMP') else 'WaitingPoint'
+        approach = dict(id='APPROACH-CNC-001', agvSiteId='APPROACH-1', x=1, y=1,
+                        type='Intersection', enabled=True, resourceIds=[], allowTransitThrough=True)
+        ordinary = dict(id='JUNCTION-1', agvSiteId='JUNCTION-1', x=2, y=1,
+                        type='Intersection', enabled=True, resourceIds=[])
+        payload['mapDefinition']['nodes'].extend([approach, ordinary])
+        normalized = runtime._validate_configuration(payload)
+        by_id = {node['id']: node for node in normalized['mapDefinition']['nodes']}
+        self.assertIs(by_id['APPROACH-CNC-001']['allowTrafficStop'], False)
+        self.assertIsNone(by_id['JUNCTION-1'].get('allowTrafficStop'))
+        self.assertNotIn('allowTrafficStop', approach, 'caller payload must remain unchanged')
+
     def test_multiple_waiting_bays_survive_configuration_and_reject_duplicates(self):
         runtime = object.__new__(Runtime)
         payload = self.custom_payload()
