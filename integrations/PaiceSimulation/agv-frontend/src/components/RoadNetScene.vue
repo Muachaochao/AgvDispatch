@@ -10,6 +10,12 @@ const props = defineProps<{
   agvs?: AgvView[];
   showGrid?: boolean;
   observed?: boolean;
+  selectable?: boolean;
+  selectedNodeIds?: string[];
+}>();
+
+const emit = defineEmits<{
+  nodeSelect: [node: { id: string; type: string }];
 }>();
 
 const container = ref<HTMLDivElement | null>(null);
@@ -27,7 +33,12 @@ const agvGroup = new THREE.Group();
 const pathGroup = new THREE.Group();
 const rawNodes = new Map<string, { id: string; x: number; y: number; type: string }>();
 const displayNodes = new Map<string, { id: string; x: number; y: number; type: string }>();
+const nodeMeshes = new Map<string, THREE.Mesh>();
+const nodeVisuals = new Map<string, THREE.Mesh>();
 let renderedPoints: Array<{ x: number; y: number }> = [];
+const raycaster = new THREE.Raycaster();
+const pointer = new THREE.Vector2();
+let pointerStart: { x: number; y: number } | null = null;
 
 interface AgvMesh {
   group: THREE.Group;
@@ -77,6 +88,8 @@ function init() {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(el.clientWidth, el.clientHeight);
   el.appendChild(renderer.domElement);
+  renderer.domElement.addEventListener("pointerdown", onPointerDown);
+  renderer.domElement.addEventListener("pointerup", onPointerUp);
 
   controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
@@ -97,6 +110,61 @@ function init() {
   resizeObserver.observe(el);
 
   animate();
+}
+
+function updateNodeSelection() {
+  const selected = new Set(props.selectedNodeIds ?? []);
+  nodeVisuals.forEach((mesh, id) => {
+    const material = mesh.material as THREE.MeshStandardMaterial;
+    const active = selected.has(id);
+    material.emissiveIntensity = active ? 1.3 : 0.25;
+    mesh.scale.setScalar(active ? 1.7 : 1);
+  });
+}
+
+function onPointerDown(event: PointerEvent) {
+  if (!props.selectable || event.button !== 0) {
+    pointerStart = null;
+    return;
+  }
+  pointerStart = { x: event.clientX, y: event.clientY };
+}
+
+function onPointerUp(event: PointerEvent) {
+  if (
+    !props.selectable ||
+    event.button !== 0 ||
+    pointerStart === null ||
+    Math.hypot(event.clientX - pointerStart.x, event.clientY - pointerStart.y) > 5
+  ) {
+    pointerStart = null;
+    return;
+  }
+  pointerStart = null;
+  const rect = renderer.domElement.getBoundingClientRect();
+  pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+  raycaster.setFromCamera(pointer, camera);
+  const hit = raycaster.intersectObjects([...nodeMeshes.values()], false)[0];
+  let id = hit?.object.userData.nodeId as string | undefined;
+  let type = hit?.object.userData.nodeType as string | undefined;
+  if (!id) {
+    const clickX = event.clientX - rect.left;
+    const clickY = event.clientY - rect.top;
+    let nearestDistance = 48;
+    for (const [nodeId, mesh] of nodeMeshes) {
+      const projected = mesh.position.clone().project(camera);
+      const x = ((projected.x + 1) / 2) * rect.width;
+      const y = ((1 - projected.y) / 2) * rect.height;
+      const distance = Math.hypot(clickX - x, clickY - y);
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        id = nodeId;
+        type = mesh.userData.nodeType as string;
+      }
+    }
+  }
+  if (id && type) emit("nodeSelect", { id, type });
 }
 
 function resize() {
@@ -152,6 +220,8 @@ function disposeGroup(group: THREE.Group) {
 function rebuildRoadNet(net: RoadNetPayload | null) {
   if (!scene) return;
   disposeGroup(netGroup);
+  nodeMeshes.clear();
+  nodeVisuals.clear();
   if (!net || net.nodes.length === 0) return;
 
   const nodeMap = new Map(net.nodes.map((n) => [n.id, n]));
@@ -315,7 +385,25 @@ function rebuildRoadNet(net: RoadNetPayload | null) {
       }),
     );
     mesh.position.set(display.x, height / 2, display.y);
+    mesh.userData.nodeId = node.id;
+    mesh.userData.nodeType = node.type;
+    nodeVisuals.set(node.id, mesh);
     netGroup.add(mesh);
+    if (node.type === "WORKSTATION") {
+      const hitArea = new THREE.Mesh(
+        new THREE.SphereGeometry(dense ? 1.4 : 0.9, 10, 8),
+        new THREE.MeshBasicMaterial({
+          transparent: true,
+          opacity: 0,
+          depthWrite: false,
+        }),
+      );
+      hitArea.position.set(display.x, height / 2, display.y);
+      hitArea.userData.nodeId = node.id;
+      hitArea.userData.nodeType = node.type;
+      nodeMeshes.set(node.id, hitArea);
+      netGroup.add(hitArea);
+    }
 
     if (!dense) {
       const sprite = makeLabel(node.id);
@@ -337,6 +425,7 @@ function rebuildRoadNet(net: RoadNetPayload | null) {
       netGroup.add(label);
     }
   }
+  updateNodeSelection();
 }
 
 function makeLabel(text: string, badge = false): THREE.Sprite {
@@ -535,6 +624,12 @@ watch(
   { deep: true },
 );
 
+watch(
+  () => props.selectedNodeIds,
+  () => updateNodeSelection(),
+  { deep: true },
+);
+
 onMounted(() => {
   init();
   rebuildRoadNet(props.roadnet);
@@ -545,6 +640,8 @@ onBeforeUnmount(() => {
   cancelAnimationFrame(raf);
   resizeObserver?.disconnect();
   controls?.dispose();
+  renderer?.domElement.removeEventListener("pointerdown", onPointerDown);
+  renderer?.domElement.removeEventListener("pointerup", onPointerUp);
   if (grid) {
     grid.geometry.dispose();
     const materials = Array.isArray(grid.material) ? grid.material : [grid.material];
@@ -564,7 +661,11 @@ defineExpose({ drawPath, clearPath, fitView });
 </script>
 
 <template>
-  <div ref="container" class="scene"></div>
+  <div
+    ref="container"
+    class="scene"
+    :class="{ selectable: selectable }"
+  ></div>
 </template>
 
 <style scoped>
@@ -575,5 +676,9 @@ defineExpose({ drawPath, clearPath, fitView });
   border-radius: 8px;
   overflow: hidden;
   background: #0b1526;
+}
+
+.scene.selectable {
+  cursor: crosshair;
 }
 </style>

@@ -5,6 +5,7 @@ import RoadNetScene from '@/components/RoadNetScene.vue'
 import type { AgvView } from '@/types'
 import { getRoadNet, listDict, listRoadNets, type RoadNetPayload, type RoadNetSummary } from '@/api/roadnet'
 import {
+  createTaskSet,
   listTaskSets,
   pauseSim,
   resetSim,
@@ -20,6 +21,12 @@ import {
 } from '@/api/sim'
 import { taskSetLabel } from '@/utils/format'
 import { simSocketUrl } from '@/utils/ws'
+import {
+  clearDraftTasks,
+  pickDraftStation,
+  removeLastDraftTask,
+  type DraftTaskSet
+} from '@/simulation/draft-task-set'
 
 const maps = ref<RoadNetSummary[]>([])
 const taskSets = ref<TaskSetSummary[]>([])
@@ -27,6 +34,8 @@ const algorithms = ref<{ dictCode: string; dictValue: string }[]>([])
 
 const selectedRoadnetId = ref<number | null>(null)
 const selectedTaskSetId = ref<number | null>(null)
+const taskSource = ref<'taskset' | 'map'>('taskset')
+const draftTaskSet = ref<DraftTaskSet>(clearDraftTasks())
 const algorithm = ref('nearest')
 const agvCount = ref(3)
 const seed = ref(20261107)
@@ -57,6 +66,17 @@ let reconnectAttempts = 0
 let disposed = false
 
 const hasSim = computed(() => running.value || finished.value)
+const selectedDraftNodeIds = computed(() =>
+  draftTaskSet.value.pendingFrom ? [draftTaskSet.value.pendingFrom] : []
+)
+const canStart = computed(
+  () =>
+    !running.value &&
+    !!selectedRoadnetId.value &&
+    (taskSource.value === 'taskset'
+      ? !!selectedTaskSetId.value
+      : draftTaskSet.value.tasks.length > 0 && draftTaskSet.value.pendingFrom === null)
+)
 
 const simState = computed(() => {
   if (running.value) {
@@ -136,8 +156,29 @@ async function loadRoadNet(id: number) {
 }
 
 async function onMapChange(id: number) {
+  draftTaskSet.value = clearDraftTasks()
   await loadRoadNet(id)
   selectDefaultTaskSet()
+}
+
+function onSceneNodeSelect(node: { id: string; type: string }) {
+  if (taskSource.value !== 'map' || running.value || node.type !== 'WORKSTATION') return
+  const before = draftTaskSet.value.tasks.length
+  draftTaskSet.value = pickDraftStation(draftTaskSet.value, node.id)
+  if (draftTaskSet.value.tasks.length > before) {
+    const task = draftTaskSet.value.tasks[draftTaskSet.value.tasks.length - 1]
+    ElMessage.success(
+      `已添加任务 ${task.from} → ${task.to}`
+    )
+  }
+}
+
+function undoDraftTask() {
+  draftTaskSet.value = removeLastDraftTask(draftTaskSet.value)
+}
+
+function clearDraftTaskSet() {
+  draftTaskSet.value = clearDraftTasks()
 }
 
 function connectSocket() {
@@ -248,15 +289,31 @@ async function syncStatus() {
 }
 
 async function start() {
-  if (!selectedRoadnetId.value || !selectedTaskSetId.value) {
-    ElMessage.warning('请先选择路网与任务集')
+  if (!canStart.value || !selectedRoadnetId.value) {
+    ElMessage.warning(
+      taskSource.value === 'map'
+        ? '请先完成地图点选，并确保没有只选了起点的待完成任务'
+        : '请先选择路网与任务集'
+    )
     return
   }
   retrySocket()
   try {
+    let taskSetId = selectedTaskSetId.value
+    if (taskSource.value === 'map') {
+      const saved = await createTaskSet({
+        name: `地图点选任务-${new Date().toLocaleString('zh-CN', { hour12: false })}`,
+        roadnetId: selectedRoadnetId.value,
+        taskSet: { tasks: draftTaskSet.value.tasks }
+      })
+      taskSetId = saved.id
+      selectedTaskSetId.value = saved.id
+      taskSets.value = await listTaskSets()
+    }
+    if (!taskSetId) throw new Error('临时任务集创建失败')
     const result = await startSim({
       roadnetId: selectedRoadnetId.value,
-      taskSetId: selectedTaskSetId.value,
+      taskSetId,
       algorithm: algorithm.value,
       agvCount: agvCount.value,
       seed: seed.value
@@ -372,6 +429,11 @@ onBeforeUnmount(() => {
 <template>
   <div class="sim-page">
     <div class="toolbar panel">
+      <span class="field-label">任务来源</span>
+      <el-radio-group v-model="taskSource" :disabled="running" size="small">
+        <el-radio-button value="taskset">任务集</el-radio-button>
+        <el-radio-button value="map">地图点选</el-radio-button>
+      </el-radio-group>
       <span class="field-label">路网</span>
       <el-select
         v-model="selectedRoadnetId"
@@ -382,16 +444,21 @@ onBeforeUnmount(() => {
       >
         <el-option v-for="map in maps" :key="map.id" :label="map.name" :value="map.id" />
       </el-select>
-      <span class="field-label">任务集</span>
-      <el-select v-model="selectedTaskSetId" style="width: 190px" placeholder="任务集" :disabled="running">
-        <el-option
-          v-for="set in mapTaskSets"
-          :key="set.id"
-          :label="taskSetLabel(set.name, set.taskCount)"
-          :value="set.id"
-        />
-      </el-select>
-      <span v-if="selectedRoadnetId && mapTaskSets.length === 0" class="muted">该路网还没有任务集</span>
+      <template v-if="taskSource === 'taskset'">
+        <span class="field-label">任务集</span>
+        <el-select v-model="selectedTaskSetId" style="width: 190px" placeholder="任务集" :disabled="running">
+          <el-option
+            v-for="set in mapTaskSets"
+            :key="set.id"
+            :label="taskSetLabel(set.name, set.taskCount)"
+            :value="set.id"
+          />
+        </el-select>
+        <span v-if="selectedRoadnetId && mapTaskSets.length === 0" class="muted">该路网还没有任务集</span>
+      </template>
+      <span v-else class="map-mode-label">
+        地图点选任务 · {{ draftTaskSet.tasks.length }} 条
+      </span>
       <span class="field-label">算法</span>
       <el-select v-model="algorithm" style="width: 150px" :disabled="running">
         <el-option v-for="item in algorithms" :key="item.dictCode" :label="item.dictValue" :value="item.dictCode" />
@@ -400,7 +467,7 @@ onBeforeUnmount(() => {
       <el-input-number v-model="agvCount" :min="1" :max="12" style="width: 120px" :disabled="running" />
       <span class="field-label">随机种子</span>
       <el-input-number v-model="seed" :min="0" :controls="false" style="width: 140px" :disabled="running" />
-      <el-button type="primary" :disabled="running || !selectedTaskSetId" @click="start">开始</el-button>
+      <el-button type="primary" :disabled="!canStart" @click="start">开始</el-button>
       <el-button :disabled="!running || paused" @click="pause">暂停</el-button>
       <el-button :disabled="!running || !paused" @click="resume">继续</el-button>
       <el-button :disabled="!hasSim" @click="reset">重置</el-button>
@@ -434,9 +501,53 @@ onBeforeUnmount(() => {
       </el-button>
     </div>
 
+    <section v-if="taskSource === 'map'" class="panel map-task-builder">
+      <div class="map-task-heading">
+        <div>
+          <strong>
+            {{
+              draftTaskSet.pendingFrom
+                ? `已选起点 ${draftTaskSet.pendingFrom}，请点击终点工位`
+                : '请在左侧三维地图依次点击起点工位和终点工位'
+            }}
+          </strong>
+          <p class="muted">只有蓝色工位可被选为任务端点，拖动旋转视角不会误选。</p>
+        </div>
+        <el-space wrap>
+          <el-button size="small" :disabled="draftTaskSet.tasks.length === 0" @click="undoDraftTask">
+            撤销
+          </el-button>
+          <el-button
+            size="small"
+            :disabled="draftTaskSet.tasks.length === 0 && !draftTaskSet.pendingFrom"
+            @click="clearDraftTaskSet"
+          >
+            清空
+          </el-button>
+        </el-space>
+      </div>
+      <div v-if="draftTaskSet.tasks.length" class="draft-task-list">
+        <el-tag
+          v-for="task in draftTaskSet.tasks"
+          :key="task.id"
+          closable
+          type="success"
+          @close="undoDraftTask"
+        >
+          {{ task.from }} → {{ task.to }}
+        </el-tag>
+      </div>
+    </section>
+
     <div class="body">
       <div class="panel scene-panel">
-        <RoadNetScene :roadnet="roadnet" :agvs="agvViews" />
+        <RoadNetScene
+          :roadnet="roadnet"
+          :agvs="agvViews"
+          :selectable="taskSource === 'map' && !running"
+          :selected-node-ids="selectedDraftNodeIds"
+          @node-select="onSceneNodeSelect"
+        />
       </div>
 
       <div class="side">
@@ -530,6 +641,39 @@ onBeforeUnmount(() => {
   font-size: 13px;
   color: #606266;
   white-space: nowrap;
+}
+
+.map-mode-label {
+  font-size: 13px;
+  color: #1f3b73;
+  font-weight: 600;
+  padding: 5px 10px;
+  border-radius: 6px;
+  background: #ecf5ff;
+}
+
+.map-task-builder {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border-left: 4px solid #35d6c4;
+}
+
+.map-task-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.map-task-heading p {
+  margin: 4px 0 0;
+}
+
+.draft-task-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .body {
