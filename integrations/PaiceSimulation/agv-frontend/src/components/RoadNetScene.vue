@@ -18,6 +18,7 @@ let scene: THREE.Scene;
 let camera: THREE.PerspectiveCamera;
 let renderer: THREE.WebGLRenderer;
 let controls: OrbitControls;
+let grid: THREE.GridHelper | null = null;
 let raf = 0;
 let resizeObserver: ResizeObserver | null = null;
 
@@ -84,10 +85,6 @@ function init() {
   const dir = new THREE.DirectionalLight(0xffffff, 1.1);
   dir.position.set(30, 60, 20);
   scene.add(dir);
-
-  const grid = new THREE.GridHelper(200, 100, 0x1e3350, 0x152740);
-  grid.position.y = -0.02;
-  scene.add(grid);
 
   scene.add(netGroup);
   scene.add(agvGroup);
@@ -400,13 +397,30 @@ function clearPath() {
 
 function fitView() {
   if (!props.roadnet || props.roadnet.nodes.length === 0 || !camera) return;
-  const xs = props.roadnet.nodes.map((n) => n.x);
-  const ys = props.roadnet.nodes.map((n) => n.y);
-  const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
-  const cy = (Math.min(...ys) + Math.max(...ys)) / 2;
-  const width = Math.max(Math.max(...xs) - Math.min(...xs), 10);
-  const depth = Math.max(Math.max(...ys) - Math.min(...ys), 10);
+  const points = [
+    ...props.roadnet.nodes,
+    ...props.roadnet.edges.flatMap((edge) => edge.points ?? []),
+  ];
+  const xs = points.map((point) => point.x);
+  const ys = points.map((point) => point.y);
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const minY = Math.min(...ys), maxY = Math.max(...ys);
+  const cx = (minX + maxX) / 2;
+  const cy = (minY + maxY) / 2;
+  const width = Math.max(maxX - minX, 10);
+  const depth = Math.max(maxY - minY, 10);
   const span = Math.max(width, depth);
+  const gridSize = Math.max(40, Math.ceil(span * 1.45));
+  const gridDivisions = Math.max(20, Math.ceil(gridSize / 2));
+  if (grid) {
+    scene.remove(grid);
+    grid.geometry.dispose();
+    const materials = Array.isArray(grid.material) ? grid.material : [grid.material];
+    materials.forEach((material) => material.dispose());
+  }
+  grid = new THREE.GridHelper(gridSize, gridDivisions, 0x1e3350, 0x152740);
+  grid.position.set(cx, -0.02, cy);
+  scene.add(grid);
   const aspect = Math.max(camera.aspect || 1, 0.5);
   const viewHeight = Math.max(depth, width / aspect);
   const distance = (viewHeight / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)))) * 1.2;
@@ -451,6 +465,12 @@ onBeforeUnmount(() => {
   cancelAnimationFrame(raf);
   resizeObserver?.disconnect();
   controls?.dispose();
+  if (grid) {
+    grid.geometry.dispose();
+    const materials = Array.isArray(grid.material) ? grid.material : [grid.material];
+    materials.forEach((material) => material.dispose());
+    grid = null;
+  }
   disposeGroup(netGroup);
   disposeGroup(agvGroup);
   disposeGroup(pathGroup);
