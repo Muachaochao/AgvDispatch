@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   clearDraftTasks,
+  mainDispatchStationId,
   pickDraftStation,
   removeLastDraftTask,
+  toggleMainDispatchStation,
 } from "../src/simulation/draft-task-set.ts";
 
 test("two workstation clicks create one draft task", () => {
@@ -42,4 +44,32 @@ test("remove and clear preserve task identity", () => {
     pendingFrom: "W4",
   });
   assert.deepEqual(clearDraftTasks(), { tasks: [], pendingFrom: null });
+});
+
+test("engineering simulation accepts only CNC workstation calls", () => {
+  assert.equal(
+    mainDispatchStationId({ id: "BUS-CNC-007", type: "WORKSTATION" }),
+    "CNC-007",
+  );
+  assert.equal(
+    mainDispatchStationId({ id: "CNC-305", type: "WORKSTATION" }),
+    "CNC-305",
+  );
+  assert.equal(
+    mainDispatchStationId({ id: "CAD2-J0012", type: "JUNCTION" }),
+    null,
+  );
+  assert.equal(
+    mainDispatchStationId({ id: "BUS-CNC-306", type: "WORKSTATION" }),
+    null,
+  );
+});
+
+test("engineering simulation toggles unique PLC call stations", () => {
+  let stations: string[] = [];
+  stations = toggleMainDispatchStation(stations, "BUS-CNC-001");
+  stations = toggleMainDispatchStation(stations, "BUS-CNC-002");
+  assert.deepEqual(stations, ["BUS-CNC-001", "BUS-CNC-002"]);
+  stations = toggleMainDispatchStation(stations, "BUS-CNC-001");
+  assert.deepEqual(stations, ["BUS-CNC-002"]);
 });
