@@ -19,6 +19,7 @@ export interface DispatchStatus {
     mapIdentity?: {
       mapId?: string;
       mapVersionId?: string;
+      sourceName?: string;
       definitionHash?: string;
     };
   };
@@ -113,7 +114,10 @@ export async function loadWebSimulationMap(signal?: AbortSignal) {
         `simulation:${live.rootName ?? "current"}:${definition.name ?? "map"}`,
       mapName: definition.name,
       mapVersionId: live.configuration?.mapIdentity?.mapVersionId ?? "current",
-      definitionHash: await sourceDefinitionHash(definition),
+      sourceName: live.configuration?.mapIdentity?.sourceName ?? definition.name,
+      definitionHash:
+        live.configuration?.mapIdentity?.definitionHash ||
+        (await sourceDefinitionHash(definition)),
       updatedAt: new Date().toISOString(),
     },
     suggestedInitialSite:

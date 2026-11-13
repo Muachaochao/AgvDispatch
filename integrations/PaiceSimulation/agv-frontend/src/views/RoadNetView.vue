@@ -46,6 +46,18 @@ const preview3DVisible = ref(false)
 const preview3DPayload = ref<RoadNetPayload | null>(null)
 const preview3DFullscreen = ref(false)
 const roadnetSceneRef = ref<{ fitView: () => void } | null>(null)
+const sourceSummary = computed(() => {
+  const source = payload.value.integration?.sourceDefinition as
+    | { name?: string; nodes?: { agvSiteId?: string }[]; edges?: unknown[] }
+    | undefined
+  if (!source?.nodes?.length || !source.edges?.length) return ''
+  const stationCount = new Set(
+    source.nodes
+      .map((node) => node.agvSiteId ?? '')
+      .filter((siteId) => siteId.startsWith('CNC-'))
+  ).size
+  return `最新 Web 来源 · ${source.nodes.length} 节点 · ${source.edges.length} 道路 · ${stationCount} 工位`
+})
 
 function reset3DView() {
   roadnetSceneRef.value?.fitView()
@@ -570,6 +582,7 @@ onBeforeUnmount(() => {
           <el-button size="small" type="primary" @click="save">保存</el-button>
           <input ref="fileInput" type="file" accept=".json" hidden @change="onFileChange" />
         </div>
+        <div v-if="sourceSummary" class="source-summary">{{ sourceSummary }}</div>
 
         <div class="editor-body">
           <RoadNetEditor
@@ -715,6 +728,12 @@ onBeforeUnmount(() => {
 
 .name-input {
   width: 200px;
+}
+
+.source-summary {
+  margin: -2px 0 10px;
+  color: #60738b;
+  font-size: 12px;
 }
 
 .spacer {
