@@ -7,7 +7,7 @@ import {
   shallowRef,
   watch,
 } from "vue";
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 import RoadNetScene from "@/components/RoadNetScene.vue";
 import DispatchMapImport from "@/components/DispatchMapImport.vue";
 import {
@@ -16,7 +16,18 @@ import {
   type RoadNetSummary,
   type RoadNetPayload,
 } from "@/api/roadnet";
-import { createTaskSet } from "@/api/sim";
+import {
+  createTaskSet,
+  listTaskSets,
+  type TaskSetSummary,
+} from "@/api/sim";
+import {
+  createMainDispatchExperiment,
+  getMainDispatchExperiment,
+  listMainDispatchExperiments,
+  stopMainDispatchExperiment,
+  type MainDispatchExperiment,
+} from "@/api/dispatch-experiment";
 import {
   dispatchSceneMap,
   dispatchViews,
@@ -37,6 +48,13 @@ import {
 const status = ref<DispatchStatus | null>(null),
   tasks = ref<TaskRow[]>([]),
   resources = ref<ResourceRow[]>([]);
+const experimentTaskSets = ref<TaskSetSummary[]>([]);
+const selectedExperimentTaskSetId = ref<number | null>(null);
+const experimentName = ref("五车20单主工程调度实验");
+const experimentTimeout = ref(7200);
+const experiments = ref<MainDispatchExperiment[]>([]);
+const activeExperiment = ref<MainDispatchExperiment | null>(null);
+const experimentBusy = ref(false);
 const connected = ref(false),
   error = ref(""),
   detailError = ref(""),
@@ -61,7 +79,8 @@ const pageAbort = new AbortController();
 let timer: ReturnType<typeof setTimeout> | undefined,
   disposed = false,
   actionRevision = 0,
-  taskPollCounter = 0;
+  taskPollCounter = 0,
+  experimentPollCounter = 0;
 const clock = ref(Date.now());
 const clockTimer = setInterval(() => (clock.value = Date.now()), 1000);
 const fresh = computed(
@@ -95,6 +114,117 @@ const sceneNames = [
 
 async function loadMaps() {
   maps.value = await listRoadNets();
+}
+async function loadExperimentOptions() {
+  experimentTaskSets.value = await listTaskSets();
+  const preferred =
+    experimentTaskSets.value.find((item) =>
+      item.name.includes("五车20工位"),
+    ) ?? experimentTaskSets.value[0];
+  selectedExperimentTaskSetId.value = preferred?.id ?? null;
+  experiments.value = await listMainDispatchExperiments();
+  activeExperiment.value =
+    experiments.value.find((item) =>
+      ["PREPARING", "SUBMITTED", "RUNNING"].includes(item.status),
+    ) ?? experiments.value[0] ?? null;
+}
+async function refreshExperiments() {
+  if (!activeExperiment.value) return;
+  const id = activeExperiment.value.id;
+  try {
+    const updated = await getMainDispatchExperiment(id);
+    const index = experiments.value.findIndex((item) => item.id === id);
+    if (index >= 0) experiments.value[index] = updated;
+    else experiments.value.unshift(updated);
+    activeExperiment.value = updated;
+  } catch (e) {
+    if (!disposed) error.value = e instanceof Error ? e.message : String(e);
+  }
+}
+async function startMainDispatchExperiment() {
+  if (!selectedExperimentTaskSetId.value || !selectedScheme.value) {
+    ElMessage.warning("请选择主工程方案和实验任务集");
+    return;
+  }
+  const taskSet = experimentTaskSets.value.find(
+    (item) => item.id === selectedExperimentTaskSetId.value,
+  );
+  if (!taskSet) return;
+  if (taskSet.roadnetId === null) {
+    ElMessage.error("所选任务集没有绑定路网");
+    return;
+  }
+  try {
+    await ElMessageBox.confirm(
+      `将由主工程正式调度执行「${taskSet.name}」的 ${taskSet.taskCount} 条任务。新实验会停止当前主工程场景并创建干净隔离实例。`,
+      "启动主工程调度实验",
+      {
+        confirmButtonText: "启动实验",
+        cancelButtonText: "取消",
+        type: "warning",
+      },
+    );
+  } catch {
+    return;
+  }
+  experimentBusy.value = true;
+  error.value = "";
+  try {
+    const created = await createMainDispatchExperiment({
+      name: experimentName.value.trim(),
+      schemeId: selectedScheme.value,
+      roadnetId: taskSet.roadnetId,
+      taskSetId: taskSet.id,
+      scenarioName: "dispatch-backlog",
+      timeoutSeconds: experimentTimeout.value,
+    });
+    experiments.value = [
+      created,
+      ...experiments.value.filter((item) => item.id !== created.id),
+    ];
+    activeExperiment.value = created;
+    ElMessage.success("主工程调度实验已受理，正在创建隔离实例");
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    experimentBusy.value = false;
+  }
+}
+async function stopExperiment(item: MainDispatchExperiment) {
+  try {
+    await ElMessageBox.confirm(
+      `停止「${item.name}」后，当前主工程隔离环境也会停止。`,
+      "停止主工程实验",
+      {
+        confirmButtonText: "停止实验",
+        cancelButtonText: "取消",
+        type: "warning",
+      },
+    );
+  } catch {
+    return;
+  }
+  experimentBusy.value = true;
+  try {
+    const stopped = await stopMainDispatchExperiment(item.id);
+    const index = experiments.value.findIndex((row) => row.id === item.id);
+    if (index >= 0) experiments.value[index] = stopped;
+    activeExperiment.value = stopped;
+    ElMessage.success("主工程调度实验已停止");
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    experimentBusy.value = false;
+  }
+}
+function experimentStatusType(
+  status: MainDispatchExperiment["status"],
+): "success" | "danger" | "info" | "primary" | "warning" {
+  if (status === "FINISHED") return "success";
+  if (status === "FAILED") return "danger";
+  if (status === "ABORTED") return "info";
+  if (status === "RUNNING") return "primary";
+  return "warning";
 }
 async function poll() {
   const revision = actionRevision;
@@ -152,6 +282,7 @@ async function poll() {
     if (failures.length)
       error.value = failures.map((r) => String(r.reason)).join(" · ");
     if (selectedTask.value) await selectTask(selectedTask.value, false);
+    if (experimentPollCounter++ % 2 === 0) await refreshExperiments();
   } catch (e) {
     if (!disposed) {
       connected.value = false;
@@ -300,6 +431,7 @@ watch(
 onMounted(() => {
   void poll();
   void loadMaps().catch((e) => (error.value = String(e)));
+  void loadExperimentOptions().catch((e) => (error.value = String(e)));
 });
 onBeforeUnmount(() => {
   disposed = true;
@@ -313,7 +445,7 @@ onBeforeUnmount(() => {
   <div class="dispatch-page">
     <section class="panel source-panel">
       <div>
-        <h2>主工程接入</h2>
+        <h2>主工程调度</h2>
         <p class="muted">
           5199 · 当前隔离仿真实例 {{ status?.rootName || "尚未连接" }}
         </p>
@@ -327,7 +459,7 @@ onBeforeUnmount(() => {
             ? new Date(observedAt).toLocaleTimeString()
             : "暂无成功观察"
         }}</span
-        ><el-button @click="$router.push('/simulation')"
+        ><el-button @click="$router.push('/simulation?mode=native')"
           >进入原生算法仿真</el-button
         ></el-space
       >
@@ -339,7 +471,117 @@ onBeforeUnmount(() => {
       :closable="false"
       show-icon
     />
+    <section class="panel experiment-launcher">
+      <div class="panel-heading">
+        <div>
+          <h3>按任务集运行正式调度</h3>
+          <p class="muted">
+            任务起点映射为主工程 CNC 呼叫，车辆和路线由 5199 正式调度决定
+          </p>
+        </div>
+        <el-tag type="success">主工程控制车辆</el-tag>
+      </div>
+      <el-space wrap>
+        <el-select
+          v-model="selectedExperimentTaskSetId"
+          style="width: 250px"
+          placeholder="选择实验任务集"
+          :disabled="experimentBusy"
+        >
+          <el-option
+            v-for="item in experimentTaskSets"
+            :key="item.id"
+            :label="`${item.name} · ${item.taskCount}单`"
+            :value="item.id"
+          />
+        </el-select>
+        <el-input
+          v-model="experimentName"
+          maxlength="128"
+          style="width: 250px"
+          placeholder="实验名称"
+          :disabled="experimentBusy"
+        />
+        <el-input-number
+          v-model="experimentTimeout"
+          :min="30"
+          :max="604800"
+          :step="300"
+          style="width: 150px"
+          aria-label="实验超时秒数"
+          :disabled="experimentBusy"
+        />
+        <span class="muted">超时秒</span>
+        <el-button
+          type="primary"
+          :disabled="
+            experimentBusy ||
+            !selectedScheme ||
+            !selectedExperimentTaskSetId ||
+            !experimentName.trim()
+          "
+          @click="startMainDispatchExperiment"
+        >
+          按任务集启动主工程实验
+        </el-button>
+      </el-space>
+      <el-alert
+        v-if="selectedExperimentTaskSetId"
+        class="mapping-tip"
+        type="info"
+        :closable="false"
+        title="当前任务集需使用 BUS-CNC-001 至 BUS-CNC-305 或 CNC-001 至 CNC-305 作为起点，终点统一为 DUMPER-001"
+      />
+    </section>
+    <section v-if="experiments.length" class="panel experiment-history">
+      <div class="panel-heading">
+        <h3>主工程实验记录</h3>
+        <span v-if="activeExperiment" class="muted">
+          当前 {{ activeExperiment.message || activeExperiment.status }}
+        </span>
+      </div>
+      <el-table :data="experiments" size="small" row-key="id">
+        <el-table-column prop="name" label="实验" min-width="190" />
+        <el-table-column prop="taskCount" label="任务" width="70" />
+        <el-table-column label="状态" width="105">
+          <template #default="{ row }">
+            <el-tag size="small" :type="experimentStatusType(row.status)">
+              {{ row.status }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column
+          prop="runtimeInstance"
+          label="隔离实例"
+          min-width="220"
+          show-overflow-tooltip
+        />
+        <el-table-column prop="scenarioId" label="场景编号" min-width="150" />
+        <el-table-column prop="message" label="说明" min-width="240" />
+        <el-table-column label="操作" width="150" fixed="right">
+          <template #default="{ row }">
+            <el-button size="small" @click="activeExperiment = row">
+              查看
+            </el-button>
+            <el-button
+              v-if="row.status !== 'ABORTED'"
+              size="small"
+              type="danger"
+              link
+              :disabled="experimentBusy"
+              @click="stopExperiment(row)"
+            >
+              停止环境
+            </el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </section>
     <section class="panel controls">
+      <div class="panel-heading">
+        <h3>高级隔离控制</h3>
+        <span class="muted">用于故障演练和底层联调</span>
+      </div>
       <el-space wrap>
         <el-select
           v-model="selectedScheme"
@@ -696,6 +938,29 @@ h3 {
 }
 .controls {
   padding-bottom: 12px;
+}
+.experiment-launcher {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.experiment-launcher .panel-heading,
+.experiment-history .panel-heading {
+  margin-bottom: 4px;
+}
+.experiment-launcher h3,
+.experiment-history h3,
+.controls h3 {
+  margin: 0 0 4px;
+}
+.experiment-launcher p {
+  margin: 0;
+}
+.mapping-tip {
+  margin-top: 2px;
+}
+.experiment-history :deep(.el-table) {
+  margin-top: 10px;
 }
 @media (max-width: 1100px) {
   .dispatch-body,

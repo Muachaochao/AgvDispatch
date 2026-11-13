@@ -7,7 +7,7 @@ import { shortTime } from './dashboard';
 import { chargerMonitoringState, equipmentTone, stationSignalSummary, executionModeState } from './equipment-status';
 import {
   IconRobot, IconRoute, IconBell, IconLayoutDashboard, IconListDetails, IconMap,
-  IconPlus, IconPlugConnected, IconCircleCheck, IconCpu, IconNetwork, IconChevronDown, IconFlask
+  IconPlus, IconPlugConnected, IconCircleCheck, IconCpu, IconNetwork, IconChevronDown
 } from '@tabler/icons-vue';
 import ConsoleDialog from './ConsoleDialog.vue';
 import AppToast from './components/AppToast.vue';
@@ -52,7 +52,6 @@ const engineering = [
   { path: '/dispatch-optimization', label: '滚动派车优化', group: '运行诊断', icon: IconRoute },
   { path: '/engineering', label: '工程工作台', group: '工程配置', icon: IconCpu },
   { path: '/planning', label: '地图编辑', group: '工程配置', icon: IconRoute },
-  { path: '/simulation-center', label: '仿真测试中心', group: '联调工具', icon: IconFlask },
   { path: '/navigation-test', label: '单车导航调试', group: '联调工具', icon: IconRoute },
   { path: '/charging', label: '充电管理', group: '联调工具', icon: IconPlugConnected },
 ] as const;

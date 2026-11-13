@@ -29,3 +29,7 @@ agv:
     worker-id: ${AGV_WORKER_ID:0}
   sim:
     max-concurrent: ${AGV_SIM_MAX_CONCURRENT:5}
+  main-dispatch:
+    enabled: ${AGV_MAIN_DISPATCH_ENABLED:true}
+    base-url: ${AGV_MAIN_DISPATCH_BASE_URL:http://127.0.0.1:5199}
+    start-timeout-seconds: ${AGV_MAIN_DISPATCH_START_TIMEOUT_SECONDS:240}

@@ -5,6 +5,7 @@ import {
   type DispatchCar,
   type DispatchTaskDetail,
 } from "./dispatch-adapter";
+import http from "@/api/http";
 
 export interface DispatchStatus {
   enabled: boolean;
@@ -55,30 +56,45 @@ export async function dispatchRead<T>(
   signal?: AbortSignal,
   body?: Record<string, unknown>,
 ): Promise<T> {
-  const response = await fetch("/dispatch-api" + path, {
+  const response = await http.request<T>({
+    url: proxyPath(path),
     method: body ? "POST" : "GET",
-    headers: body ? { "Content-Type": "application/json" } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
+    data: body,
     signal: signal
       ? AbortSignal.any([signal, AbortSignal.timeout(15000)])
       : AbortSignal.timeout(15000),
   });
-  const text = await response.text();
-  let result: unknown;
-  try {
-    result = JSON.parse(text);
-  } catch {
-    throw new Error(
-      `主工程接口不可达或返回无效内容（HTTP ${response.status}）`,
-    );
+  return response as T;
+}
+
+function proxyPath(path: string) {
+  const [pathname, query] = path.split("?", 2);
+  if (pathname === "/api/simulation") return withQuery("/dispatch/main/simulation", query);
+  if (pathname === "/api/simulation/live") return "/dispatch/main/simulation/live";
+  if (pathname === "/api/simulation/resources") return "/dispatch/main/simulation/resources";
+  if (pathname === "/api/simulation/tasks") {
+    return withQuery("/dispatch/main/simulation/tasks", query);
   }
-  if (!response.ok)
-    throw new Error(
-      (result as { error?: string; message?: string }).error ??
-        (result as { message?: string }).message ??
-        `主工程接口 HTTP ${response.status}`,
-    );
-  return result as T;
+  if (pathname.startsWith("/api/simulation/tasks/")) {
+    return "/dispatch/main/simulation/tasks/" + pathname.slice("/api/simulation/tasks/".length);
+  }
+  if (pathname === "/api/simulation/report") {
+    return withQuery("/dispatch/main/simulation/report", query);
+  }
+  if (pathname.startsWith("/api/simulation/")) {
+    return "/dispatch/main/simulation/" + pathname.slice("/api/simulation/".length);
+  }
+  if (pathname === "/api/snapshot") return "/dispatch/main/snapshot";
+  if (pathname === "/api/maps") return "/dispatch/main/maps";
+  if (/^\/api\/maps\/[^/]+\/workspace$/.test(pathname)) {
+    const id = pathname.split("/")[3];
+    return `/dispatch/main/maps/${encodeURIComponent(id)}/workspace`;
+  }
+  throw new Error(`不支持的主工程读取路径：${path}`);
+}
+
+function withQuery(path: string, query?: string) {
+  return query ? `${path}?${query}` : path;
 }
 
 export async function loadPublishedDispatchMap(signal?: AbortSignal) {

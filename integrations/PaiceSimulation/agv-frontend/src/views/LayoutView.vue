@@ -13,9 +13,7 @@ const menus = computed(() => {
     { path: '/dashboard', title: '概览' },
     { path: '/roadnet', title: '车间地图' },
     { path: '/tasks', title: '任务集' },
-    { path: '/simulation', title: '仿真运行' },
-    { path: '/dispatch', title: '主工程接入' },
-    { path: '/experiments', title: '对比实验' }
+    { path: '/simulation', title: '仿真中心' }
   ]
   if (auth.isAdmin) {
     base.push({ path: '/admin/users', title: '用户管理' })

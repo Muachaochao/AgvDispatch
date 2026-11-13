@@ -14,31 +14,6 @@ export default defineConfig({
     strictPort: true,
     port: 5270,
     proxy: {
-      "/dispatch-api": {
-        target: "http://127.0.0.1:5199",
-        changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/dispatch-api/, ""),
-        bypass(req) {
-          const path = new URL(
-            req.url ?? "/",
-            "http://127.0.0.1",
-          ).pathname.replace(/^\/dispatch-api/, "");
-          const read =
-            req.method === "GET" &&
-            (/^\/api\/simulation(?:\/(?:tasks(?:\/[\w-]+)?|resources|snapshot|report|live))?$/.test(
-              path,
-            ) ||
-              path === "/api/snapshot" ||
-              path === "/api/maps" ||
-              /^\/api\/maps\/[^/]+\/workspace$/.test(path));
-          const write =
-            req.method === "POST" &&
-            /^\/api\/simulation\/(?:start|stop|scheme-start|run|abort)$/.test(
-              path,
-            );
-          if (!read && !write) return false;
-        },
-      },
       "/api": {
         target: "http://127.0.0.1:5271",
         changeOrigin: true,

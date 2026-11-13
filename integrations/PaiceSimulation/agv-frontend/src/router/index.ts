@@ -36,19 +36,16 @@ const router = createRouter({
         {
           path: 'simulation',
           name: 'simulation',
-          component: () => import('@/views/SimulationView.vue'),
-          meta: { title: '仿真运行' }
+          component: () => import('@/views/SimulationHubView.vue'),
+          meta: { title: '仿真中心', subtitle: '原生算法 / 主工程调度 / 对比实验' }
         },
         {
           path: 'experiments',
-          name: 'experiments',
-          component: () => import('@/views/ExperimentView.vue'),
-          meta: { title: '对比实验' }
+          redirect: { path: '/simulation', query: { mode: 'compare' } }
         },
         {
           path: 'dispatch',
-          component: () => import('@/views/DispatchIntegrationView.vue'),
-          meta: { title: '主工程接入', subtitle: 'Robokit / PLC 隔离仿真' }
+          redirect: { path: '/simulation', query: { mode: 'main' } }
         },
         {
           path: 'admin/users',
