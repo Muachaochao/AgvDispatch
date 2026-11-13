@@ -12,6 +12,8 @@ const output = path.join(root, ".runtime", "browser-check");
 await mkdir(output, { recursive: true });
 const errors = [],
   writes = [];
+let fixtureMapId = null,
+  fixtureTaskSetId = null;
 page.on("pageerror", (e) => errors.push(String(e)));
 let unavailable = false;
 const definition = {
@@ -197,23 +199,40 @@ try {
     .getByRole("button", { name: "确认保存实验副本", exact: true })
     .waitFor();
   assert.equal(await page.locator(".map-import .el-alert--error").count(), 0);
+  const mapSavedResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/roadnet") &&
+      response.request().method() === "POST",
+  );
   await page
     .getByRole("button", { name: "确认保存实验副本", exact: true })
     .click();
+  fixtureMapId = (await (await mapSavedResponse).json()).data.id;
   await page
     .getByRole("button", { name: "已保存实验副本", exact: true })
     .waitFor();
   console.log(
     "PASS source map conversion validates and persists in real independent Java database",
   );
+  await page.evaluate(() =>
+    Object.keys(localStorage)
+      .filter((key) => key.startsWith("dispatch-import-"))
+      .forEach((key) => localStorage.removeItem(key)),
+  );
   await page.locator(".tasks-panel .el-table__row .el-checkbox").click();
   await page
     .getByRole("button", { name: "预览选中命令为实验任务", exact: true })
     .click();
   await page.getByRole("dialog").waitFor();
+  const tasksSavedResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/taskset") &&
+      response.request().method() === "POST",
+  );
   await page
     .getByRole("button", { name: "确认保存实验任务集", exact: true })
     .click();
+  fixtureTaskSetId = (await (await tasksSavedResponse).json()).data.id;
   await page
     .getByRole("button", { name: "已保存任务集", exact: true })
     .waitFor();
@@ -221,17 +240,33 @@ try {
     "PASS original command becomes an identity-mapped native experimental task set",
   );
   const compared = await page.evaluate(async () => {
-    const headers = { Authorization: 'Bearer ' + localStorage.getItem('agv_token'), 'Content-Type': 'application/json' };
-    const maps = (await (await fetch('/api/roadnet/list', { headers })).json()).data;
-    const map = maps.filter(m => m.name.includes('接口回归夹具')).at(-1);
-    const sets = (await (await fetch('/api/taskset/list', { headers })).json()).data;
-    const set = sets.filter(s => s.roadnetId === map.id).at(-1);
-    const response = await fetch('/api/experiment/compare', { method: 'POST', headers, body: JSON.stringify({ roadnetId: map.id, taskSetId: set.id, agvCount: 2, seed: 20261113 }) });
+    const headers = {
+      Authorization: "Bearer " + localStorage.getItem("agv_token"),
+      "Content-Type": "application/json",
+    };
+    const maps = (await (await fetch("/api/roadnet/list", { headers })).json())
+      .data;
+    const map = maps.filter((m) => m.name.includes("接口回归夹具")).at(-1);
+    const sets = (await (await fetch("/api/taskset/list", { headers })).json())
+      .data;
+    const set = sets.filter((s) => s.roadnetId === map.id).at(-1);
+    const response = await fetch("/api/experiment/compare", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        roadnetId: map.id,
+        taskSetId: set.id,
+        agvCount: 2,
+        seed: 20261113,
+      }),
+    });
     return (await response.json()).data;
   });
   assert.equal(compared.length, 2);
-  assert.ok(compared.every(row => row.status === 'FINISHED'));
-  console.log('PASS both native algorithms finish on the imported graph and command task set');
+  assert.ok(compared.every((row) => row.status === "FINISHED"));
+  console.log(
+    "PASS both native algorithms finish on the imported graph and command task set",
+  );
 
   await page.locator(".el-dialog__headerbtn").click();
   await page.getByRole("button", { name: "运行业务场景", exact: true }).click();
@@ -267,5 +302,22 @@ try {
     ),
   );
 } finally {
+  await page
+    .evaluate(
+      async ({ mapId, taskSetId }) => {
+        const headers = {
+          Authorization: "Bearer " + localStorage.getItem("agv_token"),
+        };
+        if (taskSetId)
+          await fetch("/api/taskset/" + taskSetId, {
+            method: "DELETE",
+            headers,
+          });
+        if (mapId)
+          await fetch("/api/roadnet/" + mapId, { method: "DELETE", headers });
+      },
+      { mapId: fixtureMapId, taskSetId: fixtureTaskSetId },
+    )
+    .catch(() => {});
   await browser.close();
 }

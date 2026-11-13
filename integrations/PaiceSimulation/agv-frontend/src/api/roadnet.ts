@@ -21,6 +21,11 @@ export interface NetEdge {
 }
 
 export interface RoadNetPayload {
+  integration?: {
+    identity?: Record<string, unknown>
+    importedGraphFingerprint?: string
+    [key: string]: unknown
+  } | null
   nodes: NetNode[]
   edges: NetEdge[]
   width?: number

@@ -8,6 +8,7 @@ import {
 } from "@/api/roadnet";
 import {
   convertDispatchMap,
+  roadnetFingerprint,
   type SourceMap,
   type MapConversion,
 } from "@/integration/dispatch-adapter";
@@ -68,10 +69,10 @@ async function loadFile(event: Event) {
   try {
     if (file.size > 8 * 1024 * 1024) throw new Error("地图文件超过 8 MiB");
     const source = JSON.parse(await file.text()),
-      def = source.definition ?? source;
+      def = source.conversion?.sourceDefinition ?? source.definition ?? source;
     if (!Array.isArray(def.nodes) || !Array.isArray(def.edges))
       throw new Error("地图文件缺少 nodes / edges");
-    reset(def, { sourceName: file.name });
+    reset(def, source.identity ?? { sourceName: file.name });
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   } finally {
@@ -104,7 +105,20 @@ async function save() {
   try {
     const result = await createRoadNet({
       name: name.value,
-      roadnet: conversion.value.roadnet,
+      roadnet: {
+        ...conversion.value.roadnet,
+        integration: {
+          identity: identity.value,
+          importedGraphFingerprint: roadnetFingerprint(
+            conversion.value.roadnet,
+          ),
+          sourceDefinition: conversion.value.sourceDefinition,
+          coordinateOffset: conversion.value.coordinateOffset,
+          edgeMapping: conversion.value.edgeMapping,
+          excludedNodes: conversion.value.excludedNodes,
+          excludedEdges: conversion.value.excludedEdges,
+        },
+      },
       isTemplate: false,
     });
     savedId.value = result.id;

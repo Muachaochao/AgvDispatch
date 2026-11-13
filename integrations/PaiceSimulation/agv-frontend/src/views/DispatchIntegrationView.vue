@@ -199,17 +199,23 @@ async function previewTasks() {
   error.value = "";
   savedTaskSet.value = null;
   try {
-    const record = JSON.parse(
-      localStorage.getItem(`dispatch-import-${targetMap.value}`) ?? "null",
-    );
+    const map = await getRoadNet(targetMap.value);
+    const cached = map.integration
+      ? null
+      : JSON.parse(
+          localStorage.getItem(`dispatch-import-${targetMap.value}`) ?? "null",
+        );
+    const identity = map.integration?.identity ?? cached?.identity;
+    const hash = identity?.definitionHash;
     const source = status.value?.configuration?.mapIdentity;
-    const hash = record?.identity?.definitionHash;
     if (!hash || hash !== source?.definitionHash)
       throw new Error(
         "目标路网缺少与当前仿真地图一致的来源摘要，请先从本实例导入地图",
       );
-    const map = await getRoadNet(targetMap.value);
-    if (roadnetFingerprint(map) !== roadnetFingerprint(record.roadnet))
+    const expected =
+      map.integration?.importedGraphFingerprint ??
+      (cached?.roadnet ? roadnetFingerprint(cached.roadnet) : null);
+    if (!expected || roadnetFingerprint(map) !== expected)
       throw new Error("目标实验路网已修改，请重新核对并导入当前来源地图");
     const details: DispatchTaskDetail[] = [];
     for (const task of selectedTasks.value)
@@ -403,8 +409,7 @@ onBeforeUnmount(() => {
         <el-empty v-if="!vehicles.length" description="暂无车辆反馈" />
         <article v-for="car in vehicles" :key="car.id" class="vehicle-row">
           <div>
-            <strong>{{ car.id }}</strong
-            ><el-tag
+            <strong>{{ car.id }}</strong><el-tag
               size="small"
               :type="
                 car.status === 'OFFLINE'
@@ -555,9 +560,7 @@ onBeforeUnmount(() => {
     <el-dialog v-model="importDialog" title="原运输命令转换预览" width="780px"
       ><p>
         将生成
-        {{
-          importPreview?.tasks.length ?? 0
-        }}
+        {{ importPreview?.tasks.length ?? 0 }}
         条算法运输任务，原任务身份保存在映射记录中。
       </p>
       <el-input

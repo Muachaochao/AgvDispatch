@@ -222,7 +222,10 @@ async function createNew() {
 }
 
 function currentPayload(): RoadNetPayload {
-  return editorRef.value?.getPayload() ?? payload.value
+  return {
+    ...(editorRef.value?.getPayload() ?? payload.value),
+    integration: payload.value.integration
+  }
 }
 
 async function validate() {
@@ -382,7 +385,8 @@ async function onFileChange(event: Event) {
       nodes: parsed.nodes,
       edges: parsed.edges,
       width: parsed.width,
-      height: parsed.height
+      height: parsed.height,
+      integration: parsed.integration
     }
     payload.value = next
     editorRef.value?.setPayload(next)
