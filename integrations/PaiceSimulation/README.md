@@ -1,6 +1,8 @@
 # 主工程集成版入口
 
-本目录提供完整独立模板应用。启动方式见 [启动独立工程仿真](docs/how-to/启动独立工程仿真.md)，接口及转换边界见 [主工程数据接入契约](docs/reference/dispatch-integration.md)。入口为 http://127.0.0.1:5270，Java 后台为回环 5271，主工程接入来源为 5199。也可双击本目录的“启动独立仿真.cmd”。
+本目录提供完整独立模板应用。启动方式见 [启动独立工程仿真](docs/how-to/启动独立工程仿真.md)，接口及转换边界见 [主工程数据接入契约](docs/reference/dispatch-integration.md)。入口为 http://127.0.0.1:5270，Java 后台为回环 5271，主工程调度实验来源为 5199。也可双击本目录的“启动独立仿真.cmd”。
+
+排策智演是用户可见的唯一仿真前台。“仿真中心”统一提供原生算法、主工程调度和对比实验。主工程运行底座仍由 5199 提供，操作说明见 [运行主工程调度实验](docs/how-to/运行主工程调度实验.md)。
 
 以下保留上游项目介绍与参考流程，集成版端口及启动过程使用上述入口。
 
@@ -81,8 +83,8 @@ cd agv-backend
 mvn spring-boot:run -Dspring-boot.run.profiles=mysql
 ```
 
-建表由 Flyway 迁移脚本管理（`agv-backend/src/main/resources/db/migration/`），共 7 张表：
-`sys_user`、`sys_dict`、`roadnet`、`task_set`、`experiment`、`experiment_metric`、`sys_audit_log`。
+建表由 Flyway 迁移脚本管理（`agv-backend/src/main/resources/db/migration/`），共 8 张表：
+`sys_user`、`sys_dict`、`roadnet`、`task_set`、`experiment`、`experiment_metric`、`sys_audit_log`、`main_dispatch_experiment`。
 （`sim_event` 为可选降级项，默认不建，事件只走 WebSocket。）
 
 所有表的主键 `id` 都是 `BIGINT NOT NULL PRIMARY KEY`，由应用侧雪花算法生成，**数据库不使用自增**。

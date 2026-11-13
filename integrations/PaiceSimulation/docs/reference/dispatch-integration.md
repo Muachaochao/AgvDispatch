@@ -2,9 +2,111 @@
 
 独立应用完整采用排策智演的 Vue 3、Element Plus、Three.js、ECharts 页面及 Java 算法后台。访问入口为 http://127.0.0.1:5270，Java API 为回环 5271。主工程数据代理固定使用 http://127.0.0.1:5199，路径前缀为 `/dispatch-api`。原生 API 继续使用 `/api`，原生实时通道继续使用 `/ws`。
 
+## 统一仿真前台
+
+排策智演是用户可见的唯一仿真前台。“仿真中心”在一个入口中提供原生算法、主工程调度和对比实验三个工作区。5199 的仿真测试中心不再出现在日常导航中，其隔离运行能力继续作为主工程调度实验的运行底座。
+
+主工程调度实验的权威决策方是 5199 内的 `AgvDispatch.Service`。排策智演负责选择任务集、创建干净实例、提交呼叫计划、观察车辆和任务、汇总报告与保存实验记录。排策智演不在该模式中向虚拟车辆发送路线。
+
+同一时刻只允许一个主工程调度实验。新建实验会先停止当前主工程场景并创建新的隔离实例，旧实验记录和上一实例证据保持不变。
+
+## 主工程调度实验 API
+
+排策智演后台提供以下受 JWT 保护的固定接口。
+
+```text
+POST /api/dispatch/experiments
+GET  /api/dispatch/experiments
+GET  /api/dispatch/experiments/{id}
+POST /api/dispatch/experiments/{id}/stop
+```
+
+主工程原始观察和高级操作通过排策智演后台固定代理访问。
+
+```text
+GET  /api/dispatch/main/simulation
+GET  /api/dispatch/main/simulation/live
+GET  /api/dispatch/main/simulation/tasks
+GET  /api/dispatch/main/simulation/tasks/{id}
+GET  /api/dispatch/main/simulation/resources
+GET  /api/dispatch/main/simulation/report
+GET  /api/dispatch/main/snapshot
+GET  /api/dispatch/main/maps
+GET  /api/dispatch/main/maps/{id}/workspace
+POST /api/dispatch/main/simulation/{action}
+```
+
+`{action}` 只接受 `start`、`stop`、`scheme-start`、`run`、`abort`。前端不再通过 Vite 直连 5199，也不再携带第二套跨域配置。代理只拼接固定的 5199 回环路径。
+
+创建请求字段：
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `name` | string | 是 |  | 1 至 128 个字符的实验名称 |
+| `schemeId` | string | 是 |  | 5199 已保存方案 ID |
+| `roadnetId` | number | 是 |  | 排策智演路网 ID |
+| `taskSetId` | number | 是 |  | 与路网绑定的任务集 ID |
+| `scenarioName` | string | 否 | `dispatch-backlog` | 当前只接受 `dispatch-backlog` |
+| `timeoutSeconds` | number | 否 | `7200` | 30 至 604800 秒 |
+
+当前任务映射规则：
+
+- 任务 `from` 必须是 `BUS-CNC-001` 至 `BUS-CNC-305`，或直接使用 `CNC-001` 至 `CNC-305`。
+- 所有任务 `to` 必须相同，且必须是 `DUMPER-001`。5199 当前方案按该工位配置倒料目标。
+- 每个任务转换成一个 `CNC-xxx` PLC 呼叫，`atSeconds` 固定为 0。
+- 呼叫不指定车辆。车辆由主工程正式调度选择。
+- 当前任务集包含 `BUS-CNC-001` 至 `BUS-CNC-020` 时，转换结果为 `CNC-001` 至 `CNC-020` 共 20 条呼叫。
+
+接口返回的实验状态：
+
+| 状态 | 含义 |
+|---|---|
+| `PREPARING` | 正在停止旧场景、创建实例或启动主工程服务 |
+| `SUBMITTED` | 呼叫计划已提交，等待主工程场景开始 |
+| `RUNNING` | 场景运行中 |
+| `FINISHED` | 主工程场景判定通过 |
+| `FAILED` | 创建或运行失败 |
+| `ABORTED` | 用户停止或主工程场景中止 |
+
+创建接口在后台任务受理后立即返回 `PREPARING`。前端每 2 秒读取一次实验详情。详情接口会读取 5199 当前轻量状态，更新实验状态和主工程场景摘要。
+
+错误边界：
+
+| 场景 | 业务码 | HTTP |
+|---|---:|---:|
+| 主工程接入功能未启用 | `5031` | 503 |
+| 5199 不可达或返回无效 JSON | `5031` | 503 |
+| 方案、任务集或路网不匹配 | `4000` | 400 |
+| 当前任务无法映射为已配置 CNC 呼叫 | `4000` | 400 |
+| 查看或停止其他用户实验 | `4030` | 403 |
+| 实验不存在 | `4040` | 404 |
+
+配置项：
+
+| 配置 | 默认值 | 说明 |
+|---|---|---|
+| `agv.main-dispatch.enabled` | `true` | 是否允许创建主工程调度实验 |
+| `agv.main-dispatch.base-url` | `http://127.0.0.1:5199` | 5199 回环地址 |
+| `agv.main-dispatch.start-timeout-seconds` | `240` | 等待隔离实例进入运行态的上限 |
+
+环境变量 `AGV_MAIN_DISPATCH_ENABLED`、`AGV_MAIN_DISPATCH_BASE_URL` 和 `AGV_MAIN_DISPATCH_START_TIMEOUT_SECONDS` 可覆盖配置。
+
+<!-- runnable -->
+
+```powershell
+Invoke-RestMethod -Method Post http://127.0.0.1:5271/api/dispatch/experiments `
+  -Headers @{ Authorization = "Bearer $token" } `
+  -ContentType application/json `
+  -Body '{"name":"五车20单主工程实验","schemeId":"scheme-id","roadnetId":370582587826176,"taskSetId":370583982432256}'
+```
+
+<!-- manual -->
+
+在排策智演“仿真中心 → 主工程调度”选择“五车20工位算法任务”和 B07 五车方案，点击“按任务集启动主工程实验”。页面应依次显示 `PREPARING`、`SUBMITTED`、`RUNNING`，并显示主工程实时车辆、任务和等待原因。完成后实验详情应保留实例名称、场景编号、地图摘要、任务数量和报告编号。
+
 ## 页面与数据
 
-“概览、车间地图、任务集、仿真运行、对比实验、用户管理、数字字典”采用原项目页面。“主工程接入”增加当前隔离仿真实例的三维观察、车辆、原任务详情、交通资源、方案启动、场景运行、终止编排及报告查询。轮询间隔为 1 秒，串行请求，离页取消。读取失败保留最后观察并显示断连，禁用写操作。图形坐标使用 X/Y 米制映射至 X/Z，主工程角度乘以 180/π 转为原组件使用的角度值。状态未知或失联单独显示。
+“概览、车间地图、任务集、仿真中心、用户管理、数字字典”采用统一入口。“仿真中心”有三个页签：原生算法、主工程调度、对比实验。主工程调度页增加当前隔离仿真实例的三维观察、车辆、原任务详情、交通资源、方案启动、实验启动、场景运行、终止编排及报告查询。轮询间隔为 1 秒，串行请求，离页取消。读取失败保留最后观察并显示断连，禁用写操作。图形坐标使用 X/Y 米制映射至 X/Z，主工程角度乘以 180/π 转为原组件使用的角度值。状态未知或失联单独显示。
 
 高频轮询使用 `/api/simulation/live` 轻量设备状态。实例首次出现或发生变化时再读取一次完整 `/api/simulation`，保留地图、方案、配置和报告元数据。读取 Web 地图及方案控制仍使用完整接口。该路径避免 B07 的 305 工位配置和大点表在每个 1 秒轮询中重复传输。
 
