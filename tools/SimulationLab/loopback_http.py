@@ -37,7 +37,8 @@ class LoopbackJsonClient:
                     if response.will_close:
                         connection.close(); connection = None
                     return value
-                except (http.client.RemoteDisconnected, BrokenPipeError, ConnectionResetError):
+                except (http.client.RemoteDisconnected, BrokenPipeError, ConnectionResetError,
+                        ConnectionAbortedError):
                     connection.close()
                     if data is not None or attempt:
                         raise
