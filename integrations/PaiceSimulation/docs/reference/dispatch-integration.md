@@ -38,6 +38,12 @@ POST /api/dispatch/main/simulation/{action}
 
 `{action}` 只接受 `start`、`stop`、`scheme-start`、`run`、`abort`。前端不再通过 Vite 直连 5199，也不再携带第二套跨域配置。代理只拼接固定的 5199 回环路径。
 
+## 本地连接恢复
+
+5199 控制桥与隔离 WebHost 之间使用短生命周期、容量受限的回环 HTTP keep-alive 连接。Windows 下 `ConnectionAbortedError` 或 `WinError 10053` 表示旧空闲连接已被服务端关闭，不能直接解释为调度或 PLC 失败。
+
+读取请求遇到 `RemoteDisconnected`、`BrokenPipeError`、`ConnectionResetError` 或 `ConnectionAbortedError` 时，关闭旧连接并新建连接重试一次。写请求保留原请求编号和幂等边界，连接中断后不得自动重放，由调用方按原请求结果核对。
+
 创建请求字段：
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
