@@ -61,6 +61,8 @@ class EngineScaleTest {
                 org.junit.jupiter.api.Assertions.assertTrue(result.makespan() > 0);
             }
         }
-        Files.write(Path.of("target", "scale-matrix.txt"), lines);
+        Path output = Path.of("target", "scale-matrix.txt");
+        Files.createDirectories(output.getParent());
+        Files.write(output, lines);
     }
 }
