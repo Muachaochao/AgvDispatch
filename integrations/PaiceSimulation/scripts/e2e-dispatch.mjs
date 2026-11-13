@@ -84,6 +84,7 @@ const detail = {
   ],
 };
 let sourceRunning = true;
+let scenarioStarted = false;
 await page.route("**/dispatch-api/**", async (route) => {
   if (unavailable)
     return route.fulfill({
@@ -99,6 +100,8 @@ await page.route("**/dispatch-api/**", async (route) => {
     writes.push({ p, body });
     if (p.endsWith("/stop")) sourceRunning = false;
     if (p.endsWith("/start")) sourceRunning = true;
+    if (p.endsWith("/run")) scenarioStarted = true;
+    if (p.endsWith("/abort")) scenarioStarted = false;
   }
   if (p === "/api/maps")
     data = [
@@ -133,6 +136,33 @@ await page.route("**/dispatch-api/**", async (route) => {
         status: "Published",
         definition,
       },
+    };
+  else if (p === "/api/simulation/live")
+    data = {
+      enabled: true,
+      rootName: "isolated-two-car-test",
+      running: sourceRunning,
+      phase: sourceRunning ? "running" : "stopped",
+      fresh: sourceRunning,
+      device: {
+        time: Date.now() / 1000,
+        cars: {
+          "AGV-01": {
+            x: 10,
+            y: 20,
+            angle: Math.PI / 2,
+            loaded: true,
+            current_task: "original",
+            waitReason: "等待倒料资源 R1",
+          },
+          "AGV-02": { x: 14, y: 20, angle: 0, moving: true },
+        },
+      },
+      scenario: {
+        name: "normal-cycle",
+        status: scenarioStarted ? "running" : "idle",
+      },
+      error: null,
     };
   else if (p === "/api/simulation" || route.request().method() === "POST")
     data = {
@@ -226,7 +256,10 @@ try {
     .click();
   await page.waitForTimeout(1000);
   if ((await page.locator(".source-line").count()) === 0)
-    console.error("Map import text:", await page.locator(".map-import").textContent());
+    console.error(
+      "Map import text:",
+      await page.locator(".map-import").textContent(),
+    );
   await page.waitForFunction(() =>
     document
       .querySelector(".source-line")
@@ -260,7 +293,10 @@ try {
     .click();
   await page.waitForTimeout(500);
   if ((await page.getByRole("dialog").count()) === 0)
-    console.error("Task import alerts:", await page.locator(".el-alert").allTextContents());
+    console.error(
+      "Task import alerts:",
+      await page.locator(".el-alert").allTextContents(),
+    );
   await page.getByRole("dialog").waitFor();
   const tasksSavedResponse = page.waitForResponse(
     (response) =>

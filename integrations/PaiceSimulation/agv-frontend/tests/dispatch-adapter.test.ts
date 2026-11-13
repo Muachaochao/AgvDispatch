@@ -213,7 +213,7 @@ test("native JSON property ordering does not invalidate imported graph identity"
   assert.equal(roadnetFingerprint(a), roadnetFingerprint(b));
 });
 
-test("parallel directed source roads preserve independent identities through distinct intermediate nodes", () => {
+test("reciprocal roads merge into one bidirectional road with both source identities", () => {
   const d = {
     ...definition,
     edges: [
@@ -236,6 +236,38 @@ test("parallel directed source roads preserve independent identities through dis
     ],
   };
   const result = convertDispatchMap(d, "C");
+  assert.equal(result.roadnet.nodes.length, 3);
+  assert.equal(result.roadnet.edges.length, 1);
+  assert.equal(result.roadnet.edges[0]?.direction, "TWO_WAY");
+  assert.deepEqual(result.edgeMapping.forward, [result.roadnet.edges[0]?.id]);
+  assert.deepEqual(result.edgeMapping.reverse, [result.roadnet.edges[0]?.id]);
+});
+
+test("parallel road separation remains available when reciprocal merging is disabled", () => {
+  const d = {
+    ...definition,
+    edges: [
+      {
+        id: "forward",
+        from: "A",
+        to: "B",
+        geometryKind: "Line",
+        distance: 4,
+        speedLimit: 1,
+      },
+      {
+        id: "reverse",
+        from: "B",
+        to: "A",
+        geometryKind: "Line",
+        distance: 4,
+        speedLimit: 1,
+      },
+    ],
+  };
+  const result = convertDispatchMap(d, "C", {
+    mergeOppositeParallel: false,
+  });
   assert.equal(result.roadnet.edges.length, 4);
   const pairs = result.roadnet.edges.map((e) =>
     [e.from, e.to].sort().join("|"),

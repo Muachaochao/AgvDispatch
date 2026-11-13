@@ -25,7 +25,7 @@ export default defineConfig({
           ).pathname.replace(/^\/dispatch-api/, "");
           const read =
             req.method === "GET" &&
-            (/^\/api\/simulation(?:\/(?:tasks(?:\/[\w-]+)?|resources|snapshot|report))?$/.test(
+            (/^\/api\/simulation(?:\/(?:tasks(?:\/[\w-]+)?|resources|snapshot|report|live))?$/.test(
               path,
             ) ||
               path === "/api/snapshot" ||

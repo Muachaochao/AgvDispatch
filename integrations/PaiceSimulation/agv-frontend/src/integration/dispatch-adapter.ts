@@ -21,6 +21,7 @@ export interface SourceEdge {
   enabled?: boolean;
   geometryKind?: string;
   controlPoints?: Point[] | null;
+  resourceIds?: string[] | null;
 }
 export interface SourceMap {
   name?: string;
@@ -157,7 +158,11 @@ function nodeType(type?: string): NetNode["type"] {
 export function convertDispatchMap(
   definition: SourceMap,
   initialSite?: string,
-  options: { roundTripOnly?: boolean; simplifyRoads?: boolean } = {},
+  options: {
+    roundTripOnly?: boolean;
+    simplifyRoads?: boolean;
+    mergeOppositeParallel?: boolean;
+  } = {},
 ): MapConversion {
   if (definition.unit !== "m") throw new Error("只接受米制完整地图");
   const warnings = [
@@ -261,13 +266,20 @@ export function convertDispatchMap(
   const pairKey = (edge: SourceEdge) =>
     JSON.stringify([edge.from, edge.to].sort());
   const pairCounts = new Map<string, number>();
+  const pairGroups = new Map<string, SourceEdge[]>();
   for (const edge of definition.edges) {
-    if (edge.enabled !== false && byId.has(edge.from) && byId.has(edge.to))
+    if (edge.enabled !== false && byId.has(edge.from) && byId.has(edge.to)) {
       pairCounts.set(pairKey(edge), (pairCounts.get(pairKey(edge)) ?? 0) + 1);
+      const group = pairGroups.get(pairKey(edge)) ?? [];
+      group.push(edge);
+      pairGroups.set(pairKey(edge), group);
+    }
   }
+  const consumedEdges = new Set<string>();
   for (const [index, edge] of definition.edges.entries()) {
     if (edge.enabled === false) continue;
     const id = edge.id ?? `source-edge-${index}`;
+    if (consumedEdges.has(id)) continue;
     if (edgeIds.has(id)) throw new Error("地图道路 ID 重复");
     edgeIds.add(id);
     const from = byId.get(edge.from),
@@ -280,12 +292,43 @@ export function convertDispatchMap(
       throw new Error(`道路 ${id} 缺少有效长度`);
     if (!(Number.isFinite(edge.speedLimit) && edge.speedLimit! > 0))
       throw new Error(`道路 ${id} 缺少有效速度`);
+    const reciprocal =
+      options.mergeOppositeParallel === false || edge.bidirectional
+        ? undefined
+        : (pairGroups.get(pairKey(edge)) ?? []).find((candidate) => {
+            const candidateId =
+              candidate.id ??
+              `source-edge-${definition.edges.indexOf(candidate)}`;
+            return (
+              candidateId !== id &&
+              candidate.enabled !== false &&
+              !candidate.bidirectional &&
+              candidate.from === edge.to &&
+              candidate.to === edge.from &&
+              Math.abs(candidate.distance! - edge.distance!) < 1e-6 &&
+              Math.abs(candidate.speedLimit! - edge.speedLimit!) < 1e-9 &&
+              JSON.stringify(candidate.resourceIds ?? []) ===
+                JSON.stringify(edge.resourceIds ?? [])
+            );
+          });
+    if (reciprocal)
+      consumedEdges.add(
+        reciprocal.id ?? `source-edge-${definition.edges.indexOf(reciprocal)}`,
+      );
     const points = options.simplifyRoads
       ? [{ ...from }, { ...to }]
       : sampleDispatchEdge(from, to, edge);
-    if (options.simplifyRoads && edge.geometryKind && edge.geometryKind !== "Line")
+    if (
+      options.simplifyRoads &&
+      edge.geometryKind &&
+      edge.geometryKind !== "Line"
+    )
       simplifiedRoads++;
-    if (points.length === 2 && (pairCounts.get(pairKey(edge)) ?? 0) > 1)
+    if (
+      points.length === 2 &&
+      (pairCounts.get(pairKey(edge)) ?? 0) > 1 &&
+      !reciprocal
+    )
       points.splice(1, 0, { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 });
     const lengths = points
       .slice(1)
@@ -302,7 +345,7 @@ export function convertDispatchMap(
       }),
       edge.to,
     ];
-    edgeMapping[id] = lengths.map((length, i) => {
+    const segmentIds = lengths.map((length, i) => {
       const segmentId =
         lengths.length === 1 ? id : unique(`__dispatch_${id}_s${i + 1}`);
       edges.push({
@@ -312,11 +355,17 @@ export function convertDispatchMap(
         length: (edge.distance! * length) / total,
         speed: edge.speedLimit!,
         capacity: 1,
-        direction: edge.bidirectional ? "TWO_WAY" : "ONE_WAY",
+        direction: edge.bidirectional || reciprocal ? "TWO_WAY" : "ONE_WAY",
         laneMode: "SINGLE",
       });
       return segmentId;
     });
+    edgeMapping[id] = segmentIds;
+    if (reciprocal) {
+      const reciprocalId =
+        reciprocal.id ?? `source-edge-${definition.edges.indexOf(reciprocal)}`;
+      edgeMapping[reciprocalId] = segmentIds;
+    }
     if (points.length > 2)
       warnings.push(`道路 ${id} 转换为 ${lengths.length} 段折线。`);
   }
@@ -537,8 +586,7 @@ export function simulationRoadnetName(definition: SourceMap) {
   const name = definition.name ?? "Web仿真图";
   if (name.includes("28阶段") || name.includes("闭环联调"))
     return "真实场景仿真";
-  if (name.includes("305") && name.includes("五车"))
-    return "全厂五车仿真";
+  if (name.includes("305") && name.includes("五车")) return "全厂五车仿真";
   return `${name}（仿真）`;
 }
 

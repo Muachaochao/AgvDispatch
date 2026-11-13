@@ -60,7 +60,8 @@ const liveMap = shallowRef<RoadNetPayload | null>(null),
 const pageAbort = new AbortController();
 let timer: ReturnType<typeof setTimeout> | undefined,
   disposed = false,
-  actionRevision = 0;
+  actionRevision = 0,
+  taskPollCounter = 0;
 const clock = ref(Date.now());
 const clockTimer = setInterval(() => (clock.value = Date.now()), 1000);
 const fresh = computed(
@@ -98,11 +99,26 @@ async function loadMaps() {
 async function poll() {
   const revision = actionRevision;
   try {
-    const next = await dispatchRead<DispatchStatus>(
-      "/api/simulation",
+    const live = await dispatchRead<DispatchStatus>(
+      "/api/simulation/live",
       pageAbort.signal,
     );
     if (disposed || revision !== actionRevision) return;
+    const needsMetadata =
+      !status.value?.map || live.rootName !== status.value.rootName;
+    const full = needsMetadata
+      ? await dispatchRead<DispatchStatus>("/api/simulation", pageAbort.signal)
+      : null;
+    const next: DispatchStatus = full
+      ? {
+          ...full,
+          ...live,
+          map: full.map,
+          configuration: full.configuration,
+          schemes: full.schemes,
+          report: full.report,
+        }
+      : { ...status.value!, ...live };
     status.value = next;
     observedAt.value = Date.now();
     error.value = next.error ?? "";
@@ -111,25 +127,28 @@ async function poll() {
       liveMap.value = next.map ? dispatchSceneMap(next.map) : null;
       liveMapSignature.value = signature;
     }
-    const results = await Promise.allSettled([
-      dispatchRead<{ items: TaskRow[] }>(
-        "/api/simulation/tasks?page=1&pageSize=200",
-        pageAbort.signal,
-      ),
-      dispatchRead<ResourceRow[]>(
-        "/api/simulation/resources",
-        pageAbort.signal,
-      ),
-    ]);
+    const shouldReadDetails = taskPollCounter++ % 3 === 0;
+    const results = shouldReadDetails
+      ? await Promise.allSettled([
+          dispatchRead<{ items: TaskRow[] }>(
+            "/api/simulation/tasks?page=1&pageSize=200",
+            pageAbort.signal,
+          ),
+          dispatchRead<ResourceRow[]>(
+            "/api/simulation/resources",
+            pageAbort.signal,
+          ),
+        ])
+      : [];
     if (disposed || revision !== actionRevision) return;
-    if (results[0].status === "fulfilled")
+    if (results[0]?.status === "fulfilled")
       tasks.value = results[0].value.items ?? [];
-    if (results[1].status === "fulfilled")
+    if (results[1]?.status === "fulfilled")
       resources.value = results[1].value ?? [];
     const failures = results.filter(
       (r) => r.status === "rejected",
     ) as PromiseRejectedResult[];
-    connected.value = failures.length === 0;
+    connected.value = !shouldReadDetails || failures.length === 0;
     if (failures.length)
       error.value = failures.map((r) => String(r.reason)).join(" · ");
     if (selectedTask.value) await selectTask(selectedTask.value, false);
