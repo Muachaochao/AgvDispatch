@@ -105,6 +105,7 @@ function resize() {
   camera.aspect = width / height;
   camera.updateProjectionMatrix();
   renderer.setSize(width, height);
+  fitView();
 }
 
 function animate() {
@@ -157,21 +158,38 @@ function rebuildRoadNet(net: RoadNetPayload | null) {
     const from = nodeMap.get(edge.from);
     const to = nodeMap.get(edge.to);
     if (!from || !to) continue;
+    const isStationBranch =
+      from.type === "WORKSTATION" || to.type === "WORKSTATION";
+    const isServiceBranch =
+      ["WAIT", "BUFFER", "CHARGER"].includes(from.type) ||
+      ["WAIT", "BUFFER", "CHARGER"].includes(to.type) ||
+      [from.id, to.id].some((id) => /^(WAIT|CHARGE)/.test(id));
+    const lineColor = isStationBranch
+      ? 0x35d6c4
+      : isServiceBranch
+        ? 0xe7aa42
+        : 0x275580;
+    const lineOpacity = isStationBranch || isServiceBranch ? 1 : 0.82;
+    const lineHeight = isStationBranch || isServiceBranch ? 0.12 : 0.06;
 
     if (edge.points?.length) {
       const geometry = new THREE.BufferGeometry().setFromPoints(
-        edge.points.map((p) => new THREE.Vector3(p.x, 0.06, p.y)),
+        edge.points.map((p) => new THREE.Vector3(p.x, lineHeight, p.y)),
       );
       netGroup.add(
         new THREE.Line(
           geometry,
-          new THREE.LineBasicMaterial({ color: 0x2f4a72 }),
+          new THREE.LineBasicMaterial({
+            color: lineColor,
+            transparent: true,
+            opacity: lineOpacity,
+          }),
         ),
       );
       continue;
     }
-    const start = new THREE.Vector3(from.x, 0.06, from.y);
-    const end = new THREE.Vector3(to.x, 0.06, to.y);
+    const start = new THREE.Vector3(from.x, lineHeight, from.y);
+    const end = new THREE.Vector3(to.x, lineHeight, to.y);
     const dirVec = end.clone().sub(start);
     const len = dirVec.length();
     if (len < 0.01) continue;
@@ -181,7 +199,11 @@ function rebuildRoadNet(net: RoadNetPayload | null) {
       netGroup.add(
         new THREE.Line(
           geometry,
-          new THREE.LineBasicMaterial({ color: 0x2f4a72 }),
+          new THREE.LineBasicMaterial({
+            color: lineColor,
+            transparent: true,
+            opacity: lineOpacity,
+          }),
         ),
       );
     };
@@ -189,7 +211,7 @@ function rebuildRoadNet(net: RoadNetPayload | null) {
       const arrow = new THREE.Mesh(
         new THREE.ConeGeometry(0.32, 0.9, 10),
         new THREE.MeshStandardMaterial({
-          color: 0x3c5f92,
+          color: lineColor,
           metalness: 0.1,
           roughness: 0.8,
         }),
@@ -226,10 +248,12 @@ function rebuildRoadNet(net: RoadNetPayload | null) {
   }
 
   for (const node of net.nodes) {
-    const color = NODE_COLORS[node.type] ?? 0x909399;
+    const isWaitingNode = /^WAIT/.test(node.id);
+    if (dense && node.type === "JUNCTION" && !isWaitingNode) continue;
+    const color = isWaitingNode ? 0xe7aa42 : NODE_COLORS[node.type] ?? 0x909399;
     const radius =
-      node.type === "CHARGER" ? 0.22 : node.type === "WORKSTATION" ? 0.18 : 0.1;
-    const height = dense ? 0.16 : 0.5;
+      node.type === "CHARGER" ? 0.3 : node.type === "WORKSTATION" ? 0.25 : isWaitingNode ? 0.23 : 0.16;
+    const height = dense ? 0.24 : 0.5;
     const mesh = new THREE.Mesh(
       new THREE.CylinderGeometry(
         dense ? radius : 0.55,
@@ -424,7 +448,7 @@ function fitView() {
   const aspect = Math.max(camera.aspect || 1, 0.5);
   const viewHeight = Math.max(depth, width / aspect);
   const distance = (viewHeight / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)))) * 1.2;
-  const viewDirection = new THREE.Vector3(0.04, 1.05, 0.72).normalize();
+  const viewDirection = new THREE.Vector3(0.02, 1.45, 0.58).normalize();
 
   camera.near = Math.max(0.1, span / 10000);
   camera.far = Math.max(1000, distance + span * 4);
