@@ -37,3 +37,23 @@ export function removeLastDraftTask(draft: DraftTaskSet): DraftTaskSet {
 export function clearDraftTasks(): DraftTaskSet {
   return { tasks: [], pendingFrom: null };
 }
+
+export function mainDispatchStationId(node: {
+  id: string;
+  type: string;
+}): string | null {
+  if (node.type !== "WORKSTATION") return null;
+  const match = /^(?:BUS-)?(CNC-(\d{3}))$/.exec(node.id);
+  if (!match) return null;
+  const number = Number(match[2]);
+  return number >= 1 && number <= 305 ? match[1] : null;
+}
+
+export function toggleMainDispatchStation(
+  stations: string[],
+  stationId: string,
+): string[] {
+  return stations.includes(stationId)
+    ? stations.filter((id) => id !== stationId)
+    : [...stations, stationId];
+}

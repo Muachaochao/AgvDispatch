@@ -44,12 +44,19 @@ import {
   type TaskRow,
   type ResourceRow,
 } from "@/integration/dispatch-api";
+import {
+  mainDispatchStationId,
+  toggleMainDispatchStation,
+} from "@/simulation/draft-task-set";
 
 const status = ref<DispatchStatus | null>(null),
   tasks = ref<TaskRow[]>([]),
   resources = ref<ResourceRow[]>([]);
 const experimentTaskSets = ref<TaskSetSummary[]>([]);
 const selectedExperimentTaskSetId = ref<number | null>(null);
+const experimentTaskSource = ref<"taskset" | "map">("taskset");
+const selectedCallStations = ref<string[]>([]);
+const selectedCallRoadnetId = ref<number | null>(null);
 const experimentName = ref("五车20单主工程调度实验");
 const experimentTimeout = ref(7200);
 const experiments = ref<MainDispatchExperiment[]>([]);
@@ -114,6 +121,12 @@ const sceneNames = [
 
 async function loadMaps() {
   maps.value = await listRoadNets();
+  if (selectedCallRoadnetId.value === null) {
+    selectedCallRoadnetId.value =
+      maps.value.find((item) => item.name.includes("全厂五车"))?.id ??
+      maps.value[0]?.id ??
+      null;
+  }
 }
 async function loadExperimentOptions() {
   experimentTaskSets.value = await listTaskSets();
@@ -142,21 +155,46 @@ async function refreshExperiments() {
   }
 }
 async function startMainDispatchExperiment() {
-  if (!selectedExperimentTaskSetId.value || !selectedScheme.value) {
-    ElMessage.warning("请选择主工程方案和实验任务集");
+  if (!selectedScheme.value) {
+    ElMessage.warning("请选择主工程方案");
     return;
   }
-  const taskSet = experimentTaskSets.value.find(
-    (item) => item.id === selectedExperimentTaskSetId.value,
-  );
-  if (!taskSet) return;
-  if (taskSet.roadnetId === null) {
-    ElMessage.error("所选任务集没有绑定路网");
-    return;
+  let taskSet: TaskSetSummary | null = null;
+  let roadnetId: number | null = null;
+  let taskCount = 0;
+  if (experimentTaskSource.value === "map") {
+    if (!selectedCallStations.value.length) {
+      ElMessage.warning("请先在地图上选择 CNC 工位");
+      return;
+    }
+    if (selectedCallRoadnetId.value === null) {
+      ElMessage.error("请选择实验路网");
+      return;
+    }
+    roadnetId = selectedCallRoadnetId.value;
+    taskCount = selectedCallStations.value.length;
+  } else {
+    if (!selectedExperimentTaskSetId.value) {
+      ElMessage.warning("请选择实验任务集");
+      return;
+    }
+    taskSet =
+      experimentTaskSets.value.find(
+        (item) => item.id === selectedExperimentTaskSetId.value,
+      ) ?? null;
+    if (!taskSet) return;
+    if (taskSet.roadnetId === null) {
+      ElMessage.error("所选任务集没有绑定路网");
+      return;
+    }
+    roadnetId = taskSet.roadnetId;
+    taskCount = taskSet.taskCount;
   }
   try {
     await ElMessageBox.confirm(
-      `将由主工程正式调度执行「${taskSet.name}」的 ${taskSet.taskCount} 条任务。新实验会停止当前主工程场景并创建干净隔离实例。`,
+      experimentTaskSource.value === "map"
+        ? `将为主工程创建 ${taskCount} 个 PLC 工位呼叫。车辆、路线、等待位、倒料位和九步流程由当前方案决定。`
+        : `将由主工程正式调度执行「${taskSet!.name}」的 ${taskCount} 条任务。新实验会停止当前主工程场景并创建干净隔离实例。`,
       "启动主工程调度实验",
       {
         confirmButtonText: "启动实验",
@@ -170,11 +208,33 @@ async function startMainDispatchExperiment() {
   experimentBusy.value = true;
   error.value = "";
   try {
+    let taskSetId = taskSet?.id;
+    if (experimentTaskSource.value === "map") {
+      const createdTaskSet = await createTaskSet({
+        name: `主工程地图点选-${taskCount}工位-${new Date().toLocaleString(
+          "zh-CN",
+          { hour12: false },
+        )}`,
+        roadnetId,
+        taskSet: {
+          tasks: selectedCallStations.value.map((stationId, index) => ({
+            id: index + 1,
+            from: stationId,
+            to: "DUMPER-001",
+          })),
+        },
+      });
+      taskSetId = createdTaskSet.id;
+      experimentTaskSets.value = await listTaskSets();
+    }
+    if (!taskSetId || roadnetId === null) {
+      throw new Error("实验任务集或路网尚未准备完成");
+    }
     const created = await createMainDispatchExperiment({
       name: experimentName.value.trim(),
       schemeId: selectedScheme.value,
-      roadnetId: taskSet.roadnetId,
-      taskSetId: taskSet.id,
+      roadnetId,
+      taskSetId,
       scenarioName: "dispatch-backlog",
       timeoutSeconds: experimentTimeout.value,
     });
@@ -189,6 +249,18 @@ async function startMainDispatchExperiment() {
   } finally {
     experimentBusy.value = false;
   }
+}
+function onMainMapNodeSelect(node: { id: string; type: string }) {
+  if (experimentTaskSource.value !== "map") return;
+  const stationId = mainDispatchStationId(node);
+  if (!stationId) {
+    ElMessage.warning("主工程 PLC 呼叫只能选择 CNC 工位");
+    return;
+  }
+  selectedCallStations.value = toggleMainDispatchStation(
+    selectedCallStations.value,
+    node.id,
+  );
 }
 async function stopExperiment(item: MainDispatchExperiment) {
   try {
@@ -474,15 +546,33 @@ onBeforeUnmount(() => {
     <section class="panel experiment-launcher">
       <div class="panel-heading">
         <div>
-          <h3>按任务集运行正式调度</h3>
+          <h3>运行正式工程仿真</h3>
           <p class="muted">
-            任务起点映射为主工程 CNC 呼叫，车辆和路线由 5199 正式调度决定
+            PLC 呼叫、车辆调度、机构动作和九步流程由 5199 正式工程执行
           </p>
         </div>
         <el-tag type="success">主工程控制车辆</el-tag>
       </div>
       <el-space wrap>
+        <el-radio-group v-model="experimentTaskSource" :disabled="experimentBusy">
+          <el-radio-button value="taskset">任务集</el-radio-button>
+          <el-radio-button value="map">地图点选 PLC 呼叫</el-radio-button>
+        </el-radio-group>
         <el-select
+          v-model="selectedScheme"
+          style="width: 290px"
+          placeholder="选择主工程方案"
+          :disabled="experimentBusy"
+        >
+          <el-option
+            v-for="scheme in status?.schemes ?? []"
+            :key="scheme.id"
+            :label="`${scheme.name} · ${scheme.vehicleCount ?? '?'}辆`"
+            :value="scheme.id"
+          />
+        </el-select>
+        <el-select
+          v-if="experimentTaskSource === 'taskset'"
           v-model="selectedExperimentTaskSetId"
           style="width: 250px"
           placeholder="选择实验任务集"
@@ -495,6 +585,23 @@ onBeforeUnmount(() => {
             :value="item.id"
           />
         </el-select>
+        <el-select
+          v-else
+          v-model="selectedCallRoadnetId"
+          style="width: 190px"
+          placeholder="选择实验路网"
+          :disabled="experimentBusy"
+        >
+          <el-option
+            v-for="item in maps"
+            :key="item.id"
+            :label="item.name"
+            :value="item.id"
+          />
+        </el-select>
+        <el-tag v-if="experimentTaskSource === 'map'" type="info">
+          已选 {{ selectedCallStations.length }} 个 PLC 工位
+        </el-tag>
         <el-input
           v-model="experimentName"
           maxlength="128"
@@ -517,20 +624,40 @@ onBeforeUnmount(() => {
           :disabled="
             experimentBusy ||
             !selectedScheme ||
-            !selectedExperimentTaskSetId ||
+            (experimentTaskSource === 'taskset'
+              ? !selectedExperimentTaskSetId
+              : !selectedCallStations.length || !selectedCallRoadnetId) ||
             !experimentName.trim()
           "
           @click="startMainDispatchExperiment"
         >
-          按任务集启动主工程实验
+          {{
+            experimentTaskSource === "map"
+              ? "按选中工位启动主工程实验"
+              : "按任务集启动主工程实验"
+          }}
+        </el-button>
+        <el-button
+          v-if="experimentTaskSource === 'map' && selectedCallStations.length"
+          :disabled="experimentBusy"
+          @click="selectedCallStations = []"
+        >
+          清空工位
         </el-button>
       </el-space>
       <el-alert
-        v-if="selectedExperimentTaskSetId"
+        v-if="experimentTaskSource === 'taskset' && selectedExperimentTaskSetId"
         class="mapping-tip"
         type="info"
         :closable="false"
         title="当前任务集需使用 BUS-CNC-001 至 BUS-CNC-305 或 CNC-001 至 CNC-305 作为起点，终点统一为 DUMPER-001"
+      />
+      <el-alert
+        v-else-if="experimentTaskSource === 'map'"
+        class="mapping-tip"
+        type="info"
+        :closable="false"
+        title="在下方三维地图点击 CNC 工位即可加入或取消 PLC 呼叫。系统自动决定车辆、路线、等待位、倒料位、返程和九步机构动作。"
       />
     </section>
     <section v-if="experiments.length" class="panel experiment-history">
@@ -664,8 +791,26 @@ onBeforeUnmount(() => {
           ref="scene"
           :roadnet="liveMap"
           :agvs="vehicles"
+          :selectable="experimentTaskSource === 'map' && !experimentBusy"
+          :selected-node-ids="selectedCallStations"
+          @node-select="onMainMapNodeSelect"
           observed
         /><el-empty v-else description="连接主工程后显示原始地图与车辆反馈" />
+        <div v-if="experimentTaskSource === 'map'" class="selected-call-stations">
+          <el-tag
+            v-for="stationId in selectedCallStations"
+            :key="stationId"
+            closable
+            type="success"
+            @close="
+              selectedCallStations = selectedCallStations.filter(
+                (item) => item !== stationId,
+              )
+            "
+          >
+            {{ stationId }}
+          </el-tag>
+        </div>
       </section>
       <section class="panel vehicles">
         <h3>车辆与等待原因</h3>
@@ -873,6 +1018,27 @@ onBeforeUnmount(() => {
   display: grid;
   gap: 16px;
 }
+.dispatch-page > * {
+  order: 10;
+}
+.dispatch-page > .source-panel {
+  order: 0;
+}
+.dispatch-page > .el-alert {
+  order: 1;
+}
+.dispatch-page > .experiment-launcher {
+  order: 2;
+}
+.dispatch-page > .dispatch-body {
+  order: 3;
+}
+.dispatch-page > .experiment-history {
+  order: 4;
+}
+.dispatch-page > .controls {
+  order: 5;
+}
 .source-panel,
 .panel-heading {
   display: flex;
@@ -961,6 +1127,12 @@ h3 {
 }
 .experiment-history :deep(.el-table) {
   margin-top: 10px;
+}
+.selected-call-stations {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px 0;
 }
 @media (max-width: 1100px) {
   .dispatch-body,
