@@ -181,6 +181,7 @@ const hasSelectedOneWay = computed(() =>
 const nodeMap = computed(() => new Map(nodes.value.map((n) => [n.id, n])))
 const denseGraph = computed(() => nodes.value.length > 30)
 const cleanDensePreview = computed(() => denseGraph.value && !editable.value)
+const visibleMapAreaLabels = new Set(['SIM-AREA-TERMINAL'])
 const mapAreaOverlays = computed(() => {
   if (!cleanDensePreview.value) return []
   const integration = props.initial.integration
@@ -2371,7 +2372,7 @@ defineExpose({
                   stroke-dasharray="5 4"
                 />
                 <text
-                  v-if="area.id.startsWith('SIM-AREA-G') || area.id.startsWith('SIM-CAD-POINT-')"
+                  v-if="area.id.startsWith('SIM-AREA-G') || visibleMapAreaLabels.has(area.id)"
                   :x="area.labelX"
                   :y="area.labelY"
                   :fill="area.strokeColor"

@@ -466,8 +466,9 @@ function simulationAreaOverlays(map: SimulationMapDefinition | null | undefined,
 function mapNodeLabel(node: SimulationNode): string {
   return node.agvSiteId || node.id;
 }
+const visibleMapAreaLabels = new Set(['SIM-AREA-TERMINAL']);
 function showMapAreaLabel(areaId: string): boolean {
-  return areaId.startsWith('SIM-AREA-G') || areaId.startsWith('SIM-CAD-POINT-');
+  return areaId.startsWith('SIM-AREA-G') || visibleMapAreaLabels.has(areaId);
 }
 function showDenseNodeLabel(node: SimulationNode): boolean {
   const label = mapNodeLabel(node);

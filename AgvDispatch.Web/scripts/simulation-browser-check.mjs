@@ -77,7 +77,9 @@ const status = () => ({ enabled, running: enabled && running, rootName, fresh,
     'AGV-02': { x: 3, y: 4, station: 'LM2', loaded: true, current_task: 'original-transport', offline: false }
   } }, map: { nodes: [{ id: '取料', agvSiteId: 'LM1', x: 1, y: 2 }, { id: '倒料', agvSiteId: 'LM2', x: 3, y: 4 }], edges: [{ id: 'E1', from: '取料', to: '倒料', geometryKind: 'CubicBezier', controlPoints: [{ x: 1, y: 4 }, { x: 3, y: 2 }] }],
     areaAnnotations: [{ id: 'SIM-AREA-G1', sourceType: 'CadSimulationEvidence', text: '测试取货分区', boundary: [{ x: 0, y: 0 }, { x: 5, y: 0 }, { x: 5, y: 5 }, { x: 0, y: 5 }], strokeColor: '#38bdf8', fillColor: '#0ea5e9', fillOpacity: .08 },
-      { id: 'CAD-LAYER', sourceType: 'CadRasterBackground', text: 'CAD参考', sourceJson: JSON.stringify({ asset: 'cad/mock.png', opacity: .2, viewBox: { minX: 0, minY: 0, width: 5000, height: 5000 } }) }] },
+      { id: 'CAD-LAYER', sourceType: 'CadRasterBackground', text: 'CAD参考', sourceJson: JSON.stringify({ asset: 'cad/mock.png', opacity: .2, viewBox: { minX: 0, minY: 0, width: 5000, height: 5000 } }) },
+      { id: 'SIM-CAD-POINT-TEST', sourceType: 'CadReferencePoint', text: '不应常驻的CAD点位', strokeColor: '#fb7185', fillColor: '#e11d48', fillOpacity: .12,
+        boundary: [{ x: 4.2, y: .2 }, { x: 4.8, y: .2 }, { x: 4.8, y: .8 }, { x: 4.2, y: .8 }] }] },
   scenario: { id: 'original-scenario', status: active ? 'running' : 'idle', completedRounds: 0, totalRounds: 2, message: '等待原任务反馈' },
   protocol: protocolRunning ? { running: true, name: 'browser-protocol', transport: 'tcp', framing: 'line-json', port: 45678, rules: 1, requests: 0 } : { running: false },
   equipment: equipmentRunning ? { running: true, floors: ['1','2'], currentFloor: '1', targetFloor: null, direction: 'Stopped', door: 'Closed', moving: false, fault: false, signals: { call: true }, schedules: [], signalEvents: [] } : { running: false, currentFloor: '1', door: 'Closed', signals: {} },
@@ -196,6 +198,8 @@ try {
   check('Vehicle legend, state color and load badge use separate meanings', await evaluate(`(()=>{const cars=[...document.querySelectorAll('.map-car')];const color=id=>cars.find(car=>[...car.querySelectorAll('text')].at(-1)?.textContent===id)?.style.getPropertyValue('--car-color').trim();return color('AGV-01')==='#6fb9ff'&&color('AGV-02')==='#e8bf64'&&document.querySelectorAll('.map-load-badge').length===1&&document.querySelector('.map-run-legend').textContent.includes('载箱待命')&&document.querySelector('.map-run-legend').textContent.includes('箱 = 当前载箱')})()`));
   check('Business map data is primary and CAD reference is hidden by default',
     await evaluate(`document.querySelector('.map-zones').textContent.includes('测试取货分区')&&document.querySelector('.map-node text').textContent==='LM1'&&!document.querySelector('.cad-reference')`));
+  check('CAD reference points keep geometry without permanent text labels',
+    await evaluate(`document.querySelectorAll('.map-zones text').length===1&&!document.querySelector('.map-zones').textContent.includes('不应常驻的CAD点位')`));
   await click('车辆附近');
   check('Map can focus on the current vehicle area without removing the full-factory view',
     await evaluate(`document.querySelector('.simulation-map').getAttribute('viewBox')!=='0 0 800 430'`));
