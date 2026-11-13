@@ -181,7 +181,7 @@ const hasSelectedOneWay = computed(() =>
 const nodeMap = computed(() => new Map(nodes.value.map((n) => [n.id, n])))
 const denseGraph = computed(() => nodes.value.length > 30)
 const cleanDensePreview = computed(() => denseGraph.value && !editable.value)
-const visibleMapAreaLabels = new Set(['SIM-AREA-TERMINAL', 'SIM-AREA-CHARGE'])
+const visibleMapAreaLabels = new Set(['SIM-AREA-TERMINAL', 'SIM-AREA-WAIT', 'SIM-AREA-CHARGE', 'CAD-TERMINAL-PLATFORM'])
 const mapAreaOverlays = computed(() => {
   if (!cleanDensePreview.value) return []
   const integration = props.initial.integration
@@ -205,10 +205,15 @@ const mapAreaOverlays = computed(() => {
       return []
     let boundary = area.boundary
       .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
-    if (area.id === 'SIM-AREA-CHARGE') {
-      const xs = boundary.map(point => point.x), ys = boundary.map(point => point.y), padding = .35
-      const left = Math.min(...xs) - padding, right = Math.max(...xs) + padding
-      const bottom = Math.min(...ys) - padding, top = Math.max(...ys) + padding
+    const padding = area.id === 'SIM-AREA-CHARGE'
+      ? { x: .35, y: .35 }
+      : area.id === 'CAD-TERMINAL-PLATFORM'
+        ? { x: .9, y: .3 }
+        : { x: 0, y: 0 }
+    if (padding.x || padding.y) {
+      const xs = boundary.map(point => point.x), ys = boundary.map(point => point.y)
+      const left = Math.min(...xs) - padding.x, right = Math.max(...xs) + padding.x
+      const bottom = Math.min(...ys) - padding.y, top = Math.max(...ys) + padding.y
       boundary = [{ x: left, y: bottom }, { x: right, y: bottom }, { x: right, y: top }, { x: left, y: top }]
     }
     const points = boundary.map((point) => ({
@@ -216,17 +221,30 @@ const mapAreaOverlays = computed(() => {
         y: (offset.y - point.y) * SCALE
       }))
     if (points.length < 3) return []
+    const override = area.id === 'SIM-AREA-WAIT'
+      ? { text: '等待区', strokeColor: '#22c55e', fillColor: '#16a34a', fillOpacity: .08, radius: 9 }
+      : area.id === 'CAD-TERMINAL-PLATFORM'
+        ? { text: '倒料区', strokeColor: '#22d3ee', fillColor: '#0891b2', fillOpacity: .09, radius: 12 }
+        : area.id === 'SIM-AREA-CHARGE'
+          ? { text: '充电区', strokeColor: '#8b5cf6', fillColor: '#7c3aed', fillOpacity: .09, radius: 11 }
+          : null
+    const minX = Math.min(...points.map(point => point.x)), maxX = Math.max(...points.map(point => point.x))
+    const minY = Math.min(...points.map(point => point.y)), maxY = Math.max(...points.map(point => point.y))
+    const radius = Math.min(override?.radius ?? 0, (maxX - minX) / 4, (maxY - minY) / 4)
     return [
       {
         id: area.id ?? area.text ?? 'map-area',
-        text: area.text ?? '仿真分区',
+        text: override?.text ?? area.text ?? '仿真分区',
         points: points.map((point) => `${point.x},${point.y}`).join(' '),
+        path: override && radius > 0
+          ? `M ${minX + radius} ${minY} H ${maxX - radius} Q ${maxX} ${minY} ${maxX} ${minY + radius} V ${maxY - radius} Q ${maxX} ${maxY} ${maxX - radius} ${maxY} H ${minX + radius} Q ${minX} ${maxY} ${minX} ${maxY - radius} V ${minY + radius} Q ${minX} ${minY} ${minX + radius} ${minY} Z`
+          : '',
         labelX: points.reduce((sum, point) => sum + point.x, 0) / points.length,
         labelY: points.reduce((sum, point) => sum + point.y, 0) / points.length,
-        strokeColor: area.strokeColor ?? '#38bdf8',
-        fillColor: area.fillColor ?? area.strokeColor ?? '#38bdf8',
-        fillOpacity: Math.min(0.25, Math.max(0.03, Number(area.fillOpacity) || 0.06)),
-        showBoundary: !['SIM-AREA-TERMINAL', 'CAD-TERMINAL-PLATFORM'].includes(area.id ?? '')
+        strokeColor: override?.strokeColor ?? area.strokeColor ?? '#38bdf8',
+        fillColor: override?.fillColor ?? area.fillColor ?? area.strokeColor ?? '#38bdf8',
+        fillOpacity: override?.fillOpacity ?? Math.min(0.25, Math.max(0.03, Number(area.fillOpacity) || 0.06)),
+        showBoundary: area.id !== 'SIM-AREA-TERMINAL'
       }
     ]
   })
@@ -2365,8 +2383,19 @@ defineExpose({
             />
             <g v-if="mapAreaOverlays.length" class="map-areas" pointer-events="none">
               <g v-for="area in mapAreaOverlays" :key="area.id" :data-area-id="area.id">
+                <path
+                  v-if="area.showBoundary && area.path"
+                  :d="area.path"
+                  :fill="area.fillColor"
+                  :fill-opacity="area.fillOpacity"
+                  :stroke="area.strokeColor"
+                  stroke-opacity=".78"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
                 <polygon
-                  v-if="area.showBoundary"
+                  v-else-if="area.showBoundary"
                   :points="area.points"
                   :fill="area.fillColor"
                   :fill-opacity="area.fillOpacity"

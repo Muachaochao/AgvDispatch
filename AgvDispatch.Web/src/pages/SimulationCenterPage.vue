@@ -448,32 +448,50 @@ function simulationAreaOverlays(map: SimulationMapDefinition | null | undefined,
       if (Number.isFinite(x) && Number.isFinite(y)) boundary.push({ x, y });
     }
     if (boundary.length < 3) return [];
-    if (item.id === 'SIM-AREA-CHARGE') {
-      const xs = boundary.map(point => point.x), ys = boundary.map(point => point.y), padding = .35;
-      const left = Math.min(...xs) - padding, right = Math.max(...xs) + padding;
-      const bottom = Math.min(...ys) - padding, top = Math.max(...ys) + padding;
+    const padding = item.id === 'SIM-AREA-CHARGE'
+      ? { x: .35, y: .35 }
+      : item.id === 'CAD-TERMINAL-PLATFORM'
+        ? { x: .9, y: .3 }
+        : { x: 0, y: 0 };
+    if (padding.x || padding.y) {
+      const xs = boundary.map(point => point.x), ys = boundary.map(point => point.y);
+      const left = Math.min(...xs) - padding.x, right = Math.max(...xs) + padding.x;
+      const bottom = Math.min(...ys) - padding.y, top = Math.max(...ys) + padding.y;
       boundary = [{ x: left, y: bottom }, { x: right, y: bottom }, { x: right, y: top }, { x: left, y: top }];
     }
     const points = boundary.map(scene.position);
     const labelX = points.reduce((sum, point) => sum + point.x, 0) / points.length;
     const labelY = points.reduce((sum, point) => sum + point.y, 0) / points.length;
-    const strokeColor = typeof item.strokeColor === 'string' ? item.strokeColor : '#38bdf8';
-    const fillColor = typeof item.fillColor === 'string' ? item.fillColor : strokeColor;
-    const fillOpacity = Number.isFinite(Number(item.fillOpacity))
-      ? Math.min(.25, Math.max(.03, Number(item.fillOpacity))) : .06;
+    const override = item.id === 'SIM-AREA-WAIT'
+      ? { text: '等待区', strokeColor: '#22c55e', fillColor: '#16a34a', fillOpacity: .08, radius: 9 }
+      : item.id === 'CAD-TERMINAL-PLATFORM'
+        ? { text: '倒料区', strokeColor: '#22d3ee', fillColor: '#0891b2', fillOpacity: .09, radius: 12 }
+        : item.id === 'SIM-AREA-CHARGE'
+          ? { text: '充电区', strokeColor: '#8b5cf6', fillColor: '#7c3aed', fillOpacity: .09, radius: 11 }
+          : null;
+    const strokeColor = override?.strokeColor ?? (typeof item.strokeColor === 'string' ? item.strokeColor : '#38bdf8');
+    const fillColor = override?.fillColor ?? (typeof item.fillColor === 'string' ? item.fillColor : strokeColor);
+    const fillOpacity = override?.fillOpacity ?? (Number.isFinite(Number(item.fillOpacity))
+      ? Math.min(.25, Math.max(.03, Number(item.fillOpacity))) : .06);
+    const minX = Math.min(...points.map(point => point.x)), maxX = Math.max(...points.map(point => point.x));
+    const minY = Math.min(...points.map(point => point.y)), maxY = Math.max(...points.map(point => point.y));
+    const radius = Math.min(override?.radius ?? 0, (maxX - minX) / 4, (maxY - minY) / 4);
     return [{
       id: item.id ?? item.text ?? 'map-area',
-      text: item.text ?? '仿真分区',
+      text: override?.text ?? item.text ?? '仿真分区',
       points: points.map(point => `${point.x},${point.y}`).join(' '),
+      path: override && radius > 0
+        ? `M ${minX + radius} ${minY} H ${maxX - radius} Q ${maxX} ${minY} ${maxX} ${minY + radius} V ${maxY - radius} Q ${maxX} ${maxY} ${maxX - radius} ${maxY} H ${minX + radius} Q ${minX} ${maxY} ${minX} ${maxY - radius} V ${minY + radius} Q ${minX} ${minY} ${minX + radius} ${minY} Z`
+        : '',
       labelX, labelY, strokeColor, fillColor, fillOpacity,
-      showBoundary: !['SIM-AREA-TERMINAL', 'CAD-TERMINAL-PLATFORM'].includes(item.id ?? '')
+      showBoundary: item.id !== 'SIM-AREA-TERMINAL'
     }];
   });
 }
 function mapNodeLabel(node: SimulationNode): string {
   return node.agvSiteId || node.id;
 }
-const visibleMapAreaLabels = new Set(['SIM-AREA-TERMINAL', 'SIM-AREA-CHARGE']);
+const visibleMapAreaLabels = new Set(['SIM-AREA-TERMINAL', 'SIM-AREA-WAIT', 'SIM-AREA-CHARGE', 'CAD-TERMINAL-PLATFORM']);
 function showMapAreaLabel(areaId: string): boolean {
   return areaId.startsWith('SIM-AREA-G') || visibleMapAreaLabels.has(areaId);
 }
@@ -1717,7 +1735,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
             <defs><pattern id="simulation-grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="#26364b" stroke-width="1"/></pattern><marker id="simulation-route-arrow" markerUnits="userSpaceOnUse" markerWidth="3.2" markerHeight="3.2" refX="2.6" refY="1.6" orient="auto"><path d="M0,0 L3.2,1.6 L0,3.2 Z" fill="#5fa8b8"/></marker></defs>
             <rect width="800" height="430" fill="url(#simulation-grid)"/>
             <image v-if="showCadReference && cadBackground" class="cad-reference" :href="cadBackground.href" :x="cadBackground.x" :y="cadBackground.y" :width="cadBackground.width" :height="cadBackground.height" :opacity="cadBackground.opacity" preserveAspectRatio="none" />
-            <g v-if="mapAreas.length" class="map-zones"><g v-for="area in mapAreas" :key="area.id" :data-area-id="area.id"><polygon v-if="area.showBoundary" :points="area.points" :fill="area.fillColor" :fill-opacity="area.fillOpacity" :stroke="area.strokeColor" :stroke-opacity=".55" /><text v-if="showMapAreaLabel(area.id)" :x="area.labelX" :y="area.labelY" :fill="area.strokeColor">{{ area.text }}</text></g></g>
+            <g v-if="mapAreas.length" class="map-zones"><g v-for="area in mapAreas" :key="area.id" :data-area-id="area.id"><path v-if="area.showBoundary && area.path" :d="area.path" :fill="area.fillColor" :fill-opacity="area.fillOpacity" :stroke="area.strokeColor" stroke-opacity=".78" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /><polygon v-else-if="area.showBoundary" :points="area.points" :fill="area.fillColor" :fill-opacity="area.fillOpacity" :stroke="area.strokeColor" :stroke-opacity=".55" /><text v-if="showMapAreaLabel(area.id)" :x="area.labelX" :y="area.labelY" :fill="area.strokeColor">{{ area.text }}</text></g></g>
             <g class="roads"><path v-for="edge in geometry.edges" :key="edge.key" :d="edge.path" :class="[taskRouteEdgeClass(edge.id), { blocked: !!edge.id && appliedBlockedEdges.includes(edge.id) }]" marker-end="url(#simulation-route-arrow)" /></g>
             <g v-for="node in geometry.nodes" :key="node.id" class="map-node" :class="[taskRouteNodeClass(node.id), { dense: denseMap }]"><title>{{ mapNodeLabel(node) }} · {{ node.type || '地图节点' }}</title><circle :cx="node.x" :cy="node.y" :r="mapNodeRadius(node)"/><text v-if="!denseMap || showDenseNodeLabel(node)" :x="node.x + 7" :y="node.y - 7">{{ mapNodeLabel(node) }}</text></g>
             <g v-for="car in geometry.cars" :key="car.id" class="map-car" :class="{ stale: !fresh, offline: car.offline, selected: selectedVehicle === car.id }" :style="{ '--car-color': vehicleMapColor(car) }" :transform="`translate(${car.x} ${car.y})`" role="button" tabindex="0" @click="selectVehicleTask(car.id)" @keydown.enter="selectVehicleTask(car.id)">
