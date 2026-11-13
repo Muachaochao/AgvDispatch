@@ -45,6 +45,26 @@ class ClientTests(unittest.TestCase):
             client=LoopbackJsonClient(10001);self.assertTrue(client.request('/api/tasks')['ok'])
         first.close.assert_called();second.request.assert_called_once()
 
+    def test_windows_connection_aborted_read_retries_once(self):
+        first,second = Mock(),Mock()
+        first.getresponse.side_effect=ConnectionAbortedError(10053,'你的主机中的软件中止了一个已建立的连接。')
+        response=second.getresponse.return_value;response.read.return_value=b'{"ok":true}'
+        response.status=200;response.will_close=False
+        with patch('loopback_http.http.client.HTTPConnection',side_effect=[first,second]):
+            client=LoopbackJsonClient(10001);self.assertTrue(client.request('/api/tasks')['ok'])
+        first.close.assert_called();second.request.assert_called_once()
+
+    def test_windows_connection_aborted_write_is_not_replayed(self):
+        connection = Mock();connection.getresponse.side_effect = ConnectionAbortedError(
+            10053,'你的主机中的软件中止了一个已建立的连接。')
+        with patch('loopback_http.http.client.HTTPConnection',return_value=connection) as factory:
+            client = LoopbackJsonClient(10001)
+            with self.assertRaises(ConnectionAbortedError):
+                client.request('/api/create',dict(requestId='original'))
+            self.assertEqual(connection.request.call_count,1)
+            self.assertEqual(factory.call_count,1)
+            self.assertTrue(client.connections.empty())
+
     def test_concurrency_is_bounded(self):
         client=LoopbackJsonClient(10001,timeout=.01,capacity=1)
         client.slots.acquire()
