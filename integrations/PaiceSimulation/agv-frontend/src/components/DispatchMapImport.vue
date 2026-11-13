@@ -10,6 +10,7 @@ import {
   convertDispatchMap,
   resolveMapSiteId,
   roadnetFingerprint,
+  simulationRoadnetName,
   type SourceMap,
   type MapConversion,
 } from "@/integration/dispatch-adapter";
@@ -22,6 +23,7 @@ const definition = ref<SourceMap | null>(null),
   identity = ref<Record<string, unknown>>({}),
   initial = ref(""),
   roundTripOnly = ref(false),
+  simplifyRoads = ref(true),
   name = ref("");
 const conversion = ref<MapConversion | null>(null),
   errors = ref<ValidationError[]>([]),
@@ -55,10 +57,7 @@ function defaultInitialSite(def: SourceMap) {
   );
 }
 function defaultName(def: SourceMap) {
-  const text = `${def.name ?? ""} ${def.coordinateSystem ?? ""}`;
-  return text.includes("305") && text.includes("五车")
-    ? "全厂五车仿真"
-    : `${def.name ?? "Web仿真图"}（仿真）`;
+  return simulationRoadnetName(def);
 }
 function reset(
   def: SourceMap,
@@ -66,6 +65,7 @@ function reset(
   suggestedInitialSite = "",
 ) {
   roundTripOnly.value = false;
+  simplifyRoads.value = true;
   definition.value = def;
   identity.value = source;
   initial.value =
@@ -117,7 +117,10 @@ async function preview() {
     conversion.value = convertDispatchMap(
       definition.value,
       initial.value || undefined,
-      { roundTripOnly: roundTripOnly.value },
+      {
+        roundTripOnly: roundTripOnly.value,
+        simplifyRoads: simplifyRoads.value,
+      },
     );
     errors.value = await validateRoadNet(conversion.value.roadnet);
   } catch (e) {
@@ -169,7 +172,7 @@ async function save() {
     busy.value = false;
   }
 }
-watch([initial, roundTripOnly], () => {
+watch([initial, roundTripOnly, simplifyRoads], () => {
   conversion.value = null;
   errors.value = [];
 });
@@ -230,6 +233,11 @@ function download() {
             >仅导入初始点可往返区域</el-checkbox
           ></el-form-item
         >
+        <el-form-item label="道路显示">
+          <el-checkbox v-model="simplifyRoads"
+            >简化道路（推荐，保留真实长度和方向）</el-checkbox
+          >
+        </el-form-item>
       </el-form>
       <el-button :loading="busy" @click="preview">预览转换与校验</el-button>
       <template v-if="conversion">

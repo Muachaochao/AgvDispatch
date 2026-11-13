@@ -1,11 +1,9 @@
 import {
   publishedDispatchMap,
-  selectWebSimulationMap,
   sourceDefinitionHash,
   type SourceMap,
   type DispatchCar,
   type DispatchTaskDetail,
-  type WebMapSummary,
 } from "./dispatch-adapter";
 
 export interface DispatchStatus {
@@ -100,33 +98,23 @@ export async function loadPublishedDispatchMap(signal?: AbortSignal) {
 }
 
 export async function loadWebSimulationMap(signal?: AbortSignal) {
-  const maps = await dispatchRead<WebMapSummary[]>("/api/maps", signal);
-  const selected = selectWebSimulationMap(maps);
-  if (!selected) throw new Error("Web 中没有可用的已发布米制仿真地图");
-  type Workspace = Parameters<typeof publishedDispatchMap>[1];
-  const workspace = await dispatchRead<Workspace>(
-    `/api/maps/${encodeURIComponent(selected.mapId)}/workspace`,
-    signal,
-  );
-  const published = workspace.published;
-  if (
-    !published ||
-    published.status !== "Published" ||
-    published.mapId !== selected.mapId ||
-    published.versionId !== selected.publishedVersionId
-  )
-    throw new Error("Web 仿真地图发布版本已变化，请刷新后重试");
-  const definition = published.definition;
+  const live = await dispatchRead<DispatchStatus>("/api/simulation", signal);
+  if (!live.enabled || !live.map)
+    throw new Error("Web 仿真中心没有可读取的当前场景地图");
+  const definition = live.map;
   if (definition.unit !== "m") throw new Error("只接受米制完整 Web 仿真地图");
   return {
     definition,
     identity: {
-      sourceType: "Web仿真地图",
-      sourceMapId: selected.mapId,
-      mapName: selected.name,
-      mapVersionId: selected.publishedVersionId,
+      sourceType: "Web仿真实例地图",
+      instanceName: live.rootName,
+      sourceMapId:
+        live.configuration?.mapIdentity?.mapId ||
+        `simulation:${live.rootName ?? "current"}:${definition.name ?? "map"}`,
+      mapName: definition.name,
+      mapVersionId: live.configuration?.mapIdentity?.mapVersionId ?? "current",
       definitionHash: await sourceDefinitionHash(definition),
-      updatedAt: selected.updatedAt,
+      updatedAt: new Date().toISOString(),
     },
     suggestedInitialSite:
       definition.nodes.find(

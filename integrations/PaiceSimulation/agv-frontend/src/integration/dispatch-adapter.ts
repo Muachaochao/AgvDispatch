@@ -157,7 +157,7 @@ function nodeType(type?: string): NetNode["type"] {
 export function convertDispatchMap(
   definition: SourceMap,
   initialSite?: string,
-  options: { roundTripOnly?: boolean } = {},
+  options: { roundTripOnly?: boolean; simplifyRoads?: boolean } = {},
 ): MapConversion {
   if (definition.unit !== "m") throw new Error("只接受米制完整地图");
   const warnings = [
@@ -256,6 +256,7 @@ export function convertDispatchMap(
   };
   const edges: NetEdge[] = [],
     edgeMapping: Record<string, string[]> = {};
+  let simplifiedRoads = 0;
   const edgeIds = new Set<string>();
   const pairKey = (edge: SourceEdge) =>
     JSON.stringify([edge.from, edge.to].sort());
@@ -279,7 +280,11 @@ export function convertDispatchMap(
       throw new Error(`道路 ${id} 缺少有效长度`);
     if (!(Number.isFinite(edge.speedLimit) && edge.speedLimit! > 0))
       throw new Error(`道路 ${id} 缺少有效速度`);
-    const points = sampleDispatchEdge(from, to, edge);
+    const points = options.simplifyRoads
+      ? [{ ...from }, { ...to }]
+      : sampleDispatchEdge(from, to, edge);
+    if (options.simplifyRoads && edge.geometryKind && edge.geometryKind !== "Line")
+      simplifiedRoads++;
     if (points.length === 2 && (pairCounts.get(pairKey(edge)) ?? 0) > 1)
       points.splice(1, 0, { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 });
     const lengths = points
@@ -298,7 +303,8 @@ export function convertDispatchMap(
       edge.to,
     ];
     edgeMapping[id] = lengths.map((length, i) => {
-      const segmentId = unique(`__dispatch_${id}_s${i + 1}`);
+      const segmentId =
+        lengths.length === 1 ? id : unique(`__dispatch_${id}_s${i + 1}`);
       edges.push({
         id: segmentId,
         from: ids[i],
@@ -314,6 +320,10 @@ export function convertDispatchMap(
     if (points.length > 2)
       warnings.push(`道路 ${id} 转换为 ${lengths.length} 段折线。`);
   }
+  if (simplifiedRoads)
+    warnings.push(
+      `简化道路开启，${simplifiedRoads} 条曲线按起终点直线显示，算法继续使用原道路长度。`,
+    );
   const xs = nodes.map((n) => n.x),
     ys = nodes.map((n) => n.y);
   const minX = nodes.length ? Math.min(...xs) : 0,
@@ -521,6 +531,15 @@ export function selectWebSimulationMap(maps: WebMapSummary[]) {
       String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? "")),
     )[0]
   );
+}
+
+export function simulationRoadnetName(definition: SourceMap) {
+  const name = definition.name ?? "Web仿真图";
+  if (name.includes("28阶段") || name.includes("闭环联调"))
+    return "真实场景仿真";
+  if (name.includes("305") && name.includes("五车"))
+    return "全厂五车仿真";
+  return `${name}（仿真）`;
 }
 
 export function resolveMapSiteId(

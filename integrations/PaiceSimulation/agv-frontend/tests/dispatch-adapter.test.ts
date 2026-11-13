@@ -10,6 +10,7 @@ import {
   resolveMapSiteId,
   roadnetFingerprint,
   selectWebSimulationMap,
+  simulationRoadnetName,
 } from "../src/integration/dispatch-adapter.ts";
 
 const definition = {
@@ -78,6 +79,16 @@ test("unknown units and missing speed fail explicitly, disabled paths are exclud
     ).roadnet.edges.length,
     0,
   );
+});
+
+test("simplified road preview keeps endpoints and declared distance", () => {
+  const result = convertDispatchMap(definition, "C", { simplifyRoads: true });
+  assert.equal(result.roadnet.edges.length, 1);
+  assert.equal(result.roadnet.edges[0]?.id, "curve");
+  assert.equal(result.roadnet.edges[0]?.from, "A");
+  assert.equal(result.roadnet.edges[0]?.to, "B");
+  assert.equal(result.roadnet.edges[0]?.length, 6);
+  assert.ok(result.warnings.some((warning) => warning.includes("简化道路")));
 });
 test("vehicle adapter converts radians to degrees and keeps unknown or stale states", () => {
   const cars = dispatchViews(
@@ -351,6 +362,27 @@ test("Web simulation map selection falls back to the current active published ma
     },
   ]);
   assert.equal(selected?.mapId, "active");
+});
+
+test("simulation roadnet names stay short for the live scene", () => {
+  assert.equal(
+    simulationRoadnetName({
+      ...definition,
+      name: "28阶段双车闭环联调车间",
+    }),
+    "真实场景仿真",
+  );
+  assert.equal(
+    simulationRoadnetName({
+      ...definition,
+      name: "B07-1F·全厂305CNC·五车仿真图",
+    }),
+    "全厂五车仿真",
+  );
+  assert.equal(
+    simulationRoadnetName({ ...definition, name: "自定义地图" }),
+    "自定义地图（仿真）",
+  );
 });
 
 test("translated negative engineering coordinates fit the original positive editor canvas", () => {

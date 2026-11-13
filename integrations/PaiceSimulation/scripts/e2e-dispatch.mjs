@@ -224,9 +224,14 @@ try {
   await page
     .getByRole("button", { name: "读取 Web 仿真地图", exact: true })
     .click();
-  await page
-    .getByText("B07-1F·全厂305CNC·五车仿真图", { exact: true })
-    .waitFor();
+  await page.waitForTimeout(1000);
+  if ((await page.locator(".source-line").count()) === 0)
+    console.error("Map import text:", await page.locator(".map-import").textContent());
+  await page.waitForFunction(() =>
+    document
+      .querySelector(".source-line")
+      ?.textContent?.includes("接口回归夹具（双车曲线）"),
+  );
   await page
     .getByRole("button", { name: "保存仿真路网", exact: true })
     .waitFor();

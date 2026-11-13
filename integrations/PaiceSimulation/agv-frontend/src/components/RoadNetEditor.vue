@@ -179,6 +179,40 @@ const hasSelectedOneWay = computed(() =>
 )
 
 const nodeMap = computed(() => new Map(nodes.value.map((n) => [n.id, n])))
+const denseGraph = computed(() => nodes.value.length > 30)
+
+function showNodeLabel(node: NetNode) {
+  if (!denseGraph.value) return true
+  if (
+    selectedNodeIds.value.includes(node.id) ||
+    searchHitNodeIds.value.has(node.id) ||
+    (hover.value?.kind === 'node' && hover.value.id === node.id)
+  )
+    return true
+  if (node.type === 'JUNCTION') return false
+  return nodes.value.length <= 200 || view.scale >= 1.5
+}
+
+function showEdgeLabel(edge: NetEdge) {
+  if (!denseGraph.value) return true
+  return (
+    selectedEdgeIds.value.includes(edge.id) ||
+    searchHitEdgeIds.value.has(edge.id) ||
+    (hover.value?.kind === 'edge' && hover.value.id === edge.id)
+  )
+}
+
+function edgeDisplayId(id: string) {
+  return id.match(/^E\d+/i)?.[0] ?? id
+}
+
+function visualNodeRadius(node: NetNode) {
+  if (!denseGraph.value) return 9
+  if (isSelectedNode(node.id) || searchHitNodeIds.value.has(node.id)) return 5
+  if (node.type === 'WORKSTATION' || node.type === 'CHARGER') return 5
+  if (node.type === 'BUFFER') return 4
+  return 2
+}
 
 const stats = computed(() => ({
   nodes: nodes.value.length,
@@ -2338,7 +2372,7 @@ defineExpose({
                 pointer-events="none"
               />
               <text
-                v-if="showEdgeLabels"
+                v-if="showEdgeLabels && showEdgeLabel(edge)"
                 :x="edgeMid(edge).x"
                 :y="edgeMid(edge).y - 6"
                 text-anchor="middle"
@@ -2346,7 +2380,7 @@ defineExpose({
                 fill="#7a8aa3"
                 pointer-events="none"
               >
-                {{ edge.id }} · {{ edge.length }}m
+                {{ edgeDisplayId(edge.id) }} · {{ edge.length }}m
               </text>
             </g>
 
@@ -2362,7 +2396,7 @@ defineExpose({
               <circle
                 :cx="px(node.x)"
                 :cy="px(node.y)"
-                r="9"
+                :r="visualNodeRadius(node)"
                 :fill="errorNodeIds.has(node.id) ? '#f56c6c' : TYPE_COLOR[node.type]"
                 :stroke="
                   connectFrom === node.id
@@ -2371,7 +2405,15 @@ defineExpose({
                       ? '#1f3b73'
                       : '#ffffff'
                 "
-                :stroke-width="connectFrom === node.id || isSelectedNode(node.id) ? 4 : 2"
+                :stroke-width="
+                  denseGraph
+                    ? connectFrom === node.id || isSelectedNode(node.id)
+                      ? 3
+                      : 1
+                    : connectFrom === node.id || isSelectedNode(node.id)
+                      ? 4
+                      : 2
+                "
                 class="node-dot"
                 :class="{ selected: isSelectedNode(node.id) }"
                 @click="onNodeClick($event, node)"
@@ -2381,7 +2423,7 @@ defineExpose({
                 @contextmenu.prevent.stop="onNodeContextMenu($event, node)"
               />
               <text
-                v-if="showNodeLabels"
+                v-if="showNodeLabels && showNodeLabel(node)"
                 :x="px(node.x) + 12"
                 :y="px(node.y) + 4"
                 font-size="11"
