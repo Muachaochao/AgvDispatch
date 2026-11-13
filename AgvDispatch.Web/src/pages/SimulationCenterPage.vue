@@ -440,14 +440,20 @@ function simulationCadBackground(map: SimulationMapDefinition | null | undefined
 }
 function simulationAreaOverlays(map: SimulationMapDefinition | null | undefined, scene: MapGeometry) {
   return (map?.areaAnnotations ?? []).flatMap(item => {
-    if (!['CadSimulationEvidence', 'CadReferencePoint'].includes(item.sourceType ?? '') || !Array.isArray(item.boundary)) return [];
-    const boundary: { x: number; y: number }[] = [];
+    if (item.sourceType !== 'CadSimulationEvidence' || !Array.isArray(item.boundary)) return [];
+    let boundary: { x: number; y: number }[] = [];
     for (const value of item.boundary) {
       if (!value || typeof value !== 'object' || !('x' in value) || !('y' in value)) continue;
       const x = Number(value.x), y = Number(value.y);
       if (Number.isFinite(x) && Number.isFinite(y)) boundary.push({ x, y });
     }
     if (boundary.length < 3) return [];
+    if (item.id === 'SIM-AREA-CHARGE') {
+      const xs = boundary.map(point => point.x), ys = boundary.map(point => point.y), padding = .35;
+      const left = Math.min(...xs) - padding, right = Math.max(...xs) + padding;
+      const bottom = Math.min(...ys) - padding, top = Math.max(...ys) + padding;
+      boundary = [{ x: left, y: bottom }, { x: right, y: bottom }, { x: right, y: top }, { x: left, y: top }];
+    }
     const points = boundary.map(scene.position);
     const labelX = points.reduce((sum, point) => sum + point.x, 0) / points.length;
     const labelY = points.reduce((sum, point) => sum + point.y, 0) / points.length;
@@ -459,14 +465,15 @@ function simulationAreaOverlays(map: SimulationMapDefinition | null | undefined,
       id: item.id ?? item.text ?? 'map-area',
       text: item.text ?? '仿真分区',
       points: points.map(point => `${point.x},${point.y}`).join(' '),
-      labelX, labelY, strokeColor, fillColor, fillOpacity
+      labelX, labelY, strokeColor, fillColor, fillOpacity,
+      showBoundary: !['SIM-AREA-TERMINAL', 'CAD-TERMINAL-PLATFORM'].includes(item.id ?? '')
     }];
   });
 }
 function mapNodeLabel(node: SimulationNode): string {
   return node.agvSiteId || node.id;
 }
-const visibleMapAreaLabels = new Set(['SIM-AREA-TERMINAL']);
+const visibleMapAreaLabels = new Set(['SIM-AREA-TERMINAL', 'SIM-AREA-CHARGE']);
 function showMapAreaLabel(areaId: string): boolean {
   return areaId.startsWith('SIM-AREA-G') || visibleMapAreaLabels.has(areaId);
 }
@@ -1710,7 +1717,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
             <defs><pattern id="simulation-grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="#26364b" stroke-width="1"/></pattern><marker id="simulation-route-arrow" markerUnits="userSpaceOnUse" markerWidth="3.2" markerHeight="3.2" refX="2.6" refY="1.6" orient="auto"><path d="M0,0 L3.2,1.6 L0,3.2 Z" fill="#5fa8b8"/></marker></defs>
             <rect width="800" height="430" fill="url(#simulation-grid)"/>
             <image v-if="showCadReference && cadBackground" class="cad-reference" :href="cadBackground.href" :x="cadBackground.x" :y="cadBackground.y" :width="cadBackground.width" :height="cadBackground.height" :opacity="cadBackground.opacity" preserveAspectRatio="none" />
-            <g v-if="mapAreas.length" class="map-zones"><g v-for="area in mapAreas" :key="area.id"><polygon :points="area.points" :fill="area.fillColor" :fill-opacity="area.fillOpacity" :stroke="area.strokeColor" :stroke-opacity=".55" /><text v-if="showMapAreaLabel(area.id)" :x="area.labelX" :y="area.labelY" :fill="area.strokeColor">{{ area.text }}</text></g></g>
+            <g v-if="mapAreas.length" class="map-zones"><g v-for="area in mapAreas" :key="area.id" :data-area-id="area.id"><polygon v-if="area.showBoundary" :points="area.points" :fill="area.fillColor" :fill-opacity="area.fillOpacity" :stroke="area.strokeColor" :stroke-opacity=".55" /><text v-if="showMapAreaLabel(area.id)" :x="area.labelX" :y="area.labelY" :fill="area.strokeColor">{{ area.text }}</text></g></g>
             <g class="roads"><path v-for="edge in geometry.edges" :key="edge.key" :d="edge.path" :class="[taskRouteEdgeClass(edge.id), { blocked: !!edge.id && appliedBlockedEdges.includes(edge.id) }]" marker-end="url(#simulation-route-arrow)" /></g>
             <g v-for="node in geometry.nodes" :key="node.id" class="map-node" :class="[taskRouteNodeClass(node.id), { dense: denseMap }]"><title>{{ mapNodeLabel(node) }} · {{ node.type || '地图节点' }}</title><circle :cx="node.x" :cy="node.y" :r="mapNodeRadius(node)"/><text v-if="!denseMap || showDenseNodeLabel(node)" :x="node.x + 7" :y="node.y - 7">{{ mapNodeLabel(node) }}</text></g>
             <g v-for="car in geometry.cars" :key="car.id" class="map-car" :class="{ stale: !fresh, offline: car.offline, selected: selectedVehicle === car.id }" :style="{ '--car-color': vehicleMapColor(car) }" :transform="`translate(${car.x} ${car.y})`" role="button" tabindex="0" @click="selectVehicleTask(car.id)" @keydown.enter="selectVehicleTask(car.id)">

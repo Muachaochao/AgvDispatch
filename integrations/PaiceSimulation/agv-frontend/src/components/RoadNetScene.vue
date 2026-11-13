@@ -250,10 +250,24 @@ function rebuildRoadNet(net: RoadNetPayload | null) {
     mesh.position.set(node.x, height / 2, node.y);
     netGroup.add(mesh);
 
-    if (!dense || node.type === "CHARGER") {
+    if (!dense) {
       const sprite = makeLabel(node.id);
       sprite.position.set(node.x, dense ? 0.8 : 1.9, node.y);
       netGroup.add(sprite);
+    }
+  }
+
+  if (dense) {
+    const chargers = net.nodes.filter((node) => node.type === "CHARGER");
+    if (chargers.length) {
+      const label = makeLabel("双充电位");
+      label.position.set(
+        chargers.reduce((sum, node) => sum + node.x, 0) / chargers.length,
+        1.25,
+        chargers.reduce((sum, node) => sum + node.y, 0) / chargers.length,
+      );
+      label.scale.set(2.6, 1.0, 1);
+      netGroup.add(label);
     }
   }
 }

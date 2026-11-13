@@ -199,7 +199,7 @@ try {
   check('Business map data is primary and CAD reference is hidden by default',
     await evaluate(`document.querySelector('.map-zones').textContent.includes('测试取货分区')&&document.querySelector('.map-node text').textContent==='LM1'&&!document.querySelector('.cad-reference')`));
   check('CAD reference points keep geometry without permanent text labels',
-    await evaluate(`document.querySelectorAll('.map-zones text').length===1&&!document.querySelector('.map-zones').textContent.includes('不应常驻的CAD点位')`));
+    await evaluate(`document.querySelectorAll('.map-zones polygon').length===1&&document.querySelectorAll('.map-zones text').length===1&&!document.querySelector('.map-zones').textContent.includes('不应常驻的CAD点位')`));
   await click('车辆附近');
   check('Map can focus on the current vehicle area without removing the full-factory view',
     await evaluate(`document.querySelector('.simulation-map').getAttribute('viewBox')!=='0 0 800 430'`));
@@ -261,6 +261,7 @@ try {
   await wait(() => evaluate(`document.querySelectorAll('.report-task-nine-steps-summary li').length===9&&document.querySelector('.report-task-evidence').textContent.includes('报告内九步证据已显示')`), 'Report summary steps survive live detail outage');
   check('Saved report keeps nine-step evidence when live task detail is unavailable', true);
   await click('载入本报告时间轴');
+  await wait(() => evaluate(`!!document.querySelector('.replay-map .map-car text')&&document.querySelector('.history-panel .waiting-chain')?.textContent.includes('ORIGINAL')`), 'Replay map loaded');
   check('Replay loads original report positions on its saved map without device mutations', await evaluate(`document.querySelector('.replay-map .map-car text').textContent==='AGV-02'&&document.querySelector('.history-panel .waiting-chain').textContent.includes('ORIGINAL')`));
   await evaluate(`(()=>{const input=document.querySelector('[aria-label="回放时间点"]');input.value='1';input.dispatchEvent(new Event('input',{bubbles:true}))})()`);
   await wait(() => evaluate(`document.querySelector('.history-panel .waiting-chain').textContent.includes('等待就绪许可')`), 'Replay changes recorded frame');

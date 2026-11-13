@@ -181,7 +181,7 @@ const hasSelectedOneWay = computed(() =>
 const nodeMap = computed(() => new Map(nodes.value.map((n) => [n.id, n])))
 const denseGraph = computed(() => nodes.value.length > 30)
 const cleanDensePreview = computed(() => denseGraph.value && !editable.value)
-const visibleMapAreaLabels = new Set(['SIM-AREA-TERMINAL'])
+const visibleMapAreaLabels = new Set(['SIM-AREA-TERMINAL', 'SIM-AREA-CHARGE'])
 const mapAreaOverlays = computed(() => {
   if (!cleanDensePreview.value) return []
   const integration = props.initial.integration
@@ -201,15 +201,17 @@ const mapAreaOverlays = computed(() => {
   const offset = integration?.coordinateOffset as { x: number; y: number } | undefined
   if (!source?.areaAnnotations || !offset) return []
   return source.areaAnnotations.flatMap((area) => {
-    if (
-      !['CadSimulationEvidence', 'CadReferencePoint'].includes(area.sourceType ?? '') ||
-      !Array.isArray(area.boundary) ||
-      area.boundary.length < 3
-    )
+    if (area.sourceType !== 'CadSimulationEvidence' || !Array.isArray(area.boundary) || area.boundary.length < 3)
       return []
-    const points = area.boundary
+    let boundary = area.boundary
       .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
-      .map((point) => ({
+    if (area.id === 'SIM-AREA-CHARGE') {
+      const xs = boundary.map(point => point.x), ys = boundary.map(point => point.y), padding = .35
+      const left = Math.min(...xs) - padding, right = Math.max(...xs) + padding
+      const bottom = Math.min(...ys) - padding, top = Math.max(...ys) + padding
+      boundary = [{ x: left, y: bottom }, { x: right, y: bottom }, { x: right, y: top }, { x: left, y: top }]
+    }
+    const points = boundary.map((point) => ({
         x: (point.x - offset.x) * SCALE,
         y: (offset.y - point.y) * SCALE
       }))
@@ -223,7 +225,8 @@ const mapAreaOverlays = computed(() => {
         labelY: points.reduce((sum, point) => sum + point.y, 0) / points.length,
         strokeColor: area.strokeColor ?? '#38bdf8',
         fillColor: area.fillColor ?? area.strokeColor ?? '#38bdf8',
-        fillOpacity: Math.min(0.25, Math.max(0.03, Number(area.fillOpacity) || 0.06))
+        fillOpacity: Math.min(0.25, Math.max(0.03, Number(area.fillOpacity) || 0.06)),
+        showBoundary: !['SIM-AREA-TERMINAL', 'CAD-TERMINAL-PLATFORM'].includes(area.id ?? '')
       }
     ]
   })
@@ -2361,8 +2364,9 @@ defineExpose({
               pointer-events="none"
             />
             <g v-if="mapAreaOverlays.length" class="map-areas" pointer-events="none">
-              <g v-for="area in mapAreaOverlays" :key="area.id">
+              <g v-for="area in mapAreaOverlays" :key="area.id" :data-area-id="area.id">
                 <polygon
+                  v-if="area.showBoundary"
                   :points="area.points"
                   :fill="area.fillColor"
                   :fill-opacity="area.fillOpacity"
