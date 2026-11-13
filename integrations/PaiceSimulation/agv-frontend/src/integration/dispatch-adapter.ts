@@ -379,13 +379,14 @@ export function convertDispatchMap(
     minY = nodes.length ? Math.min(...ys) : 0;
   const maxX = nodes.length ? Math.max(...xs) : 1,
     maxY = nodes.length ? Math.max(...ys) : 1;
-  const coordinateOffset = { x: minX - 4, y: minY - 4 };
+  const coordinateOffset = { x: minX - 4, y: maxY + 4 };
   for (const node of nodes) {
     node.x -= coordinateOffset.x;
-    node.y -= coordinateOffset.y;
+    // Web 仿真按 -Y 朝屏幕上方显示；实验画布沿用同一方向，避免全厂图上下翻转。
+    node.y = coordinateOffset.y - node.y;
   }
   warnings.push(
-    `实验坐标统一平移，原始 X=实验 X+(${coordinateOffset.x.toFixed(6)})，原始 Y=实验 Y+(${coordinateOffset.y.toFixed(6)})。`,
+    `实验坐标统一转换，原始 X=实验 X+(${coordinateOffset.x.toFixed(6)})，原始 Y=(${coordinateOffset.y.toFixed(6)})-实验 Y。`,
   );
   return {
     roadnet: {
@@ -411,7 +412,7 @@ export function dispatchViews(
     .map(([id, car]) => ({
       id,
       x: car.x,
-      y: car.y,
+      y: -car.y,
       heading: ((car.angle ?? 0) * 180) / Math.PI,
       taskId: 0,
       status:
@@ -433,7 +434,12 @@ export function dispatchViews(
 export function dispatchSceneMap(definition: SourceMap): RoadNetPayload {
   const nodes = definition.nodes
     .filter(validPoint)
-    .map((n) => ({ id: n.id, x: n.x, y: n.y, type: nodeType(n.type) }));
+    .map((n) => ({
+      id: n.id,
+      x: n.x,
+      y: -n.y,
+      type: nodeType(n.type),
+    }));
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const edges = definition.edges.flatMap((e, i) => {
     const a = byId.get(e.from),

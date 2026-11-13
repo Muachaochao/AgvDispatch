@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   convertDispatchMap,
+  dispatchSceneMap,
   dispatchViews,
   transportTasks,
   publishedDispatchMap,
@@ -99,12 +100,18 @@ test("vehicle adapter converts radians to degrees and keeps unknown or stale sta
     true,
   );
   assert.equal(cars[0]?.heading, 90);
-  assert.equal(cars[0]?.y, 200);
+  assert.equal(cars[0]?.y, -200);
   assert.equal(cars[1]?.status, "OFFLINE");
   assert.equal(
     dispatchViews({ one: { x: 0, y: 0, moving: true } }, false)[0]?.status,
     "OFFLINE",
   );
+});
+test("live scene uses the same Y direction as the Web simulation map", () => {
+  const scene = dispatchSceneMap(definition);
+  assert.equal(scene.nodes.find((node) => node.id === "A")?.y, -200);
+  assert.deepEqual(scene.edges[0]?.points?.[0], { x: 100, y: -200 });
+  assert.deepEqual(scene.edges[0]?.points?.at(-1), { x: 104, y: -200 });
 });
 test("transport extraction keeps original identities and explains unsupported endpoints", () => {
   const result = convertDispatchMap(definition, "C");
@@ -433,5 +440,5 @@ test("translated negative engineering coordinates fit the original positive edit
     ),
   );
   assert.equal(result.roadnet.nodes[0].x + result.coordinateOffset.x, 1000);
-  assert.equal(result.roadnet.nodes[0].y + result.coordinateOffset.y, -400);
+  assert.equal(result.coordinateOffset.y - result.roadnet.nodes[0].y, -400);
 });

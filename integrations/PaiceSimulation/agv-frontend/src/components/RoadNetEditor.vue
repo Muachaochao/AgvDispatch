@@ -180,8 +180,62 @@ const hasSelectedOneWay = computed(() =>
 
 const nodeMap = computed(() => new Map(nodes.value.map((n) => [n.id, n])))
 const denseGraph = computed(() => nodes.value.length > 30)
+const cleanDensePreview = computed(() => denseGraph.value && !editable.value)
+const mapAreaOverlays = computed(() => {
+  if (!cleanDensePreview.value) return []
+  const integration = props.initial.integration
+  const source = integration?.sourceDefinition as
+    | {
+        areaAnnotations?: {
+          id?: string
+          sourceType?: string
+          text?: string
+          strokeColor?: string
+          fillColor?: string
+          fillOpacity?: number
+          boundary?: { x: number; y: number }[]
+        }[]
+      }
+    | undefined
+  const offset = integration?.coordinateOffset as { x: number; y: number } | undefined
+  if (!source?.areaAnnotations || !offset) return []
+  return source.areaAnnotations.flatMap((area) => {
+    if (
+      !['CadSimulationEvidence', 'CadReferencePoint'].includes(area.sourceType ?? '') ||
+      !Array.isArray(area.boundary) ||
+      area.boundary.length < 3
+    )
+      return []
+    const points = area.boundary
+      .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
+      .map((point) => ({
+        x: (point.x - offset.x) * SCALE,
+        y: (offset.y - point.y) * SCALE
+      }))
+    if (points.length < 3) return []
+    return [
+      {
+        id: area.id ?? area.text ?? 'map-area',
+        text: area.text ?? '仿真分区',
+        points: points.map((point) => `${point.x},${point.y}`).join(' '),
+        labelX: points.reduce((sum, point) => sum + point.x, 0) / points.length,
+        labelY: points.reduce((sum, point) => sum + point.y, 0) / points.length,
+        strokeColor: area.strokeColor ?? '#38bdf8',
+        fillColor: area.fillColor ?? area.strokeColor ?? '#38bdf8',
+        fillOpacity: Math.min(0.25, Math.max(0.03, Number(area.fillOpacity) || 0.06))
+      }
+    ]
+  })
+})
 
 function showNodeLabel(node: NetNode) {
+  if (cleanDensePreview.value) {
+    return (
+      selectedNodeIds.value.includes(node.id) ||
+      searchHitNodeIds.value.has(node.id) ||
+      (hover.value?.kind === 'node' && hover.value.id === node.id)
+    )
+  }
   if (!denseGraph.value) return true
   if (
     selectedNodeIds.value.includes(node.id) ||
@@ -195,6 +249,15 @@ function showNodeLabel(node: NetNode) {
 
 function showEdgeLabel(edge: NetEdge) {
   if (!denseGraph.value) return true
+  return (
+    selectedEdgeIds.value.includes(edge.id) ||
+    searchHitEdgeIds.value.has(edge.id) ||
+    (hover.value?.kind === 'edge' && hover.value.id === edge.id)
+  )
+}
+
+function showEdgeArrows(edge: NetEdge) {
+  if (!cleanDensePreview.value) return true
   return (
     selectedEdgeIds.value.includes(edge.id) ||
     searchHitEdgeIds.value.has(edge.id) ||
@@ -227,6 +290,7 @@ const canvasClass = computed(() => ({
   'is-drawing': tool.value !== 'select' && tool.value !== 'pan',
   'is-pan-tool': tool.value === 'pan',
   'is-readonly': !editable.value,
+  'is-web-preview': cleanDensePreview.value,
   'is-dragging': !!dragState.value,
   'is-panning': panning.value,
   'can-pan': spacePressed.value
@@ -2162,7 +2226,7 @@ defineExpose({
       <div
         ref="canvasWrap"
         class="canvas-wrap"
-        :class="{ 'is-maximized': isMaximized }"
+        :class="{ 'is-maximized': isMaximized, 'is-web-preview': cleanDensePreview }"
       >
         <div v-if="editable && tool === 'connect' && connectFrom" class="connect-hint">
           已选起点 {{ connectFrom }}，再点一个节点完成连接，Esc 取消
@@ -2201,6 +2265,33 @@ defineExpose({
                 :d="`M ${SCALE * 5} 0 L 0 0 0 ${SCALE * 5}`"
                 fill="none"
                 stroke="#dde5ef"
+                stroke-width="1"
+              />
+            </pattern>
+            <pattern
+              id="webSmallGrid"
+              :width="SNAP * SCALE"
+              :height="SNAP * SCALE"
+              patternUnits="userSpaceOnUse"
+            >
+              <path
+                :d="`M ${SNAP * SCALE} 0 L 0 0 0 ${SNAP * SCALE}`"
+                fill="none"
+                stroke="#14243a"
+                stroke-width="1"
+              />
+            </pattern>
+            <pattern
+              id="webGrid"
+              :width="SCALE * 5"
+              :height="SCALE * 5"
+              patternUnits="userSpaceOnUse"
+            >
+              <rect :width="SCALE * 5" :height="SCALE * 5" fill="url(#webSmallGrid)" />
+              <path
+                :d="`M ${SCALE * 5} 0 L 0 0 0 ${SCALE * 5}`"
+                fill="none"
+                stroke="#1b3550"
                 stroke-width="1"
               />
             </pattern>
@@ -2257,7 +2348,7 @@ defineExpose({
             <rect
               :width="mapWidth * SCALE"
               :height="mapHeight * SCALE"
-              :fill="showGrid ? 'url(#grid)' : '#fbfdff'"
+              :fill="cleanDensePreview ? 'url(#webGrid)' : showGrid ? 'url(#grid)' : '#fbfdff'"
             />
             <rect
               class="map-border"
@@ -2268,6 +2359,27 @@ defineExpose({
               vector-effect="non-scaling-stroke"
               pointer-events="none"
             />
+            <g v-if="mapAreaOverlays.length" class="map-areas" pointer-events="none">
+              <g v-for="area in mapAreaOverlays" :key="area.id">
+                <polygon
+                  :points="area.points"
+                  :fill="area.fillColor"
+                  :fill-opacity="area.fillOpacity"
+                  :stroke="area.strokeColor"
+                  stroke-opacity=".58"
+                  stroke-width="1.2"
+                  stroke-dasharray="5 4"
+                />
+                <text
+                  v-if="area.id.startsWith('SIM-AREA-G') || area.id.startsWith('SIM-CAD-POINT-')"
+                  :x="area.labelX"
+                  :y="area.labelY"
+                  :fill="area.strokeColor"
+                >
+                  {{ area.text }}
+                </text>
+              </g>
+            </g>
             <g class="map-ticks" pointer-events="none">
               <g v-for="tick in xTicks" :key="`tx-${tick}`">
                 <line :x1="tick * SCALE" y1="0" :x2="tick * SCALE" y2="8" />
@@ -2336,10 +2448,11 @@ defineExpose({
                 :y2="lane.y2"
                 :stroke="edgeStroke(edge)"
                 :stroke-width="isSelectedEdge(edge.id) ? 4 : 3"
+                class="edge-line"
                 pointer-events="none"
               />
               <line
-                v-for="arrow in edgeArrows(edge)"
+                v-for="arrow in showEdgeArrows(edge) ? edgeArrows(edge) : []"
                 :key="arrow.key"
                 :x1="arrow.x1"
                 :y1="arrow.y1"
@@ -3035,6 +3148,22 @@ defineExpose({
   background: #fbfdff;
 }
 
+.canvas-wrap.is-web-preview,
+.canvas-wrap.is-web-preview.is-maximized,
+.canvas-wrap.is-web-preview:fullscreen {
+  background: #0b1526;
+}
+
+.canvas-wrap.is-web-preview .map-legend,
+.canvas-wrap.is-web-preview .minimap,
+.canvas-wrap.is-web-preview .scale-bar,
+.canvas-wrap.is-web-preview .coords,
+.canvas-wrap.is-web-preview .map-ticks,
+.canvas-wrap.is-web-preview .legend-toggle,
+.canvas-wrap.is-web-preview .minimap-toggle {
+  display: none;
+}
+
 .canvas {
   width: 100%;
   height: 100%;
@@ -3113,6 +3242,32 @@ defineExpose({
   fill: none;
   stroke: #7f9cc0;
   stroke-width: 1.5;
+}
+
+.canvas.is-web-preview .map-border {
+  stroke: #1d3550;
+}
+
+.canvas.is-web-preview .edge-line {
+  stroke: #3e8da8 !important;
+  stroke-width: 3.2 !important;
+  stroke-linecap: round;
+}
+
+.canvas.is-web-preview .node-dot {
+  fill: #092534 !important;
+  stroke: #48d7cf !important;
+  stroke-width: 1.5 !important;
+}
+
+.canvas.is-web-preview .map-areas text {
+  font-size: 9px;
+  font-weight: 600;
+  text-anchor: middle;
+  paint-order: stroke;
+  stroke: #07101f;
+  stroke-width: 4;
+  stroke-linejoin: round;
 }
 
 .map-ticks line {

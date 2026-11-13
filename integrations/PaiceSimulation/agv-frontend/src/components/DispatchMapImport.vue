@@ -145,6 +145,12 @@ async function save() {
           ),
           sourceDefinition: conversion.value.sourceDefinition,
           coordinateOffset: conversion.value.coordinateOffset,
+          coordinateTransform: {
+            xScale: 1,
+            yScale: -1,
+            xTranslate: -conversion.value.coordinateOffset.x,
+            yTranslate: conversion.value.coordinateOffset.y,
+          },
           edgeMapping: conversion.value.edgeMapping,
           excludedNodes: conversion.value.excludedNodes,
           excludedEdges: conversion.value.excludedEdges,
