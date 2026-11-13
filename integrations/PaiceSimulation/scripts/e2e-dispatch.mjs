@@ -79,7 +79,7 @@ const detail = {
     {
       commandId: "ORIGINAL-COMMAND",
       status: "Sent",
-      route: { nodeIds: ["A", "B"], edgeIds: ["AB"] },
+      route: { nodeIds: ["B", "C"], edgeIds: ["BC"] },
     },
   ],
 };
@@ -100,7 +100,41 @@ await page.route("**/dispatch-api/**", async (route) => {
     if (p.endsWith("/stop")) sourceRunning = false;
     if (p.endsWith("/start")) sourceRunning = true;
   }
-  if (p === "/api/simulation" || route.request().method() === "POST")
+  if (p === "/api/maps")
+    data = [
+      {
+        mapId: "active-site",
+        name: "现场三车地图",
+        unit: "m",
+        isActive: true,
+        publishedVersionId: "site-v1",
+        updatedAt: "2026-11-13T10:00:00+08:00",
+      },
+      {
+        mapId: "factory",
+        name: "B07-1F·全厂305CNC·五车仿真图",
+        description: "305个工位、5台AGV",
+        unit: "m",
+        isActive: false,
+        publishedVersionId: "factory-v5",
+        updatedAt: "2026-11-06T18:46:59+08:00",
+      },
+    ];
+  else if (p === "/api/maps/factory/workspace")
+    data = {
+      project: {
+        mapId: "factory",
+        isActive: false,
+        activeVersionId: null,
+      },
+      published: {
+        mapId: "factory",
+        versionId: "factory-v5",
+        status: "Published",
+        definition,
+      },
+    };
+  else if (p === "/api/simulation" || route.request().method() === "POST")
     data = {
       enabled: true,
       running: sourceRunning,
@@ -188,15 +222,13 @@ try {
     "PASS original template scene renders two observed vehicles, radians, waiting and resources",
   );
   await page
-    .getByRole("button", { name: "读取隔离仿真地图", exact: true })
-    .click();
-  await page.locator(".map-import .el-select").click();
-  await page.getByRole("option", { name: "C", exact: true }).click();
-  await page
-    .getByRole("button", { name: "预览转换与校验", exact: true })
+    .getByRole("button", { name: "读取 Web 仿真地图", exact: true })
     .click();
   await page
-    .getByRole("button", { name: "确认保存实验副本", exact: true })
+    .getByText("B07-1F·全厂305CNC·五车仿真图", { exact: true })
+    .waitFor();
+  await page
+    .getByRole("button", { name: "保存仿真路网", exact: true })
     .waitFor();
   assert.equal(await page.locator(".map-import .el-alert--error").count(), 0);
   const mapSavedResponse = page.waitForResponse(
@@ -204,12 +236,10 @@ try {
       response.url().endsWith("/api/roadnet") &&
       response.request().method() === "POST",
   );
-  await page
-    .getByRole("button", { name: "确认保存实验副本", exact: true })
-    .click();
+  await page.getByRole("button", { name: "保存仿真路网", exact: true }).click();
   fixtureMapId = (await (await mapSavedResponse).json()).data.id;
   await page
-    .getByRole("button", { name: "已保存实验副本", exact: true })
+    .getByRole("button", { name: "已保存仿真路网", exact: true })
     .waitFor();
   console.log(
     "PASS source map conversion validates and persists in real independent Java database",
@@ -223,6 +253,9 @@ try {
   await page
     .getByRole("button", { name: "预览选中命令为实验任务", exact: true })
     .click();
+  await page.waitForTimeout(500);
+  if ((await page.getByRole("dialog").count()) === 0)
+    console.error("Task import alerts:", await page.locator(".el-alert").allTextContents());
   await page.getByRole("dialog").waitFor();
   const tasksSavedResponse = page.waitForResponse(
     (response) =>

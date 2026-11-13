@@ -7,7 +7,9 @@ import {
   publishedDispatchMap,
   dispatchIsFresh,
   dispatchRoutePoints,
+  resolveMapSiteId,
   roadnetFingerprint,
+  selectWebSimulationMap,
 } from "../src/integration/dispatch-adapter.ts";
 
 const definition = {
@@ -289,6 +291,66 @@ test("source charging points retain charger type while transit waiting points re
     "JUNCTION",
   );
   assert.ok(result.warnings.some((w) => w.includes("WaitingPoint")));
+});
+
+test("Web vehicle station resolves to the matching map node by agvSiteId or node id", () => {
+  const map = {
+    ...definition,
+    nodes: [
+      { id: "BUS-LM1", agvSiteId: "LM1", x: 1, y: 2, type: "Station" },
+      { id: "LM9", x: 3, y: 4, type: "Station" },
+    ],
+    edges: [],
+  };
+  assert.equal(resolveMapSiteId(map, "LM1"), "BUS-LM1");
+  assert.equal(resolveMapSiteId(map, "LM9"), "LM9");
+  assert.equal(resolveMapSiteId(map, "UNKNOWN"), "");
+});
+
+test("Web simulation map selection prefers the published five-car factory map", () => {
+  const selected = selectWebSimulationMap([
+    {
+      mapId: "site",
+      name: "ZM-3AGV",
+      description: "现场三车地图",
+      unit: "m",
+      isActive: true,
+      publishedVersionId: "site-v7",
+      updatedAt: "2026-11-08T17:54:56+08:00",
+    },
+    {
+      mapId: "factory",
+      name: "B07-1F·全厂305CNC·五车仿真图",
+      description: "305台CNC、5台AGV",
+      unit: "m",
+      isActive: false,
+      publishedVersionId: "factory-v5",
+      updatedAt: "2026-11-06T18:46:59+08:00",
+    },
+  ]);
+  assert.equal(selected?.mapId, "factory");
+});
+
+test("Web simulation map selection falls back to the current active published map", () => {
+  const selected = selectWebSimulationMap([
+    {
+      mapId: "draft",
+      name: "未发布地图",
+      unit: "m",
+      isActive: true,
+      publishedVersionId: null,
+      updatedAt: "2026-11-08T17:54:56+08:00",
+    },
+    {
+      mapId: "active",
+      name: "当前活动地图",
+      unit: "m",
+      isActive: true,
+      publishedVersionId: "active-v1",
+      updatedAt: "2026-11-07T17:54:56+08:00",
+    },
+  ]);
+  assert.equal(selected?.mapId, "active");
 });
 
 test("translated negative engineering coordinates fit the original positive editor canvas", () => {

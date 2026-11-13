@@ -485,6 +485,69 @@ export function publishedDispatchMap(
   return pub.definition;
 }
 
+export interface WebMapSummary {
+  mapId: string;
+  name: string;
+  description?: string;
+  unit?: string;
+  isActive: boolean;
+  publishedVersionId?: string | null;
+  updatedAt?: string;
+}
+
+export function selectWebSimulationMap(maps: WebMapSummary[]) {
+  const candidates = maps.filter(
+    (map) => !!map.publishedVersionId && map.unit === "m",
+  );
+  const score = (map: WebMapSummary) => {
+    const text = `${map.name} ${map.description ?? ""}`;
+    return (
+      (text.includes("五车") ? 4 : 0) +
+      (text.includes("305CNC") ? 4 : 0) +
+      (text.includes("仿真图") ? 2 : 0)
+    );
+  };
+  const marked = candidates
+    .filter((map) => score(map) > 0)
+    .sort(
+      (a, b) =>
+        score(b) - score(a) ||
+        String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? "")),
+    );
+  if (marked[0]) return marked[0];
+  return (
+    candidates.find((map) => map.isActive) ??
+    candidates.sort((a, b) =>
+      String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? "")),
+    )[0]
+  );
+}
+
+export function resolveMapSiteId(
+  definition: SourceMap,
+  station?: string | null,
+) {
+  if (!station) return "";
+  return (
+    definition.nodes.find(
+      (node) =>
+        node.enabled !== false &&
+        (node.id === station || node.agvSiteId === station),
+    )?.id ?? ""
+  );
+}
+
+export async function sourceDefinitionHash(definition: SourceMap) {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(JSON.stringify(definition)),
+  );
+  return [...new Uint8Array(digest)]
+    .map((value) => value.toString(16).padStart(2, "0"))
+    .join("")
+    .toUpperCase();
+}
+
 export function roadnetFingerprint(map: RoadNetPayload) {
   return JSON.stringify({
     nodes: map.nodes

@@ -206,11 +206,9 @@ async function previewTasks() {
           localStorage.getItem(`dispatch-import-${targetMap.value}`) ?? "null",
         );
     const identity = map.integration?.identity ?? cached?.identity;
-    const hash = identity?.definitionHash;
-    const source = status.value?.configuration?.mapIdentity;
-    if (!hash || hash !== source?.definitionHash)
+    if (!identity?.sourceMapId || !identity?.definitionHash)
       throw new Error(
-        "目标路网缺少与当前仿真地图一致的来源摘要，请先从本实例导入地图",
+        "目标路网缺少 Web 仿真地图来源记录，请先重新导入 Web 仿真地图",
       );
     const expected =
       map.integration?.importedGraphFingerprint ??
@@ -226,6 +224,10 @@ async function previewTasks() {
         ),
       );
     importPreview.value = transportTasks(details, map);
+    if (!importPreview.value.tasks.length)
+      throw new Error(
+        "所选原任务命令与目标 Web 仿真路网不匹配，没有可转换的运输任务",
+      );
     importDialog.value = true;
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
@@ -512,7 +514,7 @@ onBeforeUnmount(() => {
         </p>
       </div>
     </section>
-    <DispatchMapImport :status="status" @saved="mapSaved" />
+    <DispatchMapImport @saved="mapSaved" />
     <div class="lower-grid">
       <section class="panel">
         <h3>交通资源</h3>

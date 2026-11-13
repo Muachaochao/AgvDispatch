@@ -1,8 +1,11 @@
 import {
   publishedDispatchMap,
+  selectWebSimulationMap,
+  sourceDefinitionHash,
   type SourceMap,
   type DispatchCar,
   type DispatchTaskDetail,
+  type WebMapSummary,
 } from "./dispatch-adapter";
 
 export interface DispatchStatus {
@@ -94,6 +97,46 @@ export async function loadPublishedDispatchMap(signal?: AbortSignal) {
   if (after.map?.definitionHash !== before.map.definitionHash)
     throw new Error("拉取期间主工程地图摘要变化，请刷新重试");
   return { definition, identity: before.map };
+}
+
+export async function loadWebSimulationMap(signal?: AbortSignal) {
+  const maps = await dispatchRead<WebMapSummary[]>("/api/maps", signal);
+  const selected = selectWebSimulationMap(maps);
+  if (!selected) throw new Error("Web 中没有可用的已发布米制仿真地图");
+  type Workspace = Parameters<typeof publishedDispatchMap>[1];
+  const workspace = await dispatchRead<Workspace>(
+    `/api/maps/${encodeURIComponent(selected.mapId)}/workspace`,
+    signal,
+  );
+  const published = workspace.published;
+  if (
+    !published ||
+    published.status !== "Published" ||
+    published.mapId !== selected.mapId ||
+    published.versionId !== selected.publishedVersionId
+  )
+    throw new Error("Web 仿真地图发布版本已变化，请刷新后重试");
+  const definition = published.definition;
+  if (definition.unit !== "m") throw new Error("只接受米制完整 Web 仿真地图");
+  return {
+    definition,
+    identity: {
+      sourceType: "Web仿真地图",
+      sourceMapId: selected.mapId,
+      mapName: selected.name,
+      mapVersionId: selected.publishedVersionId,
+      definitionHash: await sourceDefinitionHash(definition),
+      updatedAt: selected.updatedAt,
+    },
+    suggestedInitialSite:
+      definition.nodes.find(
+        (node) => node.enabled !== false && node.type === "ChargingPoint",
+      )?.id ??
+      definition.nodes.find(
+        (node) => node.enabled !== false && node.type === "Station",
+      )?.id ??
+      "",
+  };
 }
 
 export function downloadIntegrationRecord(value: unknown, name: string) {

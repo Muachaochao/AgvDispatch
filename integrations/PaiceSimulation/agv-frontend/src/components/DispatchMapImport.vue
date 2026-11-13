@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
 import {
   createRoadNet,
@@ -8,16 +8,15 @@ import {
 } from "@/api/roadnet";
 import {
   convertDispatchMap,
+  resolveMapSiteId,
   roadnetFingerprint,
   type SourceMap,
   type MapConversion,
 } from "@/integration/dispatch-adapter";
 import {
-  loadPublishedDispatchMap,
+  loadWebSimulationMap,
   downloadIntegrationRecord,
-  type DispatchStatus,
 } from "@/integration/dispatch-api";
-const props = defineProps<{ status: DispatchStatus | null }>();
 const emit = defineEmits<{ saved: [id: number] }>();
 const definition = ref<SourceMap | null>(null),
   identity = ref<Record<string, unknown>>({}),
@@ -32,12 +31,46 @@ const conversion = ref<MapConversion | null>(null),
 const choices = computed(
   () => definition.value?.nodes.filter((n) => n.enabled !== false) ?? [],
 );
-function reset(def: SourceMap, source: Record<string, unknown>) {
+const sourceLabel = computed(() =>
+  String(
+    identity.value.mapName ??
+      identity.value.sourceName ??
+      definition.value?.name ??
+      "Web 仿真地图",
+  ),
+);
+const sourceTitle = computed(
+  () =>
+    `版本 ${String(identity.value.mapVersionId ?? "未知")} · 摘要 ${String(identity.value.definitionHash ?? "未知")}`,
+);
+function defaultInitialSite(def: SourceMap) {
+  return (
+    def.nodes.find(
+      (node) => node.enabled !== false && node.type === "ChargingPoint",
+    )?.id ??
+    def.nodes.find((node) => node.enabled !== false && node.type === "Station")
+      ?.id ??
+    def.nodes[0]?.id ??
+    ""
+  );
+}
+function defaultName(def: SourceMap) {
+  const text = `${def.name ?? ""} ${def.coordinateSystem ?? ""}`;
+  return text.includes("305") && text.includes("五车")
+    ? "全厂五车仿真"
+    : `${def.name ?? "Web仿真图"}（仿真）`;
+}
+function reset(
+  def: SourceMap,
+  source: Record<string, unknown>,
+  suggestedInitialSite = "",
+) {
   roundTripOnly.value = false;
   definition.value = def;
   identity.value = source;
-  initial.value = "";
-  name.value = `${def.name ?? "工程地图"} · 算法实验副本`;
+  initial.value =
+    resolveMapSiteId(def, suggestedInitialSite) || defaultInitialSite(def);
+  name.value = defaultName(def);
   conversion.value = null;
   errors.value = [];
   error.value = "";
@@ -47,20 +80,15 @@ async function loadActive() {
   busy.value = true;
   error.value = "";
   try {
-    const source = await loadPublishedDispatchMap();
-    reset(source.definition, source.identity);
+    const source = await loadWebSimulationMap();
+    reset(source.definition, source.identity, source.suggestedInitialSite);
+    await nextTick();
+    await preview();
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   } finally {
     busy.value = false;
   }
-}
-function loadSimulation() {
-  if (!props.status?.map) return;
-  reset(JSON.parse(JSON.stringify(props.status.map)), {
-    ...props.status.configuration?.mapIdentity,
-    instance: props.status.rootName,
-  });
 }
 async function loadFile(event: Event) {
   const input = event.target as HTMLInputElement,
@@ -134,9 +162,7 @@ async function save() {
       ElMessage.warning("路网已保存，请下载来源记录，浏览器未能保存映射缓存");
     }
     emit("saved", result.id);
-    ElMessage.success(
-      "已保存为独立实验路网，可进入车间地图、任务集及对比实验使用",
-    );
+    ElMessage.success("已保存仿真路网");
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   } finally {
@@ -160,27 +186,31 @@ function download() {
 </script>
 <template>
   <section class="panel map-import">
-    <h3>导入工程地图</h3>
+    <h3>导入 Web 仿真地图</h3>
+    <p class="muted">
+      优先读取 5199 中已发布的五车全厂仿真图，保存后供本模块算法仿真使用。
+    </p>
     <el-space wrap>
-      <el-button :loading="busy" @click="loadActive"
-        >读取主工程活动地图</el-button
-      >
-      <el-button :disabled="!status?.map || busy" @click="loadSimulation"
-        >读取隔离仿真地图</el-button
+      <el-button type="primary" :loading="busy" @click="loadActive"
+        >读取 Web 仿真地图</el-button
       >
       <label class="file-button"
-        >上传完整地图<input type="file" accept=".json" @change="loadFile"
+        >备用：载入地图文件<input type="file" accept=".json" @change="loadFile"
       /></label>
     </el-space>
     <el-alert v-if="error" :title="error" type="error" :closable="false" />
     <div v-if="definition" class="import-form">
+      <p class="source-line" :title="sourceTitle">
+        Web 仿真地图：<strong>{{ sourceLabel }}</strong>
+      </p>
       <p>
-        {{ definition.name || "工程地图" }} · {{ definition.nodes.length }} 节点
-        · {{ definition.edges.length }} 道路 ·
+        {{ definition.name || "Web 仿真图" }} ·
+        {{ definition.nodes.length }} 节点 · {{ definition.edges.length }} 道路
+        ·
         {{ definition.unit || "单位未提供" }}
       </p>
       <el-form label-width="140px">
-        <el-form-item label="副本名称"
+        <el-form-item label="仿真路网名称"
           ><el-input v-model="name" maxlength="128"
         /></el-form-item>
         <el-form-item label="实验初始停放点"
@@ -224,7 +254,7 @@ function download() {
             type="primary"
             :disabled="busy || !!savedId || errors.length > 0 || !name.trim()"
             @click="save"
-            >{{ savedId ? "已保存实验副本" : "确认保存实验副本" }}</el-button
+            >{{ savedId ? "已保存仿真路网" : "保存仿真路网" }}</el-button
           ><el-button @click="download">下载来源与转换记录</el-button
           ><el-button v-if="savedId" @click="$router.push('/roadnet')"
             >进入车间地图</el-button
@@ -240,6 +270,9 @@ h3 {
 }
 .import-form {
   margin-top: 16px;
+}
+.source-line {
+  color: #35516b;
 }
 .file-button {
   display: inline-flex;
