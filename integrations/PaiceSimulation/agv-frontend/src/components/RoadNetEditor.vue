@@ -315,7 +315,6 @@ const canvasClass = computed(() => ({
   'is-drawing': tool.value !== 'select' && tool.value !== 'pan',
   'is-pan-tool': tool.value === 'pan',
   'is-readonly': !editable.value,
-  'is-web-preview': cleanDensePreview.value,
   'is-dragging': !!dragState.value,
   'is-panning': panning.value,
   'can-pan': spacePressed.value
@@ -2251,7 +2250,7 @@ defineExpose({
       <div
         ref="canvasWrap"
         class="canvas-wrap"
-        :class="{ 'is-maximized': isMaximized, 'is-web-preview': cleanDensePreview }"
+        :class="{ 'is-maximized': isMaximized }"
       >
         <div v-if="editable && tool === 'connect' && connectFrom" class="connect-hint">
           已选起点 {{ connectFrom }}，再点一个节点完成连接，Esc 取消
@@ -2290,33 +2289,6 @@ defineExpose({
                 :d="`M ${SCALE * 5} 0 L 0 0 0 ${SCALE * 5}`"
                 fill="none"
                 stroke="#dde5ef"
-                stroke-width="1"
-              />
-            </pattern>
-            <pattern
-              id="webSmallGrid"
-              :width="SNAP * SCALE"
-              :height="SNAP * SCALE"
-              patternUnits="userSpaceOnUse"
-            >
-              <path
-                :d="`M ${SNAP * SCALE} 0 L 0 0 0 ${SNAP * SCALE}`"
-                fill="none"
-                stroke="#14243a"
-                stroke-width="1"
-              />
-            </pattern>
-            <pattern
-              id="webGrid"
-              :width="SCALE * 5"
-              :height="SCALE * 5"
-              patternUnits="userSpaceOnUse"
-            >
-              <rect :width="SCALE * 5" :height="SCALE * 5" fill="url(#webSmallGrid)" />
-              <path
-                :d="`M ${SCALE * 5} 0 L 0 0 0 ${SCALE * 5}`"
-                fill="none"
-                stroke="#1b3550"
                 stroke-width="1"
               />
             </pattern>
@@ -2373,7 +2345,7 @@ defineExpose({
             <rect
               :width="mapWidth * SCALE"
               :height="mapHeight * SCALE"
-              :fill="cleanDensePreview ? 'url(#webGrid)' : showGrid ? 'url(#grid)' : '#fbfdff'"
+              :fill="showGrid ? 'url(#grid)' : '#fbfdff'"
             />
             <rect
               class="map-border"
@@ -2616,7 +2588,7 @@ defineExpose({
         </svg>
 
         <button
-          v-if="legendCollapsed"
+          v-if="legendCollapsed && !cleanDensePreview"
           class="overlay-toggle legend-toggle"
           type="button"
           @click="toggleLegend"
@@ -2667,7 +2639,7 @@ defineExpose({
         </div>
 
         <button
-          v-if="minimapCollapsed"
+          v-if="minimapCollapsed && !cleanDensePreview"
           class="overlay-toggle minimap-toggle"
           type="button"
           @click="toggleMinimap"
@@ -3185,22 +3157,6 @@ defineExpose({
   background: #fbfdff;
 }
 
-.canvas-wrap.is-web-preview,
-.canvas-wrap.is-web-preview.is-maximized,
-.canvas-wrap.is-web-preview:fullscreen {
-  background: #0b1526;
-}
-
-.canvas-wrap.is-web-preview .map-legend,
-.canvas-wrap.is-web-preview .minimap,
-.canvas-wrap.is-web-preview .scale-bar,
-.canvas-wrap.is-web-preview .coords,
-.canvas-wrap.is-web-preview .map-ticks,
-.canvas-wrap.is-web-preview .legend-toggle,
-.canvas-wrap.is-web-preview .minimap-toggle {
-  display: none;
-}
-
 .canvas {
   width: 100%;
   height: 100%;
@@ -3281,23 +3237,7 @@ defineExpose({
   stroke-width: 1.5;
 }
 
-.canvas.is-web-preview .map-border {
-  stroke: #1d3550;
-}
-
-.canvas.is-web-preview .edge-line {
-  stroke: #3e8da8 !important;
-  stroke-width: 3.2 !important;
-  stroke-linecap: round;
-}
-
-.canvas.is-web-preview .node-dot {
-  fill: #092534 !important;
-  stroke: #48d7cf !important;
-  stroke-width: 1.5 !important;
-}
-
-.canvas.is-web-preview .map-areas text {
+.canvas.is-readonly .map-areas text {
   font-size: 9px;
   font-weight: 600;
   text-anchor: middle;
