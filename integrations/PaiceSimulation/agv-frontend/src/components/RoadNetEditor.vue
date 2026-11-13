@@ -181,7 +181,7 @@ const hasSelectedOneWay = computed(() =>
 const nodeMap = computed(() => new Map(nodes.value.map((n) => [n.id, n])))
 const denseGraph = computed(() => nodes.value.length > 30)
 const cleanDensePreview = computed(() => denseGraph.value && !editable.value)
-const visibleMapAreaLabels = new Set(['SIM-AREA-TERMINAL', 'SIM-AREA-WAIT', 'SIM-AREA-CHARGE', 'CAD-TERMINAL-PLATFORM'])
+const visibleMapAreaLabels = new Set(['SIM-AREA-WAIT', 'SIM-AREA-CHARGE', 'CAD-TERMINAL-PLATFORM'])
 const mapAreaOverlays = computed(() => {
   if (!cleanDensePreview.value) return []
   const integration = props.initial.integration
@@ -205,17 +205,20 @@ const mapAreaOverlays = computed(() => {
       return []
     let boundary = area.boundary
       .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
-    const padding = area.id === 'SIM-AREA-CHARGE'
-      ? { x: .35, y: .35 }
+    const referenceBoundary = area.id === 'SIM-AREA-WAIT'
+      ? { left: 983.7, right: 988, bottom: -430.55, top: -428 }
       : area.id === 'CAD-TERMINAL-PLATFORM'
-        ? { x: .9, y: .3 }
-        : { x: 0, y: 0 }
-    if (padding.x || padding.y) {
-      const xs = boundary.map(point => point.x), ys = boundary.map(point => point.y)
-      const left = Math.min(...xs) - padding.x, right = Math.max(...xs) + padding.x
-      const bottom = Math.min(...ys) - padding.y, top = Math.max(...ys) + padding.y
-      boundary = [{ x: left, y: bottom }, { x: right, y: bottom }, { x: right, y: top }, { x: left, y: top }]
-    }
+        ? { left: 984, right: 989.2, bottom: -432.126, top: -430.726 }
+        : area.id === 'SIM-AREA-CHARGE'
+          ? { left: 980.5, right: 983.95, bottom: -433.83, top: -432.35 }
+          : null
+    if (referenceBoundary)
+      boundary = [
+        { x: referenceBoundary.left, y: referenceBoundary.bottom },
+        { x: referenceBoundary.right, y: referenceBoundary.bottom },
+        { x: referenceBoundary.right, y: referenceBoundary.top },
+        { x: referenceBoundary.left, y: referenceBoundary.top }
+      ]
     const points = boundary.map((point) => ({
         x: (point.x - offset.x) * SCALE,
         y: (offset.y - point.y) * SCALE
