@@ -53,6 +53,9 @@ const tabs=[
  {id:'tests',label:'测试中心',group:'测试与验证'},
  {id:'simulation',label:'配置模拟',group:'测试与验证'}
 ];
+const commonTabIds=new Set(['overview','vehicles','pools','stations','templates','dumpers','standbys','validation','versions']);
+const engineeringLevel=ref<'common'|'advanced'>('common');
+const visibleTabs=computed(()=>tabs.filter(item=>engineeringLevel.value==='common'?commonTabIds.has(item.id):!commonTabIds.has(item.id)));
 const tab=computed(()=>tabs.some(t=>t.id===route.query.tab)?String(route.query.tab):'overview');
 const section=computed(()=>tab.value in sections?tab.value as Section:null);
 const dirty=computed(()=>savedText.value!==JSON.stringify(plan.value));
@@ -64,10 +67,19 @@ const selectedVersion=computed(()=>versions.value.find(v=>v.id===versionId.value
 const appliedVersionId=computed(()=>runtimeState.value?.configuration?.engineeringSource?.versionId??'');
 const reportTasks=computed(()=>report.value?.tasks?.slice((reportPage.value-1)*25,reportPage.value*25)??[]);
 function navigate(id:string,extra:Record<string,string>={}){void router.push({path:'/engineering',query:{tab:id,...extra}});}
+function setEngineeringLevel(level:'common'|'advanced'){
+ engineeringLevel.value=level;
+ const allowed=level==='common'?commonTabIds.has(tab.value):!commonTabIds.has(tab.value);
+ if(!allowed)navigate(level==='common'?'overview':'nodes');
+}
 function openRuntime(){if(versionId.value)navigate('runtime',{version:versionId.value});}
 function commissioningNavigate(target:string){const path=target==='tasks'?'/tasks':target==='map'?'/maps':target==='vehicles'||target==='vehicle-status'?'/vehicles':'/engineering';void router.push(path);}
 function openCharging(){void router.push('/charging');}
-watch(()=>route.query.tab,()=>{search.value='';page.value=1;selected.value=null;checked.value=[];importPreview.value=null;});
+watch(()=>route.query.tab,value=>{
+ const current=tabs.some(t=>t.id===value)?String(value):'overview';
+ engineeringLevel.value=commonTabIds.has(current)?'common':'advanced';
+ search.value='';page.value=1;selected.value=null;checked.value=[];importPreview.value=null;
+},{immediate:true});
 watch(()=>route.query.version,value=>{const id=typeof value==='string'?value:'';if(id&&id!==versionId.value)versionId.value=id;});
 watch(search,()=>{page.value=1;checked.value=[];});
 watch(()=>[route.query.tab,route.query.object],()=>{void nextTick(focusObject);});
@@ -155,7 +167,7 @@ onMounted(load);
  <p class="engineering-boundary">左侧先完成资源与业务配置；随后在同一页依次校验、发布、执行接入和运行核验。只有通信、地图编辑和单车调试等独立模块保留单独页面。</p>
  <p v-if="error" class="inline-warning" role="alert">{{industrialText(error)}}</p><p v-if="message" class="engineering-message" role="status">{{industrialText(message)}}</p>
  <div class="engineering-layout">
- <nav class="engineering-sidebar" aria-label="工程工作台分类"><template v-for="(item,index) in tabs" :key="item.id"><p v-if="index===0||tabs[index-1]?.group!==item.group" class="engineering-nav-group">{{item.group}}</p><button :class="{active:tab===item.id}" :aria-current="tab===item.id?'page':undefined" @click="navigate(item.id)"><span>{{item.label}}</span><small v-if="item.id in sections">{{plan[item.id as Section].length}}</small></button></template></nav>
+ <nav class="engineering-sidebar" aria-label="工程工作台分类"><div class="engineering-level-switch" aria-label="工程配置级别"><button :class="{active:engineeringLevel==='common'}" @click="setEngineeringLevel('common')"><span>常用配置</span><small>日常业务维护</small></button><button :class="{active:engineeringLevel==='advanced'}" @click="setEngineeringLevel('advanced')"><span>高级配置</span><small>地图、通信、联调</small></button></div><template v-for="(item,index) in visibleTabs" :key="item.id"><p v-if="index===0||visibleTabs[index-1]?.group!==item.group" class="engineering-nav-group">{{item.group}}</p><button :class="{active:tab===item.id}" :aria-current="tab===item.id?'page':undefined" @click="navigate(item.id)"><span>{{item.label}}</span><small v-if="item.id in sections">{{plan[item.id as Section].length}}</small></button></template></nav>
  <main class="engineering-content" :aria-busy="busy">
  <template v-if="tab==='overview'">
   <h3>工程概况</h3><div class="engineering-form"><label>工程名称<input v-model="plan.name"/></label><label>地图编号<input v-model="plan.mapId"/></label><label>地图版本<input v-model="plan.mapVersion"/></label></div>

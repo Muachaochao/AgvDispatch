@@ -40,6 +40,7 @@ let detailEpoch = 0;
 let detailPending = 0;
 
 const formOpen = ref(false);
+const createStep = ref(1);
 const creationMode = ref<'Single'|'Demand'|'Cycle'>('Single');
 const station = ref('');
 const vehicle = ref('');
@@ -86,10 +87,15 @@ const queryChanged = computed(() => JSON.stringify(draftQuery.value) !== JSON.st
 const visibleTasks = computed(() => queriedTasks.value?.items ?? []);
 const tableCount = computed(() => queriedTasks.value?.totalCount ?? 0);
 const canSubmit = computed(() => store.fresh && store.submissionEnabled && !actionBusy.value && !optionsBusy.value && (requestUncertain.value || (!!options.value?.available && !!selectedStation.value?.available && !!selectedVehicle.value?.available && pickupReachable.value)));
+const creationSteps = computed(() => creationMode.value === 'Single'
+  ? ['运行方式', '条件与路线', '确认提交']
+  : ['运行方式', creationMode.value === 'Demand' ? '按需运行配置' : '循环测试配置']);
+const singleSelectionReady = computed(() => !!options.value && !!station.value && !!vehicle.value && store.fresh);
 const taskStatusTone=(stage:string,waiting=false)=>stage==='Faulted'?'fault':['Cancelled','CancellationPending','CancellationReview'].includes(stage)?'cancelled':stage==='Completed'?'completed':waiting||isWaitingStage(stage)?'waiting':'running';
 
 watch(() => route.params.id, id => { if (id && typeof id === 'string') openTask(id); }, { immediate: true });
 watch(() => store.fresh, value => { if (value && !queryStarted) void queryTasks(1, true); });
+watch(formOpen, open => { if (open) { createStep.value = 1; routePreview.value = null; } });
 onMounted(() => { if (store.fresh) void queryTasks(1, true); });
 
 async function loadDetail(id: string) {
@@ -131,6 +137,9 @@ async function queryTasks(page = 1, apply = false) {
 function resetTaskQuery() { if (queryBusy.value) return; search.value = ''; taskFilter.value = 'all'; createdFrom.value = ''; createdTo.value = ''; pageSize.value = 50; void queryTasks(1, true); }
 function chooseTimeRange(preset: TaskTimePreset) { if (queryBusy.value) return; const range = taskTimeRange(preset); createdFrom.value = range.from; createdTo.value = range.to; void queryTasks(1, true); }
 function changeTaskPageSize(size: number) { pageSize.value = size; void queryTasks(1, true); }
+function selectCreationMode(mode: 'Single'|'Demand'|'Cycle') { creationMode.value = mode; createStep.value = 1; routePreview.value = null; actionMessage.value = ''; }
+function nextCreationStep() { createStep.value = Math.min(creationSteps.value.length, createStep.value + 1); }
+function previousCreationStep() { createStep.value = Math.max(1, createStep.value - 1); }
 
 async function loadOptions(preserveSelection = false) {
   if (optionsBusy.value || actionBusy.value) return;
@@ -229,45 +238,81 @@ watch(() => route.query.create, create => {
     <p v-else class="empty-panel">{{ store.error || '正在读取任务详情…' }}</p>
   </ConsoleDialog>
 
-  <ConsoleDialog v-if="formOpen" title="创建调度任务" @close="formOpen = false">
-    <nav class="creation-modes" aria-label="任务运行模式">
-      <button :class="{'accent-button':creationMode==='Single'}" @click="creationMode='Single'">单次业务任务</button>
-      <button :class="{'accent-button':creationMode==='Demand'}" @click="creationMode='Demand'">正常按需运行</button>
-      <button :class="{'accent-button':creationMode==='Cycle'}" @click="creationMode='Cycle'">自动循环测试</button>
-    </nav>
-    <BusinessRunPanel v-if="creationMode!=='Single'" :mode="creationMode" :options="options"/>
-    <template v-else>
-    <p class="form-explanation">{{ (options?.explanation ?? actionMessage) || '正在查询后台创建条件…' }}</p>
-    <p class="form-explanation">本表创建取满箱、倒料、返空箱任务，需要工位满箱呼叫。可选择工位查看条件和核对路线；满足条件后才能提交。</p>
-    <div class="creation-grid">
-      <label>取料工位<select v-model="station" :disabled="requestUncertain || actionBusy || optionsBusy"><option value="">请选择</option><option v-for="s in options?.stations ?? []" :key="s.stationId" :value="s.stationId">{{ s.stationId }} · {{ s.pickupSite }}{{ s.available ? '' : ' · 条件未满足' }}</option></select></label>
-      <label>车辆<select v-model="vehicle" :disabled="requestUncertain || actionBusy || optionsBusy"><option value="">请选择</option><option v-for="v in options?.vehicles ?? []" :key="v.vehicleId" :value="v.vehicleId">{{ v.label }}{{ v.available ? '' : ' · 暂不可用' }}</option></select></label>
-      <label>优先级（0–100）<input v-model.number="priority" type="number" min="0" max="100" :disabled="requestUncertain || actionBusy" /></label>
-      <label>前置任务（可选）<input v-model="dependencyTaskIdsInput" maxlength="520" placeholder="多个任务编号用逗号分隔；完成前不派车" :disabled="requestUncertain || actionBusy" /></label>
-      <label>地图版本<input :value="options?.mapVersionId ?? '—'" readonly /></label>
+  <el-drawer v-model="formOpen" class="task-create-drawer" title="创建调度任务" size="min(720px, 96vw)" :close-on-click-modal="false" destroy-on-close>
+    <div class="creation-drawer-body">
+      <nav class="creation-step-rail" aria-label="创建任务步骤">
+        <button v-for="(step, index) in creationSteps" :key="step" type="button" :class="{ active: createStep === index + 1, complete: createStep > index + 1 }" :aria-current="createStep === index + 1 ? 'step' : undefined" @click="createStep = index + 1">
+          <span>{{ index + 1 }}</span><b>{{ step }}</b>
+        </button>
+      </nav>
+
+      <section v-if="createStep === 1" class="creation-step-content">
+        <div class="creation-step-heading"><span>第 1 步</span><h3>选择任务运行方式</h3><p>单次任务适合日常出车；按需运行和循环测试用于持续联调，提交边界更严格。</p></div>
+        <nav class="creation-modes" aria-label="任务运行模式">
+          <button class="creation-mode-card" :class="{active:creationMode==='Single'}" @click="selectCreationMode('Single')"><b>单次业务任务</b><small>取满箱、倒料、返空箱一次完成</small></button>
+          <button class="creation-mode-card" :class="{active:creationMode==='Demand'}" @click="selectCreationMode('Demand')"><b>正常按需运行</b><small>按PLC呼叫接续所选工位</small></button>
+          <button class="creation-mode-card" :class="{active:creationMode==='Cycle'}" @click="selectCreationMode('Cycle')"><b>自动循环测试</b><small>按工位顺序执行指定轮数</small></button>
+        </nav>
+        <div class="creation-boundary"><b>执行边界</b><span>{{ store.submissionEnabled ? '提交成功只代表后台受理，不等于车辆动作已完成。' : '当前未开启Web提交，可继续核对条件与路线。' }}</span></div>
+      </section>
+
+      <section v-else-if="createStep === 2" class="creation-step-content">
+        <div class="creation-step-heading"><span>第 2 步</span><h3>{{ creationMode === 'Single' ? '核对工位、车辆与路线' : creationMode === 'Demand' ? '配置按需运行' : '配置循环测试' }}</h3><p>{{ creationMode === 'Single' ? '系统只展示后台当前允许的配置，条件未满足时不能提交。' : '运行条件仍由后台核验，网页不会绕过设备与恢复门禁。' }}</p></div>
+        <BusinessRunPanel v-if="creationMode!=='Single'" :mode="creationMode" :options="options"/>
+        <template v-else>
+          <p class="form-explanation">{{ (options?.explanation ?? actionMessage) || '正在查询后台创建条件…' }}</p>
+          <div class="creation-grid creation-grid-element">
+            <label>取料工位<el-select v-model="station" :disabled="requestUncertain || actionBusy || optionsBusy" placeholder="请选择取料工位"><el-option v-for="s in options?.stations ?? []" :key="s.stationId" :label="`${s.stationId} · ${s.pickupSite}${s.available ? '' : ' · 条件未满足'}`" :value="s.stationId" /></el-select></label>
+            <label>车辆<el-select v-model="vehicle" :disabled="requestUncertain || actionBusy || optionsBusy" placeholder="请选择车辆"><el-option v-for="v in options?.vehicles ?? []" :key="v.vehicleId" :label="`${v.label}${v.available ? '' : ' · 暂不可用'}`" :value="v.vehicleId" /></el-select></label>
+            <label>优先级（0–100）<el-input-number v-model="priority" :min="0" :max="100" :disabled="requestUncertain || actionBusy" /></label>
+            <label>前置任务（可选）<el-input v-model="dependencyTaskIdsInput" maxlength="520" placeholder="多个任务编号用逗号分隔；完成前不派车" :disabled="requestUncertain || actionBusy" /></label>
+            <label>地图版本<el-input :model-value="options?.mapVersionId ?? '—'" readonly /></label>
+          </div>
+          <div class="creation-inline-tools">
+            <el-button :disabled="optionsBusy || actionBusy || requestUncertain || !store.fresh" @click="loadOptions(true)"><ActionIcon name="refresh"/>{{ optionsBusy ? '刷新中…' : '刷新条件' }}</el-button>
+            <el-button :disabled="!options || !station || !vehicle || optionsBusy || actionBusy || !store.fresh" @click="previewRoute"><ActionIcon name="route"/>核对四段路线</el-button>
+            <RouterLink class="creation-help-link" to="/engineering-settings" @click="formOpen = false">配置工位、等待点与倒料点</RouterLink>
+          </div>
+          <div v-if="routePreview" class="route-preview"><b>{{ routePreview.message }}</b><p v-for="leg in routePreview.legs" :key="leg.sequence">{{ leg.sequence }}. {{ leg.name }}：{{ leg.vendorPath || leg.logicalPath }}</p></div>
+          <section v-if="options?.template" class="template-instantiation">
+            <header><div><h4>模板输入 · {{ options.template.id }} v{{ options.template.version }}</h4><p>节点通过类型化连接引用输入，不会执行任意脚本。</p></div><details><summary>执行引擎</summary><code>{{ options.template.engine }}</code></details></header>
+            <dl><div v-for="input in templateInputs" :key="input.key"><dt>{{ input.label }} <small>{{ input.key }}</small></dt><dd>{{ input.value }}</dd></div></dl>
+            <details><summary>输出变量与失败策略</summary><p v-for="output in templateOutputs" :key="output.key">{{ output.label }} · {{ output.key }} · {{ output.type }}</p><p>节点 {{ options.template.nodes.length }} 个，异常分支 {{ options.template.guards.length }} 条。</p></details>
+          </section>
+          <details class="form-explanation"><summary>查看工位条件与未满足项</summary><div role="status">
+            <p v-for="s in options?.stations ?? []" :key="s.stationId">{{ s.stationId }}：{{ s.explanation }}</p>
+            <p v-if="selectedVehicle">车辆：{{ selectedVehicle.explanation }}</p>
+            <p v-if="selectedStation && selectedVehicle && !pickupReachable">所选车辆当前站点到取料点没有可执行路径，请检查地图道路和方向。</p>
+          </div></details>
+        </template>
+        <p v-if="actionMessage" class="form-feedback" role="status">{{ industrialText(actionMessage) }}</p>
+      </section>
+
+      <section v-else class="creation-step-content">
+        <div class="creation-step-heading"><span>第 3 步</span><h3>确认并提交</h3><p>提交后仍须由后台核验车辆、地图、PLC握手和路权。</p></div>
+        <dl class="creation-review">
+          <div><dt>运行方式</dt><dd>单次业务任务</dd></div>
+          <div><dt>取料工位</dt><dd>{{ selectedStation?.stationId ?? '未选择' }}</dd></div>
+          <div><dt>车辆</dt><dd>{{ selectedVehicle?.vehicleId ?? '未选择' }}</dd></div>
+          <div><dt>优先级</dt><dd>{{ priority }}</dd></div>
+          <div><dt>前置任务</dt><dd>{{ dependencyTaskIdsInput || '无' }}</dd></div>
+          <div><dt>地图版本</dt><dd>{{ options?.mapVersionId ?? '未取得' }}</dd></div>
+          <div class="wide"><dt>路线核对</dt><dd>{{ routePreview?.message ?? '尚未执行路线核对；提交前建议先核对四段路线。' }}</dd></div>
+        </dl>
+        <div class="creation-boundary" :class="{warning:!canSubmit}"><b>{{ canSubmit ? '可以提交' : '当前不可提交' }}</b><span>{{ canSubmit ? '后台将再次校验，成功受理后继续观察任务阶段。' : '请返回上一步检查工位、车辆、路径、执行许可或未确认申请。' }}</span></div>
+        <p v-if="actionMessage" class="form-feedback" role="status">{{ industrialText(actionMessage) }}</p>
+      </section>
     </div>
-    <section v-if="options?.template" class="template-instantiation">
-      <header><div><h4>模板输入 · {{ options.template.id }} v{{ options.template.version }}</h4><p>只填写模板输入，节点内部通过类型化连接自动引用。模板不会直接执行任意脚本。</p></div><details><summary>执行引擎信息</summary><code>{{ options.template.engine }}</code></details></header>
-      <dl><div v-for="input in templateInputs" :key="input.key"><dt>{{ input.label }} <small>{{ input.key }}</small></dt><dd>{{ input.value }}</dd></div></dl>
-      <details><summary>查看输出变量与节点失败策略</summary><p v-for="output in templateOutputs" :key="output.key">{{ output.label }} · {{ output.key }} · {{ output.type }}</p><p>节点 {{ options.template.nodes.length }} 个；机械/握手节点默认禁止自动重试，异常分支 {{ options.template.guards.length }} 条。</p></details>
-    </section>
-    <details class="form-explanation"><summary>查看工位条件与未满足项</summary><div role="status">
-      <p v-for="s in options?.stations ?? []" :key="s.stationId">{{ s.stationId }}：{{ s.explanation }}</p>
-      <p v-if="selectedVehicle">车辆：{{ selectedVehicle.explanation }}</p>
-      <p v-if="selectedStation && selectedVehicle && !pickupReachable">所选车辆当前站点到取料点没有可执行路径，请检查地图道路和方向。</p>
-    </div></details>
-    <p class="form-explanation"><RouterLink class="cyan" to="/engineering-settings" @click="formOpen = false">配置工位、等待点、倒料点及车辆动作</RouterLink>；道路与站点位置在地图编辑中定义。当前业务步骤固定为九步。</p>
-    <div class="inline-warning">{{ store.submissionEnabled ? '提交后仍须经过后台核验，成功接收不等于执行完成。' : 'Web提交未启用，可核对条件及路线。' }}</div>
-    <div v-if="routePreview" class="route-preview"><b>{{ routePreview.message }}</b><p v-for="leg in routePreview.legs" :key="leg.sequence">{{ leg.sequence }}. {{ leg.name }}：{{ leg.vendorPath || leg.logicalPath }}</p></div>
-    <p v-if="actionMessage" class="form-feedback" role="status">{{ industrialText(actionMessage) }}</p>
-    </template>
     <template #footer>
-      <button @click="formOpen = false"><ActionIcon name="close"/>取消</button>
-      <button :disabled="optionsBusy || actionBusy || requestUncertain || !store.fresh" @click="loadOptions(true)"><ActionIcon name="refresh"/>{{ optionsBusy ? '刷新中…' : '刷新条件' }}</button>
-      <button v-if="creationMode==='Single'" :disabled="!options || !station || !vehicle || optionsBusy || actionBusy || !store.fresh" @click="previewRoute"><ActionIcon name="route"/>核对四段路线</button>
-      <button v-if="creationMode==='Single'" class="accent-button" :disabled="!canSubmit" @click="submitTask">{{ actionBusy ? '处理中…' : requestUncertain ? '重试原申请' : '提交后台' }}</button>
+      <div class="creation-drawer-footer">
+        <el-button @click="formOpen = false"><ActionIcon name="close"/>取消</el-button>
+        <span class="creation-footer-spacer"/>
+        <el-button v-if="createStep > 1" @click="previousCreationStep">上一步</el-button>
+        <el-button v-if="createStep < creationSteps.length" type="primary" :disabled="createStep === 2 && creationMode === 'Single' && !singleSelectionReady" @click="nextCreationStep">下一步</el-button>
+        <el-button v-if="creationMode === 'Single' && createStep === 3" type="primary" :disabled="!canSubmit" @click="submitTask">{{ actionBusy ? '处理中…' : requestUncertain ? '重试原申请' : '提交后台' }}</el-button>
+      </div>
     </template>
-  </ConsoleDialog>
+  </el-drawer>
 </template>
 <style scoped>
 .task-history-page{gap:8px}.task-page-header{display:flex;align-items:center;justify-content:space-between;gap:18px;min-height:52px;padding:2px 2px 7px;border-bottom:1px solid #243858}.task-page-title{display:flex;align-items:center;gap:10px;color:#54cadf}.task-page-title h2{color:#d9eafb;font-size:19px;letter-spacing:.8px}.task-page-title small{display:block;margin-top:4px;color:#7089aa;font-size:10px}.task-page-actions{display:flex;align-items:center;gap:7px}.task-page-actions>span{margin-right:6px;color:#6f9fba;font-size:11px}.task-query-toolbar{display:grid;grid-template-columns:minmax(170px,1.25fr) minmax(110px,.55fr) minmax(300px,1.3fr) auto auto auto;align-items:center;gap:7px;padding:8px 10px;border:1px solid #233a5d;border-radius:5px;background:#0e1932}.task-query-toolbar input,.task-query-toolbar select,.task-query-toolbar button{min-height:31px;height:31px}.query-search{display:flex;align-items:center;gap:7px;min-width:0;padding-left:9px;border:1px solid #2b4168;border-radius:3px;background:#0a1530;color:#667f9f}.query-search input{width:100%;padding:4px 7px;border:0;background:transparent}.query-date-range{display:flex;align-items:center;gap:6px;min-width:0}.query-date-range input{width:100%;min-width:126px;padding:4px 7px;color-scheme:dark}.query-date-range>span{color:#7088a8;font-size:10px}.history-presets{display:flex;gap:2px}.history-presets button{height:31px;min-height:31px;padding:4px 8px;border-color:transparent;background:transparent;color:#7f99ba;font-size:10px}.history-presets button:hover{border-color:#2f6081;background:#132947}.query-submit,.reset-submit{padding:4px 12px}.quiet-button{border-color:transparent;background:transparent}.task-result-head{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:26px;padding:2px 4px 0;color:#7890af;font-size:10px}.task-time-note{color:#5e789b}.pending-filter{color:#e9b34f}.management-table{min-height:260px}.task-result-footer{display:flex;align-items:center;justify-content:flex-end;gap:9px;min-height:35px;padding:2px 2px 4px;color:#7890ae;font-size:10px}.task-result-footer>span{margin-right:auto}.task-result-footer label{display:flex;align-items:center;gap:6px}.task-result-footer select{min-height:28px;padding:3px 7px}.task-result-footer button{min-height:28px;padding:4px 8px}.task-result-footer b{font-weight:400;font-size:10px;color:#9cb2cb}.task-history-page>.inline-warning{margin:0}

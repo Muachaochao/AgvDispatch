@@ -4,7 +4,9 @@ import {
   ElButton,
   ElConfigProvider,
   ElDatePicker,
+  ElDrawer,
   ElInput,
+  ElInputNumber,
   ElOption,
   ElPagination,
   ElSelect,
@@ -15,6 +17,7 @@ import 'element-plus/es/components/base/style/css';
 import 'element-plus/es/components/button/style/css';
 import 'element-plus/es/components/icon/style/css';
 import 'element-plus/es/components/input/style/css';
+import 'element-plus/es/components/input-number/style/css';
 import 'element-plus/es/components/select/style/css';
 import 'element-plus/es/components/option/style/css';
 import 'element-plus/es/components/date-picker/style/css';
@@ -23,6 +26,7 @@ import 'element-plus/es/components/pagination/style/css';
 import 'element-plus/es/components/tooltip/style/css';
 import 'element-plus/es/components/popper/style/css';
 import 'element-plus/es/components/scrollbar/style/css';
+import 'element-plus/es/components/drawer/style/css';
 import 'element-plus/theme-chalk/dark/css-vars.css';
 import App from './App.vue';
 import router from './router';
@@ -39,7 +43,9 @@ app.use(router);
 app.component('ElButton', ElButton);
 app.component('ElConfigProvider', ElConfigProvider);
 app.component('ElDatePicker', ElDatePicker);
+app.component('ElDrawer', ElDrawer);
 app.component('ElInput', ElInput);
+app.component('ElInputNumber', ElInputNumber);
 app.component('ElOption', ElOption);
 app.component('ElPagination', ElPagination);
 app.component('ElSelect', ElSelect);

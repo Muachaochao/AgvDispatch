@@ -34,6 +34,7 @@ const selectedEdge = ref('');
 const locatedResource=ref(''),locationMessage=ref('');
 const detail = ref<import('../types').TaskDetail | null>(null);
 const mapElement = ref<HTMLElement>();
+const lowerDeck = ref<HTMLElement>();
 const mapView = ref<'top' | 'isometric'>('top');
 const mapLabels = ref<'auto'|'all'|'none'>('auto');
 const showTaskDialog = ref(false);
@@ -104,6 +105,7 @@ function clearLocation(){locatedResource.value='';locationMessage.value='';scene
 function locateResource(id:string){if(!store.fresh){clearLocation();return;}const view=resourceView(store.snapshot?.map,id);if(!view){clearLocation();locationMessage.value='资源 '+id+' 无有效边界，不能定位；不猜测位置。';return;}scene?.focusResource(id,view);mapElement.value?.scrollIntoView({block:'center'});locatedResource.value=id;locationMessage.value='已定位资源 '+id+'；仅调整视角，不改变资源归属或放行。';}
 watch(()=>[store.demoMode,store.snapshot?.map?.id,store.snapshot?.map?.version,store.snapshot?.map?.definitionHash,store.fresh].join('|'),clearLocation);
 function fullscreen() { void mapElement.value?.parentElement?.requestFullscreen().catch(() => { store.sceneError = '当前浏览器未允许全屏'; }); }
+function scrollToOperations() { lowerDeck.value?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
 
 onMounted(() => {
   try {
@@ -130,6 +132,9 @@ onUnmounted(() => { ++detailEpoch;++areaEpoch;clearInterval(areaTimer);scene?.di
     </button>
     <button class="health-metric" :class="liveTasks.length ? 'warning' : 'success'" @click="router.push('/tasks')">
       <span>当前任务</span><b>{{ liveTasks.length }}</b>
+    </button>
+    <button class="health-metric health-detail-metric" @click="scrollToOperations">
+      <span>运行保障</span><b>详情</b>
     </button>
     <p class="system-health-observation">{{ store.fresh ? `后台观察 ${shortTime(store.snapshot?.receivedAt)}` : (store.error || '正在连接后台') }}</p>
   </section>
@@ -232,8 +237,11 @@ onUnmounted(() => { ++detailEpoch;++areaEpoch;clearInterval(areaTimer);scene?.di
     </aside>
   </div>
 
-  <TrafficClosuresPanel/>
-  <TrafficWaitingPanel @locate="locateResource" @task="openTask"/>
+  <section ref="lowerDeck" class="overview-lower-deck" aria-label="运行保障详情">
+    <header><div><small>运行保障详情</small><h2>道路封锁 · 交通等待 · 资源占用</h2></div><span>向下滚动查看完整记录</span></header>
+    <TrafficClosuresPanel/>
+    <TrafficWaitingPanel @locate="locateResource" @task="openTask"/>
+  </section>
   <ConsoleDialog v-if="showTaskDialog" title="任务运行详情 · 九步、条件与执行证据" wide @close="showTaskDialog = false">
     <TaskExecutionDetails v-if="detail" :detail="detail" :fresh="store.fresh" :now="store.now" />
     <p v-else class="empty-panel">{{ store.error || '正在读取任务详情…' }}</p>
@@ -264,7 +272,7 @@ onUnmounted(() => { ++detailEpoch;++areaEpoch;clearInterval(areaTimer);scene?.di
 </div>
 </template>
 
-<style scoped>.overview-page{flex:1;min-height:0;overflow:auto;padding-bottom:12px;display:flex;flex-direction:column;gap:10px}.overview-page .control-grid{height:max(720px,calc(100dvh - 258px));flex:none;min-height:720px}.live-tasks,.shared-panel{overflow:auto}.live-tasks{min-height:290px}.right-column{min-height:760px}.distribution-panel>.panel-footnote{flex-shrink:0}.live-tasks>header,.live-tasks>.current-task-counts,.live-task{flex-shrink:0}.live-task>div{flex-wrap:wrap;gap:6px}.live-task b{overflow-wrap:anywhere;min-width:0;white-space:normal;flex:1 1 120px}.live-task small{white-space:normal;overflow-wrap:anywhere;display:block;-webkit-line-clamp:unset;overflow:visible}.shared-resource details{grid-column:1/-1;min-width:0;font-size:11px;overflow-wrap:anywhere}.shared-resource summary{cursor:pointer}.traffic-focus{padding:12px 16px;border-top:1px solid #2c4563;font-size:12px;line-height:1.8}.traffic-focus select{max-width:100%}.traffic-focus button{margin:4px}.resource-location{padding:0 16px;font-size:12px;line-height:1.8;color:#c5dbec}.traffic-focus p{overflow-wrap:anywhere;margin:5px 0}@media(min-width:901px){.overview-page .control-grid{height:max(760px,calc(100dvh - 258px));min-height:760px}}@media(max-width:900px){.overview-page .control-grid{height:auto;min-height:0}}</style>
+<style scoped>.overview-page{flex:1;min-height:0;overflow:auto;padding-bottom:12px;display:flex;flex-direction:column;gap:10px}.overview-page .control-grid{height:max(480px,calc(100dvh - 258px));flex:none;min-height:480px}.live-tasks,.shared-panel{overflow:auto}.live-tasks{min-height:0}.right-column{min-height:0}.distribution-panel>.panel-footnote{flex-shrink:0}.live-tasks>header,.live-tasks>.current-task-counts,.live-task{flex-shrink:0}.live-task>div{flex-wrap:wrap;gap:6px}.live-task b{overflow-wrap:anywhere;min-width:0;white-space:normal;flex:1 1 120px}.live-task small{white-space:normal;overflow-wrap:anywhere;display:block;-webkit-line-clamp:unset;overflow:visible}.shared-resource details{grid-column:1/-1;min-width:0;font-size:11px;overflow-wrap:anywhere}.shared-resource summary{cursor:pointer}.traffic-focus{padding:12px 16px;border-top:1px solid #2c4563;font-size:12px;line-height:1.8}.traffic-focus select{max-width:100%}.traffic-focus button{margin:4px}.resource-location{padding:0 16px;font-size:12px;line-height:1.8;color:#c5dbec}.traffic-focus p{overflow-wrap:anywhere;margin:5px 0}.overview-lower-deck{display:grid;gap:10px;flex:none;padding-top:2px}.overview-lower-deck>header{display:flex;align-items:end;justify-content:space-between;gap:16px;padding:12px 3px 4px;border-top:1px solid var(--ui-line)}.overview-lower-deck>header small{display:block;margin-bottom:4px;color:var(--ui-text-3);font-size:9px;letter-spacing:1.4px}.overview-lower-deck>header h2{font-size:15px;color:var(--ui-text)}.overview-lower-deck>header>span{color:var(--ui-text-3);font-size:10px}.overview-lower-deck :deep(.closures-panel),.overview-lower-deck :deep(.waiting-panel){margin-top:0}@media(max-width:900px){.overview-page .control-grid{height:auto;min-height:0}.overview-lower-deck>header{align-items:flex-start;flex-direction:column;gap:4px}}</style>
 <style scoped>
 .obstacle-link{align-self:flex-start;margin:0 14px 12px}
 .right-column{grid-template-rows:326px minmax(180px,1fr) auto}
