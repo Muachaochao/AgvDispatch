@@ -13,3 +13,43 @@
 .scene-label-leader[hidden]{display:none}
 .display-area-label{position:absolute;left:0;top:0;pointer-events:auto;max-width:190px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:#0b1229cf;border:1px solid currentColor;border-radius:4px;padding:3px 7px;font:600 12px/1.35 "Microsoft YaHei",sans-serif;cursor:pointer}
 .display-area-label[hidden]{display:none}
+
+html[data-theme="light"] .scene-map-label{
+  border-color:#bfd0de;
+  background:rgba(255,255,255,.94);
+  color:#24495a;
+  box-shadow:0 3px 10px rgba(37,66,88,.12)
+}
+
+html[data-theme="light"] .scene-map-label.station,
+html[data-theme="light"] .scene-map-label.station.vendor-area{
+  border-color:transparent;
+  background:rgba(255,255,255,.84);
+  color:#3d5569
+}
+
+html[data-theme="light"] .scene-map-label.vehicle{
+  border-color:var(--label-color,#0b839a);
+  background:rgba(255,255,255,.96);
+  color:var(--label-color,#075f72)
+}
+
+html[data-theme="light"] .scene-map-label.station.focused{
+  border-color:#0b839a;
+  background:#e9f5f8;
+  color:#075f72
+}
+
+html[data-theme="light"] .scene-map-label.station.disabled{
+  color:#8a99a8;
+  border-color:#d5dfe8
+}
+
+html[data-theme="light"] .scene-label-leader{
+  background:rgba(83,121,142,.55)
+}
+
+html[data-theme="light"] .display-area-label{
+  background:rgba(255,255,255,.94);
+  box-shadow:0 3px 10px rgba(37,66,88,.1)
+}

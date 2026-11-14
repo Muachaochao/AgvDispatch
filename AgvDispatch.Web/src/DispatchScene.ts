@@ -30,6 +30,7 @@ export class DispatchScene {
   private frame = 0;
   private sized=false;
   private mapKey = '';
+  private currentMap: WebMap | null = null;
   private center = new THREE.Vector3();
   private span = 25;
   private mode: 'top' | 'isometric' = 'top';
@@ -39,6 +40,7 @@ export class DispatchScene {
   private onLeave = () => { this.hoveredStation=''; };
   private hoveredStation='';
   private labelMode:MapLabelMode='auto';
+  private themeObserver: MutationObserver;
 
 
   private vehiclePool = new Map<string, { group: THREE.Group; label: SceneLabel; ring: THREE.Mesh | null }>();
@@ -50,7 +52,7 @@ export class DispatchScene {
   private ringMaterial = new THREE.MeshBasicMaterial({ color: '#d6f5ff', side: THREE.DoubleSide });
 
   constructor(private container: HTMLElement, private onSelect: (id: string) => void, onAreaSelect:(area:DisplayArea)=>void=()=>{}) {
-    this.scene.background = new THREE.Color('#0b1229');
+    this.scene.background = new THREE.Color(this.themeColor('#edf3f8', '#0b1229'));
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     container.appendChild(this.renderer.domElement);
     this.labelLayer.className='scene-label-layer';this.labelLayer.setAttribute('aria-label','车辆与站点标注');container.appendChild(this.labelLayer);
@@ -67,6 +69,8 @@ export class DispatchScene {
       this.viewportWidth=width;this.viewportHeight=height;this.renderer.setSize(width, height); this.camera.aspect = width / Math.max(height, 1); this.camera.updateProjectionMatrix(); if(!this.sized){this.sized=true;this.view(this.mode);}
     });
     this.resizeObserver.observe(container);
+    this.themeObserver=new MutationObserver(()=>this.applyTheme());
+    this.themeObserver.observe(document.documentElement,{attributes:true,attributeFilter:['data-theme','class']});
     this.onPointer = event => {
       const rect = this.renderer.domElement.getBoundingClientRect();
       this.pick.setFromCamera(new THREE.Vector2((event.clientX - rect.left) / rect.width * 2 - 1, -(event.clientY - rect.top) / rect.height * 2 + 1), this.camera);
@@ -100,6 +104,13 @@ export class DispatchScene {
 
   setDisplayAreas(areas:DisplayArea[],key:string){this.displayAreas.update(areas,key);}
   setLabelMode(mode:MapLabelMode){this.labelMode=mode;this.layoutLabels();}
+  private themeColor(light:string,dark:string){return document.documentElement.dataset.theme==='light'?light:dark;}
+  private applyTheme(){
+    const light=document.documentElement.dataset.theme==='light';
+    this.scene.background=new THREE.Color(light?'#edf3f8':'#0b1229');
+    this.renderer.domElement.style.background=light?'#edf3f8':'#0b1229';
+    if(this.currentMap)this.drawMap(this.currentMap);
+  }
 
   update(snapshot: Snapshot | null, selected = '', selectedEdge = '', focus?:TrafficFocus, now=Date.now()) {
     const map = snapshot?.map;
@@ -108,7 +119,7 @@ export class DispatchScene {
 
     const enabled=new Set(map?.edges.filter(e=>e.enabled).map(e=>e.id)??[]);
     for (const [id, group] of this.edges) group.traverse(object => {
-      if (object instanceof THREE.Line) (object.material as THREE.LineBasicMaterial).color.set(focus?.edgeIds.includes(id) ? '#47e4b3' : id === selectedEdge ? '#ffffff' : enabled.has(id) ? '#3e8da8' : '#455365');
+      if (object instanceof THREE.Line) (object.material as THREE.LineBasicMaterial).color.set(focus?.edgeIds.includes(id) ? '#20a982' : id === selectedEdge ? this.themeColor('#0b7188','#ffffff') : enabled.has(id) ? this.themeColor('#5e91a6','#3e8da8') : this.themeColor('#a9b7c5','#455365'));
     });
 
     for(const [id,mesh] of this.resourceMeshes){const material=mesh.material as THREE.MeshBasicMaterial;const blocked=focus?.blocked.includes(id),held=focus?.held.includes(id);material.color.set(blocked?'#ff657e':held?'#ffbd59':'#e4aa4f');material.opacity=blocked ? .5 : held ? .35 : .12;}
@@ -180,6 +191,7 @@ export class DispatchScene {
   }
 
   private drawMap(map: WebMap | null) {
+    this.currentMap=map;
     this.clearResourceFocus();this.clearGroup(this.mapGroup); this.edges.clear();this.resourceMeshes.clear();
     for (const [, entry] of this.vehiclePool) {
       if (entry.group.parent) this.vehicleGroup.remove(entry.group);
@@ -195,7 +207,7 @@ export class DispatchScene {
     map.nodes.forEach(add);map.edges.forEach(e=>e.points.forEach(add));map.resources.forEach(r=>r.boundary?.forEach(add));map.areaAnnotations?.forEach(a=>a.boundary.forEach(add));if(!Number.isFinite(minX))return;
     this.center.set((minX + maxX) / 2, 0, (minY + maxY) / 2);
     this.span = Math.max(maxX - minX, maxY - minY, 15);
-    const grid = new THREE.GridHelper(Math.ceil(this.span * 1.5), 30, '#294258', '#1b2d40');
+    const grid = new THREE.GridHelper(Math.ceil(this.span * 1.5), 30, this.themeColor('#b8c9d8','#294258'), this.themeColor('#dbe5ee','#1b2d40'));
     grid.position.copy(this.center); grid.position.y = -0.12; this.mapGroup.add(grid);
 
     for(const area of map.areaAnnotations??[]){
@@ -210,16 +222,16 @@ export class DispatchScene {
     }
 
     for (const edge of map.edges) {
-      const group = makePathObject(edge.id, edge.points.map(p => ({ x: p.x, y: 0, z: -p.y })), edge.enabled ? 0x3e8da8 : 0x455365);
+      const group = makePathObject(edge.id, edge.points.map(p => ({ x: p.x, y: 0, z: -p.y })), new THREE.Color(edge.enabled ? this.themeColor('#5e91a6','#3e8da8') : this.themeColor('#a9b7c5','#455365')).getHex());
       this.mapGroup.add(group); this.edges.set(edge.id, group);
       if (edge.enabled && edge.points.length > 1) {
         const index = Math.floor((edge.points.length - 1) / 2), a = edge.points[index], b = edge.points[index + 1];
         const dir = new THREE.Vector3(b.x - a.x, 0, -(b.y - a.y));
-        if (dir.length() > 0.001) this.mapGroup.add(new THREE.ArrowHelper(dir.normalize(), new THREE.Vector3(a.x, 0.08, -a.y), 0.65, 0x65abc0, 0.22, 0.15));
+        if (dir.length() > 0.001) this.mapGroup.add(new THREE.ArrowHelper(dir.normalize(), new THREE.Vector3(a.x, 0.08, -a.y), 0.65, new THREE.Color(this.themeColor('#497f95','#65abc0')).getHex(), 0.22, 0.15));
       }
     }
     for (const node of map.nodes) {
-      const marker=new THREE.Mesh(new THREE.RingGeometry(0.18,0.23,32),new THREE.MeshBasicMaterial({color:node.enabled?'#43d9b1':'#637083',side:THREE.DoubleSide}));
+      const marker=new THREE.Mesh(new THREE.RingGeometry(0.18,0.23,32),new THREE.MeshBasicMaterial({color:node.enabled?this.themeColor('#159a78','#43d9b1'):this.themeColor('#9aa8b7','#637083'),side:THREE.DoubleSide}));
       marker.rotation.x=-Math.PI/2;marker.position.set(node.x,.04,-node.y);this.mapGroup.add(marker);
       const label=this.makeSceneLabel(node.agvSiteId??node.id,'station');label.anchor.set(node.x,.05,-node.y);
       label.id=node.id;label.priority=node.type==='Station'||node.type==='WaitingPoint'?20:10;
@@ -287,7 +299,7 @@ export class DispatchScene {
   focusResource(id:string,bounds:{x:number;y:number;span:number}){
     const mesh=this.resourceMeshes.get(id);if(!mesh)return;
     this.clearResourceFocus();const box=new THREE.Box3().setFromObject(mesh);
-    const outline=new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(box.min.x,.15,box.min.z),new THREE.Vector3(box.max.x,.15,box.min.z),new THREE.Vector3(box.max.x,.15,box.max.z),new THREE.Vector3(box.min.x,.15,box.max.z)]),new THREE.LineBasicMaterial({color:'#ffffff',depthTest:false}));outline.renderOrder=10;this.resourceFocus.add(outline);
+    const outline=new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(box.min.x,.15,box.min.z),new THREE.Vector3(box.max.x,.15,box.min.z),new THREE.Vector3(box.max.x,.15,box.max.z),new THREE.Vector3(box.min.x,.15,box.max.z)]),new THREE.LineBasicMaterial({color:this.themeColor('#075f72','#ffffff'),depthTest:false}));outline.renderOrder=10;this.resourceFocus.add(outline);
     const target=new THREE.Vector3(bounds.x,0,-bounds.y),direction=this.camera.position.clone().sub(this.controls.target).normalize();
     const distance=Math.max(4,bounds.span/(2*Math.tan(THREE.MathUtils.degToRad(this.camera.fov/2)))*1.5/Math.min(1,this.camera.aspect));
     this.controls.target.copy(target);this.camera.position.copy(target).add(direction.multiplyScalar(distance));this.controls.update();
@@ -321,6 +333,7 @@ export class DispatchScene {
     this.displayAreas.dispose();
     cancelAnimationFrame(this.frame);
     this.resizeObserver.disconnect();
+    this.themeObserver.disconnect();
     this.controls.dispose();
     this.renderer.domElement.removeEventListener('pointerup', this.onPointer);
     this.renderer.domElement.removeEventListener('pointermove',this.onHover);

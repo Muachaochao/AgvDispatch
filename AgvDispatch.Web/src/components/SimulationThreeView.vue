@@ -19,6 +19,7 @@ const host = ref<HTMLDivElement | null>(null),
 let renderer: THREE.WebGLRenderer | undefined,
   controls: OrbitControls | undefined,
   observer: ResizeObserver | undefined,
+  themeObserver: MutationObserver | undefined,
   frame = 0;
 const scene = new THREE.Scene(),
   camera = new THREE.PerspectiveCamera(42, 1, 0.01, 100000);
@@ -153,6 +154,12 @@ function contextLost(event: Event) {
   cancelAnimationFrame(frame);
   failure.value = "三维绘图连接已中断，请切换二维视图查看。";
 }
+function applyTheme() {
+  const light = document.documentElement.dataset.theme === "light";
+  scene.background = new THREE.Color(light ? "#edf3f8" : "#071321");
+  if (renderer) renderer.domElement.style.background = light ? "#edf3f8" : "#071321";
+  draw();
+}
 watch(
   () => [props.geometry, props.edgeColors, props.selected, props.fresh],
   draw,
@@ -163,7 +170,7 @@ onMounted(() => {
   try {
     renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    scene.background = new THREE.Color("#071321");
+    applyTheme();
     scene.add(
       roads,
       vehicles,
@@ -189,6 +196,8 @@ onMounted(() => {
       }
     });
     observer.observe(host.value!);
+    themeObserver = new MutationObserver(applyTheme);
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "class"] });
     draw();
     const animate = () => {
       frame = requestAnimationFrame(animate);
@@ -203,6 +212,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   cancelAnimationFrame(frame);
   observer?.disconnect();
+  themeObserver?.disconnect();
   controls?.dispose();
   clear(roads);
   clear(vehicles);

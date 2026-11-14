@@ -1529,6 +1529,16 @@ html[data-theme="light"] .map-card-art {
   color: #71879a;
 }
 
+html[data-theme="light"] .simulation-three {
+  border-color: #d7e1eb;
+  background: #edf3f8;
+}
+
+html[data-theme="light"] .simulation-three .three-tools,
+html[data-theme="light"] .simulation-three .three-error {
+  color: #5b7085;
+}
+
 html[data-theme="light"] .map-card h3,
 html[data-theme="light"] .charge-section h3,
 html[data-theme="light"] .recovery-panel h2,
@@ -1586,6 +1596,976 @@ html[data-theme="light"] .pipeline-checks th {
 html[data-theme="light"] .pipeline-checks td {
   border-bottom-color: #e1e8ef;
   color: #465a70;
+}
+
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-page-title h2,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-main-status > strong,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-detail-header h3,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-step-body > b,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-checks strong,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-comparison b,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-record > header strong,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-empty strong {
+  color: #17233a;
+}
+
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-page-title > div > p:last-child {
+  color: #5f7488;
+}
+
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-eyebrow,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-context-label,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-main-status > p,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-timestamps dt,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-metrics dt,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-timestamps dd,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-timestamps small,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-gates b,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-gates p,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-observation-toolbar > label,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-observation-toolbar > small,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-layer-nav > header > span,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-step-body > small,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-state-text,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-state-text em,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-layer-nav > p,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-detail-header > div > p,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-detail-header > div > span,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-detail-summary,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-layer-boundary span,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-layer-boundary b,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-layer-boundary > small,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-metrics dd,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-metrics dd > small,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-checks-section > header > span,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-records-section > header p,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-comparison small,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-record-time,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-issue-filter,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-record-count,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-record-ids,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-record > p,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-record-facts dt,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-record-facts dd,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-record details summary,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-record > footer > span,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-record > footer > small,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-source-note,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-empty,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-empty p {
+  color: #5f7488;
+}
+
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-step-number {
+  border-color: #b9c9d7;
+  background: #f2f6f9;
+  color: #40566b;
+}
+
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-step-body > b,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-layer-nav h3 {
+  color: #243a50;
+}
+
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-layer-nav > button:hover {
+  background: #f2f7fa;
+}
+
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-layer-nav > button.selected {
+  background: #e8f4f7;
+  box-shadow: inset 3px 0 #0b839a;
+}
+
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-layer-nav > button.selected .pipeline-step-number {
+  border-color: #78bac7;
+  background: #ffffff;
+  color: #08758a;
+}
+
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-banner {
+  border-left-color: #0b839a;
+  background: #f2f9fb;
+}
+
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-banner.historical {
+  border-color: #d9c8df;
+  border-left-color: #8d668f;
+  background: #fbf5fb;
+}
+
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-banner.stale {
+  border-color: #e2c99f;
+  border-left-color: #b2781b;
+  background: #fff9ed;
+}
+
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-gates article {
+  border-right-color: #e1e8ef;
+}
+
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-gates article > div > span,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-gates .gate-on,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-gates .gate-off > div > span {
+  border: 1px solid #d6e1e9;
+  background: #eef3f6;
+  color: #52677d;
+}
+
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-gates .gate-on {
+  border-color: #b7dbcf;
+  background: #eaf8f2;
+  color: #08755d;
+}
+
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-gates .gate-off > div > span {
+  border-color: #e4cfaa;
+  background: #fff7e8;
+  color: #8a5a0c;
+}
+
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-detail-summary {
+  border: 1px solid #e1e9f0;
+  background: #f7fafc;
+  color: #465a70;
+}
+
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-layer-boundary,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-metrics,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-record > footer {
+  border-color: #e1e8ef;
+}
+
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-status-badge {
+  background: #eef3f6;
+  color: #52677d;
+}
+
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-status-badge.ready {
+  background: #eaf8f2;
+  color: #08755d;
+}
+
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-status-badge.running,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-status-badge.observing {
+  background: #e9f5fa;
+  color: #086d84;
+}
+
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-status-badge.waiting {
+  background: #fff7e8;
+  color: #8a5a0c;
+}
+
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-status-badge.blocked {
+  background: #fff0f3;
+  color: #a23248;
+}
+
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-status-badge.stale,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-status-badge.unknown {
+  background: #f4f0f8;
+  color: #6f557f;
+}
+
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-status-badge.disabled,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-status-badge.idle {
+  background: #eef2f5;
+  color: #52677d;
+}
+
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-issue-filter span,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-record-count > span {
+  background: #fff7e8;
+  color: #845817;
+}
+
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-search input {
+  background: transparent;
+  color: #243a50;
+}
+
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-alert,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-history-note {
+  border-left-color: #b2781b;
+  background: #fff9ed;
+  color: #76501b;
+}
+
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-history-note {
+  border-left-color: #8d668f;
+  background: #fbf5fb;
+  color: #664a69;
+}
+
+html[data-theme="light"] .workbench-title,
+html[data-theme="light"] .editor-options,
+html[data-theme="light"] .editor-layout,
+html[data-theme="light"] .editor-tree,
+html[data-theme="light"] .editor-inspector,
+html[data-theme="light"] .layer-card,
+html[data-theme="light"] .backend-map-tools,
+html[data-theme="light"] .workbench-guide,
+html[data-theme="light"] .plan-cards article,
+html[data-theme="light"] .waypoint-list li,
+html[data-theme="light"] .commissioning-note,
+html[data-theme="light"] .commissioning-runtime > div,
+html[data-theme="light"] .commissioning-route,
+html[data-theme="light"] .commissioning-help,
+html[data-theme="light"] .test-center-intro,
+html[data-theme="light"] .test-stage,
+html[data-theme="light"] .two-car-steps li,
+html[data-theme="light"] .task-switch-panel,
+html[data-theme="light"] .switch-status,
+html[data-theme="light"] .switch-message,
+html[data-theme="light"] .switch-warning,
+html[data-theme="light"] .switch-blockers,
+html[data-theme="light"] .navigation-detour,
+html[data-theme="light"] .detour-candidate,
+html[data-theme="light"] .display-area-editor .area-layout aside,
+html[data-theme="light"] .template-lists > section,
+html[data-theme="light"] .template-editor,
+html[data-theme="light"] .task-flow-panel,
+html[data-theme="light"] .contract-columns section,
+html[data-theme="light"] .policy-panel,
+html[data-theme="light"] .guard-panel,
+html[data-theme="light"] .flow-variables section,
+html[data-theme="light"] .flow-chain article {
+  border-color: #d7e1eb;
+  background: #ffffff;
+  box-shadow: 0 8px 22px rgba(38, 57, 78, .06);
+}
+
+html[data-theme="light"] .editor-canvas,
+html[data-theme="light"] .display-area-canvas,
+html[data-theme="light"] .task-route-map-wrap {
+  border-color: #d7e1eb;
+  background: #edf3f8;
+}
+
+html[data-theme="light"] .editor-canvas svg text,
+html[data-theme="light"] .display-area-canvas text {
+  fill: #334a60 !important;
+}
+
+html[data-theme="light"] .editor-canvas svg pattern path {
+  stroke: #d7e2eb !important;
+}
+
+html[data-theme="light"] .editor-panel-tabs {
+  border-bottom-color: #dbe5ee;
+  background: #f8fafc;
+}
+
+html[data-theme="light"] .editor-panel-tabs button.active {
+  border-color: #9ccbd4;
+  background: #e9f5f8;
+  color: #08758a;
+}
+
+html[data-theme="light"] .editor-coordinate {
+  background: rgba(255, 255, 255, .88);
+  color: #52677d;
+}
+
+html[data-theme="light"] .workflow-guide {
+  border-color: #d7e1eb;
+  background: #f7fafc;
+  color: #5b7085;
+}
+
+html[data-theme="light"] .planning-workbench :is(
+  .workbench-title h2,
+  .editor-tree h3,
+  .editor-inspector h3,
+  .workbench-guide h3,
+  .workbench-guide h4,
+  .plan-cards h3,
+  .layer-card h4,
+  .editor-command-panel h4
+) {
+  color: #17233a;
+}
+
+html[data-theme="light"] .planning-workbench :is(
+  .workflow-guide,
+  .workflow-guide b,
+  .workbench-tabs small,
+  .editor-tool-hint,
+  .editor-options,
+  .editor-options > span,
+  .editor-tree > b,
+  .editor-tree small,
+  .editor-inspector label,
+  .editor-inspector p,
+  .muted-note,
+  .workbench-guide,
+  .workbench-guide p,
+  .plan-cards small,
+  .waypoint-list small,
+  .planning-workbench details,
+  .layer-card > small,
+  .editor-command-panel p,
+  .editor-history small
+) {
+  color: #5f7488;
+}
+
+html[data-theme="light"] .planning-workbench .workbench-title > span {
+  color: #5f7488;
+}
+
+html[data-theme="light"] .planning-workbench .workbench-title > span.green-text,
+html[data-theme="light"] .planning-workbench .workflow-guide .green-text {
+  color: #08755d !important;
+}
+
+html[data-theme="light"] .planning-workbench .workbench-title > span.amber-text,
+html[data-theme="light"] .planning-workbench .workflow-guide .amber-text {
+  color: #805517 !important;
+}
+
+html[data-theme="light"] .planning-workbench .editor-tool-hint strong {
+  color: #805517;
+}
+
+html[data-theme="light"] .planning-workbench .editor-tree > button {
+  color: #43586d;
+}
+
+html[data-theme="light"] .planning-workbench .editor-tree > button:hover {
+  background: #edf5f8;
+  color: #17233a;
+}
+
+html[data-theme="light"] .planning-workbench .editor-tree > button.active {
+  border-color: #9ccbd4;
+  background: #e9f5f8;
+  color: #08758a;
+}
+
+html[data-theme="light"] .planning-workbench .editor-layout,
+html[data-theme="light"] .planning-workbench .editor-tree,
+html[data-theme="light"] .planning-workbench .editor-inspector {
+  border-color: #d7e1eb;
+}
+
+html[data-theme="light"] .planning-workbench .editor-tree {
+  border-right-color: #d7e1eb;
+}
+
+html[data-theme="light"] .planning-workbench .editor-inspector {
+  border-left-color: #d7e1eb;
+}
+
+html[data-theme="light"] .planning-workbench .editor-options,
+html[data-theme="light"] .planning-workbench .backend-map-tools {
+  background: #f7fafc;
+}
+
+html[data-theme="light"] .planning-workbench .layer-card.current {
+  border-left-color: #0b839a;
+}
+
+html[data-theme="light"] .planning-workbench .plan-cards article,
+html[data-theme="light"] .planning-workbench .waypoint-list li,
+html[data-theme="light"] .planning-workbench .layer-card {
+  border-color: #d7e1eb;
+  background: #ffffff;
+}
+
+html[data-theme="light"] .commissioning-page,
+html[data-theme="light"] .commissioning-heading h2,
+html[data-theme="light"] .test-center-intro h2,
+html[data-theme="light"] .test-stage h3,
+html[data-theme="light"] .task-switch-panel h3,
+html[data-theme="light"] .navigation-detour h3 {
+  color: #17233a;
+}
+
+html[data-theme="light"] .commissioning-page p,
+html[data-theme="light"] .commissioning-heading p,
+html[data-theme="light"] .commissioning-note,
+html[data-theme="light"] .test-center-intro p,
+html[data-theme="light"] .test-stage p,
+html[data-theme="light"] .task-switch-panel p,
+html[data-theme="light"] .navigation-detour p {
+  color: #5b7085;
+}
+
+html[data-theme="light"] .commissioning-table th,
+html[data-theme="light"] .version-panel th,
+html[data-theme="light"] .history-panel th {
+  border-bottom-color: #dbe5ee;
+  background: #f1f6fa;
+  color: #60758a;
+}
+
+html[data-theme="light"] .commissioning-table td,
+html[data-theme="light"] .version-panel td,
+html[data-theme="light"] .history-panel td {
+  border-bottom-color: #e1e8ef;
+  color: #43586d;
+}
+
+html[data-theme="light"] .switch-form input[type=number],
+html[data-theme="light"] .switch-form textarea,
+html[data-theme="light"] .switch-review textarea,
+html[data-theme="light"] .timeout-recovery textarea,
+html[data-theme="light"] .cancel-reason-label textarea {
+  border-color: #ccd8e3;
+  background: #ffffff;
+  color: #243a50;
+}
+
+html[data-theme="light"] .toast-item {
+  border-color: #ccd8e3;
+  background: #ffffff;
+  color: #334a60;
+  box-shadow: 0 10px 30px rgba(38, 57, 78, .14);
+}
+
+html[data-theme="light"] .toast-item.success {
+  border-color: #94cdbd;
+  background: #effaf6;
+}
+
+html[data-theme="light"] .toast-item.warning {
+  border-color: #ddc58f;
+  background: #fff9ed;
+}
+
+html[data-theme="light"] .toast-item.error {
+  border-color: #dda5ad;
+  background: #fff2f4;
+}
+
+html[data-theme="light"] .waiting-panel > p,
+html[data-theme="light"] .waiting-summary,
+html[data-theme="light"] .waiting-filters,
+html[data-theme="light"] .waiting-table small {
+  color: #5b7085;
+}
+
+html[data-theme="light"] .simulation-page {
+  color: #243a50;
+  background: linear-gradient(180deg, #f8fafc 0, #edf3f8 240px, #edf3f8 100%);
+}
+
+html[data-theme="light"] .simulation-page :is(
+  .environment-panel,
+  .simulation-panel,
+  .configuration-guide,
+  .first-run-guide,
+  .guide-grid article,
+  .live-facts > div,
+  .new-instance-control,
+  .scenario-brief,
+  .fault-intro,
+  .recent-instances li,
+  .version-builds > div,
+  .station-designer,
+  .report-version,
+  .task-counts article,
+  .task-step-list > li,
+  .task-route-now,
+  .task-route-selection,
+  .task-route-leg-list button,
+  .route-resource-summary,
+  .report-task-nine-steps > li,
+  .report-task-evidence-grid article,
+  .manual-hero,
+  .manual-facts article,
+  .story-lead,
+  .vehicle-story-list article,
+  .module-heading,
+  .module-nav,
+  .overview-hero,
+  .overview-kpis,
+  .mission-control,
+  .stage-tabs button,
+  .mission-metrics > div,
+  .map-view-switch button,
+  .manual-next-step,
+  .task-waiting-copy
+) {
+  border-color: #d7e1eb !important;
+  background: #ffffff !important;
+  color: #334a60;
+  box-shadow: 0 6px 18px rgba(38, 57, 78, .05);
+}
+
+html[data-theme="light"] .simulation-page .simulation-map,
+html[data-theme="light"] .simulation-page .map-empty,
+html[data-theme="light"] .simulation-page .task-route-map-wrap {
+  border-color: #d7e1eb;
+  background: #edf3f8;
+}
+
+html[data-theme="light"] .simulation-page .map-node circle {
+  fill: #ffffff;
+  stroke: #557c91;
+}
+
+html[data-theme="light"] .simulation-page .map-node text,
+html[data-theme="light"] .simulation-page .map-car text {
+  fill: #334a60;
+  stroke: #edf3f8;
+}
+
+html[data-theme="light"] .simulation-page .map-car rect {
+  stroke: #ffffff;
+}
+
+html[data-theme="light"] .simulation-page h1,
+html[data-theme="light"] .simulation-page h2,
+html[data-theme="light"] .simulation-page h3,
+html[data-theme="light"] .simulation-page h4,
+html[data-theme="light"] .simulation-page h5,
+html[data-theme="light"] .simulation-page strong,
+html[data-theme="light"] .simulation-page b {
+  color: #17233a;
+}
+
+html[data-theme="light"] .simulation-page p,
+html[data-theme="light"] .simulation-page small,
+html[data-theme="light"] .simulation-page dt,
+html[data-theme="light"] .simulation-page .simulation-boundary {
+  color: #5b7085;
+}
+
+html[data-theme="light"] .simulation-page .task-table th,
+html[data-theme="light"] .simulation-page .report-panel th,
+html[data-theme="light"] .simulation-page .version-panel th,
+html[data-theme="light"] .simulation-page .history-panel th {
+  border-bottom-color: #dbe5ee;
+  background: #f1f6fa;
+  color: #60758a;
+}
+
+html[data-theme="light"] .simulation-page .task-table td,
+html[data-theme="light"] .simulation-page .report-panel td,
+html[data-theme="light"] .simulation-page .version-panel td,
+html[data-theme="light"] .simulation-page .history-panel td {
+  border-bottom-color: #e1e8ef;
+  color: #43586d;
+}
+
+html[data-theme="light"] .simulation-page .task-record-row:hover td,
+html[data-theme="light"] .simulation-page .task-record-row.expanded td {
+  background: #eef5f8;
+}
+
+html[data-theme="light"] .simulation-page .task-record-evidence-row > td {
+  border-bottom-color: #dbe5ee !important;
+  background: #f8fafc !important;
+}
+
+html[data-theme="light"] .simulation-page :is(.page-kicker, .section-kicker) {
+  color: #08758a !important;
+}
+
+html[data-theme="light"] .simulation-page .module-nav button strong {
+  color: #43586d !important;
+}
+
+html[data-theme="light"] .simulation-page .module-nav button.active strong {
+  color: #08758a !important;
+}
+
+html[data-theme="light"] .simulation-page .module-nav button > span {
+  background: #eef5f8;
+  color: #52677d;
+}
+
+html[data-theme="light"] .simulation-page .module-nav button.active > span {
+  background: #dff1f4;
+  color: #08758a;
+}
+
+html[data-theme="light"] .simulation-page .module-heading h3,
+html[data-theme="light"] .simulation-page .overview-hero h3,
+html[data-theme="light"] .simulation-page .overview-kpis b,
+html[data-theme="light"] .simulation-page .mode-card b {
+  color: #17233a !important;
+}
+
+html[data-theme="light"] .simulation-page :is(
+  .simulation-title p,
+  .module-heading p,
+  .module-heading-status small,
+  .overview-hero-copy p,
+  .overview-kpis small,
+  .overview-kpis span,
+  .mode-card small,
+  .mode-card span,
+  .map-empty,
+  .map-caption,
+  .simulation-boundary
+) {
+  color: #5f7488 !important;
+}
+
+html[data-theme="light"] .simulation-page .simulation-error {
+  border-color: #e3bac2;
+  background: #fff2f4;
+  color: #8f2740;
+}
+
+html[data-theme="light"] .simulation-page .simulation-notice {
+  border-color: #b7d8df;
+  background: #eef8fa;
+  color: #426578;
+}
+
+html[data-theme="light"] .simulation-page .state-pill {
+  border-color: #d6e1e9;
+  background: #eef3f6;
+  color: #52677d;
+}
+
+html[data-theme="light"] .simulation-page .state-pill.pass {
+  border-color: #b7dbcf;
+  background: #eaf8f2;
+  color: #08755d;
+}
+
+html[data-theme="light"] .simulation-page .state-pill.fail {
+  border-color: #e4bac2;
+  background: #fff0f3;
+  color: #a23248;
+}
+
+html[data-theme="light"] .simulation-page .state-pill.waiting {
+  border-color: #e4cfaa;
+  background: #fff7e8;
+  color: #8a5a0c;
+}
+
+html[data-theme="light"] .management-page thead,
+html[data-theme="light"] .overview-page thead,
+html[data-theme="light"] .waiting-panel thead,
+html[data-theme="light"] .closures-panel thead {
+  background: #f1f6fa;
+}
+
+html[data-theme="light"] .management-page tbody tr,
+html[data-theme="light"] .overview-page tbody tr,
+html[data-theme="light"] .waiting-panel tbody tr,
+html[data-theme="light"] .closures-panel tbody tr {
+  background: #ffffff;
+}
+
+html[data-theme="light"] .management-page tbody tr:nth-child(odd),
+html[data-theme="light"] .overview-page tbody tr:nth-child(odd),
+html[data-theme="light"] .waiting-panel tbody tr:nth-child(odd),
+html[data-theme="light"] .closures-panel tbody tr:nth-child(odd) {
+  background: #fbfcfe;
+}
+
+html[data-theme="light"] .business-table .el-table__body tr.el-table__row,
+html[data-theme="light"] .business-table .el-table__body tr.el-table__row--striped {
+  background: #ffffff !important;
+}
+
+html[data-theme="light"] .business-table .el-table__body tr.el-table__row:nth-child(odd) {
+  background: #fbfcfe !important;
+}
+
+html[data-theme="light"] .charging-page table,
+html[data-theme="light"] .charging-page tbody,
+html[data-theme="light"] .charging-page tr,
+html[data-theme="light"] .charging-page td,
+html[data-theme="light"] .charging-page th {
+  border-color: #e0e7ef;
+  background: #ffffff;
+  color: #43586d;
+}
+
+html[data-theme="light"] .charging-page th {
+  background: #f1f6fa;
+  color: #60758a;
+}
+
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-search {
+  border-color: #ccd8e3;
+  background: #ffffff;
+  color: #5b7085;
+}
+
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-table-wrap,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-checks th,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-checks td,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-record-list,
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-record {
+  border-color: #dbe5ee;
+  background: #ffffff;
+}
+
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-checks th {
+  background: #f1f6fa;
+  color: #60758a;
+}
+
+html[data-theme="light"] .dispatch-pipeline-page .pipeline-record + .pipeline-record {
+  border-top-color: #e1e8ef;
+}
+
+html[data-theme="light"] .dispatch-optimization-page .assignment-panel {
+  border-color: #d7e1eb;
+  background: #ffffff;
+  box-shadow: 0 8px 22px rgba(38, 57, 78, .06);
+}
+
+html[data-theme="light"] .dispatch-optimization-page .pipeline-layer,
+html[data-theme="light"] .dispatch-optimization-page .assignment-queue > article,
+html[data-theme="light"] .dispatch-optimization-page .assignment-candidates > article {
+  border-color: #dbe5ee;
+  background: #f8fafc;
+}
+
+html[data-theme="light"] .dispatch-optimization-page .assignment-metrics article,
+html[data-theme="light"] .dispatch-optimization-page .assignment-cycle-status,
+html[data-theme="light"] .dispatch-optimization-page .assignment-selected-reason,
+html[data-theme="light"] .dispatch-optimization-page .assignment-table-wrap,
+html[data-theme="light"] .dispatch-optimization-page .assignment-config-actions {
+  border-color: #dbe5ee;
+  background: #ffffff;
+}
+
+html[data-theme="light"] .dispatch-optimization-page .assignment-table th {
+  border-bottom-color: #dbe5ee;
+  background: #f1f6fa;
+  color: #60758a;
+}
+
+html[data-theme="light"] .dispatch-optimization-page .assignment-table td {
+  border-bottom-color: #e1e8ef;
+  color: #43586d;
+}
+
+html[data-theme="light"] .dispatch-optimization-page .assignment-table tr.selected {
+  background: #e9f5f8;
+}
+
+html[data-theme="light"] .dispatch-optimization-page :is(
+  .assignment-metrics b,
+  .assignment-panel h3,
+  .assignment-panel summary,
+  .assignment-mappings h4,
+  .pipeline-layer-title h4,
+  .assignment-table td strong
+) {
+  color: #17233a;
+}
+
+html[data-theme="light"] .dispatch-optimization-page :is(
+  .assignment-intro,
+  .assignment-panel > p,
+  .assignment-panel header p,
+  .assignment-search,
+  .assignment-table small,
+  .assignment-selected-reason,
+  .assignment-empty,
+  .assignment-config-grid label,
+  .assignment-config-grid small,
+  .assignment-config-actions > span,
+  .assignment-breakdown span,
+  .assignment-mappings p,
+  .assignment-mapping-row label,
+  .assignment-pipeline > header > span,
+  .pipeline-summary,
+  .pipeline-layer > small
+) {
+  color: #5f7488;
+}
+
+html[data-theme="light"] .dispatch-optimization-page :is(
+  .management-title > a,
+  .assignment-table td a,
+  .assignment-candidates > a,
+  .assignment-breakdown summary,
+  .pipeline-layer > a,
+  .pipeline-detail-note
+) {
+  color: #08758a;
+}
+
+html[data-theme="light"] .dispatch-optimization-page .assignment-note {
+  color: #5f7488 !important;
+}
+
+html[data-theme="light"] .dispatch-optimization-page .assignment-mode,
+html[data-theme="light"] .dispatch-optimization-page .assignment-cycle-status {
+  border-color: #d5e0e9;
+  background: #f2f7fa;
+  color: #465a70;
+}
+
+html[data-theme="light"] .dispatch-optimization-page .assignment-mode.global {
+  border-color: #a9d4c8;
+  background: #eaf8f2;
+  color: #08755d;
+}
+
+html[data-theme="light"] .dispatch-optimization-page .assignment-success {
+  border: 1px solid #b7dbcf;
+  background: #eaf8f2;
+  color: #08755d;
+}
+
+html[data-theme="light"] .dispatch-optimization-page .assignment-cycle-status {
+  border-left: 2px solid #0b839a;
+}
+
+html[data-theme="light"] .dispatch-optimization-page .assignment-cycle-status strong {
+  color: #086d80;
+}
+
+html[data-theme="light"] .dispatch-optimization-page .assignment-metrics :is(span, small) {
+  color: #60758a;
+}
+
+html[data-theme="light"] .dispatch-optimization-page .assignment-metrics em {
+  color: #52677d;
+}
+
+html[data-theme="light"] .dispatch-optimization-page .assignment-selected-reason {
+  border: 1px solid #d8e3ec;
+  background: #f7fafc;
+}
+
+html[data-theme="light"] .dispatch-optimization-page .assignment-config-actions,
+html[data-theme="light"] .dispatch-optimization-page .assignment-mappings {
+  border-top-color: #e1e8ef;
+}
+
+html[data-theme="light"] .dispatch-optimization-page .pipeline-layer-title .pipeline-number {
+  border-color: #b9c9d7;
+  background: #ffffff;
+  color: #40566b;
+}
+
+html[data-theme="light"] .dispatch-optimization-page .pipeline-layer:not(:last-child)::after {
+  color: #7c90a4;
+}
+
+html[data-theme="light"] .dispatch-optimization-page .pipeline-layer.focused {
+  outline-color: #79bac7;
+}
+
+html[data-theme="light"] .dispatch-optimization-page .pipeline-layer-state strong {
+  border: 1px solid #d6e1e9;
+  background: #eef3f6;
+  color: #52677d;
+}
+
+html[data-theme="light"] .dispatch-optimization-page .pipeline-layer.ready .pipeline-layer-state strong {
+  border-color: #b7dbcf;
+  background: #eaf8f2;
+  color: #08755d;
+}
+
+html[data-theme="light"] .dispatch-optimization-page .pipeline-layer.running .pipeline-layer-state strong,
+html[data-theme="light"] .dispatch-optimization-page .pipeline-layer.observing .pipeline-layer-state strong {
+  border-color: #b6d8e2;
+  background: #e9f5fa;
+  color: #086d84;
+}
+
+html[data-theme="light"] .dispatch-optimization-page .pipeline-layer.waiting .pipeline-layer-state strong,
+html[data-theme="light"] .dispatch-optimization-page .pipeline-layer.stale .pipeline-layer-state strong {
+  border-color: #e4cfaa;
+  background: #fff7e8;
+  color: #8a5a0c;
+}
+
+html[data-theme="light"] .dispatch-optimization-page .pipeline-layer.blocked .pipeline-layer-state strong {
+  border-color: #e4bac2;
+  background: #fff0f3;
+  color: #a23248;
+}
+
+html[data-theme="light"] .dispatch-optimization-page .pipeline-layer-state > span {
+  color: #5f7488;
+}
+
+html[data-theme="light"] .dispatch-optimization-page .pipeline-purpose {
+  color: #667b8e !important;
+}
+
+html[data-theme="light"] .dispatch-optimization-page .assignment-config-grid input,
+html[data-theme="light"] .dispatch-optimization-page .assignment-config-grid select,
+html[data-theme="light"] .dispatch-optimization-page .assignment-mapping-row input,
+html[data-theme="light"] .dispatch-optimization-page .assignment-search input {
+  border-color: #ccd8e3;
+  background: #ffffff;
+  color: #243a50;
+}
+
+html[data-theme="light"] .planning-workbench .workbench-message {
+  border-left-color: #0b839a;
+  background: #edf7f9;
+  color: #52677d;
+}
+
+html[data-theme="light"] .planning-workbench .workbench-tabs button.active,
+html[data-theme="light"] .planning-workbench .editor-toolbar button.active {
+  border-color: #9ccbd4 !important;
+  background: #e9f5f8 !important;
+  color: #08758a !important;
+}
+
+html[data-theme="light"] .nav-test > section,
+html[data-theme="light"] .nav-test .navigation-detour,
+html[data-theme="light"] .nav-test .jack-test {
+  border-color: #d7e1eb !important;
+  background: #ffffff !important;
+  box-shadow: 0 8px 22px rgba(38, 57, 78, .06);
+}
+
+html[data-theme="light"] .nav-test h2,
+html[data-theme="light"] .nav-test h3,
+html[data-theme="light"] .nav-test h4 {
+  color: #17233a;
+}
+
+html[data-theme="light"] .nav-test p,
+html[data-theme="light"] .nav-test small,
+html[data-theme="light"] .nav-test dt {
+  color: #5b7085;
+}
+
+html[data-theme="light"] .nav-test {
+  color: #243a50;
+}
+
+html[data-theme="light"] .nav-test .error {
+  border: 1px solid #e3bac2;
+  border-left: 3px solid #b83250;
+  background: #fff2f4 !important;
+  color: #8f2740;
+}
+
+html[data-theme="light"] .nav-test .notice {
+  color: #52677d;
+}
+
+html[data-theme="light"] .nav-test :is(.preview, .jack-status) {
+  border-color: #d7e1eb;
+  background: #f7fafc;
+  color: #465a70;
+}
+
+html[data-theme="light"] .nav-test select {
+  border-color: #cad6e2;
+  background: #ffffff;
+  color: #17233a;
+}
+
+html[data-theme="light"] .nav-test .navigation-detour button {
+  border-color: #cbd8e3;
+  background: #ffffff;
+  color: #43596e;
 }
 
 @media (max-width: 650px) {
@@ -1920,9 +2900,9 @@ html[data-theme="light"] {
   --line: #d6e0eb;
   --cyan: #087f96;
   --muted: #64748b;
-  --green: #0f9f79;
-  --amber: #bd7a12;
-  --red: #cf3f61;
+  --green: #08755d;
+  --amber: #8a5a0c;
+  --red: #b83250;
   --ui-page: #edf2f7;
   --ui-page-deep: #e7edf5;
   --ui-surface: #ffffff;
@@ -1933,13 +2913,13 @@ html[data-theme="light"] {
   --ui-line-strong: #bdcbd9;
   --ui-text: #17233a;
   --ui-text-2: #465a70;
-  --ui-text-3: #78899c;
+  --ui-text-3: #60758a;
   --ui-primary: #0b839a;
   --ui-primary-strong: #08758a;
   --ui-primary-soft: rgba(9, 126, 148, .1);
-  --ui-success: #0f9f79;
-  --ui-warning: #bd7a12;
-  --ui-danger: #cf3f61;
+  --ui-success: #08755d;
+  --ui-warning: #8a5a0c;
+  --ui-danger: #b83250;
   --ui-shadow: 0 10px 28px rgba(38, 57, 78, .09);
   --el-color-primary: #0b839a;
   --el-color-primary-light-3: #4ca7b9;
@@ -2057,6 +3037,14 @@ html[data-theme="light"] .engineering-dropdown {
   box-shadow: 0 18px 36px rgba(31, 49, 69, .16);
 }
 
+html[data-theme="light"] .engineering-dropdown p {
+  color: #536a80;
+}
+
+html[data-theme="light"] .equipment-strip small {
+  color: #5f7488;
+}
+
 html[data-theme="light"] button {
   border-color: #c6d4e1;
   background: #f4f7fa;
@@ -2153,7 +3141,438 @@ html[data-theme="light"] .equipment-strip > div {
 }
 
 html[data-theme="light"] .equipment-strip small {
-  color: #718397;
+  color: #5f7488;
+}
+
+html[data-theme="light"] :is(.console-brand span, .header-clock span) {
+  color: #5f7488 !important;
+}
+
+html[data-theme="light"] .engineering-dropdown p {
+  color: #536a80 !important;
+}
+
+html[data-theme="light"] .state-label.running {
+  color: #08755d !important;
+}
+
+html[data-theme="light"] .state-label.waiting {
+  color: #8a5a0c !important;
+}
+
+html[data-theme="light"] .state-label.idle {
+  color: #684d91 !important;
+}
+
+html[data-theme="light"] .state-label.charging {
+  color: #086d84 !important;
+}
+
+html[data-theme="light"] .state-label.fault {
+  color: #b83250 !important;
+}
+
+html[data-theme="light"] .state-label.offline,
+html[data-theme="light"] .state-label.unknown {
+  color: #52677d !important;
+}
+
+html[data-theme="light"] .state-label.completed {
+  color: #52677d !important;
+}
+
+html[data-theme="light"] .state-label.cancelled {
+  color: #465a70 !important;
+}
+
+html[data-theme="light"] .severity {
+  color: #086d84;
+}
+
+html[data-theme="light"] .severity.warning {
+  color: #8a5a0c;
+}
+
+html[data-theme="light"] .severity.error,
+html[data-theme="light"] .severity.critical {
+  color: #b83250;
+}
+
+html[data-theme="light"] .alarm-state.open {
+  color: #8a5a0c;
+}
+
+html[data-theme="light"] .alarm-state.acknowledged {
+  color: #086d84;
+}
+
+html[data-theme="light"] .alarm-state.recovered {
+  color: #08755d;
+}
+
+html[data-theme="light"] .fleet-counts button {
+  border-color: #dbe5ee;
+  background: #f8fafc;
+}
+
+html[data-theme="light"] .fleet-counts button:hover {
+  border-color: #9ccbd4;
+  background: #edf5f8;
+}
+
+html[data-theme="light"] .fleet-counts b,
+html[data-theme="light"] .ring-legend b {
+  color: #17233a;
+}
+
+html[data-theme="light"] .ring-legend > span {
+  border: 1px solid #dbe5ee;
+  background: #f2f7fa;
+  color: #52677d !important;
+}
+
+html[data-theme="light"] .ring-legend b {
+  color: #17233a !important;
+}
+
+html[data-theme="light"] .shared-resource > b {
+  color: #243a50;
+}
+
+html[data-theme="light"] .battery-line b,
+html[data-theme="light"] .battery-value {
+  color: #08755d;
+}
+
+html[data-theme="light"] :is(
+  .fleet-counts span,
+  .battery-line,
+  .mini-table-head,
+  .alarm-preview-row small,
+  .panel-footnote,
+  .empty-panel,
+  .ring-legend > span,
+  .shared-resource small
+) {
+  color: #5f7488;
+}
+
+html[data-theme="light"] .map-status-legend {
+  color: #52677d;
+  font-size: 10px;
+}
+
+html[data-theme="light"] .map-status-legend > span {
+  color: #52677d !important;
+}
+
+html[data-theme="light"] .system-health-observation,
+html[data-theme="light"] .focus-vehicle small,
+html[data-theme="light"] .section-heading h2 small {
+  color: #52677d !important;
+}
+
+html[data-theme="light"] .health-metric > span {
+  color: #52677d !important;
+}
+
+html[data-theme="light"] .current-task-counts > span,
+html[data-theme="light"] .current-task-counts b {
+  color: #086d84 !important;
+}
+
+html[data-theme="light"] .map-caption-bottom,
+html[data-theme="light"] .map-navigation small {
+  color: #52677d !important;
+}
+
+html[data-theme="light"] .map-caption-bottom > span {
+  color: #52677d !important;
+}
+
+html[data-theme="light"] .task-query-toolbar .query-search.el-input,
+html[data-theme="light"] .alarm-query-toolbar .query-search.el-input,
+html[data-theme="light"] .query-search.el-input {
+  background: #ffffff !important;
+  color: #52677d !important;
+  box-shadow: inset 0 0 0 1px #d4dfe9 !important;
+}
+
+html[data-theme="light"] .query-date-range {
+  color-scheme: light;
+}
+
+html[data-theme="light"] .query-search.el-input input {
+  background: transparent !important;
+  color: #243a50 !important;
+}
+
+html[data-theme="light"] .history-presets button {
+  color: #5f7488;
+}
+
+html[data-theme="light"] .history-presets button:hover {
+  border-color: #9ccbd4;
+  background: #edf5f8;
+  color: #17233a;
+}
+
+html[data-theme="light"] .el-button.is-link {
+  color: #086d84;
+}
+
+html[data-theme="light"] .el-button.is-link.el-button--danger {
+  color: #b83250;
+}
+
+html[data-theme="light"] .el-pagination .number.is-active {
+  background: #086d84 !important;
+  color: #ffffff !important;
+}
+
+html[data-theme="light"] .query-bar label,
+html[data-theme="light"] .query-bar label > span {
+  color: #52677d !important;
+}
+
+html[data-theme="light"] .task-result-head,
+html[data-theme="light"] .task-time-note,
+html[data-theme="light"] .task-result-footer,
+html[data-theme="light"] .task-result-footer b,
+html[data-theme="light"] .result-total {
+  color: #52677d !important;
+}
+
+html[data-theme="light"] .result-total b {
+  color: #17233a;
+}
+
+html[data-theme="light"] .result-total span {
+  color: #52677d !important;
+}
+
+html[data-theme="light"] .alarm-summary-strip p {
+  color: #52677d !important;
+}
+
+html[data-theme="light"] .alarm-summary-strip span {
+  color: #52677d !important;
+}
+
+html[data-theme="light"] .alarm-summary-strip .open b {
+  color: #8a5a0c !important;
+}
+
+html[data-theme="light"] .alarm-page-actions > span {
+  color: #52677d !important;
+}
+
+html[data-theme="light"] .map-catalog-note {
+  color: #5f7488;
+}
+
+html[data-theme="light"] .management-title > span {
+  color: #52677d !important;
+}
+
+html[data-theme="light"] .outline-badge {
+  border-color: #b7d8df;
+  color: #086d84;
+}
+
+html[data-theme="light"] .outline-badge.cyan {
+  background: #eef8fa;
+  color: #086d84 !important;
+}
+
+html[data-theme="light"] .map-card-art > b {
+  color: #243a50;
+}
+
+html[data-theme="light"] .map-card-art > small,
+html[data-theme="light"] .map-card dl {
+  color: #5f7488;
+}
+
+html[data-theme="light"] .map-card small {
+  color: #52677d !important;
+}
+
+html[data-theme="light"] .map-card > p,
+html[data-theme="light"] .map-card dl {
+  color: #5f7488;
+}
+
+html[data-theme="light"] .recovery-panel .recovery-warning {
+  border: 1px solid #e6c98f;
+  border-left: 3px solid #b2781b;
+  background: #fff9ed;
+  color: #76501b !important;
+}
+
+html[data-theme="light"] .recovery-panel details {
+  color: #5f7488;
+}
+
+html[data-theme="light"] .recovery-panel header small {
+  color: #52677d;
+}
+
+html[data-theme="light"] .timeout-recovery .warning {
+  border: 1px solid #e6c98f;
+  border-left: 3px solid #b2781b;
+  background: #fff9ed;
+  color: #76501b !important;
+}
+
+html[data-theme="light"] .recovery-panel .selected {
+  border-color: #79bac7;
+  background: #e9f5f8;
+  color: #08758a;
+}
+
+html[data-theme="light"] .charge-monitor-fields dt,
+html[data-theme="light"] .charge-monitor-fields dd,
+html[data-theme="light"] .charge-explanation,
+html[data-theme="light"] .charge-monitoring p,
+html[data-theme="light"] .charge-section small,
+html[data-theme="light"] .charge-policy small {
+  color: #52677d;
+}
+
+html[data-theme="light"] .charge-policy strong {
+  color: #08755d;
+}
+
+html[data-theme="light"] .charging-page th {
+  color: #52677d !important;
+}
+
+html[data-theme="light"] .charge-section h3 small,
+html[data-theme="light"] .charge-monitor-label {
+  color: #5f7488;
+}
+
+html[data-theme="light"] .commissioning-page .accent-button,
+html[data-theme="light"] .engineering-center .accent-button {
+  border-color: #147f93 !important;
+  background: linear-gradient(180deg, #1290a7, #0b7388) !important;
+  color: #ffffff !important;
+}
+
+html[data-theme="light"] .mode-badge {
+  border-color: #b7d8df;
+  background: #eef8fa;
+  color: #426578;
+}
+
+html[data-theme="light"] .engineering-level-switch button small,
+html[data-theme="light"] .engineering-sidebar button small,
+html[data-theme="light"] .engineering-nav-group {
+  color: #52677d !important;
+}
+
+html[data-theme="light"] .engineering-links button,
+html[data-theme="light"] .engineering-content a,
+html[data-theme="light"] .engineering-links a {
+  color: #086d84 !important;
+}
+
+html[data-theme="light"] .commissioning-page :is(
+  .commissioning-runtime span,
+  .commissioning-runtime small,
+  .commissioning-results > span,
+  .commissioning-results label,
+  .commissioning-table small,
+  #commissioning-signals > p,
+  .commissioning-route p,
+  .commissioning-build
+) {
+  color: #52677d !important;
+}
+
+html[data-theme="light"] .commissioning-table th {
+  color: #52677d !important;
+}
+
+html[data-theme="light"] .check-status.Pass {
+  color: #08755d;
+}
+
+html[data-theme="light"] .check-status.Blocked {
+  color: #b83250;
+}
+
+html[data-theme="light"] .check-status.Unknown {
+  color: #8a5a0c;
+}
+
+html[data-theme="light"] .check-status.Notice {
+  color: #086d84;
+}
+
+html[data-theme="light"] .planning-workbench .workbench-title > span {
+  color: #52677d !important;
+}
+
+html[data-theme="light"] .planning-workbench b {
+  color: #243a50;
+}
+
+html[data-theme="light"] .planning-workbench small {
+  color: #52677d;
+}
+
+html[data-theme="light"] .dispatch-optimization-page .assignment-monitor-entry {
+  border-color: #b7d8df !important;
+  background: #eef8fa !important;
+  color: #086d84 !important;
+}
+
+html[data-theme="light"] .resource-review a {
+  color: #08758a !important;
+}
+
+html[data-theme="light"] .query-date-range > span {
+  color: #52677d !important;
+}
+
+html[data-theme="light"] .el-table th.el-table__cell .cell,
+html[data-theme="light"] .pipeline-checks th {
+  color: #52677d !important;
+}
+
+html[data-theme="light"] .dispatch-pipeline-page :is(
+  .pipeline-step-body > small,
+  .pipeline-state-text em
+) {
+  color: #52677d !important;
+}
+
+html[data-theme="light"] .dispatch-optimization-page .pipeline-purpose {
+  color: #52677d !important;
+}
+
+html[data-theme="light"] .dispatch-optimization-page .assignment-table th {
+  color: #52677d !important;
+}
+
+html[data-theme="light"] .simulation-page .map-empty {
+  color: #52677d !important;
+}
+
+html[data-theme="light"] .simulation-page .map-empty span {
+  color: #52677d !important;
+}
+
+html[data-theme="light"] .simulation-page :is(.map-run-legend, .task-route-legend) {
+  border-color: #d7e1eb;
+  background: rgba(247, 250, 252, .95);
+  color: #52677d;
+}
+
+html[data-theme="light"] .simulation-page :is(.map-run-legend, .task-route-legend) span {
+  color: #52677d;
 }
 
 html[data-theme="light"] .management-table {
@@ -2289,17 +3708,17 @@ html[data-theme="light"] .alarm-summary-strip .critical b {
 }
 
 html[data-theme="light"] .map-control {
-  border-color: #263f58;
-  background: #0b1728;
+  border-color: #d7e1eb;
+  background: #ffffff;
 }
 
 html[data-theme="light"] .map-control > .section-heading {
-  border-bottom-color: #263f58;
-  background: #0c1d33;
+  border-bottom-color: #dbe5ee;
+  background: #f7fafc;
 }
 
 html[data-theme="light"] .map-control > .section-heading h2 {
-  color: #e8f3fb;
+  color: #17233a;
 }
 
 html[data-theme="light"] .map-control .map-heading > div > small,
@@ -2307,29 +3726,48 @@ html[data-theme="light"] .map-control .map-navigation,
 html[data-theme="light"] .map-control .map-bottom-tools,
 html[data-theme="light"] .map-control .resource-location,
 html[data-theme="light"] .map-control .traffic-focus {
-  color: #9fb6cb;
+  color: #5b7085;
 }
 
 html[data-theme="light"] .map-control .map-bottom-tools {
-  border-top-color: #263f58;
-  background: #0a1728;
+  border-top-color: #dbe5ee;
+  background: #f7fafc;
 }
 
 html[data-theme="light"] .map-control .map-bottom-tools select {
-  border-color: #314f6a;
-  background: #0d2035;
-  color: #c8d8e7;
+  border-color: #d4dfe9;
+  background: #ffffff;
+  color: #334a60;
 }
 
 html[data-theme="light"] .map-control .traffic-focus {
-  border-top-color: #263f58;
-  background: #0b1728;
+  border-top-color: #dbe5ee;
+  background: #ffffff;
 }
 
 html[data-theme="light"] .map-control .map-toolbar button:not(.active) {
-  border-color: #31516e;
-  background: #10243a;
-  color: #a9c1d5;
+  border-color: #d5e0ea;
+  background: #ffffff;
+  color: #52677d;
+}
+
+html[data-theme="light"] .map-control .map-status-legend,
+html[data-theme="light"] .map-control .map-caption-bottom,
+html[data-theme="light"] .map-control .map-navigation small {
+  color: #718498;
+}
+
+html[data-theme="light"] .map-control .map-zoom {
+  border-color: #d5e0ea;
+  background: #ffffff;
+}
+
+html[data-theme="light"] .map-control .map-zoom button {
+  color: #52677d;
+}
+
+html[data-theme="light"] .map-control .map-zoom button + button {
+  border-left-color: #dce5ee;
 }
 
 html[data-theme="light"] .el-popper,
