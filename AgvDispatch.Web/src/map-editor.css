@@ -378,21 +378,21 @@
 
 .editor-canvas.is-panning .map-static-canvas,
 .editor-canvas.is-settling .map-static-canvas {
-  visibility: hidden;
+  display: none;
 }
 
 .navigation-svg-layer {
-  visibility: hidden;
+  display: none;
 }
 
 .editor-canvas.is-panning .navigation-svg-layer,
 .editor-canvas.is-settling .navigation-svg-layer {
-  visibility: visible;
+  display: block;
 }
 
 .editor-canvas.is-panning .interaction-detail-layer,
 .editor-canvas.is-settling .interaction-detail-layer {
-  visibility: hidden;
+  display: none;
   pointer-events: none;
 }
 

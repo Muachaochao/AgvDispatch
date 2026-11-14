@@ -157,7 +157,7 @@ async function measurePanFps() {
     });
     await sleep(12);
   }
-  const sawTransform = await evaluate('getComputedStyle(document.querySelector(".navigation-svg-layer")).visibility === "visible"');
+  const sawTransform = await evaluate('getComputedStyle(document.querySelector(".navigation-svg-layer")).display !== "none"');
   await rpc('Input.dispatchMouseEvent', { type: 'mouseReleased', ...center, button: 'left', buttons: 0, clickCount: 1 });
   await sleep(80);
   await evaluate(`(() => [...document.querySelectorAll('button')].find(candidate => candidate.textContent.trim() === '选择 / 框选')?.click())()`);
@@ -184,7 +184,7 @@ async function measureZoomFps() {
         cancelable: true
       }));
     })()`);
-    if (index === 5) sawTransform = await evaluate('getComputedStyle(document.querySelector(".navigation-svg-layer")).visibility === "visible"');
+    if (index === 5) sawTransform = await evaluate('getComputedStyle(document.querySelector(".navigation-svg-layer")).display !== "none"');
     await sleep(14);
   }
   await sleep(240);
