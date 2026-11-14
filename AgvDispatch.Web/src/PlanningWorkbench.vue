@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import ActionIcon from './components/ActionIcon.vue';
 import DisplayAreasEditor from './components/DisplayAreasEditor.vue';
-import AreaAnnotations from './components/AreaAnnotations.vue';
+import MapStaticCanvas from './components/MapStaticCanvas.vue';
 import { computed, nextTick, onMounted, onUnmounted, ref, watch, toRef } from 'vue';
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router';
 import { IconMap, IconDeviceFloppy, IconDownload, IconUpload, IconPlus, IconTrash, IconArrowUp, IconArrowDown, IconCopy, IconRefresh, IconZoomIn, IconZoomOut, IconPlugConnected, IconCloudUpload, IconArrowLeft, IconEye, IconSearch, IconChevronDown } from '@tabler/icons-vue';
@@ -77,9 +77,9 @@ const counts=computed(()=>`${definition.value.nodes.length} 航点 · ${definiti
 const labelMode=ref<MapLabelMode>('auto');
 const labelOptions=computed<MapLabelIndexOptions>(()=>({
  mode:labelMode.value,
- zoom:Number(ed.zoom),
+ zoom:Number(ed.renderZoom),
  scale:Number(ed.renderScale),
- view:ed.viewRect,
+ view:ed.renderViewRect,
  selectedIds:ed.selection.node
 }));
 const labelIndex=useMapLabelIndex(computed(()=>ed.visibleNodes),labelOptions);
@@ -92,7 +92,7 @@ const showRoadArrowheads=computed(()=>Number(ed.zoom)>=1.5);
 const selectedEdgeIds=computed(()=>new Set(ed.selection.edge));
 const selectedEdges=computed(()=>ed.visibleEdges.filter(edge=>selectedEdgeIds.value.has(edge.id)));
 const selectedCurveEdges=computed(()=>selectedEdges.value.filter(edge=>edge.controlPoints?.length));
-const edgeRenderBatches=computed(()=>buildMapEdgeBatches(ed.visibleEdges.filter(edge=>!selectedEdgeIds.value.has(edge.id)).map(edge=>{
+const navigationEdgeBatches=computed(()=>buildMapEdgeBatches(ed.visibleEdges.map(edge=>{
  const style=ed.layerStyle(edge);
  return {
   id:edge.id,
@@ -104,13 +104,13 @@ const edgeRenderBatches=computed(()=>buildMapEdgeBatches(ed.visibleEdges.filter(
   bidirectional:edge.bidirectional
  };
 }),showRoadArrowheads.value));
-const nodePanBatches=computed(()=>buildMapNodeBatches(ed.visibleNodes.map(node=>({
+const navigationNodeBatches=computed(()=>buildMapNodeBatches(ed.visibleNodes.map(node=>({
  id:node.id,
  x:node.x,
  y:node.y,
  layerId:node.layerId??'navigation',
- fill:ed.isSelected('node',node.id)?'#effaff':ed.color(node,node.enabled?'#0d344a':'#344254'),
- stroke:ed.isSelected('node',node.id)?'#70e0f2':ed.color(node,node.enabled?'#59bfd9':'#71829a')
+ fill:ed.color(node,node.enabled?'#0d344a':'#344254'),
+ stroke:ed.color(node,node.enabled?'#59bfd9':'#71829a')
 })),Number(nodeRadius.value)));
 type EditorTreeRow={key:string;label:string;kind?:'node'|'edge'|'resource'|'scene';objectId?:string;children?:EditorTreeRow[]};
 const treeData=computed<EditorTreeRow[]>(()=>{
@@ -332,29 +332,28 @@ onUnmounted(()=>{++epoch;window.removeEventListener('beforeunload',beforeUnload)
    <p class="editor-tool-hint" role="status">{{ed.toolHint}} <strong v-if="ed.measurement!==null">距离 {{ed.measurement.toFixed(3)}} m</strong><span v-if="ed.snapTarget"> · 吸附 {{ed.snapTarget}}</span></p>
    <div class="editor-layout"><aside class="editor-tree"><header><h3>{{tab==='scene'?'场景对象':'导航对象'}}</h3><el-button v-if="tab==='scene'" size="small" :icon="IconPlus" @click="ed.addScene({x:0,y:0})">新增</el-button></header><el-input v-model="objectSearch" clearable :prefix-icon="IconSearch" placeholder="搜索编号、站点或区域"/><el-tree ref="treeRef" :data="treeData" node-key="key" :props="{label:'label',children:'children'}" :filter-node-method="filterTreeNode" :current-node-key="treeCurrentKey" :default-expanded-keys="[tab==='scene'?'scene:items':'group:nodes']" highlight-current :expand-on-click-node="false" empty-text="当前没有可编辑对象" @node-click="handleTreeNode"><template #default="{data}"><span class="editor-tree-label">{{data.label}}</span></template></el-tree><p v-if="tab==='scene'" class="muted-note">场景图形仅用于显示；设备区不会自动成为障碍或交通锁。</p></aside>
     <div class="editor-canvas" :class="{'pan-mode':tool==='pan'||ed.space,'is-panning':ed.panning,'is-settling':ed.viewSettling}">
-     <svg ref="svg" :viewBox="viewBox" :data-view-box="viewBox" :data-zoom="Number(ed.zoom).toFixed(3)" :data-render-nodes="ed.visibleNodes.length" :data-render-edges="ed.visibleEdges.length" :data-render-edge-batches="edgeRenderBatches.length" :data-visible-labels="nodeLabelIds.size" :data-label-index="labelIndexMode" :data-label-index-ms="labelIndexDuration.toFixed(2)" role="application" tabindex="0" aria-label="调度地图编辑画布，支持框选、节点拖动与键盘快捷键" @pointerdown="ed.down" @pointermove="ed.move" @pointerup="ed.up" @pointercancel="ed.cancelGesture" @lostpointercapture="ed.cancelGesture" @contextmenu.prevent @dblclick.prevent="tool==='boundary'&&ed.finishBoundary()" @wheel.prevent="ed.wheel">
+     <div class="editor-map-layers">
+     <MapStaticCanvas :definition="definition" :scene="plan.scene" :nodes="ed.visibleNodes" :edges="ed.visibleEdges" :resources="ed.visibleResources" :layers="ed.layerList" :areas="visibleVendorAreas" :labels="nodeLabelIds" :view-box="viewBox" :scale="scale" :show-arrowheads="showRoadArrowheads" :navigating="ed.panning||ed.viewSettling" :simplified="!editorDetailVisible" :revision="ed.renderVersion"/>
+     <svg ref="svg" class="editor-interaction-layer" :viewBox="viewBox" :data-view-box="viewBox" :data-zoom="Number(ed.zoom).toFixed(3)" :data-render-nodes="ed.visibleNodes.length" :data-render-edges="ed.visibleEdges.length" :data-visible-labels="nodeLabelIds.size" :data-label-index="labelIndexMode" :data-label-index-ms="labelIndexDuration.toFixed(2)" role="application" tabindex="0" aria-label="调度地图编辑画布，支持框选、节点拖动与键盘快捷键" @pointerdown="ed.down" @pointermove="ed.move" @pointerup="ed.up" @pointercancel="ed.cancelGesture" @lostpointercapture="ed.cancelGesture" @contextmenu.prevent @dblclick.prevent="tool==='boundary'&&ed.finishBoundary()" @wheel.prevent="ed.wheel">
       <defs><pattern id="planning-editor-grid" :width="Math.max(.001,Number(ed.gridStep)||1)" :height="Math.max(.001,Number(ed.gridStep)||1)" patternUnits="userSpaceOnUse"><path :d="`M ${Math.max(.001,Number(ed.gridStep)||1)} 0 L 0 0 0 ${Math.max(.001,Number(ed.gridStep)||1)}`" fill="none" stroke="#1a3550" :stroke-width="scale*.04"/></pattern><marker id="planning-editor-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#72bfd2"/></marker></defs>
       <rect v-if="ed.grid" :x="Number(viewBox.split(' ')[0])" :y="Number(viewBox.split(' ')[1])" :width="Number(viewBox.split(' ')[2])" :height="Number(viewBox.split(' ')[3])" fill="url(#planning-editor-grid)" pointer-events="none"/>
-      <AreaAnnotations :areas="visibleVendorAreas" :scale="scale"/>
-      <template v-if="editorDetailVisible"><g v-for="s in ed.visibleScene" :key="s.id" v-memo="[s, ed.selection.scene, ed.layerList, scale]" data-object="scene" data-kind="scene" :data-id="s.id" :style="ed.layerStyle(s)">
-       <rect v-if="s.kind!=='text'" :x="s.x" :y="-s.y-s.height" :width="s.width" :height="s.height" :fill="s.color" fill-opacity=".18" :stroke="ed.isSelected('scene',s.id)?'#e8fbff':s.color" :stroke-width="scale*.12"/><text :x="s.x+scale*.2" :y="-s.y-s.height+scale*1.2" :fill="s.color" :font-size="scale*1.1">{{s.name}}</text>
-      </g></template>
-      <template v-if="editorDetailVisible"><polygon v-for="r in ed.visibleResources" :key="r.id" v-memo="[r, ed.selection.resource, ed.layerList, scale]" data-object="resource" data-kind="resource" :data-id="r.id" :points="r.boundary?.map(p=>`${p.x},${-p.y}`).join(' ')" fill="#e0b25b" :fill-opacity="ed.isSelected('resource',r.id)?.22:.09" :stroke="ed.isSelected('resource',r.id)?'#fff4d0':ed.color(r,'#b79a68')" :stroke-width="ed.lineWidth(r)" :style="ed.layerStyle(r)"><title>{{r.id}} · {{r.type}}</title></polygon></template>
-      <g class="edge-visual-batches" pointer-events="none">
-       <path v-for="batch in edgeRenderBatches" :key="batch.key" v-memo="[batch, showRoadArrowheads]" :d="batch.path" fill="none" :stroke="batch.color" :stroke-width="batch.strokeWidth" :style="{opacity:batch.opacity}" :marker-start="batch.markerStart?'url(#planning-editor-arrow)':undefined" :marker-end="batch.markerEnd?'url(#planning-editor-arrow)':undefined" pointer-events="none"/>
+      <g class="navigation-svg-layer" pointer-events="none">
+       <path v-for="batch in navigationEdgeBatches" :key="batch.key" :d="batch.path" fill="none" :stroke="batch.color" :stroke-width="batch.strokeWidth" :style="{opacity:batch.opacity}" :marker-start="batch.markerStart?'url(#planning-editor-arrow)':undefined" :marker-end="batch.markerEnd?'url(#planning-editor-arrow)':undefined"/>
+       <path v-for="batch in navigationNodeBatches" :key="`nodes-${batch.key}`" :d="batch.path" :fill="batch.fill" :stroke="batch.stroke" :stroke-width="scale*.15"/>
       </g>
+      <g class="interaction-detail-layer scene-hit-layer"><g v-for="s in ed.visibleScene" :key="s.id" v-memo="[s, ed.selection.scene, ed.layerList, scale]" data-object="scene" data-kind="scene" :data-id="s.id" :style="ed.layerStyle(s)">
+       <rect :x="s.x" :y="-s.y-s.height" :width="s.width" :height="s.height" fill="transparent" :stroke="ed.isSelected('scene',s.id)?'#e8fbff':'transparent'" :stroke-width="scale*.12" pointer-events="all"><title>{{s.name}} · {{s.id}}</title></rect>
+      </g></g>
+      <g class="interaction-detail-layer resource-hit-layer"><polygon v-for="r in ed.visibleResources" :key="r.id" v-memo="[r, ed.selection.resource, ed.layerList, scale]" data-object="resource" data-kind="resource" :data-id="r.id" :points="r.boundary?.map(p=>`${p.x},${-p.y}`).join(' ')" fill="transparent" :stroke="ed.isSelected('resource',r.id)?'#fff4d0':'transparent'" :stroke-width="scale*.18" :style="ed.layerStyle(r)" pointer-events="all"><title>{{r.id}} · {{r.type}}</title></polygon></g>
       <g v-for="e in selectedEdges" :key="`selected-${e.id}`" v-memo="[e, ed.selection.edge, ed.layerList, scale]" data-kind="edge" :data-id="e.id" data-object="edge" :style="ed.layerStyle(e)">
        <path :d="edgePathData.get(e.id)??''" fill="none" stroke="#effaff" :stroke-width="ed.lineWidth(e)*1.6" :marker-end="'url(#planning-editor-arrow)'" :marker-start="e.bidirectional?'url(#planning-editor-arrow)':undefined" pointer-events="none"/>
       </g>
-      <g v-if="!ed.panning&&!ed.viewSettling" class="edge-hit-paths" pointer-events="stroke">
+      <g class="interaction-detail-layer edge-hit-paths" pointer-events="stroke">
        <path v-for="e in ed.visibleEdges" :key="`hit-${e.id}`" v-memo="[e, scale]" :d="edgePathData.get(e.id)??''" fill="none" stroke="transparent" :stroke-width="scale*1.6" data-kind="edge" :data-id="e.id" data-object="edge" pointer-events="stroke"><title>{{e.id}} · {{e.from}} → {{e.to}} · {{e.distance.toFixed(2)}} m</title></path>
       </g>
-      <template v-if="!editorDetailVisible"><g class="node-pan-batches" pointer-events="none">
-       <path v-for="batch in nodePanBatches" :key="batch.key" v-memo="[batch, nodeRadius]" :d="batch.path" :fill="batch.fill" :stroke="batch.stroke" :stroke-width="scale*.15" pointer-events="none"/>
-      </g></template>
-      <template v-else><g v-for="n in ed.visibleNodes" :key="n.id" v-memo="[n, ed.selection.node, ed.layerList, scale, nodeLabelIds.has(n.id)]" data-object="node" data-kind="node" :data-id="n.id" :data-node-type="n.type" :style="ed.layerStyle(n)">
-       <circle v-if="!ed.panning&&!ed.viewSettling" :cx="n.x" :cy="-n.y" :r="scale*1.15" fill="transparent"/><circle :cx="n.x" :cy="-n.y" :r="nodeRadius" :fill="ed.isSelected('node',n.id)?'#effaff':ed.color(n,n.enabled?'#0d344a':'#344254')" :stroke="ed.isSelected('node',n.id)?'#70e0f2':ed.color(n,n.enabled?'#59bfd9':'#71829a')" :stroke-width="scale*.15"/><text v-if="nodeLabelIds.has(n.id)" class="editor-node-label" :x="n.x+scale*.85" :y="-n.y-scale*.65" fill="#bdcfe3" :font-size="scale*1.05">{{n.id}}</text><title>{{n.id}} · {{n.x.toFixed(3)}}, {{n.y.toFixed(3)}} m</title>
-      </g></template>
+      <g class="interaction-detail-layer node-hit-layer"><g v-for="n in ed.visibleNodes" :key="n.id" v-memo="[n, ed.selection.node, ed.layerList, scale]" data-object="node" data-kind="node" :data-id="n.id" :data-node-type="n.type" :style="ed.layerStyle(n)">
+       <circle :cx="n.x" :cy="-n.y" :r="scale*1.15" fill="transparent" pointer-events="all"/><circle v-if="ed.isSelected('node',n.id)" :cx="n.x" :cy="-n.y" :r="nodeRadius" fill="none" stroke="#70e0f2" :stroke-width="scale*.16" pointer-events="none"/><title>{{n.id}} · {{n.x.toFixed(3)}}, {{n.y.toFixed(3)}} m</title>
+      </g></g>
       <template v-for="e in selectedCurveEdges" :key="`handles-${e.id}`">
        <polyline :points="[definition.nodes.find(n=>n.id===e.from),...(e.controlPoints??[]),definition.nodes.find(n=>n.id===e.to)].filter(Boolean).map(p=>`${p!.x},${-p!.y}`).join(' ')" fill="none" stroke="#d9ad63" :stroke-width="scale*.08" :stroke-dasharray="`${scale*.3} ${scale*.3}`" pointer-events="none"/>
        <circle v-for="(p,index) in e.controlPoints" :key="index" :cx="p.x" :cy="-p.y" :r="scale*.5" fill="#ffc767" stroke="#fff0ce" :stroke-width="scale*.1" data-kind="edge" :data-id="e.id" :data-control="index" class="curve-handle"><title>拖动控制点 {{index+1}}</title></circle>
@@ -367,6 +366,7 @@ onUnmounted(()=>{++epoch;window.removeEventListener('beforeunload',beforeUnload)
        <g v-if="ed.measure.length"><line :x1="ed.measure[0]!.x" :y1="-ed.measure[0]!.y" :x2="(ed.measure[1]??ed.cursor??ed.measure[0])!.x" :y2="-(ed.measure[1]??ed.cursor??ed.measure[0])!.y" stroke="#ecb960" :stroke-width="scale*.15"/><circle v-for="(p,i) in ed.measure" :key="i" :cx="p.x" :cy="-p.y" :r="scale*.35" fill="#ffe2a4"/></g>
       </g>
      </svg>
+     </div>
      <div class="editor-zoom"><button aria-label="编辑地图缩小" @click="ed.zoom=Math.max(.1,ed.zoom*.8)"><IconZoomOut :size="15"/></button><button @click="fit"><ActionIcon name="fit"/>适配</button><button aria-label="编辑地图放大" @click="ed.zoom=Math.min(40,ed.zoom*1.25)"><IconZoomIn :size="15"/></button></div>
      <div class="editor-coordinate">{{ed.cursor?`X ${ed.cursor.x.toFixed(3)} · Y ${ed.cursor.y.toFixed(3)} m`:'米制坐标'}} · {{Math.round(ed.zoom*100)}}% · 标签 {{nodeLabelIds.size}}/{{ed.visibleNodes.length}} · {{labelIndexMode==='worker'?`Worker ${labelIndexDuration.toFixed(1)} ms`:'主线程索引'}} · 已选 {{ed.count}}{{ed.measurement!==null?` · 测量 ${ed.measurement.toFixed(3)} m`:''}}</div>
     </div>

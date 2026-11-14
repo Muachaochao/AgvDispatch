@@ -337,7 +337,17 @@
   background: var(--ui-page-deep);
 }
 
-.editor-canvas > svg {
+.editor-map-layers {
+  position: absolute;
+  inset: 0;
+  will-change: transform;
+  transform-origin: 0 0;
+}
+
+.editor-map-layers > svg {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
   display: block;
   width: 100%;
   height: 100%;
@@ -360,6 +370,30 @@
   stroke: var(--ui-page);
   stroke-width: .2em;
   stroke-linejoin: round;
+}
+
+.map-static-canvas {
+  z-index: 0;
+}
+
+.editor-canvas.is-panning .map-static-canvas,
+.editor-canvas.is-settling .map-static-canvas {
+  visibility: hidden;
+}
+
+.navigation-svg-layer {
+  visibility: hidden;
+}
+
+.editor-canvas.is-panning .navigation-svg-layer,
+.editor-canvas.is-settling .navigation-svg-layer {
+  visibility: visible;
+}
+
+.editor-canvas.is-panning .interaction-detail-layer,
+.editor-canvas.is-settling .interaction-detail-layer {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .editor-canvas.is-panning .editor-node-label,
@@ -386,7 +420,7 @@
   position: absolute;
   right: 12px;
   bottom: 34px;
-  z-index: 1;
+  z-index: 2;
   display: flex;
   gap: 4px;
   padding: 3px;
@@ -414,6 +448,7 @@
   background: color-mix(in srgb, var(--editor-panel) 88%, transparent);
   color: var(--editor-text-3);
   font-size: 9px;
+  z-index: 2;
   pointer-events: none;
 }
 
