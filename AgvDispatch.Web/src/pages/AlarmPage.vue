@@ -4,7 +4,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { useDispatchStore } from '../stores/dispatch';
 import { shortTime, alarmSeverity, alarmStatus } from '../dashboard';
-import { IconBell, IconArrowLeft, IconSearch, IconChevronLeft, IconChevronRight } from '@tabler/icons-vue';
+import { IconBell, IconArrowLeft, IconSearch } from '@tabler/icons-vue';
 import ConsoleDialog from '../ConsoleDialog.vue';
 import type { Alarm, AlarmPage } from '../types';
 import { alarmMessageText, alarmSourceLabel, alarmTitleText } from '../operator-labels';
@@ -47,7 +47,6 @@ const draftQuery = computed<AlarmHistoryQuery>(() => ({
 const queryChanged = computed(() => JSON.stringify(draftQuery.value) !== JSON.stringify(appliedQuery.value));
 const visibleAlarms = computed(() => queriedAlarms.value?.items ?? []);
 const totalCount = computed(() => queriedAlarms.value?.totalCount ?? 0);
-const pages = computed(() => Math.max(1, Math.ceil(totalCount.value / (queriedAlarms.value?.pageSize ?? appliedQuery.value.pageSize))));
 const summary = computed(() => queriedAlarms.value?.summary ?? { total: 0, open: 0, acknowledged: 0, recovered: 0, critical: 0 });
 const hasTimeFilter = computed(() => !!(appliedQuery.value.from || appliedQuery.value.to));
 const appliedFilterText = computed(() => {
@@ -138,6 +137,10 @@ function chooseTimeRange(preset: AlarmTimePreset) {
   occurredTo.value = range.to;
   void queryAlarms(1, true);
 }
+function changeAlarmPageSize(size: number) {
+  pageSize.value = size;
+  void queryAlarms(1, true);
+}
 </script>
 
 <template>
@@ -154,33 +157,19 @@ function chooseTimeRange(preset: AlarmTimePreset) {
     </header>
 
     <form class="alarm-query-toolbar" @submit.prevent="queryAlarms(1, true)">
-      <label class="query-search">
-        <IconSearch :size="14" />
-        <input v-model="search" maxlength="128" placeholder="告警编号、对象、代码或内容" aria-label="搜索告警" :disabled="queryBusy" />
-      </label>
-      <select v-model="statusFilter" class="alarm-status-filter" aria-label="筛选告警状态" :disabled="queryBusy">
-        <option value="all">全部状态</option>
-        <option value="open">未确认</option>
-        <option value="acknowledged">已确认</option>
-        <option value="recovered">已恢复</option>
-      </select>
-      <select v-model="severityFilter" class="alarm-severity-filter" aria-label="筛选告警级别" :disabled="queryBusy">
-        <option value="all">全部级别</option>
-        <option value="info">信息</option>
-        <option value="warning">警告</option>
-        <option value="error">错误</option>
-        <option value="critical">严重</option>
-      </select>
+      <el-input v-model="search" class="query-search" maxlength="128" clearable placeholder="告警编号、对象、代码或内容" aria-label="搜索告警" :disabled="queryBusy" :prefix-icon="IconSearch" />
+      <el-select v-model="statusFilter" class="alarm-status-filter" aria-label="筛选告警状态" :disabled="queryBusy"><el-option label="全部状态" value="all" /><el-option label="未确认" value="open" /><el-option label="已确认" value="acknowledged" /><el-option label="已恢复" value="recovered" /></el-select>
+      <el-select v-model="severityFilter" class="alarm-severity-filter" aria-label="筛选告警级别" :disabled="queryBusy"><el-option label="全部级别" value="all" /><el-option label="信息" value="info" /><el-option label="警告" value="warning" /><el-option label="错误" value="error" /><el-option label="严重" value="critical" /></el-select>
       <div class="query-date-range">
-        <input v-model="occurredFrom" type="datetime-local" aria-label="首次发生时间从" :disabled="queryBusy" />
+        <el-date-picker v-model="occurredFrom" type="datetime" value-format="YYYY-MM-DDTHH:mm" format="YYYY-MM-DD HH:mm" placeholder="首次发生从" aria-label="首次发生时间从" :disabled="queryBusy" />
         <span>至</span>
-        <input v-model="occurredTo" type="datetime-local" aria-label="首次发生时间至" :disabled="queryBusy" />
+        <el-date-picker v-model="occurredTo" type="datetime" value-format="YYYY-MM-DDTHH:mm" format="YYYY-MM-DD HH:mm" placeholder="首次发生至" aria-label="首次发生时间至" :disabled="queryBusy" />
       </div>
       <div class="history-presets" aria-label="快捷时间范围">
         <button v-for="item in ([['today', '今天'], ['yesterday', '昨天'], ['week', '近7天'], ['all', '全部']] as const)" :key="item[0]" type="button" :disabled="queryBusy || !store.fresh" @click="chooseTimeRange(item[0])">{{ item[1] }}</button>
       </div>
-      <button type="submit" class="accent-button query-submit" :class="{ changed: queryChanged }" :disabled="queryBusy || !store.fresh">{{ queryBusy ? '查询中…' : queryChanged ? '应用筛选' : '查询' }}</button>
-      <button type="button" class="quiet-button reset-submit" :disabled="queryBusy || !store.fresh" @click="resetQuery">重置</button>
+      <el-button native-type="submit" type="primary" class="query-submit" :class="{ changed: queryChanged }" :disabled="queryBusy || !store.fresh">{{ queryBusy ? '查询中…' : queryChanged ? '应用筛选' : '查询' }}</el-button>
+      <el-button class="reset-submit" :disabled="queryBusy || !store.fresh" @click="resetQuery">重置</el-button>
     </form>
 
     <div class="alarm-summary-strip" aria-label="告警汇总">
@@ -196,36 +185,24 @@ function chooseTimeRange(preset: AlarmTimePreset) {
     <p v-if="queryError" class="inline-warning" role="alert">{{ queryError }}</p>
 
     <div class="management-table">
-      <table class="alarm-table">
-        <thead>
-          <tr><th>操作</th><th>告警编号</th><th>关联对象</th><th>告警信息</th><th>级别</th><th>状态</th><th>首次发生</th><th>最近观察</th><th>恢复时间</th></tr>
-        </thead>
-        <tbody>
-          <tr v-for="alarm in visibleAlarms" :key="alarm.alarmId">
-            <td><button class="table-button" @click="selectedAlarm = alarm"><ActionIcon name="preview"/>详情</button></td>
-            <td class="mono cyan alarm-id-cell" :title="alarm.alarmId">{{ alarm.alarmId }}</td>
-            <td class="source-cell"><b>{{ alarm.sourceId }}</b><small>{{ alarmSourceLabel(alarm.sourceType) }}</small></td>
-            <td class="alarm-message-cell"><b :title="alarmTitleText(alarm.title)">{{ alarmTitleText(alarm.title) }}</b><small :title="alarmMessageText(alarm.message)">{{ alarmMessageText(alarm.message) }}</small></td>
-            <td><span class="severity" :class="alarm.severity.toLowerCase()">{{ alarmSeverity(alarm.severity) }}</span></td>
-            <td><span class="alarm-state" :class="statusTone(alarm.status)">{{ alarmStatus(alarm.status) }}</span></td>
-            <td class="time-cell">{{ shortTime(alarm.firstOccurredAt) }}</td>
-            <td class="time-cell">{{ shortTime(alarm.lastObservedAt) }}</td>
-            <td class="time-cell">{{ shortTime(alarm.recoveredAt) }}</td>
-          </tr>
-        </tbody>
-      </table>
-      <p v-if="!visibleAlarms.length" class="empty-panel">{{ queryBusy ? '正在查询告警记录…' : queryError && !queriedAlarms ? '读取失败，请重新查询。' : '当前条件下没有告警，可调整关键词、状态、级别或首次发生时间。' }}</p>
+      <el-table :data="visibleAlarms" row-key="alarmId" stripe height="100%" table-layout="fixed" class="business-table alarm-table">
+        <el-table-column label="操作" width="82" fixed="left"><template #default="{ row }"><el-button link type="primary" @click="selectedAlarm = row"><ActionIcon name="preview"/>详情</el-button></template></el-table-column>
+        <el-table-column label="告警编号" min-width="230" show-overflow-tooltip><template #default="{ row }"><span class="table-mono">{{ row.alarmId }}</span></template></el-table-column>
+        <el-table-column label="关联对象" min-width="150"><template #default="{ row }"><b class="table-strong">{{ row.sourceId }}</b><small class="table-subline">{{ alarmSourceLabel(row.sourceType) }}</small></template></el-table-column>
+        <el-table-column label="告警信息" min-width="360" show-overflow-tooltip><template #default="{ row }"><b class="table-strong">{{ alarmTitleText(row.title) }}</b><small class="table-subline">{{ alarmMessageText(row.message) }}</small></template></el-table-column>
+        <el-table-column label="级别" width="90"><template #default="{ row }"><span class="severity" :class="row.severity.toLowerCase()">{{ alarmSeverity(row.severity) }}</span></template></el-table-column>
+        <el-table-column label="状态" width="105"><template #default="{ row }"><span class="alarm-state" :class="statusTone(row.status)">{{ alarmStatus(row.status) }}</span></template></el-table-column>
+        <el-table-column label="首次发生" width="155"><template #default="{ row }">{{ shortTime(row.firstOccurredAt) }}</template></el-table-column>
+        <el-table-column label="最近观察" width="155"><template #default="{ row }">{{ shortTime(row.lastObservedAt) }}</template></el-table-column>
+        <el-table-column label="恢复时间" width="155"><template #default="{ row }">{{ shortTime(row.recoveredAt) }}</template></el-table-column>
+        <template #empty><div class="table-empty">{{ queryBusy ? '正在查询告警记录…' : queryError && !queriedAlarms ? '读取失败，请重新查询。' : '当前条件下没有告警，可调整关键词、状态、级别或首次发生时间。' }}</div></template>
+      </el-table>
     </div>
 
     <footer class="alarm-result-footer">
       <div class="result-total"><span>告警总数</span><b>{{ totalCount }}</b></div>
       <div class="result-controls">
-        <label class="page-size">每页<select v-model.number="pageSize" aria-label="每页告警条数" :disabled="queryBusy" @change="queryAlarms(1, true)"><option :value="20">20 条</option><option :value="50">50 条</option><option :value="100">100 条</option><option :value="200">200 条</option></select></label>
-        <nav class="pager" aria-label="告警分页">
-          <button :disabled="alarmPage <= 1 || queryBusy" aria-label="上一页" title="上一页" @click="queryAlarms(alarmPage - 1)"><IconChevronLeft :size="15" /></button>
-          <span><b>{{ alarmPage }}</b><i>/</i>{{ pages }}</span>
-          <button :disabled="alarmPage >= pages || queryBusy" aria-label="下一页" title="下一页" @click="queryAlarms(alarmPage + 1)"><IconChevronRight :size="15" /></button>
-        </nav>
+        <el-pagination background :current-page="alarmPage" :page-size="appliedQuery.pageSize" :page-sizes="[20, 50, 100, 200]" :total="totalCount" layout="sizes, prev, pager, next" @current-change="queryAlarms" @size-change="changeAlarmPageSize" />
       </div>
     </footer>
   </section>
@@ -368,8 +345,9 @@ function chooseTimeRange(preset: AlarmTimePreset) {
 .alarm-raw-message summary{cursor:pointer;color:#78cfe1}
 .alarm-raw-message p{margin:7px 0 0;overflow-wrap:anywhere}
 @media(max-width:1450px){
-  .alarm-query-toolbar{grid-template-columns:minmax(200px,1fr) 110px 110px minmax(270px,1.2fr) auto auto}
-  .history-presets{grid-column:1/-1;justify-self:end}
+  .alarm-query-toolbar{grid-template-columns:minmax(180px,1fr) 106px 106px minmax(290px,1fr) 150px 90px}
+  .history-presets{grid-column:5;grid-row:1;justify-self:end}
+  .query-submit{grid-column:6;grid-row:1;width:90px;padding:4px 10px}
   .reset-submit{display:none}
   .alarm-summary-strip{grid-template-columns:repeat(5,minmax(85px,1fr))}
   .alarm-summary-strip p{display:none}
@@ -379,8 +357,8 @@ function chooseTimeRange(preset: AlarmTimePreset) {
   .alarm-page-actions{width:100%;justify-content:flex-end}
   .alarm-query-toolbar{grid-template-columns:1fr 1fr}
   .query-search,.query-date-range,.history-presets{grid-column:1/-1}
-  .history-presets{justify-self:start}
-  .query-submit{grid-column:2}
+  .history-presets{grid-row:auto;justify-self:start}
+  .query-submit{grid-column:2;grid-row:auto;width:auto}
   .alarm-summary-strip{grid-template-columns:repeat(3,1fr)}
   .alarm-summary-strip>div{padding:7px 9px}
 }

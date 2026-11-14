@@ -10,7 +10,7 @@ import { shortTime } from '../dashboard';
 import { newTaskRequestId } from '../task-request';
 import type { CreationOptions, RoutePreview, TaskDetail, TaskPage } from '../types';
 import { demoTaskPage, emptyTaskHistoryQuery, taskHistoryError, taskHistoryUrl, taskTimeRange, type TaskTimePreset } from '../task-history';
-import { IconListDetails, IconArrowLeft, IconPlus, IconSearch, IconChevronLeft, IconChevronRight } from '@tabler/icons-vue';
+import { IconListDetails, IconArrowLeft, IconPlus, IconSearch } from '@tabler/icons-vue';
 import ConsoleDialog from '../ConsoleDialog.vue';
 import TaskExecutionDetails from '../TaskExecutionDetails.vue';
 import BusinessRunPanel from '../components/BusinessRunPanel.vue';
@@ -84,7 +84,6 @@ const templateOutputs = computed(() => options.value?.template?.outputs ?? []);
 const draftQuery = computed(() => ({ search: search.value, filter: taskFilter.value, from: createdFrom.value, to: createdTo.value, pageSize: pageSize.value }));
 const queryChanged = computed(() => JSON.stringify(draftQuery.value) !== JSON.stringify(appliedQuery.value));
 const visibleTasks = computed(() => queriedTasks.value?.items ?? []);
-const pages = computed(() => Math.max(1, Math.ceil((queriedTasks.value?.totalCount ?? 0) / (queriedTasks.value?.pageSize ?? appliedQuery.value.pageSize))));
 const tableCount = computed(() => queriedTasks.value?.totalCount ?? 0);
 const canSubmit = computed(() => store.fresh && store.submissionEnabled && !actionBusy.value && !optionsBusy.value && (requestUncertain.value || (!!options.value?.available && !!selectedStation.value?.available && !!selectedVehicle.value?.available && pickupReachable.value)));
 const taskStatusTone=(stage:string,waiting=false)=>stage==='Faulted'?'fault':['Cancelled','CancellationPending','CancellationReview'].includes(stage)?'cancelled':stage==='Completed'?'completed':waiting||isWaitingStage(stage)?'waiting':'running';
@@ -131,6 +130,7 @@ async function queryTasks(page = 1, apply = false) {
 
 function resetTaskQuery() { if (queryBusy.value) return; search.value = ''; taskFilter.value = 'all'; createdFrom.value = ''; createdTo.value = ''; pageSize.value = 50; void queryTasks(1, true); }
 function chooseTimeRange(preset: TaskTimePreset) { if (queryBusy.value) return; const range = taskTimeRange(preset); createdFrom.value = range.from; createdTo.value = range.to; void queryTasks(1, true); }
+function changeTaskPageSize(size: number) { pageSize.value = size; void queryTasks(1, true); }
 
 async function loadOptions(preserveSelection = false) {
   if (optionsBusy.value || actionBusy.value) return;
@@ -194,42 +194,32 @@ watch(() => route.query.create, create => {
       <div class="task-page-actions"><button class="accent-button" @click="loadOptions()"><IconPlus :size="15" />创建任务</button><button @click="router.push('/engineering-tests')">工程测试</button><button class="quiet-button" @click="router.push('/')"><IconArrowLeft :size="15" />大屏</button></div>
     </header>
     <form class="task-query-toolbar" @submit.prevent="queryTasks(1, true)">
-      <label class="query-search"><IconSearch :size="14" /><input v-model="search" maxlength="128" placeholder="任务、工位或车辆" aria-label="搜索任务" :disabled="queryBusy" /></label>
-      <select v-model="taskFilter" aria-label="筛选任务状态" :disabled="queryBusy"><option value="all">全部状态</option><option value="waiting">待派车</option><option value="running">执行中</option><option value="completed">已完成</option><option value="failed">异常</option><option value="cancelled">已取消</option></select>
-      <div class="query-date-range"><input v-model="createdFrom" type="datetime-local" aria-label="创建时间从" :disabled="queryBusy" /><span>至</span><input v-model="createdTo" type="datetime-local" aria-label="创建时间至" :disabled="queryBusy" /></div>
+      <el-input v-model="search" class="query-search" maxlength="128" clearable placeholder="任务、工位或车辆" aria-label="搜索任务" :disabled="queryBusy" :prefix-icon="IconSearch" />
+      <el-select v-model="taskFilter" aria-label="筛选任务状态" :disabled="queryBusy"><el-option label="全部状态" value="all" /><el-option label="待派车" value="waiting" /><el-option label="执行中" value="running" /><el-option label="已完成" value="completed" /><el-option label="异常" value="failed" /><el-option label="已取消" value="cancelled" /></el-select>
+      <div class="query-date-range"><el-date-picker v-model="createdFrom" type="datetime" value-format="YYYY-MM-DDTHH:mm" format="YYYY-MM-DD HH:mm" placeholder="创建时间从" aria-label="创建时间从" :disabled="queryBusy" /><span>至</span><el-date-picker v-model="createdTo" type="datetime" value-format="YYYY-MM-DDTHH:mm" format="YYYY-MM-DD HH:mm" placeholder="创建时间至" aria-label="创建时间至" :disabled="queryBusy" /></div>
       <div class="history-presets" aria-label="快捷时间范围"><button v-for="item in ([['today', '今天'], ['yesterday', '昨天'], ['week', '近7天'], ['all', '全部时间']] as const)" :key="item[0]" type="button" :disabled="queryBusy || !store.fresh" @click="chooseTimeRange(item[0])">{{ item[1] }}</button></div>
-      <button type="submit" class="accent-button query-submit" :class="{changed:queryChanged}" :disabled="queryBusy || !store.fresh">{{ queryBusy ? '查询中' : queryChanged ? '应用筛选' : '查询' }}</button>
-      <button type="button" class="quiet-button reset-submit" :disabled="queryBusy" @click="resetTaskQuery">重置</button>
+      <el-button native-type="submit" type="primary" class="query-submit" :class="{changed:queryChanged}" :disabled="queryBusy || !store.fresh">{{ queryBusy ? '查询中' : queryChanged ? '应用筛选' : '查询' }}</el-button>
+      <el-button class="reset-submit" :disabled="queryBusy" @click="resetTaskQuery">重置</el-button>
     </form>
     <p v-if="queryError" class="inline-warning">{{ queryError }}</p>
     <div class="management-table">
-      <table>
-        <thead><tr><th>操作</th><th>任务编号</th><th>来源工位</th><th>车辆</th><th>状态</th><th>优先级</th><th>创建时间</th><th>更新时间</th><th>异常说明</th></tr></thead>
-        <tbody>
-          <tr v-for="task in visibleTasks" :key="task.taskId">
-            <td><button class="table-button" @click="openTask(task.taskId)"><ActionIcon name="preview"/>详情</button></td>
-            <td class="task-id-cell" :title="task.taskId"><span>{{ task.taskId }}</span></td>
-            <td>{{ task.stationId }}</td>
-            <td>{{ task.vehicleId ?? '待分配' }}</td>
-            <td><span class="state-label" :class="taskStatusTone(task.stage,!!taskWait(store.snapshot,task,store.now))">{{ taskWait(store.snapshot,task,store.now)?.label ?? label(task.stage) }}</span><small v-if="taskWait(store.snapshot,task,store.now)" style="display:block;max-width:300px;white-space:normal">业务阶段：{{label(task.stage)}} · {{taskWait(store.snapshot,task,store.now)?.reason}}</small></td>
-            <td>{{ task.priority }}</td>
-            <td>{{ shortTime(task.createdAt) }}</td>
-            <td>{{ shortTime(task.updatedAt) }}</td>
-            <td class="message-cell" :title="task.errorMessage ?? ''"><span>{{ task.errorMessage ? industrialText(task.errorMessage) : '—' }}</span></td>
-          </tr>
-        </tbody>
-      </table>
-      <p v-if="!visibleTasks.length" class="empty-panel">{{ queryBusy ? '正在查询任务记录…' : queryError && !queriedTasks ? '读取失败，请重新查询。' : '当前条件下没有任务，可调整创建时间或状态。' }}</p>
+      <el-table :data="visibleTasks" row-key="taskId" stripe height="100%" table-layout="fixed" class="business-table task-table">
+        <el-table-column label="操作" width="82" fixed="left"><template #default="{ row }"><el-button link type="primary" @click="openTask(row.taskId)"><ActionIcon name="preview"/>详情</el-button></template></el-table-column>
+        <el-table-column label="任务编号" prop="taskId" min-width="360" show-overflow-tooltip><template #default="{ row }"><span class="table-mono">{{ row.taskId }}</span></template></el-table-column>
+        <el-table-column label="来源工位" prop="stationId" width="120" />
+        <el-table-column label="车辆" width="105"><template #default="{ row }">{{ row.vehicleId ?? '待分配' }}</template></el-table-column>
+        <el-table-column label="状态" min-width="180"><template #default="{ row }"><span class="state-label" :class="taskStatusTone(row.stage,!!taskWait(store.snapshot,row,store.now))">{{ taskWait(store.snapshot,row,store.now)?.label ?? label(row.stage) }}</span><small v-if="taskWait(store.snapshot,row,store.now)" class="table-subline">业务阶段：{{label(row.stage)}} · {{taskWait(store.snapshot,row,store.now)?.reason}}</small></template></el-table-column>
+        <el-table-column label="优先级" prop="priority" width="86" align="center" />
+        <el-table-column label="创建时间" width="155"><template #default="{ row }">{{ shortTime(row.createdAt) }}</template></el-table-column>
+        <el-table-column label="更新时间" width="155"><template #default="{ row }">{{ shortTime(row.updatedAt) }}</template></el-table-column>
+        <el-table-column label="异常说明" min-width="260" show-overflow-tooltip><template #default="{ row }"><span class="table-secondary">{{ row.errorMessage ? industrialText(row.errorMessage) : '—' }}</span></template></el-table-column>
+        <template #empty><div class="table-empty">{{ queryBusy ? '正在查询任务记录…' : queryError && !queriedTasks ? '读取失败，请重新查询。' : '当前条件下没有任务，可调整创建时间或状态。' }}</div></template>
+      </el-table>
     </div>
     <footer class="task-result-footer">
       <div class="result-total"><span>任务总数</span><b>{{ tableCount }}</b></div>
       <div class="result-controls">
-        <label class="page-size">每页<select v-model.number="pageSize" aria-label="每页任务条数" :disabled="queryBusy" @change="queryTasks(1, true)"><option :value="20">20 条</option><option :value="50">50 条</option><option :value="100">100 条</option><option :value="200">200 条</option></select></label>
-        <nav class="pager" aria-label="任务分页">
-          <button :disabled="taskPage <= 1 || queryBusy" aria-label="上一页" title="上一页" @click="queryTasks(taskPage - 1)"><IconChevronLeft :size="15" /></button>
-          <span><b>{{ taskPage }}</b><i>/</i>{{ pages }}</span>
-          <button :disabled="taskPage >= pages || queryBusy" aria-label="下一页" title="下一页" @click="queryTasks(taskPage + 1)"><IconChevronRight :size="15" /></button>
-        </nav>
+        <el-pagination background :current-page="taskPage" :page-size="appliedQuery.pageSize" :page-sizes="[20, 50, 100, 200]" :total="tableCount" layout="sizes, prev, pager, next" @current-change="queryTasks" @size-change="changeTaskPageSize" />
       </div>
     </footer>
   </section>

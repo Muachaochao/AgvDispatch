@@ -73,41 +73,25 @@ const filteredVehicles = computed(() => store.vehicles.filter(v =>
     <p v-if="connectionMessage" role="status">{{ connectionMessage }}</p>
     <p v-if="connectionError" role="alert">{{ connectionError }}</p>
     <div class="query-bar">
-      <label>车辆 / 站点<input v-model="vehicleSearch" placeholder="编号、名称、当前位置" aria-label="搜索车辆" /></label>
-      <label>车辆状态<select v-model="vehicleFilter" aria-label="筛选车辆状态">
-        <option value="all">全部</option>
-        <option v-for="stat in store.vehicleStats" :key="stat.key" :value="stat.key">{{ stat.label }}</option>
-      </select></label>
-      <button @click="vehicleSearch = ''; vehicleFilter = 'all'"><ActionIcon name="refresh"/>重置</button>
+      <label><span>车辆 / 站点</span><el-input v-model="vehicleSearch" clearable placeholder="编号、名称、当前位置" aria-label="搜索车辆" /></label>
+      <label><span>车辆状态</span><el-select v-model="vehicleFilter" aria-label="筛选车辆状态"><el-option label="全部" value="all" /><el-option v-for="stat in store.vehicleStats" :key="stat.key" :label="stat.label" :value="stat.key" /></el-select></label>
+      <el-button @click="vehicleSearch = ''; vehicleFilter = 'all'"><ActionIcon name="refresh"/>重置</el-button>
     </div>
     <div class="management-table">
-      <table>
-        <thead><tr><th>车辆编号</th><th>名称</th><th>状态</th><th>障碍状态 / 已观察时长</th><th>当前站点</th><th>原始坐标 X / Y</th><th>电量</th><th>定位置信度</th><th>数据质量</th><th>最近采集</th><th>操作</th></tr></thead>
-        <tbody>
-          <tr v-for="v in filteredVehicles" :key="v.vehicleId">
-            <td class="mono cyan">{{ v.vehicleId }}</td>
-            <td>{{ v.displayName }}</td>
-            <td><span class="state-label" :class="vehicleCategory(v, store.allTasks, store.fresh, store.now)">{{ categoryLabels[vehicleCategory(v, store.allTasks, store.fresh, store.now)] }}</span></td>
-            <td><button class="table-button obstacle-summary" @click="obstacleVehicleId = v.vehicleId" :aria-label="v.vehicleId + ' 障碍状态及处置依据'">
-              <span>{{ vehicleObstacle(v, store.fresh, store.now).label }}</span><small>{{ vehicleObstacle(v, store.fresh, store.now).duration }} · 查看依据</small>
-            </button></td>
-            <td>{{ v.currentStation ?? '—' }}</td>
-            <td class="mono">{{ v.x?.toFixed(2) ?? '—' }} / {{ v.y?.toFixed(2) ?? '—' }}</td>
-            <td class="green-text">{{ v.batteryPercent ?? '—' }}%</td>
-            <td>{{ v.localizationConfidence ?? '—' }}</td>
-            <td>{{ label(v.quality) }}</td>
-            <td>{{ shortTime(v.lastSuccessfulPollAt) }}</td>
-            <td>
-              <button class="table-button" @click="router.push({ name: 'overview' })"><ActionIcon name="locate"/>地图定位</button>
-              <button class="table-button" :disabled="!connections?.canManage || connections.restartRequired || !!pending || !activeConnection(v.vehicleId)"
-                @click="toggleConnection(v.vehicleId)">
-                {{ pending === v.vehicleId ? '处理中…' : activeConnection(v.vehicleId)?.enabled ? '断开通信' : '连接通信' }}
-              </button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-      <p v-if="!filteredVehicles.length" class="empty-panel">没有匹配车辆</p>
+      <el-table :data="filteredVehicles" row-key="vehicleId" stripe height="100%" table-layout="fixed" class="business-table vehicle-table">
+        <el-table-column label="车辆编号" width="110" fixed="left"><template #default="{ row }"><span class="table-mono">{{ row.vehicleId }}</span></template></el-table-column>
+        <el-table-column label="名称" prop="displayName" min-width="160" show-overflow-tooltip />
+        <el-table-column label="状态" width="125"><template #default="{ row }"><span class="state-label" :class="vehicleCategory(row, store.allTasks, store.fresh, store.now)">{{ categoryLabels[vehicleCategory(row, store.allTasks, store.fresh, store.now)] }}</span></template></el-table-column>
+        <el-table-column label="障碍状态 / 已观察时长" min-width="190"><template #default="{ row }"><button class="obstacle-summary" @click="obstacleVehicleId = row.vehicleId" :aria-label="row.vehicleId + ' 障碍状态及处置依据'"><span>{{ vehicleObstacle(row, store.fresh, store.now).label }}</span><small>{{ vehicleObstacle(row, store.fresh, store.now).duration }} · 查看依据</small></button></template></el-table-column>
+        <el-table-column label="当前站点" width="115"><template #default="{ row }">{{ row.currentStation ?? '—' }}</template></el-table-column>
+        <el-table-column label="原始坐标 X / Y" width="150"><template #default="{ row }"><span class="table-mono">{{ row.x?.toFixed(2) ?? '—' }} / {{ row.y?.toFixed(2) ?? '—' }}</span></template></el-table-column>
+        <el-table-column label="电量" width="90"><template #default="{ row }"><span class="battery-value">{{ row.batteryPercent ?? '—' }}%</span></template></el-table-column>
+        <el-table-column label="定位置信度" width="110"><template #default="{ row }">{{ row.localizationConfidence ?? '—' }}</template></el-table-column>
+        <el-table-column label="数据质量" width="105"><template #default="{ row }">{{ label(row.quality) }}</template></el-table-column>
+        <el-table-column label="最近采集" width="155"><template #default="{ row }">{{ shortTime(row.lastSuccessfulPollAt) }}</template></el-table-column>
+        <el-table-column label="操作" width="210" fixed="right"><template #default="{ row }"><div class="table-actions"><el-button link type="primary" @click="router.push({ name: 'overview' })"><ActionIcon name="locate"/>地图定位</el-button><el-button link :type="activeConnection(row.vehicleId)?.enabled ? 'danger' : 'primary'" :disabled="!connections?.canManage || connections.restartRequired || !!pending || !activeConnection(row.vehicleId)" @click="toggleConnection(row.vehicleId)">{{ pending === row.vehicleId ? '处理中…' : activeConnection(row.vehicleId)?.enabled ? '断开通信' : '连接通信' }}</el-button></div></template></el-table-column>
+        <template #empty><div class="table-empty">没有匹配车辆</div></template>
+      </el-table>
     </div>
     <ConsoleDialog v-if="obstacleVehicle" :title="obstacleVehicle.vehicleId + ' · 障碍状态与处置'" @close="obstacleVehicleId = ''">
       <VehicleObstacleDetails :vehicle="obstacleVehicle" :current="store.fresh" :now="store.now" />
@@ -115,4 +99,4 @@ const filteredVehicles = computed(() => store.vehicles.filter(v =>
   </section>
 </template>
 
-<style scoped>.obstacle-summary{display:flex;flex-direction:column;align-items:flex-start;gap:5px;line-height:1.5;white-space:normal;text-align:left}.obstacle-summary small{color:#8baacb;font-size:10px}</style>
+<style scoped>.obstacle-summary{display:flex;flex-direction:column;align-items:flex-start;gap:5px;line-height:1.5;white-space:normal;text-align:left;border:0;background:transparent;padding:0;min-height:0}.obstacle-summary small{color:var(--ui-text-3);font-size:10px}.battery-value{color:var(--ui-success);font-family:Consolas,monospace}.table-actions{display:flex;align-items:center;gap:2px;flex-wrap:wrap}</style>

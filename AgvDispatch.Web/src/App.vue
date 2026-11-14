@@ -1,13 +1,15 @@
 ﻿<script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
+import zhCn from 'element-plus/es/locale/lang/zh-cn';
+import { applyUiTheme, preferredTheme, type UiTheme } from './ui-theme';
 import { useDispatchStore } from './stores/dispatch';
 import { useChargingStore } from './stores/charging';
 import { shortTime } from './dashboard';
 import { chargerMonitoringState, equipmentTone, stationSignalSummary, executionModeState } from './equipment-status';
 import {
   IconRobot, IconRoute, IconBell, IconLayoutDashboard, IconListDetails, IconMap,
-  IconPlus, IconPlugConnected, IconCircleCheck, IconCpu, IconNetwork, IconChevronDown
+  IconPlus, IconPlugConnected, IconCircleCheck, IconCpu, IconNetwork, IconChevronDown, IconSun, IconMoon
 } from '@tabler/icons-vue';
 import ConsoleDialog from './ConsoleDialog.vue';
 import AppToast from './components/AppToast.vue';
@@ -22,6 +24,7 @@ const connectionOpen = ref(false);
 const stationSignalsOpen = ref(false);
 const executionModeOpen = ref(false);
 const selectedStationId = ref('');
+const theme = ref<UiTheme>(preferredTheme());
 const plcDevices = computed(() => store.equipment.filter(device => device.category === 'PLC' || device.quality === '连接诊断'));
 const stationDevices = computed(() => store.equipment.filter(device => !plcDevices.value.some(plc => plc.id === device.id)));
 const stationSignals = computed(() => stationSignalSummary(stationDevices.value, store.fresh));
@@ -71,6 +74,10 @@ function fieldValue(value: unknown) {
   if (value === null || value === undefined || value === '') return '未知';
   return String(value);
 }
+function toggleTheme() {
+  theme.value = theme.value === 'dark' ? 'light' : 'dark';
+}
+watch(theme, applyUiTheme, { immediate: true });
 
 onMounted(() => {
   store.startNowTimer();
@@ -85,6 +92,7 @@ onUnmounted(() => {
 </script>
 
 <template>
+  <el-config-provider :locale="zhCn">
   <div class="console-shell">
     <AppLoading :active="!store.snapshot && !store.error" message="正在连接C#调度主服务…" />
 
@@ -106,6 +114,9 @@ onUnmounted(() => {
         </details>
       </nav>
       <div class="header-actions">
+        <button class="theme-toggle" :title="theme === 'dark' ? '切换到浅色主题' : '切换到深色主题'" :aria-label="theme === 'dark' ? '切换到浅色主题' : '切换到深色主题'" @click="toggleTheme">
+          <IconSun v-if="theme === 'dark'" :size="16" /><IconMoon v-else :size="16" /><span>{{ theme === 'dark' ? '浅色' : '深色' }}</span>
+        </button>
         <button v-if="!route.path.startsWith('/tasks')" class="accent-button" @click="router.push({ name: 'tasks', query: { create: '1' } })"><IconPlus :size="16" />创建任务</button>
       </div>
     </header>
@@ -184,6 +195,7 @@ onUnmounted(() => {
     </ConsoleDialog>
     <AppToast />
   </div>
+  </el-config-provider>
 </template>
 
 <style scoped>
