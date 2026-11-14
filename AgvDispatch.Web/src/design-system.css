@@ -1582,7 +1582,7 @@ html[data-theme="light"] .engineering-message {
 }
 
 html .overview-page .right-column {
-  grid-template-rows: minmax(250px, .85fr) minmax(210px, 1.15fr) minmax(188px, .8fr);
+  grid-template-rows: minmax(300px, .9fr) minmax(210px, 1.15fr) minmax(260px, .95fr);
 }
 
 @media (min-width: 1280px) and (max-width: 1560px) {
@@ -1634,12 +1634,12 @@ html .overview-page .right-column {
   }
 
   html #app .overview-page .control-grid {
-    height: max(620px, calc(100dvh - 150px));
-    min-height: 620px;
+    height: max(840px, calc(100dvh - 80px));
+    min-height: 840px;
   }
 
   html #app .overview-page .right-column {
-    grid-template-rows: minmax(250px, .85fr) minmax(210px, 1.15fr) minmax(188px, .8fr);
+    grid-template-rows: minmax(300px, .9fr) minmax(210px, 1.15fr) minmax(260px, .95fr);
   }
 
   html .overview-page .ring-chart {
