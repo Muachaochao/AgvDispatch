@@ -56,6 +56,20 @@ async function readAreas(){
 watch(()=>[store.demoMode,store.snapshot?.source,store.snapshot?.map?.id,store.snapshot?.map?.version,store.snapshot?.map?.definitionHash].join('|'),()=>{++areaEpoch;areaContext.value=null;chosenArea.value=null;areaMessage.value='';drawAreas();void readAreas();});
 
 const liveTasks=computed(()=>store.allTasks.filter(task=>!['Completed','Cancelled'].includes(task.stage)).map(task=>({task,wait:taskWait(store.snapshot,task,store.now)})));
+const criticalOpenAlarms=computed(()=>store.openAlarms.filter(alarm=>['Critical','Error'].includes(alarm.severity)).length);
+const offlineVehicles=computed(()=>store.vehicleStats.find(stat=>stat.key==='offline')?.count??0);
+const systemHealthTone=computed(()=>{
+  if(!store.fresh)return 'unknown';
+  if(criticalOpenAlarms.value>0||(store.vehicles.length>0&&offlineVehicles.value>=store.vehicles.length))return 'danger';
+  if(store.openAlarms.length>0||offlineVehicles.value>0)return 'warning';
+  return 'healthy';
+});
+const systemHealthTitle=computed(()=>{
+  if(!store.fresh)return '等待后台有效观察';
+  if(systemHealthTone.value==='danger')return '存在需要优先处理的异常';
+  if(systemHealthTone.value==='warning')return '系统运行中，存在待核对状态';
+  return '关键业务状态稳定';
+});
 const chosenVehicle = computed(() => store.vehicles.find(v => v.vehicleId === selectedVehicle.value));
 const chosenObstacle = computed(() => chosenVehicle.value ? vehicleObstacle(chosenVehicle.value, store.fresh, store.now) : null);
 const selectedRoad = computed(() => store.snapshot?.map?.edges.find(edge => edge.id === selectedEdge.value));
@@ -104,6 +118,21 @@ onUnmounted(() => { ++detailEpoch;++areaEpoch;clearInterval(areaTimer);scene?.di
 <template>
 <div class="overview-page">
   <TrafficRehearsal v-if="store.demoMode"/>
+  <section v-if="!store.demoMode" class="system-health" :class="systemHealthTone" aria-label="系统健康摘要">
+    <div class="system-health-copy">
+      <div><small>运行态势</small><strong>{{ systemHealthTitle }}</strong></div>
+    </div>
+    <button class="health-metric" :class="criticalOpenAlarms ? 'danger' : 'success'" @click="router.push('/alarms')">
+      <span>严重 / 错误</span><b>{{ criticalOpenAlarms }}</b>
+    </button>
+    <button class="health-metric" :class="offlineVehicles ? 'warning' : 'success'" @click="router.push('/vehicles')">
+      <span>离线车辆</span><b>{{ offlineVehicles }}</b>
+    </button>
+    <button class="health-metric" :class="liveTasks.length ? 'warning' : 'success'" @click="router.push('/tasks')">
+      <span>当前任务</span><b>{{ liveTasks.length }}</b>
+    </button>
+    <p class="system-health-observation">{{ store.fresh ? `后台观察 ${shortTime(store.snapshot?.receivedAt)}` : (store.error || '正在连接后台') }}</p>
+  </section>
   <div class="control-grid">
     <aside class="left-column">
       <section class="control-panel statistics-panel">
@@ -235,7 +264,7 @@ onUnmounted(() => { ++detailEpoch;++areaEpoch;clearInterval(areaTimer);scene?.di
 </div>
 </template>
 
-<style scoped>.overview-page{flex:1;min-height:0;overflow:auto;padding-bottom:12px}.overview-page .control-grid{height:max(780px,calc(100dvh - 205px));flex:none;min-height:780px}.live-tasks,.shared-panel{overflow:auto}.live-tasks{min-height:290px}.right-column{min-height:760px}.distribution-panel>.panel-footnote{flex-shrink:0}.live-tasks>header,.live-tasks>.current-task-counts,.live-task{flex-shrink:0}.live-task>div{flex-wrap:wrap;gap:6px}.live-task b{overflow-wrap:anywhere;min-width:0;white-space:normal;flex:1 1 120px}.live-task small{white-space:normal;overflow-wrap:anywhere;display:block;-webkit-line-clamp:unset;overflow:visible}.shared-resource details{grid-column:1/-1;min-width:0;font-size:11px;overflow-wrap:anywhere}.shared-resource summary{cursor:pointer}.traffic-focus{padding:12px 16px;border-top:1px solid #2c4563;font-size:12px;line-height:1.8}.traffic-focus select{max-width:100%}.traffic-focus button{margin:4px}.resource-location{padding:0 16px;font-size:12px;line-height:1.8;color:#c5dbec}.traffic-focus p{overflow-wrap:anywhere;margin:5px 0}@media(min-width:901px){.overview-page .control-grid{height:max(820px,calc(100dvh - 205px));min-height:820px}}</style>
+<style scoped>.overview-page{flex:1;min-height:0;overflow:auto;padding-bottom:12px;display:flex;flex-direction:column;gap:10px}.overview-page .control-grid{height:max(720px,calc(100dvh - 258px));flex:none;min-height:720px}.live-tasks,.shared-panel{overflow:auto}.live-tasks{min-height:290px}.right-column{min-height:760px}.distribution-panel>.panel-footnote{flex-shrink:0}.live-tasks>header,.live-tasks>.current-task-counts,.live-task{flex-shrink:0}.live-task>div{flex-wrap:wrap;gap:6px}.live-task b{overflow-wrap:anywhere;min-width:0;white-space:normal;flex:1 1 120px}.live-task small{white-space:normal;overflow-wrap:anywhere;display:block;-webkit-line-clamp:unset;overflow:visible}.shared-resource details{grid-column:1/-1;min-width:0;font-size:11px;overflow-wrap:anywhere}.shared-resource summary{cursor:pointer}.traffic-focus{padding:12px 16px;border-top:1px solid #2c4563;font-size:12px;line-height:1.8}.traffic-focus select{max-width:100%}.traffic-focus button{margin:4px}.resource-location{padding:0 16px;font-size:12px;line-height:1.8;color:#c5dbec}.traffic-focus p{overflow-wrap:anywhere;margin:5px 0}@media(min-width:901px){.overview-page .control-grid{height:max(760px,calc(100dvh - 258px));min-height:760px}}@media(max-width:900px){.overview-page .control-grid{height:auto;min-height:0}}</style>
 <style scoped>
 .obstacle-link{align-self:flex-start;margin:0 14px 12px}
 .right-column{grid-template-rows:326px minmax(180px,1fr) auto}

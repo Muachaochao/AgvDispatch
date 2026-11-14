@@ -190,7 +190,7 @@ watch(() => route.query.create, create => {
 <template>
   <section class="management-page task-history-page">
     <header class="task-page-header">
-      <div class="task-page-title"><IconListDetails :size="22" /><h2>业务任务</h2></div>
+      <div class="task-page-title"><IconListDetails :size="22" /><div><h2>业务任务</h2><small>查询、核对并查看九步执行证据</small></div></div>
       <div class="task-page-actions"><button class="accent-button" @click="loadOptions()"><IconPlus :size="15" />创建任务</button><button @click="router.push('/engineering-tests')">工程测试</button><button class="quiet-button" @click="router.push('/')"><IconArrowLeft :size="15" />大屏</button></div>
     </header>
     <form class="task-query-toolbar" @submit.prevent="queryTasks(1, true)">
@@ -208,14 +208,14 @@ watch(() => route.query.create, create => {
         <tbody>
           <tr v-for="task in visibleTasks" :key="task.taskId">
             <td><button class="table-button" @click="openTask(task.taskId)"><ActionIcon name="preview"/>详情</button></td>
-            <td class="cyan mono" :title="task.taskId">{{ task.taskId }}</td>
+            <td class="task-id-cell" :title="task.taskId"><span>{{ task.taskId }}</span></td>
             <td>{{ task.stationId }}</td>
             <td>{{ task.vehicleId ?? '待分配' }}</td>
             <td><span class="state-label" :class="taskStatusTone(task.stage,!!taskWait(store.snapshot,task,store.now))">{{ taskWait(store.snapshot,task,store.now)?.label ?? label(task.stage) }}</span><small v-if="taskWait(store.snapshot,task,store.now)" style="display:block;max-width:300px;white-space:normal">业务阶段：{{label(task.stage)}} · {{taskWait(store.snapshot,task,store.now)?.reason}}</small></td>
             <td>{{ task.priority }}</td>
             <td>{{ shortTime(task.createdAt) }}</td>
             <td>{{ shortTime(task.updatedAt) }}</td>
-            <td class="message-cell" :title="task.errorMessage ?? ''">{{ task.errorMessage ? industrialText(task.errorMessage) : '—' }}</td>
+            <td class="message-cell" :title="task.errorMessage ?? ''"><span>{{ task.errorMessage ? industrialText(task.errorMessage) : '—' }}</span></td>
           </tr>
         </tbody>
       </table>

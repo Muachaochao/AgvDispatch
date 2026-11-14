@@ -106,7 +106,7 @@ onUnmounted(() => {
         </details>
       </nav>
       <div class="header-actions">
-        <button class="accent-button" @click="router.push({ name: 'tasks', query: { create: '1' } })"><IconPlus :size="16" />创建任务</button>
+        <button v-if="!route.path.startsWith('/tasks')" class="accent-button" @click="router.push({ name: 'tasks', query: { create: '1' } })"><IconPlus :size="16" />创建任务</button>
       </div>
     </header>
 
