@@ -20,7 +20,15 @@ const router = createRouter({
     { path: '/tasks/:id', name: 'task-detail', component: () => import('./pages/TaskListPage.vue') },
     { path: '/alarms', name: 'alarms', component: () => import('./pages/AlarmPage.vue') },
     { path: '/maps', name: 'maps', component: () => import('./pages/MapCatalogPage.vue') },
-    { path: '/planning', name: 'planning', component: () => import('./PlanningWorkbench.vue'), props: true },
+    {
+      path: '/planning',
+      name: 'planning',
+      component: () => import('./PlanningWorkbench.vue'),
+      props: route => ({
+        source: route.query.source === 'demo' ? 'demo' : undefined,
+        initialTab: typeof route.query.tab === 'string' ? route.query.tab : undefined
+      })
+    },
     { path: '/engineering-settings', name: 'engineering-settings', redirect: to => ({ path: '/engineering', query: { ...to.query, tab: 'settings' } }) },
     { path: '/commissioning', name: 'commissioning', redirect: to => ({ path: '/engineering', query: { ...to.query, tab: 'commissioning' } }) },
   ]

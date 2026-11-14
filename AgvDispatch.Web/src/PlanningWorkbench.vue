@@ -2,9 +2,9 @@
 import ActionIcon from './components/ActionIcon.vue';
 import DisplayAreasEditor from './components/DisplayAreasEditor.vue';
 import AreaAnnotations from './components/AreaAnnotations.vue';
-import { computed, onMounted, onUnmounted, ref, watch, toRef } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
-import { IconMap, IconDeviceFloppy, IconDownload, IconUpload, IconPlus, IconTrash, IconArrowUp, IconArrowDown, IconCopy, IconRefresh, IconZoomIn, IconZoomOut, IconPlugConnected, IconCloudUpload, IconArrowLeft, IconEye } from '@tabler/icons-vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, watch, toRef } from 'vue';
+import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router';
+import { IconMap, IconDeviceFloppy, IconDownload, IconUpload, IconPlus, IconTrash, IconArrowUp, IconArrowDown, IconCopy, IconRefresh, IconZoomIn, IconZoomOut, IconPlugConnected, IconCloudUpload, IconArrowLeft, IconEye, IconSearch, IconChevronDown } from '@tabler/icons-vue';
 import ConsoleDialog from './ConsoleDialog.vue';
 import ServerProjects from './ServerProjects.vue';
 import VendorPathPanel from './VendorPathPanel.vue';
@@ -23,7 +23,7 @@ const store = useDispatchStore();
 const toastStore = useToastStore();
 const currentRoute = useRoute();
 const mapRouter = useRouter();
-const effectiveSource = computed((): 'demo' | 'backend' => props.source ?? (store.fresh && store.snapshot?.source==='backend' && !store.demoMode ? 'backend' : 'demo'));
+const effectiveSource = computed((): 'demo' | 'backend' => props.source ?? (store.snapshot?.source==='backend' && !store.demoMode && !store.engineeringSimulationOnly ? 'backend' : 'demo'));
 const effectiveSnapshot = computed((): Snapshot | null => props.snapshot ?? store.snapshot);
 const uuid=()=>crypto.randomUUID();
 const vehicleMessage=ref('');
@@ -36,6 +36,8 @@ watch(tab,value=>{if(value==='areas')areasOpened.value=true;});
 watch(queryTab, v => { if (v) tab.value = v; });
 watch(()=>props.initialTab,v=>{if(v)tab.value=v;});
 const plan=ref<Plan>(emptyPlan()),saved=ref<Plan[]>([]),dirty=ref(false),message=ref(''),busy=ref(false);
+const initializing=ref(false),mapPickerOpen=ref(false),mapPickerSearch=ref(''),objectSearch=ref('');
+const treeRef=ref<any>(null);
 const selected=ref(''),kind=ref<'node'|'edge'|'resource'|'scene'>('node');
 const nodeForm=ref<Node>(),edgeForm=ref<Edge>(),resourceForm=ref<Resource>(),sceneForm=ref<SceneItem>();
 const ed=useMapEditor(plan,tab,message,()=>{dirty.value=true;},inspectObject,saveLocal);
@@ -68,6 +70,29 @@ const definition=computed(()=>plan.value.definition),issues=computed(()=>validat
 const route=computed(()=>routePlan(definition.value,plan.value.waypoints));
 const viewBox=computed(()=>ed.viewBox),scale=computed(()=>ed.scale),nodeRadius=computed(()=>ed.scale*.55);
 const counts=computed(()=>`${definition.value.nodes.length} 航点 · ${definition.value.edges.length} 道路 · ${definition.value.resources.length} 共享区域 · ${definition.value.areaAnnotations?.length??0} 厂家区域标注`);
+type EditorTreeRow={key:string;label:string;kind?:'node'|'edge'|'resource'|'scene';objectId?:string;children?:EditorTreeRow[]};
+const treeData=computed<EditorTreeRow[]>(()=>{
+  if(tab.value==='scene')return [{key:'scene:items',label:`场景对象 ${plan.value.scene.length}`,children:plan.value.scene.map(item=>({key:`scene:${item.id}`,label:item.name,kind:'scene',objectId:item.id}))}];
+  return [
+    {key:'group:nodes',label:`航点 ${definition.value.nodes.length}`,children:definition.value.nodes.map(node=>({key:`node:${node.id}`,label:node.agvSiteId?`${node.id} · ${node.agvSiteId}`:node.id,kind:'node',objectId:node.id}))},
+    {key:'group:edges',label:`道路 ${definition.value.edges.length}`,children:definition.value.edges.map(edge=>({key:`edge:${edge.id}`,label:`${edge.id} · ${edge.from}${edge.bidirectional?'↔':'→'}${edge.to}`,kind:'edge',objectId:edge.id}))},
+    {key:'group:resources',label:`共享区域 ${definition.value.resources.length}`,children:definition.value.resources.map(resource=>({key:`resource:${resource.id}`,label:`${resource.id} · 容量${resource.capacity}`,kind:'resource',objectId:resource.id}))}
+  ];
+});
+const treeCurrentKey=computed(()=>selected.value?`${kind.value}:${selected.value}`:'');
+function filterTreeNode(value:string,data:EditorTreeRow){return !value||`${data.label} ${data.objectId??''}`.toLowerCase().includes(value.toLowerCase());}
+function handleTreeNode(data:EditorTreeRow){if(data.kind&&data.objectId)select(data.kind,data.objectId);}
+watch(objectSearch,value=>{void nextTick(()=>treeRef.value?.filter(value));});
+const filteredMaps=computed(()=>{
+ const keyword=mapPickerSearch.value.trim().toLowerCase();
+ return [...maps.value]
+   .filter(map=>!keyword||`${map.name} ${map.mapId} ${map.coordinateSystem}`.toLowerCase().includes(keyword))
+   .sort((left,right)=>Number(right.isActive)-Number(left.isActive)||right.updatedAt.localeCompare(left.updatedAt));
+});
+function confirmDiscardDraft(action:string){return !dirty.value||window.confirm(`当前地图编辑稿有未保存修改。确定${action}并放弃这些修改？`);}
+async function openMapPicker(){mapPickerSearch.value='';mapPickerOpen.value=true;if(!maps.value.length&&effectiveSource.value==='backend')await listMaps();}
+async function chooseMapFromPicker(id:string){if(!id||!confirmDiscardDraft('切换地图'))return;mapPickerOpen.value=false;mapId.value=id;await loadWorkspace(true);}
+function startBlankMapFromPicker(){if(!confirmDiscardDraft('新建空白地图'))return;mapPickerOpen.value=false;pending.value=emptyPlan();message.value='已准备空白地图；在加载预览中确认后才会替换当前编辑稿。';}
 const showVendorAreas=ref(true);
 const runtimeOpen=ref(false),runtimeCoordinates=ref(false),runtimeReplace=ref(false),runtimeRoles=ref<Record<string,string>>({});
 const runtimeSource=computed(()=>definition.value.robokitSource?.sha256??'');
@@ -83,9 +108,44 @@ async function prepareRuntime(){if(!runtimeReady.value)return;const source=runti
  message.value='运行图已准备：车端原始坐标、站点用途和道路已应用。请先关联已有后台地图或新建后台地图，再保存草稿并去地图管理发布。尚未激活，也未给机器人发送动作。';
 });}
 const visibleVendorAreas=computed(()=>showVendorAreas.value?(definition.value.areaAnnotations??[]).filter(a=>geometry.visible(definition.value,a)):[]);
+const vendorAreaNames=computed(()=>(definition.value.areaAnnotations??[]).map(area=>area.text));
+const vendorAreaPreview=computed(()=>{const names=vendorAreaNames.value;return `${names.slice(0,5).join('、')}${names.length>5?` 等 ${names.length} 项`:''}`;});
 const vehicleErrors=computed(()=>validateVehicles(plan.value.vehicles));
-let epoch=0;
-watch(effectiveSource,()=>{++epoch;workspace.value=null;association.value=null;maps.value=[];versions.value=[];vehicleRevision.value='';canManage.value=false;message.value='数据源已切换。编辑稿保留，后台关联已解除，请重新关联目标以保留编辑内容。';});
+let epoch=0,initialLoadRevision=0;
+async function loadInitialBackendMap(){
+ if(effectiveSource.value!=='backend')return;
+ const revision=++initialLoadRevision;
+ initializing.value=true;
+ try{
+  await listMaps();
+  if(revision!==initialLoadRevision||effectiveSource.value!=='backend')return;
+  const target=queryMapId.value||effectiveSnapshot.value?.map?.id||maps.value.find(map=>map.isActive)?.mapId||maps.value[0]?.mapId||'';
+  if(target){
+   mapId.value=target;
+   message.value=`正在读取后台地图 ${target} 的草稿…`;
+   await loadWorkspace(true);
+  }else{
+   mapPickerOpen.value=true;
+   message.value='后台没有可编辑地图，请选择地图或新建地图。';
+  }
+ }catch(ex){
+  if(revision===initialLoadRevision){message.value=`自动加载地图草稿失败：${String(ex)}`;mapPickerOpen.value=true;}
+ }finally{
+  if(revision===initialLoadRevision)initializing.value=false;
+ }
+}
+watch(effectiveSource,source=>{
+ ++epoch;
+ ++initialLoadRevision;
+ workspace.value=null;
+ association.value=null;
+ maps.value=[];
+ versions.value=[];
+ vehicleRevision.value='';
+ canManage.value=false;
+ if(source==='backend'){void loadInitialBackendMap();}
+ else message.value='数据源已切换。编辑稿保留，后台关联已解除，请重新关联目标以保留编辑内容。';
+});
 function edit(fn:()=>void,label='应用属性 / 编辑方案'){return ed.edit(fn,label);}
 function history(redo=false){ed.history(redo);}
 function resetSelection(){ed.clear();}
@@ -122,13 +182,13 @@ async function importFile(e:Event){const input=e.target as HTMLInputElement,file
  await run(async mine=>{if(file.name.toLowerCase().endsWith('.smap')){if(effectiveSource.value!=='backend')throw new Error('SMAP需要连接后台使用现有厂家解析器；示例模式可导入本工具方案或规范化地图JSON。');const response=await fetch('/api/maps/import?format=smap',{method:'POST',body:file,headers:{'Content-Type':'application/octet-stream'},signal:AbortSignal.timeout(35000)});const result=await response.json();if(!response.ok||!result.accepted||!result.definition)throw new Error(result.detail??result.message??result.error??'地图解析失败');if(mine!==epoch)return;pending.value=parsePlan(JSON.stringify(result.definition));message.value=result.message;}
  else{const next=parsePlan(await file.text());if(mine!==epoch)return;pending.value=next;message.value='文件已解析，核对后点击“加载到编辑稿”。不会切换运行地图。';}});}
 function importRuntime(){const map=effectiveSnapshot.value?.map;if(!map){message.value='没有可复制的运行地图。';return;}if(map.edges.some(e=>e.kind!=='Line')){message.value='运行图包含曲线，请连接后台读取完整草稿，避免丢失曲线控制点。';return;}const next=emptyPlan();next.name=`${map.name} 副本`;next.definition={name:map.name,source:'',coordinateSystem:map.coordinateSystem,unit:map.unit,nodes:map.nodes.map(n=>({...n,type:['Waypoint','Station','Intersection','WaitingPoint','ChargingPoint'].includes(n.type)?n.type:n.id==='WAIT'?'WaitingPoint':'Waypoint',agvSiteId:n.agvSiteId??null,resourceIds:[]})),edges:map.edges.filter(e=>e.kind==='Line').map(e=>({id:e.id,from:e.from,to:e.to,distance:e.points.reduce((sum,p,i,a)=>i?sum+Math.hypot(p.x-a[i-1]!.x,p.y-a[i-1]!.y):0,0),speedLimit:.5,enabled:e.enabled,bidirectional:e.bidirectional,resourceIds:[],geometryKind:'Line'})),resources:map.resources.map(r=>({...r,type:'NarrowAisle'}))};pending.value=next;message.value='运行图仅提供展示投影，副本不含完整道路属性/曲线；后台请优先“读取完整草稿”。';}
-async function listMaps(){if(effectiveSource.value!=='backend'){message.value='示例模式没有后台地图目录，可使用本机方案。';return;}await run(async mine=>{const result=await request<MapSummary[]>('/api/maps');if(mine!==epoch)return;maps.value=result;mapId.value||=result[0]?.mapId??'';message.value=`找到 ${result.length} 张后台地图`;});}
+async function listMaps(){if(effectiveSource.value!=='backend'){message.value='示例模式没有后台地图目录，可使用本机方案。';return;}await run(async mine=>{const result=await request<MapSummary[]>('/api/maps');if(mine!==epoch)return;maps.value=result;mapId.value||=result.find(map=>map.isActive)?.mapId??result[0]?.mapId??'';message.value=`找到 ${result.length} 张后台地图`;});}
 async function openAssociation(){if(effectiveSource.value!=='backend'||!mapId.value)return;const target=mapId.value;await run(async mine=>{const result=await request<any>(`/api/maps/${encodeURIComponent(target)}/workspace`);if(mine!==epoch||mapId.value!==target)return;checkDraftDestination(result,target);association.value=result;});}
 function confirmAssociation(){if(!association.value||busy.value||effectiveSource.value!=='backend')return;workspace.value=association.value;mapId.value=workspace.value.project.mapId;association.value=null;message.value=`已关联 ${workspace.value.project.name} 的 V${workspace.value.draft.versionNumber} 草稿，当前编辑内容已保留。请点击“保存地图草稿”，再去地图管理发布新版本。`;}
-function acceptWorkspace(result:any){workspace.value=result;mapId.value=result.project.mapId;plan.value.definition=clone(result.draft.definition);dirty.value=true;resetSelection();fit();}
-async function loadWorkspace(){if(effectiveSource.value!=='backend'||!mapId.value)return;await run(async mine=>{const result=await request<any>(`/api/maps/${encodeURIComponent(mapId.value)}/workspace`);if(mine!==epoch)return;if(!result?.draft)throw new Error('没有可编辑草稿');parsePlan(JSON.stringify(result.draft.definition));edit(()=>acceptWorkspace(result));versions.value=await request<any[]>(`/api/maps/${encodeURIComponent(mapId.value)}/versions`);if(mine!==epoch){workspace.value=null;return;}message.value='完整草稿已加载并替换当前地图。场景、车辆及航点顺序请重新核对。';plan.value.waypoints=plan.value.waypoints.filter(id=>definition.value.nodes.some(n=>n.id===id));});}
+function acceptWorkspace(result:any){workspace.value=result;mapId.value=result.project.mapId;plan.value.name=result.project.name;plan.value.definition=clone(result.draft.definition);dirty.value=true;resetSelection();fit();}
+async function loadWorkspace(force=false){if(effectiveSource.value!=='backend'||!mapId.value)return;if(!force&&!confirmDiscardDraft('读取完整草稿并覆盖当前编辑'))return;await run(async mine=>{const result=await request<any>(`/api/maps/${encodeURIComponent(mapId.value)}/workspace`);if(mine!==epoch)return;if(!result?.draft)throw new Error('没有可编辑草稿');parsePlan(JSON.stringify(result.draft.definition));edit(()=>acceptWorkspace(result));dirty.value=false;versions.value=await request<any[]>(`/api/maps/${encodeURIComponent(mapId.value)}/versions`);if(mine!==epoch){workspace.value=null;return;}message.value='完整草稿已加载并替换当前地图。场景、车辆及航点顺序请重新核对。';plan.value.waypoints=plan.value.waypoints.filter(id=>definition.value.nodes.some(n=>n.id===id));});}
 async function createBackend(){if(effectiveSource.value!=='backend')return;await run(async mine=>{const d=definition.value,result=await request<any>('/api/maps/create',{name:d.name,description:plan.value.name,backgroundFilePath:'',coordinateSystem:d.coordinateSystem,unit:d.unit,coordinateScale:1});if(mine!==epoch)return;if(!result.accepted)throw new Error(result.message);workspace.value=result.workspace;mapId.value=result.workspace.project.mapId;message.value=`${result.message} 请继续保存当前编辑稿。`;});}
-async function saveBackend(){if(!workspace.value||issues.value.length||effectiveSource.value!=='backend')return;await run(async mine=>{const w=workspace.value,d=clone(definition.value),result=await request<any>('/api/maps/draft',{mapId:w.project.mapId,versionId:w.draft.versionId,name:d.name,description:w.project.description,backgroundFilePath:w.project.backgroundFilePath,coordinateSystem:d.coordinateSystem,unit:d.unit,coordinateScale:w.project.coordinateScale,definition:d,expectedEditToken:w.draft.editToken});if(mine!==epoch)return;if(!result.accepted)throw new Error(result.message);workspace.value=result.workspace;message.value=`${result.message} 场景/方案仍需单独保存本机；运行地图未切换。`;});}
+async function saveBackend(){if(!workspace.value||issues.value.length||effectiveSource.value!=='backend')return;await run(async mine=>{const w=workspace.value,d=clone(definition.value),result=await request<any>('/api/maps/draft',{mapId:w.project.mapId,versionId:w.draft.versionId,name:d.name,description:w.project.description,backgroundFilePath:w.project.backgroundFilePath,coordinateSystem:d.coordinateSystem,unit:d.unit,coordinateScale:w.project.coordinateScale,definition:d,expectedEditToken:w.draft.editToken});if(mine!==epoch)return;if(!result.accepted)throw new Error(result.message);workspace.value=result.workspace;dirty.value=false;message.value=`${result.message} 场景/方案仍需单独保存本机；运行地图未切换。`;});}
 function goToMapManagement(){mapRouter.push({name:'maps'});}
 function previewOnDashboard(){store.previewMap=effectiveSnapshot.value?.map??null;mapRouter.push({name:'overview'});}
 function openVehicle(v?:VehicleConfig){vehicleMessage.value='';vehicleOriginal.value=v?.vehicleId??'';vehicleForm.value=v?clone(v):{vehicleId:unique('AGV-',plan.value.vehicles.map(v=>v.vehicleId)),displayName:'新增车辆',ipAddress:'',port:19204,navigationPort:19206,enabled:false};}
@@ -138,24 +198,38 @@ async function saveVehicles(){if(effectiveSource.value!=='backend'||!vehicleRevi
 function reorder(index:number,delta:number){if(index+delta<0||index+delta>=plan.value.waypoints.length)return;edit(()=>{const list=plan.value.waypoints;[list[index],list[index+delta]]=[list[index+delta]!,list[index]!];});}
 async function pushOfflineToBackend(){if(effectiveSource.value!=='backend'||issues.value.length)return;await run(async mine=>{const d=definition.value;const result=await request<any>('/api/maps/create',{name:d.name,description:plan.value.name,backgroundFilePath:'',coordinateSystem:d.coordinateSystem,unit:d.unit,coordinateScale:1});if(mine!==epoch)return;if(!result.accepted)throw new Error(result.message);workspace.value=result.workspace;mapId.value=result.workspace.project.mapId;toastStore.success('已推送到后台新建地图');message.value=`${result.message} 请继续保存当前编辑稿到后台草稿。`;});}
 function beforeUnload(e:BeforeUnloadEvent){if(dirty.value){e.preventDefault();e.returnValue='';}}
+onBeforeRouteLeave(()=>!dirty.value||window.confirm('当前地图编辑稿有未保存修改。确定离开并放弃这些修改？'));
 onMounted(async()=>{window.addEventListener('beforeunload',beforeUnload);try{const raw=localStorage.getItem('agv-web-plans-v1');if(raw){const data=JSON.parse(raw);if(!Array.isArray(data)||data.length>20)throw new Error('本机方案索引无效');saved.value=data.map(p=>parsePlan(JSON.stringify(p)));}}catch(ex){message.value=`本机方案未加载：${String(ex)}，原内容未覆盖。`;}
-if(queryMapId.value&&effectiveSource.value==='backend'){mapId.value=queryMapId.value;message.value=`正在读取后台地图 ${queryMapId.value} 的草稿…`;try{await loadWorkspace();}catch{message.value='自动加载草稿失败，请手动读取。';}}});
+if(effectiveSource.value==='backend')await loadInitialBackendMap();});
 onUnmounted(()=>{++epoch;window.removeEventListener('beforeunload',beforeUnload);});
 </script>
 
 <template>
  <section class="planning-workbench">
   <header v-show="tab!=='areas'" class="workbench-title">
-    <button @click="goToMapManagement" class="text-button"><IconArrowLeft :size="14"/>地图管理</button>
-    <h2><IconMap :size="21"/>调度工程工作台</h2>
-    <input v-model="plan.name" aria-label="方案名称" @change="dirty=true"/>
-    <span :class="workspace?'green-text':effectiveSource==='backend'?'cyan':'amber-text'">{{workspace?`已关联后台 ${workspace.project.mapId}`:effectiveSource==='backend'?'后台已连接 · 未关联草稿':'离线模式'}}</span>
-    <span :class="dirty?'amber-text':'green-text'">{{dirty?'· 未保存':saved.some(p=>p.id===plan.id)?'· 已保存':'· 新方案'}}</span>
-    <button title="Ctrl+S · 保存到本机浏览器" @click="saveLocal"><IconDeviceFloppy :size="15"/>保存方案</button>
-    <button @click="exportPlan"><IconDownload :size="15"/>导出方案</button>
-    <button @click="importInput?.click()"><IconUpload :size="15"/>加载文件</button>
-    <button v-if="!workspace&&effectiveSource==='backend'&&!issues.length" @click="pushOfflineToBackend"><IconCloudUpload :size="15"/>推送到后台新建</button>
-    <input ref="importInput" class="file-picker" type="file" accept=".json,.smap" aria-label="导入地图或方案文件" @change="importFile"/>
+    <div class="workbench-title-main">
+      <el-button link :icon="IconArrowLeft" @click="goToMapManagement">地图管理</el-button>
+      <div class="workbench-title-copy"><h2><IconMap :size="21"/>调度工程工作台</h2><small>{{workspace ? `${workspace.project.name} · V${workspace.draft.versionNumber}` : '尚未关联后台地图草稿'}}</small></div>
+      <el-input v-model="plan.name" class="plan-name-input" aria-label="方案名称" @change="dirty=true"/>
+      <el-tag :type="workspace?'success':effectiveSource==='backend'?'info':'warning'" effect="plain">{{workspace?'已关联草稿':effectiveSource==='backend'?'后台已连接':'离线模式'}}</el-tag>
+      <el-tag :type="dirty?'warning':'success'" effect="plain">{{dirty?'未保存':'已保存'}}</el-tag>
+    </div>
+    <div class="workbench-title-actions">
+      <el-button :icon="IconMap" @click="openMapPicker">切换地图</el-button>
+      <el-button type="primary" :icon="IconDeviceFloppy" :disabled="!!saveBlocker" :title="saveBlocker||'保存到已关联后台草稿'" @click="saveBackend">保存地图草稿</el-button>
+      <el-dropdown trigger="click">
+        <el-button>方案操作<IconChevronDown :size="13"/></el-button>
+        <template #dropdown>
+          <el-dropdown-menu>
+            <el-dropdown-item :icon="IconDeviceFloppy" @click="saveLocal">保存到本机</el-dropdown-item>
+            <el-dropdown-item :icon="IconDownload" @click="exportPlan">导出方案</el-dropdown-item>
+            <el-dropdown-item :icon="IconUpload" @click="importInput?.click()">加载方案 / SMAP</el-dropdown-item>
+            <el-dropdown-item v-if="!workspace&&effectiveSource==='backend'&&!issues.length" :icon="IconCloudUpload" @click="pushOfflineToBackend">推送到后台新建</el-dropdown-item>
+          </el-dropdown-menu>
+        </template>
+      </el-dropdown>
+      <input ref="importInput" class="file-picker" type="file" accept=".json,.smap" aria-label="导入地图或方案文件" @change="importFile"/>
+    </div>
   </header>
   <div v-show="tab!=='areas'" class="workflow-guide">
     <b>操作流程：</b>
@@ -166,30 +240,54 @@ onUnmounted(()=>{++epoch;window.removeEventListener('beforeunload',beforeUnload)
     <span class="amber-text">⑤ 激活与安全切换</span> →
     <span class="amber-text">⑥ 大屏显示</span>
   </div>
-  <nav class="workbench-tabs" aria-label="工程模块"><button v-for="item in tabs" :key="item.id" :class="{active:tab===item.id}" @click="tab=item.id"><ActionIcon :name="item.icon"/>{{item.name}}</button><small v-if="tab!=='areas'">{{counts}}</small></nav>
+  <div v-show="tab!=='areas'" class="workbench-tab-row">
+   <el-tabs v-model="tab" class="workbench-tabs" aria-label="工程模块">
+    <el-tab-pane v-for="item in tabs" :key="item.id" :name="item.id">
+     <template #label><span class="workbench-tab-label"><ActionIcon :name="item.icon"/>{{item.name}}</span></template>
+    </el-tab-pane>
+   </el-tabs>
+   <small>{{counts}}</small>
+  </div>
   <DisplayAreasEditor v-if="areasOpened" v-show="tab==='areas'" :initial-map-id="workspace?.project.mapId||mapId"/>
   <p v-if="tab!=='areas'" class="workbench-message" role="status">{{message||'厂家激光扫图在RoboShop完成；此处编辑调度导航和场景。编辑稿不会自动影响运行地图。'}}</p>
   <ServerProjects v-if="tab==='plans'" :plan="plan" :available="effectiveSource==='backend'" :map-id="workspace?.project?.mapId" :map-version="workspace?.draft?.versionId" @preview="pending=$event"/>
   <template v-if="tab==='map'||tab==='scene'">
    <div class="editor-toolbar editor-tool-palette" aria-label="地图绘图工具">
-    <button v-for="item in (tab==='map'?mapTools:sceneTools)" :key="item.id" :class="{active:tool===item.id}" :aria-pressed="tool===item.id" @click="ed.changeTool(item.id)"><ActionIcon :name="item.icon"/>{{item.label}}</button>
-    <span class="tool-divider"></span><button :disabled="!undoStack.length" title="Ctrl+Z" @click="history()"><ActionIcon name="undo"/>撤销</button><button :disabled="!redoStack.length" title="Ctrl+Y / Ctrl+Shift+Z" @click="history(true)"><ActionIcon name="redo"/>重做</button>
-    <button @click="ed.panel='batch'"><ActionIcon name="properties"/>批量 / 对齐 / 拓扑</button><button @click="ed.panel='layers'"><ActionIcon name="layers"/>图层</button><button @click="ed.panel='history'"><ActionIcon name="history"/>历史</button>
-    <select v-model="robotMapVehicle" aria-label="拉取地图的车辆"><option v-for="v in robotMapVehicles" :key="v.vehicleId" :value="v.vehicleId">{{v.vehicleId}}</option></select><button :disabled="busy||effectiveSource!=='backend'||!robotMapVehicle" @click="pullRobotMap">从机器人拉取当前地图</button>
-    <button :disabled="busy||effectiveSource!=='backend'||!runtimeSource||definition.coordinateSystem!=='SmapWorldTranslated'" @click="openRuntimePreparation">准备运行地图</button>
-    <button @click="importRuntime"><ActionIcon name="copy"/>从运行图复制</button><button @click="exportMap"><ActionIcon name="download"/>导出地图JSON</button>
+    <el-button-group class="drawing-tool-group">
+      <el-button v-for="item in (tab==='map'?mapTools:sceneTools)" :key="item.id" :type="tool===item.id?'primary':'default'" :class="{active:tool===item.id}" :aria-pressed="tool===item.id" @click="ed.changeTool(item.id)"><ActionIcon :name="item.icon"/>{{item.label}}</el-button>
+    </el-button-group>
+    <el-button-group>
+      <el-tooltip content="撤销 Ctrl+Z"><el-button :disabled="!undoStack.length" aria-label="撤销" @click="history()"><ActionIcon name="undo"/></el-button></el-tooltip>
+      <el-tooltip content="重做 Ctrl+Y"><el-button :disabled="!redoStack.length" aria-label="重做" @click="history(true)"><ActionIcon name="redo"/></el-button></el-tooltip>
+    </el-button-group>
+    <el-button-group>
+      <el-button @click="ed.panel='batch'"><ActionIcon name="properties"/>批量</el-button>
+      <el-button @click="ed.panel='layers'"><ActionIcon name="layers"/>图层</el-button>
+      <el-button @click="ed.panel='history'"><ActionIcon name="history"/>历史</el-button>
+    </el-button-group>
+    <el-select v-model="robotMapVehicle" aria-label="拉取地图的车辆" style="width:110px"><el-option v-for="v in robotMapVehicles" :key="v.vehicleId" :label="v.vehicleId" :value="v.vehicleId"/></el-select>
+    <el-button :disabled="busy||effectiveSource!=='backend'||!robotMapVehicle" :loading="busy" @click="pullRobotMap">拉取车端地图</el-button>
+    <el-button :disabled="busy||effectiveSource!=='backend'||!runtimeSource||definition.coordinateSystem!=='SmapWorldTranslated'" @click="openRuntimePreparation">准备运行地图</el-button>
+    <el-dropdown trigger="click">
+      <el-button>更多工具<IconChevronDown :size="13"/></el-button>
+      <template #dropdown><el-dropdown-menu><el-dropdown-item :icon="IconCopy" @click="importRuntime">从运行图复制</el-dropdown-item><el-dropdown-item :icon="IconDownload" @click="exportMap">导出地图 JSON</el-dropdown-item></el-dropdown-menu></template>
+    </el-dropdown>
    </div>
    <div class="editor-options">
-    <label>当前图层<select v-model="ed.currentLayer" @change="ed.settings"><option v-for="layer in ed.layerList" :key="layer.id" :value="layer.id">{{layer.name}}{{layer.isLocked?' · 锁定':''}}</option></select></label>
-    <label><input v-model="ed.grid" type="checkbox" @change="ed.settings"/>网格</label><label>间距(m)<input v-model.number="ed.gridStep" type="number" min=".001" step=".1" @change="ed.settings"/></label>
-    <label><input v-model="ed.snapGrid" type="checkbox" @change="ed.settings"/>网格吸附</label><label><input v-model="ed.snapNodes" type="checkbox" @change="ed.settings"/>节点吸附</label><label><input v-model="ed.snapAlignment" type="checkbox" @change="ed.settings"/>对齐参考线</label>
-    <span>已选 {{ed.count}}</span><button :disabled="!ed.count" @click="ed.remove"><ActionIcon name="remove"/>删除所选</button>
-    <template v-if="tool==='boundary'"><button :disabled="ed.draft.length<3" @click="ed.finishBoundary"><ActionIcon name="check"/>完成边界（Enter）</button><button :disabled="!ed.draft.length" @click="ed.draft.pop()"><ActionIcon name="undo"/>撤回顶点</button></template>
-    <template v-if="tool==='brush'"><label>共享区域<select v-model="ed.brushResource"><option value="">选择共享区域</option><option v-for="r in definition.resources" :key="r.id" :value="r.id">{{r.id}}</option></select></label><label><input v-model="ed.brushRemove" type="checkbox"/>解除关联</label></template>
+    <label>当前图层<el-select v-model="ed.currentLayer" style="width:150px" @change="ed.settings"><el-option v-for="layer in ed.layerList" :key="layer.id" :label="`${layer.name}${layer.isLocked?' · 锁定':''}`" :value="layer.id"/></el-select></label>
+    <el-checkbox v-model="ed.grid" @change="ed.settings">网格</el-checkbox><label>间距(m)<el-input-number v-model="ed.gridStep" :min=".001" :step=".1" controls-position="right" @change="ed.settings"/></label>
+    <el-checkbox v-model="ed.snapGrid" @change="ed.settings">网格吸附</el-checkbox><el-checkbox v-model="ed.snapNodes" @change="ed.settings">节点吸附</el-checkbox><el-checkbox v-model="ed.snapAlignment" @change="ed.settings">对齐参考线</el-checkbox>
+    <span>已选 {{ed.count}}</span><el-button :disabled="!ed.count" type="danger" plain @click="ed.remove"><ActionIcon name="remove"/>删除所选</el-button>
+    <template v-if="tool==='boundary'"><el-button :disabled="ed.draft.length<3" @click="ed.finishBoundary"><ActionIcon name="check"/>完成边界（Enter）</el-button><el-button :disabled="!ed.draft.length" @click="ed.draft.pop()"><ActionIcon name="undo"/>撤回顶点</el-button></template>
+    <template v-if="tool==='brush'"><label>共享区域<el-select v-model="ed.brushResource" filterable style="width:170px"><el-option label="选择共享区域" value=""/><el-option v-for="r in definition.resources" :key="r.id" :label="r.id" :value="r.id"/></el-select></label><el-checkbox v-model="ed.brushRemove">解除关联</el-checkbox></template>
    </div>
-   <div v-if="definition.areaAnnotations?.length" class="editor-toolbar"><label><input v-model="showVendorAreas" type="checkbox"/>厂家区域标注（{{definition.areaAnnotations.length}}）</label><span>{{definition.areaAnnotations.map(a=>a.text).join(' · ')}}</span><small>仅作显示，未配置为交通锁</small></div>
+   <div v-if="definition.areaAnnotations?.length" class="editor-toolbar vendor-area-bar">
+    <el-checkbox v-model="showVendorAreas">厂家区域标注（{{definition.areaAnnotations.length}}）</el-checkbox>
+    <el-tooltip :content="vendorAreaNames.join('、')" placement="bottom-start" :show-after="350"><span class="vendor-area-preview">{{vendorAreaPreview}}</span></el-tooltip>
+    <small>仅作显示，未配置为交通锁</small>
+   </div>
    <p class="editor-tool-hint" role="status">{{ed.toolHint}} <strong v-if="ed.measurement!==null">距离 {{ed.measurement.toFixed(3)}} m</strong><span v-if="ed.snapTarget"> · 吸附 {{ed.snapTarget}}</span></p>
-   <div class="editor-layout"><aside class="editor-tree"><h3>{{tab==='scene'?'场景对象':'导航对象'}}</h3><template v-if="tab==='map'"><b>航点 {{definition.nodes.length}}</b><button v-for="n in definition.nodes" :key="n.id" :class="{active:ed.isSelected('node',n.id)}" @click="select('node',n.id,$event)">{{n.id}} <small>{{n.agvSiteId||'未绑定厂家站点'}}</small></button><b>道路 {{definition.edges.length}}</b><button v-for="e in definition.edges" :key="e.id" :class="{active:ed.isSelected('edge',e.id)}" @click="select('edge',e.id,$event)">{{e.id}}<small>{{e.from}}{{e.bidirectional?'↔':'→'}}{{e.to}}</small></button><b>共享区域 {{definition.resources.length}}</b><button v-for="r in definition.resources" :key="r.id" @click="select('resource',r.id,$event)">{{r.id}}<small>容量 {{r.capacity}}</small></button></template><template v-else><button @click="ed.addScene({x:0,y:0})"><IconPlus :size="13"/>新增场景对象</button><button v-for="s in plan.scene" :key="s.id" @click="select('scene',s.id,$event)">{{s.name}}<small>{{s.visible?'可见':'已隐藏'}} · {{s.kind}}</small></button><p class="muted-note">场景图形仅用于显示；设备区不会自动成为障碍或交通锁。</p></template></aside>
+   <div class="editor-layout"><aside class="editor-tree"><header><h3>{{tab==='scene'?'场景对象':'导航对象'}}</h3><el-button v-if="tab==='scene'" size="small" :icon="IconPlus" @click="ed.addScene({x:0,y:0})">新增</el-button></header><el-input v-model="objectSearch" clearable :prefix-icon="IconSearch" placeholder="搜索编号、站点或区域"/><el-tree ref="treeRef" :data="treeData" node-key="key" :props="{label:'label',children:'children'}" :filter-node-method="filterTreeNode" :current-node-key="treeCurrentKey" :default-expanded-keys="[tab==='scene'?'scene:items':'group:nodes']" highlight-current :expand-on-click-node="false" empty-text="当前没有可编辑对象" @node-click="handleTreeNode"><template #default="{data}"><span class="editor-tree-label">{{data.label}}</span></template></el-tree><p v-if="tab==='scene'" class="muted-note">场景图形仅用于显示；设备区不会自动成为障碍或交通锁。</p></aside>
     <div class="editor-canvas" :class="{'pan-mode':tool==='pan'||ed.space}">
      <svg ref="svg" :viewBox="viewBox" role="application" tabindex="0" aria-label="调度地图编辑画布，支持框选、节点拖动与键盘快捷键" @pointerdown="ed.down" @pointermove="ed.move" @pointerup="ed.up" @pointercancel="ed.cancelGesture" @lostpointercapture="ed.cancelGesture" @contextmenu.prevent @dblclick.prevent="tool==='boundary'&&ed.finishBoundary()" @wheel.prevent="ed.wheel">
       <defs><pattern id="planning-editor-grid" :width="Math.max(.001,Number(ed.gridStep)||1)" :height="Math.max(.001,Number(ed.gridStep)||1)" patternUnits="userSpaceOnUse"><path :d="`M ${Math.max(.001,Number(ed.gridStep)||1)} 0 L 0 0 0 ${Math.max(.001,Number(ed.gridStep)||1)}`" fill="none" stroke="#1a3550" :stroke-width="scale*.04"/></pattern><marker id="planning-editor-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#72bfd2"/></marker></defs>
@@ -222,18 +320,101 @@ onUnmounted(()=>{++epoch;window.removeEventListener('beforeunload',beforeUnload)
      <div class="editor-coordinate">{{ed.cursor?`X ${ed.cursor.x.toFixed(3)} · Y ${ed.cursor.y.toFixed(3)} m`:'米制坐标'}} · {{Math.round(ed.zoom*100)}}% · 已选 {{ed.count}}{{ed.measurement!==null?` · 测量 ${ed.measurement.toFixed(3)} m`:''}}</div>
     </div>
     <aside class="editor-inspector">
-     <nav class="editor-panel-tabs" aria-label="编辑面板"><button v-for="[id,label] in editorPanels" :key="id" :class="{active:ed.panel===id}" @click="ed.panel=id"><ActionIcon :name="panelIcons[id]"/>{{label}}</button></nav>
+     <el-radio-group v-model="ed.panel" class="editor-panel-tabs" size="small" aria-label="编辑面板">
+      <el-radio-button v-for="[id,label] in editorPanels" :key="id" :value="id"><ActionIcon :name="panelIcons[id]"/>{{label}}</el-radio-button>
+     </el-radio-group>
      <MapEditorPanels v-if="ed.panel!=='properties'" :editor="ed"/>
-     <div v-else><h3>{{selected?`属性 · ${selected}`:'地图属性'}}</h3>
-     <template v-if="!selected"><label>地图名称<input v-model="definition.name" @change="dirty=true"/></label><label>坐标系<input v-model="definition.coordinateSystem" @change="dirty=true"/></label><p class="muted-note">坐标单位：米。修改坐标系文字不会执行坐标变换。原生SMAP须使用厂家坐标与版本核对。</p></template>
-     <template v-if="kind==='node'&&nodeForm"><label>航点编号<input v-model="nodeForm.id"/></label><div class="two-fields"><label>X（米）<input v-model.number="nodeForm.x" type="number" step=".1"/></label><label>Y（米）<input v-model.number="nodeForm.y" type="number" step=".1"/></label></div><label>类型<select v-model="nodeForm.type"><option value="Waypoint">普通航点</option><option value="Station">业务站点</option><option value="Intersection">路口</option><option value="WaitingPoint">等待位</option><option value="ChargingPoint">充电位</option></select></label><label>厂家站点编号<input v-model="nodeForm.agvSiteId" placeholder="例如 LM1，按厂家地图填写"/></label><label class="check-label"><input v-model="nodeForm.enabled" type="checkbox"/>启用航点</label><label>关联共享区域<select v-model="nodeForm.resourceIds" multiple><option v-for="r in definition.resources" :key="r.id" :value="r.id">{{r.id}}</option></select></label></template>
-     <template v-if="kind==='edge'&&edgeForm"><label>道路编号<input v-model="edgeForm.id"/></label><label>起点<select v-model="edgeForm.from"><option v-for="n in definition.nodes" :key="n.id">{{n.id}}</option></select></label><label>终点<select v-model="edgeForm.to"><option v-for="n in definition.nodes" :key="n.id">{{n.id}}</option></select></label><div class="two-fields"><label>路径距离（米）<input v-model.number="edgeForm.distance" type="number" min=".001" step=".1"/></label><label>限速（米/秒）<input v-model.number="edgeForm.speedLimit" type="number" min=".001" step=".1"/></label></div><label class="check-label"><input v-model="edgeForm.bidirectional" type="checkbox"/>双向通行</label><label class="check-label"><input v-model="edgeForm.enabled" type="checkbox"/>启用道路</label><p>几何：{{edgeForm.geometryKind}} · 可在画布拖动黄色控制点。</p><div v-for="(p,i) in edgeForm.controlPoints??[]" :key="i" class="two-fields"><label>控制点{{i+1}} X<input v-model.number="p.x" type="number"/></label><label>Y<input v-model.number="p.y" type="number"/></label></div><label>关联共享区域<select v-model="edgeForm.resourceIds" multiple><option v-for="r in definition.resources" :key="r.id" :value="r.id">{{r.id}}</option></select></label><VendorPathPanel :edge="edgeForm" :definition="definition" :backend="effectiveSource==='backend'"/></template>
-     <template v-if="kind==='resource'&&resourceForm"><label>区域编号<input v-model="resourceForm.id"/></label><label>区域类型<select v-model="resourceForm.type"><option value="NarrowAisle">窄通道</option><option value="Intersection">路口</option><option value="SingleLane">单行区</option><option value="Station">工位</option><option value="ChargingBay">充电区</option></select></label><label>容量<input v-model.number="resourceForm.capacity" type="number" min="1"/></label><p>边界顶点（米）</p><div v-for="(p,i) in resourceForm.boundary??[]" :key="i" class="two-fields"><label>X{{i+1}}<input v-model.number="p.x" type="number"/></label><label>Y{{i+1}}<input v-model.number="p.y" type="number"/></label></div><button @click="resourceForm.boundary??=[];resourceForm.boundary.push({x:0,y:0})"><ActionIcon name="add"/>增加顶点</button></template>
-     <template v-if="kind==='scene'&&sceneForm"><label>对象编号<input v-model="sceneForm.id"/></label><label>名称 / 标注<input v-model="sceneForm.name"/></label><label>类型<select v-model="sceneForm.kind"><option value="area">车间区域</option><option value="equipment">设备区域</option><option value="text">文字标注</option></select></label><div class="two-fields"><label>X<input v-model.number="sceneForm.x" type="number"/></label><label>Y<input v-model.number="sceneForm.y" type="number"/></label><label>宽<input v-model.number="sceneForm.width" type="number" min=".1"/></label><label>高<input v-model.number="sceneForm.height" type="number" min=".1"/></label></div><label>颜色<input v-model="sceneForm.color" type="color"/></label><label class="check-label"><input v-model="sceneForm.visible" type="checkbox"/>显示对象</label></template>
-     <label v-if="activeForm">对象所属图层<select v-model="activeForm.layerId"><option v-for="layer in ed.layerList" :key="layer.id" :value="layer.id">{{layer.name}}</option></select></label>
-     <div v-if="selected" class="inspector-actions"><button class="accent-button" @click="applyInspector"><ActionIcon name="check"/>应用属性</button><button @click="removeSelected"><IconTrash :size="13"/>删除对象</button></div>
-    </div></aside></div>
-   <div class="backend-map-tools"><b>后台草稿</b><button :disabled="busy||effectiveSource!=='backend'" @click="listMaps"><ActionIcon name="folder"/>读取目录</button><select v-model="mapId" aria-label="选择后台地图"><option value="">选择后台地图</option><option v-for="m in maps" :key="m.mapId" :value="m.mapId">{{m.name}}</option></select><button :disabled="busy||!mapId||effectiveSource!=='backend'" @click="openAssociation">关联并保留编辑稿</button><button :disabled="busy||!mapId||effectiveSource!=='backend'" @click="loadWorkspace"><ActionIcon name="download"/>读取完整草稿并替换</button><button :disabled="busy||effectiveSource!=='backend'" @click="createBackend"><ActionIcon name="add"/>新建后台地图</button><button :disabled="!!saveBlocker" :title="saveBlocker||'保存到已关联后台草稿'" @click="saveBackend"><ActionIcon name="save"/>保存地图草稿</button><button @click="goToMapManagement"><ActionIcon name="map"/>去地图管理发布／激活</button><small>{{workspace?`${workspace.project.name} / V${workspace.draft.versionNumber} · ${workspace.project.mapId}`:'尚未关联后台草稿'}}</small></div>
+     <div v-else class="inspector-properties">
+      <div class="inspector-heading">
+       <div><h3>{{selected?`属性 · ${selected}`:'地图属性'}}</h3><small>{{selected?'修改后点击应用，才会写入当前编辑稿。':'查看当前地图的基础信息。'}}</small></div>
+       <el-tag v-if="selected" size="small" effect="plain">{{kind==='node'?'航点':kind==='edge'?'道路':kind==='resource'?'共享区域':'场景对象'}}</el-tag>
+      </div>
+      <el-form class="inspector-form" label-position="top" size="small" @submit.prevent>
+       <template v-if="!selected">
+        <el-form-item label="地图名称"><el-input v-model="definition.name" @change="dirty=true"/></el-form-item>
+        <el-form-item label="坐标系"><el-input v-model="definition.coordinateSystem" @change="dirty=true"/></el-form-item>
+        <el-alert type="info" :closable="false" show-icon title="当前坐标单位为米" description="修改坐标系文字不会执行坐标变换。原生 SMAP 须使用厂家坐标并核对版本。"/>
+       </template>
+       <template v-if="kind==='node'&&nodeForm">
+        <el-form-item label="航点编号"><el-input v-model="nodeForm.id"/></el-form-item>
+        <div class="inspector-field-grid">
+         <el-form-item label="X（米）"><el-input-number v-model="nodeForm.x" :step=".1" controls-position="right"/></el-form-item>
+         <el-form-item label="Y（米）"><el-input-number v-model="nodeForm.y" :step=".1" controls-position="right"/></el-form-item>
+        </div>
+        <el-form-item label="航点类型"><el-select v-model="nodeForm.type"><el-option label="普通航点" value="Waypoint"/><el-option label="业务站点" value="Station"/><el-option label="路口" value="Intersection"/><el-option label="等待位" value="WaitingPoint"/><el-option label="充电位" value="ChargingPoint"/></el-select></el-form-item>
+        <el-form-item label="厂家站点编号"><el-input v-model="nodeForm.agvSiteId" placeholder="例如 LM1，按厂家地图填写"/></el-form-item>
+        <el-checkbox v-model="nodeForm.enabled">启用航点</el-checkbox>
+        <el-form-item label="关联共享区域"><el-select v-model="nodeForm.resourceIds" multiple filterable collapse-tags :max-collapse-tags="2" placeholder="未关联"><el-option v-for="r in definition.resources" :key="r.id" :label="r.id" :value="r.id"/></el-select></el-form-item>
+       </template>
+       <template v-if="kind==='edge'&&edgeForm">
+        <el-form-item label="道路编号"><el-input v-model="edgeForm.id"/></el-form-item>
+        <div class="inspector-field-grid">
+         <el-form-item label="起点"><el-select v-model="edgeForm.from" filterable><el-option v-for="n in definition.nodes" :key="n.id" :label="n.id" :value="n.id"/></el-select></el-form-item>
+         <el-form-item label="终点"><el-select v-model="edgeForm.to" filterable><el-option v-for="n in definition.nodes" :key="n.id" :label="n.id" :value="n.id"/></el-select></el-form-item>
+        </div>
+        <div class="inspector-field-grid">
+         <el-form-item label="路径距离（米）"><el-input-number v-model="edgeForm.distance" :min=".001" :step=".1" controls-position="right"/></el-form-item>
+         <el-form-item label="限速（米/秒）"><el-input-number v-model="edgeForm.speedLimit" :min=".001" :step=".1" controls-position="right"/></el-form-item>
+        </div>
+        <div class="inspector-checks"><el-checkbox v-model="edgeForm.bidirectional">双向通行</el-checkbox><el-checkbox v-model="edgeForm.enabled">启用道路</el-checkbox></div>
+        <el-alert type="info" :closable="false" :title="`几何：${edgeForm.geometryKind}`" description="选中道路后可在画布拖动黄色控制点。"/>
+        <div v-for="(p,i) in edgeForm.controlPoints??[]" :key="i" class="inspector-field-grid control-point-row">
+         <el-form-item :label="`控制点 ${i+1} X`"><el-input-number v-model="p.x" controls-position="right"/></el-form-item>
+         <el-form-item label="Y"><el-input-number v-model="p.y" controls-position="right"/></el-form-item>
+        </div>
+        <el-form-item label="关联共享区域"><el-select v-model="edgeForm.resourceIds" multiple filterable collapse-tags :max-collapse-tags="2" placeholder="未关联"><el-option v-for="r in definition.resources" :key="r.id" :label="r.id" :value="r.id"/></el-select></el-form-item>
+        <VendorPathPanel :edge="edgeForm" :definition="definition" :backend="effectiveSource==='backend'"/>
+       </template>
+       <template v-if="kind==='resource'&&resourceForm">
+        <el-form-item label="区域编号"><el-input v-model="resourceForm.id"/></el-form-item>
+        <div class="inspector-field-grid">
+         <el-form-item label="区域类型"><el-select v-model="resourceForm.type"><el-option label="窄通道" value="NarrowAisle"/><el-option label="路口" value="Intersection"/><el-option label="单行区" value="SingleLane"/><el-option label="工位" value="Station"/><el-option label="充电区" value="ChargingBay"/></el-select></el-form-item>
+         <el-form-item label="容量"><el-input-number v-model="resourceForm.capacity" :min="1" :max="1000" controls-position="right"/></el-form-item>
+        </div>
+        <div class="inspector-subheading"><span>边界顶点（米）</span><el-button size="small" :icon="IconPlus" @click="resourceForm.boundary=[...(resourceForm.boundary??[]),{x:0,y:0}]">增加顶点</el-button></div>
+        <div v-for="(p,i) in resourceForm.boundary??[]" :key="i" class="boundary-point-row">
+         <span>{{i+1}}</span>
+         <el-input-number v-model="p.x" controls-position="right" aria-label="边界点 X"/>
+         <el-input-number v-model="p.y" controls-position="right" aria-label="边界点 Y"/>
+         <el-button :icon="IconTrash" circle plain type="danger" aria-label="删除边界点" @click="resourceForm.boundary=resourceForm.boundary?.filter((_,index)=>index!==i)??[]"/>
+        </div>
+       </template>
+       <template v-if="kind==='scene'&&sceneForm">
+        <div class="inspector-field-grid">
+         <el-form-item label="对象编号"><el-input v-model="sceneForm.id"/></el-form-item>
+         <el-form-item label="名称 / 标注"><el-input v-model="sceneForm.name"/></el-form-item>
+        </div>
+        <el-form-item label="对象类型"><el-select v-model="sceneForm.kind"><el-option label="车间区域" value="area"/><el-option label="设备区域" value="equipment"/><el-option label="文字标注" value="text"/></el-select></el-form-item>
+        <div class="inspector-field-grid">
+         <el-form-item label="X"><el-input-number v-model="sceneForm.x" controls-position="right"/></el-form-item>
+         <el-form-item label="Y"><el-input-number v-model="sceneForm.y" controls-position="right"/></el-form-item>
+         <el-form-item label="宽"><el-input-number v-model="sceneForm.width" :min=".1" controls-position="right"/></el-form-item>
+         <el-form-item label="高"><el-input-number v-model="sceneForm.height" :min=".1" controls-position="right"/></el-form-item>
+        </div>
+        <el-form-item label="显示颜色"><el-color-picker v-model="sceneForm.color"/></el-form-item>
+        <el-checkbox v-model="sceneForm.visible">显示对象</el-checkbox>
+       </template>
+       <el-form-item v-if="activeForm" label="对象所属图层"><el-select v-model="activeForm.layerId"><el-option v-for="layer in ed.layerList" :key="layer.id" :label="layer.name" :value="layer.id"/></el-select></el-form-item>
+      </el-form>
+      <div v-if="selected" class="inspector-actions"><el-button type="primary" :icon="IconDeviceFloppy" @click="applyInspector">应用属性</el-button><el-button type="danger" plain :icon="IconTrash" @click="removeSelected">删除对象</el-button></div>
+     </div>
+    </aside></div>
+   <section class="backend-map-tools">
+    <div class="backend-tools-heading"><div><b>后台草稿</b><small>{{workspace?`${workspace.project.name} / V${workspace.draft.versionNumber}`:'当前编辑稿尚未关联后台'}}</small></div><el-tag :type="workspace?'success':'info'" size="small" effect="plain">{{workspace?'已关联':'未关联'}}</el-tag></div>
+    <div class="backend-tools-row">
+     <el-select v-model="mapId" class="backend-map-select" filterable placeholder="选择后台地图" aria-label="选择后台地图"><el-option v-for="m in maps" :key="m.mapId" :label="m.name" :value="m.mapId"><span>{{m.name}}</span><small>{{m.isActive?'当前使用':'可编辑'}}</small></el-option></el-select>
+     <el-button :icon="IconRefresh" :disabled="busy||effectiveSource!=='backend'" @click="listMaps">刷新目录</el-button>
+     <el-button @click="openMapPicker">浏览地图</el-button>
+    </div>
+    <div class="backend-tools-row backend-tools-actions">
+     <el-button :disabled="busy||!mapId||effectiveSource!=='backend'" @click="openAssociation">关联并保留编辑稿</el-button>
+     <el-button :disabled="busy||!mapId||effectiveSource!=='backend'" :icon="IconDownload" @click="loadWorkspace()">完整草稿覆盖当前编辑</el-button>
+     <el-button :disabled="busy||effectiveSource!=='backend'" :icon="IconPlus" @click="createBackend">用当前编辑新建后台地图</el-button>
+     <el-button type="primary" :disabled="!!saveBlocker" :title="saveBlocker||'保存到已关联后台草稿'" :icon="IconDeviceFloppy" @click="saveBackend">保存地图草稿</el-button>
+     <el-button :icon="IconMap" @click="goToMapManagement">发布 / 激活</el-button>
+    </div>
+    <small class="backend-map-id">{{workspace?workspace.project.mapId:'关联会保留当前编辑；完整草稿读取会覆盖当前编辑，并在执行前再次确认。'}}</small>
+   </section>
    <p v-if="saveBlocker" class="amber-text" role="status">暂不能保存：{{saveBlocker}}</p>
    <div class="validation-strip"><span :class="issues.length?'amber-text':'green-text'">{{issues.length?issues.join('；'):'本地结构检查通过'}}</span><small>本地检查不代替后台几何/安全校验；正式运行切换沿用WPF流程。未应用的属性不参与保存。</small></div><details v-if="versions.length"><summary>后台版本记录 {{versions.length}}</summary><p v-for="v in versions" :key="v.versionId">V{{v.versionNumber}} · {{mapVersionStatusLabel(v.status)}} · {{v.nodeCount}}节点 / {{v.edgeCount}}道路 · {{v.updatedAt}}</p></details>
   </template>
@@ -241,6 +422,23 @@ onUnmounted(()=>{++epoch;window.removeEventListener('beforeunload',beforeUnload)
   <div v-else-if="tab==='vehicles'" class="configuration-page"><div class="editor-toolbar"><button class="accent-button" @click="openVehicle()"><IconPlus :size="15"/>新增车辆</button><button :disabled="busy||effectiveSource!=='backend'" @click="readVehicles"><IconRefresh :size="15"/>读取后台车辆配置并替换</button><button :disabled="busy||effectiveSource!=='backend'||!vehicleRevision||!canManage||vehicleErrors.length>0" @click="saveVehicles"><ActionIcon name="save"/>保存车辆配置到后台</button><span>{{plan.vehicles.length}}辆 · {{restart?'后台配置待重启':'配置与在线状态分别管理'}}</span></div><p class="muted-note">新增车辆默认不启用。状态端口19204、导航端口19206按现场厂家配置填写；保存后台受未结束任务、配置版本及权限核验，服务重启后生效。此处不会修改PLC、全局通信开关或自动确认地图坐标绑定。</p><div class="management-table"><table><thead><tr><th>编号</th><th>名称</th><th>控制器IP</th><th>状态端口</th><th>导航端口</th><th>启用配置</th><th>当前观察</th><th>操作</th></tr></thead><tbody><tr v-for="v in plan.vehicles" :key="v.vehicleId"><td>{{v.vehicleId}}</td><td>{{v.displayName}}</td><td>{{v.ipAddress}}</td><td>{{v.port}}</td><td>{{v.navigationPort}}</td><td>{{v.enabled?'已勾选':'不启用'}}</td><td>{{effectiveSnapshot?.status?.agvs.find(a=>a.vehicleId===v.vehicleId)?.connection ? label(effectiveSnapshot?.status?.agvs.find(a=>a.vehicleId===v.vehicleId)?.connection) : '无在线数据'}}</td><td><button @click="openVehicle(v)"><ActionIcon name="edit"/>编辑</button><button @click="edit(()=>plan.vehicles=plan.vehicles.filter(n=>n.vehicleId!==v.vehicleId))"><ActionIcon name="remove"/>移出配置稿</button></td></tr></tbody></table></div><p v-if="!plan.vehicles.length" class="empty-panel">尚未配置车辆。点击新增，或连接后台读取已保存配置。</p><p class="amber-text">{{vehicleErrors.join('；')}}</p></div>
   <div v-else-if="tab==='waypoints'" class="waypoint-editor"><div><h3>航点顺序与路径核对</h3><p class="muted-note">顺序是方案中的导航检查列表。每两个航点之间按启用道路及方向计算最短距离；不包含实时交通预约、厂家可达性或PLC业务条件，不直接生成运动命令。生产任务仍使用现有九步业务流程。</p><div class="editor-toolbar"><select v-model="waypoint" aria-label="选择顺序航点"><option value="">选择航点</option><option v-for="n in definition.nodes.filter(n=>n.enabled)" :key="n.id" :value="n.id">{{n.id}} · {{n.agvSiteId||'未绑定'}}</option></select><button :disabled="!waypoint||plan.waypoints.length>=1000" @click="edit(()=>plan.waypoints.push(waypoint))">追加航点</button><button @click="edit(()=>plan.waypoints.reverse())">反转顺序</button><button @click="edit(()=>plan.waypoints=[])">清空顺序</button></div><ol class="waypoint-list"><li v-for="(id,i) in plan.waypoints" :key="i"><b>{{i+1}}</b><span>{{id}}<small>{{definition.nodes.find(n=>n.id===id)?.agvSiteId||'未绑定厂家站点'}}</small></span><button :disabled="i===0" :aria-label="`上移航点${i+1}`" @click="reorder(i,-1)"><IconArrowUp :size="15"/></button><button :disabled="i===plan.waypoints.length-1" :aria-label="`下移航点${i+1}`" @click="reorder(i,1)"><IconArrowDown :size="15"/></button><button :aria-label="`移除航点${i+1}`" @click="edit(()=>plan.waypoints.splice(i,1))"><IconTrash :size="15"/></button></li></ol></div><aside class="workbench-guide"><h3>核对结果</h3><p v-if="route.error" class="amber-text">{{route.error}}</p><template v-else><p class="green-text">导航图结构可达 · {{route.distance.toFixed(2)}} 米</p><h4>展开航点</h4><p>{{route.nodes.join(' → ')}}</p><h4>道路顺序</h4><p>{{route.edges.join(' → ')||'同一航点，无移动'}}</p><h4>沿途资源</h4><p>{{[...new Set([...route.edges.flatMap(id=>definition.edges.find(e=>e.id===id)?.resourceIds??[]),...route.nodes.flatMap(id=>definition.nodes.find(n=>n.id===id)?.resourceIds??[])])].join('、')||'未关联共享区域'}}</p></template></aside></div>
   <details v-if="importWarnings(plan).length" class="muted-note"><summary>导入核对提示（{{importWarnings(plan).length}}）</summary><p v-for="w in importWarnings(plan)" :key="w">{{w}}</p></details>
+  <el-dialog v-model="mapPickerOpen" class="map-picker-dialog" width="min(900px, calc(100vw - 32px))" title="打开后台地图" append-to-body>
+   <div class="map-picker-toolbar">
+    <el-input v-model="mapPickerSearch" clearable :prefix-icon="IconSearch" placeholder="搜索地图名称、编号或坐标系"/>
+    <el-button :icon="IconRefresh" :loading="busy" :disabled="effectiveSource!=='backend'" @click="listMaps">刷新目录</el-button>
+    <el-button :icon="IconPlus" @click="startBlankMapFromPicker">新建空白地图</el-button>
+   </div>
+   <el-empty v-if="!filteredMaps.length" :description="maps.length?'没有匹配的地图':'后台地图目录为空'" :image-size="72"><el-button v-if="maps.length" @click="mapPickerSearch=''">清除搜索</el-button><el-button v-else type="primary" :icon="IconPlus" @click="startBlankMapFromPicker">新建空白地图</el-button></el-empty>
+   <div v-else class="map-picker-list">
+    <article v-for="map in filteredMaps" :key="map.mapId" :class="{active:map.isActive,current:map.mapId===mapId}">
+     <div class="map-picker-card-head"><div><el-tag v-if="map.isActive" type="success" size="small" effect="plain">当前使用</el-tag><el-tag v-else size="small" effect="plain">可编辑</el-tag><strong>{{map.name}}</strong></div><el-button type="primary" plain @click="chooseMapFromPicker(map.mapId)">打开</el-button></div>
+     <p>{{map.description||'未填写地图说明'}}</p>
+     <div class="map-picker-meta"><span>{{map.coordinateSystem}}</span><span>{{map.unit}}</span><span>更新 {{map.updatedAt}}</span></div>
+     <small>{{map.mapId}}</small>
+    </article>
+   </div>
+   <template #footer><span class="map-picker-footnote">打开地图会读取该地图的完整后台草稿，并覆盖当前编辑稿。当前未保存修改会先确认。</span><el-button @click="mapPickerOpen=false">取消</el-button></template>
+  </el-dialog>
   <ConsoleDialog v-if="association" title="关联已有后台地图 · 保留当前编辑稿" @close="association=null">
    <p>目标：<b>{{association.project.name}}</b> · V{{association.draft.versionNumber}}</p>
    <p>{{association.project.mapId}}</p>
@@ -263,7 +461,7 @@ onUnmounted(()=>{++epoch;window.removeEventListener('beforeunload',beforeUnload)
  </section>
 </template>
 <style scoped>
-.workflow-guide{display:flex;align-items:center;gap:8px;padding:10px 14px;background:#0d1a2e;border:1px solid #25365b;border-radius:4px;font-size:11px;color:#8da3c6;flex-wrap:wrap;margin-bottom:6px}
-.workflow-guide b{color:#c8daf0;margin-right:6px}
+.workflow-guide{display:flex;align-items:center;gap:8px;padding:8px 11px;background:var(--ui-surface-soft);border:1px solid var(--ui-line);border-radius:var(--ui-radius-sm);font-size:10px;color:var(--ui-text-2);flex-wrap:wrap}
+.workflow-guide b{color:var(--ui-text);margin-right:4px}
 .workflow-guide span{white-space:nowrap}
 </style>

@@ -3,12 +3,16 @@ import { createPinia } from 'pinia';
 import {
   ElAlert,
   ElButton,
+  ElButtonGroup,
+  ElCheckbox,
   ElCollapse,
   ElCollapseItem,
+  ElColorPicker,
   ElConfigProvider,
   ElDatePicker,
   ElDescriptions,
   ElDescriptionsItem,
+  ElDialog,
   ElDropdown,
   ElDropdownItem,
   ElDropdownMenu,
@@ -34,15 +38,20 @@ import {
   ElTag,
   ElTable,
   ElTableColumn,
-  ElTooltip
+  ElTooltip,
+  ElTree
 } from 'element-plus';
 import 'element-plus/es/components/base/style/css';
 import 'element-plus/es/components/alert/style/css';
 import 'element-plus/es/components/button/style/css';
+import 'element-plus/es/components/button-group/style/css';
+import 'element-plus/es/components/checkbox/style/css';
 import 'element-plus/es/components/collapse/style/css';
 import 'element-plus/es/components/collapse-item/style/css';
+import 'element-plus/es/components/color-picker/style/css';
 import 'element-plus/es/components/descriptions/style/css';
 import 'element-plus/es/components/descriptions-item/style/css';
+import 'element-plus/es/components/dialog/style/css';
 import 'element-plus/es/components/dropdown/style/css';
 import 'element-plus/es/components/dropdown-menu/style/css';
 import 'element-plus/es/components/dropdown-item/style/css';
@@ -69,6 +78,7 @@ import 'element-plus/es/components/tabs/style/css';
 import 'element-plus/es/components/tab-pane/style/css';
 import 'element-plus/es/components/tag/style/css';
 import 'element-plus/es/components/tooltip/style/css';
+import 'element-plus/es/components/tree/style/css';
 import 'element-plus/es/components/popper/style/css';
 import 'element-plus/es/components/scrollbar/style/css';
 import 'element-plus/es/components/drawer/style/css';
@@ -87,12 +97,16 @@ app.use(createPinia());
 app.use(router);
 app.component('ElAlert', ElAlert);
 app.component('ElButton', ElButton);
+app.component('ElButtonGroup', ElButtonGroup);
+app.component('ElCheckbox', ElCheckbox);
 app.component('ElCollapse', ElCollapse);
 app.component('ElCollapseItem', ElCollapseItem);
+app.component('ElColorPicker', ElColorPicker);
 app.component('ElConfigProvider', ElConfigProvider);
 app.component('ElDatePicker', ElDatePicker);
 app.component('ElDescriptions', ElDescriptions);
 app.component('ElDescriptionsItem', ElDescriptionsItem);
+app.component('ElDialog', ElDialog);
 app.component('ElDropdown', ElDropdown);
 app.component('ElDropdownItem', ElDropdownItem);
 app.component('ElDropdownMenu', ElDropdownMenu);
@@ -119,4 +133,5 @@ app.component('ElTag', ElTag);
 app.component('ElTable', ElTable);
 app.component('ElTableColumn', ElTableColumn);
 app.component('ElTooltip', ElTooltip);
+app.component('ElTree', ElTree);
 app.mount('#app');
