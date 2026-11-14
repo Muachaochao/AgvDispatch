@@ -804,7 +804,7 @@ input::placeholder {
 
 @media (min-width: 1600px) {
   .control-grid {
-    grid-template-columns: 280px minmax(0, 1fr) 300px;
+    grid-template-columns: 258px minmax(0, 1fr) 278px;
   }
 }
 
@@ -1582,12 +1582,12 @@ html[data-theme="light"] .engineering-message {
 }
 
 html .overview-page .right-column {
-  grid-template-rows: minmax(220px, .9fr) minmax(140px, 1fr) minmax(100px, .55fr);
+  grid-template-rows: minmax(250px, .85fr) minmax(210px, 1.15fr) minmax(188px, .8fr);
 }
 
 @media (min-width: 1280px) and (max-width: 1560px) {
   html #app .control-grid {
-    grid-template-columns: 250px minmax(0, 1fr) 270px;
+    grid-template-columns: 232px minmax(0, 1fr) 252px;
   }
 }
 
@@ -1634,12 +1634,12 @@ html .overview-page .right-column {
   }
 
   html #app .overview-page .control-grid {
-    height: max(430px, calc(100dvh - 280px));
-    min-height: 430px;
+    height: max(620px, calc(100dvh - 150px));
+    min-height: 620px;
   }
 
   html #app .overview-page .right-column {
-    grid-template-rows: minmax(176px, .85fr) minmax(125px, 1fr) minmax(86px, .5fr);
+    grid-template-rows: minmax(250px, .85fr) minmax(210px, 1.15fr) minmax(188px, .8fr);
   }
 
   html .overview-page .ring-chart {
@@ -4045,6 +4045,18 @@ html[data-theme="light"] .map-control .map-toolbar button.active {
   border-color: #086d84;
   background: #086d84;
   color: #ffffff;
+}
+
+html[data-theme="light"] .overview-page .chart-history {
+  border-color: #bcd3df;
+  background: #edf5f8;
+  color: #086d84;
+}
+
+html[data-theme="light"] .map-control .map-heading select {
+  border-color: #d4dfe9;
+  background: #ffffff;
+  color: #334a60;
 }
 
 html[data-theme="light"] .map-control .map-status-legend,

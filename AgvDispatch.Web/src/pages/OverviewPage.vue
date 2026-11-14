@@ -139,14 +139,13 @@ onUnmounted(() => { ++detailEpoch;++areaEpoch;clearInterval(areaTimer);scene?.di
       </section>
 
       <section class="control-panel alert-preview">
-        <header class="section-heading"><h2>异常告警</h2><button class="text-button" @click="router.push('/alarms')">更多 {{ store.openAlarms.length }}</button></header>
+        <header class="section-heading"><h2>异常告警</h2><button class="text-button" title="确认与恢复是不同状态，请进入告警页核对" @click="router.push('/alarms')">更多 {{ store.openAlarms.length }}</button></header>
         <div class="mini-table-head"><span>级别 / 对象</span><span>告警信息</span></div>
-        <button v-for="alarm in store.openAlarms.slice(0, 5)" :key="alarm.alarmId" class="alarm-preview-row" @click="selectedAlarm = alarm">
+        <button v-for="alarm in store.openAlarms.slice(0, 2)" :key="alarm.alarmId" class="alarm-preview-row" @click="selectedAlarm = alarm">
           <div><span class="severity" :class="alarm.severity.toLowerCase()">{{ ({ Info:'信息',Warning:'警告',Error:'错误',Critical:'严重' })[alarm.severity] ?? alarm.severity }}</span><small>{{ alarm.sourceId }}</small></div>
           <span>{{ alarmTitleText(alarm.title) }}<small>{{ shortTime(alarm.lastObservedAt) }}</small></span>
         </button>
         <p v-if="!store.openAlarms.length" class="empty-panel"><IconCircleCheck :size="25" />{{ store.fresh ? '暂无未确认告警' : '等待有效告警数据' }}</p>
-        <div class="panel-footnote">确认与恢复是不同状态，不在此自动清除告警</div>
       </section>
     </aside>
 
@@ -239,10 +238,20 @@ onUnmounted(() => { ++detailEpoch;++areaEpoch;clearInterval(areaTimer);scene?.di
 </div>
 </template>
 
-<style scoped>.overview-page{flex:1;min-height:0;overflow:auto;padding-bottom:12px;display:flex;flex-direction:column;gap:10px}.overview-page .control-grid{height:max(500px,calc(100dvh - 220px));flex:none;min-height:500px}.live-tasks,.shared-panel{overflow:auto}.live-tasks{min-height:0}.right-column{min-height:0}.distribution-panel>.panel-footnote{flex-shrink:0}.live-tasks>header,.live-tasks>.current-task-counts,.live-task{flex-shrink:0}.live-task>div{flex-wrap:wrap;gap:6px}.live-task b{overflow-wrap:anywhere;min-width:0;white-space:normal;flex:1 1 120px}.live-task small{white-space:normal;overflow-wrap:anywhere;display:block;-webkit-line-clamp:unset;overflow:visible}.shared-resource details{grid-column:1/-1;min-width:0;font-size:11px;overflow-wrap:anywhere}.shared-resource summary{cursor:pointer}.map-context-status{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ui-text-3)}.resource-location{padding:0 16px;font-size:12px;line-height:1.8;color:#c5dbec}.overview-lower-deck{display:grid;gap:10px;flex:none;padding-top:2px}.overview-lower-deck>header{display:flex;align-items:end;justify-content:space-between;gap:16px;padding:12px 3px 4px;border-top:1px solid var(--ui-line)}.overview-lower-deck>header small{display:block;margin-bottom:4px;color:var(--ui-text-3);font-size:9px;letter-spacing:1.4px}.overview-lower-deck>header h2{font-size:15px;color:var(--ui-text)}.overview-lower-deck>header>span{color:var(--ui-text-3);font-size:10px}.overview-lower-deck :deep(.closures-panel),.overview-lower-deck :deep(.waiting-panel){margin-top:0}@media(max-width:900px){.overview-page .control-grid{height:auto;min-height:0}.overview-lower-deck>header{align-items:flex-start;flex-direction:column;gap:4px}}</style>
+<style scoped>.overview-page{flex:1;min-height:0;overflow:auto;padding-bottom:14px;display:flex;flex-direction:column;gap:12px}.overview-page .control-grid{height:max(620px,calc(100dvh - 150px));flex:none;min-height:620px}.left-column{grid-template-rows:minmax(230px,.8fr) minmax(260px,1.2fr) minmax(230px,1fr)}.live-tasks,.shared-panel{overflow:auto}.live-tasks{min-height:0}.right-column{min-height:0}.distribution-panel>.panel-footnote{flex-shrink:0}.live-tasks>header,.live-tasks>.current-task-counts,.live-task{flex-shrink:0}.live-task>div{flex-wrap:wrap;gap:6px}.live-task b{overflow-wrap:anywhere;min-width:0;white-space:normal;flex:1 1 120px}.live-task small{white-space:normal;overflow-wrap:anywhere;display:block;-webkit-line-clamp:unset;overflow:visible}.shared-resource details{grid-column:1/-1;min-width:0;font-size:11px;overflow-wrap:anywhere}.shared-resource summary{cursor:pointer}.map-context-status{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ui-text-3)}.resource-location{padding:0 16px;font-size:12px;line-height:1.8;color:var(--ui-text-3)}.overview-lower-deck{display:grid;gap:10px;flex:none;padding-top:4px}.overview-lower-deck>header{display:flex;align-items:end;justify-content:space-between;gap:16px;padding:14px 3px 6px;border-top:1px solid var(--ui-line)}.overview-lower-deck>header small{display:block;margin-bottom:4px;color:var(--ui-text-3);font-size:9px;letter-spacing:1.4px}.overview-lower-deck>header h2{font-size:15px;color:var(--ui-text)}.overview-lower-deck>header>span{color:var(--ui-text-3);font-size:10px}.overview-lower-deck :deep(.closures-panel),.overview-lower-deck :deep(.waiting-panel){margin-top:0}@media(max-width:900px){.overview-page .control-grid{height:auto;min-height:0}.left-column{grid-template-rows:auto auto auto}.overview-lower-deck>header{align-items:flex-start;flex-direction:column;gap:4px}}</style>
 <style scoped>
 .obstacle-link{align-self:flex-start;margin:0 14px 12px}
-.right-column{grid-template-rows:326px minmax(180px,1fr) auto}
+.right-column{grid-template-rows:minmax(250px,.85fr) minmax(210px,1.15fr) minmax(188px,.8fr);gap:12px}
+.alert-preview{min-height:0;overflow:auto}
+.alert-preview .mini-table-head{margin:13px 16px 0;padding-bottom:10px;line-height:1.5}
+.alert-preview .alarm-preview-row{padding:14px 16px;line-height:1.65}
+.alert-preview .alarm-preview-row small{margin-top:6px;line-height:1.45}
+.alert-preview .panel-footnote{padding:10px 16px;line-height:1.7}
+.shared-panel{max-height:none;min-height:0}
+.shared-panel .shared-resource{padding:13px 16px;gap:7px 12px;line-height:1.55}
+.shared-panel .shared-resource>span{min-width:0;overflow-wrap:anywhere}
+.shared-panel .shared-resource small{padding-top:1px;line-height:1.55}
+.shared-panel .shared-resource details{line-height:1.6}
 .distribution-panel{position:relative;align-items:stretch}
 .distribution-panel::after{content:"";position:absolute;left:46px;right:46px;bottom:5px;height:1px;background:linear-gradient(90deg,transparent,rgba(63,133,186,.32),transparent);pointer-events:none}
 .chart-history{min-height:26px;padding:3px 9px;font-size:11px;color:#77d8ee;border-color:#285a7d;background:#102a43}
@@ -252,5 +261,5 @@ onUnmounted(() => { ++detailEpoch;++areaEpoch;clearInterval(areaTimer);scene?.di
 .ring-legend>span em{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-style:normal}
 .ring-legend>span b{margin-left:auto;color:#eef7ff;font:600 12px Consolas,monospace}
 .map-toolbar{flex-shrink:0;align-items:center}.map-toolbar select{max-width:110px;padding:4px 6px;font-size:11px;min-height:27px}
-@media(max-width:900px){.right-column{grid-template-rows:auto auto auto}}
+@media(max-width:900px){.right-column{grid-template-rows:auto auto auto}.shared-panel{max-height:320px}}
 </style>

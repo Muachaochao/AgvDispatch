@@ -307,7 +307,14 @@ export class DispatchScene {
   view(mode: 'top' | 'isometric') {
     this.mode = mode;
     const fit = 1 / Math.min(this.camera.aspect, 1);
-    this.camera.position.copy(this.center).add((mode === 'top' ? new THREE.Vector3(0, this.span * 1.75, 0.01) : new THREE.Vector3(this.span * 0.72, this.span * 1.15, this.span * 0.9)).multiplyScalar(fit));
+    // Large factory maps need the camera to fit against the viewport width too.
+    // Keeping the old vertical-only distance leaves more than half of a 1920px
+    // wide dispatch canvas empty even though the map itself is complete.
+    const largeMap = this.stationLabels.length > 500;
+    const offset = largeMap
+      ? (mode === 'top' ? new THREE.Vector3(0, this.span * 1.02, 0.01) : new THREE.Vector3(this.span * 0.64, this.span * 0.98, this.span * 0.76))
+      : (mode === 'top' ? new THREE.Vector3(0, this.span * 1.75, 0.01) : new THREE.Vector3(this.span * 0.72, this.span * 1.15, this.span * 0.9));
+    this.camera.position.copy(this.center).add(offset.multiplyScalar(fit));
     this.controls.target.copy(this.center); this.controls.update();
   }
 
