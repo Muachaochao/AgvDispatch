@@ -30,8 +30,8 @@ public sealed class PaiceSimulationOperations(SiteEnvironment site)
         var info = Info;
         if (info is null) return new(false, false, false, PaiceOwnedRecordState.Missing, "尚未配置排策智演。");
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
-        var front = ProbeAsync(http, info.Url, ct);
-        var back = ProbeAsync(http, "http://127.0.0.1:5271/api/health", ct);
+        var front = ProbeFrontendAsync(http, info.Url, ct);
+        var back = ProbeBackendAsync(http, "http://127.0.0.1:5271/api/health", ct);
         await Task.WhenAll(front, back);
         var record = ClassifyOwnedRecord(info.ProcessRecordPath);
         var running = front.Result && back.Result;
@@ -121,12 +121,41 @@ public sealed class PaiceSimulationOperations(SiteEnvironment site)
         return true;
     }
 
-    private static async Task<bool> ProbeAsync(HttpClient http, string url, CancellationToken ct)
+    public static bool IsExpectedFrontendHtml(string html) =>
+        html.Contains("<title>排策智演 · AGV 调度仿真</title>", StringComparison.OrdinalIgnoreCase);
+
+    public static bool IsExpectedBackendHealth(string json)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+            return root.TryGetProperty("code", out var code) && code.GetInt32() == 0 &&
+                   root.TryGetProperty("data", out var data) &&
+                   data.TryGetProperty("service", out var service) && service.GetString() == "agv-backend" &&
+                   data.TryGetProperty("status", out var status) && status.GetString() == "UP";
+        }
+        catch (Exception error) when (error is JsonException or InvalidOperationException or FormatException) { return false; }
+    }
+
+    private static async Task<bool> ProbeFrontendAsync(HttpClient http, string url, CancellationToken ct)
     {
         try
         {
             using var response = await http.GetAsync(url, ct);
-            return response.IsSuccessStatusCode;
+            return response.IsSuccessStatusCode &&
+                   IsExpectedFrontendHtml(await response.Content.ReadAsStringAsync(ct));
+        }
+        catch (Exception error) when (error is HttpRequestException or OperationCanceledException) { return false; }
+    }
+
+    private static async Task<bool> ProbeBackendAsync(HttpClient http, string url, CancellationToken ct)
+    {
+        try
+        {
+            using var response = await http.GetAsync(url, ct);
+            return response.IsSuccessStatusCode &&
+                   IsExpectedBackendHealth(await response.Content.ReadAsStringAsync(ct));
         }
         catch (Exception error) when (error is HttpRequestException or OperationCanceledException) { return false; }
     }
