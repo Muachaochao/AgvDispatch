@@ -25,7 +25,7 @@ html[data-theme="light"] .scene-map-label.station,
 html[data-theme="light"] .scene-map-label.station.vendor-area{
   border-color:transparent;
   background:rgba(255,255,255,.84);
-  color:#3d5569
+  color:#3d5569!important
 }
 
 html[data-theme="light"] .scene-map-label.vehicle{

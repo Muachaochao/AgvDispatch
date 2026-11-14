@@ -3235,6 +3235,10 @@ html[data-theme="light"] .ring-legend b {
   color: #17233a !important;
 }
 
+html[data-theme="light"] .ring-center span {
+  color: #52677d !important;
+}
+
 html[data-theme="light"] .shared-resource > b {
   color: #243a50;
 }
@@ -3274,6 +3278,10 @@ html[data-theme="light"] .section-heading h2 small {
 
 html[data-theme="light"] .health-metric > span {
   color: #52677d !important;
+}
+
+html[data-theme="light"] .health-metric.danger b {
+  color: #a92e49 !important;
 }
 
 html[data-theme="light"] .current-task-counts > span,
@@ -3749,6 +3757,12 @@ html[data-theme="light"] .map-control .map-toolbar button:not(.active) {
   border-color: #d5e0ea;
   background: #ffffff;
   color: #52677d;
+}
+
+html[data-theme="light"] .map-control .map-toolbar button.active {
+  border-color: #086d84;
+  background: #086d84;
+  color: #ffffff;
 }
 
 html[data-theme="light"] .map-control .map-status-legend,
