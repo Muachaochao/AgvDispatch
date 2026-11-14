@@ -29,7 +29,7 @@ internal static class Program
         {
             var actual = new ManagementViewModel(SiteEnvironment.Find(args[1]));
             actual.RefreshAsync().GetAwaiter().GetResult();
-            Console.WriteLine($"{actual.Release}\n后台：{actual.ServiceState}\nWeb：{actual.WebState}\n{actual.Runtime}\n{actual.Paths}");
+            Console.WriteLine($"{actual.Release}\n后台：{actual.ServiceState}\nWeb：{actual.WebState}\n仿真实例：{actual.SimulationInstance}\n仿真服务：{actual.SimulationState}\n{actual.Runtime}\n{actual.Paths}");
             return actual.ServiceState == "配置检查失败" ? 1 : 0;
         }
         var temporary = Path.Combine(Path.GetTempPath(), "agv-manager-test-" + Guid.NewGuid().ToString("N"));
