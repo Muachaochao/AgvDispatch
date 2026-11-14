@@ -63,6 +63,13 @@ internal static class Program
                 "Exited Paice simulation process record is classified as stale");
             Check(PaiceSimulationOperations.RemoveStaleOwnedRecord(staleRecord) && !File.Exists(staleRecord),
                 "Stale Paice simulation process record is safely removed before restart");
+            Check(PaiceSimulationOperations.IsExpectedFrontendHtml("<title>排策智演 · AGV 调度仿真</title>") &&
+                  !PaiceSimulationOperations.IsExpectedFrontendHtml("<title>另一个应用</title>"),
+                "Paice frontend identity requires the expected page title");
+            Check(PaiceSimulationOperations.IsExpectedBackendHealth("""{"code":0,"data":{"service":"agv-backend","status":"UP"}}""") &&
+                  !PaiceSimulationOperations.IsExpectedBackendHealth("""{"code":0,"data":{"service":"other","status":"UP"}}""") &&
+                  !PaiceSimulationOperations.IsExpectedBackendHealth("""{"code":0,"data":{"service":"agv-backend","status":"DOWN"}}"""),
+                "Paice backend identity requires agv-backend and UP");
             File.WriteAllText(staleRecord, JsonSerializer.Serialize(new[] { new { id = Environment.ProcessId, path = paice.Directory, startedUtcTicks = 1L } }));
             Check(PaiceSimulationOperations.ClassifyOwnedRecord(staleRecord) == PaiceOwnedRecordState.Conflict,
                 "Mismatched live process identity remains a conflict");
@@ -70,9 +77,8 @@ internal static class Program
                 "Conflicting Paice simulation record is retained for inspection");
             File.Delete(staleRecord);
             var paiceObservation = new PaiceSimulationOperations(site).ObserveAsync().GetAwaiter().GetResult();
-            Check(paiceObservation.Configured && !paiceObservation.FrontendReady && !paiceObservation.BackendReady &&
-                  paiceObservation.RecordState == PaiceOwnedRecordState.Missing,
-                "Paice simulation observation stays stopped without touching either loopback service");
+            Check(paiceObservation.Configured && paiceObservation.RecordState == PaiceOwnedRecordState.Missing,
+                "Paice simulation observation reads configured loopback identity without mutating services");
             var paiceView = new ManagementViewModel(site);
             Check(paiceView.PaiceFrontendState == "未就绪" && paiceView.PaiceBackendState == "未就绪" &&
                   paiceView.CanStartPaiceSimulation,
