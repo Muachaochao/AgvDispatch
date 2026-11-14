@@ -162,8 +162,8 @@ onMounted(load);
 
 <template>
 <section class="engineering-center management-page">
- <header class="management-title engineering-workbench-title"><div><h2>工程工作台</h2><p>配置、校验、发布、接入与运行核验在同一工作区完成</p></div><span class="mode-badge">配置操作不发送设备指令</span></header>
- <div class="engineering-toolbar"><button :disabled="busy" @click="load">重新读取</button><button class="accent-button" :disabled="busy||!ready||!dirty" @click="save">保存工程草稿</button><button :disabled="busy||!ready" @click="validate">统一校验</button><button :disabled="!ready" @click="download('engineering-plan.json',JSON.stringify(plan,null,2))">导出工程</button><label class="file-button">导入工程<input type="file" accept=".json" :disabled="busy" @change="importProject"/></label><span>{{dirty?'有未保存修改':'草稿已保存'}} · {{revision?revision.slice(0,8):'未建稿'}}</span></div>
+ <header class="management-title engineering-workbench-title"><div><h2>工程工作台</h2><p>配置、校验、发布、接入与运行核验在同一工作区完成</p></div><el-tag class="mode-badge" effect="plain" type="info">配置操作不发送设备指令</el-tag></header>
+ <div class="engineering-toolbar"><el-button :disabled="busy" @click="load">重新读取</el-button><el-button class="accent-button" type="primary" :disabled="busy||!ready||!dirty" @click="save">保存工程草稿</el-button><el-button :disabled="busy||!ready" @click="validate">统一校验</el-button><el-button :disabled="!ready" @click="download('engineering-plan.json',JSON.stringify(plan,null,2))">导出工程</el-button><label class="file-button">导入工程<input type="file" accept=".json" :disabled="busy" @change="importProject"/></label><span>{{dirty?'有未保存修改':'草稿已保存'}} · {{revision?revision.slice(0,8):'未建稿'}}</span></div>
  <p class="engineering-boundary">左侧先完成资源与业务配置；随后在同一页依次校验、发布、执行接入和运行核验。只有通信、地图编辑和单车调试等独立模块保留单独页面。</p>
  <p v-if="error" class="inline-warning" role="alert">{{industrialText(error)}}</p><p v-if="message" class="engineering-message" role="status">{{industrialText(message)}}</p>
  <div class="engineering-layout">

@@ -59,13 +59,13 @@ onMounted(()=>{void load();});
 </script>
 <template>
 <section class="recovery-panel">
-<header><h3>待处理异常 <small>{{ remaining }} 项待核对</small></h3><button :disabled="busy||!fresh" @click="load">{{ busy?'处理中…':'刷新状态' }}</button></header>
-<p v-if="message" role="status" class="recovery-warning">{{ industrialText(message) }}</p>
+<header><h3>待处理异常 <small>{{ remaining }} 项待核对</small></h3><el-button :loading="busy" :disabled="busy||!fresh" @click="load">{{ busy?'处理中…':'刷新状态' }}</el-button></header>
+<el-alert v-if="message" class="recovery-warning" type="warning" :closable="false" show-icon :title="industrialText(message)" />
 <template v-if="status">
-<p v-if="!status.recoveryEnabled" class="recovery-warning">当前仅可查看，恢复操作未启用。</p>
-<p v-if="!current" class="recovery-warning">状态已过期或连接中断，请刷新后核对。</p>
-<p v-if="status.released">全场恢复屏障已放行。需要核对运行中的任务，请展开下方入口。</p>
-<div v-if="!status.released" class="exception-list"><button v-for="i in status.items.filter(i=>!i.verified)" :key="i.ticketId" :class="{selected:ticket===i.ticketId}" :disabled="busy" @click="ticket=i.ticketId">{{ i.taskId==='__SITE__'?'全场设备':i.taskId }} · {{ i.stepText }}</button></div>
+<el-alert v-if="!status.recoveryEnabled" class="recovery-warning" type="warning" :closable="false" show-icon title="当前仅可查看，恢复操作未启用。" />
+<el-alert v-if="!current" class="recovery-warning" type="warning" :closable="false" show-icon title="状态已过期或连接中断，请刷新后核对。" />
+<el-alert v-if="status.released" class="recovery-message" type="success" :closable="false" show-icon title="全场恢复屏障已放行。需要核对运行中的任务，请展开下方入口。" />
+<div v-if="!status.released" class="exception-list"><el-button v-for="i in status.items.filter(i=>!i.verified)" :key="i.ticketId" size="small" :class="{selected:ticket===i.ticketId}" :disabled="busy" @click="ticket=i.ticketId">{{ i.taskId==='__SITE__'?'全场设备':i.taskId }} · {{ i.stepText }}</el-button></div>
 <article v-if="item&&!item.verified&&!status.released">
 <h3>{{ item.stepText }}</h3><p>{{ industrialText(item.reason) }}</p>
 <p>{{ industrialText(item.vehicleSummary) }}</p><p>{{ industrialText(item.loadSummary) }}</p>
@@ -80,12 +80,12 @@ onMounted(()=>{void load();});
 <label v-if="item.requiresPendingWriteConfirmation"><input v-model="pendingConfirmed" type="checkbox" :disabled="busy">原 PLC 写入已按期望值执行，续接时不重发</label>
 <details><summary>其他处理与补充说明</summary><label>处置方式<select v-model="decision" :disabled="busy"><option value="ContinueOriginal">继续原任务</option><option value="RecordPhysicalCompletion">现场动作已完成，申请补记</option><option value="CloseCancelled">核对后关闭已取消任务</option></select></label><label v-if="decision==='CloseCancelled'||item.taskId==='__SITE__'"><input v-model="offlineVehicleConfirmed" type="checkbox" :disabled="busy">相关车辆已正常关机且通信离线（仅用于安全位置、载荷和PLC已核对的全场收尾）</label><label>补充说明（选填）<input v-model="note" maxlength="600" :disabled="busy" /></label><p>补记与关闭仍须后台核验；不会跳过步骤或直接释放占用。</p></details>
 <label class="recovery-warning"><input v-model="globalImpact" type="checkbox" :disabled="busy">全部异常核对通过后恢复全场后续执行（已接受的动作不会自动停止）</label>
-<button :disabled="!allowed||item.identityBlocksRecovery||!locationConfirmed||!loadConfirmed||!plcConfirmed||!material.trim()||(item.requiresPendingWriteConfirmation&&!pendingConfirmed)" @click="act('decisions')">{{ busy?'核验中…':globalImpact?'确认并请求恢复运行':'提交本项核对' }}</button>
+<el-button type="primary" :loading="busy" :disabled="!allowed||item.identityBlocksRecovery||!locationConfirmed||!loadConfirmed||!plcConfirmed||!material.trim()||(item.requiresPendingWriteConfirmation&&!pendingConfirmed)" @click="act('decisions')">{{ busy?'核验中…':globalImpact?'确认并请求恢复运行':'提交本项核对' }}</el-button>
 </div>
 <details id="plc-review"><summary>查看 PLC 信号、路权与身份详情</summary><p>{{ industrialText(item.identitySummary) }}</p><p>{{ industrialText(item.resourceSummary) }}</p><p v-if="!plcPointCount">未取得可识别信号，不能据此认为正常。</p><section v-for="group in plcGroups" :key="group.stationId"><b>{{ group.stationId }}</b><table><tbody><tr v-for="row in group.rows" :key="row.raw"><td>{{ row.label }}</td><td>{{ row.value }}</td><td>{{ row.quality }}</td></tr></tbody></table></section></details>
 </article>
-<div v-if="!status.released&&remaining===0"><p>所有条目已核对，仍需后台最终核验。</p><label><input v-model="globalImpact" type="checkbox" :disabled="busy">确认恢复全场后续派单、运输发送和 PLC 推进</label><button :disabled="!allowed||!globalImpact" @click="act('release')">确认并恢复全场运行</button></div>
-<details v-if="status.released"><summary>核对运行中任务</summary><p>将冻结全场后续派单、发送和 PLC 推进；已接受动作不会自动停止。</p><label><input v-model="globalImpact" type="checkbox" :disabled="busy">确认上述全场影响</label><button :disabled="!allowed||!taskId.trim()||!globalImpact" @click="act('begin')">为所选任务开始核对</button></details>
+<div v-if="!status.released&&remaining===0"><p>所有条目已核对，仍需后台最终核验。</p><label><input v-model="globalImpact" type="checkbox" :disabled="busy">确认恢复全场后续派单、运输发送和 PLC 推进</label><el-button type="primary" :disabled="!allowed||!globalImpact" @click="act('release')">确认并恢复全场运行</el-button></div>
+<details v-if="status.released"><summary>核对运行中任务</summary><p>将冻结全场后续派单、发送和 PLC 推进；已接受动作不会自动停止。</p><label><input v-model="globalImpact" type="checkbox" :disabled="busy">确认上述全场影响</label><el-button :disabled="!allowed||!taskId.trim()||!globalImpact" @click="act('begin')">为所选任务开始核对</el-button></details>
 <details><summary>最近处置记录</summary><p v-for="a in status.audits" :key="a.id">{{ shortTime(a.occurredAt) }} · {{ a.taskId }} · {{ a.decisionText }} · {{ a.reason }}</p></details>
 </template>
 <details><summary>运输超时：受控改道与专项核对</summary><TimeoutDetourRecoveryPanel :task-id="selectedTask" :fresh="fresh" /></details>

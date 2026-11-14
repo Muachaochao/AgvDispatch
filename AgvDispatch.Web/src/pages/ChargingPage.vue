@@ -115,9 +115,9 @@ onMounted(() => {
 
 <template>
   <section class="management-page charging-page">
-    <header class="management-title"><h2>充电管理</h2><button @click="load" :disabled="pending">刷新状态</button></header>
-    <p v-if="error || loadError" role="alert" class="charge-error">{{error || loadError}}</p>
-    <p v-if="message" role="status">{{message}}</p>
+    <header class="management-title"><h2>充电管理</h2><el-button :loading="pending" @click="load">刷新状态</el-button></header>
+    <el-alert v-if="error || loadError" class="charge-error" type="error" :closable="false" show-icon :title="error || loadError" />
+    <el-alert v-if="message" class="charge-message" type="success" :closable="false" show-icon :title="message" />
     <div class="charge-section charge-monitoring">
       <h3>充电桩状态 <span class="charge-monitor-label"><i class="status-dot" :class="monitoring.tone"></i>{{monitoring.label}}</span></h3>
       <dl class="charge-monitor-fields">
@@ -146,9 +146,11 @@ onMounted(() => {
     <template v-if="status">
       <div class="charge-policy">
         <strong>后台自动充电策略：{{monitoring.policy}}</strong>
-        <span>≤{{status.options.startBatteryPercent}}% 申请充电并停止接新业务</span><span>≤{{status.options.criticalBatteryPercent}}% 始终禁止新业务</span><span>≥{{status.options.targetBatteryPercent}}% 结束充电</span>
+        <el-tag effect="plain" type="warning">≤{{status.options.startBatteryPercent}}% 申请充电并停止接新业务</el-tag>
+        <el-tag effect="plain" type="danger">≤{{status.options.criticalBatteryPercent}}% 始终禁止新业务</el-tag>
+        <el-tag effect="plain" type="success">≥{{status.options.targetBatteryPercent}}% 结束充电</el-tag>
       </div>
-      <p v-if="status.blockReason" class="charge-notice">{{status.blockReason}}</p>
+      <el-alert v-if="status.blockReason" class="charge-notice" type="warning" :closable="false" show-icon :title="status.blockReason" />
       <p class="charge-explanation">当前箱体循环与设备握手安全结束后，车辆才交给充电调度。充电排队及运行期间不接新业务；确认停止充电、退桩并完成返程后恢复接单，异常时保留原会话和占用。</p>
       <div class="charge-section charge-request"><h3>申请充电</h3>
         <form class="charge-request-form" @submit.prevent="requestCharge()">
@@ -156,7 +158,7 @@ onMounted(() => {
           <datalist id="charging-vehicles"><option v-for="id in availableVehicleIds" :key="id" :value="id"></option></datalist>
           <label>结束条件<select v-model="requestMode" :disabled="requestLocked"><option value="production">充到目标电量 {{status.options.targetBatteryPercent}}%</option><option value="test" :disabled="!status.options.allowTimedTests">测试：连续充电 1 分钟</option></select></label>
           <label>返程站点（选填）<input v-model="requestReturnSite" maxlength="128" placeholder="留空使用原待机点或本轮起点" :disabled="requestLocked"></label>
-          <button type="submit" :disabled="requestLocked || !status.enabled || !!loadError || !requestVehicle.trim() || requestMode === 'test' && !status.options.allowTimedTests">{{pending ? '处理中…' : '申请充电'}}</button>
+          <el-button native-type="submit" type="primary" :loading="pending" :disabled="requestLocked || !status.enabled || !!loadError || !requestVehicle.trim() || requestMode === 'test' && !status.options.allowTimedTests">{{pending ? '处理中…' : '申请充电'}}</el-button>
         </form>
         <p>申请进入后台队列，等待当前业务安全收尾、充电位和进出路线核验；不会中断正在执行的箱体循环。一分钟测试按连续实际充电计时，建立充电连接的等待时间不计入。</p>
         <p v-if="!status.enabled">后台自动充电未启用，暂不能发送新的充电申请。</p>
@@ -164,8 +166,8 @@ onMounted(() => {
         <p v-if="storageError" role="alert" class="charge-error">{{storageError}}</p>
         <div v-if="requestIntent" class="charge-request-pending" role="status">
           <p>原申请 {{requestIntent.requestId}} 尚待核对，车辆 {{requestIntent.vehicleId}}。查询不会重新发送任务。</p>
-          <button :disabled="pending" @click="load">查询原申请</button>
-          <button :disabled="pending || !!loadError" @click="requestCharge(true)">重试原申请</button>
+          <el-button :disabled="pending" @click="load">查询原申请</el-button>
+          <el-button :disabled="pending || !!loadError" @click="requestCharge(true)">重试原申请</el-button>
         </div>
       </div>
       <div class="charge-section"><h3>充电位配置</h3>
@@ -185,8 +187,8 @@ onMounted(() => {
             <td class="charge-reason">{{industrialText(row.message)}}
               <template v-if="matchingChargingWorkflow(row)"><small>{{matchingChargingWorkflow(row)?.message}}</small><small>本段连续充电：{{positiveSeconds(row)}} · 停充核验：{{row.shutdownVerified || matchingChargingWorkflow(row)?.shutdownVerified ? '已确认' : '尚未确认'}}</small></template>
               <small>{{row.sessionId}}</small></td>
-            <td><div class="charge-actions"><button v-if="row.phase !== 'Completed'" :disabled="pending" @click="open(row, 'stop')">停止申请</button>
-              <template v-if="row.phase === 'Hold'"><button :disabled="pending" @click="open(row, 'continue')">核对续接</button><button :disabled="pending" @click="open(row, 'close')">核对离位</button></template></div></td>
+            <td><div class="charge-actions"><el-button v-if="row.phase !== 'Completed'" size="small" :disabled="pending" @click="open(row, 'stop')">停止申请</el-button>
+              <template v-if="row.phase === 'Hold'"><el-button size="small" :disabled="pending" @click="open(row, 'continue')">核对续接</el-button><el-button size="small" :disabled="pending" @click="open(row, 'close')">核对离位</el-button></template></div></td>
           </tr>
         </tbody></table></div>
       </div>
@@ -200,7 +202,7 @@ onMounted(() => {
           <label><input v-model="chargerConfirmed" type="checkbox" :disabled="pending">已核对充电状态、实际位置和充电位</label>
         </template>
         <p v-if="error" role="alert" class="charge-error">{{error}}</p>
-        <button :disabled="pending || reason.trim().length < 10 || action !== 'stop' && (!vehicleConfirmed || !chargerConfirmed)" @click="submit">{{pending ? '核对中…' : '提交核对'}}</button>
+        <el-button type="primary" :loading="pending" :disabled="pending || reason.trim().length < 10 || action !== 'stop' && (!vehicleConfirmed || !chargerConfirmed)" @click="submit">{{pending ? '核对中…' : '提交核对'}}</el-button>
       </div>
     </ConsoleDialog>
   </section>

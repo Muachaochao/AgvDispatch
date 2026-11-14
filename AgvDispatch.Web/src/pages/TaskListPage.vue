@@ -240,34 +240,37 @@ watch(() => route.query.create, create => {
 
   <el-drawer v-model="formOpen" class="task-create-drawer" title="创建调度任务" size="min(720px, 96vw)" :close-on-click-modal="false" destroy-on-close>
     <div class="creation-drawer-body">
-      <nav class="creation-step-rail" aria-label="创建任务步骤">
-        <button v-for="(step, index) in creationSteps" :key="step" type="button" :class="{ active: createStep === index + 1, complete: createStep > index + 1 }" :aria-current="createStep === index + 1 ? 'step' : undefined" @click="createStep = index + 1">
-          <span>{{ index + 1 }}</span><b>{{ step }}</b>
-        </button>
-      </nav>
+      <el-steps class="creation-el-steps" :active="createStep - 1" finish-status="success" process-status="process" align-center>
+        <el-step v-for="(step, index) in creationSteps" :key="step" :title="step" class="creation-el-step" role="button" tabindex="0" :aria-current="createStep === index + 1 ? 'step' : undefined" @click="createStep = index + 1" @keydown.enter.prevent="createStep = index + 1" @keydown.space.prevent="createStep = index + 1" />
+      </el-steps>
 
       <section v-if="createStep === 1" class="creation-step-content">
-        <div class="creation-step-heading"><span>第 1 步</span><h3>选择任务运行方式</h3><p>单次任务适合日常出车；按需运行和循环测试用于持续联调，提交边界更严格。</p></div>
+        <div class="creation-step-heading"><el-tag effect="plain" round>第 1 步</el-tag><h3>选择任务运行方式</h3><p>单次任务适合日常出车；按需运行和循环测试用于持续联调，提交边界更严格。</p></div>
         <nav class="creation-modes" aria-label="任务运行模式">
           <button class="creation-mode-card" :class="{active:creationMode==='Single'}" @click="selectCreationMode('Single')"><b>单次业务任务</b><small>取满箱、倒料、返空箱一次完成</small></button>
           <button class="creation-mode-card" :class="{active:creationMode==='Demand'}" @click="selectCreationMode('Demand')"><b>正常按需运行</b><small>按PLC呼叫接续所选工位</small></button>
           <button class="creation-mode-card" :class="{active:creationMode==='Cycle'}" @click="selectCreationMode('Cycle')"><b>自动循环测试</b><small>按工位顺序执行指定轮数</small></button>
         </nav>
-        <div class="creation-boundary"><b>执行边界</b><span>{{ store.submissionEnabled ? '提交成功只代表后台受理，不等于车辆动作已完成。' : '当前未开启Web提交，可继续核对条件与路线。' }}</span></div>
+        <el-alert class="creation-el-alert" type="info" :closable="false" show-icon>
+          <template #title>执行边界</template>
+          {{ store.submissionEnabled ? '提交成功只代表后台受理，不等于车辆动作已完成。' : '当前未开启Web提交，可继续核对条件与路线。' }}
+        </el-alert>
       </section>
 
       <section v-else-if="createStep === 2" class="creation-step-content">
-        <div class="creation-step-heading"><span>第 2 步</span><h3>{{ creationMode === 'Single' ? '核对工位、车辆与路线' : creationMode === 'Demand' ? '配置按需运行' : '配置循环测试' }}</h3><p>{{ creationMode === 'Single' ? '系统只展示后台当前允许的配置，条件未满足时不能提交。' : '运行条件仍由后台核验，网页不会绕过设备与恢复门禁。' }}</p></div>
+        <div class="creation-step-heading"><el-tag effect="plain" round>第 2 步</el-tag><h3>{{ creationMode === 'Single' ? '核对工位、车辆与路线' : creationMode === 'Demand' ? '配置按需运行' : '配置循环测试' }}</h3><p>{{ creationMode === 'Single' ? '系统只展示后台当前允许的配置，条件未满足时不能提交。' : '运行条件仍由后台核验，网页不会绕过设备与恢复门禁。' }}</p></div>
         <BusinessRunPanel v-if="creationMode!=='Single'" :mode="creationMode" :options="options"/>
         <template v-else>
           <p class="form-explanation">{{ (options?.explanation ?? actionMessage) || '正在查询后台创建条件…' }}</p>
-          <div class="creation-grid creation-grid-element">
-            <label>取料工位<el-select v-model="station" :disabled="requestUncertain || actionBusy || optionsBusy" placeholder="请选择取料工位"><el-option v-for="s in options?.stations ?? []" :key="s.stationId" :label="`${s.stationId} · ${s.pickupSite}${s.available ? '' : ' · 条件未满足'}`" :value="s.stationId" /></el-select></label>
-            <label>车辆<el-select v-model="vehicle" :disabled="requestUncertain || actionBusy || optionsBusy" placeholder="请选择车辆"><el-option v-for="v in options?.vehicles ?? []" :key="v.vehicleId" :label="`${v.label}${v.available ? '' : ' · 暂不可用'}`" :value="v.vehicleId" /></el-select></label>
-            <label>优先级（0–100）<el-input-number v-model="priority" :min="0" :max="100" :disabled="requestUncertain || actionBusy" /></label>
-            <label>前置任务（可选）<el-input v-model="dependencyTaskIdsInput" maxlength="520" placeholder="多个任务编号用逗号分隔；完成前不派车" :disabled="requestUncertain || actionBusy" /></label>
-            <label>地图版本<el-input :model-value="options?.mapVersionId ?? '—'" readonly /></label>
-          </div>
+          <el-form class="creation-el-form" label-position="top">
+            <div class="creation-grid creation-grid-element">
+              <el-form-item label="取料工位"><el-select v-model="station" :disabled="requestUncertain || actionBusy || optionsBusy" placeholder="请选择取料工位"><el-option v-for="s in options?.stations ?? []" :key="s.stationId" :label="`${s.stationId} · ${s.pickupSite}${s.available ? '' : ' · 条件未满足'}`" :value="s.stationId" /></el-select></el-form-item>
+              <el-form-item label="车辆"><el-select v-model="vehicle" :disabled="requestUncertain || actionBusy || optionsBusy" placeholder="请选择车辆"><el-option v-for="v in options?.vehicles ?? []" :key="v.vehicleId" :label="`${v.label}${v.available ? '' : ' · 暂不可用'}`" :value="v.vehicleId" /></el-select></el-form-item>
+              <el-form-item label="优先级（0–100）"><el-input-number v-model="priority" :min="0" :max="100" :disabled="requestUncertain || actionBusy" /></el-form-item>
+              <el-form-item label="前置任务（可选）"><el-input v-model="dependencyTaskIdsInput" maxlength="520" placeholder="多个任务编号用逗号分隔；完成前不派车" :disabled="requestUncertain || actionBusy" /></el-form-item>
+              <el-form-item label="地图版本"><el-input :model-value="options?.mapVersionId ?? '—'" readonly /></el-form-item>
+            </div>
+          </el-form>
           <div class="creation-inline-tools">
             <el-button :disabled="optionsBusy || actionBusy || requestUncertain || !store.fresh" @click="loadOptions(true)"><ActionIcon name="refresh"/>{{ optionsBusy ? '刷新中…' : '刷新条件' }}</el-button>
             <el-button :disabled="!options || !station || !vehicle || optionsBusy || actionBusy || !store.fresh" @click="previewRoute"><ActionIcon name="route"/>核对四段路线</el-button>
@@ -279,27 +282,34 @@ watch(() => route.query.create, create => {
             <dl><div v-for="input in templateInputs" :key="input.key"><dt>{{ input.label }} <small>{{ input.key }}</small></dt><dd>{{ input.value }}</dd></div></dl>
             <details><summary>输出变量与失败策略</summary><p v-for="output in templateOutputs" :key="output.key">{{ output.label }} · {{ output.key }} · {{ output.type }}</p><p>节点 {{ options.template.nodes.length }} 个，异常分支 {{ options.template.guards.length }} 条。</p></details>
           </section>
-          <details class="form-explanation"><summary>查看工位条件与未满足项</summary><div role="status">
-            <p v-for="s in options?.stations ?? []" :key="s.stationId">{{ s.stationId }}：{{ s.explanation }}</p>
-            <p v-if="selectedVehicle">车辆：{{ selectedVehicle.explanation }}</p>
-            <p v-if="selectedStation && selectedVehicle && !pickupReachable">所选车辆当前站点到取料点没有可执行路径，请检查地图道路和方向。</p>
-          </div></details>
+          <el-collapse class="creation-condition-collapse">
+            <el-collapse-item title="查看工位条件与未满足项" name="conditions">
+              <div class="creation-condition-list" role="status">
+                <p v-for="s in options?.stations ?? []" :key="s.stationId">{{ s.stationId }}：{{ s.explanation }}</p>
+                <p v-if="selectedVehicle">车辆：{{ selectedVehicle.explanation }}</p>
+                <p v-if="selectedStation && selectedVehicle && !pickupReachable">所选车辆当前站点到取料点没有可执行路径，请检查地图道路和方向。</p>
+              </div>
+            </el-collapse-item>
+          </el-collapse>
         </template>
         <p v-if="actionMessage" class="form-feedback" role="status">{{ industrialText(actionMessage) }}</p>
       </section>
 
       <section v-else class="creation-step-content">
-        <div class="creation-step-heading"><span>第 3 步</span><h3>确认并提交</h3><p>提交后仍须由后台核验车辆、地图、PLC握手和路权。</p></div>
-        <dl class="creation-review">
-          <div><dt>运行方式</dt><dd>单次业务任务</dd></div>
-          <div><dt>取料工位</dt><dd>{{ selectedStation?.stationId ?? '未选择' }}</dd></div>
-          <div><dt>车辆</dt><dd>{{ selectedVehicle?.vehicleId ?? '未选择' }}</dd></div>
-          <div><dt>优先级</dt><dd>{{ priority }}</dd></div>
-          <div><dt>前置任务</dt><dd>{{ dependencyTaskIdsInput || '无' }}</dd></div>
-          <div><dt>地图版本</dt><dd>{{ options?.mapVersionId ?? '未取得' }}</dd></div>
-          <div class="wide"><dt>路线核对</dt><dd>{{ routePreview?.message ?? '尚未执行路线核对；提交前建议先核对四段路线。' }}</dd></div>
-        </dl>
-        <div class="creation-boundary" :class="{warning:!canSubmit}"><b>{{ canSubmit ? '可以提交' : '当前不可提交' }}</b><span>{{ canSubmit ? '后台将再次校验，成功受理后继续观察任务阶段。' : '请返回上一步检查工位、车辆、路径、执行许可或未确认申请。' }}</span></div>
+        <div class="creation-step-heading"><el-tag effect="plain" round>第 3 步</el-tag><h3>确认并提交</h3><p>提交后仍须由后台核验车辆、地图、PLC握手和路权。</p></div>
+        <el-descriptions class="creation-review-descriptions" :column="2" border>
+          <el-descriptions-item label="运行方式">单次业务任务</el-descriptions-item>
+          <el-descriptions-item label="取料工位">{{ selectedStation?.stationId ?? '未选择' }}</el-descriptions-item>
+          <el-descriptions-item label="车辆">{{ selectedVehicle?.vehicleId ?? '未选择' }}</el-descriptions-item>
+          <el-descriptions-item label="优先级">{{ priority }}</el-descriptions-item>
+          <el-descriptions-item label="前置任务">{{ dependencyTaskIdsInput || '无' }}</el-descriptions-item>
+          <el-descriptions-item label="地图版本">{{ options?.mapVersionId ?? '未取得' }}</el-descriptions-item>
+          <el-descriptions-item label="路线核对" :span="2">{{ routePreview?.message ?? '尚未执行路线核对；提交前建议先核对四段路线。' }}</el-descriptions-item>
+        </el-descriptions>
+        <el-alert class="creation-el-alert" :type="canSubmit ? 'success' : 'warning'" :closable="false" show-icon>
+          <template #title>{{ canSubmit ? '可以提交' : '当前不可提交' }}</template>
+          {{ canSubmit ? '后台将再次校验，成功受理后继续观察任务阶段。' : '请返回上一步检查工位、车辆、路径、执行许可或未确认申请。' }}
+        </el-alert>
         <p v-if="actionMessage" class="form-feedback" role="status">{{ industrialText(actionMessage) }}</p>
       </section>
     </div>
