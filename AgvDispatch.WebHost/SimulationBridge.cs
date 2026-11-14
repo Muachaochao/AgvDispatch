@@ -11,14 +11,11 @@ namespace AgvDispatch.WebHost;
 /// <summary>Owns one explicitly configured loopback simulation controller; never uses DispatchPipe.</summary>
 public sealed class SimulationBridge : IAsyncDisposable
 {
-    private static readonly Regex InstanceNamePattern = new("^web-single-vehicle-[A-Za-z0-9_-]+$", RegexOptions.CultureInvariant);
     private readonly SemaphoreSlim gate = new(1, 1);
     private readonly HttpClient client;
     private readonly string token = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
-    private readonly string? root, python, controller, artifactsRoot;
+    private readonly string? root, python, controller;
     private readonly int port;
-    private readonly object bindingCacheGate = new();
-    private (long Length, DateTime LastWriteUtc, string? Selected)? bindingSelectionCache;
     private Process? process;
     private bool disposed;
     private readonly StringBuilder diagnostics = new();
@@ -51,63 +48,6 @@ public sealed class SimulationBridge : IAsyncDisposable
         foreach (var path in new[] { root, controller, python }) RejectReparseAncestors(path);
         client.BaseAddress = new Uri($"http://127.0.0.1:{port}");
         client.DefaultRequestHeaders.Add("X-Simulation-Token", token);
-        artifactsRoot = artifacts;
-    }
-
-    public async Task<IResult> ReadBindingAsync(CancellationToken ct)
-    {
-        var binding = DiscoverBinding();
-        var owned = process;
-        if (owned is not { HasExited: false }) return Results.Json(binding);
-        try
-        {
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeout.CancelAfter(TimeSpan.FromSeconds(5));
-            using var status = await client.GetAsync("/status", timeout.Token);
-            status.EnsureSuccessStatusCode();
-            using var document = JsonDocument.Parse(await status.Content.ReadAsStringAsync(timeout.Token));
-            var active = document.RootElement.TryGetProperty("rootName", out var rootName) ? rootName.GetString() : null;
-            if (!string.IsNullOrWhiteSpace(active))
-                binding = binding with { SelectedInstance = active, SelectionSource = "running-controller" };
-        }
-        catch (Exception error) when (error is HttpRequestException or OperationCanceledException or JsonException)
-        {
-            binding = binding with { Message = "控制器进程存在，但状态读取失败：" + error.Message };
-        }
-        return Results.Json(binding);
-    }
-
-    public async Task<IResult> StopControllerAsync(CancellationToken ct)
-    {
-        if (!Enabled) return Results.Json(DiscoverBinding() with { Message = "隔离仿真环境未启用。" });
-        await gate.WaitAsync(ct);
-        try
-        {
-            var owned = process;
-            if (owned is not { HasExited: false })
-            {
-                process?.Dispose();
-                process = null;
-                return Results.Json(DiscoverBinding() with { ControllerRunning = false, Message = "仿真控制器未运行。" });
-            }
-            try
-            {
-                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                timeout.CancelAfter(TimeSpan.FromSeconds(45));
-                using var response = await client.PostAsync(
-                    "/shutdown", new StringContent("{}", Encoding.UTF8, "application/json"), timeout.Token);
-                await owned.WaitForExitAsync(timeout.Token);
-            }
-            catch (Exception error) when (error is HttpRequestException or OperationCanceledException or IOException)
-            {
-                if (!owned.HasExited) owned.Kill();
-                if (!owned.HasExited) await owned.WaitForExitAsync(CancellationToken.None);
-            }
-            owned.Dispose();
-            process = null;
-            return Results.Json(DiscoverBinding() with { ControllerRunning = false, Message = "仿真控制器及其受管仿真实例已停止。" });
-        }
-        finally { gate.Release(); }
     }
 
     public async Task<IResult> ForwardAsync(HttpMethod method, string path, string? body, CancellationToken ct)
@@ -205,138 +145,6 @@ public sealed class SimulationBridge : IAsyncDisposable
             (!int.TryParse(pageSize, out var size) || size is < 1 or > 200))
             return false;
         return true;
-    }
-
-    private SimulationBindingSnapshot DiscoverBinding()
-    {
-        var templateRootName = root is null ? "" : Path.GetFileName(root);
-        var selectionSource = "template-root";
-        var selectedRoot = root;
-        var message = "";
-        if (Enabled && artifactsRoot is not null)
-        {
-            try
-            {
-                var selected = ReadSelectedRootName();
-                if (selected is not null)
-                {
-                    var candidate = Path.Combine(artifactsRoot, selected);
-                    if (ValidInstance(candidate))
-                    {
-                        selectedRoot = candidate;
-                        selectionSource = "scheme-selection";
-                    }
-                }
-                if (selectionSource != "scheme-selection")
-                {
-                    var latest = Directory.EnumerateDirectories(
-                            artifactsRoot, "web-single-vehicle-*", SearchOption.TopDirectoryOnly)
-                        .Where(ValidInstance)
-                        .OrderByDescending(Directory.GetLastWriteTimeUtc)
-                        .FirstOrDefault();
-                    if (latest is not null)
-                    {
-                        selectedRoot = latest;
-                        selectionSource = "latest-valid-instance";
-                    }
-                }
-            }
-            catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException or
-                                              InvalidDataException or ArgumentException)
-            {
-                message = "最新仿真实例读取失败：" + error.Message;
-            }
-        }
-        var selectedName = selectedRoot is null ? null : Path.GetFileName(selectedRoot);
-        var available = selectedRoot is not null && ValidInstance(selectedRoot);
-        var metadata = available ? ReadInstanceMetadata(selectedRoot!) : default;
-        return new SimulationBindingSnapshot(
-            Enabled,
-            process is { HasExited: false },
-            port,
-            templateRootName,
-            selectedName,
-            selectionSource,
-            available,
-            metadata.MapName,
-            metadata.VehicleCount,
-            metadata.StationCount,
-            message);
-    }
-
-    private string? ReadSelectedRootName()
-    {
-        if (artifactsRoot is null || root is null) return null;
-        var directory = Path.Combine(artifactsRoot, "simulation-center");
-        if (!Directory.Exists(directory)) return null;
-        RejectReparseAncestors(directory);
-        var scope = Convert.ToHexString(
-            SHA256.HashData(Encoding.UTF8.GetBytes(root.ToLowerInvariant())))[..16].ToLowerInvariant();
-        var path = Path.Combine(directory, "schemes-" + scope + ".json");
-        if (!File.Exists(path)) return null;
-        var info = new FileInfo(path);
-        if (info.Length is <= 0 or > 64 * 1024 * 1024)
-            throw new InvalidDataException("仿真选择记录大小无效。");
-        lock (bindingCacheGate)
-        {
-            if (bindingSelectionCache is { } cached &&
-                cached.Length == info.Length && cached.LastWriteUtc == info.LastWriteTimeUtc)
-                return cached.Selected;
-        }
-        RejectReparseAncestors(path);
-        using var document = JsonDocument.Parse(File.ReadAllText(path));
-        var selected = document.RootElement.TryGetProperty("selectedRoot", out var value) ? value.GetString() : null;
-        var result = selected is not null && InstanceNamePattern.IsMatch(selected) ? selected : null;
-        lock (bindingCacheGate)
-            bindingSelectionCache = (info.Length, info.LastWriteTimeUtc, result);
-        return result;
-    }
-
-    private bool ValidInstance(string path)
-    {
-        if (!Directory.Exists(path) || !InstanceNamePattern.IsMatch(Path.GetFileName(path))) return false;
-        try
-        {
-            RejectReparseAncestors(path);
-            return File.Exists(Path.Combine(path, "lab.json")) &&
-                   File.Exists(Path.Combine(path, "service", "appsettings.json")) &&
-                   File.Exists(Path.Combine(path, "webhost", "appsettings.json"));
-        }
-        catch (ArgumentException) { return false; }
-    }
-
-    private static InstanceMetadata ReadInstanceMetadata(string path)
-    {
-        try
-        {
-            var file = Path.Combine(path, "lab.json");
-            if (new FileInfo(file).Length > 16 * 1024 * 1024) return default;
-            using var document = JsonDocument.Parse(File.ReadAllText(file));
-            var root = document.RootElement;
-            var configuration = root.TryGetProperty("simulationConfiguration", out var config) ? config : default;
-            var mapName = configuration.ValueKind == JsonValueKind.Object &&
-                          configuration.TryGetProperty("mapName", out var map)
-                ? map.GetString()
-                : root.TryGetProperty("mapName", out var labMap) ? labMap.GetString() : null;
-            var vehicles = configuration.ValueKind == JsonValueKind.Object &&
-                           configuration.TryGetProperty("vehicles", out var rows) &&
-                           rows.ValueKind == JsonValueKind.Array
-                ? rows.GetArrayLength()
-                : root.TryGetProperty("initialSites", out var sites) &&
-                  sites.ValueKind == JsonValueKind.Object
-                    ? sites.EnumerateObject().Count()
-                    : 0;
-            var stations = configuration.ValueKind == JsonValueKind.Object &&
-                           configuration.TryGetProperty("stations", out var stationRows) &&
-                           stationRows.ValueKind == JsonValueKind.Array
-                ? stationRows.GetArrayLength()
-                : 0;
-            return new InstanceMetadata(mapName, vehicles, stations);
-        }
-        catch (Exception error) when (error is IOException or JsonException or ArgumentException)
-        {
-            return default;
-        }
     }
 
     private async Task EnsureStartedAsync(CancellationToken ct)
@@ -449,18 +257,3 @@ public sealed class SimulationBridge : IAsyncDisposable
         finally { gate.Release(); }
     }
 }
-
-public sealed record SimulationBindingSnapshot(
-    bool Enabled,
-    bool ControllerRunning,
-    int ControllerPort,
-    string TemplateRootName,
-    string? SelectedInstance,
-    string SelectionSource,
-    bool InstanceAvailable,
-    string? MapName,
-    int VehicleCount,
-    int StationCount,
-    string Message);
-
-internal readonly record struct InstanceMetadata(string? MapName, int VehicleCount, int StationCount);

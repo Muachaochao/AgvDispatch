@@ -58,6 +58,28 @@ public sealed class SiteEnvironment
             settings["productionDispatch"]?.GetValue<bool>() ?? false, settings["maxConcurrentTasks"]?.GetValue<int>() ?? 1);
     }
 
+    public PaiceSimulationInfo? ReadPaiceSimulation()
+    {
+        var settings = JsonNode.Parse(File.ReadAllText(SettingsPath))?.AsObject() ?? throw new InvalidDataException("日常入口配置为空。");
+        if (settings["paiceSimulation"] is not JsonObject paice) return null;
+        var directory = PaicePath(paice["directory"]?.GetValue<string>(), "directory");
+        var start = PaicePath(paice["startScript"]?.GetValue<string>(), "startScript");
+        var stop = PaicePath(paice["stopScript"]?.GetValue<string>(), "stopScript");
+        var url = paice["url"]?.GetValue<string>();
+        if (!Directory.Exists(directory)) throw new InvalidDataException("排策智演目录不存在：" + directory);
+        if (!File.Exists(start) || !File.Exists(stop)) throw new InvalidDataException("排策智演启动或停止脚本不存在。");
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
+            uri.Scheme != Uri.UriSchemeHttp || uri.Host != "127.0.0.1" || uri.Port != 5270)
+            throw new InvalidDataException("排策智演地址必须为 http://127.0.0.1:5270/。");
+        return new(directory, start, stop, uri.AbsoluteUri);
+    }
+
+    private string PaicePath(string? value, string name)
+    {
+        if (string.IsNullOrWhiteSpace(value)) throw new InvalidDataException($"paiceSimulation.{name}未配置。");
+        return Path.GetFullPath(Path.IsPathRooted(value) ? value : Path.Combine(Root, value));
+    }
+
     public static string ChildPath(string root, string relative)
     {
         if (string.IsNullOrWhiteSpace(relative) || Path.IsPathRooted(relative)) throw new InvalidDataException("路径必须为目录内的相对路径。");
@@ -71,6 +93,12 @@ public sealed class SiteEnvironment
 public sealed record ReleaseInfo(string Bundle, string ReleaseId, string PipeName, string Launcher, string Service, bool ProductionDispatch, int MaxConcurrentTasks)
 {
     public string SessionPath => Path.Combine(Bundle, "Runtime", "launcher-session.json");
+}
+
+public sealed record PaiceSimulationInfo(string Directory, string StartScript, string StopScript, string Url)
+{
+    public string RuntimeDirectory => Path.Combine(Directory, ".runtime");
+    public string ProcessRecordPath => Path.Combine(RuntimeDirectory, "processes.json");
 }
 
 public sealed record OwnedProcess(int Id, long StartedUtcTicks, string Path);

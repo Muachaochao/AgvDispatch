@@ -6,15 +6,6 @@ public static class SimulationApi
 {
     public static void MapSimulationApi(this WebApplication app)
     {
-        app.MapGet("/api/simulation/binding", async (SimulationBridge bridge, CancellationToken ct) =>
-            await bridge.ReadBindingAsync(ct));
-        app.MapPost("/api/simulation/controller/start", async (SimulationBridge bridge, CancellationToken ct) =>
-        {
-            await bridge.ForwardAsync(HttpMethod.Get, "/status", null, ct);
-            return await bridge.ReadBindingAsync(ct);
-        });
-        app.MapPost("/api/simulation/controller/stop", async (SimulationBridge bridge, CancellationToken ct) =>
-            await bridge.StopControllerAsync(ct));
         app.MapGet("/api/simulation", async (SimulationBridge bridge, CancellationToken ct) =>
             bridge.Enabled ? await bridge.ForwardAsync(HttpMethod.Get, "/status", null, ct) :
                 Results.Ok(new { enabled = false, message = "尚未配置隔离仿真环境，请先创建仿真实验。现场通信配置不会被替换。" }));

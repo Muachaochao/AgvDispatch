@@ -18,6 +18,7 @@ public sealed class ManagementViewModel : INotifyPropertyChanged
     private readonly SiteEnvironment _site;
     private readonly SiteOperations _operations;
     private readonly SiteArchives _archives;
+    private readonly PaiceSimulationOperations _paiceOperations;
     private bool _refreshing;
     private bool _connectionsRefreshing;
     private bool _busy;
@@ -25,11 +26,12 @@ public sealed class ManagementViewModel : INotifyPropertyChanged
     private string _message = "准备检查日常版本与运行状态。";
     private string _serviceState = "检查中";
     private string _webState = "检查中";
-    private string _simulationState = "等待 WebHost 启动";
-    private string _simulationConnection = "未运行";
-    private string _simulationInstance = "尚未读取最新实例";
-    private bool _simulationRunning;
-    private bool _simulationEnabled;
+    private string _paiceState = "等待检查排策智演";
+    private string _paiceFrontendState = "未就绪";
+    private string _paiceBackendState = "未就绪";
+    private bool _paiceConfigured;
+    private bool _paiceRunning;
+    private PaiceOwnedRecordState _paiceRecordState;
     private string _release = "—";
     private string _runtime = "尚未采集后台状态。";
     private string _paths = "";
@@ -50,26 +52,28 @@ public sealed class ManagementViewModel : INotifyPropertyChanged
 
     public ManagementViewModel(SiteEnvironment site)
     {
-        _site = site; _operations = new(site); _archives = new(site);
+        _site = site; _operations = new(site); _archives = new(site); _paiceOperations = new(site);
+        try { _paiceConfigured = _paiceOperations.Info is not null; }
+        catch (Exception ex) { _paiceState = ex.Message; }
         RefreshCommand = new AsyncAction(async () => { await RefreshAsync(); await ReadConnectionsAsync(); }, () => !IsBusy);
         StartCommand = Operation(async () => SetMessage(await _operations.LaunchAsync(false)));
         StopCommand = Operation(async () => { if (Confirm("停止当前日常后台和 Web？\n核对任务、路权、待发命令、充电及在线车辆停稳状态；离线车辆不阻止空闲系统停止。\n此操作不向车辆发送停车指令。")) SetMessage(await _operations.LaunchAsync(true)); });
         RestartCommand = Operation(async () => { if (!Confirm("重启当前日常系统？\n先核对任务清场、充电及在线车辆状态；离线车辆不阻止空闲系统停止。重新启动沿用原有配置。")) return; SetMessage(await _operations.LaunchAsync(true)); SetMessage(await _operations.LaunchAsync(false)); });
-        StartSimulationCommand = Operation(async () =>
+        StartPaiceCommand = Operation(async () =>
         {
-            var binding = await new LocalBackendClient(_site.ReadRelease().PipeName).ControlSimulationControllerAsync(false);
-            SetMessage("仿真控制器已启动；当前绑定：" + (binding.SelectedInstance ?? "未选择实例"));
+            var observation = await _paiceOperations.StartAsync();
+            SetMessage(observation.Message);
         });
-        StopSimulationCommand = Operation(async () =>
+        StopPaiceCommand = Operation(async () =>
         {
-            if (!Confirm("停止当前隔离仿真控制器及其受管仿真实例？\n该操作只停止测试仿真，不停止正式后台，也不向现场车辆发送命令。")) return;
-            var binding = await new LocalBackendClient(_site.ReadRelease().PipeName).ControlSimulationControllerAsync(true);
-            SetMessage(binding.Message);
+            if (!Confirm("停止独立排策智演前端与后端？\n该操作只停止 5270/5271，不停止 AGV 正式后台，也不向现场车辆发送命令。")) return;
+            var observation = await _paiceOperations.StopAsync();
+            SetMessage(observation.Message);
         });
         OpenWebCommand = new RelayAction(() => Open(SiteEnvironment.WebUrl));
         OpenEngineeringCommand = new RelayAction(() => Open(SiteEnvironment.WebUrl + "#/engineering?tab=communication"));
         OpenPipelineCommand = new RelayAction(() => Open(SiteEnvironment.WebUrl + "#/dispatch-pipeline"));
-        OpenSimulationCommand = new RelayAction(() => Open(SiteEnvironment.WebUrl + "#/simulation-center"));
+        OpenPaiceCommand = new RelayAction(() => Open((_paiceOperations.Info ?? throw new InvalidOperationException("尚未配置排策智演。")).Url));
         OpenRecoveryCommand = new RelayAction(() => Open(SiteEnvironment.WebUrl + "#/recovery"));
         OpenSettingsCommand = new RelayAction(() => SelectedPage = 4);
         OpenInformationCommand = new RelayAction(() => SelectedPage = 2);
@@ -125,15 +129,18 @@ public sealed class ManagementViewModel : INotifyPropertyChanged
     public string ProjectConnection => Directory.Exists(Path.Combine(_site.DataRoot, "Web工程方案")) ? "目录可用" : "目录缺失";
     public string BackendConnection => _serviceState.StartsWith("运行中") ? "已连接" : _serviceState.StartsWith("未运行") ? "未连接" : "未就绪";
     public string WebConnection => _webState.StartsWith("已就绪") ? "已连接" : _webState.StartsWith("未运行") ? "未连接" : "未就绪";
-    public string SimulationConnection => _simulationConnection;
-    public string SimulationState => _simulationState;
-    public string SimulationInstance => _simulationInstance;
+    public string PaiceFrontendState => _paiceFrontendState;
+    public string PaiceBackendState => _paiceBackendState;
+    public string PaiceFrontendConnection => _paiceFrontendState.StartsWith("已就绪") ? "已连接" : "未连接";
+    public string PaiceBackendConnection => _paiceBackendState.StartsWith("健康") ? "已连接" : "未连接";
+    public string PaiceSimulationState => _paiceState;
     public bool CanStartSystem => CanOperate && _canStart;
     public bool CanStopSystem => CanOperate && _canStop;
     public bool CanRestartSystem => CanOperate && _canStop;
-    public bool CanStartSimulation => CanOperate && _simulationEnabled && !_simulationRunning;
-    public bool CanStopSimulation => CanOperate && _simulationRunning;
-    public bool IsBusy { get => _busy; private set { Set(ref _busy, value); Changed(nameof(CanOperate)); Changed(nameof(CanStartSystem)); Changed(nameof(CanStopSystem)); Changed(nameof(CanRestartSystem)); Changed(nameof(CanStartSimulation)); Changed(nameof(CanStopSimulation)); CommandManager.InvalidateRequerySuggested(); } }
+    public bool CanStartPaiceSimulation => CanOperate && _paiceConfigured && !_paiceRunning;
+    public bool CanStopPaiceSimulation => CanOperate && _paiceConfigured &&
+                                          (_paiceRunning || _paiceRecordState == PaiceOwnedRecordState.Stale);
+    public bool IsBusy { get => _busy; private set { Set(ref _busy, value); Changed(nameof(CanOperate)); Changed(nameof(CanStartSystem)); Changed(nameof(CanStopSystem)); Changed(nameof(CanRestartSystem)); Changed(nameof(CanStartPaiceSimulation)); Changed(nameof(CanStopPaiceSimulation)); CommandManager.InvalidateRequerySuggested(); } }
     public bool CanOperate => !IsBusy;
     public string Message => _message;
     public string ServiceState => _serviceState;
@@ -156,12 +163,12 @@ public sealed class ManagementViewModel : INotifyPropertyChanged
     public ICommand StartCommand { get; }
     public ICommand StopCommand { get; }
     public ICommand RestartCommand { get; }
-    public ICommand StartSimulationCommand { get; }
-    public ICommand StopSimulationCommand { get; }
+    public ICommand StartPaiceCommand { get; }
+    public ICommand StopPaiceCommand { get; }
     public ICommand OpenWebCommand { get; }
     public ICommand OpenEngineeringCommand { get; }
     public ICommand OpenPipelineCommand { get; }
-    public ICommand OpenSimulationCommand { get; }
+    public ICommand OpenPaiceCommand { get; }
     public ICommand OpenRecoveryCommand { get; }
     public ICommand OpenSettingsCommand { get; }
     public ICommand OpenInformationCommand { get; }
@@ -197,11 +204,6 @@ public sealed class ManagementViewModel : INotifyPropertyChanged
             if (!File.Exists(_site.DatabasePath)) _databaseState = "文件缺失";
             _serviceState = serviceAlive ? $"运行中 · PID {session!.Service.Id}" : "未运行 / 非当前受管进程";
             _webState = webAlive ? $"运行中 · PID {session!.Web.Id}" : "未运行 / 非当前受管进程";
-            _simulationEnabled = false;
-            _simulationRunning = false;
-            _simulationConnection = "未运行";
-            _simulationInstance = "等待 WebHost 提供绑定";
-            _simulationState = "WebHost 未运行时不能读取仿真实例。";
             _runtime = "后台未连接，任务、车辆和路权状态未知。";
             if (serviceAlive)
             {
@@ -220,48 +222,37 @@ public sealed class ManagementViewModel : INotifyPropertyChanged
                 var root = config.RootElement;
                 if (!webAlive || root.GetProperty("servicePipeName").GetString() != release.PipeName || root.GetProperty("adapter").GetProperty("informationalVersion").GetString()?.Split('+')[0] != release.ReleaseId)
                     _webState = "5199 有响应 · 版本或进程身份不匹配";
-                else
-                {
-                    _webState = "已就绪 · 127.0.0.1:5199";
-                    try { ApplySimulationBinding(await new LocalBackendClient(release.PipeName).ReadSimulationBindingAsync()); }
-                    catch (Exception ex)
-                    {
-                        _simulationConnection = "读取失败";
-                        _simulationState = "仿真绑定读取失败：" + ex.Message;
-                        _simulationInstance = "未确认";
-                    }
-                }
+                else _webState = "已就绪 · 127.0.0.1:5199";
             }
             catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or JsonException) { if (webAlive) _webState = "进程存在 · Web 未就绪"; }
+            try { ApplyPaiceObservation(await _paiceOperations.ObserveAsync()); }
+            catch (Exception ex)
+            {
+                _paiceConfigured = false;
+                _paiceRunning = false;
+                _paiceFrontendState = "配置错误";
+                _paiceBackendState = "配置错误";
+                _paiceState = ex.Message;
+            }
             _network = SiteOperations.ReadNetwork();
             _lastCheck = DateTime.Now.ToString("HH:mm:ss") + " 已检查";
         }
-        catch (Exception ex) { _canStart = false; _canStop = false; _serviceState = "配置检查失败"; _webState = "未确认"; _simulationConnection = "未确认"; _simulationState = ex.Message; _runtime = ex.Message; _connectionsState = "配置无效，设备状态未确认。"; Connections.Clear(); }
+        catch (Exception ex) { _canStart = false; _canStop = false; _serviceState = "配置检查失败"; _webState = "未确认"; _paiceFrontendState = "未确认"; _paiceBackendState = "未确认"; _paiceState = ex.Message; _runtime = ex.Message; _connectionsState = "配置无效，设备状态未确认。"; Connections.Clear(); }
         finally
         {
             _refreshing = false;
-            foreach (var name in new[] { nameof(Release), nameof(Paths), nameof(Policy), nameof(ServiceState), nameof(WebState), nameof(SimulationConnection), nameof(SimulationState), nameof(SimulationInstance), nameof(Runtime), nameof(Network), nameof(LastCheck), nameof(ConnectionsState), nameof(DatabaseState), nameof(DatabaseConnection), nameof(ProjectConnection), nameof(BackendConnection), nameof(WebConnection), nameof(CanStartSystem), nameof(CanStopSystem), nameof(CanRestartSystem), nameof(CanStartSimulation), nameof(CanStopSimulation) }) Changed(name);
+            foreach (var name in new[] { nameof(Release), nameof(Paths), nameof(Policy), nameof(ServiceState), nameof(WebState), nameof(PaiceFrontendState), nameof(PaiceBackendState), nameof(PaiceFrontendConnection), nameof(PaiceBackendConnection), nameof(PaiceSimulationState), nameof(Runtime), nameof(Network), nameof(LastCheck), nameof(ConnectionsState), nameof(DatabaseState), nameof(DatabaseConnection), nameof(ProjectConnection), nameof(BackendConnection), nameof(WebConnection), nameof(CanStartSystem), nameof(CanStopSystem), nameof(CanRestartSystem), nameof(CanStartPaiceSimulation), nameof(CanStopPaiceSimulation) }) Changed(name);
         }
     }
 
-    private void ApplySimulationBinding(SimulationBindingSnapshot binding)
+    private void ApplyPaiceObservation(PaiceSimulationObservation observation)
     {
-        _simulationEnabled = binding.Enabled;
-        _simulationRunning = binding.ControllerRunning;
-        _simulationConnection = !binding.Enabled ? "未配置" : binding.ControllerRunning ? "已运行" : "未启动";
-        _simulationInstance = binding.SelectedInstance ?? "未发现有效实例";
-        var source = binding.SelectionSource switch
-        {
-            "scheme-selection" => "上次选择的最新实例",
-            "latest-valid-instance" => "自动选择最新有效实例",
-            "running-controller" => "控制器当前实例",
-            _ => "模板实例"
-        };
-        var scale = binding.InstanceAvailable
-            ? $" · {binding.VehicleCount} 车 / {binding.StationCount} 工位"
-            : " · 实例不可用";
-        _simulationState = $"{source} · 控制器 127.0.0.1:{binding.ControllerPort}{scale}" +
-                           (string.IsNullOrWhiteSpace(binding.Message) ? "" : " · " + binding.Message);
+        _paiceConfigured = observation.Configured;
+        _paiceRunning = observation.Running;
+        _paiceRecordState = observation.RecordState;
+        _paiceFrontendState = observation.FrontendState;
+        _paiceBackendState = observation.BackendState;
+        _paiceState = observation.Message;
     }
 
     public async Task ReadConnectionsAsync()
