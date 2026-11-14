@@ -151,6 +151,9 @@ try {
     nodeCount: document.querySelectorAll('g[data-kind=node]').length,
     edgeCount: document.querySelectorAll('g[data-kind=edge]').length,
     coordinateCount: document.querySelectorAll('polygon[data-kind=resource]').length,
+    countsText: document.querySelector('.workbench-tab-row > small')?.textContent || '',
+    labelCount: Number(document.querySelector('.editor-canvas svg')?.dataset.visibleLabels || 0),
+    arrowMarkers: document.querySelectorAll('.editor-canvas path[marker-end]').length,
     message: document.querySelector('.workbench-message')?.textContent || '',
     title: document.querySelector('.workbench-title-copy small')?.textContent || '',
     layoutHeight: document.querySelector('.editor-layout')?.getBoundingClientRect().height || 0,
@@ -158,9 +161,12 @@ try {
     backgrounds: ['.workbench-title', '.editor-tree', '.editor-inspector', '.editor-options', '.backend-map-tools']
       .map(selector => ({ selector, color: getComputedStyle(document.querySelector(selector)).backgroundColor }))
   }))()`);
+  console.log(`MAP_STATE ${JSON.stringify({ nodeCount: state.nodeCount, edgeCount: state.edgeCount, coordinateCount: state.coordinateCount, labelCount: state.labelCount })}`);
 
   check('light theme is active', state.theme === 'light');
-  check('current active map loads automatically', state.nodeCount === 1112 && state.edgeCount === 1887 && state.coordinateCount === 1641);
+  check('current active map loads automatically', state.nodeCount === 1112 && state.edgeCount === 1887 && state.countsText.includes('1112 航点') && state.countsText.includes('1887 道路') && state.countsText.includes('1641 共享区域'));
+  check('zoomed-out label level keeps only a readable subset', state.labelCount > 0 && state.labelCount < state.nodeCount);
+  check('overview levels omit thousands of road arrow markers', state.arrowMarkers === 0);
   check('map identity is visible in the workbench header', state.title.includes('305CNC') && state.title.includes('B07-1F'));
   check('source switch no longer leaves the workbench blank', !state.message.includes('数据源已切换'));
   check('editor canvas receives a practical desktop height', state.layoutHeight >= 520);
@@ -198,7 +204,52 @@ try {
     canvasNodes: document.querySelectorAll('g[data-kind=node]').length
   }))()`);
   check('object tree search filters labels without replacing the canvas', searchState.visibleRows > 0 && searchState.hasMatchingLabel && searchState.canvasNodes === state.nodeCount);
+  const overlapAtOverview = await evaluate(`(() => {
+    const rects = [...document.querySelectorAll('g[data-kind=node] text')]
+      .map(text => text.getBoundingClientRect())
+      .filter(rect => rect.width > 0 && rect.height > 0);
+    let overlaps = 0;
+    for (let i = 0; i < rects.length; i += 1) {
+      for (let j = i + 1; j < rects.length; j += 1) {
+        if (rects[i].left < rects[j].right && rects[i].right > rects[j].left && rects[i].top < rects[j].bottom && rects[i].bottom > rects[j].top) overlaps += 1;
+      }
+    }
+    return overlaps;
+  })()`);
+  check('node labels do not visually overlap at overview zoom', overlapAtOverview === 0);
   await screenshot('light-editor');
+
+  for (let index = 0; index < 5; index += 1) {
+    await evaluate('document.querySelector("[aria-label=\\"编辑地图放大\\"]")?.click()');
+    await sleep(80);
+  }
+  await sleep(300);
+  const detailState = await evaluate(`(() => ({
+    labels: Number(document.querySelector('.editor-canvas svg')?.dataset.visibleLabels || 0),
+    renderedNodes: Number(document.querySelector('.editor-canvas svg')?.dataset.renderNodes || 0),
+    arrowMarkers: document.querySelectorAll('.editor-canvas path[marker-end]').length,
+    overlaps: (() => {
+      const rects = [...document.querySelectorAll('g[data-kind=node] text')]
+        .map(text => text.getBoundingClientRect())
+        .filter(rect => rect.width > 0 && rect.height > 0);
+      let count = 0;
+      for (let i = 0; i < rects.length; i += 1) {
+        for (let j = i + 1; j < rects.length; j += 1) {
+          if (rects[i].left < rects[j].right && rects[i].right > rects[j].left && rects[i].top < rects[j].bottom && rects[i].bottom > rects[j].top) count += 1;
+        }
+      }
+      return count;
+    })()
+  }))()`);
+  console.log(`DETAIL_STATE ${JSON.stringify(detailState)}`);
+  check('detail zoom reveals more labels and culls off-screen nodes', detailState.labels > state.labelCount && detailState.renderedNodes < state.nodeCount);
+  check('detail zoom restores directional road arrows', detailState.arrowMarkers > 0);
+  check('collision filtering remains active at detail zoom', detailState.overlaps === 0);
+  await evaluate(`(() => {
+    const button = [...document.querySelectorAll('button')].find(candidate => candidate.textContent.trim() === '适配');
+    button?.click();
+  })()`);
+  await sleep(300);
 
   await evaluate(`(() => {
     const button = [...document.querySelectorAll('button')].find(candidate => candidate.textContent.trim() === '切换地图');

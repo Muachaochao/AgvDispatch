@@ -19,13 +19,45 @@ export function useMapEditor(plan:Ref<Plan>,tab:Ref<string>,message:Ref<string>,
   const count=computed(()=>geometry.selectionCount(selection.value));
   const selectionSets=computed(()=>({node:new Set(selection.value.node),edge:new Set(selection.value.edge),resource:new Set(selection.value.resource),scene:new Set(selection.value.scene)}));
   const isSelected=(kind:ObjectKind,id:string)=>selectionSets.value[kind].has(id);
-  const viewBox=computed(()=>{const c=camera.value,w=c.w/zoom.value,h=c.h/zoom.value;return`${c.x+(c.w-w)/2+pan.value.x} ${c.y+(c.h-h)/2+pan.value.y} ${w} ${h}`;});
+  const viewRect=computed(()=>{const c=camera.value,w=c.w/zoom.value,h=c.h/zoom.value;return{x:c.x+(c.w-w)/2+pan.value.x,y:c.y+(c.h-h)/2+pan.value.y,width:w,height:h};});
+  const viewBox=computed(()=>{const view=viewRect.value;return`${view.x} ${view.y} ${view.width} ${view.height}`;});
   const scale=computed(()=>Math.max(camera.value.w/viewport.value.width,camera.value.h/viewport.value.height)*10/zoom.value);
   watch(svg,element=>{observer?.disconnect();if(!element)return;observer=new ResizeObserver(entries=>{const r=entries[0]?.contentRect;if(r&&r.width&&r.height)viewport.value={width:r.width,height:r.height};});observer.observe(element);});
-  const visibleNodes=computed(()=>d.value.nodes.filter(n=>geometry.visible(d.value,n)));
-  const visibleEdges=computed(()=>d.value.edges.filter(e=>geometry.visible(d.value,e)));
-  const visibleResources=computed(()=>d.value.resources.filter(r=>geometry.visible(d.value,r)));
-  const visibleScene=computed(()=>plan.value.scene.filter(o=>o.visible&&geometry.visible(d.value,o)));
+  function intersectsView(minX:number,minY:number,maxX:number,maxY:number){
+    const view=viewRect.value,margin=scale.value*4;
+    return maxX>=view.x-margin&&minX<=view.x+view.width+margin&&maxY>=view.y-margin&&minY<=view.y+view.height+margin;
+  }
+  const visibleNodes=computed(()=>d.value.nodes.filter(n=>geometry.visible(d.value,n)&&intersectsView(n.x,-n.y,n.x,-n.y)));
+  const visibleEdges=computed(()=>{
+    const nodeById=new Map(d.value.nodes.map(node=>[node.id,node]));
+    return d.value.edges.filter(edge=>{
+      if(!geometry.visible(d.value,edge))return false;
+      const from=nodeById.get(edge.from),to=nodeById.get(edge.to);
+      if(!from||!to)return false;
+      const points=[from,to,...(edge.controlPoints??[])].map(point=>[point.x,-point.y]);
+      return intersectsView(
+        Math.min(...points.map(point=>point[0]!)),
+        Math.min(...points.map(point=>point[1]!)),
+        Math.max(...points.map(point=>point[0]!)),
+        Math.max(...points.map(point=>point[1]!))
+      );
+    });
+  });
+  const visibleResources=computed(()=>d.value.resources.filter(resource=>{
+    if(!geometry.visible(d.value,resource))return false;
+    const points=(resource.boundary??[]).map(point=>[point.x,-point.y]);
+    if(!points.length)return false;
+    return intersectsView(
+      Math.min(...points.map(point=>point[0]!)),
+      Math.min(...points.map(point=>point[1]!)),
+      Math.max(...points.map(point=>point[0]!)),
+      Math.max(...points.map(point=>point[1]!))
+    );
+  }));
+  const visibleScene=computed(()=>plan.value.scene.filter(scene=>{
+    if(!scene.visible||!geometry.visible(d.value,scene))return false;
+    return intersectsView(scene.x,-scene.y-scene.height,scene.x+scene.width,-scene.y);
+  }));
   const toolHint=computed(()=>({select:'拖动节点 / 区域 / 场景；空白处拖框，Ctrl / Shift 点选可多选；中键或空格拖动平移。',pan:'拖动画布平移；滚轮以鼠标位置缩放。',node:'点击画布放置节点，使用当前图层及吸附设置。',edge:'依次点击起点、终点节点绘制直线。',arc:roadEnd.value?'点击一个经过点完成圆弧；三点不能共线。':'依次点击起点、终点节点，然后点击圆弧经过点。',bezier:roadEnd.value?`点击第 ${draft.value.length+1} 个控制点（共2个）。`:'依次点击起点、终点节点，然后点击两个贝塞尔控制点。',boundary:'逐点绘制区域边界；双击、Enter 或“完成边界”结束，Backspace 撤回顶点。',brush:'选择共享区域后，在节点或道路上点击 / 拖动刷关联；可切换解除模式。',measure:'依次点击两点测量直线距离，不修改地图。',scene:'点击画布放置场景对象。'} as Record<Tool,string>)[tool.value]);
   const measurement=computed(()=>measure.value.length===2?Math.hypot(measure.value[1]!.x-measure.value[0]!.x,measure.value[1]!.y-measure.value[0]!.y):null);
   const draftPath=computed(()=>{
@@ -161,6 +193,6 @@ export function useMapEditor(plan:Ref<Plan>,tab:Ref<string>,message:Ref<string>,
   onMounted(()=>{window.addEventListener('keydown',keyboard);window.addEventListener('keyup',keyup);window.addEventListener('blur',blur);});
   onUnmounted(()=>{cancelGesture();observer?.disconnect();window.removeEventListener('keydown',keyboard);window.removeEventListener('keyup',keyup);window.removeEventListener('blur',blur);});
   watch(()=>d.value.editorSettings,settings=>{if(!settings||typeof settings!=='object')return;const s=settings as any;gridStep.value=Number.isFinite(s.gridSize)&&s.gridSize>0?s.gridSize:1;grid.value=s.showGrid!==false;snapGrid.value=s.snapToGrid!==false;snapNodes.value=s.snapToExisting!==false;snapAlignment.value=s.snapToAlignment!==false;currentLayer.value=s.currentLayerId||'navigation';},{immediate:true});
-  return reactive({svg,selection,count,tool,panel,undoStack,redoStack,clipboard,zoom,pan,camera,viewBox,scale,grid,gridStep,snapGrid,snapNodes,snapAlignment,currentLayer,layerList,guides,snapTarget,cursor,box,draft,measure,measurement,roadStart,roadEnd,draftPath,toolHint,batch,brushResource,brushRemove,visibleNodes,visibleEdges,visibleResources,visibleScene,space,
+  return reactive({svg,selection,count,tool,panel,undoStack,redoStack,clipboard,zoom,pan,camera,viewBox,viewRect,scale,grid,gridStep,snapGrid,snapNodes,snapAlignment,currentLayer,layerList,guides,snapTarget,cursor,box,draft,measure,measurement,roadStart,roadEnd,draftPath,toolHint,batch,brushResource,brushRemove,visibleNodes,visibleEdges,visibleResources,visibleScene,space,
     edit,history,restore,pick,clear,setSelection,isSelected,fit,down,move,up,wheel,cancel,cancelGesture,changeTool,finishBoundary,remove,copy,pasteObjects,duplicate,align,transform,moveSelected,merge,reverse,split,roadBatch,enabled,connect,cleanup,intersections,settings,updateLayer,addLayer,deleteLayer,moveToLayer,layerStyle,color,lineWidth,selectAll,addNode,addScene});
 }

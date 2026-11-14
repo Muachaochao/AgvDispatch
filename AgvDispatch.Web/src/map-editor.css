@@ -354,6 +354,14 @@
   font-family: "Cascadia Mono", Consolas, "Microsoft YaHei UI", sans-serif;
 }
 
+.editor-node-label {
+  pointer-events: none;
+  paint-order: stroke;
+  stroke: var(--ui-page);
+  stroke-width: .2em;
+  stroke-linejoin: round;
+}
+
 .editor-canvas svg:focus-visible {
   outline: 2px solid var(--ui-focus-ring);
   outline-offset: -2px;
