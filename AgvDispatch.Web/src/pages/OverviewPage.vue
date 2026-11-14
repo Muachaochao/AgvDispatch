@@ -34,7 +34,6 @@ const selectedEdge = ref('');
 const locatedResource=ref(''),locationMessage=ref('');
 const detail = ref<import('../types').TaskDetail | null>(null);
 const mapElement = ref<HTMLElement>();
-const lowerDeck = ref<HTMLElement>();
 const mapView = ref<'top' | 'isometric'>('top');
 const mapLabels = ref<'auto'|'all'|'none'>('auto');
 const showTaskDialog = ref(false);
@@ -57,20 +56,6 @@ async function readAreas(){
 watch(()=>[store.demoMode,store.snapshot?.source,store.snapshot?.map?.id,store.snapshot?.map?.version,store.snapshot?.map?.definitionHash].join('|'),()=>{++areaEpoch;areaContext.value=null;chosenArea.value=null;areaMessage.value='';drawAreas();void readAreas();});
 
 const liveTasks=computed(()=>store.allTasks.filter(task=>!['Completed','Cancelled'].includes(task.stage)).map(task=>({task,wait:taskWait(store.snapshot,task,store.now)})));
-const criticalOpenAlarms=computed(()=>store.openAlarms.filter(alarm=>['Critical','Error'].includes(alarm.severity)).length);
-const offlineVehicles=computed(()=>store.vehicleStats.find(stat=>stat.key==='offline')?.count??0);
-const systemHealthTone=computed(()=>{
-  if(!store.fresh)return 'unknown';
-  if(criticalOpenAlarms.value>0||(store.vehicles.length>0&&offlineVehicles.value>=store.vehicles.length))return 'danger';
-  if(store.openAlarms.length>0||offlineVehicles.value>0)return 'warning';
-  return 'healthy';
-});
-const systemHealthTitle=computed(()=>{
-  if(!store.fresh)return '等待后台有效观察';
-  if(systemHealthTone.value==='danger')return '存在需要优先处理的异常';
-  if(systemHealthTone.value==='warning')return '系统运行中，存在待核对状态';
-  return '关键业务状态稳定';
-});
 const chosenVehicle = computed(() => store.vehicles.find(v => v.vehicleId === selectedVehicle.value));
 const chosenObstacle = computed(() => chosenVehicle.value ? vehicleObstacle(chosenVehicle.value, store.fresh, store.now) : null);
 const selectedRoad = computed(() => store.snapshot?.map?.edges.find(edge => edge.id === selectedEdge.value));
@@ -105,8 +90,6 @@ function clearLocation(){locatedResource.value='';locationMessage.value='';scene
 function locateResource(id:string){if(!store.fresh){clearLocation();return;}const view=resourceView(store.snapshot?.map,id);if(!view){clearLocation();locationMessage.value='资源 '+id+' 无有效边界，不能定位；不猜测位置。';return;}scene?.focusResource(id,view);mapElement.value?.scrollIntoView({block:'center'});locatedResource.value=id;locationMessage.value='已定位资源 '+id+'；仅调整视角，不改变资源归属或放行。';}
 watch(()=>[store.demoMode,store.snapshot?.map?.id,store.snapshot?.map?.version,store.snapshot?.map?.definitionHash,store.fresh].join('|'),clearLocation);
 function fullscreen() { void mapElement.value?.parentElement?.requestFullscreen().catch(() => { store.sceneError = '当前浏览器未允许全屏'; }); }
-function scrollToOperations() { lowerDeck.value?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
-
 onMounted(() => {
   try {
     scene = new DispatchScene(mapElement.value!, id => { selectedVehicle.value = id; },area=>{chosenArea.value=area;});
@@ -120,24 +103,6 @@ onUnmounted(() => { ++detailEpoch;++areaEpoch;clearInterval(areaTimer);scene?.di
 <template>
 <div class="overview-page">
   <TrafficRehearsal v-if="store.demoMode"/>
-  <section v-if="!store.demoMode" class="system-health" :class="systemHealthTone" aria-label="系统健康摘要">
-    <div class="system-health-copy">
-      <div><small>运行态势</small><strong>{{ systemHealthTitle }}</strong></div>
-    </div>
-    <button class="health-metric" :class="criticalOpenAlarms ? 'danger' : 'success'" @click="router.push('/alarms')">
-      <span>严重 / 错误</span><b>{{ criticalOpenAlarms }}</b>
-    </button>
-    <button class="health-metric" :class="offlineVehicles ? 'warning' : 'success'" @click="router.push('/vehicles')">
-      <span>离线车辆</span><b>{{ offlineVehicles }}</b>
-    </button>
-    <button class="health-metric" :class="liveTasks.length ? 'warning' : 'success'" @click="router.push('/tasks')">
-      <span>当前任务</span><b>{{ liveTasks.length }}</b>
-    </button>
-    <button class="health-metric health-detail-metric" @click="scrollToOperations">
-      <span>运行保障</span><b>详情</b>
-    </button>
-    <p class="system-health-observation">{{ store.fresh ? `后台观察 ${shortTime(store.snapshot?.receivedAt)}` : (store.error || '正在连接后台') }}</p>
-  </section>
   <div class="control-grid">
     <aside class="left-column">
       <section class="control-panel statistics-panel">
@@ -237,7 +202,7 @@ onUnmounted(() => { ++detailEpoch;++areaEpoch;clearInterval(areaTimer);scene?.di
     </aside>
   </div>
 
-  <section ref="lowerDeck" class="overview-lower-deck" aria-label="运行保障详情">
+  <section class="overview-lower-deck" aria-label="运行保障详情">
     <header><div><small>运行保障详情</small><h2>道路封锁 · 交通等待 · 资源占用</h2></div><span>向下滚动查看完整记录</span></header>
     <TrafficClosuresPanel/>
     <TrafficWaitingPanel @locate="locateResource" @task="openTask"/>
