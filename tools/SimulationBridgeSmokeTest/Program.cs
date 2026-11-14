@@ -34,7 +34,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200);self.send_header('Content-Type','application/zip')
             self.send_header('Content-Disposition','attachment; filename="evidence.zip"')
             self.end_headers();self.wfile.write(body);return
-        body=json.dumps(dict(enabled=True,pid=os.getpid(),path=self.path,rootName=root.name)).encode()
+        body=json.dumps(dict(enabled=True,pid=os.getpid(),path=self.path)).encode()
         self.send_response(200);self.send_header('Content-Type','application/json');self.end_headers();self.wfile.write(body)
     def do_POST(self):
         if self.headers.get('X-Simulation-Token') != token:
@@ -46,31 +46,6 @@ class Handler(BaseHTTPRequestHandler):
         if self.path=='/shutdown':threading.Thread(target=self.server.shutdown).start()
 s=ThreadingHTTPServer(('127.0.0.1',a.port),Handler);s.serve_forever();s.server_close()
 """);
-foreach (var directory in new[] { Path.Combine(root, "service"), Path.Combine(root, "webhost") })
-    Directory.CreateDirectory(directory);
-await File.WriteAllTextAsync(Path.Combine(root, "lab.json"),
-    """{"mapName":"bridge fixture","simulationConfiguration":{"mapName":"bridge fixture","vehicles":[{}],"stations":[{},{}]}}""");
-await File.WriteAllTextAsync(Path.Combine(root, "service", "appsettings.json"), "{}");
-await File.WriteAllTextAsync(Path.Combine(root, "webhost", "appsettings.json"), "{}");
-var artifacts = Path.GetDirectoryName(root)!;
-var newer = Path.Combine(artifacts, "web-single-vehicle-newer");
-foreach (var directory in new[] { newer, Path.Combine(newer, "service"), Path.Combine(newer, "webhost") })
-    Directory.CreateDirectory(directory);
-await File.WriteAllTextAsync(Path.Combine(newer, "lab.json"), """{"mapName":"newer unselected"}""");
-await File.WriteAllTextAsync(Path.Combine(newer, "service", "appsettings.json"), "{}");
-await File.WriteAllTextAsync(Path.Combine(newer, "webhost", "appsettings.json"), "{}");
-var selectionDirectory = Path.Combine(artifacts, "simulation-center");
-Directory.CreateDirectory(selectionDirectory);
-var selectionScope = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
-    System.Text.Encoding.UTF8.GetBytes(root.ToLowerInvariant())))[..16].ToLowerInvariant();
-await File.WriteAllTextAsync(Path.Combine(selectionDirectory, "schemes-" + selectionScope + ".json"),
-    JsonSerializer.Serialize(new
-    {
-        selectedRoot = Path.GetFileName(root),
-        selectedSchemeId = (string?)null,
-        recentInstances = Array.Empty<object>(),
-        schemes = Array.Empty<object>()
-    }));
 var pythonStart = new ProcessStartInfo("python") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true };
 pythonStart.ArgumentList.Add("-c"); pythonStart.ArgumentList.Add("import sys;print(sys.executable)");
 using var resolver = Process.Start(pythonStart)!;
@@ -134,17 +109,6 @@ using (var listener = new TcpListener(IPAddress.Loopback, 0))
     Check(rejected && listener.Server.IsBound, "occupied port rejected without attaching to or terminating its owner");
 }
 var freePort = Port();
-await using (var preview = new SimulationBridge(Config(Values(Port()))))
-{
-    var binding = await Execute(await preview.ReadBindingAsync(default));
-    Check(binding.GetProperty("selectedInstance").GetString() == Path.GetFileName(root) &&
-          binding.GetProperty("selectionSource").GetString() == "scheme-selection" &&
-          binding.GetProperty("mapName").GetString() == "bridge fixture" &&
-          binding.GetProperty("vehicleCount").GetInt32() == 1 &&
-          binding.GetProperty("stationCount").GetInt32() == 2 &&
-          !binding.GetProperty("controllerRunning").GetBoolean(),
-        "binding previews the durable latest simulation selection without launching Python");
-}
 int ownedPid;
 await using (var bridge = new SimulationBridge(Config(Values(freePort))))
 {
@@ -202,16 +166,9 @@ await using (var bridge = new SimulationBridge(Config(Values(freePort))))
     try { await bridge.ForwardAsync(HttpMethod.Get, "http://example.com/", null, timeout.Token); }
     catch (ArgumentException) { rejected = true; }
     Check(rejected, "bridge forbids arbitrary proxy targets");
-    var runningBinding = await Execute(await bridge.ReadBindingAsync(timeout.Token));
-    Check(runningBinding.GetProperty("controllerRunning").GetBoolean() &&
-          runningBinding.GetProperty("selectionSource").GetString() == "running-controller",
-        "binding reports the running controller without starting another process");
-    var stopped = await Execute(await bridge.StopControllerAsync(timeout.Token));
-    Check(!stopped.GetProperty("controllerRunning").GetBoolean(),
-        "controller stop is available to the assistant");
 }
-Check(File.ReadAllText(Path.Combine(root, "requests.jsonl")).Contains("/shutdown"), "controller stop requests authenticated shutdown");
+Check(File.ReadAllText(Path.Combine(root, "requests.jsonl")).Contains("/shutdown"), "dispose requests authenticated controller shutdown");
 var gone = false;
 try { using var owned = Process.GetProcessById(ownedPid); gone = owned.HasExited; } catch (ArgumentException) { gone = true; }
-Check(gone, "owned controller has exited after stop");
+Check(gone, "owned controller has exited after disposal");
 Console.WriteLine($"{checks} checks passed. Evidence: {temporary}");

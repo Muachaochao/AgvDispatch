@@ -25,11 +25,24 @@ internal static class Program
             Console.WriteLine(new SiteOperations(SiteEnvironment.Find(args[1])).LaunchAsync(true).GetAwaiter().GetResult());
             return 0;
         }
+        if (args.Length == 2 && args[0] is "--start-paice" or "--stop-paice" or "--observe-paice")
+        {
+            var site = SiteEnvironment.Find(args[1]);
+            var operations = new PaiceSimulationOperations(site);
+            var observation = args[0] switch
+            {
+                "--start-paice" => operations.StartAsync().GetAwaiter().GetResult(),
+                "--stop-paice" => operations.StopAsync().GetAwaiter().GetResult(),
+                _ => operations.ObserveAsync().GetAwaiter().GetResult()
+            };
+            Console.WriteLine(JsonSerializer.Serialize(observation, SiteEnvironment.Json));
+            return observation.Configured ? 0 : 1;
+        }
         if (args.Length == 2 && args[0] == "--inspect-site")
         {
             var actual = new ManagementViewModel(SiteEnvironment.Find(args[1]));
             actual.RefreshAsync().GetAwaiter().GetResult();
-            Console.WriteLine($"{actual.Release}\n后台：{actual.ServiceState}\nWeb：{actual.WebState}\n仿真实例：{actual.SimulationInstance}\n仿真服务：{actual.SimulationState}\n{actual.Runtime}\n{actual.Paths}");
+            Console.WriteLine($"{actual.Release}\n后台：{actual.ServiceState}\nWeb：{actual.WebState}\n排策智演前端：{actual.PaiceFrontendState}\n排策智演后端：{actual.PaiceBackendState}\n{actual.Runtime}\n{actual.Paths}");
             return actual.ServiceState == "配置检查失败" ? 1 : 0;
         }
         var temporary = Path.Combine(Path.GetTempPath(), "agv-manager-test-" + Guid.NewGuid().ToString("N"));
@@ -38,6 +51,32 @@ internal static class Program
         {
             var site = Fixture(temporary);
             Check(site.ReadRelease().ReleaseId == "1.0.0", "Daily release is resolved and both binary identities verified");
+            var paice = site.ReadPaiceSimulation();
+            Check(paice is not null && paice.Url == "http://127.0.0.1:5270/" &&
+                  paice.Directory.EndsWith(Path.Combine("integrations", "PaiceSimulation"), StringComparison.OrdinalIgnoreCase) &&
+                  File.Exists(paice.StartScript) && File.Exists(paice.StopScript),
+                "Paice simulation runtime is resolved from the daily site settings");
+            var staleRecord = Path.Combine(paice!.Directory, ".runtime", "processes.json");
+            Directory.CreateDirectory(Path.GetDirectoryName(staleRecord)!);
+            File.WriteAllText(staleRecord, JsonSerializer.Serialize(new[] { new { id = 999999, path = paice.Directory, startedUtcTicks = 1L } }));
+            Check(PaiceSimulationOperations.ClassifyOwnedRecord(staleRecord) == PaiceOwnedRecordState.Stale,
+                "Exited Paice simulation process record is classified as stale");
+            Check(PaiceSimulationOperations.RemoveStaleOwnedRecord(staleRecord) && !File.Exists(staleRecord),
+                "Stale Paice simulation process record is safely removed before restart");
+            File.WriteAllText(staleRecord, JsonSerializer.Serialize(new[] { new { id = Environment.ProcessId, path = paice.Directory, startedUtcTicks = 1L } }));
+            Check(PaiceSimulationOperations.ClassifyOwnedRecord(staleRecord) == PaiceOwnedRecordState.Conflict,
+                "Mismatched live process identity remains a conflict");
+            Reject(() => PaiceSimulationOperations.RemoveStaleOwnedRecord(staleRecord),
+                "Conflicting Paice simulation record is retained for inspection");
+            File.Delete(staleRecord);
+            var paiceObservation = new PaiceSimulationOperations(site).ObserveAsync().GetAwaiter().GetResult();
+            Check(paiceObservation.Configured && !paiceObservation.FrontendReady && !paiceObservation.BackendReady &&
+                  paiceObservation.RecordState == PaiceOwnedRecordState.Missing,
+                "Paice simulation observation stays stopped without touching either loopback service");
+            var paiceView = new ManagementViewModel(site);
+            Check(paiceView.PaiceFrontendState == "未就绪" && paiceView.PaiceBackendState == "未就绪" &&
+                  paiceView.CanStartPaiceSimulation,
+                "Software assistant exposes the independent Paice simulation lifecycle");
             Reject(() => SiteEnvironment.ChildPath(temporary, "../outside"), "Release/path escape rejected");
             Reject(() => SiteEnvironment.ChildPath(temporary, "C:/outside"), "Absolute release path rejected");
             var archives = new SiteArchives(site);
@@ -113,7 +152,11 @@ internal static class Program
             File.Copy(assembly,Path.Combine(folder,stem+".dll")); File.WriteAllText(Path.Combine(folder,stem+".exe"),"fixture only");
         }
         File.WriteAllText(Path.Combine(bundle,"release-manifest.json"),JsonSerializer.Serialize(new { schema="agv-commissioning-release",releaseId="1.0.0",port=5199,pipeName="AgvManager-Isolated-"+Guid.NewGuid().ToString("N") }));
-        File.WriteAllText(Path.Combine(root,"最新版Web.json"),JsonSerializer.Serialize(new{directory="fixture",releaseId="1.0.0",url=SiteEnvironment.WebUrl,productionDispatch=false,maxConcurrentTasks=3}));
+        var paiceDirectory=Path.Combine(root,"integrations","PaiceSimulation"); Directory.CreateDirectory(paiceDirectory);
+        var scriptDirectory=Path.Combine(root,"tools"); Directory.CreateDirectory(scriptDirectory);
+        var startScript=Path.Combine(scriptDirectory,"Start-PaiceSimulation.ps1"); var stopScript=Path.Combine(scriptDirectory,"Stop-PaiceSimulation.ps1");
+        File.WriteAllText(startScript,"# fixture"); File.WriteAllText(stopScript,"# fixture");
+        File.WriteAllText(Path.Combine(root,"最新版Web.json"),JsonSerializer.Serialize(new{directory="fixture",releaseId="1.0.0",url=SiteEnvironment.WebUrl,productionDispatch=false,maxConcurrentTasks=3,paiceSimulation=new{directory=paiceDirectory,startScript,stopScript,url="http://127.0.0.1:5270/"}}));
         var site=new SiteEnvironment(root); Directory.CreateDirectory(Path.GetDirectoryName(site.DatabasePath)!);
         using(var connection=new SqliteConnection("Pooling=False;Data Source="+site.DatabasePath)) { connection.Open(); using var command=connection.CreateCommand(); command.CommandText="CREATE TABLE marker(Value TEXT); INSERT INTO marker VALUES ('original');"; command.ExecuteNonQuery(); }
         Directory.CreateDirectory(Path.Combine(site.DataRoot,"Web工程方案")); File.WriteAllText(Path.Combine(site.DataRoot,"Web工程方案","marker.txt"),"original"); return site;
