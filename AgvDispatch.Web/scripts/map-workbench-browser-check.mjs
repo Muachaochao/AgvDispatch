@@ -132,7 +132,7 @@ async function measurePanFps() {
   await evaluate(`(() => [...document.querySelectorAll('button')].find(candidate => candidate.textContent.trim() === '平移')?.click())()`);
   await sleep(80);
   const center = await canvasCenter();
-  const viewBefore = await evaluate('document.querySelector(".editor-canvas svg").dataset.viewBox');
+  const viewBefore = await evaluate('document.querySelector(".editor-interaction-layer").dataset.viewBox');
   await rpc('Input.dispatchMouseEvent', { type: 'mousePressed', ...center, button: 'left', buttons: 1, clickCount: 1 });
   for (let index = 0; index < 8; index += 1) {
     await rpc('Input.dispatchMouseEvent', {
@@ -163,19 +163,21 @@ async function measurePanFps() {
   await evaluate(`(() => [...document.querySelectorAll('button')].find(candidate => candidate.textContent.trim() === '选择 / 框选')?.click())()`);
   return {
     fps: await finishFrameSample(),
-    changed: viewBefore !== await evaluate('document.querySelector(".editor-canvas svg").dataset.viewBox'),
+    changed: viewBefore !== await evaluate('document.querySelector(".editor-interaction-layer").dataset.viewBox'),
     sawTransform
   };
 }
 
 async function measureZoomFps() {
   const center = await canvasCenter();
-  const zoomBefore = Number(await evaluate('document.querySelector(".editor-canvas svg").dataset.zoom'));
+  const zoomBefore = Number(await evaluate('document.querySelector(".editor-interaction-layer").dataset.zoom'));
+  const mainViewBefore = await evaluate('document.querySelector(".editor-interaction-layer").dataset.viewBox');
   await startFrameSample();
   let sawTransform = false;
+  let sawFrozenMainView = false;
   for (let index = 0; index < 20; index += 1) {
     await evaluate(`(() => {
-      const target = document.querySelector('.editor-canvas svg');
+      const target = document.querySelector('.editor-interaction-layer');
       target.dispatchEvent(new WheelEvent('wheel', {
         deltaY: -90,
         clientX: ${center.x},
@@ -184,14 +186,23 @@ async function measureZoomFps() {
         cancelable: true
       }));
     })()`);
-    if (index === 5) sawTransform = await evaluate('getComputedStyle(document.querySelector(".navigation-svg-layer")).display !== "none"');
+    if (index === 5) {
+      const zoomState = await evaluate(`(() => ({
+        navigationVisible: getComputedStyle(document.querySelector('.navigation-svg-layer')).display !== 'none',
+        mainView: document.querySelector('.editor-interaction-layer').dataset.viewBox,
+        navigationView: document.querySelector('.navigation-svg-layer').dataset.viewBox
+      }))()`);
+      sawTransform = zoomState.navigationVisible;
+      sawFrozenMainView = zoomState.mainView === mainViewBefore && zoomState.navigationView !== mainViewBefore;
+    }
     await sleep(14);
   }
   await sleep(240);
   return {
     fps: await finishFrameSample(),
-    changed: Number(await evaluate('document.querySelector(".editor-canvas svg").dataset.zoom')) > zoomBefore * 1.5,
-    sawTransform
+    changed: Number(await evaluate('document.querySelector(".editor-interaction-layer").dataset.zoom')) > zoomBefore * 1.5,
+    sawTransform,
+    sawFrozenMainView
   };
 }
 
@@ -252,7 +263,7 @@ try {
     45000
   );
   await waitFor(
-    () => evaluate('document.querySelector(".editor-canvas svg")?.dataset.labelIndex === "worker"'),
+    () => evaluate('document.querySelector(".editor-interaction-layer")?.dataset.labelIndex === "worker"'),
     'The label collision index did not move to its worker',
     15000
   );
@@ -266,15 +277,15 @@ try {
   const state = await evaluate(`(() => ({
     theme: document.documentElement.dataset.theme,
     nodeCount: document.querySelectorAll('g[data-kind=node]').length,
-    edgeCount: Number(document.querySelector('.editor-canvas svg')?.dataset.renderEdges || 0),
+    edgeCount: Number(document.querySelector('.editor-interaction-layer')?.dataset.renderEdges || 0),
     edgeBatches: Number(document.querySelector('.map-static-canvas')?.dataset.renderEdgeBatches || 0),
     canvasMode: document.querySelector('.map-static-canvas')?.dataset.renderMode || '',
     canvasLabels: Number(document.querySelector('.map-static-canvas')?.dataset.renderLabels || 0),
     coordinateCount: document.querySelectorAll('polygon[data-kind=resource]').length,
     countsText: document.querySelector('.workbench-tab-row > small')?.textContent || '',
-    labelCount: Number(document.querySelector('.editor-canvas svg')?.dataset.visibleLabels || 0),
-    labelIndex: document.querySelector('.editor-canvas svg')?.dataset.labelIndex || '',
-    labelIndexMs: Number(document.querySelector('.editor-canvas svg')?.dataset.labelIndexMs || 0),
+    labelCount: Number(document.querySelector('.editor-interaction-layer')?.dataset.visibleLabels || 0),
+    labelIndex: document.querySelector('.editor-interaction-layer')?.dataset.labelIndex || '',
+    labelIndexMs: Number(document.querySelector('.editor-interaction-layer')?.dataset.labelIndexMs || 0),
     arrowMarkers: Number(document.querySelector('.map-static-canvas')?.dataset.renderArrows || 0),
     message: document.querySelector('.workbench-message')?.textContent || '',
     title: document.querySelector('.workbench-title-copy small')?.textContent || '',
@@ -355,6 +366,7 @@ try {
   check('real map wheel zoom sustains an interactive frame rate', performanceMetrics.zoomFps >= 30);
   check('zoom benchmark changes the actual map scale', zoomSamples.every(sample => sample.changed));
   check('wheel zoom uses the lightweight navigation layer without full redraw', zoomSamples.every(sample => sample.sawTransform));
+  check('zoom freezes the main SVG view while the separate navigation SVG scales', zoomSamples.every(sample => sample.sawFrozenMainView));
   const finalZoom = await measureZoomFps();
   check('detail screenshot uses the zoomed map state', finalZoom.changed);
   await screenshot('detail-editor');
@@ -363,7 +375,7 @@ try {
   await waitFor(
     () => evaluate(`(() => {
       const canvas = document.querySelector('.map-static-canvas');
-      const svg = document.querySelector('.editor-canvas svg');
+      const svg = document.querySelector('.editor-interaction-layer');
       return canvas?.dataset.renderMode === 'detail' &&
         Number(canvas?.dataset.renderLabels || 0) === Number(svg?.dataset.visibleLabels || 0);
     })()`),
@@ -382,9 +394,19 @@ try {
     await sleep(80);
   }
   await sleep(300);
+  await waitFor(
+    () => evaluate(`(() => {
+      const canvas = document.querySelector('.map-static-canvas');
+      const svg = document.querySelector('.editor-interaction-layer');
+      return canvas?.dataset.renderMode === 'detail' &&
+        Number(canvas?.dataset.renderLabels || 0) === Number(svg?.dataset.visibleLabels || 0);
+    })()`),
+    'Detail Canvas labels did not catch up with the worker result',
+    8000
+  );
   const detailState = await evaluate(`(() => ({
-    labels: Number(document.querySelector('.editor-canvas svg')?.dataset.visibleLabels || 0),
-    renderedNodes: Number(document.querySelector('.editor-canvas svg')?.dataset.renderNodes || 0),
+    labels: Number(document.querySelector('.editor-interaction-layer')?.dataset.visibleLabels || 0),
+    renderedNodes: Number(document.querySelector('.editor-interaction-layer')?.dataset.renderNodes || 0),
     arrowMarkers: Number(document.querySelector('.map-static-canvas')?.dataset.renderArrows || 0),
     canvasLabels: Number(document.querySelector('.map-static-canvas')?.dataset.renderLabels || 0),
     canvasMode: document.querySelector('.map-static-canvas')?.dataset.renderMode || ''

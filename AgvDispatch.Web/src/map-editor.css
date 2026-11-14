@@ -383,6 +383,7 @@
 
 .navigation-svg-layer {
   display: none;
+  z-index: 2;
 }
 
 .editor-canvas.is-panning .navigation-svg-layer,
@@ -393,6 +394,12 @@
 .editor-canvas.is-panning .interaction-detail-layer,
 .editor-canvas.is-settling .interaction-detail-layer {
   display: none;
+  pointer-events: none;
+}
+
+.editor-canvas.is-panning .editor-interaction-layer,
+.editor-canvas.is-settling .editor-interaction-layer {
+  visibility: hidden;
   pointer-events: none;
 }
 
