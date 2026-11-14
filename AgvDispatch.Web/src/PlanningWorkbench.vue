@@ -15,7 +15,10 @@ import * as geometry from './map-editing';
 import { useDispatchStore } from './stores/dispatch';
 import { useToastStore } from './stores/toast';
 import { clone, emptyPlan, parsePlan, validateDefinition, validateVehicles, routePlan, edgePath, type Plan, type Node, type Edge, type Resource, type VehicleConfig, type SceneItem } from './workbench';
-import { selectNodeLabels, type MapLabelMode } from './map-render-lod';
+import type { MapLabelMode } from './map-render-lod';
+import { useMapLabelIndex, type MapLabelIndexOptions } from './use-map-label-index';
+import { buildMapEdgeBatches } from './map-edge-batching';
+import { buildMapNodeBatches } from './map-node-batching';
 import type { Snapshot, MapSummary } from './types';
 import { checkDraftDestination, draftSaveBlocker } from './draft-save';
 import { label } from './state';
@@ -69,17 +72,46 @@ const sceneTools=[{id:'select',icon:'select',label:'选择 / 框选'},{id:'pan',
 const tabs=[{id:'map',icon:'map',name:'地图编辑'},{id:'areas',icon:'boundary',name:'展示区域'},{id:'scene',icon:'scene',name:'场景编辑'},{id:'plans',icon:'folder',name:'方案管理'},{id:'vehicles',icon:'vehicle',name:'车辆配置'},{id:'waypoints',icon:'route',name:'航点顺序'}] as const;
 const definition=computed(()=>plan.value.definition),issues=computed(()=>validateDefinition(definition.value));
 const route=computed(()=>routePlan(definition.value,plan.value.waypoints));
-const viewBox=computed(()=>ed.viewBox),scale=computed(()=>ed.scale),nodeRadius=computed(()=>ed.scale*.55);
+const viewBox=computed(()=>ed.viewBox),scale=computed(()=>ed.renderScale),nodeRadius=computed(()=>ed.renderScale*.55);
 const counts=computed(()=>`${definition.value.nodes.length} 航点 · ${definition.value.edges.length} 道路 · ${definition.value.resources.length} 共享区域 · ${definition.value.areaAnnotations?.length??0} 厂家区域标注`);
 const labelMode=ref<MapLabelMode>('auto');
-const nodeLabelIds=computed(()=>new Set(selectNodeLabels(ed.visibleNodes,{
+const labelOptions=computed<MapLabelIndexOptions>(()=>({
  mode:labelMode.value,
  zoom:Number(ed.zoom),
- scale:Number(ed.scale),
+ scale:Number(ed.renderScale),
  view:ed.viewRect,
  selectedIds:ed.selection.node
-}).map(node=>node.id)));
+}));
+const labelIndex=useMapLabelIndex(computed(()=>ed.visibleNodes),labelOptions);
+const nodeLabelIds=computed(()=>new Set(labelIndex.ids.value));
+const labelIndexMode=computed(()=>labelIndex.mode.value);
+const labelIndexDuration=computed(()=>labelIndex.durationMs.value);
+const editorDetailVisible=computed(()=>!ed.panning&&!ed.viewSettling);
 const edgePathData=computed(()=>new Map(ed.visibleEdges.map(edge=>[edge.id,edgePath(edge,definition.value)])));
+const showRoadArrowheads=computed(()=>Number(ed.zoom)>=1.5);
+const selectedEdgeIds=computed(()=>new Set(ed.selection.edge));
+const selectedEdges=computed(()=>ed.visibleEdges.filter(edge=>selectedEdgeIds.value.has(edge.id)));
+const selectedCurveEdges=computed(()=>selectedEdges.value.filter(edge=>edge.controlPoints?.length));
+const edgeRenderBatches=computed(()=>buildMapEdgeBatches(ed.visibleEdges.filter(edge=>!selectedEdgeIds.value.has(edge.id)).map(edge=>{
+ const style=ed.layerStyle(edge);
+ return {
+  id:edge.id,
+  path:edgePathData.value.get(edge.id)??'',
+  layerId:edge.layerId??'navigation',
+  color:ed.color(edge,edge.enabled?'#40a6c4':'#566175'),
+  opacity:Number(style.opacity??1),
+  strokeWidth:Number(ed.lineWidth(edge)),
+  bidirectional:edge.bidirectional
+ };
+}),showRoadArrowheads.value));
+const nodePanBatches=computed(()=>buildMapNodeBatches(ed.visibleNodes.map(node=>({
+ id:node.id,
+ x:node.x,
+ y:node.y,
+ layerId:node.layerId??'navigation',
+ fill:ed.isSelected('node',node.id)?'#effaff':ed.color(node,node.enabled?'#0d344a':'#344254'),
+ stroke:ed.isSelected('node',node.id)?'#70e0f2':ed.color(node,node.enabled?'#59bfd9':'#71829a')
+})),Number(nodeRadius.value)));
 type EditorTreeRow={key:string;label:string;kind?:'node'|'edge'|'resource'|'scene';objectId?:string;children?:EditorTreeRow[]};
 const treeData=computed<EditorTreeRow[]>(()=>{
   if(tab.value==='scene')return [{key:'scene:items',label:`场景对象 ${plan.value.scene.length}`,children:plan.value.scene.map(item=>({key:`scene:${item.id}`,label:item.name,kind:'scene',objectId:item.id}))}];
@@ -299,23 +331,31 @@ onUnmounted(()=>{++epoch;window.removeEventListener('beforeunload',beforeUnload)
    </div>
    <p class="editor-tool-hint" role="status">{{ed.toolHint}} <strong v-if="ed.measurement!==null">距离 {{ed.measurement.toFixed(3)}} m</strong><span v-if="ed.snapTarget"> · 吸附 {{ed.snapTarget}}</span></p>
    <div class="editor-layout"><aside class="editor-tree"><header><h3>{{tab==='scene'?'场景对象':'导航对象'}}</h3><el-button v-if="tab==='scene'" size="small" :icon="IconPlus" @click="ed.addScene({x:0,y:0})">新增</el-button></header><el-input v-model="objectSearch" clearable :prefix-icon="IconSearch" placeholder="搜索编号、站点或区域"/><el-tree ref="treeRef" :data="treeData" node-key="key" :props="{label:'label',children:'children'}" :filter-node-method="filterTreeNode" :current-node-key="treeCurrentKey" :default-expanded-keys="[tab==='scene'?'scene:items':'group:nodes']" highlight-current :expand-on-click-node="false" empty-text="当前没有可编辑对象" @node-click="handleTreeNode"><template #default="{data}"><span class="editor-tree-label">{{data.label}}</span></template></el-tree><p v-if="tab==='scene'" class="muted-note">场景图形仅用于显示；设备区不会自动成为障碍或交通锁。</p></aside>
-    <div class="editor-canvas" :class="{'pan-mode':tool==='pan'||ed.space}">
-     <svg ref="svg" :viewBox="viewBox" :data-render-nodes="ed.visibleNodes.length" :data-render-edges="ed.visibleEdges.length" :data-visible-labels="nodeLabelIds.size" role="application" tabindex="0" aria-label="调度地图编辑画布，支持框选、节点拖动与键盘快捷键" @pointerdown="ed.down" @pointermove="ed.move" @pointerup="ed.up" @pointercancel="ed.cancelGesture" @lostpointercapture="ed.cancelGesture" @contextmenu.prevent @dblclick.prevent="tool==='boundary'&&ed.finishBoundary()" @wheel.prevent="ed.wheel">
+    <div class="editor-canvas" :class="{'pan-mode':tool==='pan'||ed.space,'is-panning':ed.panning,'is-settling':ed.viewSettling}">
+     <svg ref="svg" :viewBox="viewBox" :data-view-box="viewBox" :data-zoom="Number(ed.zoom).toFixed(3)" :data-render-nodes="ed.visibleNodes.length" :data-render-edges="ed.visibleEdges.length" :data-render-edge-batches="edgeRenderBatches.length" :data-visible-labels="nodeLabelIds.size" :data-label-index="labelIndexMode" :data-label-index-ms="labelIndexDuration.toFixed(2)" role="application" tabindex="0" aria-label="调度地图编辑画布，支持框选、节点拖动与键盘快捷键" @pointerdown="ed.down" @pointermove="ed.move" @pointerup="ed.up" @pointercancel="ed.cancelGesture" @lostpointercapture="ed.cancelGesture" @contextmenu.prevent @dblclick.prevent="tool==='boundary'&&ed.finishBoundary()" @wheel.prevent="ed.wheel">
       <defs><pattern id="planning-editor-grid" :width="Math.max(.001,Number(ed.gridStep)||1)" :height="Math.max(.001,Number(ed.gridStep)||1)" patternUnits="userSpaceOnUse"><path :d="`M ${Math.max(.001,Number(ed.gridStep)||1)} 0 L 0 0 0 ${Math.max(.001,Number(ed.gridStep)||1)}`" fill="none" stroke="#1a3550" :stroke-width="scale*.04"/></pattern><marker id="planning-editor-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#72bfd2"/></marker></defs>
       <rect v-if="ed.grid" :x="Number(viewBox.split(' ')[0])" :y="Number(viewBox.split(' ')[1])" :width="Number(viewBox.split(' ')[2])" :height="Number(viewBox.split(' ')[3])" fill="url(#planning-editor-grid)" pointer-events="none"/>
       <AreaAnnotations :areas="visibleVendorAreas" :scale="scale"/>
-      <g v-for="s in ed.visibleScene" :key="s.id" v-memo="[s, ed.selection.scene, ed.layerList, scale]" data-object="scene" data-kind="scene" :data-id="s.id" :style="ed.layerStyle(s)">
+      <template v-if="editorDetailVisible"><g v-for="s in ed.visibleScene" :key="s.id" v-memo="[s, ed.selection.scene, ed.layerList, scale]" data-object="scene" data-kind="scene" :data-id="s.id" :style="ed.layerStyle(s)">
        <rect v-if="s.kind!=='text'" :x="s.x" :y="-s.y-s.height" :width="s.width" :height="s.height" :fill="s.color" fill-opacity=".18" :stroke="ed.isSelected('scene',s.id)?'#e8fbff':s.color" :stroke-width="scale*.12"/><text :x="s.x+scale*.2" :y="-s.y-s.height+scale*1.2" :fill="s.color" :font-size="scale*1.1">{{s.name}}</text>
+      </g></template>
+      <template v-if="editorDetailVisible"><polygon v-for="r in ed.visibleResources" :key="r.id" v-memo="[r, ed.selection.resource, ed.layerList, scale]" data-object="resource" data-kind="resource" :data-id="r.id" :points="r.boundary?.map(p=>`${p.x},${-p.y}`).join(' ')" fill="#e0b25b" :fill-opacity="ed.isSelected('resource',r.id)?.22:.09" :stroke="ed.isSelected('resource',r.id)?'#fff4d0':ed.color(r,'#b79a68')" :stroke-width="ed.lineWidth(r)" :style="ed.layerStyle(r)"><title>{{r.id}} · {{r.type}}</title></polygon></template>
+      <g class="edge-visual-batches" pointer-events="none">
+       <path v-for="batch in edgeRenderBatches" :key="batch.key" v-memo="[batch, showRoadArrowheads]" :d="batch.path" fill="none" :stroke="batch.color" :stroke-width="batch.strokeWidth" :style="{opacity:batch.opacity}" :marker-start="batch.markerStart?'url(#planning-editor-arrow)':undefined" :marker-end="batch.markerEnd?'url(#planning-editor-arrow)':undefined" pointer-events="none"/>
       </g>
-      <polygon v-for="r in ed.visibleResources" :key="r.id" v-memo="[r, ed.selection.resource, ed.layerList, scale]" data-object="resource" data-kind="resource" :data-id="r.id" :points="r.boundary?.map(p=>`${p.x},${-p.y}`).join(' ')" fill="#e0b25b" :fill-opacity="ed.isSelected('resource',r.id)?.22:.09" :stroke="ed.isSelected('resource',r.id)?'#fff4d0':ed.color(r,'#b79a68')" :stroke-width="ed.lineWidth(r)" :style="ed.layerStyle(r)"><title>{{r.id}} · {{r.type}}</title></polygon>
-      <g v-for="e in ed.visibleEdges" :key="e.id" v-memo="[e, ed.selection.edge, ed.layerList, scale]" data-kind="edge" :data-id="e.id" data-object="edge" :style="ed.layerStyle(e)">
-       <path :d="edgePathData.get(e.id)??''" fill="none" stroke="transparent" :stroke-width="scale*1.6" pointer-events="stroke"/>
-       <path :d="edgePathData.get(e.id)??''" fill="none" :stroke="ed.isSelected('edge',e.id)?'#effaff':ed.color(e,e.enabled?'#40a6c4':'#566175')" :stroke-width="ed.lineWidth(e)*(ed.isSelected('edge',e.id)?1.6:1)" :marker-end="Number(ed.zoom)>=1.5||ed.isSelected('edge',e.id)?'url(#planning-editor-arrow)':undefined" :marker-start="e.bidirectional&&(Number(ed.zoom)>=1.5||ed.isSelected('edge',e.id))?'url(#planning-editor-arrow)':undefined" pointer-events="none"/><title>{{e.id}} · {{e.from}} → {{e.to}} · {{e.distance.toFixed(2)}} m</title>
+      <g v-for="e in selectedEdges" :key="`selected-${e.id}`" v-memo="[e, ed.selection.edge, ed.layerList, scale]" data-kind="edge" :data-id="e.id" data-object="edge" :style="ed.layerStyle(e)">
+       <path :d="edgePathData.get(e.id)??''" fill="none" stroke="#effaff" :stroke-width="ed.lineWidth(e)*1.6" :marker-end="'url(#planning-editor-arrow)'" :marker-start="e.bidirectional?'url(#planning-editor-arrow)':undefined" pointer-events="none"/>
       </g>
-      <g v-for="n in ed.visibleNodes" :key="n.id" v-memo="[n, ed.selection.node, ed.layerList, scale, nodeLabelIds.has(n.id)]" data-object="node" data-kind="node" :data-id="n.id" :data-node-type="n.type" :style="ed.layerStyle(n)">
-       <circle :cx="n.x" :cy="-n.y" :r="scale*1.15" fill="transparent"/><circle :cx="n.x" :cy="-n.y" :r="nodeRadius" :fill="ed.isSelected('node',n.id)?'#effaff':ed.color(n,n.enabled?'#0d344a':'#344254')" :stroke="ed.isSelected('node',n.id)?'#70e0f2':ed.color(n,n.enabled?'#59bfd9':'#71829a')" :stroke-width="scale*.15"/><text v-if="nodeLabelIds.has(n.id)" class="editor-node-label" :x="n.x+scale*.85" :y="-n.y-scale*.65" fill="#bdcfe3" :font-size="scale*1.05">{{n.id}}</text><title>{{n.id}} · {{n.x.toFixed(3)}}, {{n.y.toFixed(3)}} m</title>
+      <g v-if="!ed.panning&&!ed.viewSettling" class="edge-hit-paths" pointer-events="stroke">
+       <path v-for="e in ed.visibleEdges" :key="`hit-${e.id}`" v-memo="[e, scale]" :d="edgePathData.get(e.id)??''" fill="none" stroke="transparent" :stroke-width="scale*1.6" data-kind="edge" :data-id="e.id" data-object="edge" pointer-events="stroke"><title>{{e.id}} · {{e.from}} → {{e.to}} · {{e.distance.toFixed(2)}} m</title></path>
       </g>
-      <template v-for="e in ed.visibleEdges.filter(e=>ed.isSelected('edge',e.id)&&e.controlPoints?.length)" :key="`handles-${e.id}`">
+      <template v-if="!editorDetailVisible"><g class="node-pan-batches" pointer-events="none">
+       <path v-for="batch in nodePanBatches" :key="batch.key" v-memo="[batch, nodeRadius]" :d="batch.path" :fill="batch.fill" :stroke="batch.stroke" :stroke-width="scale*.15" pointer-events="none"/>
+      </g></template>
+      <template v-else><g v-for="n in ed.visibleNodes" :key="n.id" v-memo="[n, ed.selection.node, ed.layerList, scale, nodeLabelIds.has(n.id)]" data-object="node" data-kind="node" :data-id="n.id" :data-node-type="n.type" :style="ed.layerStyle(n)">
+       <circle v-if="!ed.panning&&!ed.viewSettling" :cx="n.x" :cy="-n.y" :r="scale*1.15" fill="transparent"/><circle :cx="n.x" :cy="-n.y" :r="nodeRadius" :fill="ed.isSelected('node',n.id)?'#effaff':ed.color(n,n.enabled?'#0d344a':'#344254')" :stroke="ed.isSelected('node',n.id)?'#70e0f2':ed.color(n,n.enabled?'#59bfd9':'#71829a')" :stroke-width="scale*.15"/><text v-if="nodeLabelIds.has(n.id)" class="editor-node-label" :x="n.x+scale*.85" :y="-n.y-scale*.65" fill="#bdcfe3" :font-size="scale*1.05">{{n.id}}</text><title>{{n.id}} · {{n.x.toFixed(3)}}, {{n.y.toFixed(3)}} m</title>
+      </g></template>
+      <template v-for="e in selectedCurveEdges" :key="`handles-${e.id}`">
        <polyline :points="[definition.nodes.find(n=>n.id===e.from),...(e.controlPoints??[]),definition.nodes.find(n=>n.id===e.to)].filter(Boolean).map(p=>`${p!.x},${-p!.y}`).join(' ')" fill="none" stroke="#d9ad63" :stroke-width="scale*.08" :stroke-dasharray="`${scale*.3} ${scale*.3}`" pointer-events="none"/>
        <circle v-for="(p,index) in e.controlPoints" :key="index" :cx="p.x" :cy="-p.y" :r="scale*.5" fill="#ffc767" stroke="#fff0ce" :stroke-width="scale*.1" data-kind="edge" :data-id="e.id" :data-control="index" class="curve-handle"><title>拖动控制点 {{index+1}}</title></circle>
       </template>
@@ -328,7 +368,7 @@ onUnmounted(()=>{++epoch;window.removeEventListener('beforeunload',beforeUnload)
       </g>
      </svg>
      <div class="editor-zoom"><button aria-label="编辑地图缩小" @click="ed.zoom=Math.max(.1,ed.zoom*.8)"><IconZoomOut :size="15"/></button><button @click="fit"><ActionIcon name="fit"/>适配</button><button aria-label="编辑地图放大" @click="ed.zoom=Math.min(40,ed.zoom*1.25)"><IconZoomIn :size="15"/></button></div>
-     <div class="editor-coordinate">{{ed.cursor?`X ${ed.cursor.x.toFixed(3)} · Y ${ed.cursor.y.toFixed(3)} m`:'米制坐标'}} · {{Math.round(ed.zoom*100)}}% · 标签 {{nodeLabelIds.size}}/{{ed.visibleNodes.length}} · 已选 {{ed.count}}{{ed.measurement!==null?` · 测量 ${ed.measurement.toFixed(3)} m`:''}}</div>
+     <div class="editor-coordinate">{{ed.cursor?`X ${ed.cursor.x.toFixed(3)} · Y ${ed.cursor.y.toFixed(3)} m`:'米制坐标'}} · {{Math.round(ed.zoom*100)}}% · 标签 {{nodeLabelIds.size}}/{{ed.visibleNodes.length}} · {{labelIndexMode==='worker'?`Worker ${labelIndexDuration.toFixed(1)} ms`:'主线程索引'}} · 已选 {{ed.count}}{{ed.measurement!==null?` · 测量 ${ed.measurement.toFixed(3)} m`:''}}</div>
     </div>
     <aside class="editor-inspector">
      <el-radio-group v-model="ed.panel" class="editor-panel-tabs" size="small" aria-label="编辑面板">

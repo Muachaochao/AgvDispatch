@@ -36,6 +36,7 @@ let sequence = 0;
 const pending = new Map();
 const errors = [];
 const checks = [];
+const performanceMetrics = {};
 
 function rpc(method, params = {}) {
   return new Promise((resolvePromise, reject) => {
@@ -88,9 +89,94 @@ function check(name, condition) {
 async function screenshot(name) {
   const result = await rpc('Page.captureScreenshot', {
     format: 'png',
-    captureBeyondViewport: true
+    captureBeyondViewport: false
   });
   writeFileSync(resolve(evidence, `${name}.png`), Buffer.from(result.data, 'base64'));
+}
+
+async function startFrameSample() {
+  await evaluate(`(() => {
+    const sample = { frames: 0, startedAt: performance.now(), running: true };
+    window.__mapFrameSample = sample;
+    const frame = () => {
+      if (!sample.running) return;
+      sample.frames += 1;
+      requestAnimationFrame(frame);
+    };
+    requestAnimationFrame(frame);
+  })()`);
+}
+
+async function finishFrameSample() {
+  const sample = await evaluate(`(() => {
+    const sample = window.__mapFrameSample;
+    sample.running = false;
+    return { frames: sample.frames, elapsed: performance.now() - sample.startedAt };
+  })()`);
+  return sample.elapsed > 0 ? sample.frames * 1000 / sample.elapsed : 0;
+}
+
+async function canvasCenter() {
+  return evaluate(`(() => {
+    const rect = document.querySelector('.editor-canvas').getBoundingClientRect();
+    return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+  })()`);
+}
+
+async function measurePanFps() {
+  await evaluate(`(() => [...document.querySelectorAll('button')].find(candidate => candidate.textContent.trim() === '平移')?.click())()`);
+  await sleep(80);
+  const center = await canvasCenter();
+  const viewBefore = await evaluate('document.querySelector(".editor-canvas svg").dataset.viewBox');
+  await startFrameSample();
+  await rpc('Input.dispatchMouseEvent', { type: 'mousePressed', ...center, button: 'left', buttons: 1, clickCount: 1 });
+  for (let index = 0; index < 40; index += 1) {
+    const phase = index / 39 * Math.PI * 2;
+    await rpc('Input.dispatchMouseEvent', {
+      type: 'mouseMoved',
+      x: center.x + Math.sin(phase) * 70 + index * 1.8,
+      y: center.y + Math.sin(phase * 2) * 35 + index * 0.8,
+      button: 'left',
+      buttons: 1
+    });
+    await sleep(12);
+  }
+  await rpc('Input.dispatchMouseEvent', { type: 'mouseReleased', ...center, button: 'left', buttons: 0, clickCount: 1 });
+  await sleep(80);
+  await evaluate(`(() => [...document.querySelectorAll('button')].find(candidate => candidate.textContent.trim() === '选择 / 框选')?.click())()`);
+  return {
+    fps: await finishFrameSample(),
+    changed: viewBefore !== await evaluate('document.querySelector(".editor-canvas svg").dataset.viewBox')
+  };
+}
+
+async function measureZoomFps() {
+  const center = await canvasCenter();
+  const zoomBefore = Number(await evaluate('document.querySelector(".editor-canvas svg").dataset.zoom'));
+  await startFrameSample();
+  for (let index = 0; index < 20; index += 1) {
+    await evaluate(`(() => {
+      const target = document.querySelector('.editor-canvas svg');
+      target.dispatchEvent(new WheelEvent('wheel', {
+        deltaY: -90,
+        clientX: ${center.x},
+        clientY: ${center.y},
+        bubbles: true,
+        cancelable: true
+      }));
+    })()`);
+    await sleep(14);
+  }
+  await sleep(240);
+  return {
+    fps: await finishFrameSample(),
+    changed: Number(await evaluate('document.querySelector(".editor-canvas svg").dataset.zoom')) > zoomBefore * 1.5
+  };
+}
+
+function median(values) {
+  const sorted = [...values].sort((left, right) => left - right);
+  return sorted[Math.floor(sorted.length / 2)] ?? 0;
 }
 
 try {
@@ -144,15 +230,23 @@ try {
     'The active backend map did not load its nodes',
     45000
   );
+  await waitFor(
+    () => evaluate('document.querySelector(".editor-canvas svg")?.dataset.labelIndex === "worker"'),
+    'The label collision index did not move to its worker',
+    15000
+  );
   await sleep(800);
 
   const state = await evaluate(`(() => ({
     theme: document.documentElement.dataset.theme,
     nodeCount: document.querySelectorAll('g[data-kind=node]').length,
-    edgeCount: document.querySelectorAll('g[data-kind=edge]').length,
+    edgeCount: Number(document.querySelector('.editor-canvas svg')?.dataset.renderEdges || 0),
+    edgeBatches: Number(document.querySelector('.editor-canvas svg')?.dataset.renderEdgeBatches || 0),
     coordinateCount: document.querySelectorAll('polygon[data-kind=resource]').length,
     countsText: document.querySelector('.workbench-tab-row > small')?.textContent || '',
     labelCount: Number(document.querySelector('.editor-canvas svg')?.dataset.visibleLabels || 0),
+    labelIndex: document.querySelector('.editor-canvas svg')?.dataset.labelIndex || '',
+    labelIndexMs: Number(document.querySelector('.editor-canvas svg')?.dataset.labelIndexMs || 0),
     arrowMarkers: document.querySelectorAll('.editor-canvas path[marker-end]').length,
     message: document.querySelector('.workbench-message')?.textContent || '',
     title: document.querySelector('.workbench-title-copy small')?.textContent || '',
@@ -161,11 +255,13 @@ try {
     backgrounds: ['.workbench-title', '.editor-tree', '.editor-inspector', '.editor-options', '.backend-map-tools']
       .map(selector => ({ selector, color: getComputedStyle(document.querySelector(selector)).backgroundColor }))
   }))()`);
-  console.log(`MAP_STATE ${JSON.stringify({ nodeCount: state.nodeCount, edgeCount: state.edgeCount, coordinateCount: state.coordinateCount, labelCount: state.labelCount })}`);
+  console.log(`MAP_STATE ${JSON.stringify({ nodeCount: state.nodeCount, edgeCount: state.edgeCount, edgeBatches: state.edgeBatches, coordinateCount: state.coordinateCount, labelCount: state.labelCount, labelIndex: state.labelIndex, labelIndexMs: state.labelIndexMs })}`);
 
   check('light theme is active', state.theme === 'light');
   check('current active map loads automatically', state.nodeCount === 1112 && state.edgeCount === 1887 && state.countsText.includes('1112 航点') && state.countsText.includes('1887 道路') && state.countsText.includes('1641 共享区域'));
+  check('identical road layers collapse into a small number of SVG path batches', state.edgeBatches > 0 && state.edgeBatches <= 8);
   check('zoomed-out label level keeps only a readable subset', state.labelCount > 0 && state.labelCount < state.nodeCount);
+  check('label collision processing runs in the Web Worker', state.labelIndex === 'worker' && state.labelIndexMs >= 0);
   check('overview levels omit thousands of road arrow markers', state.arrowMarkers === 0);
   check('map identity is visible in the workbench header', state.title.includes('305CNC') && state.title.includes('B07-1F'));
   check('source switch no longer leaves the workbench blank', !state.message.includes('数据源已切换'));
@@ -204,6 +300,35 @@ try {
     canvasNodes: document.querySelectorAll('g[data-kind=node]').length
   }))()`);
   check('object tree search filters labels without replacing the canvas', searchState.visibleRows > 0 && searchState.hasMatchingLabel && searchState.canvasNodes === state.nodeCount);
+
+  const panSamples = [];
+  for (let index = 0; index < 3; index += 1) {
+    panSamples.push(await measurePanFps());
+    await evaluate(`(() => [...document.querySelectorAll('button')].find(candidate => candidate.textContent.trim() === '适配')?.click())()`);
+    await sleep(250);
+  }
+  performanceMetrics.panFpsSamples = panSamples.map(sample => sample.fps);
+  performanceMetrics.panFps = median(performanceMetrics.panFpsSamples);
+  console.log(`PAN_FPS ${performanceMetrics.panFps.toFixed(1)}`);
+  check('real map panning sustains an interactive frame rate', performanceMetrics.panFps >= 30);
+  check('panning benchmark changes the visible map viewport', panSamples.every(sample => sample.changed));
+
+  const zoomSamples = [];
+  for (let index = 0; index < 3; index += 1) {
+    zoomSamples.push(await measureZoomFps());
+    await evaluate(`(() => [...document.querySelectorAll('button')].find(candidate => candidate.textContent.trim() === '适配')?.click())()`);
+    await sleep(250);
+  }
+  performanceMetrics.zoomFpsSamples = zoomSamples.map(sample => sample.fps);
+  performanceMetrics.zoomFps = median(performanceMetrics.zoomFpsSamples);
+  console.log(`ZOOM_FPS ${performanceMetrics.zoomFps.toFixed(1)}`);
+  check('real map wheel zoom sustains an interactive frame rate', performanceMetrics.zoomFps >= 30);
+  check('zoom benchmark changes the actual map scale', zoomSamples.every(sample => sample.changed));
+  const finalZoom = await measureZoomFps();
+  check('detail screenshot uses the zoomed map state', finalZoom.changed);
+  await screenshot('detail-editor');
+  await evaluate(`(() => [...document.querySelectorAll('button')].find(candidate => candidate.textContent.trim() === '适配')?.click())()`);
+  await sleep(250);
   const overlapAtOverview = await evaluate(`(() => {
     const rects = [...document.querySelectorAll('g[data-kind=node] text')]
       .map(text => text.getBoundingClientRect())
@@ -279,7 +404,8 @@ try {
   check('dark theme reloads the same active map', await evaluate('document.querySelectorAll("g[data-kind=node]").length === 1112'));
   check('no uncaught browser exceptions', errors.length === 0);
 
-  writeFileSync(resolve(evidence, 'results.json'), JSON.stringify({ checks, errors }, null, 2));
+  writeFileSync(resolve(evidence, 'results.json'), JSON.stringify({ checks, errors, performanceMetrics }, null, 2));
+  console.log(`PERFORMANCE ${JSON.stringify(performanceMetrics)}`);
   console.log(`PASS ${checks.length} map workbench browser checks; ${evidence}`);
 } catch (error) {
   if (socket?.readyState === 1) await screenshot('failure').catch(() => {});

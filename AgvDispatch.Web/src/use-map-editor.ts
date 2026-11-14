@@ -9,7 +9,7 @@ type Gesture={pointer:number;mode:'pan'|'box'|'move'|'control'|'brush';start:Poi
 export function useMapEditor(plan:Ref<Plan>,tab:Ref<string>,message:Ref<string>,changed:()=>void,inspect:(kind:ObjectKind|null,id:string)=>void,save:()=>void) {
   const svg=ref<SVGSVGElement>(),selection=ref(geometry.emptySelection()),tool=ref<Tool>('select'),panel=ref<'properties'|'batch'|'layers'|'history'>('properties');
   const undoStack=ref<Entry[]>([]),redoStack=ref<Entry[]>([]),clipboard=ref<Fragment|null>(null),pasteCount=ref(0);
-  const zoom=ref(1),pan=ref<Point>({x:0,y:0}),camera=ref({x:-5,y:-25,w:40,h:30});
+  const zoom=ref(1),pan=ref<Point>({x:0,y:0}),camera=ref({x:-5,y:-25,w:40,h:30}),panning=ref(false),viewSettling=ref(false);
   const grid=ref(true),gridStep=ref(1),snapGrid=ref(true),snapNodes=ref(true),snapAlignment=ref(true),currentLayer=ref('navigation');
   const guides=ref<{axis:'x'|'y';value:number}[]>([]),snapTarget=ref(''),cursor=ref<Point|null>(null),box=ref<{a:Point;b:Point}|null>(null);
   const roadStart=ref(''),roadEnd=ref(''),draft=ref<Point[]>([]),measure=ref<Point[]>([]),brushResource=ref(''),brushRemove=ref(false);
@@ -20,11 +20,15 @@ export function useMapEditor(plan:Ref<Plan>,tab:Ref<string>,message:Ref<string>,
   const selectionSets=computed(()=>({node:new Set(selection.value.node),edge:new Set(selection.value.edge),resource:new Set(selection.value.resource),scene:new Set(selection.value.scene)}));
   const isSelected=(kind:ObjectKind,id:string)=>selectionSets.value[kind].has(id);
   const viewRect=computed(()=>{const c=camera.value,w=c.w/zoom.value,h=c.h/zoom.value;return{x:c.x+(c.w-w)/2+pan.value.x,y:c.y+(c.h-h)/2+pan.value.y,width:w,height:h};});
+  const renderViewRect=ref({...viewRect.value});let viewSettleTimer:ReturnType<typeof setTimeout>|undefined;
+  watch(viewRect,value=>{if(!panning.value&&!viewSettling.value)renderViewRect.value={...value};},{immediate:true});
   const viewBox=computed(()=>{const view=viewRect.value;return`${view.x} ${view.y} ${view.width} ${view.height}`;});
   const scale=computed(()=>Math.max(camera.value.w/viewport.value.width,camera.value.h/viewport.value.height)*10/zoom.value);
+  const renderScale=ref(scale.value);
+  watch(scale,value=>{if(!panning.value&&!viewSettling.value)renderScale.value=value;});
   watch(svg,element=>{observer?.disconnect();if(!element)return;observer=new ResizeObserver(entries=>{const r=entries[0]?.contentRect;if(r&&r.width&&r.height)viewport.value={width:r.width,height:r.height};});observer.observe(element);});
   function intersectsView(minX:number,minY:number,maxX:number,maxY:number){
-    const view=viewRect.value,margin=scale.value*4;
+    const view=renderViewRect.value,margin=renderScale.value*4;
     return maxX>=view.x-margin&&minX<=view.x+view.width+margin&&maxY>=view.y-margin&&minY<=view.y+view.height+margin;
   }
   const visibleNodes=computed(()=>d.value.nodes.filter(n=>geometry.visible(d.value,n)&&intersectsView(n.x,-n.y,n.x,-n.y)));
@@ -95,7 +99,7 @@ export function useMapEditor(plan:Ref<Plan>,tab:Ref<string>,message:Ref<string>,
   function snapped(p:Point,exclude:string[]=[]){const m=svg.value?.getScreenCTM(),threshold=m?9/Math.max(.01,Math.hypot(m.a,m.b)):.2;const result=geometry.snapPoint(d.value,p,{grid:snapGrid.value,step:gridStep.value,nodes:snapNodes.value,alignment:snapAlignment.value,threshold},exclude);guides.value=result.guides;snapTarget.value=result.target??'';return result.point;}
   function cancelDrawing(){roadStart.value='';roadEnd.value='';draft.value=[];guides.value=[];snapTarget.value='';}
   function release(pointer:number){if(svg.value?.hasPointerCapture(pointer))svg.value.releasePointerCapture(pointer);}
-  function cancelGesture(){if(!gesture)return;const g=gesture;gesture=null;if(g.mode==='move'||g.mode==='control'||g.mode==='brush')plan.value=g.before;release(g.pointer);box.value=null;guides.value=[];refreshInspector();}
+  function cancelGesture(){if(!gesture)return;const g=gesture;gesture=null;panning.value=false;renderViewRect.value={...viewRect.value};renderScale.value=scale.value;if(g.mode==='move'||g.mode==='control'||g.mode==='brush')plan.value=g.before;release(g.pointer);box.value=null;guides.value=[];refreshInspector();}
   function cancel(){cancelGesture();cancelDrawing();tool.value='select';message.value='已取消当前绘制 / 拖动。';}
   function changeTool(next:Tool){cancelGesture();cancelDrawing();tool.value=next;message.value='';}
   watch(tool,()=>cancelDrawing());watch(tab,()=>{cancel();clear();});
@@ -129,9 +133,9 @@ export function useMapEditor(plan:Ref<Plan>,tab:Ref<string>,message:Ref<string>,
       else if(obj.kind==='node'||obj.kind==='resource'||obj.kind==='scene'){base.mode='move';base.kind=obj.kind;base.id=obj.id;base.selection=clone(selection.value);}
       else return;
     }else if(!panGesture){base.mode='box';if(!e.ctrlKey&&!e.metaKey&&!e.shiftKey)clear();base.selection=clone(selection.value);box.value={a:p,b:p};}
-    gesture=base;svg.value?.setPointerCapture(e.pointerId);
+    gesture=base;panning.value=base.mode==='pan';svg.value?.setPointerCapture(e.pointerId);
   }
-  function move(e:PointerEvent){const p=point(e);if(p)cursor.value=gesture?p:snapped(p);const g=gesture;if(!g||e.pointerId!==g.pointer)return;const next=point(e,g.inverse);if(!next)return;
+  function move(e:PointerEvent){const p=point(e);if(p&&(!gesture||gesture.mode!=='pan'))cursor.value=gesture?p:snapped(p);const g=gesture;if(!g||e.pointerId!==g.pointer)return;const next=point(e,g.inverse);if(!next)return;
     g.moved ||= Math.hypot(e.clientX-g.client.x,e.clientY-g.client.y)>3;
     if(g.mode==='pan'){pan.value={x:g.pan.x-(next.x-g.start.x),y:g.pan.y+(next.y-g.start.y)};return;}
     if(g.mode==='box'){box.value={a:g.start,b:next};return;}
@@ -147,12 +151,12 @@ export function useMapEditor(plan:Ref<Plan>,tab:Ref<string>,message:Ref<string>,
         const desired={x:anchor.x+next.x-g.start.x,y:anchor.y+next.y-g.start.y},snap=snapped(desired,g.selection.node);geometry.translate(plan.value,g.selection,snap.x-anchor.x,snap.y-anchor.y);}
     }catch(ex){plan.value=clone(g.before);message.value=String(ex instanceof Error?ex.message:ex);}
   }
-  function up(e:PointerEvent){const g=gesture;if(!g||g.pointer!==e.pointerId)return;gesture=null;release(e.pointerId);
+  function up(e:PointerEvent){const g=gesture;if(!g||g.pointer!==e.pointerId)return;gesture=null;panning.value=false;renderViewRect.value={...viewRect.value};renderScale.value=scale.value;release(e.pointerId);
     if(g.mode==='box'){if(g.moved&&box.value){const next=geometry.boxSelection(plan.value,box.value.a,box.value.b);for(const k of Object.keys(next) as ObjectKind[])next[k]=[...new Set([...g.selection[k],...next[k]])];setSelection(next);}box.value=null;}
     else if(g.mode==='move'||g.mode==='control'||g.mode==='brush'){const issues=validateDefinition(d.value);if(issues.length){plan.value=g.before;message.value=issues.join('；');}else record(g.before,g.mode==='move'?'画布拖动':g.mode==='control'?'调整曲线控制点':'共享区域关联刷');refreshInspector();}
     guides.value=[];snapTarget.value='';
   }
-  function wheel(e:WheelEvent){if(gesture)return;const before=point(e);if(!before)return;const factor=Math.exp(-e.deltaY*.0015),next=Math.max(.1,Math.min(40,zoom.value*factor)),ratio=zoom.value/next;
+  function wheel(e:WheelEvent){if(gesture)return;const before=point(e);if(!before)return;viewSettling.value=true;clearTimeout(viewSettleTimer);viewSettleTimer=setTimeout(()=>{viewSettling.value=false;renderViewRect.value={...viewRect.value};renderScale.value=scale.value;},140);const factor=Math.exp(-e.deltaY*.0015),next=Math.max(.1,Math.min(40,zoom.value*factor)),ratio=zoom.value/next;
     const c=camera.value,w=c.w/zoom.value,h=c.h/zoom.value,left=c.x+(c.w-w)/2+pan.value.x,top=c.y+(c.h-h)/2+pan.value.y;
     zoom.value=next;const nw=c.w/next,nh=c.h/next;pan.value={x:before.x-(before.x-left)*ratio-c.x-(c.w-nw)/2,y:-before.y-(-before.y-top)*ratio-c.y-(c.h-nh)/2};
   }
@@ -181,7 +185,7 @@ export function useMapEditor(plan:Ref<Plan>,tab:Ref<string>,message:Ref<string>,
   function moveToLayer(){selectedOperation(()=>{geometry.requireLayer(d.value,currentLayer.value);for(const k of Object.keys(selection.value) as ObjectKind[])for(const o of geometry.objects(plan.value,k).filter(o=>selection.value[k].includes(o.id))){geometry.requireEditable(d.value,[o]);o.layerId=currentLayer.value;}},'移动对象到当前图层');}
   function layerStyle(o:{layerId?:string}){const l=layerList.value.find(l=>l.id===geometry.layerId(o));return{opacity:l?.alpha??1,color:l?.color||undefined};}
   function color(o:{layerId?:string},fallback:string){return layerList.value.find(l=>l.id===geometry.layerId(o))?.color||fallback;}
-  function lineWidth(o:{layerId?:string}){return scale.value*(layerList.value.find(l=>l.id===geometry.layerId(o))?.strokeWidth??2)/10;}
+  function lineWidth(o:{layerId?:string}){return renderScale.value*(layerList.value.find(l=>l.id===geometry.layerId(o))?.strokeWidth??2)/10;}
   function selectAll(){const next=geometry.emptySelection();for(const k of (tab.value==='scene'?['scene']:['node','edge','resource']) as ObjectKind[])next[k]=geometry.objects(plan.value,k).filter(o=>geometry.editable(d.value,o)).map(o=>o.id);setSelection(next);}
   function keyboard(e:KeyboardEvent){if(tab.value!=='map'&&tab.value!=='scene')return;const target=e.target as HTMLElement;
     if(target?.closest('input,textarea,select,[contenteditable="true"],[role="dialog"],.console-dialog'))return;
@@ -191,8 +195,8 @@ export function useMapEditor(plan:Ref<Plan>,tab:Ref<string>,message:Ref<string>,
   }
   const keyup=(e:KeyboardEvent)=>{if(e.code==='Space')space.value=false;};const blur=()=>{space.value=false;cancelGesture();};
   onMounted(()=>{window.addEventListener('keydown',keyboard);window.addEventListener('keyup',keyup);window.addEventListener('blur',blur);});
-  onUnmounted(()=>{cancelGesture();observer?.disconnect();window.removeEventListener('keydown',keyboard);window.removeEventListener('keyup',keyup);window.removeEventListener('blur',blur);});
+  onUnmounted(()=>{clearTimeout(viewSettleTimer);cancelGesture();observer?.disconnect();window.removeEventListener('keydown',keyboard);window.removeEventListener('keyup',keyup);window.removeEventListener('blur',blur);});
   watch(()=>d.value.editorSettings,settings=>{if(!settings||typeof settings!=='object')return;const s=settings as any;gridStep.value=Number.isFinite(s.gridSize)&&s.gridSize>0?s.gridSize:1;grid.value=s.showGrid!==false;snapGrid.value=s.snapToGrid!==false;snapNodes.value=s.snapToExisting!==false;snapAlignment.value=s.snapToAlignment!==false;currentLayer.value=s.currentLayerId||'navigation';},{immediate:true});
-  return reactive({svg,selection,count,tool,panel,undoStack,redoStack,clipboard,zoom,pan,camera,viewBox,viewRect,scale,grid,gridStep,snapGrid,snapNodes,snapAlignment,currentLayer,layerList,guides,snapTarget,cursor,box,draft,measure,measurement,roadStart,roadEnd,draftPath,toolHint,batch,brushResource,brushRemove,visibleNodes,visibleEdges,visibleResources,visibleScene,space,
+  return reactive({svg,selection,count,tool,panel,undoStack,redoStack,clipboard,zoom,pan,camera,viewBox,viewRect,renderViewRect,panning,viewSettling,scale,renderScale,grid,gridStep,snapGrid,snapNodes,snapAlignment,currentLayer,layerList,guides,snapTarget,cursor,box,draft,measure,measurement,roadStart,roadEnd,draftPath,toolHint,batch,brushResource,brushRemove,visibleNodes,visibleEdges,visibleResources,visibleScene,space,
     edit,history,restore,pick,clear,setSelection,isSelected,fit,down,move,up,wheel,cancel,cancelGesture,changeTool,finishBoundary,remove,copy,pasteObjects,duplicate,align,transform,moveSelected,merge,reverse,split,roadBatch,enabled,connect,cleanup,intersections,settings,updateLayer,addLayer,deleteLayer,moveToLayer,layerStyle,color,lineWidth,selectAll,addNode,addScene});
 }

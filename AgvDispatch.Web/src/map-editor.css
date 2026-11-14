@@ -362,6 +362,11 @@
   stroke-linejoin: round;
 }
 
+.editor-canvas.is-panning .editor-node-label,
+.editor-canvas.is-settling .editor-node-label {
+  visibility: hidden;
+}
+
 .editor-canvas svg:focus-visible {
   outline: 2px solid var(--ui-focus-ring);
   outline-offset: -2px;
