@@ -66,6 +66,26 @@ const optionsBusy = ref(false);
 const selectedStation = computed(() => options.value?.stations.find(s => s.stationId === station.value));
 const selectedVehicle = computed(() => options.value?.vehicles.find(v => v.vehicleId === vehicle.value));
 const pickupReachable = computed(() => !!selectedStation.value?.pickupReachableVehicleIds?.includes(vehicle.value));
+const availableStationCount = computed(() => options.value?.stations.filter(item=>item.available).length ?? 0);
+const availableVehicleCount = computed(() => options.value?.vehicles.filter(item=>item.available).length ?? 0);
+const creationBlocker = computed(() => {
+  if(store.demoMode)return '演示模式不能提交正式任务。';
+  if(!store.fresh)return '后台数据非当前，请等待重新连接。';
+  if(!store.submissionEnabled)return '当前后台未开启Web任务提交，只能核对条件。';
+  if(optionsBusy.value)return '正在读取后台创建条件。';
+  if(!options.value)return '尚未取得任务创建条件。';
+  if(!availableStationCount.value)return '当前没有满足后台条件的可用工位。';
+  if(!availableVehicleCount.value)return '当前没有满足后台条件的可用车辆。';
+  if(createStep.value===2&&creationMode.value==='Single'){
+    if(!options.value.available)return options.value.explanation || '后台当前未开放任务创建。';
+    if(!station.value)return '请选择取料工位。';
+    if(!vehicle.value)return '请选择执行车辆。';
+    if(!selectedStation.value?.available)return selectedStation.value?.explanation || '所选工位条件未满足。';
+    if(!selectedVehicle.value?.available)return selectedVehicle.value?.explanation || '所选车辆条件未满足。';
+    if(!pickupReachable.value)return '车辆当前站点到取料点没有可执行路线。';
+  }
+  return '';
+});
 const templateInputs = computed(() => {
   const template = options.value?.template;
   if (!template) return [];
@@ -238,7 +258,7 @@ watch(() => route.query.create, create => {
     <p v-else class="empty-panel">{{ store.error || '正在读取任务详情…' }}</p>
   </ConsoleDialog>
 
-  <el-drawer v-model="formOpen" class="task-create-drawer" title="创建调度任务" size="min(720px, 96vw)" :close-on-click-modal="false" destroy-on-close>
+  <el-drawer v-model="formOpen" class="task-create-drawer" title="创建调度任务" size="min(860px, 96vw)" :close-on-click-modal="false" destroy-on-close>
     <div class="creation-drawer-body">
       <el-steps class="creation-el-steps" :active="createStep - 1" finish-status="success" process-status="process" align-center>
         <el-step v-for="(step, index) in creationSteps" :key="step" :title="step" class="creation-el-step" role="button" tabindex="0" :aria-current="createStep === index + 1 ? 'step' : undefined" @click="createStep = index + 1" @keydown.enter.prevent="createStep = index + 1" @keydown.space.prevent="createStep = index + 1" />
@@ -246,11 +266,24 @@ watch(() => route.query.create, create => {
 
       <section v-if="createStep === 1" class="creation-step-content">
         <div class="creation-step-heading"><el-tag effect="plain" round>第 1 步</el-tag><h3>选择任务运行方式</h3><p>单次任务适合日常出车；按需运行和循环测试用于持续联调，提交边界更严格。</p></div>
-        <nav class="creation-modes" aria-label="任务运行模式">
-          <button class="creation-mode-card" :class="{active:creationMode==='Single'}" @click="selectCreationMode('Single')"><b>单次业务任务</b><small>取满箱、倒料、返空箱一次完成</small></button>
-          <button class="creation-mode-card" :class="{active:creationMode==='Demand'}" @click="selectCreationMode('Demand')"><b>正常按需运行</b><small>按PLC呼叫接续所选工位</small></button>
-          <button class="creation-mode-card" :class="{active:creationMode==='Cycle'}" @click="selectCreationMode('Cycle')"><b>自动循环测试</b><small>按工位顺序执行指定轮数</small></button>
-        </nav>
+        <div class="creation-overview">
+          <el-radio-group v-model="creationMode" class="creation-modes" aria-label="任务运行模式" @change="selectCreationMode">
+            <el-radio-button value="Single"><span class="creation-mode-copy"><b>单次业务任务</b><small>取满箱、倒料、返空箱一次完成</small></span></el-radio-button>
+            <el-radio-button value="Demand"><span class="creation-mode-copy"><b>正常按需运行</b><small>按PLC呼叫接续所选工位</small></span></el-radio-button>
+            <el-radio-button value="Cycle"><span class="creation-mode-copy"><b>自动循环测试</b><small>按工位顺序执行指定轮数</small></span></el-radio-button>
+          </el-radio-group>
+          <aside class="creation-readiness">
+            <header><h4>当前创建条件</h4><el-tag :type="creationBlocker ? 'warning' : 'success'" effect="plain">{{creationBlocker ? '需核对' : '可继续'}}</el-tag></header>
+            <dl>
+              <div><dt>后台连接</dt><dd>{{store.fresh ? '当前有效' : '非当前'}}</dd></div>
+              <div><dt>可用工位</dt><dd>{{availableStationCount}} / {{options?.stations.length ?? 0}}</dd></div>
+              <div><dt>可用车辆</dt><dd>{{availableVehicleCount}} / {{options?.vehicles.length ?? 0}}</dd></div>
+              <div><dt>地图版本</dt><dd>{{options?.mapVersionId ?? '未取得'}}</dd></div>
+            </dl>
+            <el-alert v-if="creationBlocker" type="warning" :closable="false" show-icon>{{creationBlocker}}</el-alert>
+            <el-button :loading="optionsBusy" @click="loadOptions(true)">刷新创建条件</el-button>
+          </aside>
+        </div>
         <el-alert class="creation-el-alert" type="info" :closable="false" show-icon>
           <template #title>执行边界</template>
           {{ store.submissionEnabled ? '提交成功只代表后台受理，不等于车辆动作已完成。' : '当前未开启Web提交，可继续核对条件与路线。' }}
@@ -262,6 +295,9 @@ watch(() => route.query.create, create => {
         <BusinessRunPanel v-if="creationMode!=='Single'" :mode="creationMode" :options="options"/>
         <template v-else>
           <p class="form-explanation">{{ (options?.explanation ?? actionMessage) || '正在查询后台创建条件…' }}</p>
+          <el-alert v-if="creationBlocker" class="creation-el-alert" type="warning" :closable="false" show-icon>
+            <template #title>当前条件未满足</template>{{creationBlocker}}
+          </el-alert>
           <el-form class="creation-el-form" label-position="top">
             <div class="creation-grid creation-grid-element">
               <el-form-item label="取料工位"><el-select v-model="station" :disabled="requestUncertain || actionBusy || optionsBusy" placeholder="请选择取料工位"><el-option v-for="s in options?.stations ?? []" :key="s.stationId" :label="`${s.stationId} · ${s.pickupSite}${s.available ? '' : ' · 条件未满足'}`" :value="s.stationId" /></el-select></el-form-item>
@@ -316,6 +352,7 @@ watch(() => route.query.create, create => {
     <template #footer>
       <div class="creation-drawer-footer">
         <el-button @click="formOpen = false"><ActionIcon name="close"/>取消</el-button>
+        <span v-if="creationBlocker" class="creation-footer-reason">{{creationBlocker}}</span>
         <span class="creation-footer-spacer"/>
         <el-button v-if="createStep > 1" @click="previousCreationStep">上一步</el-button>
         <el-button v-if="createStep < creationSteps.length" type="primary" :disabled="createStep === 2 && creationMode === 'Single' && !singleSelectionReady" @click="nextCreationStep">下一步</el-button>

@@ -16,6 +16,7 @@ const props=defineProps<{snapshot?:any;adapter?:any}>();
 const store=useDispatchStore(),route=useRoute(),router=useRouter();
 const plan=ref<EngineeringPlan>(newPlan()),revision=ref(''),savedText=ref(''),ready=ref(false),busy=ref(false),message=ref(''),error=ref('');
 const search=ref(''),page=ref(1),selected=ref<EngineeringRow|null>(null),checked=ref<string[]>([]);
+const tableRef=ref<any>(null);
 const validation=ref<any>(null),versions=ref<any[]>([]),versionId=ref(String(route.query.version??'')),publishNote=ref(''),report=ref<any>(null);
 const runtimeState=ref<any>(null);
 const importPreview=ref<ReturnType<typeof importDiff>|null>(null),importSection=ref<Section>('stations');
@@ -110,6 +111,9 @@ function add(){if(!section.value)return;const row=newRow(section.value);row.id='
 function copy(){if(!section.value||!selected.value)return;const row=structuredClone(JSON.parse(JSON.stringify(selected.value))) as EngineeringRow;row.id=String(row.id)+'-COPY';rows.value.push(row);selected.value=row;search.value='';page.value=Math.ceil(rows.value.length/25);}
 function remove(){if(!section.value||!selected.value)return;const current=selected.value;plan.value[section.value]=rows.value.filter(r=>r!==current);selected.value=null;validation.value=null;}
 function check(id:string,event:Event){checked.value=(event.target as HTMLInputElement).checked?[...checked.value,id]:checked.value.filter(x=>x!==id);}
+function selectionChanged(selection:EngineeringRow[]){checked.value=selection.map(row=>String(row.id));}
+function selectFiltered(){checked.value=filtered.value.map(row=>String(row.id));void nextTick(()=>{for(const row of shown.value)tableRef.value?.toggleRowSelection(row,true);});}
+function changeEngineeringPage(value:number){page.value=value;}
 function batch(){if(section.value!=='stations'||checked.value.length===0)return;const field=sections.stations.fields.find(f=>f.key===batchField.value)!;
  for(const row of rows.value.filter(r=>checked.value.includes(String(r.id))))row[batchField.value]=field.type==='number'?Number(batchValue.value):batchValue.value;validation.value=null;message.value=`已修改${checked.value.length}个工位，尚未保存。`;
 }
@@ -170,27 +174,28 @@ onMounted(load);
  <nav class="engineering-sidebar" aria-label="工程工作台分类"><div class="engineering-level-switch" aria-label="工程配置级别"><button :class="{active:engineeringLevel==='common'}" @click="setEngineeringLevel('common')"><span>常用配置</span><small>日常业务维护</small></button><button :class="{active:engineeringLevel==='advanced'}" @click="setEngineeringLevel('advanced')"><span>高级配置</span><small>地图、通信、联调</small></button></div><template v-for="(item,index) in visibleTabs" :key="item.id"><p v-if="index===0||visibleTabs[index-1]?.group!==item.group" class="engineering-nav-group">{{item.group}}</p><button :class="{active:tab===item.id}" :aria-current="tab===item.id?'page':undefined" @click="navigate(item.id)"><span>{{item.label}}</span><small v-if="item.id in sections">{{plan[item.id as Section].length}}</small></button></template></nav>
  <main class="engineering-content" :aria-busy="busy">
  <template v-if="tab==='overview'">
-  <h3>工程概况</h3><div class="engineering-form"><label>工程名称<input v-model="plan.name"/></label><label>地图编号<input v-model="plan.mapId"/></label><label>地图版本<input v-model="plan.mapVersion"/></label></div>
+  <h3>工程概况</h3><div class="engineering-form"><label>工程名称<el-input v-model="plan.name"/></label><label>地图编号<el-input v-model="plan.mapId"/></label><label>地图版本<el-input v-model="plan.mapVersion"/></label></div>
   <div class="engineering-stats"><div v-for="key in (['stations','vehicles','pools','dumpers'] as Section[])" :key="key"><b>{{plan[key].length}}</b><span>{{sections[key].label}}</span></div></div>
-  <h3>载入隔离示例</h3><p>示例会替换当前编辑区。先导出或保存已有修改。示例使用虚构地址，不读取或连接现场设备。</p><div class="engineering-form"><label>工位数量<input v-model.number="sampleStations" type="number" min="1" max="1000"/></label><label>车辆数量<input v-model.number="sampleVehicles" type="number" min="1" max="20"/></label><button :disabled="busy" @click="sample">载入示例到编辑区</button></div>
+  <h3>载入隔离示例</h3><p>示例会替换当前编辑区。先导出或保存已有修改。示例使用虚构地址，不读取或连接现场设备。</p><div class="engineering-form"><label>工位数量<el-input-number v-model="sampleStations" :min="1" :max="1000"/></label><label>车辆数量<el-input-number v-model="sampleVehicles" :min="1" :max="20"/></label><el-button :disabled="busy" @click="sample">载入示例到编辑区</el-button></div>
 <h3>相关工作区</h3><div class="engineering-links"><button @click="navigate('communication')">PLC／AGV／充电桩通信</button><button @click="navigate('settings')">任务参数与地图绑定</button><button @click="navigate('commissioning')">运行条件与通信诊断</button><button @click="navigate('tests')">测试中心</button><button @click="openCharging">充电运行管理</button><RouterLink to="/planning">地图编辑与交通资源</RouterLink><RouterLink to="/maps">地图版本与安全切换</RouterLink><RouterLink to="/recovery">任务取消与启动恢复</RouterLink></div><p class="engineering-boundary">充电运行管理保留独立页面，因为它会发起实时设备操作、展示会话和告警；通信及绑定参数已经并入本工作台。</p><button :disabled="busy||store.engineeringSimulationOnly" @click="importMap">复制当前运行地图到工程草稿</button>
-  <div class="engineering-form"><button :disabled="busy||store.engineeringSimulationOnly" @click="loadMapCatalog">读取已发布地图目录</button><label>目标地图<select v-model="targetMapId"><option value="">请选择</option><option v-for="m in mapCatalog" :key="m.mapId" :value="m.mapId">{{m.name}} · {{m.publishedVersionId||'未发布'}}</option></select></label><button :disabled="busy||!targetMapId||store.engineeringSimulationOnly" @click="importPublishedMap">复制所选发布地图到工程草稿</button></div><p>可以先绑定尚未激活的新地图；发布工程后再进入工程执行接入完成地图切换。</p>
+  <div class="engineering-form"><el-button :disabled="busy||store.engineeringSimulationOnly" @click="loadMapCatalog">读取已发布地图目录</el-button><label>目标地图<el-select v-model="targetMapId" filterable placeholder="请选择"><el-option label="请选择" value=""/><el-option v-for="m in mapCatalog" :key="m.mapId" :label="`${m.name} · ${m.publishedVersionId||'未发布'}`" :value="m.mapId"/></el-select></label><el-button :disabled="busy||!targetMapId||store.engineeringSimulationOnly" @click="importPublishedMap">复制所选发布地图到工程草稿</el-button></div><p>可以先绑定尚未激活的新地图；发布工程后再进入工程执行接入完成地图切换。</p>
  </template>
  <template v-else-if="tab==='templates'">
   <EngineeringTaskTemplatePanel :plan="plan" @message="message=$event" />
  </template>
  <template v-else-if="section">
   <h3>{{sections[section].label}}</h3><p>{{sections[section].description}}</p>
-  <div class="engineering-toolbar"><input v-model="search" aria-label="搜索配置对象" placeholder="搜索编号、区域、绑定…"/><button @click="add">新增</button><button @click="download(section+'.csv',exportCsv(section,rows),'text/csv;charset=utf-8')">导出CSV / 模板</button><label class="file-button">导入CSV<input type="file" accept=".csv" :disabled="busy" @change="importFile"/></label></div>
-  <div v-if="section==='stations'" class="engineering-toolbar"><button @click="checked=filtered.map(r=>String(r.id))">选择筛选结果（{{filtered.length}}）</button><span>已选{{checked.length}}</span><select v-model="batchField" aria-label="批量修改字段"><option v-for="f in sections.stations.fields.filter(f=>['area','poolId','templateId','dumperId','priority'].includes(f.key))" :key="f.key" :value="f.key">{{f.label}}</option></select><input v-model="batchValue" aria-label="批量修改值" placeholder="填写目标值"/><button :disabled="!checked.length||!batchValue" @click="batch">应用到所选工位</button></div>
+  <div class="engineering-toolbar"><el-input v-model="search" clearable aria-label="搜索配置对象" placeholder="搜索编号、区域、绑定…"/><el-button @click="add">新增</el-button><el-button @click="download(section+'.csv',exportCsv(section,rows),'text/csv;charset=utf-8')">导出CSV / 模板</el-button><label class="file-button">导入CSV<input type="file" accept=".csv" :disabled="busy" @change="importFile"/></label></div>
+  <div v-if="section==='stations'" class="engineering-toolbar"><el-button @click="selectFiltered">选择筛选结果（{{filtered.length}}）</el-button><span>已选{{checked.length}}</span><el-select v-model="batchField" aria-label="批量修改字段" style="width:150px"><el-option v-for="f in sections.stations.fields.filter(f=>['area','poolId','templateId','dumperId','priority'].includes(f.key))" :key="f.key" :label="f.label" :value="f.key"/></el-select><el-input v-model="batchValue" aria-label="批量修改值" placeholder="填写目标值" style="width:180px"/><el-button type="primary" :disabled="!checked.length||!batchValue" @click="batch">应用到所选工位</el-button></div>
   <div v-if="importPreview" class="engineering-import"><h4>导入差异预览</h4><p>新增{{importPreview.added}} · 修改{{importPreview.changed}} · 未变{{importPreview.unchanged}}。仅按编号合并，不删除未列出的原对象。</p><details><summary>查看前50项差异</summary><div v-for="c in importPreview.changes.slice(0,50)" :key="c.id"><b>{{c.id}} · {{c.status}}</b><pre v-if="c.status==='修改'">原：{{c.before}}
-新：{{c.after}}</pre></div></details><button @click="applyImport">确认合并到编辑区</button><button @click="importPreview=null">取消导入</button></div>
-  <div class="engineering-table-layout"><div><div class="engineering-table-scroll"><table class="engineering-table"><thead><tr><th v-if="section==='stations'">选择</th><th v-for="f in columns" :key="f.key">{{f.label}}</th><th>操作</th></tr></thead><tbody><tr v-for="(row,i) in shown" :key="(page-1)*25+i" :class="{selected:selected===row}"><td v-if="section==='stations'"><input type="checkbox" :aria-label="'选择'+row.id" :checked="checked.includes(String(row.id))" @change="check(String(row.id),$event)"/></td><td v-for="f in columns" :key="f.key">{{engineeringFieldValueLabel(f.key,value(row,f))}}</td><td><button @click="selected=row">编辑</button></td></tr><tr v-if="!shown.length"><td :colspan="columns.length+2">没有匹配对象。可新增或导入CSV。</td></tr></tbody></table></div><div class="engineering-toolbar"><button :disabled="page<=1" @click="page--">上一页</button><span>第{{page}} / {{Math.max(1,Math.ceil(filtered.length/25))}}页 · {{filtered.length}}项</span><button :disabled="page*25>=filtered.length" @click="page++">下一页</button></div></div>
-  <fieldset v-if="selected" class="engineering-detail"><legend>编辑 {{selected.id}}</legend><label v-for="f in sections[section].fields" :key="f.key">{{f.label}}
-  <input v-if="f.type==='boolean'" type="checkbox" :checked="!!selected[f.key]" @change="update(selected,f,$event)"/>
-  <select v-else-if="f.options" :value="selected[f.key]" @change="update(selected,f,$event)"><option v-for="o in f.options" :key="o" :value="o">{{engineeringFieldValueLabel(f.key,o)}}</option></select>
-  <input v-else :value="value(selected,f)" :type="f.type==='number'?'number':'text'" :step="f.type==='number'?'any':undefined" :list="f.ref?'engineering-ref-'+f.ref:undefined" @input="update(selected,f,$event)"/>
-  <small v-if="f.help">{{f.help}}</small></label><div class="engineering-toolbar"><button @click="copy">复制对象</button><button @click="remove">从草稿删除</button><button @click="selected=null">收起</button></div></fieldset></div>
+新：{{c.after}}</pre></div></details><el-button type="primary" @click="applyImport">确认合并到编辑区</el-button><el-button @click="importPreview=null">取消导入</el-button></div>
+  <div class="engineering-table-layout"><div><div class="engineering-table-scroll"><el-table ref="tableRef" :data="shown" row-key="id" stripe border height="540" table-layout="fixed" class="engineering-el-table" @selection-change="selectionChanged" @row-dblclick="selected=$event"><el-table-column v-if="section==='stations'" type="selection" width="48" reserve-selection/><el-table-column v-for="f in columns" :key="f.key" :label="f.label" :prop="f.key" min-width="130" show-overflow-tooltip><template #default="{row}">{{engineeringFieldValueLabel(f.key,value(row,f))}}</template></el-table-column><el-table-column label="操作" width="82" fixed="right"><template #default="{row}"><el-button link type="primary" @click="selected=row">编辑</el-button></template></el-table-column><template #empty><el-empty description="没有匹配对象，可新增或导入CSV。" :image-size="72"/></template></el-table></div><div class="engineering-pagebar"><el-pagination background layout="total, prev, pager, next" :current-page="page" :page-size="25" :total="filtered.length" @current-change="changeEngineeringPage"/></div></div>
+  <section v-if="selected" class="engineering-detail"><header><h4>编辑 {{selected.id}}</h4><el-button link @click="selected=null">收起</el-button></header><label v-for="f in sections[section].fields" :key="f.key">{{f.label}}
+  <el-switch v-if="f.type==='boolean'" :model-value="!!selected[f.key]" @update:model-value="selected[f.key]=$event"/>
+  <el-select v-else-if="f.options" :model-value="selected[f.key]" @update:model-value="selected[f.key]=$event"><el-option v-for="o in f.options" :key="o" :label="engineeringFieldValueLabel(f.key,o)" :value="o"/></el-select>
+  <el-input-number v-else-if="f.type==='number'" :model-value="Number(selected[f.key]??0)" @update:model-value="selected[f.key]=$event??''"/>
+  <el-input v-else :model-value="value(selected,f)" @update:model-value="selected[f.key]=$event"/>
+  <small v-if="f.help">{{f.help}}</small></label><div class="engineering-toolbar"><el-button @click="copy">复制对象</el-button><el-button type="danger" plain @click="remove">从草稿删除</el-button></div></section></div>
  </template>
  <template v-else-if="tab==='validation'">
   <h3>统一校验与问题定位</h3><p>校验当前编辑区，包括PLC缺项、地址冲突、地图绑定、车辆能力、待机容量及路线可达性。</p><button :disabled="busy" @click="validate">重新校验</button><p v-if="!validation">尚未校验当前编辑区。</p><template v-else><p :class="validation.valid?'engineering-message':'inline-warning'">{{validation.valid?'静态配置通过':'存在阻塞项'}} · {{validation.issues.length}}项问题</p><ul class="engineering-issues"><li v-for="(i,n) in validation.issues" :key="n"><span>{{i.severity==='Error'?'阻塞':'提示'}} · {{i.objectId}}</span><p>{{industrialText(i.message)}}</p><RouterLink :to="i.link">进入{{sections[i.section as Section]?.label??'工程概况'}}修改</RouterLink></li></ul></template>
@@ -272,4 +277,149 @@ onMounted(load);
 .engineering-table-layout:has(.engineering-detail){grid-template-columns:minmax(0,1fr) minmax(300px,390px)}
 @media(max-width:1050px){.engineering-layout{grid-template-columns:1fr}.engineering-sidebar{position:static;max-height:none;flex-direction:row;flex-wrap:wrap}.engineering-nav-group{display:none}.engineering-sidebar button{width:auto}.engineering-table-layout:has(.engineering-detail){grid-template-columns:1fr}.engineering-toolbar>span{margin-left:0}.engineering-content{min-height:0}}
 @media(max-width:650px){.engineering-center{padding:0}.engineering-content{padding:14px}.engineering-toolbar button,.engineering-toolbar .file-button{flex:1 1 140px}.engineering-sidebar{gap:5px}.engineering-sidebar button{flex:1 1 140px}}
+</style>
+
+<style scoped>
+.engineering-workbench-title,
+.engineering-toolbar,
+.engineering-sidebar,
+.engineering-content,
+.engineering-detail,
+.engineering-import,
+.engineering-issues li,
+.engineering-versions li,
+.engineering-placeholder {
+  border-color: var(--ui-line);
+  background: var(--ui-surface);
+  color: var(--ui-text);
+}
+
+.engineering-toolbar,
+.engineering-sidebar,
+.engineering-detail,
+.engineering-import,
+.engineering-issues li,
+.engineering-versions li {
+  background: var(--ui-surface-raised);
+}
+
+.engineering-center p,
+.engineering-form label,
+.engineering-detail label,
+.engineering-note,
+.engineering-toolbar span,
+.engineering-detail small,
+.engineering-nav-group,
+.engineering-empty {
+  color: var(--ui-text-2);
+}
+
+.engineering-content h3,
+.engineering-content h4,
+.engineering-detail header h4,
+.engineering-detail legend,
+.engineering-issues span,
+.engineering-message,
+.engineering-content a,
+.engineering-links button,
+.engineering-links a {
+  color: var(--ui-text);
+}
+
+.engineering-sidebar button {
+  color: var(--ui-text-2);
+}
+
+.engineering-sidebar button:hover {
+  background: var(--ui-surface-hover);
+}
+
+.engineering-sidebar button.active {
+  border-color: color-mix(in srgb, var(--ui-primary) 55%, var(--ui-line));
+  background: var(--ui-primary-soft);
+  color: var(--ui-primary-strong);
+  box-shadow: inset 3px 0 var(--ui-primary);
+}
+
+.engineering-stats div,
+.engineering-boundary {
+  border-color: var(--ui-line);
+  background: var(--ui-surface-raised);
+  color: var(--ui-text-2);
+}
+
+.engineering-stats b {
+  color: var(--ui-primary-strong);
+}
+
+.engineering-stats span {
+  color: var(--ui-text-3);
+}
+
+.file-button {
+  border-color: var(--ui-line-strong);
+  background: var(--ui-surface-soft);
+  color: var(--ui-text-2);
+}
+
+.engineering-el-table {
+  --el-table-bg-color: var(--ui-table-row);
+  --el-table-tr-bg-color: var(--ui-table-row);
+  --el-table-row-hover-bg-color: var(--ui-surface-hover);
+  --el-table-header-bg-color: var(--ui-table-head);
+  --el-table-border-color: var(--ui-table-line);
+  --el-table-text-color: var(--ui-table-text);
+  --el-table-header-text-color: var(--ui-text-2);
+  color: var(--ui-table-text);
+  border-radius: var(--ui-radius-sm);
+}
+
+.engineering-el-table :deep(.el-table__header th) {
+  height: 42px;
+  background: var(--ui-table-head);
+  color: var(--ui-text-2);
+  font-weight: 600;
+}
+
+.engineering-el-table :deep(.el-table__body td),
+.engineering-el-table :deep(.el-table__cell) {
+  color: var(--ui-table-text);
+}
+
+.engineering-el-table :deep(.el-table__row--striped td) {
+  background: var(--ui-table-row-alt);
+}
+
+.engineering-el-table :deep(.el-table__row:hover > td) {
+  background: var(--ui-surface-hover);
+}
+
+.engineering-pagebar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 10px 0 0;
+}
+
+.engineering-detail > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.engineering-detail > header h4 {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.engineering-detail label {
+  margin-bottom: 12px;
+}
+
+@media (min-width: 1450px) {
+  .engineering-table-layout:has(.engineering-detail) {
+    grid-template-columns: minmax(0, 1fr) minmax(340px, 420px);
+  }
+}
 </style>

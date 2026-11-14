@@ -9,7 +9,7 @@ import { shortTime } from '../dashboard';
 import { isMapSwitchPhase } from '../map-lifecycle';
 import { mapSwitchModeLabel } from '../operator-labels';
 import type { MapSummary } from '../types';
-import { IconMap, IconArrowLeft, IconRefresh, IconEye, IconPlayerPlay, IconEdit, IconAlertTriangle, IconCircleCheck, IconX } from '@tabler/icons-vue';
+import { IconMap, IconArrowLeft, IconRefresh, IconEye, IconPlayerPlay, IconEdit, IconAlertTriangle, IconCircleCheck, IconX, IconSearch, IconChevronDown } from '@tabler/icons-vue';
 import ConsoleDialog from '../ConsoleDialog.vue';
 import MapPublishDialog from '../MapPublishDialog.vue';
 
@@ -22,6 +22,16 @@ const route = useRoute();
 const catalog = ref<MapSummary[]>([]);
 const catalogError = ref('');
 const selectedMap = ref<MapSummary | null>(null);
+const mapSearch = ref('');
+const mapStatus = ref<'all'|'active'|'published'|'draft'>('all');
+const filteredCatalog = computed(() => catalog.value
+  .filter(map => !mapSearch.value.trim() || `${map.name} ${map.mapId} ${map.description}`.toLowerCase().includes(mapSearch.value.trim().toLowerCase()))
+  .filter(map => mapStatus.value === 'all'
+    || (mapStatus.value === 'active' && map.isActive)
+    || (mapStatus.value === 'published' && !!map.publishedVersionId)
+    || (mapStatus.value === 'draft' && !map.publishedVersionId))
+  .slice()
+  .sort((a,b) => Number(b.isActive)-Number(a.isActive) || Number(!!b.publishedVersionId)-Number(!!a.publishedVersionId) || Date.parse(b.updatedAt)-Date.parse(a.updatedAt)));
 const busy = ref(false);
 const publishMapId = ref('');
 function published() { publishMapId.value = ''; toast.success('地图草稿已发布；需要激活并完成安全流程后才用于运行。'); void loadCatalog(); }
@@ -201,27 +211,43 @@ const currentPhase = computed(() => switchStatus.value?.current?.phaseText ?? '�
       <button @click="router.push('/')"><IconArrowLeft :size="15" />返回大屏</button>
     </header>
     <div class="map-workflow"><b>地图使用流程</b><span>工程编辑保存草稿 → 本页发布 → 激活与安全切换 → 大屏显示当前运行图</span></div>
+    <div class="map-query-toolbar">
+      <el-input v-model="mapSearch" clearable :prefix-icon="IconSearch" placeholder="搜索地图名称、编号或说明" aria-label="搜索地图"/>
+      <el-select v-model="mapStatus" aria-label="筛选地图状态" style="width:150px">
+        <el-option label="全部地图" value="all"/><el-option label="当前运行" value="active"/><el-option label="已发布" value="published"/><el-option label="未发布" value="draft"/>
+      </el-select>
+      <span>显示 {{filteredCatalog.length}} / {{catalog.length}} 张</span>
+      <el-button :icon="IconRefresh" @click="loadCatalog">刷新目录</el-button>
+    </div>
     <p v-if="route.query.engineeringVersion" class="inline-warning">工程接入目标：{{route.query.mapId||'请返回预检取得地图编号'}} / {{route.query.mapVersion||'请返回预检取得准确版本'}}。请核对卡片的发布版本；版本不同应重新绑定工程，不能用相似地图代替。激活及安全切换完成后，<RouterLink :to="{path:'/engineering-runtime',query:{version:route.query.engineeringVersion}}">返回工程执行接入重新预检</RouterLink>。</p>
     <div class="map-catalog-note">本页统一管理地图发布、版本与激活。发布是生成后台版本，车辆上传尚未开放。大屏只显示后台当前运行地图；现场条件或地图兼容未核定时，激活保持禁用。</div>
     <p v-if="storageError" class="inline-warning">本地激活复核记录不可读，地图写操作保持禁用：{{storageError}}</p>
     <p v-if="activationIntent" class="inline-warning activation-pending">存在原激活结果待核对：{{activationIntent.releaseId}} · {{activationIntent.mapId}} / {{activationIntent.versionId}}。禁止重复激活和直接放行。<button @click="loadActivationReview"><ActionIcon name="search"/>只读复核原激活</button></p>
     <p v-if="catalogError" class="inline-warning">{{ catalogError }}</p>
     <div class="map-catalog">
-      <article v-for="map in catalog" :key="map.mapId" class="map-card">
-        <div class="map-card-art"><IconMap :size="36" stroke="1" /><span class="outline-badge" :class="{ cyan: map.isActive }">{{ map.isActive ? '当前运行' : '未运行' }}</span><b :title="map.mapId">{{ map.mapId }}</b><small>{{ unitLabel(map.unit) }} · {{ coordinateLabel(map.coordinateSystem) }}</small></div>
+      <article v-for="map in filteredCatalog" :key="map.mapId" class="map-card" :class="{active:map.isActive}">
+        <div class="map-card-art"><IconMap :size="36" stroke="1" /><el-tag :type="map.isActive ? 'success' : map.publishedVersionId ? 'info' : 'warning'" effect="plain">{{ map.isActive ? '当前运行' : map.publishedVersionId ? '已发布' : '未发布' }}</el-tag><b :title="map.mapId">{{ map.mapId }}</b><small>{{ unitLabel(map.unit) }} · {{ coordinateLabel(map.coordinateSystem) }}</small></div>
         <h3>{{ map.name }}</h3>
         <p>{{ map.description || '未填写说明' }}</p>
         <dl><dt>运行版本</dt><dd>{{ map.activeVersionId ?? '—' }}</dd><dt>发布版本</dt><dd>{{ map.publishedVersionId ?? '—' }}</dd></dl>
         <footer>
-          <button @click="selectedMap = map"><IconEye :size="14" />详情</button>
-          <button @click="loadVersions(map.mapId)"><ActionIcon name="history"/>版本历史</button>
-          <button @click="openEditDraft(map.mapId)"><IconEdit :size="14" />编辑草稿</button>
-          <button :disabled="busy || activationBlocked" @click="publishMapId = map.mapId"><ActionIcon name="publish"/>发布草稿</button>
-          <button v-if="map.publishedVersionId && (!map.isActive || map.publishedVersionId !== map.activeVersionId)" class="accent-button" :disabled="busy||activationBlocked" @click="openActivate(map)"><IconPlayerPlay :size="14" />激活</button>
-          <button v-if="map.isActive && map.mapId === store.snapshot?.map?.id" @click="router.push('/')"><ActionIcon name="map"/>查看运行图</button>
+          <el-button v-if="map.isActive && map.mapId === store.snapshot?.map?.id" type="primary" @click="router.push('/')"><ActionIcon name="map"/>查看运行图</el-button>
+          <el-button v-else-if="map.publishedVersionId && (!map.isActive || map.publishedVersionId !== map.activeVersionId)" type="primary" :disabled="busy||activationBlocked" @click="openActivate(map)"><IconPlayerPlay :size="14" />激活</el-button>
+          <el-button v-else type="primary" plain :disabled="busy || activationBlocked" @click="publishMapId = map.mapId"><ActionIcon name="publish"/>发布草稿</el-button>
+          <el-dropdown trigger="click">
+            <el-button>更多操作<IconChevronDown :size="13"/></el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item :icon="IconEye" @click="selectedMap = map">地图详情</el-dropdown-item>
+                <el-dropdown-item @click="loadVersions(map.mapId)"><ActionIcon name="history"/>版本历史</el-dropdown-item>
+                <el-dropdown-item :icon="IconEdit" @click="openEditDraft(map.mapId)">编辑草稿</el-dropdown-item>
+                <el-dropdown-item :disabled="busy || activationBlocked" @click="publishMapId = map.mapId"><ActionIcon name="publish"/>发布当前草稿</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
         </footer>
       </article>
-      <p v-if="!catalog.length && !catalogError" class="empty-panel">没有可查看的地图。连接后台后刷新，或在工程编辑中新建。</p>
+      <el-empty v-if="!filteredCatalog.length && !catalogError" class="map-empty" :description="catalog.length ? '没有符合当前筛选条件的地图。' : '没有可查看的地图。连接后台后刷新，或在工程编辑中新建。'" :image-size="84"/>
     </div>
   </section>
 
@@ -344,13 +370,20 @@ const currentPhase = computed(() => switchStatus.value?.current?.phaseText ?? '�
 .map-catalog-page > :not(.map-catalog){flex-shrink:0}
 /* The page owns scrolling. Grid rows must size to their content, never to
    the remaining viewport height, or overflow:hidden clips card actions. */
-.map-catalog-page > .map-catalog{flex:none;overflow:visible;grid-auto-rows:max-content;grid-template-columns:repeat(auto-fill,minmax(min(100%,300px),1fr));align-items:stretch;padding-bottom:20px}
+.map-catalog-page > .map-catalog{flex:none;overflow:visible;grid-auto-rows:max-content;grid-template-columns:repeat(auto-fill,minmax(min(100%,340px),1fr));align-items:stretch;padding-bottom:20px}
 .map-card{display:flex;flex-direction:column;min-width:0;height:auto}
 .map-card-art{height:118px;flex-shrink:0;gap:6px;padding-top:20px}
 .map-card-art>b{width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}
 .map-card h3{overflow-wrap:anywhere;line-height:1.6}
 .map-card>p{min-height:0;overflow-wrap:anywhere;padding-bottom:8px}
 .map-card dl{grid-template-columns:62px minmax(0,1fr);line-height:1.6}
-.map-card footer{margin-top:auto;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;padding:12px}
+.map-card footer{margin-top:auto;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:12px}
 .map-card footer button{min-width:0;min-height:32px;padding:6px;font-size:11px}
+.map-query-toolbar{display:grid;grid-template-columns:minmax(260px,1fr) 150px auto auto;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--ui-line);border-radius:var(--ui-radius);background:var(--ui-surface-raised)}
+.map-query-toolbar>span{color:var(--ui-text-3);font-size:11px;white-space:nowrap}
+.map-card.active{border-color:color-mix(in srgb,var(--ui-primary) 58%,var(--ui-line));box-shadow:inset 0 3px var(--ui-primary)}
+.map-card-art>.el-tag{position:absolute;left:12px;top:11px}
+.map-card>p{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.map-empty{grid-column:1/-1;min-height:260px}
+@media(max-width:780px){.map-query-toolbar{grid-template-columns:1fr}.map-query-toolbar .el-select{width:100%!important}.map-card footer{grid-template-columns:1fr}}
 </style>

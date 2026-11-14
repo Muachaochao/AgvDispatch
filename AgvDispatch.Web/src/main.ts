@@ -9,19 +9,32 @@ import {
   ElDatePicker,
   ElDescriptions,
   ElDescriptionsItem,
+  ElDropdown,
+  ElDropdownItem,
+  ElDropdownMenu,
   ElDrawer,
+  ElEmpty,
   ElForm,
   ElFormItem,
   ElInput,
   ElInputNumber,
   ElOption,
   ElPagination,
+  ElPopconfirm,
+  ElRadioButton,
+  ElRadioGroup,
+  ElResult,
   ElSelect,
+  ElSkeleton,
+  ElSkeletonItem,
   ElStep,
   ElSteps,
+  ElTabPane,
+  ElTabs,
   ElTag,
   ElTable,
-  ElTableColumn
+  ElTableColumn,
+  ElTooltip
 } from 'element-plus';
 import 'element-plus/es/components/base/style/css';
 import 'element-plus/es/components/alert/style/css';
@@ -30,6 +43,10 @@ import 'element-plus/es/components/collapse/style/css';
 import 'element-plus/es/components/collapse-item/style/css';
 import 'element-plus/es/components/descriptions/style/css';
 import 'element-plus/es/components/descriptions-item/style/css';
+import 'element-plus/es/components/dropdown/style/css';
+import 'element-plus/es/components/dropdown-menu/style/css';
+import 'element-plus/es/components/dropdown-item/style/css';
+import 'element-plus/es/components/empty/style/css';
 import 'element-plus/es/components/icon/style/css';
 import 'element-plus/es/components/input/style/css';
 import 'element-plus/es/components/input-number/style/css';
@@ -40,8 +57,16 @@ import 'element-plus/es/components/option/style/css';
 import 'element-plus/es/components/date-picker/style/css';
 import 'element-plus/es/components/table/style/css';
 import 'element-plus/es/components/pagination/style/css';
+import 'element-plus/es/components/popconfirm/style/css';
+import 'element-plus/es/components/radio-group/style/css';
+import 'element-plus/es/components/radio-button/style/css';
+import 'element-plus/es/components/result/style/css';
+import 'element-plus/es/components/skeleton/style/css';
+import 'element-plus/es/components/skeleton-item/style/css';
 import 'element-plus/es/components/step/style/css';
 import 'element-plus/es/components/steps/style/css';
+import 'element-plus/es/components/tabs/style/css';
+import 'element-plus/es/components/tab-pane/style/css';
 import 'element-plus/es/components/tag/style/css';
 import 'element-plus/es/components/tooltip/style/css';
 import 'element-plus/es/components/popper/style/css';
@@ -68,17 +93,30 @@ app.component('ElConfigProvider', ElConfigProvider);
 app.component('ElDatePicker', ElDatePicker);
 app.component('ElDescriptions', ElDescriptions);
 app.component('ElDescriptionsItem', ElDescriptionsItem);
+app.component('ElDropdown', ElDropdown);
+app.component('ElDropdownItem', ElDropdownItem);
+app.component('ElDropdownMenu', ElDropdownMenu);
 app.component('ElDrawer', ElDrawer);
+app.component('ElEmpty', ElEmpty);
 app.component('ElForm', ElForm);
 app.component('ElFormItem', ElFormItem);
 app.component('ElInput', ElInput);
 app.component('ElInputNumber', ElInputNumber);
 app.component('ElOption', ElOption);
 app.component('ElPagination', ElPagination);
+app.component('ElPopconfirm', ElPopconfirm);
+app.component('ElRadioButton', ElRadioButton);
+app.component('ElRadioGroup', ElRadioGroup);
+app.component('ElResult', ElResult);
 app.component('ElSelect', ElSelect);
+app.component('ElSkeleton', ElSkeleton);
+app.component('ElSkeletonItem', ElSkeletonItem);
 app.component('ElStep', ElStep);
 app.component('ElSteps', ElSteps);
+app.component('ElTabPane', ElTabPane);
+app.component('ElTabs', ElTabs);
 app.component('ElTag', ElTag);
 app.component('ElTable', ElTable);
 app.component('ElTableColumn', ElTableColumn);
+app.component('ElTooltip', ElTooltip);
 app.mount('#app');
