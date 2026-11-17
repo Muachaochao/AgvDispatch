@@ -613,6 +613,8 @@ def execute(runtime, request):
     evidence = runtime.root / ('simulation-run-' + runtime.scenario['id'])
     evidence.mkdir(exist_ok=False)
     write(evidence / 'scenario.json', dict(**request, startedAt=started, rootName=runtime.root.name))
+    if (runtime.root / 'runtime-release.json').is_file():
+        write(evidence / 'runtime-release.json', read(runtime.root / 'runtime-release.json'))
     if (runtime.root / 'navigation.agvmap.json').is_file():
         write(evidence / 'map.json', read(runtime.root / 'navigation.agvmap.json'))
     simulation_configuration = getattr(runtime, 'lab', {}).get('simulationConfiguration') or {}

@@ -40,6 +40,7 @@ async function start() {
  <section class="panel business-setup">
   <h3>业务场景配置</h3>
   <p class="muted">选择工程方案，配置单次或随机满箱呼叫。主工程负责派车、取箱、倒料、返箱及 PLC 收尾。</p>
+  <p v-if="status?.runtimeRelease" class="muted">运行包 {{ status.runtimeRelease.releaseId }} · 调度模式 {{ status.runtimeRelease.algorithmMode }}</p>
   <el-alert v-if="error" :title="error" type="error" :closable="false" />
   <div v-if="status?.businessPlan" class="plan-summary">
    <p>当前计划：{{ status.businessPlan.count }} 次呼叫 · 间隔 {{ status.businessPlan.intervalSeconds }} 秒 · 种子 {{ status.businessPlan.seed }} · {{ status.businessPlan.stationIds.length }} 个工位</p>

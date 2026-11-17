@@ -402,6 +402,7 @@ class Runtime:
                         fresh=self.phase == 'running' and 0 <= time.time() - device.get('time', 0) < 5 and bool(self.children) and all(p.poll() is None for p in self.children.values()),
                         device=device, map=read(self.root / 'navigation.agvmap.json'), scenario=dict(self.scenario), report=self.report,
                         businessPlan=read(self.root / 'business-call-plan.json') if (self.root / 'business-call-plan.json').is_file() else None,
+                        runtimeRelease=read(self.root / 'runtime-release.json') if (self.root / 'runtime-release.json').is_file() else None,
                         controls=self.controls, error=self.error, configuration=getattr(self, 'lab', {}).get('simulationConfiguration'), recovery=recovery,
                         protocol=self.protocol_status(),
                         equipment=self.equipment_status(),
@@ -1086,10 +1087,13 @@ class Runtime:
                 raise ValueError('请先停止协议服务和设备模型，再创建干净实例。')
             validate_root(self.root)
             source, lab, settings, web, _ = validate_root(self.template_root)
+            from runtime_release import current_release, verify_release
+            release = current_release(WORKSPACE)
             target = WORKSPACE / 'artifacts' / ('web-single-vehicle-sim-' + time.strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:6])
             target.mkdir()
             for directory in ('service', 'webhost'):
-                shutil.copytree(source / directory, target / directory,
+                binary_source = release['directories'][directory] if release else source / directory
+                shutil.copytree(binary_source, target / directory,
                     ignore=shutil.ignore_patterns('data', 'logs', '*.log', '*.db', '*.db-*', 'appsettings*.json'))
             navigation = copy.deepcopy(configuration['mapDefinition'])
             write(target / 'navigation.agvmap.json', navigation)
@@ -1158,20 +1162,9 @@ class Runtime:
                 ReceiptValiditySeconds=15)
             settings['Dispatching']['MaxConcurrentTasks'] = len(robots)
             if len(configuration['stations']) > 32 and len(robots) > 1:
-                # A no-op Shadow optimizer still plans dozens of tasks times
-                # every vehicle while holding the single map/execution mutex.
-                # On a 305-station wave that gate hold exceeds the two-second
-                # segment receipt lifetime and starves confirmed partial
-                # releases. The isolated large-project profile uses the formal
-                # production dispatch orchestrator's legacy selection path,
-                # which still performs health, route, traffic, command and
-                # safety checks for every selected vehicle.
-                settings['DispatchOptimization'] = dict(
-                    Mode='Disabled',
-                    IntervalMs=2000,
-                    WindowSize=20,
-                )
                 settings['TrafficSegmentRelease']['MaximumAgeSeconds'] = 15
+            if release:
+                settings['DispatchOptimization'] = copy.deepcopy(release['options'])
             # Only loopback PLC calls enter the production creation coordinator.
             # Scenarios never choose a car or fabricate a queued database row.
             settings['TaskCreation']['AutomaticCreationEnabled'] = True
@@ -1206,6 +1199,9 @@ class Runtime:
             web.update(Port=lab['webPort'], PipeName=lab['pipe'], ProjectStorePath=str(target / 'projects'), EngineeringStorePath=str(target / 'engineering'))
             for filename, value in [('lab.json', lab), ('service/appsettings.json', settings), ('service-settings.json', settings), ('webhost/appsettings.json', {'Web': web})]:
                 write(target / filename, value)
+            if release:
+                verify_release(target, release)
+                write(target / 'runtime-release.json', release['metadata'])
             store = self.scheme_store
             self.__init__(target, template_root=self.template_root, scheme_store=store)
             if store is not None: store.remember(target)
@@ -1218,6 +1214,8 @@ class Runtime:
             if self.worker and self.worker.is_alive():
                 raise ValueError('上个操作仍在收尾。')
             validate_root(self.root)
+            from runtime_release import current_release, verify_release
+            verify_release(self.root, current_release(WORKSPACE))
             if any((self.root / p).exists() for p in ('multi-state.json', 'device-state.json', 'STOP')):
                 raise ValueError('该实例保留了设备历史；请新建仿真实例，不会自动重置故障状态。')
             for port in self.ports:

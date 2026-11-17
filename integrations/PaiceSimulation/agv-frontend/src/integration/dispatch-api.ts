@@ -13,6 +13,7 @@ export interface DispatchStatus {
   phase?: string;
   fresh?: boolean;
   rootName?: string;
+  runtimeRelease?: { releaseId: string; algorithmMode: string; serviceSha256: string; webHostSha256: string; optionsSha256: string } | null;
   businessPlan?: {
     seed: number;
     count: number;
