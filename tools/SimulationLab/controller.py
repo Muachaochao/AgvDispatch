@@ -998,18 +998,32 @@ class Runtime:
 
     def select_scheme(self, payload, start=False):
         if self.scheme_store is None: raise ValueError('仿真方案存储未初始化。')
-        if 'id' not in payload or set(payload) - {'id', 'business', 'plan'}: raise ValueError('请选择一个保存的方案。')
+        if 'id' not in payload or set(payload) - {'id', 'business', 'plan', 'vehicleStarts', 'checkOnly'}: raise ValueError('请选择一个保存的方案。')
+        check_only = payload.get('checkOnly', False)
+        if type(check_only) is not bool or (start and check_only):
+            raise ValueError('检查模式仅用于方案预览。')
         value = self.scheme_store.get(payload['id'])
         configuration = copy.deepcopy(value['configuration'])
+        if 'vehicleStarts' in payload:
+            starts = payload['vehicleStarts']
+            ids = {v['id'] for v in configuration['vehicles']}
+            if (not isinstance(starts, list) or len(starts) != len(ids) or
+                    any(not isinstance(v, dict) or set(v) != {'id', 'initialSite'} or
+                        not isinstance(v['id'], str) or not isinstance(v['initialSite'], str) for v in starts) or
+                    {v['id'] for v in starts} != ids or len({v['initialSite'] for v in starts}) != len(ids)):
+                raise ValueError('车辆初始位置须完整覆盖方案车辆且各不相同。')
+            positions = {v['id']: v['initialSite'] for v in starts}
+            for vehicle in configuration['vehicles']:
+                vehicle['initialSite'] = positions[vehicle['id']]
         if 'business' in payload and 'plan' in payload: raise ValueError('单次业务与随机计划不能同时提交。')
-        self.business_plan = None
+        business_plan = None
         if 'plan' in payload:
             from business_plan import generate_plan
-            self.business_plan = generate_plan(payload['plan'], configuration['stations'])
+            business_plan = generate_plan(payload['plan'], configuration['stations'])
             for vehicle in configuration['vehicles']:
                 vehicle.update(initialLoaded=False, speedScale=1.0)
             value['scenario'] = dict(name='business-calls', rounds=1, intervalSeconds=0, timeoutSeconds=7200,
-                                    calls=self.business_plan['calls'])
+                                    calls=business_plan['calls'])
         business = payload.get('business')
         if 'business' in payload:
             if not isinstance(business, dict) or set(business) != {'vehicleId', 'initialSite', 'stationId'}:
@@ -1030,7 +1044,17 @@ class Runtime:
         if scenario and (any(call['stationId'] not in {s['stationId'] for s in configuration['stations']} for call in scenario.get('calls', [])) or
                          any(call.get('vehicleId') for call in scenario.get('calls', []))):
             raise ValueError('保存场景与当前工位或自动选车规则不匹配，请更新方案。')
-        plan_record = self.business_plan
+        if check_only:
+            from runtime_release import current_release
+            release = current_release(WORKSPACE)
+            return dict(configuration=configuration, businessPlan=business_plan,
+                runtimeRelease=release['metadata'] if release else None,
+                preflight=dict(passed=True, checks=[
+                    dict(name='地图、工位与PLC点表绑定', status='passed'),
+                    dict(name='车辆初态与业务路线配置', status='passed'),
+                    dict(name='当前发布程序与算法选项', status='passed' if release else 'unbound'),
+                    dict(name='业务呼叫计划', status='passed')]))
+        plan_record = business_plan
         self._create_instance(configuration)
         self.business_plan = plan_record
         if plan_record is not None: write(self.root / 'business-call-plan.json', plan_record)

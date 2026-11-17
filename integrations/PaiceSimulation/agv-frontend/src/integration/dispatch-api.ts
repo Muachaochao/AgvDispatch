@@ -13,6 +13,7 @@ export interface DispatchStatus {
   phase?: string;
   fresh?: boolean;
   rootName?: string;
+  preflight?: { passed: boolean; checks: { name: string; status: string }[] };
   runtimeRelease?: { releaseId: string; algorithmMode: string; serviceSha256: string; webHostSha256: string; optionsSha256: string } | null;
   businessPlan?: {
     seed: number;
@@ -26,8 +27,11 @@ export interface DispatchStatus {
   map?: SourceMap | null;
   device?: { time: number; cars?: Record<string, DispatchCar> } | null;
   configuration?: {
-    vehicles?: { id: string; initialSite: string }[];
+    vehicles?: { id: string; initialSite: string; initialLoaded?: boolean; speedScale?: number }[];
     stations?: { stationId: string; pickupSite?: string }[];
+    dumper?: { dumpingSite: string; waitingSite: string; waitingSites?: string[]; resourceId: string };
+    downstreamAdmissionCapacity?: number;
+    plcSignalTable?: { fileName?: string; sha256?: string; sourceLabel?: string };
     mapIdentity?: {
       mapId?: string;
       mapVersionId?: string;
@@ -70,10 +74,11 @@ export async function dispatchRead<T>(
   const response = await http.request<T>({
     url: proxyPath(path),
     method: body ? "POST" : "GET",
+    timeout: ['/api/simulation/scheme-select', '/api/simulation/scheme-start'].includes(path) ? 180000 : 15000,
     data: body,
     signal: signal
       ? AbortSignal.any([signal, AbortSignal.timeout(15000)])
-      : AbortSignal.timeout(15000),
+      : AbortSignal.timeout(['/api/simulation/scheme-select', '/api/simulation/scheme-start'].includes(path) ? 180000 : 15000),
   });
   return response as T;
 }
