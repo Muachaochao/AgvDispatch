@@ -5,6 +5,29 @@ import threading
 from controller import Runtime
 
 class BusinessScenarioTests(unittest.TestCase):
+    def test_preflight_previews_plan_without_creating_instance(self):
+        runtime, _ = self.fixture()
+        with patch('runtime_release.current_release', return_value=None):
+            result = runtime.select_scheme(dict(id='source', checkOnly=True,
+                plan=dict(seed=7,count=3,intervalSeconds=10,stationIds=['CNC-001'])))
+        runtime._create_instance.assert_not_called()
+        runtime.scheme_store.remember.assert_not_called()
+        self.assertEqual(len(result['businessPlan']['calls']), 3)
+        self.assertTrue(result['preflight']['passed'])
+
+    def test_vehicle_starts_apply_and_reject_incomplete_or_duplicate_input(self):
+        runtime, _ = self.fixture()
+        starts = [dict(id='AGV-01',initialSite='WAIT-01'),dict(id='AGV-02',initialSite='WAIT-02')]
+        with patch('controller.write'):
+            runtime.select_scheme(dict(id='source',vehicleStarts=starts,
+                plan=dict(seed=7,count=1,intervalSeconds=10,stationIds=['CNC-001'])))
+        self.assertEqual(runtime._create_instance.call_args.args[0]['vehicles'][1]['initialSite'], 'WAIT-02')
+        for invalid in [starts[:1], [starts[0],starts[0]], [starts[0], dict(id='AGV-02',initialSite='WAIT-01')]]:
+            runtime, _ = self.fixture()
+            with self.assertRaises(ValueError):
+                runtime.select_scheme(dict(id='source', vehicleStarts=invalid))
+            runtime._create_instance.assert_not_called()
+
     def fixture(self):
         config = dict(vehicles=[dict(id='AGV-01', initialSite='WAIT-01', initialLoaded=True, speedScale=3), dict(id='AGV-02')],
             stations=[dict(stationId='CNC-001'), dict(stationId='CNC-002')],
