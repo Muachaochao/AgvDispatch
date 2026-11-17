@@ -347,7 +347,7 @@ async function pollDetails(live: DispatchStatus, revision: number) {
           report: full.report,
         }
       : { ...status.value!, ...live };
-    status.value = { ...next, ...status.value, map: next.map, configuration: next.configuration, schemes: next.schemes, report: next.report };
+    status.value = { ...next, ...status.value, map: next.map, configuration: next.configuration, schemes: next.schemes, report: next.report, startupPlan: full?.startupPlan ?? status.value?.startupPlan };
     error.value = next.error ?? "";
     const signature = JSON.stringify(next.map ?? null);
     if (signature !== liveMapSignature.value) {

@@ -9,6 +9,14 @@ const vehicleId = ref(''), initialSite = ref(''), stationId = ref('')
 const mode = ref('single'), seed = ref(20261117), count = ref(10), interval = ref(3), stationIds = ref<string[]>([])
 const busy = ref(false), error = ref('')
 const startupNotice = ref('')
+const pendingStartup = ref<{ root: string | undefined; scheme: string } | null>(null)
+watch(() => props.status, value => {
+ const pending = pendingStartup.value
+ if (pending && value && startupAccepted(value, pending.root, pending.scheme)) {
+  error.value = ''; loadedScheme.value = ''; pendingStartup.value = null
+  startupNotice.value = '后台已接收本次开测，正在同步启动与业务结果。'
+ }
+})
 const vehicleStarts = ref<{ id: string; initialSite: string }[]>([])
 const draft = ref<DispatchStatus | null>(null)
 const preview = ref<DispatchStatus | null>(null), checkedInput = ref('')
@@ -47,10 +55,12 @@ async function load() {
 async function start() {
  if (!ready.value || locked.value || !checked.value) return
  const previousRoot = props.status?.rootName
+ pendingStartup.value = { root: previousRoot, scheme: scheme.value }
  busy.value = true; error.value = ''; startupNotice.value = ''
  try {
   const value = await dispatchRead<DispatchStatus>('/api/simulation/scheme-start', undefined, input.value)
   loadedScheme.value = ''; emit('changed', value)
+  pendingStartup.value = null
  } catch (e) {
   error.value = String(e)
   try {
