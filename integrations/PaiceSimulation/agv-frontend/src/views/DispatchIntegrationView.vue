@@ -95,6 +95,11 @@ const fresh = computed(
   () => connected.value && dispatchIsFresh(status.value, clock.value),
 );
 const cars = computed(() => status.value?.device?.cars ?? {});
+const selectedCar = computed(() => cars.value[detail.value?.task.vehicleId ?? '']);
+const mechanism = computed(() => selectedCar.value?.mechanism);
+const mechanismStates: Record<string, string> = {
+  Idle: '待命', Executing: '执行中', Completed: '完成', Interrupted: '中断',
+};
 const vehicles = computed(() => dispatchViews(cars.value, fresh.value));
 const scenarioActive = computed(() =>
   ["running", "starting", "pending", "stopping", "aborting"].includes(
@@ -916,7 +921,16 @@ onBeforeUnmount(() => {
             label="等待说明"
         /><el-table-column prop="completionRequirement" label="完成条件" min-width="250" /></el-table>
         <h4>导航与机构动作命令</h4>
-        <p class="muted">载箱反馈：{{ detail.task.vehicleId && cars[detail.task.vehicleId] ? (cars[detail.task.vehicleId]!.loaded === true ? '有箱' : cars[detail.task.vehicleId]!.loaded === false ? '空载' : '未提供') : '未提供' }} · 机构行程/到位反馈：当前虚拟设备未提供独立反馈</p>
+        <p class="muted">车辆当前载箱：{{ selectedCar?.loaded == null ? '未提供' : selectedCar.loaded ? '有箱' : '空载' }}</p>
+        <p v-if="mechanism" class="muted">
+          车辆最近机构反馈（合成模型）：
+          {{ mechanism.operation === 'JackLoad' ? '顶升取箱' : mechanism.operation === 'JackUnload' ? '落下放箱' : '无动作' }} ·
+          {{ mechanismStates[mechanism.state] || '未知' }} ·
+          上位 {{ mechanism.upperLimit == null ? '未知' : mechanism.upperLimit ? '1' : '0' }} ·
+          下位 {{ mechanism.lowerLimit == null ? '未知' : mechanism.lowerLimit ? '1' : '0' }}
+          <span v-if="mechanism.taskId"> · 机构指令 {{ mechanism.taskId }}</span>
+        </p>
+        <p v-else class="muted">车辆最近机构反馈：未提供</p>
         <el-alert v-if="!fresh" title="当前设备数据已过期，以下记录不能作为实时完成证据" type="warning" :closable="false" />
         <h4>PLC 执行条件 · {{ detail.handshakeContractVersion || '未提供契约版本' }}</h4>
         <el-table :data="detail.plcConditions ?? []" size="small" empty-text="当前步骤没有返回 PLC 条件">

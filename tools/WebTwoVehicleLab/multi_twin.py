@@ -38,7 +38,7 @@ class SharedPlc(DeviceTwin):
 
 def snapshot(car):
     return dict(station=car.station, x=car.x, y=car.y, angle=car.angle,
-                loaded=car.loaded, current_task=car.current, tasks=car.tasks,
+                loaded=car.loaded, mechanism=dict(car.mechanism), current_task=car.current, tasks=car.tasks,
                 completed_segments=car.steps, offline=car.offline,
                 paused=car.paused, speedScale=car.speed_scale,
                 batteryPercent=car.battery_percent*100, batteryVoltage=car.battery_voltage(), charging=car.charging,

@@ -139,6 +139,12 @@ def archive_evidence(runtime, identity):
             if source.is_file() and not _linked(source):
                 relative = source.relative_to(evidence)
                 _add_file(archive, entries, source, (Path(evidence.name) / relative).as_posix())
+        plan_path = root / 'business-call-plan.json'
+        scenario_path = evidence / 'scenario.json'
+        if report.get('name') == 'business-calls' and plan_path.is_file() and not _linked(plan_path) and scenario_path.is_file():
+            plan = read(plan_path)
+            if plan.get('calls') == read(scenario_path).get('calls'):
+                _add_file(archive, entries, plan_path, evidence.name + '/business-call-plan.json')
         audit = _task_audit(root, evidence)
         _add_bytes(archive, entries, 'task-audit.json', _json_bytes(audit))
         detail_path = evidence / 'all-task-details.json'

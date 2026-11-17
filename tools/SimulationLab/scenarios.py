@@ -14,7 +14,7 @@ from device_controls import PLC_DEFAULTS
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'WebSingleVehicleLab'))
 from footprint import swept_rectangles_overlap, vehicle_extents
 
-NAMES = ('normal-cycle', 'simultaneous-calls', 'custom-calls', 'dispatch-backlog', 'disconnect-reconnect',
+NAMES = ('business-calls', 'normal-cycle', 'simultaneous-calls', 'custom-calls', 'dispatch-backlog', 'disconnect-reconnect',
          'plc-delay', 'plc-recovery', 'service-restart', 'resume-recovery', 'vendor-cancel-return',
          'response-loss', 'road-block-recovery', 'obstacle-auto-detour',
          'obstacle-auto-safety-return',
@@ -220,7 +220,7 @@ def validate_scenario(value):
             raise ValueError('故障保持或车端超时触发时间须为1至120秒。')
         result['holdSeconds'] = float(hold)
     calls = value.get('calls')
-    if result['name'] in ('custom-calls', 'dispatch-backlog'):
+    if result['name'] in ('custom-calls', 'dispatch-backlog', 'business-calls'):
         if not isinstance(calls, list) or not 1 <= len(calls) <= 500:
             raise ValueError('自定义呼叫计划须包含1至500条呼叫。')
         normalized = []
@@ -237,10 +237,10 @@ def validate_scenario(value):
                 raise ValueError('呼叫时间须为0至86400秒。')
             if vehicle is not None and (not isinstance(vehicle, str) or not vehicle.strip()):
                 raise ValueError('指定车辆编号无效。')
-            if vehicle is not None and result['name'] == 'dispatch-backlog':
+            if vehicle is not None and result['name'] in ('dispatch-backlog', 'business-calls'):
                 raise ValueError('持续积压场景只产生PLC呼叫，不能指定车辆。')
             key = round(float(at), 6)
-            if station in simultaneous.setdefault(key, set()) and result['name'] != 'dispatch-backlog':
+            if station in simultaneous.setdefault(key, set()) and result['name'] not in ('dispatch-backlog', 'business-calls'):
                 raise ValueError('同一时刻不能重复呼叫同一工位。')
             simultaneous[key].add(station)
             normalized.append(dict(stationId=station, atSeconds=float(at), vehicleId=vehicle))
@@ -782,7 +782,7 @@ def execute(runtime, request):
     def complete(ids):
         nonlocal fault_observed, recovery_hold, auto_detour_sends
         deadline = time.monotonic() + request['timeoutSeconds']
-        large_batch = request['name'] in ('custom-calls', 'dispatch-backlog') and len(ids) > 32
+        large_batch = request['name'] in ('custom-calls', 'dispatch-backlog', 'business-calls') and len(ids) > 32
 
         def batch_task_details():
             placeholders = ','.join('?' for _ in ids)
@@ -1523,7 +1523,7 @@ def execute(runtime, request):
         if not pairs: raise ValueError('没有可测试的车辆与工位配对。')
         if request['name'] == 'plc-recovery': pairs = pairs[:1]
         if request['name'] == 'simultaneous-calls' and len(pairs) < 2: raise ValueError('同时呼叫场景至少需要两辆车和两个工位。')
-        if request['name'] == 'dispatch-backlog':
+        if request['name'] in ('dispatch-backlog', 'business-calls'):
             from automatic_calls import run_backlog
             run_backlog(runtime, request, evidence, observer, tasks, completed_tasks, discover, check)
         elif request['name'] == 'custom-calls':

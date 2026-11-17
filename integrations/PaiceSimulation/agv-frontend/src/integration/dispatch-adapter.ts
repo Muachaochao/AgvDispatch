@@ -33,6 +33,7 @@ export interface SourceMap {
   [key: string]: unknown;
 }
 export interface DispatchCar extends Point {
+  mechanism?: { source: string; operation?: string | null; taskId?: string | null; state: string; upperLimit: boolean | null; lowerLimit: boolean | null };
   angle?: number;
   moving?: boolean;
   offline?: boolean;

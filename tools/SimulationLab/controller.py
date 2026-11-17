@@ -401,6 +401,7 @@ class Runtime:
             return dict(enabled=True, rootName=self.root.name, running=self.phase == 'running', phase=self.phase,
                         fresh=self.phase == 'running' and 0 <= time.time() - device.get('time', 0) < 5 and bool(self.children) and all(p.poll() is None for p in self.children.values()),
                         device=device, map=read(self.root / 'navigation.agvmap.json'), scenario=dict(self.scenario), report=self.report,
+                        businessPlan=read(self.root / 'business-call-plan.json') if (self.root / 'business-call-plan.json').is_file() else None,
                         controls=self.controls, error=self.error, configuration=getattr(self, 'lab', {}).get('simulationConfiguration'), recovery=recovery,
                         protocol=self.protocol_status(),
                         equipment=self.equipment_status(),
@@ -996,9 +997,18 @@ class Runtime:
 
     def select_scheme(self, payload, start=False):
         if self.scheme_store is None: raise ValueError('仿真方案存储未初始化。')
-        if 'id' not in payload or set(payload) - {'id', 'business'}: raise ValueError('请选择一个保存的方案。')
+        if 'id' not in payload or set(payload) - {'id', 'business', 'plan'}: raise ValueError('请选择一个保存的方案。')
         value = self.scheme_store.get(payload['id'])
         configuration = copy.deepcopy(value['configuration'])
+        if 'business' in payload and 'plan' in payload: raise ValueError('单次业务与随机计划不能同时提交。')
+        self.business_plan = None
+        if 'plan' in payload:
+            from business_plan import generate_plan
+            self.business_plan = generate_plan(payload['plan'], configuration['stations'])
+            for vehicle in configuration['vehicles']:
+                vehicle.update(initialLoaded=False, speedScale=1.0)
+            value['scenario'] = dict(name='business-calls', rounds=1, intervalSeconds=0, timeoutSeconds=7200,
+                                    calls=self.business_plan['calls'])
         business = payload.get('business')
         if 'business' in payload:
             if not isinstance(business, dict) or set(business) != {'vehicleId', 'initialSite', 'stationId'}:
@@ -1019,7 +1029,10 @@ class Runtime:
         if scenario and (any(call['stationId'] not in {s['stationId'] for s in configuration['stations']} for call in scenario.get('calls', [])) or
                          any(call.get('vehicleId') for call in scenario.get('calls', []))):
             raise ValueError('保存场景与当前工位或自动选车规则不匹配，请更新方案。')
+        plan_record = self.business_plan
         self._create_instance(configuration)
+        self.business_plan = plan_record
+        if plan_record is not None: write(self.root / 'business-call-plan.json', plan_record)
         self.scheme_store.remember(self.root, value['id'])
         if start:
             self.startup_plan = dict(status='starting', schemeId=value['id'], scenarioName=scenario.get('name') if scenario else None,
@@ -1352,11 +1365,11 @@ class Runtime:
             stations = set(self.settings['Dispatching']['StationPickupSites'])
             if any(call['stationId'] not in stations for call in request.get('calls', [])):
                 raise ValueError('呼叫计划包含本实例未配置的工位。')
-            if request['name'] == 'dispatch-backlog' and not self.settings['TaskCreation']['AutomaticCreationEnabled']:
+            if request['name'] in ('dispatch-backlog', 'business-calls') and not self.settings['TaskCreation']['AutomaticCreationEnabled']:
                 raise ValueError('此旧实例未启用正式PLC自动接单，请按当前方案新建实例。')
             if self.settings['TaskCreation']['AutomaticCreationEnabled'] and any(call.get('vehicleId') for call in request.get('calls', [])):
                 raise ValueError('PLC自动接单由正式调度选择车辆，呼叫计划不能指定车辆。')
-            total_units = len(request['calls']) if request['name'] in ('custom-calls', 'dispatch-backlog') else request['rounds']
+            total_units = len(request['calls']) if request['name'] in ('custom-calls', 'dispatch-backlog', 'business-calls') else request['rounds']
             self.scenario = dict(id=uuid.uuid4().hex, status='running', completedRounds=0, totalRounds=total_units, startedAt=time.time(), message='核对初态', **request)
             self.worker = threading.Thread(target=execute, args=(self, request), daemon=True); self.worker.start()
         return self.status()

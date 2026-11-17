@@ -13,6 +13,13 @@ export interface DispatchStatus {
   phase?: string;
   fresh?: boolean;
   rootName?: string;
+  businessPlan?: {
+    seed: number;
+    count: number;
+    intervalSeconds: number;
+    stationIds: string[];
+    calls: { stationId: string; atSeconds: number; vehicleId: null }[];
+  } | null;
   error?: string;
   message?: string;
   map?: SourceMap | null;

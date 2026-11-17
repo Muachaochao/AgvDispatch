@@ -48,6 +48,7 @@ class DeviceTwin:
         self.charging_gain_percent_per_hour = 20.0
         self.charging = False
         self.acceleration = 0.6
+        self.mechanism = dict(source='synthetic', operation=None, taskId=None, state='Idle', upperLimit=None, lowerLimit=None)
         self.operation_seconds = 2.0
         self.travel_cost_percent_per_meter = 0.01
         self.idle_cost_percent_per_hour = 0.1
@@ -326,6 +327,18 @@ class DeviceTwin:
             await asyncio.sleep(0.1)
         return self.tasks[tid] != 6
 
+    async def execute_mechanism(self, tid, operation):
+        self.mechanism = dict(source='synthetic', operation=operation, taskId=tid,
+                              state='Executing', upperLimit=None, lowerLimit=None)
+        self.log('mechanism-start', **self.mechanism)
+        completed = await self.wait_motion(tid, self.operation_seconds)
+        completed = completed and self.tasks.get(tid) not in (6, 7)
+        self.mechanism.update(state='Completed' if completed else 'Interrupted',
+            upperLimit=(operation == 'JackLoad') if completed else None,
+            lowerLimit=(operation == 'JackUnload') if completed else None)
+        self.log('mechanism-feedback', **self.mechanism)
+        return completed
+
     async def drive(self):
         while True:
             item = await self.queue.get()
@@ -422,7 +435,7 @@ class DeviceTwin:
                 self.at_source = True
                 operation = item.get('operation', 'Wait')
                 if operation in ('JackLoad', 'JackUnload'):
-                    if not await self.wait_motion(tid, self.operation_seconds):
+                    if not await self.execute_mechanism(tid, operation):
                         self.current = None
                         self.motion_edge = None
                         self.queue.task_done()
@@ -678,7 +691,7 @@ class DeviceTwin:
             self.scan_handshakes()
             self.apply_navigation_timeout()
             state = dict(station=self.station, x=self.x, y=self.y, angle=self.angle,
-                         loaded=self.loaded, current_task=self.current, tasks=self.tasks,
+                         loaded=self.loaded, mechanism=dict(self.mechanism), current_task=self.current, tasks=self.tasks,
                          completed_segments=self.steps, db1=list(self.memory[:4]), dumper=list(self.memory[610:611]), memory_hex=self.memory.hex(),
                          contract=self.contract, dumper_reserved=self.dumper_reserved,
                          batteryPercent=self.battery_percent * 100, batteryVoltage=self.battery_voltage(), charging=self.charging,
