@@ -10,6 +10,7 @@ import http from "@/api/http";
 export interface DispatchStatus {
   enabled: boolean;
   running?: boolean;
+  phase?: string;
   fresh?: boolean;
   rootName?: string;
   error?: string;
@@ -17,6 +18,8 @@ export interface DispatchStatus {
   map?: SourceMap | null;
   device?: { time: number; cars?: Record<string, DispatchCar> } | null;
   configuration?: {
+    vehicles?: { id: string; initialSite: string }[];
+    stations?: { stationId: string; pickupSite?: string }[];
     mapIdentity?: {
       mapId?: string;
       mapVersionId?: string;

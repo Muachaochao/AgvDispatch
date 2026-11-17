@@ -117,12 +117,12 @@ def run_backlog(runtime, request, evidence, observer, tasks, completed, discover
                 priorityCoverage='按已保存的各工位优先级进入正式队列；全局匹配同时考虑等待时长和路线成本，记录实际派车顺序供核验。',
                 orderCoverage='记录实际呼叫、建单、派车和完成顺序；全局匹配考虑路线成本，不把严格先到先派当成既定规则。'))
             check('持续计划全部经正式PLC接单完成', len(tasks) == len(request['calls']), f'{len(tasks)}个原任务')
-            if admission_limit is None:
+            if admission_limit is None and len(request['calls']) > 1:
                 check('忙车期间有正式等待队列', maximum_busy_waiting > 0,
                       f'全部车辆执行时最多{maximum_busy_waiting}单等待派车；若为0，请增加同时工位或减少车辆重新验证积压。')
-            else:
+            elif admission_limit is not None:
                 check('下游准入没有超卖', maximum_active <= admission_limit, f'最大执行{maximum_active}，上限{admission_limit}')
-                check('下游准入满额时呼叫保持未取箱排队', maximum_admission_waiting > 0,
+                if len(request['calls']) > 1: check('下游准入满额时呼叫保持未取箱排队', maximum_admission_waiting > 0,
                       f'准入上限{admission_limit}时最多{maximum_admission_waiting}单等待；全车忙碌覆盖另记为{maximum_busy_waiting}，两者不混同。')
             return
         runtime.abort.wait(.5)

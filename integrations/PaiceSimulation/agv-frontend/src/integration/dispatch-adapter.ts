@@ -55,12 +55,17 @@ export interface DispatchTaskDetail {
     stage?: string;
   };
   waitingExplanation?: string;
+  handshakeContractVersion?: string;
+  plcConditions?: { stationId: string; variableName: string; address: string; expectedValue: boolean; currentValue?: boolean | null; quality: string; satisfied: boolean; reason?: string; observedAt?: string }[];
+  handshakes?: { stepId: string; phase: string; reason: string; cycleId: string }[];
   steps?: {
     sequence: number;
     stepType: string;
     status: string;
     waitingExplanation?: string;
     isCurrent?: boolean;
+    completionRequirement?: string;
+    observedPhase?: string;
   }[];
   commands?: {
     commandId: string;
@@ -69,6 +74,7 @@ export interface DispatchTaskDetail {
       nodeIds?: string[];
       edgeIds?: string[];
       vendorSites?: string[];
+      action?: string;
     } | null;
   }[];
 }

@@ -16,12 +16,12 @@ const modes: { name: SimulationMode; label: string }[] = [
 ]
 
 const mode = computed<SimulationMode>(() => {
-  const value = String(route.query.mode || 'native')
-  return modes.some((item) => item.name === value) ? (value as SimulationMode) : 'native'
+  const value = String(route.query.mode || 'main')
+  return modes.some((item) => item.name === value) ? (value as SimulationMode) : 'main'
 })
 
 function changeMode(value: string | number | boolean) {
-  const next = modes.some((item) => item.name === value) ? String(value) : 'native'
+  const next = modes.some((item) => item.name === value) ? String(value) : 'main'
   void router.replace({ path: '/simulation', query: { ...route.query, mode: next } })
 }
 

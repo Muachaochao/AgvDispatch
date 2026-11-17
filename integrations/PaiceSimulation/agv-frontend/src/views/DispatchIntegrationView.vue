@@ -8,6 +8,7 @@ import {
   watch,
 } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
+import BusinessScenarioSetup from "@/components/BusinessScenarioSetup.vue";
 import RoadNetScene from "@/components/RoadNetScene.vue";
 import DispatchMapImport from "@/components/DispatchMapImport.vue";
 import {
@@ -139,7 +140,7 @@ async function loadExperimentOptions() {
   activeExperiment.value =
     experiments.value.find((item) =>
       ["PREPARING", "SUBMITTED", "RUNNING"].includes(item.status),
-    ) ?? experiments.value[0] ?? null;
+    ) ?? null;
 }
 async function refreshExperiments() {
   if (!activeExperiment.value) return;
@@ -307,7 +308,7 @@ async function poll() {
     );
     if (disposed || revision !== actionRevision) return;
     const needsMetadata =
-      !status.value?.map || live.rootName !== status.value.rootName;
+      !status.value?.map || live.rootName !== status.value.rootName || live.scenario?.status !== status.value?.scenario?.status;
     const full = needsMetadata
       ? await dispatchRead<DispatchStatus>("/api/simulation", pageAbort.signal)
       : null;
@@ -329,7 +330,7 @@ async function poll() {
       liveMap.value = next.map ? dispatchSceneMap(next.map) : null;
       liveMapSignature.value = signature;
     }
-    const shouldReadDetails = taskPollCounter++ % 3 === 0;
+    const shouldReadDetails = next.running === true && taskPollCounter++ % 3 === 0;
     const results = shouldReadDetails
       ? await Promise.allSettled([
           dispatchRead<{ items: TaskRow[] }>(
@@ -353,7 +354,8 @@ async function poll() {
     connected.value = !shouldReadDetails || failures.length === 0;
     if (failures.length)
       error.value = failures.map((r) => String(r.reason)).join(" · ");
-    if (selectedTask.value) await selectTask(selectedTask.value, false);
+    if (!selectedTask.value && tasks.value.length === 1) selectedTask.value = tasks.value[0]!.taskId;
+    if (next.running && selectedTask.value) await selectTask(selectedTask.value, false);
     if (experimentPollCounter++ % 2 === 0) await refreshExperiments();
   } catch (e) {
     if (!disposed) {
@@ -543,6 +545,8 @@ onBeforeUnmount(() => {
       :closable="false"
       show-icon
     />
+    <BusinessScenarioSetup :status="status" @changed="status = $event; selectedTask = ''; detail = null; tasks = []; liveMapSignature = '';" />
+    <details class="panel legacy-experiments"><summary>批量任务与历史实验（高级）</summary>
     <section class="panel experiment-launcher">
       <div class="panel-heading">
         <div>
@@ -704,6 +708,7 @@ onBeforeUnmount(() => {
         </el-table-column>
       </el-table>
     </section>
+    </details>
     <section class="panel controls">
       <div class="panel-heading">
         <h3>高级隔离控制</h3>
@@ -909,13 +914,27 @@ onBeforeUnmount(() => {
             width="130" /><el-table-column
             prop="waitingExplanation"
             label="等待说明"
-        /></el-table>
+        /><el-table-column prop="completionRequirement" label="完成条件" min-width="250" /></el-table>
+        <h4>导航与机构动作命令</h4>
+        <p class="muted">载箱反馈：{{ detail.task.vehicleId && cars[detail.task.vehicleId] ? (cars[detail.task.vehicleId]!.loaded === true ? '有箱' : cars[detail.task.vehicleId]!.loaded === false ? '空载' : '未提供') : '未提供' }} · 机构行程/到位反馈：当前虚拟设备未提供独立反馈</p>
+        <el-alert v-if="!fresh" title="当前设备数据已过期，以下记录不能作为实时完成证据" type="warning" :closable="false" />
+        <h4>PLC 执行条件 · {{ detail.handshakeContractVersion || '未提供契约版本' }}</h4>
+        <el-table :data="detail.plcConditions ?? []" size="small" empty-text="当前步骤没有返回 PLC 条件">
+          <el-table-column prop="stationId" label="工位" />
+          <el-table-column prop="variableName" label="信号" min-width="180" />
+          <el-table-column prop="address" label="地址" />
+          <el-table-column label="期望"><template #default="{ row }">{{ row.expectedValue ? '1' : '0' }}</template></el-table-column>
+          <el-table-column label="反馈"><template #default="{ row }">{{ row.currentValue == null ? '未知' : row.currentValue ? '1' : '0' }}</template></el-table-column>
+          <el-table-column prop="quality" label="质量" />
+          <el-table-column prop="reason" label="判定原因" min-width="200" />
+        </el-table>
+        <p v-for="handshake in detail.handshakes ?? []" :key="handshake.stepId" class="muted">{{ handshake.phase }} · {{ handshake.reason }}</p>
         <p
           v-for="command in detail.commands ?? []"
           :key="command.commandId"
           class="muted"
         >
-          {{ command.commandId }} · {{ command.status }} ·
+          {{ command.route?.action || "导航" }} · {{ command.commandId }} · {{ command.status }} ·
           {{ command.route?.nodeIds?.join(" → ") }}
         </p>
       </div>
@@ -1033,6 +1052,9 @@ onBeforeUnmount(() => {
 .dispatch-page > .dispatch-body {
   order: 3;
 }
+.dispatch-page > .business-setup { order: 2; }
+.dispatch-page > .tasks-panel { order: 4; }
+.dispatch-page > .legacy-experiments { order: 12; }
 .dispatch-page > .experiment-history {
   order: 4;
 }

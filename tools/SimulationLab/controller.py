@@ -996,9 +996,24 @@ class Runtime:
 
     def select_scheme(self, payload, start=False):
         if self.scheme_store is None: raise ValueError('仿真方案存储未初始化。')
-        if set(payload) != {'id'}: raise ValueError('请选择一个保存的方案。')
+        if 'id' not in payload or set(payload) - {'id', 'business'}: raise ValueError('请选择一个保存的方案。')
         value = self.scheme_store.get(payload['id'])
-        configuration = self._validate_configuration(value['configuration'])
+        configuration = copy.deepcopy(value['configuration'])
+        business = payload.get('business')
+        if 'business' in payload:
+            if not isinstance(business, dict) or set(business) != {'vehicleId', 'initialSite', 'stationId'}:
+                raise ValueError('单次业务必须指定车辆、初始节点和CNC工位。')
+            vehicle = next((v for v in configuration['vehicles'] if v['id'] == business['vehicleId']), None)
+            if vehicle is None: raise ValueError('车辆不属于所选方案。')
+            if not any(s['stationId'] == business['stationId'] for s in configuration['stations']):
+                raise ValueError('CNC工位未绑定所选方案。')
+            if not any(n['id'] == business['initialSite'] and n.get('enabled') is not False for n in configuration['mapDefinition']['nodes']):
+                raise ValueError('初始节点不存在或未启用。')
+            vehicle.update(initialSite=business['initialSite'], initialLoaded=False, speedScale=1.0)
+            configuration['vehicles'] = [vehicle]
+            value['scenario'] = dict(name='dispatch-backlog', rounds=1, intervalSeconds=0, timeoutSeconds=7200,
+                calls=[dict(stationId=business['stationId'], atSeconds=0, vehicleId=None)])
+        configuration = self._validate_configuration(configuration)
         from scenarios import validate_scenario
         scenario = validate_scenario(value['scenario']) if value.get('scenario') else None
         if scenario and (any(call['stationId'] not in {s['stationId'] for s in configuration['stations']} for call in scenario.get('calls', [])) or
