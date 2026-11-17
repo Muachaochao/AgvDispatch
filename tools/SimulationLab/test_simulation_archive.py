@@ -1,17 +1,56 @@
 import io
+from contextlib import closing
 import json
 from pathlib import Path
 import tempfile
+import sqlite3
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 import zipfile
 
-from simulation_archive import archive_evidence
+from simulation_archive import archive_evidence, _task_audit
 from test_runtime_lifecycle import fixture
 
 
 class EvidenceArchiveTests(unittest.TestCase):
+    def test_oversize_database_payload_has_explicit_digest_and_keeps_original(self):
+        with tempfile.TemporaryDirectory() as name:
+            root = fixture(Path(name))
+            run = root / 'simulation-run-test'
+            run.mkdir()
+            (run / 'task-identities.json').write_text('{"TASK-1":{}}', encoding='utf-8')
+            payload = '工厂地图' * 20000
+            database = root / 'data/agv-dispatch.db'
+            with closing(sqlite3.connect(database)) as db:
+                db.execute('create table receipt (TaskId text, PayloadJson text)')
+                db.execute('insert into receipt values (?, ?)', ('TASK-1', payload))
+                db.commit()
+            audit = _task_audit(root, run)
+            row = audit['tables']['receipt'][0]
+            self.assertEqual(row['TaskId'], 'TASK-1')
+            self.assertTrue(row['PayloadJson']['archiveOmitted'])
+            self.assertEqual(row['PayloadJson']['utf8Bytes'], len(payload.encode('utf-8')))
+            self.assertEqual(len(row['PayloadJson']['sha256']), 64)
+            with closing(sqlite3.connect(database)) as db:
+                self.assertEqual(db.execute('select PayloadJson from receipt').fetchone()[0], payload)
+
+    def test_oversize_observations_are_listed_in_manifest(self):
+        with tempfile.TemporaryDirectory() as name:
+            root = fixture(Path(name))
+            run_id = 'b' * 32
+            run = root / ('simulation-run-' + run_id)
+            run.mkdir()
+            (run / 'report.json').write_text(json.dumps(dict(id=run_id, status='passed')), encoding='utf-8')
+            (run / 'observations.jsonl').write_text('x' * 32000, encoding='utf-8')
+            with patch('controller.WORKSPACE', Path(name)), patch('simulation_archive.MAX_SOURCE_BYTES', 16000):
+                _, payload = archive_evidence(SimpleNamespace(root=root, scheme_store=None), run_id)
+            with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+                manifest = json.loads(archive.read('archive-manifest.json'))
+                self.assertEqual(manifest['omittedFiles'][0]['path'], run.name + '/observations.jsonl')
+                self.assertEqual(manifest['omittedFiles'][0]['bytes'], 32000)
+            self.assertEqual((run / 'observations.jsonl').stat().st_size, 32000)
+
     def test_archive_contains_report_observations_tasks_and_logs(self):
         with tempfile.TemporaryDirectory() as name:
             workspace = Path(name)
