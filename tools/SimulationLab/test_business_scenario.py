@@ -14,6 +14,7 @@ class BusinessScenarioTests(unittest.TestCase):
         runtime.scheme_store.remember.assert_not_called()
         self.assertEqual(len(result['businessPlan']['calls']), 3)
         self.assertTrue(result['preflight']['passed'])
+        self.assertEqual(result['map'], result['configuration']['mapDefinition'])
         self.assertFalse(hasattr(runtime, 'business_plan'))
 
     def test_vehicle_starts_apply_and_reject_incomplete_or_duplicate_input(self):

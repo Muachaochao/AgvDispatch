@@ -8,10 +8,11 @@ const vehicleId = ref(''), initialSite = ref(''), stationId = ref('')
 const mode = ref('single'), seed = ref(20261117), count = ref(10), interval = ref(3), stationIds = ref<string[]>([])
 const busy = ref(false), error = ref('')
 const vehicleStarts = ref<{ id: string; initialSite: string }[]>([])
+const draft = ref<DispatchStatus | null>(null)
 const preview = ref<DispatchStatus | null>(null), checkedInput = ref('')
-const vehicles = computed(() => props.status?.configuration?.vehicles ?? [])
-const stations = computed(() => props.status?.configuration?.stations ?? [])
-const sites = computed(() => (props.status?.map?.nodes ?? []).filter(n => n.enabled !== false))
+const vehicles = computed(() => draft.value?.configuration?.vehicles ?? props.status?.configuration?.vehicles ?? [])
+const stations = computed(() => draft.value?.configuration?.stations ?? props.status?.configuration?.stations ?? [])
+const sites = computed(() => (draft.value?.map?.nodes ?? props.status?.map?.nodes ?? []).filter(n => n.enabled !== false))
 const locked = computed(() => busy.value || !!props.status?.running || ['starting','stopping'].includes(props.status?.phase ?? ''))
 const ready = computed(() => loadedScheme.value === scheme.value && loadedRoot.value === props.status?.rootName && !!loadedScheme.value)
 const input = computed(() => ({ id: scheme.value, ...(mode.value === 'single'
@@ -30,9 +31,9 @@ watch(vehicleId, id => { initialSite.value = vehicles.value.find(v => v.id === i
 async function load() {
  busy.value = true; error.value = ''; loadedScheme.value = ''
  try {
-  const value = await dispatchRead<DispatchStatus>('/api/simulation/scheme-select', undefined, { id: scheme.value })
-  emit('changed', value)
-  loadedScheme.value = scheme.value; loadedRoot.value = value.rootName ?? ''
+  const value = await dispatchRead<DispatchStatus>('/api/simulation/scheme-select', undefined, { id: scheme.value, checkOnly: true })
+  draft.value = value
+  loadedScheme.value = scheme.value; loadedRoot.value = props.status?.rootName ?? ''
   vehicleId.value = value.configuration?.vehicles?.[0]?.id ?? ''
   initialSite.value = value.configuration?.vehicles?.[0]?.initialSite ?? ''
   stationId.value = value.configuration?.stations?.[0]?.stationId ?? ''
@@ -74,9 +75,9 @@ async function start() {
    <el-form-item label="业务模式"><el-radio-group v-model="mode" :disabled="locked"><el-radio-button value="single">单次呼叫</el-radio-button><el-radio-button value="random">随机呼叫计划</el-radio-button></el-radio-group></el-form-item>
    <details v-if="ready">
     <summary>地图与业务绑定 · {{ stations.length }} 个工位</summary>
-    <p>{{ status?.configuration?.mapIdentity?.sourceName }} · {{ status?.configuration?.mapIdentity?.definitionHash }}</p>
-    <p>倒料点 {{ status?.configuration?.dumper?.dumpingSite }} · 等待位 {{ status?.configuration?.dumper?.waitingSites?.join('、') || status?.configuration?.dumper?.waitingSite }} · 准入容量 {{ status?.configuration?.downstreamAdmissionCapacity ?? '沿用配置' }}</p>
-    <p>PLC 点表 {{ status?.configuration?.plcSignalTable?.fileName }} · {{ status?.configuration?.plcSignalTable?.sha256 }}</p>
+    <p>{{ draft?.configuration?.mapIdentity?.sourceName }} · {{ draft?.configuration?.mapIdentity?.definitionHash }}</p>
+    <p>倒料点 {{ draft?.configuration?.dumper?.dumpingSite }} · 等待位 {{ draft?.configuration?.dumper?.waitingSites?.join('、') || draft?.configuration?.dumper?.waitingSite }} · 准入容量 {{ draft?.configuration?.downstreamAdmissionCapacity ?? '沿用配置' }}</p>
+    <p>PLC 点表 {{ draft?.configuration?.plcSignalTable?.fileName }} · {{ draft?.configuration?.plcSignalTable?.sha256 }}</p>
     <el-table :data="stations" max-height="240"><el-table-column prop="stationId" label="工位" /><el-table-column prop="pickupSite" label="取返箱点" /></el-table>
    </details>
    <template v-if="ready && mode === 'single'">
@@ -106,6 +107,11 @@ async function start() {
    <el-table v-if="preview.businessPlan" :data="preview.businessPlan.calls" max-height="240"><el-table-column prop="stationId" label="呼叫工位" /><el-table-column prop="atSeconds" label="计划时间（秒）" /></el-table>
   </section>
   <p v-if="status?.phase === 'starting'">正在准备隔离设备、连接正式后台并恢复地图，请等待就绪。</p>
+  <el-table v-if="status?.startupChecks?.length" :data="status.startupChecks">
+   <el-table-column prop="name" label="环境启动检查" />
+   <el-table-column label="结果"><template #default="{ row }">{{ ({ pending: '待检查', running: '检查中', passed: '通过', failed: '失败' } as Record<string, string>)[row.status] || row.status }}</template></el-table-column>
+   <el-table-column prop="detail" label="详细信息" />
+  </el-table>
   <el-alert v-if="status?.error" :title="status.error" type="error" :closable="false" />
   <p v-if="status?.running" class="muted">环境运行中。九步进度和 PLC 条件见下方任务详情，重新配置前请先停止隔离环境。</p>
  </section>

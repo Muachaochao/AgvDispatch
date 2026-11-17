@@ -154,6 +154,7 @@ class Runtime:
         self.recovery_cache = (0, {})
         self.plc_table_cache = None
         self.startup_plan = None
+        self.startup_checks = []
         self.startup_thread = None
         if scheme_store is not None:
             from versions import VersionComparison
@@ -409,7 +410,7 @@ class Runtime:
                         **(self.scheme_store.catalog() if getattr(self, 'scheme_store', None) else {}),
                         stationCatalog=plc_table.get('stations', []), history=self.history_cache[1],
                         plcSignalTable=self._plc_table_metadata(plc_table),
-                        recoveryGuidance=self.guidance_cache[1], startupPlan=self.startup_plan,
+                        recoveryGuidance=self.guidance_cache[1], startupPlan=self.startup_plan, startupChecks=getattr(self, 'startup_checks', []),
                         versionComparison=self.version_comparison.snapshot() if hasattr(self, 'version_comparison') else None,
                         message='回环设备仿真；合成模型不代表真实固件、机械及安全联锁验收。')
 
@@ -446,6 +447,7 @@ class Runtime:
                     message=scenario.get('message'),
                 ),
                 error=self.error,
+                startupChecks=getattr(self, 'startup_checks', []),
                 message='轻量实时状态；正式派车、PLC和路权仍由生产仿真后台负责。',
             )
 
@@ -904,17 +906,16 @@ class Runtime:
         for source, target, bidirectional in edges:
             graph[source].add(target)
             if bidirectional: graph[target].add(source)
-        def reachable(source, target):
+        def reachable(source):
             pending, seen = [source], set()
             while pending:
                 current = pending.pop()
-                if current == target: return True
                 if current in seen: continue
                 seen.add(current); pending.extend(graph[current] - seen)
-            return False
+            return seen
         targets = [s['pickupSite'] for s in normalized_stations] + waiting_sites + [dumping, inspection]
         for vehicle in normalized_vehicles:
-            if any(not reachable(vehicle['initialSite'], target) for target in targets):
+            if not set(targets) <= reachable(vehicle['initialSite']):
                 raise ValueError(f"{vehicle['id']}与地图工位、等待点或倒料点不连通。")
         admission = payload.get('downstreamAdmissionCapacity', 0)
         if type(admission) is not int or not 0 <= admission <= 8:
@@ -1047,7 +1048,7 @@ class Runtime:
         if check_only:
             from runtime_release import current_release
             release = current_release(WORKSPACE)
-            return dict(configuration=configuration, businessPlan=business_plan,
+            return dict(configuration=configuration, map=configuration['mapDefinition'], businessPlan=business_plan,
                 runtimeRelease=release['metadata'] if release else None,
                 preflight=dict(passed=True, checks=[
                     dict(name='地图、工位与PLC点表绑定', status='passed'),
@@ -1250,17 +1251,29 @@ class Runtime:
         return self.status()
 
     def _start(self):
+        self.startup_checks = [dict(name=name, status='pending', detail='') for name in
+                               ['虚拟设备', '正式后台', '地图恢复', '现场初态']]
+        current = self.startup_checks[0]
         try:
+            current['status'] = 'running'
             multi = self.lab.get('twoVehicleSimulation') or self.lab.get('multiVehicleSimulation')
             self.launch('twin', [sys.executable, str(WORKSPACE / ('tools/WebTwoVehicleLab/multi_twin.py' if multi else 'tools/WebSingleVehicleLab/device_twin.py')), str(self.root)], self.root)
             self.wait('虚拟设备启动超时', lambda: self.device(), 15)
+            current['status'] = 'passed'
+            current = self.startup_checks[1]; current['status'] = 'running'
             for name, exe in [('service', 'AgvDispatch.Service'), ('webhost', 'AgvDispatch.WebHost')]:
                 self.launch(name, [str(self.root / name / (exe + '.exe'))], self.root / name)
             self.wait('正式后台连接超时', self.connected)
+            current['status'] = 'passed'
+            current = self.startup_checks[2]; current['status'] = 'running'
             self.bootstrap()
+            current['status'] = 'passed'
+            current = self.startup_checks[3]; current['status'] = 'running'
             self._restart_twin_at_field_sites()
+            current['status'] = 'passed'
             self.phase = 'running'
         except Exception as error:
+            current.update(status='failed', detail=str(error))
             self.phase = 'failed'; self.error = str(error)
             try:
                 self._stop_children()
