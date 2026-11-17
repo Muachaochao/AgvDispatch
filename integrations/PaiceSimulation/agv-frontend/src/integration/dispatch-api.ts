@@ -15,6 +15,7 @@ export interface DispatchStatus {
   rootName?: string;
   preflight?: { passed: boolean; checks: { name: string; status: string }[] };
   startupChecks?: { name: string; status: string; detail: string }[];
+  startupPlan?: { schemeId?: string; status?: string; message?: string };
   runtimeRelease?: { releaseId: string; algorithmMode: string; serviceSha256: string; webHostSha256: string; optionsSha256: string } | null;
   businessPlan?: {
     seed: number;

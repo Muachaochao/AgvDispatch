@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { dispatchRead, downloadIntegrationRecord, type DispatchStatus } from '@/integration/dispatch-api'
+import { startupAccepted } from '@/integration/startup-result'
 const props = defineProps<{ status: DispatchStatus | null }>()
 const emit = defineEmits<{ changed: [value: DispatchStatus] }>()
 const scheme = ref(''), loadedScheme = ref(''), loadedRoot = ref('')
 const vehicleId = ref(''), initialSite = ref(''), stationId = ref('')
 const mode = ref('single'), seed = ref(20261117), count = ref(10), interval = ref(3), stationIds = ref<string[]>([])
 const busy = ref(false), error = ref('')
+const startupNotice = ref('')
 const vehicleStarts = ref<{ id: string; initialSite: string }[]>([])
 const draft = ref<DispatchStatus | null>(null)
 const preview = ref<DispatchStatus | null>(null), checkedInput = ref('')
@@ -44,13 +46,21 @@ async function load() {
 }
 async function start() {
  if (!ready.value || locked.value || !checked.value) return
- busy.value = true; error.value = ''
+ const previousRoot = props.status?.rootName
+ busy.value = true; error.value = ''; startupNotice.value = ''
  try {
   const value = await dispatchRead<DispatchStatus>('/api/simulation/scheme-start', undefined, input.value)
   loadedScheme.value = ''; emit('changed', value)
  } catch (e) {
   error.value = String(e)
-  try { emit('changed', await dispatchRead<DispatchStatus>('/api/simulation')) } catch { /* Keep the original startup error visible. */ }
+  try {
+   const value = await dispatchRead<DispatchStatus>('/api/simulation')
+   emit('changed', value)
+   if (startupAccepted(value, previousRoot, scheme.value)) {
+    error.value = ''; loadedScheme.value = ''
+    startupNotice.value = '后台已接收本次开测，正在同步启动与业务结果。'
+   } else if (value.error) error.value = value.error
+  } catch { /* Keep the original startup error visible. */ }
  } finally { busy.value = false }
 }
 </script>
@@ -60,6 +70,7 @@ async function start() {
   <p class="muted">选择工程方案，配置单次或随机满箱呼叫。主工程负责派车、取箱、倒料、返箱及 PLC 收尾。</p>
   <p v-if="status?.runtimeRelease" class="muted">运行包 {{ status.runtimeRelease.releaseId }} · 调度模式 {{ status.runtimeRelease.algorithmMode }}</p>
   <el-alert v-if="error" :title="error" type="error" :closable="false" />
+  <el-alert v-if="startupNotice" :title="startupNotice" type="info" :closable="false" />
   <div v-if="status?.businessPlan" class="plan-summary">
    <p>当前计划：{{ status.businessPlan.count }} 次呼叫 · 间隔 {{ status.businessPlan.intervalSeconds }} 秒 · 种子 {{ status.businessPlan.seed }} · {{ status.businessPlan.stationIds.length }} 个工位</p>
    <el-button @click="downloadIntegrationRecord(status.businessPlan, 'business-call-plan.json')">下载业务计划</el-button>

@@ -89,6 +89,8 @@ let timer: ReturnType<typeof setTimeout> | undefined,
   actionRevision = 0,
   taskPollCounter = 0,
   experimentPollCounter = 0;
+let detailPolling = false;
+let metadataRoot: string | undefined, metadataScenario: string | undefined;
 const clock = ref(Date.now());
 const clockTimer = setInterval(() => (clock.value = Date.now()), 1000);
 const fresh = computed(
@@ -312,11 +314,29 @@ async function poll() {
       pageAbort.signal,
     );
     if (disposed || revision !== actionRevision) return;
+    status.value = { ...status.value!, ...live };
+    observedAt.value = Date.now();
+    connected.value = true;
+    if (!detailPolling) void pollDetails(live, revision);
+  } catch (e) {
+    if (!disposed) {
+      connected.value = false;
+      error.value = e instanceof Error ? e.message : String(e);
+    }
+  } finally {
+    if (!disposed) timer = setTimeout(poll, 1000);
+  }
+}
+async function pollDetails(live: DispatchStatus, revision: number) {
+  detailPolling = true;
+  try {
     const needsMetadata =
-      !status.value?.map || live.rootName !== status.value.rootName || live.scenario?.status !== status.value?.scenario?.status;
+      !status.value?.map || live.rootName !== metadataRoot || live.scenario?.status !== metadataScenario;
     const full = needsMetadata
       ? await dispatchRead<DispatchStatus>("/api/simulation", pageAbort.signal)
       : null;
+    if (disposed || revision !== actionRevision || status.value?.rootName !== live.rootName) return;
+    if (full) { metadataRoot = live.rootName; metadataScenario = live.scenario?.status; }
     const next: DispatchStatus = full
       ? {
           ...full,
@@ -327,8 +347,7 @@ async function poll() {
           report: full.report,
         }
       : { ...status.value!, ...live };
-    status.value = next;
-    observedAt.value = Date.now();
+    status.value = { ...next, ...status.value, map: next.map, configuration: next.configuration, schemes: next.schemes, report: next.report };
     error.value = next.error ?? "";
     const signature = JSON.stringify(next.map ?? null);
     if (signature !== liveMapSignature.value) {
@@ -356,7 +375,6 @@ async function poll() {
     const failures = results.filter(
       (r) => r.status === "rejected",
     ) as PromiseRejectedResult[];
-    connected.value = !shouldReadDetails || failures.length === 0;
     if (failures.length)
       error.value = failures.map((r) => String(r.reason)).join(" · ");
     if (!selectedTask.value && tasks.value.length === 1) selectedTask.value = tasks.value[0]!.taskId;
@@ -364,11 +382,10 @@ async function poll() {
     if (experimentPollCounter++ % 2 === 0) await refreshExperiments();
   } catch (e) {
     if (!disposed) {
-      connected.value = false;
       error.value = e instanceof Error ? e.message : String(e);
     }
   } finally {
-    if (!disposed) timer = setTimeout(poll, 1000);
+    detailPolling = false;
   }
 }
 async function selectTask(id: string, clear = true) {
