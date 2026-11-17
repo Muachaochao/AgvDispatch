@@ -21,7 +21,7 @@ class BacklogTests(unittest.TestCase):
     def test_admission_queue_is_distinct_from_all_fleet_busy(self):
         self.test_calls_continue_while_car_is_busy_and_repeated_station_waits_its_own_cycle(admission=True)
 
-    def test_calls_continue_while_car_is_busy_and_repeated_station_waits_its_own_cycle(self, admission=False):
+    def test_calls_continue_while_car_is_busy_and_repeated_station_waits_its_own_cycle(self, admission=False, single=False):
         with tempfile.TemporaryDirectory() as name:
             clock = Clock()
             tasks, completed, original, events = {}, set(), {}, []
@@ -86,8 +86,14 @@ class BacklogTests(unittest.TestCase):
             request=validate_scenario(dict(name='dispatch-backlog',timeoutSeconds=60,calls=[
                 dict(stationId='CNC-001',atSeconds=0),dict(stationId='CNC-002',atSeconds=0),
                 dict(stationId='CNC-001',atSeconds=.5)]))
+            if single: request['calls'] = request['calls'][:1]
             with patch('automatic_calls.time',clock):
                 run_backlog(runtime,request,root,Observer(),tasks,completed,discover,check)
+            if single:
+                self.assertEqual(len(completed),1)
+                self.assertTrue(all(passed for _,passed in checks))
+                self.assertFalse(any(name=='下游准入满额时呼叫保持未取箱排队' for name,_ in checks))
+                return
             self.assertEqual(len(completed),3)
             self.assertEqual(events[:2],[('CNC-001',0),('CNC-002',0)])
             self.assertGreaterEqual(events[2][1],4.5)
@@ -103,6 +109,9 @@ class BacklogTests(unittest.TestCase):
             self.assertTrue(all(passed for _,passed in checks))
             accepted=[json.loads(line) for line in (root/'call-queue.jsonl').read_text(encoding='utf-8').splitlines()]
             self.assertEqual(sum(item['kind']=='assigned' for item in accepted),3)
+
+    def test_single_call_verifies_business_without_backlog_coverage(self):
+        self.test_calls_continue_while_car_is_busy_and_repeated_station_waits_its_own_cycle(admission=True, single=True)
 
     def test_backlog_rejects_script_selected_vehicle_and_unknown_station_shape(self):
         for call in [dict(stationId='CNC-001',atSeconds=0,vehicleId='car'),dict(stationId='CNC-306',atSeconds=0)]:
