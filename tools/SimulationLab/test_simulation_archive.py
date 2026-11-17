@@ -19,7 +19,11 @@ class EvidenceArchiveTests(unittest.TestCase):
             run_id = 'a' * 32
             run = root / ('simulation-run-' + run_id)
             run.mkdir()
-            report = dict(id=run_id, name='dispatch-backlog', status='passed', message='测试完成')
+            report = dict(id=run_id, name='business-calls', status='passed', message='测试完成')
+            calls = [dict(stationId='CNC-001', atSeconds=0, vehicleId=None)]
+            plan = dict(seed=123, count=1, intervalSeconds=3, stationIds=['CNC-001'], calls=calls)
+            (root / 'business-call-plan.json').write_text(json.dumps(plan), encoding='utf-8')
+            (run / 'scenario.json').write_text(json.dumps(dict(name='business-calls', calls=calls)), encoding='utf-8')
             (run / 'report.json').write_text(json.dumps(report, ensure_ascii=False), encoding='utf-8')
             (run / 'map.json').write_text('{"nodes":[]}', encoding='utf-8')
             (run / 'observations.jsonl').write_text('{"time":1}\n', encoding='utf-8')
@@ -46,6 +50,7 @@ class EvidenceArchiveTests(unittest.TestCase):
                 self.assertIn('task-audit.json', names)
                 self.assertIn('task-summary.csv', names)
                 self.assertIn(run.name + '/report.json', names)
+                self.assertEqual(json.loads(archive.read(run.name + '/business-call-plan.json')), plan)
                 self.assertIn(run.name + '/observations.jsonl', names)
                 self.assertIn('logs/device-events.jsonl', names)
                 self.assertIn('logs/simulation-webhost-stdout.log', names)
@@ -53,6 +58,13 @@ class EvidenceArchiveTests(unittest.TestCase):
                 manifest = json.loads(archive.read('archive-manifest.json'))
                 self.assertEqual(manifest['reportId'], run_id)
                 self.assertTrue(manifest['files'])
+            # A later, different call list must not acquire this plan's seed.
+            plan['calls'][0]['atSeconds'] = 9
+            (root / 'business-call-plan.json').write_text(json.dumps(plan), encoding='utf-8')
+            with patch('controller.WORKSPACE', workspace):
+                _, payload = archive_evidence(SimpleNamespace(root=root, scheme_store=None), run_id)
+            with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+                self.assertNotIn(run.name + '/business-call-plan.json', archive.namelist())
 
 
 if __name__ == '__main__':

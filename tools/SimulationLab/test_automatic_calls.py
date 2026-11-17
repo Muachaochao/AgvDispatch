@@ -21,7 +21,7 @@ class BacklogTests(unittest.TestCase):
     def test_admission_queue_is_distinct_from_all_fleet_busy(self):
         self.test_calls_continue_while_car_is_busy_and_repeated_station_waits_its_own_cycle(admission=True)
 
-    def test_calls_continue_while_car_is_busy_and_repeated_station_waits_its_own_cycle(self, admission=False, single=False):
+    def test_calls_continue_while_car_is_busy_and_repeated_station_waits_its_own_cycle(self, admission=False, single=False, business=False):
         with tempfile.TemporaryDirectory() as name:
             clock = Clock()
             tasks, completed, original, events = {}, set(), {}, []
@@ -87,6 +87,7 @@ class BacklogTests(unittest.TestCase):
                 dict(stationId='CNC-001',atSeconds=0),dict(stationId='CNC-002',atSeconds=0),
                 dict(stationId='CNC-001',atSeconds=.5)]))
             if single: request['calls'] = request['calls'][:1]
+            if business: request['name'] = 'business-calls'
             with patch('automatic_calls.time',clock):
                 run_backlog(runtime,request,root,Observer(),tasks,completed,discover,check)
             if single:
@@ -112,6 +113,9 @@ class BacklogTests(unittest.TestCase):
 
     def test_single_call_verifies_business_without_backlog_coverage(self):
         self.test_calls_continue_while_car_is_busy_and_repeated_station_waits_its_own_cycle(admission=True, single=True)
+
+    def test_business_plan_uses_plc_execution(self):
+        self.test_calls_continue_while_car_is_busy_and_repeated_station_waits_its_own_cycle(single=True, business=True)
 
     def test_backlog_rejects_script_selected_vehicle_and_unknown_station_shape(self):
         for call in [dict(stationId='CNC-001',atSeconds=0,vehicleId='car'),dict(stationId='CNC-306',atSeconds=0)]:

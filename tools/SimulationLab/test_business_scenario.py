@@ -16,7 +16,8 @@ class BusinessScenarioTests(unittest.TestCase):
         runtime._validate_configuration = Mock(side_effect=lambda value: value)
         runtime._create_instance = Mock()
         runtime.status = Mock(return_value={})
-        runtime.root = 'isolated'
+        from pathlib import Path
+        runtime.root = Path('isolated')
         return runtime, config
 
     def test_single_vehicle_preserves_original_scheme_and_full_map(self):
@@ -45,6 +46,19 @@ class BusinessScenarioTests(unittest.TestCase):
         scenario = runtime.run_scenario.call_args.args[0]
         self.assertEqual(scenario['calls'], [dict(stationId='CNC-001', atSeconds=0, vehicleId=None)])
         self.assertEqual(scenario['timeoutSeconds'], 7200)
+
+    def test_seeded_plan_is_reproducible_preserves_fleet_and_has_no_vehicle_assignment(self):
+        results = []
+        for _ in range(2):
+            runtime, original = self.fixture()
+            with patch('controller.write'):
+                runtime.select_scheme(dict(id='source',plan=dict(seed=123,count=8,intervalSeconds=2,stationIds=['CNC-002','CNC-001'])))
+            self.assertEqual(len(runtime._create_instance.call_args.args[0]['vehicles']), 2)
+            self.assertTrue(all(v['speedScale'] == 1 for v in runtime._create_instance.call_args.args[0]['vehicles']))
+            results.append(runtime.business_plan)
+        self.assertEqual(results[0], results[1])
+        self.assertEqual([c['atSeconds'] for c in results[0]['calls']], list(range(0,16,2)))
+        self.assertTrue(all(c['vehicleId'] is None for c in results[0]['calls']))
 
     def test_invalid_business_rejected_before_creating_instance(self):
         for change in [dict(vehicleId='missing'),dict(stationId='missing'),dict(initialSite='BAD'),dict(extra=True)]:

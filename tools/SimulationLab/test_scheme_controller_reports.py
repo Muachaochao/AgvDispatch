@@ -14,6 +14,16 @@ from test_runtime_lifecycle import fixture
 
 
 class ControllerSchemeTests(unittest.TestCase):
+    def test_current_plan_is_visible_after_controller_restart(self):
+        with tempfile.TemporaryDirectory() as name, patch('controller.WORKSPACE', Path(name)):
+            root = fixture(Path(name))
+            self.assertIsNone(Runtime(root).status()['businessPlan'])
+            plan = dict(seed=123, count=2, intervalSeconds=3, stationIds=['CNC-001'],
+                        calls=[dict(stationId='CNC-001', atSeconds=0, vehicleId=None),
+                               dict(stationId='CNC-001', atSeconds=3, vehicleId=None)])
+            write(root / 'business-call-plan.json', plan)
+            self.assertEqual(Runtime(root).status()['businessPlan'], plan)
+
     def test_saved_configuration_recreates_clean_instance_and_survives_selection_restart(self):
         with tempfile.TemporaryDirectory() as name, patch('controller.WORKSPACE', Path(name)):
             workspace = Path(name)
