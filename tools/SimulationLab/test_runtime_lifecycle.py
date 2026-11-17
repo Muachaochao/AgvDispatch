@@ -69,6 +69,8 @@ class LifecycleTests(unittest.TestCase):
             runtime.launch = launch
             runtime._start()
             self.assertEqual(runtime.phase, 'failed')
+            self.assertEqual(runtime.startup_checks[0]['status'], 'failed')
+            self.assertIn('startup failure', runtime.startup_checks[0]['detail'])
             self.assertIn('startup failure', runtime.error)
             self.assertIn('停止并清理', runtime.error)
             self.assertIs(runtime.children['twin'], child)
