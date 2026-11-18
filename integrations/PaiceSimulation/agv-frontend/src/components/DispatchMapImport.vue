@@ -22,16 +22,17 @@ const emit = defineEmits<{ saved: [id: number] }>();
 const definition = ref<SourceMap | null>(null),
   identity = ref<Record<string, unknown>>({}),
   initial = ref(""),
-  roundTripOnly = ref(false),
+  roundTripOnly = ref(true),
   simplifyRoads = ref(true),
-  name = ref("");
+  name = ref(""),
+  protectedSites = ref<string[]>([]);
 const conversion = ref<MapConversion | null>(null),
   errors = ref<ValidationError[]>([]),
   error = ref(""),
   busy = ref(false),
   savedId = ref<number | null>(null);
 const choices = computed(
-  () => definition.value?.nodes.filter((n) => n.enabled !== false) ?? [],
+  () => definition.value?.nodes.filter((n) => n.enabled !== false).map(n => ({ value: n.id, label: n.id })) ?? [],
 );
 const sourceLabel = computed(() =>
   String(
@@ -63,11 +64,13 @@ function reset(
   def: SourceMap,
   source: Record<string, unknown>,
   suggestedInitialSite = "",
+  protectedSourceSites: string[] = [],
 ) {
-  roundTripOnly.value = false;
+  roundTripOnly.value = true;
   simplifyRoads.value = true;
   definition.value = def;
   identity.value = source;
+  protectedSites.value = protectedSourceSites.map(site => resolveMapSiteId(def, site) || site);
   initial.value =
     resolveMapSiteId(def, suggestedInitialSite) || defaultInitialSite(def);
   name.value = defaultName(def);
@@ -81,7 +84,7 @@ async function loadActive() {
   error.value = "";
   try {
     const source = await loadWebSimulationMap();
-    reset(source.definition, source.identity, source.suggestedInitialSite);
+    reset(source.definition, source.identity, source.suggestedInitialSite, source.protectedSites);
     await nextTick();
     await preview();
   } catch (e) {
@@ -114,20 +117,27 @@ async function preview() {
   conversion.value = null;
   savedId.value = null;
   try {
-    conversion.value = convertDispatchMap(
+    const next = convertDispatchMap(
       definition.value,
       initial.value || undefined,
       {
         roundTripOnly: roundTripOnly.value,
         simplifyRoads: simplifyRoads.value,
+        protectedSiteIds: protectedSites.value,
       },
     );
-    errors.value = await validateRoadNet(conversion.value.roadnet);
+    errors.value = await validateRoadNet(next.roadnet);
+    conversion.value = next;
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   } finally {
     busy.value = false;
   }
+}
+async function previewRoundTrip() {
+  roundTripOnly.value = true;
+  await nextTick();
+  await preview();
 }
 async function save() {
   if (!conversion.value || errors.value.length || savedId.value) return;
@@ -204,7 +214,7 @@ function download() {
         >读取 Web 仿真地图</el-button
       >
       <label class="file-button"
-        >备用：载入地图文件<input type="file" accept=".json" @change="loadFile"
+        >备用：载入地图文件<input type="file" accept=".json" :disabled="busy" @change="loadFile"
       /></label>
     </el-space>
     <el-alert v-if="error" :title="error" type="error" :closable="false" />
@@ -223,24 +233,22 @@ function download() {
           ><el-input v-model="name" maxlength="128"
         /></el-form-item>
         <el-form-item label="实验初始停放点"
-          ><el-select
+          ><el-select-v2
             v-model="initial"
+            :options="choices"
+            :disabled="busy"
             filterable
             clearable
             placeholder="沿用原图充电位，或显式选择实验停放点"
-            ><el-option
-              v-for="node in choices"
-              :key="node.id"
-              :value="node.id"
-              :label="node.id" /></el-select
+            />
         ></el-form-item>
         <el-form-item label="实验导入范围"
-          ><el-checkbox v-model="roundTripOnly"
+          ><el-checkbox v-model="roundTripOnly" :disabled="busy"
             >仅导入初始点可往返区域</el-checkbox
           ></el-form-item
         >
         <el-form-item label="道路显示">
-          <el-checkbox v-model="simplifyRoads"
+          <el-checkbox v-model="simplifyRoads" :disabled="busy"
             >简化道路（推荐，保留真实长度和方向）</el-checkbox
           >
         </el-form-item>
@@ -251,6 +259,13 @@ function download() {
           {{ conversion.roadnet.nodes.length }} 实验节点 ·
           {{ conversion.roadnet.edges.length }} 实验路段
         </p>
+        <el-alert
+          v-if="conversion.excludedNodes.length"
+          type="info"
+          :closable="false"
+          title="仅在算法实验副本中排除不可往返点位"
+          :description="conversion.excludedNodes.join('、')"
+        />
         <ul class="conversion-warnings">
           <li v-for="warning in conversion.warnings" :key="warning">
             {{ warning }}
@@ -263,6 +278,9 @@ function download() {
           type="warning"
           :closable="false"
         />
+        <el-button v-if="errors.length && !roundTripOnly" :disabled="busy" @click="previewRoundTrip">
+          改为仅导入可往返区域
+        </el-button>
         <el-space
           ><el-button
             type="primary"
@@ -315,7 +333,7 @@ h3 {
 .el-alert {
   margin: 10px 0;
 }
-.el-select {
+.el-select-v2 {
   width: 100%;
 }
 </style>

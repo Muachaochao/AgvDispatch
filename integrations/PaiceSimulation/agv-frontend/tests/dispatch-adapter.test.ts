@@ -321,6 +321,18 @@ test("optional round-trip scope excludes directed CAD tails with explicit record
   assert.ok(!result.roadnet.nodes.some((n) => n.id === "tail"));
   assert.deepEqual(result.excludedNodes, ["tail"]);
   assert.deepEqual(result.excludedEdges, ["tail-road"]);
+  assert.throws(
+    () => convertDispatchMap(d, "C", { roundTripOnly: true, protectedSiteIds: ["tail"] }),
+    /tail.*无法与初始点往返/,
+  );
+  const workingTail = {
+    ...d,
+    nodes: d.nodes.map(node => node.id === "tail" ? { ...node, type: "Station" } : node),
+  };
+  assert.throws(
+    () => convertDispatchMap(workingTail, "C", { roundTripOnly: true, protectedSiteIds: [] }),
+    /tail.*无法与初始点往返/,
+  );
 });
 
 test("source charging points retain charger type while transit waiting points remain junctions", () => {

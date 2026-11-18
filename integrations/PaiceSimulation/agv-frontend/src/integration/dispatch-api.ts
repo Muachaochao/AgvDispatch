@@ -32,6 +32,7 @@ export interface DispatchStatus {
     vehicles?: { id: string; initialSite: string; initialLoaded?: boolean; speedScale?: number }[];
     stations?: { stationId: string; pickupSite?: string }[];
     dumper?: { dumpingSite: string; waitingSite: string; waitingSites?: string[]; resourceId: string };
+    inspectionSite?: string;
     downstreamAdmissionCapacity?: number;
     plcSignalTable?: { fileName?: string; sha256?: string; sourceLabel?: string };
     mapIdentity?: {
@@ -160,8 +161,17 @@ export async function loadWebSimulationMap(signal?: AbortSignal) {
     throw new Error("Web 仿真中心没有可读取的当前场景地图");
   const definition = live.map;
   if (definition.unit !== "m") throw new Error("只接受米制完整 Web 仿真地图");
+  const config = live.configuration;
   return {
     definition,
+    protectedSites: [
+      ...(config?.vehicles ?? []).map(vehicle => vehicle.initialSite),
+      ...(config?.stations ?? []).map(station => station.pickupSite),
+      ...(config?.dumper?.waitingSites ?? []),
+      config?.dumper?.waitingSite,
+      config?.dumper?.dumpingSite,
+      config?.inspectionSite,
+    ].filter((site): site is string => !!site),
     identity: {
       sourceType: "Web仿真实例地图",
       instanceName: live.rootName,

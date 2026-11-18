@@ -170,6 +170,7 @@ export function convertDispatchMap(
     roundTripOnly?: boolean;
     simplifyRoads?: boolean;
     mergeOppositeParallel?: boolean;
+    protectedSiteIds?: readonly string[];
   } = {},
 ): MapConversion {
   if (definition.unit !== "m") throw new Error("只接受米制完整地图");
@@ -226,14 +227,17 @@ export function convertDispatchMap(
     };
     const forward = visit(outgoing),
       backward = visit(incoming);
-    sourceNodes = enabledNodes.filter(
-      (n) => forward.has(n.id) && backward.has(n.id),
-    );
-    excludedNodes.push(
-      ...enabledNodes
-        .filter((n) => !forward.has(n.id) || !backward.has(n.id))
-        .map((n) => n.id),
-    );
+    const outside = enabledNodes.filter((n) => !forward.has(n.id) || !backward.has(n.id));
+    if (options.protectedSiteIds) {
+      const protectedIds = new Set(options.protectedSiteIds);
+      const blocked = outside.filter(node =>
+        protectedIds.has(node.id) || (node.type !== "Waypoint" && node.type !== "Junction"),
+      );
+      if (blocked.length)
+        throw new Error(`以下点位无法确认可安全排除：${blocked.map(node => node.id).join("、")} 无法与初始点往返。`);
+    }
+    sourceNodes = enabledNodes.filter((n) => forward.has(n.id) && backward.has(n.id));
+    excludedNodes.push(...outside.map((n) => n.id));
     const included = new Set(sourceNodes.map((n) => n.id));
     excludedEdges.push(
       ...definition.edges
