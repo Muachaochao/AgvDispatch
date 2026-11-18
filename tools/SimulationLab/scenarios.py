@@ -7,6 +7,7 @@ import sqlite3
 import sys
 import time
 import uuid
+from contextlib import closing
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from controller import read, write
@@ -259,7 +260,7 @@ def validate_scenario(value):
 
 
 def query(root, sql, parameters=()):
-    with sqlite3.connect((root / 'data/agv-dispatch.db').resolve().as_uri() + '?mode=ro', uri=True, timeout=3) as db:
+    with closing(sqlite3.connect((root / 'data/agv-dispatch.db').resolve().as_uri() + '?mode=ro', uri=True, timeout=3)) as db:
         db.row_factory = sqlite3.Row
         return [dict(row) for row in db.execute(sql, parameters)]
 
@@ -1827,6 +1828,7 @@ def execute(runtime, request):
                  'response-loss', 'road-block-recovery', 'obstacle-auto-detour',
                  'obstacle-auto-safety-return', *TIMEOUT_OBSTACLE_NAMES) else None,
             taskSummary=summarize_tasks(all_details),
+            callRows=runtime.scenario.get('callRows', []),
             startedAt=started, finishedAt=time.time(), evidenceDirectory=evidence.name,
             metrics=dict(taskCount=len(tasks), completedRounds=runtime.scenario['completedRounds'], durationSeconds=time.time()-started,
                          samples=observer.samples if observer else 0, minimumSeparationMeters=observer.minimum if observer else None,

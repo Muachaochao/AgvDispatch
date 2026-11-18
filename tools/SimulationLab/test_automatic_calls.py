@@ -110,6 +110,9 @@ class BacklogTests(unittest.TestCase):
             self.assertTrue(all(passed for _,passed in checks))
             accepted=[json.loads(line) for line in (root/'call-queue.jsonl').read_text(encoding='utf-8').splitlines()]
             self.assertEqual(sum(item['kind']=='assigned' for item in accepted),3)
+            self.assertEqual([row['stationId'] for row in runtime.scenario['callRows']], ['CNC-001', 'CNC-002', 'CNC-001'])
+            self.assertEqual(len({row['taskId'] for row in runtime.scenario['callRows']}), 3)
+            self.assertTrue(all(row['status'] == 'completed' for row in runtime.scenario['callRows']))
 
     def test_single_call_verifies_business_without_backlog_coverage(self):
         self.test_calls_continue_while_car_is_busy_and_repeated_station_waits_its_own_cycle(admission=True, single=True)

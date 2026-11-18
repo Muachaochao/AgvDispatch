@@ -283,7 +283,16 @@ class Runtime:
             raise ValueError('任务编号无效。')
         with self.lock:
             try:
-                return self.api('/api/tasks/' + task_id)
+                result = self.api('/api/tasks/' + task_id)
+                from scenarios import query
+                import sqlite3
+                try:
+                    result['trafficWaiting'] = query(self.root,
+                        "SELECT Reason AS reason, BlockingKey AS blockingKey, WaitingSinceUtc AS waitingSinceUtc "
+                        "FROM traffic_request WHERE TaskId=? AND State='Waiting' ORDER BY UpdatedAt DESC", (task_id,))
+                except sqlite3.Error:
+                    result['trafficWaiting'] = None
+                return result
             except Exception as live_error:
                 saved = next((item for item in (self._report_task_summary() or [])
                               if item.get('taskId') == task_id), None)
@@ -445,6 +454,8 @@ class Runtime:
                     completedRounds=scenario.get('completedRounds', 0),
                     totalRounds=scenario.get('totalRounds', 0),
                     message=scenario.get('message'),
+                    callRows=scenario.get('callRows') or (
+                        (self.report or {}).get('callRows', []) if scenario.get('status') == 'idle' else []),
                 ),
                 error=self.error,
                 startupChecks=getattr(self, 'startup_checks', []),

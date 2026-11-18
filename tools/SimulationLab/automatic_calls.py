@@ -11,6 +11,9 @@ def run_backlog(runtime, request, evidence, observer, tasks, completed, discover
         raise ValueError('持续积压需要正式PLC自动接单模式。')
     offsets = {station['stationId']: station['offset'] for station in runtime.lab['simulationTopology']['stations']}
     pending = [dict(call, planIndex=index) for index, call in enumerate(request['calls'])]
+    rows = [dict(planIndex=index, stationId=call['stationId'], atSeconds=call['atSeconds'], status='pending')
+            for index, call in enumerate(request['calls'])]
+    runtime.scenario['callRows'] = rows
     pending.sort(key=lambda call: (call['atSeconds'], call['planIndex']))
     inflight, stable_since, details = {}, {}, {}
     started = time.monotonic()
@@ -27,6 +30,7 @@ def run_backlog(runtime, request, evidence, observer, tasks, completed, discover
     if admission_limit is not None and (type(admission_limit) is not int or admission_limit < 1):
         raise ValueError('下游准入配置无效。')
     assignments = {}
+    task_rows = {}
     emitted = 0
 
     def event(kind, **value):
@@ -43,6 +47,9 @@ def run_backlog(runtime, request, evidence, observer, tasks, completed, discover
                 tid = discover(station)
                 if tid:
                     active['taskId'] = tid
+                    index = active['call']['planIndex']
+                    task_rows[tid] = index
+                    rows[index] = dict(rows[index], taskId=tid, status='created')
                     event('created', stationId=station, taskId=tid, planIndex=active['call']['planIndex'])
                 elif now - active['emittedAt'] > call_acceptance_timeout:
                     raise TimeoutError(
@@ -51,6 +58,12 @@ def run_backlog(runtime, request, evidence, observer, tasks, completed, discover
             if tid not in completed:
                 details[tid] = runtime.api('/api/tasks/' + tid)
                 tasks[tid]['vehicle'] = details[tid]['task'].get('vehicleId') or tasks[tid]['vehicle']
+                index = task_rows[tid]
+                detail = details[tid]
+                step = next((s for s in detail.get('steps', []) if s.get('isCurrent')), {})
+                rows[index] = dict(rows[index], vehicleId=tasks[tid]['vehicle'], stepNumber=step.get('sequence'),
+                                   taskStage=detail['task']['stage'], waitingExplanation=detail.get('waitingExplanation'),
+                                   status='active' if tasks[tid]['vehicle'] else 'created')
                 if tasks[tid]['vehicle'] and tid not in assignments:
                     assignments[tid] = tasks[tid]['vehicle']
                     event('assigned', taskId=tid, vehicleId=tasks[tid]['vehicle'], stationId=tasks[tid]['station'])
@@ -62,6 +75,7 @@ def run_backlog(runtime, request, evidence, observer, tasks, completed, discover
                           all(step['status'] == 'Completed' for step in detail['steps']) and
                           detail.get('handover', {}).get('exitPhysicallyVerified') is True, tid)
                     completed.add(tid)
+                    rows[index] = dict(rows[index], status='completed', waitingExplanation=None)
                     event('completed', taskId=tid, vehicleId=tasks[tid]['vehicle'])
         observer.sample(details)
         memory = bytes.fromhex(fresh_device_state(runtime)['memory_hex'])
@@ -91,6 +105,8 @@ def run_backlog(runtime, request, evidence, observer, tasks, completed, discover
                 inflight[call['stationId']] = dict(call=call, taskId=None, emittedAt=now)
                 stable_since.pop(call['stationId'], None)
                 emitted += 1
+                index = call['planIndex']
+                rows[index] = dict(rows[index], actualAtSeconds=time.monotonic()-started, status='emitted')
                 event('emitted', **call, actualAtSeconds=time.monotonic()-started)
         waiting = sum(1 for tid, detail in details.items() if tid not in completed and not detail['task'].get('vehicleId'))
         active = sum(1 for tid, detail in details.items() if tid not in completed and detail['task'].get('vehicleId'))

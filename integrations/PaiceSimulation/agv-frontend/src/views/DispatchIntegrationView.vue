@@ -9,6 +9,7 @@ import {
 } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import BusinessScenarioSetup from "@/components/BusinessScenarioSetup.vue";
+import EngineeringSchemeEditor from "@/components/EngineeringSchemeEditor.vue";
 import RoadNetScene from "@/components/RoadNetScene.vue";
 import DispatchMapImport from "@/components/DispatchMapImport.vue";
 import {
@@ -97,6 +98,25 @@ const fresh = computed(
   () => connected.value && dispatchIsFresh(status.value, clock.value),
 );
 const cars = computed(() => status.value?.device?.cars ?? {});
+const section = ref('engineering');
+const callStatuses: Record<string, string> = {
+  pending: '待触发', emitted: '已触发 · 待建单', created: '待派车', active: '执行中', completed: '已完成',
+  Faulted: '任务故障', Cancelled: '任务取消',
+};
+function schemeSaved(value: DispatchStatus) {
+  if (status.value) status.value = { ...status.value, schemes: value.schemes };
+}
+async function openCallTask(taskId: string) {
+  await selectTask(taskId);
+  document.getElementById('business-task-detail')?.scrollIntoView({ block: 'start' });
+}
+function blockingVehicles(key?: string) {
+  try {
+    const rows: unknown = JSON.parse(key || '[]');
+    if (Array.isArray(rows)) return [...new Set(rows.filter(Array.isArray).map(row => row[2]).filter(Boolean))].join('、');
+  } catch { /* The backend explanation remains available. */ }
+  return '';
+}
 const selectedCar = computed(() => cars.value[detail.value?.task.vehicleId ?? '']);
 const mechanism = computed(() => selectedCar.value?.mechanism);
 const mechanismStates: Record<string, string> = {
@@ -567,8 +587,17 @@ onBeforeUnmount(() => {
       :closable="false"
       show-icon
     />
-    <BusinessScenarioSetup :status="status" @changed="status = $event; selectedTask = ''; detail = null; tasks = []; liveMapSignature = '';" />
-    <details class="panel legacy-experiments"><summary>批量任务与历史实验（高级）</summary>
+    <nav class="panel workflow-nav" aria-label="业务仿真流程">
+      <el-radio-group v-model="section">
+        <el-radio-button value="engineering">工程配置</el-radio-button>
+        <el-radio-button value="plan">呼叫计划</el-radio-button>
+        <el-radio-button value="monitor">运行监控</el-radio-button>
+        <el-radio-button value="report">报告</el-radio-button>
+      </el-radio-group>
+    </nav>
+    <EngineeringSchemeEditor v-if="section === 'engineering'" :status="status" @saved="schemeSaved" />
+    <BusinessScenarioSetup v-show="section === 'plan'" :status="status" @started="section = 'monitor'" @changed="status = $event; selectedTask = ''; detail = null; tasks = []; liveMapSignature = '';" />
+    <details v-show="section === 'monitor'" class="panel legacy-experiments"><summary>批量任务与历史实验（高级）</summary>
     <section class="panel experiment-launcher">
       <div class="panel-heading">
         <div>
@@ -731,7 +760,7 @@ onBeforeUnmount(() => {
       </el-table>
     </section>
     </details>
-    <section class="panel controls">
+    <section v-show="section === 'monitor' || section === 'plan'" class="panel controls">
       <div class="panel-heading">
         <h3>高级隔离控制</h3>
         <span class="muted">用于故障演练和底层联调</span>
@@ -807,7 +836,22 @@ onBeforeUnmount(() => {
         {{ status.scenario.message }}
       </p>
     </section>
-    <div class="dispatch-body">
+    <section v-show="section === 'monitor'" class="panel calls-panel">
+      <h3>多单呼叫</h3>
+      <el-table :data="status?.scenario?.callRows ?? []" size="small" empty-text="开始业务呼叫计划后显示逐单进度">
+        <el-table-column label="序号" width="72"><template #default="{ row }">{{ row.planIndex + 1 }}</template></el-table-column>
+        <el-table-column prop="stationId" label="工位" width="110" />
+        <el-table-column prop="atSeconds" label="计划秒" width="90" />
+        <el-table-column label="触发秒" width="90"><template #default="{ row }">{{ row.actualAtSeconds?.toFixed(1) ?? '—' }}</template></el-table-column>
+        <el-table-column label="状态" width="145"><template #default="{ row }">{{ callStatuses[row.taskStage] || callStatuses[row.status] || row.status }}{{ row.stepNumber ? ` · ${row.stepNumber}/9` : '' }}</template></el-table-column>
+        <el-table-column prop="vehicleId" label="车辆" width="100" />
+        <el-table-column prop="waitingExplanation" label="当前说明" show-overflow-tooltip />
+        <el-table-column label="正式任务" width="115"><template #default="{ row }">
+          <el-button v-if="row.taskId" link type="primary" :title="row.taskId" @click="openCallTask(row.taskId)">查看九步</el-button>
+        </template></el-table-column>
+      </el-table>
+    </section>
+    <div v-show="section === 'monitor'" class="dispatch-body">
       <section class="panel dispatch-scene">
         <div class="panel-heading">
           <h3>隔离仿真三维路网</h3>
@@ -876,7 +920,7 @@ onBeforeUnmount(() => {
         </article>
       </section>
     </div>
-    <section class="panel tasks-panel">
+    <section v-show="section === 'monitor'" id="business-task-detail" class="panel tasks-panel">
       <div class="panel-heading">
         <h3>原任务 · 最近 {{ tasks.length }} 条</h3>
         <el-space wrap
@@ -937,6 +981,13 @@ onBeforeUnmount(() => {
             prop="waitingExplanation"
             label="等待说明"
         /><el-table-column prop="completionRequirement" label="完成条件" min-width="250" /></el-table>
+        <template v-if="detail.trafficWaiting?.length">
+          <h4>当前路权阻塞</h4>
+          <p v-for="(wait, index) in detail.trafficWaiting" :key="index">
+            {{ wait.reason }} · {{ blockingVehicles(wait.blockingKey) }}
+            <span v-if="wait.waitingSinceUtc"> · 等待起始 {{ new Date(wait.waitingSinceUtc.replace(' ', 'T') + 'Z').toLocaleString() }}</span>
+          </p>
+        </template>
         <h4>导航与机构动作命令</h4>
         <p class="muted">车辆当前载箱：{{ selectedCar?.loaded == null ? '未提供' : selectedCar.loaded ? '有箱' : '空载' }}</p>
         <p v-if="mechanism" class="muted">
@@ -970,9 +1021,9 @@ onBeforeUnmount(() => {
         </p>
       </div>
     </section>
-    <DispatchMapImport @saved="mapSaved" />
-    <div class="lower-grid">
-      <section class="panel">
+    <DispatchMapImport v-show="section === 'engineering'" @saved="mapSaved" />
+    <div v-show="section === 'monitor' || section === 'report'" class="lower-grid" :class="{ 'report-grid': section === 'report' }">
+      <section v-show="section === 'monitor'" class="panel">
         <h3>交通资源</h3>
         <el-table :data="resources" size="small"
           ><el-table-column prop="resourceId" label="资源" /><el-table-column
@@ -992,7 +1043,7 @@ onBeforeUnmount(() => {
           ></el-table
         >
       </section>
-      <section class="panel">
+      <section v-show="section === 'report'" class="panel">
         <div class="panel-heading">
           <h3>当前业务报告</h3>
           <el-button
@@ -1084,6 +1135,8 @@ onBeforeUnmount(() => {
   order: 3;
 }
 .dispatch-page > .business-setup { order: 2; }
+.dispatch-page > .workflow-nav { order: 1; }
+.dispatch-page > .calls-panel { order: 2; }
 .dispatch-page > .tasks-panel { order: 4; }
 .dispatch-page > .legacy-experiments { order: 12; }
 .dispatch-page > .experiment-history {
@@ -1145,6 +1198,9 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 16px;
+}
+.lower-grid.report-grid {
+  grid-template-columns: minmax(0, 1fr);
 }
 .task-detail {
   margin-top: 18px;

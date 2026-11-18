@@ -121,6 +121,7 @@ public class MainDispatchIntegrationController {
         private static final java.util.Set<String> TASK_FILTERS =
                 java.util.Set.of("All", "Active", "Completed", "Failed");
         private static final java.util.Set<String> ACTIONS =
-                java.util.Set.of("start", "stop", "scheme-start", "scheme-select", "run", "abort");
+                java.util.Set.of("start", "stop", "scheme-start", "scheme-select", "run", "abort",
+                        "scheme-save", "point-table-validate");
     }
 }

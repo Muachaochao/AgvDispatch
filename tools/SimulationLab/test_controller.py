@@ -296,6 +296,26 @@ class SimulationTests(unittest.TestCase):
         self.assertEqual(runtime.task_resources()[0]['resourceId'], 'RDUMP')
         self.assertEqual(calls, ['/api/snapshot'])
 
+    def test_task_detail_reads_current_waits_for_selected_task(self):
+        import sqlite3
+        from contextlib import closing
+        with tempfile.TemporaryDirectory() as folder:
+            runtime = object.__new__(Runtime)
+            runtime.root = Path(folder)
+            runtime.lock = threading.RLock()
+            runtime.api = lambda path: dict(task=dict(taskId=path.split('/')[-1], stage='Executing'))
+            (runtime.root / 'data').mkdir()
+            with closing(sqlite3.connect(runtime.root / 'data/agv-dispatch.db')) as db, db:
+                db.execute('CREATE TABLE traffic_request (TaskId, State, Reason, BlockingKey, WaitingSinceUtc, UpdatedAt)')
+                db.executemany('INSERT INTO traffic_request VALUES (?, ?, ?, ?, ?, ?)', [
+                    ('TASK-1', 'Waiting', '路权等待', '[]', '2026-11-18 09:00:00', '2026-11-18 09:01:00'),
+                    ('TASK-1', 'Acquired', '已获取', '[]', None, '2026-11-18 09:01:02'),
+                    ('TASK-2', 'Waiting', '其他任务等待', '[]', None, '2026-11-18 09:01:05'),
+                ])
+            detail = runtime.task_detail('TASK-1')
+            self.assertEqual(detail['trafficWaiting'], [
+                dict(reason='路权等待', blockingKey='[]', waitingSinceUtc='2026-11-18 09:00:00')])
+
     def test_stopped_environment_uses_saved_report_task_evidence(self):
         runtime = object.__new__(Runtime)
         runtime.lock = threading.RLock()

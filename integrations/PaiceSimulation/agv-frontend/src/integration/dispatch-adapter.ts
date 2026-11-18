@@ -56,6 +56,7 @@ export interface DispatchTaskDetail {
     stage?: string;
   };
   waitingExplanation?: string;
+  trafficWaiting?: { reason: string; blockingKey?: string; waitingSinceUtc?: string }[] | null;
   handshakeContractVersion?: string;
   plcConditions?: { stationId: string; variableName: string; address: string; expectedValue: boolean; currentValue?: boolean | null; quality: string; satisfied: boolean; reason?: string; observedAt?: string }[];
   handshakes?: { stepId: string; phase: string; reason: string; cycleId: string }[];

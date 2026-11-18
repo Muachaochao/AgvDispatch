@@ -47,13 +47,25 @@ export interface DispatchStatus {
     vehicleCount?: number;
     stationCount?: number;
   }[];
-  scenario?: { name?: string; status?: string; message?: string };
+  scenario?: { name?: string; status?: string; message?: string; callRows?: CallRow[] };
   report?: {
     id?: string;
     status?: string;
     metrics?: Record<string, unknown>;
     checks?: { name: string; status: string }[];
   };
+}
+export interface CallRow {
+  planIndex: number;
+  stationId: string;
+  atSeconds: number;
+  actualAtSeconds?: number;
+  taskId?: string;
+  vehicleId?: string;
+  stepNumber?: number;
+  taskStage?: string;
+  status: string;
+  waitingExplanation?: string;
 }
 export interface TaskRow {
   taskId: string;

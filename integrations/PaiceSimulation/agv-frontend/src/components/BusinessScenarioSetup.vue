@@ -3,7 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { dispatchRead, downloadIntegrationRecord, type DispatchStatus } from '@/integration/dispatch-api'
 import { startupAccepted } from '@/integration/startup-result'
 const props = defineProps<{ status: DispatchStatus | null }>()
-const emit = defineEmits<{ changed: [value: DispatchStatus] }>()
+const emit = defineEmits<{ changed: [value: DispatchStatus]; started: [] }>()
 const scheme = ref(''), loadedScheme = ref(''), loadedRoot = ref('')
 const vehicleId = ref(''), initialSite = ref(''), stationId = ref('')
 const mode = ref('single'), seed = ref(20261117), count = ref(10), interval = ref(3), stationIds = ref<string[]>([])
@@ -15,6 +15,7 @@ watch(() => props.status, value => {
  if (pending && value && startupAccepted(value, pending.root, pending.scheme)) {
   error.value = ''; loadedScheme.value = ''; pendingStartup.value = null
   startupNotice.value = '后台已接收本次开测，正在同步启动与业务结果。'
+  emit('started')
  }
 })
 const vehicleStarts = ref<{ id: string; initialSite: string }[]>([])
@@ -61,6 +62,7 @@ async function start() {
   const value = await dispatchRead<DispatchStatus>('/api/simulation/scheme-start', undefined, input.value)
   loadedScheme.value = ''; emit('changed', value)
   pendingStartup.value = null
+  emit('started')
  } catch (e) {
   error.value = String(e)
   try {
@@ -68,7 +70,9 @@ async function start() {
    emit('changed', value)
    if (startupAccepted(value, previousRoot, scheme.value)) {
     error.value = ''; loadedScheme.value = ''
+    pendingStartup.value = null
     startupNotice.value = '后台已接收本次开测，正在同步启动与业务结果。'
+    emit('started')
    } else if (value.error) error.value = value.error
   } catch { /* Keep the original startup error visible. */ }
  } finally { busy.value = false }
