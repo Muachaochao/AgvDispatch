@@ -31,10 +31,8 @@ if($Rebuild -or !(Test-Path -LiteralPath $jar)){
     if(!$MavenPath -and (Test-Path -LiteralPath 'F:/ChaoChao/AGV-Study/.tools/apache-maven-3.9.11/bin/mvn.cmd')){$MavenPath='F:/ChaoChao/AGV-Study/.tools/apache-maven-3.9.11/bin/mvn.cmd'}
     if(!$MavenPath){throw '找不到 Maven，请通过 -MavenPath 指定 mvn.cmd。'}
     $env:JAVA_HOME=$JavaHome
-    & $MavenPath -B -q -f (Join-Path $application 'pom.xml') install
-    if($LASTEXITCODE){throw 'Java 构建或测试失败。'}
-    & $MavenPath -B -q -f (Join-Path $application 'pom.xml') -pl agv-backend -DskipTests package spring-boot:repackage
-    if($LASTEXITCODE){throw 'Java 可执行包构建失败。'}
+    & $MavenPath -B -q -f (Join-Path $application 'pom.xml') clean package
+    if($LASTEXITCODE){throw 'Java 构建、测试或打包失败。'}
     & $npm --prefix $frontend run type-check
     if($LASTEXITCODE){throw '前端类型检查失败。'}
     & $npm --prefix $frontend run build
