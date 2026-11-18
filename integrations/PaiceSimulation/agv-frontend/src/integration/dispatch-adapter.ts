@@ -89,6 +89,38 @@ export interface MapConversion {
   excludedNodes: string[];
   excludedEdges: string[];
 }
+export class RoundTripBlockedError extends Error {
+  readonly nodeIds: string[];
+  constructor(nodeIds: string[]) {
+    super(`以下点位无法确认可安全排除：${nodeIds.join("、")} 无法与初始点往返。`);
+    this.nodeIds = nodeIds;
+  }
+}
+export function applyImportRoadDirections(definition: SourceMap, directions: Readonly<Record<string, boolean>>): SourceMap {
+  return {
+    ...definition,
+    edges: definition.edges.map((edge, i) => {
+      const id = edge.id ?? `source-edge-${i}`;
+      return Object.prototype.hasOwnProperty.call(directions, id) ? { ...edge, bidirectional: directions[id] } : edge;
+    }),
+  };
+}
+
+export function sourcePointTraffic(definition: SourceMap, nodeId: string) {
+  const enabled = new Set(definition.nodes.filter(node => node.enabled !== false).map(node => node.id));
+  let incoming = 0, outgoing = 0;
+  for (const edge of definition.edges) {
+    if (edge.enabled === false || !enabled.has(edge.from) || !enabled.has(edge.to)) continue;
+    if (edge.to === nodeId || (edge.bidirectional && edge.from === nodeId)) incoming++;
+    if (edge.from === nodeId || (edge.bidirectional && edge.to === nodeId)) outgoing++;
+  }
+  const reason = !enabled.has(nodeId) ? "点位停用或不存在"
+    : !incoming && !outgoing ? "没有启用的关联道路"
+    : !outgoing ? "只进不出"
+    : !incoming ? "只出不进"
+    : "无法与初始点往返";
+  return { incoming, outgoing, reason };
+}
 function validPoint(point: Point) {
   return Number.isFinite(point.x) && Number.isFinite(point.y);
 }
@@ -179,6 +211,7 @@ export function convertDispatchMap(
     "区域资源、厂家道路属性、PLC条件及车体包络保存在来源记录中。",
   ];
   const enabledNodes = definition.nodes.filter((n) => n.enabled !== false);
+  const enabledNodeIds = new Set(enabledNodes.map(n => n.id));
   const transitWaiting = enabledNodes.filter(
     (n) => n.type === "WaitingPoint",
   ).length;
@@ -233,20 +266,16 @@ export function convertDispatchMap(
       const blocked = outside.filter(node =>
         protectedIds.has(node.id) || (node.type !== "Waypoint" && node.type !== "Junction"),
       );
-      if (blocked.length)
-        throw new Error(`以下点位无法确认可安全排除：${blocked.map(node => node.id).join("、")} 无法与初始点往返。`);
+      if (blocked.length) throw new RoundTripBlockedError(blocked.map(node => node.id));
     }
     sourceNodes = enabledNodes.filter((n) => forward.has(n.id) && backward.has(n.id));
     excludedNodes.push(...outside.map((n) => n.id));
     const included = new Set(sourceNodes.map((n) => n.id));
     excludedEdges.push(
-      ...definition.edges
-        .filter(
-          (e) =>
-            e.enabled !== false &&
-            (!included.has(e.from) || !included.has(e.to)),
-        )
-        .map((e, i) => e.id ?? `excluded-${i}`),
+      ...definition.edges.flatMap((e, i) =>
+        e.enabled !== false && enabledNodeIds.has(e.from) && enabledNodeIds.has(e.to) &&
+        (!included.has(e.from) || !included.has(e.to)) ? [e.id ?? `source-edge-${i}`] : [],
+      ),
     );
     warnings.push(
       `按初始点 ${anchor} 保留可往返区域，排除 ${excludedNodes.length} 个节点和 ${excludedEdges.length} 条道路。`,
@@ -297,7 +326,8 @@ export function convertDispatchMap(
     const from = byId.get(edge.from),
       to = byId.get(edge.to);
     if (!from || !to) {
-      warnings.push(`跳过端点禁用或缺失的道路 ${id}`);
+      if (!options.roundTripOnly || !enabledNodeIds.has(edge.from) || !enabledNodeIds.has(edge.to))
+        warnings.push(`跳过端点禁用或缺失的道路 ${id}`);
       continue;
     }
     if (!(Number.isFinite(edge.distance) && edge.distance! > 0))

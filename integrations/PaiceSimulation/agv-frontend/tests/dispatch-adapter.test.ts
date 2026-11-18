@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   convertDispatchMap,
+  applyImportRoadDirections,
+  sourcePointTraffic,
   dispatchSceneMap,
   dispatchViews,
   transportTasks,
@@ -321,6 +323,12 @@ test("optional round-trip scope excludes directed CAD tails with explicit record
   assert.ok(!result.roadnet.nodes.some((n) => n.id === "tail"));
   assert.deepEqual(result.excludedNodes, ["tail"]);
   assert.deepEqual(result.excludedEdges, ["tail-road"]);
+  assert.equal(sourcePointTraffic(d, "tail").reason, "只进不出");
+  assert.equal(sourcePointTraffic(d, "tail").incoming, 1);
+  const changed = applyImportRoadDirections(d, { "tail-road": true });
+  assert.equal(sourcePointTraffic(changed, "tail").outgoing, 1);
+  assert.deepEqual(convertDispatchMap(changed, "C", { roundTripOnly: true }).excludedNodes, []);
+  assert.equal(sourcePointTraffic(d, "tail").outgoing, 0);
   assert.throws(
     () => convertDispatchMap(d, "C", { roundTripOnly: true, protectedSiteIds: ["tail"] }),
     /tail.*无法与初始点往返/,

@@ -7,6 +7,8 @@ const props = defineProps<{
   map: RoadNetPayload
   markers: EngineeringPoint[]
   selectedId: string
+  highlightEdges?: ReadonlySet<string>
+  diagnostic?: boolean
 }>()
 const emit = defineEmits<{ select: [id: string] }>()
 const canvas = ref<HTMLCanvasElement>()
@@ -33,15 +35,22 @@ function paint() {
   const midX = focused?.x ?? (minX + maxX) / 2, midY = focused?.y ?? (minY + maxY) / 2
   const x = (value: number) => (value - midX) * scale + width / 2
   const y = (value: number) => (value - midY) * scale + height / 2
-  ctx.strokeStyle = '#a0b4c9'
-  ctx.beginPath()
-  for (const edge of props.map.edges) {
-    const points = edge.points ?? []
-    if (!points.length) continue
-    ctx.moveTo(x(points[0]!.x), y(points[0]!.y))
-    for (const point of points.slice(1)) ctx.lineTo(x(point.x), y(point.y))
+  function roads(highlight: boolean) {
+    if (!ctx) return
+    ctx.strokeStyle = highlight ? '#7540a8' : '#a0b4c9'
+    ctx.lineWidth = highlight ? 2.5 : 1
+    ctx.beginPath()
+    for (const edge of props.map.edges) {
+      if (!!props.highlightEdges?.has(edge.id) !== highlight) continue
+      const points = edge.points ?? []
+      if (!points.length) continue
+      ctx.moveTo(x(points[0]!.x), y(points[0]!.y))
+      for (let i = 1; i < points.length; i++) ctx.lineTo(x(points[i]!.x), y(points[i]!.y))
+    }
+    ctx.stroke()
   }
-  ctx.stroke()
+  roads(false)
+  if (props.highlightEdges?.size) roads(true)
   const marked = new Map<string, EngineeringPoint>()
   for (const marker of props.markers) {
     if (!marked.has(marker.nodeId) || marker.group === 'vehicle') marked.set(marker.nodeId, marker)
@@ -64,7 +73,8 @@ function paint() {
   }
   overlays.sort((a, b) => Number(a.selected) - Number(b.selected))
   for (const { node, marker, cx, cy, selected } of overlays) {
-    ctx.fillStyle = selected ? '#8d35bb' : marker?.group === 'vehicle' ? '#98510d' : '#16754c'
+    ctx.fillStyle = marker?.group === 'error' ? '#b42318' : marker?.group === 'excluded' ? '#b35a12'
+      : selected ? '#8d35bb' : marker?.group === 'vehicle' ? '#98510d' : '#16754c'
     ctx.beginPath()
     ctx.arc(cx, cy, selected ? 6 : 4, 0, Math.PI * 2)
     ctx.fill()
@@ -86,12 +96,16 @@ function select(event: MouseEvent) {
   if (selected) emit('select', selected)
 }
 
-watch([() => props.map, () => props.markers, () => props.selectedId, zoom], paint, { flush: 'post' })
+watch([() => props.map, () => props.markers, () => props.selectedId, () => props.highlightEdges, zoom], paint, { flush: 'post' })
 onMounted(() => {
   observer = new ResizeObserver(paint)
   observer.observe(canvas.value!)
 })
 onBeforeUnmount(() => observer?.disconnect())
+defineExpose({ focus: () => {
+  zoom.value = 2.5
+  canvas.value?.parentElement?.scrollIntoView({ block: 'nearest' })
+} })
 </script>
 
 <template>
@@ -99,9 +113,10 @@ onBeforeUnmount(() => observer?.disconnect())
     <el-space wrap>
       <el-button size="small" :disabled="zoom === 1" @click="zoom = 1">全图</el-button>
       <el-button size="small" :disabled="!selectedId || zoom === 2.5" @click="zoom = 2.5">放大所选点位</el-button>
-      <span>蓝色工位 · 棕色车辆初始点 · 绿色业务点 · 紫色选中点</span>
+      <span v-if="diagnostic">红色错误 · 橙色排除项 · 紫色关联道路</span>
+      <span v-else>蓝色工位 · 棕色车辆初始点 · 绿色业务点 · 紫色选中点</span>
     </el-space>
-    <canvas ref="canvas" role="img" aria-label="工程二维地图" @click="select" />
+    <canvas ref="canvas" role="img" :aria-label="diagnostic ? '导入路网校验地图' : '工程二维地图'" @click="select" />
   </div>
 </template>
 
