@@ -24,6 +24,13 @@ const preview = ref<DispatchStatus | null>(null), checkedInput = ref('')
 const vehicles = computed(() => draft.value?.configuration?.vehicles ?? props.status?.configuration?.vehicles ?? [])
 const stations = computed(() => draft.value?.configuration?.stations ?? props.status?.configuration?.stations ?? [])
 const sites = computed(() => (draft.value?.map?.nodes ?? props.status?.map?.nodes ?? []).filter(n => n.enabled !== false))
+const siteOptions = computed(() => sites.value.map(n => ({ value: n.id, label: n.agvSiteId && n.agvSiteId !== n.id ? n.agvSiteId + ' · ' + n.id : n.id })))
+const stationOptions = computed(() => stations.value.map(s => ({ value: s.stationId, label: s.stationId })))
+const sitesById = computed(() => new Map(sites.value.map(n => [n.id, n])))
+function coordinates(id: string) {
+ const site = sitesById.value.get(id)
+ return site ? `X ${site.x.toFixed(3)} · Y ${site.y.toFixed(3)}` : ''
+}
 const locked = computed(() => busy.value || !!props.status?.running || ['starting','stopping'].includes(props.status?.phase ?? ''))
 const ready = computed(() => loadedScheme.value === scheme.value && loadedRoot.value === props.status?.rootName && !!loadedScheme.value)
 const input = computed(() => ({ id: scheme.value, ...(mode.value === 'single'
@@ -107,15 +114,16 @@ async function start() {
    </details>
    <template v-if="ready && mode === 'single'">
     <el-form-item label="参与车辆"><el-select v-model="vehicleId" :disabled="locked"><el-option v-for="v in vehicles" :key="v.id" :label="v.id" :value="v.id" /></el-select><span class="muted">仅启用这一辆车，空载起步，速度倍率 1</span></el-form-item>
-    <el-form-item label="初始位置"><el-select v-model="initialSite" filterable :disabled="locked"><el-option v-for="n in sites" :key="n.id" :label="n.agvSiteId || n.id" :value="n.id" /></el-select></el-form-item>
-    <el-form-item label="呼叫工位"><el-select v-model="stationId" filterable :disabled="locked"><el-option v-for="s in stations" :key="s.stationId" :label="s.stationId" :value="s.stationId" /></el-select></el-form-item>
+    <el-form-item label="初始位置"><el-select-v2 v-model="initialSite" :options="siteOptions" filterable :disabled="locked" /><span class="muted">{{ coordinates(initialSite) }}</span></el-form-item>
+    <el-form-item label="呼叫工位"><el-select-v2 v-model="stationId" :options="stationOptions" filterable :disabled="locked" /></el-form-item>
    </template>
    <template v-if="ready && mode === 'random'">
     <p>{{ vehicles.length }} 辆车空载起步，速度倍率 1。</p>
     <el-form-item v-for="vehicle in vehicleStarts" :key="vehicle.id" :label="vehicle.id">
-     <el-select v-model="vehicle.initialSite" filterable :disabled="locked"><el-option v-for="n in sites" :key="n.id" :label="n.agvSiteId || n.id" :value="n.id" /></el-select>
+     <el-select-v2 v-model="vehicle.initialSite" :options="siteOptions" filterable :disabled="locked" />
+     <span class="muted">{{ coordinates(vehicle.initialSite) }}</span>
     </el-form-item>
-    <el-form-item label="呼叫范围"><el-select v-model="stationIds" multiple filterable collapse-tags :disabled="locked" style="width: 100%"><el-option v-for="s in stations" :key="s.stationId" :label="s.stationId" :value="s.stationId" /></el-select></el-form-item>
+    <el-form-item label="呼叫范围"><el-select-v2 v-model="stationIds" :options="stationOptions" multiple filterable collapse-tags :disabled="locked" style="width: 100%" /></el-form-item>
     <el-form-item label="随机种子"><el-input-number v-model="seed" :min="0" :max="2147483647" :precision="0" :disabled="locked" /></el-form-item>
     <el-form-item label="呼叫总量"><el-input-number v-model="count" :min="1" :max="500" :precision="0" :disabled="locked" /></el-form-item>
     <el-form-item label="呼叫间隔秒"><el-input-number v-model="interval" :min="0" :max="60" :disabled="locked" /></el-form-item>

@@ -38,6 +38,7 @@ import {
   dispatchIsFresh,
   dispatchRoutePoints,
   type DispatchTaskDetail,
+  type SourceMap,
 } from "@/integration/dispatch-adapter";
 import {
   dispatchRead,
@@ -51,7 +52,7 @@ import {
   toggleMainDispatchStation,
 } from "@/simulation/draft-task-set";
 
-const status = ref<DispatchStatus | null>(null),
+const status = shallowRef<DispatchStatus | null>(null),
   tasks = ref<TaskRow[]>([]),
   resources = ref<ResourceRow[]>([]);
 const experimentTaskSets = ref<TaskSetSummary[]>([]);
@@ -92,6 +93,7 @@ let timer: ReturnType<typeof setTimeout> | undefined,
   experimentPollCounter = 0;
 let detailPolling = false;
 let metadataRoot: string | undefined, metadataScenario: string | undefined;
+let lastRenderSource: SourceMap | null = null;
 const clock = ref(Date.now());
 const clockTimer = setInterval(() => (clock.value = Date.now()), 1000);
 const fresh = computed(
@@ -107,6 +109,7 @@ function schemeSaved(value: DispatchStatus) {
   if (status.value) status.value = { ...status.value, schemes: value.schemes };
 }
 async function openCallTask(taskId: string) {
+  section.value = "monitor";
   await selectTask(taskId);
   document.getElementById('business-task-detail')?.scrollIntoView({ block: 'start' });
 }
@@ -369,11 +372,18 @@ async function pollDetails(live: DispatchStatus, revision: number) {
       : { ...status.value!, ...live };
     status.value = { ...next, ...status.value, map: next.map, configuration: next.configuration, schemes: next.schemes, report: next.report, startupPlan: full?.startupPlan ?? status.value?.startupPlan };
     error.value = next.error ?? "";
-    const signature = JSON.stringify(next.map ?? null);
-    if (signature !== liveMapSignature.value) {
-      liveMap.value = next.map ? dispatchSceneMap(next.map) : null;
-      liveMapSignature.value = signature;
+    if (section.value === 'monitor') {
+      const map = next.map ?? null;
+      if (map !== lastRenderSource) {
+        lastRenderSource = map;
+        const signature = JSON.stringify(map);
+        if (signature !== liveMapSignature.value) {
+          liveMap.value = map ? dispatchSceneMap(map) : null;
+          liveMapSignature.value = signature;
+        }
+      }
     }
+    if (section.value !== 'monitor') return;
     const shouldReadDetails = next.running === true && taskPollCounter++ % 3 === 0;
     const results = shouldReadDetails
       ? await Promise.allSettled([
@@ -851,7 +861,7 @@ onBeforeUnmount(() => {
         </template></el-table-column>
       </el-table>
     </section>
-    <div v-show="section === 'monitor'" class="dispatch-body">
+    <div v-if="section === 'monitor'" class="dispatch-body">
       <section class="panel dispatch-scene">
         <div class="panel-heading">
           <h3>隔离仿真三维路网</h3>
@@ -1053,7 +1063,20 @@ onBeforeUnmount(() => {
             >下载原报告</el-button
           >
         </div>
-        <p>{{ status?.report?.status || "暂无报告" }}</p>
+        <p>{{ ({ passed: "通过", failed: "失败", aborted: "已中止" } as Record<string, string>)[status?.report?.status ?? ""] ?? status?.report?.status ?? "暂无报告" }}</p>
+        <el-alert
+          v-if="status?.report?.firstFailure || status?.report?.message"
+          :title="status.report.firstFailure || status.report.message"
+          :type="status.report.status === 'failed' ? 'error' : 'info'"
+          :closable="false"
+        />
+        <el-table v-if="status?.report?.waitingChain?.length" :data="status.report.waitingChain" size="small">
+          <el-table-column prop="stationId" label="工位" width="100" />
+          <el-table-column prop="vehicleId" label="车辆" width="100" />
+          <el-table-column label="当前步骤" min-width="140"><template #default="{ row }">第 {{ row.stepNumber }} 步 · {{ row.stepName }}</template></el-table-column>
+          <el-table-column prop="waitReason" label="等待说明" min-width="250" />
+          <el-table-column label="正式任务" width="112"><template #default="{ row }"><el-button v-if="row.taskId" link type="primary" @click="openCallTask(row.taskId)">查看九步</el-button></template></el-table-column>
+        </el-table>
         <p
           v-for="(value, key) in status?.report?.metrics ?? {}"
           :key="key"

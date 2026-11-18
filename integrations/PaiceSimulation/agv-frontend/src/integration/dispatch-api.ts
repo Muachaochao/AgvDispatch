@@ -51,6 +51,16 @@ export interface DispatchStatus {
   report?: {
     id?: string;
     status?: string;
+    message?: string;
+    firstFailure?: string;
+    waitingChain?: {
+      taskId?: string;
+      stationId?: string;
+      vehicleId?: string;
+      stepNumber?: number;
+      stepName?: string;
+      waitReason?: string;
+    }[];
     metrics?: Record<string, unknown>;
     checks?: { name: string; status: string }[];
   };
