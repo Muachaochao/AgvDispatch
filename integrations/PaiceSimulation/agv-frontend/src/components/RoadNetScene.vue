@@ -1,9 +1,12 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import type { RoadNetPayload } from "@/api/roadnet";
 import type { AgvView } from "@/types";
+import MapNavigationToolbar from "./MapNavigationToolbar.vue";
+import MapOverview from "./MapOverview.vue";
+import { mapBounds, mapNavigationItems, toggleMapFullscreen, type MapBounds, type MapLocation, type MapPoint } from "@/integration/map-navigation";
 
 const props = defineProps<{
   roadnet: RoadNetPayload | null;
@@ -19,6 +22,22 @@ const emit = defineEmits<{
 }>();
 
 const container = ref<HTMLDivElement | null>(null);
+const surface = ref<HTMLDivElement | null>(null);
+const staticItems = shallowRef<MapLocation[]>([]);
+const located = shallowRef<MapLocation | null>(null);
+const zoom = ref(100);
+const showLabels = ref(false);
+const marked = ref(false);
+const viewport = shallowRef<MapBounds | null>(null);
+const items = computed<MapLocation[]>(() => [...staticItems.value, ...(props.agvs ?? []).map(car => ({
+  id: car.id, x: car.x, y: car.y, kind: "vehicle" as const,
+}))]);
+const locationGroup = new THREE.Group();
+const labelsGroup = new THREE.Group();
+const ground = new THREE.Plane(new THREE.Vector3(0, 1, 0));
+const groundRay = new THREE.Raycaster();
+let defaultDistance = 1;
+let overviewDirty = true, lastOverview = 0;
 
 let scene: THREE.Scene;
 let camera: THREE.PerspectiveCamera;
@@ -96,6 +115,7 @@ function init() {
   controls.dampingFactor = 0.08;
   controls.maxPolarAngle = Math.PI / 2.05;
   controls.target.set(15, 0, 12);
+  controls.addEventListener("change", markOverviewDirty);
 
   scene.add(new THREE.AmbientLight(0xffffff, 0.85));
   const dir = new THREE.DirectionalLight(0xffffff, 1.1);
@@ -105,6 +125,8 @@ function init() {
   scene.add(netGroup);
   scene.add(agvGroup);
   scene.add(pathGroup);
+  scene.add(locationGroup);
+  scene.add(labelsGroup);
 
   resizeObserver = new ResizeObserver(resize);
   resizeObserver.observe(el);
@@ -116,7 +138,7 @@ function updateNodeSelection() {
   const selected = new Set(props.selectedNodeIds ?? []);
   nodeVisuals.forEach((mesh, id) => {
     const material = mesh.material as THREE.MeshStandardMaterial;
-    const active = selected.has(id);
+    const active = marked.value || selected.has(id) || (located.value?.kind === "node" && located.value.id === id);
     material.emissiveIntensity = active ? 1.3 : 0.25;
     mesh.scale.setScalar(active ? 1.7 : 1);
   });
@@ -176,10 +198,10 @@ function resize() {
   camera.aspect = width / height;
   camera.updateProjectionMatrix();
   renderer.setSize(width, height);
-  fitView();
+  markOverviewDirty();
 }
 
-function animate() {
+function animate(now = 0) {
   raf = requestAnimationFrame(animate);
   const k = props.observed ? 1 : 0.35;
   agvMeshes.forEach((mesh) => {
@@ -192,7 +214,97 @@ function animate() {
     mesh.group.rotation.y = current + delta * k;
   });
   controls?.update();
+  if (located.value?.kind === "vehicle") {
+    const vehicle = agvMeshes.get(located.value.id);
+    if (vehicle) locationGroup.position.set(vehicle.group.position.x, 0, vehicle.group.position.z);
+  }
+  if (overviewDirty && now - lastOverview >= 130) {
+    lastOverview = now;
+    overviewDirty = false;
+    updateOverview();
+  }
   renderer?.render(scene, camera);
+}
+
+function markOverviewDirty() { overviewDirty = true; }
+
+function updateOverview() {
+  if (!camera || !controls) return;
+  zoom.value = Math.round(defaultDistance / camera.position.distanceTo(controls.target) * 100);
+  camera.updateMatrixWorld();
+  const corners: MapPoint[] = [];
+  for (const x of [-1, 1]) for (const y of [-1, 1]) {
+    groundRay.setFromCamera(new THREE.Vector2(x, y), camera);
+    const hit = groundRay.ray.intersectPlane(ground, new THREE.Vector3());
+    if (hit) corners.push({ x: hit.x, y: hit.z });
+  }
+  viewport.value = corners.length === 4 ? mapBounds(corners) : null;
+}
+
+function centerAt(point: MapPoint) {
+  if (!controls) return;
+  const next = new THREE.Vector3(point.x, 0, point.y);
+  camera.position.add(next.clone().sub(controls.target));
+  controls.target.copy(next);
+  controls.update();
+  markOverviewDirty();
+  if (showLabels.value) refreshLabels();
+}
+
+function zoomBy(factor: number) {
+  if (!controls) return;
+  const offset = camera.position.clone().sub(controls.target);
+  offset.setLength(THREE.MathUtils.clamp(offset.length() / factor, controls.minDistance, controls.maxDistance));
+  camera.position.copy(controls.target).add(offset);
+  controls.update();
+  markOverviewDirty();
+}
+
+function pan(x: number, y: number) {
+  if (!controls) return;
+  const step = camera.position.distanceTo(controls.target) * 0.075;
+  centerAt({ x: controls.target.x + x * step, y: controls.target.z + y * step });
+}
+
+function locate(item: MapLocation) {
+  located.value = item;
+  marked.value = false;
+  centerAt(item);
+  const distance = camera.position.distanceTo(controls.target);
+  if (distance > defaultDistance / 2) zoomBy(distance / (defaultDistance / 2));
+  disposeGroup(locationGroup);
+  locationGroup.position.set(item.x, 0, item.y);
+  // A separate marker also locates ordinary junctions hidden in a dense map.
+  const marker = new THREE.Mesh(new THREE.RingGeometry(0.48, 0.7, 24), new THREE.MeshBasicMaterial({ color: 0xdc9bfb, side: THREE.DoubleSide, depthTest: false }));
+  marker.rotation.x = -Math.PI / 2;
+  marker.position.y = 0.08;
+  locationGroup.add(marker);
+  const label = makeLabel(item.id, true);
+  label.position.y = 1.05;
+  locationGroup.add(label);
+  updateNodeSelection();
+}
+
+function clearLocation() {
+  located.value = null;
+  marked.value = false;
+  disposeGroup(locationGroup);
+  updateNodeSelection();
+}
+
+function refreshLabels() {
+  disposeGroup(labelsGroup);
+  if (!showLabels.value || !controls) return;
+  const target = controls.target;
+  const nearest = staticItems.value.filter(item => item.kind === "node")
+    .sort((a, b) => Math.hypot(a.x - target.x, a.y - target.z) - Math.hypot(b.x - target.x, b.y - target.z))
+    .slice(0, 30);
+  for (const item of nearest) {
+    const label = makeLabel(item.id);
+    label.position.set(item.x, 0.8, item.y);
+    label.scale.set(1.8, 0.9, 1);
+    labelsGroup.add(label);
+  }
 }
 
 function disposeMaterial(material: THREE.Material | THREE.Material[]) {
@@ -604,16 +716,26 @@ function fitView() {
   }
   controls.target.set(cx, 0, cy);
   camera.position.copy(controls.target).addScaledVector(viewDirection, distance);
-  controls.minDistance = span * 0.25;
+  defaultDistance = distance;
+  controls.minDistance = Math.max(0.8, span * 0.035);
   controls.maxDistance = span * 4;
   controls.update();
+  markOverviewDirty();
+  if (showLabels.value) refreshLabels();
+}
+
+function loadMap(net: RoadNetPayload | null) {
+  clearLocation();
+  rebuildRoadNet(net);
+  staticItems.value = mapNavigationItems(net, displayNodes);
+  fitView();
+  if (!net?.nodes.length) viewport.value = null;
 }
 
 watch(
   () => props.roadnet,
   (net) => {
-    rebuildRoadNet(net);
-    fitView();
+    loadMap(net);
   },
   { deep: false },
 );
@@ -623,6 +745,8 @@ watch(
   (list) => updateAgvs(list),
   { deep: true },
 );
+watch(showLabels, refreshLabels);
+watch(marked, updateNodeSelection);
 
 watch(
   () => props.selectedNodeIds,
@@ -632,8 +756,8 @@ watch(
 
 onMounted(() => {
   init();
-  rebuildRoadNet(props.roadnet);
-  fitView();
+  loadMap(props.roadnet);
+  updateAgvs(props.agvs);
 });
 
 onBeforeUnmount(() => {
@@ -651,6 +775,8 @@ onBeforeUnmount(() => {
   disposeGroup(netGroup);
   disposeGroup(agvGroup);
   disposeGroup(pathGroup);
+  disposeGroup(locationGroup);
+  disposeGroup(labelsGroup);
   renderer?.dispose();
   if (renderer?.domElement.parentElement) {
     renderer.domElement.parentElement.removeChild(renderer.domElement);
@@ -661,11 +787,15 @@ defineExpose({ drawPath, clearPath, fitView });
 </script>
 
 <template>
-  <div
-    ref="container"
-    class="scene"
-    :class="{ selectable: selectable }"
-  ></div>
+  <div ref="surface" class="scene-surface">
+    <MapNavigationToolbar v-if="roadnet?.nodes.length" :items="items" :zoom="zoom" :labels="showLabels" :marked="marked || !!located"
+      @locate="locate" @zoom="zoomBy" @pan="pan" @fit="fitView" @fullscreen="toggleMapFullscreen(surface)"
+      @labels="showLabels = $event" @select-all="marked = true" @clear="clearLocation" />
+    <div class="scene-frame">
+      <div ref="container" class="scene" :class="{ selectable: selectable }"></div>
+      <MapOverview :map="roadnet" :view="viewport" :target="located" @center="centerAt" />
+    </div>
+  </div>
 </template>
 
 <style scoped>
@@ -677,6 +807,12 @@ defineExpose({ drawPath, clearPath, fitView });
   overflow: hidden;
   background: #0b1526;
 }
+
+.scene-surface { display: flex; flex-direction: column; height: 100%; min-width: 0; }
+.scene-frame { position: relative; flex: 1; min-height: 420px; }
+.scene-surface:fullscreen { background: #fff; padding: 12px; }
+.scene-surface:fullscreen .scene-frame { min-height: 0; }
+.scene-surface:fullscreen .scene { min-height: 0; }
 
 .scene.selectable {
   cursor: crosshair;

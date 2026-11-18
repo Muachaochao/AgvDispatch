@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { findMapMatches, mapNavigationItems } from "../src/integration/map-navigation.ts";
 import {
   convertDispatchMap,
   applyImportRoadDirections,
@@ -41,6 +42,22 @@ const definition = {
   ],
   resources: [{ id: "R", capacity: 1 }],
 };
+
+test("map location prioritizes exact IDs and resolves source aliases and road segments", () => {
+  const items = mapNavigationItems({
+    nodes: [
+      { id: "BUS-CNC-001", x: 1, y: 1, type: "WORKSTATION" },
+      { id: "CNC-0010", x: 5, y: 3, type: "WORKSTATION" },
+    ],
+    edges: [{ id: "A__1", from: "BUS-CNC-001", to: "CNC-0010", length: 4, speed: 1, direction: "ONE_WAY", capacity: 1 }],
+    integration: {
+      sourceDefinition: { nodes: [{ id: "BUS-CNC-001", agvSiteId: "CNC-001" }] },
+      edgeMapping: { "CAD-E01": ["A__1"] },
+    },
+  });
+  assert.equal(findMapMatches(items, "cnc-001")[0]?.id, "BUS-CNC-001");
+  assert.deepEqual(findMapMatches(items, "CAD-E01").map(({ kind, x, y }) => [kind, x, y]), [["edge", 3, 2]]);
+});
 
 test("map conversion preserves invertible source coordinates, subdivides curves and declared length", () => {
   const result = convertDispatchMap(definition, "C");

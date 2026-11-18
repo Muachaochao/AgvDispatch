@@ -306,6 +306,7 @@ function download() {
           :selected-id="selectedSite"
           :highlight-edges="highlights"
           @select="selectedSite = $event"
+          @inspect="selectedSite = $event"
         />
         <aside class="point-inspection">
           <h4>点位与关联道路</h4>

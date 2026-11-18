@@ -160,7 +160,7 @@ async function save() {
     <template v-if="configuration">
       <p>{{ configuration.mapDefinition.name }} · {{ configuration.mapDefinition.nodes.length }} 节点 · {{ configuration.mapDefinition.edges.length }} 道路 · {{ configuration.stations.length }} 工位</p>
       <div class="engineering-layout">
-        <EngineeringPointMap v-if="sceneMap" :map="sceneMap" :markers="markers" :selected-id="selectedSite" @select="selectNode" />
+        <EngineeringPointMap v-if="sceneMap" :map="sceneMap" :markers="markers" :selected-id="selectedSite" @select="selectNode" @inspect="inspectNode" />
         <aside class="engineering-overview">
           <h4>车辆初始点 · {{ vehicles.length }} 台</h4>
           <ul class="engineering-vehicles">

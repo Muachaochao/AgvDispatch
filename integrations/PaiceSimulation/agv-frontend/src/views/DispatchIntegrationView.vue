@@ -1192,7 +1192,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
 }
-.dispatch-scene :deep(.scene) {
+.dispatch-scene :deep(.scene-surface) {
   flex: 1;
   min-height: 0;
 }

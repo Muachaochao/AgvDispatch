@@ -2,6 +2,7 @@ import http from './http'
 
 export interface NetNode {
   id: string
+  agvSiteId?: string
   x: number
   y: number
   type: 'WORKSTATION' | 'CHARGER' | 'BUFFER' | 'JUNCTION'

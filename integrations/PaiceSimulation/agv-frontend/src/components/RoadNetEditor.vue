@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { NetEdge, NetNode, RoadNetPayload, ValidationError } from '@/api/roadnet'
+import { findMapMatches, mapNavigationItems } from '@/integration/map-navigation'
 
 const props = defineProps<{
   initial: RoadNetPayload
@@ -403,20 +404,15 @@ const hoverInfo = computed(() => {
   }
 })
 
-const searchResults = computed(() => {
-  const query = searchQuery.value.trim().toLowerCase()
-  if (!query) return [] as { kind: 'node' | 'edge'; id: string }[]
-  const result: { kind: 'node' | 'edge'; id: string }[] = []
-  for (const node of nodes.value) {
-    if (node.id.toLowerCase().includes(query) || TYPE_LABEL[node.type]?.includes(query)) {
-      result.push({ kind: 'node', id: node.id })
-    }
-  }
-  for (const edge of edges.value) {
-    if (edge.id.toLowerCase().includes(query)) result.push({ kind: 'edge', id: edge.id })
-  }
-  return result
+const searchableItems = computed(() => {
+  const types = new Map(nodes.value.map(node => [node.id, TYPE_LABEL[node.type]]))
+  return mapNavigationItems({ nodes: nodes.value, edges: edges.value, integration: props.initial.integration })
+    .map(item => {
+      const label = item.kind === 'node' ? types.get(item.id) : undefined
+      return label ? { ...item, aliases: [...(item.aliases ?? []), label] } : item
+    })
 })
+const searchResults = computed(() => findMapMatches(searchableItems.value, searchQuery.value))
 
 const searchHitNodeIds = computed(
   () => new Set(searchResults.value.filter((item) => item.kind === 'node').map((item) => item.id))
@@ -2671,7 +2667,7 @@ defineExpose({
         </div>
 
         <button
-          v-if="minimapCollapsed && !cleanDensePreview"
+          v-if="minimapCollapsed"
           class="overlay-toggle minimap-toggle"
           type="button"
           @click="toggleMinimap"

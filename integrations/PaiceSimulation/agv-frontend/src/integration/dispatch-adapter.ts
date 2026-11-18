@@ -479,6 +479,7 @@ export function dispatchSceneMap(definition: SourceMap): RoadNetPayload {
     .filter(validPoint)
     .map((n) => ({
       id: n.id,
+      agvSiteId: n.agvSiteId ?? undefined,
       x: n.x,
       y: -n.y,
       type: nodeType(n.type),
