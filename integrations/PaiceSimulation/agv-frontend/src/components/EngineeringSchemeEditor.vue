@@ -40,10 +40,13 @@ const stationOptions = computed(() => configuration.value?.stations.map(row => (
 const nodeOptions = computed(() => [...nodes.value.values()].map(node => ({
   value: node.id, label: node.agvSiteId && node.agvSiteId !== node.id ? node.agvSiteId + ' · ' + node.id : node.id,
 })))
-const sites = computed(() => nodeOptions.value.filter(site => {
-  const node = nodes.value.get(site.value)
-  return node?.enabled !== false && node?.type === 'Station'
-}))
+const comparePointLabels = new Intl.Collator(undefined, { numeric: true }).compare
+const sites = computed(() => nodeOptions.value
+  .filter(site => {
+    const node = nodes.value.get(site.value)
+    return node?.enabled !== false && node?.type === 'Station'
+  })
+  .sort((a, b) => comparePointLabels(a.label, b.label)))
 const vehicles = computed(() => configuration.value?.vehicles ?? [])
 const markers = computed<EngineeringPoint[]>(() => {
   const config = configuration.value
