@@ -9,6 +9,7 @@ import { isFresh } from '@main-web/state'
 import type { Snapshot } from '@main-web/types'
 
 const SimulationCenter = defineAsyncComponent(() => import('@main-web/pages/SimulationCenterPage.vue'))
+const SimulationWorkshopMap = defineAsyncComponent(() => import('@/components/SimulationWorkshopMap.vue'))
 const Pipeline = defineAsyncComponent(() => import('@main-web/pages/DispatchPipelinePage.vue'))
 const Optimization = defineAsyncComponent(() => import('@main-web/pages/DispatchOptimizationPage.vue'))
 
@@ -98,7 +99,20 @@ const diagnostics = computed(() => route.query.view === 'optimization' ? 'optimi
         <RouterLink :to="dispatchLocation('monitor')">交通资源与车辆</RouterLink>
       </template>
     </nav>
-    <SimulationCenter v-if="embedded" :embedded="embedded" @navigate="navigate" />
+    <SimulationCenter v-if="embedded" :embedded="embedded" @navigate="navigate">
+      <template #overview-map="{ status, fresh, selectedVehicle, selectVehicle, roadHighlights }">
+        <SimulationWorkshopMap class="panel" :definition="status?.map" :cars="status?.device?.cars"
+          :station-count="status?.configuration?.stations?.length"
+          :fleet-count="status?.configuration?.vehicles?.length"
+          :fresh="fresh" :selected-vehicle="selectedVehicle" :road-highlights="roadHighlights"
+          @select-vehicle="selectVehicle">
+          <template #empty>
+            <span>当前隔离实例尚未提供地图。</span>
+            <RouterLink :to="dispatchLocation('engineering')">查看工程配置</RouterLink>
+          </template>
+        </SimulationWorkshopMap>
+      </template>
+    </SimulationCenter>
     <Optimization v-else-if="diagnostics === 'optimization'" :simulation-read="signal => request('/dispatch-optimization', undefined, signal)"
       :simulation-save="auth.isAdmin ? (update, signal) => request('/dispatch-optimization/options', update, signal) : undefined"
       :simulation-task-link="taskLink" />

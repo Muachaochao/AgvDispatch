@@ -46,6 +46,7 @@ export interface DispatchStatus {
   schemes?: {
     id: string;
     name: string;
+    mapName?: string;
     vehicleCount?: number;
     stationCount?: number;
   }[];

@@ -730,6 +730,13 @@ export function simulationRoadnetName(definition: SourceMap) {
   return `${name}（仿真）`;
 }
 
+export function workshopMapName(definition: SourceMap) {
+  const name = definition.name?.trim();
+  if (name && (name === "全厂五车仿真" || (name.includes("B07-1F") && name.includes("305"))))
+    return "全厂五车仿真";
+  return name || "隔离实例地图";
+}
+
 export function resolveMapSiteId(
   definition: SourceMap,
   station?: string | null,

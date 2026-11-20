@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, shallowRef, watch } from 'vue'
+import { computed, defineAsyncComponent, ref, shallowRef, watch } from 'vue'
 import EngineeringPointMap from './EngineeringPointMap.vue'
 import { dispatchSceneMap, type SourceMap } from '@/integration/dispatch-adapter'
 import { dispatchRead, type DispatchStatus } from '@/integration/dispatch-api'
@@ -7,6 +7,7 @@ import { inspectEngineeringPoints, readPlcSignals, type EngineeringPoint } from 
 
 const props = defineProps<{ status: DispatchStatus | null }>()
 const emit = defineEmits<{ saved: [status: DispatchStatus] }>()
+const SimulationWorkshopMap = defineAsyncComponent(() => import('./SimulationWorkshopMap.vue'))
 type Station = { stationId: string; pickupSite: string; offset: number; signalSource: string; sourceLabel?: string; priority?: number }
 type PointTable = { fileName: string; csvText: string; sha256: string; stations: Station[] }
 type Configuration = {
@@ -25,6 +26,7 @@ const busy = ref(false)
 const bindOnMap = ref(false)
 const selectedSite = ref('')
 const showSignals = ref(false)
+const mapTab = ref<'preview' | 'points'>('preview')
 const locked = computed(() => busy.value || props.status?.running || ['starting', 'stopping'].includes(props.status?.phase ?? ''))
 const station = computed(() => configuration.value?.stations.find(row => row.stationId === stationId.value))
 const bindings = computed(() => new Map(configuration.value?.plcSignalTable.stations.map(row => [row.stationId, row])))
@@ -68,10 +70,22 @@ const signalOwner = computed(() => selectedSite.value === configuration.value?.d
 const signals = computed(() => signalCatalog.value.get(signalOwner.value) ?? [])
 const syntheticCount = computed(() => configuration.value?.stations.filter(row => row.signalSource !== 'verified').length ?? 0)
 watch(() => station.value?.pickupSite, site => { if (site) selectedSite.value = site })
+watch(() => props.status?.schemes, schemes => {
+  if (scheme.value || !schemes?.length) return
+  const fullFactory = schemes.find(item => {
+    const name = item.mapName || item.name
+    return item.vehicleCount === 5 && item.stationCount === 305
+      && (name.includes('B07') || name.includes('全厂五车仿真'))
+  })
+  if (fullFactory) {
+    scheme.value = fullFactory.id
+    void load()
+  }
+}, { immediate: true })
 
 async function load() {
   busy.value = true; error.value = ''; notice.value = ''; configuration.value = null; sceneMap.value = null
-  bindOnMap.value = false; showSignals.value = false
+  bindOnMap.value = false; showSignals.value = false; mapTab.value = 'preview'
   try {
     const value = await dispatchRead<{ configuration: Configuration }>('/api/simulation/scheme-select', undefined, { id: scheme.value, checkOnly: true })
     const config = value.configuration
@@ -95,6 +109,7 @@ function inspectNode(id: string) {
 function inspectIssue(issue: EngineeringPoint) {
   if (issue.group === 'station') stationId.value = issue.label
   selectedSite.value = issue.nodeId
+  mapTab.value = 'points'
 }
 
 function selectNode(id: string) {
@@ -158,8 +173,13 @@ async function save() {
       <el-button :disabled="!scheme || busy" @click="load">加载工程配置</el-button>
     </el-space>
     <template v-if="configuration">
-      <p>{{ configuration.mapDefinition.name }} · {{ configuration.mapDefinition.nodes.length }} 节点 · {{ configuration.mapDefinition.edges.length }} 道路 · {{ configuration.stations.length }} 工位</p>
-      <div class="engineering-layout">
+      <el-radio-group v-model="mapTab" size="small" aria-label="工程地图视图">
+        <el-radio-button value="preview">地图预览</el-radio-button>
+        <el-radio-button value="points">工程点位与绑定</el-radio-button>
+      </el-radio-group>
+      <SimulationWorkshopMap v-if="mapTab === 'preview'"
+        :definition="configuration.mapDefinition" :fleet-count="vehicles.length" :station-count="configuration.stations.length" />
+      <div v-else class="engineering-layout">
         <EngineeringPointMap v-if="sceneMap" :map="sceneMap" :markers="markers" :selected-id="selectedSite" @select="selectNode" @inspect="inspectNode" />
         <aside class="engineering-overview">
           <h4>车辆初始点 · {{ vehicles.length }} 台</h4>
@@ -188,7 +208,7 @@ async function save() {
         </li>
       </ul>
       <p v-else>已核对工位、车辆初始点、业务点位及 PLC 字节绑定。</p>
-      <el-radio-group v-model="bindOnMap" :disabled="busy" aria-label="地图选点用途">
+      <el-radio-group v-model="bindOnMap" :disabled="busy" aria-label="地图选点用途" @change="mapTab = 'points'">
         <el-radio-button :value="false">点图核对工位</el-radio-button>
         <el-radio-button :value="true" :disabled="locked">点图修改停靠点</el-radio-button>
       </el-radio-group>

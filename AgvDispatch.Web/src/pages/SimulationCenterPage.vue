@@ -40,6 +40,20 @@ const threeEdgeColors = computed(() => Object.fromEntries(geometry.value.edges.m
     classes['task-route-future'] ? '#54cce3' : classes['task-route-completed'] ? '#4c938e' : '#3e8da8';
   return [edge.key, color];
 })));
+const overviewRoadHighlights = computed(() => {
+  const highlights: Record<string, string> = {};
+  const blocked = new Set(appliedBlockedEdges.value);
+  const routeEdges = taskRouteLegs.value.flatMap(leg => leg.edgeIds);
+  for (const id of new Set([...blocked, ...routeEdges])) {
+    const classes = taskRouteEdgeClass(id);
+    if (blocked.has(id) || classes['task-route-waiting']) highlights[id] = '#b64c2f';
+    else if (classes['task-route-current'] || classes['task-route-focus']) highlights[id] = '#087968';
+    else if (classes['task-route-return']) highlights[id] = '#a96c10';
+    else if (classes['task-route-future']) highlights[id] = '#3456c8';
+    else if (classes['task-route-completed']) highlights[id] = '#62918a';
+  }
+  return highlights;
+});
 const dispatchStore = props.embedded?.field ?? useDispatchStore();
 const route = useRoute(), router = useRouter();
 const status = ref<SimulationStatus | null>(null), error = ref(''), actionError = ref(''), notice = ref('');
@@ -1787,6 +1801,8 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
       </details>
 
       <div class="overview-grid business-overview-grid">
+        <slot name="overview-map" :status="status" :fresh="fresh" :selected-vehicle="selectedVehicle"
+          :select-vehicle="selectVehicleTask" :road-highlights="overviewRoadHighlights">
         <section class="simulation-panel map-panel" aria-labelledby="simulation-map">
           <header><div><p class="section-kicker">车辆现在在哪</p><h3 id="simulation-map">全厂运行画面</h3></div><div class="toolbar map-header-actions"><span class="map-view-switch"><button :aria-pressed="sceneDimension === '2d'" :class="{ active: sceneDimension === '2d' }" @click="sceneDimension = '2d'">二维</button><button :aria-pressed="sceneDimension === '3d'" :class="{ active: sceneDimension === '3d' }" @click="sceneDimension = '3d'">三维</button></span><span class="map-view-switch"><button :class="{ active: mapViewMode === 'all' }" :aria-pressed="mapViewMode === 'all'" @click="mapViewMode = 'all'">全厂</button><button :class="{ active: mapViewMode === 'vehicles' }" :aria-pressed="mapViewMode === 'vehicles'" :disabled="!geometry.cars.length" @click="mapViewMode = 'vehicles'">车辆附近</button></span><button v-if="cadBackground" class="map-layer-toggle" :aria-pressed="showCadReference" @click="showCadReference = !showCadReference">{{ showCadReference ? '关闭CAD参考' : '查看CAD参考' }}</button></div></header>
           <SimulationThreeView v-if="geometry.nodes.length && sceneDimension === '3d'" :geometry="geometry" :fresh="fresh" :selected="selectedVehicle" :focus-vehicles="mapViewMode === 'vehicles'" :edge-colors="threeEdgeColors" @select="selectVehicleTask" />
@@ -1805,7 +1821,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
           <div class="map-run-legend"><span><i class="map-legend-dot running"></i>执行中</span><span><i class="map-legend-dot waiting"></i>作业等待/载箱待命</span><span><i class="map-legend-dot idle"></i>空载待命</span><span><i class="map-legend-dot blocked"></i>道路受阻</span><span><i class="map-legend-dot fault"></i>暂停/故障</span><span><i class="map-legend-dot offline"></i>离线/状态过期</span><span><i class="map-load-legend"></i>箱 = 当前载箱</span></div>
           <div class="map-caption"><span>彩色分区依次为一组、二组、三组、四组和末组；站点详细名称可悬停查看。{{ showCadReference && cadBackground ? ' CAD参考层只用于核对位置。' : '' }}</span><span>{{ vehicleIds.length }} 辆 · {{ offlineVehicleCount }} 辆离线</span></div>
         </section>
-
+        </slot>
       </div>
     </section>
 

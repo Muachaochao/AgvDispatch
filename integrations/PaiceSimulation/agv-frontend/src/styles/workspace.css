@@ -108,7 +108,7 @@
 
 .paice-workspace .simulation-operations :is(.simulation-page, .management-page) h3 { margin-block: 0; }
 .paice-workspace .simulation-operations :is(.simulation-page, .management-page) a { color: var(--ui-primary-strong); }
-.paice-workspace .simulation-operations :is(.simulation-page, .management-page) button {
+.paice-workspace .simulation-operations :is(.simulation-page, .management-page) button:not(.workshop-preview *) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -124,7 +124,7 @@
   cursor: pointer;
 }
 
-.paice-workspace .simulation-operations button:not(:disabled):hover { background: var(--ui-surface-soft); }
+.paice-workspace .simulation-operations button:not(:disabled, .workshop-preview *):hover { background: var(--ui-surface-soft); }
 .paice-workspace .simulation-operations button:is(.primary, .accent-button) {
   border-color: var(--ui-primary);
   background: var(--ui-primary);
@@ -134,13 +134,13 @@
 .paice-workspace .simulation-operations button:is(.primary, .accent-button):not(:disabled):hover {
   background: var(--ui-primary-strong);
 }
-.paice-workspace .simulation-operations button:disabled { opacity: .55; cursor: default; }
+.paice-workspace .simulation-operations button:disabled:not(.workshop-preview *) { opacity: .55; cursor: default; }
 .paice-workspace :is(button, a, summary, select, input, textarea):focus-visible {
   outline: 2px solid #6483e9;
   outline-offset: 2px;
 }
 
-.paice-workspace .simulation-operations :is(input:not([type="checkbox"], [type="radio"], [type="range"]), select, textarea) {
+.paice-workspace .simulation-operations :is(input:not([type="checkbox"], [type="radio"], [type="range"]), select, textarea):not(.workshop-preview *) {
   min-height: 32px;
   max-width: 100%;
   padding: 5px 8px;
@@ -337,34 +337,7 @@
   grid-row: 1;
 }
 .paice-workspace .simulation-operations .overview-stage { display: flex; flex-direction: column; gap: 10px; }
-.paice-workspace .simulation-operations .business-overview-grid,
-.paice-workspace .simulation-operations .business-overview-grid .map-panel { min-height: 0; }
-.paice-workspace .simulation-operations .business-overview-grid :is(.simulation-map, .simulation-three, .map-empty) {
-  display: block;
-  min-height: 0;
-  height: clamp(340px, calc(100dvh - 235px), 800px);
-  border-radius: 8px;
-}
-.paice-workspace .simulation-operations .business-overview-grid .map-empty { display: grid; gap: 4px; }
-.paice-workspace .simulation-operations .business-overview-grid .map-panel { padding: 12px; }
-.paice-workspace .simulation-operations .business-overview-grid .map-panel > header { flex-wrap: wrap; }
-.paice-workspace .simulation-operations .business-overview-grid .map-panel .section-kicker { display: none; }
-.paice-workspace .simulation-operations .simulation-three .three-tools { top: 12px; }
-.paice-workspace .simulation-operations .simulation-three button {
-  border-color: #48647f;
-  background: #14243aed;
-  color: #e5edf7;
-}
-.paice-workspace .simulation-operations .simulation-three button:not(:disabled):hover { background: #203851; }
-.paice-workspace .simulation-operations .simulation-three button[aria-pressed="true"] {
-  border-color: #41d9bf;
-  color: #70e6d1;
-}
-.paice-workspace .simulation-operations .simulation-three .three-vehicles small {
-  margin: 0;
-  color: inherit;
-  font-size: 10px;
-}
+.paice-workspace .simulation-operations .business-overview-grid { min-height: 0; }
 .paice-workspace .simulation-operations .instance-details {
   display: block;
   order: 1;
@@ -381,13 +354,6 @@
   background: transparent;
   color: var(--ui-text-3);
   font-size: 12px;
-}
-.paice-workspace .simulation-operations .map-view-switch { border-color: var(--ui-line); border-radius: 6px; }
-.paice-workspace .simulation-operations .map-view-switch button { border: 0; border-radius: 0; }
-.paice-workspace .simulation-operations .map-view-switch button + button { border-left: 1px solid var(--ui-line); }
-.paice-workspace .simulation-operations .map-view-switch button.active {
-  color: var(--ui-primary-strong);
-  background: var(--workspace-selected);
 }
 
 .paice-workspace .simulation-operations .business-story {

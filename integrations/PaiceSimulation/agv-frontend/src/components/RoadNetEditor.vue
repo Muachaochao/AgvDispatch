@@ -10,6 +10,7 @@ const props = defineProps<{
   readonly?: boolean
   tasks?: { id: number; from: string; to: string }[]
   name?: string
+  previewOnly?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -154,7 +155,7 @@ const batchEdgeSpeed = ref(1)
 const batchEdgeCapacity = ref(1)
 const batchEdgeLaneMode = ref<'SINGLE' | 'DUAL'>('SINGLE')
 
-const editable = computed(() => !props.readonly)
+const editable = computed(() => !props.readonly && !props.previewOnly)
 const errors = computed(() => props.errors ?? [])
 const errorNodeIds = computed(
   () => new Set(errors.value.map((e) => e.nodeId).filter(Boolean) as string[])
@@ -549,7 +550,9 @@ function clamp(value: number, min: number, max: number) {
 
 function sizeValue(value: number | undefined, fallback: number) {
   const parsed = Number(value)
-  return Number.isFinite(parsed) ? clamp(Math.round(parsed), MIN_SIZE, MAX_SIZE) : fallback
+  return Number.isFinite(parsed)
+    ? clamp(Math.round(parsed), MIN_SIZE, props.previewOnly ? Infinity : MAX_SIZE)
+    : fallback
 }
 
 function cloneNodes(list: NetNode[]) {
@@ -664,6 +667,20 @@ function refreshAllEdgeLengths() {
 function px(value: number) {
   return value * SCALE
 }
+
+const previewCurves = computed(() => {
+  const curves = new Map<string, string>()
+  if (!props.previewOnly) return curves
+  for (const edge of edges.value) {
+    if (!edge.points || edge.points.length <= 2) continue
+    const from = displayNode(edge.from)
+    const to = displayNode(edge.to)
+    if (!from || !to) continue
+    const points = [from, ...edge.points.slice(1, -1), to]
+    curves.set(edge.id, points.map(point => `${px(point.x)},${px(point.y)}`).join(' '))
+  }
+  return curves
+})
 
 const LANE_OFFSET_PX = 5
 
@@ -846,6 +863,7 @@ function stopPanRepeat() {
 let previewNoticeAt = 0
 
 function notifyPreviewReadonly() {
+  if (props.previewOnly) return
   const now = Date.now()
   if (now - previewNoticeAt < 2000) return
   previewNoticeAt = now
@@ -1993,7 +2011,7 @@ function loadPayload(payload: RoadNetPayload, resetHistory = true) {
     node.x = clamp(node.x, 0, mapWidth.value)
     node.y = clamp(node.y, 0, mapHeight.value)
   })
-  refreshAllEdgeLengths()
+  if (!props.previewOnly) refreshAllEdgeLengths()
   clearSelection()
   resetView()
   guides.value = {}
@@ -2125,9 +2143,10 @@ defineExpose({
             </el-button>
           </el-button-group>
         </template>
-        <el-tag v-else type="info" size="small">预览模式 · 点「编辑」可修改</el-tag>
+        <el-tag v-else-if="!previewOnly" type="info" size="small">预览模式 · 点「编辑」可修改</el-tag>
         <div class="spacer" />
         <span class="hint">滚轮缩放 · 空格/中键平移</span>
+        <slot name="preview-actions" />
       </div>
 
       <div class="toolbar-row toolbar-secondary">
@@ -2476,8 +2495,17 @@ defineExpose({
             </g>
 
             <g v-for="edge in edges" :key="edge.id">
+              <polyline
+                v-if="previewCurves.has(edge.id)"
+                :points="previewCurves.get(edge.id)"
+                :stroke="edgeStroke(edge)"
+                :stroke-width="isSelectedEdge(edge.id) ? 4 : 3"
+                class="edge-line"
+                fill="none"
+                pointer-events="none"
+              />
               <line
-                v-for="lane in edgeLanes(edge)"
+                v-for="lane in previewCurves.has(edge.id) ? [] : edgeLanes(edge)"
                 :key="lane.key"
                 :x1="lane.x1"
                 :y1="lane.y1"
@@ -2489,7 +2517,7 @@ defineExpose({
                 pointer-events="none"
               />
               <line
-                v-for="arrow in showEdgeArrows(edge) ? edgeArrows(edge) : []"
+                v-for="arrow in !previewCurves.has(edge.id) && showEdgeArrows(edge) ? edgeArrows(edge) : []"
                 :key="arrow.key"
                 :x1="arrow.x1"
                 :y1="arrow.y1"
@@ -2500,7 +2528,19 @@ defineExpose({
                 :marker-end="arrow.markerEnd"
                 pointer-events="none"
               />
+              <polyline
+                v-if="previewCurves.has(edge.id)"
+                :points="previewCurves.get(edge.id)"
+                class="edge-hit"
+                fill="none"
+                @mousedown="onEdgeMouseDown($event, edge)"
+                @dblclick="onEdgeDoubleClick($event, edge)"
+                @mouseenter="onEdgeEnter($event, edge)"
+                @mouseleave="clearHover"
+                @contextmenu.prevent.stop="onEdgeContextMenu($event, edge)"
+              />
               <line
+                v-else
                 :x1="px(displayNode(edge.from)?.x ?? 0)"
                 :y1="px(displayNode(edge.from)?.y ?? 0)"
                 :x2="px(displayNode(edge.to)?.x ?? 0)"
@@ -2512,8 +2552,15 @@ defineExpose({
                 @mouseleave="clearHover"
                 @contextmenu.prevent.stop="onEdgeContextMenu($event, edge)"
               />
+              <polyline
+                v-if="previewCurves.has(edge.id) && searchHitEdgeIds.has(edge.id)"
+                :points="previewCurves.get(edge.id)"
+                class="search-hit-edge"
+                fill="none"
+                pointer-events="none"
+              />
               <line
-                v-if="searchHitEdgeIds.has(edge.id)"
+                v-else-if="searchHitEdgeIds.has(edge.id)"
                 :x1="px(displayNode(edge.from)?.x ?? 0)"
                 :y1="px(displayNode(edge.from)?.y ?? 0)"
                 :x2="px(displayNode(edge.to)?.x ?? 0)"
@@ -2584,6 +2631,7 @@ defineExpose({
               </text>
             </g>
 
+            <slot name="map-overlay" :pixels-per-meter="SCALE" :zoom="view.scale" />
             <line
               v-if="guides.x !== undefined"
               :x1="guides.x"
