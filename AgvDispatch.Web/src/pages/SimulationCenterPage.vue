@@ -2,6 +2,8 @@
 import { defineAsyncComponent, computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { IconPlayerPlay, IconPlayerStop, IconRefresh, IconDownload, IconFlask, IconRobot } from '@tabler/icons-vue';
+import { ElSelectV2 } from 'element-plus';
+import 'element-plus/es/components/select-v2/style/css';
 import { simulationApi as defaultSimulationApi, simulationFresh, simulationGeometry, simulationLabel, loadCurrentSimulationMap, simulationTone, scenarioActive, simulationVehicleOriginsFromLive,
   simulationMetricLabel, simulationMetricValue, simulationMetricComparison, simulationReplayCars,
   simulationStationBindingsFromCatalog, simulationVehicleVisualState, simulationVehicleVisualColor,
@@ -228,6 +230,51 @@ const currentTask = computed(() => vehicle.value?.current_task || '当前无运�
 const snapshotTime = computed(() => stamp(status.value?.device?.time));
 const mapNodes = computed(() => (mapDefinition.value?.nodes ?? []).filter(node => node.enabled !== false));
 const mapResources = computed(() => (mapDefinition.value?.resources ?? []).filter(resource => (resource.boundary?.length ?? 0) >= 3));
+const configurationLocked = computed(() => busy.value || !!status.value?.running || starting.value || active.value);
+const compareMapNumber = new Intl.Collator(undefined, { numeric: true }).compare;
+const siteTypes = {
+  WaitingPoint: '等待位',
+  Station: '工位／设备停车点',
+  ChargingPoint: '充电位',
+  TrafficStop: '道路安全停点',
+  Intersection: '路口',
+  Waypoint: '普通航点',
+  Other: '未标注类型的点位',
+};
+const resourceTypes = {
+  Bound: '倒料停车点已关联',
+  Station: '工位／设备区',
+  NarrowAisle: '窄通道',
+  SingleLane: '单行区',
+  Intersection: '路口',
+  ChargingBay: '充电区',
+  Other: '未标注类型的区域',
+};
+type MapOption = { value: string; label: string };
+function groupMapOptions<T>(
+  items: readonly T[],
+  labels: Record<string, string>,
+  groupKey: (item: T) => string,
+  toOption: (item: T) => MapOption,
+) {
+  const groups = new Map(Object.entries(labels).map(([key, label]) => [key, { label, options: [] as MapOption[] }]));
+  for (const item of items) (groups.get(groupKey(item)) ?? groups.get('Other'))?.options.push(toOption(item));
+  return [...groups.values()].filter(group => group.options.length).map(group => ({
+    label: group.label, options: group.options.sort((a, b) => compareMapNumber(a.label, b.label)),
+  }));
+}
+const siteOptions = computed(() => groupMapOptions(mapNodes.value, siteTypes,
+  node => node.type === 'WaitingPoint' && node.resourceIds?.includes(`SIM-STOP-${node.id}`) ? 'TrafficStop' : node.type ?? 'Other',
+  node => ({ value: node.id, label: node.agvSiteId && node.agvSiteId !== node.id ? `${node.agvSiteId} · ${node.id}` : node.id })));
+const extraWaitingOptions = computed(() => siteOptions.value.map(group => ({
+  ...group, options: group.options.filter(option => option.value !== waitingSite.value && option.value !== dumpingSite.value),
+})).filter(group => group.options.length));
+const dumperResourceOptions = computed(() => {
+  const bound = new Set(mapNodes.value.find(node => node.id === dumpingSite.value)?.resourceIds ?? []);
+  return groupMapOptions(mapResources.value, resourceTypes,
+    resource => bound.has(resource.id) ? 'Bound' : resource.type ?? 'Other',
+    resource => ({ value: resource.id, label: `${resource.id} · 容量 ${resource.capacity ?? 1}` }));
+});
 const recovery = computed(() => status.value?.recovery);
 const manualCar = computed(() => manualGuide.value?.vehicleId ? cars.value[manualGuide.value.vehicleId] ?? null : null);
 const manualRecoveryReady = computed(() => manualRecovery.value?.outcome === 'ReadyForControlledDetour' &&
@@ -885,15 +932,15 @@ const configurationProblems = computed(() => {
     problems.push('工位编号不能重复。');
   if (new Set(stationDrafts.value.map(station => station.pickupSite)).size !== stationDrafts.value.length)
     problems.push('各工位不能共用同一取货节点。');
-  if (!waitingSite.value) problems.push('未选择主等待位。');
-  if (!dumpingSite.value) problems.push('未选择倒料位。');
-  if (!inspectionSite.value) problems.push('未选择检修或设备观察点。');
-  if (!dumperResourceId.value) problems.push('未选择倒料资源边界。');
+  if (!waitingSite.value) problems.push('请选择主要倒料候车位。');
+  if (!dumpingSite.value) problems.push('请选择倒料停车点。');
+  if (!inspectionSite.value) problems.push('请选择检修／观察点。');
+  if (!dumperResourceId.value) problems.push('请选择倒料区占用范围。');
   if (!Number.isInteger(downstreamAdmissionCapacity.value) || downstreamAdmissionCapacity.value < 0 || downstreamAdmissionCapacity.value > 8)
-    problems.push('同时放行取箱任务数须为0至8的整数。');
+    problems.push('取箱到收尾的并行上限须为 0 至 8 的整数。');
   if (waitingSite.value && waitingSite.value === dumpingSite.value) problems.push('主等待位与倒料位不能相同。');
   if (additionalWaitingSites.value.some(site => site === waitingSite.value || site === dumpingSite.value || !mapNodes.value.some(node => node.id === site)))
-    problems.push('其他等待位包含重复、无效或与倒料位相同的节点。');
+    problems.push('其他倒料候车位须有效，且与主要候车位、倒料停车点分开。');
   if (customVehicles.value.length < 1 || customVehicles.value.length > 8) problems.push('车辆数量须为1至8辆。');
   customVehicles.value.forEach((vehicle, index) => {
     const label = `车辆${index + 1}`;
@@ -2025,7 +2072,13 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
         <div class="map-import">
           <div class="toolbar"><button :disabled="busy || !dispatchStore.fresh || dispatchStore.demoMode || !dispatchStore.snapshot?.map || !!status?.running || starting || active" @click="loadCurrentMap"><IconRefresh :size="15" />拉取当前工程（地图+参数+点表）</button><label class="loaded-config"><input v-model="useFieldVehiclePositions" type="checkbox" />同时按当前真车位置设置初始点</label></div>
           <label class="file-picker">选择地图文件<input type="file" accept=".json,.agvmap.json,.rpj,application/json" :disabled="busy || !!status?.running || starting || active" @change="loadMapFile" /></label>
-          <div><b v-if="mapFileName">{{ mapFileName }}</b><span v-if="liveMapIdentity">{{ liveMapIdentity }}</span><span v-if="mapDefinition">{{ mapDefinition.nodes.length }} 节点 · {{ mapDefinition.edges.length }} 道路 · {{ mapDefinition.resources.length }} 资源</span><span v-if="mapIdentityDraft?.definitionHash">地图摘要 {{ mapIdentityDraft.definitionHash.slice(0, 12) }}…</span><span v-else-if="!mapDefinition">尚未载入自定义地图</span></div>
+          <div class="map-import-summary">
+            <b v-if="mapFileName">{{ mapFileName }}</b>
+            <span v-if="liveMapIdentity">{{ liveMapIdentity }}</span>
+            <span v-if="mapDefinition">{{ mapDefinition.nodes.length }} 节点 · {{ mapDefinition.edges.length }} 道路 · {{ mapDefinition.resources.length }} 资源</span>
+            <span v-if="mapIdentityDraft?.definitionHash">地图摘要 {{ mapIdentityDraft.definitionHash.slice(0, 12) }}…</span>
+            <span v-else-if="!mapDefinition">尚未载入自定义地图</span>
+          </div>
         </div>
         <div class="plc-table-binding">
           <div class="designer-section-title"><span>PLC</span><div><b>绑定当前地图对应的点表</b><small>点表随方案保存；创建实例时复制为实例专属 simulation-signals.csv。载入后可按节点自动映射全部工位，再逐项修改。</small></div></div>
@@ -2053,7 +2106,11 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
           </div>
           <fieldset :disabled="busy || !!status?.running || starting || active" class="topology-grid">
             <div class="station-designer">
-              <datalist id="simulation-pickup-nodes"><option v-for="node in mapNodes" :key="node.id" :value="node.id" :label="node.agvSiteId || node.id" /></datalist>
+              <datalist id="simulation-pickup-nodes">
+                <template v-for="group in siteOptions" :key="group.label">
+                  <option v-for="site in group.options" :key="site.value" :value="site.value" :label="`${group.label} · ${site.label}`" />
+                </template>
+              </datalist>
               <p v-if="!visibleStations.length">没有匹配的工位。</p>
               <div v-for="{ station, index } in visibleStations" :key="index" class="station-config-row">
                 <label>工位编号<input v-model.trim="station.stationId" placeholder="CNC-001" maxlength="7" /></label>
@@ -2065,18 +2122,46 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
               </div>
               <button :disabled="stationDrafts.length >= MAX_SIMULATION_STATIONS" @click="addStation">增加隔离仿真工位</button><small>本页最多配置 {{ MAX_SIMULATION_STATIONS }} 个工位；可按当前 CAD 仿真图和点表一次自动映射，再逐项修改。现场未确认的点位会保留为“隔离合成点位”。</small>
             </div>
-            <label>主等待位节点<select v-model="waitingSite" @change="additionalWaitingSites = additionalWaitingSites.filter(site => site !== waitingSite); resetVehicleOrigins()"><option v-for="node in mapNodes" :key="node.id" :value="node.id">{{ node.id }}</option></select></label>
-            <label>其他等待位（可多选）<select v-model="additionalWaitingSites" multiple @change="resetVehicleOrigins"><option v-for="node in mapNodes.filter(node => node.id !== waitingSite && node.id !== dumpingSite)" :key="node.id" :value="node.id">{{ node.id }}</option></select><small>多车排队使用全部等待位；拉取当前地图时同步带入现场候车位配置。</small></label>
-            <label>倒料位节点<select v-model="dumpingSite" @change="resetVehicleOrigins"><option v-for="node in mapNodes" :key="node.id" :value="node.id">{{ node.id }}</option></select></label>
-            <label>检修 / 设备观察点<select v-model="inspectionSite" @change="resetVehicleOrigins"><option value="">请选择检修或观察点</option><option v-for="node in mapNodes" :key="node.id" :value="node.id">{{ node.id }}</option></select></label>
-            <label>倒料资源边界<select v-model="dumperResourceId"><option value="">请选择倒料资源边界</option><option v-for="resource in mapResources" :key="resource.id" :value="resource.id">{{ resource.id }} · 容量 {{ resource.capacity ?? 1 }}</option></select></label>
-            <label>同时放行取箱任务数<input v-model.number="downstreamAdmissionCapacity" type="number" min="0" max="8" step="1"/><small>0表示沿用车队并发上限。单倒料设备可先试3；超出的呼叫先不取箱，已有任务在核验收尾后腾出名额。倒料机始终只允许1辆。</small></label>
+            <label>主要倒料候车位
+              <ElSelectV2 v-model="waitingSite" :options="siteOptions" :disabled="configurationLocked" :teleported="false"
+                class="topology-select" filterable aria-label="主要倒料候车位" placeholder="搜索候车位编号"
+                @change="additionalWaitingSites = additionalWaitingSites.filter(site => site !== waitingSite); resetVehicleOrigins()" />
+              <small>倒料机忙时，载着满箱的车可以先停在这里等。</small>
+            </label>
+            <label>其他倒料候车位（可多选）
+              <ElSelectV2 v-model="additionalWaitingSites" :options="extraWaitingOptions" :disabled="configurationLocked" :teleported="false"
+                class="topology-select" multiple collapse-tags :max-collapse-tags="2" filterable
+                aria-label="其他倒料候车位" placeholder="搜索并选择候车位" @change="resetVehicleOrigins" />
+              <small>多车排队时，调度会从已配置的候车位中选当前可用的位置。</small>
+            </label>
+            <label>倒料停车点
+              <ElSelectV2 v-model="dumpingSite" :options="siteOptions" :disabled="configurationLocked" :teleported="false"
+                class="topology-select" filterable aria-label="倒料停车点" placeholder="搜索倒料点编号" @change="resetVehicleOrigins" />
+              <small>车进倒料区后停下来，配合设备完成倒料的位置。</small>
+            </label>
+            <label>检修／观察点
+              <ElSelectV2 v-model="inspectionSite" :options="siteOptions" :disabled="configurationLocked" :teleported="false"
+                class="topology-select" filterable aria-label="检修／观察点" placeholder="搜索检修或观察点" @change="resetVehicleOrigins" />
+              <small>给仿真保留的检修停车或设备观察位置。</small>
+            </label>
+            <label>倒料区占用范围
+              <ElSelectV2 v-model="dumperResourceId" :options="dumperResourceOptions" :disabled="configurationLocked" :teleported="false"
+                class="topology-select" filterable aria-label="倒料区占用范围" placeholder="搜索区域编号" />
+              <small>地图上要保护的倒料区域。容量为 1 时，同一时间只允许 1 台车占用。</small>
+            </label>
+            <label>取箱到收尾的并行上限
+              <input v-model.number="downstreamAdmissionCapacity" type="number" min="0" max="8" step="1" />
+              <small>0 表示不额外限流，车辆、路权和设备许可照常检查。填正数时，一单从派车去取箱到返箱并核验收尾占一个名额。</small>
+            </label>
           </fieldset>
           <div class="vehicle-designer">
             <div class="designer-section-title"><span>02</span><div><b>车辆画像 · {{ customVehicles.length }} 辆</b><small>配置车辆、电机、电池和动作模型参数。</small></div></div>
             <div v-for="(vehicle, index) in customVehicles" :key="index" class="vehicle-config-row">
               <label>车辆 ID<input v-model.trim="vehicle.id" maxlength="32" /></label>
-              <label>初始节点<select v-model="vehicle.initialSite"><option v-for="node in mapNodes" :key="node.id" :value="node.id">{{ node.id }}</option></select></label>
+              <label>车辆起点
+                <ElSelectV2 v-model="vehicle.initialSite" :options="siteOptions" :disabled="configurationLocked" :teleported="false"
+                  class="topology-select" filterable :aria-label="`${vehicle.id} 的车辆起点`" placeholder="搜索车辆起点" />
+              </label>
               <label>车长 / m<input v-model.number="vehicle.lengthMeters" type="number" min="0.1" max="20" step="0.01" @input="updateVehicleFootprint(vehicle)" /></label>
               <label>车宽 / m<input v-model.number="vehicle.widthMeters" type="number" min="0.1" max="20" step="0.01" @input="updateVehicleFootprint(vehicle)" /></label>
               <label>电量 / %<input v-model.number="vehicle.batteryPercent" type="number" min="0" max="100" step="1" /></label>
@@ -2382,6 +2467,13 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
 </template>
 
 <style scoped>
+.map-import { border-radius: 8px; }
+.map-import .loaded-config { flex-direction: row; align-items: center; }
+.map-import .loaded-config input { width: auto; }
+.map-import-summary { display: flex; flex-wrap: wrap; gap: 4px 12px; min-width: 0; overflow-wrap: anywhere; }
+.topology-grid > label, .vehicle-config-row > label { min-width: 0; }
+.topology-grid > label > small { margin: 0; }
+.topology-select { width: 100%; }
 .map-node.dense circle{fill:#55779a;stroke-width:1}.map-node.dense text{font-size:10px}.cad-reference{pointer-events:none;filter:grayscale(.35) brightness(1.08)}
 .simulation-page{flex:1;min-height:0;overflow:auto;padding:8px 12px 30px;color:#d3e2f3}.simulation-title{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:8px 0 18px}.simulation-title h2{display:flex;align-items:center;gap:9px;font-size:23px}.simulation-title p{margin-top:9px;color:#94abc8;line-height:1.6}.toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:8px}.new-vehicle-count{display:flex;align-items:center;gap:7px;color:#9cb1cb;font-size:11px}.new-vehicle-count input{width:60px}.scope-label{font-size:11px;color:#7ad4e7;border:1px solid #2b6676;background:#102e3e;padding:4px 8px;border-radius:4px;white-space:nowrap}.environment-panel,.simulation-panel,.configuration-guide{border:1px solid #2b4162;border-radius:6px;background:#101b32;padding:18px}.environment-panel{display:flex;align-items:center;flex-wrap:wrap;gap:20px;margin-bottom:14px}.environment-panel>div:first-child{flex:1;min-width:240px}.environment-panel h3{font-size:16px}.environment-panel p{color:#9cb1cb;line-height:1.6;margin-top:7px;overflow-wrap:anywhere}.environment-state{display:flex;flex-direction:column;gap:8px}.environment-state small{color:#89a0be}.simulation-grid{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(320px,1fr);gap:14px}.simulation-panel{min-width:0}.simulation-panel>header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}.simulation-panel h3{display:flex;align-items:center;gap:8px;font-size:15px}.simulation-panel small{display:block;color:#91a8c3;line-height:1.65;margin-top:12px}.simulation-map{width:100%;height:340px;background:#0c1529;border:1px solid #223654;border-radius:4px}.roads path{fill:none;stroke:#3b5475;stroke-width:4;stroke-linecap:round}.roads path.blocked{stroke:#ef947b;stroke-dasharray:8 6}.edge-controls{border-top:1px solid #2b4162;padding-top:12px;margin-top:15px}.edge-controls summary{cursor:pointer;color:#a9c7dc}.edge-controls p{line-height:1.6;color:#91a8c3;margin:12px 0}.edge-options{max-height:150px;overflow:auto;margin:12px 0}.edge-options label{display:flex;flex-direction:row;align-items:center;gap:8px;padding:5px}.edge-options input{width:15px;min-height:15px}.map-node circle{fill:#90abc8;stroke:#0c1529;stroke-width:2}.map-node text{font-size:12px;fill:#a5b7cc;paint-order:stroke;stroke:#0c1529;stroke-width:4;stroke-linejoin:round}.map-car{color:var(--car-color);transition:transform .5s linear}.map-car>circle{fill:var(--car-color);fill-opacity:.12;stroke:var(--car-color);stroke-width:1.5}.map-car rect{fill:var(--car-color);stroke:#091525;stroke-width:2}.map-car text{fill:var(--car-color);font-size:13px;font-weight:600;paint-order:stroke;stroke:#0c1529;stroke-width:4;stroke-linejoin:round}.map-car.selected>circle{stroke-width:3}.map-car.stale{opacity:.4}.map-car.offline>circle{stroke-dasharray:4 3}.map-caption{display:flex;justify-content:space-between;gap:12px;color:#86a0bf;padding-top:10px;line-height:1.6}.map-empty{min-height:340px;display:grid;place-content:center;color:#839bbb;background:#0c1529;padding:28px;text-align:center}.simulation-panel label{display:flex;flex-direction:column;gap:7px;color:#a5bad2;font-size:12px}.simulation-panel input,.simulation-panel select{width:100%;min-width:0}.simulation-panel fieldset{border:0;padding:0;margin:0 0 16px;min-width:0}.form-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:14px 0}.scenario-panel fieldset>label{margin-bottom:12px}.simulation-page .primary{color:#a6f0ff;border-color:#289db6;background:#134050}.state-pill{display:inline-flex;padding:4px 8px;border:1px solid #3f526d;border-radius:4px;font-size:11px;white-space:nowrap}.state-pill.pass{color:#67e1bb;background:#112f2e;border-color:#286a59}.state-pill.fail{color:#ffacb6;background:#3c2432;border-color:#865064}.state-pill.waiting{color:#f1d08f;background:#342e21;border-color:#75603a}.state-pill.unknown{color:#a2b1c6;background:#1a273c;border-color:#3c4f6a}.scenario-progress{border-top:1px solid #293c59;margin-top:19px;padding-top:16px}.scenario-progress>div{display:flex;justify-content:space-between;color:#a5d5e4}.scenario-progress progress{width:100%;height:6px;margin:12px 0;accent-color:#3ac5cf}.scenario-progress p{line-height:1.7;color:#b1c5dd;overflow-wrap:anywhere}.vehicle-select{max-width:320px}.vehicle-facts{display:grid;grid-template-columns:105px minmax(0,1fr);gap:9px 12px;line-height:1.5;margin:16px 0 19px}.vehicle-facts dt{color:#8fa6c3}.vehicle-facts dd{margin:0;overflow-wrap:anywhere}.speed-control{display:flex;align-items:flex-end;gap:10px;margin-top:15px}.speed-control label{max-width:130px}.plc-faults{margin-top:18px}.report-panel{margin-top:14px}.report-metrics{display:flex;flex-wrap:wrap;gap:12px 28px;padding-bottom:8px}.report-metrics dt{font-size:11px;color:#8da6c3}.report-metrics dd{margin:5px 0;font-size:19px;color:#b7e7ef;font-variant-numeric:tabular-nums}.report-identity{display:flex;flex-wrap:wrap;align-items:center;gap:10px 18px;padding:0 0 15px;color:#99b1ca;line-height:1.6}.report-identity b{color:#c2dbe8}.report-panel>.inline-warning{line-height:1.7;margin-bottom:12px}.report-table{overflow:auto}.report-panel table{width:100%;border-collapse:collapse;text-align:left;line-height:1.6}.report-panel th{font-weight:400;color:#8fa7c6;background:#12223a}.report-panel td,.report-panel th{padding:12px;border-bottom:1px solid #293b56}.report-panel td:first-child{min-width:150px}.report-panel td:last-child{overflow-wrap:anywhere}.report-empty{color:#91a8c3;line-height:1.8;padding:8px 0}.simulation-error,.simulation-notice{padding:12px 15px;line-height:1.6;margin-bottom:14px;border-radius:4px}.simulation-error{background:#402633;border:1px solid #865269;color:#ffbdc8}.simulation-notice{background:#143037;border:1px solid #2c626a;color:#9edfe0}.inline-warning{color:#eac17d;font-size:11px}.scenario-panel>.inline-warning{margin-top:10px}.configuration-guide{margin-bottom:14px}.configuration-guide h3{margin-bottom:10px}.configuration-guide p{line-height:1.8;color:#a0b8d0}.event-panel{margin-top:14px}.event-panel summary{cursor:pointer;color:#a8cedf}.event-panel ol{list-style:none;padding:0;max-height:250px;overflow:auto}.event-panel li{display:flex;gap:16px;line-height:1.7;border-top:1px solid #263a55;padding:9px 0;overflow-wrap:anywhere}.event-panel time{flex:none;color:#8ca5c1}.simulation-boundary{color:#8098b5;line-height:1.8;margin-top:16px;font-size:11px}@media(max-width:1050px){.simulation-grid{grid-template-columns:1fr}.simulation-title{align-items:flex-start}.map-panel{order:0}}@media(max-width:650px){.simulation-page{padding:5px}.simulation-title{flex-direction:column}.environment-panel{padding:14px}.simulation-panel{padding:14px}.simulation-panel>header{align-items:flex-start;flex-wrap:wrap}.simulation-map{height:280px}.form-row{grid-template-columns:1fr}.map-caption{flex-direction:column}.event-panel li{display:block}.event-panel time{display:block}.vehicle-facts{grid-template-columns:85px minmax(0,1fr)}}@media(prefers-reduced-motion:reduce){.map-car{transition:none}}
 .instance-designer{margin-bottom:14px}.designer-intro{line-height:1.75;color:#9db4ce;margin-bottom:14px}.designer-intro code{color:#8ce0e4}.map-import{display:flex;align-items:center;flex-wrap:wrap;gap:12px;padding:12px;background:#0c172b;border:1px solid #263d5b;margin-bottom:14px}.map-import>span{color:#8da7c4;line-height:1.55}.file-picker{max-width:330px}.file-picker input{padding:7px}.plc-table-binding{border:1px solid #294666;background:#0a1628;padding:13px;margin-bottom:14px}.plc-table-summary{display:grid;gap:5px;padding:10px;border:1px solid #23605d;background:#0a2427}.plc-table-summary span{color:#9ed6d0}.plc-table-summary code{display:block;overflow-wrap:anywhere;color:#77aee4;font-size:11px}.topology-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.vehicle-designer{border-top:1px solid #293e5d;margin-top:16px;padding-top:14px}.designer-subhead{display:flex;justify-content:space-between;gap:12px;align-items:baseline;margin-bottom:10px}.designer-subhead small,.designer-actions span{color:#8da4c0}.vehicle-config-row{display:grid;grid-template-columns:1fr 1.3fr .7fr auto;gap:9px;align-items:end;padding:9px 0;border-top:1px solid #223651}.agentel-config-row button{height:34px}.designer-actions{margin-top:15px}.call-plan{border-top:1px solid #2a405f;padding-top:13px;margin-top:14px}.recovery-panel{margin-top:14px}.recovery-panel>p{line-height:1.75;color:#a1b8d1}.recovery-items{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:10px;margin:14px 0}.recovery-items article{border:1px solid #304965;background:#0d192d;padding:12px}.recovery-title{display:flex;justify-content:space-between;gap:10px;margin-bottom:9px}.recovery-items p,.recovery-items small{display:block;color:#9fb6cf;line-height:1.6;overflow-wrap:anywhere;margin:5px 0}.recovery-items button{margin-top:8px}.recovery-confirmations{display:flex;flex-wrap:wrap;gap:18px;margin-top:12px}.recovery-confirmations label{display:flex;flex-direction:row;align-items:center;gap:8px}.recovery-confirmations input{width:16px;min-height:16px}.simulation-panel textarea{width:100%;min-width:0;resize:vertical}@media(max-width:1050px){.topology-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:650px){.topology-grid,.vehicle-config-row{grid-template-columns:1fr}}

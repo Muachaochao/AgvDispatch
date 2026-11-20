@@ -140,7 +140,7 @@
   outline-offset: 2px;
 }
 
-.paice-workspace .simulation-operations :is(input:not([type="checkbox"], [type="radio"], [type="range"]), select, textarea):not(.workshop-preview *) {
+.paice-workspace .simulation-operations :is(input:not([type="checkbox"], [type="radio"], [type="range"]), select, textarea):not(.workshop-preview *, .topology-select *) {
   min-height: 32px;
   max-width: 100%;
   padding: 5px 8px;
@@ -152,6 +152,25 @@
 }
 .paice-workspace .simulation-operations :is(progress, input[type="range"], input[type="checkbox"], input[type="radio"]) {
   accent-color: var(--ui-primary);
+}
+
+.paice-workspace .simulation-operations .map-import {
+  background: var(--ui-surface-raised);
+  border-color: var(--ui-line);
+  color: var(--ui-text);
+}
+.paice-workspace .simulation-operations .instance-designer :is(.designer-intro, .map-import-summary span, .designer-actions span) {
+  color: var(--ui-text-2);
+}
+.paice-workspace .simulation-operations .designer-intro code { color: var(--ui-primary-strong); }
+.paice-workspace .simulation-operations .instance-designer :is(.designer-section-title, .vehicle-designer, .vehicle-config-row) {
+  border-color: var(--ui-line);
+}
+.paice-workspace .simulation-operations .designer-section-title b { color: var(--ui-text); }
+.paice-workspace .simulation-operations .instance-designer {
+  --el-fill-color-blank: var(--ui-surface);
+  --el-bg-color-overlay: var(--ui-surface);
+  --el-border-color-hover: var(--ui-primary);
 }
 
 .paice-workspace .simulation-operations :is(
