@@ -68,6 +68,21 @@ const stationDrafts = ref<SimulationStationConfiguration[]>([
   { stationId: 'CNC-001', pickupSite: '', signalSource: 'verified' },
   { stationId: 'CNC-002', pickupSite: '', signalSource: 'verified' }
 ]);
+const stationFilter = ref('');
+const stationPage = ref(1);
+const stationsPerPage = 12;
+const filteredStations = computed(() => {
+  const search = stationFilter.value.trim().toLowerCase();
+  return stationDrafts.value.map((station, index) => ({ station, index })).filter(({ station }) =>
+    station.stationId.toLowerCase().includes(search) || station.pickupSite.toLowerCase().includes(search));
+});
+const stationPageCount = computed(() => Math.max(1, Math.ceil(filteredStations.value.length / stationsPerPage)));
+const visibleStations = computed(() => {
+  const offset = (stationPage.value - 1) * stationsPerPage;
+  return filteredStations.value.slice(offset, offset + stationsPerPage);
+});
+watch(stationFilter, () => { stationPage.value = 1; }, { flush: 'sync' });
+watch(stationPageCount, count => { stationPage.value = Math.min(stationPage.value, count); });
 const waitingSite = ref(''), dumpingSite = ref('');
 const schemeName = ref(''), selectedScheme = ref(''), selectedHistory = ref(''), comparisonId = ref('');
 const selectedReport = ref<SimulationReport | null>(null), comparisonReport = ref<SimulationReport | null>(null);
@@ -1177,6 +1192,8 @@ function addStation() {
   const next = Array.from({ length: 999 }, (_, index) => `CNC-${String(index + 1).padStart(3, '0')}`).find(id => !used.has(id))!;
   stationDrafts.value.push({ stationId: verified?.stationId ?? bound?.stationId ?? next, pickupSite: '',
     signalSource: verified ? 'verified' : 'isolated-synthetic' });
+  stationFilter.value = '';
+  stationPage.value = stationPageCount.value;
 }
 function autoMapStations(notify = true) {
   if (!mapDefinition.value) {
@@ -1403,6 +1420,8 @@ function accept(next: SimulationStatus) {
     mapDefinition.value = next.map; mapFileName.value = next.configuration.mapName || '已保存的实例地图';
     mapIdentityDraft.value = next.configuration.mapIdentity ?? undefined;
     stationDrafts.value = next.configuration.stations.map(station => ({ ...station, signalSource: station.signalSource ?? 'verified' }));
+    stationFilter.value = '';
+    stationPage.value = 1;
     waitingSite.value = next.configuration.dumper.waitingSite;
     additionalWaitingSites.value = (next.configuration.dumper.waitingSites ?? []).filter(site => site !== waitingSite.value);
     dumpingSite.value = next.configuration.dumper.dumpingSite; dumperResourceId.value = next.configuration.dumper.resourceId;
@@ -2005,11 +2024,19 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
         </div>
         <template v-if="mapDefinition">
           <div class="designer-section-title"><span>01</span><div><b>业务拓扑映射</b><small>把地图节点绑定到当前 28 阶段业务模型。</small></div></div>
+          <div class="toolbar station-page-tools">
+            <input v-model="stationFilter" type="search" aria-label="搜索工位或取货节点" placeholder="搜索工位或取货节点" />
+            <button type="button" :disabled="stationPage <= 1" @click="stationPage--">上一页</button>
+            <span>{{ filteredStations.length }} 个工位 · 第 {{ stationPage }} / {{ stationPageCount }} 页</span>
+            <button type="button" :disabled="stationPage >= stationPageCount" @click="stationPage++">下一页</button>
+          </div>
           <fieldset :disabled="busy || !!status?.running || starting || active" class="topology-grid">
             <div class="station-designer">
-              <div v-for="(station, index) in stationDrafts" :key="index" class="station-config-row">
+              <datalist id="simulation-pickup-nodes"><option v-for="node in mapNodes" :key="node.id" :value="node.id" :label="node.agvSiteId || node.id" /></datalist>
+              <p v-if="!visibleStations.length">没有匹配的工位。</p>
+              <div v-for="{ station, index } in visibleStations" :key="index" class="station-config-row">
                 <label>工位编号<input v-model.trim="station.stationId" placeholder="CNC-001" maxlength="7" /></label>
-                <label>工位取货节点<select v-model="station.pickupSite" @change="resetVehicleOrigins"><option value="">请选择节点</option><option v-for="node in mapNodes" :key="node.id" :value="node.id">{{ node.id }} · {{ node.agvSiteId }}</option></select></label>
+                <label>工位取货节点<input v-model.trim.lazy="station.pickupSite" list="simulation-pickup-nodes" placeholder="输入或选择节点" @change="resetVehicleOrigins" /></label>
                 <label>信号依据<select v-model="station.signalSource"><option value="verified">当前有效点表</option><option value="isolated-synthetic">隔离合成点位（现场未确认）</option></select></label>
                 <label>派车优先级<input :value="station.priority" type="number" min="0" max="100" step="1" placeholder="沿用默认" @input="station.priority = ($event.target as HTMLInputElement).value === '' ? undefined : Number(($event.target as HTMLInputElement).value)" /></label>
                 <button :disabled="stationDrafts.length <= 1" @click="stationDrafts.splice(index, 1); resetVehicleOrigins()">删除工位</button>
@@ -2070,7 +2097,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
             <div>
               <label class="file-picker">载入协议 JSON<input type="file" accept=".json,application/json" @change="loadProtocolFile" /></label>
               <textarea v-model="protocolText" rows="13" spellcheck="false" aria-label="协议模拟JSON"></textarea>
-              <div class="toolbar"><button class="primary" :disabled="busy || protocol?.running" @click="startProtocol">启动协议服务器</button><button :disabled="busy || !protocol?.running" @click="action('protocol-stop')">停止协议服务器</button></div>
+              <div class="toolbar"><button class="primary" :disabled="!available || protocol?.running" @click="startProtocol">启动协议服务器</button><button :disabled="!available || !protocol?.running" @click="action('protocol-stop')">停止协议服务器</button></div>
             </div>
             <aside>
               <dl><dt>端点</dt><dd>{{ protocolAddress() }}</dd><dt>协议 / 分帧</dt><dd>{{ protocol?.transport || '—' }} / {{ protocol?.framing || '—' }}</dd><dt>规则数</dt><dd>{{ protocol?.rules ?? 0 }}</dd><dt>请求数</dt><dd>{{ protocol?.requests ?? 0 }}</dd></dl>
@@ -2087,14 +2114,14 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
           <p>用于独立演练楼层运输、开关门和外部信号时间轴。该模型当前不进入正式派车契约或安全联锁。</p>
           <div class="equipment-grid">
             <div>
-              <div class="toolbar"><label>楼层运行 / 秒<input v-model.number="equipmentTravelSeconds" type="number" min="0.1" max="300" step="0.1" /></label><label>开关门 / 秒<input v-model.number="equipmentDoorSeconds" type="number" min="0.1" max="60" step="0.1" /></label><button class="primary" :disabled="busy || equipment?.running" @click="startEquipment">启动设备模型</button><button :disabled="busy || !equipment?.running" @click="action('equipment-stop')">停止设备模型</button></div>
+              <div class="toolbar"><label>楼层运行 / 秒<input v-model.number="equipmentTravelSeconds" type="number" min="0.1" max="300" step="0.1" /></label><label>开关门 / 秒<input v-model.number="equipmentDoorSeconds" type="number" min="0.1" max="60" step="0.1" /></label><button class="primary" :disabled="!available || equipment?.running" @click="startEquipment">启动设备模型</button><button :disabled="!available || !equipment?.running" @click="action('equipment-stop')">停止设备模型</button></div>
               <dl class="equipment-facts"><dt>当前 / 目标楼层</dt><dd>{{ equipment?.currentFloor || '—' }} → {{ equipment?.targetFloor || '—' }}</dd><dt>运行状态</dt><dd>{{ equipment?.fault ? '故障' : equipment?.moving ? `${equipmentDirectionLabel(equipment?.direction)} · ${Math.round((equipment?.progress ?? 0) * 100)}%` : equipmentDirectionLabel(equipment?.direction) }}</dd><dt>门状态</dt><dd>{{ equipmentDirectionLabel(equipment?.door) }}</dd></dl>
-              <div class="toolbar"><button :disabled="busy || !equipment?.running || equipment?.fault || equipment?.moving || equipment?.door !== 'Closed'" @click="equipmentControl({ elevator: { targetFloor: '2' } })">前往2层</button><button :disabled="busy || !equipment?.running || equipment?.fault || equipment?.moving || equipment?.door !== 'Closed'" @click="equipmentControl({ elevator: { targetFloor: '1' } })">前往1层</button><button :disabled="busy || !equipment?.running || equipment?.moving" @click="equipmentControl({ elevator: { doorCommand: 'open' } })">开门</button><button :disabled="busy || !equipment?.running || equipment?.moving" @click="equipmentControl({ elevator: { doorCommand: 'close' } })">关门</button><button :disabled="busy || !equipment?.running" @click="equipmentControl({ elevator: { fault: true } })">注入故障</button><button :disabled="busy || !equipment?.running" @click="equipmentControl({ elevator: { reset: true } })">复位设备</button></div>
+              <div class="toolbar"><button :disabled="!available || !equipment?.running || equipment?.fault || equipment?.moving || equipment?.door !== 'Closed'" @click="equipmentControl({ elevator: { targetFloor: '2' } })">前往2层</button><button :disabled="!available || !equipment?.running || equipment?.fault || equipment?.moving || equipment?.door !== 'Closed'" @click="equipmentControl({ elevator: { targetFloor: '1' } })">前往1层</button><button :disabled="!available || !equipment?.running || equipment?.moving" @click="equipmentControl({ elevator: { doorCommand: 'open' } })">开门</button><button :disabled="!available || !equipment?.running || equipment?.moving" @click="equipmentControl({ elevator: { doorCommand: 'close' } })">关门</button><button :disabled="!available || !equipment?.running" @click="equipmentControl({ elevator: { fault: true } })">注入故障</button><button :disabled="!available || !equipment?.running" @click="equipmentControl({ elevator: { reset: true } })">复位设备</button></div>
             </div>
             <div>
               <label>立即设置信号<textarea v-model="signalSetText" rows="3" spellcheck="false"></textarea></label>
               <label>信号时间轴 JSON<textarea v-model="signalScheduleText" rows="4" spellcheck="false"></textarea></label>
-              <div class="toolbar"><button :disabled="busy || !equipment?.running" @click="setEquipmentSignals">应用信号及时间轴</button><button :disabled="busy || !equipment?.running" @click="equipmentControl({ signals: { clearSchedule: true } })">清除时间轴</button></div>
+              <div class="toolbar"><button :disabled="!available || !equipment?.running" @click="setEquipmentSignals">应用信号及时间轴</button><button :disabled="!available || !equipment?.running" @click="equipmentControl({ signals: { clearSchedule: true } })">清除时间轴</button></div>
               <pre>{{ JSON.stringify({ signals: equipment?.signals || {}, scheduled: equipment?.schedules?.length || 0, recent: equipment?.signalEvents?.slice(-5) || [] }, null, 2) }}</pre>
             </div>
           </div>
@@ -2550,4 +2577,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
 .manual-recovery-message{margin:12px 0;padding:12px 14px;border-left:2px solid #54cbd4;background:#0b2030;color:#a9d1dc!important;line-height:1.7}
 @media(max-width:980px){.manual-hero{align-items:flex-start;flex-direction:column}.manual-hero-actions{justify-content:flex-start}.manual-facts{grid-template-columns:repeat(2,minmax(0,1fr))}.manual-guide-title{grid-template-columns:1fr}.manual-guide-title code{white-space:normal;overflow-wrap:anywhere}}
 @media(max-width:650px){.manual-facts{grid-template-columns:1fr}.manual-next-step{grid-template-columns:1fr}}
+.station-page-tools{margin:0 0 12px}
+.station-page-tools input{width:min(100%,260px)}
+.station-page-tools span{font-variant-numeric:tabular-nums}
 </style>
