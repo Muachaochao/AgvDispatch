@@ -29,7 +29,7 @@ const pointMap = ref<InstanceType<typeof EngineeringPointMap>>()
 const selectedSite = ref('')
 const showSignals = ref(false)
 const mapTab = ref<'preview' | 'points'>('preview')
-let originalBindings: Pick<Configuration, 'stations' | 'plcSignalTable'> | undefined
+let originalConfiguration: Pick<Configuration, 'stations' | 'plcSignalTable' | 'downstreamAdmissionCapacity'> | undefined
 const locked = computed(() => busy.value || props.status?.running || ['starting', 'stopping'].includes(props.status?.phase ?? ''))
 const station = computed(() => configuration.value?.stations.find(row => row.stationId === stationId.value))
 const bindings = computed(() => new Map(configuration.value?.plcSignalTable.stations.map(row => [row.stationId, row])))
@@ -48,6 +48,12 @@ const sites = computed(() => nodeOptions.value
   })
   .sort((a, b) => comparePointLabels(a.label, b.label)))
 const vehicles = computed(() => configuration.value?.vehicles ?? [])
+const admissionValue = computed({
+  get: () => configuration.value?.downstreamAdmissionCapacity ?? 0,
+  set: value => {
+    if (configuration.value) configuration.value.downstreamAdmissionCapacity = value
+  },
+})
 const markers = computed<EngineeringPoint[]>(() => {
   const config = configuration.value
   if (!config) return []
@@ -140,7 +146,11 @@ function inspectIssue(issue: EngineeringPoint) {
 function beginEditing() {
   const config = configuration.value
   if (!config || locked.value) return
-  originalBindings = { stations: config.stations.map(row => ({ ...row })), plcSignalTable: config.plcSignalTable }
+  originalConfiguration = {
+    stations: config.stations.map(row => ({ ...row })),
+    plcSignalTable: config.plcSignalTable,
+    downstreamAdmissionCapacity: config.downstreamAdmissionCapacity,
+  }
   name.value = (props.status?.schemes?.find(row => row.id === scheme.value)?.name ?? '').slice(0, 73).trimEnd() + ' · 配置副本'
   editing.value = true
   error.value = ''; notice.value = ''
@@ -149,12 +159,12 @@ function beginEditing() {
 function finishEditing() {
   editing.value = false
   pickingStop.value = false
-  originalBindings = undefined
+  originalConfiguration = undefined
 }
 
 function cancelEditing() {
   if (busy.value) return
-  if (configuration.value && originalBindings) Object.assign(configuration.value, originalBindings)
+  if (configuration.value && originalConfiguration) Object.assign(configuration.value, originalConfiguration)
   finishEditing()
   error.value = ''; notice.value = ''
 }
@@ -214,7 +224,7 @@ async function save() {
       scheme.value = result.selectedSchemeId
       finishEditing()
     } else {
-      if (originalBindings) Object.assign(configuration.value, originalBindings)
+      if (originalConfiguration) Object.assign(configuration.value, originalConfiguration)
       finishEditing()
     }
     emit('saved', result)
@@ -287,7 +297,6 @@ async function save() {
       <section class="engineering-check">
         <header class="engineering-check-header">
           <h4>点位检查详情</h4>
-          <el-button v-if="!editing" :disabled="locked" @click="beginEditing">编辑配置</el-button>
         </header>
         <ul v-if="issues.length" class="point-issues">
           <li v-for="issue in issues" :key="issue.label + issue.reason">
@@ -297,15 +306,29 @@ async function save() {
         <p v-else>已核对车辆起点、工位停车点、业务点位和 PLC 绑定。</p>
         <dl class="engineering-facts engineering-summary">
           <div>
+            <dt>方案车辆数</dt>
+            <dd>{{ vehicles.length }} 台</dd>
+            <p>方案最多能配置 {{ vehicles.length }} 台虚拟车。</p>
+          </div>
+          <div>
+            <dt>车队任务并发</dt>
+            <dd>{{ vehicles.length }} 单</dd>
+            <p>主工程最多同时为 {{ vehicles.length }} 台车分配任务。</p>
+          </div>
+          <div>
             <dt>倒料资源</dt>
             <dd><el-button link type="primary" @click="locatePoint(configuration.dumper.dumpingSite)">{{ configuration.dumper.resourceId }}</el-button></dd>
           </div>
           <div>
-            <dt>同时执行上限</dt>
-            <dd>{{ configuration.downstreamAdmissionCapacity ? `${configuration.downstreamAdmissionCapacity} 单` : '不限' }}</dd>
-            <p v-if="configuration.downstreamAdmissionCapacity">派车去取箱时占用名额，返箱收尾后释放。</p>
+            <dt>取箱到收尾的并行上限</dt>
+            <dd>{{ admissionValue ? `${admissionValue} 单` : '不限' }}</dd>
+            <p v-if="admissionValue">派车去取箱时占用名额，返箱收尾后释放。</p>
           </div>
         </dl>
+        <div class="engineering-summary-action">
+          <el-button type="primary" plain :disabled="locked" @click="beginEditing">编辑配置</el-button>
+          <small>在编辑配置中修改并行上限和工位停车点。</small>
+        </div>
       </section>
       <el-alert v-if="notice && !editing" :title="notice" type="success" :closable="false" show-icon />
       <section v-if="editing" class="engineering-edit">
@@ -328,6 +351,11 @@ async function save() {
             </el-form-item>
             <el-form-item label="新方案名称">
               <el-input v-model="name" maxlength="80" :disabled="locked" />
+            </el-form-item>
+            <el-form-item label="取箱到收尾的并行上限">
+              <el-input-number v-model="admissionValue" :min="0" :max="Math.max(1, vehicles.length)" :step="1"
+                :disabled="locked" aria-label="取箱到收尾的并行上限" />
+              <small class="admission-help">填 0 表示关闭这层限流。正数最多不超过 {{ vehicles.length }} 单，派车取箱后占用名额，返箱收尾后释放。倒料区进车容量仍单独计算。</small>
             </el-form-item>
           </div>
           <p v-if="issues.length">请先处理点位检查中的异常，再保存方案。</p>
@@ -372,6 +400,8 @@ async function save() {
 .engineering-facts dd { margin: 2px 0 0; font-weight: 600; overflow-wrap: anywhere; }
 .engineering-summary { gap: 12px 32px; margin-bottom: 0; }
 .engineering-summary dd { min-height: 26px; display: flex; align-items: center; }
+.engineering-summary-action { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+.engineering-summary-action small { color: var(--el-text-color-secondary); }
 .engineering-map-header, .engineering-check-header, .map-pick-banner { display: flex; align-items: center; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
 .engineering-check-header h4, .engineering-edit h4 { margin: 0; }
 .map-pick-banner { padding: 8px 12px; border-radius: 8px; background: var(--el-color-primary-light-9); }
@@ -380,6 +410,7 @@ async function save() {
 .engineering-edit-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); gap: 0 16px; max-width: 850px; }
 .engineering-edit-grid .el-form-item .el-button { margin-top: 6px; }
 .engineering-edit-grid .el-form-item .point-detail { width: 100%; overflow-wrap: anywhere; }
+.engineering-edit-grid .admission-help { display: block; width: 100%; margin-top: 6px; line-height: 1.6; color: var(--el-text-color-secondary); }
 .engineering-edit-grid input[type="file"] { max-width: 100%; }
 @media (max-width: 1040px) { .engineering-layout { grid-template-columns: minmax(0, 1fr); } }
 </style>
