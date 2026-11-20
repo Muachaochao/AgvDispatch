@@ -65,7 +65,10 @@ public sealed class SimulationBridge : IAsyncDisposable
             ObjectDisposedException.ThrowIf(disposed, this);
             await EnsureStartedAsync(ct);
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeout.CancelAfter(TimeSpan.FromSeconds(45));
+            // Instance preparation copies and verifies the isolated runtime binaries.
+            var preparesInstance = method == HttpMethod.Post &&
+                path is "/new-instance" or "/configure" or "/scheme-select" or "/scheme-start";
+            timeout.CancelAfter(TimeSpan.FromSeconds(preparesInstance ? 120 : 45));
             using var request = new HttpRequestMessage(method, path);
             if (body is not null) request.Content = new StringContent(body, Encoding.UTF8, "application/json");
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);

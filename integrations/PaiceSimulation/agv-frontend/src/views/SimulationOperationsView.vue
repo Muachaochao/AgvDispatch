@@ -24,10 +24,11 @@ const stage = computed(() => (Object.keys(sections) as Stage[]).find(key => sect
 
 const prefix = '/dispatch/main'
 const simulationBase = prefix + '/simulation'
+const instancePreparation = new Set(['/new-instance', '/configure', '/scheme-select', '/scheme-start'])
 async function request<T>(path = '', body?: unknown, signal?: AbortSignal): Promise<T> {
   const response = await http.request<T>({
     url: simulationBase + path, method: body === undefined ? 'GET' : 'POST',
-    data: body, signal, timeout: 50000
+    data: body, signal, timeout: body !== undefined && instancePreparation.has(path) ? 140000 : 50000
   })
   return response as T
 }

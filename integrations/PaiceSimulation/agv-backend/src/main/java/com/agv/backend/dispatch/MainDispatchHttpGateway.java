@@ -12,9 +12,13 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.Set;
 
 @Component
 public class MainDispatchHttpGateway implements MainDispatchGateway {
+    private static final Set<String> INSTANCE_PREPARATION_PATHS = Set.of(
+            "/api/simulation/new-instance", "/api/simulation/configure",
+            "/api/simulation/scheme-select", "/api/simulation/scheme-start");
 
     private final MainDispatchProperties properties;
     private final ObjectMapper objectMapper;
@@ -66,8 +70,9 @@ public class MainDispatchHttpGateway implements MainDispatchGateway {
             throw new BusinessException(5031, "主工程调度实验未启用");
         }
         try {
+            long timeoutSeconds = "POST".equals(method) && INSTANCE_PREPARATION_PATHS.contains(path) ? 130 : 48;
             HttpRequest.Builder request = HttpRequest.newBuilder(uri(path))
-                    .timeout(Duration.ofSeconds(45))
+                    .timeout(Duration.ofSeconds(timeoutSeconds))
                     .header("Accept", "application/json");
             if ("POST".equals(method)) {
                 request.header("Content-Type", "application/json")
@@ -84,8 +89,8 @@ public class MainDispatchHttpGateway implements MainDispatchGateway {
                 throw new BusinessException(5031, "5199 返回了无效 JSON");
             }
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                String message = parsed.path("error").asText(
-                        parsed.path("message").asText("5199 请求失败 HTTP " + response.statusCode()));
+                String message = parsed.path("detail").asText(parsed.path("error").asText(
+                        parsed.path("message").asText("5199 请求失败 HTTP " + response.statusCode())));
                 throw new BusinessException(5031, message);
             }
             return parsed;

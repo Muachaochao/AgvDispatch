@@ -1473,7 +1473,8 @@ async function action(name: 'start' | 'stop' | 'run' | 'abort' | 'control' | 'ne
   if (name === 'new-instance' && (!Number.isInteger(newVehicleCount.value) || newVehicleCount.value < 1 || newVehicleCount.value > 8)) return;
   busy.value = true; error.value = ''; actionError.value = ''; notice.value = '';
   const request = new AbortController(); controller = request;
-  const timeout = setTimeout(() => request.abort(), 60000);
+  const preparesInstance = ['new-instance', 'configure', 'scheme-select', 'scheme-start'].includes(name);
+  const timeout = setTimeout(() => request.abort(), preparesInstance ? 145000 : 60000);
   let result: SimulationStatus | undefined;
   try {
     const next = await simulationApi<SimulationStatus>('/' + name, payload, request.signal);
@@ -1722,7 +1723,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
             <div class="overview-status-title"><span :class="['state-pill', cleanupRequired ? 'fail' : fresh ? 'pass' : 'unknown']">{{ !status?.enabled ? '未准备' : status?.running ? '运行正常' : '已停止' }}</span><b>{{ overviewHeadline }}</b></div>
             <p>{{ onlineVehicleCount }} 辆车在线 · {{ loadedVehicleCount }} 辆载箱 · {{ modeledTaskCount }} 辆执行任务</p>
           </div>
-          <button class="primary overview-next-action" @click="followNextAction">{{ nextAction.button }}</button>
+          <button class="primary overview-next-action" :disabled="busy || reading" @click="followNextAction">{{ nextAction.button }}</button>
         </div>
         <div class="vehicle-story-list">
           <article v-for="item in vehicleStories" :key="item.id" :class="item.tone">
