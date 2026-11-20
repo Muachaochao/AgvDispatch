@@ -2283,7 +2283,7 @@ defineExpose({
           <template #dropdown>
             <el-dropdown-menu>
               <el-dropdown-item command="fit-selection" :disabled="selectedCount === 0">适应选中</el-dropdown-item>
-              <el-dropdown-item command="fit-error" :disabled="errors.length === 0">适应错误</el-dropdown-item>
+              <el-dropdown-item v-if="!previewOnly" command="fit-error" :disabled="errors.length === 0">适应错误</el-dropdown-item>
               <el-dropdown-item command="png" divided>导出 PNG</el-dropdown-item>
               <el-dropdown-item command="svg">导出 SVG</el-dropdown-item>
               <el-dropdown-item command="help" divided>快捷键与操作</el-dropdown-item>
@@ -2293,7 +2293,7 @@ defineExpose({
       </div>
     </div>
 
-    <div class="workspace">
+    <div class="workspace" :class="{ 'preview-only': previewOnly }">
       <div
         ref="canvasWrap"
         class="canvas-wrap"
@@ -2780,7 +2780,7 @@ defineExpose({
         </el-button>
       </div>
 
-      <div class="side">
+      <div v-if="!previewOnly" class="side">
         <div class="side-inner">
           <div class="side-tabs" role="tablist">
             <button
@@ -3209,6 +3209,10 @@ defineExpose({
   gap: 10px;
   flex: 1;
   min-height: 0;
+}
+
+.workspace.preview-only {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .canvas-wrap {

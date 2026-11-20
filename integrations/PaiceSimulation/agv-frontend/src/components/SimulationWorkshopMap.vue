@@ -148,12 +148,11 @@ const legend = [
 </template>
 
 <style scoped>
-.workshop-preview { min-width: 0; container-type: inline-size; }
+.workshop-preview { min-width: 0; }
 .preview-header { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 14px; margin-bottom: 12px; }
 .preview-header h3 { margin: 0; font-size: 17px; }
 .preview-header p { margin: 0; color: var(--ui-text-3); font-size: 12px; }
 .preview-canvas { height: clamp(460px, 68dvh, 780px); }
-.preview-canvas :deep(.workspace) { grid-template-columns: minmax(0, 1fr) minmax(150px, 21%); }
 .preview-3d { height: min(72dvh, 760px); }
 .preview-empty { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 18px 0; color: var(--ui-text-3); }
 .preview-route { fill: none; stroke-width: 3px; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; pointer-events: none; }
@@ -180,7 +179,4 @@ const legend = [
 .vehicle-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 0; margin: 12px 0 0; list-style: none; color: var(--ui-text-3); font-size: 12px; }
 .vehicle-legend li { display: flex; align-items: center; gap: 5px; }
 .vehicle-legend i { display: block; width: 8px; height: 8px; border-radius: 50%; }
-@container (max-width: 690px) {
-  .preview-canvas :deep(.workspace) { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) 120px; }
-}
 </style>
