@@ -12,6 +12,7 @@ import BusinessScenarioSetup from "@/components/BusinessScenarioSetup.vue";
 import EngineeringSchemeEditor from "@/components/EngineeringSchemeEditor.vue";
 import RoadNetScene from "@/components/RoadNetScene.vue";
 import DispatchMapImport from "@/components/DispatchMapImport.vue";
+import DispatchReplay from "@/components/DispatchReplay.vue";
 import {
   getRoadNet,
   listRoadNets,
@@ -44,6 +45,7 @@ import {
   dispatchRead,
   downloadIntegrationRecord,
   type DispatchStatus,
+  type DispatchReport,
   type TaskRow,
   type ResourceRow,
 } from "@/integration/dispatch-api";
@@ -73,6 +75,14 @@ const connected = ref(false),
 const detail = ref<DispatchTaskDetail | null>(null),
   selectedTask = ref(""),
   selectedScheme = ref("");
+const selectedCommandId = ref("");
+const historicalReport = shallowRef<DispatchReport | null>(null);
+const historicalReportId = ref("");
+const reportError = ref("");
+const reportBusy = ref(false);
+const displayedReport = computed(() =>
+  historicalReportId.value ? historicalReport.value : status.value?.report,
+);
 const scenario = ref("normal-cycle"),
   rounds = ref(1),
   targetMap = ref<number | null>(null),
@@ -92,6 +102,7 @@ let timer: ReturnType<typeof setTimeout> | undefined,
   taskPollCounter = 0,
   experimentPollCounter = 0;
 let detailPolling = false;
+let taskRequest = 0;
 let metadataRoot: string | undefined, metadataScenario: string | undefined;
 let lastRenderSource: SourceMap | null = null;
 const clock = ref(Date.now());
@@ -113,6 +124,18 @@ async function openCallTask(taskId: string) {
   await selectTask(taskId);
   document.getElementById('business-task-detail')?.scrollIntoView({ block: 'start' });
 }
+function activeTaskForVehicle(vehicleId: string) {
+  return status.value?.scenario?.callRows?.find(row => row.vehicleId === vehicleId && row.status === "active")?.taskId
+    ?? tasks.value.find(row => row.vehicleId === vehicleId && !["Completed", "Cancelled", "Faulted"].includes(row.stage))?.taskId;
+}
+function taskForVehicle(vehicleId: string) {
+  return activeTaskForVehicle(vehicleId)
+    ?? tasks.value.find(row => row.vehicleId === vehicleId)?.taskId;
+}
+function inspectVehicle(vehicleId: string) {
+  const id = taskForVehicle(vehicleId);
+  if (id) void selectTask(id);
+}
 function blockingVehicles(key?: string) {
   try {
     const rows: unknown = JSON.parse(key || '[]');
@@ -121,6 +144,53 @@ function blockingVehicles(key?: string) {
   return '';
 }
 const selectedCar = computed(() => cars.value[detail.value?.task.vehicleId ?? '']);
+const currentStep = computed(() => detail.value?.steps?.find(step => step.isCurrent));
+const routeCommands = computed(() =>
+  detail.value?.commands?.filter(command => command.route?.edgeIds?.length) ?? [],
+);
+const currentCommand = computed(() => {
+  if (!fresh.value || !currentStep.value || !selectedCar.value) return undefined;
+  const vendorId = selectedCar.value.current_task;
+  const stepId = currentStep.value.stepId;
+  const commands = routeCommands.value.filter(command => stepId && command.stepId === stepId);
+  if (vendorId) return commands.find(command => command.vendorCommandId === vendorId);
+  return commands.reverse().find(command => ["Pending", "Sending", "RetryScheduled"].includes(command.status ?? ""));
+});
+const shownCommand = computed(() => selectedCommandId.value
+  ? routeCommands.value.find(command => command.commandId === selectedCommandId.value)
+  : currentCommand.value);
+const routeKey = computed(() => JSON.stringify([
+  shownCommand.value?.route?.nodeIds ?? [],
+  shownCommand.value?.route?.edgeIds ?? [],
+  shownCommand.value?.route?.mapVersionId,
+]));
+const routePoints = computed(() => {
+  const [nodes, edges, version] = JSON.parse(routeKey.value) as [string[], string[], string?];
+  const currentVersion = status.value?.configuration?.mapIdentity?.mapVersionId;
+  if (!liveMap.value || (version && currentVersion && version !== currentVersion)) return [];
+  return dispatchRoutePoints(liveMap.value, nodes, edges);
+});
+watch([scene, routePoints], ([mapScene, points]) => {
+  if (points.length > 1) mapScene?.drawPath(points);
+  else mapScene?.clearPath();
+}, { flush: "post" });
+const stepNames: Record<string, string> = {
+  GoToPickup: "前往工位取满箱", PickupFullBox: "取满箱确认",
+  DeliverFullBoxToDumper: "运送满箱到等待位", WaitForDumperReady: "等待倒料许可",
+  EnterDumpingPosition: "进入倒料位", DumpFullBox: "倒料确认",
+  ReturnEmptyBox: "返回工位", PlaceEmptyBox: "放回空箱确认", CompletePlcHandshake: "PLC 握手收尾",
+};
+const stepStates: Record<string, string> = {
+  Pending: "未开始", Ready: "待执行", CommandPending: "待发命令",
+  Sending: "发送中", Sent: "已发送", Executing: "执行中", Completed: "已完成",
+  RetryScheduled: "待重试", Failed: "失败", Cancelled: "已取消", ManualIntervention: "待人工处理",
+};
+function commandLabel(command: (typeof routeCommands.value)[number]) {
+  const step = detail.value?.steps?.find(item => item.stepId === command.stepId);
+  const nodes = command.route?.nodeIds ?? [];
+  const endpoints = nodes.length ? `${nodes[0]} → ${nodes[nodes.length - 1]} · ` : "";
+  return `${step ? `第 ${step.sequence} 步 · ` : ""}${endpoints}${command.vendorCommandId || command.commandId}`;
+}
 const mechanism = computed(() => selectedCar.value?.mechanism);
 const mechanismStates: Record<string, string> = {
   Idle: '待命', Executing: '执行中', Completed: '完成', Interrupted: '中断',
@@ -353,13 +423,14 @@ async function poll() {
 async function pollDetails(live: DispatchStatus, revision: number) {
   detailPolling = true;
   try {
+    const scenarioKey = `${live.scenario?.id ?? ""}:${live.scenario?.status ?? ""}`;
     const needsMetadata =
-      !status.value?.map || live.rootName !== metadataRoot || live.scenario?.status !== metadataScenario;
+      !status.value?.map || live.rootName !== metadataRoot || scenarioKey !== metadataScenario;
     const full = needsMetadata
       ? await dispatchRead<DispatchStatus>("/api/simulation", pageAbort.signal)
       : null;
     if (disposed || revision !== actionRevision || status.value?.rootName !== live.rootName) return;
-    if (full) { metadataRoot = live.rootName; metadataScenario = live.scenario?.status; }
+    if (full) { metadataRoot = live.rootName; metadataScenario = scenarioKey; }
     const next: DispatchStatus = full
       ? {
           ...full,
@@ -370,7 +441,7 @@ async function pollDetails(live: DispatchStatus, revision: number) {
           report: full.report,
         }
       : { ...status.value!, ...live };
-    status.value = { ...next, ...status.value, map: next.map, configuration: next.configuration, schemes: next.schemes, report: next.report, startupPlan: full?.startupPlan ?? status.value?.startupPlan };
+    status.value = { ...next, ...status.value, map: next.map, configuration: next.configuration, schemes: next.schemes, history: next.history, report: next.report, startupPlan: full?.startupPlan ?? status.value?.startupPlan };
     error.value = next.error ?? "";
     if (section.value === 'monitor') {
       const map = next.map ?? null;
@@ -407,8 +478,11 @@ async function pollDetails(live: DispatchStatus, revision: number) {
     ) as PromiseRejectedResult[];
     if (failures.length)
       error.value = failures.map((r) => String(r.reason)).join(" · ");
-    if (!selectedTask.value && tasks.value.length === 1) selectedTask.value = tasks.value[0]!.taskId;
-    if (next.running && selectedTask.value) await selectTask(selectedTask.value, false);
+    const automaticTask = next.scenario?.callRows?.find(row => row.status === "active" && row.vehicleId)?.taskId
+      ?? tasks.value.find(task => task.vehicleId && !["Completed", "Cancelled", "Faulted"].includes(task.stage))?.taskId
+      ?? (tasks.value.length === 1 ? tasks.value[0]?.taskId : undefined);
+    if (!selectedTask.value && automaticTask) await selectTask(automaticTask);
+    else if (next.running && selectedTask.value && shouldReadDetails) await selectTask(selectedTask.value, false);
     if (experimentPollCounter++ % 2 === 0) await refreshExperiments();
   } catch (e) {
     if (!disposed) {
@@ -419,34 +493,23 @@ async function pollDetails(live: DispatchStatus, revision: number) {
   }
 }
 async function selectTask(id: string, clear = true) {
+  const request = ++taskRequest;
   selectedTask.value = id;
   if (clear) {
     detail.value = null;
     detailError.value = "";
-    scene.value?.clearPath();
+    selectedCommandId.value = "";
   }
   try {
     const next = await dispatchRead<DispatchTaskDetail>(
       `/api/simulation/tasks/${encodeURIComponent(id)}`,
       pageAbort.signal,
     );
-    if (disposed || selectedTask.value !== id) return;
+    if (disposed || selectedTask.value !== id || request !== taskRequest) return;
     detail.value = next;
     detailError.value = "";
-    const route = next.commands?.find((c) =>
-      ["Sent", "Sending", "Accepted", "Executing"].includes(c.status ?? ""),
-    )?.route;
-    const points = liveMap.value
-      ? dispatchRoutePoints(
-          liveMap.value,
-          route?.nodeIds ?? [],
-          route?.edgeIds ?? [],
-        )
-      : [];
-    if (points.length > 1) scene.value?.drawPath(points);
-    else scene.value?.clearPath();
   } catch (e) {
-    if (!disposed)
+    if (!disposed && request === taskRequest && selectedTask.value === id)
       detailError.value = e instanceof Error ? e.message : String(e);
   }
 }
@@ -539,12 +602,27 @@ function mapSaved(id: number) {
 }
 function reportDownload() {
   downloadIntegrationRecord(
-    status.value?.report ?? {},
-    "dispatch-simulation-report.json",
+    displayedReport.value,
+    `dispatch-simulation-report-${displayedReport.value?.id ?? "current"}.json`,
   );
 }
+async function selectReport(id: string) {
+  historicalReportId.value = id;
+  historicalReport.value = null;
+  reportError.value = "";
+  reportBusy.value = !!id;
+  if (!id) return;
+  try {
+    const result = await dispatchRead<DispatchReport>(`/api/simulation/report?id=${encodeURIComponent(id)}`, pageAbort.signal);
+    if (!disposed && historicalReportId.value === id) historicalReport.value = result;
+  } catch (e) {
+    if (!disposed && historicalReportId.value === id) reportError.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    if (historicalReportId.value === id) reportBusy.value = false;
+  }
+}
 watch(
-  () => status.value?.rootName,
+  [() => status.value?.rootName, () => status.value?.scenario?.id],
   () => {
     selectedTask.value = "";
     detail.value = null;
@@ -867,6 +945,26 @@ onBeforeUnmount(() => {
           <h3>隔离仿真三维路网</h3>
           <el-button size="small" @click="scene?.fitView()">适应画面</el-button>
         </div>
+        <div class="route-toolbar">
+          <el-button
+            v-for="car in vehicles"
+            :key="car.id"
+            size="small"
+            :type="detail?.task.vehicleId === car.id ? 'primary' : 'default'"
+            :disabled="!taskForVehicle(car.id)"
+            @click="inspectVehicle(car.id)"
+          >{{ car.id }}</el-button>
+          <el-select v-if="routeCommands.length" v-model="selectedCommandId" size="small" aria-label="导航命令路线">
+            <el-option label="跟随当前导航" value="" />
+            <el-option v-for="command in routeCommands" :key="command.commandId" :value="command.commandId" :label="commandLabel(command)" />
+          </el-select>
+        </div>
+        <p v-if="shownCommand" class="muted">
+          {{ selectedCommandId && shownCommand.commandId !== currentCommand?.commandId ? "历史命令" : "当前导航" }}
+          · {{ commandLabel(shownCommand) }} · {{ stepStates[shownCommand.status ?? ""] || shownCommand.status }}
+          <span v-if="routePoints.length < 2"> · 路线与当前地图无法匹配</span>
+        </p>
+        <p v-else class="muted">{{ selectedTask ? "当前暂无可显示的导航路线，可查看九步状态或选择既有命令" : "选择有任务的车辆查看路线" }}</p>
         <RoadNetScene
           v-if="liveMap"
           ref="scene"
@@ -919,53 +1017,17 @@ onBeforeUnmount(() => {
             {{ car.heading.toFixed(1) }}°
           </p>
           <p>{{ cars[car.id]?.waitReason || "未报告等待原因" }}</p>
-          <el-button
-            v-if="tasks.find((t) => t.vehicleId === car.id)"
-            size="small"
-            @click="
-              selectTask(tasks.find((t) => t.vehicleId === car.id)!.taskId)
-            "
-            >查看原任务</el-button
-          >
+          <el-button v-if="taskForVehicle(car.id)" size="small" @click="inspectVehicle(car.id)">
+            路线与九步
+          </el-button>
         </article>
       </section>
     </div>
-    <section v-show="section === 'monitor'" id="business-task-detail" class="panel tasks-panel">
+    <section v-if="section === 'monitor'" id="business-task-detail" class="panel tasks-panel">
       <div class="panel-heading">
-        <h3>原任务 · 最近 {{ tasks.length }} 条</h3>
-        <el-space wrap
-          ><el-select
-            v-model="targetMap"
-            style="width: 220px"
-            placeholder="选择导入后的实验路网"
-            ><el-option
-              v-for="map in maps"
-              :key="map.id"
-              :label="map.name"
-              :value="map.id" /></el-select
-          ><el-button
-            :disabled="!fresh || busy || !targetMap || !selectedTasks.length"
-            @click="previewTasks"
-            >预览选中命令为实验任务</el-button
-          ></el-space
-        >
+        <h3>九步任务</h3>
+        <el-tag v-if="detail">{{ detail.task.stationId }} · {{ detail.task.vehicleId || '待派车' }}</el-tag>
       </div>
-      <el-table
-        :data="tasks"
-        row-key="taskId"
-        @selection-change="selectedTasks = $event"
-        @row-click="(row: TaskRow) => selectTask(row.taskId)"
-        ><el-table-column type="selection" width="45" /><el-table-column
-          prop="taskId"
-          label="原任务 ID"
-          min-width="240" /><el-table-column
-          prop="vehicleId"
-          label="车辆"
-          width="120" /><el-table-column
-          prop="stationId"
-          label="工位"
-          width="140" /><el-table-column prop="stage" label="阶段" width="160"
-      /></el-table>
       <el-alert
         v-if="detailError"
         :title="detailError"
@@ -977,19 +1039,26 @@ onBeforeUnmount(() => {
           {{ detail.task.taskId }} ·
           {{ detail.waitingExplanation || "当前无等待说明" }}
         </h4>
-        <el-table :data="detail.steps ?? []" size="small"
+        <el-table :data="detail.steps ?? []" size="small" :row-class-name="({ row }: { row: { isCurrent?: boolean } }) => row.isCurrent ? 'current-business-step' : ''"
           ><el-table-column
             prop="sequence"
             label="步骤"
             width="70" /><el-table-column
-            prop="stepType"
             label="类型"
-            width="190" /><el-table-column
-            prop="status"
+            min-width="150"><template #default="{ row }">{{ stepNames[row.stepType] || row.stepType }}</template></el-table-column><el-table-column
             label="状态"
-            width="130" /><el-table-column
+            width="112"><template #default="{ row }">
+              <el-tag v-if="row.isCurrent" size="small">{{ stepStates[row.status] || row.status }}</el-tag>
+              <span v-else>{{ stepStates[row.status] || row.status }}</span>
+            </template></el-table-column>
+          <el-table-column label="起止点" min-width="155"><template #default="{ row }">
+            {{ [row.sourceSite, row.destinationSite].filter(Boolean).join(' → ') || '—' }}
+          </template></el-table-column>
+          <el-table-column prop="elapsedText" label="耗时" width="95" />
+          <el-table-column
             prop="waitingExplanation"
             label="等待说明"
+            min-width="190"
         /><el-table-column prop="completionRequirement" label="完成条件" min-width="250" /></el-table>
         <template v-if="detail.trafficWaiting?.length">
           <h4>当前路权阻塞</h4>
@@ -1021,15 +1090,36 @@ onBeforeUnmount(() => {
           <el-table-column prop="reason" label="判定原因" min-width="200" />
         </el-table>
         <p v-for="handshake in detail.handshakes ?? []" :key="handshake.stepId" class="muted">{{ handshake.phase }} · {{ handshake.reason }}</p>
-        <p
+        <details
           v-for="command in detail.commands ?? []"
           :key="command.commandId"
           class="muted"
         >
-          {{ command.route?.action || "导航" }} · {{ command.commandId }} · {{ command.status }} ·
-          {{ command.route?.nodeIds?.join(" → ") }}
-        </p>
+          <summary>{{ commandLabel(command) }} · {{ stepStates[command.status ?? ""] || command.status }}</summary>
+          <p>{{ command.route?.action || "导航" }} · {{ command.route?.nodeIds?.join(" → ") || "无路线快照" }}</p>
+        </details>
       </div>
+      <el-empty v-else-if="!detailError" :description="selectedTask ? '正在读取九步任务' : '从多单呼叫或车辆选择任务'" />
+    </section>
+    <section v-if="section === 'monitor'" class="panel tasks-panel">
+      <div class="panel-heading">
+        <h3>原任务 · 最近 {{ tasks.length }} 条</h3>
+        <el-space wrap>
+          <el-select v-model="targetMap" style="width: 220px" placeholder="选择导入后的实验路网">
+            <el-option v-for="map in maps" :key="map.id" :label="map.name" :value="map.id" />
+          </el-select>
+          <el-button :disabled="!fresh || busy || !targetMap || !selectedTasks.length" @click="previewTasks">
+            预览选中命令为实验任务
+          </el-button>
+        </el-space>
+      </div>
+      <el-table :data="tasks" row-key="taskId" @selection-change="selectedTasks = $event" @row-click="(row: TaskRow) => openCallTask(row.taskId)">
+        <el-table-column type="selection" width="45" />
+        <el-table-column prop="taskId" label="原任务 ID" min-width="240" />
+        <el-table-column prop="vehicleId" label="车辆" width="120" />
+        <el-table-column prop="stationId" label="工位" width="140" />
+        <el-table-column prop="stage" label="阶段" width="160" />
+      </el-table>
     </section>
     <DispatchMapImport v-show="section === 'engineering'" @saved="mapSaved" />
     <div v-show="section === 'monitor' || section === 'report'" class="lower-grid" :class="{ 'report-grid': section === 'report' }">
@@ -1053,24 +1143,31 @@ onBeforeUnmount(() => {
           ></el-table
         >
       </section>
-      <section v-show="section === 'report'" class="panel">
+      <section v-if="section === 'report'" class="panel">
         <div class="panel-heading">
-          <h3>当前业务报告</h3>
+          <h3>业务报告</h3>
+          <el-select :model-value="historicalReportId" class="report-select" aria-label="选择业务报告" @change="selectReport">
+            <el-option label="当前报告" value="" />
+            <el-option v-for="entry in status?.history ?? []" :key="entry.id" :value="entry.id || ''"
+              :label="`${entry.finishedAt ? new Date(entry.finishedAt * 1000).toLocaleString() : entry.id} · ${entry.name || '业务仿真'}`" />
+          </el-select>
           <el-button
-            :disabled="!status?.report"
+            :disabled="!displayedReport"
             size="small"
             @click="reportDownload"
             >下载原报告</el-button
           >
         </div>
-        <p>{{ ({ passed: "通过", failed: "失败", aborted: "已中止" } as Record<string, string>)[status?.report?.status ?? ""] ?? status?.report?.status ?? "暂无报告" }}</p>
+        <p>{{ reportBusy ? '正在读取报告' : ({ passed: "通过", failed: "失败", aborted: "已中止" } as Record<string, string>)[displayedReport?.status ?? ""] ?? displayedReport?.status ?? "暂无报告" }}</p>
+        <el-alert v-if="reportError" :title="reportError" type="error" :closable="false" />
         <el-alert
-          v-if="status?.report?.firstFailure || status?.report?.message"
-          :title="status.report.firstFailure || status.report.message"
-          :type="status.report.status === 'failed' ? 'error' : 'info'"
+          v-if="displayedReport?.firstFailure || displayedReport?.message"
+          :title="displayedReport.firstFailure || displayedReport.message"
+          :type="displayedReport.status === 'failed' ? 'error' : 'info'"
           :closable="false"
         />
-        <el-table v-if="status?.report?.waitingChain?.length" :data="status.report.waitingChain" size="small">
+        <DispatchReplay v-if="displayedReport?.id" :key="displayedReport.id" :report-id="displayedReport.id" />
+        <el-table v-if="displayedReport?.waitingChain?.length" :data="displayedReport.waitingChain" size="small">
           <el-table-column prop="stationId" label="工位" width="100" />
           <el-table-column prop="vehicleId" label="车辆" width="100" />
           <el-table-column label="当前步骤" min-width="140"><template #default="{ row }">第 {{ row.stepNumber }} 步 · {{ row.stepName }}</template></el-table-column>
@@ -1078,13 +1175,13 @@ onBeforeUnmount(() => {
           <el-table-column label="正式任务" width="112"><template #default="{ row }"><el-button v-if="row.taskId" link type="primary" @click="openCallTask(row.taskId)">查看九步</el-button></template></el-table-column>
         </el-table>
         <p
-          v-for="(value, key) in status?.report?.metrics ?? {}"
+          v-for="(value, key) in displayedReport?.metrics ?? {}"
           :key="key"
           class="muted"
         >
           {{ key }} · {{ value }}
         </p>
-        <p v-for="check in status?.report?.checks ?? []" :key="check.name">
+        <p v-for="check in displayedReport?.checks ?? []" :key="check.name">
           {{ check.name }} · {{ check.status }}
         </p>
       </section>
@@ -1227,6 +1324,24 @@ onBeforeUnmount(() => {
 }
 .task-detail {
   margin-top: 18px;
+}
+.route-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0;
+}
+.route-toolbar .el-button {
+  margin-left: 0;
+}
+.route-toolbar .el-select, .report-select {
+  width: min(100%, 350px);
+}
+.task-detail :deep(.current-business-step) {
+  --el-table-tr-bg-color: var(--el-color-primary-light-9);
+}
+.task-detail details {
+  overflow-wrap: anywhere;
 }
 .task-detail p {
   overflow-wrap: anywhere;

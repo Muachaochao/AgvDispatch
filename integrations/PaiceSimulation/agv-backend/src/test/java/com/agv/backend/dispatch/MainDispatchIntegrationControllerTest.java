@@ -2,12 +2,14 @@ package com.agv.backend.dispatch;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.agv.backend.common.BusinessException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -26,6 +28,21 @@ class MainDispatchIntegrationControllerTest {
 
         assertEquals(live, controller.live().data());
         verify(gateway).get("/api/simulation/live");
+    }
+
+    @Test
+    @DisplayName("回放按报告编号读取同轮证据")
+    void readsReplayByReportId() throws Exception {
+        MainDispatchGateway gateway = mock(MainDispatchGateway.class);
+        String id = "c98f4be8450a4ce2a4ce246fdcb09572";
+        String path = "/api/simulation/replay?id=" + id;
+        JsonNode replay = objectMapper.readTree("{\"timeline\":[{\"time\":1}]}");
+        when(gateway.get(path)).thenReturn(replay);
+        MainDispatchIntegrationController controller = new MainDispatchIntegrationController(gateway);
+
+        assertEquals(replay, controller.replay(id).data());
+        assertThrows(BusinessException.class, () -> controller.replay("../report"));
+        verify(gateway).get(path);
     }
 
     @Test

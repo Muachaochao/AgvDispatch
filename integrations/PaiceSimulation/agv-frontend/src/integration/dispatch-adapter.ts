@@ -61,9 +61,13 @@ export interface DispatchTaskDetail {
   plcConditions?: { stationId: string; variableName: string; address: string; expectedValue: boolean; currentValue?: boolean | null; quality: string; satisfied: boolean; reason?: string; observedAt?: string }[];
   handshakes?: { stepId: string; phase: string; reason: string; cycleId: string }[];
   steps?: {
+    stepId?: string;
     sequence: number;
     stepType: string;
     status: string;
+    sourceSite?: string | null;
+    destinationSite?: string | null;
+    elapsedText?: string;
     waitingExplanation?: string;
     isCurrent?: boolean;
     completionRequirement?: string;
@@ -71,8 +75,11 @@ export interface DispatchTaskDetail {
   }[];
   commands?: {
     commandId: string;
+    stepId?: string;
+    vendorCommandId?: string | null;
     status?: string;
     route?: {
+      mapVersionId?: string;
       nodeIds?: string[];
       edgeIds?: string[];
       vendorSites?: string[];
@@ -711,10 +718,11 @@ export function dispatchRoutePoints(
   edgeIds: string[],
 ): Point[] {
   const points: Point[] = [];
+  const nodes = new Map(map.nodes.map((node) => [node.id, node]));
+  const edges = new Map(map.edges.map((edge) => [edge.id, edge]));
   for (const [index, id] of edgeIds.entries()) {
-    const edge = map.edges.find((e) => e.id === id);
+    const edge = edges.get(id);
     if (!edge) return [];
-    const nodes = new Map(map.nodes.map((n) => [n.id, n]));
     const geometry =
       edge.points ??
       [nodes.get(edge.from), nodes.get(edge.to)].filter(

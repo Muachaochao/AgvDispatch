@@ -48,9 +48,14 @@ export interface DispatchStatus {
     vehicleCount?: number;
     stationCount?: number;
   }[];
-  scenario?: { name?: string; status?: string; message?: string; callRows?: CallRow[] };
-  report?: {
+  scenario?: { id?: string; name?: string; status?: string; message?: string; callRows?: CallRow[] };
+  history?: DispatchReport[];
+  report?: DispatchReport | null;
+}
+export interface DispatchReport {
     id?: string;
+    name?: string;
+    finishedAt?: number;
     status?: string;
     message?: string;
     firstFailure?: string;
@@ -64,7 +69,6 @@ export interface DispatchStatus {
     }[];
     metrics?: Record<string, unknown>;
     checks?: { name: string; status: string }[];
-  };
 }
 export interface CallRow {
   planIndex: number;
@@ -119,8 +123,8 @@ function proxyPath(path: string) {
   if (pathname.startsWith("/api/simulation/tasks/")) {
     return "/dispatch/main/simulation/tasks/" + pathname.slice("/api/simulation/tasks/".length);
   }
-  if (pathname === "/api/simulation/report") {
-    return withQuery("/dispatch/main/simulation/report", query);
+  if (pathname === "/api/simulation/report" || pathname === "/api/simulation/replay") {
+    return withQuery(pathname.replace("/api/", "/dispatch/main/"), query);
   }
   if (pathname.startsWith("/api/simulation/")) {
     return "/dispatch/main/simulation/" + pathname.slice("/api/simulation/".length);

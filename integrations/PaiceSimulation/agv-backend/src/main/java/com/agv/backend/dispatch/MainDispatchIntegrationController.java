@@ -71,6 +71,11 @@ public class MainDispatchIntegrationController {
         return ApiResponse.ok(gateway.get("/api/simulation/report" + suffix));
     }
 
+    @GetMapping("/simulation/replay")
+    public ApiResponse<JsonNode> replay(@RequestParam String id) {
+        return ApiResponse.ok(gateway.get("/api/simulation/replay?id=" + safeHex(id)));
+    }
+
     @GetMapping("/snapshot")
     public ApiResponse<JsonNode> snapshot() {
         return ApiResponse.ok(gateway.get("/api/snapshot"));
