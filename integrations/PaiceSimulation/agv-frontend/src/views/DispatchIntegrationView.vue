@@ -38,12 +38,18 @@ import {
   roadnetFingerprint,
   dispatchIsFresh,
   dispatchRoutePoints,
+  dispatchWaitBlockers,
+  dispatchWaitDuration,
+  dispatchWaitSnapshotFresh,
+  dispatchWaitState,
   type DispatchTaskDetail,
+  type DispatchWaitRequest,
   type SourceMap,
 } from "@/integration/dispatch-adapter";
 import {
   dispatchRead,
   downloadIntegrationRecord,
+  type DispatchMonitor,
   type DispatchStatus,
   type DispatchReport,
   type TaskRow,
@@ -57,6 +63,7 @@ import {
 const status = shallowRef<DispatchStatus | null>(null),
   tasks = ref<TaskRow[]>([]),
   resources = ref<ResourceRow[]>([]);
+const monitor = shallowRef<DispatchMonitor | null>(null);
 const experimentTaskSets = ref<TaskSetSummary[]>([]);
 const selectedExperimentTaskSetId = ref<number | null>(null);
 const experimentTaskSource = ref<"taskset" | "map">("taskset");
@@ -112,10 +119,34 @@ const fresh = computed(
 );
 const cars = computed(() => status.value?.device?.cars ?? {});
 const section = ref('engineering');
-const callStatuses: Record<string, string> = {
-  pending: '待触发', emitted: '已触发 · 待建单', created: '待派车', active: '执行中', completed: '已完成',
-  Faulted: '任务故障', Cancelled: '任务取消',
-};
+const waitFresh = computed(() => connected.value && dispatchWaitSnapshotFresh(monitor.value, clock.value));
+const waitsByTask = computed(() => {
+  const index = new Map<string, DispatchWaitRequest[]>();
+  if (!waitFresh.value) return index;
+  for (const request of monitor.value?.traffic?.requests ?? []) {
+    const requests = index.get(request.taskId) ?? [];
+    requests.push(request);
+    index.set(request.taskId, requests);
+  }
+  return index;
+});
+const calls = computed(() => (status.value?.scenario?.callRows ?? []).map(row => ({
+  ...row,
+  wait: dispatchWaitState(row, waitsByTask.value.get(row.taskId ?? "") ?? []),
+})));
+const activeCallsByVehicle = computed(() => new Map(
+  calls.value.filter(row => row.vehicleId && row.status === "active")
+    .map(row => [row.vehicleId!, row]),
+));
+function waitSummary(request: DispatchWaitRequest, candidate = false) {
+  const blockers = dispatchWaitBlockers(request.blockers);
+  const first = blockers[0];
+  const cause = first
+    ? `${first.resourceId} · ${first.vehicles.length ? `${first.vehicles.join("、")} 占用` : "持有车辆未知"}${blockers.length > 1 ? ` · 共 ${blockers.length} 个阻塞资源` : ""}`
+    : request.reason || "当前快照未返回阻塞资源";
+  return [candidate ? `候选路线 ${request.vehicleId || ""}`.trimEnd() : "", dispatchWaitDuration(request), cause]
+    .filter(Boolean).join(" · ");
+}
 function schemeSaved(value: DispatchStatus) {
   if (status.value) status.value = { ...status.value, schemes: value.schemes };
 }
@@ -125,8 +156,14 @@ async function openCallTask(taskId: string) {
   document.getElementById('business-task-detail')?.scrollIntoView({ block: 'start' });
 }
 function activeTaskForVehicle(vehicleId: string) {
-  return status.value?.scenario?.callRows?.find(row => row.vehicleId === vehicleId && row.status === "active")?.taskId
+  return activeCallsByVehicle.value.get(vehicleId)?.taskId
     ?? tasks.value.find(row => row.vehicleId === vehicleId && !["Completed", "Cancelled", "Faulted"].includes(row.stage))?.taskId;
+}
+function waitForVehicle(vehicleId: string) {
+  const call = activeCallsByVehicle.value.get(vehicleId);
+  if (call) return call.wait;
+  const task = tasks.value.find(row => row.taskId === activeTaskForVehicle(vehicleId));
+  return task && dispatchWaitState({ ...task, taskStage: task.stage }, waitsByTask.value.get(task.taskId) ?? []);
 }
 function taskForVehicle(vehicleId: string) {
   return activeTaskForVehicle(vehicleId)
@@ -136,15 +173,19 @@ function inspectVehicle(vehicleId: string) {
   const id = taskForVehicle(vehicleId);
   if (id) void selectTask(id);
 }
-function blockingVehicles(key?: string) {
-  try {
-    const rows: unknown = JSON.parse(key || '[]');
-    if (Array.isArray(rows)) return [...new Set(rows.filter(Array.isArray).map(row => row[2]).filter(Boolean))].join('、');
-  } catch { /* The backend explanation remains available. */ }
-  return '';
-}
 const selectedCar = computed(() => cars.value[detail.value?.task.vehicleId ?? '']);
 const currentStep = computed(() => detail.value?.steps?.find(step => step.isCurrent));
+const detailWait = computed(() => {
+  const task = detail.value?.task;
+  if (!task) return undefined;
+  return dispatchWaitState({
+    ...task,
+    taskStage: task.stage,
+    stepId: currentStep.value?.stepId,
+    stepNumber: currentStep.value?.sequence,
+  }, waitsByTask.value.get(task.taskId) ?? []);
+});
+const detailBlockers = computed(() => dispatchWaitBlockers(detailWait.value?.request?.blockers));
 const routeCommands = computed(() =>
   detail.value?.commands?.filter(command => command.route?.edgeIds?.length) ?? [],
 );
@@ -195,7 +236,10 @@ const mechanism = computed(() => selectedCar.value?.mechanism);
 const mechanismStates: Record<string, string> = {
   Idle: '待命', Executing: '执行中', Completed: '完成', Interrupted: '中断',
 };
-const vehicles = computed(() => dispatchViews(cars.value, fresh.value));
+const vehicles = computed(() => dispatchViews(cars.value, fresh.value).map(car => ({
+  ...car,
+  wait: fresh.value ? waitForVehicle(car.id) : undefined,
+})));
 const scenarioActive = computed(() =>
   ["running", "starting", "pending", "stopping", "aborting"].includes(
     status.value?.scenario?.status?.toLowerCase() ?? "",
@@ -414,6 +458,7 @@ async function poll() {
   } catch (e) {
     if (!disposed) {
       connected.value = false;
+      monitor.value = null;
       error.value = e instanceof Error ? e.message : String(e);
     }
   } finally {
@@ -424,12 +469,14 @@ async function pollDetails(live: DispatchStatus, revision: number) {
   detailPolling = true;
   try {
     const scenarioKey = `${live.scenario?.id ?? ""}:${live.scenario?.status ?? ""}`;
+    const sameInstance = () => !disposed && connected.value && revision === actionRevision
+      && status.value?.rootName === live.rootName && status.value?.scenario?.id === live.scenario?.id;
     const needsMetadata =
       !status.value?.map || live.rootName !== metadataRoot || scenarioKey !== metadataScenario;
     const full = needsMetadata
       ? await dispatchRead<DispatchStatus>("/api/simulation", pageAbort.signal)
       : null;
-    if (disposed || revision !== actionRevision || status.value?.rootName !== live.rootName) return;
+    if (!sameInstance()) return;
     if (full) { metadataRoot = live.rootName; metadataScenario = scenarioKey; }
     const next: DispatchStatus = full
       ? {
@@ -462,23 +509,28 @@ async function pollDetails(live: DispatchStatus, revision: number) {
             "/api/simulation/tasks?page=1&pageSize=200",
             pageAbort.signal,
           ),
-          dispatchRead<ResourceRow[]>(
-            "/api/simulation/resources",
+          dispatchRead<DispatchMonitor>(
+            "/api/simulation/monitor",
             pageAbort.signal,
           ),
         ])
       : [];
-    if (disposed || revision !== actionRevision) return;
+    if (!sameInstance()) return;
     if (results[0]?.status === "fulfilled")
       tasks.value = results[0].value.items ?? [];
-    if (results[1]?.status === "fulfilled")
-      resources.value = results[1].value ?? [];
+    if (results[1]?.status === "fulfilled") {
+      const snapshot = results[1].value;
+      monitor.value = snapshot.connected ? snapshot : null;
+      resources.value = snapshot.resources ?? [];
+    } else if (results[1]?.status === "rejected" || !next.running) {
+      monitor.value = null;
+    }
     const failures = results.filter(
       (r) => r.status === "rejected",
     ) as PromiseRejectedResult[];
     if (failures.length)
       error.value = failures.map((r) => String(r.reason)).join(" · ");
-    const automaticTask = next.scenario?.callRows?.find(row => row.status === "active" && row.vehicleId)?.taskId
+    const automaticTask = status.value?.scenario?.callRows?.find(row => row.status === "active" && row.vehicleId)?.taskId
       ?? tasks.value.find(task => task.vehicleId && !["Completed", "Cancelled", "Faulted"].includes(task.stage))?.taskId
       ?? (tasks.value.length === 1 ? tasks.value[0]?.taskId : undefined);
     if (!selectedTask.value && automaticTask) await selectTask(automaticTask);
@@ -518,6 +570,7 @@ async function action(name: string, body: Record<string, unknown> = {}) {
   busy.value = true;
   error.value = "";
   actionRevision++;
+  monitor.value = null;
   try {
     status.value = await dispatchRead<DispatchStatus>(
       `/api/simulation/${name}`,
@@ -629,6 +682,8 @@ watch(
     selectedTasks.value = [];
     tasks.value = [];
     resources.value = [];
+    monitor.value = null;
+    taskPollCounter = 0;
     scene.value?.clearPath();
   },
 );
@@ -926,14 +981,21 @@ onBeforeUnmount(() => {
     </section>
     <section v-show="section === 'monitor'" class="panel calls-panel">
       <h3>多单呼叫</h3>
-      <el-table :data="status?.scenario?.callRows ?? []" size="small" empty-text="开始业务呼叫计划后显示逐单进度">
+      <p v-if="status?.running && !waitFresh" class="muted">实时路权数据暂不可用 · 持有车辆和实时计时暂停显示</p>
+      <p v-else-if="waitFresh && monitor?.traffic?.requestsTruncated" class="muted">后台快照仅包含部分路权请求</p>
+      <el-table :data="calls" size="small" empty-text="开始业务呼叫计划后显示逐单进度">
         <el-table-column label="序号" width="72"><template #default="{ row }">{{ row.planIndex + 1 }}</template></el-table-column>
         <el-table-column prop="stationId" label="工位" width="110" />
         <el-table-column prop="atSeconds" label="计划秒" width="90" />
         <el-table-column label="触发秒" width="90"><template #default="{ row }">{{ row.actualAtSeconds?.toFixed(1) ?? '—' }}</template></el-table-column>
-        <el-table-column label="状态" width="145"><template #default="{ row }">{{ callStatuses[row.taskStage] || callStatuses[row.status] || row.status }}{{ row.stepNumber ? ` · ${row.stepNumber}/9` : '' }}</template></el-table-column>
+        <el-table-column label="状态" width="178"><template #default="{ row }">
+          <el-tag :type="row.wait.type" size="small">{{ row.wait.label }}</el-tag>
+          <span v-if="row.stepNumber"> · {{ row.stepNumber }}/9</span>
+        </template></el-table-column>
         <el-table-column prop="vehicleId" label="车辆" width="100" />
-        <el-table-column prop="waitingExplanation" label="当前说明" show-overflow-tooltip />
+        <el-table-column label="当前说明" min-width="240" show-overflow-tooltip><template #default="{ row }">
+          {{ row.wait.request ? waitSummary(row.wait.request, !row.vehicleId) : row.waitingExplanation || '—' }}
+        </template></el-table-column>
         <el-table-column label="正式任务" width="115"><template #default="{ row }">
           <el-button v-if="row.taskId" link type="primary" :title="row.taskId" @click="openCallTask(row.taskId)">查看九步</el-button>
         </template></el-table-column>
@@ -996,7 +1058,9 @@ onBeforeUnmount(() => {
         <el-empty v-if="!vehicles.length" description="暂无车辆反馈" />
         <article v-for="car in vehicles" :key="car.id" class="vehicle-row">
           <div>
-            <strong>{{ car.id }}</strong><el-tag
+            <strong>{{ car.id }}</strong>
+            <el-tag v-if="car.wait && car.wait.type !== 'primary'" :type="car.wait.type" size="small">{{ car.wait.label }}</el-tag>
+            <el-tag v-else
               size="small"
               :type="
                 car.status === 'OFFLINE'
@@ -1016,7 +1080,8 @@ onBeforeUnmount(() => {
             X {{ car.x.toFixed(3) }} · Y {{ car.y.toFixed(3) }} m ·
             {{ car.heading.toFixed(1) }}°
           </p>
-          <p>{{ cars[car.id]?.waitReason || "未报告等待原因" }}</p>
+          <p v-if="car.wait?.request" class="wait-summary">{{ waitSummary(car.wait.request) }}</p>
+          <p v-else-if="cars[car.id]?.waitReason">{{ cars[car.id]?.waitReason }}</p>
           <el-button v-if="taskForVehicle(car.id)" size="small" @click="inspectVehicle(car.id)">
             路线与九步
           </el-button>
@@ -1026,7 +1091,10 @@ onBeforeUnmount(() => {
     <section v-if="section === 'monitor'" id="business-task-detail" class="panel tasks-panel">
       <div class="panel-heading">
         <h3>九步任务</h3>
-        <el-tag v-if="detail">{{ detail.task.stationId }} · {{ detail.task.vehicleId || '待派车' }}</el-tag>
+        <el-space v-if="detail" wrap>
+          <el-tag v-if="detailWait" :type="detailWait.type">{{ detailWait.label }}</el-tag>
+          <el-tag>{{ detail.task.stationId }} · {{ detail.task.vehicleId || '待派车' }}</el-tag>
+        </el-space>
       </div>
       <el-alert
         v-if="detailError"
@@ -1060,13 +1128,20 @@ onBeforeUnmount(() => {
             label="等待说明"
             min-width="190"
         /><el-table-column prop="completionRequirement" label="完成条件" min-width="250" /></el-table>
-        <template v-if="detail.trafficWaiting?.length">
-          <h4>当前路权阻塞</h4>
-          <p v-for="(wait, index) in detail.trafficWaiting" :key="index">
-            {{ wait.reason }} · {{ blockingVehicles(wait.blockingKey) }}
-            <span v-if="wait.waitingSinceUtc"> · 等待起始 {{ new Date(wait.waitingSinceUtc.replace(' ', 'T') + 'Z').toLocaleString() }}</span>
+        <div v-if="detailWait?.request" class="wait-summary">
+          <h4>{{ !detail.task.vehicleId ? '候选路线等待' : detailWait.request.waitingCategory === 'Equipment' ? '设备资源等待' : '当前路权等待' }}</h4>
+          <p>{{ detailWait.request.vehicleId }} · {{ dispatchWaitDuration(detailWait.request) }}
+            <span v-if="detailWait.request.source && detailWait.request.destination">
+              · {{ detailWait.request.source }} → {{ detailWait.request.destination }}
+            </span>
           </p>
-        </template>
+          <p>{{ detailWait.request.reason || '当前快照未返回等待原因' }}</p>
+          <ul v-if="detailBlockers.length">
+            <li v-for="blocker in detailBlockers" :key="blocker.resourceId">
+              <strong>{{ blocker.resourceId }}</strong> · {{ blocker.vehicles.length ? `${blocker.vehicles.join('、')} 占用` : '持有车辆未知' }}
+            </li>
+          </ul>
+        </div>
         <h4>导航与机构动作命令</h4>
         <p class="muted">车辆当前载箱：{{ selectedCar?.loaded == null ? '未提供' : selectedCar.loaded ? '有箱' : '空载' }}</p>
         <p v-if="mechanism" class="muted">

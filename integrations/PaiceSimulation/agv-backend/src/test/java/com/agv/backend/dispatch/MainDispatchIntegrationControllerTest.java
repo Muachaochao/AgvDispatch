@@ -46,6 +46,27 @@ class MainDispatchIntegrationControllerTest {
     }
 
     @Test
+    @DisplayName("运行监控只读返回现行等待请求和资源")
+    void readsCurrentTrafficWaitsFromSimulationSnapshot() throws Exception {
+        MainDispatchGateway gateway = mock(MainDispatchGateway.class);
+        JsonNode snapshot = objectMapper.readTree("""
+                {"connected":true,"resources":[{"resourceId":"R1","capacity":1}],
+                 "traffic":{"capturedAt":"2026-11-20T12:07:22Z","requestsTruncated":true,
+                 "events":[{"kind":"Released"}],"requests":[{"state":"Released"},
+                 {"state":"Waiting","taskId":"task-1","blockers":[{"resourceId":"R1","vehicleId":"AGV-03"}]}]}}
+                """);
+        when(gateway.get("/api/simulation/snapshot")).thenReturn(snapshot);
+        var monitor = new MainDispatchIntegrationController(gateway).monitor().data();
+
+        assertEquals(1, monitor.traffic().requests().size());
+        assertEquals("AGV-03", monitor.traffic().requests().get(0).at("/blockers/0/vehicleId").asText());
+        assertEquals("2026-11-20T12:07:22Z", monitor.traffic().capturedAt());
+        assertEquals(true, monitor.traffic().requestsTruncated());
+        assertEquals(snapshot.get("resources"), monitor.resources());
+        verify(gateway).get("/api/simulation/snapshot");
+    }
+
+    @Test
     @DisplayName("主工程高级操作只转发允许的动作")
     void forwardsAllowedSimulationAction() throws Exception {
         MainDispatchGateway gateway = mock(MainDispatchGateway.class);

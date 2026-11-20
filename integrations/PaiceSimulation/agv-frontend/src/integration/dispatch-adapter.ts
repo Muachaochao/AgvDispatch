@@ -87,6 +87,89 @@ export interface DispatchTaskDetail {
     } | null;
   }[];
 }
+export interface DispatchWaitRequest {
+  taskId: string;
+  stepId: string;
+  vehicleId?: string | null;
+  source?: string;
+  destination?: string;
+  reason?: string;
+  waitingCategory?: string;
+  waitingSeconds?: number | null;
+  waitingStartKnown?: boolean;
+  waitingClockValid?: boolean;
+  blockers?: { resourceId: string; vehicleId?: string | null }[];
+}
+export interface DispatchWaitSnapshot {
+  connected: boolean;
+  traffic?: {
+    capturedAt?: string | null;
+    requestsTruncated?: boolean;
+    requests: DispatchWaitRequest[];
+  } | null;
+}
+interface DispatchWaitTask {
+  status?: string;
+  taskStage?: string;
+  taskId?: string;
+  vehicleId?: string | null;
+  stepNumber?: number | null;
+  stepId?: string;
+}
+export interface DispatchWaitState {
+  label: string;
+  type: "info" | "warning" | "primary" | "success" | "danger";
+  request?: DispatchWaitRequest;
+}
+
+export function dispatchWaitSnapshotFresh(snapshot: DispatchWaitSnapshot | null, now: number) {
+  const age = now - Date.parse(snapshot?.traffic?.capturedAt ?? "");
+  return snapshot?.connected === true && age >= -1000 && age < 10000;
+}
+
+export function dispatchWaitState(task: DispatchWaitTask, requests: readonly DispatchWaitRequest[]): DispatchWaitState {
+  if (task.status === "completed" || task.taskStage === "Completed") return { label: "已完成", type: "success" };
+  if (task.taskStage === "Cancelled" || task.status === "Cancelled") return { label: "任务取消", type: "info" };
+  if (task.taskStage === "Faulted" || task.status === "Faulted") return { label: "任务故障", type: "danger" };
+  if (["CancellationPending", "CancellationReview"].includes(task.taskStage ?? "")) return { label: "取消处理中", type: "warning" };
+  if (task.status === "pending") return { label: "待触发", type: "info" };
+  if (!task.taskId) return { label: "已触发 · 待建单", type: "info" };
+  const taskRequests = requests.filter(item => item.taskId === task.taskId);
+  if (!task.vehicleId) return { label: "已建单待派", type: "info", request: taskRequests.find(item => item.waitingCategory !== "Equipment") };
+
+  const request = taskRequests.find(item => item.vehicleId === task.vehicleId
+    && (!task.stepId || task.stepId === item.stepId)
+    && (task.stepNumber == null || (task.stepNumber === 4
+      ? item.waitingCategory === "Equipment"
+      : [1, 3, 5, 7].includes(task.stepNumber) && item.waitingCategory !== "Equipment")));
+  if (request && request.waitingCategory !== "Equipment") return { label: "已派车等路权", type: "warning", request };
+  if (request || [2, 4, 6, 8, 9].includes(task.stepNumber ?? 0)
+    || (task.stepNumber == null && ["PickingUp", "WaitingForDumper", "WaitingForPlcConfirmation"].includes(task.taskStage ?? ""))) {
+    return { label: "等 PLC／机构反馈", type: "warning", request };
+  }
+  return { label: "执行中", type: "primary" };
+}
+
+export function dispatchWaitDuration(request: Pick<DispatchWaitRequest, "waitingSeconds" | "waitingStartKnown" | "waitingClockValid">) {
+  const seconds = request.waitingSeconds;
+  if (!request.waitingStartKnown || request.waitingClockValid === false || seconds == null
+    || !Number.isFinite(seconds) || seconds < 0) return "等待起点未知";
+  const total = Math.floor(seconds);
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor(total / 60) % 60;
+  return `已等 ${[hours && `${hours}小时`, (minutes || hours) && `${minutes}分`, `${total % 60}秒`].filter(Boolean).join(" ")}`;
+}
+
+export function dispatchWaitBlockers(blockers: DispatchWaitRequest["blockers"] = []) {
+  const grouped = new Map<string, Set<string>>();
+  for (const { resourceId, vehicleId } of blockers) {
+    const vehicles = grouped.get(resourceId) ?? new Set<string>();
+    if (vehicleId) vehicles.add(vehicleId);
+    grouped.set(resourceId, vehicles);
+  }
+  return [...grouped].map(([resourceId, vehicles]) => ({ resourceId, vehicles: [...vehicles].sort() }));
+}
+
 export interface MapConversion {
   roadnet: RoadNetPayload;
   sourceDefinition: SourceMap;

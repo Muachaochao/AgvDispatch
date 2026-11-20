@@ -13,6 +13,8 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 @RestController
@@ -39,6 +41,29 @@ public class MainDispatchIntegrationController {
     public ApiResponse<JsonNode> resources() {
         return ApiResponse.ok(gateway.get("/api/simulation/resources"));
     }
+
+    @GetMapping("/simulation/monitor")
+    public ApiResponse<SimulationMonitor> monitor() {
+        JsonNode snapshot = gateway.get("/api/simulation/snapshot");
+        JsonNode traffic = snapshot.path("traffic");
+        TrafficMonitor waiting = null;
+        if (traffic.isObject() && traffic.path("requests").isArray()) {
+            List<JsonNode> requests = new ArrayList<>();
+            for (JsonNode request : traffic.path("requests")) {
+                if ("Waiting".equals(request.path("state").asText())) {
+                    requests.add(request);
+                }
+            }
+            waiting = new TrafficMonitor(traffic.path("capturedAt").asText(null),
+                    traffic.path("requestsTruncated").asBoolean(), requests);
+        }
+        return ApiResponse.ok(new SimulationMonitor(snapshot.path("connected").asBoolean(),
+                snapshot.path("resources"), waiting));
+    }
+
+    public record SimulationMonitor(boolean connected, JsonNode resources, TrafficMonitor traffic) {}
+
+    public record TrafficMonitor(String capturedAt, boolean requestsTruncated, List<JsonNode> requests) {}
 
     @GetMapping("/simulation/tasks")
     public ApiResponse<JsonNode> tasks(

@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { findMapMatches, mapNavigationItems } from "../src/integration/map-navigation.ts";
+import * as monitoring from "../src/integration/dispatch-adapter.ts";
 import {
   convertDispatchMap,
   applyImportRoadDirections,
@@ -16,6 +17,51 @@ import {
   selectWebSimulationMap,
   simulationRoadnetName,
 } from "../src/integration/dispatch-adapter.ts";
+
+test("business monitor distinguishes planned, unassigned, route, and PLC waits", () => {
+  const candidate = { taskId: "T1", stepId: "S1", vehicleId: "AGV-04", waitingCategory: "Route" };
+  const assigned = { ...candidate, vehicleId: "AGV-02" };
+  assert.equal(monitoring.dispatchWaitState({ status: "pending" }, []).label, "待触发");
+  assert.equal(monitoring.dispatchWaitState({ status: "emitted" }, []).label, "已触发 · 待建单");
+  const unassigned = monitoring.dispatchWaitState({ status: "created", taskId: "T1" }, [candidate]);
+  assert.equal(unassigned.label, "已建单待派");
+  assert.equal(unassigned.request, candidate);
+  assert.equal(monitoring.dispatchWaitState({ status: "active", taskId: "T1", vehicleId: "AGV-02" }, [candidate]).label, "执行中");
+  const driving = { status: "active", taskId: "T1", vehicleId: "AGV-02", stepNumber: 3 };
+  assert.equal(monitoring.dispatchWaitState(driving, [candidate, assigned]).label, "已派车等路权");
+  assert.equal(monitoring.dispatchWaitState(driving, [{ ...assigned, taskId: "T2" }]).label, "执行中");
+  assert.equal(monitoring.dispatchWaitState({ ...driving, stepId: "S3" }, [assigned]).label, "执行中");
+  const equipment = { ...assigned, waitingCategory: "Equipment" };
+  assert.deepEqual(monitoring.dispatchWaitState({ ...driving, stepNumber: 4 }, [assigned, equipment]), {
+    label: "等 PLC／机构反馈", type: "warning", request: equipment,
+  });
+  assert.equal(monitoring.dispatchWaitState({ ...driving, taskStage: "Cancelled" }, [assigned]).label, "任务取消");
+  assert.equal(monitoring.dispatchWaitState({ ...driving, status: "completed" }, [assigned]).request, undefined);
+});
+
+test("route waits use the source clock and group actual holders by occupied resource", () => {
+  assert.equal(monitoring.dispatchWaitDuration({ waitingSeconds: 431.2, waitingStartKnown: true }), "已等 7分 11秒");
+  assert.equal(monitoring.dispatchWaitDuration({ waitingSeconds: 431, waitingStartKnown: false }), "等待起点未知");
+  assert.equal(monitoring.dispatchWaitDuration({ waitingSeconds: 431, waitingStartKnown: true, waitingClockValid: false }), "等待起点未知");
+  const blockers = [
+    { resourceId: "SEG-1", vehicleId: "AGV-01" },
+    { resourceId: "SEG-1", vehicleId: "AGV-03" },
+    { resourceId: "SEG-1", vehicleId: "AGV-01" },
+    { resourceId: "SEG-2", vehicleId: "" },
+  ];
+  assert.deepEqual(monitoring.dispatchWaitBlockers(blockers), [
+    { resourceId: "SEG-1", vehicles: ["AGV-01", "AGV-03"] },
+    { resourceId: "SEG-2", vehicles: [] },
+  ]);
+});
+
+test("live traffic waits expire when the snapshot fails or stops updating", () => {
+  const timestamp = Date.parse("2026-11-20T12:00:00Z");
+  const monitor = { connected: true, traffic: { capturedAt: "2026-11-20T12:00:00Z", requests: [] } };
+  assert.equal(monitoring.dispatchWaitSnapshotFresh(monitor, timestamp + 3000), true);
+  assert.equal(monitoring.dispatchWaitSnapshotFresh(monitor, timestamp + 15000), false);
+  assert.equal(monitoring.dispatchWaitSnapshotFresh({ ...monitor, connected: false }, timestamp), false);
+});
 
 const definition = {
   unit: "m",

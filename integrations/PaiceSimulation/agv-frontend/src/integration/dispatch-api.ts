@@ -4,6 +4,7 @@ import {
   type SourceMap,
   type DispatchCar,
   type DispatchTaskDetail,
+  type DispatchWaitSnapshot,
 } from "./dispatch-adapter";
 import http from "@/api/http";
 
@@ -94,6 +95,9 @@ export interface ResourceRow {
   occupiedCount: number;
   leases?: { vehicleId: string; taskId: string }[];
 }
+export interface DispatchMonitor extends DispatchWaitSnapshot {
+  resources?: ResourceRow[];
+}
 
 export async function dispatchRead<T>(
   path: string,
@@ -116,6 +120,7 @@ function proxyPath(path: string) {
   const [pathname, query] = path.split("?", 2);
   if (pathname === "/api/simulation") return withQuery("/dispatch/main/simulation", query);
   if (pathname === "/api/simulation/live") return "/dispatch/main/simulation/live";
+  if (pathname === "/api/simulation/monitor") return "/dispatch/main/simulation/monitor";
   if (pathname === "/api/simulation/resources") return "/dispatch/main/simulation/resources";
   if (pathname === "/api/simulation/tasks") {
     return withQuery("/dispatch/main/simulation/tasks", query);
