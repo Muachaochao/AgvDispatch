@@ -7,7 +7,7 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from controller import OBSTACLE_RECOVERY_TIMING, Runtime, WORKSPACE, validate_root, write, rename_evidence
 from scenarios import obstacle_detour_observation_deadline, Observer, obstacle_detour_send_observed, separation, validate_scenario
@@ -15,6 +15,24 @@ from test_runtime_lifecycle import SOURCE_PLC_TABLE
 
 
 class SimulationTests(unittest.TestCase):
+    def test_dispatch_options_write_is_scoped_to_current_isolated_instance(self):
+        runtime = Runtime.__new__(Runtime)
+        runtime.lock = threading.RLock()
+        runtime.root = Path('web-single-vehicle-sim-example')
+        runtime.phase = 'running'
+        runtime.api = Mock(return_value={'revision': 'next'})
+        update = dict(simulationInstance='previous', expectedRevision='current', options={'mode': 'Shadow'})
+        with self.assertRaises(ValueError):
+            runtime.dispatch_diagnostics('/dispatch-optimization', update)
+        runtime.api.assert_not_called()
+
+        update['simulationInstance'] = runtime.root.name
+        result = runtime.dispatch_diagnostics('/dispatch-optimization', update)
+        self.assertEqual(result, {'revision': 'next', 'simulationInstance': runtime.root.name})
+        runtime.api.assert_called_once_with(
+            '/api/dispatch-optimization/options', {'expectedRevision': 'current', 'options': {'mode': 'Shadow'}},
+            allow_rejection=True, method='PUT')
+
     def test_downstream_admission_is_explicit_and_saved_with_configuration(self):
         runtime = Runtime.__new__(Runtime)
         payload = self.custom_payload()

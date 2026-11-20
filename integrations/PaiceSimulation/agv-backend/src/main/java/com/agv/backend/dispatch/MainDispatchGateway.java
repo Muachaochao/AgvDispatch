@@ -7,4 +7,6 @@ public interface MainDispatchGateway {
     JsonNode get(String path);
 
     JsonNode post(String path, Object payload);
+
+    byte[] archive(String reportId);
 }

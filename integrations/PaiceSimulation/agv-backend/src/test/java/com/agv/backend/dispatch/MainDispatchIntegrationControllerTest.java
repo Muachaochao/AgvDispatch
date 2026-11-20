@@ -78,4 +78,21 @@ class MainDispatchIntegrationControllerTest {
         assertEquals(state, controller.simulationAction("scheme-start", body).data());
         verify(gateway).post("/api/simulation/scheme-start", body);
     }
+    @Test
+    void routesWorkbenchControlsAndDiagnosticsToTheIsolatedBridge() throws Exception {
+        MainDispatchGateway gateway = mock(MainDispatchGateway.class);
+        JsonNode state = objectMapper.readTree("{\"enabled\":true}");
+        JsonNode body = objectMapper.readTree("{\"vehicles\":{}}");
+        when(gateway.post("/api/simulation/control", body)).thenReturn(state);
+        when(gateway.get("/api/simulation/dispatch-pipeline")).thenReturn(state);
+        when(gateway.post("/api/simulation/dispatch-optimization/options", body)).thenReturn(state);
+        when(gateway.get("/api/simulation/timeout-recovery/T1")).thenReturn(state);
+        var controller = new MainDispatchIntegrationController(gateway);
+        assertEquals(state, controller.simulationAction("control", body).data());
+        assertEquals(state, controller.isolatedDiagnostics("dispatch-pipeline").data());
+        assertEquals(state, controller.saveSimulationDispatchOptions(body).data());
+        assertEquals(state, controller.timeoutRecovery("T1").data());
+        assertThrows(BusinessException.class, () -> controller.isolatedDiagnostics("snapshot"));
+        assertThrows(BusinessException.class, () -> controller.timeoutRecovery("../T1"));
+    }
 }

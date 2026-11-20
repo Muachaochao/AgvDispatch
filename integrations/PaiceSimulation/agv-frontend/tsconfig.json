@@ -3,7 +3,7 @@
     "target": "ES2020",
     "useDefineForClassFields": true,
     "module": "ESNext",
-    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "skipLibCheck": true,
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
@@ -16,7 +16,14 @@
     "noUnusedParameters": false,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": ["src/*"],
+      "@main-web/*": ["../../../AgvDispatch.Web/src/*"],
+      "vue": ["node_modules/vue"],
+      "vue-router": ["node_modules/vue-router"],
+      "pinia": ["node_modules/pinia"],
+      "three": ["node_modules/@types/three"],
+      "three/*": ["node_modules/@types/three/*"],
+      "@tabler/icons-vue": ["node_modules/@tabler/icons-vue"]
     }
   },
   "include": ["src/**/*.ts", "src/**/*.d.ts", "src/**/*.tsx", "src/**/*.vue"]

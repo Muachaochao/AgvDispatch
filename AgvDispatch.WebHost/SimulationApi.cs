@@ -25,6 +25,12 @@ public static class SimulationApi
             bridge.Enabled ? await bridge.ForwardAsync(HttpMethod.Get, "/point-table", null, ct) : Disabled());
         app.MapGet("/api/simulation/snapshot", async (SimulationBridge bridge, CancellationToken ct) =>
             bridge.Enabled ? await bridge.ForwardAsync(HttpMethod.Get, "/snapshot", null, ct) : Disabled());
+        app.MapGet("/api/simulation/dispatch-pipeline", async (SimulationBridge bridge, CancellationToken ct) =>
+            bridge.Enabled ? await bridge.ForwardAsync(HttpMethod.Get, "/dispatch-pipeline", null, ct) : Disabled());
+        app.MapGet("/api/simulation/dispatch-optimization", async (SimulationBridge bridge, CancellationToken ct) =>
+            bridge.Enabled ? await bridge.ForwardAsync(HttpMethod.Get, "/dispatch-optimization", null, ct) : Disabled());
+        app.MapPost("/api/simulation/dispatch-optimization/options", async (JsonElement options, SimulationBridge bridge, CancellationToken ct) =>
+            bridge.Enabled ? await bridge.ForwardAsync(HttpMethod.Post, "/dispatch-optimization/options", options.GetRawText(), ct) : Disabled());
         app.MapGet("/api/simulation/resources", async (SimulationBridge bridge, CancellationToken ct) =>
             bridge.Enabled ? await bridge.ForwardAsync(HttpMethod.Get, "/resources", null, ct) : Disabled());
         app.MapGet("/api/simulation/tasks", async (string? filter, string? search, int? page, int? pageSize,

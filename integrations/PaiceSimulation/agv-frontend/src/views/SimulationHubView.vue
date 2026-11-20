@@ -1,87 +1,26 @@
 <script setup lang="ts">
-import { computed, watch } from 'vue'
+import { computed, defineAsyncComponent } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import SimulationView from './SimulationView.vue'
-import DispatchIntegrationView from './DispatchIntegrationView.vue'
-import ExperimentView from './ExperimentView.vue'
+import { dispatchLocation, dispatchSection, type DispatchSection } from '@/integration/dispatch-workspace'
 
-type SimulationMode = 'native' | 'main' | 'compare'
-
+const SimulationView = defineAsyncComponent(() => import('./SimulationView.vue'))
+const DispatchIntegration = defineAsyncComponent(() => import('./DispatchIntegrationView.vue'))
+const SimulationOperations = defineAsyncComponent(() => import('./SimulationOperationsView.vue'))
+const ExperimentView = defineAsyncComponent(() => import('./ExperimentView.vue'))
 const route = useRoute()
 const router = useRouter()
-const modes: { name: SimulationMode; label: string }[] = [
-  { name: 'native', label: '原生算法' },
-  { name: 'main', label: '主工程调度' },
-  { name: 'compare', label: '对比实验' }
-]
-
-const mode = computed<SimulationMode>(() => {
-  const value = String(route.query.mode || 'main')
-  return modes.some((item) => item.name === value) ? (value as SimulationMode) : 'main'
+const mode = computed(() => route.query.mode === 'native' || route.query.mode === 'compare' ? route.query.mode : 'main')
+const taskId = computed(() => typeof route.query.taskId === 'string' ? route.query.taskId : undefined)
+const section = computed<DispatchSection>({
+  get: () => dispatchSection(route.query.section),
+  set: value => { void router.push(dispatchLocation(value)) }
 })
-
-function changeMode(value: string | number | boolean) {
-  const next = modes.some((item) => item.name === value) ? String(value) : 'main'
-  void router.replace({ path: '/simulation', query: { ...route.query, mode: next } })
-}
-
-watch(mode, (value) => {
-  if (route.query.mode !== value) {
-    router.replace({ path: '/simulation', query: { ...route.query, mode: value } })
-  }
-})
+const businessForms = new Set<DispatchSection>(['engineering', 'plan', 'monitor', 'report'])
 </script>
 
 <template>
-  <div class="simulation-hub">
-    <div class="hub-heading panel">
-      <div>
-        <h2>仿真中心</h2>
-        <p class="muted">统一运行原生算法、主工程调度和同输入对比实验</p>
-      </div>
-      <el-radio-group
-        :model-value="mode"
-        size="large"
-        @change="changeMode"
-      >
-        <el-radio-button v-for="item in modes" :key="item.name" :value="item.name">
-          {{ item.label }}
-        </el-radio-button>
-      </el-radio-group>
-    </div>
-
-    <SimulationView v-if="mode === 'native'" />
-    <DispatchIntegrationView v-else-if="mode === 'main'" />
-    <ExperimentView v-else />
-  </div>
+  <SimulationView v-if="mode === 'native'" />
+  <ExperimentView v-else-if="mode === 'compare'" />
+  <DispatchIntegration v-else-if="businessForms.has(section)" v-model="section" :task-id="taskId" />
+  <SimulationOperations v-else :section="section" />
 </template>
-
-<style scoped>
-.simulation-hub {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.hub-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-}
-
-.hub-heading h2 {
-  margin: 0 0 4px;
-}
-
-.hub-heading p {
-  margin: 0;
-}
-
-@media (max-width: 900px) {
-  .hub-heading {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-}
-</style>

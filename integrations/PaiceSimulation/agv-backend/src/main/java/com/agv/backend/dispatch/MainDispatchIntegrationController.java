@@ -3,6 +3,12 @@ package com.agv.backend.dispatch;
 import com.agv.backend.common.ApiResponse;
 import com.agv.backend.common.BusinessException;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -40,6 +46,50 @@ public class MainDispatchIntegrationController {
     @GetMapping("/simulation/resources")
     public ApiResponse<JsonNode> resources() {
         return ApiResponse.ok(gateway.get("/api/simulation/resources"));
+    }
+
+    @GetMapping("/simulation/snapshot")
+    public ApiResponse<JsonNode> isolatedSnapshot() {
+        return ApiResponse.ok(gateway.get("/api/simulation/snapshot"));
+    }
+
+    @GetMapping("/simulation/point-table")
+    public ApiResponse<JsonNode> pointTable() {
+        return ApiResponse.ok(gateway.get("/api/simulation/point-table"));
+    }
+
+    @GetMapping("/simulation/{diagnostic:dispatch-pipeline|dispatch-optimization}")
+    public ApiResponse<JsonNode> isolatedDiagnostics(@PathVariable String diagnostic) {
+        if (!"dispatch-pipeline".equals(diagnostic) && !"dispatch-optimization".equals(diagnostic)) {
+            throw new BusinessException(4040, "不支持的隔离调度诊断");
+        }
+        return ApiResponse.ok(gateway.get("/api/simulation/" + diagnostic));
+    }
+
+    @PreAuthorize("hasRole('ADMIN')")
+    @PostMapping("/simulation/dispatch-optimization/options")
+    public ApiResponse<JsonNode> saveSimulationDispatchOptions(@RequestBody JsonNode body) {
+        return ApiResponse.ok(gateway.post("/api/simulation/dispatch-optimization/options", body));
+    }
+
+    @GetMapping("/simulation/timeout-recovery/{id}")
+    public ApiResponse<JsonNode> timeoutRecovery(@PathVariable String id) {
+        return ApiResponse.ok(gateway.get("/api/simulation/timeout-recovery/" + safeId(id)));
+    }
+
+    @PostMapping("/simulation/timeout-recovery/{id}/execute")
+    public ApiResponse<JsonNode> executeTimeoutRecovery(@PathVariable String id, @RequestBody JsonNode body) {
+        return ApiResponse.ok(gateway.post("/api/simulation/timeout-recovery/" + safeId(id) + "/execute", body));
+    }
+
+    @GetMapping("/simulation/archive")
+    public ResponseEntity<byte[]> archive(@RequestParam String id) {
+        String reportId = safeHex(id);
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType("application/zip"))
+                .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment()
+                        .filename("simulation-evidence-" + reportId + ".zip").build().toString())
+                .body(gateway.archive(reportId));
     }
 
     @GetMapping("/simulation/monitor")
@@ -97,13 +147,34 @@ public class MainDispatchIntegrationController {
     }
 
     @GetMapping("/simulation/replay")
-    public ApiResponse<JsonNode> replay(@RequestParam String id) {
-        return ApiResponse.ok(gateway.get("/api/simulation/replay?id=" + safeHex(id)));
+    public ApiResponse<JsonNode> replay(@RequestParam(required = false) String id) {
+        return ApiResponse.ok(gateway.get("/api/simulation/replay" + (id == null ? "" : "?id=" + safeHex(id))));
     }
 
     @GetMapping("/snapshot")
     public ApiResponse<JsonNode> snapshot() {
         return ApiResponse.ok(gateway.get("/api/snapshot"));
+    }
+
+    @GetMapping("/field-task-parameters")
+    public ApiResponse<JsonNode> fieldTaskParameters() {
+        return ApiResponse.ok(gateway.get("/api/task-parameters"));
+    }
+
+    @GetMapping("/field-point-table")
+    public ApiResponse<JsonNode> fieldPointTable() {
+        return ApiResponse.ok(gateway.get("/api/communication/point-table"));
+    }
+
+    @GetMapping("/field-vehicles")
+    public ApiResponse<JsonNode> fieldVehicles() {
+        var result = new ObjectMapper().createObjectNode();
+        var vehicles = result.putObject("saved").putArray("agvs");
+        for (JsonNode vehicle : gateway.get("/api/communication").path("saved").path("agvs")) {
+            vehicles.addObject().put("vehicleId", vehicle.path("vehicleId").asText())
+                    .put("enabled", vehicle.path("enabled").asBoolean());
+        }
+        return ApiResponse.ok(result);
     }
 
     @GetMapping("/maps")
@@ -152,6 +223,8 @@ public class MainDispatchIntegrationController {
                 java.util.Set.of("All", "Active", "Completed", "Failed");
         private static final java.util.Set<String> ACTIONS =
                 java.util.Set.of("start", "stop", "scheme-start", "scheme-select", "run", "abort",
-                        "scheme-save", "point-table-validate");
+                        "scheme-save", "scheme-delete", "point-table-validate", "control", "new-instance",
+                        "configure", "recover", "recover-release", "protocol-start", "protocol-stop",
+                        "equipment-start", "equipment-control", "equipment-stop");
     }
 }

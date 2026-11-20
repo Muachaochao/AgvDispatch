@@ -12,9 +12,10 @@ class LoopbackJsonClient:
         self.slots = threading.BoundedSemaphore(capacity)
         self.connections = queue.LifoQueue(capacity)
 
-    def request(self, path, data=None):
+    def request(self, path, data=None, *, method=None):
         if not path.startswith('/') or path.startswith('//'):
             raise ValueError('Backend path must be local and absolute.')
+        method = method or ('GET' if data is None else 'POST')
         if not self.slots.acquire(timeout=self.timeout):
             raise TimeoutError('本地仿真接口并发已满，等待连接超时。')
         connection = None
@@ -26,7 +27,7 @@ class LoopbackJsonClient:
             for attempt in range(2):
                 try:
                     body = None if data is None else json.dumps(data, ensure_ascii=False).encode('utf-8')
-                    connection.request('GET' if data is None else 'POST', path, body,
+                    connection.request(method, path, body,
                                        {'Content-Type': 'application/json'})
                     response = connection.getresponse()
                     raw = response.read()
@@ -40,7 +41,7 @@ class LoopbackJsonClient:
                 except (http.client.RemoteDisconnected, BrokenPipeError, ConnectionResetError,
                         ConnectionAbortedError):
                     connection.close()
-                    if data is not None or attempt:
+                    if method != 'GET' or attempt:
                         raise
                     connection = http.client.HTTPConnection('127.0.0.1', self.port, timeout=self.timeout)
         except BaseException:

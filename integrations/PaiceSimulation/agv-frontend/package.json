@@ -15,6 +15,7 @@
     "e2e:dispatch": "node ../scripts/e2e-dispatch.mjs"
   },
   "dependencies": {
+    "@tabler/icons-vue": "3.49.0",
     "axios": "^1.7.7",
     "echarts": "^6.1.0",
     "element-plus": "^2.8.4",

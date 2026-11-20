@@ -2,7 +2,7 @@
 import { defineAsyncComponent, computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { IconPlayerPlay, IconPlayerStop, IconRefresh, IconDownload, IconFlask, IconRobot } from '@tabler/icons-vue';
-import { simulationApi, simulationFresh, simulationGeometry, simulationLabel, loadCurrentSimulationMap, simulationTone, scenarioActive, simulationVehicleOriginsFromLive,
+import { simulationApi as defaultSimulationApi, simulationFresh, simulationGeometry, simulationLabel, loadCurrentSimulationMap, simulationTone, scenarioActive, simulationVehicleOriginsFromLive,
   simulationMetricLabel, simulationMetricValue, simulationMetricComparison, simulationReplayCars,
   simulationStationBindingsFromCatalog, simulationVehicleVisualState, simulationVehicleVisualColor,
   simulationVehicleVisualLabel, simulationObstacleRecoveryLabel,
@@ -18,6 +18,18 @@ import { useDispatchStore } from '../stores/dispatch';
 import type { Snapshot, TaskDetail, TaskPage, TaskRow, TrafficRequest } from '../types';
 import { resourceHandovers } from '../traffic-display';
 
+type SimulationStage = 'overview' | 'tasks' | 'environment' | 'scenario' | 'faults' | 'manual' | 'results';
+const props = defineProps<{
+  embedded?: {
+    stage: SimulationStage;
+    taskId?: string;
+    request: typeof defaultSimulationApi;
+    archive: (id: string) => Promise<Blob>;
+    field: { snapshot: Snapshot | null; fresh: boolean; demoMode: boolean; api: (path: string) => Promise<unknown> };
+  };
+}>();
+const emit = defineEmits<{ navigate: [stage: SimulationStage] }>();
+const simulationApi = props.embedded?.request ?? defaultSimulationApi;
 const SimulationThreeView = defineAsyncComponent(() => import('../components/SimulationThreeView.vue'));
 const sceneDimension = ref<'2d' | '3d'>('2d');
 const threeEdgeColors = computed(() => Object.fromEntries(geometry.value.edges.map(edge => {
@@ -28,7 +40,7 @@ const threeEdgeColors = computed(() => Object.fromEntries(geometry.value.edges.m
     classes['task-route-future'] ? '#54cce3' : classes['task-route-completed'] ? '#4c938e' : '#3e8da8';
   return [edge.key, color];
 })));
-const dispatchStore = useDispatchStore();
+const dispatchStore = props.embedded?.field ?? useDispatchStore();
 const route = useRoute(), router = useRouter();
 const status = ref<SimulationStatus | null>(null), error = ref(''), actionError = ref(''), notice = ref('');
 let metadataLoaded = false, lastMetadataRefresh = 0;
@@ -676,7 +688,6 @@ function vehicleBodySize(id: string) {
   const width = length * widthMeters / Math.max(.01, lengthMeters);
   return { length, width };
 }
-type SimulationStage = 'overview' | 'tasks' | 'environment' | 'scenario' | 'faults' | 'manual' | 'results';
 const stageTabs: { id: SimulationStage; number: string; title: string; description: string; path: string }[] = [
   { id: 'overview', number: '01', title: '运行总览', description: '看清车辆在哪、正在做什么和下一步', path: '' },
   { id: 'tasks', number: '02', title: '任务运行', description: '查看真实任务、九步进度、命令、PLC和路权', path: 'tasks' },
@@ -687,6 +698,7 @@ const stageTabs: { id: SimulationStage; number: string; title: string; descripti
   { id: 'results', number: '07', title: '监测与报告', description: '查看检查结果、历史对比和问题回放', path: 'results' }
 ];
 const activeStage = computed<SimulationStage>(() => {
+  if (props.embedded) return props.embedded.stage;
   const value = String(route.params.section ?? '');
   return stageTabs.find(tab => tab.id === value || tab.path === value)?.id ?? 'overview';
 });
@@ -796,6 +808,10 @@ const overviewNarrative = computed(() => {
   return `${onlineVehicleCount.value} 辆车已就绪，${loadedVehicleCount.value} 辆载箱，${modeledTaskCount.value} 辆正在执行任务。下一步进入“场景编排”选择这次要测什么。`;
 });
 function openStage(stage: SimulationStage) {
+  if (props.embedded) {
+    emit('navigate', stage);
+    return;
+  }
   const target = stageTabs.find(tab => tab.id === stage) ?? stageTabs[0]!;
   const location = target.path
     ? { name: 'simulation-center', params: { section: target.path } }
@@ -1425,10 +1441,16 @@ async function refresh(force = false) {
   reading.value = true; const request = new AbortController(); controller = request;
   const timeout = setTimeout(() => request.abort(), 45000);
   try {
-    const readMetadata = force || !metadataLoaded || !status.value ||
+    let readMetadata = force || !metadataLoaded || !status.value ||
       Date.now() - lastMetadataRefresh > 60_000;
-    const received = await simulationApi<SimulationStatus>(
+    let received = await simulationApi<SimulationStatus>(
       readMetadata ? '' : '/live', undefined, request.signal);
+    if (!readMetadata && (received.rootName !== status.value?.rootName ||
+        received.scenario?.id !== status.value?.scenario?.id ||
+        received.scenario?.status !== status.value?.scenario?.status)) {
+      received = await simulationApi<SimulationStatus>('', undefined, request.signal);
+      readMetadata = true;
+    }
     if (!disposed) {
       const next = readMetadata ? received : { ...status.value!, ...received };
       if (readMetadata) {
@@ -1478,6 +1500,9 @@ watch(selectedVehicle, () => {
   if (Number.isFinite(vehicle.value?.speedScale)) speedScale.value = vehicle.value.speedScale!;
 });
 watch(activeStage, stage => { if (stage === 'tasks') void refreshSimulationTasks(); });
+watch(() => [props.embedded?.taskId, activeStage.value, status.value?.rootName] as const, ([taskId, stage, root]) => {
+  if (taskId && root && stage === 'tasks') void selectSimulationTask(taskId);
+});
 watch(() => run.value.name, name => { if (name === 'dispatch-backlog') { callCount.value = Math.max(6, callCount.value); callInterval.value = 1; } });
 async function downloadReport() {
   if (busy.value || !report.value) return;
@@ -1497,7 +1522,13 @@ async function downloadEvidenceArchive() {
   if (busy.value || !report.value?.id) return;
   busy.value = true; actionError.value = ''; notice.value = '';
   try {
-    const response = await fetch('/api/simulation/archive?id=' + encodeURIComponent(report.value.id), { cache: 'no-store' });
+    const id = report.value.id;
+    if (props.embedded) {
+      downloadBlob(await props.embedded.archive(id), `simulation-evidence-${id}.zip`);
+      notice.value = '完整证据包已导出。';
+      return;
+    }
+    const response = await fetch('/api/simulation/archive?id=' + encodeURIComponent(id), { cache: 'no-store' });
     if (!response.ok) {
       const detail = await response.json().catch(() => ({}));
       throw new Error(detail.error || detail.detail || `证据包导出失败（${response.status}）`);
@@ -1661,8 +1692,8 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
 </script>
 
 <template>
-  <main class="simulation-page">
-    <header class="simulation-title">
+  <main class="simulation-page" :class="{ embedded: !!embedded }">
+    <header v-if="!embedded" class="simulation-title">
       <div>
         <p class="page-kicker">隔离环境 · 正式调度仿真</p>
         <h2><IconFlask :size="24" />仿真测试中心</h2>
@@ -1678,8 +1709,8 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
     <p v-if="notice" class="simulation-notice" role="status">{{ industrialText(notice) }}</p>
 
     <div class="simulation-workspace">
-      <div class="simulation-sidebar">
-        <nav class="stage-tabs module-nav" aria-label="仿真测试功能页面">
+      <div v-if="!embedded || activeStage === 'overview'" class="simulation-sidebar">
+        <nav v-if="!embedded" class="stage-tabs module-nav" aria-label="仿真测试功能页面">
           <button v-for="tab in stageTabs" :key="tab.id" :class="{ active: activeStage === tab.id }" :aria-current="activeStage === tab.id ? 'page' : undefined" @click="openStage(tab.id)">
             <span>{{ tab.number }}</span><strong>{{ tab.title }}</strong>
           </button>
@@ -2089,6 +2120,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
               <option value="response-loss">运输命令回包丢失</option>
               <option value="road-block-recovery">道路临时阻塞后恢复</option>
               <option value="obstacle-auto-detour">前方障碍自动改道</option>
+              <option value="obstacle-auto-safety-return">道路中段自动退回安全站</option>
               <option value="obstacle-timeout-pickup">取料途中受阻并超时</option>
               <option value="obstacle-timeout-fullbox">满箱运输受阻并超时</option>
               <option value="obstacle-timeout-return">空箱返程受阻并超时</option>
@@ -2105,7 +2137,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
               <small>{{ run.name === 'dispatch-backlog' ? '按时间持续追加，不等上一批完成；同一工位仍有原任务时，后续呼叫保留在计划队列。验证忙车排除建议1车2工位或2车3工位，第3工位须明确使用隔离合成点位。只有真正观察到全部车辆忙碌期间仍有正式待派任务，才证明覆盖了积压；2车2工位可能无法形成积压。工位优先级在新建环境前配置，并写入报告。' : '同一批次工位会在同一设备扫描中置位；指定车辆不可达时停止并报告。此场景按批次完成后继续。' }}</small>
             </div>
             <div v-if="run.name === 'plc-recovery'" class="form-row"><label>卡位信号<select v-model="plcFault"><option value="ready">倒料机就绪许可</option><option value="done">倒料完成，允许离开</option></select></label><label>卡位保持 / 秒<input v-model.number="plcFaultHold" type="number" min="1" max="120" /></label></div>
-            <label v-if="run.name === 'road-block-recovery' || run.name === 'obstacle-auto-detour' || obstacleTimeoutScenarios.has(run.name)">{{ obstacleTimeoutScenarios.has(run.name) ? '障碍持续到车端超时' : (run.name === 'road-block-recovery' ? '道路阻塞保持' : '车端障碍保持') }} / 秒<input v-model.number="roadBlockHold" type="number" min="1" max="120" /></label>
+            <label v-if="run.name === 'road-block-recovery' || run.name === 'obstacle-auto-detour' || obstacleTimeoutScenarios.has(run.name)">{{ obstacleTimeoutScenarios.has(run.name) ? '障碍保持时间' : (run.name === 'road-block-recovery' ? '道路阻塞保持' : '车端障碍保持') }} / 秒<input v-model.number="roadBlockHold" type="number" min="1" max="120" /></label>
             <label v-if="run.name === 'service-restart'">重启注入阶段<select v-model="restartStage"><option value="pickup">原取料运输执行中（可验证到站补记后续接）</option><option value="delivery">满箱运输执行中（保留更复杂恢复现场）</option></select></label>
           </fieldset>
           <div class="toolbar"><button class="primary" :disabled="!canControl || active || !runValid || (['custom-calls', 'dispatch-backlog'].includes(run.name) && !callPlanValid)" @click="startScenario"><IconPlayerPlay :size="16" />运行场景</button><button :disabled="!available || !active" @click="action('abort')">中止后续场景</button></div>
@@ -2331,6 +2363,8 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
 .simulation-workspace{display:grid;grid-template-columns:270px minmax(0,1fr);gap:10px;align-items:stretch;min-height:calc(100vh - 140px)}
 .simulation-sidebar{display:flex;flex-direction:column;gap:9px;min-height:0;height:calc(100vh - 140px)}
 .simulation-workspace-content{min-width:0}
+.embedded:has(.simulation-workspace > :only-child) .simulation-workspace{grid-template-columns:minmax(0,1fr);min-height:0}
+.embedded .simulation-workspace{min-height:0}
 .module-nav{grid-template-columns:repeat(5,minmax(0,1fr))!important;gap:6px!important;margin:0 0 12px!important;padding:6px;border:1px solid #263e59;border-radius:8px;background:#081425}
 .simulation-sidebar>.module-nav{grid-template-columns:1fr!important;margin:0!important;padding:7px;flex:none}
 .simulation-sidebar>.module-nav button{min-height:48px!important;padding:8px 10px!important}

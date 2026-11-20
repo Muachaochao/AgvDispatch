@@ -18,8 +18,8 @@ const router = createRouter({
         {
           path: 'dashboard',
           name: 'dashboard',
-          component: () => import('@/views/DashboardView.vue'),
-          meta: { title: '概览' }
+          component: () => import('@/views/SimulationHubView.vue'),
+          meta: { title: '运行总览' }
         },
         {
           path: 'roadnet',
@@ -37,7 +37,7 @@ const router = createRouter({
           path: 'simulation',
           name: 'simulation',
           component: () => import('@/views/SimulationHubView.vue'),
-          meta: { title: '仿真中心', subtitle: '原生算法 / 主工程调度 / 对比实验' }
+          meta: { title: '仿真中心' }
         },
         {
           path: 'experiments',

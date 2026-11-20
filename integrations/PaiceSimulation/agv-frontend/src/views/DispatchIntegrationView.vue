@@ -8,6 +8,7 @@ import {
   watch,
 } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
+import { dispatchLocation, type DispatchSection } from "@/integration/dispatch-workspace";
 import BusinessScenarioSetup from "@/components/BusinessScenarioSetup.vue";
 import EngineeringSchemeEditor from "@/components/EngineeringSchemeEditor.vue";
 import RoadNetScene from "@/components/RoadNetScene.vue";
@@ -118,7 +119,8 @@ const fresh = computed(
   () => connected.value && dispatchIsFresh(status.value, clock.value),
 );
 const cars = computed(() => status.value?.device?.cars ?? {});
-const section = ref('engineering');
+const section = defineModel<DispatchSection>({ required: true });
+const props = defineProps<{ taskId?: string }>();
 const waitFresh = computed(() => connected.value && dispatchWaitSnapshotFresh(monitor.value, clock.value));
 const waitsByTask = computed(() => {
   const index = new Map<string, DispatchWaitRequest[]>();
@@ -530,7 +532,7 @@ async function pollDetails(live: DispatchStatus, revision: number) {
     ) as PromiseRejectedResult[];
     if (failures.length)
       error.value = failures.map((r) => String(r.reason)).join(" · ");
-    const automaticTask = status.value?.scenario?.callRows?.find(row => row.status === "active" && row.vehicleId)?.taskId
+    const automaticTask = props.taskId ?? status.value?.scenario?.callRows?.find(row => row.status === "active" && row.vehicleId)?.taskId
       ?? tasks.value.find(task => task.vehicleId && !["Completed", "Cancelled", "Faulted"].includes(task.stage))?.taskId
       ?? (tasks.value.length === 1 ? tasks.value[0]?.taskId : undefined);
     if (!selectedTask.value && automaticTask) await selectTask(automaticTask);
@@ -718,8 +720,6 @@ onBeforeUnmount(() => {
             ? new Date(observedAt).toLocaleTimeString()
             : "暂无成功观察"
         }}</span
-        ><el-button @click="$router.push('/simulation?mode=native')"
-          >进入原生算法仿真</el-button
         ></el-space
       >
     </section>
@@ -730,13 +730,13 @@ onBeforeUnmount(() => {
       :closable="false"
       show-icon
     />
-    <nav class="panel workflow-nav" aria-label="业务仿真流程">
-      <el-radio-group v-model="section">
-        <el-radio-button value="engineering">工程配置</el-radio-button>
-        <el-radio-button value="plan">呼叫计划</el-radio-button>
-        <el-radio-button value="monitor">运行监控</el-radio-button>
-        <el-radio-button value="report">报告</el-radio-button>
-      </el-radio-group>
+    <nav class="panel workflow-nav" aria-label="相关仿真工具">
+      <RouterLink v-if="section === 'engineering'" :to="dispatchLocation('environment')">环境工具、车辆与设备模型</RouterLink>
+      <RouterLink v-if="section === 'engineering'" :to="dispatchLocation('plan')">配置呼叫并检查启动</RouterLink>
+      <RouterLink v-if="section === 'plan'" :to="dispatchLocation('scenarios')">全部场景</RouterLink>
+      <RouterLink v-if="section === 'monitor'" :to="dispatchLocation('task-evidence', selectedTask)">任务证据与路权交接</RouterLink>
+      <RouterLink v-if="section === 'monitor'" :to="dispatchLocation('diagnosis')">六层调度诊断</RouterLink>
+      <RouterLink v-if="section === 'report'" :to="dispatchLocation('report-evidence')">历史对比与完整证据包</RouterLink>
     </nav>
     <EngineeringSchemeEditor v-if="section === 'engineering'" :status="status" @saved="schemeSaved" />
     <BusinessScenarioSetup v-show="section === 'plan'" :status="status" @started="section = 'monitor'" @changed="status = $event; selectedTask = ''; detail = null; tasks = []; liveMapSignature = '';" />

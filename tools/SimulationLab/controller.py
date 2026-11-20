@@ -160,18 +160,34 @@ class Runtime:
             from versions import VersionComparison
             self.version_comparison = VersionComparison(self)
 
-    def api(self, path, data=None, allow_rejection=False):
+    def api(self, path, data=None, allow_rejection=False, *, method=None):
         if self.abort.is_set():
             raise InterruptedError('场景已停止，拒绝继续提交后台操作。')
         # The normal WebHost pipe operation is bounded at 25 seconds. A shorter
         # client timeout can abandon a successful task creation before its receipt.
         try:
-            result = self.api_client.request(path, data)
+            result = (self.api_client.request(path, data) if method is None
+                      else self.api_client.request(path, data, method=method))
         except TimeoutError as error:
             raise TimeoutError(f'等待仿真后台接口 {path} 返回超时，请核对原请求结果。') from error
         if not allow_rejection and isinstance(result, dict) and result.get('accepted') is False:
             raise RuntimeError(f'{path}: {result}')
         return result
+
+    def dispatch_diagnostics(self, path, update=None):
+        with self.lock:
+            if self.phase != 'running':
+                raise ValueError('请先启动隔离实例。')
+            instance = self.root.name
+            if update is None:
+                return {**self.api('/api' + path), 'simulationInstance': instance}
+            if set(update) != {'simulationInstance', 'expectedRevision', 'options'} or update['simulationInstance'] != instance:
+                raise ValueError('仿真实例已变化，请刷新调度策略后再保存。')
+            request = {key: update[key] for key in ('expectedRevision', 'options')}
+            if not isinstance(request['expectedRevision'], str) or not request['expectedRevision'] or not isinstance(request['options'], dict):
+                raise ValueError('调度策略必须包含配置和当前修订。')
+            result = self.api('/api/dispatch-optimization/options', request, allow_rejection=True, method='PUT')
+            return {**result, 'simulationInstance': instance}
 
     def device(self):
         path = self.root / ('multi-state.json' if self.lab.get('twoVehicleSimulation') or self.lab.get('multiVehicleSimulation') else 'device-state.json')
@@ -1516,6 +1532,9 @@ def serve(root, port, token):
                         result = runtime.api('/api/timeout-recovery/' + query['id'][0])
                     elif parsed.path == '/resources': result = runtime.task_resources()
                     elif parsed.path == '/snapshot': result = runtime.api('/api/snapshot')
+                    elif parsed.path in ('/dispatch-pipeline', '/dispatch-optimization'):
+                        if query: raise ValueError('只读查询参数无效。')
+                        result = runtime.dispatch_diagnostics(parsed.path)
                     elif parsed.path in ('/report', '/replay'):
                         if query and (set(query) != {'id'} or len(query['id']) != 1): raise ValueError('报告查询参数无效。')
                         identity = query.get('id', [None])[0]
@@ -1542,6 +1561,8 @@ def serve(root, port, token):
                     elif self.path == '/scheme-start': result = runtime.select_scheme(payload, start=True)
                     elif self.path == '/scheme-delete': result = runtime.delete_scheme(payload)
                     elif self.path == '/point-table-validate': result = runtime.validate_point_table(payload)
+                    elif self.path == '/dispatch-optimization/options':
+                        result = runtime.dispatch_diagnostics('/dispatch-optimization', payload)
                     elif self.path == '/timeout-recovery-execute':
                         allowed = {'taskId', 'expectedRevision', 'executeConfirmed',
                                    'vehicleAndLocationConfirmed', 'loadAndOwnershipConfirmed',

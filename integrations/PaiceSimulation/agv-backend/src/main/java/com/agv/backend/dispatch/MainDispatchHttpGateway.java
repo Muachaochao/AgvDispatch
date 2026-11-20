@@ -38,6 +38,29 @@ public class MainDispatchHttpGateway implements MainDispatchGateway {
         return send("POST", path, payload == null ? "{}" : write(payload));
     }
 
+    @Override
+    public byte[] archive(String reportId) {
+        if (!properties.isEnabled()) throw new BusinessException(5031, "主工程调度实验未启用");
+        if (!reportId.matches("[a-fA-F0-9]{32}")) throw new BusinessException("主工程报告编号无效");
+        int maximumBytes = 64 * 1024 * 1024;
+        try {
+            var request = HttpRequest.newBuilder(uri("/api/simulation/archive?id=" + reportId))
+                    .timeout(Duration.ofSeconds(95)).header("Accept", "application/zip").GET().build();
+            var response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
+            try (var stream = response.body()) {
+                if (response.statusCode() != 200) throw new BusinessException(5031, "5199 证据包读取失败");
+                byte[] bytes = stream.readNBytes(maximumBytes + 1);
+                if (bytes.length > maximumBytes) throw new BusinessException(5031, "证据包超过大小限制");
+                return bytes;
+            }
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            throw new BusinessException(5031, "证据包读取已中断");
+        } catch (IOException error) {
+            throw new BusinessException(5031, "无法读取 5199 证据包");
+        }
+    }
+
     private JsonNode send(String method, String path, String body) {
         if (!properties.isEnabled()) {
             throw new BusinessException(5031, "主工程调度实验未启用");

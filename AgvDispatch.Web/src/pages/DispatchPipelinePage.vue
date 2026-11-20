@@ -12,7 +12,11 @@ import {
 } from '../dispatch-pipeline';
 import { industrialText } from '../operator-labels';
 
-const store = useDispatchStore(), route = useRoute(), router = useRouter();
+const props = defineProps<{
+  simulationRead?: (signal: AbortSignal) => Promise<PipelineInspectionSnapshot>;
+  simulationTaskLink?: (taskId: string) => { path: string; query: Record<string, string> };
+}>();
+const store = props.simulationRead ? null : useDispatchStore(), route = useRoute(), router = useRouter();
 const latest = shallowRef<PipelineInspectionSnapshot>();
 const observations = shallowRef<PipelineObservation[]>([]);
 const fixed = shallowRef<PipelineObservation | null>(null);
@@ -20,7 +24,7 @@ const loading = ref(false), error = ref(''), readAt = ref(0), now = ref(Date.now
 const search = ref(''), onlyIssues = ref(false), detailElement = ref<HTMLElement>();
 let alive = true, controller: AbortController | undefined;
 let poll: ReturnType<typeof setInterval> | undefined, tick: ReturnType<typeof setInterval> | undefined;
-const liveContext = computed(() => !store.demoMode && !store.engineeringSimulationOnly);
+const liveContext = computed(() => !!props.simulationRead || (!!store && !store.demoMode && !store.engineeringSimulationOnly));
 const selectedKey = computed(() => pipelineLayerKey(route.query.layer));
 const data = computed(() => fixed.value?.snapshot ?? latest.value);
 const historyMode = computed(() => fixed.value !== null);
@@ -69,9 +73,7 @@ async function load() {
   const pending = new AbortController(); controller = pending;
   const timeout = setTimeout(() => pending.abort(), 20000);
   try {
-    const response = await fetch('/api/dispatch-pipeline', { cache: 'no-store', signal: pending.signal });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.detail ?? result.error ?? '无法读取六层监控状态。');
+    const result = props.simulationRead ? await props.simulationRead(pending.signal) : await readFieldPipeline(pending.signal);
     if (!result || !Array.isArray(result.layers) || !Array.isArray(result.gates) || !pipelineTimestampFresh(result.capturedAt, Date.now(), 30000))
       throw new Error('后台观察结构或采集时间无效，请核对后台版本与时间。');
     if (alive && liveContext.value) {
@@ -85,6 +87,12 @@ async function load() {
     if (alive) loading.value = false;
   }
 }
+async function readFieldPipeline(signal: AbortSignal): Promise<PipelineInspectionSnapshot> {
+  const response = await fetch('/api/dispatch-pipeline', { cache: 'no-store', signal });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.detail ?? result.error ?? '无法读取六层监控状态。');
+  return result;
+}
 watch(liveContext, value => { if (value) void load(); else controller?.abort(); });
 onMounted(() => { void load(); poll = setInterval(() => { void load(); }, 5000); tick = setInterval(() => { now.value = Date.now(); }, 1000); });
 onUnmounted(() => { alive = false; clearInterval(poll); clearInterval(tick); controller?.abort(); });
@@ -94,7 +102,7 @@ onUnmounted(() => { alive = false; clearInterval(poll); clearInterval(tick); con
   <section class="management-page dispatch-pipeline-page" :class="{ 'is-historical': historyMode }">
     <header class="pipeline-page-title">
       <div><p class="pipeline-eyebrow">调度过程 / 只读监控</p><h2>六层调度监控</h2><p>先看运行开关，再逐层核对任务、车辆、资源与原命令。</p></div>
-      <div class="pipeline-page-actions"><RouterLink to="/dispatch-optimization">调度策略与成本 <IconArrowRight :size="14"/></RouterLink><button data-testid="pipeline-refresh" :disabled="loading || !liveContext" @click="load"><IconRefresh :size="15"/>{{loading ? '正在采集…' : '刷新观察'}}</button></div>
+      <div class="pipeline-page-actions"><RouterLink v-if="!simulationRead" to="/dispatch-optimization">调度策略与成本 <IconArrowRight :size="14"/></RouterLink><button data-testid="pipeline-refresh" :disabled="loading || !liveContext" @click="load"><IconRefresh :size="15"/>{{loading ? '正在采集…' : '刷新观察'}}</button></div>
     </header>
 
     <p v-if="!liveContext" class="pipeline-alert" role="alert">当前为演示或工程隔离模式，不读取现场调度数据。</p>
@@ -133,10 +141,10 @@ onUnmounted(() => { alive = false; clearInterval(poll); clearInterval(tick); con
 
         <section class="pipeline-checks-section"><header><h4>判断依据</h4><span>实际值、预期条件与最近观察逐项对照</span></header><div class="pipeline-table-wrap"><table class="pipeline-checks"><thead><tr><th>检查项</th><th>观察结果</th><th>实际 / 预期</th><th>依据与时间</th></tr></thead><tbody><tr v-for="check in layer?.checks ?? []" :key="check.key" data-testid="pipeline-check"><td><strong>{{industrialText(check.label)}}</strong></td><td><span class="pipeline-status-badge" :class="state(check).tone">{{statusLabel(state(check).label)}}</span></td><td><div class="pipeline-comparison"><b>{{industrialText(check.actual || '未取得实际值')}}</b><small>预期：{{industrialText(check.expected || '后台未提供')}}</small></div></td><td><p>{{industrialText(check.reason)}}</p><small class="pipeline-record-time">{{pipelineTime(check.observedAt)}}</small></td></tr><tr v-if="!layer?.checks.length"><td colspan="4" class="pipeline-empty">尚未取得逐项检查依据；当前不推断检查已通过。</td></tr></tbody></table></div></section>
 
-        <section class="pipeline-records-section"><header><div><h4>实际记录</h4><p>关联原任务、车辆、资源或命令，展开查看采集依据。</p></div><RouterLink :to="selected.link">{{selected.linkLabel}} <IconArrowRight :size="13"/></RouterLink></header>
+        <section class="pipeline-records-section"><header><div><h4>实际记录</h4><p>关联原任务、车辆、资源或命令，展开查看采集依据。</p></div><RouterLink v-if="!simulationRead" :to="selected.link">{{selected.linkLabel}} <IconArrowRight :size="13"/></RouterLink></header>
           <div class="pipeline-record-tools"><label class="pipeline-search"><IconSearch :size="16"/><input v-model="search" data-testid="pipeline-search" type="search" aria-label="筛选当前层记录" placeholder="任务、工位、车辆、资源、命令或原因"/></label><label class="pipeline-issue-filter"><input v-model="onlyIssues" data-testid="pipeline-only-issues" type="checkbox"/>仅等待或异常<span>{{issueCount}}</span></label><button v-if="search || onlyIssues" @click="search = ''; onlyIssues = false">清除筛选</button></div>
           <p class="pipeline-record-count">{{records.length}} 条符合筛选 · 本次展示 {{layer?.records.length ?? 0}} / {{layer?.totalCount ?? '—'}} 条后台记录<span v-if="layer?.truncated"> · 已达采样上限，请进入相关页面查看其余记录</span></p>
-          <div class="pipeline-record-list"><article v-for="record in records" :key="record.id" class="pipeline-record" data-testid="pipeline-record"><header><div><strong>{{record.title || record.id}}</strong><span class="pipeline-record-ids"><span v-if="record.stationId">工位 {{record.stationId}}</span><span v-if="record.vehicleId">车辆 {{record.vehicleId}}</span><span v-if="record.resourceId">资源 {{record.resourceId}}</span></span></div><span class="pipeline-status-badge" :class="pipelineRecordState(record.state).tone">{{pipelineRecordState(record.state).label}}</span></header><p>{{record.reason || '后台未提供额外说明。'}}</p><dl class="pipeline-record-facts"><div v-for="fact in record.facts.slice(0, 4)" :key="fact.label"><dt>{{fact.label}}</dt><dd>{{fact.value || '—'}}</dd></div></dl><details v-if="record.facts.length > 4" open><summary>全部 {{record.facts.length}} 项依据（默认展开）</summary><dl class="pipeline-record-facts"><div v-for="fact in record.facts.slice(4)" :key="fact.label"><dt>{{fact.label}}</dt><dd>{{fact.value || '—'}}</dd></div></dl></details><footer><span>原记录更新 {{pipelineTime(record.updatedAt)}}</span><RouterLink v-if="record.taskId" :to="`/tasks/${record.taskId}`" title="打开原任务详情：步骤、命令、路权与恢复记录">追踪任务 {{record.taskId}}</RouterLink><RouterLink v-if="pipelineInternalLink(record.link)" :to="pipelineInternalLink(record.link)!">查看相关记录 <IconArrowRight :size="12"/></RouterLink><small v-else class="pipeline-raw-id">{{record.id}}</small></footer></article><div v-if="!records.length" class="pipeline-empty"><strong>{{search || onlyIssues ? '当前层没有符合筛选的记录' : layer ? '本次采集未返回该层记录' : '尚未取得该层明细'}}</strong><p>{{search || onlyIssues ? '可清除筛选或切换其他层，按同一编号继续查看。' : '空记录不代表所有检查通过，请同时核对运行开关、判断依据和采样说明。'}}</p></div></div>
+          <div class="pipeline-record-list"><article v-for="record in records" :key="record.id" class="pipeline-record" data-testid="pipeline-record"><header><div><strong>{{record.title || record.id}}</strong><span class="pipeline-record-ids"><span v-if="record.stationId">工位 {{record.stationId}}</span><span v-if="record.vehicleId">车辆 {{record.vehicleId}}</span><span v-if="record.resourceId">资源 {{record.resourceId}}</span></span></div><span class="pipeline-status-badge" :class="pipelineRecordState(record.state).tone">{{pipelineRecordState(record.state).label}}</span></header><p>{{record.reason || '后台未提供额外说明。'}}</p><dl class="pipeline-record-facts"><div v-for="fact in record.facts.slice(0, 4)" :key="fact.label"><dt>{{fact.label}}</dt><dd>{{fact.value || '—'}}</dd></div></dl><details v-if="record.facts.length > 4" open><summary>全部 {{record.facts.length}} 项依据（默认展开）</summary><dl class="pipeline-record-facts"><div v-for="fact in record.facts.slice(4)" :key="fact.label"><dt>{{fact.label}}</dt><dd>{{fact.value || '—'}}</dd></div></dl></details><footer><span>原记录更新 {{pipelineTime(record.updatedAt)}}</span><RouterLink v-if="record.taskId" :to="simulationTaskLink ? simulationTaskLink(record.taskId) : `/tasks/${record.taskId}`" title="打开原任务详情：步骤、命令、路权与恢复记录">追踪任务 {{record.taskId}}</RouterLink><RouterLink v-if="!simulationRead && pipelineInternalLink(record.link)" :to="pipelineInternalLink(record.link)!">查看相关记录 <IconArrowRight :size="12"/></RouterLink><small v-else class="pipeline-raw-id">{{record.id}}</small></footer></article><div v-if="!records.length" class="pipeline-empty"><strong>{{search || onlyIssues ? '当前层没有符合筛选的记录' : layer ? '本次采集未返回该层记录' : '尚未取得该层明细'}}</strong><p>{{search || onlyIssues ? '可清除筛选或切换其他层，按同一编号继续查看。' : '空记录不代表所有检查通过，请同时核对运行开关、判断依据和采样说明。'}}</p></div></div>
           <p class="pipeline-source-note">{{industrialText(layer?.note || '等待后台提供该层数据来源与采样说明。')}} 原记录更新时间与本次采集时间含义不同；观察结果不授予车辆、PLC 或资源动作许可。</p>
         </section>
       </article>

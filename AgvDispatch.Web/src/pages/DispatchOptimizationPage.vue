@@ -7,8 +7,15 @@ import {
   type DispatchAssignmentOptions, type DispatchOptimizationSnapshot, type DispatchZoneRow, type DispatchDeadlineRow
 } from '../dispatch-optimization';
 
-const dispatch = useDispatchStore();
-const data = ref<DispatchOptimizationSnapshot>();
+type OptionsUpdate = { options: DispatchAssignmentOptions; expectedRevision: string };
+type OptimizationSnapshot = DispatchOptimizationSnapshot & { simulationInstance?: string };
+const props = defineProps<{
+  simulationRead?: (signal: AbortSignal) => Promise<OptimizationSnapshot>;
+  simulationSave?: (update: OptionsUpdate & { simulationInstance: string }, signal: AbortSignal) => Promise<OptimizationSnapshot>;
+  simulationTaskLink?: (taskId: string) => { path: string; query: Record<string, string> };
+}>();
+const dispatch = props.simulationRead ? null : useDispatchStore();
+const data = ref<OptimizationSnapshot>();
 const draft = ref<DispatchAssignmentOptions>();
 const zoneRows = ref<DispatchZoneRow[]>([]), deadlineRows = ref<DispatchDeadlineRow[]>([]);
 const draftRevision = ref('');
@@ -21,7 +28,7 @@ let tick: ReturnType<typeof setInterval> | undefined;
 let readController: AbortController | undefined;
 let saveController: AbortController | undefined;
 
-const liveContext = computed(() => !dispatch.demoMode && !dispatch.engineeringSimulationOnly);
+const liveContext = computed(() => !!props.simulationRead || (!!dispatch && !dispatch.demoMode && !dispatch.engineeringSimulationOnly));
 const readFresh = computed(() => !loadError.value && readAt.value > 0 && now.value - readAt.value < 15000);
 const configuredDraft = computed(() => draft.value ? {
   ...draft.value,
@@ -32,7 +39,8 @@ const dirty = computed(() => !!configuredDraft.value && JSON.stringify(configure
 const revisionChanged = computed(() => !!data.value && !!draftRevision.value && draftRevision.value !== data.value.revision);
 const validation = computed(() => configuredDraft.value
   ? assignmentMappingRowsError(zoneRows.value, deadlineRows.value) || assignmentOptionsError(configuredDraft.value) : '请先读取后台配置。');
-const canSave = computed(() => liveContext.value && readFresh.value && dirty.value && !validation.value && !revisionChanged.value && !saving.value && !loading.value);
+const editable = computed(() => !props.simulationRead || (!!props.simulationSave && !!data.value?.simulationInstance));
+const canSave = computed(() => editable.value && liveContext.value && readFresh.value && dirty.value && !validation.value && !revisionChanged.value && !saving.value && !loading.value);
 const tasks = computed(() => (data.value?.tasks ?? []).filter(task =>
   [task.taskId, task.stationId, task.recommendedVehicleId, task.greedyVehicleId, task.dispatchedVehicleId, task.reason]
     .some(value => value?.toLocaleLowerCase().includes(search.value.trim().toLocaleLowerCase()))));
@@ -56,8 +64,10 @@ function resetDraft() {
   saveError.value = ''; message.value = '';
 }
 
-function accept(snapshot: DispatchOptimizationSnapshot, reset = false) {
-  const keepDraft = !reset && dirty.value;
+function accept(snapshot: OptimizationSnapshot, reset = false) {
+  const sameInstance = snapshot.simulationInstance === data.value?.simulationInstance;
+  const keepDraft = sameInstance && !reset && dirty.value;
+  if (!sameInstance) recent.value = [];
   data.value = snapshot;
   readAt.value = Date.now(); now.value = Date.now();
   if (!keepDraft || !draft.value) resetDraft();
@@ -73,9 +83,8 @@ async function load() {
   const controller = new AbortController(); readController = controller;
   const timeout = setTimeout(() => controller.abort(), 30000);
   try {
-    const response = await fetch('/api/dispatch-optimization', { cache: 'no-store', signal: controller.signal });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.detail ?? result.error ?? '无法读取派车优化状态。');
+    const result = props.simulationRead ? await props.simulationRead(controller.signal) : await readFieldOptimization(controller.signal);
+    if (!result?.options || !Array.isArray(result.tasks)) throw new Error('后台未提供派车优化数据。');
     if (alive) { accept(result); loadError.value = ''; }
   } catch (error) {
     if (alive) loadError.value = error instanceof Error ? error.message : String(error);
@@ -84,19 +93,24 @@ async function load() {
     if (alive) loading.value = false;
   }
 }
+async function readFieldOptimization(signal: AbortSignal): Promise<DispatchOptimizationSnapshot> {
+  const response = await fetch('/api/dispatch-optimization', { cache: 'no-store', signal });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.detail ?? result.error ?? '无法读取派车优化状态。');
+  return result;
+}
 
 async function save() {
-  if (!canSave.value || !draft.value) return;
+  const options = configuredDraft.value;
+  if (!canSave.value || !options) return;
   saving.value = true; saveError.value = ''; message.value = '';
   const controller = new AbortController(); saveController = controller;
   const timeout = setTimeout(() => controller.abort(), 30000);
   try {
-    const response = await fetch('/api/dispatch-optimization/options', {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ options: configuredDraft.value, expectedRevision: draftRevision.value }), signal: controller.signal
-    });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.detail ?? result.error ?? '配置保存未完成，请刷新核对。');
+    const update = { options, expectedRevision: draftRevision.value };
+    const result = props.simulationRead
+      ? await props.simulationSave!({ ...update, simulationInstance: data.value!.simulationInstance! }, controller.signal)
+      : await saveFieldOptimization(update, controller.signal);
     if (alive) {
       accept(result, true); loadError.value = '';
       message.value = `已保存为「${modeLabel(result.options.mode)}」，从后续调度周期生效。`;
@@ -108,6 +122,14 @@ async function save() {
     clearTimeout(timeout); saveController = undefined;
     if (alive) saving.value = false;
   }
+}
+async function saveFieldOptimization(update: OptionsUpdate, signal: AbortSignal): Promise<OptimizationSnapshot> {
+  const response = await fetch('/api/dispatch-optimization/options', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(update), signal
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.detail ?? result.error ?? '配置保存未完成，请刷新核对。');
+  return result;
 }
 
 onMounted(() => {
@@ -126,8 +148,8 @@ onUnmounted(() => {
     <header class="management-title">
       <h2>滚动派车优化</h2>
       <span class="assignment-mode" :class="{ global: data?.options.mode === 'Global' }">{{modeLabel(data?.options.mode)}}</span>
-      <RouterLink class="assignment-monitor-entry" to="/dispatch-pipeline">六层调度监控 · 查看每层明细</RouterLink>
-      <RouterLink to="/tasks">业务任务</RouterLink>
+      <RouterLink v-if="!simulationRead" class="assignment-monitor-entry" to="/dispatch-pipeline">六层调度监控 · 查看每层明细</RouterLink>
+      <RouterLink v-if="!simulationRead" to="/tasks">业务任务</RouterLink>
       <button :disabled="loading || saving || !liveContext" @click="load">{{loading ? '读取中…' : '刷新状态'}}</button>
     </header>
     <p class="assignment-intro">在当前等待队列中同时匹配任务与车辆。执行中、已取得有效路权及已发车的任务保留原归属；未分配任务继续保存在队列，按等待时间重新评估。</p>
@@ -145,8 +167,8 @@ onUnmounted(() => {
           <div class="pipeline-layer-state"><strong>{{layer.label}}</strong><span v-if="layer.itemCount !== null">{{layer.itemCount}} 项</span></div>
           <p class="pipeline-purpose">{{layer.purpose}}</p><p class="pipeline-summary">{{layer.summary}}</p>
           <small>{{layer.updatedAt ? `观察于 ${time(layer.updatedAt)}` : '尚无有效更新时间'}}</small>
-          <RouterLink :to="`/dispatch-pipeline?layer=${layer.key}`">查看本层输入、依据与实际记录 →</RouterLink>
-          <RouterLink v-if="layer.link" :to="layer.link">{{layer.linkLabel}}</RouterLink><span v-else class="pipeline-detail-note">下方查看本轮匹配组合</span>
+          <RouterLink v-if="!simulationRead" :to="`/dispatch-pipeline?layer=${layer.key}`">查看本层输入、依据与实际记录 →</RouterLink>
+          <RouterLink v-if="!simulationRead && layer.link" :to="layer.link">{{layer.linkLabel}}</RouterLink><span v-else class="pipeline-detail-note">下方查看本轮匹配组合</span>
         </li>
       </ol>
     </section>
@@ -168,7 +190,7 @@ onUnmounted(() => {
             <table class="assignment-table"><thead><tr><th>工位 / 呼叫时间</th><th>有效优先级</th><th>已等待</th><th>全局推荐</th><th>传统派车</th><th>实际登记</th><th>本轮结果</th><th>详情</th></tr></thead>
               <tbody>
                 <tr v-for="task in tasks" :key="task.taskId" :class="{selected: selectedTaskId === task.taskId}">
-                  <td><strong>{{task.stationId}}</strong><small>{{time(task.calledAt)}}</small><RouterLink :to="`/tasks/${encodeURIComponent(task.taskId)}`">{{task.taskId}}</RouterLink></td>
+                  <td><strong>{{task.stationId}}</strong><small>{{time(task.calledAt)}}</small><RouterLink :to="simulationTaskLink ? simulationTaskLink(task.taskId) : `/tasks/${encodeURIComponent(task.taskId)}`">{{task.taskId}}</RouterLink></td>
                   <td><strong>{{assignmentNumber(task.effectivePriority)}}</strong><small>基础 {{task.basePriority}}</small></td>
                   <td>{{assignmentNumber(task.waitMinutes)}} 分钟</td>
                   <td :class="{different: task.recommendedVehicleId !== task.greedyVehicleId}">{{task.recommendedVehicleId || '待分配'}}</td>
@@ -198,7 +220,7 @@ onUnmounted(() => {
           </template>
           <p v-else class="assignment-empty">没有选中的等待任务。</p>
           <p class="assignment-note">行驶时间依据道路速度及估算巡航上限计算。拥堵成本来自当前道路动态惩罚，不代表公共资源释放倒计时；已占用资源仍按硬约束等待。返程按权重折算，未配置区域的站点不添加跨区成本。</p>
-          <RouterLink to="/resource-review">查看当前公共资源占用</RouterLink>
+          <RouterLink v-if="!simulationRead" to="/resource-review">查看当前公共资源占用</RouterLink>
         </article>
       </div>
 
@@ -207,7 +229,7 @@ onUnmounted(() => {
         <p>影子比对会同时计算全局推荐和传统派车结果。切换为全局匹配后，后续等待任务按推荐组合申请路权；车辆命令仍通过现有持久化队列和安全复核。</p>
         <p v-if="revisionChanged" class="inline-warning" role="alert">后台配置修订已变化。请点击“载入后台配置”取得当前值后再编辑，避免覆盖其他修改。</p>
         <form v-if="draft" @submit.prevent="save">
-          <fieldset :disabled="saving || !liveContext">
+          <fieldset :disabled="saving || !liveContext || !editable">
             <div class="assignment-config-grid">
               <label>派车模式<select v-model="draft.mode"><option value="Disabled">传统派车 · 关闭优化计算</option><option value="Shadow">影子比对 · 推荐供核对</option><option value="Global">全局匹配 · 用于后续派车</option></select></label>
               <label>滚动周期（毫秒）<input v-model.number="draft.intervalMs" type="number" min="2000" max="5000" step="1" required/><small>2～5 秒，默认 3000</small></label>

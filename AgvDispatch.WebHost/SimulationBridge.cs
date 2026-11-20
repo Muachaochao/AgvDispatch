@@ -57,7 +57,7 @@ public sealed class SimulationBridge : IAsyncDisposable
             (method != HttpMethod.Post || path is not ("/start" or "/stop" or "/run" or "/abort" or "/control" or
                 "/new-instance" or "/configure" or "/recover" or "/recover-release" or "/protocol-start" or "/protocol-stop" or
                 "/equipment-start" or "/equipment-control" or "/equipment-stop" or "/scheme-save" or "/scheme-select" or
-                "/scheme-start" or "/scheme-delete" or "/point-table-validate" or "/timeout-recovery-execute")))
+                "/scheme-start" or "/scheme-delete" or "/point-table-validate" or "/timeout-recovery-execute" or "/dispatch-optimization/options")))
             throw new ArgumentException("不支持的仿真操作。");
         await gate.WaitAsync(ct);
         try
@@ -109,7 +109,7 @@ public sealed class SimulationBridge : IAsyncDisposable
 
     private static bool AllowedReadPath(string path)
     {
-        if (path is "/status" or "/live" or "/report" or "/replay" or "/point-table" or "/snapshot" or "/resources" or "/tasks" ||
+        if (path is "/status" or "/live" or "/report" or "/replay" or "/point-table" or "/snapshot" or "/resources" or "/tasks" or "/dispatch-pipeline" or "/dispatch-optimization" ||
             Regex.IsMatch(path, @"^/(report|replay|archive)\?id=[a-f0-9]{32}$", RegexOptions.CultureInvariant) ||
             Regex.IsMatch(path, @"^/task\?id=[A-Za-z0-9_-]{1,128}$", RegexOptions.CultureInvariant) ||
             Regex.IsMatch(path, @"^/timeout-recovery\?id=[A-Za-z0-9_-]{1,128}$", RegexOptions.CultureInvariant))
