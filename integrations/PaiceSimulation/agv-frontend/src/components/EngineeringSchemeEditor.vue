@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, ref, shallowRef, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, ref, shallowRef, watch } from 'vue'
 import EngineeringPointMap from './EngineeringPointMap.vue'
 import { dispatchSceneMap, type SourceMap } from '@/integration/dispatch-adapter'
 import { dispatchRead, type DispatchStatus } from '@/integration/dispatch-api'
@@ -23,10 +23,13 @@ const scheme = ref(''), name = ref(''), stationId = ref(''), error = ref(''), no
 const configuration = ref<Configuration | null>(null)
 const sceneMap = shallowRef<ReturnType<typeof dispatchSceneMap> | null>(null)
 const busy = ref(false)
-const bindOnMap = ref(false)
+const editing = ref(false)
+const pickingStop = ref(false)
+const pointMap = ref<InstanceType<typeof EngineeringPointMap>>()
 const selectedSite = ref('')
 const showSignals = ref(false)
 const mapTab = ref<'preview' | 'points'>('preview')
+let originalBindings: Pick<Configuration, 'stations' | 'plcSignalTable'> | undefined
 const locked = computed(() => busy.value || props.status?.running || ['starting', 'stopping'].includes(props.status?.phase ?? ''))
 const station = computed(() => configuration.value?.stations.find(row => row.stationId === stationId.value))
 const bindings = computed(() => new Map(configuration.value?.plcSignalTable.stations.map(row => [row.stationId, row])))
@@ -49,7 +52,7 @@ const markers = computed<EngineeringPoint[]>(() => {
     ...vehicles.value.map(vehicle => ({ label: vehicle.id, nodeId: vehicle.initialSite, group: 'vehicle' })),
     { label: '倒料点', nodeId: config.dumper.dumpingSite, group: 'facility' },
     ...(config.dumper.waitingSites ?? [config.dumper.waitingSite]).map((nodeId, i) => ({ label: '等待位 ' + (i + 1), nodeId, group: 'facility' })),
-    { label: '检修点', nodeId: config.inspectionSite, group: 'inspection' },
+    { label: '检修／观察点', nodeId: config.inspectionSite, group: 'inspection' },
   ]
 })
 const issues = computed(() => {
@@ -70,6 +73,8 @@ const signalOwner = computed(() => selectedSite.value === configuration.value?.d
 const signals = computed(() => signalCatalog.value.get(signalOwner.value) ?? [])
 const syntheticCount = computed(() => configuration.value?.stations.filter(row => row.signalSource !== 'verified').length ?? 0)
 watch(() => station.value?.pickupSite, site => { if (site) selectedSite.value = site })
+watch([stationId, locked], () => { pickingStop.value = false })
+watch(mapTab, tab => { if (tab === 'preview') pickingStop.value = false })
 watch(() => props.status?.schemes, schemes => {
   if (scheme.value || !schemes?.length) return
   const fullFactory = schemes.find(item => {
@@ -85,7 +90,7 @@ watch(() => props.status?.schemes, schemes => {
 
 async function load() {
   busy.value = true; error.value = ''; notice.value = ''; configuration.value = null; sceneMap.value = null
-  bindOnMap.value = false; showSignals.value = false; mapTab.value = 'preview'
+  showSignals.value = false; mapTab.value = 'preview'; selectedSite.value = ''
   try {
     const value = await dispatchRead<{ configuration: Configuration }>('/api/simulation/scheme-select', undefined, { id: scheme.value, checkOnly: true })
     const config = value.configuration
@@ -96,7 +101,7 @@ async function load() {
       edges: config.mapDefinition.edges.filter(edge => edge.enabled !== false),
     })
     stationId.value = config.stations[0]?.stationId ?? ''
-    name.value = (props.status?.schemes?.find(row => row.id === scheme.value)?.name ?? '') + ' · 配置副本'
+    selectedSite.value = config.stations[0]?.pickupSite ?? ''
   } catch (e) { error.value = String(e) } finally { busy.value = false }
 }
 
@@ -106,32 +111,79 @@ function inspectNode(id: string) {
   selectedSite.value = id
 }
 
+async function focusPoint(id: string) {
+  pickingStop.value = false
+  selectedSite.value = id
+  mapTab.value = 'points'
+  await nextTick()
+  if (nodes.value.get(id)?.enabled !== false && nodes.value.has(id)) pointMap.value?.focus()
+}
+
+function locatePoint(id: string) {
+  inspectNode(id)
+  void focusPoint(id)
+}
+
+function inspectStation(id: string) {
+  stationId.value = id
+  if (station.value) void focusPoint(station.value.pickupSite)
+}
+
 function inspectIssue(issue: EngineeringPoint) {
   if (issue.group === 'station') stationId.value = issue.label
-  selectedSite.value = issue.nodeId
-  mapTab.value = 'points'
+  void focusPoint(issue.nodeId)
+}
+
+function beginEditing() {
+  const config = configuration.value
+  if (!config || locked.value) return
+  originalBindings = { stations: config.stations.map(row => ({ ...row })), plcSignalTable: config.plcSignalTable }
+  name.value = (props.status?.schemes?.find(row => row.id === scheme.value)?.name ?? '').slice(0, 73).trimEnd() + ' · 配置副本'
+  editing.value = true
+  error.value = ''; notice.value = ''
+}
+
+function finishEditing() {
+  editing.value = false
+  pickingStop.value = false
+  originalBindings = undefined
+}
+
+function cancelEditing() {
+  if (busy.value) return
+  if (configuration.value && originalBindings) Object.assign(configuration.value, originalBindings)
+  finishEditing()
+  error.value = ''; notice.value = ''
+}
+
+async function chooseStopOnMap() {
+  if (!editing.value || locked.value || !station.value) return
+  await focusPoint(station.value.pickupSite)
+  if (editing.value && !locked.value) pickingStop.value = true
 }
 
 function selectNode(id: string) {
   if (busy.value) return
-  if (!bindOnMap.value) {
+  if (!editing.value || !pickingStop.value || locked.value) {
     inspectNode(id)
     return
   }
-  if (locked.value || !station.value) return
+  if (!station.value) return
   if (!sites.value.some(site => site.value === id)) {
-    error.value = '请选择已启用的工位停靠节点。'
+    error.value = '请在地图上点一个已启用的工位。'
     return
   }
   station.value.pickupSite = id
-  error.value = ''; notice.value = ''
+  selectedSite.value = id
+  pickingStop.value = false
+  error.value = ''
 }
 
 async function upload(event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
   input.value = ''
-  if (!file || locked.value || !configuration.value) return
+  if (!file || !editing.value || locked.value || !configuration.value) return
   busy.value = true; error.value = ''; notice.value = ''
   try {
     const csvText = await file.text()
@@ -146,97 +198,148 @@ async function upload(event: Event) {
         offset: point.offset, signalSource: point.signalSource === 'verified' ? row.signalSource : 'isolated-synthetic' }
     })
     config.plcSignalTable = { ...table, csvText }
-    notice.value = 'PLC 点表校验通过，可另存方案。'
+    notice.value = 'PLC 点表校验通过。点击「另存为新方案」保存。'
   } catch (e) { error.value = String(e) } finally { busy.value = false }
 }
 
 async function save() {
-  if (!configuration.value || !name.value.trim() || locked.value || issues.value.length) return
+  if (!editing.value || !configuration.value || !name.value.trim() || locked.value || issues.value.length) return
   busy.value = true; error.value = ''; notice.value = ''
   try {
-    const result = await dispatchRead<DispatchStatus>('/api/simulation/scheme-save', undefined, { name: name.value.trim(), configuration: configuration.value })
+    const result = await dispatchRead<DispatchStatus & { selectedSchemeId?: string }>('/api/simulation/scheme-save', undefined, { name: name.value.trim(), configuration: configuration.value })
+    if (result.selectedSchemeId) {
+      scheme.value = result.selectedSchemeId
+      finishEditing()
+    } else {
+      if (originalBindings) Object.assign(configuration.value, originalBindings)
+      finishEditing()
+    }
     emit('saved', result)
-    notice.value = '已另存工程方案，可在呼叫计划中选择。'
+    notice.value = `已保存「${name.value.trim()}」。可在「场景与呼叫」选择。`
   } catch (e) { error.value = String(e) } finally { busy.value = false }
 }
 </script>
 
 <template>
   <section class="panel engineering-panel">
-    <h3>工程配置</h3>
-    <el-alert v-if="error" :title="error" type="error" :closable="false" />
-    <el-alert v-if="notice" :title="notice" type="success" :closable="false" />
+    <h3>仿真工程方案</h3>
     <el-space wrap>
-      <el-select v-model="scheme" placeholder="选择工程方案" style="width: 320px" :disabled="busy" @change="configuration = null; sceneMap = null">
+      <el-select v-model="scheme" placeholder="选择工程方案" aria-label="仿真工程方案" style="width: min(320px, 75vw)" :disabled="busy || editing" @change="load">
         <el-option v-for="item in status?.schemes ?? []" :key="item.id" :label="item.name" :value="item.id" />
       </el-select>
-      <el-button :disabled="!scheme || busy" @click="load">加载工程配置</el-button>
+      <el-button :disabled="!scheme || busy || editing" :loading="busy && !configuration" @click="load">重新加载</el-button>
     </el-space>
+    <el-alert v-if="error && !pickingStop && !editing" :title="error" type="error" :closable="false" show-icon />
     <template v-if="configuration">
-      <el-radio-group v-model="mapTab" size="small" aria-label="工程地图视图">
-        <el-radio-button value="preview">地图预览</el-radio-button>
-        <el-radio-button value="points">工程点位与绑定</el-radio-button>
-      </el-radio-group>
+      <div class="engineering-map-header">
+        <el-radio-group v-model="mapTab" size="small" aria-label="工程地图视图">
+          <el-radio-button value="preview">全厂地图</el-radio-button>
+          <el-radio-button value="points">查工位与车辆起点</el-radio-button>
+        </el-radio-group>
+        <el-tag effect="light" :type="issues.length ? 'warning' : 'success'">
+          {{ issues.length ? `点位检查：${issues.length} 项异常` : '点位检查：未发现配置异常' }}
+        </el-tag>
+      </div>
       <SimulationWorkshopMap v-if="mapTab === 'preview'"
         :definition="configuration.mapDefinition" :fleet-count="vehicles.length" :station-count="configuration.stations.length" />
-      <div v-else class="engineering-layout">
-        <EngineeringPointMap v-if="sceneMap" :map="sceneMap" :markers="markers" :selected-id="selectedSite" @select="selectNode" @inspect="inspectNode" />
-        <aside class="engineering-overview">
-          <h4>车辆初始点 · {{ vehicles.length }} 台</h4>
-          <ul class="engineering-vehicles">
-            <li v-for="vehicle in vehicles" :key="vehicle.id">
-              <el-button link type="primary" @click="inspectNode(vehicle.initialSite)">{{ vehicle.id }} · {{ vehicle.initialSite }}</el-button>
-              <small>{{ vehicle.initialLoaded ? '有箱' : '空载' }} · {{ vehicle.speedScale }}×</small>
-            </li>
-          </ul>
-          <h4>业务点位</h4>
-          <ul>
-            <li v-for="marker in markers.filter(item => item.group !== 'vehicle')" :key="marker.label">
-              <el-button link type="primary" @click="inspectNode(marker.nodeId)">{{ marker.label }} · {{ marker.nodeId }}</el-button>
-            </li>
-          </ul>
-          <p>倒料资源 {{ configuration.dumper.resourceId }} · 准入 {{ configuration.downstreamAdmissionCapacity || '不限流' }}</p>
-          <el-select-v2 :model-value="selectedSite" :options="nodeOptions" filterable placeholder="查找地图点位" @change="inspectNode" />
-          <p v-if="point" class="point-detail">{{ point.id }} · X {{ point.x.toFixed(3) }} · Y {{ point.y.toFixed(3) }} {{ configuration.mapDefinition.unit }} · {{ point.enabled === false ? '停用' : '启用' }}</p>
-          <p v-else-if="selectedSite" class="point-detail">{{ selectedSite }} · 地图点位不存在</p>
-        </aside>
-      </div>
-      <h4>点位检查 · {{ issues.length }} 项异常</h4>
-      <ul v-if="issues.length" class="point-issues">
-        <li v-for="issue in issues" :key="issue.label + issue.reason">
-          <el-button type="danger" link @click="inspectIssue(issue)">{{ issue.label }} · {{ issue.nodeId }} · {{ issue.reason }}</el-button>
-        </li>
-      </ul>
-      <p v-else>已核对工位、车辆初始点、业务点位及 PLC 字节绑定。</p>
-      <el-radio-group v-model="bindOnMap" :disabled="busy" aria-label="地图选点用途" @change="mapTab = 'points'">
-        <el-radio-button :value="false">点图核对工位</el-radio-button>
-        <el-radio-button :value="true" :disabled="locked">点图修改停靠点</el-radio-button>
-      </el-radio-group>
-      <el-form label-width="120px">
-        <el-form-item label="CNC 工位">
-          <el-select-v2 v-model="stationId" :options="stationOptions" filterable :disabled="busy" style="width: 240px" />
-        </el-form-item>
-        <el-form-item v-if="station" label="取返箱停靠点">
-          <el-select-v2 v-model="station.pickupSite" :options="sites" filterable :disabled="locked" style="width: 240px" />
-          <span>节点 {{ station.pickupSite }}</span>
-        </el-form-item>
-        <el-form-item v-if="binding" label="PLC 工位绑定">
-          <span>DB1.DBX{{ binding.offset }}.0–7 · {{ station?.signalSource === 'verified' ? '当前点表已核定' : '隔离仿真点位' }}</span>
-          <el-button @click="showSignals = !showSignals">{{ showSignals ? '收起 PLC 点表' : '查看 PLC 点表' }}</el-button>
-        </el-form-item>
-        <el-form-item label="当前 PLC 点表">
-          <span>{{ configuration.plcSignalTable.fileName }} · {{ syntheticCount }} 个工位使用隔离仿真信号</span>
-        </el-form-item>
-        <el-form-item label="导入 PLC 点表">
-          <input type="file" accept=".csv,text/csv" :disabled="locked" @change="upload" />
-        </el-form-item>
-        <el-form-item label="新方案名称">
-          <el-input v-model="name" maxlength="100" :disabled="locked" style="width: 320px" />
-          <el-button type="primary" :disabled="locked || !name.trim() || !!issues.length" @click="save">另存工程方案</el-button>
-        </el-form-item>
-      </el-form>
-      <div v-if="showSignals">
+      <template v-else>
+        <div v-if="pickingStop" class="map-pick-banner" role="status">
+          <span>{{ error || `请在图上点选 ${stationId} 的新停车点。` }}</span>
+          <el-button size="small" @click="pickingStop = false; error = ''">取消选点</el-button>
+        </div>
+        <div class="engineering-layout">
+          <EngineeringPointMap v-if="sceneMap" ref="pointMap" :map="sceneMap" :markers="markers" :selected-id="selectedSite" @select="selectNode" @inspect="inspectNode" />
+          <aside class="engineering-overview">
+            <label class="inspection-field">
+              <span>地图定位</span>
+              <el-select-v2 :model-value="selectedSite" :options="nodeOptions" filterable placeholder="输入地图点位编号" @change="locatePoint" />
+            </label>
+            <p v-if="point" class="point-detail">X {{ point.x.toFixed(3) }} · Y {{ point.y.toFixed(3) }} {{ configuration.mapDefinition.unit }} · {{ point.enabled === false ? '停用' : '启用' }}</p>
+            <p v-else-if="selectedSite" class="point-detail">{{ selectedSite }} · 地图点位不存在</p>
+            <label class="inspection-field">
+              <span>CNC 工位</span>
+              <el-select-v2 :model-value="stationId" :options="stationOptions" filterable :disabled="busy" @change="inspectStation" />
+            </label>
+            <dl v-if="station" class="engineering-facts">
+              <div><dt>取箱／还箱停车点</dt><dd>{{ station.pickupSite }}</dd></div>
+            </dl>
+            <el-button v-if="binding || signals.length" size="small" :aria-expanded="showSignals" @click="showSignals = !showSignals">
+              {{ showSignals ? '收起 PLC 信号' : '查看 PLC 信号' }}
+            </el-button>
+            <details class="engineering-locations">
+              <summary>车辆起点与业务点位</summary>
+              <ul>
+                <li v-for="vehicle in vehicles" :key="vehicle.id">
+                  <el-button link type="primary" @click="locatePoint(vehicle.initialSite)">{{ vehicle.id }} · {{ vehicle.initialSite }}</el-button>
+                  <small>{{ vehicle.initialLoaded ? '有箱' : '空载' }} · {{ vehicle.speedScale }}×</small>
+                </li>
+                <li v-for="marker in markers.filter(item => item.group !== 'vehicle')" :key="marker.label">
+                  <el-button link type="primary" @click="locatePoint(marker.nodeId)">{{ marker.label }} · {{ marker.nodeId }}</el-button>
+                </li>
+              </ul>
+            </details>
+          </aside>
+        </div>
+      </template>
+      <section class="engineering-check">
+        <header class="engineering-check-header">
+          <h4>点位检查详情</h4>
+          <el-button v-if="!editing" :disabled="locked" @click="beginEditing">编辑配置</el-button>
+        </header>
+        <ul v-if="issues.length" class="point-issues">
+          <li v-for="issue in issues" :key="issue.label + issue.reason">
+            <el-button type="danger" link @click="inspectIssue(issue)">{{ issue.label }} · {{ issue.nodeId }} · {{ issue.reason }}</el-button>
+          </li>
+        </ul>
+        <p v-else>已核对车辆起点、工位停车点、业务点位和 PLC 绑定。</p>
+        <dl class="engineering-facts engineering-summary">
+          <div>
+            <dt>倒料资源</dt>
+            <dd><el-button link type="primary" @click="locatePoint(configuration.dumper.dumpingSite)">{{ configuration.dumper.resourceId }}</el-button></dd>
+          </div>
+          <div>
+            <dt>同时执行上限</dt>
+            <dd>{{ configuration.downstreamAdmissionCapacity ? `${configuration.downstreamAdmissionCapacity} 单` : '不限' }}</dd>
+            <p v-if="configuration.downstreamAdmissionCapacity">派车去取箱时占用名额，返箱收尾后释放。</p>
+          </div>
+        </dl>
+      </section>
+      <el-alert v-if="notice && !editing" :title="notice" type="success" :closable="false" show-icon />
+      <section v-if="editing" class="engineering-edit">
+        <h4>编辑配置</h4>
+        <el-alert v-if="error && !pickingStop" :title="error" type="error" :closable="false" show-icon />
+        <el-alert v-if="notice" :title="notice" type="success" :closable="false" show-icon />
+        <p v-if="locked && !busy">仿真进行中，停止后可继续修改或保存。</p>
+        <el-form label-position="top" @submit.prevent>
+          <div class="engineering-edit-grid">
+            <el-form-item label="要修改的 CNC 工位">
+              <el-select-v2 :model-value="stationId" :options="stationOptions" filterable :disabled="busy" @change="inspectStation" />
+            </el-form-item>
+            <el-form-item v-if="station" label="取箱／还箱停车点">
+              <el-select-v2 v-model="station.pickupSite" :options="sites" filterable :disabled="locked" @change="pickingStop = false" />
+              <el-button :disabled="locked" size="small" @click="chooseStopOnMap">在地图上选新停车点</el-button>
+            </el-form-item>
+            <el-form-item label="导入 PLC 点表">
+              <p class="point-detail">{{ configuration.plcSignalTable.fileName }}</p>
+              <input aria-label="导入 PLC 点表" type="file" accept=".csv,text/csv" :disabled="locked" @change="upload" />
+            </el-form-item>
+            <el-form-item label="新方案名称">
+              <el-input v-model="name" maxlength="80" :disabled="locked" />
+            </el-form-item>
+          </div>
+          <p v-if="issues.length">请先处理点位检查中的异常，再保存方案。</p>
+          <el-space wrap>
+            <el-button :disabled="busy" @click="cancelEditing">取消编辑</el-button>
+            <el-button type="primary" :disabled="locked || !name.trim() || !!issues.length" @click="save">另存为新方案</el-button>
+          </el-space>
+        </el-form>
+      </section>
+      <div v-if="mapTab === 'points' && showSignals">
         <h4>{{ signalOwner }} 的 PLC 信号</h4>
+        <p class="point-detail">
+          {{ configuration.plcSignalTable.fileName }} · {{ syntheticCount }} 个工位使用隔离仿真信号
+          <template v-if="binding && signalOwner === stationId"> · DB1.DBX{{ binding.offset }}.0–7 · {{ station?.signalSource === 'verified' ? '当前点表已核定' : '隔离仿真点位' }}</template>
+        </p>
         <el-table :data="signals" class="engineering-signals" empty-text="点表没有该工位的信号记录">
           <el-table-column prop="name" label="信号" min-width="215" />
           <el-table-column prop="address" label="地址" min-width="130" />
@@ -252,13 +355,28 @@ async function save() {
 <style scoped>
 .engineering-panel { order: 2; }
 .engineering-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 320px); gap: 16px; }
-.engineering-overview { background: #f5f7fc; border-radius: 8px; padding: 12px; }
-.engineering-overview h4 { margin: 4px 0; }
+.engineering-overview, .engineering-check, .engineering-edit { background: var(--el-fill-color-lighter); border: 1px solid var(--el-border-color-lighter); border-radius: 10px; padding: 14px 16px; }
+.engineering-overview { align-self: start; }
 .engineering-overview ul, .point-issues { list-style: none; padding: 0; margin: 6px 0; }
 .engineering-overview small { margin-left: 8px; }
-.engineering-overview p { margin: 6px 0; }
+.inspection-field { display: grid; gap: 6px; margin-bottom: 8px; font-weight: 600; }
+.inspection-field + .inspection-field, .point-detail + .inspection-field { margin-top: 14px; }
+.engineering-locations { margin-top: 12px; }
+.engineering-locations summary { cursor: pointer; color: var(--el-text-color-secondary); }
+.point-detail, .engineering-check p, .engineering-edit p { margin: 6px 0; color: var(--el-text-color-secondary); font-size: 13px; }
+.engineering-facts { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0; }
+.engineering-facts dt { color: var(--el-text-color-secondary); font-size: 13px; }
+.engineering-facts dd { margin: 2px 0 0; font-weight: 600; overflow-wrap: anywhere; }
+.engineering-summary { gap: 12px 32px; margin-bottom: 0; }
+.engineering-summary dd { min-height: 26px; display: flex; align-items: center; }
+.engineering-map-header, .engineering-check-header, .map-pick-banner { display: flex; align-items: center; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
+.engineering-check-header h4, .engineering-edit h4 { margin: 0; }
+.map-pick-banner { padding: 8px 12px; border-radius: 8px; background: var(--el-color-primary-light-9); }
 .point-issues { max-height: 200px; overflow: auto; }
-.el-form { margin-top: 16px; }
-.el-form-item span, .el-form-item .el-button { margin-left: 12px; }
+.engineering-edit h4 { margin-bottom: 12px; }
+.engineering-edit-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); gap: 0 16px; max-width: 850px; }
+.engineering-edit-grid .el-form-item .el-button { margin-top: 6px; }
+.engineering-edit-grid .el-form-item .point-detail { width: 100%; overflow-wrap: anywhere; }
+.engineering-edit-grid input[type="file"] { max-width: 100%; }
 @media (max-width: 1040px) { .engineering-layout { grid-template-columns: minmax(0, 1fr); } }
 </style>
