@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, reactive, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { IconArrowRight, IconChartArrows, IconListDetails, IconMap2, IconRefresh } from '@tabler/icons-vue'
 import http from '@/api/http'
 import { dispatchLocation, type DispatchSection } from '@/integration/dispatch-workspace'
 import { useAuthStore } from '@/stores/auth'
@@ -83,17 +84,17 @@ const diagnostics = computed(() => route.query.view === 'optimization' ? 'optimi
 
 <template>
   <div class="simulation-operations">
-    <nav class="panel operation-links" aria-label="相关仿真操作">
-      <RouterLink v-if="section === 'overview'" :to="dispatchLocation('engineering')">检查工程与地图</RouterLink>
-      <RouterLink v-if="section === 'overview'" :to="dispatchLocation('monitor')">打开运行监控</RouterLink>
+    <nav class="workspace-actions" aria-label="相关仿真操作">
+      <RouterLink v-if="section === 'overview'" :to="dispatchLocation('engineering')"><IconMap2 :size="16" aria-hidden="true" />检查工程与地图</RouterLink>
+      <RouterLink v-if="section === 'overview'" :to="dispatchLocation('monitor')"><IconListDetails :size="16" aria-hidden="true" />打开运行监控<IconArrowRight :size="14" aria-hidden="true" /></RouterLink>
       <RouterLink v-if="section === 'environment'" :to="dispatchLocation('engineering')">工程点位与启动检查</RouterLink>
-      <el-button v-if="section === 'environment'" link type="primary" @click="readField">刷新现场只读配置</el-button>
+      <el-button v-if="section === 'environment'" @click="readField"><IconRefresh :size="16" aria-hidden="true" />刷新现场只读配置</el-button>
       <RouterLink v-if="section === 'scenarios'" :to="dispatchLocation('plan')">单次与随机业务计划</RouterLink>
       <RouterLink v-if="section === 'task-evidence'" :to="dispatchLocation('monitor', embedded?.taskId)">多单呼叫与车辆路线</RouterLink>
       <RouterLink v-if="section === 'report-evidence'" :to="dispatchLocation('report')">本轮报告与视频</RouterLink>
       <template v-if="section === 'diagnosis'">
-        <RouterLink :to="dispatchLocation('diagnosis')">六层调度</RouterLink>
-        <RouterLink :to="{ query: { mode: 'main', section: 'diagnosis', view: 'optimization' } }">滚动匹配与成本</RouterLink>
+        <RouterLink :to="dispatchLocation('diagnosis')" :aria-current="diagnostics === 'pipeline' ? 'page' : undefined"><IconChartArrows :size="16" aria-hidden="true" />六层调度</RouterLink>
+        <RouterLink :to="{ query: { mode: 'main', section: 'diagnosis', view: 'optimization' } }" :aria-current="diagnostics === 'optimization' ? 'page' : undefined">滚动匹配与成本</RouterLink>
         <RouterLink :to="dispatchLocation('monitor')">交通资源与车辆</RouterLink>
       </template>
     </nav>
@@ -104,9 +105,3 @@ const diagnostics = computed(() => route.query.view === 'optimization' ? 'optimi
     <Pipeline v-else :simulation-read="signal => request('/dispatch-pipeline', undefined, signal)" :simulation-task-link="taskLink" />
   </div>
 </template>
-
-<style scoped>
-.operation-links { display: flex; gap: 10px 22px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
-.operation-links:empty { display: none; }
-.operation-links a { color: var(--el-color-primary); }
-</style>

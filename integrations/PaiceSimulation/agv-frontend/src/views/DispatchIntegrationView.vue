@@ -706,9 +706,9 @@ onBeforeUnmount(() => {
   <div class="dispatch-page">
     <section class="panel source-panel">
       <div>
-        <h2>主工程调度</h2>
+        <strong>隔离仿真实例</strong>
         <p class="muted">
-          5199 · 当前隔离仿真实例 {{ status?.rootName || "尚未连接" }}
+          {{ status?.rootName || "尚未连接" }}
         </p>
       </div>
       <el-space wrap
@@ -730,7 +730,7 @@ onBeforeUnmount(() => {
       :closable="false"
       show-icon
     />
-    <nav class="panel workflow-nav" aria-label="相关仿真工具">
+    <nav class="workspace-actions workflow-nav" aria-label="相关仿真工具">
       <RouterLink v-if="section === 'engineering'" :to="dispatchLocation('environment')">环境工具、车辆与设备模型</RouterLink>
       <RouterLink v-if="section === 'engineering'" :to="dispatchLocation('plan')">配置呼叫并检查启动</RouterLink>
       <RouterLink v-if="section === 'plan'" :to="dispatchLocation('scenarios')">全部场景</RouterLink>
@@ -1347,12 +1347,9 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   gap: 16px;
 }
-.source-panel h2 {
-  margin: 0;
-  font-size: 20px;
-}
 .source-panel p {
-  margin-bottom: 0;
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
 }
 .dispatch-body {
   display: grid;

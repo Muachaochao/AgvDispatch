@@ -1,0 +1,452 @@
+.paice-workspace {
+  --workspace-bg: #eef2f7;
+  --ui-text: #172338;
+  --ui-text-2: #34445c;
+  --ui-text-3: #56667c;
+  --ui-surface: #fff;
+  --ui-surface-raised: #f7f9fd;
+  --ui-surface-soft: #f1f5fa;
+  --ui-line: #dbe3ef;
+  --ui-table-head: #f0f4fa;
+  --ui-primary: #3456c8;
+  --ui-primary-strong: #25429e;
+  --workspace-selected: #eaf0ff;
+  --workspace-success: #146148;
+  --workspace-success-bg: #e8f7ee;
+  --workspace-warning: #86500e;
+  --workspace-warning-bg: #fff3df;
+  --workspace-danger: #a12b44;
+  --workspace-danger-bg: #fcebf0;
+  --workspace-shadow: 0 2px 6px #23395d08;
+  --el-color-primary: var(--ui-primary);
+  --el-color-primary-dark-2: var(--ui-primary-strong);
+  --el-color-primary-light-3: #5673d0;
+  --el-color-primary-light-5: #7b91da;
+  --el-color-primary-light-7: #aebbea;
+  --el-color-primary-light-8: #cad5f4;
+  --el-color-primary-light-9: var(--workspace-selected);
+  --el-text-color-primary: var(--ui-text);
+  --el-text-color-regular: var(--ui-text-2);
+  --el-text-color-secondary: var(--ui-text-3);
+  --el-border-color: var(--ui-line);
+  --el-border-color-light: var(--ui-line);
+  --el-fill-color-light: var(--ui-surface-soft);
+  color-scheme: light;
+}
+
+.paice-workspace .panel {
+  min-width: 0;
+  border: 1px solid var(--ui-line);
+  border-radius: 10px;
+  padding: clamp(14px, 1.4vw, 20px);
+  background: var(--ui-surface);
+  box-shadow: var(--workspace-shadow);
+}
+
+.paice-workspace .muted { color: var(--ui-text-3); }
+.paice-workspace .el-table {
+  --el-table-header-bg-color: var(--ui-table-head);
+  --el-table-header-text-color: var(--ui-text-2);
+  --el-table-row-hover-bg-color: var(--ui-surface-raised);
+}
+
+.paice-workspace .workspace-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.paice-workspace .simulation-operations > .workspace-actions { margin-bottom: 14px; }
+.paice-workspace .workspace-actions:empty { display: none; }
+.paice-workspace .workspace-actions > a,
+.paice-workspace .workspace-actions > .el-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 5px 12px;
+  border: 1px solid var(--ui-line);
+  border-radius: 7px;
+  background: var(--ui-surface);
+  color: var(--ui-text-2);
+  font-size: 13px;
+  font-weight: 550;
+  line-height: 1.45;
+  text-decoration: none;
+}
+
+.paice-workspace .workspace-actions > a:hover,
+.paice-workspace .workspace-actions > a[aria-current="page"] {
+  border-color: #bfcef6;
+  background: var(--workspace-selected);
+  color: var(--ui-primary-strong);
+}
+
+.paice-workspace .workspace-actions .el-button > span { gap: 7px; }
+.paice-workspace .source-panel { padding-block: 12px; }
+.paice-workspace .source-panel strong { font-size: 14px; }
+.paice-workspace .dispatch-page .panel-heading h3 { margin-block: 0; }
+.paice-workspace .dispatch-page > .dispatch-body { gap: 12px; }
+.paice-workspace .dispatch-page :is(.vehicle-row, .task-detail) { border-color: var(--ui-line); }
+.paice-workspace .dispatch-page .vehicle-row p { color: var(--ui-text-2); }
+
+/* Shared 5199 components inherit these controls only inside 排策智演. */
+.paice-workspace .simulation-operations :is(.simulation-page, .management-page) {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  min-width: 0;
+  padding: 0;
+  overflow: visible;
+  background: transparent;
+  color: var(--ui-text);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.paice-workspace .simulation-operations :is(.simulation-page, .management-page) h3 { margin-block: 0; }
+.paice-workspace .simulation-operations :is(.simulation-page, .management-page) a { color: var(--ui-primary-strong); }
+.paice-workspace .simulation-operations :is(.simulation-page, .management-page) button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 5px 10px;
+  border: 1px solid var(--ui-line);
+  border-radius: 6px;
+  background: var(--ui-surface);
+  color: var(--ui-text-2);
+  font: inherit;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.paice-workspace .simulation-operations button:not(:disabled):hover { background: var(--ui-surface-soft); }
+.paice-workspace .simulation-operations button:is(.primary, .accent-button) {
+  border-color: var(--ui-primary);
+  background: var(--ui-primary);
+  color: #fff;
+  font-weight: 600;
+}
+.paice-workspace .simulation-operations button:is(.primary, .accent-button):not(:disabled):hover {
+  background: var(--ui-primary-strong);
+}
+.paice-workspace .simulation-operations button:disabled { opacity: .55; cursor: default; }
+.paice-workspace :is(button, a, summary, select, input, textarea):focus-visible {
+  outline: 2px solid #6483e9;
+  outline-offset: 2px;
+}
+
+.paice-workspace .simulation-operations :is(input:not([type="checkbox"], [type="radio"], [type="range"]), select, textarea) {
+  min-height: 32px;
+  max-width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--ui-line);
+  border-radius: 6px;
+  background: var(--ui-surface);
+  color: var(--ui-text);
+  font: inherit;
+}
+.paice-workspace .simulation-operations :is(progress, input[type="range"], input[type="checkbox"], input[type="radio"]) {
+  accent-color: var(--ui-primary);
+}
+
+.paice-workspace .simulation-operations :is(
+  .simulation-panel, .environment-panel, .configuration-guide, .module-heading, .fault-intro, .manual-hero,
+  .pipeline-gates, .pipeline-layer-nav, .pipeline-detail, .assignment-panel, .assignment-metrics article
+) {
+  border: 1px solid var(--ui-line);
+  border-radius: 10px;
+  background: var(--ui-surface);
+  box-shadow: var(--workspace-shadow);
+}
+
+.paice-workspace .simulation-operations :is(
+  .first-run-guide, .guide-grid article, .live-facts > div, .new-instance-control, .scenario-brief,
+  .plc-table-binding, .protocol-grid aside, .protocol-grid pre, .equipment-grid > div, .equipment-grid pre,
+  .recent-instances li, .waiting-chain li, .recovery-items article, .manual-facts article,
+  .task-counts article, .task-step-list > li, .report-task-nine-steps > li, .report-task-evidence-grid article,
+  .pipeline-banner, .assignment-selected-reason, .assignment-cycle-status, .pipeline-layer
+) {
+  border-color: var(--ui-line);
+  border-radius: 7px;
+  background: var(--ui-surface-raised);
+  color: var(--ui-text-2);
+}
+
+.paice-workspace .simulation-operations :is(
+  .module-heading h3, .new-instance-control h3, .scenario-brief h3, .fault-intro h3, .manual-hero h3,
+  .report-metrics dd, .report-identity b, .version-builds b, .recovery-guidance article > b,
+  .task-counts b, .task-step-list strong, .task-evidence-grid article > p b, .task-timeline b,
+  .report-task-evidence b, .report-task-evidence h5, .manual-facts b,
+  .pipeline-metrics dd, .pipeline-record-facts dd, .assignment-metrics b, .assignment-panel h3,
+  .assignment-panel summary, .assignment-mappings h4, .assignment-table td strong, .pipeline-layer-title h4
+) { color: var(--ui-text); }
+
+.paice-workspace .simulation-operations :is(
+  .simulation-panel small, .simulation-panel label, .module-heading p:last-child, .module-heading-status small,
+  .new-instance-control p:last-child, .new-instance-control label, .scenario-brief dt, .scenario-brief dd,
+  .scenario-brief > div:first-child > p:last-child, .fault-intro > p, .manual-hero p,
+  .vehicle-facts dt, .equipment-facts dt, .protocol-grid aside dt, .simulation-boundary,
+  .configuration-guide p, .scheme-panel > p, .version-panel > p, .report-identity, .report-empty,
+  .report-version, .history-panel > header > span, .report-metrics dt, .task-command-panel > header p:last-child,
+  .task-evidence-grid article > p, .task-timeline-copy, .task-timeline time, .task-step-list details p,
+  .report-task-evidence-grid p, .manual-decision small, .sidebar-simulation-note,
+  .assignment-intro, .assignment-panel p, .assignment-panel small, .assignment-search,
+  .assignment-config label, .assignment-config-actions > span, .assignment-panel summary > span, .assignment-empty,
+  .pipeline-layer-state > span, .pipeline-layer > small, .pipeline-summary, .pipeline-detail-note
+) { color: var(--ui-text-3); }
+
+.paice-workspace .simulation-operations .simulation-panel small { font-size: 12px; }
+.paice-workspace .simulation-operations .section-kicker {
+  color: var(--ui-text-3) !important;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.5;
+  letter-spacing: normal;
+}
+
+.paice-workspace .simulation-operations :is(
+  .edge-controls, .scenario-progress, .technical-details, .report-version, .version-builds > div,
+  .vehicle-advanced, .station-designer, .voltage-curve-editor, .sidebar-simulation-note, .manual-decision,
+  .task-table-scroll, .assignment-table-wrap, .assignment-config-actions, .assignment-mappings
+) { border-color: var(--ui-line); }
+
+.paice-workspace .simulation-operations :is(
+  .edge-controls summary, .event-panel summary, .recent-instances summary, .report-version summary,
+  .technical-details summary, .vehicle-advanced summary, .assignment-breakdown summary
+) { color: var(--ui-primary-strong); }
+
+.paice-workspace .simulation-operations :is(
+  .report-panel th, .version-panel th, .history-panel th, .task-table th, .assignment-table th
+) {
+  background: var(--ui-table-head);
+  color: var(--ui-text-2);
+  font-size: 12px;
+}
+.paice-workspace .simulation-operations :is(
+  .report-panel td, .report-panel th, .version-panel td, .version-panel th,
+  .history-panel td, .history-panel th, .task-table td, .task-table th, .assignment-table td, .assignment-table th
+) { border-color: var(--ui-line); }
+.paice-workspace .simulation-operations :is(.task-table td, .task-table td b) { color: var(--ui-text); font-size: 12px; }
+.paice-workspace .simulation-operations .assignment-table { width: 100%; border-collapse: collapse; text-align: left; }
+.paice-workspace .simulation-operations :is(.assignment-table td, .assignment-table th) { border-bottom: 1px solid var(--ui-line); }
+.paice-workspace .simulation-operations :is(.task-table tbody tr:hover, .task-record-row:hover td) { background: var(--ui-surface-soft); }
+.paice-workspace .simulation-operations :is(.task-table tbody tr.selected, .assignment-table tr.selected, .task-record-row.expanded td,
+  .task-record-evidence-row > td, .pipeline-layer-nav > button.selected) {
+  background: var(--workspace-selected) !important;
+  box-shadow: none;
+}
+
+.paice-workspace .simulation-operations :is(
+  .state-pill, .scope-label, .assignment-mode, .pipeline-status-badge, .pipeline-layer-state strong, .pipeline-number
+) {
+  border-color: var(--ui-line);
+  border-radius: 6px;
+  background: var(--ui-surface-soft);
+  color: var(--ui-text-2);
+  font-size: 12px;
+}
+.paice-workspace .simulation-operations :is(
+  .state-pill.pass, .simulation-notice, .assignment-success, .assignment-mode.global, .pipeline-status-badge.ready,
+  .pipeline-layer.ready .pipeline-layer-state strong, .task-step-list > li.completed, .plc-table-summary
+) { border-color: #b7dfcb; background: var(--workspace-success-bg); color: var(--workspace-success); }
+.paice-workspace .simulation-operations :is(
+  .state-pill.waiting, .task-waiting-copy, .task-waiting-signal, .task-step-list > li.current, .manual-next-step, .pipeline-alert,
+  .pipeline-status-badge.waiting, .pipeline-layer:is(.waiting, .stale) .pipeline-layer-state strong,
+  .task-table tbody tr.traffic-waiting:not(.selected)
+) { border-color: #ead1aa; background: var(--workspace-warning-bg); color: var(--workspace-warning); }
+.paice-workspace .simulation-operations :is(
+  .state-pill.fail, .simulation-error, .first-failure, .task-counts article.fault, .task-step-list > li.failed,
+  .pipeline-status-badge.blocked, .pipeline-layer.blocked .pipeline-layer-state strong
+) { border-color: #efbdc9; background: var(--workspace-danger-bg); color: var(--workspace-danger); }
+.paice-workspace .simulation-operations :is(.inline-warning, .manual-next-step b, .task-step-list p, .report-task-nine-steps p,
+  .assignment-table tr.excluded td, .assignment-layer-tag) { color: var(--workspace-warning); }
+.paice-workspace .simulation-operations :is(.task-waiting-signal, .recovery-reason) { color: var(--workspace-warning) !important; }
+.paice-workspace .simulation-operations :is(.task-empty, .task-counts small, .assignment-note) { color: var(--ui-text-3) !important; }
+.paice-workspace .simulation-operations :is(.task-table .task-error-text, .task-counts article.fault b) { color: var(--workspace-danger); }
+.paice-workspace .simulation-operations :is(.plc-table-summary span, .plc-table-summary code) { color: var(--workspace-success); }
+.paice-workspace .simulation-operations :is(.task-step-list > li > span, .report-task-nine-steps > li > span, .designer-section-title > span) {
+  background: var(--workspace-selected);
+  color: var(--ui-primary-strong);
+}
+
+.paice-workspace .simulation-operations :is(.module-heading, .management-title, .pipeline-page-title) {
+  gap: 14px;
+  padding: 12px 16px;
+}
+.paice-workspace .simulation-operations :is(.management-title, .pipeline-page-title) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  border: 1px solid var(--ui-line);
+  border-radius: 10px;
+  background: var(--ui-surface);
+}
+.paice-workspace .simulation-operations :is(.management-title, .pipeline-page-title) h2 {
+  margin: 0;
+  color: var(--ui-text);
+  font-size: 17px;
+}
+.paice-workspace .simulation-operations .module-heading { grid-template-columns: minmax(0, 1fr) auto auto; }
+.paice-workspace .simulation-operations .module-heading p { margin: 0; }
+.paice-workspace .simulation-operations .module-heading-status,
+.paice-workspace .simulation-operations .module-heading-actions { grid-area: auto; }
+.paice-workspace .simulation-operations .assignment-metrics b { font-weight: 650; }
+.paice-workspace .simulation-operations :is(.assignment-metrics em, .pipeline-purpose, .pipeline-layer > a) { color: var(--ui-text-3); }
+.paice-workspace .simulation-operations :is(.pipeline-detail-summary, .recovery-business-summary, .manual-recovery-message) {
+  background: var(--workspace-selected);
+  color: var(--ui-text-2) !important;
+}
+.paice-workspace .simulation-operations .pipeline-layer-nav > button {
+  justify-content: flex-start;
+  align-items: flex-start;
+  text-align: left;
+  padding: 11px;
+}
+.paice-workspace .simulation-operations .pipeline-search input { border: 0; background: transparent; }
+.paice-workspace .simulation-operations .pipeline-banner.stale {
+  border-color: #ead1aa;
+  background: var(--workspace-warning-bg);
+}
+.paice-workspace .simulation-operations :is(.pipeline-banner.historical, .pipeline-history-note) {
+  border-color: #d6c7e9;
+  background: #f3eef9;
+  color: #5c3e78;
+}
+.paice-workspace .simulation-operations .pipeline-banner.historical .pipeline-context-label { color: #5c3e78; }
+
+/* Put the map first and use an adjacent rail for live fleet information. */
+.paice-workspace .simulation-operations .embedded .simulation-workspace:has(.overview-stage) {
+  grid-template-columns: minmax(0, 1fr) minmax(256px, 298px);
+  align-items: start;
+  gap: 14px;
+}
+.paice-workspace .simulation-operations .embedded .simulation-sidebar {
+  grid-column: 2;
+  grid-row: 1;
+  height: auto;
+}
+.paice-workspace .simulation-operations .embedded .simulation-workspace:has(.overview-stage) .simulation-workspace-content {
+  grid-column: 1;
+  grid-row: 1;
+}
+.paice-workspace .simulation-operations .overview-stage { display: flex; flex-direction: column; gap: 10px; }
+.paice-workspace .simulation-operations .business-overview-grid,
+.paice-workspace .simulation-operations .business-overview-grid .map-panel { min-height: 0; }
+.paice-workspace .simulation-operations .business-overview-grid :is(.simulation-map, .simulation-three, .map-empty) {
+  display: block;
+  min-height: 0;
+  height: clamp(340px, calc(100dvh - 235px), 800px);
+  border-radius: 8px;
+}
+.paice-workspace .simulation-operations .business-overview-grid .map-empty { display: grid; gap: 4px; }
+.paice-workspace .simulation-operations .business-overview-grid .map-panel { padding: 12px; }
+.paice-workspace .simulation-operations .business-overview-grid .map-panel > header { flex-wrap: wrap; }
+.paice-workspace .simulation-operations .business-overview-grid .map-panel .section-kicker { display: none; }
+.paice-workspace .simulation-operations .simulation-three .three-tools { top: 12px; }
+.paice-workspace .simulation-operations .simulation-three button {
+  border-color: #48647f;
+  background: #14243aed;
+  color: #e5edf7;
+}
+.paice-workspace .simulation-operations .simulation-three button:not(:disabled):hover { background: #203851; }
+.paice-workspace .simulation-operations .simulation-three button[aria-pressed="true"] {
+  border-color: #41d9bf;
+  color: #70e6d1;
+}
+.paice-workspace .simulation-operations .simulation-three .three-vehicles small {
+  margin: 0;
+  color: inherit;
+  font-size: 10px;
+}
+.paice-workspace .simulation-operations .instance-details {
+  display: block;
+  order: 1;
+  padding: 8px 12px;
+  color: var(--ui-text-3);
+  font-size: 12px;
+}
+.paice-workspace .simulation-operations .map-caption { gap: 8px; color: var(--ui-text-3); font-size: 12px; }
+.paice-workspace .simulation-operations .map-run-legend {
+  position: static;
+  max-width: none;
+  padding: 8px 0 0;
+  border: 0;
+  background: transparent;
+  color: var(--ui-text-3);
+  font-size: 12px;
+}
+.paice-workspace .simulation-operations .map-view-switch { border-color: var(--ui-line); border-radius: 6px; }
+.paice-workspace .simulation-operations .map-view-switch button { border: 0; border-radius: 0; }
+.paice-workspace .simulation-operations .map-view-switch button + button { border-left: 1px solid var(--ui-line); }
+.paice-workspace .simulation-operations .map-view-switch button.active {
+  color: var(--ui-primary-strong);
+  background: var(--workspace-selected);
+}
+
+.paice-workspace .simulation-operations .business-story {
+  padding: 14px !important;
+  background: var(--ui-surface) !important;
+  border-color: var(--ui-line) !important;
+}
+.paice-workspace .simulation-operations .business-story h3 { font-size: 16px; }
+.paice-workspace .simulation-operations .overview-hero {
+  grid-template-columns: 1fr;
+  gap: 10px;
+  padding: 11px;
+  border-color: var(--ui-line);
+  background: var(--ui-surface-raised);
+}
+.paice-workspace .simulation-operations .overview-status-title { flex-wrap: wrap; }
+.paice-workspace .simulation-operations .overview-status-title b { color: var(--ui-text); font-size: 14px; white-space: normal; }
+.paice-workspace .simulation-operations .overview-next-action { grid-area: auto; }
+.paice-workspace .simulation-operations .fleet-counts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin: 10px 0 0;
+}
+.paice-workspace .simulation-operations .fleet-counts > div { padding-left: 7px; border-left: 1px solid var(--ui-line); }
+.paice-workspace .simulation-operations .fleet-counts dt { color: var(--ui-text-3); font-size: 11px; }
+.paice-workspace .simulation-operations .fleet-counts dd { margin: 2px 0 0; font-size: 21px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.paice-workspace .simulation-operations .vehicle-story-list { gap: 6px; max-height: 440px; margin-top: 10px; }
+.paice-workspace .simulation-operations .vehicle-story-list article {
+  border-top-color: var(--ui-line);
+  border-right-color: var(--ui-line);
+  border-bottom-color: var(--ui-line);
+  border-radius: 6px;
+  background: var(--ui-surface-raised);
+}
+.paice-workspace .simulation-operations .vehicle-story-list article b { color: var(--ui-text); font-size: 13px; }
+.paice-workspace .simulation-operations .vehicle-story-list article :is(span, small, p) {
+  color: var(--ui-text-3);
+  font-size: 12px;
+  margin-top: 2px;
+}
+.paice-workspace .simulation-operations .vehicle-story-list article.running span { color: var(--workspace-success); }
+.paice-workspace .simulation-operations .vehicle-story-list article:is(.waiting, .blocked) span { color: var(--workspace-warning); }
+.paice-workspace .simulation-operations .vehicle-story-list article.fault span { color: var(--workspace-danger); }
+.paice-workspace .simulation-operations .business-story .quick-actions button { font-size: 12px; }
+.paice-workspace .simulation-operations .sidebar-simulation-note { font-size: 11px; }
+
+@media (max-width: 1130px) {
+  .paice-workspace .simulation-operations .embedded .simulation-workspace:has(.overview-stage) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .paice-workspace .simulation-operations .embedded .simulation-sidebar { grid-column: 1; grid-row: 2; }
+  .paice-workspace .simulation-operations .vehicle-story-list {
+    grid-template-columns: repeat(auto-fit, minmax(175px, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .paice-workspace .simulation-operations .module-heading { grid-template-columns: minmax(0, 1fr); }
+  .paice-workspace .simulation-operations .simulation-panel > header { flex-wrap: wrap; }
+  .paice-workspace .simulation-operations .map-caption { flex-wrap: wrap; }
+}

@@ -1736,11 +1736,16 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
           </button>
         </nav>
         <aside v-if="activeStage === 'overview'" class="simulation-panel business-story sidebar-business-story">
-        <header><div><p class="section-kicker">当前运行</p><h3>车辆正在做什么</h3></div><span :class="['state-pill', active ? 'waiting' : report ? 'pass' : 'unknown']">{{ active ? '测试中' : report ? '有结果' : '待测试' }}</span></header>
+        <header><div><p v-if="!embedded" class="section-kicker">当前运行</p><h3>{{ embedded ? '车队状态' : '车辆正在做什么' }}</h3></div><span :class="['state-pill', active ? 'waiting' : report ? 'pass' : 'unknown']">{{ active ? '测试中' : report ? '有结果' : '待测试' }}</span></header>
         <div class="overview-hero" :data-action="nextAction.kind" aria-live="polite">
           <div class="overview-hero-copy">
             <div class="overview-status-title"><span :class="['state-pill', cleanupRequired ? 'fail' : fresh ? 'pass' : 'unknown']">{{ !status?.enabled ? '未准备' : status?.running ? '运行正常' : '已停止' }}</span><b>{{ overviewHeadline }}</b></div>
-            <p>{{ onlineVehicleCount }} 辆车在线 · {{ loadedVehicleCount }} 辆载箱 · {{ modeledTaskCount }} 辆执行任务</p>
+            <dl v-if="embedded" class="fleet-counts">
+              <div><dt>在线</dt><dd>{{ onlineVehicleCount }}</dd></div>
+              <div><dt>载箱</dt><dd>{{ loadedVehicleCount }}</dd></div>
+              <div><dt>执行任务</dt><dd>{{ modeledTaskCount }}</dd></div>
+            </dl>
+            <p v-else>{{ onlineVehicleCount }} 辆车在线 · {{ loadedVehicleCount }} 辆载箱 · {{ modeledTaskCount }} 辆执行任务</p>
           </div>
           <button class="primary overview-next-action" :disabled="busy || reading" @click="followNextAction">{{ nextAction.button }}</button>
         </div>
@@ -1759,8 +1764,8 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
 
     <section v-if="activeStage !== 'overview'" class="module-heading">
       <div>
-        <p class="section-kicker">独立页面 {{ activeStageInfo.number }} / 07</p>
-        <h3 id="simulation-environment">{{ activeStageInfo.title }}</h3>
+        <p v-if="!embedded" class="section-kicker">独立页面 {{ activeStageInfo.number }} / 07</p>
+        <h3 v-if="!embedded" id="simulation-environment">{{ activeStageInfo.title }}</h3>
         <p>{{ activeStageInfo.description }}</p>
       </div>
       <div class="module-heading-status">
