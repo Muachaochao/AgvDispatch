@@ -21,6 +21,17 @@
 
 `/simulation?mode=main&section=overview` 是默认工作区。登录后使用 `/dashboard` 进入同一总览。`engineering`、`plan`、`monitor`、`diagnosis`、`faults`、`recovery`、`report` 是侧栏业务入口。`environment`、`scenarios`、`task-evidence`、`report-evidence` 打开对应的完整工具。同一入口支持可复制的地址与浏览器前进、后退。`mode=native`、`mode=compare`、原任务集和管理员地址兼容已有链接。
 
+## 排策智演工作区界面
+
+- 侧栏分组显示业务入口，图标与文字同时可见。窄屏可由顶部菜单按钮打开侧栏，选择入口、点击遮罩或按 Escape 后关闭。
+- 运行总览突出全厂地图，在同一屏查看车辆状态和下一步操作。运行、待命、作业等待、故障和离线仍使用各自状态色。技术实例信息可展开查看。
+- 工程、呼叫、任务和报告页使用一致的标题、卡片和相关操作样式。调度诊断的六层调度与滚动匹配标记当前视图。嵌入的 5199 仿真工具使用排策智演的浅色工作区样式，地图保留自身的底色和图例。
+- 业务路由、地图交互、权限、接口及数据格式沿用本台账中的约定。工作区主题作用于排策智演。
+
+<!-- manual -->
+
+打开运行总览、任务与车队和调度诊断，核对当前菜单、车辆状态、九步入口和地图控件。缩窄窗口后核对菜单的打开与退出。页面中的加载、错误、等待和禁用状态仍可辨识。
+
 排策智演代理的固定只读接口包含仿真快照、点表、恢复候选、报告和证据 ZIP。现场地图及通信点表只读，用于复制配置。设备控制、方案、恢复和生命周期操作经 `/api/dispatch/main/simulation` 转发至主工程隔离接口。超时恢复使用原任务编号。证据包需提供报告编号。隔离诊断使用 `/api/dispatch/main/simulation/dispatch-pipeline` 和 `/api/dispatch/main/simulation/dispatch-optimization`，对应 WebHost 仿真桥同名读取能力；旧发布包缺少这些接口时显示该能力不可用。
 
 | 操作 | 隔离接口，在 `/api/dispatch/main/simulation` 下 |
