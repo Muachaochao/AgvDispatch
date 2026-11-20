@@ -23,6 +23,43 @@
 
 排策智演代理的固定只读接口包含仿真快照、点表、恢复候选、报告和证据 ZIP。现场地图及通信点表只读，用于复制配置。设备控制、方案、恢复和生命周期操作经 `/api/dispatch/main/simulation` 转发至主工程隔离接口。超时恢复使用原任务编号。证据包需提供报告编号。隔离诊断使用 `/api/dispatch/main/simulation/dispatch-pipeline` 和 `/api/dispatch/main/simulation/dispatch-optimization`，对应 WebHost 仿真桥同名读取能力；旧发布包缺少这些接口时显示该能力不可用。
 
+| 操作 | 隔离接口，在 `/api/dispatch/main/simulation` 下 |
+| --- | --- |
+| 查看运行实例、地图与状态，启动或停止环境 | `GET /api/dispatch/main/simulation`、`GET /live`、`POST /start`、`POST /stop` |
+| 准备新实例、导入地图及点表、预检与管理方案 | `POST /new-instance`、`POST /configure`、`GET /point-table`、`POST /point-table-validate`、`POST /scheme-select`、`POST /scheme-save`、`POST /scheme-start`、`POST /scheme-delete` |
+| 开始和停止场景 | `POST /run`、`POST /abort` |
+| 看原任务、九步、命令、路线和路权 | `GET /tasks`、`GET /tasks/{id}`、`GET /snapshot`、`GET /resources`、`GET /monitor` |
+| 查看六层观察和滚动匹配，保存当前隔离策略 | `GET /dispatch-pipeline`、`GET /dispatch-optimization`、`POST /dispatch-optimization/options` |
+| 控制虚拟车、PLC 和道路故障 | `POST /control` |
+| 操作协议服务器、设备模型与定时信号 | `POST /protocol-start`、`POST /protocol-stop`、`POST /equipment-start`、`POST /equipment-control`、`POST /equipment-stop` |
+| 核对人工恢复条件，提交处置和放行 | `POST /recover`、`POST /recover-release`、`GET /timeout-recovery/{id}`、`POST /timeout-recovery/{id}/execute` |
+| 选择和比较报告，播放回放，导出 JSON、WebM、ZIP | `GET /report?id=…`、`GET /replay?id=…`、`GET /archive?id=…`。浏览器用回放采样生成 WebM。 |
+
+## 场景验收
+
+| 全部场景中的选项 | 验收观察 |
+| --- | --- |
+| 完整业务循环 | 原任务九步走完，记录满箱、倒料、返空和 PLC 收尾。 |
+| 多工位同时呼叫 | 同批呼叫独立建单，路权等待有记录，车辆通过后释放。 |
+| 正式调度持续排队测试 | 按计划呼叫，忙车排除，待派任务能在车辆和路权可用后接单。 |
+| 自定义呼叫计划 | 次数、批次、间隔和工位与实际触发一致。 |
+| 车辆断连与重连 | 记录断连、恢复及原任务的后续动作。 |
+| PLC 反馈延迟 | 对应步骤等待，收到反馈后再进入下一步。 |
+| PLC 卡位与恢复 | 卡位期间保留业务状态，信号复原后按原步骤推进。 |
+| 后台重启与恢复屏障 | 重启后核对原车、原任务、载荷和占用，再按屏障条件放行。 |
+| 恢复后继续原任务 | 人工复核通过后，按原任务编号续接。 |
+| 车端返程中途取消 | 记录车端取消，核对返箱状态、占用及人工核对入口。 |
+| 运输命令回包丢失 | 按原命令和原任务核对结果及重试次数。 |
+| 道路临时阻塞后恢复 | 阻塞和解除均可定位，核对续行和资源释放时点。 |
+| 前方障碍自动改道 | 对照原导航终态、新路线和原车归属。 |
+| 道路中段自动退回安全站 | 记录原命令取消、后退许可、实际到站和续行。 |
+| 取料途中受阻并超时 | 保留原任务、空载状态和超时证据。 |
+| 满箱运输受阻并超时 | 保留满箱责任、原车、目标倒料点及路权。 |
+| 空箱返程受阻并超时 | 核对返箱、放箱和 PLC 收尾状态。 |
+| 道路中段受阻并超时 | 继续申请前核对可信车位及安全站条件。 |
+| 安全点转移后继续 | 受控到达安全点后核对原车、原任务和续行。 |
+| 无法恢复转人工处置 | 核对人工处置项、保存的占用和操作回执。 |
+
 <!-- manual -->
 
 1. 登录后从运行总览进入工程与地图，选择 B07 方案，检查实际点位、初始位置和 PLC 绑定。
