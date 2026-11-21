@@ -183,12 +183,26 @@ Check(staging.TryStage(stagingRoute, stagingMap with
         Edges = [..stagingEdges, new("CROSSING", "CROSS1", "CROSS2", 4, 1, false, true, [])]
     }, blockedDownstream, ["V"]) is null, "停点车体覆盖其他道路时必须留在原位。");
 
+var followup = staging.PlanFollowup(new FollowupPlanner(stagingRoute), stagingMap, "START", "PICK",
+    blockedDownstream, ["V"]);
+Check(followup?.Windows[0].Destination == "BAY", "已接单送箱也能在合格点分段通行。");
+Check(staging.PlanFollowup(new FollowupPlanner(stagingRoute), stagingMap, "START", "PICK",
+    blockedDownstream, ["V"], dumperExit: "START") is null,
+    "返箱首段合并倒料出口保护后如仍有占用，禁止出区。");
+
 using var wakeup = new DispatchTrafficWakeup();
 Check(!await wakeup.WaitAsync(0, default), "没有新提交时保留定时兜底。");
 var pending = wakeup.WaitAsync(5000, default);
 wakeup.Publish();
 Check(await pending, "路权提交能立即唤醒调度。");
+Check(await wakeup.WaitForFollowupAsync(0, default), "同一次释放也唤醒后续运输步骤。");
 Parallel.For(0, 100, _ => wakeup.Publish());
 Check(await wakeup.WaitAsync(0, default) && !await wakeup.WaitAsync(0, default),
     "一批并发释放合并成一次唤醒。");
 Console.WriteLine("PASS staged pickup gating, maximum-load clearance, and coalesced release wakeup.");
+
+sealed class FollowupPlanner(RoutePlan route) : IRoutePlanner
+{
+    public RoutePlan? Plan(string source, string destination, IReadOnlySet<string> unavailable) =>
+        route.ResourceIds.Any(unavailable.Contains) ? null : route;
+}

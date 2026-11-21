@@ -4,6 +4,7 @@ namespace AgvDispatch.Service;
 public sealed class DispatchTrafficWakeup : IDisposable
 {
     private readonly SemaphoreSlim _pending = new(0, 1);
+    private readonly SemaphoreSlim _followup = new(0, 1);
     private readonly object _publishGate = new();
 
     public void Publish()
@@ -11,11 +12,19 @@ public sealed class DispatchTrafficWakeup : IDisposable
         lock (_publishGate)
         {
             if (_pending.CurrentCount == 0) _pending.Release();
+            if (_followup.CurrentCount == 0) _followup.Release();
         }
     }
 
     public Task<bool> WaitAsync(int fallbackIntervalMs, CancellationToken ct) =>
         _pending.WaitAsync(fallbackIntervalMs, ct);
 
-    public void Dispose() => _pending.Dispose();
+    public Task<bool> WaitForFollowupAsync(int fallbackIntervalMs, CancellationToken ct) =>
+        _followup.WaitAsync(fallbackIntervalMs, ct);
+
+    public void Dispose()
+    {
+        _pending.Dispose();
+        _followup.Dispose();
+    }
 }

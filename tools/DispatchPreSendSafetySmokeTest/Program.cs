@@ -172,22 +172,27 @@ await db.Updateable<DispatchTaskEntity>().SetColumns(t => t.Stage == (int)Dispat
 var stagingResources = new TrafficResourceDefinition[]
 {
     new("START-ROAD", TrafficResourceType.SingleLane), new("BAY-LOCK", TrafficResourceType.Station),
-    new("FAR", TrafficResourceType.SingleLane)
+    new("FAR", TrafficResourceType.SingleLane), new("DETOUR", TrafficResourceType.SingleLane)
 };
-catalog.Replace(stagingResources);
 var bay = new MapNode("BAY", 5, 0, MapNodeType.WaitingPoint, true, ["BAY-LOCK"]) { AllowTrafficStop = true };
 var stagingDefinition = new MapDefinition("staging", "synthetic", "Cartesian", "m",
-    [new("A", 0, 0, MapNodeType.Station, true, []), bay, new("B", 10, 0, MapNodeType.Station, true, [])],
+    [new("A", 0, 0, MapNodeType.Station, true, []), bay, new("B", 10, 0, MapNodeType.Station, true, []),
+        new("FORK", 7, 0, MapNodeType.Waypoint, true, []), new("ALT", 8, 3, MapNodeType.Waypoint, true, [])],
     [new("A-BAY", "A", "BAY", 5, 1, false, true, ["START-ROAD"]),
-        new("BAY-B", "BAY", "B", 5, 1, false, true, ["FAR"])], stagingResources);
-map.Replace(new("M", "V2", stagingDefinition with { Nodes = [stagingDefinition.Nodes[0],
-    bay with { AllowTrafficStop = false }, stagingDefinition.Nodes[2]] }, DateTimeOffset.UtcNow));
+        new("BAY-FORK", "BAY", "FORK", 2, 1, false, true, []),
+        new("FORK-B", "FORK", "B", 3, 1, false, true, ["FAR"]),
+        new("FORK-ALT", "FORK", "ALT", 3.2, 1, false, true, ["DETOUR"]),
+        new("ALT-B", "ALT", "B", 5, 1, false, true, ["DETOUR"])], stagingResources);
+var stagingPlanner = new StagingPlanner();
+catalog.Replace(MapCorridorResources.AllResources(stagingDefinition));
+map.Replace(new("M", "V2", stagingDefinition with { Nodes = stagingDefinition.Nodes.Select(node =>
+    node.Id == "BAY" ? node with { AllowTrafficStop = false } : node).ToArray() }, DateTimeOffset.UtcNow));
 var stageTask = await tasks.TryCreateAsync("STAGING-ST", "DUMP", 50, default);
 await tasks.MarkAcknowledgedAsync(stageTask.Task.TaskId, default);
 dispatch.StationPickupSites["STAGING-ST"] = "B";
 foreach (var item in new[] { ("Faulted", false), ("CommunicationOnline", true), ("BoxPresent", true), ("FullBoxRequestAcknowledged", true) })
     signalCache.Put("STAGING-ST", item.Item1, item.Item2);
-await traffic.RecordRouteAsync(new("far-owner", "OTHER-TRANSPORT", "V2", "BAY", "B", ["BAY-B"],
+await traffic.RecordRouteAsync(new("far-owner", "OTHER-TRANSPORT", "V2", "FORK", "B", ["FORK-B"],
     ["FAR"], false, "downstream fixture") { MapId = "M", MapVersionId = "V2" }, default);
 Check((await traffic.TryAcquireAsync("far-owner", "OTHER-TRANSPORT", "V2", ["FAR"], default)).Acquired,
     "different task owns the downstream capacity-one resource");
@@ -195,7 +200,7 @@ var stageOptions = new DispatchTaskStepOptions { RollingWindowMinimumEdges = 1 }
 var stageAgv = new AgvOptions { NavigationCommandMode = "SpecifiedPath" };
 handshake.DumperExit.BodyProfiles = [new("profile", "V", .49, .05, true, true)];
 var stagedOrchestrator = new DispatchTaskOrchestrator(Microsoft.Extensions.Logging.Abstractions.NullLogger<DispatchTaskOrchestrator>.Instance,
-    dispatch, orchestration, outbox, gateway, cache, map, new MapOptions(), new StagingPlanner(), traffic, gate,
+    dispatch, orchestration, outbox, gateway, cache, map, new MapOptions(), stagingPlanner, traffic, gate,
     optimization: optimization, preSendSafety: guard, stepOptions: stageOptions, agvOptions: stageAgv,
     pickupStaging: new GlobalPickupRoutePlanner(stageOptions, stageAgv, handshake));
 Task RunStagedCycle() => (Task)optimizationCycle.Invoke(stagedOrchestrator,
@@ -217,8 +222,6 @@ Check(await outbox.TryClaimAsync(firstStaged.CommandId, DateTimeOffset.UtcNow, d
     "first staged command is claimed once");
 await outbox.MarkSentAsync(firstStaged.CommandId, "first-staged-vendor", default);
 var stagedOwner = (await orchestration.GetAssignedTasksAsync(default)).Single(t => t.TaskId == stageTask.Task.TaskId);
-cache.Row = goodVehicle with { CurrentStation = "BAY", X = 5, VelocityX = 0, VelocityY = 0,
-    AngularVelocity = 0, LastSuccessfulPollAt = DateTimeOffset.UtcNow };
 var advance = typeof(DispatchTaskOrchestrator).GetMethod("TryAdvanceTransportWindowAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
 var completedWindow = new AgvTransportTaskStatus("first-staged-vendor", firstStaged.StepId,
     AgvTransportTaskState.Completed, "V", DateTimeOffset.UtcNow);
@@ -226,17 +229,32 @@ async Task Advance()
 {
     await (Task)advance.Invoke(stagedOrchestrator, [stagedOwner, completedWindow, CancellationToken.None])!;
 }
+cache.Row = goodVehicle with { CurrentStation = "BAY", X = 5, VelocityX = 0.3, VelocityY = 0,
+    AngularVelocity = 0, LastSuccessfulPollAt = DateTimeOffset.UtcNow };
+await Advance();
+Check(await db.Queryable<AgvCommandOutboxEntity>().CountAsync(c => c.TaskId == stageTask.Task.TaskId) == 1,
+    "rolling continuation never sends while the previous window is moving");
+cache.Row = cache.Row with { VelocityX = 0, LastSuccessfulPollAt = DateTimeOffset.UtcNow };
 await Advance();
 Check(await db.Queryable<AgvCommandOutboxEntity>().CountAsync(c => c.TaskId == stageTask.Task.TaskId) == 1,
     "at the staging bay the vehicle waits while downstream remains occupied");
-await traffic.ReleaseStepAsync("far-owner", default);
+stagingPlanner.DetourOpen = true;
+var preview = typeof(DispatchTaskOrchestrator).GetMethod("PreviewTransportContinuationAsync",
+    BindingFlags.Instance | BindingFlags.NonPublic)!;
+await (Task)preview.Invoke(stagedOrchestrator, [stagedOwner, CancellationToken.None])!;
+Check(!await db.Queryable<TrafficResourceLeaseEntity>().AnyAsync(l => l.TaskId == stageTask.Task.TaskId && l.ResourceId == "DETOUR"),
+    "read-only continuation preview never leases the bypass");
 await Advance();
 var nextStaged = (await outbox.GetDueCommandsAsync(DateTimeOffset.UtcNow.AddSeconds(1), 10, default))
     .Single(c => c.TaskId == stageTask.Task.TaskId);
 var nextPayload = JsonSerializer.Deserialize<AgvTransportCommandPayload>(nextStaged.PayloadJson, json)!;
 Check(nextPayload.WindowIndex == 1 && nextPayload.Source == "BAY" && nextPayload.Destination == "B" &&
-    await db.Queryable<TrafficResourceLeaseEntity>().AnyAsync(l => l.TaskId == stageTask.Task.TaskId && l.ResourceId == "FAR"),
-    "after downstream release the same task acquires the next window and prepares its original continuation");
+    nextPayload.Windows[0].EdgeIds.SequenceEqual(stagedPayload.Windows[0].EdgeIds) &&
+    nextPayload.Path.Contains("ALT") &&
+    await db.Queryable<TrafficResourceLeaseEntity>().AnyAsync(l => l.TaskId == "OTHER-TRANSPORT" && l.ResourceId == "FAR") &&
+    await db.Queryable<TrafficResourceLeaseEntity>().AnyAsync(l => l.TaskId == stageTask.Task.TaskId && l.ResourceId == "DETOUR") &&
+    await db.Queryable<TrafficResourceLeaseEntity>().AnyAsync(l => l.TaskId == stageTask.Task.TaskId && l.ResourceId == "BAY-LOCK"),
+    "the same task prepares an alternate next window, preserves the completed prefix and holding point, and never takes the occupied original road");
 Console.WriteLine($"PASS {checks} common safety and atomic deduplication checks; isolated SQLite, synthetic map and fake gateway only.");
 
 sealed class Signals : IPlcSignalCache
@@ -286,9 +304,20 @@ sealed class Planner : IRoutePlanner
 }
 sealed class StagingPlanner : IRoutePlanner
 {
-    public RoutePlan? Plan(string source, string destination, IReadOnlySet<string> unavailable) =>
-        source == "A" && destination == "B" && !unavailable.Contains("FAR")
-            ? new(["A", "BAY", "B"], ["A-BAY", "BAY-B"], ["START-ROAD", "BAY-LOCK", "FAR"], 10) : null;
+    public bool DetourOpen { get; set; }
+    public RoutePlan? Plan(string source, string destination, IReadOnlySet<string> unavailable)
+    {
+        if (destination != "B") return null;
+        if (unavailable.Contains("FAR")) return source == "BAY" && DetourOpen
+            ? new(["BAY", "FORK", "ALT", "B"], ["BAY-FORK", "FORK-ALT", "ALT-B"], ["BAY-LOCK", "DETOUR"], 10)
+            : null;
+        return source switch
+        {
+            "A" => new(["A", "BAY", "FORK", "B"], ["A-BAY", "BAY-FORK", "FORK-B"], ["START-ROAD", "BAY-LOCK", "FAR"], 10),
+            "BAY" => new(["BAY", "FORK", "B"], ["BAY-FORK", "FORK-B"], ["BAY-LOCK", "FAR"], 5),
+            _ => null
+        };
+    }
 }
 sealed class Gate : IMapExecutionGate
 {

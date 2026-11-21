@@ -50,6 +50,11 @@ public sealed partial class TrafficResourceManager(
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
 
+    public async Task<IReadOnlyList<string>?> GetStepHeldResourceIdsAsync(string taskId, string ownerStepId, CancellationToken ct) =>
+        await database.Queryable<TrafficResourceLeaseEntity>()
+            .Where(lease => lease.TaskId == taskId && lease.OwnerStepId == ownerStepId)
+            .Select(lease => lease.ResourceId).Distinct().ToListAsync(ct);
+
     public Task<TrafficReservationResult> TryAcquireAsync(
         string ownerStepId,
         string taskId,

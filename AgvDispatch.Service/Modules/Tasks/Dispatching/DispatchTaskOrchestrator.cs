@@ -42,6 +42,9 @@ public sealed partial class DispatchTaskOrchestrator(
         new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _dependencyWaitWarnings =
         new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, TransportContinuationPreview> _continuationPreviews = new(StringComparer.Ordinal);
+    private bool UsesDynamicContinuation => optimization?.Options.Mode.Equals("Global", StringComparison.OrdinalIgnoreCase) == true &&
+        pickupStaging is { SupportsRollingRoutes: true };
     private string? _waitingBayError;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -543,6 +546,9 @@ public sealed partial class DispatchTaskOrchestrator(
     private async Task SynchronizeExecutingTasksAsync(CancellationToken cancellationToken)
     {
         var executing = await tasks.GetExecutingTasksAsync(cancellationToken);
+        var activeCommands = executing.Select(task => task.VendorTaskId).ToHashSet(StringComparer.Ordinal);
+        foreach (var obsolete in _continuationPreviews.Keys.Where(id => !activeCommands.Contains(id)).ToArray())
+            _continuationPreviews.Remove(obsolete);
         foreach (var task in executing)
         {
             if (string.IsNullOrWhiteSpace(task.VendorTaskId))
@@ -568,6 +574,10 @@ public sealed partial class DispatchTaskOrchestrator(
                 {
                     continue;
                 }
+
+                if (UsesDynamicContinuation && status.State == AgvTransportTaskState.GoingToDestination &&
+                    status.VendorTaskId == task.VendorTaskId && status.VehicleId == task.VehicleId)
+                    await PreviewTransportContinuationAsync(task, cancellationToken);
 
                 if (status.State == AgvTransportTaskState.Completed)
                 {
@@ -664,6 +674,53 @@ public sealed partial class DispatchTaskOrchestrator(
         }
     }
 
+    private sealed record TransportContinuationPreview(
+        AgvTransportCommandPayload? Payload, ActiveMapRuntimeSnapshot Map, DateTimeOffset CheckedAt,
+        IReadOnlySet<string> UnavailableResources);
+
+    private async Task PreviewTransportContinuationAsync(DispatchTaskWorkItem task, CancellationToken ct)
+    {
+        if (activeMap.Current is not { } map) return;
+        var commandId = task.VendorTaskId!;
+        _continuationPreviews.TryGetValue(commandId, out var previous);
+        var now = DateTimeOffset.UtcNow;
+        if (ReferenceEquals(previous?.Map, map) && now - previous!.CheckedAt < TimeSpan.FromMilliseconds(500))
+            return;
+        var payload = previous?.Payload;
+        if (!ReferenceEquals(previous?.Map, map))
+        {
+            var command = await outbox.GetTransportCommandByVendorAsync(task.TaskId, commandId, ct);
+            payload = ReadTransportPayload(command);
+        }
+        if (payload is null || payload.WindowIndex < 0 || payload.WindowIndex >= payload.Windows.Count - 1)
+        {
+            _continuationPreviews[commandId] = new(null, map, now, new HashSet<string>());
+            return;
+        }
+        var unavailable = await trafficResources.GetUnavailableResourceIdsAsync(task.TaskId, ct);
+        if (previous is not null && ReferenceEquals(previous.Map, map) && unavailable.SetEquals(previous.UnavailableResources))
+        {
+            _continuationPreviews[commandId] = previous with { CheckedAt = now };
+            return;
+        }
+        var blocked = payload.Windows.Skip(payload.WindowIndex + 1).Any(window => window.ResourceIds.Any(unavailable.Contains));
+        var alternate = blocked ? PlanRemainingTransport(task, payload, map, unavailable) : null;
+        _continuationPreviews[commandId] = new(payload, map, now, unavailable);
+        if (alternate is not null)
+            logger.LogDebug("车辆行驶中已预算后续路线，到站按最新状态重新核验。TaskId={TaskId}, NextStop={NextStop}",
+                task.TaskId, alternate.Windows[0].Destination);
+    }
+
+    private StagedPickupRoute? PlanRemainingTransport(DispatchTaskWorkItem task, AgvTransportCommandPayload payload,
+        ActiveMapRuntimeSnapshot map, IReadOnlySet<string> unavailable) =>
+        pickupStaging?.PlanFollowup(routePlanner, map.Definition, payload.Destination, payload.Windows[^1].Destination,
+            unavailable, agvStates.GetAll().Select(vehicle => vehicle.VehicleId).Append(task.VehicleId!)
+                .Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
+
+    private static AgvTransportCommandPayload? ReadTransportPayload(AgvCommandOutboxItem? command) =>
+        command is null ? null : System.Text.Json.JsonSerializer.Deserialize<AgvTransportCommandPayload>(
+            command.PayloadJson, new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
+
     private async Task<TransportWindowAdvanceOutcome> TryAdvanceTransportWindowAsync(DispatchTaskWorkItem task, AgvTransportTaskStatus terminal,
         CancellationToken cancellationToken)
     {
@@ -671,8 +728,7 @@ public sealed partial class DispatchTaskOrchestrator(
             return TransportWindowAdvanceOutcome.NotApplicable;
         var command = await outbox.GetTransportCommandByVendorAsync(task.TaskId, task.VendorTaskId, cancellationToken);
         if (command is null) return TransportWindowAdvanceOutcome.NotApplicable;
-        var payload = System.Text.Json.JsonSerializer.Deserialize<AgvTransportCommandPayload>(
-            command.PayloadJson, new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
+        var payload = ReadTransportPayload(command);
         if (payload is null || payload.Windows.Count == 0 ||
             payload.WindowIndex < 0 || payload.WindowIndex >= payload.Windows.Count - 1)
             return TransportWindowAdvanceOutcome.NotApplicable;
@@ -695,40 +751,68 @@ public sealed partial class DispatchTaskOrchestrator(
             robot.AngularVelocity is not { } va || !double.IsFinite(va) || Math.Abs(va) > 0.02)
             return TransportWindowAdvanceOutcome.WaitingAtSafePoint;
 
-        var next = payload.Windows[payload.WindowIndex + 1];
+        var nextIndex = payload.WindowIndex + 1;
+        var windows = payload.Windows;
+        var next = windows[nextIndex];
         // Free only geometrically cleared OLD resources before requesting the
         // next window. Waiting for the next grant first creates hold-and-wait
         // cycles with a vehicle returning from the dumper.
         if (completedRouteRelease is not null)
             await completedRouteRelease.ReleaseWindowAsync(task.TaskId, command.StepId, terminal, cancellationToken);
+        var map = activeMap.Current;
+        IReadOnlyList<string>? retained = null;
+        if (UsesDynamicContinuation && map is not null)
+        {
+            // Do not let a changed path release the previous window's footprint.
+            // Any lease still present after the geometric pass remains protected.
+            retained = await trafficResources.GetStepHeldResourceIdsAsync(task.TaskId, command.StepId, cancellationToken);
+            var unavailable = await trafficResources.GetUnavailableResourceIdsAsync(task.TaskId, cancellationToken);
+            if (windows.Skip(nextIndex).Any(window => window.ResourceIds.Any(unavailable.Contains)) &&
+                PlanRemainingTransport(task, payload, map, unavailable) is { } reroute &&
+                (next.ResourceIds.Any(unavailable.Contains) || reroute.DeferredSeconds == 0))
+            {
+                windows = GlobalPickupRoutePlanner.ReplaceRemainingWindows(payload, reroute.Windows);
+                next = windows[nextIndex];
+                if (!next.EdgeIds.SequenceEqual(payload.Windows[nextIndex].EdgeIds, StringComparer.OrdinalIgnoreCase))
+                    logger.LogInformation("滚动窗口采用新规划的剩余路线。TaskId={TaskId}, StepId={StepId}, From={From}, To={To}",
+                        task.TaskId, command.StepId, next.Source, next.Destination);
+            }
+            if (retained is { Count: > 0 })
+            {
+                next = next with { ResourceIds = next.ResourceIds.Concat(retained)
+                    .Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase).ToArray() };
+                windows = windows.Select((window, index) => index == nextIndex ? next : window).ToArray();
+            }
+        }
         var observation = new TrafficRouteObservation(command.StepId, task.TaskId, task.VehicleId,
             next.Source, next.Destination, next.EdgeIds, next.ResourceIds, false,
             "车辆已在安全点停稳，原任务申请下一滚动路权窗口。")
-            { MapId = activeMap.Current?.MapId, MapVersionId = activeMap.Current?.VersionId };
+            { MapId = map?.MapId, MapVersionId = map?.VersionId };
         var acquired = await _trafficLayer.AcquireAsync(observation, cancellationToken);
         if (!acquired.Acquired) return TransportWindowAdvanceOutcome.WaitingForTraffic;
         // Acquire first, then release resources not reused by the next window.
         // This keeps an overlapping intersection or waiting-bay anchor leased
         // without a gap while freeing corridors already fully passed.
-        await trafficResources.ReleaseStepExceptResourcesAsync(command.StepId, next.ResourceIds,
-            "车辆已完整通过上一路权窗口，释放不再复用的资源并保留下一窗口资源。", cancellationToken);
+        if (retained is null)
+            await trafficResources.ReleaseStepExceptResourcesAsync(command.StepId, next.ResourceIds,
+                "车辆已完整通过上一路权窗口，释放不再复用的资源并保留下一窗口资源。", cancellationToken);
 
         var fullSource = payload.Windows[0].Source;
         var fullDestination = payload.Windows[^1].Destination;
         var prepared = await outbox.TryPrepareTransportWindowAsync(
             task.TaskId, command.StepId, task.VehicleId, fullSource, fullDestination,
-            next, payload.Windows, task.VendorTaskId, payload.FinalAction, cancellationToken);
+            next, windows, task.VendorTaskId, payload.FinalAction, cancellationToken);
         if (!prepared)
         {
             var waiting = trafficResources is ITaskWaitingBayAllocator allocator
                 ? await allocator.GetAsync(task.TaskId, cancellationToken)
                 : null;
-            if (waiting is null)
+            if (retained is null && waiting is null)
                 await trafficResources.ReleaseStepAsync(command.StepId, cancellationToken);
             else
                 await trafficResources.ReleaseStepExceptResourcesAsync(
-                    command.StepId, [waiting.ResourceId],
-                    "下一窗口命令准备失败；释放公共路段，但保留本任务已绑定的独立候车位。",
+                    command.StepId, waiting is null ? retained! : [..retained ?? [], waiting.ResourceId],
+                    "下一窗口命令准备失败；释放新增的租约，保留原窗口未确认离开的资源和已绑定候车位。",
                     cancellationToken);
         }
         return prepared

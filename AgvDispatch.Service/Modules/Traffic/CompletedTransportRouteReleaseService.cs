@@ -28,7 +28,7 @@ public sealed class CompletedTransportRouteReleaseService(
     MapOptions mapOptions,
     TrafficSegmentReleasePolicy releasePolicy,
     TrafficResourceManager resources,
-    TimeProvider? clock = null)
+    TimeProvider? clock = null, DispatchTrafficWakeup? trafficWakeup = null)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private static readonly HashSet<DispatchTaskStepType> TransportSteps =
@@ -231,6 +231,7 @@ public sealed class CompletedTransportRouteReleaseService(
             windowBoundary ? "原厂家窗口已完成且车辆在安全点停稳，按完整包络释放已通过的旧窗口资源；当前停点资源及仍被车体覆盖或几何无法核定的下一窗口资源继续保留，原业务步骤未完成。" :
                 "车辆已完成原运输并停到明确终点；释放该步骤已走过的全部前序路权，终点资源继续保留。",
             ct);
+        if (released > 0) trafficWakeup?.Publish();
         return new(released, released == 0
             ? "并发状态已变化，本轮未删除路权。"
             : $"已释放{released}项已走过的前序路段，终点资源继续保留。");

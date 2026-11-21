@@ -24,11 +24,17 @@ public sealed class DispatchTaskStepCoordinator(
     IAgvStateCache? vehicleStates = null, IActiveMapRuntime? activeMap = null, PersistentHandshakeExecutor? handshake = null,
     IDispatchPreSendSafetyService? preSendSafety = null, DispatchTrafficReservationService? trafficLayer = null,
     IDispatchPipelineMonitor? pipeline = null, DispatchOptimizationService? optimization = null, MapOptions? mapOptions = null,
-    AgvOptions? agvOptions = null) : IsolatedBackgroundService
+    AgvOptions? agvOptions = null, GlobalPickupRoutePlanner? pickupStaging = null,
+    DispatchTrafficWakeup? trafficWakeup = null) : IsolatedBackgroundService
 {
     private readonly DispatchTrafficReservationService _trafficLayer = trafficLayer ?? new(trafficResources, pipeline, tasks, optimization);
     private readonly Dictionary<string, string> _conditionFingerprints = new(StringComparer.Ordinal);
     private readonly HashSet<string> _observedSteps = new(StringComparer.Ordinal);
+    private GlobalPickupRoutePlanner? RollingRoutes => optimization?.Options.Mode.Equals("Global", StringComparison.OrdinalIgnoreCase) == true &&
+        pickupStaging is { SupportsRollingRoutes: true } ? pickupStaging : null;
+
+    private string[] FleetVehicleIds() => vehicleStates?.GetAll().Select(vehicle => vehicle.VehicleId).ToArray() ?? [];
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         if (!options.Enabled || !dispatchOptions.Enabled)
@@ -72,7 +78,10 @@ public sealed class DispatchTaskStepCoordinator(
                 logger.LogError(exception, "任务步骤协调周期失败。");
             }
 
-            await Task.Delay(options.PollIntervalMs, stoppingToken);
+            if (RollingRoutes is not null && trafficWakeup is not null)
+                await trafficWakeup.WaitForFollowupAsync(options.PollIntervalMs, stoppingToken);
+            else
+                await Task.Delay(options.PollIntervalMs, stoppingToken);
         }
     }
 
@@ -296,7 +305,8 @@ public sealed class DispatchTaskStepCoordinator(
             if (!VehicleReadyAt(step.VehicleId, pickup, current)) return;
             if (trafficResources is ITaskWaitingBayAllocator allocator)
                 await TaskWaitingBayRouter.ObserveWaitingAsync(step, pickup, dispatchOptions, current, routePlanner,
-                    trafficResources, allocator, options, _trafficLayer, ct, agvOptions?.NavigationCommandMode);
+                    trafficResources, allocator, options, _trafficLayer, ct, agvOptions?.NavigationCommandMode,
+                    RollingRoutes, FleetVehicleIds());
             return;
         }
         var waiting = dispatchOptions.GetDumperWaitingSite()!;
@@ -313,16 +323,27 @@ public sealed class DispatchTaskStepCoordinator(
             _ => (dispatchOptions.DumperDumpingSite, pickup)
         };
         var unavailable = await trafficResources.GetUnavailableResourceIdsAsync(step.TaskId, ct);
-        var plan = routePlanner.Plan(route.Item1, route.Item2, unavailable) ??
+        var adaptive = PlanFollowup(step.StepType, current, route.Item1, route.Item2, unavailable);
+        var plan = adaptive?.Route ?? routePlanner.Plan(route.Item1, route.Item2, unavailable) ??
             routePlanner.Plan(route.Item1, route.Item2, new HashSet<string>());
         if (plan is not { Nodes.Count: >= 2 } || !VehicleReadyAt(step.VehicleId, route.Item1, current)) return;
-        var firstWindow = TransportRouteWindows.Plan(
-            plan, current.Definition, options, agvOptions?.NavigationCommandMode)[0];
+        var windows = adaptive?.Windows ?? TransportRouteWindows.Plan(
+            plan, current.Definition, options, agvOptions?.NavigationCommandMode);
+        if (adaptive is null && step.StepType == DispatchTaskStepType.ReturnEmptyBox)
+            windows = TransportRouteWindows.IncludeDumperExitClearance(windows, current.Definition, route.Item1);
+        var firstWindow = windows[0];
         await _trafficLayer.ObserveAsync(new(step.StepId, step.TaskId, step.VehicleId,
             firstWindow.Source, firstWindow.Destination, firstWindow.EdgeIds, firstWindow.ResourceIds, true,
             "后续运输候选已核对，按原任务优先级等待首个安全路权窗口。")
             { MapId = current.MapId, MapVersionId = current.VersionId }, ct);
     }
+
+    private StagedPickupRoute? PlanFollowup(DispatchTaskStepType type, ActiveMapRuntimeSnapshot? map,
+        string source, string destination, IReadOnlySet<string> unavailable) =>
+        map is not null && type is (DispatchTaskStepType.DeliverFullBoxToDumper or DispatchTaskStepType.ReturnEmptyBox)
+            ? RollingRoutes?.PlanFollowup(routePlanner, map.Definition, source, destination, unavailable,
+                FleetVehicleIds(), type == DispatchTaskStepType.ReturnEmptyBox ? source : null)
+            : null;
 
     private bool VehicleReadyAt(string vehicleId, string source, ActiveMapRuntimeSnapshot current)
     {
@@ -378,7 +399,7 @@ public sealed class DispatchTaskStepCoordinator(
             {
                 var chosen = await TaskWaitingBayRouter.AcquireAsync(step, pickupSite, dispatchOptions, current,
                     routePlanner, trafficResources, allocator, options, cancellationToken, _trafficLayer,
-                    agvOptions?.NavigationCommandMode);
+                    agvOptions?.NavigationCommandMode, RollingRoutes, FleetVehicleIds());
                 if (chosen is null) return;
                 waitingSite = chosen.Value.Site;
                 selectedPlan = chosen.Value.Plan;
@@ -408,7 +429,10 @@ public sealed class DispatchTaskStepCoordinator(
         var unavailable = await trafficResources.GetUnavailableResourceIdsAsync(
             step.TaskId,
             cancellationToken);
-        var plan = selectedPlan ?? routePlanner.Plan(route.Item1, route.Item2, unavailable);
+        var adaptive = selectedPlan is null
+            ? PlanFollowup(step.StepType, planningMap, route.Item1, route.Item2, unavailable)
+            : null;
+        var plan = selectedPlan ?? adaptive?.Route ?? routePlanner.Plan(route.Item1, route.Item2, unavailable);
         if (plan == null)
         {
             var diagnostic = routePlanner.Plan(route.Item1, route.Item2, new HashSet<string>());
@@ -428,7 +452,7 @@ public sealed class DispatchTaskStepCoordinator(
         {
             throw new InvalidOperationException($"AGV路径节点不足：{route.Item1}->{route.Item2}。");
         }
-        var windows = selectedWindows;
+        var windows = selectedWindows ?? adaptive?.Windows;
         if (windows is null)
         {
             windows = planningMap is null

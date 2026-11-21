@@ -24,6 +24,9 @@ public interface ITrafficResourceManager
         string requestingTaskId,
         CancellationToken cancellationToken);
 
+    Task<IReadOnlyList<string>?> GetStepHeldResourceIdsAsync(string taskId, string ownerStepId, CancellationToken ct) =>
+        Task.FromResult<IReadOnlyList<string>?>(null);
+
     Task<TrafficReservationResult> TryAcquireAsync(
         string ownerStepId,
         string taskId,

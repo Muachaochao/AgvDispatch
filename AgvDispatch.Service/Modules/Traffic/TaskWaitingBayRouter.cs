@@ -10,7 +10,8 @@ public static class TaskWaitingBayRouter
         ActiveMapRuntimeSnapshot map, IRoutePlanner planner, ITrafficResourceManager traffic,
         ITaskWaitingBayAllocator allocator, DispatchTaskStepOptions stepOptions,
         DispatchTrafficReservationService trafficLayer, CancellationToken ct,
-        string? navigationCommandMode = null)
+        string? navigationCommandMode = null, GlobalPickupRoutePlanner? rolling = null,
+        IReadOnlyCollection<string>? vehicleIds = null)
     {
         var selected = await allocator.GetAsync(step.TaskId, ct);
         if (selected is not null && (selected.VehicleId != step.VehicleId || selected.StepId != step.StepId ||
@@ -18,13 +19,14 @@ public static class TaskWaitingBayRouter
         var sites = selected is null ? options.GetDumperWaitingSites() : [selected.WaitingSite];
         var unavailable = await traffic.GetUnavailableResourceIdsAsync(step.TaskId, ct);
         var counts = await allocator.GetSelectionCountsAsync(map.MapId, map.VersionId, ct);
-        var candidate = Rank(sites, pickup, planner, unavailable, counts).FirstOrDefault();
+        var ranked = Rank(sites, pickup, planner, unavailable, counts, map.Definition, rolling, vehicleIds).FirstOrDefault();
+        var candidate = (ranked.Site, ranked.Plan);
         if (candidate.Plan is null)
             candidate = sites.Select(site => (Site: site, Plan: planner.Plan(pickup, site, new HashSet<string>())))
                 .Where(c => c.Plan is { Nodes.Count: >= 2 }).OrderBy(c => c.Plan!.Cost).ThenBy(c => c.Site, StringComparer.Ordinal).FirstOrDefault();
         if (candidate.Plan is null) return;
-        var first = TransportRouteWindows.Plan(
-            candidate.Plan, map.Definition, stepOptions, navigationCommandMode)[0];
+        var first = (ranked.Windows ?? TransportRouteWindows.Plan(
+            candidate.Plan, map.Definition, stepOptions, navigationCommandMode))[0];
         var waitingResource = selected?.ResourceId ??
             DumperWaitingBaySafety.ExclusiveResourceIds(map.Definition, options, candidate.Site)
                 .Order(StringComparer.Ordinal).FirstOrDefault();
@@ -43,7 +45,8 @@ public static class TaskWaitingBayRouter
         ActiveMapRuntimeSnapshot map, IRoutePlanner planner, ITrafficResourceManager traffic,
         ITaskWaitingBayAllocator allocator, DispatchTaskStepOptions stepOptions,
         CancellationToken ct, DispatchTrafficReservationService? trafficLayer = null,
-        string? navigationCommandMode = null)
+        string? navigationCommandMode = null, GlobalPickupRoutePlanner? rolling = null,
+        IReadOnlyCollection<string>? vehicleIds = null)
     {
         var selected = await allocator.GetAsync(step.TaskId, ct);
         if (selected is not null && (selected.VehicleId != step.VehicleId || selected.StepId != step.StepId ||
@@ -53,15 +56,15 @@ public static class TaskWaitingBayRouter
         var sites = selected is null ? options.GetDumperWaitingSites() : [selected.WaitingSite];
         var unavailable = await traffic.GetUnavailableResourceIdsAsync(step.TaskId, ct);
         var counts = await allocator.GetSelectionCountsAsync(map.MapId, map.VersionId, ct);
-        var candidates = Rank(sites, pickup, planner, unavailable, counts);
+        var candidates = Rank(sites, pickup, planner, unavailable, counts, map.Definition, rolling, vehicleIds);
         foreach (var candidate in candidates)
         {
             var resource = selected?.ResourceId ?? DumperWaitingBaySafety.ExclusiveResourceIds(map.Definition, options, candidate.Site)
                 .Order(StringComparer.Ordinal).FirstOrDefault();
             if (resource is null || !candidate.Plan!.ResourceIds.Contains(resource, StringComparer.OrdinalIgnoreCase))
                 throw new InvalidOperationException("候车路线未包含该等待节点的独立容量1资源。");
-            var windows = TransportRouteWindows.Plan(
-                    candidate.Plan, map.Definition, stepOptions, navigationCommandMode)
+            var windows = (candidate.Windows ?? TransportRouteWindows.Plan(
+                    candidate.Plan, map.Definition, stepOptions, navigationCommandMode))
                 .Select(window => window with
                 {
                     ResourceIds = window.ResourceIds.Append(resource).Distinct(StringComparer.OrdinalIgnoreCase)
@@ -100,17 +103,24 @@ public static class TaskWaitingBayRouter
 
     // Balance only among near-equivalent feasible routes. A history preference
     // must never select a long detour, ignore an occupied resource or rebind a task.
-    private static (string Site, RoutePlan? Plan)[] Rank(IReadOnlyList<string> sites, string pickup,
-        IRoutePlanner planner, IReadOnlySet<string> unavailable, IReadOnlyDictionary<string, int> counts)
+    private static (string Site, RoutePlan? Plan, IReadOnlyList<AgvTransportRouteWindow>? Windows, double Cost)[] Rank(
+        IReadOnlyList<string> sites, string pickup, IRoutePlanner planner, IReadOnlySet<string> unavailable,
+        IReadOnlyDictionary<string, int> counts, MapDefinition map, GlobalPickupRoutePlanner? rolling,
+        IReadOnlyCollection<string>? vehicleIds)
     {
-        var candidates = sites.Select(site => (Site: site, Plan: planner.Plan(pickup, site, unavailable)))
-            .Where(c => c.Plan is { Nodes.Count: >= 2 } && double.IsFinite(c.Plan.Cost)).ToArray();
+        var candidates = sites.Select(site =>
+        {
+            var proposal = rolling?.PlanFollowup(planner, map, pickup, site, unavailable, vehicleIds ?? []);
+            var plan = rolling is null ? planner.Plan(pickup, site, unavailable) : proposal?.Route;
+            return (Site: site, Plan: plan, Windows: proposal?.Windows,
+                Cost: (plan?.Cost ?? double.PositiveInfinity) + (proposal?.DeferredSeconds ?? 0));
+        }).Where(c => c.Plan is { Nodes.Count: >= 2 } && double.IsFinite(c.Cost)).ToArray();
         if (candidates.Length == 0) return [];
-        var minimum = candidates.Min(c => c.Plan!.Cost);
+        var minimum = candidates.Min(c => c.Cost);
         // Cost is supplied by the active planner; use a relative band, not metres/seconds assumptions.
         var band = Math.Max(Math.Abs(minimum) * 0.15, 0.001);
-        return candidates.OrderBy(c => c.Plan!.Cost > minimum + band)
-            .ThenBy(c => c.Plan!.Cost <= minimum + band ? counts.GetValueOrDefault(c.Site) : int.MaxValue)
-            .ThenBy(c => c.Plan!.Cost).ThenBy(c => c.Site, StringComparer.Ordinal).ToArray();
+        return candidates.OrderBy(c => c.Cost > minimum + band)
+            .ThenBy(c => c.Cost <= minimum + band ? counts.GetValueOrDefault(c.Site) : int.MaxValue)
+            .ThenBy(c => c.Cost).ThenBy(c => c.Site, StringComparer.Ordinal).ToArray();
     }
 }

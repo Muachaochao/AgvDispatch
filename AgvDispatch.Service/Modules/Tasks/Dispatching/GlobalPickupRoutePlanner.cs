@@ -10,6 +10,45 @@ public sealed record StagedPickupRoute(RoutePlan Route, IReadOnlyList<AgvTranspo
 public sealed class GlobalPickupRoutePlanner(
     DispatchTaskStepOptions steps, AgvOptions agv, HandshakeExecutionOptions handshake)
 {
+    public bool SupportsRollingRoutes => steps.RollingReservationEnabled &&
+        agv.NavigationCommandMode.Equals("SpecifiedPath", StringComparison.OrdinalIgnoreCase);
+
+    public StagedPickupRoute? PlanFollowup(IRoutePlanner planner, MapDefinition map, string source, string target,
+        IReadOnlySet<string> unavailable, IReadOnlyCollection<string> vehicleIds, string? dumperExit = null)
+    {
+        var clear = planner.Plan(source, target, unavailable);
+        StagedPickupRoute? best = null;
+        if (clear is { Nodes.Count: >= 2 } && double.IsFinite(clear.Cost))
+        {
+            var windows = ProtectExit(TransportRouteWindows.Plan(clear, map, steps, agv.NavigationCommandMode));
+            if (!windows[0].ResourceIds.Any(unavailable.Contains)) best = new(clear, windows, 0);
+        }
+        if (!SupportsRollingRoutes || unavailable.Count == 0) return best;
+
+        var shortest = planner.Plan(source, target, new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+        if (shortest is null || !double.IsFinite(shortest.Cost) || shortest.Cost >= best?.Route.Cost)
+            return best;
+        var staged = TryStage(shortest, map, unavailable, vehicleIds);
+        if (staged is null) return best;
+        var protectedWindows = ProtectExit(staged.Windows);
+        if (protectedWindows[0].ResourceIds.Any(unavailable.Contains) ||
+            best is not null && staged.Route.Cost + staged.DeferredSeconds >= best.Route.Cost)
+            return best;
+        return staged with { Windows = protectedWindows };
+
+        IReadOnlyList<AgvTransportRouteWindow> ProtectExit(IReadOnlyList<AgvTransportRouteWindow> windows) =>
+            dumperExit is null ? windows : TransportRouteWindows.IncludeDumperExitClearance(windows, map, dumperExit);
+    }
+
+    public static IReadOnlyList<AgvTransportRouteWindow> ReplaceRemainingWindows(
+        AgvTransportCommandPayload payload, IReadOnlyList<AgvTransportRouteWindow> remaining)
+    {
+        var firstIndex = payload.WindowIndex + 1;
+        return payload.Windows.Take(firstIndex)
+            .Concat(remaining.Select((window, index) => window with { Index = firstIndex + index }))
+            .ToArray();
+    }
+
     public StagedPickupRoute? TryStage(RoutePlan route, MapDefinition map, IReadOnlySet<string> unavailable,
         IReadOnlyCollection<string> vehicleIds)
     {
