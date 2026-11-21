@@ -151,14 +151,16 @@ public sealed partial class TrafficResourceManager(
                     task is null || task.VehicleId!=vehicleId || task.Stage!=(int)DispatchTaskStage.PickingUp)
                     throw new InvalidOperationException("候车选位的原任务、车辆、送箱步骤或地图版本发生变化。");
             }
+            var comparer = StringComparer.OrdinalIgnoreCase;
+            var leasesByResource = (await database.Queryable<TrafficResourceLeaseEntity>()
+                .ToListAsync(cancellationToken)).ToLookup(lease => lease.ResourceId, comparer);
+            ILookup<string, string>? predecessors = null;
             foreach (var resourceId in requested)
             {
                 var resource = catalog.TryGet(resourceId, out var definition)
                     ? definition
                     : throw new InvalidOperationException($"交通资源{resourceId}不存在。");
-                var leases = await database.Queryable<TrafficResourceLeaseEntity>()
-                    .Where(lease => lease.ResourceId == resourceId)
-                    .ToListAsync(cancellationToken);
+                var leases = leasesByResource[resourceId];
                 var otherTasks = leases
                     .Where(lease => !string.Equals(
                         lease.TaskId,
@@ -177,47 +179,38 @@ public sealed partial class TrafficResourceManager(
                 // A capacity becoming free is not a permit to jump ahead of a
                 // freshly evaluated higher-priority/older waiting call. Existing
                 // owners always keep their resource, regardless of queue order.
-                if (!leases.Any(l => string.Equals(l.TaskId, taskId, StringComparison.OrdinalIgnoreCase)) &&
-                    await FindQueuePredecessorAsync(context, taskId, resourceId,
-                        resource.Capacity - otherTasks.Length, cancellationToken) is { } predecessor)
+                if (leases.Any(l => comparer.Equals(l.TaskId, taskId))) continue;
+                predecessors ??= await LoadQueuePredecessorsAsync(context, taskId, requested, leasesByResource, cancellationToken);
+                var freeSlots = resource.Capacity - otherTasks.Length;
+                var ahead = predecessors[resourceId].Distinct(comparer).Take(freeSlots).ToArray();
+                if (ahead.Length == freeSlots)
                 {
                     blockerResource = resourceId;
-                    blockerTask = predecessor;
+                    blockerTask = ahead[0];
                     await WriteStateAsync(ownerStepId, taskId, vehicleId, "Waiting",
-                        $"资源{resourceId}按有效优先级和呼叫时间排队，等待前序任务{predecessor}申请；已有路权保持不变。",
+                        $"资源{resourceId}按有效优先级和呼叫时间排队，等待前序任务{blockerTask}申请；已有路权保持不变。",
                         requested, cancellationToken);
                     return;
                 }
             }
 
-            var newlyAcquired = new List<string>();
+            var additions = new List<TrafficResourceLeaseEntity>();
+            var renewed = new List<string>();
             foreach (var resourceId in requested)
             {
-                var exists = await database.Queryable<TrafficResourceLeaseEntity>()
-                    .AnyAsync(lease =>
-                        lease.ResourceId == resourceId &&
-                        lease.OwnerStepId == ownerStepId,
-                        cancellationToken);
-                if (exists)
+                var existing = leasesByResource[resourceId].Where(lease => lease.OwnerStepId == ownerStepId).ToArray();
+                if (existing.Length > 0)
                 {
-                    var owner = await database.Queryable<TrafficResourceLeaseEntity>().Where(l => l.ResourceId == resourceId && l.OwnerStepId == ownerStepId).FirstAsync(cancellationToken);
-                    if (owner.TaskId != taskId || owner.VehicleId != vehicleId) throw new InvalidOperationException("已有路权步骤与任务或车辆归属冲突。");
-                    if (owner.MapId != null && context?.MapId != null && (owner.MapId != context.MapId || owner.MapVersionId != context.MapVersionId))
+                    if (existing.Any(owner => owner.TaskId != taskId || owner.VehicleId != vehicleId))
+                        throw new InvalidOperationException("已有路权步骤与任务或车辆归属冲突。");
+                    if (context?.MapId != null && existing.Any(owner => owner.MapId != null &&
+                        (owner.MapId != context.MapId || owner.MapVersionId != context.MapVersionId)))
                         throw new InvalidOperationException("已有路权属于另一地图版本，不能复用为新版本路权。");
-                    await database.Updateable<TrafficResourceLeaseEntity>()
-                        .SetColumns(lease => new TrafficResourceLeaseEntity
-                        {
-                            RenewedAt = now,
-                            ExpiresAt = now.Add(settings.LeaseDuration)
-                        })
-                        .Where(lease =>
-                            lease.ResourceId == resourceId &&
-                            lease.OwnerStepId == ownerStepId)
-                        .ExecuteCommandAsync(cancellationToken);
+                    renewed.AddRange(existing.Select(owner => owner.LeaseId));
                     continue;
                 }
 
-                await database.Insertable(new TrafficResourceLeaseEntity
+                additions.Add(new TrafficResourceLeaseEntity
                 {
                     LeaseId = $"TRL-{Guid.NewGuid():N}",
                     ResourceId = resourceId,
@@ -228,11 +221,20 @@ public sealed partial class TrafficResourceManager(
                     AcquiredAt = now,
                     RenewedAt = now,
                     ExpiresAt = now.Add(settings.LeaseDuration)
-                }).ExecuteCommandAsync(cancellationToken);
-                newlyAcquired.Add(resourceId);
+                });
             }
-            if (newlyAcquired.Count > 0)
-                await RecordLeaseChangeAsync(ownerStepId, taskId, vehicleId, "ResourceAcquired", newlyAcquired,
+            foreach (var batch in renewed.Chunk(200))
+                await database.Updateable<TrafficResourceLeaseEntity>()
+                    .SetColumns(lease => new TrafficResourceLeaseEntity
+                    {
+                        RenewedAt = now,
+                        ExpiresAt = now.Add(settings.LeaseDuration)
+                    })
+                    .Where(lease => batch.Contains(lease.LeaseId)).ExecuteCommandAsync(cancellationToken);
+            foreach (var batch in additions.Chunk(200))
+                await database.Insertable(batch).ExecuteCommandAsync(cancellationToken);
+            if (additions.Count > 0)
+                await RecordLeaseChangeAsync(ownerStepId, taskId, vehicleId, "ResourceAcquired", additions.Select(lease => lease.ResourceId).ToArray(),
                     "实际取得所列资源；原占用已在本事务中核对，后续按车体与交接证据释放。", cancellationToken);
             if(binding is not null && await GetAsync(taskId,cancellationToken) is null)
                 await database.Insertable(new TaskWaitingBayEntity{TaskId=taskId,VehicleId=vehicleId,StepId=ownerStepId,

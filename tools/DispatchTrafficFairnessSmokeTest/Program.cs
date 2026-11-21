@@ -282,6 +282,44 @@ using(var fixture=await Fixture.Create())
     await fixture.Manager.ReleaseTaskAsync("HIGH",default);
     Check((await fixture.Acquire("FULL")).Acquired,"高优先级释放后满箱原车正常取得下一窗口");
 }
+var longWindow = Enumerable.Range(1, 126).Select(i => $"W{i:D3}").ToArray();
+using (var fixture = await Fixture.Create(windowResources: longWindow))
+{
+    await fixture.Call("OWNER", 90, -2);
+    await fixture.Call("NEXT", 50, -1);
+    await fixture.Observe("OWNER", 90, resources: [longWindow[^1]]);
+    Check((await fixture.Acquire("OWNER", [longWindow[^1]])).Acquired, "last window resource initially held");
+    await fixture.Observe("NEXT", 50, resources: longWindow);
+    var rejected = await fixture.Acquire("NEXT", longWindow);
+    Check(!rejected.Acquired && rejected.BlockingResourceId == longWindow[^1] &&
+        !await fixture.Db.Queryable<TrafficResourceLeaseEntity>().AnyAsync(l => l.TaskId == "NEXT"),
+        "last resource blocked means no partial leases for a long window");
+    await fixture.Manager.ReleaseTaskAsync("OWNER", default);
+    var queueReads = 0;
+    var leaseReads = 0;
+    var leaseInserts = 0;
+    fixture.Db.Aop.OnLogExecuting = (sql, _) =>
+    {
+        if (sql.StartsWith("SELECT", StringComparison.OrdinalIgnoreCase))
+        {
+            if (sql.Contains("traffic_request") && sql.Contains("QueueObservedAtUtc") &&
+                sql.Contains("WHERE") && sql[(sql.IndexOf("WHERE", StringComparison.OrdinalIgnoreCase))..].Contains("QueueObservedAtUtc"))
+                queueReads++;
+            if (sql.Contains("traffic_resource_lease")) leaseReads++;
+        }
+        if (sql.StartsWith("INSERT", StringComparison.OrdinalIgnoreCase) && sql.Contains("traffic_resource_lease"))
+            leaseInserts++;
+    };
+    Check((await fixture.Acquire("NEXT", longWindow)).Acquired, "complete 126-resource window granted after release");
+    Console.WriteLine($"126-resource acquisition SQL: queue reads={queueReads}, lease reads={leaseReads}, inserts={leaseInserts}");
+    Check(queueReads == 1 && leaseReads <= 3 && leaseInserts <= 2,
+        "one queue snapshot and bounded lease queries/writes for a 126-resource window");
+    Check((await fixture.Manager.GetStepHeldResourceIdsAsync("NEXT", "NEXT", default))!.Count == longWindow.Length,
+        "batch grant persists all 126 leases under the original step");
+    Check((await fixture.Acquire("NEXT", longWindow)).Acquired &&
+        (await fixture.Manager.GetStepHeldResourceIdsAsync("NEXT", "NEXT", default))!.Count == longWindow.Length,
+        "retry renews existing leases without creating duplicates");
+}
 Console.WriteLine($"PASS {checks} rolling traffic fairness/cache checks; isolated database and synthetic maps only.");
 
 sealed class Fixture : IDisposable
@@ -290,11 +328,12 @@ sealed class Fixture : IDisposable
     public TrafficResourceManager Manager = null!;
     public Clock Clock = new();
     private TrafficResourceCatalog _catalog = null!;
-    public static async Task<Fixture> Create(int capacity = 1)
+    public static async Task<Fixture> Create(int capacity = 1, string[]? windowResources = null)
     {
         var fixture = new Fixture();
         fixture.Db = DatabaseFactory.Create(new() { DatabasePath = Path.Combine(Path.GetTempPath(), "agv-queue-" + Guid.NewGuid().ToString("N"), "fixture.db") });
-        fixture._catalog = new([new("R", TrafficResourceType.NarrowAisle, capacity), new("S", TrafficResourceType.NarrowAisle)]);
+        fixture._catalog = new([new("R", TrafficResourceType.NarrowAisle, capacity), new("S", TrafficResourceType.NarrowAisle),
+            ..(windowResources ?? []).Select(id => new TrafficResourceDefinition(id, TrafficResourceType.NarrowAisle))]);
         await new DatabaseInitializer(fixture.Db, fixture._catalog).InitializeAsync(default);
         fixture.Restart(); return fixture;
     }
