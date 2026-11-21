@@ -435,7 +435,14 @@ def complete_command_set(commands, tasks, recoveries=None):
     return True
 
 
-def resource_wait_cycles(requests, leases, ownership, capacities, cars):
+def leases_by_resource(leases):
+    holders = {}
+    for lease in leases:
+        holders.setdefault(lease['ResourceId'], []).append(lease)
+    return holders
+
+
+def resource_wait_cycles(requests, leases, ownership, capacities, cars, *, holders=None):
     """Only durable assigned tasks and currently held, saturated leases count.
 
     A dispatch candidate is not the owner of its suggested vehicle. Historical
@@ -443,6 +450,8 @@ def resource_wait_cycles(requests, leases, ownership, capacities, cars):
     changed. Moving vehicles are excluded from persistent stopped wait cycles.
     """
     assigned = {r['TaskId']: r['VehicleId'] for r in ownership}
+    if holders is None:
+        holders = leases_by_resource(leases)
     dependencies = {}
     for request in requests:
         task, vehicle = request.get('TaskId'), request.get('VehicleId')
@@ -455,11 +464,12 @@ def resource_wait_cycles(requests, leases, ownership, capacities, cars):
         except (ValueError, TypeError):
             continue
         for resource in resource_ids:
-            holders = [l for l in leases if l.get('ResourceId') == resource]
-            tasks = {l.get('TaskId') for l in holders}
+            resource_leases = holders.get(resource, ())
+            tasks = {lease['TaskId'] for lease in resource_leases}
             if task in tasks or len(tasks) < capacities.get(resource, 1):
                 continue
-            owners = {l['VehicleId'] for l in holders if l.get('VehicleId') and l['VehicleId'] != vehicle}
+            owners = {lease['VehicleId'] for lease in resource_leases
+                      if lease.get('VehicleId') and lease['VehicleId'] != vehicle}
             if owners:
                 dependencies.setdefault(vehicle, []).append(owners)
     # A running vendor navigation can be physically stopped by a parked car
@@ -524,9 +534,11 @@ class Observer:
                 self.violations.append(dict(kind='vehicle-multiple-tasks', vehicle=vehicle, tasks=sorted(task_ids)))
         self.ownership_samples += 1
         leases = query(self.runtime.root, 'select ResourceId,TaskId,VehicleId,OwnerStepId from traffic_resource_lease')
-        for resource, capacity in self.resources.items():
-            owners = {r['TaskId'] for r in leases if r['ResourceId'] == resource}
-            if len(owners) > capacity: self.violations.append(dict(kind='capacity', resource=resource, owners=sorted(owners)))
+        holders = leases_by_resource(leases)
+        for resource, resource_leases in holders.items():
+            owners = {lease['TaskId'] for lease in resource_leases}
+            if len(owners) > self.resources.get(resource, 1):
+                self.violations.append(dict(kind='capacity', resource=resource, owners=sorted(owners)))
         cars = state['cars']
         ids = sorted(cars)
         for i, first in enumerate(ids):
@@ -555,7 +567,7 @@ class Observer:
         current_pairs = set(mutual_wait_pairs(cars))
         requests = query(self.runtime.root,
                          "select TaskId,VehicleId,State,ResourceIds from traffic_request where State='Waiting'")
-        cycles = resource_wait_cycles(requests, leases, ownership, self.resources, cars)
+        cycles = resource_wait_cycles(requests, leases, ownership, self.resources, cars, holders=holders)
         for cycle in tuple(self.resource_cycle_started):
             if cycle not in cycles:
                 self.resource_cycle_started.pop(cycle)
