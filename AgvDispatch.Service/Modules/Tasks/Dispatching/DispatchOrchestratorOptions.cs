@@ -29,7 +29,7 @@ public sealed class DispatchOrchestratorOptions
         !StationVehiclePools.TryGetValue(stationId, out var ids) || ids.Contains(vehicleId, StringComparer.OrdinalIgnoreCase);
     public string? EngineeringMapError(AgvDispatch.Application.Abstractions.ActiveMapRuntimeSnapshot? map) =>
         EngineeringMapId is null ? null : map is null || map.MapId != EngineeringMapId || map.VersionId != EngineeringMapVersion ||
-        AgvDispatch.Application.Abstractions.EngineeringRuntimeIdentity.MapHash(map.Definition) != EngineeringMapHash
+        map.DefinitionHash != EngineeringMapHash
         ? "工程任务参数与当前运行地图版本或内容不一致，请在工程执行接入页重新核对并应用；禁止沿用旧图参数派车。" : null;
     public Dictionary<string, string[]> Routes { get; set; } =
         new(StringComparer.OrdinalIgnoreCase);

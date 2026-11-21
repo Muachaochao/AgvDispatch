@@ -13,7 +13,7 @@ public sealed class GlobalPickupRoutePlanner(
     public bool SupportsRollingRoutes => steps.RollingReservationEnabled &&
         agv.NavigationCommandMode.Equals("SpecifiedPath", StringComparison.OrdinalIgnoreCase);
 
-    public StagedPickupRoute? PlanFollowup(IRoutePlanner planner, MapDefinition map, string source, string target,
+    public StagedPickupRoute? PlanFollowup(IRoutePlanner planner, ActiveMapRuntimeSnapshot map, string source, string target,
         IReadOnlySet<string> unavailable, IReadOnlyCollection<string> vehicleIds, string? dumperExit = null)
     {
         var clear = planner.Plan(source, target, unavailable);
@@ -37,7 +37,7 @@ public sealed class GlobalPickupRoutePlanner(
         return staged with { Windows = protectedWindows };
 
         IReadOnlyList<AgvTransportRouteWindow> ProtectExit(IReadOnlyList<AgvTransportRouteWindow> windows) =>
-            dumperExit is null ? windows : TransportRouteWindows.IncludeDumperExitClearance(windows, map, dumperExit);
+            dumperExit is null ? windows : TransportRouteWindows.IncludeDumperExitClearance(windows, map.Definition, dumperExit);
     }
 
     public static IReadOnlyList<AgvTransportRouteWindow> ReplaceRemainingWindows(
@@ -59,18 +59,18 @@ public sealed class GlobalPickupRoutePlanner(
             completedStops.Contains(MapRouteSiteMapper.ResolveLogicalNodeId(map, site)));
     }
 
-    public StagedPickupRoute? TryStage(RoutePlan route, MapDefinition map, IReadOnlySet<string> unavailable,
+    public StagedPickupRoute? TryStage(RoutePlan route, ActiveMapRuntimeSnapshot map, IReadOnlySet<string> unavailable,
         IReadOnlyCollection<string> vehicleIds)
     {
         if (unavailable.Count == 0 || !route.ResourceIds.Any(unavailable.Contains) ||
             route.Nodes.Count < 3 || route.EdgeIds.Count != route.Nodes.Count - 1 ||
-            !map.Unit.Equals("m", StringComparison.OrdinalIgnoreCase))
+            !map.Definition.Unit.Equals("m", StringComparison.OrdinalIgnoreCase))
             return null;
         var clearance = FleetClearance(vehicleIds);
         if (clearance is null) return null;
 
         var windows = TransportRouteWindows.Plan(route, map, steps, agv.NavigationCommandMode,
-            node => HasHoldingClearance(node, map, clearance.Value));
+            node => HasHoldingClearance(node, map.Definition, clearance.Value));
         if (windows.Count < 2 || windows[0].ResourceIds.Any(unavailable.Contains))
             return null;
 

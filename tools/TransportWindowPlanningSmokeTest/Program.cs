@@ -165,29 +165,31 @@ var handshake = new HandshakeExecutionOptions();
 handshake.DumperExit.BodyProfiles = [new("body", "V", .49, .05, true, true)];
 var staging = new GlobalPickupRoutePlanner(options, new AgvOptions { NavigationCommandMode = "SpecifiedPath" }, handshake);
 var blockedDownstream = new HashSet<string> { "DOWNSTREAM" };
-var partial = staging.TryStage(stagingRoute, stagingMap, blockedDownstream, ["V"]);
+ActiveMapRuntimeSnapshot Activate(MapDefinition map) => new(map.Name, "v1", map, DateTimeOffset.UtcNow);
+var activeStaging = Activate(stagingMap);
+var partial = staging.TryStage(stagingRoute, activeStaging, blockedDownstream, ["V"]);
 Check(partial is not null && partial.Windows.Count == 2 &&
       partial.Windows[0].Destination == "BAY" && !partial.Windows[0].ResourceIds.Contains("DOWNSTREAM") &&
       partial.Windows[1].ResourceIds.Contains("DOWNSTREAM") && partial.DeferredSeconds > 0,
     "后段有租约时，只申请到合格停点的首窗，保留后窗并计入等待成本。");
-Check(staging.TryStage(stagingRoute, stagingMap, new HashSet<string> { "DOWNSTREAM", "ENTRY" }, ["V"]) is null,
+Check(staging.TryStage(stagingRoute, activeStaging, new HashSet<string> { "DOWNSTREAM", "ENTRY" }, ["V"]) is null,
     "首窗资源被占时不能派车。");
-Check(staging.TryStage(stagingRoute, stagingMap with
-    { Edges = [stagingEdges[0], stagingEdges[1], stagingEdges[2] with { Bidirectional = true }] },
+Check(staging.TryStage(stagingRoute, Activate(stagingMap with
+    { Edges = [stagingEdges[0], stagingEdges[1], stagingEdges[2] with { Bidirectional = true }] }),
     blockedDownstream, ["V"]) is null, "双向共用路段不能成为提前发车的等待落脚点。");
-Check(staging.TryStage(stagingRoute, stagingMap, blockedDownstream, ["V", "UNKNOWN"]) is null,
+Check(staging.TryStage(stagingRoute, activeStaging, blockedDownstream, ["V", "UNKNOWN"]) is null,
     "车队缺少核定车体时不得使用提前派车模式。");
-Check(staging.TryStage(stagingRoute, stagingMap with
+Check(staging.TryStage(stagingRoute, Activate(stagingMap with
     {
         Nodes = [..stagingNodes, new("CROSS1", 6.1, -2, MapNodeType.Waypoint, true, []),
             new("CROSS2", 6.1, 2, MapNodeType.Waypoint, true, [])],
         Edges = [..stagingEdges, new("CROSSING", "CROSS1", "CROSS2", 4, 1, false, true, [])]
-    }, blockedDownstream, ["V"]) is null, "停点车体覆盖其他道路时必须留在原位。");
+    }), blockedDownstream, ["V"]) is null, "停点车体覆盖其他道路时必须留在原位。");
 
-var followup = staging.PlanFollowup(new FollowupPlanner(stagingRoute), stagingMap, "START", "PICK",
+var followup = staging.PlanFollowup(new FollowupPlanner(stagingRoute), activeStaging, "START", "PICK",
     blockedDownstream, ["V"]);
 Check(followup?.Windows[0].Destination == "BAY", "已接单送箱也能在合格点分段通行。");
-Check(staging.PlanFollowup(new FollowupPlanner(stagingRoute), stagingMap, "START", "PICK",
+Check(staging.PlanFollowup(new FollowupPlanner(stagingRoute), activeStaging, "START", "PICK",
     blockedDownstream, ["V"], dumperExit: "START") is null,
     "返箱首段合并倒料出口保护后如仍有占用，禁止出区。");
 var sent = new AgvTransportCommandPayload("TASK-W01", "V", "START", "BAY", partial!.Windows[0].Path, null)
@@ -211,6 +213,33 @@ Parallel.For(0, 100, _ => wakeup.Publish());
 Check(await wakeup.WaitAsync(0, default) && !await wakeup.WaitAsync(0, default),
     "一批并发释放合并成一次唤醒。");
 Console.WriteLine("PASS staged pickup gating, maximum-load clearance, and coalesced release wakeup.");
+
+var aliasMap = stagingMap with
+{
+    Nodes = stagingNodes.Select(node => node with { AgvSiteId = "ROBOT-" + node.Id }).ToArray()
+};
+var active = new ActiveMapRuntimeSnapshot("fixture", "v1", aliasMap, DateTimeOffset.UtcNow);
+var aliasRoute = stagingRoute with { Nodes = stagingRoute.Nodes.Select(id => "ROBOT-" + id).ToArray() };
+var indexed = TransportRouteWindows.Plan(aliasRoute, active, options);
+var compatible = TransportRouteWindows.Plan(aliasRoute, aliasMap, options);
+Check(indexed.Count == compatible.Count && indexed.Zip(compatible).All(pair =>
+    pair.First.Path.SequenceEqual(pair.Second.Path) && pair.First.EdgeIds.SequenceEqual(pair.Second.EdgeIds) &&
+    pair.First.ResourceIds.SequenceEqual(pair.Second.ResourceIds)), "snapshot and compatible window paths include the same site aliases and corridor guards");
+var changed = new ActiveMapRuntimeSnapshot("fixture", "v2", aliasMap with
+{
+    Edges = [stagingEdges[0] with { ResourceIds = ["UPDATED"] }, ..stagingEdges.Skip(1)],
+    Resources = [..aliasMap.Resources, new("UPDATED", TrafficResourceType.Intersection)]
+}, DateTimeOffset.UtcNow);
+Check(active.DefinitionHash == EngineeringRuntimeIdentity.MapHash(aliasMap) && active.DefinitionHash != changed.DefinitionHash &&
+    TransportRouteWindows.Plan(aliasRoute, changed, options)[0].ResourceIds.Contains("UPDATED") &&
+    !indexed[0].ResourceIds.Contains("UPDATED"), "new runtime uses its own map identity and new edge resources");
+try
+{
+    TransportRouteWindows.Plan(aliasRoute with { EdgeIds = ["MISSING", "E2", "E3"] }, active, options);
+    throw new Exception("unknown route edge should be rejected");
+}
+catch (InvalidOperationException error) when (error.Message.Contains("MISSING")) { }
+Console.WriteLine("PASS indexed active-map windows, aliases, unknown edge rejection and map replacement.");
 
 sealed class FollowupPlanner(RoutePlan route) : IRoutePlanner
 {

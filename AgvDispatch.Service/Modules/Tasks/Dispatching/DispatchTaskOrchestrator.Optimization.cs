@@ -199,7 +199,7 @@ public sealed partial class DispatchTaskOrchestrator
                 DispatchCandidateFilter.PhysicalIntermediateOccupants(route, map?.Definition, currentVehicles, vehicle.VehicleId).Count > 0))
             return Reject("safety", "取箱工位或路线实际占用已变化，重新进入匹配。");
         var partial = staged && map is not null
-            ? pickupStaging?.TryStage(route, map.Definition, unavailable, currentVehicles.Select(v => v.VehicleId).ToArray())
+            ? pickupStaging?.TryStage(route, map, unavailable, currentVehicles.Select(v => v.VehicleId).ToArray())
             : null;
         if (staged && partial is null && route.ResourceIds.Any(unavailable.Contains))
             return Reject("traffic", "首窗路权或候车点净空不足，重新进入匹配。");
@@ -252,7 +252,7 @@ public sealed partial class DispatchTaskOrchestrator
         }
 
         return TransportRouteWindows.Plan(
-            route, map.Definition, _stepOptions, agvOptions?.NavigationCommandMode);
+            route, map, _stepOptions, agvOptions?.NavigationCommandMode);
     }
 
     private static string? BindingVehicle(HandshakeCheckpoint? checkpoint)

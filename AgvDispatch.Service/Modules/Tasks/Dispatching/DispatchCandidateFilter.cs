@@ -145,7 +145,7 @@ public sealed class DispatchCandidateFilter(DispatchOrchestratorOptions options,
                 var nominal = unavailable.Count == 0 || (route is not null && !canStage)
                     ? null : Plan(vehicle.CurrentStation!, pickup, new HashSet<string>());
                 var staged = canStage && nominal is { Nodes.Count: >= 3 }
-                    ? pickupStaging!.TryStage(nominal, map!.Definition, unavailable, vehicleIds) : null;
+                    ? pickupStaging!.TryStage(nominal, map!, unavailable, vehicleIds) : null;
                 if (staged is not null && (route is null ||
                     EffectiveRouteSeconds(staged.Route, map, policy) + staged.DeferredSeconds < EffectiveRouteSeconds(route, map, policy)))
                     route = staged.Route;

@@ -19,14 +19,14 @@ public static class TaskWaitingBayRouter
         var sites = selected is null ? options.GetDumperWaitingSites() : [selected.WaitingSite];
         var unavailable = await traffic.GetUnavailableResourceIdsAsync(step.TaskId, ct);
         var counts = await allocator.GetSelectionCountsAsync(map.MapId, map.VersionId, ct);
-        var ranked = Rank(sites, pickup, planner, unavailable, counts, map.Definition, rolling, vehicleIds).FirstOrDefault();
+        var ranked = Rank(sites, pickup, planner, unavailable, counts, map, rolling, vehicleIds).FirstOrDefault();
         var candidate = (ranked.Site, ranked.Plan);
         if (candidate.Plan is null)
             candidate = sites.Select(site => (Site: site, Plan: planner.Plan(pickup, site, new HashSet<string>())))
                 .Where(c => c.Plan is { Nodes.Count: >= 2 }).OrderBy(c => c.Plan!.Cost).ThenBy(c => c.Site, StringComparer.Ordinal).FirstOrDefault();
         if (candidate.Plan is null) return;
         var first = (ranked.Windows ?? TransportRouteWindows.Plan(
-            candidate.Plan, map.Definition, stepOptions, navigationCommandMode))[0];
+            candidate.Plan, map, stepOptions, navigationCommandMode))[0];
         var waitingResource = selected?.ResourceId ??
             DumperWaitingBaySafety.ExclusiveResourceIds(map.Definition, options, candidate.Site)
                 .Order(StringComparer.Ordinal).FirstOrDefault();
@@ -56,7 +56,7 @@ public static class TaskWaitingBayRouter
         var sites = selected is null ? options.GetDumperWaitingSites() : [selected.WaitingSite];
         var unavailable = await traffic.GetUnavailableResourceIdsAsync(step.TaskId, ct);
         var counts = await allocator.GetSelectionCountsAsync(map.MapId, map.VersionId, ct);
-        var candidates = Rank(sites, pickup, planner, unavailable, counts, map.Definition, rolling, vehicleIds);
+        var candidates = Rank(sites, pickup, planner, unavailable, counts, map, rolling, vehicleIds);
         foreach (var candidate in candidates)
         {
             var resource = selected?.ResourceId ?? DumperWaitingBaySafety.ExclusiveResourceIds(map.Definition, options, candidate.Site)
@@ -64,7 +64,7 @@ public static class TaskWaitingBayRouter
             if (resource is null || !candidate.Plan!.ResourceIds.Contains(resource, StringComparer.OrdinalIgnoreCase))
                 throw new InvalidOperationException("候车路线未包含该等待节点的独立容量1资源。");
             var windows = (candidate.Windows ?? TransportRouteWindows.Plan(
-                    candidate.Plan, map.Definition, stepOptions, navigationCommandMode))
+                    candidate.Plan, map, stepOptions, navigationCommandMode))
                 .Select(window => window with
                 {
                     ResourceIds = window.ResourceIds.Append(resource).Distinct(StringComparer.OrdinalIgnoreCase)
@@ -105,7 +105,7 @@ public static class TaskWaitingBayRouter
     // must never select a long detour, ignore an occupied resource or rebind a task.
     private static (string Site, RoutePlan? Plan, IReadOnlyList<AgvTransportRouteWindow>? Windows, double Cost)[] Rank(
         IReadOnlyList<string> sites, string pickup, IRoutePlanner planner, IReadOnlySet<string> unavailable,
-        IReadOnlyDictionary<string, int> counts, MapDefinition map, GlobalPickupRoutePlanner? rolling,
+        IReadOnlyDictionary<string, int> counts, ActiveMapRuntimeSnapshot map, GlobalPickupRoutePlanner? rolling,
         IReadOnlyCollection<string>? vehicleIds)
     {
         var candidates = sites.Select(site =>

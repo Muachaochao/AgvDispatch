@@ -8,6 +8,7 @@ public sealed class ActiveMapRuntimeSnapshot
     public string MapId { get; }
     public string VersionId { get; }
     public MapDefinition Definition { get; }
+    public string DefinitionHash { get; }
     public DateTimeOffset ActivatedAt { get; }
     public MapGraph Graph { get; }
 
@@ -22,12 +23,21 @@ public sealed class ActiveMapRuntimeSnapshot
                 { ResourceIds = Array.AsReadOnly(node.ResourceIds.ToArray()) }).ToArray()),
             Edges = Array.AsReadOnly(definition.Edges.Select(edge => edge with
                 { ResourceIds = Array.AsReadOnly(edge.ResourceIds.ToArray()),
-                  ControlPoints = edge.ControlPoints is null ? null : Array.AsReadOnly(edge.ControlPoints.ToArray()) }).ToArray()),
+                  ControlPoints = Freeze(edge.ControlPoints),
+                  VendorPath = edge.VendorPath is { } path ? path with { ControlPoints = Freeze(path.ControlPoints) } : null }).ToArray()),
             Resources = Array.AsReadOnly(definition.Resources.Select(resource => resource with
-                { Boundary = resource.Boundary is null ? null : Array.AsReadOnly(resource.Boundary.ToArray()) }).ToArray())
+                { Boundary = Freeze(resource.Boundary) }).ToArray()),
+            AreaAnnotations = definition.AreaAnnotations is { } annotations
+                ? Array.AsReadOnly(annotations.Select(area => area with { Boundary = Freeze(area.Boundary)! }).ToArray()) : null,
+            ImportWarnings = Array.AsReadOnly(definition.ImportWarnings.ToArray()),
+            Layers = Array.AsReadOnly(definition.Layers.ToArray())
         };
+        DefinitionHash = EngineeringRuntimeIdentity.MapHash(Definition);
         Graph = Definition.ToGraph();
     }
+
+    private static IReadOnlyList<MapPoint2D>? Freeze(IReadOnlyList<MapPoint2D>? points) =>
+        points is null ? null : Array.AsReadOnly(points.ToArray());
 }
 
 public interface IActiveMapRuntime

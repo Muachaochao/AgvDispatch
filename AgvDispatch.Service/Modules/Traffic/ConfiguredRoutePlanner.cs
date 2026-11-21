@@ -57,7 +57,7 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
         if (activeGraph is not null && activeDefinition is not null)
         {
             if (closures is not null && (closures.MapId != snapshot!.MapId || closures.VersionId != snapshot.VersionId ||
-                !string.Equals(closures.DefinitionHash, EngineeringRuntimeIdentity.MapHash(activeDefinition), StringComparison.OrdinalIgnoreCase)))
+                !string.Equals(closures.DefinitionHash, snapshot.DefinitionHash, StringComparison.OrdinalIgnoreCase)))
                 return null;
             return PlanAndMap(activeGraph, activeDefinition, source, destination,
                 unavailableResourceIds, _trafficFlow.GetEdgePenalties(), closures?.BlockedTraversals, comparisonOnly);

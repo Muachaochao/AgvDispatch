@@ -328,7 +328,7 @@ public sealed class DispatchTaskStepCoordinator(
             routePlanner.Plan(route.Item1, route.Item2, new HashSet<string>());
         if (plan is not { Nodes.Count: >= 2 } || !VehicleReadyAt(step.VehicleId, route.Item1, current)) return;
         var windows = adaptive?.Windows ?? TransportRouteWindows.Plan(
-            plan, current.Definition, options, agvOptions?.NavigationCommandMode);
+            plan, current, options, agvOptions?.NavigationCommandMode);
         if (adaptive is null && step.StepType == DispatchTaskStepType.ReturnEmptyBox)
             windows = TransportRouteWindows.IncludeDumperExitClearance(windows, current.Definition, route.Item1);
         var firstWindow = windows[0];
@@ -341,7 +341,7 @@ public sealed class DispatchTaskStepCoordinator(
     private StagedPickupRoute? PlanFollowup(DispatchTaskStepType type, ActiveMapRuntimeSnapshot? map,
         string source, string destination, IReadOnlySet<string> unavailable) =>
         map is not null && type is (DispatchTaskStepType.DeliverFullBoxToDumper or DispatchTaskStepType.ReturnEmptyBox)
-            ? RollingRoutes?.PlanFollowup(routePlanner, map.Definition, source, destination, unavailable,
+            ? RollingRoutes?.PlanFollowup(routePlanner, map, source, destination, unavailable,
                 FleetVehicleIds(), type == DispatchTaskStepType.ReturnEmptyBox ? source : null)
             : null;
 
@@ -459,7 +459,7 @@ public sealed class DispatchTaskStepCoordinator(
                 ? [new AgvTransportRouteWindow(0, plan.Nodes[0], plan.Nodes[^1], plan.Nodes,
                     plan.EdgeIds, plan.ResourceIds, true)]
                 : TransportRouteWindows.Plan(
-                    plan, planningMap.Definition, options, agvOptions?.NavigationCommandMode);
+                    plan, planningMap, options, agvOptions?.NavigationCommandMode);
             if (planningMap is not null && step.StepType == DispatchTaskStepType.ReturnEmptyBox)
                 windows = TransportRouteWindows.IncludeDumperExitClearance(
                     windows, planningMap.Definition, dumpingSite);

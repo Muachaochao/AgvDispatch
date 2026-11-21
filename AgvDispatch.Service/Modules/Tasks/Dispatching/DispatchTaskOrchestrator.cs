@@ -717,7 +717,7 @@ public sealed partial class DispatchTaskOrchestrator(
     private StagedPickupRoute? PlanRemainingTransport(DispatchTaskWorkItem task, AgvTransportCommandPayload payload,
         ActiveMapRuntimeSnapshot map, IReadOnlySet<string> unavailable)
     {
-        var alternative = pickupStaging?.PlanFollowup(routePlanner, map.Definition, payload.Destination, payload.Windows[^1].Destination,
+        var alternative = pickupStaging?.PlanFollowup(routePlanner, map, payload.Destination, payload.Windows[^1].Destination,
             unavailable, agvStates.GetAll().Select(vehicle => vehicle.VehicleId).Append(task.VehicleId!)
                 .Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
         return alternative is not null && GlobalPickupRoutePlanner.IsForwardContinuation(payload, alternative.Route, map.Definition)

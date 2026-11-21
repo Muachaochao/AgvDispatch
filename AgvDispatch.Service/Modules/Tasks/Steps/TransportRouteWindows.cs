@@ -1,3 +1,4 @@
+using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Domain.Maps;
 using AgvDispatch.Domain.Tasks;
 
@@ -14,21 +15,36 @@ public static class TransportRouteWindows
         DispatchTaskStepOptions options, string? navigationCommandMode = null,
         Func<MapNode, bool>? canStageAt = null)
     {
-        ArgumentNullException.ThrowIfNull(route);
         ArgumentNullException.ThrowIfNull(map);
-        ArgumentNullException.ThrowIfNull(options);
-        // Routing uses the runtime-enriched graph, where reciprocal/merge edges
-        // receive AUTO-CORRIDOR-* guards. The published map remains unchanged, so
-        // window resources must be calculated against the same enriched topology.
         var topology = MapCorridorResources.Enrich(map);
-        var resourceMap = map with { Edges = topology.Edges, Resources = topology.Resources };
+        var edgeIndex = topology.Edges.ToDictionary(edge => edge.Id, StringComparer.OrdinalIgnoreCase);
+        var nodeIndex = map.Nodes.ToDictionary(node => node.Id, StringComparer.OrdinalIgnoreCase);
+        return PlanCore(route, site => nodeIndex.GetValueOrDefault(MapRouteSiteMapper.ResolveLogicalNodeId(map, site)),
+            edgeIndex, options, navigationCommandMode, canStageAt);
+    }
+
+    public static IReadOnlyList<AgvTransportRouteWindow> Plan(RoutePlan route, ActiveMapRuntimeSnapshot map,
+        DispatchTaskStepOptions options, string? navigationCommandMode = null, Func<MapNode, bool>? canStageAt = null)
+    {
+        ArgumentNullException.ThrowIfNull(map);
+        return PlanCore(route, map.Graph.FindRouteNode, map.Graph.Edges, options, navigationCommandMode, canStageAt);
+    }
+
+    private static IReadOnlyList<AgvTransportRouteWindow> PlanCore(RoutePlan route, Func<string, MapNode?> findNode,
+        IReadOnlyDictionary<string, MapEdge> edges, DispatchTaskStepOptions options, string? navigationCommandMode,
+        Func<MapNode, bool>? canStageAt)
+    {
+        ArgumentNullException.ThrowIfNull(route);
+        ArgumentNullException.ThrowIfNull(options);
+        var nodes = route.Nodes.Select(site => findNode(site) ??
+            throw new InvalidOperationException($"滚动窗口引用了未知节点{site}。")).ToArray();
         // A 3051 GotargetCommissioning task carries only source and destination in
         // the vendor request. Splitting it into several stops changes the operation
         // contract, so only SpecifiedPath/3066 may use rolling route windows.
         var modeSupportsWindows = navigationCommandMode is null ||
             navigationCommandMode.Equals("SpecifiedPath", StringComparison.OrdinalIgnoreCase);
         if (!options.RollingReservationEnabled || !modeSupportsWindows || route.Nodes.Count < 3)
-            return [Window(route, resourceMap, 0, route.Nodes.Count - 1, true)];
+            return [Window(route, nodes, edges, 0, route.Nodes.Count - 1, true)];
 
         var minimum = Math.Clamp(options.RollingWindowMinimumEdges, 1, 100);
         var windows = new List<AgvTransportRouteWindow>();
@@ -38,7 +54,7 @@ public static class TransportRouteWindows
             var remainingEdges = route.Nodes.Count - 1 - start;
             if (remainingEdges <= minimum)
             {
-                windows.Add(Window(route, resourceMap, start, route.Nodes.Count - 1, true));
+                windows.Add(Window(route, nodes, edges, start, route.Nodes.Count - 1, true));
                 break;
             }
 
@@ -50,23 +66,23 @@ public static class TransportRouteWindows
             var boundary = -1;
             for (var index = lower; index < route.Nodes.Count - 1; index++)
             {
-                if (!IsStableStop(route.Nodes[index], resourceMap, canStageAt)) continue;
+                if (!IsStableStop(nodes[index], canStageAt)) continue;
                 boundary = index;
                 break;
             }
 
             if (boundary < 0)
             {
-                windows.Add(Window(route, resourceMap, start, route.Nodes.Count - 1, true));
+                windows.Add(Window(route, nodes, edges, start, route.Nodes.Count - 1, true));
                 break;
             }
 
-            windows.Add(Window(route, resourceMap, start, boundary, false));
+            windows.Add(Window(route, nodes, edges, start, boundary, false));
             start = boundary;
         }
 
         if (windows.Count == 0 || windows[^1].Final is false)
-            windows.Add(Window(route, resourceMap, start, route.Nodes.Count - 1, true));
+            windows.Add(Window(route, nodes, edges, start, route.Nodes.Count - 1, true));
         return windows.Select((window, index) => window with { Index = index }).ToArray();
     }
 
@@ -107,16 +123,13 @@ public static class TransportRouteWindows
             .ToArray();
     }
 
-    private static bool IsStableStop(string site, MapDefinition map, Func<MapNode, bool>? canStageAt)
-    {
-        var logical = MapRouteSiteMapper.ResolveLogicalNodeId(map, site);
-        var node = map.Nodes.SingleOrDefault(item => item.Id.Equals(logical, StringComparison.OrdinalIgnoreCase));
-        return node is { Enabled: true, AllowTrafficStop: not false } &&
+    private static bool IsStableStop(MapNode node, Func<MapNode, bool>? canStageAt) =>
+        node is { Enabled: true, AllowTrafficStop: not false } &&
             node.Type is MapNodeType.Station or MapNodeType.WaitingPoint or MapNodeType.ChargingPoint or MapNodeType.Intersection &&
             (canStageAt is null || canStageAt(node));
-    }
 
-    private static AgvTransportRouteWindow Window(RoutePlan route, MapDefinition map, int start, int end, bool final)
+    private static AgvTransportRouteWindow Window(RoutePlan route, MapNode[] routeNodes,
+        IReadOnlyDictionary<string, MapEdge> edgeIndex, int start, int end, bool final)
     {
         var nodes = route.Nodes.Skip(start).Take(end - start + 1).ToArray();
         var edges = route.EdgeIds.Skip(start).Take(end - start).ToArray();
@@ -124,24 +137,16 @@ public static class TransportRouteWindows
             throw new InvalidOperationException("运输滚动窗口的节点与路段不连续。");
 
         var resources = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        AddNodeResources(resources, map, nodes[0]);
-        for (var edgeIndex = 0; edgeIndex < edges.Length; edgeIndex++)
+        resources.UnionWith(routeNodes[start].ResourceIds);
+        for (var offset = 0; offset < edges.Length; offset++)
         {
-            var edge = map.Edges.SingleOrDefault(item => item.Id.Equals(edges[edgeIndex], StringComparison.OrdinalIgnoreCase))
-                ?? throw new InvalidOperationException($"滚动窗口引用了未知路段{edges[edgeIndex]}。");
+            var edge = edgeIndex.GetValueOrDefault(edges[offset])
+                ?? throw new InvalidOperationException($"滚动窗口引用了未知路段{edges[offset]}。");
             resources.UnionWith(edge.ResourceIds);
-            AddNodeResources(resources, map, nodes[edgeIndex + 1]);
+            resources.UnionWith(routeNodes[start + offset + 1].ResourceIds);
         }
 
         return new(0, nodes[0], nodes[^1], nodes, edges,
             resources.Order(StringComparer.OrdinalIgnoreCase).ToArray(), final);
-    }
-
-    private static void AddNodeResources(ISet<string> target, MapDefinition map, string site)
-    {
-        var logical = MapRouteSiteMapper.ResolveLogicalNodeId(map, site);
-        var node = map.Nodes.SingleOrDefault(item => item.Id.Equals(logical, StringComparison.OrdinalIgnoreCase))
-            ?? throw new InvalidOperationException($"滚动窗口引用了未知节点{site}。");
-        foreach (var resource in node.ResourceIds) target.Add(resource);
     }
 }

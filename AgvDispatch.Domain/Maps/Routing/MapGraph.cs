@@ -3,8 +3,10 @@ namespace AgvDispatch.Domain.Maps;
 public sealed class MapGraph
 {
     private readonly Dictionary<string, MapNode> _nodes;
+    private readonly Dictionary<string, MapNode?> _siteAliases = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, TrafficResourceDefinition> _resources;
     private readonly Dictionary<string, List<Traversal>> _outgoing;
+    public IReadOnlyDictionary<string, MapEdge> Edges { get; }
 
     public MapGraph(
         IEnumerable<MapNode> nodes,
@@ -39,9 +41,11 @@ public sealed class MapGraph
             }
 
             ValidateResourceReferences(node.ResourceIds, $"节点{node.Id}");
+            AddAlias(node.Id, node);
+            if (!string.IsNullOrWhiteSpace(node.AgvSiteId)) AddAlias(node.AgvSiteId, node);
         }
 
-        var edgeIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var indexedEdges = new Dictionary<string, MapEdge>(StringComparer.OrdinalIgnoreCase);
         foreach (var suppliedEdge in topology.Edges)
         {
             var edge = suppliedEdge;
@@ -52,7 +56,7 @@ public sealed class MapGraph
                 throw new InvalidOperationException("地图路段编号、起点和终点不能为空。");
             }
 
-            if (!edgeIds.Add(edge.Id))
+            if (!indexedEdges.TryAdd(edge.Id, edge))
             {
                 throw new InvalidOperationException($"地图路段编号重复：{edge.Id}。");
             }
@@ -66,6 +70,7 @@ public sealed class MapGraph
                 throw new InvalidOperationException($"路段{edge.Id}几何无效：{geometryError}");
             if (edge.GeometryKind != MapEdgeGeometryKind.Line)
                 edge = edge with { Distance = MapEdgeGeometry.Length(edge, _nodes[edge.From], _nodes[edge.To]) };
+            indexedEdges[edge.Id] = edge;
 
             if (!double.IsFinite(edge.Distance) || edge.Distance <= 0 || edge.SpeedLimit < 0)
             {
@@ -79,9 +84,22 @@ public sealed class MapGraph
                 _outgoing[edge.To].Add(new Traversal(edge, edge.To, edge.From, true));
             }
         }
+        Edges = new System.Collections.ObjectModel.ReadOnlyDictionary<string, MapEdge>(indexedEdges);
     }
 
     public IReadOnlyDictionary<string, TrafficResourceDefinition> Resources => _resources;
+
+    public MapNode? FindRouteNode(string site)
+    {
+        var normalized = MapRouteSiteMapper.NormalizeSiteId(site);
+        return normalized is null ? null : _siteAliases.GetValueOrDefault(normalized) ?? _nodes.GetValueOrDefault(normalized);
+    }
+
+    private void AddAlias(string alias, MapNode node)
+    {
+        if (!_siteAliases.TryAdd(alias, node) && _siteAliases[alias]?.Id != node.Id)
+            _siteAliases[alias] = null;
+    }
 
     // A transport command needs actual adjacent edges, even when its end station is
     // the current station. Do not turn a zero-length shortest path into a completed action.
