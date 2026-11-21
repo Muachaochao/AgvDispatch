@@ -212,7 +212,7 @@ const legend = [
 .preview-vehicle rect { stroke: #243a56; stroke-width: 1.4; vector-effect: non-scaling-stroke; }
 .preview-vehicle path { fill: #1b334d; }
 .preview-vehicle text {
-  visibility: hidden;
+  visibility: visible;
   fill: #203653;
   stroke: #fff;
   stroke-width: 3px;
