@@ -360,8 +360,7 @@ def complete_command_set(commands, tasks, recoveries=None):
             return False
 
         indexes = []
-        counts = set()
-        plans = []
+        issued_plans = []
         for row, value in zip(rows, decoded):
             business_step = value.get('businessStepId') or value.get('businessTaskId')
             index = value.get('windowIndex', 0)
@@ -372,7 +371,6 @@ def complete_command_set(commands, tasks, recoveries=None):
                     (count > 1 and not isinstance(windows, list))):
                 return False
             indexes.append(index)
-            counts.add(count)
             expected_id = step_id if count == 1 else f'{step_id}-W{index + 1:02d}'
             expected_previous = None if index == 0 else f'{step_id}-W{index:02d}'
             if (value.get('businessTaskId') != expected_id or
@@ -381,7 +379,8 @@ def complete_command_set(commands, tasks, recoveries=None):
                 return False
             if windows:
                 ordered = sorted(windows, key=lambda item: item.get('index', -1))
-                if ([item.get('index') for item in ordered] != list(range(count)) or
+                if (len(ordered) != count or
+                        [item.get('index') for item in ordered] != list(range(count)) or
                         ordered[-1].get('final') is not True or
                         any(item.get('final') is not False for item in ordered[:-1])):
                     return False
@@ -390,26 +389,39 @@ def complete_command_set(commands, tasks, recoveries=None):
                         value.get('destination') != current.get('destination') or
                         value.get('path') != current.get('path')):
                     return False
-                plans.append(ordered)
+                nodes = []
+                for window in ordered:
+                    path = window.get('path') or []
+                    if (not isinstance(path, list) or not path or
+                            path[0] != window.get('source') or
+                            path[-1] != window.get('destination') or
+                            nodes and path[0] != nodes[-1]):
+                        return False
+                    nodes.extend(path if not nodes else path[1:])
+                issued_plans.append((index, ordered, current))
+            else:
+                issued_plans.append((index, None, None))
         recovery = recovered.get((task_id, step_id))
-        if len(counts) != 1:
-            return False
-        expected_count = len(rows) if recovery else next(iter(counts))
-        if sorted(indexes) != list(range(expected_count)):
+        if sorted(indexes) != list(range(len(rows))):
             return False
         if recovery:
             last_row = rows[indexes.index(max(indexes))]
             if last_row.get('VendorCommandId') != recovery.get('OriginalVendorTaskId'):
                 return False
-        if plans and any(plan != plans[0] for plan in plans[1:]):
+        elif not issued_plans or issued_plans[-1][2].get('final') is not True:
             return False
-        if plans:
-            nodes = []
-            for window in plans[0]:
-                path = window.get('path') or []
-                if not path or (nodes and path[0] != nodes[-1]):
+        previous = None
+        for index, planned_windows, current in issued_plans:
+            if previous is not None and planned_windows is not None:
+                previous_index, previous_windows, previous_current = previous
+                if previous_windows is None or previous_current is None:
                     return False
-                nodes.extend(path if not nodes else path[1:])
+                if (index != previous_index + 1 or
+                        planned_windows[:previous_index + 1] !=
+                        previous_windows[:previous_index + 1] or
+                        current.get('source') != previous_current.get('destination')):
+                    return False
+            previous = (index, planned_windows, current)
         return True
 
     for task in tasks:

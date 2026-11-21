@@ -214,6 +214,56 @@ class VerdictTests(unittest.TestCase):
                                                    previousVendorTaskId='WRONG'))
         self.assertFalse(complete_command_set(rows, {'original-task': {}}))
 
+    def test_dynamic_continuation_may_replace_unexecuted_window_plan(self):
+        first_plan = [
+            dict(index=0, source='A', destination='B', path=['A', 'B'], final=False),
+            dict(index=1, source='B', destination='C', path=['B', 'C'], final=False),
+            dict(index=2, source='C', destination='D', path=['C', 'D'], final=True),
+        ]
+        replanned = [
+            dict(index=0, source='A', destination='B', path=['A', 'B'], final=False),
+            dict(index=1, source='B', destination='D', path=['B', 'E', 'D'], final=True),
+        ]
+
+        def row(index, count, windows):
+            previous = None if index == 0 else f'STEP-0-W{index:02d}'
+            vendor = f'STEP-0-W{index + 1:02d}'
+            current = windows[index]
+            return dict(TaskId='original-task', StepId='STEP-0', CommandId=f'dynamic-{index}',
+                        Status=30, AttemptCount=1, VendorCommandId=vendor,
+                        PayloadJson=json.dumps(dict(businessTaskId=vendor, businessStepId='STEP-0',
+                            windowIndex=index, windowCount=count, previousVendorTaskId=previous,
+                            source=current['source'], destination=current['destination'],
+                            path=current['path'], windows=windows)))
+
+        rows = commands()[1:] + [row(0, 3, first_plan), row(1, 2, replanned)]
+        self.assertTrue(complete_command_set(rows, {'original-task': {}}))
+        rows[-1]['PayloadJson'] = json.dumps(dict(json.loads(rows[-1]['PayloadJson']),
+            windows=[first_plan[0],
+                     dict(index=1, source='X', destination='D', path=['X', 'D'], final=True)]))
+        self.assertFalse(complete_command_set(rows, {'original-task': {}}))
+
+    def test_dynamic_continuation_still_requires_consecutive_issued_windows(self):
+        windows = [
+            dict(index=0, source='A', destination='B', path=['A', 'B'], final=False),
+            dict(index=1, source='B', destination='C', path=['B', 'C'], final=False),
+            dict(index=2, source='C', destination='D', path=['C', 'D'], final=True),
+        ]
+
+        def row(index):
+            previous = None if index == 0 else f'STEP-0-W{index:02d}'
+            vendor = f'STEP-0-W{index + 1:02d}'
+            current = windows[index]
+            return dict(TaskId='original-task', StepId='STEP-0', CommandId=f'gap-{index}',
+                        Status=30, AttemptCount=1, VendorCommandId=vendor,
+                        PayloadJson=json.dumps(dict(businessTaskId=vendor, businessStepId='STEP-0',
+                            windowIndex=index, windowCount=3, previousVendorTaskId=previous,
+                            source=current['source'], destination=current['destination'],
+                            path=current['path'], windows=windows)))
+
+        rows = commands()[1:] + [row(0), row(2)]
+        self.assertFalse(complete_command_set(rows, {'original-task': {}}))
+
     def test_mutual_blockers_are_distinguished_from_a_one_way_queue(self):
         self.assertEqual(mutual_wait_pairs({'b': dict(blockedByVehicle='a'), 'a': dict(blockedByVehicle='b')}),
                          [('a', 'b')])
