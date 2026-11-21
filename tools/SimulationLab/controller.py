@@ -314,6 +314,10 @@ class Runtime:
                               if item.get('taskId') == task_id), None)
                 if saved is None:
                     raise live_error
+                from simulation_reports import saved_task_detail
+                archived = saved_task_detail(self, self.report.get('id'), task_id)
+                if archived is not None:
+                    return archived
                 row = next(row for row in (self._report_task_rows() or []) if row['taskId'] == task_id)
                 steps = []
                 for step in saved.get('steps') or []:

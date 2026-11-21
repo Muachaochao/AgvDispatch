@@ -5,6 +5,7 @@ import re
 
 REPORT_ID = re.compile(r'^[a-f0-9]{32}$')
 MAX_REPORT_BYTES = 2 * 1024 * 1024
+MAX_TASK_DETAILS_BYTES = 48 * 1024 * 1024
 # Long factory campaigns retain large raw observations. Read twice in a stream;
 # keep the independent per-line, frame-count and response-size bounds below.
 MAX_REPLAY_BYTES = 2 * 1024 * 1024 * 1024
@@ -131,6 +132,21 @@ def find_run(runtime, identity):
     for _, run in _runs(runtime):
         if run.name == 'simulation-run-' + identity: return run
     raise ValueError('历史报告不存在或未保存在最近实例中。')
+
+
+def saved_task_detail(runtime, report_id, task_id):
+    from controller import read
+    try:
+        run = find_run(runtime, report_id)
+        details = read(_bounded_file(run / 'all-task-details.json', MAX_TASK_DETAILS_BYTES))
+    except (OSError, ValueError, TypeError):
+        return None
+    detail = details.get(task_id) if isinstance(details, dict) else None
+    task = detail.get('task') if isinstance(detail, dict) else None
+    if not isinstance(task, dict) or task.get('taskId') != task_id:
+        return None
+    return dict(detail, evidenceSource='saved-report-detail',
+                evidenceMessage='显示本轮报告保存的最后一次任务观察。')
 
 
 def _present_report(value):

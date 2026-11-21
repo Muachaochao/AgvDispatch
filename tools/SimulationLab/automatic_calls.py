@@ -62,6 +62,9 @@ def run_backlog(runtime, request, evidence, observer, tasks, completed, discover
                 detail = details[tid]
                 step = next((s for s in detail.get('steps', []) if s.get('isCurrent')), {})
                 rows[index] = dict(rows[index], vehicleId=tasks[tid]['vehicle'], stepNumber=step.get('sequence'),
+                                   stepId=step.get('stepId'), stepType=step.get('stepType'),
+                                   stepStartedAt=step.get('startedAt'), destinationSite=step.get('destinationSite'),
+                                   sourceSite=step.get('sourceSite'), createdAt=detail['task'].get('createdAt'),
                                    taskStage=detail['task']['stage'], waitingExplanation=detail.get('waitingExplanation'),
                                    status='active' if tasks[tid]['vehicle'] else 'created')
                 if tasks[tid]['vehicle'] and tid not in assignments:

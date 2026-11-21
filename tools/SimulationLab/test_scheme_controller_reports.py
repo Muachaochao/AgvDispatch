@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from controller import Runtime, read, validate_root, write
 from schemes import SchemeStore
-from simulation_reports import history, report, replay
+from simulation_reports import history, report, replay, saved_task_detail
 from test_runtime_lifecycle import fixture
 
 
@@ -166,6 +166,17 @@ class ReportTests(unittest.TestCase):
         self.runtime.report = original
         self.assertEqual(report(self.runtime)['taskSummary'][0]['currentStepName'], '已完成')
         self.assertEqual(self.runtime.report, original)
+
+    def test_saved_task_detail_preserves_route_and_rejects_mismatched_task(self):
+        route = {'nodeIds': ['A', 'B'], 'edgeIds': ['AB']}
+        detail = dict(task=dict(taskId='TASK-1'), commands=[dict(route=route)])
+        write(self.run / 'all-task-details.json', {'TASK-1': detail, 'TASK-2': detail})
+        archived = saved_task_detail(self.runtime, self.identity, 'TASK-1')
+        self.assertEqual(archived['commands'][0]['route'], route)
+        self.assertEqual(archived['evidenceSource'], 'saved-report-detail')
+        self.assertIsNone(saved_task_detail(self.runtime, self.identity, 'TASK-2'))
+        with patch('simulation_reports.MAX_TASK_DETAILS_BYTES', 1):
+            self.assertIsNone(saved_task_detail(self.runtime, self.identity, 'TASK-1'))
 
     def test_replay_retains_actual_station_load_and_obstacle_evidence(self):
         car = dict(x=1, y=2, angle=1.5707963267948966, station='CNC-024',
