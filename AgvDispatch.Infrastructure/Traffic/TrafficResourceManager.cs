@@ -356,19 +356,12 @@ public sealed partial class TrafficResourceManager(
                 expected.Any(lease => lease.VehicleId != vehicleId ||
                     lease.MapId != mapId || lease.MapVersionId != mapVersionId))
                 return;
-            var exactLease = Expressionable.Create<TrafficResourceLeaseEntity>();
-            foreach (var captured in expected)
-            {
-                exactLease.Or(l => l.TaskId == taskId && l.OwnerStepId == stepId &&
-                    l.LeaseId == captured.LeaseId &&
-                    l.VehicleId == captured.VehicleId &&
-                    l.ResourceId == captured.ResourceId &&
-                    l.MapId == captured.MapId &&
-                    l.MapVersionId == captured.MapVersionId &&
-                    l.AcquiredAt == captured.AcquiredAt);
-            }
+            // The SQLite transaction protects the identities just verified above.
+            // A DateTime parameter can render .270 as .27 while the persisted
+            // value is text, so repeating the typed time comparison in SQL fails.
             var deleted = await database.Deleteable<TrafficResourceLeaseEntity>()
-                .Where(exactLease.ToExpression())
+                .Where(l => ids.Contains(l.LeaseId) && l.TaskId == taskId && l.OwnerStepId == stepId &&
+                    l.VehicleId == vehicleId && l.MapId == mapId && l.MapVersionId == mapVersionId)
                 .ExecuteCommandAsync(ct);
             if (deleted != expected.Length)
                 throw new InvalidOperationException("租约身份在释放事务中发生变化。");

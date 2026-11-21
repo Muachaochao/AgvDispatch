@@ -44,6 +44,8 @@ void Reset()
     db.Insertable(new TrafficResourceLeaseEntity { LeaseId="LEASE",ResourceId="R",OwnerStepId="STEP",TaskId="TASK",VehicleId="AGV",MapId="M",MapVersionId="V1",AcquiredAt=now.AddSeconds(-5).LocalDateTime,ExpiresAt=now.AddSeconds(-1).LocalDateTime }).ExecuteCommand();
     db.Insertable(new TrafficResourceLeaseEntity { LeaseId="LEASE2",ResourceId="R2",OwnerStepId="STEP",TaskId="TASK",VehicleId="AGV",MapId="M",MapVersionId="V1",AcquiredAt=now.AddSeconds(-5).LocalDateTime,ExpiresAt=now.AddSeconds(-1).LocalDateTime }).ExecuteCommand();
     db.Insertable(new TrafficResourceLeaseEntity { LeaseId="FINAL-LEASE",ResourceId="FINAL",OwnerStepId="STEP",TaskId="TASK",VehicleId="AGV",MapId="M",MapVersionId="V1",AcquiredAt=now.AddSeconds(-5).LocalDateTime,ExpiresAt=now.AddSeconds(-1).LocalDateTime }).ExecuteCommand();
+    db.Ado.ExecuteCommand("UPDATE traffic_resource_lease SET AcquiredAt = @acquired WHERE LeaseId = 'LEASE'",
+        new { acquired = now.AddSeconds(-5).LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss.000", CultureInfo.InvariantCulture) });
     clock.UtcNow=now;
     runtime.Replace(new("M","V1",map,now)); source.OnRead=null;source.Hang=false;source.Evidence=new(first,first with{Sequence=11,ObservedAt=now.AddSeconds(-1)});
     envelope.Body=new("CALIBRATED","AGV","LocalCartesian",.5,true,true);gate.SetMode(MapExecutionMode.Running);barrier.IsOpen=true;policy.Enabled=true;

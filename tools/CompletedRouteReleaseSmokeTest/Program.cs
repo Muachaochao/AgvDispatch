@@ -211,8 +211,12 @@ windowDb.Insertable(request).ExecuteCommand();
 var windowTask=database.Queryable<DispatchTaskEntity>().Single();windowTask.Stage=(int)DispatchTaskStage.GoingToPickup;windowTask.VendorTaskId="STEP";windowDb.Insertable(windowTask).ExecuteCommand();
 var windowStep=database.Queryable<DispatchTaskStepEntity>().Single();windowStep.Status=(int)DispatchTaskStepStatus.Executing;windowStep.DestinationSite="D";windowDb.Insertable(windowStep).ExecuteCommand();
 var windowCommand=database.Queryable<AgvCommandOutboxEntity>().Single();windowCommand.PayloadJson=payload;windowCommand.ExecutionRouteSnapshotJson=snapshotJson;windowCommand.ExecutionRouteSnapshotHash=TransportRouteSnapshots.Hash(snapshotJson);windowDb.Insertable(windowCommand).ExecuteCommand();
+var batchAcquiredAt = new DateTime(2026, 11, 22, 3, 55, 25, 270);
 foreach(var resource in new[]{"FINAL","CORRIDOR","INTERSECTION","AUTO-CORRIDOR-SYNTHETIC","NEXT-CLEAR","STOP-CLEAR","STOP-KEEP"})
- windowDb.Insertable(new TrafficResourceLeaseEntity{LeaseId="BOUNDARY-"+resource,ResourceId=resource,TaskId="TASK",OwnerStepId="STEP",VehicleId="AGV",MapId="MAP",MapVersionId="V1",AcquiredAt=DateTime.Now,RenewedAt=DateTime.Now,ExpiresAt=DateTime.Now.AddMinutes(2)}).ExecuteCommand();
+ windowDb.Insertable(new TrafficResourceLeaseEntity{LeaseId="BOUNDARY-"+resource,ResourceId=resource,TaskId="TASK",OwnerStepId="STEP",VehicleId="AGV",MapId="MAP",MapVersionId="V1",AcquiredAt=batchAcquiredAt,RenewedAt=DateTime.Now,ExpiresAt=DateTime.Now.AddMinutes(2)}).ExecuteCommand();
+// Reproduce the persisted batch format found in the B07 release refusal,
+// independently of how this provider writes a single DateTime parameter.
+windowDb.Ado.ExecuteCommand("UPDATE traffic_resource_lease SET AcquiredAt = '2026-11-22 03:55:25.270' WHERE LeaseId = 'BOUNDARY-CORRIDOR'");
 windowDb.Insertable(new TrafficResourceLeaseEntity{LeaseId="OTHER-NEXT",ResourceId="NEXT",TaskId="OTHER",OwnerStepId="OTHER-STEP",VehicleId="OTHER-CAR",MapId="MAP",MapVersionId="V1",AcquiredAt=DateTime.Now,RenewedAt=DateTime.Now,ExpiresAt=DateTime.Now.AddMinutes(2)}).ExecuteCommand();
 var windowManager=new TrafficResourceManager(windowDb,new TrafficResourceCatalog(extended.Resources),new(TimeSpan.FromMinutes(2)));
 var windowService=new CompletedTransportRouteReleaseService(windowDb,runtime,vehicles,provider,options,new MapOptions{MinimumLocalizationConfidence=.5},new TrafficSegmentReleasePolicy{Enabled=true},windowManager);

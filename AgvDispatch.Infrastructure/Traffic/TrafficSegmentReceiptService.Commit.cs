@@ -79,9 +79,12 @@ public sealed partial class TrafficSegmentReceiptService
                 if(lease.OwnerStepId!=original.StepId||lease.TaskId!=original.TaskId||lease.VehicleId!=original.VehicleId||
                     lease.ResourceId!=original.ResourceId||lease.MapId!=original.MapId||lease.MapVersionId!=original.MapVersionId)
                     throw new InvalidOperationException("原租约归属变化。");
+                // IsCurrentAsync verifies the typed acquisition timestamp as part
+                // of the fingerprint in this transaction. SQLite stores different
+                // textual forms of the same timestamp, so do not rebind it in SQL.
                 var deleted=await database.Deleteable<TrafficResourceLeaseEntity>().Where(l=>l.LeaseId==lease.LeaseId&&
                     l.OwnerStepId==lease.OwnerStepId&&l.TaskId==lease.TaskId&&l.VehicleId==lease.VehicleId&&
-                    l.ResourceId==lease.ResourceId&&l.MapId==lease.MapId&&l.MapVersionId==lease.MapVersionId&&l.AcquiredAt==lease.AcquiredAt)
+                    l.ResourceId==lease.ResourceId&&l.MapId==lease.MapId&&l.MapVersionId==lease.MapVersionId)
                     .ExecuteCommandAsync(ct);
                 if(deleted!=1)throw new InvalidOperationException("原租约条件删除失败。");
                 await database.Insertable(new TrafficSegmentCommitLeaseEntity{AuditId=Guid.NewGuid().ToString("N"),
