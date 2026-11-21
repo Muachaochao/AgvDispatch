@@ -94,6 +94,19 @@ Check(sharedMergeIds.Length == 1 && MapCorridorResources.IsAutomatic(sharedMerge
 Check(mergeGraph.Resources[sharedMergeIds[0]].Type == TrafficResourceType.SingleLane &&
       mergeGraph.Resources[sharedMergeIds[0]].Capacity == 1,
     "the shared Waypoint guard is a single-lane capacity-one lease");
+var authoredMergeDefinition = new MapDefinition(
+    "authored-waypoint-merge", "", "LocalCartesian", "m",
+    mergeDefinition.Nodes,
+    mergeDefinition.Edges.Select(edge => edge with { ResourceIds = ["J-MERGE"] }).ToArray(),
+    [new TrafficResourceDefinition("J-MERGE", TrafficResourceType.Intersection, 1,
+        [new(1.9, -0.1), new(2.1, -0.1), new(2.1, 0.1), new(1.9, 0.1)])]);
+var authoredMergeGraph = authoredMergeDefinition.ToGraph();
+var authoredWestMerge = authoredMergeGraph.FindShortestRoute("MERGE-WEST", "MERGE-EAST")!;
+var authoredSouthMerge = authoredMergeGraph.FindShortestRoute("MERGE-SOUTH", "MERGE-EAST")!;
+Check(!authoredMergeGraph.Resources.Keys.Any(MapCorridorResources.IsAutomatic) &&
+      authoredWestMerge.ResourceIds.SequenceEqual(["J-MERGE"]) &&
+      authoredSouthMerge.ResourceIds.SequenceEqual(["J-MERGE"]),
+    "an authored capacity-one junction shared by every incident edge suppresses duplicate automatic node guards");
 var bidirectionalGraph = new MapDefinition(
     "auto-bidirectional", "", "LocalCartesian", "m",
     [Node("L", 0, 0), Node("R", 2, 0)],
@@ -288,7 +301,14 @@ var blocked = await manual.CreateAsync(TrafficUserContext.LocalOperation("isolat
 Check(!blocked.Accepted && await db.Queryable<DispatchTaskEntity>().CountAsync() == 1, "no-cycle creation refuses without persisting another same-point task");
 Check(planner.Plan("LM-PICK", "PICK", new HashSet<string>()) is null, "dispatcher also refuses when actual graph loses the return route");
 
-await ProtocolChecks.Run(definition, Check);
+var batchDefinition = definition with
+{
+    Nodes = definition.Nodes.Append(new MapNode("WAIT-2", 6, 0, MapNodeType.Waypoint,
+        true, [], "WAIT-2")).ToArray(),
+    Edges = definition.Edges.Append(new MapEdge("P2", "PICK", "WAIT-2", 6, 0.75, false, true, []))
+        .Append(new MapEdge("W2D", "WAIT-2", "DUMP", 2, 0.75, false, true, [])).ToArray()
+};
+await ProtocolChecks.Run(definition, Check, batchDefinition);
 Console.WriteLine($"PASS: {checks} repeat-pickup routing checks");
 
 sealed class EmptyFlow : ITrafficFlowMonitor
