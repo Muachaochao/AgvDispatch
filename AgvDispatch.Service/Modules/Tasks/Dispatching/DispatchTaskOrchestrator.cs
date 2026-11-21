@@ -5,6 +5,7 @@ using AgvDispatch.Domain.Devices;
 using AgvDispatch.Domain.Maps;
 using AgvDispatch.Domain.Tasks;
 using AgvDispatch.Application.Maps;
+using AgvDispatch.Application.Tasks;
 
 namespace AgvDispatch.Service;
 
@@ -43,6 +44,7 @@ public sealed partial class DispatchTaskOrchestrator(
     private readonly HashSet<string> _dependencyWaitWarnings =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, TransportContinuationPreview> _continuationPreviews = new(StringComparer.Ordinal);
+    private readonly TemporaryDetourDeferral _continuationDetours = new();
     private bool UsesDynamicContinuation => optimization?.Options.Mode.Equals("Global", StringComparison.OrdinalIgnoreCase) == true &&
         pickupStaging is { SupportsRollingRoutes: true };
     private string? _waitingBayError;
@@ -547,6 +549,7 @@ public sealed partial class DispatchTaskOrchestrator(
     {
         var executing = await tasks.GetExecutingTasksAsync(cancellationToken);
         var activeCommands = executing.Select(task => task.VendorTaskId).ToHashSet(StringComparer.Ordinal);
+        _continuationDetours.RetainTasks(activeCommands.OfType<string>().ToHashSet(StringComparer.Ordinal));
         foreach (var obsolete in _continuationPreviews.Keys.Where(id => !activeCommands.Contains(id)).ToArray())
             _continuationPreviews.Remove(obsolete);
         foreach (var task in executing)
@@ -712,10 +715,31 @@ public sealed partial class DispatchTaskOrchestrator(
     }
 
     private StagedPickupRoute? PlanRemainingTransport(DispatchTaskWorkItem task, AgvTransportCommandPayload payload,
-        ActiveMapRuntimeSnapshot map, IReadOnlySet<string> unavailable) =>
-        pickupStaging?.PlanFollowup(routePlanner, map.Definition, payload.Destination, payload.Windows[^1].Destination,
+        ActiveMapRuntimeSnapshot map, IReadOnlySet<string> unavailable)
+    {
+        var alternative = pickupStaging?.PlanFollowup(routePlanner, map.Definition, payload.Destination, payload.Windows[^1].Destination,
             unavailable, agvStates.GetAll().Select(vehicle => vehicle.VehicleId).Append(task.VehicleId!)
                 .Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
+        return alternative is not null && GlobalPickupRoutePlanner.IsForwardContinuation(payload, alternative.Route, map.Definition)
+            ? alternative : null;
+    }
+
+    private bool IsContinuationWorthTaking(DispatchTaskWorkItem task, AgvTransportCommandPayload payload,
+        ActiveMapRuntimeSnapshot map, StagedPickupRoute reroute, bool nextBlocked)
+    {
+        var policy = optimization!.Options;
+        var oldEdges = payload.Windows.Skip(payload.WindowIndex + 1).SelectMany(window => window.EdgeIds).ToArray();
+        var (oldTravel, _) = EstimateRoute(new RoutePlan([], oldEdges, [], 0), map, policy);
+        var (travel, traffic) = EstimateRoute(reroute.Route, map, policy);
+        var cost = travel + traffic + reroute.DeferredSeconds;
+        if (!nextBlocked)
+            return reroute.DeferredSeconds == 0 && cost <= oldTravel + 30;
+
+        // Retain the queue position for a short-lived blockage before accepting
+        // a long detour. This clock belongs to the current sent window.
+        return _continuationDetours.RemainingSeconds(task.VendorTaskId!, task.VehicleId!, map.VersionId,
+            cost, oldTravel, DateTimeOffset.UtcNow, maximumRatio: 1.5, minimumExtraSeconds: 30) == 0;
+    }
 
     private static AgvTransportCommandPayload? ReadTransportPayload(AgvCommandOutboxItem? command) =>
         command is null ? null : System.Text.Json.JsonSerializer.Deserialize<AgvTransportCommandPayload>(
@@ -769,7 +793,7 @@ public sealed partial class DispatchTaskOrchestrator(
             var unavailable = await trafficResources.GetUnavailableResourceIdsAsync(task.TaskId, cancellationToken);
             if (windows.Skip(nextIndex).Any(window => window.ResourceIds.Any(unavailable.Contains)) &&
                 PlanRemainingTransport(task, payload, map, unavailable) is { } reroute &&
-                (next.ResourceIds.Any(unavailable.Contains) || reroute.DeferredSeconds == 0))
+                IsContinuationWorthTaking(task, payload, map, reroute, next.ResourceIds.Any(unavailable.Contains)))
             {
                 windows = GlobalPickupRoutePlanner.ReplaceRemainingWindows(payload, reroute.Windows);
                 next = windows[nextIndex];

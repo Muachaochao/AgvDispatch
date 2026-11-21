@@ -49,6 +49,16 @@ public sealed class GlobalPickupRoutePlanner(
             .ToArray();
     }
 
+    public static bool IsForwardContinuation(AgvTransportCommandPayload payload, RoutePlan alternative, MapDefinition map)
+    {
+        var completedStops = payload.Windows.Take(payload.WindowIndex)
+            .Select(window => MapRouteSiteMapper.ResolveLogicalNodeId(map, window.Destination))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        completedStops.Add(MapRouteSiteMapper.ResolveLogicalNodeId(map, payload.Windows[0].Source));
+        return !alternative.Nodes.Skip(1).Any(site =>
+            completedStops.Contains(MapRouteSiteMapper.ResolveLogicalNodeId(map, site)));
+    }
+
     public StagedPickupRoute? TryStage(RoutePlan route, MapDefinition map, IReadOnlySet<string> unavailable,
         IReadOnlyCollection<string> vehicleIds)
     {

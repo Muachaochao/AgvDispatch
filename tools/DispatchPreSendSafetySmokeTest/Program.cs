@@ -239,6 +239,11 @@ await Advance();
 Check(await db.Queryable<AgvCommandOutboxEntity>().CountAsync(c => c.TaskId == stageTask.Task.TaskId) == 1,
     "at the staging bay the vehicle waits while downstream remains occupied");
 stagingPlanner.DetourOpen = true;
+stagingPlanner.DetourCost = 120;
+await Advance();
+Check(await db.Queryable<AgvCommandOutboxEntity>().CountAsync(c => c.TaskId == stageTask.Task.TaskId) == 1,
+    "a newly available but much longer detour leaves the original request waiting");
+stagingPlanner.DetourCost = 10;
 var preview = typeof(DispatchTaskOrchestrator).GetMethod("PreviewTransportContinuationAsync",
     BindingFlags.Instance | BindingFlags.NonPublic)!;
 await (Task)preview.Invoke(stagedOrchestrator, [stagedOwner, CancellationToken.None])!;
@@ -305,11 +310,12 @@ sealed class Planner : IRoutePlanner
 sealed class StagingPlanner : IRoutePlanner
 {
     public bool DetourOpen { get; set; }
+    public double DetourCost { get; set; } = 10;
     public RoutePlan? Plan(string source, string destination, IReadOnlySet<string> unavailable)
     {
         if (destination != "B") return null;
         if (unavailable.Contains("FAR")) return source == "BAY" && DetourOpen
-            ? new(["BAY", "FORK", "ALT", "B"], ["BAY-FORK", "FORK-ALT", "ALT-B"], ["BAY-LOCK", "DETOUR"], 10)
+            ? new(["BAY", "FORK", "ALT", "B"], ["BAY-FORK", "FORK-ALT", "ALT-B"], ["BAY-LOCK", "DETOUR"], DetourCost)
             : null;
         return source switch
         {

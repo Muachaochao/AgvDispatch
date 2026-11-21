@@ -1,6 +1,7 @@
 using AgvDispatch.Domain.Maps;
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Connectors.Agv;
+using AgvDispatch.Domain.Tasks;
 using AgvDispatch.Service;
 
 static void Check(bool condition, string message)
@@ -189,6 +190,16 @@ Check(followup?.Windows[0].Destination == "BAY", "已接单送箱也能在合格
 Check(staging.PlanFollowup(new FollowupPlanner(stagingRoute), stagingMap, "START", "PICK",
     blockedDownstream, ["V"], dumperExit: "START") is null,
     "返箱首段合并倒料出口保护后如仍有占用，禁止出区。");
+var sent = new AgvTransportCommandPayload("TASK-W01", "V", "START", "BAY", partial!.Windows[0].Path, null)
+{
+    Windows = partial.Windows
+};
+Check(GlobalPickupRoutePlanner.IsForwardContinuation(sent,
+        new RoutePlan(["BAY", "PICK"], ["E3"], [], 4), stagingMap),
+    "从当前候车点继续向前的路线可以参与比较。");
+Check(!GlobalPickupRoutePlanner.IsForwardContinuation(sent,
+        new RoutePlan(["BAY", "START", "PICK"], ["E2", "E1"], [], 16), stagingMap),
+    "动态改线不能绕回同一步骤已经驶离的起点。");
 
 using var wakeup = new DispatchTrafficWakeup();
 Check(!await wakeup.WaitAsync(0, default), "没有新提交时保留定时兜底。");
