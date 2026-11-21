@@ -23,7 +23,8 @@ public sealed class RouteSegmentPassThroughReleaseWorker(
     TrafficSegmentReleaseWorkerOptions worker,
     TrafficSegmentReleasePolicy policy,
     TrafficSegmentCommitOptions commit,
-    TimeProvider? clock = null) : IsolatedBackgroundService
+    TimeProvider? clock = null,
+    DispatchTrafficWakeup? dispatchWakeup = null) : IsolatedBackgroundService
 {
     private readonly Dictionary<string, string> _lastReason = new(StringComparer.Ordinal);
 
@@ -87,6 +88,7 @@ public sealed class RouteSegmentPassThroughReleaseWorker(
             }
 
             var released = result.ReleasedLeaseIds.Count;
+            if (released > 0) dispatchWakeup?.Publish();
             Record(step, "Released",
                 released > 0
                     ? $"已原子释放 {released} 项完全通过且后续不再使用的资源；其余资源继续占用。"

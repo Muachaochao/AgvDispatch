@@ -11,7 +11,8 @@ namespace AgvDispatch.Service;
 public static class TransportRouteWindows
 {
     public static IReadOnlyList<AgvTransportRouteWindow> Plan(RoutePlan route, MapDefinition map,
-        DispatchTaskStepOptions options, string? navigationCommandMode = null)
+        DispatchTaskStepOptions options, string? navigationCommandMode = null,
+        Func<MapNode, bool>? canStageAt = null)
     {
         ArgumentNullException.ThrowIfNull(route);
         ArgumentNullException.ThrowIfNull(map);
@@ -49,7 +50,7 @@ public static class TransportRouteWindows
             var boundary = -1;
             for (var index = lower; index < route.Nodes.Count - 1; index++)
             {
-                if (!IsStableStop(route.Nodes[index], resourceMap)) continue;
+                if (!IsStableStop(route.Nodes[index], resourceMap, canStageAt)) continue;
                 boundary = index;
                 break;
             }
@@ -106,12 +107,13 @@ public static class TransportRouteWindows
             .ToArray();
     }
 
-    private static bool IsStableStop(string site, MapDefinition map)
+    private static bool IsStableStop(string site, MapDefinition map, Func<MapNode, bool>? canStageAt)
     {
         var logical = MapRouteSiteMapper.ResolveLogicalNodeId(map, site);
         var node = map.Nodes.SingleOrDefault(item => item.Id.Equals(logical, StringComparison.OrdinalIgnoreCase));
         return node is { Enabled: true, AllowTrafficStop: not false } &&
-            node.Type is MapNodeType.Station or MapNodeType.WaitingPoint or MapNodeType.ChargingPoint or MapNodeType.Intersection;
+            node.Type is MapNodeType.Station or MapNodeType.WaitingPoint or MapNodeType.ChargingPoint or MapNodeType.Intersection &&
+            (canStageAt is null || canStageAt(node));
     }
 
     private static AgvTransportRouteWindow Window(RoutePlan route, MapDefinition map, int start, int end, bool final)

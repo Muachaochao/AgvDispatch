@@ -95,7 +95,8 @@ public sealed partial class DispatchTaskOrchestrator
                 var vehicle = vehicles.Single(v => v.VehicleId == next.VehicleId);
                 string? outcome;
                 try { outcome = await TryPrepareOptimizedAsync(task, ready[task.TaskId], vehicle, plans[(task.TaskId, vehicle.VehicleId)],
-                    next.EffectivePriority, map, policy, ct, layer => blockedLayers[task.TaskId] = layer); }
+                    next.EffectivePriority, map, policy, ct, layer => blockedLayers[task.TaskId] = layer,
+                    graph.StagedPairs.Contains((task.TaskId, vehicle.VehicleId))); }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
                 catch (Exception ex)
                 {
@@ -149,7 +150,7 @@ public sealed partial class DispatchTaskOrchestrator
 
     private async Task<string?> TryPrepareOptimizedAsync(DispatchTaskWorkItem task, DispatchTaskStepWorkItem step,
         AgvVehicleStatus vehicle, RoutePlan planned, double priority, ActiveMapRuntimeSnapshot? map,
-        DispatchAssignmentOptions policy, CancellationToken ct, Action<string>? rejectedLayer = null)
+        DispatchAssignmentOptions policy, CancellationToken ct, Action<string>? rejectedLayer = null, bool staged = false)
     {
         string Reject(string layer, string reason)
         { rejectedLayer?.Invoke(layer); optimization?.ReportLayer(layer, layer == "traffic" ? "Waiting" : "Blocked", reason); return reason; }
@@ -172,7 +173,8 @@ public sealed partial class DispatchTaskOrchestrator
                 if (!check.Accepted) return Reject("safety", "派车前车端地图核验未通过：" + check.Message);
             }
         }
-        var current = (await agvGateway.GetVehiclesAsync(ct)).SingleOrDefault(v => v.VehicleId == vehicle.VehicleId);
+        var currentVehicles = await agvGateway.GetVehiclesAsync(ct);
+        var current = currentVehicles.SingleOrDefault(v => v.VehicleId == vehicle.VehicleId);
         var busy = (await tasks.GetSubmittingTasksAsync(ct)).Concat(await tasks.GetAssignedTasksAsync(ct))
             .Where(t => t.VehicleId is not null).Select(t => t.VehicleId!).ToHashSet(StringComparer.OrdinalIgnoreCase);
         busy.UnionWith(await trafficResources.GetHeldVehicleIdsAsync(ct));
@@ -188,10 +190,20 @@ public sealed partial class DispatchTaskOrchestrator
         if (currentTask is null || currentTask.VehicleId is not null || currentStep is null ||
             (await trafficResources.GetHeldTaskIdsAsync(ct)).Contains(task.TaskId)) return Reject("safety", "任务、首步骤或既有路权责任已变化，保留持久化原记录。");
         // Bypass cache at the final check. A recommendation is never proof of a current executable route.
-        var route = routePlanner.Plan(current.CurrentStation!, planned.Nodes[^1], unavailable);
+        var route = routePlanner.Plan(current.CurrentStation!, planned.Nodes[^1],
+            staged ? new HashSet<string>() : unavailable);
         if (route is null || !route.Nodes.SequenceEqual(planned.Nodes) || !route.EdgeIds.SequenceEqual(planned.EdgeIds) ||
             !route.ResourceIds.SequenceEqual(planned.ResourceIds) || !ReferenceEquals(map, activeMap.Current)) return Reject("traffic", "道路、地图或公共资源已变化，重新进入匹配。");
-        var windows = PlanInitialTransportWindows(route, map);
+        if (staged && (DispatchCandidateFilter.PhysicalPickupOccupants(planned.Nodes[^1], map?.Definition, currentVehicles)
+                .Any(id => !id.Equals(vehicle.VehicleId, StringComparison.OrdinalIgnoreCase)) ||
+                DispatchCandidateFilter.PhysicalIntermediateOccupants(route, map?.Definition, currentVehicles, vehicle.VehicleId).Count > 0))
+            return Reject("safety", "取箱工位或路线实际占用已变化，重新进入匹配。");
+        var partial = staged && map is not null
+            ? pickupStaging?.TryStage(route, map.Definition, unavailable, currentVehicles.Select(v => v.VehicleId).ToArray())
+            : null;
+        if (staged && partial is null && route.ResourceIds.Any(unavailable.Contains))
+            return Reject("traffic", "首窗路权或候车点净空不足，重新进入匹配。");
+        var windows = partial?.Windows ?? PlanInitialTransportWindows(route, map);
         var firstWindow = windows[0];
         var reservation = await _trafficLayer.AcquireAsync(new(step.StepId, task.TaskId, vehicle.VehicleId,
             firstWindow.Source, firstWindow.Destination, firstWindow.EdgeIds, firstWindow.ResourceIds,

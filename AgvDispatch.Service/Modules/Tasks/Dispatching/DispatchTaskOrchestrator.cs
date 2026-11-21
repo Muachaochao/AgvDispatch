@@ -28,11 +28,12 @@ public sealed partial class DispatchTaskOrchestrator(
     DispatchTrafficReservationService? trafficLayer=null, IDispatchPreSendSafetyService? preSendSafety=null,
     ITaskHandshakeStore? handshakes=null, ITransportTimeoutRecoveryService? timeoutRecovery=null,
     CompletedTransportRouteReleaseService? completedRouteRelease=null,
-    DispatchTaskStepOptions? stepOptions=null, AgvOptions? agvOptions=null) : IsolatedBackgroundService
+    DispatchTaskStepOptions? stepOptions=null, AgvOptions? agvOptions=null,
+    GlobalPickupRoutePlanner? pickupStaging=null, DispatchTrafficWakeup? trafficWakeup=null) : IsolatedBackgroundService
 {
     private readonly IDispatchQueueWindowService _queueLayer = queueLayer ?? new DispatchQueueWindowService(tasks, trafficResources);
     private readonly IDispatchCandidateFilter _candidateLayer = candidateLayer ?? new DispatchCandidateFilter(options, agvGateway, agvStates,
-        activeMap, mapOptions, routePlanner, trafficResources, routeCache, businessRun, fleetTest, charging, taskSwitchGuard);
+        activeMap, mapOptions, routePlanner, trafficResources, routeCache, businessRun, fleetTest, charging, taskSwitchGuard, pickupStaging);
     private readonly DispatchTrafficReservationService _trafficLayer = trafficLayer ?? new(trafficResources, optimization, tasks, optimization);
     private readonly DispatchTaskStepOptions _stepOptions = stepOptions ?? new();
     private readonly HashSet<string> _missingRouteWarnings =
@@ -79,8 +80,13 @@ public sealed partial class DispatchTaskOrchestrator(
                 logger.LogError(exception, "AGV任务编排周期执行失败。");
             }
 
-            await Task.Delay(optimization is not null && optimization.Options.Mode != "Disabled"
-                ? Math.Min(options.PollIntervalMs, optimization.Options.IntervalMs) : options.PollIntervalMs, stoppingToken);
+            var interval = optimization is not null && optimization.Options.Mode != "Disabled"
+                ? Math.Min(options.PollIntervalMs, optimization.Options.IntervalMs) : options.PollIntervalMs;
+            if (trafficWakeup is null)
+                await Task.Delay(interval, stoppingToken);
+            else if (await trafficWakeup.WaitAsync(interval, stoppingToken) &&
+                optimization?.Options.Mode.Equals("Global", StringComparison.OrdinalIgnoreCase) == true)
+                _nextOptimizationAt = DateTimeOffset.MinValue;
         }
     }
 

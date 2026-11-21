@@ -1,4 +1,6 @@
 using AgvDispatch.Domain.Maps;
+using AgvDispatch.Application.Abstractions;
+using AgvDispatch.Connectors.Agv;
 using AgvDispatch.Service;
 
 static void Check(bool condition, string message)
@@ -139,3 +141,54 @@ var bypassUnsafeJunction = TransportRouteWindows.Plan(
 Check(bypassUnsafeJunction.Count == 2 && bypassUnsafeJunction[0].Destination == "F",
     "禁止停车的中途路口不能成为窗口终点，应继续搜索真正允许停车的后续站点。");
 Console.WriteLine("PASS explicit transit-only intersections: no unsafe stop, forward search, existing-map compatibility.");
+
+var stagingNodes = new[]
+{
+    new MapNode("START", 0, 0, MapNodeType.Station, true, []),
+    new MapNode("PASS", 3, 0, MapNodeType.Intersection, true, []),
+    new MapNode("BAY", 6, 0, MapNodeType.WaitingPoint, true, ["BAY-LOCK"]) { AllowTrafficStop = true },
+    new MapNode("PICK", 10, 0, MapNodeType.Station, true, [])
+};
+var stagingEdges = new[]
+{
+    new MapEdge("E1", "START", "PASS", 3, 1, false, true, ["ENTRY"]),
+    new MapEdge("E2", "PASS", "BAY", 3, 1, false, true, []),
+    new MapEdge("E3", "BAY", "PICK", 4, 1, false, true, ["DOWNSTREAM"])
+};
+var stagingMap = new MapDefinition("STAGING", "", "RobotWorld", "m", stagingNodes, stagingEdges,
+    [new("BAY-LOCK", TrafficResourceType.Station), new("ENTRY", TrafficResourceType.Intersection),
+        new("DOWNSTREAM", TrafficResourceType.Intersection)]);
+var stagingRoute = new RoutePlan(stagingNodes.Select(n => n.Id).ToArray(), stagingEdges.Select(e => e.Id).ToArray(),
+    ["BAY-LOCK", "ENTRY", "DOWNSTREAM"], 10);
+var handshake = new HandshakeExecutionOptions();
+handshake.DumperExit.BodyProfiles = [new("body", "V", .49, .05, true, true)];
+var staging = new GlobalPickupRoutePlanner(options, new AgvOptions { NavigationCommandMode = "SpecifiedPath" }, handshake);
+var blockedDownstream = new HashSet<string> { "DOWNSTREAM" };
+var partial = staging.TryStage(stagingRoute, stagingMap, blockedDownstream, ["V"]);
+Check(partial is not null && partial.Windows.Count == 2 &&
+      partial.Windows[0].Destination == "BAY" && !partial.Windows[0].ResourceIds.Contains("DOWNSTREAM") &&
+      partial.Windows[1].ResourceIds.Contains("DOWNSTREAM") && partial.DeferredSeconds > 0,
+    "后段有租约时，只申请到合格停点的首窗，保留后窗并计入等待成本。");
+Check(staging.TryStage(stagingRoute, stagingMap, new HashSet<string> { "DOWNSTREAM", "ENTRY" }, ["V"]) is null,
+    "首窗资源被占时不能派车。");
+Check(staging.TryStage(stagingRoute, stagingMap with
+    { Edges = [stagingEdges[0], stagingEdges[1], stagingEdges[2] with { Bidirectional = true }] },
+    blockedDownstream, ["V"]) is null, "双向共用路段不能成为提前发车的等待落脚点。");
+Check(staging.TryStage(stagingRoute, stagingMap, blockedDownstream, ["V", "UNKNOWN"]) is null,
+    "车队缺少核定车体时不得使用提前派车模式。");
+Check(staging.TryStage(stagingRoute, stagingMap with
+    {
+        Nodes = [..stagingNodes, new("CROSS1", 6.1, -2, MapNodeType.Waypoint, true, []),
+            new("CROSS2", 6.1, 2, MapNodeType.Waypoint, true, [])],
+        Edges = [..stagingEdges, new("CROSSING", "CROSS1", "CROSS2", 4, 1, false, true, [])]
+    }, blockedDownstream, ["V"]) is null, "停点车体覆盖其他道路时必须留在原位。");
+
+using var wakeup = new DispatchTrafficWakeup();
+Check(!await wakeup.WaitAsync(0, default), "没有新提交时保留定时兜底。");
+var pending = wakeup.WaitAsync(5000, default);
+wakeup.Publish();
+Check(await pending, "路权提交能立即唤醒调度。");
+Parallel.For(0, 100, _ => wakeup.Publish());
+Check(await wakeup.WaitAsync(0, default) && !await wakeup.WaitAsync(0, default),
+    "一批并发释放合并成一次唤醒。");
+Console.WriteLine("PASS staged pickup gating, maximum-load clearance, and coalesced release wakeup.");

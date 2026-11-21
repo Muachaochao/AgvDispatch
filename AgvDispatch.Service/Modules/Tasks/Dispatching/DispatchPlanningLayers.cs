@@ -36,6 +36,7 @@ public sealed record DispatchCandidateGraph
     public Dictionary<string, string?> GeneralReasons { get; init; } = new(StringComparer.OrdinalIgnoreCase);
     public List<DispatchAssignmentCandidate> Edges { get; init; } = [];
     public Dictionary<(string, string), RoutePlan> Plans { get; init; } = [];
+    public HashSet<(string, string)> StagedPairs { get; init; } = [];
     public Dictionary<string, List<DispatchOptimizationCandidate>> Diagnostics { get; init; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, string> TaskReasons { get; init; } = new(StringComparer.OrdinalIgnoreCase);
     // Observations are proposals. Layer four decides whether to persist them; Shadow never does.

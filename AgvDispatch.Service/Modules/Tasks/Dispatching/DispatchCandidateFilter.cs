@@ -11,7 +11,8 @@ public sealed class DispatchCandidateFilter(DispatchOrchestratorOptions options,
     IAgvStateCache agvStates, IActiveMapRuntime activeMap, MapOptions mapOptions,
     IRoutePlanner routePlanner, ITrafficResourceManager trafficResources, DispatchRouteCache? routeCache = null,
     BusinessRunOwnership? businessRun = null, FleetTestOwnership? fleetTest = null,
-    IChargingDispatchGuard? charging = null, ITaskSwitchGuard? taskSwitchGuard = null) : IDispatchCandidateFilter
+    IChargingDispatchGuard? charging = null, ITaskSwitchGuard? taskSwitchGuard = null,
+    GlobalPickupRoutePlanner? pickupStaging = null) : IDispatchCandidateFilter
 {
     private readonly AgvDispatch.Application.Tasks.TemporaryDetourDeferral detours = new();
     public string? CheckVehicle(AgvVehicleStatus vehicle, IReadOnlySet<string> occupied, DispatchAssignmentOptions policy)
@@ -95,6 +96,9 @@ public sealed class DispatchCandidateFilter(DispatchOrchestratorOptions options,
         var reasons = vehicles.ToDictionary(v => v.VehicleId, v => CheckVehicle(v, queue.OccupiedVehicles, policy), StringComparer.OrdinalIgnoreCase);
         var result = new DispatchCandidateGraph { Vehicles = vehicles, GeneralReasons = reasons };
         var waitingRoutes = new List<TrafficRouteObservation>();
+        var canStage = pickupStaging is not null && map is not null &&
+            policy.Mode.Equals("Global", StringComparison.OrdinalIgnoreCase);
+        var vehicleIds = vehicles.Select(vehicle => vehicle.VehicleId).ToArray();
         var work = queue.Work.ToDictionary(t => t.TaskId, StringComparer.OrdinalIgnoreCase);
         detours.RetainTasks(work.Keys.ToHashSet(StringComparer.OrdinalIgnoreCase));
         foreach (var score in queue.Window)
@@ -138,9 +142,17 @@ public sealed class DispatchCandidateFilter(DispatchOrchestratorOptions options,
                     continue;
                 }
                 var route = Plan(vehicle.CurrentStation!, pickup, unavailable);
+                var nominal = unavailable.Count == 0 || (route is not null && !canStage)
+                    ? null : Plan(vehicle.CurrentStation!, pickup, new HashSet<string>());
+                var staged = canStage && nominal is { Nodes.Count: >= 3 }
+                    ? pickupStaging!.TryStage(nominal, map!.Definition, unavailable, vehicleIds) : null;
+                if (staged is not null && (route is null ||
+                    EffectiveRouteSeconds(staged.Route, map, policy) + staged.DeferredSeconds < EffectiveRouteSeconds(route, map, policy)))
+                    route = staged.Route;
+                else
+                    staged = null;
                 if (route is not { Nodes.Count: >= 2 })
                 {
-                    var nominal = unavailable.Count == 0 ? null : Plan(vehicle.CurrentStation!, pickup, new HashSet<string>());
                     if (nominal is { Nodes.Count: >= 2 } && (blocked is null || nominal.Cost < blocked.Value.Route.Cost)) blocked = (vehicle, nominal);
                     rows.Add(new(vehicle.VehicleId, 0, 0, nominal is null ? "无合法可达路线（含封路、同点取货闭合路径检查）。" : "必要公共资源容量已占用，等待释放。", false));
                     continue;
@@ -171,14 +183,16 @@ public sealed class DispatchCandidateFilter(DispatchOrchestratorOptions options,
                 }
                 var candidate = new DispatchAssignmentCandidate(task.TaskId, vehicle.VehicleId, estimate.Travel)
                 {
-                    TrafficWaitSeconds = estimate.TrafficWait, ReturnSeconds = returnSeconds,
+                    TrafficWaitSeconds = estimate.TrafficWait + (staged?.DeferredSeconds ?? 0), ReturnSeconds = returnSeconds,
                     CrossZoneSeconds = sourceZone is not null && targetZone is not null && !sourceZone.Equals(targetZone, StringComparison.OrdinalIgnoreCase) ? policy.CrossZoneSeconds : 0,
                     BatteryRiskSeconds = policy.BatteryRiskSeconds * (1 - (double)battery / 100),
                     StandbyBonusSeconds = options.StandbySites.Contains(vehicle.CurrentStation!, StringComparer.OrdinalIgnoreCase) ? policy.StandbyBonusSeconds : 0
                 };
                 result.Edges.Add(candidate); result.Plans[(task.TaskId, vehicle.VehicleId)] = route;
+                if (staged is not null) result.StagedPairs.Add((task.TaskId, vehicle.VehicleId));
                 rows.Add(new(vehicle.VehicleId, candidate.TravelSeconds, candidate.TotalCostSeconds,
-                    "已通过在线、定位、健康、电量、车辆池和路径筛选；发车前仍须实时核验路权。", true)
+                    staged is null ? "已通过在线、定位、健康、电量、车辆池和路径筛选；发车前仍须实时核验路权。"
+                        : $"首窗可到候车点 {staged.Windows[0].Destination}；后续窗口占用计入预计等待，发车前仍须实时核验。", true)
                 { TrafficWaitSeconds = candidate.TrafficWaitSeconds, ReturnSeconds = candidate.ReturnSeconds, CrossZoneSeconds = candidate.CrossZoneSeconds,
                     BatteryRiskSeconds = candidate.BatteryRiskSeconds, StandbyBonusSeconds = candidate.StandbyBonusSeconds });
             }
@@ -188,6 +202,12 @@ public sealed class DispatchCandidateFilter(DispatchOrchestratorOptions options,
                     { MapId = map?.MapId, MapVersionId = map?.VersionId, QueuePriority = score.EffectivePriority });
         }
         return result with { WaitingRoutes = waitingRoutes };
+    }
+
+    private static double EffectiveRouteSeconds(RoutePlan route, ActiveMapRuntimeSnapshot? map, DispatchAssignmentOptions policy)
+    {
+        var estimate = EstimateRoute(route, map, policy);
+        return estimate.Travel + estimate.TrafficWait;
     }
 
     private RoutePlan? Plan(string source, string destination, IReadOnlySet<string> unavailable) =>

@@ -1,6 +1,8 @@
 using System.Reflection;
+using System.Text.Json;
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Application.Maps;
+using AgvDispatch.Connectors.Agv;
 using AgvDispatch.Domain.Agvs;
 using AgvDispatch.Domain.Devices;
 using AgvDispatch.Domain.Maps;
@@ -163,6 +165,78 @@ await (Task)dispatchCycle.Invoke(dispatcher, [CancellationToken.None])!;
 var blockedCommand = await db.Queryable<AgvCommandOutboxEntity>().Where(c => c.TaskId == pipelineTask.Task.TaskId).SingleAsync();
 Check(blockedCommand.AttemptCount == 0 && blockedCommand.Status == (int)AgvCommandStatus.Pending,
     "actual outbox shared preclaim safety catches PLC change after global preparation without consuming a send attempt");
+
+await traffic.ReleaseTaskAsync(pipelineTask.Task.TaskId, default);
+await db.Updateable<DispatchTaskEntity>().SetColumns(t => t.Stage == (int)DispatchTaskStage.Faulted)
+    .Where(t => t.TaskId == pipelineTask.Task.TaskId).ExecuteCommandAsync();
+var stagingResources = new TrafficResourceDefinition[]
+{
+    new("START-ROAD", TrafficResourceType.SingleLane), new("BAY-LOCK", TrafficResourceType.Station),
+    new("FAR", TrafficResourceType.SingleLane)
+};
+catalog.Replace(stagingResources);
+var bay = new MapNode("BAY", 5, 0, MapNodeType.WaitingPoint, true, ["BAY-LOCK"]) { AllowTrafficStop = true };
+var stagingDefinition = new MapDefinition("staging", "synthetic", "Cartesian", "m",
+    [new("A", 0, 0, MapNodeType.Station, true, []), bay, new("B", 10, 0, MapNodeType.Station, true, [])],
+    [new("A-BAY", "A", "BAY", 5, 1, false, true, ["START-ROAD"]),
+        new("BAY-B", "BAY", "B", 5, 1, false, true, ["FAR"])], stagingResources);
+map.Replace(new("M", "V2", stagingDefinition with { Nodes = [stagingDefinition.Nodes[0],
+    bay with { AllowTrafficStop = false }, stagingDefinition.Nodes[2]] }, DateTimeOffset.UtcNow));
+var stageTask = await tasks.TryCreateAsync("STAGING-ST", "DUMP", 50, default);
+await tasks.MarkAcknowledgedAsync(stageTask.Task.TaskId, default);
+dispatch.StationPickupSites["STAGING-ST"] = "B";
+foreach (var item in new[] { ("Faulted", false), ("CommunicationOnline", true), ("BoxPresent", true), ("FullBoxRequestAcknowledged", true) })
+    signalCache.Put("STAGING-ST", item.Item1, item.Item2);
+await traffic.RecordRouteAsync(new("far-owner", "OTHER-TRANSPORT", "V2", "BAY", "B", ["BAY-B"],
+    ["FAR"], false, "downstream fixture") { MapId = "M", MapVersionId = "V2" }, default);
+Check((await traffic.TryAcquireAsync("far-owner", "OTHER-TRANSPORT", "V2", ["FAR"], default)).Acquired,
+    "different task owns the downstream capacity-one resource");
+var stageOptions = new DispatchTaskStepOptions { RollingWindowMinimumEdges = 1 };
+var stageAgv = new AgvOptions { NavigationCommandMode = "SpecifiedPath" };
+handshake.DumperExit.BodyProfiles = [new("profile", "V", .49, .05, true, true)];
+var stagedOrchestrator = new DispatchTaskOrchestrator(Microsoft.Extensions.Logging.Abstractions.NullLogger<DispatchTaskOrchestrator>.Instance,
+    dispatch, orchestration, outbox, gateway, cache, map, new MapOptions(), new StagingPlanner(), traffic, gate,
+    optimization: optimization, preSendSafety: guard, stepOptions: stageOptions, agvOptions: stageAgv,
+    pickupStaging: new GlobalPickupRoutePlanner(stageOptions, stageAgv, handshake));
+Task RunStagedCycle() => (Task)optimizationCycle.Invoke(stagedOrchestrator,
+    [policy, 1, Array.Empty<DispatchTaskWorkItem>(), CancellationToken.None])!;
+await RunStagedCycle();
+Check(!await db.Queryable<AgvCommandOutboxEntity>().AnyAsync(c => c.TaskId == stageTask.Task.TaskId),
+    "Global leaves a vehicle at its source when the would-be stop is prohibited");
+map.Replace(new("M", "V2", stagingDefinition, DateTimeOffset.UtcNow));
+await RunStagedCycle();
+var firstStaged = (await outbox.GetDueCommandsAsync(DateTimeOffset.UtcNow.AddSeconds(1), 10, default))
+    .Single(c => c.TaskId == stageTask.Task.TaskId);
+var json = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+var stagedPayload = JsonSerializer.Deserialize<AgvTransportCommandPayload>(firstStaged.PayloadJson, json)!;
+Check(stagedPayload.Destination == "BAY" && stagedPayload.Windows.Count == 2 &&
+    await guard.CheckPendingCommandAsync(firstStaged, default) == null &&
+    !await db.Queryable<TrafficResourceLeaseEntity>().AnyAsync(l => l.TaskId == stageTask.Task.TaskId && l.ResourceId == "FAR"),
+    "Global prepares a safety-checked first window without leasing the occupied suffix");
+Check(await outbox.TryClaimAsync(firstStaged.CommandId, DateTimeOffset.UtcNow, default) is not null,
+    "first staged command is claimed once");
+await outbox.MarkSentAsync(firstStaged.CommandId, "first-staged-vendor", default);
+var stagedOwner = (await orchestration.GetAssignedTasksAsync(default)).Single(t => t.TaskId == stageTask.Task.TaskId);
+cache.Row = goodVehicle with { CurrentStation = "BAY", X = 5, VelocityX = 0, VelocityY = 0,
+    AngularVelocity = 0, LastSuccessfulPollAt = DateTimeOffset.UtcNow };
+var advance = typeof(DispatchTaskOrchestrator).GetMethod("TryAdvanceTransportWindowAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+var completedWindow = new AgvTransportTaskStatus("first-staged-vendor", firstStaged.StepId,
+    AgvTransportTaskState.Completed, "V", DateTimeOffset.UtcNow);
+async Task Advance()
+{
+    await (Task)advance.Invoke(stagedOrchestrator, [stagedOwner, completedWindow, CancellationToken.None])!;
+}
+await Advance();
+Check(await db.Queryable<AgvCommandOutboxEntity>().CountAsync(c => c.TaskId == stageTask.Task.TaskId) == 1,
+    "at the staging bay the vehicle waits while downstream remains occupied");
+await traffic.ReleaseStepAsync("far-owner", default);
+await Advance();
+var nextStaged = (await outbox.GetDueCommandsAsync(DateTimeOffset.UtcNow.AddSeconds(1), 10, default))
+    .Single(c => c.TaskId == stageTask.Task.TaskId);
+var nextPayload = JsonSerializer.Deserialize<AgvTransportCommandPayload>(nextStaged.PayloadJson, json)!;
+Check(nextPayload.WindowIndex == 1 && nextPayload.Source == "BAY" && nextPayload.Destination == "B" &&
+    await db.Queryable<TrafficResourceLeaseEntity>().AnyAsync(l => l.TaskId == stageTask.Task.TaskId && l.ResourceId == "FAR"),
+    "after downstream release the same task acquires the next window and prepares its original continuation");
 Console.WriteLine($"PASS {checks} common safety and atomic deduplication checks; isolated SQLite, synthetic map and fake gateway only.");
 
 sealed class Signals : IPlcSignalCache
@@ -209,6 +283,12 @@ sealed class Planner : IRoutePlanner
 {
     public RoutePlan? Plan(string source, string destination, IReadOnlySet<string> unavailable) =>
         source == "A" && destination == "B" && !unavailable.Contains("R") ? new(["A", "B"], ["AB"], ["R"], 10) : null;
+}
+sealed class StagingPlanner : IRoutePlanner
+{
+    public RoutePlan? Plan(string source, string destination, IReadOnlySet<string> unavailable) =>
+        source == "A" && destination == "B" && !unavailable.Contains("FAR")
+            ? new(["A", "BAY", "B"], ["A-BAY", "BAY-B"], ["START-ROAD", "BAY-LOCK", "FAR"], 10) : null;
 }
 sealed class Gate : IMapExecutionGate
 {

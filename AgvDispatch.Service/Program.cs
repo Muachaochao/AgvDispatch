@@ -284,6 +284,8 @@ builder.Services.AddSingleton<IDispatchPipelineMonitor>(p => p.GetRequiredServic
 builder.Services.AddSingleton<IDispatchOptimizationService, DispatchPipelineSnapshotService>();
 builder.Services.AddSingleton<IDispatchPipelineInspectionService, DispatchPipelineInspectionService>();
 builder.Services.AddSingleton<IDispatchQueueWindowService, DispatchQueueWindowService>();
+builder.Services.AddSingleton<GlobalPickupRoutePlanner>();
+builder.Services.AddSingleton<DispatchTrafficWakeup>();
 builder.Services.AddSingleton<IDispatchCandidateFilter, DispatchCandidateFilter>();
 builder.Services.AddSingleton<DispatchTrafficReservationService>();
 builder.Services.AddSingleton<DispatchPreSendSafetyService>();
