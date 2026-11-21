@@ -23,6 +23,7 @@ const replay = shallowRef<DispatchReplay | null>(null);
 const frameIndex = ref(0);
 const loading = ref(false);
 const playing = ref(false);
+const playbackRate = ref(1);
 const videoProgress = ref<number | null>(null);
 const error = ref("");
 const notice = ref("");
@@ -77,12 +78,12 @@ function togglePlayback() {
   if (!playing.value && frameIndex.value >= timeline.value.length - 1) frameIndex.value = 0;
   playing.value = !playing.value;
 }
-watch(playing, (active, _old, onCleanup) => {
+watch([playing, playbackRate], ([active, rate], _old, onCleanup) => {
   if (!active) return;
   const timer = setInterval(() => {
     if (frameIndex.value < timeline.value.length - 1) frameIndex.value++;
     else playing.value = false;
-  }, 125);
+  }, 125 / rate);
   onCleanup(() => clearInterval(timer));
 });
 onBeforeUnmount(() => lifetime.abort());
@@ -208,6 +209,12 @@ async function exportVideo() {
     <div class="replay-controls">
       <el-button size="small" :loading="loading" :disabled="playing || videoProgress !== null" @click="load">载入时间轴</el-button>
       <el-button size="small" :disabled="timeline.length < 2" @click="togglePlayback">{{ playing ? "暂停回放" : "播放回放" }}</el-button>
+      <label v-if="timeline.length > 1" class="replay-rate">
+        回放速度
+        <select v-model.number="playbackRate" aria-label="回放速度">
+          <option v-for="rate in [1, 2, 4, 8]" :key="rate" :value="rate">{{ rate }}×</option>
+        </select>
+      </label>
       <el-button size="small" :disabled="!timeline.length" :loading="videoProgress !== null" @click="exportVideo">
         {{ videoProgress === null ? "导出回放视频" : `正在录制 ${videoProgress}%` }}
       </el-button>
@@ -248,6 +255,8 @@ async function exportVideo() {
 .dispatch-replay { margin: 16px 0; display: grid; gap: 10px; min-width: 0; }
 .replay-controls { display: flex; flex-wrap: wrap; gap: 8px; }
 .replay-controls .el-button { margin-left: 0; }
+.replay-rate { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
+.replay-rate select { color: inherit; background: var(--el-fill-color-blank); border: 1px solid var(--el-border-color); border-radius: 4px; padding: 2px 6px; }
 .replay-timeline { display: grid; gap: 5px; }
 .replay-timeline input { width: 100%; }
 </style>
