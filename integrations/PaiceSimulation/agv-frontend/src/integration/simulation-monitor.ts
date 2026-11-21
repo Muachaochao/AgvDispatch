@@ -144,6 +144,23 @@ export function summarizeWait(request: DispatchWaitRequest, locations: ReadonlyM
     blockers.length > 1 && `另有 ${blockers.length - 1} 项`].filter(Boolean).join(' · ')
 }
 
+export function trafficWaitRows(requests: readonly DispatchWaitRequest[], now: number) {
+  return requests.filter(request => request.state === 'Waiting' && request.waitingCategory !== 'Equipment')
+    .map(request => {
+      const blockers = dispatchWaitBlockers(request.blockers)
+      const blockingSeconds = blockers.length && request.blockingObservationCurrent &&
+        request.blockingStartKnown && request.blockingClockValid !== false
+        ? secondsSince(request.blockingSince, now) ?? null
+        : null
+      return {
+        key: `${request.taskId}/${request.stepId}`, request, blockers, blockingSeconds,
+        holders: [...new Set(blockers.flatMap(blocker => blocker.vehicles))].sort(),
+      }
+    })
+    .sort((a, b) => Number(!!b.blockers.length) - Number(!!a.blockers.length)
+      || (b.request.waitingSeconds ?? -1) - (a.request.waitingSeconds ?? -1))
+}
+
 export function vehicleTaskKind(car: Pick<DispatchCar, 'charging' | 'current_task' | 'recovery'> | undefined, business: boolean) {
   if (car?.charging || car?.current_task?.startsWith('CHARGE-')) return '充电'
   if (car?.recovery && car.recovery.state !== 'Recovered') return business ? '业务 · 障碍恢复' : '障碍恢复'

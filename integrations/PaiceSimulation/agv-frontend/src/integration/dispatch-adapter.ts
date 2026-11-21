@@ -112,6 +112,10 @@ export interface DispatchWaitRequest {
   waitingSeconds?: number | null;
   waitingStartKnown?: boolean;
   waitingClockValid?: boolean;
+  blockingSince?: string | null;
+  blockingObservationCurrent?: boolean;
+  blockingStartKnown?: boolean;
+  blockingClockValid?: boolean;
   state?: string;
   resourceIds?: string[];
   blockers?: { resourceId: string; vehicleId?: string | null }[];

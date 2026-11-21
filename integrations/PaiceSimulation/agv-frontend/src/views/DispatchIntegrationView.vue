@@ -61,7 +61,7 @@ import {
 import {
   briefReason, businessStepLabel, businessStepNames as stepNames, callPresentation,
   elapsedLabel, resourceLocations, resourceRows, routeTarget, secondsSince,
-  summarizeWait, vehicleTaskKind,
+  summarizeWait, trafficWaitRows, vehicleTaskKind,
 } from "@/integration/simulation-monitor";
 import {
   mainDispatchStationId,
@@ -76,6 +76,7 @@ const resourcePageSize = 40;
 const resourcePage = ref(1);
 const resourceQuery = ref("");
 const showAllResources = ref(false);
+const trafficView = ref<'requests' | 'resources'>('requests');
 const selectedResourceId = ref("");
 const resourceEvents = shallowRef<DispatchTrafficEvent[]>([]);
 const resourceEvidenceStatus = ref("");
@@ -151,6 +152,9 @@ const cars = computed(() => status.value?.device?.cars ?? {});
 const section = defineModel<DispatchSection>({ required: true });
 const props = defineProps<{ taskId?: string }>();
 const waitFresh = computed(() => connected.value && dispatchWaitSnapshotFresh(monitor.value, clock.value));
+const waitingApplications = computed(() => trafficWaitRows(
+  waitFresh.value ? monitor.value?.traffic?.requests ?? [] : [], clock.value,
+));
 watch(resourcePageCount, count => { resourcePage.value = Math.min(resourcePage.value, count); });
 const waitsByTask = computed(() => {
   const index = new Map<string, DispatchWaitRequest[]>();
@@ -1364,13 +1368,50 @@ onBeforeUnmount(() => {
       <section v-if="section === 'monitor'" class="panel resource-panel">
         <div class="panel-heading">
           <h3>交通资源</h3>
-          <div class="resource-filters">
+          <el-radio-group v-model="trafficView" size="small" aria-label="交通资源查看方式">
+            <el-radio-button value="requests">按等待申请</el-radio-button>
+            <el-radio-button value="resources">按资源查找</el-radio-button>
+          </el-radio-group>
+          <div v-if="trafficView === 'resources'" class="resource-filters">
             <el-input v-model="resourceQuery" size="small" clearable placeholder="搜索名称或完整编号" aria-label="搜索交通资源" />
             <el-checkbox v-model="showAllResources">显示空闲资源</el-checkbox>
           </div>
         </div>
         <p v-if="!waitFresh" class="muted">占用与等待快照暂不可用。</p>
-        <el-table :data="visibleResources" row-key="resourceId" size="small" empty-text="当前筛选下没有交通资源">
+        <el-table v-if="trafficView === 'requests'" :data="waitingApplications" row-key="key" size="small" empty-text="当前没有路权等待申请">
+          <el-table-column type="expand">
+            <template #default="{ row }">
+              <div class="resource-detail">
+                <p>{{ row.request.source || '起点未知' }} → {{ row.request.destination || '目标未知' }}</p>
+                <p v-for="blocker in row.blockers" :key="blocker.resourceId">
+                  <el-button link type="primary" @click="inspectResource(blocker.resourceId, true)">
+                    {{ resourceIndex.get(blocker.resourceId)?.label || blocker.resourceId }}
+                  </el-button>
+                  · {{ blocker.vehicles.join('、') || '占用车待确认' }}
+                </p>
+                <p v-if="!row.blockers.length" class="muted">{{ briefReason(row.request.reason) || '等待调度复核' }}</p>
+              </div>
+            </template>
+          </el-table-column>
+          <el-table-column label="等待车" min-width="116"><template #default="{ row }">
+            <el-button link type="primary" @click="openCallTask(row.request.taskId)">{{ waitVehicleLabel(row.request) }}</el-button>
+          </template></el-table-column>
+          <el-table-column label="占用车" min-width="108"><template #default="{ row }">{{ row.holders.join('、') || '—' }}</template></el-table-column>
+          <el-table-column label="当前阻塞" min-width="158"><template #default="{ row }">
+            <template v-if="row.blockers[0]">
+              <el-button link type="primary" :title="row.blockers[0].resourceId" @click="inspectResource(row.blockers[0].resourceId, true)">
+                {{ resourceIndex.get(row.blockers[0].resourceId)?.label || row.blockers[0].resourceId }}
+              </el-button>
+              <span v-if="row.blockers.length > 1"> 等 {{ row.blockers.length }} 项</span>
+            </template>
+            <span v-else>待调度复核</span>
+          </template></el-table-column>
+          <el-table-column label="申请已等" min-width="108"><template #default="{ row }">{{ dispatchWaitDuration(row.request) }}</template></el-table-column>
+          <el-table-column label="连续阻塞" min-width="112"><template #default="{ row }">
+            {{ row.blockingSeconds !== null ? elapsedLabel(row.blockingSeconds) : '—' }}
+          </template></el-table-column>
+        </el-table>
+        <el-table v-else :data="visibleResources" row-key="resourceId" size="small" empty-text="当前筛选下没有交通资源">
           <el-table-column label="资源" min-width="195"><template #default="{ row }">
             <el-button link type="primary" @click="inspectResource(row.resourceId)">{{ row.label }}</el-button>
           </template></el-table-column>
@@ -1385,7 +1426,7 @@ onBeforeUnmount(() => {
           </template></el-table-column>
           <el-table-column label="地图" width="78"><template #default="{ row }"><el-button v-if="row.location?.point || row.location?.nodeId || row.location?.edgeIds.length" link type="primary" @click="inspectResource(row.resourceId, true)">定位</el-button></template></el-table-column>
         </el-table>
-        <el-pagination v-if="filteredResources.length > resourcePageSize" v-model:current-page="resourcePage" :page-size="resourcePageSize" :total="filteredResources.length" layout="total, prev, pager, next" size="small" />
+        <el-pagination v-if="trafficView === 'resources' && filteredResources.length > resourcePageSize" v-model:current-page="resourcePage" :page-size="resourcePageSize" :total="filteredResources.length" layout="total, prev, pager, next" size="small" />
         <div v-if="selectedResourceId" class="resource-detail">
           <div class="panel-heading">
             <h4>{{ resourceIndex.get(selectedResourceId)?.label || '资源详情' }}</h4>

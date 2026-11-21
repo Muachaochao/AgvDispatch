@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { callPresentation, resourceLocations, resourceRows, vehicleTaskKind, routeTarget } from '../src/integration/simulation-monitor.ts'
+import { callPresentation, resourceLocations, resourceRows, vehicleTaskKind, routeTarget, trafficWaitRows } from '../src/integration/simulation-monitor.ts'
 
 test('keeps repeated calls separate and explains the previous unfinished cycle only once due', () => {
   const first = { planIndex: 0, stationId: 'CNC-111', atSeconds: 12, status: 'active', taskId: 'A', vehicleId: 'AGV-01' }
@@ -36,4 +36,20 @@ test('uses real navigation and charging evidence and avoids carrying over old de
   assert.equal(vehicleTaskKind(undefined, false), '未确认')
   assert.equal(routeTarget({ vendorSites: ['A', 'B'], nodeIds: ['J-01', 'J-02'] }), 'B')
   assert.equal(routeTarget(undefined), undefined)
+})
+test('uses one row per request and distinguishes request age from the current blockers', () => {
+  const now = Date.parse('2026-11-21T13:00:20Z')
+  const waiting = {
+    taskId: 'A', stepId: 'S', vehicleId: 'AGV-04', state: 'Waiting', waitingSeconds: 600,
+    blockingSince: '2026-11-21T13:00:10Z', blockingObservationCurrent: true, blockingStartKnown: true,
+    blockers: [{ resourceId: 'R1', vehicleId: 'AGV-02' }, { resourceId: 'R1', vehicleId: 'AGV-03' },
+      { resourceId: 'R2', vehicleId: 'AGV-02' }],
+  }
+  const rows = trafficWaitRows([waiting, { ...waiting, taskId: 'B', blockingObservationCurrent: false },
+    { ...waiting, taskId: 'C', waitingCategory: 'Equipment' }], now)
+  assert.equal(rows.length, 2)
+  assert.deepEqual(rows[0].holders, ['AGV-02', 'AGV-03'])
+  assert.equal(rows[0].blockers.length, 2)
+  assert.equal(rows[0].blockingSeconds, 10)
+  assert.equal(rows[1].blockingSeconds, null)
 })
