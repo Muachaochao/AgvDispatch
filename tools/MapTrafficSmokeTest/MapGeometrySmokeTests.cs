@@ -53,6 +53,23 @@ internal static class MapGeometrySmokeTests
         var onChord = AgvMapPositionAnalyzer.Analyze(2, 0, 0.99, now, definition, now, TimeSpan.FromSeconds(5), 0.5, 0.1);
         Check(onCurve.State == AgvMapPositionState.Normal && onChord.State == AgvMapPositionState.OffRoute,
             "AGV localization follows actual curve");
+        var published = Definition([start, end, arcEnd],
+            [line, line with { Id = "LINE-TIE" }, bezier, arc]);
+        var stale = TimeSpan.FromSeconds(5);
+        for (var x = -1d; x <= 5; x += 0.25)
+        for (var y = -1d; y <= 4; y += 0.25)
+        {
+            var fullScan = AgvMapPositionAnalyzer.Analyze(x, y, 0.99, now, published, now, stale, 0.5, 0.1);
+            var indexed = AgvMapPositionAnalyzer.Analyze(x, y, 0.99, now, published, now, stale, 0.5, 0.1, reuseGeometry: true);
+            Check(indexed == fullScan, "published geometry preserves distance, state and map-order ties");
+        }
+        var replacement = published with { Edges = [published.Edges[1], published.Edges[0], bezier, arc] };
+        Check(AgvMapPositionAnalyzer.Analyze(2, 0, 0.99, now, replacement, now, stale, 0.5, 0.1, reuseGeometry: true)
+                .NearestEdgeId == "LINE-TIE",
+            "a replacement map never inherits the previous geometry index");
+        Check(AgvMapPositionAnalyzer.Analyze(2, 0, 0.99, now - stale - stale, published, now, stale, 0.5, 0.1, reuseGeometry: true)
+                .State == AgvMapPositionState.Stale,
+            "reusing geometry does not reuse vehicle feedback");
         var routeGraph = Definition([start, end, Node("X", 2, -1)],
             [bezier with { Distance = 0.01 }, Edge("AX", "A", "X") with { Distance = Math.Sqrt(5) },
              Edge("XD", "X", "D") with { Distance = Math.Sqrt(5) }]).ToGraph();

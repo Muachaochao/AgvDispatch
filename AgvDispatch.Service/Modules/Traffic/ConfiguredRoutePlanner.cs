@@ -184,7 +184,7 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
             }
             var position = AgvMapPositionAnalyzer.Analyze(x, y, confidence, observed, definition, now,
                 maximumAge, _mapOptions.MinimumLocalizationConfidence,
-                _mapOptions.MaximumRouteDeviationMeters);
+                _mapOptions.MaximumRouteDeviationMeters, reuseGeometry: true);
             if (position.State != AgvMapPositionState.Normal ||
                 string.IsNullOrWhiteSpace(position.NearestEdgeId))
                 continue;

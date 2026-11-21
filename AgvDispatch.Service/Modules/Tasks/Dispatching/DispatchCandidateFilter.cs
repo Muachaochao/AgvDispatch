@@ -27,7 +27,7 @@ public sealed class DispatchCandidateFilter(DispatchOrchestratorOptions options,
         if (robot.Tasks.Any(t => t.Status is 1 or 2 or 3)) return "车端已有未结束任务。";
         var position = AgvMapPositionAnalyzer.Analyze(robot.X, robot.Y, robot.LocalizationConfidence, robot.LastSuccessfulPollAt,
             activeMap.Current?.Definition, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds),
-            mapOptions.MinimumLocalizationConfidence, mapOptions.MaximumRouteDeviationMeters);
+            mapOptions.MinimumLocalizationConfidence, mapOptions.MaximumRouteDeviationMeters, reuseGeometry: true);
         if (position.State != AgvMapPositionState.Normal) return "定位无效、过期或偏离地图。";
         if (string.IsNullOrWhiteSpace(vehicle.CurrentStation)) return "车辆当前站点未知。";
         if (robot.BatteryPercent is null || robot.BatteryPercent < (decimal)policy.MinimumBatteryPercent || vehicle.BatteryPercent < (decimal)policy.MinimumBatteryPercent ||
