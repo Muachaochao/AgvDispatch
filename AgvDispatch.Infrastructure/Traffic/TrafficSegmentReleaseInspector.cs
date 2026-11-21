@@ -124,8 +124,9 @@ public sealed class TrafficSegmentReleaseInspector(ISqlSugarClient database, IAc
                 throw new InvalidDataException("已删原租约仍存在或被重建。");
             leases.AddRange(deleted);
         }
-        if (commands.Count != 1) throw new InvalidDataException("原运输命令缺失或不唯一。");
-        var command = commands[0];
+        var matchingCommands = commands.Where(item => item.VendorCommandId == step.VendorTaskId).ToArray();
+        if (matchingCommands.Length != 1) throw new InvalidDataException("当前运输窗口命令缺失或不唯一。");
+        var command = matchingCommands[0];
         var expectedStage = (DispatchTaskStepType)step.StepType switch
         {
             DispatchTaskStepType.GoToPickup => DispatchTaskStage.GoingToPickup,
@@ -158,20 +159,17 @@ public sealed class TrafficSegmentReleaseInspector(ISqlSugarClient database, IAc
             ? payload.BusinessTaskId
             : payload.BusinessStepId;
         if (businessStepId != stepId || payload.VehicleId != vehicle || payload.Path is null ||
-            payload.Path.Count < 2 || edges.Length != payload.Path.Count - 1 ||
+            payload.Path.Count < 2 ||
             payload.Source != payload.Path[0] || payload.Destination != payload.Path[^1] ||
             step.SourceSite is null || step.DestinationSite is null)
             throw new InvalidDataException("原命令路径和步骤不一致。");
-        var nodes = payload.Path.Select(site =>
+        var nodes = frozen.AgvSites.Select(site =>
         {
             var matches = map.Definition.Nodes.Where(n =>
                 string.Equals(string.IsNullOrWhiteSpace(n.AgvSiteId) ? n.Id : n.AgvSiteId, site, StringComparison.OrdinalIgnoreCase)).ToArray();
             if (matches.Length != 1) throw new InvalidDataException("原路径站点无法唯一映射到活动地图。");
             return matches[0].Id;
         }).ToArray();
-        if (MapRouteSiteMapper.ResolveLogicalNodeId(map.Definition, request.Source) != nodes[0] ||
-            MapRouteSiteMapper.ResolveLogicalNodeId(map.Definition, request.Destination) != nodes[^1])
-            throw new InvalidDataException("原路权请求起终点与发送路径不一致。");
         if (leases.Count == 0 || leases.Any(l => l.TaskId != task.TaskId || l.VehicleId != vehicle ||
             l.MapId != map.MapId || l.MapVersionId != map.VersionId))
             throw new InvalidDataException("原租约缺失或归属/地图版本不一致。");

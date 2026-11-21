@@ -184,22 +184,34 @@ Check(replay.ReleasedCount == 0 &&
 // while another car owns NEXT and needs CORRIDOR to leave the dumper.
 using var windowDb=DatabaseFactory.Create(new(){DatabasePath=Path.Combine(root,"window.db")});
 await new DatabaseInitializer(windowDb).InitializeAsync(default);
-var extended = map with { Nodes = map.Nodes.Append(new MapNode("D",20,0,MapNodeType.Station,true,["NEXT"])).ToArray(),
+var extended = map with { Nodes = map.Nodes
+        .Select(node => node.Id == "C"
+            ? node with { ResourceIds = ["FINAL", "STOP-CLEAR", "STOP-KEEP"] }
+            : node)
+        .Append(new MapNode("D",20,0,MapNodeType.Station,true,["NEXT"])).ToArray(),
     Edges=map.Edges.Append(new MapEdge("CD","C","D",10,1,false,true,["NEXT"])).ToArray(),
-    Resources=map.Resources.Append(new TrafficResourceDefinition("NEXT",TrafficResourceType.Station)).ToArray() };
+    Resources=map.Resources
+        .Append(new TrafficResourceDefinition("NEXT",TrafficResourceType.Station))
+        .Append(new TrafficResourceDefinition("STOP-KEEP",TrafficResourceType.Station))
+        .Append(new TrafficResourceDefinition("NEXT-CLEAR",TrafficResourceType.NarrowAisle,1,
+            [new(14,-1),new(16,-1),new(16,1),new(14,1)]))
+        .Append(new TrafficResourceDefinition("STOP-CLEAR",TrafficResourceType.Intersection,1,
+            [new(6,-1),new(8,-1),new(8,1),new(6,1)]))
+        .ToArray() };
 runtime.Replace(new("MAP","V1",extended,DateTimeOffset.UtcNow));
 var currentWindow=new AgvTransportRouteWindow(0,"A","C",["A","B","C"],["AB","BC"],
-    ["CORRIDOR","FINAL","INTERSECTION","AUTO-CORRIDOR-SYNTHETIC"],false);
+    ["CORRIDOR","FINAL","INTERSECTION","AUTO-CORRIDOR-SYNTHETIC","NEXT-CLEAR","STOP-CLEAR","STOP-KEEP"],false);
 var nextWindow=new AgvTransportRouteWindow(1,"C","D",["C","D"],["CD"],["FINAL","NEXT"],true);
+var nextWindowWithClearCorridor=nextWindow with { ResourceIds=["FINAL","NEXT","NEXT-CLEAR"] };
 payload=JsonSerializer.Serialize(new AgvTransportCommandPayload("STEP","AGV","A","C",["A","B","C"],null)
-    {BusinessStepId="STEP",WindowCount=2,Windows=[currentWindow,nextWindow]},new JsonSerializerOptions(JsonSerializerDefaults.Web));
+    {BusinessStepId="STEP",WindowCount=2,Windows=[currentWindow,nextWindowWithClearCorridor]},new JsonSerializerOptions(JsonSerializerDefaults.Web));
 request.ResourceIds=JsonSerializer.Serialize(currentWindow.ResourceIds);request.State="Held";
 snapshotJson=TransportRouteSnapshots.Serialize(TransportRouteSnapshots.Capture("TASK","STEP","CMD","AGV",payload,runtime.Current!,request));
 windowDb.Insertable(request).ExecuteCommand();
 var windowTask=database.Queryable<DispatchTaskEntity>().Single();windowTask.Stage=(int)DispatchTaskStage.GoingToPickup;windowTask.VendorTaskId="STEP";windowDb.Insertable(windowTask).ExecuteCommand();
 var windowStep=database.Queryable<DispatchTaskStepEntity>().Single();windowStep.Status=(int)DispatchTaskStepStatus.Executing;windowStep.DestinationSite="D";windowDb.Insertable(windowStep).ExecuteCommand();
 var windowCommand=database.Queryable<AgvCommandOutboxEntity>().Single();windowCommand.PayloadJson=payload;windowCommand.ExecutionRouteSnapshotJson=snapshotJson;windowCommand.ExecutionRouteSnapshotHash=TransportRouteSnapshots.Hash(snapshotJson);windowDb.Insertable(windowCommand).ExecuteCommand();
-foreach(var resource in new[]{"FINAL","CORRIDOR","INTERSECTION","AUTO-CORRIDOR-SYNTHETIC"})
+foreach(var resource in new[]{"FINAL","CORRIDOR","INTERSECTION","AUTO-CORRIDOR-SYNTHETIC","NEXT-CLEAR","STOP-CLEAR","STOP-KEEP"})
  windowDb.Insertable(new TrafficResourceLeaseEntity{LeaseId="BOUNDARY-"+resource,ResourceId=resource,TaskId="TASK",OwnerStepId="STEP",VehicleId="AGV",MapId="MAP",MapVersionId="V1",AcquiredAt=DateTime.Now,RenewedAt=DateTime.Now,ExpiresAt=DateTime.Now.AddMinutes(2)}).ExecuteCommand();
 windowDb.Insertable(new TrafficResourceLeaseEntity{LeaseId="OTHER-NEXT",ResourceId="NEXT",TaskId="OTHER",OwnerStepId="OTHER-STEP",VehicleId="OTHER-CAR",MapId="MAP",MapVersionId="V1",AcquiredAt=DateTime.Now,RenewedAt=DateTime.Now,ExpiresAt=DateTime.Now.AddMinutes(2)}).ExecuteCommand();
 var windowManager=new TrafficResourceManager(windowDb,new TrafficResourceCatalog(extended.Resources),new(TimeSpan.FromMinutes(2)));
@@ -215,10 +227,48 @@ Refresh(offset:1);
 Check((await windowService.ReleaseWindowAsync("TASK","STEP",Terminal(),default)).ReleasedCount==0,"坐标未到安全站点时不释放，不能冒用最近站点");
 Refresh();
 var boundaryReleased=await windowService.ReleaseWindowAsync("TASK","STEP",Terminal(),default);
-Check(boundaryReleased.ReleasedCount==2,"下一窗口被占用时，先按完整包络释放已通过的旧路段和路口");
+Check(boundaryReleased.ReleasedCount==4,"下一窗口被占用时，先按完整包络释放已通过的旧路段、路口、复用走廊及已明确离开的当前停点多边形资源");
 Check(windowDb.Queryable<TrafficResourceLeaseEntity>().Any(l=>l.ResourceId=="FINAL")&&windowDb.Queryable<TrafficResourceLeaseEntity>().Any(l=>l.LeaseId=="OTHER-NEXT")&&windowDb.Queryable<TrafficResourceLeaseEntity>().Any(l=>l.ResourceId=="AUTO-CORRIDOR-SYNTHETIC"),"保留当前停点、他车下一窗口和无几何依据的未知走廊，未删他车路权");
+Check(!windowDb.Queryable<TrafficResourceLeaseEntity>().Any(l=>l.LeaseId=="BOUNDARY-NEXT-CLEAR"),"下一窗口复用但车体已完全离开的旧资源也先释放，避免先占后等");
+Check(windowDb.Queryable<TrafficResourceLeaseEntity>().Any(l=>l.LeaseId=="BOUNDARY-STOP-KEEP"),"当前停点无几何依据的资源继续保留，不按站点列表笼统阻塞相邻有边界资源");
+Check(!windowDb.Queryable<TrafficResourceLeaseEntity>().Any(l=>l.LeaseId=="BOUNDARY-STOP-CLEAR"),"当前停点列出的有边界资源只有在完整车体包络已离开时才释放");
 Check((await windowManager.TryAcquireAsync("OTHER-STEP","OTHER","OTHER-CAR",["CORRIDOR"],default)).Acquired,"返箱车可取得前车真正释放的路权，不再被已走过路段挡住");
 Check(windowDb.Queryable<DispatchTaskStepEntity>().Single(s=>s.StepId=="STEP").Status==(int)DispatchTaskStepStatus.Executing&&windowDb.Queryable<AgvCommandOutboxEntity>().Count()==1,"只释放前序资源，不完成业务步骤、不伪造PLC、不提前发送下一窗口");
+var identityAcquiredAt=DateTime.Now.AddMinutes(-1);
+var identityLease=new TrafficResourceLeaseEntity
+{
+    LeaseId="LEASE-IDENTITY",ResourceId="CORRIDOR",TaskId="IDENTITY-TASK",
+    OwnerStepId="IDENTITY-STEP",VehicleId="AGV",MapId="MAP",MapVersionId="V1",
+    AcquiredAt=identityAcquiredAt,RenewedAt=DateTime.Now,ExpiresAt=DateTime.Now.AddMinutes(2)
+};
+windowDb.Insertable(identityLease).ExecuteCommand();
+TrafficResourceLeaseEntity IdentityExpected(string vehicle="AGV",string resource="CORRIDOR",
+    string version="V1",DateTime? acquiredAt=null)=>new()
+{
+    LeaseId="LEASE-IDENTITY",ResourceId=resource,TaskId="IDENTITY-TASK",
+    OwnerStepId="IDENTITY-STEP",VehicleId=vehicle,MapId="MAP",MapVersionId=version,
+    AcquiredAt=acquiredAt??identityAcquiredAt
+};
+Check(await windowManager.ReleasePassedLeasesAsync("IDENTITY-TASK","IDENTITY-STEP",
+    [IdentityExpected(vehicle:"OTHER-CAR")],"身份回归",default)==0&&
+    windowDb.Queryable<TrafficResourceLeaseEntity>().Any(l=>l.LeaseId=="LEASE-IDENTITY"),
+    "释放事务拒绝车号变化的同名租约");
+Check(await windowManager.ReleasePassedLeasesAsync("IDENTITY-TASK","IDENTITY-STEP",
+    [IdentityExpected(resource:"INTERSECTION")],"身份回归",default)==0&&
+    windowDb.Queryable<TrafficResourceLeaseEntity>().Any(l=>l.LeaseId=="LEASE-IDENTITY"),
+    "释放事务拒绝资源变化的同名租约");
+Check(await windowManager.ReleasePassedLeasesAsync("IDENTITY-TASK","IDENTITY-STEP",
+    [IdentityExpected(version:"V2")],"身份回归",default)==0&&
+    windowDb.Queryable<TrafficResourceLeaseEntity>().Any(l=>l.LeaseId=="LEASE-IDENTITY"),
+    "释放事务拒绝地图版本变化的同名租约");
+Check(await windowManager.ReleasePassedLeasesAsync("IDENTITY-TASK","IDENTITY-STEP",
+    [IdentityExpected(acquiredAt:identityAcquiredAt.AddSeconds(1))],"身份回归",default)==0&&
+    windowDb.Queryable<TrafficResourceLeaseEntity>().Any(l=>l.LeaseId=="LEASE-IDENTITY"),
+    "释放事务拒绝获取周期变化的同名租约");
+Check(await windowManager.ReleasePassedLeasesAsync("IDENTITY-TASK","IDENTITY-STEP",
+    [IdentityExpected()],"身份回归",default)==1&&
+    !windowDb.Queryable<TrafficResourceLeaseEntity>().Any(l=>l.LeaseId=="LEASE-IDENTITY"),
+    "完整身份一致时才删除目标租约");
 if(args.Length==1)
 {
     // Read-only archive -> private SQLite replay. This exercises actual CAD
@@ -254,6 +304,52 @@ if(args.Length==1)
     var cleared=new[]{"SEG-0203","X-CAD2-J0640","X-CAD2-J0641","AUTO-CORRIDOR-7223E762A27394A1B200","AUTO-CORRIDOR-A9035B3BCBCC062F62B8"};
     Check(cadReleased.ReleasedCount>0&&!cadDb.Queryable<TrafficResourceLeaseEntity>().Any(l=>l.TaskId==cadTask.TaskId&&cleared.Contains(l.ResourceId)),"真实失败档案的CAD回放：完整包络已离开的五项返箱阻塞资源均可核验释放（仅私有副本）");
     Check(cadDb.Queryable<TrafficResourceLeaseEntity>().Any(l=>l.VehicleId=="AGV-04"&&l.ResourceId=="X-CAD2-J0652")&&cadDb.Queryable<TrafficResourceLeaseEntity>().Any(l=>l.TaskId==cadTask.TaskId&&l.ResourceId=="SIM-STOP-SIM-SAFE-CAD2-E01832"),"CAD回放仍保留倒料车当前资源及满箱车安全点，不删除另一辆车路权");
+}
+if(args.Length==2&&args[0]=="--dumper-replay")
+{
+    // Replay the v2 DUMPER hold in a private SQLite copy. The archived task is
+    // momentarily restored to the stage it had when the entry step completed;
+    // this only recreates the release-time decision and never edits the archive.
+    var archive=Path.GetFullPath(args[1]);var replayPath=Path.Combine(root,"dumper-replay.db");
+    using(var source=new SqliteConnection(new SqliteConnectionStringBuilder{DataSource=Path.Combine(archive,"data","agv-dispatch.db"),Mode=SqliteOpenMode.ReadOnly}.ToString()))
+    using(var target=new SqliteConnection("Data Source="+replayPath)){source.Open();target.Open();source.BackupDatabase(target);}
+    using var dumperDb=DatabaseFactory.Create(new(){DatabasePath=replayPath});
+    var dumperTask=dumperDb.Queryable<DispatchTaskEntity>().Single(t=>t.VehicleId=="AGV-04"&&t.StationId=="CNC-239");
+    var dumperStep=dumperDb.Queryable<DispatchTaskStepEntity>().Single(s=>
+        s.TaskId==dumperTask.TaskId&&s.StepType==(int)DispatchTaskStepType.EnterDumpingPosition);
+    dumperTask.Stage=(int)DispatchTaskStage.Dumping;dumperTask.VendorTaskId=dumperStep.VendorTaskId;
+    dumperDb.Updateable(dumperTask).ExecuteCommand();
+    var dumperCommand=dumperDb.Queryable<AgvCommandOutboxEntity>().Single(c=>
+        c.StepId==dumperStep.StepId&&c.VendorCommandId==dumperStep.VendorTaskId);
+    var dumperVersion=dumperDb.Queryable<MapVersionEntity>().Single(v=>v.VersionId==dumperCommand.ExecutionMapVersionId);
+    var jsonOptions=new JsonSerializerOptions(JsonSerializerDefaults.Web);jsonOptions.Converters.Add(new JsonStringEnumConverter());
+    var dumperMap=JsonSerializer.Deserialize<MapDefinition>(dumperVersion.DefinitionJson,jsonOptions)!;
+    var dumperRuntime=new ActiveMapRuntime();dumperRuntime.Replace(new(dumperVersion.MapId,dumperVersion.VersionId,dumperMap,DateTimeOffset.UtcNow));
+    using var device=JsonDocument.Parse(File.ReadAllText(Path.Combine(archive,"multi-state.json")));
+    var car=device.RootElement.GetProperty("cars").GetProperty("AGV-04");
+    var dumperVehicle=vehicle with {VehicleId="AGV-04",CurrentStation=car.GetProperty("station").GetString(),X=car.GetProperty("x").GetDouble(),Y=car.GetProperty("y").GetDouble(),LastSuccessfulPollAt=DateTimeOffset.UtcNow,UpdatedAt=DateTimeOffset.UtcNow,VelocityX=0,VelocityY=0,AngularVelocity=0};
+    using var settings=JsonDocument.Parse(File.ReadAllText(Path.Combine(archive,"service-settings.json")));
+    var dumperHandshake=settings.RootElement.GetProperty("HandshakeExecution").Deserialize<HandshakeExecutionOptions>(jsonOptions)!;
+    var dumperProfile=dumperHandshake.DumperExit.BodyProfiles.Single(p=>p.VehicleId=="AGV-04");
+    var dumperManager=new TrafficResourceManager(dumperDb,new TrafficResourceCatalog(dumperMap.Resources),new(TimeSpan.FromMinutes(2)));
+    var dumperService=new CompletedTransportRouteReleaseService(dumperDb,dumperRuntime,
+        new Vehicles(dumperVehicle),new BodyProvider(new(dumperProfile.ProfileId,"AGV-04",
+            dumperMap.CoordinateSystem,dumperProfile.RadiusFromReportedReferenceMeters,
+            dumperProfile.CalibrationVerified,dumperProfile.IncludesMaximumPermittedLoad)),
+        dumperHandshake,new MapOptions(),new TrafficSegmentReleasePolicy{Enabled=true},dumperManager);
+    var dumperReleased=await dumperService.ReleaseAsync(dumperTask.TaskId,dumperStep.StepId,default);
+    Check(dumperReleased.ReleasedCount>0&&!dumperDb.Queryable<TrafficResourceLeaseEntity>().Any(l=>
+            l.TaskId==dumperTask.TaskId&&l.ResourceId=="X-CAD2-J0652"),
+        "v2失败档案回放：DUMPER到站后释放完整包络已离开的相邻路口X-CAD2-J0652");
+    Check(dumperDb.Queryable<TrafficResourceLeaseEntity>().Any(l=>
+            l.TaskId==dumperTask.TaskId&&l.ResourceId=="DUMPER-001"),
+        "v2失败档案回放：仍在当前停点的主设备资源DUMPER-001继续保留");
+    Check(dumperDb.Queryable<TrafficResourceLeaseEntity>().Any(l=>
+            l.TaskId==dumperTask.TaskId&&l.ResourceId=="X-CAD2-J0651"),
+        "v2失败档案回放：完整包络仍覆盖的相邻路口X-CAD2-J0651继续保留");
+    Check(dumperDb.Queryable<TrafficResourceLeaseEntity>().Any(l=>
+            l.VehicleId=="AGV-01"&&l.ResourceId=="AUTO-CORRIDOR-C5312196CB270FFD59E2"),
+        "v2失败档案回放：释放另一任务资源时不得删除AGV-01原路权");
 }
 Console.WriteLine($"PASS {checks} completed-route release checks. Database: {root}");
 

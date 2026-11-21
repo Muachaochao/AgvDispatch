@@ -31,11 +31,12 @@ var map = new MapDefinition("M", "test", "LocalCartesian", "m",
         new("D", 6, 0, MapNodeType.Station, true, []) { AgvSiteId = "P4" }
     ],
     [
-        new("AB", "A", "B", 2, 1, true, true, []),
+        new("AB", "A", "B", 2, 1, true, true, ["PASSED"]),
         new("BC", "B", "C", 2, 1, true, true, []),
         new("CD", "C", "D", 2, 1, true, true, [])
     ],
-    []);
+    [new("PASSED", TrafficResourceType.NarrowAisle, 1,
+        [new(0, -1), new(1, -1), new(1, 1), new(0, 1)])]);
 var runtime = new ActiveMapRuntime();
 runtime.Replace(new("M", "V1", map, now));
 var payload = JsonSerializer.Serialize(new AgvTransportCommandPayload(
@@ -76,7 +77,11 @@ var cache = new AgvStateCache(new AgvOptions
 {
     Enabled = true,
     StaleAfterMs = 5000,
-    Robots = [new() { Enabled = true, VehicleId = "AGV", DisplayName = "AGV", IpAddress = "127.0.0.1" }]
+    Robots =
+    [
+        new() { Enabled = true, VehicleId = "AGV", DisplayName = "AGV", IpAddress = "127.0.0.1" },
+        new() { Enabled = true, VehicleId = "AGV-WINDOW", DisplayName = "AGV-WINDOW", IpAddress = "127.0.0.1" }
+    ]
 }, clock);
 var handshake = new HandshakeExecutionOptions
 {
@@ -84,7 +89,8 @@ var handshake = new HandshakeExecutionOptions
     {
         BodyProfiles =
         [
-            new("AGV-FULL-LOAD", "AGV", 0.49, 0.1, true, true)
+            new("AGV-FULL-LOAD", "AGV", 0.49, 0.1, true, true),
+            new("AGV-WINDOW-FULL-LOAD", "AGV-WINDOW", 0.49, 0.1, true, true)
         ]
     }
 };
@@ -118,11 +124,95 @@ Check(next is not null && next.First.LastFullyTraversedEdgeIndex == 1 &&
       next.Second.LastFullyTraversedEdgeIndex == 1,
     "车辆进入第三段后只新增第二段为完全通过，无需等待整单完成");
 
+var windows = new[]
+{
+    new AgvTransportRouteWindow(0, "P1", "P2", ["P1", "P2"], ["AB"], [], false),
+    new AgvTransportRouteWindow(1, "P2", "P4", ["P2", "P3", "P4"], ["BC", "CD"], [], true)
+};
+var earlierWindowPayload = JsonSerializer.Serialize(new AgvTransportCommandPayload(
+    "WINDOW-V-01", "AGV-WINDOW", "P1", "P2", ["P1", "P2"], null)
+{
+    BusinessStepId = "WINDOW-STEP", WindowIndex = 0, WindowCount = 2, Windows = windows
+}, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+var currentWindowPayload = JsonSerializer.Serialize(new AgvTransportCommandPayload(
+    "WINDOW-V-02", "AGV-WINDOW", "P2", "P4", ["P2", "P3", "P4"], null)
+{
+    BusinessStepId = "WINDOW-STEP", WindowIndex = 1, WindowCount = 2, Windows = windows
+}, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+var currentWindowRequest = new TrafficRequestEntity
+{
+    StepId = "WINDOW-STEP", TaskId = "WINDOW-TASK", VehicleId = "AGV-WINDOW",
+    Source = "P2", Destination = "P4", EdgeIds = "[\"BC\",\"CD\"]", ResourceIds = "[\"PASSED\"]",
+    MapId = "M", MapVersionId = "V1", State = "Held"
+};
+var currentWindowRoute = TransportRouteSnapshots.Capture("WINDOW-TASK", "WINDOW-STEP",
+    "WINDOW-CMD", "AGV-WINDOW", currentWindowPayload, new("M", "V1", map, now),
+    currentWindowRequest);
+var currentWindowJson = TransportRouteSnapshots.Serialize(currentWindowRoute);
+db.Insertable(new DispatchTaskEntity
+{
+    TaskId = "WINDOW-TASK", StationId = "CNC-002", VehicleId = "AGV-WINDOW",
+    VendorTaskId = "WINDOW-V-02", Stage = (int)DispatchTaskStage.GoingToPickup
+}).ExecuteCommand();
+db.Insertable(new DispatchTaskStepEntity
+{
+    StepId = "WINDOW-STEP", TaskId = "WINDOW-TASK", StepType = (int)DispatchTaskStepType.GoToPickup,
+    Status = (int)DispatchTaskStepStatus.Executing, VehicleId = "AGV-WINDOW",
+    VendorTaskId = "WINDOW-V-02", SourceSite = "P1", DestinationSite = "P4"
+}).ExecuteCommand();
+db.Insertable(new[]
+{
+    new AgvCommandOutboxEntity
+    {
+        CommandId = "WINDOW-CMD-OLD", IdempotencyKey = "WINDOW-OLD", TaskId = "WINDOW-TASK",
+        StepId = "WINDOW-STEP", VehicleId = "AGV-WINDOW", VendorCommandId = "WINDOW-V-01",
+        CommandType = (int)AgvCommandType.Transport, Status = (int)AgvCommandStatus.Sent,
+        PayloadJson = earlierWindowPayload, ExecutionMapId = "M", ExecutionMapVersionId = "V1",
+        SentAt = now.AddSeconds(-6).LocalDateTime
+    },
+    new AgvCommandOutboxEntity
+    {
+        CommandId = "WINDOW-CMD", IdempotencyKey = "WINDOW-NEW", TaskId = "WINDOW-TASK",
+        StepId = "WINDOW-STEP", VehicleId = "AGV-WINDOW", VendorCommandId = "WINDOW-V-02",
+        CommandType = (int)AgvCommandType.Transport, Status = (int)AgvCommandStatus.Sent,
+        PayloadJson = currentWindowPayload, ExecutionRouteSnapshotJson = currentWindowJson,
+        ExecutionRouteSnapshotHash = TransportRouteSnapshots.Hash(currentWindowJson),
+        ExecutionMapId = "M", ExecutionMapVersionId = "V1", SentAt = now.AddSeconds(-3).LocalDateTime
+    }
+}).ExecuteCommand();
+db.Insertable(currentWindowRequest).ExecuteCommand();
+db.Insertable(new TrafficResourceLeaseEntity
+{
+    LeaseId = "PASSED-LEASE", ResourceId = "PASSED", OwnerStepId = "WINDOW-STEP",
+    TaskId = "WINDOW-TASK", VehicleId = "AGV-WINDOW", MapId = "M", MapVersionId = "V1",
+    AcquiredAt = now.AddSeconds(-6).LocalDateTime
+}).ExecuteCommand();
+clock.UtcNow = now.AddSeconds(2);
+ApplyWindowTelemetry(now.AddMilliseconds(900), 2.3);
+var windowPending = reader.ReadAsync("AGV-WINDOW", default);
+await Task.Delay(100);
+clock.UtcNow = now.AddSeconds(2.3);
+ApplyWindowTelemetry(now.AddMilliseconds(1200), 2.7);
+var windowPair = await windowPending.WaitAsync(TimeSpan.FromSeconds(3));
+Check(windowPair is not null && windowPair.First.LastFullyTraversedEdgeIndex == 0 &&
+      windowPair.Second.LastFullyTraversedEdgeIndex == 0,
+    "第二窗口命令只按当前厂家任务累计整单路段进度");
+
 var envelopeProvider = new ConfiguredTrafficBodyEnvelopeProvider(handshake, runtime);
 var envelope = await envelopeProvider.ReadAsync("AGV", default);
 Check(envelope is { CalibrationVerified: true, IncludesMaximumPermittedLoad: true } &&
       envelope.VehicleId == "AGV" && Math.Abs(envelope.RadiusFromReportedReferenceMeters - 0.49) < 1e-9,
     "整车包络唯一绑定车辆并包含额定最大载荷");
+
+var executionGate = new MapExecutionGate(new OpenRecoveryBarrier());
+executionGate.SetMode(MapExecutionMode.Running);
+var inspector = new TrafficSegmentReleaseInspector(db, runtime, executionGate,
+    new TrafficSegmentReleasePolicy { Enabled = true },
+    new RecordedProgress(windowPair), envelopeProvider, clock);
+var assessment = await inspector.InspectAsync("WINDOW-STEP", default);
+Check(assessment.Available && assessment.Candidates.Any(candidate =>
+        candidate.ResourceId == "PASSED" && candidate.EvidenceVerified),
+    "当前窗口仍在行驶时，核验通过的旧路段资源可以释放：" + assessment.Reason);
 
 db.Updateable<DispatchTaskStepEntity>().Where(step => step.StepId == "STEP")
     .SetColumns(step => step.VendorTaskId == "OTHER").ExecuteCommand();
@@ -148,8 +238,26 @@ void ApplyTelemetry(DateTimeOffset observedAt, double x, double percentage,
         ], [], observedAt), TimeSpan.FromMilliseconds(20));
 }
 
+void ApplyWindowTelemetry(DateTimeOffset observedAt, double x)
+{
+    cache.ApplyTelemetry("AGV-WINDOW", new AgvRobotTelemetry(
+        x, 0, 0, 0.98, null, "P2", 80, false, false, "2", "P2", "P3", 0.4,
+        [new("WINDOW-V-02-01", 2, null)], [], observedAt), TimeSpan.FromMilliseconds(20));
+}
+
 sealed class FixedClock(DateTimeOffset now) : TimeProvider
 {
     public DateTimeOffset UtcNow { get; set; } = now;
     public override DateTimeOffset GetUtcNow() => UtcNow;
+}
+
+sealed class OpenRecoveryBarrier : IRecoveryBarrier
+{
+    public bool IsOpen => true;
+}
+
+sealed class RecordedProgress(TrafficProgressPair? pair) : IAuthoritativeTrafficProgressReader
+{
+    public Task<TrafficProgressPair?> ReadAsync(string vehicleId, CancellationToken ct)
+        => Task.FromResult(pair);
 }

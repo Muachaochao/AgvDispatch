@@ -301,16 +301,25 @@ public sealed partial class TrafficResourceManager(
     /// that its complete safety envelope is outside every released resource.
     /// </summary>
     public async Task<int> ReleasePassedLeasesAsync(string taskId, string stepId,
-        IReadOnlyCollection<string> leaseIds, string reason, CancellationToken ct)
+        IReadOnlyCollection<TrafficResourceLeaseEntity> expectedLeases,
+        string reason, CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(taskId);
         ArgumentException.ThrowIfNullOrWhiteSpace(stepId);
-        ArgumentNullException.ThrowIfNull(leaseIds);
+        ArgumentNullException.ThrowIfNull(expectedLeases);
         ArgumentException.ThrowIfNullOrWhiteSpace(reason);
         ct.ThrowIfCancellationRequested();
-        var ids = leaseIds.Where(id => !string.IsNullOrWhiteSpace(id))
-            .Distinct(StringComparer.Ordinal).ToArray();
-        if (ids.Length == 0) return 0;
+        var expectedById = expectedLeases
+            .Where(lease => !string.IsNullOrWhiteSpace(lease.LeaseId))
+            .GroupBy(lease => lease.LeaseId, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.ToArray(),
+                StringComparer.Ordinal);
+        if (expectedById.Count == 0) return 0;
+        if (expectedById.Values.Any(group => group.Length != 1))
+            throw new ArgumentException("同一租约不能以不同获取身份重复提交。",
+                nameof(expectedLeases));
+        var expected = expectedById.Values.Select(group => group[0]).ToArray();
+        var ids = expected.Select(lease => lease.LeaseId).ToArray();
 
         var released = 0;
         var transaction = await database.Ado.UseTranAsync(async () =>
@@ -318,24 +327,56 @@ public sealed partial class TrafficResourceManager(
             var leases = await database.Queryable<TrafficResourceLeaseEntity>()
                 .Where(l => l.TaskId == taskId && l.OwnerStepId == stepId && ids.Contains(l.LeaseId))
                 .ToListAsync(ct);
-            if (leases.Count == 0) return;
-            await database.Deleteable<TrafficResourceLeaseEntity>()
-                .Where(l => l.TaskId == taskId && l.OwnerStepId == stepId &&
-                    leases.Select(item => item.LeaseId).Contains(l.LeaseId))
+            if (leases.Count != expected.Length) return;
+            var currentById = leases.ToDictionary(lease => lease.LeaseId,
+                StringComparer.Ordinal);
+            if (expected.Any(captured =>
+                {
+                    if (!currentById.TryGetValue(captured.LeaseId, out var current)) return true;
+                    return current.TaskId != taskId || current.OwnerStepId != stepId ||
+                        current.VehicleId != captured.VehicleId ||
+                        current.ResourceId != captured.ResourceId ||
+                        current.MapId != captured.MapId ||
+                        current.MapVersionId != captured.MapVersionId ||
+                        !current.AcquiredAt.Equals(captured.AcquiredAt);
+                }))
+                return;
+            var vehicleId = expected[0].VehicleId;
+            var mapId = expected[0].MapId;
+            var mapVersionId = expected[0].MapVersionId;
+            if (string.IsNullOrWhiteSpace(vehicleId) || string.IsNullOrWhiteSpace(mapId) ||
+                string.IsNullOrWhiteSpace(mapVersionId) ||
+                expected.Any(lease => lease.VehicleId != vehicleId ||
+                    lease.MapId != mapId || lease.MapVersionId != mapVersionId))
+                return;
+            var exactLease = Expressionable.Create<TrafficResourceLeaseEntity>();
+            foreach (var captured in expected)
+            {
+                exactLease.Or(l => l.TaskId == taskId && l.OwnerStepId == stepId &&
+                    l.LeaseId == captured.LeaseId &&
+                    l.VehicleId == captured.VehicleId &&
+                    l.ResourceId == captured.ResourceId &&
+                    l.MapId == captured.MapId &&
+                    l.MapVersionId == captured.MapVersionId &&
+                    l.AcquiredAt == captured.AcquiredAt);
+            }
+            var deleted = await database.Deleteable<TrafficResourceLeaseEntity>()
+                .Where(exactLease.ToExpression())
                 .ExecuteCommandAsync(ct);
+            if (deleted != expected.Length)
+                throw new InvalidOperationException("租约身份在释放事务中发生变化。");
             var remaining = await database.Queryable<TrafficResourceLeaseEntity>()
                 .Where(l => l.TaskId == taskId && l.OwnerStepId == stepId)
                 .ToListAsync(ct);
-            var first = leases[0];
-            await RecordLeaseChangeAsync(stepId, taskId, first.VehicleId, "ResourceReleased",
-                leases.Select(l => l.ResourceId), reason, ct);
-            await WriteStateAsync(stepId, taskId, first.VehicleId,
+            await RecordLeaseChangeAsync(stepId, taskId, vehicleId, "ResourceReleased",
+                expected.Select(l => l.ResourceId), reason, ct);
+            await WriteStateAsync(stepId, taskId, vehicleId,
                 remaining.Count == 0 ? "Released" : "Held",
                 remaining.Count == 0
                     ? reason
                     : reason + " 终点或仍有车体覆盖的资源继续占用。",
                 remaining.Select(l => l.ResourceId).ToArray(), ct);
-            released = leases.Count;
+            released = deleted;
         });
         if (!transaction.IsSuccess)
             throw new InvalidOperationException("已完成运输路段释放事务失败，原占用保持不变。",

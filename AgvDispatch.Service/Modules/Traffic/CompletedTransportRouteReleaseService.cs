@@ -169,8 +169,7 @@ public sealed class CompletedTransportRouteReleaseService(
             return new(0, "缺少已核定的完整车体、载荷包络或定位误差界。");
 
         var destination = destinationMatches[0];
-        var protectedResources = destination.ResourceIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
-        if (windowBoundary) protectedResources.UnionWith(payload.Windows[payload.WindowIndex + 1].ResourceIds);
+        var destinationResources = destination.ResourceIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
         var requestedResources = (JsonSerializer.Deserialize<string[]>(request.ResourceIds) ?? [])
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var definitions = map.Definition.Resources.ToDictionary(item => item.Id,
@@ -180,14 +179,14 @@ public sealed class CompletedTransportRouteReleaseService(
         if (!double.IsFinite(radius) || radius <= 0 ||
             !double.IsFinite(releasePolicy.SafetyMarginMeters) || releasePolicy.SafetyMarginMeters < 0.1)
             return new(0, "包络安全余量无效，保留路权。");
-        var candidates = new List<string>();
+        var candidates = new List<TrafficResourceLeaseEntity>();
         var topology = windowBoundary ? MapCorridorResources.Enrich(map.Definition) : null;
         var graphNodes = windowBoundary ? map.Definition.Nodes.ToDictionary(n => n.Id, StringComparer.OrdinalIgnoreCase) : null;
         foreach (var lease in leases)
         {
             if (string.IsNullOrWhiteSpace(lease.LeaseId) ||
                 lease.MapId != map.MapId || lease.MapVersionId != map.VersionId ||
-                protectedResources.Contains(lease.ResourceId) ||
+                lease.VehicleId != step.VehicleId ||
                 !requestedResources.Contains(lease.ResourceId))
                 continue;
             // The completed vendor step and exact destination arrival are
@@ -196,31 +195,40 @@ public sealed class CompletedTransportRouteReleaseService(
             // STANDBY-* and DUMPER-WAIT-*). They are still constrained to the
             // immutable request resource set and destination resources remain
             // protected. Polygon resources retain the independent envelope check.
-            if (definitions.TryGetValue(lease.ResourceId, out var definition))
+            var hasBoundary = definitions.TryGetValue(lease.ResourceId, out var definition) &&
+                definition.Capacity >= 1 && ValidBoundary(definition.Boundary);
+            if (hasBoundary)
             {
-                if (definition.Capacity < 1 || !ValidBoundary(definition.Boundary) ||
-                    !Outside(x, y, radius, definition.Boundary!))
-                    continue;
+                if (!Outside(x, y, radius, definition!.Boundary!)) continue;
             }
-            else if (windowBoundary)
+            else
             {
-                // Generated corridor guards have no polygon. Keep any guard
-                // touching the current body, even if it is absent from the stop node.
-                var guarded = topology!.Edges.Where(e => e.ResourceIds.Contains(lease.ResourceId, StringComparer.OrdinalIgnoreCase)).ToArray();
-                if (guarded.Length == 0 || guarded.Any(e =>
+                // A boundaryless resource listed on the current stop node is the
+                // only unconditional protection: without geometry there is no
+                // independent proof that the complete body has left it.
+                if (destinationResources.Contains(lease.ResourceId)) continue;
+                if (windowBoundary)
                 {
-                    if (!MapEdgeGeometry.TryValidate(e, graphNodes![e.From], graphNodes[e.To], out _)) return true;
-                    var distance = MapEdgeGeometry.DistanceTo(e, graphNodes[e.From], graphNodes[e.To], x, y);
-                    return !double.IsFinite(distance) || distance <= radius;
-                })) continue;
+                    // Generated corridor guards also have no polygon. Use their
+                    // actual edge geometry and keep unknown geometry conservatively.
+                    var guarded = topology!.Edges.Where(e =>
+                        e.ResourceIds.Contains(lease.ResourceId, StringComparer.OrdinalIgnoreCase)).ToArray();
+                    if (guarded.Length == 0 || guarded.Any(e =>
+                    {
+                        if (!MapEdgeGeometry.TryValidate(e, graphNodes![e.From], graphNodes[e.To], out _))
+                            return true;
+                        var distance = MapEdgeGeometry.DistanceTo(e, graphNodes[e.From], graphNodes[e.To], x, y);
+                        return !double.IsFinite(distance) || distance <= radius;
+                    })) continue;
+                }
             }
-            candidates.Add(lease.LeaseId);
+            candidates.Add(lease);
         }
         if (candidates.Count == 0)
             return new(0, "前序路段仍被车体覆盖或只剩终点资源，继续保留。");
 
         var released = await resources.ReleasePassedLeasesAsync(taskId, stepId, candidates,
-            windowBoundary ? "原厂家窗口已完成且车辆在安全点停稳，按完整包络释放已通过的旧窗口资源；当前停点和下一窗口重用资源继续保留，原业务步骤未完成。" :
+            windowBoundary ? "原厂家窗口已完成且车辆在安全点停稳，按完整包络释放已通过的旧窗口资源；当前停点资源及仍被车体覆盖或几何无法核定的下一窗口资源继续保留，原业务步骤未完成。" :
                 "车辆已完成原运输并停到明确终点；释放该步骤已走过的全部前序路权，终点资源继续保留。",
             ct);
         return new(released, released == 0

@@ -71,11 +71,34 @@ public sealed class AgvTrafficProgressReader(
                 command.CommandType == (int)AgvCommandType.Transport &&
                 command.Status == (int)AgvCommandStatus.Sent)
             .ToListAsync(ct);
-        if (commands.Count != 1) return null;
-        var command = commands[0];
+        var matchingCommands = commands.Where(item => item.VendorCommandId == step.VendorTaskId).ToArray();
+        if (matchingCommands.Length != 1) return null;
+        var command = matchingCommands[0];
         var route = TransportRouteSnapshots.Read(command);
         var payload = JsonSerializer.Deserialize<AgvTransportCommandPayload>(command.PayloadJson, JsonOptions);
-        if (payload?.Path is not { Count: >= 2 } path || path.Count != route.EdgeIds.Length + 1)
+        if (payload?.Path is not { Count: >= 2 } path || payload.Windows is null ||
+            route.AgvSites.Length != route.EdgeIds.Length + 1) return null;
+
+        var windowStart = 0;
+        if (payload.Windows.Count == 0)
+        {
+            if (path.Count != route.AgvSites.Length) return null;
+        }
+        else
+        {
+            var windows = payload.Windows.OrderBy(item => item.Index).ToArray();
+            if (payload.WindowIndex < 0 || payload.WindowIndex >= windows.Length ||
+                windows.Where((item, index) => item.Index != index || item.EdgeIds is null).Any())
+                return null;
+            var current = windows[payload.WindowIndex];
+            windowStart = windows.Take(payload.WindowIndex).Sum(item => item.EdgeIds.Count);
+            if (current.EdgeIds.Count != path.Count - 1 ||
+                !route.EdgeIds.Skip(windowStart).Take(current.EdgeIds.Count)
+                    .SequenceEqual(current.EdgeIds, StringComparer.OrdinalIgnoreCase))
+                return null;
+        }
+        if (!route.AgvSites.Skip(windowStart).Take(path.Count)
+                .SequenceEqual(path, StringComparer.OrdinalIgnoreCase))
             return null;
         var profiles = handshake.DumperExit.BodyProfiles
             .Where(profile => profile.VehicleId.Equals(vehicleId, StringComparison.OrdinalIgnoreCase))
@@ -88,7 +111,7 @@ public sealed class AgvTrafficProgressReader(
         var segmentIds = AgvTransportSegmentIds.For(step.VendorTaskId, path.Count);
         return new(step.TaskId, step.StepId, step.VendorTaskId, command.CommandId,
             command.ExecutionRouteSnapshotHash!, route.MapId, route.MapVersionId,
-            route.CoordinateFrameId, path.ToArray(), segmentIds.ToArray(),
+            route.CoordinateFrameId, path.ToArray(), segmentIds.ToArray(), windowStart,
             profiles[0].MaximumPositionUncertaintyMeters);
     }
 
@@ -113,13 +136,13 @@ public sealed class AgvTrafficProgressReader(
             : indexed.Where(row => row.Task.Status == 1).ToArray();
         if (candidates.Length != 1) return null;
         var currentIndex = candidates[0].Index;
-        if (!string.Equals(snapshot.SourceStation, context.Path[currentIndex], StringComparison.OrdinalIgnoreCase) ||
-            !string.Equals(snapshot.TargetStation, context.Path[currentIndex + 1], StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(snapshot.SourceStation, context.WindowPath[currentIndex], StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(snapshot.TargetStation, context.WindowPath[currentIndex + 1], StringComparison.OrdinalIgnoreCase))
             return null;
 
         // A running move task proves only that its preceding edges are complete.
         // The current edge is not declared complete from percentage alone.
-        var lastFullyTraversed = currentIndex - 1;
+        var lastFullyTraversed = context.WindowStartEdgeIndex + currentIndex - 1;
         var epoch = "ROBOKIT-" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
             System.Text.Encoding.UTF8.GetBytes(
                 $"{snapshot.VehicleId}|{context.VendorTaskId}|{context.CommandId}|{context.RouteRevision}")))[..16];
@@ -131,6 +154,7 @@ public sealed class AgvTrafficProgressReader(
 
     private sealed record ProgressContext(string TaskId, string StepId, string VendorTaskId,
         string CommandId, string RouteRevision, string MapId, string MapVersionId,
-        string CoordinateFrameId, string[] Path, string[] SegmentIds,
+        string CoordinateFrameId,
+        string[] WindowPath, string[] SegmentIds, int WindowStartEdgeIndex,
         double PositionUncertaintyMeters);
 }
