@@ -70,7 +70,10 @@ public sealed partial class TrafficResourceControlService(
                 configured ? definition.Capacity : persisted?.Capacity ?? 1,
                 resourceLeases.Select(lease => lease.TaskId)
                     .Distinct(StringComparer.OrdinalIgnoreCase).Count(),
-                resourceLeases);
+                resourceLeases)
+            {
+                RuntimeBoundary = configured && MapCorridorResources.IsAutomatic(resourceId) ? definition.Boundary : null
+            };
         }).ToArray();
     }
 

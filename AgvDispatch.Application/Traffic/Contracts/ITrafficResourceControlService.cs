@@ -20,7 +20,10 @@ public sealed record TrafficResourceSnapshot(
     TrafficResourceType? Type,
     int Capacity,
     int OccupiedCount,
-    IReadOnlyList<TrafficResourceLeaseSnapshot> Leases);
+    IReadOnlyList<TrafficResourceLeaseSnapshot> Leases)
+{
+    public IReadOnlyList<MapPoint2D>? RuntimeBoundary { get; init; }
+}
 
 public sealed record TrafficResourceReleaseAuditSnapshot(
     string AuditId,
