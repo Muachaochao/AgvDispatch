@@ -111,9 +111,15 @@ internal static class Program
         Check(!db.Queryable<TrafficResourceLeaseEntity>().Any(l=>l.TaskId=="TASK-A") && (await control.GetLifecycleAsync(default)).Events.Any(e=>e.StepId=="STEP-A2" && e.Kind=="Released"), "已完成任务正常释放并保存过程记录");
         Check((await control.GetLifecycleAsync(default)).Requests.Single(r=>r.StepId=="STEP-B").Reason.Contains("重新规划"), "阻塞方释放后等待下一轮调度不在查询时自动授予");
         Check((await manager.TryAcquireAsync("STEP-B","TASK-B","AGV-B",["CROSS","NARROW"],default)).Acquired, "冲突解除后原请求可重新取得完整资源");
-        var eventCount=db.Queryable<TrafficLifecycleEventEntity>().Count();
-        await manager.ReleaseStepAsync("STEP-B",default); await manager.ReleaseStepAsync("STEP-B",default);
-        Check(db.Queryable<TrafficLifecycleEventEntity>().Count()==eventCount+1, "准备回滚幂等不伪造重复释放");
+        var beforeRelease = db.Queryable<TrafficLifecycleEventEntity>().Where(e => e.StepId == "STEP-B")
+            .Select(e => e.EventId).ToList().ToHashSet();
+        await manager.ReleaseStepAsync("STEP-B",default);
+        var releaseEvents = db.Queryable<TrafficLifecycleEventEntity>().Where(e => e.StepId == "STEP-B")
+            .ToList().Where(e => !beforeRelease.Contains(e.EventId)).ToArray();
+        await manager.ReleaseStepAsync("STEP-B",default);
+        Check(releaseEvents.Select(e => e.Kind).Order().SequenceEqual(new[] { "Released", "ResourceReleased" }) &&
+            db.Queryable<TrafficLifecycleEventEntity>().Where(e => e.StepId == "STEP-B").Count() == beforeRelease.Count + releaseEvents.Length,
+            "准备回滚仅记录一次物理资源释放和一次请求终态，重试不增记");
         await manager.RecordRouteAsync(routeA with { StepId="STEP-B",TaskId="TASK-B",VehicleId="AGV-B",EdgeIds=["DETOUR-EDGE"],ResourceIds=["CROSS"],Reason="冲突解除后选择绕行路径。" },default);
         await manager.TryAcquireAsync("STEP-B","TASK-B","AGV-B",["CROSS"],default);
         Check((await control.GetLifecycleAsync(default)).Requests.Single(r=>r.StepId=="STEP-B").EdgeIds.SequenceEqual(new[]{"DETOUR-EDGE"}), "新的可行路径替换旧等待诊断路段");
