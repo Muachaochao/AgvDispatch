@@ -30,7 +30,7 @@ export interface DispatchStatus {
   map?: SourceMap | null;
   device?: { time: number; cars?: Record<string, DispatchCar> } | null;
   configuration?: {
-    vehicles?: { id: string; initialSite: string; initialLoaded?: boolean; speedScale?: number }[];
+    vehicles?: { id: string; initialSite: string; initialLoaded?: boolean; speedScale?: number; lengthMeters?: number; widthMeters?: number }[];
     stations?: { stationId: string; pickupSite?: string }[];
     dumper?: { dumpingSite: string; waitingSite: string; waitingSites?: string[]; resourceId: string };
     inspectionSite?: string;
@@ -50,17 +50,19 @@ export interface DispatchStatus {
     vehicleCount?: number;
     stationCount?: number;
   }[];
-  scenario?: { id?: string; name?: string; status?: string; message?: string; callRows?: CallRow[] };
+  scenario?: { id?: string; name?: string; status?: string; message?: string; startedAt?: number; callRows?: CallRow[] };
   history?: DispatchReport[];
   report?: DispatchReport | null;
 }
 export interface DispatchReport {
     id?: string;
     name?: string;
+    startedAt?: number;
     finishedAt?: number;
     status?: string;
     message?: string;
     firstFailure?: string;
+    callRows?: CallRow[];
     waitingChain?: {
       taskId?: string;
       stationId?: string;
@@ -80,6 +82,13 @@ export interface CallRow {
   taskId?: string;
   vehicleId?: string;
   stepNumber?: number;
+  stepId?: string;
+  stepType?: string;
+  stepName?: string;
+  stepStartedAt?: string;
+  destinationSite?: string;
+  sourceSite?: string;
+  createdAt?: string;
   taskStage?: string;
   status: string;
   waitingExplanation?: string;
@@ -89,15 +98,26 @@ export interface TaskRow {
   vehicleId?: string | null;
   stationId?: string;
   stage: string;
+  createdAt?: string;
 }
 export interface ResourceRow {
   resourceId: string;
   capacity: number;
   occupiedCount: number;
-  leases?: { vehicleId: string; taskId: string }[];
+  runtimeBoundary?: { x: number; y: number }[] | null;
+  leases?: { vehicleId: string; taskId: string; acquiredAt?: string }[];
 }
 export interface DispatchMonitor extends DispatchWaitSnapshot {
   resources?: ResourceRow[];
+}
+export interface DispatchTrafficEvent {
+  eventId: string;
+  kind: string;
+  resourceIds: string[];
+  vehicleId?: string;
+  taskId?: string;
+  reason?: string;
+  occurredAt: string;
 }
 
 export async function dispatchRead<T>(
@@ -121,6 +141,7 @@ function proxyPath(path: string) {
   const [pathname, query] = path.split("?", 2);
   if (pathname === "/api/simulation") return withQuery("/dispatch/main/simulation", query);
   if (pathname === "/api/simulation/live") return "/dispatch/main/simulation/live";
+  if (pathname === "/api/simulation/snapshot") return "/dispatch/main/simulation/snapshot";
   if (pathname === "/api/simulation/monitor") return "/dispatch/main/simulation/monitor";
   if (pathname === "/api/simulation/resources") return "/dispatch/main/simulation/resources";
   if (pathname === "/api/simulation/tasks") {

@@ -2,8 +2,9 @@
 import { computed, defineAsyncComponent, ref, shallowRef, watch } from 'vue'
 import type { RoadNetPayload } from '@/api/roadnet'
 import { dispatchSceneMap, dispatchViews, workshopMapName, type SourceMap } from '@/integration/dispatch-adapter'
-import { mapBounds } from '@/integration/map-navigation'
-import { simulationVehicleVisualColor, simulationVehicleVisualLabel, type SimulationVehicle } from '@main-web/simulation'
+import { mapBounds, mapNavigationItems, type MapLocation, type MapPoint } from '@/integration/map-navigation'
+import { simulationVehicleVisualColor, simulationVehicleVisualLabel } from '@main-web/simulation'
+import type { DispatchCar } from '@/integration/dispatch-adapter'
 import RoadNetEditor from './RoadNetEditor.vue'
 
 const RoadNetScene = defineAsyncComponent(() => import('./RoadNetScene.vue'))
@@ -11,16 +12,25 @@ const props = defineProps<{
   definition?: SourceMap | null
   fleetCount?: number
   stationCount?: number
-  cars?: Record<string, SimulationVehicle>
+  cars?: Record<string, DispatchCar>
   fresh?: boolean
   selectedVehicle?: string
   roadHighlights?: Record<string, string>
+  resourceBoundary?: MapPoint[]
+  route?: MapPoint[]
+  routeColor?: string
+  location?: { nodeId?: string; edgeIds?: string[]; vehicleId?: string; point?: MapPoint; label?: string } | null
+  vehicleProfiles?: { id: string; lengthMeters?: number; widthMeters?: number }[]
+  selectNodes?: boolean
+  selectedNodeIds?: string[]
 }>()
-const emit = defineEmits<{ selectVehicle: [id: string] }>()
+const emit = defineEmits<{ selectVehicle: [id: string]; selectNode: [node: { id: string; type: string }] }>()
 const preview = shallowRef<{ map: RoadNetPayload; offset: { x: number; y: number } } | null>(null)
 const revision = ref(0)
 const error = ref('')
 const show3d = ref(false)
+const editor = ref<InstanceType<typeof RoadNetEditor> | null>(null)
+const scene = ref<InstanceType<typeof RoadNetScene> | null>(null)
 let lastDefinition: string | undefined
 
 watch(() => props.definition, (definition) => {
@@ -63,6 +73,7 @@ watch(() => props.definition, (definition) => {
 }, { immediate: true })
 
 const title = computed(() => props.definition ? workshopMapName(props.definition) : '地图预览')
+const profiles = computed(() => new Map(props.vehicleProfiles?.map(profile => [profile.id, profile])))
 const agvs = computed(() => {
   const offset = preview.value?.offset
   const cars = props.cars
@@ -70,12 +81,15 @@ const agvs = computed(() => {
   const fresh = props.fresh === true
   return dispatchViews(cars, fresh).map(car => {
     const feedback = cars[car.id]!
+    const { recovery: _recovery, ...visualFeedback } = feedback
     return {
       ...car,
+      lengthMeters: profiles.value.get(car.id)?.lengthMeters,
+      widthMeters: profiles.value.get(car.id)?.widthMeters,
       x: car.x - offset.x,
       y: car.y + offset.y,
-      color: simulationVehicleVisualColor(feedback, fresh),
-      label: simulationVehicleVisualLabel(feedback, fresh),
+      color: simulationVehicleVisualColor(visualFeedback, fresh),
+      label: simulationVehicleVisualLabel(visualFeedback, fresh),
       loaded: feedback.loaded
     }
   })
@@ -84,6 +98,38 @@ const routes = computed(() => preview.value?.map.edges.flatMap(edge => {
   const color = props.roadHighlights?.[edge.id]
   return color && edge.points?.length ? [{ id: edge.id, color, points: edge.points }] : []
 }) ?? [])
+const navigation = computed(() => {
+  const offset = preview.value?.offset
+  return offset ? (props.route ?? []).map(point => ({ x: point.x - offset.x, y: point.y + offset.y })) : []
+})
+const overlays = computed(() => {
+  const paths = [...routes.value, { id: 'active-navigation', points: navigation.value, color: props.routeColor ?? '#14796f' }]
+  const offset = preview.value?.offset, boundary = props.resourceBoundary
+  if (offset && boundary?.length) {
+    paths.push({ id: 'resource-boundary', color: '#be5b20', points: [...boundary, boundary[0]!]
+      .map(point => ({ x: point.x - offset.x, y: -point.y + offset.y })) })
+  }
+  return paths
+})
+const staticLocations = computed(() => mapNavigationItems(preview.value?.map ?? null))
+const vehicleLocations = computed<MapLocation[]>(() => agvs.value.map(car => ({ ...car, kind: 'vehicle' })))
+function focusLocation() {
+  const location = props.location, offset = preview.value?.offset
+  if (!location || !offset) return
+  const point = location.point && { x: location.point.x - offset.x, y: -location.point.y + offset.y }
+  const vehicle = vehicleLocations.value.find(item => item.id === location.vehicleId)
+  const edgeIds = location.edgeIds ?? []
+  editor.value?.focusMap(location.nodeId ? [location.nodeId] : [], edgeIds, vehicle ?? (edgeIds.length ? undefined : point))
+  if (!scene.value) return
+  const target = vehicle ?? staticLocations.value.find(item => item.id === (location.nodeId ?? edgeIds[0]))
+    ?? (point && { ...point, id: location.label ?? '资源', kind: 'edge' as const })
+  if (target) scene.value.locate(target)
+}
+function selectNode(node: { id: string; type: string }) {
+  if (props.selectNodes) emit('selectNode', node)
+}
+watch([() => props.location, editor, scene], focusLocation, { flush: 'post' })
+watch([overlays, scene], ([paths, mapScene]) => mapScene?.drawPaths(paths), { flush: 'post' })
 const legend = [
   { text: '执行中', color: '#41d9bf' },
   { text: '作业等待／载箱待命', color: '#e8bf64' },
@@ -106,16 +152,17 @@ const legend = [
     </header>
     <el-alert v-if="error" type="error" :title="`地图预览加载失败 · ${error}`" :closable="false" show-icon />
     <div v-else-if="preview" class="preview-canvas">
-      <RoadNetEditor :key="revision" :initial="preview.map" :name="title" preview-only>
+      <RoadNetEditor :key="revision" ref="editor" :initial="preview.map" :name="title" preview-only
+        :vehicle-locations="vehicleLocations" @vehicle-select="emit('selectVehicle', $event)" @node-select="selectNode">
         <template #preview-actions>
           <el-button size="small" @click="show3d = true">3D 预览</el-button>
         </template>
         <template #map-overlay="{ pixelsPerMeter, zoom }">
-          <g v-if="routes.length || agvs.length" data-export="ignore">
-            <polyline v-for="segment in routes" :key="segment.id" class="preview-route"
+          <g v-if="overlays.length || agvs.length" data-export="ignore">
+            <polyline v-for="segment in overlays" :key="segment.id" class="preview-route"
               :points="segment.points.map(point => `${point.x * pixelsPerMeter},${point.y * pixelsPerMeter}`).join(' ')"
               :stroke="segment.color" />
-            <g v-for="car in agvs" :key="car.id" class="preview-vehicle"
+            <g v-for="(car, index) in agvs" :key="car.id" class="preview-vehicle"
               :class="{ selected: car.id === selectedVehicle }"
               :transform="`translate(${car.x * pixelsPerMeter} ${car.y * pixelsPerMeter})`"
               role="button" tabindex="0" :aria-label="`查看 ${car.id}`"
@@ -128,7 +175,7 @@ const legend = [
                 <path d="M2,-4 L8,0 L2,4 Z" />
                 <circle v-if="car.loaded" cx="-5" cy="0" r="3" fill="#fff3c5" />
               </g>
-              <text x="0" y="-12" :class="{ 'visible-label': zoom >= 1.6 }">{{ car.id }}</text>
+              <text :x="(index % 2) * 18 - 9" :y="-12 - (index % 3) * 15" :class="{ 'visible-label': zoom >= 1.6 }">{{ car.id }}</text>
             </g>
           </g>
         </template>
@@ -141,7 +188,9 @@ const legend = [
 
     <el-dialog v-model="show3d" :title="`${title} · 3D 预览`" width="min(92vw, 1500px)" top="5vh" destroy-on-close>
       <div v-if="preview" class="preview-3d">
-        <RoadNetScene :roadnet="preview.map" :agvs="agvs" :observed="fresh" />
+        <RoadNetScene ref="scene" :roadnet="preview.map" :agvs="agvs" :observed="fresh" exact-geometry
+          :selectable="selectNodes" :selected-node-ids="selectedNodeIds" vehicle-selectable
+          @vehicle-select="emit('selectVehicle', $event)" @node-select="selectNode" />
       </div>
     </el-dialog>
   </section>

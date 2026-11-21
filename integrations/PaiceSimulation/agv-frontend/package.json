@@ -11,7 +11,7 @@
     "e2e:roadnet": "node ../scripts/e2e-roadnet.mjs",
     "e2e:taskset": "node ../scripts/e2e-taskset.mjs",
     "e2e:sim": "node ../scripts/e2e-simulation.mjs",
-    "test:dispatch": "node --experimental-strip-types --test tests/dispatch-adapter.test.ts tests/engineering-points.test.ts",
+    "test:dispatch": "node --experimental-strip-types --test tests/dispatch-adapter.test.ts tests/engineering-points.test.ts tests/simulation-monitor.test.ts",
     "e2e:dispatch": "node ../scripts/e2e-dispatch.mjs"
   },
   "dependencies": {

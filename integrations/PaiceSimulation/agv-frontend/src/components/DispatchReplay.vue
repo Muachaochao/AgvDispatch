@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from "vue";
-import RoadNetScene from "@/components/RoadNetScene.vue";
-import { dispatchSceneMap, type Point, type SourceMap } from "@/integration/dispatch-adapter";
+import SimulationWorkshopMap from "@/components/SimulationWorkshopMap.vue";
+import { dispatchSceneMap, type DispatchCar, type Point, type SourceMap } from "@/integration/dispatch-adapter";
 import { dispatchRead } from "@/integration/dispatch-api";
 
 interface ReplayFrame {
   time: number;
-  vehicles?: (Point & { vehicleId: string; angle?: number; site?: string; waitReason?: string })[];
+  vehicles?: (Point & { vehicleId: string; angle?: number; site?: string; waitReason?: string; loaded?: boolean; moving?: boolean; offline?: boolean; taskId?: string | null })[];
   tasks?: { taskId: string; stationId?: string; vehicleId?: string; stage?: string; step?: string; waitReason?: string }[];
 }
 interface DispatchReplay {
@@ -30,10 +30,18 @@ const lifetime = new AbortController();
 const timeline = computed(() => replay.value?.timeline ?? []);
 const frame = computed(() => timeline.value[frameIndex.value]);
 const map = computed(() => replay.value?.map ? dispatchSceneMap(replay.value.map) : null);
-const cars = computed(() => (frame.value?.vehicles ?? []).filter(validPosition).map(car => ({
-  id: car.vehicleId, x: car.x, y: -car.y, heading: (car.angle ?? 0) * 180 / Math.PI,
-  status: "IDLE", taskId: -1, station: car.site,
-})));
+const cars = computed<Record<string, DispatchCar>>(() => Object.fromEntries(
+  (frame.value?.vehicles ?? []).filter(validPosition).map(car => [car.vehicleId, {
+    x: car.x, y: car.y, angle: car.angle, station: car.site, waitReason: car.waitReason,
+    loaded: car.loaded, moving: car.moving, offline: car.offline, current_task: car.taskId,
+  }]),
+));
+const selectedVehicle = ref("");
+const location = shallowRef<{ vehicleId: string } | null>(null);
+function locateVehicle(vehicleId: string) {
+  selectedVehicle.value = vehicleId;
+  location.value = { vehicleId };
+}
 const stageNames: Record<string, string> = {
   WaitingForVehicle: "待派车", SubmittingToAgv: "下发命令", GoingToPickup: "前往取箱",
   PickingUp: "取箱", GoingToDumper: "运送满箱", WaitingForDumper: "等待倒料",
@@ -212,10 +220,13 @@ async function exportVideo() {
         <span>{{ displayTime(frame.time) }} · {{ frameIndex + 1 }} / {{ timeline.length }}{{ replay?.sampled ? `（原始 ${replay.totalSamples ?? "多条"} 条采样）` : "" }}</span>
         <input v-model.number="frameIndex" type="range" min="0" :max="timeline.length - 1" aria-label="回放时间点" @input="playing = false" />
       </label>
-      <RoadNetScene v-if="map" :roadnet="map" :agvs="cars" observed />
+      <SimulationWorkshopMap v-if="replay?.map" :definition="replay.map" :cars="cars" :fresh="true"
+        :selected-vehicle="selectedVehicle" :location="location" @select-vehicle="locateVehicle" />
       <p v-else>{{ replay?.mapMessage || "该轮报告未提供地图快照" }}</p>
       <el-table :data="frame.vehicles ?? []" size="small" empty-text="该采样没有车辆反馈">
-        <el-table-column prop="vehicleId" label="车辆" width="105" />
+        <el-table-column label="车辆" width="105"><template #default="{ row }">
+          <el-button link type="primary" @click="locateVehicle(row.vehicleId)">{{ row.vehicleId }}</el-button>
+        </template></el-table-column>
         <el-table-column prop="site" label="当前点位" min-width="180" />
         <el-table-column label="坐标 (m)" min-width="150"><template #default="{ row }">
           {{ validPosition(row) ? `${row.x.toFixed(2)}, ${row.y.toFixed(2)}` : "—" }}

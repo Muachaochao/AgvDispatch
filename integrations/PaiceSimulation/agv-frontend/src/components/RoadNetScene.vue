@@ -14,11 +14,14 @@ const props = defineProps<{
   showGrid?: boolean;
   observed?: boolean;
   selectable?: boolean;
+  vehicleSelectable?: boolean;
+  exactGeometry?: boolean;
   selectedNodeIds?: string[];
 }>();
 
 const emit = defineEmits<{
   nodeSelect: [node: { id: string; type: string }];
+  vehicleSelect: [id: string];
 }>();
 
 const container = ref<HTMLDivElement | null>(null);
@@ -28,6 +31,7 @@ const located = shallowRef<MapLocation | null>(null);
 const zoom = ref(100);
 const showLabels = ref(false);
 const marked = ref(false);
+const dragging = ref(false);
 const viewport = shallowRef<MapBounds | null>(null);
 const items = computed<MapLocation[]>(() => [...staticItems.value, ...(props.agvs ?? []).map(car => ({
   id: car.id, x: car.x, y: car.y, kind: "vehicle" as const,
@@ -57,10 +61,12 @@ const nodeVisuals = new Map<string, THREE.Mesh>();
 let renderedPoints: Array<{ x: number; y: number }> = [];
 const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
-let pointerStart: { x: number; y: number } | null = null;
+let pointerStart: { id: number; x: number; y: number } | null = null;
+const groundHit = new THREE.Vector3();
 
 interface AgvMesh {
   group: THREE.Group;
+  box: THREE.Mesh;
   target: THREE.Vector3;
   targetHeading: number;
   status: string;
@@ -108,7 +114,10 @@ function init() {
   renderer.setSize(el.clientWidth, el.clientHeight);
   el.appendChild(renderer.domElement);
   renderer.domElement.addEventListener("pointerdown", onPointerDown);
+  renderer.domElement.addEventListener("pointermove", onPointerMove);
   renderer.domElement.addEventListener("pointerup", onPointerUp);
+  renderer.domElement.addEventListener("pointercancel", cancelPointer);
+  renderer.domElement.addEventListener("lostpointercapture", cancelPointer);
 
   controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
@@ -145,45 +154,50 @@ function updateNodeSelection() {
 }
 
 function onPointerDown(event: PointerEvent) {
-  if (!props.selectable || event.button !== 0) {
-    pointerStart = null;
-    return;
-  }
-  pointerStart = { x: event.clientX, y: event.clientY };
+  dragging.value = true;
+  pointerStart = (props.selectable || props.vehicleSelectable) && event.button === 0 && event.isPrimary
+    ? { id: event.pointerId, x: event.clientX, y: event.clientY } : null;
 }
-
-function onPointerUp(event: PointerEvent) {
-  if (
-    !props.selectable ||
-    event.button !== 0 ||
-    pointerStart === null ||
-    Math.hypot(event.clientX - pointerStart.x, event.clientY - pointerStart.y) > 5
-  ) {
-    pointerStart = null;
-    return;
-  }
+function onPointerMove(event: PointerEvent) {
+  if (pointerStart?.id !== event.pointerId) return;
+  if (Math.hypot(event.clientX - pointerStart.x, event.clientY - pointerStart.y) > 5) pointerStart = null;
+}
+function cancelPointer() {
+  dragging.value = false;
   pointerStart = null;
+}
+function onPointerUp(event: PointerEvent) {
+  onPointerMove(event);
+  const shouldSelect = event.button === 0 && pointerStart?.id === event.pointerId;
+  cancelPointer();
+  if (!shouldSelect) return;
   const rect = renderer.domElement.getBoundingClientRect();
+  if (props.vehicleSelectable) {
+    let nearest: string | undefined, distance = 16;
+    for (const [id, mesh] of agvMeshes) {
+      const point = groundHit.copy(mesh.group.position).project(camera);
+      if (point.z < -1 || point.z > 1) continue;
+      const pixels = Math.hypot(event.clientX - rect.left - (point.x + 1) * rect.width / 2,
+        event.clientY - rect.top - (1 - point.y) * rect.height / 2);
+      if (pixels < distance) { nearest = id; distance = pixels; }
+    }
+    if (nearest) return emit("vehicleSelect", nearest);
+  }
+  if (!props.selectable) return;
   pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
   pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+  camera.updateMatrixWorld();
   raycaster.setFromCamera(pointer, camera);
   const hit = raycaster.intersectObjects([...nodeMeshes.values()], false)[0];
   let id = hit?.object.userData.nodeId as string | undefined;
   let type = hit?.object.userData.nodeType as string | undefined;
   if (!id) {
-    const clickX = event.clientX - rect.left;
-    const clickY = event.clientY - rect.top;
     let nearestDistance = 48;
     for (const [nodeId, mesh] of nodeMeshes) {
       const projected = mesh.position.clone().project(camera);
-      const x = ((projected.x + 1) / 2) * rect.width;
-      const y = ((1 - projected.y) / 2) * rect.height;
-      const distance = Math.hypot(clickX - x, clickY - y);
-      if (distance < nearestDistance) {
-        nearestDistance = distance;
-        id = nodeId;
-        type = mesh.userData.nodeType as string;
-      }
+      const distance = Math.hypot(event.clientX - rect.left - ((projected.x + 1) / 2) * rect.width,
+        event.clientY - rect.top - ((1 - projected.y) / 2) * rect.height);
+      if (distance < nearestDistance) { nearestDistance = distance; id = nodeId; type = mesh.userData.nodeType as string; }
     }
   }
   if (id && type) emit("nodeSelect", { id, type });
@@ -205,7 +219,11 @@ function animate(now = 0) {
   raf = requestAnimationFrame(animate);
   const k = props.observed ? 1 : 0.35;
   agvMeshes.forEach((mesh) => {
-    mesh.group.position.lerp(mesh.target, k);
+    if (!props.observed && mesh.group.position.distanceToSquared(mesh.target) > 0.000001) {
+      mesh.group.position.lerp(mesh.target, k);
+    } else {
+      mesh.group.position.copy(mesh.target);
+    }
     const current = mesh.group.rotation.y;
     const delta = Math.atan2(
       Math.sin(mesh.targetHeading - current),
@@ -224,9 +242,17 @@ function animate(now = 0) {
     updateOverview();
   }
   renderer?.render(scene, camera);
+  // Live observations move in one-second steps and do not need 60 idle renders per second.
+  if (props.observed && !overviewDirty && agvMeshes.size && [...agvMeshes.values()].every(mesh =>
+    mesh.group.position.distanceToSquared(mesh.target) < 0.000001)) {
+    cancelAnimationFrame(raf);
+    raf = 0;
+  }
 }
-
-function markOverviewDirty() { overviewDirty = true; }
+function requestRender() {
+  if (!raf && renderer) raf = requestAnimationFrame(animate);
+}
+function markOverviewDirty() { overviewDirty = true; requestRender(); }
 
 function updateOverview() {
   if (!camera || !controls) return;
@@ -338,6 +364,10 @@ function rebuildRoadNet(net: RoadNetPayload | null) {
 
   const nodeMap = new Map(net.nodes.map((n) => [n.id, n]));
   const dense = net.nodes.length > 200;
+  const lineBatches = new Map<number, { vertices: number[]; opacity: number }>();
+  const arrowBatches = new Map<number, THREE.Matrix4[]>();
+  const arrowUp = new THREE.Vector3(0, 1, 0);
+  const arrowRotation = new THREE.Quaternion();
   rawNodes.clear();
   displayNodes.clear();
   renderedPoints = [];
@@ -346,7 +376,7 @@ function rebuildRoadNet(net: RoadNetPayload | null) {
     rawNodes.set(node.id, value);
     displayNodes.set(node.id, { ...value });
   }
-  if (dense) {
+  if (dense && !props.exactGeometry) {
     for (const node of net.nodes) {
       if (node.type !== "WORKSTATION") continue;
       const connection = net.edges.find((edge) => {
@@ -393,25 +423,22 @@ function rebuildRoadNet(net: RoadNetPayload | null) {
         : 0x275580;
     const lineOpacity = isStationBranch || isServiceBranch ? 1 : 0.82;
     const lineHeight = isStationBranch || isServiceBranch ? 0.12 : 0.06;
+    let batch = lineBatches.get(lineColor);
+    if (!batch) {
+      batch = { vertices: [], opacity: lineOpacity };
+      lineBatches.set(lineColor, batch);
+    }
+    const vertices = batch.vertices;
 
     if (edge.points?.length) {
       const points = edge.points.map((point) => ({ ...point }));
       points[0] = { x: displayFrom.x, y: displayFrom.y };
       points[points.length - 1] = { x: displayTo.x, y: displayTo.y };
-      const geometry = new THREE.BufferGeometry().setFromPoints(
-        points.map((p) => new THREE.Vector3(p.x, lineHeight, p.y)),
-      );
       renderedPoints.push(...points);
-      netGroup.add(
-        new THREE.Line(
-          geometry,
-          new THREE.LineBasicMaterial({
-            color: lineColor,
-            transparent: true,
-            opacity: lineOpacity,
-          }),
-        ),
-      );
+      for (let index = 1; index < points.length; index++) {
+        const previous = points[index - 1]!, point = points[index]!;
+        vertices.push(previous.x, lineHeight, previous.y, point.x, lineHeight, point.y);
+      }
       continue;
     }
     const start = new THREE.Vector3(displayFrom.x, lineHeight, displayFrom.y);
@@ -422,33 +449,14 @@ function rebuildRoadNet(net: RoadNetPayload | null) {
     if (len < 0.01) continue;
 
     const addLine = (a: THREE.Vector3, b: THREE.Vector3) => {
-      const geometry = new THREE.BufferGeometry().setFromPoints([a, b]);
-      netGroup.add(
-        new THREE.Line(
-          geometry,
-          new THREE.LineBasicMaterial({
-            color: lineColor,
-            transparent: true,
-            opacity: lineOpacity,
-          }),
-        ),
-      );
+      vertices.push(a.x, a.y, a.z, b.x, b.y, b.z);
     };
     const addArrow = (position: THREE.Vector3, direction: THREE.Vector3) => {
-      const arrow = new THREE.Mesh(
-        new THREE.ConeGeometry(0.32, 0.9, 10),
-        new THREE.MeshStandardMaterial({
-          color: lineColor,
-          metalness: 0.1,
-          roughness: 0.8,
-        }),
-      );
-      arrow.position.copy(position);
-      arrow.quaternion.setFromUnitVectors(
-        new THREE.Vector3(0, 1, 0),
-        direction.clone().normalize(),
-      );
-      netGroup.add(arrow);
+      if (dense) return;
+      const arrows = arrowBatches.get(lineColor) ?? [];
+      arrowRotation.setFromUnitVectors(arrowUp, direction.clone().normalize());
+      arrows.push(new THREE.Matrix4().makeRotationFromQuaternion(arrowRotation).setPosition(position));
+      arrowBatches.set(lineColor, arrows);
     };
 
     const dual = edge.direction === "TWO_WAY" && edge.laneMode === "DUAL";
@@ -472,6 +480,21 @@ function rebuildRoadNet(net: RoadNetPayload | null) {
         addArrow(start.clone().lerp(end, 2 / 3), dirVec.clone().negate());
       }
     }
+  }
+
+  for (const [color, { vertices, opacity }] of lineBatches) {
+    if (!vertices.length) continue;
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.Float32BufferAttribute(vertices, 3));
+    netGroup.add(new THREE.LineSegments(geometry,
+      new THREE.LineBasicMaterial({ color, transparent: true, opacity })));
+  }
+  for (const [color, arrows] of arrowBatches) {
+    if (!arrows.length) continue;
+    const mesh = new THREE.InstancedMesh(new THREE.ConeGeometry(0.32, 0.9, 10),
+      new THREE.MeshStandardMaterial({ color, metalness: 0.1, roughness: 0.8 }), arrows.length);
+    arrows.forEach((matrix, index) => mesh.setMatrixAt(index, matrix));
+    netGroup.add(mesh);
   }
 
   for (const node of net.nodes) {
@@ -574,11 +597,11 @@ function makeLabel(text: string, badge = false): THREE.Sprite {
   return sprite;
 }
 
-function createAgvMesh(id: string): AgvMesh {
+function createAgvMesh(agv: AgvView): AgvMesh {
   const group = new THREE.Group();
-
+  const length = agv.lengthMeters ?? 1.5, width = agv.widthMeters ?? 1;
   const body = new THREE.Mesh(
-    new THREE.BoxGeometry(1.5, 0.55, 1.0),
+    new THREE.BoxGeometry(length, 0.55, width),
     new THREE.MeshStandardMaterial({
       color: 0x409eff,
       metalness: 0.3,
@@ -597,17 +620,22 @@ function createAgvMesh(id: string): AgvMesh {
     }),
   );
   nose.rotation.z = -Math.PI / 2;
-  nose.position.set(1.0, 0.45, 0);
+  nose.position.set(length / 2, 0.45, 0);
   group.add(nose);
-
-  const sprite = makeLabel(id, true);
-  sprite.position.set(0, 2.1, 0);
-  sprite.scale.set(3.0, 1.5, 1);
+  const box = new THREE.Mesh(new THREE.BoxGeometry(length * 0.72, 0.32, width * 0.82),
+    new THREE.MeshStandardMaterial({ color: 0xe2b568, roughness: 0.7 }));
+  box.position.y = 0.88;
+  box.visible = false;
+  group.add(box);
+  const sprite = makeLabel(agv.id, true);
+  sprite.position.set(0, 1.6, 0);
+  sprite.scale.set(2.4, 1.2, 1);
   group.add(sprite);
 
   agvGroup.add(group);
   return {
     group,
+    box,
     target: new THREE.Vector3(0, 0.45, 0),
     targetHeading: 0,
     status: "IDLE",
@@ -622,7 +650,7 @@ function updateAgvs(list: AgvView[] | undefined) {
     seen.add(agv.id);
     let mesh = agvMeshes.get(agv.id);
     if (!mesh) {
-      mesh = createAgvMesh(agv.id);
+      mesh = createAgvMesh(agv);
       mesh.group.position.set(agv.x, 0.45, agv.y);
       agvMeshes.set(agv.id, mesh);
     }
@@ -641,6 +669,7 @@ function updateAgvs(list: AgvView[] | undefined) {
     }
     mesh.target.set(x, 0.45, y);
     mesh.targetHeading = -THREE.MathUtils.degToRad(agv.heading || 0);
+    mesh.box.visible = agv.loaded === true;
 
     if (mesh.status !== agv.status) {
       mesh.status = agv.status;
@@ -660,23 +689,27 @@ function updateAgvs(list: AgvView[] | undefined) {
       agvMeshes.delete(id);
     }
   }
+  requestRender();
 }
 
 /** 画一条规划路径（用于单车路径演示）。 */
-function drawPath(points: Array<{ x: number; y: number }>) {
+function drawPath(points: MapPoint[]) {
+  drawPaths([{ points, color: "#ffd666" }]);
+}
+function drawPaths(paths: { points: MapPoint[]; color: string }[]) {
   if (!scene) return;
   disposeGroup(pathGroup);
-  if (!points || points.length < 2) return;
-  const geometry = new THREE.BufferGeometry().setFromPoints(
-    points.map((p) => new THREE.Vector3(p.x, 0.35, p.y)),
-  );
-  const material = new THREE.LineBasicMaterial({ color: 0xffd666 });
-  pathGroup.add(new THREE.Line(geometry, material));
+  for (const { points, color } of paths) {
+    if (points.length < 2) continue;
+    const geometry = new THREE.BufferGeometry().setFromPoints(points.map(p => new THREE.Vector3(p.x, 0.35, p.y)));
+    pathGroup.add(new THREE.Line(geometry, new THREE.LineBasicMaterial({ color })));
+  }
+  requestRender();
 }
-
 function clearPath() {
   if (!scene) return;
   disposeGroup(pathGroup);
+  requestRender();
 }
 
 function fitView() {
@@ -745,6 +778,7 @@ watch(
   (list) => updateAgvs(list),
   { deep: true },
 );
+watch(() => props.observed, requestRender);
 watch(showLabels, refreshLabels);
 watch(marked, updateNodeSelection);
 
@@ -765,7 +799,10 @@ onBeforeUnmount(() => {
   resizeObserver?.disconnect();
   controls?.dispose();
   renderer?.domElement.removeEventListener("pointerdown", onPointerDown);
+  renderer?.domElement.removeEventListener("pointermove", onPointerMove);
   renderer?.domElement.removeEventListener("pointerup", onPointerUp);
+  renderer?.domElement.removeEventListener("pointercancel", cancelPointer);
+  renderer?.domElement.removeEventListener("lostpointercapture", cancelPointer);
   if (grid) {
     grid.geometry.dispose();
     const materials = Array.isArray(grid.material) ? grid.material : [grid.material];
@@ -783,7 +820,7 @@ onBeforeUnmount(() => {
   }
 });
 
-defineExpose({ drawPath, clearPath, fitView });
+defineExpose({ drawPath, drawPaths, clearPath, fitView, locate });
 </script>
 
 <template>
@@ -792,8 +829,8 @@ defineExpose({ drawPath, clearPath, fitView });
       @locate="locate" @zoom="zoomBy" @pan="pan" @fit="fitView" @fullscreen="toggleMapFullscreen(surface)"
       @labels="showLabels = $event" @select-all="marked = true" @clear="clearLocation" />
     <div class="scene-frame">
-      <div ref="container" class="scene" :class="{ selectable: selectable }"></div>
-      <MapOverview :map="roadnet" :view="viewport" :target="located" @center="centerAt" />
+      <div ref="container" class="scene" :class="{ 'is-dragging': dragging }"></div>
+      <MapOverview :map="roadnet" :view="viewport" :target="located" @center="centerAt" @settled="showLabels && refreshLabels()" />
     </div>
   </div>
 </template>
@@ -806,6 +843,7 @@ defineExpose({ drawPath, clearPath, fitView });
   border-radius: 8px;
   overflow: hidden;
   background: #0b1526;
+  cursor: var(--map-cursor-grab);
 }
 
 .scene-surface { display: flex; flex-direction: column; height: 100%; min-width: 0; }
@@ -814,7 +852,5 @@ defineExpose({ drawPath, clearPath, fitView });
 .scene-surface:fullscreen .scene-frame { min-height: 0; }
 .scene-surface:fullscreen .scene { min-height: 0; }
 
-.scene.selectable {
-  cursor: crosshair;
-}
+.scene.is-dragging { cursor: var(--map-cursor-grabbing); }
 </style>

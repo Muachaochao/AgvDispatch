@@ -11,7 +11,7 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { dispatchLocation, type DispatchSection } from "@/integration/dispatch-workspace";
 import BusinessScenarioSetup from "@/components/BusinessScenarioSetup.vue";
 import EngineeringSchemeEditor from "@/components/EngineeringSchemeEditor.vue";
-import RoadNetScene from "@/components/RoadNetScene.vue";
+import SimulationWorkshopMap from "@/components/SimulationWorkshopMap.vue";
 import DispatchMapImport from "@/components/DispatchMapImport.vue";
 import DispatchReplay from "@/components/DispatchReplay.vue";
 import {
@@ -53,9 +53,16 @@ import {
   type DispatchMonitor,
   type DispatchStatus,
   type DispatchReport,
+  type DispatchTrafficEvent,
+  type CallRow,
   type TaskRow,
   type ResourceRow,
 } from "@/integration/dispatch-api";
+import {
+  briefReason, businessStepLabel, businessStepNames as stepNames, callPresentation,
+  elapsedLabel, resourceLocations, resourceRows, routeTarget, secondsSince,
+  summarizeWait, vehicleTaskKind,
+} from "@/integration/simulation-monitor";
 import {
   mainDispatchStationId,
   toggleMainDispatchStation,
@@ -63,8 +70,28 @@ import {
 
 const status = shallowRef<DispatchStatus | null>(null),
   tasks = ref<TaskRow[]>([]),
-  resources = ref<ResourceRow[]>([]);
+  resources = shallowRef<ResourceRow[]>([]);
 const monitor = shallowRef<DispatchMonitor | null>(null);
+const resourcePageSize = 40;
+const resourcePage = ref(1);
+const resourceQuery = ref("");
+const showAllResources = ref(false);
+const selectedResourceId = ref("");
+const resourceEvents = shallowRef<DispatchTrafficEvent[]>([]);
+const resourceEvidenceStatus = ref("");
+const resourceIndex = computed(() => resourceLocations(status.value?.map, resources.value));
+const filteredResources = computed(() => resourceRows(
+  resources.value, waitFresh.value ? monitor.value?.traffic?.requests ?? [] : [],
+  resourceIndex.value, resourceQuery.value, showAllResources.value,
+));
+const resourcePageCount = computed(() =>
+  Math.max(1, Math.ceil(filteredResources.value.length / resourcePageSize)),
+);
+const visibleResources = computed(() => {
+  const offset = (resourcePage.value - 1) * resourcePageSize;
+  return filteredResources.value.slice(offset, offset + resourcePageSize);
+});
+watch([resourceQuery, showAllResources], () => { resourcePage.value = 1; });
 const experimentTaskSets = ref<TaskSetSummary[]>([]);
 const selectedExperimentTaskSetId = ref<number | null>(null);
 const experimentTaskSource = ref<"taskset" | "map">("taskset");
@@ -84,6 +111,9 @@ const detail = ref<DispatchTaskDetail | null>(null),
   selectedTask = ref(""),
   selectedScheme = ref("");
 const selectedCommandId = ref("");
+const selectedVehicleId = ref("");
+const selectedCallIndex = ref<number | null>(null);
+const mapLocation = shallowRef<{ vehicleId?: string; nodeId?: string; edgeIds?: string[]; point?: { x: number; y: number }; label?: string } | null>(null);
 const historicalReport = shallowRef<DispatchReport | null>(null);
 const historicalReportId = ref("");
 const reportError = ref("");
@@ -101,8 +131,7 @@ const selectedTasks = ref<TaskRow[]>([]),
 const importName = ref("工程原命令运输实验"),
   savedTaskSet = ref<number | null>(null);
 const liveMap = shallowRef<RoadNetPayload | null>(null),
-  liveMapSignature = ref(""),
-  scene = ref<InstanceType<typeof RoadNetScene> | null>(null);
+  liveMapSignature = ref("");
 const pageAbort = new AbortController();
 let timer: ReturnType<typeof setTimeout> | undefined,
   disposed = false,
@@ -122,6 +151,7 @@ const cars = computed(() => status.value?.device?.cars ?? {});
 const section = defineModel<DispatchSection>({ required: true });
 const props = defineProps<{ taskId?: string }>();
 const waitFresh = computed(() => connected.value && dispatchWaitSnapshotFresh(monitor.value, clock.value));
+watch(resourcePageCount, count => { resourcePage.value = Math.min(resourcePage.value, count); });
 const waitsByTask = computed(() => {
   const index = new Map<string, DispatchWaitRequest[]>();
   if (!waitFresh.value) return index;
@@ -132,34 +162,85 @@ const waitsByTask = computed(() => {
   }
   return index;
 });
-const calls = computed(() => (status.value?.scenario?.callRows ?? []).map(row => ({
-  ...row,
-  wait: dispatchWaitState(row, waitsByTask.value.get(row.taskId ?? "") ?? []),
-})));
+const calls = computed(() => {
+  const rows = status.value?.scenario?.callRows ?? status.value?.report?.callRows ?? [];
+  const start = status.value?.scenario?.startedAt ?? status.value?.report?.startedAt;
+  const until = scenarioActive.value ? clock.value / 1000 : status.value?.report?.finishedAt ?? status.value?.device?.time;
+  const elapsed = start && until ? Math.max(0, until - start) : 0;
+  return rows.map(row => {
+    const task = tasks.value.find(task => task.taskId === row.taskId);
+    const wait = dispatchWaitState(row, waitsByTask.value.get(row.taskId ?? "") ?? []);
+    const presentation = callPresentation(row, rows, elapsed);
+    const waitingSeconds = row.status === "pending" ? (elapsed >= row.atSeconds ? elapsed - row.atSeconds : undefined)
+      : !row.taskId ? (row.actualAtSeconds != null ? elapsed - row.actualAtSeconds : undefined)
+      : !row.vehicleId ? secondsSince(row.createdAt ?? task?.createdAt, until ? until * 1000 : undefined)
+      : wait.type === "warning" ? secondsSince(row.stepStartedAt, until ? until * 1000 : undefined) : undefined;
+    const label = wait.label === "已触发 · 待建单" ? "等 PLC 接收" : wait.label;
+    return { ...row, ...presentation, wait, label,
+      duration: wait.request ? dispatchWaitDuration(wait.request).replace(/^已等 /, "") : elapsedLabel(waitingSeconds),
+      reason: wait.request ? waitSummary(wait.request, !row.vehicleId, true)
+        : presentation.reason || (wait.type === "warning" ? "等待本步反馈" : "—"),
+    };
+  });
+});
+const selectedCall = computed(() => calls.value.find(row => row.planIndex === selectedCallIndex.value));
 const activeCallsByVehicle = computed(() => new Map(
-  calls.value.filter(row => row.vehicleId && row.status === "active")
+  (status.value?.running ? calls.value : []).filter(row => row.vehicleId && row.status === "active"
+    && !["Completed", "Cancelled", "Faulted"].includes(row.taskStage ?? ""))
     .map(row => [row.vehicleId!, row]),
 ));
-function waitSummary(request: DispatchWaitRequest, candidate = false) {
-  const blockers = dispatchWaitBlockers(request.blockers);
-  const first = blockers[0];
-  const cause = first
-    ? `${first.resourceId} · ${first.vehicles.length ? `${first.vehicles.join("、")} 占用` : "持有车辆未知"}${blockers.length > 1 ? ` · 共 ${blockers.length} 个阻塞资源` : ""}`
-    : request.reason || "当前快照未返回阻塞资源";
-  return [candidate ? `候选路线 ${request.vehicleId || ""}`.trimEnd() : "", dispatchWaitDuration(request), cause]
-    .filter(Boolean).join(" · ");
+function waitSummary(request: DispatchWaitRequest, candidate = false, omitDuration = false) {
+  return summarizeWait(request, resourceIndex.value, candidate, omitDuration);
 }
 function schemeSaved(value: DispatchStatus) {
   if (status.value) status.value = { ...status.value, schemes: value.schemes };
 }
 async function openCallTask(taskId: string) {
   section.value = "monitor";
+  const call = calls.value.find(row => row.taskId === taskId);
+  const task = tasks.value.find(row => row.taskId === taskId);
+  selectedCallIndex.value = call?.planIndex ?? null;
+  selectedVehicleId.value = call?.vehicleId || task?.vehicleId || "";
+  locateTask(call?.stationId ?? task?.stationId, selectedVehicleId.value);
   await selectTask(taskId);
+  scrollTaskDetail();
+}
+function scrollTaskDetail() {
   document.getElementById('business-task-detail')?.scrollIntoView({ block: 'start' });
 }
+function locateTask(stationId?: string, vehicleId?: string) {
+  const nodeId = status.value?.configuration?.stations?.find(station => station.stationId === stationId)?.pickupSite
+    ?? status.value?.map?.nodes.find(node => node.id === `BUS-${stationId}`)?.id ?? stationId;
+  mapLocation.value = vehicleId && cars.value[vehicleId] ? { vehicleId } : nodeId ? { nodeId } : null;
+}
+function clearTask() {
+  taskRequest++;
+  selectedTask.value = "";
+  detail.value = null;
+  detailError.value = "";
+  selectedCommandId.value = "";
+}
+function openCall(row: CallRow) {
+  if (row.taskId) return openCallTask(row.taskId);
+  clearTask();
+  selectedVehicleId.value = "";
+  selectedCallIndex.value = row.planIndex;
+  locateTask(row.stationId);
+  scrollTaskDetail();
+}
+function pickMapNode(node: { id: string; type: string }) {
+  if (experimentTaskSource.value === "map") return onMainMapNodeSelect(node);
+  const stationId = status.value?.configuration?.stations?.find(station => station.pickupSite === node.id)?.stationId
+    ?? mainDispatchStationId(node);
+  const stationCalls = calls.value.filter(row => row.stationId === stationId);
+  const call = stationCalls.find(row => row.status === "active") ?? stationCalls.at(-1);
+  if (call) void openCall(call);
+}
 function activeTaskForVehicle(vehicleId: string) {
+  if (!status.value?.running) return undefined;
   return activeCallsByVehicle.value.get(vehicleId)?.taskId
-    ?? tasks.value.find(row => row.vehicleId === vehicleId && !["Completed", "Cancelled", "Faulted"].includes(row.stage))?.taskId;
+    ?? tasks.value.find(row => row.vehicleId === vehicleId && !["Completed", "Cancelled", "Faulted"].includes(row.stage)
+      && !calls.value.some(call => call.taskId === row.taskId && call.status === "completed"))?.taskId;
 }
 function waitForVehicle(vehicleId: string) {
   const call = activeCallsByVehicle.value.get(vehicleId);
@@ -167,15 +248,20 @@ function waitForVehicle(vehicleId: string) {
   const task = tasks.value.find(row => row.taskId === activeTaskForVehicle(vehicleId));
   return task && dispatchWaitState({ ...task, taskStage: task.stage }, waitsByTask.value.get(task.taskId) ?? []);
 }
-function taskForVehicle(vehicleId: string) {
-  return activeTaskForVehicle(vehicleId)
-    ?? tasks.value.find(row => row.vehicleId === vehicleId)?.taskId;
-}
 function inspectVehicle(vehicleId: string) {
-  const id = taskForVehicle(vehicleId);
+  selectedVehicleId.value = vehicleId;
+  const call = activeCallsByVehicle.value.get(vehicleId);
+  selectedCallIndex.value = call?.planIndex ?? null;
+  locateTask(call?.stationId ?? status.value?.configuration?.vehicles?.find(car => car.id === vehicleId)?.initialSite, vehicleId);
+  const id = activeTaskForVehicle(vehicleId);
   if (id) void selectTask(id);
+  else clearTask();
 }
 const selectedCar = computed(() => cars.value[detail.value?.task.vehicleId ?? '']);
+const historicalTask = computed(() => !!detail.value && (
+  detail.value.evidenceSource?.startsWith("saved-report") === true
+    || ["Completed", "Cancelled", "Faulted"].includes(detail.value.task.stage ?? "")
+));
 const currentStep = computed(() => detail.value?.steps?.find(step => step.isCurrent));
 const detailWait = computed(() => {
   const task = detail.value?.task;
@@ -188,11 +274,63 @@ const detailWait = computed(() => {
   }, waitsByTask.value.get(task.taskId) ?? []);
 });
 const detailBlockers = computed(() => dispatchWaitBlockers(detailWait.value?.request?.blockers));
+const highlightedResources = computed(() => Object.fromEntries(
+  (resourceIndex.value.get(selectedResourceId.value)?.edgeIds ?? []).map(id => [id, "#be5b20"]),
+));
+const highlightedBoundary = computed(() => {
+  const resource = resourceIndex.value.get(selectedResourceId.value);
+  return resource?.edgeIds.length ? undefined : resource?.boundary;
+});
+const selectedResource = computed(() => resources.value.find(row => row.resourceId === selectedResourceId.value));
+const selectedResourceWaits = computed(() => waitFresh.value ? (monitor.value?.traffic?.requests ?? []).filter(request =>
+  request.resourceIds?.includes(selectedResourceId.value)
+  || request.blockers?.some(blocker => blocker.resourceId === selectedResourceId.value)) : []);
+function waitVehicleLabel(request: DispatchWaitRequest) {
+  const assigned = calls.value.find(row => row.taskId === request.taskId)?.vehicleId
+    ?? tasks.value.find(row => row.taskId === request.taskId)?.vehicleId;
+  return request.vehicleId ? `${assigned === request.vehicleId ? "" : "候选 "}${request.vehicleId}` : "待匹配";
+}
+function displayTime(value?: string | null) {
+  const time = Date.parse(value ?? "");
+  return Number.isFinite(time) ? new Date(time).toLocaleString("zh-CN", { hour12: false }) : "—";
+}
+async function inspectResource(id: string, focus = false) {
+  selectedResourceId.value = id;
+  resourceEvents.value = [];
+  resourceEvidenceStatus.value = "正在读取释放记录";
+  const location = resourceIndex.value.get(id);
+  if (focus && location) {
+    mapLocation.value = { ...location };
+    document.getElementById('fleet-map')?.scrollIntoView({ block: 'start' });
+  }
+  const instance = status.value?.rootName;
+  try {
+    const snapshot = await dispatchRead<{ traffic?: { events?: DispatchTrafficEvent[] } }>(
+      "/api/simulation/snapshot", pageAbort.signal,
+    );
+    if (selectedResourceId.value !== id || instance !== status.value?.rootName) return;
+    resourceEvents.value = (snapshot.traffic?.events ?? []).filter(event =>
+      event.resourceIds?.includes(id) && ["SegmentReleased", "ResourceReleased", "Released", "ResourceAcquired"].includes(event.kind));
+    resourceEvidenceStatus.value = resourceEvents.value.length ? "" : "近期快照无此资源的释放或占用记录";
+  } catch {
+    if (selectedResourceId.value === id && instance === status.value?.rootName) {
+      resourceEvidenceStatus.value = "暂时无法读取释放记录";
+    }
+  }
+}
+async function copyId(id: string) {
+  try {
+    await navigator.clipboard.writeText(id);
+    ElMessage.success("已复制编号");
+  } catch {
+    ElMessage.warning("请选中完整编号手动复制");
+  }
+}
 const routeCommands = computed(() =>
   detail.value?.commands?.filter(command => command.route?.edgeIds?.length) ?? [],
 );
 const currentCommand = computed(() => {
-  if (!fresh.value || !currentStep.value || !selectedCar.value) return undefined;
+  if (historicalTask.value || !fresh.value || !currentStep.value || !selectedCar.value) return undefined;
   const vendorId = selectedCar.value.current_task;
   const stepId = currentStep.value.stepId;
   const commands = routeCommands.value.filter(command => stepId && command.stepId === stepId);
@@ -213,35 +351,58 @@ const routePoints = computed(() => {
   if (!liveMap.value || (version && currentVersion && version !== currentVersion)) return [];
   return dispatchRoutePoints(liveMap.value, nodes, edges);
 });
-watch([scene, routePoints], ([mapScene, points]) => {
-  if (points.length > 1) mapScene?.drawPath(points);
-  else mapScene?.clearPath();
-}, { flush: "post" });
-const stepNames: Record<string, string> = {
-  GoToPickup: "前往工位取满箱", PickupFullBox: "取满箱确认",
-  DeliverFullBoxToDumper: "运送满箱到等待位", WaitForDumperReady: "等待倒料许可",
-  EnterDumpingPosition: "进入倒料位", DumpFullBox: "倒料确认",
-  ReturnEmptyBox: "返回工位", PlaceEmptyBox: "放回空箱确认", CompletePlcHandshake: "PLC 握手收尾",
-};
+const historicalRoute = computed(() => !!shownCommand.value && (
+  historicalTask.value || shownCommand.value.commandId !== currentCommand.value?.commandId
+));
 const stepStates: Record<string, string> = {
   Pending: "未开始", Ready: "待执行", CommandPending: "待发命令",
   Sending: "发送中", Sent: "已发送", Executing: "执行中", Completed: "已完成",
   RetryScheduled: "待重试", Failed: "失败", Cancelled: "已取消", ManualIntervention: "待人工处理",
 };
 function commandLabel(command: (typeof routeCommands.value)[number]) {
+  if (!command.route?.edgeIds?.length) return "机构／设备命令";
   const step = detail.value?.steps?.find(item => item.stepId === command.stepId);
   const nodes = command.route?.nodeIds ?? [];
   const endpoints = nodes.length ? `${nodes[0]} → ${nodes[nodes.length - 1]} · ` : "";
-  return `${step ? `第 ${step.sequence} 步 · ` : ""}${endpoints}${command.vendorCommandId || command.commandId}`;
+  const position = routeCommands.value.findIndex(item => item.commandId === command.commandId);
+  return `${step ? `第 ${step.sequence} 步 · ` : ""}${endpoints}命令 ${position + 1}`;
 }
-const mechanism = computed(() => selectedCar.value?.mechanism);
+function showCommand(commandId: string) {
+  selectedCommandId.value = commandId;
+  const command = routeCommands.value.find(item => item.commandId === commandId);
+  if (command?.route?.nodeIds?.[0] && routePoints.value.length > 1) mapLocation.value = { nodeId: command.route.nodeIds[0] };
+  document.getElementById('fleet-map')?.scrollIntoView({ block: 'start' });
+}
+function showStepRoute(stepId: string) {
+  const command = currentCommand.value?.stepId === stepId ? currentCommand.value
+    : routeCommands.value.filter(item => item.stepId === stepId).at(-1);
+  if (command) showCommand(command.commandId);
+}
+const mechanism = computed(() => fresh.value && !historicalTask.value ? selectedCar.value?.mechanism : undefined);
 const mechanismStates: Record<string, string> = {
   Idle: '待命', Executing: '执行中', Completed: '完成', Interrupted: '中断',
 };
-const vehicles = computed(() => dispatchViews(cars.value, fresh.value).map(car => ({
-  ...car,
-  wait: fresh.value ? waitForVehicle(car.id) : undefined,
-})));
+const vehicles = computed(() => {
+  const views = new Map(dispatchViews(cars.value, fresh.value).map(car => [car.id, car]));
+  const ids = [...new Set([...(status.value?.configuration?.vehicles ?? []).map(car => car.id), ...views.keys()])];
+  return ids.sort((a, b) => a.localeCompare(b, "zh-CN", { numeric: true })).map(id => {
+    const observed = views.get(id), car = cars.value[id], call = activeCallsByVehicle.value.get(id);
+    const step = activeTaskForVehicle(id) === detail.value?.task.taskId && !historicalTask.value ? currentStep.value : undefined;
+    const stepNumber = step?.sequence ?? call?.stepNumber;
+    const label = businessStepLabel({ stepNumber, stepType: step?.stepType ?? call?.stepType, stepName: call?.stepName });
+    const since = secondsSince(step?.startedAt ?? call?.stepStartedAt, fresh.value ? clock.value : (status.value?.device?.time ?? 0) * 1000);
+    return { id, car, status: observed?.status ?? "UNKNOWN", coordinates: observed,
+      wait: fresh.value ? waitForVehicle(id) : undefined,
+      kind: vehicleTaskKind(car, !!activeTaskForVehicle(id)),
+      step: label ? `${stepNumber}/9 ${label}` : "",
+      target: fresh.value && car && !car.offline
+        ? (car.recovery?.state !== "Recovered" ? car.recovery?.safetyPointTarget : undefined)
+          || (detail.value?.task.vehicleId === id ? routeTarget(currentCommand.value?.route) : undefined)
+          || step?.destinationSite || call?.destinationSite : undefined,
+      duration: elapsedLabel(car?.recovery?.durationSeconds ?? since),
+    };
+  });
+});
 const scenarioActive = computed(() =>
   ["running", "starting", "pending", "stopping", "aborting"].includes(
     status.value?.scenario?.status?.toLowerCase() ?? "",
@@ -258,6 +419,7 @@ const stateName: Record<string, string> = {
   OFFLINE: "离线或状态过期",
   FAULT: "暂停或故障",
   BLOCKED: "受阻",
+  UNKNOWN: "尚无反馈",
 };
 const sceneNames = [
   { value: "normal-cycle", label: "完整业务循环" },
@@ -504,17 +666,17 @@ async function pollDetails(live: DispatchStatus, revision: number) {
       }
     }
     if (section.value !== 'monitor') return;
-    const shouldReadDetails = next.running === true && taskPollCounter++ % 3 === 0;
+    const shouldReadDetails = taskPollCounter++ % 3 === 0 && (next.running === true || tasks.value.length === 0);
     const results = shouldReadDetails
       ? await Promise.allSettled([
           dispatchRead<{ items: TaskRow[] }>(
             "/api/simulation/tasks?page=1&pageSize=200",
             pageAbort.signal,
           ),
-          dispatchRead<DispatchMonitor>(
+          next.running ? dispatchRead<DispatchMonitor>(
             "/api/simulation/monitor",
             pageAbort.signal,
-          ),
+          ) : Promise.resolve(null),
         ])
       : [];
     if (!sameInstance()) return;
@@ -522,21 +684,26 @@ async function pollDetails(live: DispatchStatus, revision: number) {
       tasks.value = results[0].value.items ?? [];
     if (results[1]?.status === "fulfilled") {
       const snapshot = results[1].value;
-      monitor.value = snapshot.connected ? snapshot : null;
-      resources.value = snapshot.resources ?? [];
+      monitor.value = snapshot?.connected ? snapshot : null;
+      resources.value = snapshot?.connected ? snapshot.resources ?? [] : [];
     } else if (results[1]?.status === "rejected" || !next.running) {
       monitor.value = null;
+      resources.value = [];
     }
     const failures = results.filter(
       (r) => r.status === "rejected",
     ) as PromiseRejectedResult[];
     if (failures.length)
       error.value = failures.map((r) => String(r.reason)).join(" · ");
-    const automaticTask = props.taskId ?? status.value?.scenario?.callRows?.find(row => row.status === "active" && row.vehicleId)?.taskId
+    const automaticTask = props.taskId ?? (next.running ? status.value?.scenario?.callRows?.find(row => row.status === "active" && row.vehicleId)?.taskId : undefined)
       ?? tasks.value.find(task => task.vehicleId && !["Completed", "Cancelled", "Faulted"].includes(task.stage))?.taskId
       ?? (tasks.value.length === 1 ? tasks.value[0]?.taskId : undefined);
-    if (!selectedTask.value && automaticTask) await selectTask(automaticTask);
-    else if (next.running && selectedTask.value && shouldReadDetails) await selectTask(selectedTask.value, false);
+    if (!selectedTask.value && selectedCall.value?.taskId) await selectTask(selectedCall.value.taskId);
+    else if (selectedVehicleId.value && selectedCallIndex.value == null && !selectedTask.value) {
+      const newTask = activeTaskForVehicle(selectedVehicleId.value);
+      if (newTask) await selectTask(newTask);
+    } else if (!selectedTask.value && selectedCallIndex.value == null && automaticTask) await selectTask(automaticTask);
+    else if (selectedTask.value && shouldReadDetails) await selectTask(selectedTask.value, false);
     if (experimentPollCounter++ % 2 === 0) await refreshExperiments();
   } catch (e) {
     if (!disposed) {
@@ -561,6 +728,10 @@ async function selectTask(id: string, clear = true) {
     );
     if (disposed || selectedTask.value !== id || request !== taskRequest) return;
     detail.value = next;
+    if (clear) {
+      if (historicalTask.value) selectedCommandId.value = routeCommands.value.at(-1)?.commandId ?? "";
+    }
+    selectedVehicleId.value = next.task.vehicleId || selectedVehicleId.value;
     detailError.value = "";
   } catch (e) {
     if (!disposed && request === taskRequest && selectedTask.value === id)
@@ -679,14 +850,16 @@ async function selectReport(id: string) {
 watch(
   [() => status.value?.rootName, () => status.value?.scenario?.id],
   () => {
-    selectedTask.value = "";
-    detail.value = null;
+    clearTask();
+    selectedVehicleId.value = "";
+    selectedCallIndex.value = null;
+    selectedResourceId.value = "";
+    mapLocation.value = null;
     selectedTasks.value = [];
     tasks.value = [];
     resources.value = [];
     monitor.value = null;
     taskPollCounter = 0;
-    scene.value?.clearPath();
   },
 );
 onMounted(() => {
@@ -979,64 +1152,43 @@ onBeforeUnmount(() => {
         {{ status.scenario.message }}
       </p>
     </section>
-    <section v-show="section === 'monitor'" class="panel calls-panel">
-      <h3>多单呼叫</h3>
-      <p v-if="status?.running && !waitFresh" class="muted">实时路权数据暂不可用 · 持有车辆和实时计时暂停显示</p>
-      <p v-else-if="waitFresh && monitor?.traffic?.requestsTruncated" class="muted">后台快照仅包含部分路权请求</p>
-      <el-table :data="calls" size="small" empty-text="开始业务呼叫计划后显示逐单进度">
-        <el-table-column label="序号" width="72"><template #default="{ row }">{{ row.planIndex + 1 }}</template></el-table-column>
-        <el-table-column prop="stationId" label="工位" width="110" />
-        <el-table-column prop="atSeconds" label="计划秒" width="90" />
-        <el-table-column label="触发秒" width="90"><template #default="{ row }">{{ row.actualAtSeconds?.toFixed(1) ?? '—' }}</template></el-table-column>
-        <el-table-column label="状态" width="178"><template #default="{ row }">
-          <el-tag :type="row.wait.type" size="small">{{ row.wait.label }}</el-tag>
-          <span v-if="row.stepNumber"> · {{ row.stepNumber }}/9</span>
+    <section v-if="section === 'monitor'" class="panel calls-panel">
+      <div class="panel-heading">
+        <h3>呼叫进度</h3>
+        <span v-if="calls.length" class="muted">{{ !scenarioActive ? '本轮记录 · ' : '' }}已完成 {{ calls.filter(row => row.wait.type === 'success').length }}/{{ calls.length }} 单</span>
+      </div>
+      <p v-if="status?.running && !waitFresh" class="muted">路权快照暂不可用，等待原因可能不完整。</p>
+      <p v-else-if="waitFresh && monitor?.traffic?.requestsTruncated" class="muted">后台快照仅包含部分路权请求。</p>
+      <el-table :data="calls" row-key="planIndex" size="small" max-height="460" empty-text="开始业务呼叫计划后显示逐单进度">
+        <el-table-column label="工位" width="142"><template #default="{ row }">
+          <el-button link type="primary" @click="openCall(row)">{{ row.stationId }} <span class="muted call-number">#{{ row.planIndex + 1 }}</span></el-button>
         </template></el-table-column>
-        <el-table-column prop="vehicleId" label="车辆" width="100" />
-        <el-table-column label="当前说明" min-width="240" show-overflow-tooltip><template #default="{ row }">
-          {{ row.wait.request ? waitSummary(row.wait.request, !row.vehicleId) : row.waitingExplanation || '—' }}
-        </template></el-table-column>
-        <el-table-column label="正式任务" width="115"><template #default="{ row }">
-          <el-button v-if="row.taskId" link type="primary" :title="row.taskId" @click="openCallTask(row.taskId)">查看九步</el-button>
-        </template></el-table-column>
+        <el-table-column label="状态" width="155"><template #default="{ row }"><el-tag :type="row.wait.type" size="small">{{ row.label }}</el-tag></template></el-table-column>
+        <el-table-column label="执行车辆" width="105"><template #default="{ row }">{{ row.vehicleId || '—' }}</template></el-table-column>
+        <el-table-column prop="step" label="当前步骤" min-width="185" />
+        <el-table-column prop="duration" label="已等待" width="125" />
+        <el-table-column prop="reason" label="等待原因" min-width="225" show-overflow-tooltip />
+        <el-table-column label="详情" width="82"><template #default="{ row }"><el-button link type="primary" @click="openCall(row)">查看</el-button></template></el-table-column>
       </el-table>
     </section>
     <div v-if="section === 'monitor'" class="dispatch-body">
-      <section class="panel dispatch-scene">
-        <div class="panel-heading">
-          <h3>隔离仿真三维路网</h3>
-          <el-button size="small" @click="scene?.fitView()">适应画面</el-button>
-        </div>
-        <div class="route-toolbar">
-          <el-button
-            v-for="car in vehicles"
-            :key="car.id"
-            size="small"
-            :type="detail?.task.vehicleId === car.id ? 'primary' : 'default'"
-            :disabled="!taskForVehicle(car.id)"
-            @click="inspectVehicle(car.id)"
-          >{{ car.id }}</el-button>
-          <el-select v-if="routeCommands.length" v-model="selectedCommandId" size="small" aria-label="导航命令路线">
+      <section id="fleet-map" class="panel dispatch-scene">
+        <SimulationWorkshopMap :definition="status?.map" :cars="cars" :fresh="fresh"
+          :fleet-count="vehicles.length" :station-count="status?.configuration?.stations?.length"
+          :vehicle-profiles="status?.configuration?.vehicles" :selected-vehicle="selectedVehicleId"
+          :road-highlights="highlightedResources" :resource-boundary="highlightedBoundary" :route="routePoints" :route-color="historicalRoute ? '#8154ac' : '#14796f'"
+          :location="mapLocation" :selected-node-ids="selectedCallStations" select-nodes
+          @select-node="pickMapNode" @select-vehicle="inspectVehicle" />
+        <div v-if="selectedVehicleId || routeCommands.length" class="route-toolbar">
+          <el-tag v-if="shownCommand" :type="historicalRoute ? 'info' : 'success'" size="small">{{ historicalRoute ? '历史路线' : '当前导航' }}</el-tag>
+          <span v-else class="muted">{{ selectedVehicleId || '选中任务' }} · 暂无已确认的当前路线</span>
+          <el-select v-if="routeCommands.length" :model-value="selectedCommandId" size="small" aria-label="导航命令路线" @change="showCommand">
             <el-option label="跟随当前导航" value="" />
             <el-option v-for="command in routeCommands" :key="command.commandId" :value="command.commandId" :label="commandLabel(command)" />
           </el-select>
+          <span v-if="shownCommand && routePoints.length < 2" class="muted">路线与当前地图无法匹配</span>
+          <el-button v-if="selectedTask" link type="primary" size="small" @click="scrollTaskDetail">查看九步</el-button>
         </div>
-        <p v-if="shownCommand" class="muted">
-          {{ selectedCommandId && shownCommand.commandId !== currentCommand?.commandId ? "历史命令" : "当前导航" }}
-          · {{ commandLabel(shownCommand) }} · {{ stepStates[shownCommand.status ?? ""] || shownCommand.status }}
-          <span v-if="routePoints.length < 2"> · 路线与当前地图无法匹配</span>
-        </p>
-        <p v-else class="muted">{{ selectedTask ? "当前暂无可显示的导航路线，可查看九步状态或选择既有命令" : "选择有任务的车辆查看路线" }}</p>
-        <RoadNetScene
-          v-if="liveMap"
-          ref="scene"
-          :roadnet="liveMap"
-          :agvs="vehicles"
-          :selectable="experimentTaskSource === 'map' && !experimentBusy"
-          :selected-node-ids="selectedCallStations"
-          @node-select="onMainMapNodeSelect"
-          observed
-        /><el-empty v-else description="连接主工程后显示原始地图与车辆反馈" />
         <div v-if="experimentTaskSource === 'map'" class="selected-call-stations">
           <el-tag
             v-for="stationId in selectedCallStations"
@@ -1054,37 +1206,25 @@ onBeforeUnmount(() => {
         </div>
       </section>
       <section class="panel vehicles">
-        <h3>车辆与等待原因</h3>
-        <el-empty v-if="!vehicles.length" description="暂无车辆反馈" />
-        <article v-for="car in vehicles" :key="car.id" class="vehicle-row">
-          <div>
-            <strong>{{ car.id }}</strong>
-            <el-tag v-if="car.wait && car.wait.type !== 'primary'" :type="car.wait.type" size="small">{{ car.wait.label }}</el-tag>
-            <el-tag v-else
-              size="small"
-              :type="
-                car.status === 'OFFLINE'
-                  ? 'info'
-                  : car.status === 'MOVING'
-                    ? 'success'
-                    : 'warning'
-              "
-              >{{ stateName[car.status] || car.status }}</el-tag
-            >
+        <div class="panel-heading"><h3>车队状态</h3><span class="muted">{{ vehicles.length }} 台</span></div>
+        <el-empty v-if="!vehicles.length" description="暂无车辆配置或反馈" />
+        <article v-for="vehicle in vehicles" :key="vehicle.id" class="vehicle-row" :class="{ 'vehicle-selected': selectedVehicleId === vehicle.id }">
+          <div class="vehicle-title">
+            <el-button link type="primary" :aria-pressed="selectedVehicleId === vehicle.id" @click="inspectVehicle(vehicle.id)"><strong>{{ vehicle.id }}</strong></el-button>
+            <span class="vehicle-battery" :class="{ 'low-battery': vehicle.car?.batteryPercent != null && vehicle.car.batteryPercent < 25 }">{{ vehicle.car?.batteryPercent != null ? `${vehicle.car.batteryPercent.toFixed(0)}%` : '电量未知' }}</span>
+            <el-tag v-if="vehicle.wait && vehicle.wait.type !== 'primary' && vehicle.status !== 'OFFLINE'" :type="vehicle.wait.type" size="small">{{ vehicle.wait.label }}</el-tag>
+            <el-tag v-else size="small" :type="vehicle.status === 'MOVING' || vehicle.status === 'CHARGING' ? 'success' : vehicle.status === 'OFFLINE' || vehicle.status === 'UNKNOWN' ? 'info' : 'warning'">{{ stateName[vehicle.status] || vehicle.status }}</el-tag>
           </div>
-          <p>
-            {{ cars[car.id]?.station || "站间" }} ·
-            {{ cars[car.id]?.loaded ? "载箱" : "空载" }}
-          </p>
-          <p>
-            X {{ car.x.toFixed(3) }} · Y {{ car.y.toFixed(3) }} m ·
-            {{ car.heading.toFixed(1) }}°
-          </p>
-          <p v-if="car.wait?.request" class="wait-summary">{{ waitSummary(car.wait.request) }}</p>
-          <p v-else-if="cars[car.id]?.waitReason">{{ cars[car.id]?.waitReason }}</p>
-          <el-button v-if="taskForVehicle(car.id)" size="small" @click="inspectVehicle(car.id)">
-            路线与九步
-          </el-button>
+          <dl class="vehicle-facts">
+            <div><dt>位置</dt><dd>{{ vehicle.car?.station || (vehicle.coordinates ? '站间' : '—') }} · {{ vehicle.car?.loaded == null ? '载荷未知' : vehicle.car.loaded ? '载箱' : '空载' }}</dd></div>
+            <div><dt>任务</dt><dd>{{ vehicle.kind }}<template v-if="vehicle.step"> · {{ vehicle.step }}</template></dd></div>
+            <div><dt>下一目标</dt><dd>{{ vehicle.target || '—' }}</dd></div>
+            <div v-if="vehicle.duration !== '—'"><dt>已持续</dt><dd>{{ vehicle.duration }}</dd></div>
+          </dl>
+          <p v-if="vehicle.status === 'OFFLINE' && status?.device?.time" class="muted">最后反馈 {{ new Date(status.device.time * 1000).toLocaleString('zh-CN', { hour12: false }) }}</p>
+          <p v-if="vehicle.wait?.request" class="wait-summary">{{ waitSummary(vehicle.wait.request) }}</p>
+          <p v-else-if="vehicle.car?.waitReason && vehicle.status !== 'OFFLINE'">{{ briefReason(vehicle.car.waitReason) }}</p>
+          <p v-if="vehicle.car?.recovery?.message && vehicle.status !== 'OFFLINE'">{{ vehicle.car.recovery.message }}</p>
         </article>
       </section>
     </div>
@@ -1092,9 +1232,16 @@ onBeforeUnmount(() => {
       <div class="panel-heading">
         <h3>九步任务</h3>
         <el-space v-if="detail" wrap>
+          <el-tag v-if="historicalTask" type="info">历史任务</el-tag>
           <el-tag v-if="detailWait" :type="detailWait.type">{{ detailWait.label }}</el-tag>
           <el-tag>{{ detail.task.stationId }} · {{ detail.task.vehicleId || '待派车' }}</el-tag>
         </el-space>
+      </div>
+      <div v-if="selectedCall" class="call-detail">
+        <strong>{{ selectedCall.stationId }} · 第 {{ selectedCall.planIndex + 1 }} 次呼叫</strong>
+        <span>计划 {{ selectedCall.atSeconds }} 秒 · 实际 {{ selectedCall.actualAtSeconds == null ? '尚未触发' : `${selectedCall.actualAtSeconds.toFixed(1)} 秒` }}</span>
+        <span>{{ selectedCall.label }}<template v-if="selectedCall.reason !== '—'"> · {{ selectedCall.reason }}</template></span>
+        <el-button v-if="selectedCall.previous" link type="primary" @click="openCall(selectedCall.previous)">查看该工位上一单</el-button>
       </div>
       <el-alert
         v-if="detailError"
@@ -1103,10 +1250,7 @@ onBeforeUnmount(() => {
         :closable="false"
       />
       <div v-if="detail" class="task-detail">
-        <h4>
-          {{ detail.task.taskId }} ·
-          {{ detail.waitingExplanation || "当前无等待说明" }}
-        </h4>
+        <p v-if="detail.evidenceMessage" class="muted">{{ detail.evidenceMessage }}</p>
         <el-table :data="detail.steps ?? []" size="small" :row-class-name="({ row }: { row: { isCurrent?: boolean } }) => row.isCurrent ? 'current-business-step' : ''"
           ><el-table-column
             prop="sequence"
@@ -1123,11 +1267,15 @@ onBeforeUnmount(() => {
             {{ [row.sourceSite, row.destinationSite].filter(Boolean).join(' → ') || '—' }}
           </template></el-table-column>
           <el-table-column prop="elapsedText" label="耗时" width="95" />
-          <el-table-column
-            prop="waitingExplanation"
-            label="等待说明"
-            min-width="190"
-        /><el-table-column prop="completionRequirement" label="完成条件" min-width="250" /></el-table>
+          <el-table-column label="到位／动作反馈" min-width="190"><template #default="{ row }">
+            {{ briefReason(row.observedPhase) || briefReason(row.waitingExplanation) || '—' }}
+            <div v-if="row.completedAt" class="muted">{{ displayTime(row.completedAt) }}</div>
+          </template></el-table-column>
+          <el-table-column label="证据" width="95"><template #default="{ row }">
+            <el-button v-if="routeCommands.some(command => command.stepId === row.stepId)" link type="primary"
+              @click="showStepRoute(row.stepId)">看路线</el-button>
+          </template></el-table-column>
+        </el-table>
         <div v-if="detailWait?.request" class="wait-summary">
           <h4>{{ !detail.task.vehicleId ? '候选路线等待' : detailWait.request.waitingCategory === 'Equipment' ? '设备资源等待' : '当前路权等待' }}</h4>
           <p>{{ detailWait.request.vehicleId }} · {{ dispatchWaitDuration(detailWait.request) }}
@@ -1135,26 +1283,23 @@ onBeforeUnmount(() => {
               · {{ detailWait.request.source }} → {{ detailWait.request.destination }}
             </span>
           </p>
-          <p>{{ detailWait.request.reason || '当前快照未返回等待原因' }}</p>
           <ul v-if="detailBlockers.length">
             <li v-for="blocker in detailBlockers" :key="blocker.resourceId">
-              <strong>{{ blocker.resourceId }}</strong> · {{ blocker.vehicles.length ? `${blocker.vehicles.join('、')} 占用` : '持有车辆未知' }}
+              <el-button link type="primary" @click="inspectResource(blocker.resourceId, true)">{{ resourceIndex.get(blocker.resourceId)?.label || '阻塞资源' }}</el-button>
+              · {{ blocker.vehicles.length ? `${blocker.vehicles.join('、')} 占用` : '持有车辆未知' }}
             </li>
           </ul>
         </div>
-        <h4>导航与机构动作命令</h4>
-        <p class="muted">车辆当前载箱：{{ selectedCar?.loaded == null ? '未提供' : selectedCar.loaded ? '有箱' : '空载' }}</p>
+        <h4 v-if="!historicalTask">机构反馈</h4>
         <p v-if="mechanism" class="muted">
-          车辆最近机构反馈（合成模型）：
+          隔离模型最近反馈 ·
           {{ mechanism.operation === 'JackLoad' ? '顶升取箱' : mechanism.operation === 'JackUnload' ? '落下放箱' : '无动作' }} ·
           {{ mechanismStates[mechanism.state] || '未知' }} ·
           上位 {{ mechanism.upperLimit == null ? '未知' : mechanism.upperLimit ? '1' : '0' }} ·
           下位 {{ mechanism.lowerLimit == null ? '未知' : mechanism.lowerLimit ? '1' : '0' }}
-          <span v-if="mechanism.taskId"> · 机构指令 {{ mechanism.taskId }}</span>
         </p>
-        <p v-else class="muted">车辆最近机构反馈：未提供</p>
-        <el-alert v-if="!fresh" title="当前设备数据已过期，以下记录不能作为实时完成证据" type="warning" :closable="false" />
-        <h4>PLC 执行条件 · {{ detail.handshakeContractVersion || '未提供契约版本' }}</h4>
+        <p v-else-if="!historicalTask" class="muted">暂无新鲜机构反馈</p>
+        <h4>{{ historicalTask ? '历史 PLC 证据' : 'PLC 信号与反馈' }}</h4>
         <el-table :data="detail.plcConditions ?? []" size="small" empty-text="当前步骤没有返回 PLC 条件">
           <el-table-column prop="stationId" label="工位" />
           <el-table-column prop="variableName" label="信号" min-width="180" />
@@ -1162,19 +1307,37 @@ onBeforeUnmount(() => {
           <el-table-column label="期望"><template #default="{ row }">{{ row.expectedValue ? '1' : '0' }}</template></el-table-column>
           <el-table-column label="反馈"><template #default="{ row }">{{ row.currentValue == null ? '未知' : row.currentValue ? '1' : '0' }}</template></el-table-column>
           <el-table-column prop="quality" label="质量" />
-          <el-table-column prop="reason" label="判定原因" min-width="200" />
+          <el-table-column label="观测时间" min-width="175"><template #default="{ row }">{{ displayTime(row.observedAt) }}</template></el-table-column>
+          <el-table-column prop="reason" label="判定原因" min-width="170" />
         </el-table>
-        <p v-for="handshake in detail.handshakes ?? []" :key="handshake.stepId" class="muted">{{ handshake.phase }} · {{ handshake.reason }}</p>
-        <details
-          v-for="command in detail.commands ?? []"
-          :key="command.commandId"
-          class="muted"
-        >
-          <summary>{{ commandLabel(command) }} · {{ stepStates[command.status ?? ""] || command.status }}</summary>
-          <p>{{ command.route?.action || "导航" }} · {{ command.route?.nodeIds?.join(" → ") || "无路线快照" }}</p>
+        <p v-for="handshake in detail.handshakes ?? []" :key="handshake.stepId" class="muted">
+          {{ displayTime(handshake.updatedAt) }} · {{ handshake.reason || handshake.phase }}
+          <template v-if="handshake.pendingSignal"> · 待写 {{ handshake.pendingSignal }} = {{ handshake.pendingValue == null ? '未知' : Number(handshake.pendingValue) }}</template>
+        </p>
+        <details v-if="detail.executionTimeline?.length">
+          <summary>执行时间线 · {{ detail.executionTimeline.length }} 条</summary>
+          <ul class="evidence-list">
+            <li v-for="event in detail.executionTimeline" :key="event.id">{{ displayTime(event.occurredAt) }} · {{ event.title }}<span v-if="event.summary"> · {{ event.summary }}</span></li>
+          </ul>
+        </details>
+        <details v-if="detail.commands?.length">
+          <summary>导航与机构命令 · {{ detail.commands.length }} 条</summary>
+          <ul class="evidence-list">
+            <li v-for="command in detail.commands" :key="command.commandId">
+              {{ commandLabel(command) }} · {{ stepStates[command.status ?? ''] || command.status }} · {{ displayTime(command.sentAt) }}
+              <el-button v-if="command.route?.edgeIds?.length" link type="primary" @click="showCommand(command.commandId)">查看{{ command.commandId === currentCommand?.commandId ? '当前' : '历史' }}路线</el-button>
+              <div class="muted">{{ command.vendorCommandId || command.commandId }}</div>
+              <div v-if="command.lastError">{{ command.lastError }}</div>
+            </li>
+          </ul>
+        </details>
+        <details>
+          <summary>原始编号与诊断</summary>
+          <p><code>{{ detail.task.taskId }}</code> <el-button link type="primary" @click="copyId(detail.task.taskId)">复制任务号</el-button></p>
+          <p>{{ detail.waitingExplanation || selectedCall?.waitingExplanation || '暂无诊断说明' }}</p>
         </details>
       </div>
-      <el-empty v-else-if="!detailError" :description="selectedTask ? '正在读取九步任务' : '从多单呼叫或车辆选择任务'" />
+      <el-empty v-else-if="!detailError && !selectedCall" :description="selectedTask ? '正在读取九步任务' : selectedVehicleId ? `${selectedVehicleId} 暂无执行中的业务任务` : '从呼叫、车辆或地图打开任务'" />
     </section>
     <section v-if="section === 'monitor'" class="panel tasks-panel">
       <div class="panel-heading">
@@ -1198,25 +1361,53 @@ onBeforeUnmount(() => {
     </section>
     <DispatchMapImport v-show="section === 'engineering'" @saved="mapSaved" />
     <div v-show="section === 'monitor' || section === 'report'" class="lower-grid" :class="{ 'report-grid': section === 'report' }">
-      <section v-show="section === 'monitor'" class="panel">
-        <h3>交通资源</h3>
-        <el-table :data="resources" size="small"
-          ><el-table-column prop="resourceId" label="资源" /><el-table-column
-            prop="occupiedCount"
-            label="占用"
-            width="70"
-          /><el-table-column
-            prop="capacity"
-            label="容量"
-            width="70"
-          /><el-table-column label="原占用任务"
-            ><template #default="{ row }">{{
-              row.leases
-                ?.map((l: any) => `${l.vehicleId} / ${l.taskId}`)
-                .join("，") || "无"
-            }}</template></el-table-column
-          ></el-table
-        >
+      <section v-if="section === 'monitor'" class="panel resource-panel">
+        <div class="panel-heading">
+          <h3>交通资源</h3>
+          <div class="resource-filters">
+            <el-input v-model="resourceQuery" size="small" clearable placeholder="搜索名称或完整编号" aria-label="搜索交通资源" />
+            <el-checkbox v-model="showAllResources">显示空闲资源</el-checkbox>
+          </div>
+        </div>
+        <p v-if="!waitFresh" class="muted">占用与等待快照暂不可用。</p>
+        <el-table :data="visibleResources" row-key="resourceId" size="small" empty-text="当前筛选下没有交通资源">
+          <el-table-column label="资源" min-width="195"><template #default="{ row }">
+            <el-button link type="primary" @click="inspectResource(row.resourceId)">{{ row.label }}</el-button>
+          </template></el-table-column>
+          <el-table-column label="状态" width="105"><template #default="{ row }">
+            <el-tag size="small" :type="row.blocking ? 'danger' : row.waits.length ? 'warning' : row.occupiedCount ? 'primary' : 'info'">{{ row.blocking ? '正在阻塞' : row.waits.length ? '有人等待' : row.occupiedCount ? '占用中' : '空闲' }}</el-tag>
+          </template></el-table-column>
+          <el-table-column label="占用 / 容量" width="112"><template #default="{ row }">{{ row.occupiedCount }}/{{ row.capacity }}</template></el-table-column>
+          <el-table-column label="占用车辆" min-width="140"><template #default="{ row }">{{ [...new Set(row.leases?.map((lease: { vehicleId: string }) => lease.vehicleId))].filter(Boolean).join('、') || '—' }}</template></el-table-column>
+          <el-table-column label="等候车辆" min-width="190"><template #default="{ row }">
+            <div v-for="(request, index) in row.waits.slice(0, 3)" :key="`${request.taskId}-${request.stepId}-${index}`">{{ waitVehicleLabel(request) }} · {{ dispatchWaitDuration(request) }}</div>
+            <span v-if="row.waits.length > 3">另有 {{ row.waits.length - 3 }} 项</span><span v-if="!row.waits.length">—</span>
+          </template></el-table-column>
+          <el-table-column label="地图" width="78"><template #default="{ row }"><el-button v-if="row.location?.point || row.location?.nodeId || row.location?.edgeIds.length" link type="primary" @click="inspectResource(row.resourceId, true)">定位</el-button></template></el-table-column>
+        </el-table>
+        <el-pagination v-if="filteredResources.length > resourcePageSize" v-model:current-page="resourcePage" :page-size="resourcePageSize" :total="filteredResources.length" layout="total, prev, pager, next" size="small" />
+        <div v-if="selectedResourceId" class="resource-detail">
+          <div class="panel-heading">
+            <h4>{{ resourceIndex.get(selectedResourceId)?.label || '资源详情' }}</h4>
+            <el-button link @click="selectedResourceId = ''">关闭详情</el-button>
+          </div>
+          <div class="resource-id"><code>{{ selectedResourceId }}</code><el-button link type="primary" @click="copyId(selectedResourceId)">复制编号</el-button></div>
+          <p v-for="lease in selectedResource?.leases ?? []" :key="`${lease.vehicleId}-${lease.taskId}`">
+            {{ lease.vehicleId }} · 持有中
+            <el-button v-if="lease.taskId" link type="primary" @click="openCallTask(lease.taskId)">占用任务</el-button>
+          </p>
+          <p v-for="(request, index) in selectedResourceWaits" :key="`${request.taskId}-${request.stepId}-${index}`">
+            {{ waitVehicleLabel(request) }} · {{ dispatchWaitDuration(request) }}
+            <el-button v-if="request.taskId" link type="primary" @click="openCallTask(request.taskId)">等待任务</el-button>
+          </p>
+          <p v-if="resourceEvidenceStatus" class="muted">{{ resourceEvidenceStatus }}</p>
+          <ul v-else class="evidence-list">
+            <li v-for="event in resourceEvents" :key="event.eventId">
+              {{ displayTime(event.occurredAt) }} · {{ event.vehicleId || '车辆未知' }} · {{ event.kind === 'SegmentReleased' ? '通过校验后逐段释放' : event.kind === 'ResourceAcquired' ? '取得路权' : '已释放' }}
+              <span v-if="event.reason"> · {{ event.reason }}</span>
+            </li>
+          </ul>
+        </div>
       </section>
       <section v-if="section === 'report'" class="panel">
         <div class="panel-heading">
@@ -1326,12 +1517,10 @@ onBeforeUnmount(() => {
 .dispatch-page > .experiment-launcher {
   order: 2;
 }
-.dispatch-page > .dispatch-body {
-  order: 3;
-}
+.dispatch-page > .dispatch-body { order: 2; }
 .dispatch-page > .business-setup { order: 2; }
 .dispatch-page > .workflow-nav { order: 1; }
-.dispatch-page > .calls-panel { order: 2; }
+.dispatch-page > .calls-panel { order: 3; }
 .dispatch-page > .tasks-panel { order: 4; }
 .dispatch-page > .legacy-experiments { order: 12; }
 .dispatch-page > .experiment-history {
@@ -1353,33 +1542,40 @@ onBeforeUnmount(() => {
 }
 .dispatch-body {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 310px;
+  grid-template-columns: minmax(0, 1fr) minmax(275px, 315px);
   gap: 16px;
+  align-items: start;
 }
 .dispatch-scene {
-  height: 560px;
-  display: flex;
-  flex-direction: column;
-}
-.dispatch-scene :deep(.scene-surface) {
-  flex: 1;
-  min-height: 0;
+  min-width: 0;
 }
 .panel-heading h3 {
   margin: 0 0 12px;
 }
 .vehicles {
-  max-height: 560px;
-  overflow: auto;
+  display: grid;
+  gap: 8px;
 }
+.vehicles .panel-heading h3, .resource-panel .panel-heading h3 { margin: 0; }
 .vehicle-row {
-  padding: 12px 0;
-  border-bottom: 1px solid #ebeef5;
+  padding: 10px;
+  border: 1px solid var(--ui-border, #e0e7f0);
+  border-radius: 8px;
 }
-.vehicle-row > div {
+.vehicle-selected { background: var(--el-color-primary-light-9); border-color: var(--el-color-primary-light-5); }
+.vehicle-title {
   display: flex;
-  justify-content: space-between;
+  align-items: center;
+  gap: 6px 10px;
+  flex-wrap: wrap;
 }
+.vehicle-title .el-tag { margin-left: auto; }
+.vehicle-battery { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.low-battery { color: #a34d17; }
+.vehicle-facts { display: grid; gap: 4px; margin: 8px 0 0; font-size: 12px; }
+.vehicle-facts div { display: grid; grid-template-columns: 4em minmax(0, 1fr); gap: 6px; }
+.vehicle-facts dt { color: var(--ui-text-3); }
+.vehicle-facts dd { margin: 0; overflow-wrap: anywhere; }
 .vehicle-row p {
   font-size: 13px;
   color: #606266;
@@ -1388,17 +1584,42 @@ onBeforeUnmount(() => {
 }
 .lower-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
 }
 .lower-grid.report-grid {
   grid-template-columns: minmax(0, 1fr);
 }
+.resource-panel .el-input {
+  width: 200px;
+  max-width: 100%;
+}
+.resource-panel .el-pagination {
+  margin-top: 12px;
+}
+.resource-filters, .resource-id, .call-detail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+}
+.resource-detail, .call-detail {
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid var(--ui-border, #e0e7f0);
+  border-radius: 8px;
+}
+.resource-detail h4 { margin: 0; }
+.resource-id code, .task-detail code { overflow-wrap: anywhere; }
+.call-number { margin-left: 4px; }
+.evidence-list { padding-left: 18px; }
+.evidence-list li { margin: 6px 0; overflow-wrap: anywhere; }
 .task-detail {
   margin-top: 18px;
 }
 .route-toolbar {
   display: flex;
+  align-items: center;
   flex-wrap: wrap;
   gap: 8px;
   margin: 10px 0;
@@ -1462,9 +1683,6 @@ h3 {
   .panel-heading {
     align-items: flex-start;
     flex-wrap: wrap;
-  }
-  .dispatch-scene {
-    height: 440px;
   }
 }
 </style>

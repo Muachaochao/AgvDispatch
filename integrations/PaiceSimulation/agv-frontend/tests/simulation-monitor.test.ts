@@ -1,0 +1,39 @@
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { callPresentation, resourceLocations, resourceRows, vehicleTaskKind, routeTarget } from '../src/integration/simulation-monitor.ts'
+
+test('keeps repeated calls separate and explains the previous unfinished cycle only once due', () => {
+  const first = { planIndex: 0, stationId: 'CNC-111', atSeconds: 12, status: 'active', taskId: 'A', vehicleId: 'AGV-01' }
+  const next = { planIndex: 7, stationId: 'CNC-111', atSeconds: 21, status: 'pending' }
+  assert.match(callPresentation(next, [first, next], 22).reason, /第 1 单/)
+  assert.equal(callPresentation(next, [first, next], 19).reason, '等待计划触发')
+  assert.equal(callPresentation({ ...next, status: 'emitted' }, [first], 25).reason, '等待 PLC 呼叫建单')
+  assert.equal(callPresentation({ ...first, status: 'created', vehicleId: undefined, stepNumber: 1 }, [], 20).step, '待派车')
+})
+
+test('shows active resources first with short map labels and keeps full IDs searchable', () => {
+  const long = 'AUTO-CORRIDOR-0123456789ABCDEF'
+  const map = {
+    nodes: [{ id: 'BUS-CNC-154', x: 0, y: 0 }, { id: 'J-01', x: 1, y: 0 }],
+    edges: [{ id: 'E-01', from: 'BUS-CNC-154', to: 'J-01', resourceIds: [long] }],
+  }
+  const locations = resourceLocations(map)
+  const resources = [{ resourceId: 'free', occupiedCount: 0, capacity: 1 }, { resourceId: long, occupiedCount: 1, capacity: 1 }]
+  const waiting = [{ stepId: 'step', taskId: 'task', vehicleId: 'AGV-02', blockers: [{ resourceId: long, vehicleId: 'AGV-01' }] }]
+  const rows = resourceRows(resources, waiting, locations, '', false)
+  assert.deepEqual(rows.map(row => row.resourceId), [long])
+  assert.match(rows[0].label, /CNC-154/)
+  assert.equal(rows[0].waits[0].vehicleId, 'AGV-02')
+  assert.deepEqual(locations.get(long)?.edgeIds, ['E-01'])
+  assert.equal(resourceRows(resources, [], locations, '0123456789ABCDEF', false).length, 1)
+  assert.equal(resourceRows(resources, [], locations, 'free', false).length, 1)
+})
+
+test('uses real navigation and charging evidence and avoids carrying over old destinations', () => {
+  assert.equal(vehicleTaskKind({ charging: true, current_task: 'move' }, true), '充电')
+  assert.equal(vehicleTaskKind({ current_task: 'STANDBY-abc' }, false), '回待机')
+  assert.equal(vehicleTaskKind({ current_task: 'move' }, true), '业务 · 导航')
+  assert.equal(vehicleTaskKind(undefined, false), '未确认')
+  assert.equal(routeTarget({ vendorSites: ['A', 'B'], nodeIds: ['J-01', 'J-02'] }), 'B')
+  assert.equal(routeTarget(undefined), undefined)
+})

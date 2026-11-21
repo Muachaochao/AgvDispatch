@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { NetEdge, NetNode, RoadNetPayload, ValidationError } from '@/api/roadnet'
-import { findMapMatches, mapNavigationItems } from '@/integration/map-navigation'
+import { findMapMatches, mapNavigationItems, type MapLocation, type MapPoint } from '@/integration/map-navigation'
 
 const props = defineProps<{
   initial: RoadNetPayload
@@ -11,11 +11,14 @@ const props = defineProps<{
   tasks?: { id: number; from: string; to: string }[]
   name?: string
   previewOnly?: boolean
+  vehicleLocations?: MapLocation[]
 }>()
 
 const emit = defineEmits<{
   (e: 'change'): void
   (e: 'save'): void
+  (e: 'node-select', node: NetNode): void
+  (e: 'vehicle-select', id: string): void
 }>()
 
 const SCALE = 20 // 1 米 = 20 像素
@@ -411,7 +414,7 @@ const searchableItems = computed(() => {
     .map(item => {
       const label = item.kind === 'node' ? types.get(item.id) : undefined
       return label ? { ...item, aliases: [...(item.aliases ?? []), label] } : item
-    })
+    }).concat(props.vehicleLocations ?? [])
 })
 const searchResults = computed(() => findMapMatches(searchableItems.value, searchQuery.value))
 
@@ -870,7 +873,7 @@ function notifyPreviewReadonly() {
   ElMessage.info('预览模式：点右上角「编辑」后可拖动')
 }
 
-function fitNodes(list: NetNode[], maxScale = MAX_SCALE) {
+function fitNodes(list: MapPoint[], maxScale = MAX_SCALE) {
   if (list.length === 0) {
     resetView()
     return
@@ -896,6 +899,18 @@ function fitNodes(list: NetNode[], maxScale = MAX_SCALE) {
 
 function fitView() {
   fitNodes(nodes.value, 2)
+}
+
+function focusMap(nodeIds: string[], edgeIds: string[], point?: MapPoint) {
+  selectedNodeIds.value = nodeIds.filter(id => nodeMap.value.has(id))
+  const selected = new Set(edgeIds)
+  const roads = edges.value.filter(edge => selected.has(edge.id))
+  selectedEdgeIds.value = roads.map(edge => edge.id)
+  const ids = new Set([...selectedNodeIds.value, ...roads.flatMap(edge => [edge.from, edge.to])])
+  const points = [...ids].flatMap(id => nodeMap.value.get(id) ?? [])
+  const bounds = point ? [point] : [...points, ...roads.flatMap(edge => edge.points ?? [])]
+  if (bounds.length) fitNodes(bounds, 3)
+  return bounds.length > 0
 }
 
 function fitSelection() {
@@ -1044,6 +1059,7 @@ function addNodeAt(type: Tool, point: { x: number; y: number }) {
 }
 
 function onNodeClick(event: MouseEvent, node: NetNode) {
+  if (props.previewOnly && event.button === 0) emit('node-select', node)
   if (tool.value !== 'connect' || !editable.value) return
   event.stopPropagation()
   if (!connectFrom.value) {
@@ -1684,6 +1700,11 @@ function nextSearch() {
   }
   const item = results[searchIndex.value % results.length]
   searchIndex.value += 1
+  if (item.kind === 'vehicle') {
+    focusMap([], [], item)
+    emit('vehicle-select', item.id)
+    return
+  }
   if (item.kind === 'node') {
     selectedNodeIds.value = [item.id]
     selectedEdgeIds.value = []
@@ -2104,6 +2125,7 @@ defineExpose({
   markSaved,
   markDirty,
   focusError,
+  focusMap,
   fitSelection,
   showValidation,
   fitError,
@@ -3088,8 +3110,6 @@ defineExpose({
   height: 100%;
   min-height: 0;
   --map-cursor-default: default;
-  --map-cursor-grab: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 24 24' fill='none' stroke-linecap='round' stroke-linejoin='round'%3E%3Cg stroke='%23ffffff' stroke-width='5'%3E%3Cpath d='M18 11V6a2 2 0 0 0-4 0v5'/%3E%3Cpath d='M14 10V4a2 2 0 0 0-4 0v6'/%3E%3Cpath d='M10 10.5V6a2 2 0 0 0-4 0v8'/%3E%3Cpath d='M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15'/%3E%3C/g%3E%3Cg stroke='%23303133' stroke-width='2.4'%3E%3Cpath d='M18 11V6a2 2 0 0 0-4 0v5'/%3E%3Cpath d='M14 10V4a2 2 0 0 0-4 0v6'/%3E%3Cpath d='M10 10.5V6a2 2 0 0 0-4 0v8'/%3E%3Cpath d='M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15'/%3E%3C/g%3E%3C/svg%3E") 16 16, grab;
-  --map-cursor-grabbing: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 24 24' fill='none' stroke-linecap='round' stroke-linejoin='round'%3E%3Cg stroke='%23ffffff' stroke-width='5'%3E%3Cpath d='M8 12V9a2 2 0 0 1 4 0v3'/%3E%3Cpath d='M12 12V8a2 2 0 0 1 4 0v4'/%3E%3Cpath d='M16 12V9a2 2 0 0 1 4 0v7a6 6 0 0 1-6 6h-1.5a6 6 0 0 1-4.9-2.55l-2.2-3.1a2 2 0 0 1 3.2-2.4L11 16'/%3E%3C/g%3E%3Cg stroke='%23303133' stroke-width='2.4'%3E%3Cpath d='M8 12V9a2 2 0 0 1 4 0v3'/%3E%3Cpath d='M12 12V8a2 2 0 0 1 4 0v4'/%3E%3Cpath d='M16 12V9a2 2 0 0 1 4 0v7a6 6 0 0 1-6 6h-1.5a6 6 0 0 1-4.9-2.55l-2.2-3.1a2 2 0 0 1 3.2-2.4L11 16'/%3E%3C/g%3E%3C/svg%3E") 16 16, grabbing;
   --map-cursor-pointer: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Cpath d='M9 4 L25 18 L18 19 L21 28 L17 30 L13 21 L9 25 Z' fill='%23303133' stroke='%23ffffff' stroke-width='2.5' stroke-linejoin='round'/%3E%3C/svg%3E") 9 4, pointer;
   --map-cursor-crosshair: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Cg stroke='%23ffffff' stroke-width='5' stroke-linecap='round'%3E%3Cpath d='M16 5v22M5 16h22'/%3E%3C/g%3E%3Cg stroke='%23303133' stroke-width='2.2' stroke-linecap='round'%3E%3Cpath d='M16 5v22M5 16h22'/%3E%3C/g%3E%3Ccircle cx='16' cy='16' r='1.6' fill='%23303133'/%3E%3C/svg%3E") 16 16, crosshair;
 }

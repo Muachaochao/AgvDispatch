@@ -7,4 +7,7 @@ export interface AgvView {
   status: string
   taskId: number
   station?: string
+  loaded?: boolean
+  lengthMeters?: number
+  widthMeters?: number
 }

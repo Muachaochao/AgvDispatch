@@ -47,6 +47,8 @@ export interface DispatchCar extends Point {
   batteryPercent?: number;
   speedMps?: number;
   charging?: boolean;
+  motionEdge?: string | null;
+  recovery?: { state?: string; message?: string; nextAction?: string; safetyPointTarget?: string | null; durationSeconds?: number };
 }
 export interface DispatchTaskDetail {
   task: {
@@ -54,12 +56,18 @@ export interface DispatchTaskDetail {
     vehicleId?: string | null;
     stationId?: string;
     stage?: string;
+    createdAt?: string;
+    updatedAt?: string;
   };
   waitingExplanation?: string;
+  evidenceSource?: string;
+  evidenceMessage?: string;
+  executionTimeline?: { id: string; stepId?: string; occurredAt: string; kind: string; title: string; summary?: string }[];
+  handover?: { exitPhysicallyVerified?: boolean; recordedReleaseReasons?: string[]; reason?: string };
   trafficWaiting?: { reason: string; blockingKey?: string; waitingSinceUtc?: string }[] | null;
   handshakeContractVersion?: string;
   plcConditions?: { stationId: string; variableName: string; address: string; expectedValue: boolean; currentValue?: boolean | null; quality: string; satisfied: boolean; reason?: string; observedAt?: string }[];
-  handshakes?: { stepId: string; phase: string; reason: string; cycleId: string }[];
+  handshakes?: { stepId: string; phase: string; reason: string; cycleId: string; updatedAt?: string; pendingSignal?: string; pendingValue?: boolean | null }[];
   steps?: {
     stepId?: string;
     sequence: number;
@@ -72,12 +80,18 @@ export interface DispatchTaskDetail {
     isCurrent?: boolean;
     completionRequirement?: string;
     observedPhase?: string;
+    startedAt?: string | null;
+    completedAt?: string | null;
+    commandStateExplanation?: string;
+    evidenceBoundary?: string;
   }[];
   commands?: {
     commandId: string;
     stepId?: string;
     vendorCommandId?: string | null;
     status?: string;
+    sentAt?: string | null;
+    lastError?: string | null;
     route?: {
       mapVersionId?: string;
       nodeIds?: string[];
@@ -98,6 +112,8 @@ export interface DispatchWaitRequest {
   waitingSeconds?: number | null;
   waitingStartKnown?: boolean;
   waitingClockValid?: boolean;
+  state?: string;
+  resourceIds?: string[];
   blockers?: { resourceId: string; vehicleId?: string | null }[];
 }
 export interface DispatchWaitSnapshot {
