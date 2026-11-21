@@ -162,6 +162,50 @@ using (var f = await Fixture.Create("Global"))
     Check(f.Gateway.Writes == 0, "optimization registers outbox only and never bypasses command sender");
 }
 
+foreach (var change in new[] { "none", "gate", "map", "policy", "slots" })
+{
+    var preflight = new PausableMapPreflight();
+    using var f = await Fixture.Create("Global", preflight: preflight);
+    var first = await f.Call("CNC1", 80);
+    await f.Cycle();
+    var second = await f.Call("CNC2", 70);
+    preflight.Paused = true;
+    var cycle = (Task)typeof(DispatchTaskOrchestrator).GetMethod("RunCycleAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+        .Invoke(f.Orchestrator, [CancellationToken.None])!;
+    try
+    {
+        await preflight.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        f.Gateway.AllowWrites = true;
+        await f.SendCycle().WaitAsync(TimeSpan.FromSeconds(3));
+        Check(f.Gateway.Writes == 1, "earlier command is sent during pending vehicle map check: " + change);
+
+        using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+        using var control = await f.Gate.EnterControlAsync(budget.Token);
+        if (change == "gate") f.Gate.SetMode(MapExecutionMode.Draining);
+        if (change == "map")
+        {
+            var map = f.Map.Current!;
+            f.Map.Replace(new(map.MapId, "V2", map.Definition, DateTimeOffset.UtcNow));
+        }
+        if (change == "policy")
+        {
+            var policy = await f.Optimization.GetAsync(default);
+            await f.Optimization.SaveOptionsAsync(TrafficUserContext.LocalOperation("TEST\\ADMIN"),
+                new(policy.Options with { WindowSize = policy.Options.WindowSize + 1 }, policy.Revision), default);
+        }
+        if (change == "slots") f.Dispatch.MaxConcurrentTasks = 1;
+    }
+    finally
+    {
+        preflight.Resume.TrySetResult();
+    }
+    await cycle.WaitAsync(TimeSpan.FromSeconds(5));
+    Check((await f.Due()).Any(c => c.TaskId == second) == (change == "none"),
+        "vehicle map evidence is consumed only under the current dispatch context: " + change);
+    Check((await f.Tasks.GetStepsAsync(first, default))[0].Status != DispatchTaskStepStatus.Ready,
+        "the earlier command remains attached to its original task: " + change);
+}
+
 using (var f = await Fixture.Create("Global"))
 {
     var a = await f.Call("CNC1", 80); var b = await f.Call("CNC2", 50);
@@ -346,13 +390,17 @@ sealed class Fixture : IDisposable
     public FixturePlanner Planner { get; private set; } = null!;
     public AgvStateCache States { get; private set; } = null!;
 
-    public static async Task<Fixture> Create(string mode, bool shared = false)
+    public MapExecutionGate Gate { get; } = new();
+
+    public static async Task<Fixture> Create(string mode, bool shared = false, IRobokitTaskMapPreflight? preflight = null)
     {
         var f = new Fixture();
         var root = Path.Combine(Path.GetTempPath(), "agv-optimization-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         f.Db = DatabaseFactory.Create(new() { DatabasePath = Path.Combine(root, "test.db") });
-        var resources = shared ? new[] { new TrafficResourceDefinition("R", TrafficResourceType.NarrowAisle) } : [];
+        var resources = new List<TrafficResourceDefinition>();
+        if (shared) resources.Add(new("R", TrafficResourceType.NarrowAisle));
+        if (preflight is not null) resources.Add(new("WAIT-RESOURCE", TrafficResourceType.NarrowAisle));
         var catalog = new TrafficResourceCatalog(resources);
         await new DatabaseInitializer(f.Db, catalog).InitializeAsync(default);
         f.Tasks = new(f.Db); f.Repository = new(f.Db); f.Outbox = new(f.Db, f.Map);
@@ -362,15 +410,18 @@ sealed class Fixture : IDisposable
         f.Optimization = new(Path.Combine(root, "optimizer.json"), new() { Mode = mode }, NullLogger<DispatchOptimizationService>.Instance);
         f.States = new(new AgvOptions { Enabled = true, Robots = [new() { VehicleId = "V1" }, new() { VehicleId = "V2" }] });
         var nodes = new[] { "HOME1", "HOME2", "PICK1", "PICK2", "WAIT", "DUMP" }
-            .Select((id, i) => new MapNode(id, i, 0, MapNodeType.Station, true, [], id)).ToArray();
+            .Select((id, i) => new MapNode(id, i, 0, MapNodeType.Station, true,
+                preflight is not null && id == "WAIT" ? ["WAIT-RESOURCE"] : [], id)).ToArray();
         var planner = new FixturePlanner(shared);
         f.Planner = planner;
         var edges = planner.Routes.Select(p => new MapEdge(p.Value.EdgeIds[0], p.Key.Item1, p.Key.Item2, p.Value.Cost, 1, false, true, p.Value.ResourceIds)).ToArray();
         f.Map.Replace(new("M", "V1", new("optimization-test", "", "LocalCartesian", "m", nodes, edges, resources), DateTimeOffset.UtcNow));
         f.Apply("V1"); f.Apply("V2");
-        var gate = new MapExecutionGate(); gate.SetMode(MapExecutionMode.Running);
+        var gate = f.Gate; gate.SetMode(MapExecutionMode.Running);
         f.Orchestrator = new(NullLogger<DispatchTaskOrchestrator>.Instance, f.Dispatch, f.Repository, f.Outbox,
-            f.Gateway, f.States, f.Map, new() { PositionStaleSeconds = 60 }, planner, f.Traffic, gate, optimization: f.Optimization);
+            f.Gateway, f.States, f.Map, new() { PositionStaleSeconds = 60 }, planner, f.Traffic, gate,
+            robokitMap: preflight, optimization: f.Optimization,
+            handshakeOptions: preflight is null ? null : new() { Enabled = true, PlcContractVersion = HandshakeExecutionOptions.Version });
         f.Sender = new(NullLogger<AgvCommandOutboxDispatcher>.Instance, new(), f.Outbox, f.Gateway, gate,
             trafficResources: f.Traffic, activeMap: f.Map);
         return f;
@@ -400,6 +451,24 @@ sealed class Fixture : IDisposable
     public async Task SendCycle() => await (Task)typeof(AgvCommandOutboxDispatcher)
         .GetMethod("DispatchDueCommandsAsync", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(Sender, [CancellationToken.None])!;
     public void Dispose() => Db.Dispose();
+}
+
+sealed class PausableMapPreflight : IRobokitTaskMapPreflight
+{
+    public bool Paused;
+    public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public TaskCompletionSource Resume { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    public async Task<RobokitTaskMapCheck> CheckAsync(string vehicleId, string currentSite, string pickup,
+        string waiting, string dumping, string mapId, string versionId, CancellationToken ct)
+    {
+        if (Paused)
+        {
+            Started.TrySetResult();
+            await Resume.Task.WaitAsync(ct);
+        }
+        return new(true, "test map and paths verified");
+    }
 }
 
 sealed class FixturePlanner

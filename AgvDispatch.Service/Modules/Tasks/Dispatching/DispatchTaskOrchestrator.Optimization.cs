@@ -32,14 +32,27 @@ public sealed partial class DispatchTaskOrchestrator
         var watch = Stopwatch.StartNew();
         var now = DateTimeOffset.UtcNow;
         var hits = routeCache?.Hits ?? 0; var misses = routeCache?.Misses ?? 0;
-        var map = activeMap.Current;
-        optimization?.ReportLayer("queue", "Running", "读取持久化呼叫，固定既有任务和路权，按优先级与呼叫时间选择窗口。");
-        var queue = await _queueLayer.LoadAsync(policy, activeTasks, now, ct);
+        var global = policy.Mode.Equals("Global", StringComparison.OrdinalIgnoreCase);
+        ActiveMapRuntimeSnapshot? map;
+        DispatchQueueWindow queue;
+        DispatchCandidateGraph graph;
+        {
+            // Shadow is invoked by the legacy cycle with its original lease held.
+            using var chargingLease = global && charging is not null ? await charging.EnterBusinessAsync(ct) : null;
+            using var execution = global ? await executionGate.EnterAsync(MapExecutionOperation.NewWork, ct) : null;
+            if (global && (execution is null || !ReferenceEquals(policy, optimization?.Options))) return;
+            map = activeMap.Current;
+            if (global && options.EngineeringMapError(map) is not null) return;
+            optimization?.ReportLayer("queue", "Running", "读取持久化呼叫，固定既有任务和路权，按优先级与呼叫时间选择窗口。");
+            queue = await _queueLayer.LoadAsync(policy, activeTasks, now, ct);
+            optimization?.ReportLayer("queue", "Ready", $"持久化等待 {queue.Waiting.Length} 单，本轮窗口 {queue.Window.Count} 单；窗口外及固定任务继续保留。", queue.Waiting.Length);
+            optimization?.ReportLayer("candidates", "Running", "筛选健康、能力车辆池、电量、区域和合法路线，不申请路权、不登记命令。");
+            graph = await _candidateLayer.BuildAsync(queue, policy, map, ct);
+            if (global) await _trafficLayer.ObserveWaitingAsync(graph.WaitingRoutes, ct);
+        }
+        var planningMs = watch.Elapsed.TotalMilliseconds;
         IReadOnlyList<DispatchTaskWorkItem> waiting = queue.Waiting;
         var work = queue.Work; var input = queue.Input; var window = queue.Window; var ready = queue.Ready;
-        optimization?.ReportLayer("queue", "Ready", $"持久化等待 {waiting.Count} 单，本轮窗口 {window.Count} 单；窗口外及固定任务继续保留。", waiting.Count);
-        optimization?.ReportLayer("candidates", "Running", "筛选健康、能力车辆池、电量、区域和合法路线，不申请路权、不登记命令。");
-        var graph = await _candidateLayer.BuildAsync(queue, policy, map, ct);
         var vehicles = graph.Vehicles; var generalReasons = graph.GeneralReasons; var edges = graph.Edges;
         var plans = graph.Plans; var diagnostics = graph.Diagnostics; var taskReasons = graph.TaskReasons;
         // First-leg handshake binding is the durable vehicle commitment. Once it
@@ -60,8 +73,6 @@ public sealed partial class DispatchTaskOrchestrator
         }
         optimization?.ReportLayer("candidates", edges.Count == 0 && window.Count > 0 ? "Waiting" : "Ready",
             $"通过硬约束 {generalReasons.Count(p => p.Value is null)} 台车，形成 {edges.Count} 条可执行候选边。", edges.Count);
-        if (policy.Mode.Equals("Global", StringComparison.OrdinalIgnoreCase))
-            await _trafficLayer.ObserveWaitingAsync(graph.WaitingRoutes, ct);
         optimization?.ReportLayer("matching", "Running", "最小费用最大流计算；只有等待任务与未占用车辆参与。");
         var result = _optimizer.Optimize(input, edges, policy, now, slots);
         optimization?.ReportLayer("matching", policy.Mode.Equals("Shadow", StringComparison.OrdinalIgnoreCase) ? "Observing" : "Ready",
@@ -80,7 +91,8 @@ public sealed partial class DispatchTaskOrchestrator
         }
         var prepared = new Dictionary<string, string>();
         var blockedLayers = new Dictionary<string, string>();
-        var global = policy.Mode.Equals("Global", StringComparison.OrdinalIgnoreCase);
+        var preflightMs = 0d;
+        var commitMs = 0d;
         if (global && slots > 0)
         {
             var failedPairs = new HashSet<(string, string)>();
@@ -94,9 +106,30 @@ public sealed partial class DispatchTaskOrchestrator
                 var task = work.Single(t => t.TaskId == next.TaskId);
                 var vehicle = vehicles.Single(v => v.VehicleId == next.VehicleId);
                 string? outcome;
-                try { outcome = await TryPrepareOptimizedAsync(task, ready[task.TaskId], vehicle, plans[(task.TaskId, vehicle.VehicleId)],
-                    next.EffectivePriority, map, policy, ct, layer => blockedLayers[task.TaskId] = layer,
-                    graph.StagedPairs.Contains((task.TaskId, vehicle.VehicleId))); }
+                try
+                {
+                    var stage = Stopwatch.StartNew();
+                    var plan = plans[(task.TaskId, vehicle.VehicleId)];
+                    var waitingSites = options.GetDumperWaitingSites().ToArray();
+                    var dumpingSite = options.DumperDumpingSite;
+                    var preflightFailure = await CheckOptimizedVehicleMapAsync(vehicle, plan, map, waitingSites, dumpingSite, ct);
+                    preflightMs += stage.Elapsed.TotalMilliseconds;
+                    if (preflightFailure is not null)
+                    {
+                        outcome = preflightFailure;
+                        blockedLayers[task.TaskId] = "safety";
+                        optimization?.ReportLayer("safety", "Blocked", outcome);
+                    }
+                    else
+                    {
+                        stage.Restart();
+                        outcome = await TryPrepareOptimizedAsync(task, ready[task.TaskId], vehicle, plan,
+                            next.EffectivePriority, map, policy, waitingSites, dumpingSite, ct,
+                            layer => blockedLayers[task.TaskId] = layer,
+                            graph.StagedPairs.Contains((task.TaskId, vehicle.VehicleId)));
+                        commitMs += stage.Elapsed.TotalMilliseconds;
+                    }
+                }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
                 catch (Exception ex)
                 {
@@ -123,6 +156,9 @@ public sealed partial class DispatchTaskOrchestrator
                 }
             }
         }
+        if (global && edges.Count > 0)
+            logger.LogInformation("全局匹配分段耗时。候选和排队={PlanningMs:F1}ms，车端地图核验={PreflightMs:F1}ms，门禁等待和登记={CommitMs:F1}ms，候选={Candidates}，登记={Prepared}",
+                planningMs, preflightMs, commitMs, edges.Count, prepared.Count);
         var rowsOut = window.Select(score => new DispatchOptimizationTask(score.TaskId, score.StationId, score.CalledAt,
             score.BasePriority, score.EffectivePriority, score.WaitingSeconds / 60,
             result.Assignments.FirstOrDefault(a => a.TaskId == score.TaskId)?.VehicleId,
@@ -148,13 +184,34 @@ public sealed partial class DispatchTaskOrchestrator
         }, !global, !global && improved);
     }
 
+    private async Task<string?> CheckOptimizedVehicleMapAsync(AgvVehicleStatus vehicle, RoutePlan planned,
+        ActiveMapRuntimeSnapshot? map, IReadOnlyList<string> waitingSites, string dumpingSite, CancellationToken ct)
+    {
+        if (robokitMap is null) return null;
+        if (map is null || !ReferenceEquals(map, activeMap.Current) || !executionGate.CanStartNewWork)
+            return "运行地图或新增派车门禁已变化。";
+        var check = await robokitMap.CheckWaitingSitesAsync(vehicle.VehicleId, vehicle.CurrentStation!,
+            planned.Nodes[^1], waitingSites, dumpingSite, map.MapId, map.VersionId, ct);
+        return check.Accepted ? null : "派车前车端地图核验未通过：" + check.Message;
+    }
+
     private async Task<string?> TryPrepareOptimizedAsync(DispatchTaskWorkItem task, DispatchTaskStepWorkItem step,
         AgvVehicleStatus vehicle, RoutePlan planned, double priority, ActiveMapRuntimeSnapshot? map,
-        DispatchAssignmentOptions policy, CancellationToken ct, Action<string>? rejectedLayer = null, bool staged = false)
+        DispatchAssignmentOptions policy, IReadOnlyList<string> waitingSites, string dumpingSite,
+        CancellationToken ct, Action<string>? rejectedLayer = null, bool staged = false)
     {
         string Reject(string layer, string reason)
         { rejectedLayer?.Invoke(layer); optimization?.ReportLayer(layer, layer == "traffic" ? "Waiting" : "Blocked", reason); return reason; }
-        if (!executionGate.CanStartNewWork || !ReferenceEquals(map, activeMap.Current)) return Reject("safety", "运行地图或新增派车门禁已变化。");
+        bool ContextCurrent() => executionGate.CanStartNewWork && ReferenceEquals(map, activeMap.Current) &&
+            ReferenceEquals(policy, optimization?.Options) && dumpingSite == options.DumperDumpingSite &&
+            options.EngineeringMapError(map) is null && options.AllowsVehicle(task.StationId, vehicle.VehicleId) &&
+            MapRouteSiteMapper.IsSameNode(map?.Definition, planned.Nodes[^1], options.GetPickupSite(task.StationId)) &&
+            waitingSites.SequenceEqual(options.GetDumperWaitingSites(), StringComparer.Ordinal);
+
+        using var chargingLease = charging is null ? null : await charging.EnterBusinessAsync(ct);
+        using var execution = await executionGate.EnterAsync(MapExecutionOperation.NewWork, ct);
+        if (execution is null || !ContextCurrent())
+            return Reject("safety", "运行地图、倒料配置、派车策略或新增派车门禁已变化。");
         var admissionState = await outbox.GetPickupAdmissionAsync(task.TaskId, ct);
         if (!admissionState.Allowed)
         {
@@ -163,19 +220,11 @@ public sealed partial class DispatchTaskOrchestrator
                 { MapId=map?.MapId, MapVersionId=map?.VersionId }, ct);
             return Reject("traffic", admissionState.Reason);
         }
-        if (robokitMap is not null)
-        {
-            if (map is null) return Reject("safety", "运行地图不存在。");
-            foreach (var waiting in options.GetDumperWaitingSites())
-            {
-                var check = await robokitMap.CheckAsync(vehicle.VehicleId, vehicle.CurrentStation!, planned.Nodes[^1], waiting,
-                    options.DumperDumpingSite, map.MapId, map.VersionId, ct);
-                if (!check.Accepted) return Reject("safety", "派车前车端地图核验未通过：" + check.Message);
-            }
-        }
         var currentVehicles = await agvGateway.GetVehiclesAsync(ct);
         var current = currentVehicles.SingleOrDefault(v => v.VehicleId == vehicle.VehicleId);
-        var busy = (await tasks.GetSubmittingTasksAsync(ct)).Concat(await tasks.GetAssignedTasksAsync(ct))
+        var active = (await tasks.GetSubmittingTasksAsync(ct)).Concat(await tasks.GetAssignedTasksAsync(ct)).ToArray();
+        if (active.Length >= options.MaxConcurrentTasks) return Reject("traffic", "车队并发槽位已用完。");
+        var busy = active
             .Where(t => t.VehicleId is not null).Select(t => t.VehicleId!).ToHashSet(StringComparer.OrdinalIgnoreCase);
         busy.UnionWith(await trafficResources.GetHeldVehicleIdsAsync(ct));
         var exclusion = current is null ? "车辆状态已丢失。" : VehicleExclusion(current, busy, policy);
@@ -213,7 +262,7 @@ public sealed partial class DispatchTaskOrchestrator
         var commandPrepared = false;
         try
         {
-            if (!executionGate.CanStartNewWork || !ReferenceEquals(map, activeMap.Current) ||
+            if (!ContextCurrent() ||
                 !agvStates.TryGet(vehicle.VehicleId, out var fresh) ||
                 !MapRouteSiteMapper.IsSameNode(map?.Definition, fresh.CurrentStation, current.CurrentStation) ||
                 VehicleExclusion(current, busy, policy) is not null) return Reject("safety", "路权取得后实时状态变化，未登记命令。");
@@ -221,6 +270,7 @@ public sealed partial class DispatchTaskOrchestrator
             if (preSendSafety is not null && await preSendSafety.CheckPreparationAsync(step, vehicle.VehicleId, firstWindow.Path, map, ct) is { } rejected)
                 return Reject("safety", rejected);
             if (preSendSafety is null && handshake is not null) await handshake.BindBeforeTransportAsync(step with { VehicleId = vehicle.VehicleId }, ct);
+            if (!ContextCurrent()) return Reject("safety", "登记前派车上下文已变化，保留原任务。");
             optimization?.ReportLayer("safety", "Ready", "本候选通过发车前复核；命令将以原步骤编号原子登记。");
             commandPrepared = await outbox.TryPrepareTransportWindowAsync(
                 task.TaskId, step.StepId, vehicle.VehicleId, route.Nodes[0], route.Nodes[^1],

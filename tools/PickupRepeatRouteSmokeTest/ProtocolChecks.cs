@@ -10,12 +10,16 @@ using AgvDispatch.Infrastructure.Maps;
 
 static class ProtocolChecks
 {
-    public static async Task Run(MapDefinition definition, Action<bool,string> check)
+    public static async Task Run(MapDefinition definition, Action<bool,string> check, MapDefinition batchDefinition)
     {
         using var device = new Device(definition);
+        using var secondDevice = new Device(batchDefinition);
         var runtime = new ActiveMapRuntime(); runtime.Replace(new("MAP", "V1", definition, DateTimeOffset.Now));
-        var options = new AgvOptions { Enabled = true, RequestIntervalMs = 100, Robots = [new() { VehicleId = "AGV-01", IpAddress = "127.0.0.1", Port = device.Port, NavigationPort = device.Port }],
+        var options = new AgvOptions { Enabled = true, RequestIntervalMs = 100, Robots = [new() { VehicleId = "AGV-01", IpAddress = "127.0.0.1", Port = device.Port, NavigationPort = device.Port },
+                new() { VehicleId = "AGV-02", IpAddress = "127.0.0.1", Port = secondDevice.Port, NavigationPort = secondDevice.Port }],
             MapBindings = [new() { VehicleId = "AGV-01", LocalMapId = "MAP", LocalMapVersion = "V1", RobotMap = "repeat-map", RobotMapMd5 = new string('a', 32), CoordinatesVerified = true }] };
+        options.MapBindings.Add(new() { VehicleId = "AGV-02", LocalMapId = "MAP", LocalMapVersion = "V1", RobotMap = "repeat-map",
+            RobotMapMd5 = new string('a', 32), CoordinatesVerified = true });
         await using var connections = new AgvConnectionManager(options);
         var inspection = new Inspection(definition);
         var preflight = new RobokitTaskMapPreflight(options, connections, runtime, inspection);
@@ -48,7 +52,7 @@ static class ProtocolChecks
         inspection.After=null;
         options.MapBindings.Add(options.MapBindings[0]);
         check(!(await preflight.CheckCurrentMapAsync("AGV-01","MAP","V1",default)).Accepted,"ambiguous coordinate binding refuses exit evidence");
-        options.MapBindings.RemoveAt(1);options.MapBindings[0].CoordinatesVerified=false;
+        options.MapBindings.RemoveAt(options.MapBindings.Count - 1);options.MapBindings[0].CoordinatesVerified=false;
         check(!(await preflight.CheckCurrentMapAsync("AGV-01","MAP","V1",default)).Accepted,"unverified coordinates refuse exit evidence");
         options.MapBindings[0].CoordinatesVerified=true;
         inspection.After=()=>options.MapBindings[0].RobotMap="changed-during-observation";
@@ -59,22 +63,84 @@ static class ProtocolChecks
         options.MapBindings[0].RobotMapMd5=new string('a',32);
         check(!(await preflight.CheckCurrentMapAsync("AGV-01","MAP","OLD",default)).Accepted,"original business map version must match current runtime");
         var actual=new RobokitTaskMapPreflight(options,connections,runtime,new RobokitInspectionService(options,connections,runtime));
-        check((await actual.CheckCurrentMapAsync("AGV-01","MAP","V1",default)).Accepted,"current-map gate accepts actual loopback 1300/1022/1302 inspection");
+        var actualCheck = await actual.CheckCurrentMapAsync("AGV-01","MAP","V1",default);
+        check(actualCheck.Accepted,"current-map gate accepts actual loopback 1300/1022/1302 inspection: " + actualCheck.Message);
         device.BadHash=true;
         check(!(await actual.CheckCurrentMapAsync("AGV-01","MAP","V1",default)).Accepted,"actual 1302 hash mismatch blocks exit evidence");
         check(device.Pairs.Count==pairCount,"actual exit identity inspection also sends no 1303 or navigation command");
+
+        runtime.Replace(new("MAP", "V1", batchDefinition, DateTimeOffset.Now));
+        device.RejectReverse = false;
+        var actualBatch = new RobokitTaskMapPreflight(options, connections, runtime,
+            new RobokitInspectionService(options, connections, runtime));
+        var stationsBefore = secondDevice.StationQueries;
+        var actualBatchResult = await actualBatch.CheckWaitingSitesAsync("AGV-02", "LM-PICK", "PICK",
+            ["WAIT", "WAIT-2"], "DUMP", "MAP", "V1", default);
+        check(actualBatchResult.Accepted && secondDevice.StationQueries == stationsBefore + 1,
+            "actual loopback batch reads the full station table once for all waiting sites");
+
+        var batchInspection = new Inspection(batchDefinition, options, runtime) { ThrowOnSecondRead = true };
+        var batch = new RobokitTaskMapPreflight(options, connections, runtime, batchInspection);
+        var batchResult = await batch.CheckWaitingSitesAsync("AGV-02", "LM-PICK", "PICK", ["WAIT", "WAIT-2"], "DUMP", "MAP", "V1", default);
+        check(batchResult.Accepted && batchInspection.ReadCount == 1,
+            "waiting-site bundle reads vehicle map/stations once and preserves every route check: " +
+            $"{batchResult.Message}; reads={batchInspection.ReadCount}");
+        var firstWaiting = batchResult.RouteChecks.Where(c => c.Sequence == 3).Select(c => c.Target);
+        check(firstWaiting.Contains("LM-WAIT") && firstWaiting.Contains("WAIT-2"),
+            "waiting-site bundle checks both candidates in one vehicle observation: " + string.Join(",", firstWaiting));
+
+        batchInspection.ThrowOnSecondRead = false;
+        batchInspection.BeforeCompleteRead = () => Task.Delay(150);
+        var delayed = await batch.CheckWaitingSitesAsync("AGV-02", "LM-PICK", "PICK", ["WAIT", "WAIT-2"], "DUMP", "MAP", "V1", default);
+        check(delayed.Accepted && batchInspection.ReadCount == 2,
+            "waiting-site bundle gives every vehicle observation the full inspection budget: " +
+            $"{delayed.Message}; reads={batchInspection.ReadCount}");
+        batchInspection.ThrowOnSecondRead = true;
+        batchInspection.BeforeCompleteRead = null;
+        var baselineBinding = options.MapBindings.Single(b => b.VehicleId == "AGV-02");
+        batchInspection.After = () => baselineBinding.RobotMapMd5 = new string('b', 32);
+        check(!(await batch.CheckWaitingSitesAsync("AGV-02", "LM-PICK", "PICK", ["WAIT", "WAIT-2"], "DUMP", "MAP", "V1", default)).Accepted,
+            "waiting-site bundle rejects a map binding changed during the batch");
+        baselineBinding.RobotMapMd5 = new string('a', 32); batchInspection.After = null;
+        batchInspection.SequentialAfter = () => runtime.Replace(new("MAP", "V1", definition, DateTimeOffset.Now));
+        check(!(await batch.CheckWaitingSitesAsync("AGV-02", "LM-PICK", "PICK", ["WAIT", "WAIT-2"], "DUMP", "MAP", "V1", default)).Accepted,
+            "waiting-site bundle rejects a runtime map changed during the batch");
     }
-    sealed class Inspection(MapDefinition definition):IRobokitInspectionService
+    sealed class Inspection(MapDefinition definition, AgvOptions? options = null, ActiveMapRuntime? runtime = null):IRobokitInspectionService
     {
         public RobokitInspectionSnapshot Snapshot=new("AGV-01",DateTimeOffset.Now,true,true,"isolated identity fixture",null,null,"repeat-map",new string('a',32),1,"MAP","V1",false,null,definition.Nodes.Select(n=>new RobokitStation(n.AgvSiteId!,"Station",n.X,n.Y,0,null)).ToArray(),[],[],[]);
         public Action? After;
-        public Task<RobokitInspectionSnapshot> ReadAsync(RobokitInspectionQuery query,CancellationToken ct){After?.Invoke();return Task.FromResult(Snapshot);}
+        public Action? SequentialAfter;
+        public Func<Task>? BeforeCompleteRead;
+        public bool ThrowOnSecondRead;
+        public int ReadCount { get; private set; }
+        public async Task<RobokitInspectionSnapshot> ReadAsync(RobokitInspectionQuery query,CancellationToken ct)
+        {
+            ReadCount++;
+            if (options is null && runtime is null) { After?.Invoke(); return Snapshot; }
+            if (ThrowOnSecondRead && ReadCount > 1) throw new InvalidDataException("unexpected second full inspection");
+            var identity = (options?.MapBindings ?? []).SingleOrDefault(b => b.VehicleId == query.VehicleId);
+            var local = runtime?.Current;
+            var observation = Snapshot with { VehicleId = query.VehicleId, LocalMapId = local?.MapId ?? Snapshot.LocalMapId,
+                LocalMapVersion = local?.VersionId ?? Snapshot.LocalMapVersion, RobotMap = identity?.RobotMap ?? Snapshot.RobotMap,
+                RobotMapMd5 = identity?.RobotMapMd5 ?? Snapshot.RobotMapMd5 };
+            if (BeforeCompleteRead is not null)
+            {
+                await BeforeCompleteRead();
+                After?.Invoke();
+                return observation;
+            }
+            var first = (options?.MapBindings ?? []).SingleOrDefault(b => b.VehicleId == query.VehicleId);
+            await Task.Yield();
+            SequentialAfter?.Invoke();
+            return observation with { RobotMap = first?.RobotMap ?? observation.RobotMap, RobotMapMd5 = first?.RobotMapMd5 ?? observation.RobotMapMd5 };
+        }
     }
     sealed class Device:IDisposable
     {
         readonly TcpListener listener=new(IPAddress.Loopback,0);readonly CancellationTokenSource stop=new();readonly Task server;
         readonly MapDefinition definition;
-        public int Port{get;} public bool RejectReverse, BadHash;public JsonElement? Command;public List<(string,string)> Pairs=[];
+        public int Port{get;} public int StationQueries; public bool RejectReverse, BadHash;public JsonElement? Command;public List<(string,string)> Pairs=[];
         public Device(MapDefinition definition){this.definition=definition;listener.Start();Port=((IPEndPoint)listener.LocalEndpoint).Port;server=Task.Run(Serve);}
         async Task Serve()
         {
@@ -90,7 +156,7 @@ static class ProtocolChecks
                     {
                         case 1000:response=new{version="3.4.fixture",netprotocol_version="1"};break;
                         case 1060:response=new{locked=false,nick_name="fixture"};break;
-                        case 1301:response=new{stations=definition.Nodes.Select(n=>new{id=n.AgvSiteId,type="Station",x=n.X,y=n.Y,r=0})};break;
+                        case 1301:StationQueries++;response=new{stations=definition.Nodes.Select(n=>new{id=n.AgvSiteId,type="Station",x=n.X,y=n.Y,r=0})};break;
                         case 1302:response=new{map_info=new[]{new{name="repeat-map.smap",md5=new string(BadHash?'b':'a',32)}}};break;
                         case 1303:
                             var a=request.RootElement.GetProperty("source_id").GetString()!;var b=request.RootElement.GetProperty("target_id").GetString()!;Pairs.Add((a,b));

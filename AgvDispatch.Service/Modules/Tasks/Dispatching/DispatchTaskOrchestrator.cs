@@ -97,14 +97,23 @@ public sealed partial class DispatchTaskOrchestrator(
 
     private async Task RunCycleAsync(CancellationToken cancellationToken)
     {
+        var global = await RunCycleUnderGateAsync(cancellationToken);
+        if (global is not null)
+            await RunOptimizationAsync(global.Policy, global.Slots, global.ActiveTasks, cancellationToken);
+    }
+
+    private sealed record GlobalCycle(DispatchAssignmentOptions Policy, int Slots, DispatchTaskWorkItem[] ActiveTasks);
+
+    private async Task<GlobalCycle?> RunCycleUnderGateAsync(CancellationToken cancellationToken)
+    {
         using var chargingLease = charging is null ? null : await charging.EnterBusinessAsync(cancellationToken);
         using var execution = await executionGate.EnterAsync(MapExecutionOperation.ExistingWork, cancellationToken);
-        if (execution is null) { ReportOptimizationGate("地图恢复或切换门禁尚未放行。" ); return; }
+        if (execution is null) { ReportOptimizationGate("地图恢复或切换门禁尚未放行。" ); return null; }
         var connection = await agvGateway.GetConnectionStatusAsync(cancellationToken);
         if (connection.State is not (ConnectionState.Online or ConnectionState.Degraded))
         {
             ReportOptimizationGate("AGV通信未就绪，保留等待队列。");
-            return;
+            return null;
         }
 
         await SynchronizeExecutingTasksAsync(cancellationToken);
@@ -115,8 +124,8 @@ public sealed partial class DispatchTaskOrchestrator(
         {
             await trafficResources.RenewTaskAsync(activeTask.TaskId, cancellationToken);
         }
-        if (!executionGate.CanStartNewWork) { ReportOptimizationGate("地图执行门禁尚未允许新增派车。"); return; }
-        if (options.EngineeringMapError(activeMap.Current) is { } mapError) { ReportOptimizationGate(mapError); return; }
+        if (!executionGate.CanStartNewWork) { ReportOptimizationGate("地图执行门禁尚未允许新增派车。"); return null; }
+        if (options.EngineeringMapError(activeMap.Current) is { } mapError) { ReportOptimizationGate(mapError); return null; }
         var bayError = DumperWaitingBaySafety.GetError(activeMap.Current?.Definition, options,
             handshakeOptions is { Enabled: true, PlcContractVersion: HandshakeExecutionOptions.Version });
         if (bayError is not null)
@@ -124,29 +133,37 @@ public sealed partial class DispatchTaskOrchestrator(
             if (_waitingBayError != bayError) logger.LogWarning("新派车被候车位门禁阻止：{Reason}", bayError);
             _waitingBayError = bayError;
             ReportOptimizationGate(bayError);
-            return;
+            return null;
         }
         _waitingBayError = null;
         if (options.RequireGlobalMatching && !string.Equals(optimization?.Options.Mode, "Global", StringComparison.OrdinalIgnoreCase))
         {
             ReportOptimizationGate("正式业务要求全局匹配；当前优化策略未处于 Global，保留原队列并暂停新增派车。");
-            return;
+            return null;
         }
         var occupiedSlots = submitting.Count + assigned.Count;
         var availableSlots = options.MaxConcurrentTasks - occupiedSlots;
         if (availableSlots <= 0)
         {
-            return;
+            return null;
         }
         if (optimization is not null && !optimization.Options.Mode.Equals("Disabled", StringComparison.OrdinalIgnoreCase))
         {
-            if (DateTimeOffset.UtcNow < _nextOptimizationAt) return;
+            if (DateTimeOffset.UtcNow < _nextOptimizationAt) return null;
             var policy = optimization.Options;
             _nextOptimizationAt = DateTimeOffset.UtcNow.AddMilliseconds(policy.IntervalMs);
-            var global = policy.Mode.Equals("Global", StringComparison.OrdinalIgnoreCase);
-            await RunOptimizationAsync(policy, Math.Max(0, availableSlots), submitting.Concat(assigned).ToArray(), cancellationToken);
-            if (global) return;
+            var active = submitting.Concat(assigned).ToArray();
+            if (policy.Mode.Equals("Global", StringComparison.OrdinalIgnoreCase))
+                return new(policy, availableSlots, active);
+            await RunOptimizationAsync(policy, availableSlots, active, cancellationToken);
         }
+        await RunLegacyDispatchAsync(submitting, assigned, availableSlots, cancellationToken);
+        return null;
+    }
+
+    private async Task RunLegacyDispatchAsync(IReadOnlyList<DispatchTaskWorkItem> submitting,
+        IReadOnlyList<DispatchTaskWorkItem> assigned, int availableSlots, CancellationToken cancellationToken)
+    {
         var occupiedVehicles = submitting
             .Concat(assigned)
             .Select(task => task.VehicleId)
