@@ -117,6 +117,14 @@ public static class MapCorridorResources
                  edge.To.Equals(node.Id, StringComparison.OrdinalIgnoreCase))).ToArray();
             if (incident.Length < 2)
                 continue;
+            // A map author may already bind one capacity-one resource to every
+            // incident edge. That resource serializes this exact junction and
+            // usually has a compact node boundary, so adding the wider automatic
+            // guard would duplicate the gate and keep it leased at nearby safe
+            // points. Reuse the authored guard only when it is independently
+            // releasable from geometry.
+            if (HasSharedReleasableJunctionResource(incident, resourceArray))
+                continue;
             var resourceId = CreateResourceId("NODE|" + CoordinateKey(node), usedIds);
             automaticResources.Add(new TrafficResourceDefinition(
                 resourceId,
@@ -145,6 +153,24 @@ public static class MapCorridorResources
             Array.AsReadOnly(enrichedEdges),
             Array.AsReadOnly(resourceArray.Concat(automaticResources).ToArray()));
     }
+
+    private static bool HasSharedReleasableJunctionResource(
+        IReadOnlyList<MapEdge> incident,
+        IReadOnlyList<TrafficResourceDefinition> resources)
+    {
+        var shared = incident[0].ResourceIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var edge in incident.Skip(1))
+            shared.IntersectWith(edge.ResourceIds);
+        return resources.Any(resource =>
+            shared.Contains(resource.Id) &&
+            resource.Capacity == 1 &&
+            ValidBoundary(resource.Boundary));
+    }
+
+    private static bool ValidBoundary(IReadOnlyList<MapPoint2D>? boundary) =>
+        boundary is { Count: >= 3 } &&
+        boundary.All(point => point is not null &&
+            double.IsFinite(point.X) && double.IsFinite(point.Y));
 
     private static string GeometryKey(MapEdge edge, IReadOnlyDictionary<string, MapNode> nodes)
     {
