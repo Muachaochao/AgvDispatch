@@ -69,7 +69,7 @@ public static class TransportRouteSnapshots
         return new(1,taskId,stepId,commandId,vehicleId,map.MapId,map.VersionId,map.Definition.CoordinateSystem,
             // Match the Web map's published definition hash (string enums) so the task
             // page can prove a snapshot belongs to the active map version.
-            EngineeringRuntimeIdentity.MapHash(map.Definition),
+            map.DefinitionHash,
             Hash(payloadJson),nodes,routeEdges,vendorPath);
     }
 
