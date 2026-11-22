@@ -132,6 +132,10 @@ def validate_root(root):
     return root, lab, settings, web, ports
 
 
+class StartupTelemetryUnavailable(ValueError):
+    """A saved scenario has not been submitted and may await its next sample."""
+
+
 class Runtime:
     def __init__(self, root, template_root=None, scheme_store=None):
         self.root, self.lab, self.settings, self.web, self.ports = validate_root(root)
@@ -1151,7 +1155,7 @@ class Runtime:
                         self.startup_plan.update(status='aborted', message='启动计划已停止。'); return
                     if self.phase != 'running':
                         raise RuntimeError(self.error or '仿真未就绪，未提交测试呼叫。')
-                    if scenario: self.run_scenario(scenario, clear_abort=False)
+                    if scenario: self.submit_saved_scenario(scenario)
                     self.startup_plan.update(status='submitted' if scenario else 'ready',
                         message='保存场景已开始，结果见运行进度。' if scenario else '方案已启动，可以选择场景。')
                 except Exception as error:
@@ -1472,13 +1476,29 @@ class Runtime:
             self.controls = candidate
         return self.status()
 
+    def submit_saved_scenario(self, scenario):
+        def submit():
+            try:
+                self.run_scenario(scenario, clear_abort=False)
+            except StartupTelemetryUnavailable:
+                raise
+            except (OSError, ValueError) as error:
+                raise RuntimeError(str(error)) from error
+            return True
+
+        self.wait('环境就绪后等待新鲜设备反馈超时', submit, timeout=15)
+
     def run_scenario(self, payload, clear_abort=True):
         from scenarios import validate_scenario, execute
         request = validate_scenario(payload)
         with self.lock:
             if not clear_abort and self.abort.is_set():
                 raise InterruptedError('一键开测已停止，未提交测试呼叫。')
-            if not self._fresh_telemetry() or self.worker and self.worker.is_alive():
+            if self.worker and self.worker.is_alive():
+                raise ValueError('仿真未就绪或已有场景运行。')
+            if not self._fresh_telemetry():
+                if not clear_abort:
+                    raise StartupTelemetryUnavailable('当前设备反馈未就绪。')
                 raise ValueError('仿真未就绪或已有场景运行。')
             if not clear_abort and self.abort.is_set():
                 raise InterruptedError('一键开测已停止，未提交测试呼叫。')

@@ -15,6 +15,28 @@ from test_runtime_lifecycle import SOURCE_PLC_TABLE
 
 
 class SimulationTests(unittest.TestCase):
+    def test_saved_scenario_waits_for_a_fresh_sample_and_submits_once(self):
+        runtime = Runtime.__new__(Runtime)
+        runtime.abort = threading.Event()
+        runtime.children = {}
+        runtime.lock = threading.RLock()
+        runtime.worker = None
+        runtime.scenario = {}
+        runtime.settings = {'Dispatching': {'StationPickupSites': {}},
+                            'TaskCreation': {'AutomaticCreationEnabled': False}}
+        runtime.clock = Mock()
+        runtime.clock.time.return_value = 12
+        runtime._fresh_telemetry = Mock(side_effect=[False, True])
+        runtime.status = Mock(return_value={})
+        with patch.object(runtime.abort, 'wait'), patch('controller.threading.Thread') as worker:
+            runtime.submit_saved_scenario({'name': 'normal-cycle'})
+        self.assertEqual(runtime._fresh_telemetry.call_count, 2)
+        worker.return_value.start.assert_called_once()
+        self.assertEqual(runtime.scenario['status'], 'running')
+        with self.assertRaisesRegex(RuntimeError, '已有场景运行'):
+            runtime.submit_saved_scenario({'name': 'normal-cycle'})
+        self.assertEqual(runtime._fresh_telemetry.call_count, 2)
+
     def test_map_activation_retries_only_freshness_denial_without_changing_request(self):
         runtime = Runtime.__new__(Runtime)
         runtime.children = {}
