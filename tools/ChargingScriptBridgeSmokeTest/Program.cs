@@ -17,7 +17,7 @@ try
 {
     var profilePath = Path.Combine(root, "profile.json");
     Write(profilePath, new { schema = "agv-dispatch-charge-profile-v1", commissioned = true, vehicleId = "A", siteId = "C",
-        robotIp = "192.0.2.66", robotMap = "robot-map", robotMapMd5 = new string('a', 32), approachSite = "LM52" });
+        robotIp = "192.0.2.66", robotMap = "robot-map", robotMapMd5 = new string('a', 32), approachSite = "LM52", chargerIp = "192.0.2.77" });
     var tools = Path.Combine(root, "tools"); Directory.CreateDirectory(tools);
     File.WriteAllText(Path.Combine(tools, "dispatch_worker.py"), "raise AssertionError('must never execute in offline bridge tests')");
     var settings = new ChargingScriptOptions { Enabled = true, PythonExecutable = "MUST-NOT-LAUNCH", ToolsDirectory = tools,
@@ -26,7 +26,7 @@ try
         Robots = [new() { VehicleId = "A", IpAddress = "192.0.2.66" }],
         MapBindings = [new() { VehicleId = "A", LocalMapId = "m", LocalMapVersion = "v", RobotMap = "robot-map", RobotMapMd5 = new string('a', 32), CoordinatesVerified = true }] };
     var adapter = new ScriptChargingWorkflow(settings, new(), agvs, root);
-    var site = new ChargingSite("C", "LM52", "LM51", "BAY") { Commissioned = true, ControlMode = "RobokitScript", AllowedVehicleIds = ["A"] };
+    var site = new ChargingSite("C", "LM52", "LM51", "BAY") { Commissioned = true, ControlMode = "RobokitScript", AllowedVehicleIds = ["A"], ChargerAddress = "192.0.2.77" };
     var id = "CHARGE-test-DOCK";
     var session = new ChargingSession("CHARGE-test", "A", ChargingPhase.SendingDock, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "test")
     { Site = site, Route = new("m", "v", ["LM44", "LM52"], ["LM52", "LM51"], ["BAY"], 1),
