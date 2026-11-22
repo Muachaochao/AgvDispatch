@@ -231,8 +231,17 @@ export interface SimulationVehicleConfiguration {
   batteryPercent?: number; speedScale?: number; voltageCurve?: { percent: number; voltage: number }[];
   chargingGainPercentPerHour?: number;
 }
+/** Optional isolated charging-priority experiment (see 充电优先仿真验收). */
+export interface SimulationChargingSiteConfiguration {
+  id: string; chargingSiteId: string; exitSiteId: string; resourceId: string; allowedVehicleIds: string[];
+}
+export interface SimulationChargingPriorityTest {
+  enabled: boolean; startBatteryPercent: number; criticalBatteryPercent: number; targetBatteryPercent: number;
+  sites: SimulationChargingSiteConfiguration[];
+}
 export interface SimulationConfigureRequest {
   downstreamAdmissionCapacity?: number;
+  chargingPriorityTest?: SimulationChargingPriorityTest;
   name: string; mapDefinition: SimulationMapDefinition; stations: SimulationStationConfiguration[];
   vehicles: SimulationVehicleConfiguration[];
   dumper: { dumpingSite: string; waitingSite: string; waitingSites?: string[]; resourceId: string };
@@ -358,6 +367,7 @@ export interface SimulationStatus {
   scenario?: SimulationScenario | null; report?: SimulationReport | null; phase?: string; controls?: Partial<SimulationControls>;
   configuration?: {
     downstreamAdmissionCapacity?: number;
+    chargingPriorityTest?: SimulationChargingPriorityTest | null;
     stations: SimulationStationConfiguration[]; vehicles: SimulationVehicleConfiguration[]; inspectionSite: string;
     dumper: { dumpingSite: string; waitingSite: string; waitingSites?: string[]; resourceId: string }; mapName: string;
     plcSignalTable?: SimulationPlcSignalTable | null;
