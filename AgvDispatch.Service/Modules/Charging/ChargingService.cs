@@ -213,7 +213,7 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
             }
             var released=await port.ShrinkToBayAsync(row,ct);
             row=Move(row,ChargingPhase.StartingCharge,"已完成原导航并核对真实充电点位置，准备车端充电继电器控制。"+
-                (released>0?$"已释放身后及未使用道路{released}项，仅保留充电位和出口路线。":""));
+                (released>0?$"已释放来车、出口及未使用道路{released}项，充电期间仅保留充电位。":""));
         }
         if(row.Phase==ChargingPhase.StartingCharge)
         {
@@ -244,6 +244,13 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
                 if(CurrentStopped(reading))
                 {
                     if(!port.IsAt(row.VehicleId,row.Site!.ChargingSiteId)){Hold(row,"停止后车辆不在原充电点，须核对人工移动。");return;}
+                    // B07-FIX C8: wait (not Hold) for the exit road like any other vehicle; the bay stays reserved.
+                    if(!await port.AcquireExitAsync(row,ct))
+                    {
+                        const string waiting="停充已确认，电流归零；出口路线被其他车辆占用，保留充电位并等待路权后驶离。";
+                        if(row.Message!=waiting)Save(row with {Message=waiting,UpdatedAt=Now});
+                        return;
+                    }
                     await SendNavigationAsync(row,true,ct);return;
                 }
                 if(TimedOut(row,options.StopTimeoutSeconds))Hold(row,"停止充电后仍有电流或状态未知，禁止驶离及释放。");

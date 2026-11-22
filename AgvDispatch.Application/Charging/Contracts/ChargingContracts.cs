@@ -157,6 +157,9 @@ public interface IChargingRuntimePort
     /// <summary>After the vehicle is verified on the charging point, keep only the bay and the exit path and release the
     /// inbound/return roads it no longer occupies. Returns the number of released leases.</summary>
     Task<int> ShrinkToBayAsync(ChargingSession session, CancellationToken ct) => Task.FromResult(0);
+    // B07-FIX C8: exit roads are not held while charging; they are acquired as ordinary traffic once the
+    // stop is verified. False keeps the session in AwaitingStop (no Hold) until the exit route is free.
+    Task<bool> AcquireExitAsync(ChargingSession session, CancellationToken ct) => Task.FromResult(true);
     Task<string?> ValidateAsync(ChargingSession session, bool requireStopped, CancellationToken ct);
     Task<string?> ValidateRecoveryCloseAsync(ChargingSession session,CancellationToken ct) => ValidateAsync(session,true,ct);
     bool IsAt(string vehicleId, string siteId);
