@@ -802,7 +802,7 @@ public sealed partial class DispatchTaskOrchestrator(
         var nextIndex = payload.WindowIndex + 1;
         var windows = map is null
             ? payload.Windows
-            : TransportRouteWindows.NormalizeResources(payload.Windows, map);
+            : KeepIssuedWindows(payload, TransportRouteWindows.NormalizeResources(payload.Windows, map), nextIndex);
         var next = windows[nextIndex];
         // Free only geometrically cleared OLD resources before requesting the
         // next window. Waiting for the next grant first creates hold-and-wait
@@ -822,7 +822,7 @@ public sealed partial class DispatchTaskOrchestrator(
             {
                 windows = GlobalPickupRoutePlanner.ReplaceRemainingWindows(payload, reroute.Windows);
                 if (map is not null)
-                    windows = TransportRouteWindows.NormalizeResources(windows, map);
+                    windows = KeepIssuedWindows(payload, TransportRouteWindows.NormalizeResources(windows, map), nextIndex);
                 next = windows[nextIndex];
                 if (!next.EdgeIds.SequenceEqual(payload.Windows[nextIndex].EdgeIds, StringComparer.OrdinalIgnoreCase))
                     logger.LogInformation("滚动窗口采用新规划的剩余路线。TaskId={TaskId}, StepId={StepId}, From={From}, To={To}",
@@ -870,6 +870,13 @@ public sealed partial class DispatchTaskOrchestrator(
             ? TransportWindowAdvanceOutcome.Prepared
             : TransportWindowAdvanceOutcome.PreparationFailed;
     }
+
+    // B07-FIX F1: windows already sent to the vehicle are immutable history. Re-normalizing them
+    // rewrote their resource sets in every later command, so the outbox no longer proved one
+    // consistent plan ("运输命令无重复或遗漏" failed although paths were identical).
+    private static IReadOnlyList<AgvTransportRouteWindow> KeepIssuedWindows(AgvTransportCommandPayload payload,
+        IReadOnlyList<AgvTransportRouteWindow> normalized, int nextIndex) =>
+        payload.Windows.Take(nextIndex).Concat(normalized.Skip(nextIndex)).ToArray();
 
     private enum TransportWindowAdvanceOutcome
     {
