@@ -18,7 +18,9 @@ public sealed partial class TrafficResourceManager
     public async Task RecordRouteAsync(TrafficRouteObservation route, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
-        if (route.WaitingCategory is not ("Route" or "Equipment")) throw new ArgumentException("等待类别无效。");
+        if (route.WaitingCategory is not ("Route" or "Equipment" or "ReferenceRoute")) throw new ArgumentException("等待类别无效。");
+        if (route.WaitingCategory == "ReferenceRoute")
+            route = route with { Waiting = true, QueueEligible = false, QueuePriority = null };
         if (route.QueuePriority is { } priority && !double.IsFinite(priority)) throw new ArgumentException("路权排队优先级必须为有限数值。");
         var result = await database.Ado.UseTranAsync(async () =>
             await WriteStateAsync(route.StepId, route.TaskId, route.VehicleId, route.Waiting ? "Waiting" :
@@ -62,7 +64,7 @@ public sealed partial class TrafficResourceManager
         }
         else { row.WaitingSinceUtc = null; row.WaitingStartKnown = null; }
         changed |= previousWait != row.WaitingSinceUtc;
-        var activeBlockers = state == "Waiting" ? TrafficBlockageObservation.Find(resources,task,
+        var activeBlockers = state == "Waiting" && route?.WaitingCategory != "ReferenceRoute" ? TrafficBlockageObservation.Find(resources,task,
             await database.Queryable<TrafficResourceLeaseEntity>().Where(l=>l.TaskId!=task).ToListAsync(ct),catalog) : [];
         var blockingKey = TrafficBlockageObservation.Key(activeBlockers);
         string? blockingEvent = null;

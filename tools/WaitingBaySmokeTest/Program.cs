@@ -116,10 +116,18 @@ await db.Updateable<DispatchTaskEntity>().SetColumns(t=>t.Stage==(int)DispatchTa
 await manager.GetUnavailableResourceIdsAsync("MULTI-A",default);
 var ma=await MultiStep("MULTI-A","CAR-A");var mb=await MultiStep("MULTI-B","CAR-B");var mc=await MultiStep("MULTI-C","CAR-C");
 var a=await TaskWaitingBayRouter.AcquireAsync(ma,"P1",multiOptions,runtime,planner,manager,manager,stepOptions,default);
+planner.Targets.Clear();
 var b=await TaskWaitingBayRouter.AcquireAsync(mb,"P2",multiOptions,runtime,planner,manager,manager,stepOptions,default);
 Check(a is not null&&b is not null&&a.Value.Site!=b.Value.Site,"前两台车选择不同空候车位并在同事务持久占用");
+Check(!planner.Targets.Contains(a!.Value.Site), "有空泊位时不为已占满泊位搜索路线");
+await TaskWaitingBayRouter.ObserveWaitingAsync(mc,"P1",multiOptions,runtime,planner,manager,manager,stepOptions,
+    new DispatchTrafficReservationService(manager),default);
+Check(db.Queryable<TrafficRequestEntity>().Where(r=>r.StepId==mc.StepId).Single() is
+    { WaitingCategory:"ReferenceRoute", QueueObservedAtUtc:null }, "无法选位时预观察仅记录参考路径，不加入队列");
 Check(await TaskWaitingBayRouter.AcquireAsync(mc,"P1",multiOptions,runtime,planner,manager,manager,stepOptions,default) is null&&await manager.GetAsync(mc.TaskId,default) is null,
     "第三台无空位时保持原工位，不生成伪候车绑定");
+Check(db.Queryable<TrafficRequestEntity>().Where(r=>r.StepId==mc.StepId).Single() is
+    { WaitingCategory:"ReferenceRoute", QueueObservedAtUtc:null }, "正式选位失败仍不将参考路径挂入队列");
 var savedA=await manager.GetAsync(ma.TaskId,default);
 var managerAfterRestart=new TrafficResourceManager(db,catalog,new(TimeSpan.FromSeconds(1)));
 Check(await managerAfterRestart.GetAsync(ma.TaskId,default)==savedA,"重建服务后保留原任务、车辆、地图及候车位");
@@ -220,5 +228,10 @@ Console.WriteLine($"PASS {checks} waiting-bay/route/equipment checks. Evidence: 
 
 sealed class BayPlanner(MapDefinition map):IRoutePlanner
 {
-    public RoutePlan? Plan(string source,string destination,IReadOnlySet<string> unavailable)=>map.ToGraph().FindShortestTransportRoute(source,destination,unavailable);
+    public List<string> Targets { get; } = [];
+    public RoutePlan? Plan(string source,string destination,IReadOnlySet<string> unavailable)
+    {
+        Targets.Add(destination);
+        return map.ToGraph().FindShortestTransportRoute(source,destination,unavailable);
+    }
 }

@@ -13,7 +13,9 @@ public sealed partial class TrafficResourceControlService
         // Count, filter, sort, and the returned page share one read snapshot. No traffic state is changed.
         var transaction = await database.Ado.UseTranAsync(async () =>
         {
-            var requests = await database.Queryable<TrafficRequestEntity>().Where(r => r.State == "Waiting").ToListAsync(ct);
+            var requests = await database.Queryable<TrafficRequestEntity>()
+                .Where(r => r.State == "Waiting" && (r.WaitingCategory == null || r.WaitingCategory != "ReferenceRoute"))
+                .ToListAsync(ct);
             var taskIds = requests.Select(r => r.TaskId).Distinct().ToArray();
             var stepIds = requests.Select(r => r.StepId).Distinct().ToArray();
             var tasks = taskIds.Length == 0 ? [] : await database.Queryable<DispatchTaskEntity>().Where(t => taskIds.Contains(t.TaskId)).ToListAsync(ct);

@@ -44,7 +44,7 @@ public sealed partial class TrafficResourceControlService
             r.State is "Acquired" or "Held" ? "NoLease" : r.State;
         var reason = state == "Retained" ? "原任务异常、取消核对或任务缺失；仍保留占用，须按现场处置流程核对。" :
             state == "NoLease" ? "当前无对应占用，请结合人工解锁和路权历史核对。" :
-            state == "Waiting" && r.WaitingCategory != "Equipment" && blockers.Length == 0 && resourceIds.Length > 0 ?
+            state == "Waiting" && (r.WaitingCategory is null or "Route") && blockers.Length == 0 && resourceIds.Length > 0 ?
                 r.QueuePriority != null ? "当前未观察到资源容量占满，等待滚动调度按有效优先级和呼叫时间重新申请；已有路权保持不变，查询不授予路权。" :
                 "上次资源冲突已不在当前占用中，等待下一次调度重新规划申请；不会在查询时自动取得路权。" : r.Reason;
         var seconds = state == "Waiting" && r.WaitingSinceUtc != null && nowUtc.UtcDateTime >= r.WaitingSinceUtc.Value ? (double?)(nowUtc.UtcDateTime-r.WaitingSinceUtc.Value).TotalSeconds : null;

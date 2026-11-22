@@ -24,20 +24,15 @@ public static class TaskWaitingBayRouter
             : [selected.WaitingSite];
         var unavailable = await traffic.GetUnavailableResourceIdsAsync(step.TaskId, ct);
         var counts = await allocator.GetSelectionCountsAsync(map.MapId, map.VersionId, ct);
-        var ranked = Rank(sites, pickup, planner, unavailable, counts, map, rolling, vehicleIds).FirstOrDefault();
-        var candidate = (ranked.Site, ranked.Plan);
-        if (candidate.Plan is null)
-            candidate = sites.Select(site => (Site: site, Plan: planner.Plan(pickup, site, new HashSet<string>())))
-                .Where(c => c.Plan is { Nodes.Count: >= 2 }).OrderBy(c => c.Plan!.Cost).ThenBy(c => c.Site, StringComparer.Ordinal).FirstOrDefault();
-        if (candidate.Plan is null) return;
+        var ranked = Rank(sites, pickup, planner, unavailable, counts, map, options, selected?.ResourceId, rolling, vehicleIds).FirstOrDefault();
+        if (ranked.Plan is null)
+        {
+            await ObserveReferenceAsync(step, pickup, sites, planner, unavailable, map, trafficLayer, ct);
+            return;
+        }
         var first = (ranked.Windows ?? TransportRouteWindows.Plan(
-            candidate.Plan, map, stepOptions, navigationCommandMode))[0];
-        var waitingResource = selected?.ResourceId ??
-            DumperWaitingBaySafety.ExclusiveResourceIds(map.Definition, options, candidate.Site)
-                .Order(StringComparer.Ordinal).FirstOrDefault();
-        var resources = string.IsNullOrWhiteSpace(waitingResource)
-            ? first.ResourceIds
-            : first.ResourceIds.Append(waitingResource).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            ranked.Plan, map, stepOptions, navigationCommandMode))[0];
+        var resources = first.ResourceIds.Append(ranked.Resource).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         await trafficLayer.ObserveAsync(new(step.StepId, step.TaskId, step.VehicleId!, first.Source, first.Destination,
             first.EdgeIds, resources, true, "独立候车位和首个路权窗口按原任务优先级排队；尚未选位或授予路权。")
             { MapId = map.MapId, MapVersionId = map.VersionId }, ct);
@@ -63,12 +58,12 @@ public static class TaskWaitingBayRouter
             : [selected.WaitingSite];
         var unavailable = await traffic.GetUnavailableResourceIdsAsync(step.TaskId, ct);
         var counts = await allocator.GetSelectionCountsAsync(map.MapId, map.VersionId, ct);
-        var candidates = Rank(sites, pickup, planner, unavailable, counts, map, rolling, vehicleIds);
+        var layer = trafficLayer ?? new DispatchTrafficReservationService(traffic);
+        var candidates = Rank(sites, pickup, planner, unavailable, counts, map, options, selected?.ResourceId, rolling, vehicleIds);
         foreach (var candidate in candidates)
         {
-            var resource = selected?.ResourceId ?? DumperWaitingBaySafety.ExclusiveResourceIds(map.Definition, options, candidate.Site)
-                .Order(StringComparer.Ordinal).FirstOrDefault();
-            if (resource is null || !candidate.Plan!.ResourceIds.Contains(resource, StringComparer.OrdinalIgnoreCase))
+            var resource = candidate.Resource;
+            if (!candidate.Plan!.ResourceIds.Contains(resource, StringComparer.OrdinalIgnoreCase))
                 throw new InvalidOperationException("候车路线未包含该等待节点的独立容量1资源。");
             var windows = (candidate.Windows ?? TransportRouteWindows.Plan(
                     candidate.Plan, map, stepOptions, navigationCommandMode))
@@ -82,30 +77,33 @@ public static class TaskWaitingBayRouter
                 first.EdgeIds, first.ResourceIds, false, $"选择候车位{candidate.Site}（本地图已选{counts.GetValueOrDefault(candidate.Site)}次）；仅在可达且路权可申请的泊位中均衡选择，保留原绑定和离位核验。")
                 { MapId = map.MapId, MapVersionId = map.VersionId };
             var binding = selected ?? new(step.TaskId, step.VehicleId!, step.StepId, map.MapId, map.VersionId, candidate.Site, resource);
-            var result = await (trafficLayer ?? new DispatchTrafficReservationService(traffic))
-                .AcquireWaitingBayAsync(observation, binding, allocator, ct);
+            var result = await layer.AcquireWaitingBayAsync(observation, binding, allocator, ct);
             if (result.Acquired)
                 return (candidate.Site, candidate.Plan, windows);
         }
         if (candidates.Length == 0)
         {
-            var diagnostics = sites.Select(site => (Site: site, Plan: planner.Plan(pickup, site, new HashSet<string>())))
-                .Where(c => c.Plan is { Nodes.Count: >= 2 }).OrderBy(c => c.Plan!.Cost).ToArray();
-            var diagnosticCandidate = diagnostics.FirstOrDefault();
-            var site = diagnosticCandidate.Site ?? selected?.WaitingSite ?? sites[0];
-            var diagnostic = diagnosticCandidate.Plan;
-            var reasons = string.Join("；", sites.Select(s =>
-            {
-                var plan = diagnostics.FirstOrDefault(d => d.Site == s).Plan;
-                var blocked = plan?.ResourceIds.Where(unavailable.Contains).ToArray() ?? [];
-                return plan is null ? $"{s}无可执行地图路线" : $"{s}受占用资源{string.Join('、', blocked)}影响";
-            }));
-            await (trafficLayer ?? new DispatchTrafficReservationService(traffic)).ObserveAsync(new(step.StepId, step.TaskId, step.VehicleId!, pickup, site,
-                diagnostic?.EdgeIds ?? [], diagnostic?.ResourceIds ?? [], true,
-                "候车位或其路径不可用，保持在原取箱点；" + reasons + "。未发送命令，取消和心跳过期不自动腾位。")
-                { MapId = map.MapId, MapVersionId = map.VersionId }, ct);
+            await ObserveReferenceAsync(step, pickup, sites, planner, unavailable, map, layer, ct);
         }
         return null;
+    }
+
+    private static Task ObserveReferenceAsync(DispatchTaskStepWorkItem step, string pickup,
+        IReadOnlyList<string> sites, IRoutePlanner planner, IReadOnlySet<string> unavailable,
+        ActiveMapRuntimeSnapshot map, DispatchTrafficReservationService trafficLayer, CancellationToken ct)
+    {
+        var noResourceExclusions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var diagnostic = sites.Select(site => (Site: site, Plan: planner.Plan(pickup, site, noResourceExclusions)))
+            .Where(candidate => candidate.Plan is { Nodes.Count: >= 2 } && double.IsFinite(candidate.Plan.Cost))
+            .OrderBy(candidate => candidate.Plan!.Cost).ThenBy(candidate => candidate.Site, StringComparer.Ordinal)
+            .FirstOrDefault();
+        var route = diagnostic.Plan;
+        var resources = route?.ResourceIds ?? [];
+        var reason = route is null ? "当前找不到可达候车位，车辆留在取箱点。"
+            : $"当前没有可执行的候车路线，车辆留在取箱点。参考路线关联 {resources.Count(unavailable.Contains)} 项占满资源。";
+        return trafficLayer.SuspendRecommendationAsync(new(step.StepId, step.TaskId, step.VehicleId!, pickup,
+            diagnostic.Site ?? "", route?.EdgeIds ?? [], resources, true, reason)
+            { MapId = map.MapId, MapVersionId = map.VersionId, WaitingCategory = "ReferenceRoute" }, ct);
     }
 
     private const int MaximumMapHoldingCandidates = 12;
@@ -137,16 +135,20 @@ public static class TaskWaitingBayRouter
 
     // Balance only among near-equivalent feasible routes. A history preference
     // must never select a long detour, ignore an occupied resource or rebind a task.
-    private static (string Site, RoutePlan? Plan, IReadOnlyList<AgvTransportRouteWindow>? Windows, double Cost)[] Rank(
+    private static (string Site, string Resource, RoutePlan? Plan, IReadOnlyList<AgvTransportRouteWindow>? Windows, double Cost)[] Rank(
         IReadOnlyList<string> sites, string pickup, IRoutePlanner planner, IReadOnlySet<string> unavailable,
-        IReadOnlyDictionary<string, int> counts, ActiveMapRuntimeSnapshot map, GlobalPickupRoutePlanner? rolling,
-        IReadOnlyCollection<string>? vehicleIds)
+        IReadOnlyDictionary<string, int> counts, ActiveMapRuntimeSnapshot map, DispatchOrchestratorOptions options,
+        string? boundResource, GlobalPickupRoutePlanner? rolling, IReadOnlyCollection<string>? vehicleIds)
     {
-        var candidates = sites.Select(site =>
+        var candidates = sites.Select(site => (Site: site, Resource: boundResource ??
+                DumperWaitingBaySafety.ExclusiveResourceIds(map.Definition, options, site)
+                    .Order(StringComparer.Ordinal).FirstOrDefault()))
+            .Where(candidate => candidate.Resource is not null && !unavailable.Contains(candidate.Resource))
+            .Select(candidate =>
         {
-            var proposal = rolling?.PlanFollowup(planner, map, pickup, site, unavailable, vehicleIds ?? []);
-            var plan = rolling is null ? planner.Plan(pickup, site, unavailable) : proposal?.Route;
-            return (Site: site, Plan: plan, Windows: proposal?.Windows,
+            var proposal = rolling?.PlanFollowup(planner, map, pickup, candidate.Site, unavailable, vehicleIds ?? []);
+            var plan = rolling is null ? planner.Plan(pickup, candidate.Site, unavailable) : proposal?.Route;
+            return (candidate.Site, Resource: candidate.Resource!, Plan: plan, Windows: proposal?.Windows,
                 Cost: (plan?.Cost ?? double.PositiveInfinity) + (proposal?.DeferredSeconds ?? 0));
         }).Where(c => c.Plan is { Nodes.Count: >= 2 } && double.IsFinite(c.Cost)).ToArray();
         if (candidates.Length == 0) return [];
