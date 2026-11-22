@@ -23,18 +23,36 @@ await using var connections = new AgvConnectionManager(options);
 var folder = Path.Combine(Path.GetTempPath(), "agv-resume-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(folder);
 var path = Path.Combine(folder, "navigation.json");
-var suspended = new NavigationTestRecord("TASK", "VENDOR-1", "SIM", "A", "B", "map", new string('a', 32),
-    "Suspended", "车端暂停", DateTimeOffset.Now, "isolated")
+var running = new NavigationTestRecord("TASK", "VENDOR-1", "SIM", "A", "B", "map", new string('a', 32),
+    "Running", "车端运行中", DateTimeOffset.Now, "isolated")
     { NavigationApi = 3051, Route = ["A", "B"], VendorTaskIds = ["VENDOR-1"] };
-File.WriteAllText(path, JsonSerializer.Serialize(suspended));
+File.WriteAllText(path, JsonSerializer.Serialize(running));
 try
 {
     var service = new SingleNavigationTestService(new SingleNavigationTestOptions
         { Enabled = true, VehicleId = "SIM", BusinessExecutionDisabled = true }, options, connections,
         new Tasks(), new Gate(), path);
     var user = TrafficUserContext.LocalOperation("isolated");
+    robot.LastTaskRunning = true;
     var status = await service.ReadAsync(default);
-    Check(status.Current?.State == "Suspended", "fresh original task is reconciled as suspended");
+    Check(status.Current?.State == "Running", "fresh original task is reconciled as running");
+    robot.Blocked = true;
+    await Reject(() => service.PauseAsync(user, new("TASK"), default), "blocked vehicle cannot send pause");
+    Check(robot.Pauses == 0, "blocked vehicle sends no 3001");
+    robot.Blocked = false;
+    var paused = await service.PauseAsync(user, new("TASK"), default);
+    Check(paused.State == "PauseRequested" && robot.Pauses == 1 && robot.LastTaskPaused,
+        "running original task receives exactly one 3001");
+    await Reject(() => service.PauseAsync(user, new("TASK"), default), "repeated pause cannot send 3001 twice");
+    Check(robot.Pauses == 1, "one shot pause survives repeated request");
+    await Reject(() => service.ResumeAsync(user, new("TASK"), default),
+        "pause without two stopped observations cannot send resume");
+    Check(robot.Resumes == 0, "unconfirmed pause sends no 3002");
+    status = await service.ReadAsync(default);
+    status = await service.ReadAsync(default);
+    Check(status.Current?.State == "Suspended" && status.Current.PauseStoppedSamples >= 2 &&
+        status.Current.PauseStoppedAt is not null,
+        "status 3 plus two stopped samples confirms the paused navigation");
     robot.Blocked = true;
     await Reject(() => service.ResumeAsync(user, new("TASK"), default), "blocked or 52200 state cannot send resume");
     Check(robot.Resumes == 0, "blocked state sends no 3002");
@@ -74,7 +92,7 @@ sealed class Robot : IAsyncDisposable
 {
     readonly TcpListener status = new(IPAddress.Loopback, 0), navigation = new(IPAddress.Loopback, 0);
     readonly CancellationTokenSource stop = new(); readonly ConcurrentBag<Task> workers = [];
-    public bool Blocked, LastTaskRunning; public int Resumes;
+    public bool Blocked, LastTaskRunning, LastTaskPaused; public int Pauses, Resumes;
     public int StatusPort => ((IPEndPoint)status.LocalEndpoint).Port;
     public int NavigationPort => ((IPEndPoint)navigation.LocalEndpoint).Port;
     public Robot() { status.Start(); navigation.Start(); workers.Add(Accept(status)); workers.Add(Accept(navigation)); }
@@ -102,7 +120,8 @@ sealed class Robot : IAsyncDisposable
                     1301 => new { stations = new[] { new { id = "A", x = 0d, y = 0d }, new { id = "B", x = 1d, y = 0d } } },
                     1100 => new { x = 0d, y = 0d, confidence = .9, current_station = "A", emergency = false,
                         blocked = Blocked, charging = false, vx = 0d, vy = 0d, w = 0d },
-                    1110 => new { task_status_package = new { task_status_list = new[] { new { task_id = "VENDOR-1", status = LastTaskRunning ? 2 : 3 } } } },
+                    1110 => new { task_status_package = new { task_status_list = new[] { new { task_id = "VENDOR-1", status = LastTaskPaused ? 3 : LastTaskRunning ? 2 : 1 } } } },
+                    3001 => Pause(),
                     3002 => Resume(),
                     _ => new { ret_code = 999 }
                 };
@@ -114,7 +133,8 @@ sealed class Robot : IAsyncDisposable
         }
         catch (OperationCanceledException) { } catch (IOException) { }
     }
-    object Resume() { Resumes++; LastTaskRunning = true; return new { ret_code = 0 }; }
+    object Pause() { Pauses++; LastTaskPaused = true; LastTaskRunning = false; return new { ret_code = 0 }; }
+    object Resume() { Resumes++; LastTaskPaused = false; LastTaskRunning = true; return new { ret_code = 0 }; }
     public async ValueTask DisposeAsync()
     {
         stop.Cancel(); status.Stop(); navigation.Stop(); await Task.WhenAll(workers.ToArray());

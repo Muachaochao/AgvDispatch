@@ -30,7 +30,7 @@ public sealed partial class SeerAgvGateway
         if (!double.IsFinite(remainingDistanceMeters) || remainingDistanceMeters <= 0)
             throw new ArgumentOutOfRangeException(nameof(remainingDistanceMeters),
                 "安全点退回距离必须是大于0的有限数值。");
-        if (blockedSince == default || blockedSince > DateTimeOffset.UtcNow.AddSeconds(1))
+        if (blockedSince == default || blockedSince > AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow().AddSeconds(1))
             throw new InvalidOperationException("退回安全站点缺少可信的连续受阻起始时间。");
         if (!connections.TryGet(vehicleId, out var client))
             throw new InvalidOperationException($"未配置AGV车辆{vehicleId}。");

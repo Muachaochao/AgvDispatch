@@ -9,6 +9,7 @@ public sealed record NavigationTestStation(string Id, double X, double Y);
 public sealed record NavigationTestStations(string VehicleId, string RobotMap, string RobotMapMd5,
     IReadOnlyList<NavigationTestStation> Stations, string? SuggestedSourceSite, DateTimeOffset CapturedAt);
 public sealed record NavigationTestSubmit(string PreviewId, bool SiteClearConfirmed);
+public sealed record NavigationTestPause(string TaskId);
 public sealed record NavigationTestCancel(string TaskId);
 public sealed record NavigationTestResume(string TaskId);
 public sealed record NavigationTestPreview(string PreviewId, DateTimeOffset ExpiresAt, string VehicleId,
@@ -36,6 +37,11 @@ public sealed record NavigationTestRecord(string TaskId, string VendorTaskId, st
     public NavigationTestAutoDetourRecord? AutoDetour { get; init; }
     public DateTimeOffset? CancellationAttemptedAt { get; init; }
     public string? CancellationVendorTaskId { get; init; }
+    public DateTimeOffset? PauseAttemptedAt { get; init; }
+    public string? PauseVendorTaskId { get; init; }
+    public int PauseStoppedSamples { get; init; }
+    public DateTimeOffset? PauseLastObservedAt { get; init; }
+    public DateTimeOffset? PauseStoppedAt { get; init; }
     public DateTimeOffset? ResumeAttemptedAt { get; init; }
     public string? ResumeVendorTaskId { get; init; }
 }
@@ -76,6 +82,8 @@ public interface ISingleNavigationTestService
     Task<NavigationTestStations> ReadStationsAsync(CancellationToken ct);
     Task<NavigationTestPreview> PreviewAsync(TrafficUserContext user, NavigationTestQuery query, CancellationToken ct);
     Task<NavigationTestRecord> SubmitAsync(TrafficUserContext user, NavigationTestSubmit request, CancellationToken ct);
+    Task<NavigationTestRecord> PauseAsync(TrafficUserContext user, NavigationTestPause request, CancellationToken ct) =>
+        throw new NotSupportedException("后台尚未支持暂停当前导航。");
     Task<NavigationTestRecord> CancelAsync(TrafficUserContext user, NavigationTestCancel request, CancellationToken ct);
     Task<NavigationTestRecord> ResumeAsync(TrafficUserContext user, NavigationTestResume request, CancellationToken ct) => throw new NotSupportedException("后台尚未支持继续暂停的原导航。");
     Task ValidateRetainedBusinessRunAsync(string retainedVehicleId, CancellationToken ct) =>

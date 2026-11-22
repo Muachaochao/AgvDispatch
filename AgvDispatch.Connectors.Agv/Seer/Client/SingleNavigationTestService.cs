@@ -56,7 +56,7 @@ public sealed partial class SingleNavigationTestService : ISingleNavigationTestS
                     _record=_record with {State="ReviewHold",Detour=detour with {State="ReviewHold",StoppedObservedAt=null,Message="后台重启：未发送改道进入人工复核，不自动续发取消或导航。"}};
                 SynchronizeSentDetourStatus();
                 if(_record.State=="ReviewHold"&&_record.AutoDetour is {} auto)
-                    _record=_record with {AutoDetour=auto with {State="ReviewHold",Message=_record.Message,UpdatedAt=DateTimeOffset.UtcNow}};
+                    _record=_record with {AutoDetour=auto with {State="ReviewHold",Message=_record.Message,UpdatedAt=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow()}};
             }
         }
     }
@@ -179,7 +179,7 @@ public sealed partial class SingleNavigationTestService : ISingleNavigationTestS
         if(Text(after.RootElement,"current_map")!=map||Text(after.RootElement,"current_map_md5")!=md5||Int(afterLoad.RootElement,"loadmap_status")!=1||
             !afterOwner.RootElement.TryGetProperty("locked",out var al)||al.ValueKind!=JsonValueKind.False)
             throw new InvalidOperationException("核验期间地图或控制权发生变化，请重新核验。");
-        return new(Guid.NewGuid().ToString("N"),DateTimeOffset.UtcNow.AddSeconds(30),q.VehicleId,q.SourceSite,q.TargetSite,map,md5,path)
+        return new(Guid.NewGuid().ToString("N"),AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow().AddSeconds(30),q.VehicleId,q.SourceSite,q.TargetSite,map,md5,path)
         {TargetX=target.X,TargetY=target.Y};
     }
     public async Task<NavigationTestPreview> PreviewAsync(TrafficUserContext user,NavigationTestQuery query,CancellationToken ct)
@@ -202,7 +202,7 @@ public sealed partial class SingleNavigationTestService : ISingleNavigationTestS
         try
         {
             var preview=_preview;_preview=null; // one-use even when the send/response is interrupted
-            if(!request.SiteClearConfirmed||preview is null||preview.PreviewId!=request.PreviewId||preview.ExpiresAt<DateTimeOffset.UtcNow)
+            if(!request.SiteClearConfirmed||preview is null||preview.PreviewId!=request.PreviewId||preview.ExpiresAt<AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow())
                 throw new InvalidOperationException("核验已失效或未确认测试区域，请重新核验。");
             if(_record is not null&&!Terminal(_record.State))throw new InvalidOperationException("原测试尚未结束。");
             using var lease=await _execution.EnterControlAsync(ct);
@@ -211,22 +211,22 @@ public sealed partial class SingleNavigationTestService : ISingleNavigationTestS
             if(fresh.RobotMap!=preview.RobotMap||fresh.RobotMapMd5!=preview.RobotMapMd5)throw new InvalidOperationException("地图身份已变化，拒绝沿用旧核验。");
             if(!fresh.Route.SequenceEqual(preview.Route,StringComparer.Ordinal)||fresh.TargetX!=preview.TargetX||fresh.TargetY!=preview.TargetY)
                 throw new InvalidOperationException("车端规划路线或终点坐标已变化，请重新核验并确认。");
-            if(DateTimeOffset.UtcNow>preview.ExpiresAt)throw new InvalidOperationException("发送前核验已过期。");
+            if(AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow()>preview.ExpiresAt)throw new InvalidOperationException("发送前核验已过期。");
             var client=await GuardAsync(preview.VehicleId,ct);
             using var closureGate=_roadClosures is null?null:await _roadClosures.EnterRouteSendAsync(preview.Route,ct);
             RequireNoInitialClosures();
             var id="NAVTEST-"+Guid.NewGuid().ToString("N");
             var vendor=AgvTransportSegmentIds.For(id,2).Single();
-            _record=new(id,vendor,preview.VehicleId,preview.SourceSite,preview.TargetSite,preview.RobotMap,preview.RobotMapMd5,"Uncertain","已记录发送意图；未确认车端接受，禁止自动重发。",DateTimeOffset.Now,user.WindowsIdentity)
+            _record=new(id,vendor,preview.VehicleId,preview.SourceSite,preview.TargetSite,preview.RobotMap,preview.RobotMapMd5,"Uncertain","已记录发送意图；未确认车端接受，禁止自动重发。",AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow(),user.WindowsIdentity)
             {NavigationApi=3051,Route=preview.Route.ToArray(),VendorTaskIds=[vendor],TargetX=preview.TargetX,TargetY=preview.TargetY};
             Persist(); // write intent durably before any motion bytes
             try
             {
                 using var response=await client.RequestAsync(3051,new{source_id=preview.SourceSite,id=preview.TargetSite,task_id=vendor},ct);
                 if(Int(response.RootElement,"ret_code")!=0)throw new InvalidDataException("导航应答缺少明确的ret_code=0。");
-                _record=_record with{State="Accepted",Message="车端已应答；不代表到点完成。",UpdatedAt=DateTimeOffset.Now};
+                _record=_record with{State="Accepted",Message="车端已应答；不代表到点完成。",UpdatedAt=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow()};
             }
-            catch(Exception ex){_record=_record with{State="Uncertain",Message="下发结果不确定，禁止重发，请查询原任务或现场核对："+ex.Message,UpdatedAt=DateTimeOffset.Now};}
+            catch(Exception ex){_record=_record with{State="Uncertain",Message="下发结果不确定，禁止重发，请查询原任务或现场核对："+ex.Message,UpdatedAt=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow()};}
             Persist();return _record;
         }
         finally{_mutex.Release();}
@@ -246,6 +246,7 @@ public sealed partial class SingleNavigationTestService : ISingleNavigationTestS
                         return BuildStatus();
                     }
                     var ids=CurrentVendorIds(_record);
+                    var previousState=_record.State;
                     var rows=await client.QueryTasksAsync(ids,ct);
                     var known=rows.Count==ids.Count&&rows.All(x=>x.Status is >=1 and <=7);
                     var state=!known?"Uncertain":rows.Any(x=>x.Status==2)?"Running":rows.Any(x=>x.Status==3)?"Suspended":rows.Any(x=>x.Status==1)?"Waiting":rows.Any(x=>x.Status is 5 or 7)?"Failed":rows.Any(x=>x.Status==6)?"Cancelled":"Completed";
@@ -254,6 +255,12 @@ public sealed partial class SingleNavigationTestService : ISingleNavigationTestS
                     {
                         state="CancelRequested";
                         message=$"已请求取消 {_record.CancellationVendorTaskId}，原任务链仍有活动分段：{string.Join(",",rows.Where(x=>x.Status is 1 or 2 or 3).Select(x=>$"{x.TaskId}={x.Status}"))}；取消尚未核实，只查询原编号，不重复取消或发送导航。";
+                    }
+                    if(state=="Running"&&_record.PauseAttemptedAt is not null&&_record.ResumeAttemptedAt is null&&
+                        previousState is "PauseRequested" or "PausePending")
+                    {
+                        state="PausePending";
+                        message="车端已应答3001，原任务仍为运行状态；继续等待状态3和连续停稳证据，不重复发送暂停命令。";
                     }
                     var (t,_)=await client.PollAsync(ct);
                     ObservePosition(t);
@@ -269,13 +276,14 @@ public sealed partial class SingleNavigationTestService : ISingleNavigationTestS
                             else message="原任务已完成，车端地图一致，车辆已在所选终点静止。";
                         }
                     }
-                    _record=_record with{State=state,Message=message,UpdatedAt=DateTimeOffset.Now};
+                    _record=_record with{State=state,Message=message,UpdatedAt=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow()};
+                    ObservePauseState(state,t);
                     SynchronizeSentDetourStatus();
                     Persist();
                 }
                 catch(Exception ex)when(!ct.IsCancellationRequested)
                 {
-                    _record=_record with{State="Uncertain",BlockedSince=null,Message="查询失败，不能重发："+ex.Message,UpdatedAt=DateTimeOffset.Now};
+                    _record=_record with{State="Uncertain",BlockedSince=null,Message="查询失败，不能重发："+ex.Message,UpdatedAt=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow()};
                     if(_record.Detour is {SendAttemptedAt:null} pending)
                         _record=_record with {Detour=pending with {StoppedObservedAt=null,State=pending.State=="ReviewHold"?"ReviewHold":"AwaitingOriginalTerminal",Message=_record.Message}};
                     SynchronizeSentDetourStatus();
@@ -316,7 +324,7 @@ public sealed partial class SingleNavigationTestService : ISingleNavigationTestS
             if(rows.Count!=ids.Count||rows.Any(x=>x.Status is <1 or >7))throw new InvalidOperationException("任务链证据不完整，不能推测取消范围。");
             var task=ids.Select(id=>rows.Single(x=>x.TaskId==id)).FirstOrDefault(x=>x.Status is 1 or 2 or 3);
             if(task?.Status is not (1 or 2 or 3))throw new InvalidOperationException("原任务不是可取消状态；不能发送无范围取消。");
-            _record=_record with{State="Uncertain",Message="已记录原任务取消意图；尚未确认取消结果。",CancellationAttemptedAt=DateTimeOffset.UtcNow,CancellationVendorTaskId=task.TaskId,UpdatedAt=DateTimeOffset.Now};Persist();
+            _record=_record with{State="Uncertain",Message="已记录原任务取消意图；尚未确认取消结果。",CancellationAttemptedAt=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow(),CancellationVendorTaskId=task.TaskId,UpdatedAt=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow()};Persist();
             try{await client.CancelNavigationAsync(task.TaskId,false,ct);_record=_record with{State="CancelRequested",Message="取消已应答，请继续查询至取消终态；不是急停。"};}
             catch(Exception ex){_record=_record with{Message="取消结果不确定，请查询原任务："+ex.Message};}
             SynchronizeSentDetourStatus();

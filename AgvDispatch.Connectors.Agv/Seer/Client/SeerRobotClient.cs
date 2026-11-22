@@ -10,6 +10,7 @@ public sealed class SeerRobotClient : IAsyncDisposable
 {
     private const ushort QueryAllStatus = 1100;
     private const ushort QueryTaskStatus = 1110;
+    private const ushort PauseTask = 3001;
     private const ushort ResumeTask = 3002;
     private const ushort CancelTask = 3003;
     private const ushort GoToTarget = 3051;
@@ -196,6 +197,11 @@ public sealed class SeerRobotClient : IAsyncDisposable
                 mode = 1
             },
             cancellationToken);
+    }
+
+    public async Task PauseNavigationAsync(CancellationToken cancellationToken)
+    {
+        using var response = await RequestAsync(PauseTask, null, cancellationToken);
     }
 
     public async Task CancelNavigationAsync(

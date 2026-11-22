@@ -38,7 +38,7 @@ public sealed class RobotMapDownloadService(AgvOptions options,AgvConnectionMana
                 throw new InvalidOperationException("下载期间车端地图身份或加载状态变化，已丢弃本次结果，请重新拉取。");
             var json=content.RootElement.GetRawText();var bytes=Encoding.UTF8.GetBytes(json);
             if(bytes.Length>8*1024*1024)throw new InvalidDataException("地图超过Web导入8MiB预算。");
-            return new(query.VehicleId,map,md5!,Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(),json,DateTimeOffset.Now);
+            return new(query.VehicleId,map,md5!,Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(),json,AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow());
         }
         finally{_mutex.Release();}
     }

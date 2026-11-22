@@ -30,7 +30,7 @@ public sealed partial class SingleNavigationTestService
         if(state is not (0 or 1 or 2 or 3 or 4 or 255))throw new InvalidDataException("未知顶升状态码："+state);
         var error=Int(e,"jack_error_code")??throw new InvalidDataException("车端未提供顶升错误码。");
         double? height=e.TryGetProperty("jack_height",out var h)&&h.ValueKind==JsonValueKind.Number&&h.TryGetDouble(out var v)&&double.IsFinite(v)&&v>=0?v:null;
-        return new(state,RequiredBool(e,"jack_enable"),RequiredBool(e,"jack_emc"),error,RequiredBool(e,"jack_isFull"),height,DateTimeOffset.Now);
+        return new(state,RequiredBool(e,"jack_enable"),RequiredBool(e,"jack_emc"),error,RequiredBool(e,"jack_isFull"),height,AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow());
     }
     private static string? JackHealth(JackTestTelemetry t)=>!t.Enabled?"车端顶升未启用或未配置。":t.Emergency?"顶升急停未解除。":t.ErrorCode!=0||t.State==255?"顶升故障，错误码："+t.ErrorCode:t.State is 0 or 2?"顶升机构正在运动，请等待反馈。":null;
     private void ReconcileJack(JackTestTelemetry telemetry)
@@ -116,15 +116,15 @@ public sealed partial class SingleNavigationTestService
             using var tasks=await client.RequestAsync(1110,new{},ct);RequireIdleTaskList(tasks.RootElement);
             if(!Idle(vehicle)||vehicle.Charging!=false||vehicle.LocalizationConfidence is not >=.5||vehicle.Alarms.Any(a=>a.Severity is AgvAlarmSeverity.Error or AgvAlarmSeverity.Fatal))throw new InvalidOperationException("车辆未确认静止、存在故障/任务/充电，不能顶升。");
             _preview=null;
-            _jackRecord=new(request.RequestId,_settings.VehicleId,request.Action,"Uncertain","已持久化顶升发送意图；结果不确定时禁止重发。",t.State,DateTimeOffset.Now,user.WindowsIdentity);PersistJack();
+            _jackRecord=new(request.RequestId,_settings.VehicleId,request.Action,"Uncertain","已持久化顶升发送意图；结果不确定时禁止重发。",t.State,AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow(),user.WindowsIdentity);PersistJack();
             try
             {
                 await using var other=new SeerTcpChannel(client.Robot.IpAddress,_settings.OtherApiPort,_options);
                 using var response=await other.RequestAsync((ushort)(request.Action=="Up"?6070:6071),null,ct);
                 var code=Int(response.RootElement,"ret_code");
-                _jackRecord=_jackRecord with{Acknowledged=code==0,State=code==0?"Accepted":code is not null?"Rejected":"Uncertain",Message=code==0?"车端已应答，等待1027反馈到位。":code is not null?"车端拒绝动作，返回码："+code:"应答缺少明确返回码，结果不确定，禁止重发。",UpdatedAt=DateTimeOffset.Now};
+                _jackRecord=_jackRecord with{Acknowledged=code==0,State=code==0?"Accepted":code is not null?"Rejected":"Uncertain",Message=code==0?"车端已应答，等待1027反馈到位。":code is not null?"车端拒绝动作，返回码："+code:"应答缺少明确返回码，结果不确定，禁止重发。",UpdatedAt=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow()};
             }
-            catch(Exception ex){_jackRecord=_jackRecord with{State="Uncertain",Message="发送结果不确定，禁止重发；请查询反馈并现场核对："+ex.Message,UpdatedAt=DateTimeOffset.Now};}
+            catch(Exception ex){_jackRecord=_jackRecord with{State="Uncertain",Message="发送结果不确定，禁止重发；请查询反馈并现场核对："+ex.Message,UpdatedAt=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow()};}
             PersistJack();return _jackRecord;
         }
         finally{_mutex.Release();}

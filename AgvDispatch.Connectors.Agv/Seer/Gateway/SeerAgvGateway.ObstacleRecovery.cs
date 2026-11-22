@@ -22,7 +22,7 @@ public sealed partial class SeerAgvGateway
         if (path.Count < 2 || path.Count > 2048 || path.Any(string.IsNullOrWhiteSpace) ||
             path.Zip(path.Skip(1)).Any(pair => string.Equals(pair.First, pair.Second, StringComparison.OrdinalIgnoreCase)))
             throw new ArgumentException("自动改道路径必须包含至少两个连续且不重复的有效站点。", nameof(path));
-        if (blockedSince == default || blockedSince > DateTimeOffset.UtcNow.AddSeconds(1))
+        if (blockedSince == default || blockedSince > AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow().AddSeconds(1))
             throw new InvalidOperationException("自动改道缺少可信的连续受阻起始时间。");
         if (path.Count > 2 &&
             !string.Equals(options.NavigationCommandMode, "SpecifiedPath", StringComparison.OrdinalIgnoreCase))

@@ -39,6 +39,8 @@ var completed = await client.QueryTaskAsync("STEP-001", CancellationToken.None);
 Require(completed?.Status == 4, "指定路径任务完成状态解析失败");
 var running = await client.QueryTaskAsync("STEP-CANCEL", CancellationToken.None);
 Require(running?.Status == 2, "待取消任务状态解析失败");
+await client.PauseNavigationAsync(CancellationToken.None);
+await client.ResumeNavigationAsync(CancellationToken.None);
 await client.CancelNavigationAsync("STEP-CANCEL", smartCancel: true, CancellationToken.None);
 await server;
 
@@ -54,7 +56,7 @@ Require(telemetry.NavigationState == "2", "task_status导航状态兼容解析�
 Require(telemetry.Tasks.Count == 1 && telemetry.Tasks[0].Status == 2, "任务状态解析失败");
 Require(telemetry.Alarms.Count == 1 && telemetry.Alarms[0].Code == "55001", "报警解析失败");
 await VerifyGatewayIdempotencyAsync();
-Console.WriteLine("SEER协议冒烟测试通过：状态采集、1110幂等查询、3066指定路径动作和3003精准取消正常。");
+Console.WriteLine("SEER协议冒烟测试通过：状态采集、1110幂等查询、3066指定路径动作、3001暂停、3002继续和3003精准取消正常。");
 
 static async Task VerifyGatewayIdempotencyAsync()
 {
@@ -163,7 +165,7 @@ static async Task RunMockServerAsync(TcpListener listener)
 {
     using var client = await listener.AcceptTcpClientAsync();
     await using var stream = client.GetStream();
-    for (var index = 0; index < 7; index++)
+    for (var index = 0; index < 9; index++)
     {
         var header = new byte[16];
         await stream.ReadExactlyAsync(header);
@@ -193,6 +195,10 @@ static async Task RunMockServerAsync(TcpListener listener)
         {
             Require(requestJson.RootElement.GetProperty("taskId").GetString() == "STEP-CANCEL", "取消任务ID错误");
             Require(requestJson.RootElement.GetProperty("smartCancel").GetBoolean(), "智能取消参数错误");
+        }
+        else if (requestType is 3001 or 3002)
+        {
+            Require(requestBody.Length == 0, "暂停/继续导航请求必须没有JSON数据区");
         }
 
         object response = requestType switch
@@ -238,6 +244,8 @@ static async Task RunMockServerAsync(TcpListener listener)
                 }
             },
             3066 => new { ret_code = 0 },
+            3001 => new { ret_code = 0 },
+            3002 => new { ret_code = 0 },
             3003 => new { ret_code = 0 },
             _ => throw new InvalidOperationException($"收到未知请求编号{requestType}")
         };

@@ -21,7 +21,7 @@ public sealed class TaskSwitchVehicleProbe(AgvOptions options, AgvConnectionMana
             using var response = await client.RequestAsync(1027, null, ct);
             if (!options.Enabled || !client.CommunicationEnabled || !client.Robot.Enabled)
                 return Rejected(client.Robot.VehicleId, "查询期间车辆通信已禁用，本次反馈不用于换单。");
-            var observedAt = DateTimeOffset.UtcNow;
+            var observedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow();
             var fields = ReadFields(response.RootElement, "1027");
             if (fields.TryGetValue("ret_code", out var returnCode) && RequiredInt(returnCode, "ret_code") != 0)
                 throw new InvalidDataException("1027 返回非零错误码，无法核对顶升状态。");
@@ -156,7 +156,7 @@ public sealed class TaskSwitchVehicleProbe(AgvOptions options, AgvConnectionMana
             ? result : throw new InvalidDataException($"1027 字段 {name} 必须为整数。");
 
     private static TaskSwitchVehicleEvidence Rejected(string vehicleId, string reason) =>
-        new(vehicleId, false, DateTimeOffset.UtcNow, [reason]);
+        new(vehicleId, false, AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow(), [reason]);
 
     private static string Limit(string message) => message.Length > 300 ? message[..300] : message;
 }

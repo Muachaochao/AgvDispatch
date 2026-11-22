@@ -70,7 +70,7 @@ public sealed partial class SingleNavigationTestService
             if(matches.Length!=1||input&&!RequiredBool(matches[0],"valid"))throw new InvalidDataException($"{group}{id}反馈无效或不唯一。");
             return RequiredBool(matches[0],"status");
         }
-        var t=new ForkTestTelemetry(Signal("DI",6,true),Signal("DI",3,true),Signal("DO",5,false),Signal("DO",6,false),DateTimeOffset.Now);
+        var t=new ForkTestTelemetry(Signal("DI",6,true),Signal("DI",3,true),Signal("DO",5,false),Signal("DO",6,false),AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow());
         if(t.UpperLimit&&t.LowerLimit||t.PumpOn&&t.ValveOn)throw new InvalidDataException("货叉上下限位或升降输出矛盾。");
         return t;
     }
@@ -81,7 +81,7 @@ public sealed partial class SingleNavigationTestService
         var target=_forkRecord.Action=="Up"?t.UpperLimit:_forkRecord.Action=="Down"&&t.LowerLimit;
         if(!t.PumpOn&&!t.ValveOn&&(_forkRecord.Action=="Stop"||target))
             _forkRecord=_forkRecord with{State=_forkRecord.Action=="Stop"?"Stopped":_forkRecord.Acknowledged?"Completed":"ObservedTarget",Message=_forkRecord.Action=="Stop"?"升降输出已关闭；实际机构停止仍需现场观察。":"已核对目标限位有效且升降输出关闭。",UpdatedAt=t.ObservedAt};
-        else if(DateTimeOffset.Now-_forkRecord.UpdatedAt>TimeSpan.FromSeconds(20))
+        else if(AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow()-_forkRecord.UpdatedAt>TimeSpan.FromSeconds(20))
             _forkRecord=_forkRecord with{State="Uncertain",Message="未在20秒内确认到位；不自动重发，请停止并现场核对。"};
         PersistFork();
     }
@@ -156,7 +156,7 @@ public sealed partial class SingleNavigationTestService
             }
             var ids=(_forkRecord?.RequestIds??[]).Append(request.RequestId).ToArray();
             _preview=null;
-            _forkRecord=new(request.RequestId,_settings.VehicleId,request.Action,"Uncertain","已保存发送意图；应答不确定时只查询，不重发。",DateTimeOffset.Now){RequestIds=ids};PersistFork();
+            _forkRecord=new(request.RequestId,_settings.VehicleId,request.Action,"Uncertain","已保存发送意图；应答不确定时只查询，不重发。",AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow()){RequestIds=ids};PersistFork();
             try
             {
                 await using var other=new SeerTcpChannel(client.Robot.IpAddress,_settings.OtherApiPort,_options);

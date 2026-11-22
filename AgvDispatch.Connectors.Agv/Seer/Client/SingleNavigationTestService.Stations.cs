@@ -75,7 +75,7 @@ public sealed partial class SingleNavigationTestService
                 throw new InvalidOperationException("读取期间车端地图变化或尚未加载成功，请重新读取站点。");
             var near=rows.Where(s=>AtStation(telemetry,s.X,s.Y)).ToArray();
             var suggested=near.SingleOrDefault(s=>s.Id==telemetry.CurrentStation)?.Id??(near.Length==1?near[0].Id:null);
-            return new(_settings.VehicleId,identity.Map,identity.Md5,rows,suggested,DateTimeOffset.Now);
+            return new(_settings.VehicleId,identity.Map,identity.Md5,rows,suggested,AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow());
         }
         finally{_mutex.Release();}
     }

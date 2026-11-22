@@ -21,6 +21,8 @@ public sealed partial class SingleNavigationTestService
                 throw new InvalidOperationException("原任务已进入改道或取消流程，不能发送继续命令。");
             if (record.ResumeAttemptedAt is not null)
                 throw new InvalidOperationException("当前原任务已经记录继续命令尝试，只能查询原任务，不能重复发送。");
+            if (record.PauseAttemptedAt is not null && record.PauseStoppedAt is null)
+                throw new InvalidOperationException("暂停命令尚未取得连续停稳证据，不能继续原导航。");
             RequireKnownOriginal(record);
             var ids = CurrentVendorIds(record);
             using var lease = await _execution.EnterControlAsync(ct);
@@ -42,13 +44,14 @@ public sealed partial class SingleNavigationTestService
                 ? null
                 : await _roadClosures.EnterRouteSendAsync(record.Route, ct);
             var vendorTaskId = rows.Single(task => task.Status == 3).TaskId;
-            _record = record with
+            var current = _record ?? throw new InvalidOperationException("原导航记录在继续核验期间丢失。");
+            _record = current with
             {
                 State = "ResumeIntent",
                 Message = "已持久化继续原导航意图；结果未确认前禁止重复发送。",
-                ResumeAttemptedAt = DateTimeOffset.UtcNow,
+                ResumeAttemptedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow(),
                 ResumeVendorTaskId = vendorTaskId,
-                UpdatedAt = DateTimeOffset.Now
+                UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow()
             };
             Persist();
             try
@@ -58,7 +61,7 @@ public sealed partial class SingleNavigationTestService
                 {
                     State = "ResumeRequested",
                     Message = "车端已应答3002；请继续查询原任务，应答不代表已恢复运动或完成。",
-                    UpdatedAt = DateTimeOffset.Now
+                    UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow()
                 };
             }
             catch (Exception ex)
@@ -67,7 +70,7 @@ public sealed partial class SingleNavigationTestService
                 {
                     State = "Uncertain",
                     Message = "继续原导航的结果不确定，禁止重发，只能查询原任务或现场核对：" + ex.Message,
-                    UpdatedAt = DateTimeOffset.Now
+                    UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow()
                 };
             }
             Persist();

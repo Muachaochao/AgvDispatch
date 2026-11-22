@@ -11,7 +11,7 @@ public sealed class RobokitInspectionService(AgvOptions options, AgvConnectionMa
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(query.VehicleId);
         var local = maps.Current;
-        RobokitInspectionSnapshot Unavailable(string reason) => new(query.VehicleId, DateTimeOffset.Now,
+        RobokitInspectionSnapshot Unavailable(string reason) => new(query.VehicleId, AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow(),
             false, false, reason, null, null, null, null, null, local?.MapId, local?.VersionId,
             null, null, [], [], [], [reason]);
         if (!options.Enabled) return Unavailable("AGV采集未启用；未连接设备。");
@@ -106,7 +106,7 @@ public sealed class RobokitInspectionService(AgvOptions options, AgvConnectionMa
             if(!stable) issues.Add("采集期间地图/版本变化、载入未完成或地图身份缺失，整批不可作核验依据。");
             if(String(info.RootElement,"version") is null) issues.Add("1000缺少Robokit版本。");
             issues.Add("只读观察：未核定本地地图与车端MD5关联、坐标转换或完整线路，不作为调度放行条件。");
-            return new(query.VehicleId, DateTimeOffset.Now,true,stable,
+            return new(query.VehicleId, AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow(),true,stable,
                 stable ? "只读采集完成；请查看核验提示" : "采集完成但地图不稳定", String(info.RootElement,"version"),
                 String(info.RootElement,"netprotocol_version"),name,md5,loadStatus,local?.MapId,local?.VersionId,
                 Boolean(owner.RootElement,"locked"),String(owner.RootElement,"nick_name"),stations,mappings,route,issues);

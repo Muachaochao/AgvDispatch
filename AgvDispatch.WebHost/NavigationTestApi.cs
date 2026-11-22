@@ -15,6 +15,7 @@ public static class NavigationTestApi
         app.MapGet("/api/navigation-test/stations",async(DispatchPipe p,CancellationToken ct)=>await p.ReadAsync<NavigationTestStations>("GetNavigationTestStations",new{},ct));
         app.MapPost("/api/navigation-test/preview",async(NavigationTestQuery q,DispatchPipe p,CancellationToken ct)=>await p.ReadAsync<NavigationTestPreview>("PreviewNavigationTest",q,ct));
         app.MapPost("/api/navigation-test/submit",async(NavigationTestSubmit q,DispatchPipe p,CancellationToken ct)=>await p.ReadAsync<NavigationTestRecord>("SubmitNavigationTest",q,ct));
+        app.MapPost("/api/navigation-test/pause",async(NavigationTestPause q,DispatchPipe p,CancellationToken ct)=>await p.ReadAsync<NavigationTestRecord>("PauseNavigationTest",q,ct));
         app.MapPost("/api/navigation-test/cancel",async(NavigationTestCancel q,DispatchPipe p,CancellationToken ct)=>await p.ReadAsync<NavigationTestRecord>("CancelNavigationTest",q,ct));
         app.MapPost("/api/navigation-test/resume",async(NavigationTestResume q,DispatchPipe p,CancellationToken ct)=>await p.ReadAsync<NavigationTestRecord>("ResumeNavigationTest",q,ct));
     }
