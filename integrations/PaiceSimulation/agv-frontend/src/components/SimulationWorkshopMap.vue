@@ -16,6 +16,8 @@ const props = defineProps<{
   fresh?: boolean
   selectedVehicle?: string
   roadHighlights?: Record<string, string>
+  routeEndpoints?: { nodeId: string; label: string; site: string }[]
+  compactHeader?: boolean
   resourceBoundary?: MapPoint[]
   route?: MapPoint[]
   routeColor?: string
@@ -98,6 +100,14 @@ const routes = computed(() => preview.value?.map.edges.flatMap(edge => {
   const color = props.roadHighlights?.[edge.id]
   return color && edge.points?.length ? [{ id: edge.id, color, points: edge.points }] : []
 }) ?? [])
+const endpointMarkers = computed(() => {
+  if (!props.routeEndpoints?.length) return []
+  const nodes = new Map(preview.value?.map.nodes.map(node => [node.id, node]))
+  return props.routeEndpoints.flatMap(endpoint => {
+    const node = nodes.get(endpoint.nodeId)
+    return node ? [{ ...endpoint, x: node.x, y: node.y }] : []
+  })
+})
 const navigation = computed(() => {
   const offset = preview.value?.offset
   return offset ? (props.route ?? []).map(point => ({ x: point.x - offset.x, y: point.y + offset.y })) : []
@@ -142,7 +152,7 @@ const legend = [
 
 <template>
   <section class="workshop-preview">
-    <header class="preview-header">
+    <header v-if="!compactHeader" class="preview-header">
       <h3 :title="definition?.name">{{ title }}</h3>
       <p v-if="definition">
         {{ definition.nodes.length }} 节点 · {{ definition.edges.length }} 道路
@@ -162,6 +172,12 @@ const legend = [
             <polyline v-for="segment in overlays" :key="segment.id" class="preview-route"
               :points="segment.points.map(point => `${point.x * pixelsPerMeter},${point.y * pixelsPerMeter}`).join(' ')"
               :stroke="segment.color" />
+            <g v-for="(marker, index) in endpointMarkers" :key="marker.nodeId" class="preview-route-endpoint"
+              :transform="`translate(${marker.x * pixelsPerMeter} ${marker.y * pixelsPerMeter})`">
+              <title>{{ marker.label }} · {{ marker.site }}</title>
+              <circle r="8" />
+              <text :y="index === 0 ? -14 : 23">{{ marker.label }}</text>
+            </g>
             <g v-for="(car, index) in agvs" :key="car.id" class="preview-vehicle"
               :class="{ selected: car.id === selectedVehicle }"
               :transform="`translate(${car.x * pixelsPerMeter} ${car.y * pixelsPerMeter})`"
@@ -205,6 +221,8 @@ const legend = [
 .preview-3d { height: min(72dvh, 760px); }
 .preview-empty { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 18px 0; color: var(--ui-text-3); }
 .preview-route { fill: none; stroke-width: 3px; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; pointer-events: none; }
+.preview-route-endpoint circle { fill: #25429e; stroke: #fff; stroke-width: 2px; }
+.preview-route-endpoint text { fill: #203653; stroke: #fff; stroke-width: 4px; paint-order: stroke; text-anchor: middle; font-size: 18px; font-weight: 700; }
 .preview-vehicle { cursor: var(--map-cursor-pointer, pointer); transition: transform .45s linear; }
 @media (prefers-reduced-motion: reduce) {
   .preview-vehicle { transition: none; }

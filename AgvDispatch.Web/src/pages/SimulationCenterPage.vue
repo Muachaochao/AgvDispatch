@@ -113,6 +113,8 @@ const simulationTaskSearch = ref('');
 const selectedTaskId = ref(''), selectedTaskDetail = ref<TaskDetail | null>(null);
 const taskReading = ref(false), taskDetailReading = ref(false), taskError = ref('');
 const selectedTaskRouteStepId = ref('');
+const selectedTaskRouteCommandId = ref('');
+let taskDetailRequestId = 0;
 const taskRuntimeSnapshot = ref<Snapshot | null>(null), taskSnapshotError = ref('');
 const taskSnapshotFetchedAt = ref(0);
 const reportTaskDetailId = ref(''), reportTaskDetail = ref<TaskDetail | null>(null);
@@ -312,9 +314,9 @@ function taskWaitingSeconds(taskId: string) {
 }
 type TaskRouteLegKind = 'completed' | 'current' | 'future';
 type TaskRouteLeg = {
-  stepId: string; sequence: number; stepType: string; stepStatus: string; kind: TaskRouteLegKind;
-  isCurrent: boolean; isReturn: boolean; label: string; action: string; sites: string[];
-  nodeIds: string[]; edgeIds: string[]; traffic?: TrafficRequest;
+  stepId: string; commandId: string; sequence: number; kind: TaskRouteLegKind;
+  isCurrent: boolean; isReturn: boolean; source: string; destination: string;
+  nodeIds: string[]; edgeIds: string[];
 };
 const taskRouteLegs = computed<TaskRouteLeg[]>(() => {
   const detail = selectedTaskDetail.value;
@@ -322,35 +324,82 @@ const taskRouteLegs = computed<TaskRouteLeg[]>(() => {
   const steps = new Map(detail.steps.filter(step => !!step.stepId).map(step => [step.stepId!, step]));
   return (detail.commands ?? []).flatMap(command => {
     const step = steps.get(command.stepId);
-    if (!step?.stepId || !command.route) return [];
+    if (!step?.stepId || !command.route?.edgeIds?.length) return [];
     const active = step.isCurrent || ['Ready', 'Executing', 'WaitingForTraffic'].includes(step.status);
     const kind: TaskRouteLegKind = step.status === 'Completed' ? 'completed' : active ? 'current' : 'future';
-    const traffic = taskRuntimeSnapshot.value?.traffic?.requests?.find(request =>
-      request.taskId === detail.task.taskId && request.stepId === step.stepId);
+    const nodeIds = command.route.nodeIds ?? [];
+    const sites = command.route.vendorSites ?? [];
     return [{
-      stepId: step.stepId, sequence: step.sequence, stepType: step.stepType, stepStatus: step.status, kind,
-      isCurrent: active, isReturn: step.stepType === 'ReturnEmptyBox', label: taskStepLabel(step.stepType),
-      action: routeActionLabel(command.route.action), sites: command.route.vendorSites ?? [],
-      nodeIds: command.route.nodeIds ?? [], edgeIds: command.route.edgeIds ?? [], traffic
+      stepId: step.stepId, commandId: command.commandId, sequence: step.sequence, kind,
+      isCurrent: active, isReturn: step.stepType === 'ReturnEmptyBox',
+      source: sites[0] || nodeIds[0] || step.sourceSite || '—',
+      destination: sites.at(-1) || nodeIds.at(-1) || step.destinationSite || '—',
+      nodeIds, edgeIds: command.route.edgeIds
     }];
   }).sort((left, right) => left.sequence - right.sequence);
 });
-const selectedTaskRouteLeg = computed(() =>
-  taskRouteLegs.value.find(leg => leg.stepId === selectedTaskRouteStepId.value) ?? null);
 const selectedTaskCurrentStep = computed(() => {
   const steps = selectedTaskDetail.value?.steps ?? [];
   return steps.find(step => step.isCurrent) ??
     steps.find(step => ['Ready', 'Executing', 'WaitingForTraffic'].includes(step.status)) ?? null;
 });
+const selectedEvidenceStep = computed(() => {
+  const steps = selectedTaskDetail.value?.steps ?? [];
+  return steps.find(step => evidenceStepKey(step) === selectedTaskRouteStepId.value) ??
+    selectedTaskCurrentStep.value ??
+    steps.find(step => step.stepId === taskRouteLegs.value[0]?.stepId) ?? steps[0];
+});
+const selectedStepRoutes = computed(() =>
+  taskRouteLegs.value.filter(leg => leg.stepId === selectedEvidenceStep.value?.stepId));
+const selectedTaskRouteLeg = computed(() =>
+  selectedStepRoutes.value.find(leg => leg.commandId === selectedTaskRouteCommandId.value) ??
+  selectedStepRoutes.value.at(-1));
+const selectedRouteExistsOnMap = computed(() => {
+  const leg = selectedTaskRouteLeg.value;
+  const map = status.value?.map;
+  if (!leg || !map) return false;
+  const nodes = new Set(map.nodes.filter(node => node.enabled !== false).map(node => node.id));
+  const edges = new Map(map.edges.filter(edge => edge.enabled !== false).map(edge => [edge.id, edge]));
+  return leg.nodeIds.length === leg.edgeIds.length + 1 && leg.nodeIds.every(id => nodes.has(id)) &&
+    leg.edgeIds.every((id, index) => {
+      const edge = edges.get(id);
+      const from = leg.nodeIds[index], to = leg.nodeIds[index + 1];
+      return edge && ((edge.from === from && edge.to === to) || (edge.to === from && edge.from === to));
+    });
+});
+const evidenceRouteColor = computed(() => selectedTaskRouteLeg.value?.isReturn ? '#a96c10' : '#087968');
+const evidenceRoadHighlights = computed(() => Object.fromEntries(
+  (selectedRouteExistsOnMap.value ? selectedTaskRouteLeg.value?.edgeIds ?? [] : [])
+    .map(id => [id, evidenceRouteColor.value])));
+const evidenceRouteEndpoints = computed(() => {
+  const leg = selectedRouteExistsOnMap.value ? selectedTaskRouteLeg.value : undefined;
+  if (!leg) return [];
+  const start = leg.nodeIds[0]!, end = leg.nodeIds.at(-1)!;
+  return start === end ? [{ nodeId: start, label: '起终点', site: leg.source }] : [
+    { nodeId: start, label: '起点', site: leg.source },
+    { nodeId: end, label: '终点', site: leg.destination }
+  ];
+});
+const archivedTaskEvidence = computed(() => !status.value?.running ||
+  selectedTaskDetail.value?.evidenceSource?.startsWith('saved-report') ||
+  ['Completed', 'Cancelled'].includes(selectedTaskDetail.value?.task.stage ?? ''));
+const evidenceStepHandshakes = computed(() => selectedTaskDetail.value?.handshakes?.filter(
+  handshake => handshake.stepId === selectedEvidenceStep.value?.stepId) ?? []);
+const evidenceStepCommands = computed(() => selectedTaskDetail.value?.commands?.filter(
+  command => command.stepId === selectedEvidenceStep.value?.stepId) ?? []);
 const selectedTaskTrafficRequest = computed(() => {
   const detail = selectedTaskDetail.value;
   if (!detail) return null;
   const requests = (taskRuntimeSnapshot.value?.traffic?.requests ?? [])
-    .filter(request => request.taskId === detail.task.taskId)
+    .filter(request => request.taskId === detail.task.taskId && request.stepId === selectedTaskCurrentStep.value?.stepId)
     .sort((left, right) => Date.parse(right.updatedAt ?? '') - Date.parse(left.updatedAt ?? ''));
-  return requests.find(request => request.stepId === selectedTaskCurrentStep.value?.stepId) ?? requests[0] ?? null;
+  return requests.find(request => request.state === 'Waiting') ?? requests[0] ?? null;
 });
 const selectedTaskWaitBlockers = computed(() => selectedTaskTrafficRequest.value?.blockers ?? []);
+const selectedTaskWaitSeconds = computed(() => {
+  const seconds = selectedTaskTrafficRequest.value?.waitingSeconds;
+  return typeof seconds === 'number' && Number.isFinite(seconds) ? Math.max(0, Math.floor(seconds)) : null;
+});
 const selectedTaskHandovers = computed(() => resourceHandovers(taskRuntimeSnapshot.value, selectedTaskTrafficRequest.value));
 const selectedTaskWaitGroups = computed(() => {
   const groups = new Map<string, {
@@ -368,12 +417,6 @@ const selectedTaskWaitGroups = computed(() => {
   }
   return [...groups.values()];
 });
-const selectedTaskNamedResources = computed(() =>
-  (selectedTaskTrafficRequest.value?.resourceIds ?? []).filter(resourceId => !resourceId.startsWith('AUTO-CORRIDOR-')));
-const selectedTaskAutomaticResourceCount = computed(() =>
-  (selectedTaskTrafficRequest.value?.resourceIds ?? []).filter(resourceId => resourceId.startsWith('AUTO-CORRIDOR-')).length);
-const selectedTaskCurrentLeg = computed(() => taskRouteLegs.value.find(leg => leg.isCurrent) ?? null);
-
 function routeActionLabel(action?: string | null) {
   return ({ JackLoad: '顶升取箱', JackUnload: '放下空箱', Wait: '导航/等待' } as Record<string, string>)[action ?? ''] ??
     (action ? industrialText(action) : '运输移动');
@@ -437,24 +480,12 @@ function taskRouteNodeClass(nodeId?: string | null) {
     'task-node-dimmed': !!selectedTaskRouteStepId.value && !focused
   };
 }
-function isTaskRouteNode(nodeId?: string | null) {
-  return !!nodeId && taskRouteLegs.value.some(leg => leg.nodeIds.includes(nodeId));
+function evidenceStepKey(step: TaskDetail['steps'][number]) {
+  return step.stepId || `sequence-${step.sequence}`;
 }
-function taskRouteMarker(edgeId?: string | null) {
-  if (!edgeId) return undefined;
-  if (selectedTaskRouteLeg.value?.edgeIds.includes(edgeId))
-    return selectedTaskRouteLeg.value.isReturn ? 'url(#task-return-arrow)' : 'url(#task-focus-arrow)';
-  const legs = taskRouteLegs.value.filter(leg => leg.edgeIds.includes(edgeId));
-  if (!legs.length) return undefined;
-  if (selectedTaskTrafficRequest.value?.state === 'Waiting' && legs.some(leg => leg.isCurrent))
-    return 'url(#task-waiting-arrow)';
-  if (legs.some(leg => leg.isCurrent)) return 'url(#task-current-arrow)';
-  if (legs.some(leg => leg.isReturn && leg.kind !== 'completed')) return 'url(#task-return-arrow)';
-  if (legs.some(leg => leg.kind === 'future')) return 'url(#task-future-arrow)';
-  return 'url(#task-completed-arrow)';
-}
-function selectTaskRouteLeg(stepId: string) {
-  selectedTaskRouteStepId.value = selectedTaskRouteStepId.value === stepId ? '' : stepId;
+function selectEvidenceStep(step: TaskDetail['steps'][number]) {
+  selectedTaskRouteStepId.value = evidenceStepKey(step);
+  selectedTaskRouteCommandId.value = '';
 }
 function trafficWaitingText(request?: TrafficRequest | null) {
   if (!request) return '当前没有从后台读取到该步骤的路权申请。';
@@ -658,23 +689,28 @@ function selectVehicleTask(vehicleId: string) {
   if (task) void selectSimulationTask(task.taskId);
 }
 async function selectSimulationTask(taskId: string) {
-  if (!taskId || taskDetailReading.value) return;
-  if (selectedTaskId.value !== taskId) selectedTaskRouteStepId.value = '';
+  if (!taskId || (selectedTaskId.value === taskId && taskDetailReading.value)) return;
+  const requestId = ++taskDetailRequestId;
+  if (selectedTaskId.value !== taskId) {
+    selectedTaskDetail.value = null;
+    selectedTaskRouteStepId.value = '';
+    selectedTaskRouteCommandId.value = '';
+  }
   selectedTaskId.value = taskId;
   taskDetailReading.value = true;
   taskError.value = '';
   try {
     const detail = await simulationApi<TaskDetail>('/tasks/' + encodeURIComponent(taskId));
-    if (!disposed && selectedTaskId.value === taskId) {
+    if (!disposed && requestId === taskDetailRequestId) {
       selectedTaskDetail.value = detail;
       if (detail.task.vehicleId) selectedVehicle.value = detail.task.vehicleId;
       await refreshTaskRuntimeSnapshot();
     }
   } catch (reason) {
-    if (!disposed && selectedTaskId.value === taskId)
+    if (!disposed && requestId === taskDetailRequestId)
       taskError.value = reason instanceof Error ? reason.message : String(reason);
   } finally {
-    taskDetailReading.value = false;
+    if (requestId === taskDetailRequestId) taskDetailReading.value = false;
   }
 }
 async function refreshTaskRuntimeSnapshot(force = false) {
@@ -715,11 +751,12 @@ async function loadSimulationTaskWindow(filter: typeof simulationTaskFilter.valu
 }
 async function refreshSimulationTasks() {
   if (taskReading.value || (!status.value?.running && !report.value)) return;
+  const root = status.value?.rootName;
   taskReading.value = true;
   taskError.value = '';
   try {
     const page = await loadSimulationTaskWindow(simulationTaskFilter.value, simulationTaskSearch.value);
-    if (disposed) return;
+    if (disposed || root !== status.value?.rootName) return;
     simulationTaskPage.value = page;
     simulationTasks.value = page.items ?? [];
     if (status.value?.running && simulationTasks.value.length) await refreshTaskRuntimeSnapshot();
@@ -1506,7 +1543,9 @@ function accept(next: SimulationStatus) {
     selectedHistory.value = ''; selectedReport.value = null; replay.value = null; replayPlaying.value = false;
     simulationTasks.value = []; simulationTaskPage.value = null;
     selectedTaskId.value = ''; selectedTaskDetail.value = null;
-    selectedTaskRouteStepId.value = ''; taskRuntimeSnapshot.value = null; taskSnapshotError.value = '';
+    taskDetailRequestId++; taskDetailReading.value = false;
+    selectedTaskRouteStepId.value = ''; selectedTaskRouteCommandId.value = '';
+    taskRuntimeSnapshot.value = null; taskSnapshotError.value = '';
     taskSnapshotFetchedAt.value = 0;
     reportTaskDetailId.value = ''; reportTaskDetail.value = null; reportTaskError.value = '';
     manualGuide.value = null; manualRecovery.value = null; manualRecoveryError.value = '';
@@ -1539,7 +1578,8 @@ async function refresh(force = false) {
       }
       accept(next);
       error.value = '';
-      if (next.running) void refreshSimulationTasks();
+      if (next.running || (readMetadata && activeStage.value === 'tasks' && next.report))
+        void refreshSimulationTasks();
     }
   }
   catch (reason) { if (!disposed) { connected.value = false; error.value = reason instanceof Error ? reason.message : String(reason); } }
@@ -1823,7 +1863,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
       </div>
       <div class="simulation-workspace-content">
 
-    <section v-if="activeStage !== 'overview'" class="module-heading">
+    <section v-if="activeStage !== 'overview' && !(embedded && activeStage === 'tasks')" class="module-heading">
       <div>
         <p v-if="!embedded" class="section-kicker">独立页面 {{ activeStageInfo.number }} / 07</p>
         <h3 v-if="!embedded" id="simulation-environment">{{ activeStageInfo.title }}</h3>
@@ -1875,7 +1915,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
     <section v-if="activeStage === 'tasks'" class="stage-surface tasks-stage">
       <section class="simulation-panel task-command-panel">
         <header>
-          <div><p class="section-kicker">隔离后台只读数据</p><h3>任务运行</h3><p>任务来自当前仿真实例自己的 Service 和数据库；点击任一任务只读查看九步、命令、PLC与路权。</p></div>
+          <h3>任务运行</h3>
           <span :class="['state-pill', status?.running ? 'pass' : simulationTasks.length ? 'waiting' : 'unknown']">{{ status?.running ? '隔离后台在线' : simulationTasks.length ? '最近报告证据' : '仿真未运行' }}</span>
         </header>
         <div class="task-counts">
@@ -1888,7 +1928,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
         <div class="task-filter-row">
           <label>状态<select v-model="simulationTaskFilter" @change="refreshSimulationTasks"><option value="All">全部</option><option value="Active">执行中</option><option value="Completed">已完成</option><option value="Failed">失败/异常</option></select></label>
           <label class="task-search">搜索<input v-model.trim="simulationTaskSearch" placeholder="任务号、工位或车辆" @keyup.enter="refreshSimulationTasks" /></label>
-          <button :disabled="taskReading || !status?.running" @click="refreshSimulationTasks"><IconRefresh :size="15" />{{ taskReading ? '读取中' : '刷新任务' }}</button>
+          <button :disabled="taskReading || (!status?.running && !report)" @click="refreshSimulationTasks"><IconRefresh :size="15" />{{ taskReading ? '读取中' : '刷新任务' }}</button>
         </div>
         <p v-if="taskError" class="simulation-error" role="alert">{{ industrialText(taskError) }}</p>
       </section>
@@ -1898,16 +1938,15 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
           <header><div><h3>任务队列</h3><small>{{ simulationTasks.length }} 条 · 实际派车来自正式调度</small></div></header>
           <div class="task-table-scroll">
             <table class="task-table">
-              <thead><tr><th>工位</th><th>车辆</th><th>阶段</th><th>异常</th><th>更新时间</th></tr></thead>
+              <thead><tr><th>工位</th><th>车辆</th><th>状态</th><th>更新时间</th></tr></thead>
               <tbody>
-                <tr v-for="task in simulationTasks" :key="task.taskId" :class="{ selected: selectedTaskId === task.taskId, 'traffic-waiting': !!taskWaitingRequest(task.taskId) }" role="button" tabindex="0" @click="selectSimulationTask(task.taskId)" @keydown.enter="selectSimulationTask(task.taskId)">
-                  <td><b>{{ task.stationId || '未提供' }}</b><small>{{ task.taskId }}</small></td>
+                <tr v-for="task in simulationTasks" :key="task.taskId" :class="{ selected: selectedTaskId === task.taskId, 'traffic-waiting': !!taskWaitingRequest(task.taskId) }" role="button" tabindex="0" @click="selectSimulationTask(task.taskId)" @keydown.enter="selectSimulationTask(task.taskId)" @keydown.space.prevent="selectSimulationTask(task.taskId)">
+                  <td><b>{{ task.stationId || '未提供' }}</b></td>
                   <td>{{ task.vehicleId || '尚未派车' }}</td>
-                  <td><span :class="['state-pill', taskTone(task.stage)]">{{ taskStageLabel(task.stage) }}</span><small v-if="taskWaitingRequest(task.taskId)" class="task-waiting-signal">等待路权 · {{ taskWaitingSeconds(task.taskId) ?? '—' }} 秒</small></td>
-                  <td :class="{ 'task-error-text': !!task.errorMessage }">{{ task.errorMessage || '无' }}</td>
+                  <td><span :class="['state-pill', taskTone(task.stage)]">{{ taskStageLabel(task.stage) }}</span><small v-if="taskWaitingRequest(task.taskId)" class="task-waiting-signal">等待路权 · {{ taskWaitingSeconds(task.taskId) ?? '—' }} 秒</small><small v-if="task.errorMessage" class="task-error-text">{{ industrialText(task.errorMessage) }}</small></td>
                   <td>{{ stamp(task.updatedAt) }}</td>
                 </tr>
-                <tr v-if="!simulationTasks.length"><td colspan="5" class="task-empty">{{ status?.running ? '当前筛选没有任务。' : '启动隔离仿真后显示任务数据。' }}</td></tr>
+                <tr v-if="!simulationTasks.length"><td colspan="4" class="task-empty">{{ taskReading ? '正在读取任务…' : status?.running || report ? '当前筛选没有任务。' : '启动隔离仿真后显示任务数据。' }}</td></tr>
               </tbody>
             </table>
           </div>
@@ -1915,132 +1954,113 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
 
         <section class="simulation-panel task-detail-panel">
           <template v-if="selectedTaskDetail">
-            <header><div><p class="section-kicker">{{ selectedTaskDetail.task.stationId }}</p><h3>{{ selectedTaskDetail.task.vehicleId || '等待派车' }} · {{ taskStageLabel(selectedTaskDetail.task.stage) }}</h3><small>{{ selectedTaskDetail.task.taskId }}</small></div><span :class="['state-pill', taskTone(selectedTaskDetail.task.stage)]">{{ taskStageLabel(selectedTaskDetail.task.stage) }}</span></header>
-            <p v-if="selectedTaskDetail.evidenceMessage" class="task-waiting-copy">{{ industrialText(selectedTaskDetail.evidenceMessage) }}</p>
-            <p v-if="selectedTaskDetail.waitingExplanation" class="task-waiting-copy">{{ industrialText(selectedTaskDetail.waitingExplanation) }}</p>
-            <ol class="task-step-list">
-              <li v-for="step in selectedTaskDetail.steps" :key="step.stepId || step.sequence" :class="{ current: step.isCurrent, completed: step.status === 'Completed', failed: ['Failed','ManualIntervention'].includes(step.status) }">
-                <span>{{ step.sequence }}</span>
-                <div><strong>{{ taskStepLabel(step.stepType) }}</strong><small>{{ taskStatusLabel(step.status) }} · {{ step.elapsedText || '未完成' }}<template v-if="step.startedAt"> · 开始 {{ stamp(step.startedAt) }}</template><template v-if="step.completedAt"> · 完成 {{ stamp(step.completedAt) }}</template></small><p v-if="step.waitingExplanation">{{ industrialText(step.waitingExplanation) }}</p><details v-if="step.observedPhase || step.completionRequirement"><summary>证据与完成条件</summary><p>{{ industrialText(step.observedPhase || step.completionRequirement) }}</p><p>{{ industrialText(step.evidenceBoundary || '') }}</p></details></div>
+            <header>
+              <h3>{{ selectedTaskDetail.task.stationId }} · {{ selectedTaskDetail.task.vehicleId || '等待派车' }}</h3>
+              <span :class="['state-pill', taskTone(selectedTaskDetail.task.stage)]">{{ taskStageLabel(selectedTaskDetail.task.stage) }}</span>
+            </header>
+            <ol class="task-step-list" aria-label="任务九步">
+              <li v-for="step in selectedTaskDetail.steps" :key="evidenceStepKey(step)"
+                :class="{ current: step.isCurrent, completed: step.status === 'Completed', failed: ['Failed','ManualIntervention'].includes(step.status) }">
+                <button type="button" :aria-pressed="selectedEvidenceStep === step" aria-controls="task-evidence-route"
+                  @click="selectEvidenceStep(step)">
+                  <span class="task-step-number">{{ step.sequence }}</span>
+                  <span><strong>{{ taskStepLabel(step.stepType) }}</strong><small>{{ taskStatusLabel(step.status) }}<template v-if="step.elapsedText && /^\d/.test(step.elapsedText)"> · {{ step.elapsedText }}</template></small></span>
+                </button>
               </li>
             </ol>
           </template>
-          <p v-else class="task-empty">{{ selectedTaskId ? '正在读取任务详情…' : '选择左侧任务查看详情。' }}</p>
+          <p v-else class="task-empty">{{ taskError || (selectedTaskId ? '正在读取任务详情…' : '选择左侧任务查看详情。') }}</p>
         </section>
       </div>
 
-      <section v-if="selectedTaskDetail" class="simulation-panel task-route-panel">
+      <section v-if="selectedTaskDetail" id="task-evidence-route" class="simulation-panel task-route-panel">
         <header>
-          <div><p class="section-kicker">地图联动</p><h3>任务路线与路权等待</h3><p>按步骤区分已完成、正在执行、后续和返程路段；点击右侧步骤可单独查看该段路线。</p></div>
-          <span class="scope-label">只读展示，不占用或修改路权</span>
+          <h3 v-if="selectedEvidenceStep">第 {{ selectedEvidenceStep.sequence }} 步 · {{ taskStepLabel(selectedEvidenceStep.stepType) }}</h3>
+          <h3 v-else>任务路线</h3>
+          <span class="scope-label">{{ archivedTaskEvidence ? '历史记录' : '当前实例' }}</span>
         </header>
-        <div class="task-route-layout">
-          <div class="task-route-map-wrap">
-            <svg v-if="geometry.nodes.length" class="simulation-map task-route-map" viewBox="0 0 800 430" role="img" aria-label="所选任务的分阶段规划路线和路权等待状态">
-              <defs>
-                <pattern id="task-grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="#26364b" stroke-width="1"/></pattern>
-                <marker id="task-completed-arrow" markerUnits="userSpaceOnUse" markerWidth="4" markerHeight="4" refX="3.2" refY="2" orient="auto"><path d="M0,0 L4,2 L0,4 Z" fill="#559f99"/></marker>
-                <marker id="task-future-arrow" markerUnits="userSpaceOnUse" markerWidth="4" markerHeight="4" refX="3.2" refY="2" orient="auto"><path d="M0,0 L4,2 L0,4 Z" fill="#55cfe6"/></marker>
-                <marker id="task-current-arrow" markerUnits="userSpaceOnUse" markerWidth="4" markerHeight="4" refX="3.2" refY="2" orient="auto"><path d="M0,0 L4,2 L0,4 Z" fill="#5ff5da"/></marker>
-                <marker id="task-return-arrow" markerUnits="userSpaceOnUse" markerWidth="4" markerHeight="4" refX="3.2" refY="2" orient="auto"><path d="M0,0 L4,2 L0,4 Z" fill="#ffc76b"/></marker>
-                <marker id="task-waiting-arrow" markerUnits="userSpaceOnUse" markerWidth="4" markerHeight="4" refX="3.2" refY="2" orient="auto"><path d="M0,0 L4,2 L0,4 Z" fill="#ff8a6c"/></marker>
-                <marker id="task-focus-arrow" markerUnits="userSpaceOnUse" markerWidth="4.4" markerHeight="4.4" refX="3.6" refY="2.2" orient="auto"><path d="M0,0 L4.4,2.2 L0,4.4 Z" fill="#f5ffff"/></marker>
-              </defs>
-              <rect width="800" height="430" fill="url(#task-grid)"/>
-              <g class="roads"><path v-for="edge in geometry.edges" :key="edge.key" :d="edge.path" :class="[taskRouteEdgeClass(edge.id), { blocked: !!edge.id && appliedBlockedEdges.includes(edge.id) }]" :marker-end="taskRouteMarker(edge.id)" /></g>
-              <g v-for="node in geometry.nodes" :key="node.id" class="map-node" :class="[taskRouteNodeClass(node.id), { dense: denseMap }]"><circle :cx="node.x" :cy="node.y" :r="isTaskRouteNode(node.id) ? 5.5 : mapNodeRadius(node)"/><text v-if="isTaskRouteNode(node.id)" :x="node.x + 7" :y="node.y - 7">{{ mapNodeLabel(node) }}</text><title>{{ mapNodeLabel(node) }}</title></g>
-              <g v-for="car in geometry.cars" :key="car.id" class="map-car" :class="{ selected: selectedVehicle === car.id }" :style="{ '--car-color': vehicleMapColor(car) }" :transform="`translate(${car.x} ${car.y})`"><circle :r="vehicleBodySize(car.id).length * .72"/><g :transform="`rotate(${-(car.angle ?? 0) * 180 / Math.PI})`"><rect :x="-vehicleBodySize(car.id).length / 2" :y="-vehicleBodySize(car.id).width / 2" :width="vehicleBodySize(car.id).length" :height="vehicleBodySize(car.id).width" rx="2"/></g><g v-if="car.loaded" class="map-load-badge"><rect x="5" y="3" width="9" height="7" rx="1"/><text x="9.5" y="8.1" text-anchor="middle">箱</text></g><text x="0" :y="-vehicleBodySize(car.id).length / 2 - 6" text-anchor="middle">{{ car.id }}</text><title>{{ car.id }} · {{ vehicleVisualLabel(car) }} · {{ car.loaded ? '载箱' : '空载' }}</title></g>
-            </svg>
-            <div class="task-route-legend">
-              <span><i class="route-swatch completed"></i>已经走过</span>
-              <span><i class="route-swatch future"></i>后续路线</span>
-              <span><i class="route-swatch current"></i>当前路段</span>
-              <span><i class="route-swatch waiting"></i>等待路权</span>
-              <span><i class="route-swatch returning"></i>返程路线</span>
-            </div>
-          </div>
-
-          <aside class="task-route-sidebar">
-            <section :class="['task-route-now', { waiting: selectedTaskTrafficRequest?.state === 'Waiting' }]">
-              <template v-if="selectedTaskCurrentStep">
-                <small>任务现在卡在哪里</small>
-                <h4>第{{ selectedTaskCurrentStep.sequence }}步 · {{ taskStepLabel(selectedTaskCurrentStep.stepType) }}</h4>
-                <p>{{ trafficWaitingText(selectedTaskTrafficRequest) }}</p>
-                <p v-if="taskSnapshotError" class="inline-warning">路权实时数据读取失败：{{ industrialText(taskSnapshotError) }}</p>
-                <div v-if="selectedTaskWaitGroups.length" class="route-blocker-list">
-                  <b>需要以下车辆先释放路权</b>
-                  <article v-for="group in selectedTaskWaitGroups" :key="`${group.vehicleId}-${group.taskId}`">
-                    <strong>{{ group.vehicleId }}</strong>
-                    <span>{{ group.resources.map(routeResourceLabel).join('、') }}</span>
-                    <small>任务 {{ simulationTasks.find(task => task.taskId === group.taskId)?.stationId || group.taskId }} · {{ group.heartbeatExpired ? '心跳已过期，责任仍保留' : '整车通过或交接核验后逐项释放；尚无确认的释放时间' }}</small>
-                  </article>
-                </div>
-                <div v-else-if="selectedTaskTrafficRequest?.state === 'Waiting'" class="route-blocker-list">
-                  <b>正在等待正式调度授予资源</b>
-                  <small>后台暂未返回具体占用车辆，先按上方等待原因核对候车位、交叉口和当前路权。</small>
-                </div>
-                <div v-if="selectedTaskTrafficRequest?.resourceIds?.length" class="route-resource-summary">
-                  <span>本步共申请 {{ selectedTaskTrafficRequest.resourceIds.length }} 项路权</span>
-                  <span v-if="selectedTaskAutomaticResourceCount">其中 {{ selectedTaskAutomaticResourceCount }} 项是调度器为双向道路和交叉汇入自动建立的路段互斥</span>
-                  <span v-for="resourceId in selectedTaskNamedResources" :key="resourceId">{{ routeResourceLabel(resourceId) }}</span>
-                  <small>“路段互斥”是运行时路权，不是地图站点或现场支援点。</small>
-                </div>
-                <details class="route-resource-summary"><summary>这些路权刚才由谁释放、谁又取得？</summary>
-                  <p v-for="event in selectedTaskHandovers.slice(0, 12)" :key="event.eventId"><b>{{ event.vehicleId }}</b> · {{ event.kind === 'ResourceAcquired' ? '取得' : '核验后释放' }} · {{ new Date(event.occurredAt).toLocaleString('zh-CN', { hour12: false }) }}<br/>{{ event.resourceIds.map(routeResourceLabel).join('、') }}</p>
-                  <p v-if="!selectedTaskHandovers.length">最近快照尚无匹配的实际交接记录；不能据此判断已释放。</p>
-                  <small>这里只显示最近全场100条事件中匹配当前地图和资源的记录，最多展开12条。完整交接查看后台交通页或本轮原始日志；不是预计释放时间。</small>
-                </details>
-                <p v-if="!selectedTaskCurrentLeg" class="route-stationary-note">{{ !selectedTaskDetail.task.vehicleId && selectedTaskCurrentStep.stepType === 'GoToPickup' ? '任务仍在正式调度队列中，尚未分配车辆，因此当前没有可执行路线。获得车辆和首段路权后，这里会显示第一段行驶路线。' : '当前步骤是车辆动作、倒料或PLC等待，不需要沿道路继续移动。完成本步后才会申请下一段路线。' }}</p>
-              </template>
-              <template v-else>
-                <small>任务状态</small>
-                <h4>{{ taskStageLabel(selectedTaskDetail.task.stage) }}</h4>
-                <p>任务已经结束。点击下方任一步骤，可以单独查看当时的规划路线；返程步骤使用琥珀色。</p>
-              </template>
-            </section>
-
-            <section class="task-route-selection">
-              <header><b>{{ selectedTaskRouteLeg ? '已选中的路线段' : '路线分段' }}</b><button v-if="selectedTaskRouteStepId" @click="selectedTaskRouteStepId = ''">查看全程</button></header>
-              <article v-if="selectedTaskRouteLeg" class="task-route-selected">
-                <b>第{{ selectedTaskRouteLeg.sequence }}步 · {{ selectedTaskRouteLeg.label }}</b>
-                <small>{{ selectedTaskRouteLeg.action }}</small>
-                <p>{{ selectedTaskRouteLeg.sites.join(' → ') }}</p>
-              </article>
-              <div class="task-route-leg-list">
-                <button v-for="leg in taskRouteLegs" :key="leg.stepId" :class="[leg.kind, { current: leg.isCurrent, returning: leg.isReturn, active: selectedTaskRouteStepId === leg.stepId }]" @click="selectTaskRouteLeg(leg.stepId)">
-                  <span>{{ leg.sequence }}</span>
-                  <div><b>{{ leg.label }}{{ leg.isReturn ? ' · 返程' : '' }}</b><small>{{ leg.kind === 'completed' ? '已完成' : leg.kind === 'current' ? '当前执行' : '后续计划' }} · {{ leg.action }}</small><em>{{ leg.sites.join(' → ') }}</em></div>
-                </button>
-                <p v-if="!taskRouteLegs.length" class="route-no-legs">该任务尚未分配车辆或尚未生成运输命令，暂时没有可显示的路线。</p>
-              </div>
-            </section>
-          </aside>
+        <div v-if="selectedTaskRouteLeg" class="task-route-controls">
+          <p class="task-route-endpoints"><i :style="{ background: evidenceRouteColor }" /><span>{{ selectedTaskRouteLeg.source }}</span><span aria-hidden="true">→</span><span>{{ selectedTaskRouteLeg.destination }}</span></p>
+          <label v-if="selectedStepRoutes.length > 1">
+            路线记录
+            <select :value="selectedTaskRouteLeg.commandId" @change="selectedTaskRouteCommandId = ($event.target as HTMLSelectElement).value">
+              <option v-for="(leg, index) in selectedStepRoutes" :key="leg.commandId" :value="leg.commandId">{{ index + 1 }} / {{ selectedStepRoutes.length }} · {{ leg.source }} → {{ leg.destination }}</option>
+            </select>
+          </label>
         </div>
+        <p v-if="!selectedTaskRouteLeg" class="task-route-message">本步没有路线记录<template v-if="evidenceStepCommands.length"> · {{ routeActionLabel(evidenceStepCommands.at(-1)?.route?.action) }} · {{ actionStateLabel(evidenceStepCommands.at(-1)?.status) }}</template></p>
+        <p v-else-if="!selectedRouteExistsOnMap" class="task-route-message">所选路线无法在当前实例地图中定位，可展开原始命令查看节点。</p>
+        <div v-if="selectedEvidenceStep && (selectedEvidenceStep.waitingExplanation || (!selectedTaskRouteLeg && (selectedEvidenceStep.observedPhase || selectedEvidenceStep.completionRequirement)))" class="task-step-observation">
+          {{ industrialText(selectedEvidenceStep.waitingExplanation || selectedEvidenceStep.observedPhase || selectedEvidenceStep.completionRequirement) }}
+        </div>
+        <div v-if="selectedEvidenceStep === selectedTaskCurrentStep && selectedTaskTrafficRequest?.state === 'Waiting'" class="task-route-now">
+          <strong>等待路权<template v-if="selectedTaskWaitSeconds !== null"> · {{ selectedTaskWaitSeconds }} 秒</template></strong>
+          <span v-if="selectedTaskWaitGroups.length">等待 {{ selectedTaskWaitGroups.map(group => group.vehicleId).join('、') }} 释放</span>
+          <span v-else>{{ industrialText(selectedTaskTrafficRequest.reason) }}</span>
+        </div>
+        <div class="task-route-map-wrap">
+          <slot name="task-route-map" :definition="status?.map" :cars="archivedTaskEvidence ? undefined : cars"
+            :fresh="fresh" :selected-vehicle="selectedTaskDetail.task.vehicleId || undefined"
+            :road-highlights="evidenceRoadHighlights" :route-endpoints="evidenceRouteEndpoints">
+            <svg v-if="geometry.nodes.length" class="task-route-map" viewBox="0 0 800 430" role="img" aria-label="所选步骤路线">
+              <path v-for="edge in geometry.edges" :key="edge.key" :d="edge.path" fill="none"
+                :stroke="evidenceRoadHighlights[edge.id ?? ''] || '#9baec8'" :stroke-width="evidenceRoadHighlights[edge.id ?? ''] ? 4 : 1" />
+              <g v-for="node in geometry.nodes.filter(node => evidenceRouteEndpoints.some(endpoint => endpoint.nodeId === node.id))" :key="node.id">
+                <circle :cx="node.x" :cy="node.y" r="5" :fill="evidenceRouteColor" stroke="white" stroke-width="2" />
+                <text :x="node.x + 9" :y="node.y - 8">{{ evidenceRouteEndpoints.find(endpoint => endpoint.nodeId === node.id)?.label }}</text>
+              </g>
+              <template v-if="!archivedTaskEvidence">
+                <g v-for="car in geometry.cars" :key="car.id" :transform="`translate(${car.x} ${car.y})`">
+                  <circle r="5" :fill="vehicleMapColor(car)" stroke="#243a56" stroke-width="1.5" />
+                  <text v-if="car.id === selectedTaskDetail.task.vehicleId" x="8" y="12">{{ car.id }}</text>
+                  <title>{{ car.id }} · {{ vehicleVisualLabel(car) }}</title>
+                </g>
+              </template>
+            </svg>
+            <p v-else class="task-route-message">当前没有可预览的地图。</p>
+          </slot>
+        </div>
+        <details v-if="selectedEvidenceStep" :key="`${selectedTaskId}-${evidenceStepKey(selectedEvidenceStep)}`" class="task-evidence-details">
+          <summary>本步证据</summary>
+          <p v-if="selectedEvidenceStep.startedAt">开始 {{ stamp(selectedEvidenceStep.startedAt) }}<template v-if="selectedEvidenceStep.completedAt"> · 完成 {{ stamp(selectedEvidenceStep.completedAt) }}</template></p>
+          <p v-if="selectedEvidenceStep.observedPhase">{{ industrialText(selectedEvidenceStep.observedPhase) }}</p>
+          <p v-if="selectedEvidenceStep.completionRequirement">{{ industrialText(selectedEvidenceStep.completionRequirement) }}</p>
+          <p v-if="selectedEvidenceStep.evidenceBoundary">{{ industrialText(selectedEvidenceStep.evidenceBoundary) }}</p>
+          <p v-for="handshake in evidenceStepHandshakes" :key="handshake.cycleId">{{ handshakePhaseLabel(handshake.phase) }} · {{ industrialText(handshake.reason) }}</p>
+          <p v-if="selectedEvidenceStep.errorMessage">{{ industrialText(selectedEvidenceStep.errorMessage) }}</p>
+          <p v-if="!selectedEvidenceStep.startedAt && !selectedEvidenceStep.observedPhase && !selectedEvidenceStep.completionRequirement && !selectedEvidenceStep.evidenceBoundary && !selectedEvidenceStep.errorMessage && !evidenceStepHandshakes.length">本步暂无额外证据。</p>
+        </details>
       </section>
 
-      <section v-if="selectedTaskDetail" class="simulation-panel task-evidence-grid">
-        <article>
-          <header><h3>车辆与路权</h3><small>{{ selectedTaskDetail.resources?.length ?? 0 }} 条当前占用</small></header>
-          <p><b>车辆</b>{{ selectedTaskDetail.task.vehicleId || '尚未派车' }}</p>
-          <p v-for="resource in selectedTaskDetail.resources ?? []" :key="resource.resourceId"><b>{{ routeResourceLabel(resource.resourceId) }}</b>{{ resource.vehicleId }} · {{ resource.heartbeatExpired ? '心跳过期' : '占用中' }} · {{ stamp(resource.expiresAt) }}</p>
-        </article>
-        <article>
-          <header><h3>PLC 条件</h3><small>{{ selectedTaskDetail.plcConditions?.length ?? 0 }} 个信号</small></header>
-          <p v-for="signal in selectedTaskDetail.plcConditions ?? []" :key="`${signal.stationId}-${signal.variableName}`"><b>{{ plcSignalLabel(signal.variableName) }}</b>{{ plcConditionLabel(signal.currentValue, signal.expectedValue) }} · {{ signal.satisfied ? '条件已满足' : '继续等待' }}</p>
-        </article>
-        <article>
-          <header><h3>运输命令</h3><small>{{ selectedTaskDetail.commands?.length ?? 0 }} 条</small></header>
-          <p v-for="command in selectedTaskDetail.commands ?? []" :key="command.commandId"><b>{{ actionStateLabel(command.status) }}</b>{{ command.route?.vendorSites?.join(' → ') || command.stepId }} · 尝试 {{ command.attemptCount }} 次</p>
-        </article>
-        <article>
-          <header><h3>PLC 握手</h3><small>{{ selectedTaskDetail.handshakes?.length ?? 0 }} 个周期</small></header>
-          <template v-if="selectedTaskDetail.handshakes?.length"><p v-for="handshake in selectedTaskDetail.handshakes" :key="handshake.cycleId"><b>{{ handshakePhaseLabel(handshake.phase) }}</b>{{ industrialText(handshake.reason) }}<small>{{ handshake.pendingSignal ? `等待${plcSignalLabel(handshake.pendingSignal)}变为${handshake.pendingValue ? '置位' : '复位'}` : '当前没有待确认信号' }}</small></p></template>
-          <p v-else>当前任务没有额外握手周期。</p>
-        </article>
-        <article class="task-timeline-panel">
-          <header><h3>合并时间轴</h3><small>{{ taskTimeline.length }} 个事件 · 车辆、任务、PLC、等待与路权</small></header>
+      <section v-if="selectedTaskDetail" :key="selectedTaskId" class="simulation-panel task-evidence-archive">
+        <details class="task-evidence-details">
+          <summary>原始命令与任务编号</summary>
+          <p class="evidence-raw">{{ selectedTaskDetail.task.taskId }}</p>
+          <p v-if="selectedTaskDetail.evidenceMessage">{{ industrialText(selectedTaskDetail.evidenceMessage) }}</p>
+          <details v-for="(command, index) in selectedTaskDetail.commands ?? []" :key="command.commandId" class="task-evidence-details">
+            <summary>命令 {{ index + 1 }} · {{ actionStateLabel(command.status) }}<template v-if="command.route?.vendorSites?.length"> · {{ command.route.vendorSites[0] }} → {{ command.route.vendorSites.at(-1) }}</template></summary>
+            <p class="evidence-raw">{{ command.commandId }}<template v-if="command.vendorCommandId"> · {{ command.vendorCommandId }}</template> · 尝试 {{ command.attemptCount }} 次</p>
+            <p v-if="command.lastError">{{ industrialText(command.lastError) }}</p>
+            <p v-if="command.route?.nodeIds?.length" class="evidence-raw">{{ command.route.nodeIds.join(' → ') }}</p>
+            <p v-if="command.route?.vendorSites?.length" class="evidence-raw">{{ command.route.vendorSites.join(' → ') }}</p>
+          </details>
+        </details>
+        <details class="task-evidence-details">
+          <summary>PLC 与路权</summary>
+          <p v-if="selectedTaskDetail.waitingExplanation">{{ industrialText(selectedTaskDetail.waitingExplanation) }}</p>
+          <p v-if="taskSnapshotError">路权读取失败 · {{ industrialText(taskSnapshotError) }}</p>
+          <p v-if="selectedTaskTrafficRequest">{{ trafficWaitingText(selectedTaskTrafficRequest) }}</p>
+          <p v-for="group in selectedTaskWaitGroups" :key="`${group.vehicleId}-${group.taskId}`"><b>{{ group.vehicleId }}</b> · {{ group.resources.map(routeResourceLabel).join('、') }}<template v-if="group.heartbeatExpired"> · 心跳已过期</template></p>
+          <p v-if="selectedTaskTrafficRequest?.resourceIds?.length">申请 {{ selectedTaskTrafficRequest.resourceIds.length }} 项路权 · {{ selectedTaskTrafficRequest.resourceIds.map(routeResourceLabel).join('、') }}</p>
+          <p v-for="resource in selectedTaskDetail.resources ?? []" :key="resource.resourceId"><b>{{ routeResourceLabel(resource.resourceId) }}</b> · {{ resource.vehicleId }} · {{ resource.heartbeatExpired ? '心跳过期' : '占用中' }} · {{ stamp(resource.expiresAt) }}</p>
+          <p v-for="event in selectedTaskHandovers.slice(0, 12)" :key="event.eventId">{{ event.vehicleId }} · {{ event.kind === 'ResourceAcquired' ? '取得' : '核验后释放' }} · {{ stamp(event.occurredAt) }} · {{ event.resourceIds.map(routeResourceLabel).join('、') }}</p>
+          <p v-for="signal in selectedTaskDetail.plcConditions ?? []" :key="`${signal.stationId}-${signal.variableName}`"><b>{{ plcSignalLabel(signal.variableName) }}</b> · {{ plcConditionLabel(signal.currentValue, signal.expectedValue) }}</p>
+          <p v-for="handshake in selectedTaskDetail.handshakes ?? []" :key="handshake.cycleId"><b>{{ handshakePhaseLabel(handshake.phase) }}</b> · {{ industrialText(handshake.reason) }}<template v-if="handshake.pendingSignal"> · 等待{{ plcSignalLabel(handshake.pendingSignal) }}{{ handshake.pendingValue ? '置位' : '复位' }}</template></p>
+        </details>
+        <details class="task-evidence-details">
+          <summary>时间轴 · {{ taskTimeline.length }} 条</summary>
           <ol class="task-timeline"><li v-for="event in taskTimeline.slice(-160)" :key="event.id"><time>{{ stamp(event.occurredAt) }}</time><b :title="industrialText(event.title)">{{ industrialText(event.title) }}</b><span class="task-timeline-copy" :title="industrialText(event.summary)"><em>{{ event.source }}</em><span>{{ industrialText(event.summary) }}</span></span></li></ol>
-        </article>
+        </details>
       </section>
     </section>
 
@@ -2607,9 +2627,9 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
 .task-filter-row input,.task-filter-row select{height:34px}
 .task-search input{min-width:0}
 .task-workbench{display:grid;grid-template-columns:minmax(340px,.82fr) minmax(0,1.18fr);gap:10px;align-items:stretch}
-.task-table-panel,.task-detail-panel{padding:13px!important;min-height:520px}
+.task-table-panel,.task-detail-panel{padding:13px!important}
 .task-table-panel>header,.task-detail-panel>header{margin-bottom:10px!important}
-.task-table-scroll{max-height:620px;overflow:auto;border:1px solid #253c57}
+.task-table-scroll{max-height:340px;overflow:auto;border:1px solid #253c57}
 .task-table{width:100%;border-collapse:collapse;text-align:left}
 .task-table th{position:sticky;top:0;z-index:1;padding:9px 8px;border-bottom:1px solid #2c4663;background:#10233a;color:#7f9ab4;font-size:10px;font-weight:500;white-space:nowrap}
 .task-table td{padding:9px 8px;border-bottom:1px solid #223750;color:#b5cad8;font-size:10px;vertical-align:top;line-height:1.45}
@@ -2620,14 +2640,20 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
 .task-detail-panel{display:flex;flex-direction:column;min-width:0}
 .task-waiting-copy{margin:0 0 10px;padding:9px 11px;border-left:3px solid #e1b967;background:#211f18;color:#dfc985;line-height:1.6;font-size:11px}
 .task-step-list{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin:0;padding:0;list-style:none}
-.task-step-list>li{display:grid;grid-template-columns:26px minmax(0,1fr);gap:7px;min-height:104px;padding:9px;border:1px solid #263f59;border-radius:5px;background:#091626}
-.task-step-list>li>span{display:grid;place-items:center;width:24px;height:24px;border-radius:50%;background:#172d43;color:#7da9be;font:600 9px Consolas,monospace}
-.task-step-list strong{display:block;color:#c9dce6;font-size:11px;line-height:1.35}.task-step-list small{margin:3px 0 0;color:#829bb2;font-size:9px;line-height:1.35}.task-step-list p{margin:5px 0 0;color:#c2a771;font-size:9px;line-height:1.45}.task-step-list details{margin-top:5px}.task-step-list details p{color:#7e9bb1}.task-step-list details summary{font-size:9px}
-.task-step-list>li.current{border-color:#b18d43;background:#1b241f}.task-step-list>li.completed{border-color:#2a6658;background:#0b211f}.task-step-list>li.completed>span{background:#1c5c4f;color:#bff8e7}.task-step-list>li.failed{border-color:#814c5c;background:#281a27}
-.task-route-panel{padding:13px!important}.task-route-panel>header{margin-bottom:8px!important}.task-route-panel>header p:last-child{margin:3px 0 0;color:#859fb7;font-size:10px;line-height:1.45}
-.task-route-layout{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:10px;align-items:stretch}
-.task-route-map-wrap{position:relative;min-width:0;border:1px solid #253e58;border-radius:6px;overflow:hidden;background:#071321}
-.task-route-map{display:block;height:clamp(460px,52vh,700px)!important;min-height:460px;border:0!important;border-radius:0!important}
+.task-step-list>li{min-width:0;border:1px solid var(--ui-line);border-radius:6px;background:var(--ui-surface-raised)}
+.task-step-list>li>button{width:100%;min-height:62px;height:auto;display:grid;grid-template-columns:26px minmax(0,1fr);align-items:center;gap:8px;padding:8px;text-align:left;white-space:normal;border:0;border-radius:5px;background:transparent;color:var(--ui-text)}
+.task-step-list>li>button[aria-pressed="true"]{outline:2px solid var(--ui-primary);outline-offset:-1px;background:var(--ui-surface-soft)}
+.task-step-list .task-step-number{display:grid;place-items:center;width:24px;height:24px;border-radius:50%;background:var(--ui-surface-soft);font-weight:700;color:var(--ui-text-2)}
+.task-step-list strong,.task-step-list small{display:block;line-height:1.45}.task-step-list strong{font-size:13px}.task-step-list small{margin-top:3px;color:var(--ui-text-3)}
+.task-step-list>li.current{border-color:var(--ui-warning)}.task-step-list>li.completed .task-step-number{background:#d8eee6;color:#17634f}.task-step-list>li.failed{border-color:var(--ui-danger)}
+.task-route-panel{scroll-margin-top:16px}.task-route-panel>header{align-items:center;margin-bottom:8px!important}
+.task-route-map-wrap{min-width:0}.task-route-map{display:block;width:100%;height:auto;max-height:640px;background:#f8fafc;border:1px solid #dbe3ef;border-radius:8px}.task-route-map text{font-size:12px;fill:#172338;paint-order:stroke;stroke:#fff;stroke-width:2px}
+.task-route-controls,.task-route-now{display:flex;align-items:center;flex-wrap:wrap;gap:8px 16px}.task-route-controls{justify-content:space-between;margin-bottom:12px}
+.task-route-controls label,.task-route-endpoints{display:flex;flex-direction:row;align-items:center;flex-wrap:wrap;gap:7px;color:var(--ui-text-2);font-size:13px}.task-route-endpoints{margin:0;overflow-wrap:anywhere}.task-route-endpoints i{width:18px;height:3px;border-radius:2px}.task-route-controls select{width:auto;max-width:min(360px,100%)}
+.task-route-message,.task-step-observation,.task-route-now{padding:8px 12px;border:1px solid var(--ui-line);border-radius:6px;background:var(--ui-surface-soft);color:var(--ui-text-2);margin:0 0 12px;font-size:13px;line-height:1.5;overflow-wrap:anywhere}
+.task-route-now strong{color:var(--ui-warning)}
+.task-evidence-details{margin-top:8px;border-top:1px solid var(--ui-line);padding-top:8px;min-width:0}.task-evidence-details summary{cursor:pointer;font-size:13px;color:var(--ui-text-2)}.task-evidence-details p{font-size:12px;color:var(--ui-text-3);overflow-wrap:anywhere}.task-evidence-details .evidence-raw{font-family:Consolas,monospace;line-height:1.65}.task-evidence-details .task-evidence-details{margin-inline-start:16px}
+.task-evidence-archive>.task-evidence-details:first-child{margin-top:0;border-top:0;padding-top:0}
 .roads path.task-route{fill:none;stroke-linecap:round;stroke-linejoin:round;transition:stroke .2s,stroke-width .2s,opacity .2s}
 .roads path.task-route-completed{stroke:#4c938e;stroke-width:4.2;opacity:.72;filter:drop-shadow(0 0 2px #285f5b)}
 .roads path.task-route-future{stroke:#54cce3;stroke-width:4.2;stroke-dasharray:9 6;opacity:.78}
@@ -2644,24 +2670,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
 .map-node.task-node-return circle{fill:#61451f!important;stroke:#ffd27d!important;stroke-width:2.5!important}
 .map-node.task-node-focus circle{fill:#f2ffff!important;stroke:#68ffe6!important;stroke-width:3.5!important;filter:drop-shadow(0 0 6px #5ff5da)}
 .map-node.task-node-dimmed{opacity:.24}
-.task-route-panel .map-node:not(.task-node){opacity:.4}
-.task-route-panel .map-car{opacity:.96}
-.task-route-legend{position:absolute;left:12px;bottom:12px;z-index:3;display:flex;flex-wrap:wrap;gap:8px 13px;max-width:calc(100% - 24px);padding:7px 9px;border:1px solid #2a455e;border-radius:5px;background:#071321e8;color:#9bb2c5;font-size:9px;pointer-events:none}
-.task-route-legend span{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}.route-swatch{display:inline-block;width:24px;height:0;border-top:4px solid #4c938e}.route-swatch.future{border-top:3px dashed #54cce3}.route-swatch.current{border-top-color:#5ff5da;box-shadow:0 0 5px #5ff5da}.route-swatch.waiting{border-top:4px dashed #ff8a6c}.route-swatch.returning{border-top:4px dashed #ffc76b}
-.task-route-sidebar{display:flex;flex-direction:column;gap:8px;min-width:0;max-height:clamp(460px,52vh,700px)}
-.task-route-now{padding:12px;border:1px solid #356c67;border-left:3px solid #5ff5da;background:linear-gradient(145deg,#0c292c,#091726)}
-.task-route-now.waiting{border-color:#8a594b;border-left-color:#ff8a6c;background:linear-gradient(145deg,#2a1716,#111522)}
-.task-route-now>small,.task-route-selection header small{color:#76cfc8;font-size:9px}.task-route-now h4{margin:3px 0 5px;color:#e4f7f4;font-size:14px}.task-route-now>p{margin:5px 0;color:#a8c3cf;font-size:10px;line-height:1.55}.route-stationary-note{padding:7px;border:1px solid #3d5268;background:#0b1a2b;color:#99b4c8!important}
-.route-blocker-list{display:grid;gap:5px;margin-top:8px;padding-top:8px;border-top:1px solid #3d5660}.route-blocker-list>b{color:#ffd49d;font-size:10px}.route-blocker-list article{display:grid;grid-template-columns:60px minmax(0,1fr);gap:3px 7px;padding:7px;border:1px solid #805044;background:#241819}.route-blocker-list article strong{grid-row:1/3;align-self:center;color:#ffb497;font-size:11px}.route-blocker-list article span{color:#e8d3bd;font-size:10px;line-height:1.4}.route-blocker-list article small{grid-column:2;color:#9f8c85;font-size:9px;line-height:1.4}.route-blocker-list>small{color:#c7a99a;font-size:9px;line-height:1.5}.route-resource-summary{display:grid;gap:4px;margin-top:7px;padding:7px;border:1px solid #304b62;background:#091a28}.route-resource-summary span{padding:3px 5px;border:1px solid #355368;border-radius:3px;background:#0b2031;color:#8fb1c2;font-size:8px;line-height:1.4}.route-resource-summary small{padding:2px 1px 0;color:#718da2;font-size:8px;line-height:1.45}
-.task-route-selection{display:flex;flex-direction:column;min-height:0;padding:10px;border:1px solid #283f59;background:#081625}.task-route-selection>header{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:7px}.task-route-selection>header b{color:#cedfe8;font-size:11px}.task-route-selection>header button{min-height:25px;padding:3px 7px;font-size:9px}.task-route-selected{margin-bottom:7px;padding:8px;border:1px solid #55734f;background:#13261e}.task-route-selected>b{display:block;color:#d7eddf;font-size:10px}.task-route-selected small{display:block;margin-top:2px;color:#7fc3a2;font-size:9px}.task-route-selected p{margin:5px 0 0;color:#9fc0b1;font-size:9px;line-height:1.45}
-.task-route-leg-list{display:grid;gap:5px;min-height:0;overflow-y:auto;overflow-x:hidden;padding-right:2px}.task-route-leg-list button{display:grid;grid-template-columns:25px minmax(0,1fr);gap:7px;width:100%;min-width:0;max-width:100%;padding:7px;text-align:left;border:1px solid #29445f;border-left:3px solid #4c938e;background:#0a192a}.task-route-leg-list button.future{border-left-color:#54cce3}.task-route-leg-list button.current{border-left-color:#5ff5da;background:#0d2928}.task-route-leg-list button.returning{border-left-color:#ffc76b}.task-route-leg-list button.active{border-color:#d9ffff;box-shadow:inset 0 0 0 1px #5ff5da}.task-route-leg-list button>span{display:grid;place-items:center;width:23px;height:23px;border-radius:50%;background:#183248;color:#8eb7c8;font:600 9px Consolas,monospace}.task-route-leg-list button>div{min-width:0}.task-route-leg-list b{display:block;color:#cedee8;font-size:10px}.task-route-leg-list small{display:block;margin:2px 0 0;color:#7e9caf;font-size:8px}.task-route-leg-list em{display:block;margin-top:3px;color:#8eabbc;font-size:8px;font-style:normal;line-height:1.35;white-space:normal;overflow-wrap:anywhere;word-break:break-word}
-.route-no-legs{margin:0;padding:9px;border:1px dashed #3d566b;color:#8ca6b9;font-size:9px;line-height:1.5}
 @keyframes task-route-flow{to{stroke-dashoffset:-24}}@keyframes task-route-wait{from{stroke-opacity:.58}to{stroke-opacity:1}}@keyframes task-node-wait{from{opacity:.68}to{opacity:1}}
-.task-evidence-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0!important;padding:0!important;overflow:hidden}
-.task-evidence-grid>article{min-width:0;padding:13px;border-right:1px solid #263d58;border-bottom:1px solid #263d58}.task-evidence-grid>article:nth-child(2n){border-right:0}
-.task-evidence-grid article>header{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px}.task-evidence-grid h3{font-size:12px}.task-evidence-grid header small{margin:0}
-.task-evidence-grid article>p{display:flex;flex-direction:column;gap:2px;margin:0;padding:6px 0;border-top:1px solid #1e334b;color:#91abc1;font-size:10px;line-height:1.45}.task-evidence-grid article>p:first-of-type{border-top:0}.task-evidence-grid article>p b{color:#cfe2ea;font-size:10px}.task-evidence-grid article>p small{display:block;margin:3px 0 0}
-.task-timeline-panel{grid-column:1/-1;border-right:0!important;border-bottom:0!important}
 .task-timeline{max-height:330px;margin:0;padding:0;overflow-y:auto;overflow-x:hidden;list-style:none}
 .task-timeline li{display:grid;grid-template-columns:120px 180px minmax(0,1fr);gap:12px;align-items:center;min-width:0;min-height:40px;padding:7px 4px;border-top:1px solid #20364f;font-size:10px;line-height:1.45}
 .task-timeline time,.task-timeline b,.task-timeline-copy{min-width:0}.task-timeline time{color:#648198;font-variant-numeric:tabular-nums;white-space:nowrap}.task-timeline b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#cae1e9;font-weight:600}.task-timeline-copy{display:grid;grid-template-columns:48px minmax(0,1fr);gap:8px;align-items:center;color:#8fa9bf}.task-timeline-copy em{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#58cbd4;font-style:normal}.task-timeline-copy>span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -2677,9 +2686,8 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
 .report-task-nine-steps b{display:block;color:#c9dfe8;font-size:10px}.report-task-nine-steps small{display:block;margin:2px 0 0;color:#809bb3;font-size:9px}.report-task-nine-steps p{margin:4px 0 0;color:#bda66e;font-size:9px;line-height:1.45}.report-task-nine-steps details{margin-top:4px}.report-task-nine-steps summary{font-size:9px}.report-task-nine-steps>li.completed{border-color:#2b6558}.report-task-nine-steps>li.failed{border-color:#824d5d}
 .report-task-evidence-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.report-task-evidence-grid article{padding:9px;border:1px solid #253d58;background:#0a1727}.report-task-evidence-grid h5{margin:0 0 6px;color:#c3dae5;font-size:10px}.report-task-evidence-grid p{display:flex;flex-direction:column;gap:2px;margin:0;padding:5px 0;border-top:1px solid #1c3248;color:#88a3ba;font-size:9px;line-height:1.45}.report-task-evidence-grid p:first-of-type{border-top:0}.report-task-evidence-grid b{color:#c7dce5}
 @media(max-width:1180px){.task-counts{grid-template-columns:repeat(3,minmax(100px,1fr))}.task-workbench{grid-template-columns:minmax(310px,.9fr) minmax(0,1.1fr)}.task-step-list{grid-template-columns:repeat(2,minmax(0,1fr))}.task-timeline li{grid-template-columns:108px 150px minmax(0,1fr)}}
-@media(max-width:1180px){.task-route-layout{grid-template-columns:minmax(0,1fr) 300px}}
-@media(max-width:900px){.task-workbench{grid-template-columns:1fr}.task-table-panel,.task-detail-panel{min-height:0}.task-table-scroll{max-height:420px}.task-counts{grid-template-columns:repeat(2,minmax(100px,1fr))}.report-task-evidence-grid{grid-template-columns:1fr}.report-task-nine-steps{grid-template-columns:repeat(2,minmax(0,1fr))}.task-route-layout{grid-template-columns:1fr}.task-route-sidebar{max-height:none}.task-route-map{height:520px!important;min-height:520px}.task-route-leg-list{max-height:360px}}
-@media(max-width:650px){.task-filter-row{grid-template-columns:1fr}.task-counts{grid-template-columns:1fr 1fr}.task-step-list,.report-task-nine-steps{grid-template-columns:1fr}.task-evidence-grid{grid-template-columns:1fr}.task-evidence-grid>article{border-right:0}.task-timeline li{grid-template-columns:1fr;gap:3px}.task-timeline b,.task-timeline-copy>span{white-space:normal}.task-route-map{height:350px!important;min-height:350px}.task-route-legend{position:static;border:0;border-top:1px solid #253d52;border-radius:0}.report-task-evidence>header{align-items:flex-start;flex-direction:column}}
+@media(max-width:900px){.task-workbench{grid-template-columns:1fr}.task-table-panel,.task-detail-panel{min-height:0}.task-table-scroll{max-height:420px}.task-counts{grid-template-columns:repeat(2,minmax(100px,1fr))}.report-task-evidence-grid{grid-template-columns:1fr}.report-task-nine-steps{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:650px){.task-filter-row{grid-template-columns:1fr}.task-counts{grid-template-columns:1fr 1fr}.task-step-list,.report-task-nine-steps{grid-template-columns:1fr}.task-timeline li{grid-template-columns:1fr;gap:3px}.task-timeline b,.task-timeline-copy>span{white-space:normal}.report-task-evidence>header{align-items:flex-start;flex-direction:column}}
 .manual-stage{display:grid;gap:14px}
 .manual-hero{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:18px 20px;border-left:3px solid #5dd8df;background:linear-gradient(120deg,#102839,#0c1729)}
 .manual-hero h3{font-size:21px;margin:3px 0 7px;color:#e2f4f7}.manual-hero p{max-width:820px;line-height:1.75;color:#b2c9d6}.manual-hero-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}

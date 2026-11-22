@@ -112,6 +112,11 @@ const diagnostics = computed(() => route.query.view === 'optimization' ? 'optimi
           </template>
         </SimulationWorkshopMap>
       </template>
+      <template #task-route-map="{ definition, cars, fresh, selectedVehicle, roadHighlights, routeEndpoints }">
+        <SimulationWorkshopMap :definition="definition" :cars="cars" :fresh="fresh"
+          :selected-vehicle="selectedVehicle" :road-highlights="roadHighlights"
+          :route-endpoints="routeEndpoints" compact-header />
+      </template>
     </SimulationCenter>
     <Optimization v-else-if="diagnostics === 'optimization'" :simulation-read="signal => request('/dispatch-optimization', undefined, signal)"
       :simulation-save="auth.isAdmin ? (update, signal) => request('/dispatch-optimization/options', update, signal) : undefined"

@@ -45,6 +45,7 @@ const taskDetail = { task: taskRows[0], waitingExplanation: '等待倒料机给�
   commands: [
     ['COMMAND-1', 'STEP-1', 'Completed', 'JackLoad', 'LM1 > LM2'],
     ['COMMAND-2', 'STEP-3', 'Completed', 'Wait', 'LM2 > LM1'],
+    ['COMMAND-2B', 'STEP-3', 'Completed', 'Wait', 'LM1 > LM2'],
     ['COMMAND-3', 'STEP-5', 'Sent', 'Wait', 'LM1 > LM2'],
     ['COMMAND-4', 'STEP-7', 'Pending', 'JackUnload', 'LM2 > LM1']
   ].map(([commandId, stepId, status, action, sites]) => ({ commandId, stepId, status, attemptCount: 1,
@@ -230,13 +231,19 @@ try {
   await evaluate(`[...document.querySelectorAll('.stage-tabs button')].find(button=>button.textContent.includes('任务运行')).click()`);
   await wait(() => evaluate(`document.querySelector('.tasks-stage')?.offsetParent!==null&&document.querySelectorAll('.task-table tbody tr').length===2&&document.querySelectorAll('.task-step-list li').length===9`), 'Task page and nine-step detail');
   check('Task page reads the isolated task API and highlights the selected task route',
-    await evaluate(`document.querySelector('.task-command-panel').textContent.includes('隔离后台在线')&&document.querySelector('.task-route-panel .roads path.task-route')&&document.querySelector('.task-route-panel .map-node.task-node')&&document.querySelector('.task-timeline').textContent.includes('PLC')`));
-  await wait(() => evaluate(`document.querySelectorAll('.task-route-leg-list button').length===4&&document.querySelector('.task-route-now').textContent.includes('AGV-01')&&document.querySelector('.task-route-now').textContent.includes('32 秒')`), 'Route legs and traffic blocker guidance');
-  check('Task route explains the blocking vehicle, resource and return leg',
-    await evaluate(`document.querySelector('.task-route-now').textContent.includes('交叉口路权')&&document.querySelector('.task-route-leg-list .returning').textContent.includes('返程')`));
-  await evaluate(`document.querySelector('.task-route-leg-list .returning').click()`);
-  await wait(() => evaluate(`document.querySelector('.task-route-panel .roads path.task-route-focus.task-route-return')&&document.querySelector('.task-route-leg-list .returning').classList.contains('active')`), 'Return leg focus');
-  check('Selecting a route leg isolates that leg on the map', true);
+    await evaluate(`document.querySelector('.task-command-panel').textContent.includes('隔离后台在线')&&document.querySelector('.task-route-map path[stroke="#087968"]')&&document.querySelectorAll('.task-route-map circle[r="5"]').length>=2&&document.querySelector('.task-timeline').textContent.includes('PLC')`));
+  await wait(() => evaluate(`document.querySelector('.task-route-now')?.textContent.includes('AGV-01')&&document.querySelector('.task-route-now')?.textContent.includes('32 秒')`), 'Current step and traffic blocker guidance');
+  check('Traffic details and full command chains remain available on demand',
+    await evaluate(`!document.querySelector('.task-evidence-archive details[open]')&&document.querySelector('.task-evidence-archive').textContent.includes('交叉口路权')&&document.querySelector('.task-evidence-archive').textContent.includes('COMMAND-1')`));
+  await evaluate(`document.querySelectorAll('.task-step-list button')[2].click()`);
+  await wait(() => evaluate(`document.querySelector('.task-route-controls select')?.value==='COMMAND-2B'`), 'Route commands for one business step');
+  await evaluate(`{const select=document.querySelector('.task-route-controls select');select.value='COMMAND-2';select.dispatchEvent(new Event('change'));}`);
+  check('The command selector changes the route endpoints', await evaluate(`document.querySelector('.task-route-endpoints').textContent.replace(/\\s/g,'').includes('LM2→LM1')`));
+  await evaluate(`document.querySelectorAll('.task-step-list button')[5].click()`);
+  check('A stationary step clears route highlights', await evaluate(`document.querySelector('.task-route-message').textContent.includes('本步没有路线记录')&&!document.querySelector('.task-route-map path[stroke="#087968"]')`));
+  await evaluate(`document.querySelectorAll('.task-step-list button')[6].click()`);
+  await wait(() => evaluate(`document.querySelector('.task-route-map path[stroke="#a96c10"]')&&document.querySelectorAll('.task-step-list button')[6].getAttribute('aria-pressed')==='true'`), 'Return step focus');
+  check('Selecting a step isolates its route on the map', true);
   await evaluate(`document.querySelector('.task-route-panel').scrollIntoView({block:'start'})`);
   const routeShot = await rpc('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
   writeFileSync(resolve(profile, 'simulation-task-route.png'), Buffer.from(routeShot.data, 'base64'));
