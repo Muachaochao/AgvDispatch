@@ -1795,7 +1795,11 @@ def execute(runtime, request):
                 for line in source.read_text(encoding='utf-8').splitlines():
                     event = json.loads(line)
                     requested_ids = {str(item.get('task_id')) for item in event.get('request', {}).get('move_task_list', [])}
-                    if ((recovering or event['time'] >= started) and event['kind'] == 'robokit' and event['api'] == 3066 and
+                    # B07-FIX C1: DeviceJournal stamps wall-clock time.time(); `started` is the business
+                    # clock. Convert before comparing, otherwise accelerated runs drop early windows.
+                    event_business_time = runtime.clock.origin_seconds + max(
+                        0.0, event['time'] - runtime.clock.origin_seconds) * runtime.clock.rate
+                    if ((recovering or event_business_time >= started) and event['kind'] == 'robokit' and event['api'] == 3066 and
                             event['response'].get('ret_code') == 0 and (not allowed_step_ids or requested_ids & allowed_step_ids)):
                         sends.append(dict(vehicle=vehicle, **event))
             write(evidence / 'accepted-3066.json', sends)
