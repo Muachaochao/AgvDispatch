@@ -214,6 +214,58 @@ class LifecycleTests(unittest.TestCase):
             self.assertFalse((runtime.root/'multi-state.json').exists())
             self.assertFalse((runtime.root/'data/agv-dispatch.db').exists())
 
+    def test_charging_instance_writes_thresholds_sites_and_per_vehicle_ports(self):
+        with tempfile.TemporaryDirectory() as name, patch('controller.WORKSPACE', Path(name)):
+            source = fixture(Path(name))
+            map_path = source/'navigation.agvmap.json'
+            navigation = read(map_path)
+            navigation['nodes'].extend([
+                dict(id='充电位', agvSiteId='CHARGE-01', x=80, y=0, enabled=True,
+                     type='ChargingPoint', resourceIds=['CHARGE-01']),
+                dict(id='充电出口', agvSiteId='CHARGE-EXIT', x=90, y=0, enabled=True,
+                     type='WaitingPoint', resourceIds=[]),
+            ])
+            navigation['edges'].extend([
+                dict(id='E-CHARGE-IN', **{'from': '停车A', 'to': '充电位'}, bidirectional=True, enabled=True),
+                dict(id='E-CHARGE-OUT', **{'from': '充电位', 'to': '充电出口'}, bidirectional=True, enabled=True),
+            ])
+            navigation['resources'].append(dict(id='CHARGE-01', type='ChargingBay', capacity=1, name='一号码头'))
+            write(map_path, navigation)
+            runtime = Runtime(source)
+            configuration = runtime._validate_configuration(dict(
+                name='充电优先', mapDefinition=navigation,
+                stations=[dict(stationId='CNC-001', pickupSite='取货A')],
+                dumper=dict(dumpingSite='倒料', waitingSite='等待', resourceId='R2_倒料区'),
+                inspectionSite='停车B',
+                vehicles=[
+                    dict(id='AGV-01', initialSite='停车A', batteryPercent=22, chargingGainPercentPerHour=400),
+                    dict(id='AGV-02', initialSite='停车C', batteryPercent=24, chargingGainPercentPerHour=400),
+                ],
+                plcSignalTable=dict(fileName='plc.csv', csvText=SOURCE_PLC_TABLE.read_text(encoding='utf-8-sig')),
+                chargingPriorityTest=dict(
+                    enabled=True, startBatteryPercent=25, criticalBatteryPercent=15, targetBatteryPercent=80,
+                    sites=[dict(id='B07-CHARGE-01', chargingSiteId='充电位', exitSiteId='充电出口',
+                                resourceId='CHARGE-01', allowedVehicleIds=['AGV-01', 'AGV-02'])])
+            ))
+            runtime._create_instance(configuration, 8)
+            charging = runtime.settings['Charging']
+            self.assertTrue(charging['Enabled'])
+            self.assertEqual(charging['StartBatteryPercent'], 25)
+            self.assertEqual(charging['CriticalBatteryPercent'], 15)
+            self.assertEqual(charging['TargetBatteryPercent'], 80)
+            self.assertEqual(charging['Sites'][0]['ChargingSiteId'], '充电位')
+            self.assertTrue(charging['Sites'][0]['Commissioned'])
+            self.assertTrue(runtime.settings['RobokitCharging']['RelayControlConfirmed'])
+            ports = runtime.settings['RobokitCharging']['VehicleOtherApiPorts']
+            self.assertEqual(set(ports), {'AGV-01', 'AGV-02'})
+            self.assertEqual(len(set(ports.values())), 2)
+            communication = read(runtime.root/'data/communication-settings.json')['Configuration']
+            self.assertTrue(communication['ChargingSiteConfigurationInitialized'])
+            self.assertEqual(len(communication['ChargingSites']), 1)
+            self.assertEqual(communication['ChargingSites'][0]['ChargingSiteId'], '充电位')
+            self.assertEqual(set(runtime.lab['simulationConfiguration']['chargingPriorityTest']['sites'][0]['allowedVehicleIds']),
+                             {'AGV-01', 'AGV-02'})
+
     def test_stop_only_owned_children_and_preserves_original_files(self):
         with tempfile.TemporaryDirectory() as name, patch('controller.WORKSPACE', Path(name)):
             root = fixture(Path(name)); runtime = Runtime(root)

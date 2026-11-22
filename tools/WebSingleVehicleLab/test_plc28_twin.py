@@ -96,6 +96,36 @@ class Plc28TwinTests(unittest.TestCase):
         self.assertEqual(7, twin.tasks['TASK'])
         self.assertTrue(twin.navigation_timeout_tripped)
 
+    def test_battery_and_relay_api_share_the_same_charging_state(self):
+        twin = self.make_twin()
+        twin.battery_percent = .245
+        before = twin.robokit_reply(1007, {'simple': False})
+        self.assertEqual(before['battery_level'], .245)
+        self.assertFalse(before['charging'])
+        self.assertEqual(before['current'], 0)
+        self.assertEqual(before['battery_temp'], 30)
+        self.assertFalse(before['manual_charge'])
+        self.assertFalse(before['auto_charge'])
+
+        response = twin.robokit_reply(6005, {'status': True})
+        self.assertEqual(response, {'ret_code': 0})
+        during = twin.robokit_reply(1007, {})
+        self.assertTrue(during['charging'])
+        self.assertEqual(during['current'], 5)
+        self.assertTrue(during['auto_charge'])
+
+        self.assertEqual(twin.robokit_reply(6005, {'status': False}), {'ret_code': 0})
+        after = twin.robokit_reply(1007, {})
+        self.assertFalse(after['charging'])
+        self.assertEqual(after['current'], 0)
+
+    def test_relay_api_rejects_ambiguous_status(self):
+        twin = self.make_twin()
+        for request in ({}, {'status': 1}, {'status': 'true'}, {'status': None}):
+            response = twin.robokit_reply(6005, request)
+            self.assertEqual(response['ret_code'], 400)
+        self.assertFalse(twin.charging)
+
 
 if __name__ == '__main__':
     unittest.main()

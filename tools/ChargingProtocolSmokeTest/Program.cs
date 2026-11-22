@@ -32,6 +32,15 @@ var control = new RobokitChargingRobotControl(options, connections, settings);
 await Fails<InvalidOperationException>(() => control.SetChargingRelayAsync("SIM", true, default), "缺少现场确认时禁止6005");
 Check(robot.Requests.IsEmpty, "充电控制门禁拒绝时不连接设备");
 Check(new RobokitChargingRobotControlOptions().OtherApiPort == 19210, "其他API默认19210");
+settings.VehicleOtherApiPorts["SIM"] = robot.VehicleOtherPort;
+Check(settings.ResolveOtherApiPort("SIM") == robot.VehicleOtherPort &&
+      settings.ResolveOtherApiPort("OTHER") == robot.OtherPort,
+    "每车其他API端口覆盖默认端口");
+settings.VehicleOtherApiPorts["BAD"] = 70000;
+await Fails<InvalidOperationException>(() => settings.ResolveOtherApiPort("BAD").Equals(0)
+    ? Task.CompletedTask
+    : control.SetChargingRelayAsync("BAD", true, default), "拒绝越界车辆其他API端口");
+settings.VehicleOtherApiPorts.Remove("BAD");
 var battery = await control.ReadBatteryAsync("SIM", default);
 Check(battery.BatteryPercent == 24.5m && battery.Charging == true && battery.Current == 5.2 && battery.Temperature == 32,
     "1007完整电池遥测及电量比例转换");
@@ -58,7 +67,7 @@ settings.RelayControlConfirmed = true;
 await control.SetChargingRelayAsync("SIM", true, default);
 await control.SetChargingRelayAsync("SIM", false, default);
 var writes = robot.Requests.Where(r => r.Type == 6005).ToArray();
-Check(writes.Length == 2 && writes.All(r => r.Port == robot.OtherPort), "6005只走其他API端口");
+Check(writes.Length == 2 && writes.All(r => r.Port == robot.VehicleOtherPort), "6005使用本车独立其他API端口");
 Check(writes[0].Payload == "{\"status\":true}" && writes[1].Payload == "{\"status\":false}", "继电器开关使用明确boolean字段");
 robot.RelayResponse = "{}";
 await Fails<InvalidDataException>(() => control.SetChargingRelayAsync("SIM", true, default), "6005缺少返回码保持不确定");
@@ -91,6 +100,7 @@ sealed class Robot : IAsyncDisposable
     private readonly CancellationTokenSource _stop = new();
     private readonly TcpListener _status = new(IPAddress.Loopback, 0);
     private readonly TcpListener _other = new(IPAddress.Loopback, 0);
+    private readonly TcpListener _vehicleOther = new(IPAddress.Loopback, 0);
     private readonly List<Task> _loops = [];
     public ConcurrentQueue<(int Port, ushort Type, string Payload)> Requests { get; } = new();
     public string BatteryResponse { get; set; } = "{\"ret_code\":0,\"battery_level\":0.245,\"charging\":true,\"current\":5.2,\"battery_temp\":32,\"manual_charge\":false,\"auto_charge\":true}";
@@ -99,10 +109,11 @@ sealed class Robot : IAsyncDisposable
     public bool WrongSequence { get; set; }
     public int StatusPort => ((IPEndPoint)_status.LocalEndpoint).Port;
     public int OtherPort => ((IPEndPoint)_other.LocalEndpoint).Port;
+    public int VehicleOtherPort => ((IPEndPoint)_vehicleOther.LocalEndpoint).Port;
     public Robot()
     {
-        _status.Start(); _other.Start();
-        _loops.Add(Loop(_status)); _loops.Add(Loop(_other));
+        _status.Start(); _other.Start(); _vehicleOther.Start();
+        _loops.Add(Loop(_status)); _loops.Add(Loop(_other)); _loops.Add(Loop(_vehicleOther));
     }
     private async Task Loop(TcpListener listener)
     {
