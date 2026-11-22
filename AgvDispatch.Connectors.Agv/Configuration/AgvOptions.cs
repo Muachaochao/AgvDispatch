@@ -105,6 +105,9 @@ public sealed class AgvRobotOptions
     // Legacy Port remains the status port; navigation never implicitly shares it.
     public int Port { get; set; } = 19204;
     public int NavigationPort { get; set; } = 19206;
+    // Optional per-vehicle Robokit "other API" port (6005 charging relay). Null uses RobokitCharging:OtherApiPort.
+    // Needed when several robots share one address, e.g. NAT port mapping or the isolated multi-vehicle simulation.
+    public int? OtherApiPort { get; set; }
 }
 
 public sealed class RobokitMapBinding

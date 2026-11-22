@@ -70,6 +70,8 @@ public sealed class AgvConnectionSetting : ObservableConnectionSetting
     public int NavigationPort { get => _navigationPort; set => Set(ref _navigationPort, value); }
     private int _port = 19204;
     public int Port { get => _port; set => Set(ref _port, value); }
+    private int? _otherApiPort;
+    public int? OtherApiPort { get => _otherApiPort; set => Set(ref _otherApiPort, value); }
 }
 public sealed class AgvMapBindingSetting : ObservableConnectionSetting
 {
