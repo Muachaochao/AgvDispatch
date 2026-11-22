@@ -87,8 +87,11 @@ public static class TrafficSegmentReleaseEvaluator
                     if(edges[context.RouteEdgeIds[i]].ResourceIds.Contains(lease.ResourceId,StringComparer.OrdinalIgnoreCase))last=i;
                     // A non-terminal node resource is passed when the preceding
                     // edge is complete. The current edge need not also finish.
-                    if(nodes[context.RouteNodeIds[i]].ResourceIds.Contains(lease.ResourceId,StringComparer.OrdinalIgnoreCase)&&i>0)
-                        last=Math.Max(last,i-1);
+                    // The route's start node (for example the departure waiting
+                    // bay) has no preceding edge: it is passed once edge 0 is
+                    // complete. The body-envelope check below still applies.
+                    if(nodes[context.RouteNodeIds[i]].ResourceIds.Contains(lease.ResourceId,StringComparer.OrdinalIgnoreCase))
+                        last=Math.Max(last,Math.Max(i-1,0));
                 }
                 if(nodes[context.RouteNodeIds[^1]].ResourceIds.Contains(lease.ResourceId,StringComparer.OrdinalIgnoreCase))reason="本段终点资源保持至正常交接/业务收尾。";
                 else if(last<0)reason="资源未绑定原路线，无法确定最后一次使用。";
