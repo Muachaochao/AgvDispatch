@@ -266,6 +266,25 @@ def query(root, sql, parameters=()):
         return [dict(row) for row in db.execute(sql, parameters)]
 
 
+def charging_session_ids(root):
+    """Active automatic-charging sessions. Their bay and route leases are owned by the formal charging
+    workflow (TaskId == SessionId), not left over by a business task."""
+    path = root / 'data/charging-sessions.json'
+    try:
+        rows = json.loads(path.read_text(encoding='utf-8-sig')) if path.exists() else []
+    except (OSError, ValueError):
+        return set()
+    return {row['SessionId'] for row in rows if row.get('Phase') not in (13, 'Completed') and row.get('SessionId')}
+
+
+def business_leases(root):
+    """Traffic leases excluding those held by active charging sessions."""
+    charging = charging_session_ids(root)
+    if not charging:
+        return query(root, 'select ResourceId from traffic_resource_lease')
+    return [row for row in query(root, 'select ResourceId,TaskId from traffic_resource_lease') if row['TaskId'] not in charging]
+
+
 def separation(a0, a1, b0, b1):
     """Minimum separation for linearly interpolated paired samples, no model feedback."""
     dx, dy = a0['x'] - b0['x'], a0['y'] - b0['y']
@@ -1536,7 +1555,7 @@ def execute(runtime, request):
             runtime.scenario['completedRounds'] = 1
         else:
             runtime.idle_review()
-            check('运行前无残留路权', not query(runtime.root, 'select ResourceId from traffic_resource_lease'), '只读数据库核对')
+            check('运行前无残留路权', not business_leases(runtime.root), '只读数据库核对（充电会话自身的充电位和路线租约除外）')
         if any(v.get('offline') or v.get('paused') or v.get('dropNextResponse') or v.get('blockedEdges') or
                v.get('obstacle') or v.get('obstacleAfterSegments') is not None or
                v.get('navigationTimeoutAfterBlockedSeconds') is not None or
@@ -1731,7 +1750,7 @@ def execute(runtime, request):
             check('预期车端取消已形成独立故障结果', fault_observed, '取消任务、原命令和原路权已保留待核对')
         elif request['name'] != 'service-restart' and request['name'] not in (
                 set(TIMEOUT_OBSTACLE_NAMES) - {'obstacle-timeout-safe-site'}):
-            check('最终无残留路权', not query(runtime.root, 'select ResourceId from traffic_resource_lease'), '所有资源租约已释放')
+            check('最终无残留路权', not business_leases(runtime.root), '所有业务资源租约已释放（进行中的充电会话除外）')
             commands = query(runtime.root, 'select TaskId,StepId,CommandId,Status,AttemptCount,VendorCommandId,LastError,PayloadJson from agv_command_outbox')
             commands = [c for c in commands if c['TaskId'] in tasks]
             write(evidence / 'outbox-readonly.json', commands)
@@ -1803,8 +1822,20 @@ def execute(runtime, request):
                             event['response'].get('ret_code') == 0 and (not allowed_step_ids or requested_ids & allowed_step_ids)):
                         sends.append(dict(vehicle=vehicle, **event))
             write(evidence / 'accepted-3066.json', sends)
+            # B07-FIX V1: match receipts to commands instead of comparing totals. A command that the device
+            # accepted and the backend later cancelled (obstacle detour / safety return) legitimately has a receipt.
+            command_status = {str(c['VendorCommandId']): c['Status'] for c in commands if c.get('VendorCommandId')}
+            command_status.update({str(root): 30 for root in timeout_roots if root})
+            receipts, unmatched = {}, 0
+            for event in sends:
+                ids = {str(item.get('task_id')) for item in event.get('request', {}).get('move_task_list', [])} & set(command_status)
+                if len(ids) != 1: unmatched += 1; continue
+                key = next(iter(ids)); receipts[key] = receipts.get(key, 0) + 1
+            receipts_ok = (unmatched == 0 and
+                           all(receipts.get(k, 0) == 1 for k, status in command_status.items() if status == 30) and
+                           all(count == 1 for count in receipts.values()))
             check('设备实际接收原运输及必要改道命令',
-                  len(sends) == len(sent_window_commands) + len(timeout_roots),
+                  receipts_ok if command_status else len(sends) == len(sent_window_commands) + len(timeout_roots),
                   f'{len(sends)}次成功接收；已确认窗口{len(sent_window_commands)}次，超时恢复{len(timeout_roots)}次，自动改道{auto_detour_sends}次')
             if timeout_roots:
                 observed_roots = [str(item.get('task_id')) for event in sends

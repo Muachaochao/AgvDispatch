@@ -91,9 +91,11 @@ async def run(root):
         car.peers = [peer for peer in cars if peer is not car]
     servers = [await asyncio.start_server(plc.s7, '127.0.0.1', lab['plcPort'])]
     for robot, car in zip(robots, cars):
-        for port in (robot['Port'], robot['NavigationPort']):
+        # OtherApiPort (6005 charging relay) is optional and per vehicle in the isolated simulation.
+        for port in (robot['Port'], robot['NavigationPort'], *([robot['OtherApiPort']] if robot.get('OtherApiPort') else [])):
             servers.append(await asyncio.start_server(car.robokit, '127.0.0.1', port))
-    workers = [asyncio.create_task(plc.plc_scan()), *[asyncio.create_task(c.drive()) for c in cars]]
+    workers = [asyncio.create_task(plc.plc_scan()), *[asyncio.create_task(c.drive()) for c in cars],
+               *[asyncio.create_task(c.idle_battery()) for c in cars]]
     (root / 'device-ready').write_text(f'{len(cars)} TCP cars / one shared S7 PLC', encoding='utf-8')
     last_sequence = None
     try:

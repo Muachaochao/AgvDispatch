@@ -23,12 +23,13 @@ public sealed class RobokitChargingRobotControl(
     {
         if (!options.AllowCommands || !settings.RelayControlConfirmed)
             throw new InvalidOperationException("AGV动作或现场核定的6005充电继电器控制未启用。");
-        if (settings.OtherApiPort is < 1 or > 65535)
-            throw new InvalidOperationException("Robokit其他API端口无效。");
         var client = RequireClient(vehicleId);
+        var port = client.Robot.OtherApiPort ?? settings.OtherApiPort;
+        if (port is < 1 or > 65535)
+            throw new InvalidOperationException("Robokit其他API端口无效。");
         // There is intentionally no retry: a lost reply may follow a successful
         // relay switch. The durable charging state machine owns reconciliation.
-        await using var other = new SeerTcpChannel(client.Robot.IpAddress, settings.OtherApiPort, options);
+        await using var other = new SeerTcpChannel(client.Robot.IpAddress, port, options);
         using var response = await other.RequestAsync(6005, new { status = enabled }, cancellationToken);
         RequireResponse(response.RootElement, 6005, requireReturnCode: true);
     }

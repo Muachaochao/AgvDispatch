@@ -12,6 +12,8 @@ public sealed class ChargingRuntimePort(ChargingOptions options, IAgvStateCache 
     Func<string,string?>? vehicleBlock = null, Func<string,string?>? returnSite = null) : IChargingRuntimePort
 {
     private DateTimeOffset Now => (clock??TimeProvider.System).GetUtcNow();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string,string> planFailures=new(StringComparer.OrdinalIgnoreCase);
+    public string? LastPlanFailure(string vehicleId,ChargingSite site)=>planFailures.TryGetValue(vehicleId+"|"+site.Id,out var reason)?reason:null;
     public IReadOnlyList<AgvRobotSnapshot> Vehicles => vehicles.GetAll();
     public string? NewWorkBlockReason => gate.NewWorkBlockReason ?? externalBlock?.Invoke();
     public ValueTask<IDisposable?> EnterExecutionAsync(bool newWork,CancellationToken ct) => gate.EnterAsync(newWork?MapExecutionOperation.NewWork:MapExecutionOperation.ExistingWork,ct);
@@ -71,22 +73,34 @@ public sealed class ChargingRuntimePort(ChargingOptions options, IAgvStateCache 
 
     public async Task<ChargingRoute?> PlanWithReturnAsync(string vehicleId,ChargingSite site,string? requestedReturnSite,CancellationToken ct)
     {
-        if(Health(vehicleId,true) is not null||vehicleBlock?.Invoke(vehicleId) is not null||SiteError(site) is not null||!vehicles.TryGet(vehicleId,out var v)||Node(v.CurrentStation??"") is not {} source)return null;
+        var key=vehicleId+"|"+site.Id;
+        ChargingRoute? Fail(string reason){planFailures[key]=reason;return null;}
+        if(Health(vehicleId,true) is {} health)return Fail(health);
+        if(vehicleBlock?.Invoke(vehicleId) is {} block)return Fail(block);
+        if(SiteError(site) is {} siteError)return Fail(siteError);
+        if(!vehicles.TryGet(vehicleId,out var v)||Node(v.CurrentStation??"") is not {} source)return Fail("车辆当前不在地图命名站点上，不能作为充电路线起点。");
         var current=map.Current!;var target=Node(site.ChargingSiteId)!;var exit=Node(site.ExitSiteId)!;
         var selectedHome=string.IsNullOrWhiteSpace(requestedReturnSite)?returnSite?.Invoke(vehicleId):requestedReturnSite.Trim();
         var homeId=string.IsNullOrWhiteSpace(selectedHome)?source.AgvSiteId!:selectedHome!;
         var home=Node(homeId);
-        if(home is null)return null;
-        if(OccupiedByOther(vehicleId,target)||OccupiedByOther(vehicleId,exit)||OccupiedByOther(vehicleId,home))return null;
+        if(home is null)return Fail($"充电后返回点{homeId}不在运行地图上。");
+        if(OccupiedByOther(vehicleId,target))return Fail($"充电点{target.Id}被其他车辆占用。");
+        if(OccupiedByOther(vehicleId,exit))return Fail($"充电出口{exit.Id}被其他车辆占用。");
+        if(OccupiedByOther(vehicleId,home))return Fail($"返回点{home.Id}被其他车辆占用。");
         // No same-station empty route can stand in for a commissioned docking move.
-        if(source.Id==target.Id)return null;
+        if(source.Id==target.Id)return Fail("车辆已在充电点上，不能用空路线代替对接动作。");
         var unavailable=await resources.GetUnavailableResourceIdsAsync("CHARGING-PLAN",ct);
-        if(unavailable.Contains(site.ResourceId))return null;
-        var incoming=planner.Plan(source.AgvSiteId!,target.AgvSiteId!,unavailable);
-        var outgoing=planner.Plan(target.AgvSiteId!,exit.AgvSiteId!,unavailable);
-        var returning=planner.Plan(exit.AgvSiteId!,home.AgvSiteId!,unavailable);
-        if(incoming is not {Nodes.Count:>=2}||outgoing is not {Nodes.Count:>=2}||returning is not {Nodes.Count:>=2})return null;
-        if(incoming.Nodes.Any(id=>Node(id) is null)||outgoing.Nodes.Any(id=>Node(id) is null)||returning.Nodes.Any(id=>Node(id) is null))return null;
+        if(unavailable.Contains(site.ResourceId))return Fail($"充电位资源{site.ResourceId}已被占用。");
+        // B07-FIX C4: legs are planned before the vehicle leaves its bay; its own parked body must not block
+        // the way back to that bay (all other vehicles, leases and the dumper clearance still apply).
+        var incoming=planner.PlanForVehicle(source.AgvSiteId!,target.AgvSiteId!,unavailable,vehicleId);
+        var outgoing=planner.PlanForVehicle(target.AgvSiteId!,exit.AgvSiteId!,unavailable,vehicleId);
+        var returning=planner.PlanForVehicle(exit.AgvSiteId!,home.AgvSiteId!,unavailable,vehicleId);
+        if(incoming is not {Nodes.Count:>=2})return Fail($"{source.Id}→{target.Id}在当前可用路权下无路线。");
+        if(outgoing is not {Nodes.Count:>=2})return Fail($"{target.Id}→出口{exit.Id}在当前可用路权下无路线。");
+        if(returning is not {Nodes.Count:>=2})return Fail($"出口{exit.Id}→返回点{home.Id}在当前可用路权下无路线。");
+        if(incoming.Nodes.Any(id=>Node(id) is null)||outgoing.Nodes.Any(id=>Node(id) is null)||returning.Nodes.Any(id=>Node(id) is null))return Fail("充电路线含未映射厂家站点的节点。");
+        planFailures.TryRemove(key,out _);
         return new(current.MapId,current.VersionId,incoming.Nodes.Select(id=>Node(id)!.AgvSiteId!).ToArray(),outgoing.Nodes.Select(id=>Node(id)!.AgvSiteId!).ToArray(),
             incoming.ResourceIds.Concat(outgoing.ResourceIds).Concat(returning.ResourceIds).Append(site.ResourceId)
                 .Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),incoming.Cost)
@@ -157,6 +171,25 @@ public sealed class ChargingRuntimePort(ChargingOptions options, IAgvStateCache 
         return (await resources.TryAcquireAsync(session.SessionId+"-LOCK",session.SessionId,session.VehicleId,route.ResourceIds,ct)).Acquired;
     }
     public Task RenewAsync(string sessionId,CancellationToken ct)=>resources.RenewTaskAsync(sessionId,ct);
+    // B07-FIX C6: the inbound road is behind the vehicle and, for Relay6005, the return road is never driven by the
+    // charging session (it completes at the exit node). Holding them for the whole charge blocked the shared junctions in
+    // front of the waiting bays and stalled every business vehicle. Keep the bay, the charging point and the exit path.
+    public async Task<int> ShrinkToBayAsync(ChargingSession session,CancellationToken ct)
+    {
+        if(session.Site is null||session.Route is null||map.Current is not {} current||
+           current.MapId!=session.Route.MapId||current.VersionId!=session.Route.MapVersionId)return 0;
+        var definition=current.Definition;
+        var keep=new HashSet<string>(StringComparer.OrdinalIgnoreCase){session.Site.ResourceId};
+        var exitNodes=session.Route.ExitPath.Select(id=>Node(id)).ToArray();
+        if(exitNodes.Any(n=>n is null))return 0;
+        foreach(var node in exitNodes)keep.UnionWith(node!.ResourceIds);
+        foreach(var (from,to) in exitNodes.Zip(exitNodes.Skip(1)))
+            foreach(var edge in definition.Edges.Where(e=>e.Enabled&&(e.From.Equals(from!.Id,StringComparison.OrdinalIgnoreCase)&&e.To.Equals(to!.Id,StringComparison.OrdinalIgnoreCase)||
+                e.Bidirectional&&e.From.Equals(to!.Id,StringComparison.OrdinalIgnoreCase)&&e.To.Equals(from.Id,StringComparison.OrdinalIgnoreCase))))
+                keep.UnionWith(edge.ResourceIds);
+        return await resources.ReleaseStepExceptResourcesAsync(session.SessionId+"-LOCK",keep,
+            "车辆已在充电点停稳：保留充电位及出口路线，释放身后来车道路和未使用的返回道路。",ct);
+    }
     public Task ReleaseAsync(string sessionId,CancellationToken ct)=>resources.ReleaseTaskAsync(sessionId,ct);
     public Task<string> NavigateAsync(string commandId,string vehicleId,IReadOnlyList<string> path,CancellationToken ct)=>
         gateway.CreateTransportTaskAsync(commandId,vehicleId,path,new AgvTransportAction("Wait"),ct);

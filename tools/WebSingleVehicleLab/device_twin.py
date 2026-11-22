@@ -48,6 +48,8 @@ class DeviceTwin:
         self.voltage_curve = [dict(percent=0, voltage=21), dict(percent=100, voltage=26)]
         self.charging_gain_percent_per_hour = 20.0
         self.charging = False
+        # Robokit 6005 relay state. The battery only charges while the relay is on and the car is parked on a ChargingPoint.
+        self.charging_relay = False
         self.acceleration = 0.6
         self.mechanism = dict(source='synthetic', operation=None, taskId=None, state='Idle', upperLimit=None, lowerLimit=None)
         self.operation_seconds = 2.0
@@ -180,11 +182,16 @@ class DeviceTwin:
         self.idle_cost_percent_per_hour = float(profile.get('idleCostPercentPerHour', .1))
 
     def consume_battery(self, distance=0.0, seconds=0.0):
-        if self.charging:
+        if self.charging_now():
             self.battery_percent = min(1.0, self.battery_percent + self.charging_gain_percent_per_hour / 100.0 * seconds / 3600.0)
             return
         cost_percent = distance * self.travel_cost_percent_per_meter + seconds * self.idle_cost_percent_per_hour / 3600.0
         self.battery_percent = max(0.0, self.battery_percent - cost_percent / 100.0)
+
+    def charging_now(self):
+        if self.charging: return True
+        node = self.nodes.get(self.station) if self.station else None
+        return bool(self.charging_relay and self.current is None and node and node.get('type') == 'ChargingPoint')
 
     def battery_voltage(self):
         percent = self.battery_percent * 100
@@ -339,6 +346,14 @@ class DeviceTwin:
             lowerLimit=(operation == 'JackUnload') if completed else None)
         self.log('mechanism-feedback', **self.mechanism)
         return completed
+
+    async def idle_battery(self):
+        """Parked cars still drain at the idle rate, and charge while the 6005 relay is on at a ChargingPoint.
+        Motion updates the battery itself, so this only runs while no navigation is executing."""
+        while True:
+            await asyncio.sleep(CLOCK.business_delay(1.0))
+            if self.current is None:
+                self.consume_battery(seconds=1.0)
 
     async def drive(self):
         while True:
@@ -695,7 +710,7 @@ class DeviceTwin:
                          loaded=self.loaded, mechanism=dict(self.mechanism), current_task=self.current, tasks=self.tasks,
                          completed_segments=self.steps, db1=list(self.memory[:4]), dumper=list(self.memory[610:611]), memory_hex=self.memory.hex(),
                          contract=self.contract, dumper_reserved=self.dumper_reserved,
-                         batteryPercent=self.battery_percent * 100, batteryVoltage=self.battery_voltage(), charging=self.charging,
+                         batteryPercent=self.battery_percent * 100, batteryVoltage=self.battery_voltage(), charging=self.charging_now(), chargingRelay=self.charging_relay,
                          speedMps=self.current_speed_mps,
                          distanceMeters=self.distance_meters, simulationControl=self.control_snapshot(), time=CLOCK.time(),
                          stations=self.station_snapshot(),
@@ -717,7 +732,7 @@ class DeviceTwin:
                         battery_level=self.battery_percent, battery_voltage=self.battery_voltage(), emergency=False,
                         blocked=self.external_blocked_now(),
                         navigation_status=2 if self.current else 0, errors=[], fatals=[], warnings=[],
-                        vx=self.current_speed_mps if self.current and not self.paused else 0, vy=0, w=0, charging=self.charging)
+                        vx=self.current_speed_mps if self.current and not self.paused else 0, vy=0, w=0, charging=self.charging_now())
         if api == 1110:
             wanted = request.get('task_ids', list(self.tasks))
             result = dict(task_status_package=dict(task_status_list=[dict(task_id=t, status=self.tasks.get(t,404), type=1) for t in wanted]))
@@ -824,6 +839,19 @@ class DeviceTwin:
             if tid not in self.tasks:
                 return dict(ret_code=400,err_msg='Task absent')
             self.tasks[tid]=6
+            return dict(ret_code=0)
+        if api == 1007:
+            # Battery detail (synthetic): current is positive while charging, temperature is a fixed nominal value.
+            charging = self.charging_now()
+            return dict(ret_code=0, battery_level=round(self.battery_percent, 4), charging=charging,
+                        current=12.0 if charging else -3.0, voltage=self.battery_voltage(), battery_temp=30.0,
+                        manual_charge=False, auto_charge=charging)
+        if api == 6005:
+            status = request.get('status')
+            if not isinstance(status, bool):
+                return dict(ret_code=400, err_msg='status must be boolean')
+            self.charging_relay = status
+            self.log('charging-relay', status=status, station=self.station, battery=round(self.battery_percent * 100, 2))
             return dict(ret_code=0)
         return dict(ret_code=400,err_msg=f'Unsupported twin API {api}')
 
@@ -957,7 +985,7 @@ class DeviceTwin:
         for port,handler in [(config['robotPort'],self.robokit),(config['navigationPort'],self.robokit),(config['plcPort'],self.s7)]:
             servers.append(await asyncio.start_server(handler,'127.0.0.1',port))
         self.log('started', ports=config, map_sha256=hashlib.sha256(self.map_bytes).hexdigest())
-        workers=[asyncio.create_task(self.drive()),asyncio.create_task(self.plc_scan())]
+        workers=[asyncio.create_task(self.drive()),asyncio.create_task(self.idle_battery()),asyncio.create_task(self.plc_scan())]
         (self.root/'device-ready').write_text('loopback-only',encoding='utf-8')
         try:
             while not (self.root/'STOP').exists():

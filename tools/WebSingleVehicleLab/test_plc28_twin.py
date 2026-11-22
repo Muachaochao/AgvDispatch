@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from device_twin import DeviceTwin
+from simulation_clock import CLOCK
 
 
 class Plc28TwinTests(unittest.TestCase):
@@ -88,7 +89,9 @@ class Plc28TwinTests(unittest.TestCase):
         self.assertTrue(twin.blocked_now())
 
         twin.obstacle = True
-        twin.navigation_blocked_since = 1.0
+        # The twin measures blocking on the isolated business clock, which starts near zero in a
+        # fresh process; place the start of blocking clearly beyond the 5 s timeout on that clock.
+        twin.navigation_blocked_since = CLOCK.monotonic() - 10
         twin.apply_navigation_timeout()
         self.assertEqual(7, twin.tasks['TASK'])
         self.assertTrue(twin.navigation_timeout_tripped)

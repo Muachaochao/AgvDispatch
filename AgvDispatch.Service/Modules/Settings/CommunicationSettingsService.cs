@@ -76,7 +76,7 @@ public sealed class CommunicationSettingsService : ICommunicationSettingsService
             InterruptedFailureThreshold = p.InterruptedFailureThreshold, ReadBlockSizeBytes = p.ReadBlockSizeBytes,
             SignalCsvPath = p.SignalCsvPath }],
         Agvs = a.Robots.Select(r => new AgvConnectionSetting { VehicleId = r.VehicleId, DisplayName = r.DisplayName,
-            Enabled = r.Enabled, IpAddress = r.IpAddress, Port = r.Port, NavigationPort = r.NavigationPort }).ToList(),
+            Enabled = r.Enabled, IpAddress = r.IpAddress, Port = r.Port, NavigationPort = r.NavigationPort, OtherApiPort = r.OtherApiPort }).ToList(),
         MapBindings = a.MapBindings.Select(b=>new AgvMapBindingSetting { VehicleId=b.VehicleId,LocalMapId=b.LocalMapId,LocalMapVersion=b.LocalMapVersion,RobotMap=b.RobotMap,RobotMapMd5=b.RobotMapMd5,CoordinatesVerified=b.CoordinatesVerified,ConfirmationNote=b.ConfirmationNote }).ToList(),
         AgvEnabled = a.Enabled, AgvProtocolVersion = a.ProtocolVersion, AgvPollIntervalMs = a.PollIntervalMs,
         AgvConnectTimeoutMs = a.ConnectTimeoutMs, AgvRequestTimeoutMs = a.RequestTimeoutMs,
@@ -132,9 +132,10 @@ public sealed class CommunicationSettingsService : ICommunicationSettingsService
             if (!ids.Add(a.VehicleId)) throw new ArgumentException($"AGV编号重复：{a.VehicleId}");
             ValidateEndpoint(a.IpAddress, a.Port, c.AgvEnabled && a.Enabled);
             ValidateEndpoint(a.IpAddress, a.NavigationPort, c.AgvEnabled && a.Enabled);
+            if (a.OtherApiPort is { } other) ValidateEndpoint(a.IpAddress, other, c.AgvEnabled && a.Enabled);
             if (a.DisplayName is null || a.DisplayName.Length > 80) throw new ArgumentException("AGV名称过长。");
             if (c.AgvEnabled && a.Enabled)
-                foreach (var port in new[] { a.Port, a.NavigationPort }.Distinct())
+                foreach (var port in new[] { a.Port, a.NavigationPort }.Concat(a.OtherApiPort is { } o ? [o] : []).Distinct())
                     if (!endpoints.Add($"{IPAddress.Parse(a.IpAddress)}:{port}")) throw new ArgumentException("不同AGV的状态或导航连接地址重复。");
         }
         ids.Clear(); endpoints.Clear();
@@ -220,7 +221,7 @@ public sealed class CommunicationSettingsService : ICommunicationSettingsService
         a.ReconnectDelayMs = c.AgvReconnectDelayMs; a.StaleAfterMs = c.AgvStaleAfterMs;
         if(c.MapBindings is not null) a.MapBindings=c.MapBindings.Select(b=>new RobokitMapBinding {VehicleId=b.VehicleId,LocalMapId=b.LocalMapId,LocalMapVersion=b.LocalMapVersion,RobotMap=b.RobotMap,RobotMapMd5=b.RobotMapMd5,CoordinatesVerified=b.CoordinatesVerified,ConfirmationNote=b.ConfirmationNote}).ToList();
         a.Robots = c.Agvs.Select(r => new AgvRobotOptions { VehicleId = r.VehicleId, DisplayName = r.DisplayName,
-            Enabled = r.Enabled, IpAddress = r.IpAddress, Port = r.Port, NavigationPort = r.NavigationPort }).ToList();
+            Enabled = r.Enabled, IpAddress = r.IpAddress, Port = r.Port, NavigationPort = r.NavigationPort, OtherApiPort = r.OtherApiPort }).ToList();
     }
 
     private CommunicationSettingsSnapshot Snapshot(TrafficUserContext user) => new(_saved.Revision,
