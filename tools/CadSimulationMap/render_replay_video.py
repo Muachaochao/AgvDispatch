@@ -128,6 +128,9 @@ def render_map(draw: ImageDraw.ImageDraw, replay: dict[str, Any],
         max(node["x"] for node in nodes.values()),
         max(node["y"] for node in nodes.values()),
     )
+    padding = max(1.0, max(bounds[2] - bounds[0], bounds[3] - bounds[1]) * .07)
+    bounds = (bounds[0] - padding, bounds[1] - padding,
+              bounds[2] + padding, bounds[3] + padding)
     transform = point_map(list(nodes.values()), bounds, viewport)
     left, top, width, height = viewport
     draw.rounded_rectangle((left, top, left + width, top + height), radius=14,
@@ -150,6 +153,14 @@ def render_map(draw: ImageDraw.ImageDraw, replay: dict[str, Any],
             radius = 4
             color = NODE_COLORS.get(node.get("type"), "#f8fafc")
         draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=color)
+        site = node.get("agvSiteId")
+        station_numbers = {"LM1": 1, "LM3": 2, "LM5": 3, "LM7": 4,
+                           "LM9": 5, "LM11": 6, "LM13": 7}
+        if site in station_numbers:
+            draw.text((x + 4, y - 14), f"CNC-{station_numbers[site]:03d}",
+                      font=font(10), fill="#c9efff")
+        elif site in {"LM35", "LM36", "LM39", "LM40"}:
+            draw.text((x + 4, y - 14), site, font=font(10), fill="#a9dff2")
     return transform, bounds
 
 
@@ -160,8 +171,13 @@ def render_frame(replay: dict[str, Any], index: int, total: int,
     image = Image.new("RGB", (width, height), "#030a12")
     draw = ImageDraw.Draw(image)
     title_font, normal, small, tiny = font(34, True), font(18), font(14), font(12)
-    draw.text((40, 24), "B07-1F · CAD全厂305CNC · 五车隔离仿真闭环", fill="#eaf7ff", font=title_font)
-    draw.text((41, 70), "正式调度 + 回环 Robokit / S7 · 基准 0.75 m/s · 加速回放 · 800 × 520 mm",
+    vehicle_ids = sorted({str(vehicle.get("vehicleId")) for vehicle in frame.get("vehicles", [])
+                          if vehicle.get("vehicleId")})
+    station_count = len(frame.get("tasks") or [])
+    map_name = replay["map"].get("name") or "隔离仿真地图"
+    draw.text((40, 24), f"{map_name} · {len(vehicle_ids)}车{station_count}工位仿真闭环",
+              fill="#eaf7ff", font=title_font)
+    draw.text((41, 70), "正式调度 + 回环 Robokit / S7 · 基准 0.75 m/s · 加速回放 · 整车包络",
               fill="#7f9bb8", font=small)
     map_view = (32, 108, 1120, 670)
     transform, bounds = render_map(draw, replay, map_view, trail)
@@ -175,40 +191,13 @@ def render_frame(replay: dict[str, Any], index: int, total: int,
         if len(trail[vehicle_id]) > 2:
             path = [transform(px, py) for px, py in trail[vehicle_id]]
             draw.line(path, fill="#f59e0b", width=3)
-        polygon = rotated_rectangle(x, y, float(vehicle.get("angle") or 0), .8, .52, transform)
+        length, width_m = (1.0, .545) if vehicle_id == "AGV-03" else (.81, .545)
+        polygon = rotated_rectangle(x, y, float(vehicle.get("angle") or 0), length, width_m, transform)
         active = bool(vehicle.get("taskId"))
         draw.polygon(polygon, fill="#f59e0b" if active else "#22c55e",
                      outline="#fff7d6" if active else "#d1fae5")
         vx, vy = transform(x, y)
         draw.text((vx + 7, vy - 9), vehicle_id, font=tiny, fill="#08111c")
-
-    # Terminal inset makes the five CAD waiting points and bypass route readable.
-    terminal_view = (870, 620, 282, 158)
-    tx, ty, tw, th = terminal_view
-    draw.rounded_rectangle((tx, ty, tx + tw, ty + th), radius=10, fill="#071321",
-                           outline="#5b7892", width=2)
-    terminal_bounds = (979.0, -434.2, 991.2, -425.0)
-    ttransform = point_map([], terminal_bounds, (tx + 8, ty + 25, tw - 16, th - 32))
-    nodes = {node["id"]: node for node in replay["map"]["nodes"]}
-    for edge in replay["map"]["edges"]:
-        a, b = nodes.get(edge["from"]), nodes.get(edge["to"])
-        if not a or not b:
-            continue
-        points = (a["x"], a["y"], b["x"], b["y"])
-        if not (terminal_bounds[0] <= points[0] <= terminal_bounds[2] and
-                terminal_bounds[0] <= points[2] <= terminal_bounds[2] and
-                terminal_bounds[1] <= points[1] <= terminal_bounds[3] and
-                terminal_bounds[1] <= points[3] <= terminal_bounds[3]):
-            continue
-        draw.line((*ttransform(a["x"], a["y"]), *ttransform(b["x"], b["y"])),
-                  fill="#284b66", width=1)
-    for vehicle in frame.get("vehicles", []):
-        polygon = rotated_rectangle(float(vehicle["x"]), float(vehicle["y"]),
-                                    float(vehicle.get("angle") or 0), .8, .52, ttransform)
-        if all(tx <= px <= tx + tw and ty <= py <= ty + th for px, py in polygon):
-            draw.polygon(polygon, fill="#f59e0b" if vehicle.get("taskId") else "#22c55e",
-                         outline="#e2f7ff")
-    draw.text((tx + 10, ty + 5), "终端 / 五车待命区放大", font=small, fill="#a9dff2")
 
     side_x = 1175
     draw.rounded_rectangle((side_x, 108, 1568, 778), radius=14, fill="#071321",
@@ -228,27 +217,45 @@ def render_frame(replay: dict[str, Any], index: int, total: int,
     progress_right = side_x + 20 + 508 * progress
     draw.rounded_rectangle((side_x + 20, 228, progress_right, 240), radius=6, fill="#22d3ee")
 
-    task = (frame.get("tasks") or [{}])[0]
-    draw.text((side_x + 20, 272), f"任务 {task.get('taskId', '无')[-24:]}", font=small, fill="#80a5c1")
-    draw.text((side_x + 20, 304), f"工位 {task.get('stationId') or '待派车'}", font=normal, fill="#f0f8ff")
-    draw.text((side_x + 20, 340), f"车辆 {task.get('vehicleId') or '尚未分配'}", font=normal, fill="#f0f8ff")
-    draw.text((side_x + 20, 376), f"阶段 {STAGE_NAMES.get(task.get('stage'), task.get('stage') or '未运行')}",
-              font=normal, fill="#8ce4f2")
-    draw.text((side_x + 20, 416), "当前步骤", font=small, fill="#7f9bb8")
-    draw_wrapped(draw, task.get("step") or "尚无执行反馈", (side_x + 20, 444), 350, small, "#d4e6f2",
-                 line_gap=5, max_lines=4)
-    draw.text((side_x + 20, 552), "等待原因", font=small, fill="#7f9bb8")
-    draw_wrapped(draw, task.get("waitReason") or "无等待", (side_x + 20, 580), 350, tiny, "#f3c46f",
-                 line_gap=4, max_lines=4)
-    draw.text((side_x + 20, 678),
+    tasks = frame.get("tasks") or []
+    active_tasks = [task for task in tasks if task.get("stage") not in
+                    ("Completed", "Cancelled", "Faulted")]
+    draw.text((side_x + 20, 270), "车辆状态", font=normal, fill="#8ce4f2")
+    task_by_vehicle = {task.get("vehicleId"): task for task in tasks if task.get("vehicleId")}
+    vehicle_y = 302
+    for vehicle in frame.get("vehicles", []):
+        vehicle_id = vehicle.get("vehicleId")
+        task = task_by_vehicle.get(vehicle_id)
+        status = STAGE_NAMES.get(task.get("stage"), task.get("stage")) if task else "空闲"
+        location = vehicle.get("site") or ("任务结束" if status == "已完成" else "行驶中")
+        draw.text((side_x + 20, vehicle_y),
+                  f"{vehicle_id}  {location}  {status}",
+                  font=small, fill="#f0f8ff")
+        vehicle_y += 28
+    draw.text((side_x + 20, 402),
+              f"任务队列  {len(active_tasks)} 进行 / {len(tasks) - len(active_tasks)} 完成",
+              font=small, fill="#a9bdce")
+    task_y = 434
+    for task in tasks[:7]:
+        stage = STAGE_NAMES.get(task.get("stage"), task.get("stage") or "待派车")
+        draw.text((side_x + 20, task_y),
+                  f"{task.get('stationId') or '工位'}  {task.get('vehicleId') or '待派'}  {stage}",
+                  font=tiny, fill="#d4e6f2")
+        task_y += 24
+    representative = (next((task for task in active_tasks if task.get("vehicleId")), None)
+                      or (active_tasks[0] if active_tasks else {}))
+    draw.text((side_x + 20, 608), "当前等待原因", font=small, fill="#7f9bb8")
+    draw_wrapped(draw, representative.get("waitReason") or "无等待", (side_x + 20, 636),
+                 350, tiny, "#f3c46f", line_gap=4, max_lines=2)
+    draw.text((side_x + 20, 706),
               f"交通租约 {len(frame.get('leases') or []):02d} · 车辆 {len(frame.get('vehicles') or []):02d}",
               font=small, fill="#a9bdce")
     metrics = report.get("metrics") or {}
     judgement = ("通过" if report.get("status") == "passed" else "未通过")
-    draw.text((side_x + 20, 712),
+    draw.text((side_x + 20, 740),
               f"最终判定  {judgement} · {metrics.get('completedRounds', 0)}/"
               f"{metrics.get('taskCount', 0)} 九步闭环",
-              font=font(18, True), fill="#56e0ad" if judgement == "通过" else "#ff8f8f")
+              font=font(16, True), fill="#56e0ad" if judgement == "通过" else "#ff8f8f")
 
     draw.rectangle((0, 824, width, height), fill="#071321")
     draw.text((32, 840),

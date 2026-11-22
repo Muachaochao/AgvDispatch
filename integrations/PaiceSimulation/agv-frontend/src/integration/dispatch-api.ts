@@ -14,6 +14,8 @@ export interface DispatchStatus {
   phase?: string;
   fresh?: boolean;
   rootName?: string;
+  simulationRate?: number;
+  simulationOriginUnixMs?: number;
   preflight?: { passed: boolean; checks: { name: string; status: string }[] };
   startupChecks?: { name: string; status: string; detail: string }[];
   startupPlan?: { schemeId?: string; status?: string; message?: string };
@@ -50,7 +52,7 @@ export interface DispatchStatus {
     vehicleCount?: number;
     stationCount?: number;
   }[];
-  scenario?: { id?: string; name?: string; status?: string; message?: string; startedAt?: number; callRows?: CallRow[] };
+  scenario?: { id?: string; name?: string; status?: string; message?: string; startedAt?: number | null; callRows?: CallRow[] };
   history?: DispatchReport[];
   report?: DispatchReport | null;
 }

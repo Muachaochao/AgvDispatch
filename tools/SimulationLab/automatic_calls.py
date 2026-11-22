@@ -7,6 +7,9 @@ import uuid
 def run_backlog(runtime, request, evidence, observer, tasks, completed, discover, check):
     from controller import write
     from scenarios import describe_progress, fresh_device_state, external_input
+    clock = getattr(runtime, 'clock', None)
+    monotonic = clock.monotonic if clock else time.monotonic
+    time_now = clock.time if clock else time.time
     if runtime.settings.get('TaskCreation', {}).get('AutomaticCreationEnabled') is not True:
         raise ValueError('持续积压需要正式PLC自动接单模式。')
     offsets = {station['stationId']: station['offset'] for station in runtime.lab['simulationTopology']['stations']}
@@ -16,7 +19,7 @@ def run_backlog(runtime, request, evidence, observer, tasks, completed, discover
     runtime.scenario['callRows'] = rows
     pending.sort(key=lambda call: (call['atSeconds'], call['planIndex']))
     inflight, stable_since, details = {}, {}, {}
-    started = time.monotonic()
+    started = monotonic()
     # Full-factory startup and the first multi-station PLC scan can exceed the
     # legacy 40-second window when 305-station topology and several vehicles
     # initialise together. Keep the default for small scenarios, but allow a
@@ -35,13 +38,13 @@ def run_backlog(runtime, request, evidence, observer, tasks, completed, discover
 
     def event(kind, **value):
         with (evidence / 'call-queue.jsonl').open('a', encoding='utf-8') as stream:
-            stream.write(json.dumps(dict(time=time.time(), elapsedSeconds=time.monotonic()-started,
+            stream.write(json.dumps(dict(time=time_now(), elapsedSeconds=monotonic()-started,
                                         kind=kind, **value), ensure_ascii=False) + '\n')
 
-    while time.monotonic() < deadline:
+    while monotonic() < deadline:
         if runtime.abort.is_set():
             raise InterruptedError('持续积压已中止；原任务及路权保留，未发出的计划不会补发。')
-        now = time.monotonic()
+        now = monotonic()
         for station, active in list(inflight.items()):
             if active.get('taskId') is None:
                 tid = discover(station)
@@ -109,8 +112,8 @@ def run_backlog(runtime, request, evidence, observer, tasks, completed, discover
                 stable_since.pop(call['stationId'], None)
                 emitted += 1
                 index = call['planIndex']
-                rows[index] = dict(rows[index], actualAtSeconds=time.monotonic()-started, status='emitted')
-                event('emitted', **call, actualAtSeconds=time.monotonic()-started)
+                rows[index] = dict(rows[index], actualAtSeconds=monotonic()-started, status='emitted')
+                event('emitted', **call, actualAtSeconds=monotonic()-started)
         waiting = sum(1 for tid, detail in details.items() if tid not in completed and not detail['task'].get('vehicleId'))
         active = sum(1 for tid, detail in details.items() if tid not in completed and detail['task'].get('vehicleId'))
         maximum_waiting = max(maximum_waiting, waiting)
@@ -144,5 +147,5 @@ def run_backlog(runtime, request, evidence, observer, tasks, completed, discover
                 if len(request['calls']) > 1 and request['name'] == 'dispatch-backlog': check('下游准入满额时呼叫保持未取箱排队', maximum_admission_waiting > 0,
                       f'准入上限{admission_limit}时最多{maximum_admission_waiting}单等待；全车忙碌覆盖另记为{maximum_busy_waiting}，两者不混同。')
             return
-        runtime.abort.wait(.5)
+        runtime.abort.wait(clock.business_delay(.5) if clock else .5)
     raise TimeoutError('持续积压未在期限内全部闭合，请查看待发计划、正式等待链和首个阻塞原因。')

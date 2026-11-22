@@ -7,6 +7,7 @@ const emit = defineEmits<{ changed: [value: DispatchStatus]; started: [] }>()
 const scheme = ref(''), loadedScheme = ref(''), loadedRoot = ref('')
 const vehicleId = ref(''), initialSite = ref(''), stationId = ref('')
 const mode = ref('single'), seed = ref(20261117), count = ref(10), interval = ref(3), stationIds = ref<string[]>([])
+const simulationRate = ref(1)
 const busy = ref(false), error = ref('')
 const startupNotice = ref('')
 const pendingStartup = ref<{ root: string | undefined; scheme: string } | null>(null)
@@ -33,7 +34,7 @@ function coordinates(id: string) {
 }
 const locked = computed(() => busy.value || !!props.status?.running || ['starting','stopping'].includes(props.status?.phase ?? ''))
 const ready = computed(() => loadedScheme.value === scheme.value && loadedRoot.value === props.status?.rootName && !!loadedScheme.value)
-const input = computed(() => ({ id: scheme.value, ...(mode.value === 'single'
+const input = computed(() => ({ id: scheme.value, simulationRate: simulationRate.value, ...(mode.value === 'single'
  ? { business: { vehicleId: vehicleId.value, initialSite: initialSite.value, stationId: stationId.value } }
  : { vehicleStarts: vehicleStarts.value, plan: { seed: seed.value, count: count.value, intervalSeconds: interval.value, stationIds: stationIds.value } }) }))
 const checked = computed(() => !!preview.value?.preflight?.passed && checkedInput.value === JSON.stringify(input.value))
@@ -89,7 +90,7 @@ async function start() {
  <section class="panel business-setup">
   <h3>业务场景配置</h3>
   <p class="muted">选择工程方案，配置单次或随机满箱呼叫。主工程负责派车、取箱、倒料、返箱及 PLC 收尾。</p>
-  <p v-if="status?.runtimeRelease" class="muted">运行包 {{ status.runtimeRelease.releaseId }} · 调度模式 {{ status.runtimeRelease.algorithmMode }}</p>
+  <p v-if="status?.runtimeRelease" class="muted">运行包 {{ status.runtimeRelease.releaseId }} · 调度模式 {{ status.runtimeRelease.algorithmMode }} · 当前倍率 {{ status.simulationRate ?? 1 }}×</p>
   <el-alert v-if="error" :title="error" type="error" :closable="false" />
   <el-alert v-if="startupNotice" :title="startupNotice" type="info" :closable="false" />
   <div v-if="status?.businessPlan" class="plan-summary">
@@ -103,6 +104,15 @@ async function start() {
      <el-option v-for="s in status?.schemes ?? []" :key="s.id" :label="s.name" :value="s.id" />
     </el-select>
     <el-button :disabled="locked || !scheme" @click="load">加载方案</el-button>
+   </el-form-item>
+   <el-form-item label="仿真倍率">
+    <el-radio-group v-model="simulationRate" :disabled="locked">
+     <el-radio-button :value="1">1× 实时</el-radio-button>
+     <el-radio-button :value="2">2× 验收</el-radio-button>
+     <el-radio-button :value="4">4× 快速演示</el-radio-button>
+     <el-radio-button :value="8">8× 边界压测</el-radio-button>
+    </el-radio-group>
+    <span class="muted">车模、PLC 等待、业务时限和证据时间同步加速；车辆设定速度不变。正式验收使用 2×。</span>
    </el-form-item>
    <el-form-item label="业务模式"><el-radio-group v-model="mode" :disabled="locked"><el-radio-button value="single">单次呼叫</el-radio-button><el-radio-button value="random">随机呼叫计划</el-radio-button></el-radio-group></el-form-item>
    <details v-if="ready">

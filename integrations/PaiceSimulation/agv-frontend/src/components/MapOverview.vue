@@ -1,13 +1,17 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { RoadNetPayload } from '@/api/roadnet'
 import { mapBounds, type MapBounds, type MapPoint } from '@/integration/map-navigation'
 
 const props = defineProps<{ map: RoadNetPayload | null; view?: MapBounds | null; target?: MapPoint | null }>()
-const emit = defineEmits<{ center: [point: MapPoint] }>()
+const emit = defineEmits<{ center: [point: MapPoint]; settled: [] }>()
 const canvas = ref<HTMLCanvasElement>()
 const collapsed = ref(false)
 const width = 200, height = 108
+const dragging = ref(false)
+let drag: { id: number; rect: DOMRect } | null = null
+let pending: MapPoint | null = null
+let frame = 0
 const projection = computed(() => {
   const bounds = mapBounds(props.map?.nodes ?? [])
   if (!bounds) return null
@@ -55,21 +59,57 @@ const dot = computed(() => {
   const x = target.x * p.scale + p.tx, y = target.y * p.scale + p.ty
   return x >= 0 && x <= width && y >= 0 && y <= height ? { left: x / width * 100 + '%', top: y / height * 100 + '%' } : null
 })
-function navigate(event: MouseEvent) {
-  const p = projection.value
-  if (!p || !canvas.value) return
-  const rect = canvas.value.getBoundingClientRect()
-  emit('center', { x: ((event.clientX - rect.left) * width / rect.width - p.tx) / p.scale, y: ((event.clientY - rect.top) * height / rect.height - p.ty) / p.scale })
+function flushCenter() {
+  cancelAnimationFrame(frame)
+  frame = 0
+  if (!pending) return
+  emit('center', pending)
+  pending = null
 }
+
+function moveDrag(event: PointerEvent) {
+  const p = projection.value
+  if (!p || drag?.id !== event.pointerId) return
+  const { rect } = drag
+  const x = Math.max(0, Math.min(width, (event.clientX - rect.left) * width / rect.width))
+  const y = Math.max(0, Math.min(height, (event.clientY - rect.top) * height / rect.height))
+  pending = { x: (x - p.tx) / p.scale, y: (y - p.ty) / p.scale }
+  if (!frame) frame = requestAnimationFrame(flushCenter)
+}
+
+function startDrag(event: PointerEvent) {
+  const el = canvas.value
+  if (!el || drag || event.button !== 0 || !event.isPrimary) return
+  const rect = el.getBoundingClientRect()
+  if (!rect.width || !rect.height) return
+  drag = { id: event.pointerId, rect }
+  dragging.value = true
+  el.setPointerCapture(event.pointerId)
+  moveDrag(event)
+}
+
+function endDrag(event: PointerEvent) {
+  if (drag?.id !== event.pointerId) return
+  if (event.type === 'pointerup') moveDrag(event)
+  flushCenter()
+  drag = null
+  dragging.value = false
+  emit('settled')
+}
+
 watch([() => props.map, collapsed], renderMap, { flush: 'post' })
 onMounted(renderMap)
+onBeforeUnmount(() => cancelAnimationFrame(frame))
 </script>
 
 <template>
   <aside v-if="projection" class="map-overview" aria-label="地图缩略图">
     <button v-if="collapsed" type="button" class="overview-toggle" @click="collapsed = false">展开缩略图</button>
     <template v-else>
-      <canvas ref="canvas" :width="width" :height="height" aria-label="缩略图，点击移动视图" @click="navigate" />
+      <canvas ref="canvas" :width="width" :height="height" :class="{ 'is-dragging': dragging }"
+        aria-label="缩略图，点击或拖动移动视图"
+        @pointerdown="startDrag" @pointermove="moveDrag" @pointerup="endDrag"
+        @pointercancel="endDrag" @lostpointercapture="endDrag" />
       <span v-if="viewport" class="overview-viewport" :style="viewport" />
       <span v-if="dot" class="overview-target" :style="dot" />
       <button type="button" class="overview-toggle collapse" aria-label="收起缩略图" @click="collapsed = true">−</button>
@@ -79,7 +119,8 @@ onMounted(renderMap)
 
 <style scoped>
 .map-overview { position: absolute; z-index: 2; top: 10px; right: 10px; overflow: hidden; border: 1px solid #c9d7e5; border-radius: 6px; background: #f7faff; }
-.map-overview canvas { display: block; width: clamp(116px, 16vw, 200px); height: auto; cursor: crosshair; }
+.map-overview canvas { display: block; width: clamp(116px, 16vw, 200px); height: auto; cursor: var(--map-cursor-grab); touch-action: none; }
+.map-overview canvas.is-dragging { cursor: var(--map-cursor-grabbing); }
 .overview-toggle { border: 0; padding: 3px 7px; border-radius: 4px; color: #354863; background: #fff; cursor: pointer; }
 .overview-toggle.collapse { position: absolute; top: 3px; right: 3px; }
 .overview-viewport, .overview-target { position: absolute; pointer-events: none; }
