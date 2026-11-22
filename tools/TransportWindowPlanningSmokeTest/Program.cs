@@ -171,6 +171,13 @@ Check(staging.SafeHoldingSites(activeStaging, ["V"]).SequenceEqual(["BAY"]),
     "活动地图中满足容量和净空的独立等待点可自动补充为候车候选。");
 Check(staging.SafeHoldingSites(activeStaging, ["UNKNOWN"]).Count == 0,
     "缺少任何车队成员核定包络时不得产生地图候车候选。");
+handshake.DumperExit.BodyProfiles = [new("body", "V", 2, .05, true, true)];
+Check(staging.SafeHoldingSites(activeStaging, ["V"]).Count == 0,
+    "同一地图的满载尺寸变化后，应重新判断候车净空。");
+handshake.DumperExit.BodyProfiles = [new("body", "V", .49, .05, true, true)];
+Check(staging.SafeHoldingSites(Activate(stagingMap with
+    { Edges = [stagingEdges[0], stagingEdges[1], stagingEdges[2] with { Bidirectional = true }] }), ["V"]).Count == 0,
+    "重新激活的地图即使沿用编号和版本，也应根据当前几何判断。");
 var partial = staging.TryStage(stagingRoute, activeStaging, blockedDownstream, ["V"]);
 Check(partial is not null && partial.Windows.Count == 2 &&
       partial.Windows[0].Destination == "BAY" && !partial.Windows[0].ResourceIds.Contains("DOWNSTREAM") &&

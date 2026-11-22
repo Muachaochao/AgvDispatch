@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Connectors.Agv;
 using AgvDispatch.Domain.Maps;
@@ -10,6 +12,9 @@ public sealed record StagedPickupRoute(RoutePlan Route, IReadOnlyList<AgvTranspo
 public sealed class GlobalPickupRoutePlanner(
     DispatchTaskStepOptions steps, AgvOptions agv, HandshakeExecutionOptions handshake)
 {
+    private readonly ConditionalWeakTable<ActiveMapRuntimeSnapshot,
+        ConcurrentDictionary<(string NodeId, double Clearance), bool>> _holdingClearance = new();
+
     public bool SupportsRollingRoutes => steps.RollingReservationEnabled &&
         agv.NavigationCommandMode.Equals("SpecifiedPath", StringComparison.OrdinalIgnoreCase);
 
@@ -21,7 +26,7 @@ public sealed class GlobalPickupRoutePlanner(
         var clearance = FleetClearance(vehicleIds);
         if (clearance is null) return [];
         return map.Definition.Nodes
-            .Where(node => node.Enabled && HasHoldingClearance(node, map.Definition, clearance.Value))
+            .Where(node => node.Enabled && IsHoldingSite(node, map, clearance.Value))
             .Select(node => string.IsNullOrWhiteSpace(node.AgvSiteId) ? node.Id : node.AgvSiteId!)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Order(StringComparer.OrdinalIgnoreCase)
@@ -88,7 +93,7 @@ public sealed class GlobalPickupRoutePlanner(
         if (clearance is null) return null;
 
         var windows = TransportRouteWindows.Plan(route, map, steps, agv.NavigationCommandMode,
-            node => HasHoldingClearance(node, map.Definition, clearance.Value));
+            node => IsHoldingSite(node, map, clearance.Value));
         if (windows.Count < 2 || windows[0].ResourceIds.Any(unavailable.Contains))
             return null;
 
@@ -116,7 +121,7 @@ public sealed class GlobalPickupRoutePlanner(
 
         var directDistance = Distance(sourceNode, targetNode);
         var candidates = map.Definition.Nodes
-            .Where(node => node.Enabled && HasHoldingClearance(node, map.Definition, clearance.Value))
+            .Where(node => node.Enabled && IsHoldingSite(node, map, clearance.Value))
             .Where(node => !MapRouteSiteMapper.IsSameNode(map.Definition, node.Id, source) &&
                 !MapRouteSiteMapper.IsSameNode(map.Definition, node.Id, target) &&
                 !node.ResourceIds.Any(unavailable.Contains))
@@ -188,10 +193,15 @@ public sealed class GlobalPickupRoutePlanner(
         return 2 * largest + exit.SafetyMarginMeters;
     }
 
+    private bool IsHoldingSite(MapNode stop, ActiveMapRuntimeSnapshot map, double clearance) =>
+        stop is { AllowTrafficStop: true, Type: MapNodeType.WaitingPoint } &&
+        _holdingClearance.GetOrCreateValue(map).GetOrAdd((stop.Id, clearance),
+            static (_, input) => HasHoldingClearance(input.Stop, input.Map, input.Clearance),
+            (Stop: stop, Map: map.Definition, Clearance: clearance));
+
     private static bool HasHoldingClearance(MapNode stop, MapDefinition map, double clearance)
     {
-        if (stop is not { AllowTrafficStop: true, Type: MapNodeType.WaitingPoint } ||
-            !stop.ResourceIds.Any(id => map.Resources.Any(r => r.Id.Equals(id, StringComparison.OrdinalIgnoreCase) &&
+        if (!stop.ResourceIds.Any(id => map.Resources.Any(r => r.Id.Equals(id, StringComparison.OrdinalIgnoreCase) &&
                 r is { Type: TrafficResourceType.Station, Capacity: 1 }) &&
                 !map.Nodes.Any(n => n.Id != stop.Id && n.ResourceIds.Contains(id, StringComparer.OrdinalIgnoreCase))))
             return false;
