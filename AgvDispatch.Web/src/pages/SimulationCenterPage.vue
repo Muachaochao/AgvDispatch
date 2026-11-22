@@ -7,7 +7,7 @@ import 'element-plus/es/components/select-v2/style/css';
 import { simulationApi as defaultSimulationApi, simulationFresh, simulationGeometry, simulationLabel, loadCurrentSimulationMap, simulationTone, scenarioActive, simulationVehicleOriginsFromLive,
   simulationMetricLabel, simulationMetricValue, simulationMetricComparison, simulationReplayCars,
   simulationStationBindingsFromCatalog, simulationVehicleVisualState, simulationVehicleVisualColor,
-  simulationVehicleVisualLabel, simulationObstacleRecoveryLabel,
+  simulationVehicleVisualLabel, simulationObstacleRecoveryLabel, simulationActiveVehicleCount,
   type SimulationStatus, type SimulationRun, type SimulationControls, type SimulationReport,
   type SimulationConfigureRequest, type SimulationMapDefinition, type SimulationCall,
   type SimulationRecoveryItem, type SimulationReplay, type SimulationStationConfiguration,
@@ -839,7 +839,7 @@ const scenarioDescriptions: Record<SimulationRun['name'], string> = {
   'obstacle-timeout-manual': '车辆通信或位置无法安全恢复时，验证原任务进入明确的人工处置状态，不自动发车、不假完成、不释放占用。'
 };
 const currentScenarioDescription = computed(() => scenarioDescriptions[run.value.name]);
-const modeledTaskCount = computed(() => Object.values(cars.value).filter(car => !!car.current_task).length);
+const modeledTaskCount = computed(() => simulationActiveVehicleCount(cars.value, simulationTasks.value));
 const offlineVehicleCount = computed(() => Object.values(cars.value).filter(car => !!car.offline).length);
 const onlineVehicleCount = computed(() => Object.values(cars.value).filter(car => !car.offline).length);
 const loadedVehicleCount = computed(() => Object.values(cars.value).filter(car => !!car.loaded).length);

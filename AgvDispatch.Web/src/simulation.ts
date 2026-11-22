@@ -281,9 +281,22 @@ export interface SimulationEquipmentStatus {
 }
 export interface SimulationCheck { name: string; status: string; detail?: unknown }
 export interface SimulationTaskRecord {
-  taskId: string; stationId?: string; vehicleId?: string; stage?: string; currentStepNumber?: number;
+  taskId: string; stationId?: string; vehicleId?: string | null; stage?: string; currentStepNumber?: number;
   currentStepType?: string; currentStepName?: string; currentStepStatus?: string; waitingExplanation?: string;
   completed?: boolean; steps?: { number: number; stepType?: string; stepName?: string; status?: string; waitingExplanation?: string }[];
+}
+const endedTaskStages = new Set(['Completed', 'Cancelled', 'Failed', 'Faulted']);
+export function simulationActiveVehicleCount(
+  cars: Record<string, SimulationVehicle>,
+  tasks: readonly Pick<SimulationTaskRecord, 'vehicleId' | 'stage'>[],
+) {
+  const vehicles = new Set(Object.entries(cars)
+    .filter(([, car]) => !!car.current_task)
+    .map(([vehicleId]) => vehicleId));
+  for (const task of tasks) {
+    if (task.vehicleId && !endedTaskStages.has(task.stage ?? '')) vehicles.add(task.vehicleId);
+  }
+  return vehicles.size;
 }
 export interface SimulationVersionComparison {
   status?: string; message?: string;
@@ -338,6 +351,7 @@ export interface SimulationScenario {
 }
 export interface SimulationStatus {
   enabled: boolean; rootName?: string; running?: boolean; fresh?: boolean; message?: string; error?: string;
+  simulationRate?: number; simulationOriginUnixMs?: number;
   device?: { time: number; cars?: Record<string, SimulationVehicle>; memory_hex?: string; controls?: unknown;
     simulationControl?: { sequence?: string; error?: string | null; plc?: SimulationControls['plc'] } } | null;
   map?: SimulationMapDefinition | null;
@@ -390,10 +404,20 @@ export async function simulationApi<T>(path = '', body?: unknown, signal?: Abort
   return result as T;
 }
 
+export function simulationBusinessNow(status: Pick<SimulationStatus, 'simulationOriginUnixMs' | 'simulationRate'> | null, wallNow: number): number {
+  const origin = status?.simulationOriginUnixMs, rate = status?.simulationRate;
+  if (!Number.isFinite(wallNow) || !Number.isFinite(origin) || !Number.isFinite(rate) ||
+      origin! <= 0 || rate! < 1 || rate! > 8 || wallNow < origin!)
+    return wallNow;
+  return origin! + (wallNow - origin!) * rate!;
+}
+
 export function simulationFresh(status: SimulationStatus | null, now: number): boolean {
   const stamp = status?.device?.time;
+  const reference = simulationBusinessNow(status, now);
   return !!status?.enabled && !!status.running && status.fresh === true &&
-    typeof stamp === 'number' && Number.isFinite(stamp) && stamp * 1000 <= now + 1000 && now - stamp * 1000 < 5000;
+    typeof stamp === 'number' && Number.isFinite(stamp) && stamp * 1000 <= reference + 1000 &&
+    reference - stamp * 1000 < 5000;
 }
 export function scenarioActive(scenario?: SimulationScenario | null): boolean {
   return ['running', 'starting', 'pending', 'stopping'].includes(scenario?.status?.toLowerCase() ?? '');
