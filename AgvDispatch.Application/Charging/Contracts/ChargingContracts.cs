@@ -152,6 +152,11 @@ public interface IChargingRuntimePort
     Task<string?> BusyReasonAsync(string vehicleId, string? ownSessionId, CancellationToken ct);
     Task<ChargingRoute?> PlanAsync(string vehicleId, ChargingSite site, CancellationToken ct);
     Task<ChargingRoute?> PlanWithReturnAsync(string vehicleId, ChargingSite site, string? returnSiteId, CancellationToken ct) => PlanAsync(vehicleId,site,ct);
+    /// <summary>Why the last plan for this vehicle and site returned no route (null when unknown or planned).</summary>
+    string? LastPlanFailure(string vehicleId, ChargingSite site) => null;
+    /// <summary>After the vehicle is verified on the charging point, keep only the bay and the exit path and release the
+    /// inbound/return roads it no longer occupies. Returns the number of released leases.</summary>
+    Task<int> ShrinkToBayAsync(ChargingSession session, CancellationToken ct) => Task.FromResult(0);
     Task<string?> ValidateAsync(ChargingSession session, bool requireStopped, CancellationToken ct);
     Task<string?> ValidateRecoveryCloseAsync(ChargingSession session,CancellationToken ct) => ValidateAsync(session,true,ct);
     bool IsAt(string vehicleId, string siteId);

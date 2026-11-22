@@ -126,7 +126,21 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
                         if(await port.ReserveAsync(row,ct))break;
                         row=Save(row with {Site=null,Route=null,Phase=ChargingPhase.Queued,UpdatedAt=Now,Message="充电位或道路被占用，继续排队。"});
                     }
-                    if(row.Phase!=ChargingPhase.Reserved)continue;
+                    if(row.Phase!=ChargingPhase.Reserved)
+                    {
+                        // Keep the queue explainable: record why no charging bay could be planned instead of waiting silently.
+                        if(choices.Count==0)
+                        {
+                            var reasons=options.Sites.Where(s=>s.Commissioned&&s.AllowedVehicleIds.Contains(row.VehicleId,StringComparer.OrdinalIgnoreCase))
+                                .Select(s=>sessions.Any(o=>o.HasReservation&&o.Site!.ResourceId.Equals(s.ResourceId,StringComparison.OrdinalIgnoreCase))
+                                    ?$"{s.Id}：已被其他充电会话预留"
+                                    :!CanHandleSite(s,row.VehicleId)?$"{s.Id}：控制方式未就绪":$"{s.Id}：{port.LastPlanFailure(row.VehicleId,s)??"暂无可用路线"}")
+                                .ToArray();
+                            var message="排队中，暂无可用充电位："+(reasons.Length==0?"没有允许该车使用的已核定充电位。":string.Join("；",reasons));
+                            if(row.Message!=message)Save(row with {Message=message,UpdatedAt=Now});
+                        }
+                        continue;
+                    }
                 }
                 await AdvanceAsync(row,ct);
             }
@@ -197,7 +211,9 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
                 {Hold(row,"退出后仍在充电或停止电流证据不完整，保留充电位。");return;}
                 await CompleteAsync(row with {Battery=battery},"充电已停止，原退出导航完成且实际离位；释放充电资源，恢复接单。",ct);return;
             }
-            row=Move(row,ChargingPhase.StartingCharge,"已完成原导航并核对真实充电点位置，准备车端充电继电器控制。");
+            var released=await port.ShrinkToBayAsync(row,ct);
+            row=Move(row,ChargingPhase.StartingCharge,"已完成原导航并核对真实充电点位置，准备车端充电继电器控制。"+
+                (released>0?$"已释放身后及未使用道路{released}项，仅保留充电位和出口路线。":""));
         }
         if(row.Phase==ChargingPhase.StartingCharge)
         {

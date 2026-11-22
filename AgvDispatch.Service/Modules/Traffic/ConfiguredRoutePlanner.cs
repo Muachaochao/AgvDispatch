@@ -43,11 +43,14 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
         string destination,
         IReadOnlySet<string> unavailableResourceIds) => PlanCore(source, destination, unavailableResourceIds, false);
 
+    public RoutePlan? PlanForVehicle(string source, string destination, IReadOnlySet<string> unavailableResourceIds,
+        string movingVehicleId) => PlanCore(source, destination, unavailableResourceIds, false, movingVehicleId);
+
     public RoutePlan? PlanWithoutVehicleOccupancyForComparison(string source, string destination) =>
         PlanCore(source, destination, new HashSet<string>(), true);
 
     private RoutePlan? PlanCore(string source, string destination,
-        IReadOnlySet<string> unavailableResourceIds, bool comparisonOnly)
+        IReadOnlySet<string> unavailableResourceIds, bool comparisonOnly, string? movingVehicleId = null)
     {
         var snapshot = _activeMap.Current;
         var closures = _roadClosures?.GetSnapshot();
@@ -60,7 +63,7 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
                 !string.Equals(closures.DefinitionHash, snapshot.DefinitionHash, StringComparison.OrdinalIgnoreCase)))
                 return null;
             return PlanAndMap(activeGraph, activeDefinition, source, destination,
-                unavailableResourceIds, _trafficFlow.GetEdgePenalties(), closures?.BlockedTraversals, comparisonOnly);
+                unavailableResourceIds, _trafficFlow.GetEdgePenalties(), closures?.BlockedTraversals, comparisonOnly, movingVehicleId);
         }
         if (_configuredGraph is not null)
         {
@@ -68,7 +71,7 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
             // configuration graph cannot silently stand in for that identity.
             if (closures?.Closures.Any(c => c.Active) == true) return null;
             return PlanAndMap(_configuredGraph, _configuredDefinition!, source, destination,
-                unavailableResourceIds, _trafficFlow.GetEdgePenalties(), comparisonOnly: comparisonOnly);
+                unavailableResourceIds, _trafficFlow.GetEdgePenalties(), comparisonOnly: comparisonOnly, movingVehicleId: movingVehicleId);
         }
 
         if (closures?.Closures.Any(c => c.Active) == true) return null;
@@ -89,7 +92,8 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
         string destination,
         IReadOnlySet<string> unavailableResourceIds,
         IReadOnlyDictionary<string, double> edgePenalties,
-        IReadOnlyCollection<MapDirectedTraversal>? unavailableTraversals = null, bool comparisonOnly = false)
+        IReadOnlyCollection<MapDirectedTraversal>? unavailableTraversals = null, bool comparisonOnly = false,
+        string? movingVehicleId = null)
     {
         var logicalSource = MapRouteSiteMapper.ResolveLogicalNodeId(definition, source);
         var logicalDestination = MapRouteSiteMapper.ResolveLogicalNodeId(definition, destination);
@@ -98,7 +102,7 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
             unavailableTraversals = (unavailableTraversals ?? []).Concat(
                 DumperTransitClearance.BlockedTraversals(definition, logicalSource, logicalDestination,
                     _legacyOptions.DumperDumpingSite, _legacyOptions.DumperTransitClearanceMeters))
-                .Concat(comparisonOnly ? [] : OccupiedCorridorTraversals(definition, logicalSource))
+                .Concat(comparisonOnly ? [] : OccupiedCorridorTraversals(definition, logicalSource, movingVehicleId))
                 .Distinct().ToArray();
         }
         catch (ArgumentException) { return null; }
@@ -128,7 +132,8 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
         if (plan is null && _vehicleStates is not null && physicalBayNodes.Contains(logicalSource))
         {
             var occupiedBays = _vehicleStates.GetAll()
-                .Where(vehicle => !string.IsNullOrWhiteSpace(vehicle.CurrentStation))
+                .Where(vehicle => !string.IsNullOrWhiteSpace(vehicle.CurrentStation) &&
+                    !string.Equals(vehicle.VehicleId, movingVehicleId, StringComparison.OrdinalIgnoreCase))
                 .Select(vehicle => MapRouteSiteMapper.ResolveLogicalNodeId(definition, vehicle.CurrentStation!))
                 .Where(id => physicalBayNodes.Contains(id) && !id.Equals(logicalSource, StringComparison.OrdinalIgnoreCase))
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -139,7 +144,8 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
         return plan is null ? null : MapRouteSiteMapper.ToAgvSitePlan(definition, plan);
     }
 
-    private IReadOnlyList<MapDirectedTraversal> OccupiedCorridorTraversals(MapDefinition definition, string logicalSource)
+    private IReadOnlyList<MapDirectedTraversal> OccupiedCorridorTraversals(MapDefinition definition, string logicalSource,
+        string? movingVehicleId = null)
     {
         if (_vehicleStates is null || _mapOptions is null) return [];
         var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow();
@@ -154,6 +160,8 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
         var departingId = departing.Length == 1 ? departing[0].VehicleId : null;
         foreach (var vehicle in vehicles)
         {
+            // The vehicle that will drive this route is never an obstacle on its own future leg.
+            if (string.Equals(vehicle.VehicleId, movingVehicleId, StringComparison.OrdinalIgnoreCase)) continue;
             if (vehicle.Connection != ConnectionState.Online || vehicle.Quality != SignalQuality.Good ||
                 vehicle.X is not { } x || vehicle.Y is not { } y ||
                 vehicle.LocalizationConfidence is not { } confidence ||
