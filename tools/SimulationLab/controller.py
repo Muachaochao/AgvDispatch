@@ -207,6 +207,20 @@ class Runtime:
         except (OSError, ValueError):
             return {}
 
+    def _fresh_telemetry(self, device=None):
+        """Check telemetry age without building the expensive full status payload.
+
+        At 8x the five-second freshness window is only 625 ms of wall time.
+        Building the large status response before checking freshness can make a
+        valid device sample look stale by the time run_scenario reaches its
+        guard, so scheduling gates must use this lightweight check directly.
+        """
+        device = self.device() if device is None else device
+        age = getattr(self, 'clock', simulation_clock.CLOCK).time() - device.get('time', 0)
+        children = getattr(self, 'children', {})
+        return (self.phase == 'running' and 0 <= age < 5 and bool(children)
+                and all(child.poll() is None for child in children.values()))
+
     def task_page(self, query=None):
         query = query or {}
         allowed = {'filter', 'search', 'page', 'pageSize'}
@@ -387,6 +401,7 @@ class Runtime:
     def status(self):
         from simulation_reports import history, guidance
         device = self.device()
+        fresh = self._fresh_telemetry(device)
         with self.lock:
             now = getattr(self, 'clock', simulation_clock.CLOCK).monotonic()
             recovery_cache = getattr(self, 'recovery_cache', (0, {}))
@@ -438,7 +453,7 @@ class Runtime:
             return dict(enabled=True, rootName=self.root.name, running=self.phase == 'running', phase=self.phase,
                         simulationRate=getattr(self, 'simulation_rate', 1),
                         simulationOriginUnixMs=round(getattr(self, 'clock', simulation_clock.CLOCK).origin_seconds * 1000),
-                        fresh=self.phase == 'running' and 0 <= getattr(self, 'clock', simulation_clock.CLOCK).time() - device.get('time', 0) < 5 and bool(self.children) and all(p.poll() is None for p in self.children.values()),
+                        fresh=fresh,
                         device=device, map=read(self.root / 'navigation.agvmap.json'), scenario=dict(self.scenario), report=self.report,
                         businessPlan=read(self.root / 'business-call-plan.json') if (self.root / 'business-call-plan.json').is_file() else None,
                         runtimeRelease=read(self.root / 'runtime-release.json') if (self.root / 'runtime-release.json').is_file() else None,
@@ -471,10 +486,7 @@ class Runtime:
                 phase=self.phase,
                 simulationRate=getattr(self, 'simulation_rate', 1),
                 simulationOriginUnixMs=round(getattr(self, 'clock', simulation_clock.CLOCK).origin_seconds * 1000),
-                fresh=(
-                    self.phase == 'running'
-                    and 0 <= getattr(self, 'clock', simulation_clock.CLOCK).time() - device.get('time', 0) < 5
-                ),
+                fresh=self._fresh_telemetry(device),
                 device=device,
                 scenario=dict(
                     id=scenario.get('id'),
@@ -1447,7 +1459,7 @@ class Runtime:
         with self.lock:
             if not clear_abort and self.abort.is_set():
                 raise InterruptedError('一键开测已停止，未提交测试呼叫。')
-            if not self.status()['fresh'] or self.worker and self.worker.is_alive():
+            if not self._fresh_telemetry() or self.worker and self.worker.is_alive():
                 raise ValueError('仿真未就绪或已有场景运行。')
             if not clear_abort and self.abort.is_set():
                 raise InterruptedError('一键开测已停止，未提交测试呼叫。')

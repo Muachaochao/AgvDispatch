@@ -44,6 +44,32 @@ class SimulationTests(unittest.TestCase):
         self.assertEqual(scenario['startedAt'], started)
         self.assertEqual(scenario['callRows'], [call])
 
+    def test_run_scenario_does_not_recheck_freshness_through_full_status(self):
+        runtime = Runtime.__new__(Runtime)
+        runtime.lock = threading.RLock()
+        runtime.abort = threading.Event()
+        runtime.worker = None
+        runtime.phase = 'running'
+        runtime.children = {'twin': Mock(poll=Mock(return_value=None))}
+        runtime.device = lambda: dict(time=100)
+        runtime.clock = Mock(time=Mock(return_value=101))
+        runtime.settings = {
+            'Dispatching': {'StationPickupSites': {'CNC-001': 'BUS-CNC-001'}},
+            'TaskCreation': {'AutomaticCreationEnabled': True},
+        }
+        started = Mock()
+        thread = Mock(start=started)
+        def status_after_submit():
+            started.assert_called_once_with()
+            return {}
+        runtime.status = status_after_submit
+        with patch('controller.threading.Thread', return_value=thread), \
+                patch('scenarios.execute'):
+            runtime.run_scenario(dict(name='business-calls', calls=[
+                dict(stationId='CNC-001', atSeconds=0, vehicleId=None)]))
+        self.assertTrue(runtime._fresh_telemetry())
+        started.assert_called_once_with()
+
     def test_dispatch_options_write_is_scoped_to_current_isolated_instance(self):
         runtime = Runtime.__new__(Runtime)
         runtime.lock = threading.RLock()

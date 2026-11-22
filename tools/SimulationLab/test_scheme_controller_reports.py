@@ -86,15 +86,15 @@ class ControllerSchemeTests(unittest.TestCase):
             self.assertNotIn(scheme_id, [row['id'] for row in deleted['schemes']])
             self.assertTrue((source / 'simulation-report.json').exists())
 
-    def test_startup_cannot_clear_stop_arriving_during_status_read(self):
+    def test_startup_cannot_clear_stop_arriving_during_telemetry_check(self):
         runtime = object.__new__(Runtime)
         runtime.lock = threading.RLock()
         runtime.abort = threading.Event()
         runtime.worker = None
-        def status():
+        def fresh_telemetry():
             runtime.abort.set()
-            return dict(fresh=True)
-        runtime.status = status
+            return True
+        runtime._fresh_telemetry = fresh_telemetry
         with patch('controller.threading.Thread') as thread:
             with self.assertRaises(InterruptedError):
                 runtime.run_scenario(dict(name='normal-cycle'), clear_abort=False)
