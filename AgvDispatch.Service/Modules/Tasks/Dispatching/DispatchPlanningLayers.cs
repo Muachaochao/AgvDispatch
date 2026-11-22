@@ -39,6 +39,8 @@ public sealed record DispatchCandidateGraph
     public HashSet<(string, string)> StagedPairs { get; init; } = [];
     public Dictionary<string, List<DispatchOptimizationCandidate>> Diagnostics { get; init; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, string> TaskReasons { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+    public long RouteMemoHits { get; init; }
+    public long RouteMemoMisses { get; init; }
     // Observations are proposals. Layer four decides whether to persist them; Shadow never does.
     public IReadOnlyList<TrafficRouteObservation> WaitingRoutes { get; init; } = [];
 }

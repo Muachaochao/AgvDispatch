@@ -95,6 +95,8 @@ public sealed class DispatchCandidateFilter(DispatchOrchestratorOptions options,
         var vehicles = (await agvGateway.GetVehiclesAsync(ct)).OrderBy(v => v.VehicleId, StringComparer.OrdinalIgnoreCase).ToArray();
         var reasons = vehicles.ToDictionary(v => v.VehicleId, v => CheckVehicle(v, queue.OccupiedVehicles, policy), StringComparer.OrdinalIgnoreCase);
         var result = new DispatchCandidateGraph { Vehicles = vehicles, GeneralReasons = reasons };
+        var planningRoutes = new CycleRoutePlanner(routePlanner, routeCache);
+        var reservedStageSites = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var waitingRoutes = new List<TrafficRouteObservation>();
         var canStage = pickupStaging is not null && map is not null &&
             policy.Mode.Equals("Global", StringComparison.OrdinalIgnoreCase);
@@ -106,6 +108,7 @@ public sealed class DispatchCandidateFilter(DispatchOrchestratorOptions options,
             ct.ThrowIfCancellationRequested();
             var task = work[score.TaskId];
             var rows = result.Diagnostics[task.TaskId] = [];
+            string? taskStageSite = null;
             var pickup = options.GetPickupSite(task.StationId);
             if (pickup is null || !queue.Ready.TryGetValue(task.TaskId, out var step))
             { result.TaskReasons[task.TaskId] = pickup is null ? "未配置取货站点。" : "首步骤尚未就绪。"; continue; }
@@ -115,7 +118,8 @@ public sealed class DispatchCandidateFilter(DispatchOrchestratorOptions options,
             var definition = map?.Definition ?? activeMap.Current?.Definition;
             var physicalOccupants = PhysicalPickupOccupants(pickup, definition, vehicles);
             var unavailable = await trafficResources.GetUnavailableResourceIdsAsync(task.TaskId, ct);
-            var returnRoute = policy.ReturnCostWeight == 0 ? null : options.StandbySites.Select(site => Plan(pickup, site, new HashSet<string>()))
+            var returnRoute = policy.ReturnCostWeight == 0 ? null : options.StandbySites.Select(site =>
+                    planningRoutes.Plan(pickup, site, new HashSet<string>()))
                 .Where(r => r is not null).OrderBy(r => r!.Cost).FirstOrDefault();
             var returnEstimate = returnRoute is null ? (Travel: 0d, TrafficWait: 0d) : EstimateRoute(returnRoute, map, policy);
             var returnSeconds = (returnEstimate.Travel + returnEstimate.TrafficWait) * policy.ReturnCostWeight;
@@ -141,15 +145,28 @@ public sealed class DispatchCandidateFilter(DispatchOrchestratorOptions options,
                         false));
                     continue;
                 }
-                var route = Plan(vehicle.CurrentStation!, pickup, unavailable);
+                var route = planningRoutes.Plan(vehicle.CurrentStation!, pickup, unavailable);
                 var nominal = unavailable.Count == 0 || (route is not null && !canStage)
-                    ? null : Plan(vehicle.CurrentStation!, pickup, new HashSet<string>());
+                    ? null : planningRoutes.Plan(vehicle.CurrentStation!, pickup, new HashSet<string>());
                 var staged = canStage && nominal is { Nodes.Count: >= 3 }
                     ? pickupStaging!.TryStage(nominal, map!, unavailable, vehicleIds) : null;
                 if (staged is null && canStage && unavailable.Count > 0)
-                    staged = pickupStaging!.TryStageViaHolding(routePlanner, map!, vehicle.CurrentStation!, pickup,
-                        unavailable, vehicleIds);
-                if (staged is not null && (route is null ||
+                    staged = pickupStaging!.TryStageViaHolding(planningRoutes, map!, vehicle.CurrentStation!, pickup,
+                        unavailable, vehicleIds, excludedHoldingSites: reservedStageSites);
+                var proactiveChoice = false;
+                if (staged is null && canStage && route is { Nodes.Count: >= 3 })
+                {
+                    var directFirst = pickupStaging!.PlanInitialWindows(route, map!)[0];
+                    var proactive = pickupStaging.TryStageViaHolding(planningRoutes, map!,
+                        vehicle.CurrentStation!, pickup, new HashSet<string>(StringComparer.OrdinalIgnoreCase),
+                        vehicleIds, allowClearRoute: true, excludedHoldingSites: reservedStageSites);
+                    if (proactive is not null && ShouldUseProactiveStage(directFirst, proactive, route))
+                    {
+                        staged = proactive;
+                        proactiveChoice = true;
+                    }
+                }
+                if (staged is not null && (proactiveChoice || route is null ||
                     EffectiveRouteSeconds(staged.Route, map, policy) + staged.DeferredSeconds < EffectiveRouteSeconds(route, map, policy)))
                     route = staged.Route;
                 else
@@ -173,7 +190,7 @@ public sealed class DispatchCandidateFilter(DispatchOrchestratorOptions options,
                 var estimate = EstimateRoute(route, map, policy);
                 // Compare only; the reference deliberately ignores temporary peers
                 // and leases and must never enter Plans, Outbox or reservations.
-                var reference = routePlanner.PlanWithoutVehicleOccupancyForComparison(vehicle.CurrentStation!, pickup);
+                var reference = planningRoutes.PlanWithoutVehicleOccupancyForComparison(vehicle.CurrentStation!, pickup);
                 var referenceTravel = reference is null ? estimate.Travel : EstimateRoute(reference, map, policy).Travel;
                 var deferral = detours.RemainingSeconds(task.TaskId, vehicle.VehicleId, map?.VersionId ?? "",
                     estimate.Travel, referenceTravel, AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow());
@@ -193,6 +210,7 @@ public sealed class DispatchCandidateFilter(DispatchOrchestratorOptions options,
                 };
                 result.Edges.Add(candidate); result.Plans[(task.TaskId, vehicle.VehicleId)] = route;
                 if (staged is not null) result.StagedPairs.Add((task.TaskId, vehicle.VehicleId));
+                if (staged is not null) taskStageSite ??= staged.Windows[0].Destination;
                 rows.Add(new(vehicle.VehicleId, candidate.TravelSeconds, candidate.TotalCostSeconds,
                     staged is null ? "已通过在线、定位、健康、电量、车辆池和路径筛选；发车前仍须实时核验路权。"
                         : $"首窗可到候车点 {staged.Windows[0].Destination}；后续窗口占用计入预计等待，发车前仍须实时核验。", true)
@@ -201,7 +219,10 @@ public sealed class DispatchCandidateFilter(DispatchOrchestratorOptions options,
             }
             if (!result.Edges.Any(e => e.TaskId == task.TaskId) && blocked is { } b)
             {
-                var first = canStage ? pickupStaging!.PlanInitialWindows(b.Route, map!)[0] : null;
+                var first = canStage
+                    ? TransportRouteWindows.NormalizeResources(
+                        pickupStaging!.PlanInitialWindows(b.Route, map!), map!)[0]
+                    : null;
                 var referenceOnly = map is null || first is not null && !first.ResourceIds.Any(unavailable.Contains);
                 var window = referenceOnly ? null : first;
                 waitingRoutes.Add(new(step.StepId, task.TaskId, b.Vehicle.VehicleId,
@@ -214,8 +235,14 @@ public sealed class DispatchCandidateFilter(DispatchOrchestratorOptions options,
                     WaitingCategory = referenceOnly ? "ReferenceRoute" : "Route"
                 });
             }
+            if (taskStageSite is not null) reservedStageSites.Add(taskStageSite);
         }
-        return result with { WaitingRoutes = waitingRoutes };
+        return result with
+        {
+            WaitingRoutes = waitingRoutes,
+            RouteMemoHits = planningRoutes.Hits,
+            RouteMemoMisses = planningRoutes.Misses
+        };
     }
 
     private static double EffectiveRouteSeconds(RoutePlan route, ActiveMapRuntimeSnapshot? map, DispatchAssignmentOptions policy)
@@ -224,6 +251,50 @@ public sealed class DispatchCandidateFilter(DispatchOrchestratorOptions options,
         return estimate.Travel + estimate.TrafficWait;
     }
 
-    private RoutePlan? Plan(string source, string destination, IReadOnlySet<string> unavailable) =>
-        routeCache is null ? routePlanner.Plan(source, destination, unavailable) : routeCache.Plan(source, destination, unavailable);
+    private static bool ShouldUseProactiveStage(AgvTransportRouteWindow direct,
+        StagedPickupRoute staged, RoutePlan directRoute)
+    {
+        var first = staged.Windows[0];
+        return direct.EdgeIds.Count >= 32 &&
+            first.EdgeIds.Count * 2 <= direct.EdgeIds.Count &&
+            staged.Route.Cost <= directRoute.Cost * 1.15;
+    }
+
+    private sealed class CycleRoutePlanner(IRoutePlanner fallback, DispatchRouteCache? cache) : IRoutePlanner
+    {
+        private readonly Dictionary<string, RoutePlan?> routes = new(StringComparer.Ordinal);
+        public long Hits { get; private set; }
+        public long Misses { get; private set; }
+
+        public RoutePlan? Plan(string source, string destination, IReadOnlySet<string> unavailable)
+        {
+            var key = "P\u001f" + source + "\u001f" + destination + "\u001f" +
+                string.Join('\u001e', unavailable.Order(StringComparer.OrdinalIgnoreCase));
+            if (routes.TryGetValue(key, out var cached))
+            {
+                Hits++;
+                return cached;
+            }
+            Misses++;
+            var route = cache is null
+                ? fallback.Plan(source, destination, unavailable)
+                : cache.Plan(source, destination, unavailable);
+            routes[key] = route;
+            return route;
+        }
+
+        public RoutePlan? PlanWithoutVehicleOccupancyForComparison(string source, string destination)
+        {
+            var key = "C\u001f" + source + "\u001f" + destination;
+            if (routes.TryGetValue(key, out var cached))
+            {
+                Hits++;
+                return cached;
+            }
+            Misses++;
+            var route = fallback.PlanWithoutVehicleOccupancyForComparison(source, destination);
+            routes[key] = route;
+            return route;
+        }
+    }
 }

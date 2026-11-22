@@ -798,15 +798,17 @@ public sealed partial class DispatchTaskOrchestrator(
             robot.AngularVelocity is not { } va || !double.IsFinite(va) || Math.Abs(va) > 0.02)
             return TransportWindowAdvanceOutcome.WaitingAtSafePoint;
 
+        var map = activeMap.Current;
         var nextIndex = payload.WindowIndex + 1;
-        var windows = payload.Windows;
+        var windows = map is null
+            ? payload.Windows
+            : TransportRouteWindows.NormalizeResources(payload.Windows, map);
         var next = windows[nextIndex];
         // Free only geometrically cleared OLD resources before requesting the
         // next window. Waiting for the next grant first creates hold-and-wait
         // cycles with a vehicle returning from the dumper.
         if (completedRouteRelease is not null)
             await completedRouteRelease.ReleaseWindowAsync(task.TaskId, command.StepId, terminal, cancellationToken);
-        var map = activeMap.Current;
         IReadOnlyList<string>? retained = null;
         if (UsesDynamicContinuation && map is not null)
         {
@@ -819,6 +821,8 @@ public sealed partial class DispatchTaskOrchestrator(
                 IsContinuationWorthTaking(task, payload, map, reroute, next.ResourceIds.Any(unavailable.Contains)))
             {
                 windows = GlobalPickupRoutePlanner.ReplaceRemainingWindows(payload, reroute.Windows);
+                if (map is not null)
+                    windows = TransportRouteWindows.NormalizeResources(windows, map);
                 next = windows[nextIndex];
                 if (!next.EdgeIds.SequenceEqual(payload.Windows[nextIndex].EdgeIds, StringComparer.OrdinalIgnoreCase))
                     logger.LogInformation("滚动窗口采用新规划的剩余路线。TaskId={TaskId}, StepId={StepId}, From={From}, To={To}",

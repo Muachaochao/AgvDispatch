@@ -51,6 +51,17 @@ Check(plan[0].ResourceIds.Contains("R1") && plan[0].ResourceIds.Contains("R2") &
 Check(plan[0].Final == false && plan[1].Final, "只有末窗口可以在终点执行车辆动作。");
 Check(plan[1].Path.SequenceEqual(["C", "D", "E"]), "后续窗口必须从安全停靠点连续接续。");
 Check(plan[1].ResourceIds.Contains("WAIT-E"), "末窗口应保留目标等待位资源。");
+var normalizationMap = new MapDefinition("TEST", "", "RobotWorld", "m", nodes, edges, resources);
+var normalized = TransportRouteWindows.NormalizeResources(
+    [plan[0] with { ResourceIds = [.. plan[0].ResourceIds, "R3", "R4", "WAIT-E"] }, plan[1]],
+    normalizationMap);
+Check(!normalized[0].ResourceIds.Contains("R3") &&
+      !normalized[0].ResourceIds.Contains("R4") &&
+      !normalized[0].ResourceIds.Contains("WAIT-E"),
+    "发送准备必须从窗口自身几何重算资源，不能被整条路线混入的后续资源污染。");
+Check(normalized.Zip(plan).All(pair => pair.First.Path.SequenceEqual(pair.Second.Path) &&
+        pair.First.EdgeIds.SequenceEqual(pair.Second.EdgeIds)),
+    "资源归一化不能改变窗口路径或路段顺序。");
 var automaticCorridors = MapCorridorResources.Enrich(
         new MapDefinition("TEST", "", "RobotWorld", "m", nodes, edges, resources))
     .Resources.Where(resource => MapCorridorResources.IsAutomatic(resource.Id))
@@ -244,6 +255,14 @@ Check(viaHolding is not null && viaHolding.Windows.Count == 2 &&
       viaHolding.Route.Nodes.SequenceEqual(["S", "A", "HOLD", "B", "C", "T"]) &&
       !viaHolding.Windows[0].ResourceIds.Contains("BLOCKED"),
     "普通路线没有安全停点时，应允许经核定净空的独立候车位先驶离，再等待后段释放。");
+Check(staging.TryStageViaHolding(
+        holdingPlanner, Activate(holdingMap), "S", "T", new HashSet<string>(), ["V"]) is null,
+    "默认规则不会仅因路线经过候车位就拆成多个窗口。");
+Check(staging.TryStageViaHolding(
+        holdingPlanner, Activate(holdingMap), "S", "T", new HashSet<string>(), ["V"],
+        allowClearRoute: true) is { Windows.Count: 2 } proactive &&
+      proactive.Windows[0].Destination == "HOLD",
+    "资源全空的长路线可主动在核定候车位结束首窗。");
 
 var throughHoldingNodes = holdingNodes
     .Select(node => node.Id == "HOLD" ? node with { Id = "THROUGH" } : node)
@@ -270,6 +289,10 @@ Check(staging.TryStageViaHolding(
         "S", "T", new HashSet<string> { "BLOCKED" }, ["V"]) is { Windows.Count: 2 } throughStage &&
       throughStage.Windows[0].Destination == "THROUGH",
     "独立停点位于两个不同交叉点之间时，只要单入口、单出口和净空都满足，也可用于分段续行。");
+Check(staging.TryStageViaHolding(
+        holdingPlanner, Activate(holdingMap), "S", "T", new HashSet<string> { "BLOCKED" }, ["V"],
+        excludedHoldingSites: new HashSet<string> { "HOLD" }) is null,
+    "同一轮已经预占的候车点不能继续分配给另一张没有持久绑定关系的任务。");
 Check(staging.TryStageViaHolding(
         holdingPlanner, Activate(holdingMap with
         {

@@ -334,6 +334,7 @@ public sealed class DispatchTaskStepCoordinator(
         if (plan is not { Nodes.Count: >= 2 } || !VehicleReadyAt(step.VehicleId, route.Item1, current)) return;
         var windows = adaptive?.Windows ?? TransportRouteWindows.Plan(
             plan, current, options, agvOptions?.NavigationCommandMode);
+        windows = TransportRouteWindows.NormalizeResources(windows, current);
         if (adaptive is null && step.StepType == DispatchTaskStepType.ReturnEmptyBox)
             windows = TransportRouteWindows.IncludeDumperExitClearance(windows, current.Definition, route.Item1);
         var firstWindow = windows[0];
@@ -469,6 +470,8 @@ public sealed class DispatchTaskStepCoordinator(
                 windows = TransportRouteWindows.IncludeDumperExitClearance(
                     windows, planningMap.Definition, dumpingSite);
         }
+        if (planningMap is not null)
+            windows = TransportRouteWindows.NormalizeResources(windows, planningMap);
         if (!string.IsNullOrWhiteSpace(retainedWaitingResource))
         {
             // A selected capacity-1 waiting bay stays reserved while the vehicle

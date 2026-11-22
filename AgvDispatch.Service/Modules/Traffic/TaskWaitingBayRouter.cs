@@ -30,8 +30,9 @@ public static class TaskWaitingBayRouter
             await ObserveReferenceAsync(step, pickup, sites, planner, unavailable, map, trafficLayer, ct);
             return;
         }
-        var first = (ranked.Windows ?? TransportRouteWindows.Plan(
-            ranked.Plan, map, stepOptions, navigationCommandMode))[0];
+        var windows = ranked.Windows ?? TransportRouteWindows.Plan(
+            ranked.Plan, map, stepOptions, navigationCommandMode);
+        var first = TransportRouteWindows.NormalizeResources(windows, map)[0];
         var resources = first.ResourceIds.Append(ranked.Resource).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         await trafficLayer.ObserveAsync(new(step.StepId, step.TaskId, step.VehicleId!, first.Source, first.Destination,
             first.EdgeIds, resources, true, "独立候车位和首个路权窗口按原任务优先级排队；尚未选位或授予路权。")
@@ -65,8 +66,9 @@ public static class TaskWaitingBayRouter
             var resource = candidate.Resource;
             if (!candidate.Plan!.ResourceIds.Contains(resource, StringComparer.OrdinalIgnoreCase))
                 throw new InvalidOperationException("候车路线未包含该等待节点的独立容量1资源。");
-            var windows = (candidate.Windows ?? TransportRouteWindows.Plan(
-                    candidate.Plan, map, stepOptions, navigationCommandMode))
+            var windows = TransportRouteWindows.NormalizeResources(
+                    candidate.Windows ?? TransportRouteWindows.Plan(
+                        candidate.Plan, map, stepOptions, navigationCommandMode), map)
                 .Select(window => window with
                 {
                     ResourceIds = window.ResourceIds.Append(resource).Distinct(StringComparer.OrdinalIgnoreCase)

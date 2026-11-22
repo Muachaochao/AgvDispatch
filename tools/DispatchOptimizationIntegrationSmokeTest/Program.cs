@@ -162,6 +162,34 @@ using (var f = await Fixture.Create("Global"))
     Check(f.Gateway.Writes == 0, "optimization registers outbox only and never bypasses command sender");
 }
 
+var parallelPreflight = new ConcurrentMapPreflight();
+using (var f = await Fixture.Create("Global", preflight: parallelPreflight))
+{
+    await f.Call("CNC1", 80);
+    await f.Call("CNC2", 50);
+    var occupied = (await f.Repository.GetSubmittingTasksAsync(default))
+        .Concat(await f.Repository.GetAssignedTasksAsync(default)).ToArray();
+    var cycle = (Task)typeof(DispatchTaskOrchestrator).GetMethod(
+        "RunOptimizationAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+        .Invoke(f.Orchestrator, [f.Optimization.Options, 2, occupied, CancellationToken.None])!;
+    var bothStarted = true;
+    try
+    {
+        await parallelPreflight.AllStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+    }
+    catch (TimeoutException)
+    {
+        bothStarted = false;
+    }
+    finally
+    {
+        parallelPreflight.Release.TrySetResult();
+    }
+    await cycle.WaitAsync(TimeSpan.FromSeconds(5));
+    Check(bothStarted && parallelPreflight.MaximumConcurrentReads == 2 && (await f.Due()).Count == 2,
+        "independent vehicle map checks start in parallel before one-reservation-at-a-time commit");
+}
+
 foreach (var change in new[] { "none", "gate", "map", "policy", "slots" })
 {
     var preflight = new PausableMapPreflight();
@@ -475,6 +503,41 @@ sealed class PausableMapPreflight : IRobokitTaskMapPreflight
             await Resume.Task.WaitAsync(ct);
         }
         return new(true, "test map and paths verified");
+    }
+}
+
+sealed class ConcurrentMapPreflight : IRobokitTaskMapPreflight
+{
+    private int _active;
+    private int _maximumConcurrentReads;
+    public TaskCompletionSource AllStarted { get; } =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public TaskCompletionSource Release { get; } =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public int MaximumConcurrentReads => Volatile.Read(ref _maximumConcurrentReads);
+
+    public async Task<RobokitTaskMapCheck> CheckAsync(string vehicleId, string currentSite, string pickup,
+        string waiting, string dumping, string mapId, string versionId, CancellationToken ct)
+    {
+        var active = Interlocked.Increment(ref _active);
+        var maximum = Volatile.Read(ref _maximumConcurrentReads);
+        while (active > maximum)
+        {
+            var observed = Interlocked.CompareExchange(
+                ref _maximumConcurrentReads, active, maximum);
+            if (observed == maximum) break;
+            maximum = observed;
+        }
+        if (active >= 2) AllStarted.TrySetResult();
+        try
+        {
+            await Release.Task.WaitAsync(ct);
+            return new(true, "parallel test map and paths verified");
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _active);
+        }
     }
 }
 

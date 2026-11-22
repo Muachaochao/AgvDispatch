@@ -12,6 +12,9 @@ public sealed record TrafficProgressPair(TrafficProgressFrame First,TrafficProgr
 public interface IAuthoritativeTrafficProgressReader
 {
     Task<TrafficProgressPair?> ReadAsync(string vehicleId,CancellationToken ct);
+
+    Task<TrafficProgressPair?> ReadAfterAsync(string vehicleId, TrafficProgressFrame anchor, CancellationToken ct) =>
+        ReadAsync(vehicleId, ct);
 }
 public sealed record TrafficBodyEnvelope(string ProfileId,string VehicleId,string CoordinateFrameId,
     double RadiusFromReportedReferenceMeters,bool CalibrationVerified,bool IncludesMaximumPermittedLoad);

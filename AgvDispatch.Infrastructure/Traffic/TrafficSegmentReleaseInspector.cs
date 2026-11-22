@@ -31,10 +31,10 @@ public sealed class TrafficSegmentReleaseInspector(ISqlSugarClient database, IAc
         => InspectCoreAsync(stepId, null, ct);
 
     internal async Task<(CapturedEvidence? Proof, TrafficSegmentReleaseAssessment Assessment)> CaptureAsync(
-        string stepId, CancellationToken ct)
+        string stepId, CancellationToken ct, TrafficProgressFrame? anchor = null)
     {
         CapturedEvidence? captured=null;
-        var assessment = await InspectCoreAsync(stepId, value=>captured=value, ct);
+        var assessment = await InspectCoreAsync(stepId, value=>captured=value, ct, anchor);
         return (captured, assessment);
     }
 
@@ -53,7 +53,8 @@ public sealed class TrafficSegmentReleaseInspector(ISqlSugarClient database, IAc
         catch(Exception ex) when(ex is InvalidDataException or JsonException or ArgumentException){return false;}
     }
 
-    private async Task<TrafficSegmentReleaseAssessment> InspectCoreAsync(string stepId, Action<CapturedEvidence>? capture, CancellationToken ct)
+    private async Task<TrafficSegmentReleaseAssessment> InspectCoreAsync(string stepId, Action<CapturedEvidence>? capture,
+        CancellationToken ct, TrafficProgressFrame? anchor = null)
     {
         if (!policy.Enabled) return Refuse("逐段释放只读评估未启用。");
         if (progress is null || envelopes is null) return Refuse("缺少权威进度源或核定车辆包络提供器。");
@@ -71,7 +72,10 @@ public sealed class TrafficSegmentReleaseInspector(ISqlSugarClient database, IAc
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(TimeSpan.FromSeconds(5));
             var body = await envelopes.ReadAsync(before.Context.VehicleId, timeout.Token).WaitAsync(timeout.Token);
-            var evidence = await progress.ReadAsync(before.Context.VehicleId, timeout.Token).WaitAsync(timeout.Token);
+            var read = anchor is null
+                ? progress.ReadAsync(before.Context.VehicleId, timeout.Token)
+                : progress.ReadAfterAsync(before.Context.VehicleId, anchor, timeout.Token);
+            var evidence = await read.WaitAsync(timeout.Token);
             using (var access = await gate.EnterAsync(MapExecutionOperation.ExistingWork, ct))
             {
                 if (access is null) return Refuse("采集期间地图或恢复门禁关闭。");

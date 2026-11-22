@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Domain.Agvs;
@@ -32,29 +33,44 @@ public sealed class AgvTrafficProgressReader(
         DispatchTaskStepType.ReturnEmptyBox
     ];
 
-    public async Task<TrafficProgressPair?> ReadAsync(string vehicleId, CancellationToken ct)
+    public Task<TrafficProgressPair?> ReadAsync(string vehicleId, CancellationToken ct) =>
+        ReadPairAsync(vehicleId, null, ct);
+
+    public Task<TrafficProgressPair?> ReadAfterAsync(string vehicleId, TrafficProgressFrame anchor, CancellationToken ct) =>
+        ReadPairAsync(vehicleId, anchor, ct);
+
+    private async Task<TrafficProgressPair?> ReadPairAsync(string vehicleId, TrafficProgressFrame? anchor, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(vehicleId)) return null;
         var context = await ReadContextAsync(vehicleId, ct);
         if (context is null) return null;
 
-        var timeoutAt = (clock ?? TimeProvider.System).GetUtcNow().AddSeconds(options.FrameWaitSeconds);
-        TrafficProgressFrame? first = null;
-        while ((clock ?? TimeProvider.System).GetUtcNow() < timeoutAt)
+        // Timeout and polling cadence describe real observation effort. The
+        // frame timestamps and freshness checks still use the business clock.
+        // Scaling the interval at 8x floods the single-process simulator without
+        // producing more intermediate positions.
+        var budget = TimeSpan.FromSeconds(options.FrameWaitSeconds);
+        var interval = TimeSpan.FromMilliseconds(50);
+        var elapsed = Stopwatch.StartNew();
+        while (elapsed.Elapsed < budget)
         {
             ct.ThrowIfCancellationRequested();
-            if (vehicles.TryGet(vehicleId, out var snapshot) && CreateFrame(snapshot, context) is { } candidate &&
-                (first is null || candidate.ObservedAt > first.ObservedAt &&
-                    candidate.Sequence > first.Sequence))
-            {
-                if (first is null) first = candidate;
-                else if ((candidate.ObservedAt - first.ObservedAt).TotalSeconds >= 0.15)
-                    return new(first, candidate);
-            }
-            await Task.Delay(50, ct);
+            if (vehicles.TryGetConsecutiveTelemetry(vehicleId, out var previous, out var latest) &&
+                CreateFrame(previous, context) is { } first && FollowsAnchor(first, anchor) &&
+                CreateFrame(latest, context) is { } second && IsLaterFrame(first, second))
+                return new(first, second);
+            await Task.Delay(interval, ct);
         }
         return null;
     }
+
+    private static bool IsLaterFrame(TrafficProgressFrame first, TrafficProgressFrame second) =>
+        second.Sequence > first.Sequence && (second.ObservedAt - first.ObservedAt).TotalSeconds >= 0.15;
+
+    private static bool FollowsAnchor(TrafficProgressFrame frame, TrafficProgressFrame? anchor) =>
+        anchor is null || frame.ControllerEpoch == anchor.ControllerEpoch &&
+        frame.Sequence >= anchor.Sequence && frame.ObservedAt >= anchor.ObservedAt &&
+        frame.LastFullyTraversedEdgeIndex >= anchor.LastFullyTraversedEdgeIndex;
 
     private async Task<ProgressContext?> ReadContextAsync(string vehicleId, CancellationToken ct)
     {
@@ -67,13 +83,14 @@ public sealed class AgvTrafficProgressReader(
         var step = steps[0];
         if (string.IsNullOrWhiteSpace(step.VendorTaskId)) return null;
         var commands = await database.Queryable<AgvCommandOutboxEntity>()
-            .Where(command => command.StepId == step.StepId &&
+            .Where(command => command.StepId == step.StepId && command.VendorCommandId == step.VendorTaskId &&
                 command.CommandType == (int)AgvCommandType.Transport &&
                 command.Status == (int)AgvCommandStatus.Sent)
             .ToListAsync(ct);
         var matchingCommands = commands.Where(item => item.VendorCommandId == step.VendorTaskId).ToArray();
         if (matchingCommands.Length != 1) return null;
         var command = matchingCommands[0];
+        if (command.SentAt is not { } sentAt) return null;
         var route = TransportRouteSnapshots.Read(command);
         var payload = JsonSerializer.Deserialize<AgvTransportCommandPayload>(command.PayloadJson, JsonOptions);
         if (payload?.Path is not { Count: >= 2 } path || payload.Windows is null ||
@@ -112,13 +129,13 @@ public sealed class AgvTrafficProgressReader(
         return new(step.TaskId, step.StepId, step.VendorTaskId, command.CommandId,
             command.ExecutionRouteSnapshotHash!, route.MapId, route.MapVersionId,
             route.CoordinateFrameId, path.ToArray(), segmentIds.ToArray(), windowStart,
-            profiles[0].MaximumPositionUncertaintyMeters);
+            profiles[0].MaximumPositionUncertaintyMeters, new DateTimeOffset(sentAt));
     }
 
     private static TrafficProgressFrame? CreateFrame(AgvRobotSnapshot snapshot, ProgressContext context)
     {
         if (snapshot.Connection != ConnectionState.Online || snapshot.Quality != SignalQuality.Good ||
-            snapshot.LastSuccessfulPollAt is not { } observedAt || snapshot.X is not { } x ||
+            snapshot.LastSuccessfulPollAt is not { } observedAt || observedAt < context.SentAt || snapshot.X is not { } x ||
             snapshot.Y is not { } y || snapshot.LocalizationConfidence is not { } confidence ||
             snapshot.PathPercentage is not { } percentage || !double.IsFinite(x) ||
             !double.IsFinite(y) || !double.IsFinite(confidence) || !double.IsFinite(percentage) ||
@@ -156,5 +173,5 @@ public sealed class AgvTrafficProgressReader(
         string CommandId, string RouteRevision, string MapId, string MapVersionId,
         string CoordinateFrameId,
         string[] WindowPath, string[] SegmentIds, int WindowStartEdgeIndex,
-        double PositionUncertaintyMeters);
+        double PositionUncertaintyMeters, DateTimeOffset SentAt);
 }

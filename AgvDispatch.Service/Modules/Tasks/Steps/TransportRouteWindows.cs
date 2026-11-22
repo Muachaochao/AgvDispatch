@@ -30,6 +30,51 @@ public static class TransportRouteWindows
         return PlanCore(route, map.Graph.FindRouteNode, map.Graph.Edges, options, navigationCommandMode, canStageAt);
     }
 
+    /// <summary>
+    /// Recomputes each window's resource set from the window's own path and
+    /// edges. This is a send-time guard against an upstream route aggregate
+    /// accidentally contaminating a short window with later stop resources.
+    /// </summary>
+    public static IReadOnlyList<AgvTransportRouteWindow> NormalizeResources(
+        IReadOnlyList<AgvTransportRouteWindow> windows, MapDefinition map)
+    {
+        ArgumentNullException.ThrowIfNull(windows);
+        ArgumentNullException.ThrowIfNull(map);
+        var topology = MapCorridorResources.Enrich(map);
+        var nodes = map.Nodes.ToDictionary(node => node.Id, StringComparer.OrdinalIgnoreCase);
+        return NormalizeCore(windows, site =>
+            nodes.GetValueOrDefault(MapRouteSiteMapper.ResolveLogicalNodeId(map, site)),
+            topology.Edges.ToDictionary(edge => edge.Id, StringComparer.OrdinalIgnoreCase));
+    }
+
+    public static IReadOnlyList<AgvTransportRouteWindow> NormalizeResources(
+        IReadOnlyList<AgvTransportRouteWindow> windows, ActiveMapRuntimeSnapshot map)
+    {
+        ArgumentNullException.ThrowIfNull(windows);
+        ArgumentNullException.ThrowIfNull(map);
+        return NormalizeCore(windows, map.Graph.FindRouteNode, map.Graph.Edges);
+    }
+
+    private static IReadOnlyList<AgvTransportRouteWindow> NormalizeCore(
+        IReadOnlyList<AgvTransportRouteWindow> windows,
+        Func<string, MapNode?> findNode,
+        IReadOnlyDictionary<string, MapEdge> edges)
+    {
+        ArgumentNullException.ThrowIfNull(windows);
+        ArgumentNullException.ThrowIfNull(findNode);
+        ArgumentNullException.ThrowIfNull(edges);
+        return windows.Select(window =>
+        {
+            if (window.Path.Count < 2 || window.EdgeIds.Count != window.Path.Count - 1 ||
+                !string.Equals(window.Source, window.Path[0], StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(window.Destination, window.Path[^1], StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("运输滚动窗口的起终点、节点与路段不连续。");
+            var nodes = window.Path.Select(site => findNode(site) ??
+                throw new InvalidOperationException($"滚动窗口引用了未知节点{site}。")).ToArray();
+            return window with { ResourceIds = Resources(nodes, window.EdgeIds, edges) };
+        }).ToArray();
+    }
+
     private static IReadOnlyList<AgvTransportRouteWindow> PlanCore(RoutePlan route, Func<string, MapNode?> findNode,
         IReadOnlyDictionary<string, MapEdge> edges, DispatchTaskStepOptions options, string? navigationCommandMode,
         Func<MapNode, bool>? canStageAt)
@@ -136,17 +181,22 @@ public static class TransportRouteWindows
         if (nodes.Length < 2 || edges.Length != nodes.Length - 1)
             throw new InvalidOperationException("运输滚动窗口的节点与路段不连续。");
 
+        return new(0, nodes[0], nodes[^1], nodes, edges,
+            Resources(routeNodes.Skip(start).Take(end - start + 1).ToArray(), edges, edgeIndex), final);
+    }
+
+    private static string[] Resources(IReadOnlyList<MapNode> nodes, IReadOnlyList<string> edges,
+        IReadOnlyDictionary<string, MapEdge> edgeIndex)
+    {
         var resources = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        resources.UnionWith(routeNodes[start].ResourceIds);
-        for (var offset = 0; offset < edges.Length; offset++)
+        resources.UnionWith(nodes[0].ResourceIds);
+        for (var offset = 0; offset < edges.Count; offset++)
         {
             var edge = edgeIndex.GetValueOrDefault(edges[offset])
                 ?? throw new InvalidOperationException($"滚动窗口引用了未知路段{edges[offset]}。");
             resources.UnionWith(edge.ResourceIds);
-            resources.UnionWith(routeNodes[start + offset + 1].ResourceIds);
+            resources.UnionWith(nodes[offset + 1].ResourceIds);
         }
-
-        return new(0, nodes[0], nodes[^1], nodes, edges,
-            resources.Order(StringComparer.OrdinalIgnoreCase).ToArray(), final);
+        return resources.Order(StringComparer.OrdinalIgnoreCase).ToArray();
     }
 }

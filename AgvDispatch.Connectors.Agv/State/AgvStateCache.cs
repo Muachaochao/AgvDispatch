@@ -8,6 +8,7 @@ public sealed class AgvStateCache : IAgvStateCache
 {
     private readonly object _sync = new();
     private readonly Dictionary<string, AgvRobotSnapshot> _snapshots;
+    private readonly Dictionary<string, AgvRobotSnapshot> _previousTelemetry = new(StringComparer.OrdinalIgnoreCase);
     private readonly TimeSpan _staleAfter;
     private readonly TimeProvider _clock;
     private long _version;
@@ -70,6 +71,16 @@ public sealed class AgvStateCache : IAgvStateCache
         lock (_sync)
         {
             return _snapshots.TryGetValue(vehicleId, out snapshot!);
+        }
+    }
+
+    public bool TryGetConsecutiveTelemetry(string vehicleId, out AgvRobotSnapshot previous, out AgvRobotSnapshot latest)
+    {
+        lock (_sync)
+        {
+            _snapshots.TryGetValue(vehicleId, out latest!);
+            return _previousTelemetry.TryGetValue(vehicleId, out previous!) &&
+                latest is { LastSuccessfulPollAt: { } at } && _clock.GetUtcNow() - at < _staleAfter;
         }
     }
 
@@ -164,6 +175,12 @@ public sealed class AgvStateCache : IAgvStateCache
             }
 
             current = change(previous) with { UpdatedAt = now, Version = ++_version };
+            if (current is { Connection: ConnectionState.Online, Quality: SignalQuality.Good, LastSuccessfulPollAt: { } at } &&
+                previous is { Connection: ConnectionState.Online, Quality: SignalQuality.Good, LastSuccessfulPollAt: { } prior } &&
+                at > prior && at - prior < _staleAfter)
+                _previousTelemetry[vehicleId] = previous;
+            else
+                _previousTelemetry.Remove(vehicleId);
             _snapshots[vehicleId] = current;
         }
 

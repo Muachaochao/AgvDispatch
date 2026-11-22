@@ -97,10 +97,25 @@ public sealed partial class DispatchTaskOrchestrator
         {
             var failedPairs = new HashSet<(string, string)>();
             var remaining = edges.ToList();
+            var prefetched = new Dictionary<(string TaskId, string VehicleId), Task<string?>>();
+            var firstMatch = _optimizer.Optimize(input, remaining, policy, now, slots);
+            var prefetchWatch = Stopwatch.StartNew();
+            foreach (var assignment in firstMatch.Assignments)
+            {
+                var task = work.Single(t => t.TaskId == assignment.TaskId);
+                var vehicle = vehicles.Single(v => v.VehicleId == assignment.VehicleId);
+                var plan = plans[(task.TaskId, vehicle.VehicleId)];
+                prefetched[(task.TaskId, vehicle.VehicleId)] = CheckOptimizedVehicleMapAsync(
+                    vehicle, plan, map, options.GetDumperWaitingSites().ToArray(),
+                    options.DumperDumpingSite, ct);
+            }
+            if (prefetched.Count > 0)
+                await Task.WhenAll(prefetched.Values);
+            preflightMs += prefetchWatch.Elapsed.TotalMilliseconds;
             // Commit one recommendation then rematch: a failed reservation never steals another task's sole vehicle.
+            var match = firstMatch;
             while (prepared.Count < slots && remaining.Count > 0)
             {
-                var match = _optimizer.Optimize(input.Where(t => !prepared.ContainsKey(t.TaskId)).ToArray(), remaining, policy, now, slots - prepared.Count);
                 var next = match.Assignments.FirstOrDefault();
                 if (next is null) break;
                 var task = work.Single(t => t.TaskId == next.TaskId);
@@ -112,8 +127,14 @@ public sealed partial class DispatchTaskOrchestrator
                     var plan = plans[(task.TaskId, vehicle.VehicleId)];
                     var waitingSites = options.GetDumperWaitingSites().ToArray();
                     var dumpingSite = options.DumperDumpingSite;
-                    var preflightFailure = await CheckOptimizedVehicleMapAsync(vehicle, plan, map, waitingSites, dumpingSite, ct);
-                    preflightMs += stage.Elapsed.TotalMilliseconds;
+                    if (!prefetched.TryGetValue((task.TaskId, vehicle.VehicleId), out var preflight))
+                    {
+                        preflight = CheckOptimizedVehicleMapAsync(
+                            vehicle, plan, map, waitingSites, dumpingSite, ct);
+                    }
+                    var preflightFailure = await preflight;
+                    if (!prefetched.ContainsKey((task.TaskId, vehicle.VehicleId)))
+                        preflightMs += stage.Elapsed.TotalMilliseconds;
                     if (preflightFailure is not null)
                     {
                         outcome = preflightFailure;
@@ -154,6 +175,9 @@ public sealed partial class DispatchTaskOrchestrator
                     failedPairs.Add((task.TaskId, vehicle.VehicleId));
                     remaining.RemoveAll(e => failedPairs.Contains((e.TaskId, e.VehicleId)));
                 }
+                match = _optimizer.Optimize(
+                    input.Where(t => !prepared.ContainsKey(t.TaskId)).ToArray(),
+                    remaining, policy, now, slots - prepared.Count);
             }
         }
         if (global && edges.Count > 0)
@@ -177,7 +201,8 @@ public sealed partial class DispatchTaskOrchestrator
             CapturedAt = now, DurationMs = watch.Elapsed.TotalMilliseconds, WaitingTaskCount = waiting.Count,
             WindowTaskCount = window.Count, EligibleVehicleCount = generalReasons.Count(p => p.Value is null),
             CandidateCount = edges.Count, RetainedCandidateCount = result.RetainedCandidateCount,
-            RouteCacheHits = (routeCache?.Hits ?? 0) - hits, RouteCacheMisses = (routeCache?.Misses ?? 0) - misses, Tasks = rowsOut,
+            RouteCacheHits = ((routeCache?.Hits ?? 0) - hits) + graph.RouteMemoHits,
+            RouteCacheMisses = ((routeCache?.Misses ?? 0) - misses) + graph.RouteMemoMisses, Tasks = rowsOut,
             Message = $"{(global ? "全局派车" : "影子比对")}：推荐 {result.Assignments.Count} 单，贪心 {greedy.Count} 单，登记 {prepared.Count} 单；" +
                 (slots == 0 ? "并发槽位已满，既有任务保持不动。" : "等待任务继续保存在原队列。") +
                 (waiting.Count != work.Length ? $" {waiting.Count - work.Length} 个已有车辆或路权的任务保持固定。" : "")
@@ -252,6 +277,18 @@ public sealed partial class DispatchTaskOrchestrator
                 // A nominated route via a safe holding bay need not be the shortest full route.
                 partial = pickupStaging.TryStageViaHolding(routePlanner, map, current.CurrentStation!,
                     planned.Nodes[^1], unavailable, vehicleIds);
+                if (partial is null && route is not null)
+                {
+                    var directFirst = PlanInitialTransportWindows(route, map)[0];
+                    var proactive = pickupStaging.TryStageViaHolding(routePlanner, map,
+                        current.CurrentStation!, planned.Nodes[^1],
+                        new HashSet<string>(StringComparer.OrdinalIgnoreCase), vehicleIds,
+                        allowClearRoute: true);
+                    if (proactive is not null && directFirst.EdgeIds.Count >= 32 &&
+                        proactive.Windows[0].EdgeIds.Count * 2 <= directFirst.EdgeIds.Count &&
+                        proactive.Route.Cost <= route.Cost * 1.15)
+                        partial = proactive;
+                }
                 if (partial is not null) route = partial.Route;
             }
         }
@@ -264,6 +301,7 @@ public sealed partial class DispatchTaskOrchestrator
         if (staged && partial is null && route.ResourceIds.Any(unavailable.Contains))
             return Reject("traffic", "首窗路权或候车点净空不足，重新进入匹配。");
         var windows = partial?.Windows ?? PlanInitialTransportWindows(route, map);
+        if (map is not null) windows = TransportRouteWindows.NormalizeResources(windows, map);
         var firstWindow = windows[0];
         var reservation = await _trafficLayer.AcquireAsync(new(step.StepId, task.TaskId, vehicle.VehicleId,
             firstWindow.Source, firstWindow.Destination, firstWindow.EdgeIds, firstWindow.ResourceIds,
@@ -312,8 +350,9 @@ public sealed partial class DispatchTaskOrchestrator
             ];
         }
 
-        return pickupStaging?.PlanInitialWindows(route, map) ??
+        var windows = pickupStaging?.PlanInitialWindows(route, map) ??
             TransportRouteWindows.Plan(route, map, _stepOptions, agvOptions?.NavigationCommandMode);
+        return TransportRouteWindows.NormalizeResources(windows, map);
     }
 
     private static bool SamePlan(RoutePlan left, RoutePlan right) =>

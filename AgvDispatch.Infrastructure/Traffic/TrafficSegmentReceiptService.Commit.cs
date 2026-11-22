@@ -42,8 +42,8 @@ public sealed partial class TrafficSegmentReceiptService
         var view=await ReadAsync(request.ReceiptId,ct);
         if(view.State!=TrafficSegmentReceiptState.Pending||!pending.TryGetValue(request.ReceiptId,out var saved))
             return await ReadCommittedAsync(request,ct)??Denied("原凭据不可消费，需重新采集。");
-        // Capture outside the transaction/control gate. Both frames must be newer than the receipt.
-        var latest = (await inspector.CaptureAsync(saved.Proof.Context.StepId, ct)).Proof;
+        // Capture outside the gate, starting at the receipt's second frame or later.
+        var latest = (await inspector.CaptureAsync(saved.Proof.Context.StepId, ct, saved.Proof.Evidence.Second)).Proof;
         if(latest is null||!Compatible(saved.Proof,latest))
         {
             prior=await ReadCommittedAsync(request,ct);

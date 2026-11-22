@@ -12,6 +12,7 @@ public sealed record StagedPickupRoute(RoutePlan Route, IReadOnlyList<AgvTranspo
 public sealed class GlobalPickupRoutePlanner(
     DispatchTaskStepOptions steps, AgvOptions agv, HandshakeExecutionOptions handshake)
 {
+    private const int MaximumHoldingCandidates = 6;
     private readonly ConditionalWeakTable<ActiveMapRuntimeSnapshot,
         ConcurrentDictionary<(string NodeId, double Clearance), bool>> _holdingClearance = new();
 
@@ -19,7 +20,8 @@ public sealed class GlobalPickupRoutePlanner(
         agv.NavigationCommandMode.Equals("SpecifiedPath", StringComparison.OrdinalIgnoreCase);
 
     public IReadOnlyList<AgvTransportRouteWindow> PlanInitialWindows(RoutePlan route, ActiveMapRuntimeSnapshot map) =>
-        TransportRouteWindows.Plan(route, map, steps, agv.NavigationCommandMode);
+        TransportRouteWindows.NormalizeResources(
+            TransportRouteWindows.Plan(route, map, steps, agv.NavigationCommandMode), map);
 
     public IReadOnlyList<string> SafeHoldingSites(ActiveMapRuntimeSnapshot map,
         IReadOnlyCollection<string> vehicleIds)
@@ -43,7 +45,8 @@ public sealed class GlobalPickupRoutePlanner(
         StagedPickupRoute? best = null;
         if (clear is { Nodes.Count: >= 2 } && double.IsFinite(clear.Cost))
         {
-            var windows = ProtectExit(TransportRouteWindows.Plan(clear, map, steps, agv.NavigationCommandMode));
+            var windows = ProtectExit(TransportRouteWindows.NormalizeResources(
+                TransportRouteWindows.Plan(clear, map, steps, agv.NavigationCommandMode), map));
             if (!windows[0].ResourceIds.Any(unavailable.Contains)) best = new(clear, windows, 0);
         }
         if (!SupportsRollingRoutes || unavailable.Count == 0) return best;
@@ -86,23 +89,26 @@ public sealed class GlobalPickupRoutePlanner(
     }
 
     public StagedPickupRoute? TryStage(RoutePlan route, ActiveMapRuntimeSnapshot map, IReadOnlySet<string> unavailable,
-        IReadOnlyCollection<string> vehicleIds)
+        IReadOnlyCollection<string> vehicleIds, bool allowClearRoute = false)
     {
-        if (unavailable.Count == 0 || !route.ResourceIds.Any(unavailable.Contains) ||
+        if ((unavailable.Count == 0 && !allowClearRoute) ||
+            (!allowClearRoute && !route.ResourceIds.Any(unavailable.Contains)) ||
             route.Nodes.Count < 3 || route.EdgeIds.Count != route.Nodes.Count - 1 ||
             !map.Definition.Unit.Equals("m", StringComparison.OrdinalIgnoreCase))
             return null;
         var clearance = FleetClearance(vehicleIds);
         if (clearance is null) return null;
 
-        var windows = TransportRouteWindows.Plan(route, map, steps, agv.NavigationCommandMode,
-            node => IsHoldingSite(node, map, clearance.Value));
+        var windows = TransportRouteWindows.NormalizeResources(
+            TransportRouteWindows.Plan(route, map, steps, agv.NavigationCommandMode,
+                node => IsHoldingSite(node, map, clearance.Value)), map);
         if (windows.Count < 2 || windows[0].ResourceIds.Any(unavailable.Contains))
             return null;
 
         var conflicts = windows.Skip(1).SelectMany(window => window.ResourceIds)
             .Where(unavailable.Contains).Distinct(StringComparer.OrdinalIgnoreCase).Count();
-        return conflicts == 0 ? null : new(route, windows, Math.Min(90d, 12d + 3d * conflicts));
+        return conflicts == 0 && !allowClearRoute ? null :
+            new(route, windows, Math.Min(90d, 12d + 3d * conflicts));
     }
 
     /// <summary>
@@ -112,9 +118,10 @@ public sealed class GlobalPickupRoutePlanner(
     /// unavailable resources for later rolling reservation.
     /// </summary>
     public StagedPickupRoute? TryStageViaHolding(IRoutePlanner planner, ActiveMapRuntimeSnapshot map,
-        string source, string target, IReadOnlySet<string> unavailable, IReadOnlyCollection<string> vehicleIds)
+        string source, string target, IReadOnlySet<string> unavailable, IReadOnlyCollection<string> vehicleIds,
+        bool allowClearRoute = false, IReadOnlySet<string>? excludedHoldingSites = null)
     {
-        if (unavailable.Count == 0 || !SupportsRollingRoutes ||
+        if ((unavailable.Count == 0 && !allowClearRoute) || !SupportsRollingRoutes ||
             !map.Definition.Unit.Equals("m", StringComparison.OrdinalIgnoreCase))
             return null;
         var clearance = FleetClearance(vehicleIds);
@@ -127,11 +134,12 @@ public sealed class GlobalPickupRoutePlanner(
             .Where(node => node.Enabled && IsHoldingSite(node, map, clearance.Value))
             .Where(node => !MapRouteSiteMapper.IsSameNode(map.Definition, node.Id, source) &&
                 !MapRouteSiteMapper.IsSameNode(map.Definition, node.Id, target) &&
+                excludedHoldingSites?.Contains(node.Id) != true &&
                 !node.ResourceIds.Any(unavailable.Contains))
             .Select(node => (Node: node, Detour: Distance(sourceNode, node) + Distance(node, targetNode) - directDistance))
             .OrderBy(candidate => candidate.Detour)
             .ThenBy(candidate => candidate.Node.Id, StringComparer.OrdinalIgnoreCase)
-            .Take(12)
+            .Take(MaximumHoldingCandidates)
             .ToArray();
 
         StagedPickupRoute? best = null;
@@ -150,12 +158,14 @@ public sealed class GlobalPickupRoutePlanner(
                     .Order(StringComparer.OrdinalIgnoreCase)
                     .ToArray(),
                 firstLeg.Cost + remaining.Cost);
-            var staged = TryStage(combined, map, unavailable, vehicleIds);
+            var staged = TryStage(combined, map, unavailable, vehicleIds, allowClearRoute);
             if (staged is null ||
                 !MapRouteSiteMapper.IsSameNode(map.Definition, staged.Windows[0].Destination, candidate.Node.Id) ||
                 staged.Windows[0].ResourceIds.Any(unavailable.Contains))
                 continue;
-            best = BetterStage(best, staged, unavailable);
+            best = allowClearRoute
+                ? BetterProactiveStage(best, staged)
+                : BetterStage(best, staged, unavailable);
         }
         return best;
     }
@@ -174,6 +184,15 @@ public sealed class GlobalPickupRoutePlanner(
 
     private static double StageScore(StagedPickupRoute staged) =>
         staged.Route.Cost + staged.DeferredSeconds;
+
+    private static StagedPickupRoute? BetterProactiveStage(StagedPickupRoute? left,
+        StagedPickupRoute right)
+    {
+        if (left is null) return right;
+        var edgeComparison = left.Windows[0].EdgeIds.Count.CompareTo(right.Windows[0].EdgeIds.Count);
+        return edgeComparison <= 0 && (edgeComparison < 0 || StageScore(left) <= StageScore(right))
+            ? left : right;
+    }
 
     private static double Distance(MapNode left, MapNode right) =>
         Math.Sqrt(Math.Pow(left.X - right.X, 2) + Math.Pow(left.Y - right.Y, 2));

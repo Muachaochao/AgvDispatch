@@ -113,12 +113,28 @@ Check(pair.First.TaskId == "TASK" && pair.First.StepId == "STEP" && pair.First.V
 Check(Math.Abs(pair.First.PositionUncertaintyMeters - 0.1) < 1e-9,
     "定位误差采用已核定最大载荷包络中的保守误差界");
 
+var buffered = await reader.ReadAsync("AGV", default).WaitAsync(TimeSpan.FromMilliseconds(500));
+Check(buffered == pair, "已采集两帧时无需等待下一轮车端反馈");
+var commitPending = reader.ReadAfterAsync("AGV", pair.Second, default);
+Check(!commitPending.IsCompleted, "提交复核不能重复消费签发凭据时的两帧");
+ApplyTelemetry(now.AddMilliseconds(-20), 2.9, 0.55);
+clock.UtcNow = now.AddMilliseconds(200);
+ApplyTelemetry(now.AddMilliseconds(150), 3.1, 0.6);
+var commitPair = await commitPending.WaitAsync(TimeSpan.FromSeconds(3));
+Check(commitPair is not null && commitPair.First.Sequence >= pair.Second.Sequence &&
+      commitPair.Second.Sequence > commitPair.First.Sequence &&
+      commitPair.Second.ObservedAt == now.AddMilliseconds(150),
+    "提交从签发后的连续有效反馈确认新进度");
+cache.MarkFailure("AGV", new IOException("采集断开"), TimeSpan.FromSeconds(5));
+ApplyTelemetry(now.AddMilliseconds(180), 3.2, 0.65);
+Check(!cache.TryGetConsecutiveTelemetry("AGV", out _, out _), "断线恢复的第一帧不能和断线前反馈拼接");
+
 clock.UtcNow = now.AddSeconds(1);
-ApplyTelemetry(now, 4.4, 0.2, "P3", "P4", "VENDOR");
+ApplyTelemetry(now.AddMilliseconds(250), 4.4, 0.2, "P3", "P4", "VENDOR");
 var nextPending = reader.ReadAsync("AGV", default);
 await Task.Delay(100);
 clock.UtcNow = now.AddSeconds(1.3);
-ApplyTelemetry(now.AddMilliseconds(300), 4.7, 0.35, "P3", "P4", "VENDOR");
+ApplyTelemetry(now.AddMilliseconds(450), 4.7, 0.35, "P3", "P4", "VENDOR");
 var next = await nextPending.WaitAsync(TimeSpan.FromSeconds(3));
 Check(next is not null && next.First.LastFullyTraversedEdgeIndex == 1 &&
       next.Second.LastFullyTraversedEdgeIndex == 1,

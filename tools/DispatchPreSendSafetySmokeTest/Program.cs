@@ -132,10 +132,11 @@ foreach (var item in new[] { ("Faulted", false), ("CommunicationOnline", true), 
 dispatch.StationPickupSites["PIPELINE-ST"] = "B";
 var pipelineTask = await tasks.TryCreateAsync("PIPELINE-ST", "DUMP", 50, default);
 await tasks.MarkAcknowledgedAsync(pipelineTask.Task.TaskId, default);
-var policy = new DispatchAssignmentOptions { Mode = "Global" };
 var optimization = new DispatchOptimizationService(Path.Combine(Path.GetTempPath(),
-    "unused-safety-options-" + Guid.NewGuid().ToString("N") + ".json"), policy,
+    "unused-safety-options-" + Guid.NewGuid().ToString("N") + ".json"),
+    new DispatchAssignmentOptions { Mode = "Global" },
     Microsoft.Extensions.Logging.Abstractions.NullLogger<DispatchOptimizationService>.Instance);
+var policy = optimization.Options;
 var orchestrator = new DispatchTaskOrchestrator(Microsoft.Extensions.Logging.Abstractions.NullLogger<DispatchTaskOrchestrator>.Instance,
     dispatch, orchestration, outbox, gateway, cache, map, new MapOptions(), new Planner(), traffic, gate,
     optimization: optimization, preSendSafety: guard);
@@ -327,11 +328,30 @@ sealed class StagingPlanner : IRoutePlanner
 }
 sealed class Gate : IMapExecutionGate
 {
+    private int _depth;
     public MapExecutionMode Mode { get; set; } = MapExecutionMode.Running;
     public bool CanStartNewWork => Mode == MapExecutionMode.Running;
-    public ValueTask<IDisposable?> EnterAsync(MapExecutionOperation op, CancellationToken ct) => throw new Exception("Nested map operation lease is forbidden in the helper");
+    public ValueTask<IDisposable?> EnterAsync(MapExecutionOperation op, CancellationToken ct)
+    {
+        if (Interlocked.Increment(ref _depth) != 1)
+        {
+            Interlocked.Decrement(ref _depth);
+            throw new InvalidOperationException("Nested map operation lease is forbidden in the helper");
+        }
+        return ValueTask.FromResult<IDisposable?>(new Lease(this));
+    }
     public ValueTask<IDisposable> EnterControlAsync(CancellationToken ct) => throw new NotSupportedException();
     public void SetMode(MapExecutionMode mode) => Mode = mode;
+
+    private sealed class Lease(Gate owner) : IDisposable
+    {
+        private int _disposed;
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+                Interlocked.Decrement(ref owner._depth);
+        }
+    }
 }
 sealed class Monitor : IDispatchPipelineMonitor
 {

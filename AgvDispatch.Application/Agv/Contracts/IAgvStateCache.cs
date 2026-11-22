@@ -9,4 +9,10 @@ public interface IAgvStateCache
     long Version { get; }
     IReadOnlyList<AgvRobotSnapshot> GetAll();
     bool TryGet(string vehicleId, out AgvRobotSnapshot snapshot);
+
+    bool TryGetConsecutiveTelemetry(string vehicleId, out AgvRobotSnapshot previous, out AgvRobotSnapshot latest)
+    {
+        previous = latest = null!;
+        return false;
+    }
 }
