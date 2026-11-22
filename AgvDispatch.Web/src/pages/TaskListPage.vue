@@ -367,7 +367,18 @@ watch(() => route.query.create, create => {
 @media(max-width:780px){.task-page-header{align-items:flex-start;flex-wrap:wrap}.task-page-actions{width:100%;flex-wrap:wrap}.task-page-actions>span{margin-right:auto}.task-query-toolbar{grid-template-columns:1fr 1fr}.query-search,.query-date-range{grid-column:1/-1}.history-presets{grid-column:1/-1;justify-self:start}.query-submit{grid-column:2}.task-result-head{flex-wrap:wrap}.task-result-footer{flex-wrap:wrap}.task-result-footer>span{width:100%}}
 </style>
 <style scoped>
-.template-instantiation{border:1px solid #315b70;background:#0d2435;padding:13px 15px;margin:14px 0;line-height:1.7}.template-instantiation header{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.template-instantiation h4{margin:0;color:#bceaf2;font-size:14px}.template-instantiation p{margin:5px 0;color:#a8c5d6;font-size:12px}.template-instantiation code{color:#6ed7e8;font-size:11px}.template-instantiation dl{display:grid;grid-template-columns:155px minmax(0,1fr);gap:5px 12px;margin:12px 0}.template-instantiation dt{color:#8eafc5;font-size:11px}.template-instantiation dt small{display:block;color:#6f95ae}.template-instantiation dd{margin:0;color:#d3e8f2;font-size:12px;overflow-wrap:anywhere}.template-instantiation details{font-size:11px;color:#9ab8ce}.template-instantiation details p{margin:5px 0}@media(max-width:650px){.template-instantiation dl{grid-template-columns:1fr}}
+.template-instantiation{border:1px solid var(--ui-line);background:var(--ui-surface-raised);padding:13px 15px;margin:14px 0;line-height:1.7;color:var(--ui-text-2)}
+.template-instantiation header{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
+.template-instantiation h4{margin:0;color:var(--ui-text);font-size:14px}
+.template-instantiation p{margin:5px 0;color:var(--ui-text-2);font-size:12px}
+.template-instantiation code{color:var(--ui-primary-strong);font-size:11px}
+.template-instantiation dl{display:grid;grid-template-columns:155px minmax(0,1fr);gap:5px 12px;margin:12px 0}
+.template-instantiation dt{color:var(--ui-text-3);font-size:11px}
+.template-instantiation dt small{display:block;color:var(--ui-text-3)}
+.template-instantiation dd{margin:0;color:var(--ui-text);font-size:12px;overflow-wrap:anywhere}
+.template-instantiation details{font-size:11px;color:var(--ui-text-2)}
+.template-instantiation details p{margin:5px 0}
+@media(max-width:650px){.template-instantiation dl{grid-template-columns:1fr}}
 </style>
 <style scoped>
 .task-page-title h2{

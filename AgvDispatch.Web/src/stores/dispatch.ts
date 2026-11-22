@@ -17,6 +17,7 @@ export const useDispatchStore = defineStore('dispatch', () => {
   const submissionEnabled = ref(false);
   const cancellationEnabled = ref(false);
   const recoveryActionsEnabled = ref(false);
+  const alarmActionsEnabled = ref(false);
   const engineeringSimulationOnly = ref(false);
   const engineeringRuntimeApplyEnabled = ref(false);
   const adapterIdentity = ref<AdapterIdentity | null>(null);
@@ -64,6 +65,7 @@ export const useDispatchStore = defineStore('dispatch', () => {
     submissionEnabled.value = false;
     cancellationEnabled.value = false;
     recoveryActionsEnabled.value = false;
+    alarmActionsEnabled.value = false;
     adapterIdentity.value = null;
     previewMap.value = null;
     error.value = '';
@@ -128,15 +130,18 @@ export const useDispatchStore = defineStore('dispatch', () => {
     error.value = '';
     submissionEnabled.value = false;
     cancellationEnabled.value = false;
+    recoveryActionsEnabled.value = false;
+    alarmActionsEnabled.value = false;
     adapterIdentity.value = null;
     reconnectDelay = 1000;
 
     try {
-      const config = await api<{ taskSubmissionEnabled: boolean; taskCancellationEnabled?: boolean; recoveryActionsEnabled?: boolean; adapter?: AdapterIdentity;engineeringSimulationOnly?:boolean;engineeringRuntimeApplyEnabled?:boolean }>('/api/config');
+      const config = await api<{ taskSubmissionEnabled: boolean; taskCancellationEnabled?: boolean; recoveryActionsEnabled?: boolean; alarmActionsEnabled?: boolean; adapter?: AdapterIdentity;engineeringSimulationOnly?:boolean;engineeringRuntimeApplyEnabled?:boolean }>('/api/config');
       if (mine !== epoch) return;
       submissionEnabled.value = config.taskSubmissionEnabled;
       cancellationEnabled.value = config.taskCancellationEnabled === true;
       recoveryActionsEnabled.value = config.recoveryActionsEnabled === true;
+      alarmActionsEnabled.value = config.alarmActionsEnabled === true;
       adapterIdentity.value = config.adapter ?? null;
       engineeringSimulationOnly.value=config.engineeringSimulationOnly===true;
       engineeringRuntimeApplyEnabled.value=config.engineeringRuntimeApplyEnabled===true;
@@ -212,7 +217,7 @@ export const useDispatchStore = defineStore('dispatch', () => {
   }
 
   return {
-    snapshot, error, sceneError, now, submissionEnabled, cancellationEnabled, recoveryActionsEnabled, adapterIdentity,engineeringSimulationOnly,engineeringRuntimeApplyEnabled,
+    snapshot, error, sceneError, now, submissionEnabled, cancellationEnabled, recoveryActionsEnabled, alarmActionsEnabled, adapterIdentity,engineeringSimulationOnly,engineeringRuntimeApplyEnabled,
     fresh, vehicles, allTasks, equipment, resources, alarms, openAlarms,
     activeCount, vehicleStats, ringSegments, taskSummary, mapVehicleCount,
     api, connectBackend, connectDemo, stopConnection, dispose,

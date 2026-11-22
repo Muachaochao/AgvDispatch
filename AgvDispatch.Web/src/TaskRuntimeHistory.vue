@@ -32,4 +32,16 @@ async function download(){
 <p v-if="error" role="alert" class="inline-warning">{{ error }}</p><p v-if="!result">尚未查询；不自动填入示例事件。</p>
 <template v-else><p>共{{ result.totalCount }}项 · 固定窗口截止序号{{ result.throughSequence }} · 第{{ result.page }}页</p><div class="runtime-table"><table class="dialog-table"><thead><tr><th>序号 / 记录时间</th><th>事件 / 阶段</th><th>工位 / 信号</th><th>前值 → 当前 / 质量</th><th>采集时间 / 说明</th></tr></thead><tbody><tr v-for="e in result.items" :key="e.sequence"><td>{{ e.sequence }}<br>{{ shortTime(e.recordedAt) }}</td><td>{{ runtimeKindLabel(e.kind) }}<br>{{ handshakePhaseLabel(e.phase) }}</td><td>{{ e.stationId||'—' }}<br>{{ e.signal?signalLabel(e.signal,e.signal):'—' }}</td><td>{{ e.kind.startsWith('Signal')?`${boolText(e.previousValue)} → ${boolText(e.value)}`:'—' }}<br>{{ qualityLabel(e.quality) }}</td><td>{{ shortTime(e.observedAt) }}<br>{{ industrialText(e.reason) }}<details><summary>原始事件字段</summary><p>事件：{{e.kind}}<br/>阶段：{{e.phase||'—'}}<br/>信号：{{e.signal||'—'}}<br/>质量：{{e.quality||'—'}}</p><pre v-if="e.evidence">结构化核对证据：{{ e.evidence }}</pre></details></td></tr></tbody></table></div><p v-if="!result.items.length">当前筛选没有记录。</p><div class="runtime-tools"><button :disabled="busy||!fresh||result.page<=1" @click="query(result!.page-1,false)">上一页</button><button :disabled="busy||!fresh||result.page*result.pageSize>=result.totalCount" @click="query(result!.page+1,false)">下一页</button></div></template>
 <p>联调包包含任务观察、握手检查点、资源诊断、新事件窗口、CSV及SHA256清单。旧执行时间线只含最近100项；包内明确记录范围和限制。超过单包限制会拒绝，不静默截断。</p></section></template>
-<style scoped>.runtime-history{margin-top:28px;padding-top:20px;border-top:1px solid #294361}.runtime-history h3{color:#cee2f5;font-size:15px}.runtime-history p{font-size:12px;color:#8faac6;line-height:1.8;margin:12px 0}.runtime-tools{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin:12px 0}.runtime-tools label{display:flex;flex-direction:column;gap:6px;color:#a1bdd7;font-size:11px}.runtime-tools input,.runtime-tools select{max-width:190px}.runtime-table{overflow:auto}.runtime-table table{min-width:740px}.runtime-table pre{white-space:pre-wrap;max-width:450px;overflow-wrap:anywhere;font-size:11px}.runtime-table td{overflow-wrap:anywhere;line-height:1.8}</style>
+<style scoped>
+.runtime-history{margin-top:28px;padding-top:20px;border-top:1px solid var(--ui-line)}
+.runtime-history h3{color:var(--ui-text);font-size:15px}
+.runtime-history p{font-size:12px;color:var(--ui-text-2);line-height:1.8;margin:12px 0}
+.runtime-tools{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin:12px 0}
+.runtime-tools label{display:flex;flex-direction:column;gap:6px;color:var(--ui-text-2);font-size:11px}
+.runtime-tools input,.runtime-tools select{max-width:190px}
+.runtime-table{overflow:auto;border:1px solid var(--ui-line);border-radius:var(--ui-radius-sm)}
+.runtime-table table{min-width:740px}
+.runtime-table th{background:var(--ui-table-head);color:var(--ui-text-2)}
+.runtime-table td{border-bottom-color:var(--ui-table-line);background:var(--ui-table-row);color:var(--ui-table-text);overflow-wrap:anywhere;line-height:1.8}
+.runtime-table pre{white-space:pre-wrap;max-width:450px;overflow-wrap:anywhere;font-size:11px}
+</style>

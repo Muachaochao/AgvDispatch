@@ -60,5 +60,10 @@ const recoveryStateLabel = computed(() => ({
 </template>
 
 <style scoped>
-.obstacle-details{line-height:1.8;color:#b6cbe4}.obstacle-details p{margin:12px 0;overflow-wrap:anywhere}.obstacle-details h3{font-size:13px;margin-top:20px;color:#d2e5f7}.obstacle-details .property-list{margin:18px 0;gap:12px}.obstacle-details .property-list dd{font-size:12px}
+.obstacle-details{line-height:1.8;color:var(--ui-text-2)}
+.obstacle-details p{margin:12px 0;overflow-wrap:anywhere;color:var(--ui-text-2)}
+.obstacle-details h3{font-size:13px;margin-top:20px;color:var(--ui-text)}
+.obstacle-details .property-list{margin:18px 0;gap:12px}
+.obstacle-details .property-list dt{color:var(--ui-text-3)}
+.obstacle-details .property-list dd{font-size:12px;color:var(--ui-text)}
 </style>

@@ -27,6 +27,7 @@ var app = builder.Build();
 var submissions = builder.Configuration.GetValue("Web:EnableTaskSubmission", false);
 var recoveryActions = builder.Configuration.GetValue("Web:EnableRecoveryActions", false);
 var cancellations = builder.Configuration.GetValue("Web:EnableTaskCancellation", false);
+var alarmActions = builder.Configuration.GetValue("Web:EnableAlarmActions", false);
 var webRoot = Path.GetFullPath(builder.Configuration["Web:StaticPath"] ?? Path.Combine(app.Environment.ContentRootPath, "..", "AgvDispatch.Web", "dist"));
 
 app.Use(async (ctx, next) =>
@@ -58,7 +59,7 @@ app.Use(async (ctx, next) =>
     }
 });
 app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(20) });
-app.MapGet("/api/config", () => new { taskSubmissionEnabled = !engineeringSimulationOnly && submissions, taskCancellationEnabled = !engineeringSimulationOnly && cancellations, recoveryActionsEnabled = !engineeringSimulationOnly && recoveryActions, engineeringSimulationOnly, engineeringRuntimeApplyEnabled = !engineeringSimulationOnly && builder.Configuration.GetValue("Web:EnableEngineeringRuntimeApply", false), source = "backend", loopbackOnly = true,
+app.MapGet("/api/config", () => new { taskSubmissionEnabled = !engineeringSimulationOnly && submissions, taskCancellationEnabled = !engineeringSimulationOnly && cancellations, recoveryActionsEnabled = !engineeringSimulationOnly && recoveryActions, alarmActionsEnabled = !engineeringSimulationOnly && alarmActions, engineeringSimulationOnly, engineeringRuntimeApplyEnabled = !engineeringSimulationOnly && builder.Configuration.GetValue("Web:EnableEngineeringRuntimeApply", false), source = "backend", loopbackOnly = true,
     projectStoreId=Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(projectStorePath))),
     adapter = new { informationalVersion=AdapterBuildIdentity.InformationalVersion, sha256=AdapterBuildIdentity.Sha256 },
     servicePipeName = builder.Configuration["Web:PipeName"] ?? "AgvDispatch.Service" });
@@ -79,6 +80,7 @@ app.MapProjectApi();
 app.MapDisplayAreasApi();
 app.MapDiagnosticsApi(recoveryActions,cancellations);
 app.MapResourceReviewApi(recoveryActions);
+app.MapAlarmApi(!engineeringSimulationOnly && alarmActions);
 app.MapGet("/api/snapshot", async (SnapshotReader reader, CancellationToken ct) => await reader.ReadAsync(ct));
 app.MapGet("/api/alarms", async (string? search, string? status, string? severity,
     DateTimeOffset? from, DateTimeOffset? to, int? page, int? pageSize,

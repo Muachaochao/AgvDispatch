@@ -105,5 +105,20 @@ watch(() => props.current.detour?.state, () => { cancelConfirmed.value = false; 
 </template>
 
 <style scoped>
-.navigation-detour{background:#18263b;border:1px solid #344965;border-radius:8px;padding:24px;margin:20px 0;font-size:13px;line-height:1.8}.navigation-detour h3{font-size:17px;margin-bottom:12px}.navigation-detour p{margin:12px 0;overflow-wrap:anywhere}.navigation-detour a{color:#79d5eb}.navigation-detour button{padding:11px 18px;background:#254868;color:#e5f7ff;border:1px solid #5c89ab;border-radius:5px;cursor:pointer;margin:8px 10px 8px 0;white-space:normal}.navigation-detour button:disabled{opacity:.45;cursor:not-allowed}.detour-note{color:#abd0df}.detour-auto{color:#b8f0d7;background:#15362f;border-left:3px solid #4fd7a8;padding:12px 14px}.detour-error{color:#ffb2ab;background:#4b252c;padding:14px}.detour-candidate{border-left:3px solid #53c8df;padding:8px 18px;margin-top:18px;background:#102238}.detour-auto-record{border-left-color:#4fd7a8}.detour-candidate h4{font-size:14px;color:#b2e6ef}.detour-route{font-size:19px;color:#d4f5f7}.detour-check{display:flex;align-items:flex-start;gap:9px;margin:14px 0}.detour-check input{margin-top:4px}@media(max-width:600px){.navigation-detour{padding:16px}.detour-candidate{padding:8px 12px}}
+.navigation-detour{background:var(--ui-surface);border:1px solid var(--ui-line);border-radius:8px;padding:24px;margin:20px 0;font-size:13px;line-height:1.8;color:var(--ui-text)}
+.navigation-detour h3{font-size:17px;margin-bottom:12px}
+.navigation-detour p{margin:12px 0;overflow-wrap:anywhere}
+.navigation-detour a{color:var(--ui-primary-strong);font-weight:600}
+.navigation-detour button{padding:11px 18px;background:color-mix(in srgb,var(--ui-primary) 16%,var(--ui-surface-raised));color:var(--ui-text);border:1px solid color-mix(in srgb,var(--ui-primary) 45%,var(--ui-line));border-radius:5px;cursor:pointer;margin:8px 10px 8px 0;white-space:normal}
+.navigation-detour button:disabled{opacity:.45;cursor:not-allowed}
+.detour-note{color:var(--ui-text-2)}
+.detour-auto{color:var(--ui-text);background:color-mix(in srgb,var(--ui-success) 9%,var(--ui-surface-raised));border-left:3px solid var(--ui-success);padding:12px 14px}
+.detour-error{color:var(--ui-text);background:color-mix(in srgb,var(--ui-danger) 10%,var(--ui-surface-raised));border:1px solid color-mix(in srgb,var(--ui-danger) 36%,var(--ui-line));padding:14px;border-radius:6px}
+.detour-candidate{border-left:3px solid var(--ui-primary);padding:8px 18px;margin-top:18px;background:var(--ui-surface-raised)}
+.detour-auto-record{border-left-color:var(--ui-success)}
+.detour-candidate h4{font-size:14px;color:var(--ui-primary-strong)}
+.detour-route{font-size:19px;color:var(--ui-text)}
+.detour-check{display:flex;align-items:flex-start;gap:9px;margin:14px 0}
+.detour-check input{margin-top:4px}
+@media(max-width:600px){.navigation-detour{padding:16px}.detour-candidate{padding:8px 12px}}
 </style>

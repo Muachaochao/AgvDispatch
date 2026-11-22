@@ -74,7 +74,10 @@ function selectRecoveryRow(row:{taskId:string}){selectRecoveryTask(row.taskId);}
 .recovery-table{margin:0 12px;min-height:0}
 .recovery-table :deep(.el-table){--el-table-bg-color:var(--ui-surface);--el-table-tr-bg-color:var(--ui-surface);--el-table-header-bg-color:var(--ui-table-head);--el-table-border-color:var(--ui-table-line);--el-table-text-color:var(--ui-table-text);--el-table-header-text-color:var(--ui-text-2)}
 .recovery-table :deep(.el-table__row){cursor:pointer}
-.recovery-table small{display:block;margin-top:3px;color:var(--ui-text-3);font-size:10px;overflow-wrap:anywhere}
+.recovery-table small{display:block;margin-top:3px;color:var(--ui-text-2);font-size:10px;overflow-wrap:anywhere}
 .recovery-task-id{display:block;color:var(--ui-text);font:11px/1.45 Consolas,"Microsoft YaHei",monospace;overflow-wrap:anywhere}
+.recovery-page :deep(.el-tag--warning){--el-tag-text-color:var(--ui-warning);--el-tag-border-color:color-mix(in srgb,var(--ui-warning) 40%,var(--ui-line));--el-tag-bg-color:color-mix(in srgb,var(--ui-warning) 8%,var(--ui-surface))}
+.recovery-page :deep(.el-tag--success){--el-tag-text-color:var(--ui-success);--el-tag-border-color:color-mix(in srgb,var(--ui-success) 40%,var(--ui-line));--el-tag-bg-color:color-mix(in srgb,var(--ui-success) 8%,var(--ui-surface))}
+.recovery-page :deep(.el-tag--info){--el-tag-text-color:var(--ui-text-2);--el-tag-border-color:var(--ui-line-strong);--el-tag-bg-color:var(--ui-surface-soft)}
 @media(max-width:980px){.recovery-layout{grid-template-columns:1fr}.recovery-main :deep(.el-empty){min-height:260px}}
 </style>

@@ -73,6 +73,21 @@ using (var db = DatabaseFactory.Create(new() { DatabasePath = databasePath }))
     db.Insertable(new MapVersionEntity { MapId="MAP-WEB-TEST",VersionId="V2-DRAFT",VersionNumber=2,Status=(int)MapVersionStatus.Draft,DefinitionJson=JsonSerializer.Serialize(definition,WebJson.Options),ValidationJson=JsonSerializer.Serialize(new MapValidationService().Validate(definition),WebJson.Options),EditToken=Guid.NewGuid().ToString("N"),CreatedBy="isolated-test",CreatedAt=DateTime.Now,UpdatedAt=DateTime.Now }).ExecuteCommand();
     db.Insertable(new DispatchTaskEntity { TaskId = "WEB-ISOLATED-TASK", StationId = "TEST-STATION", Stage = (int)DispatchTaskStage.Completed,
         Priority = 50, CreatedAt = DateTime.Now.AddMinutes(-12), UpdatedAt = DateTime.Now }).ExecuteCommand();
+    db.Insertable(new AlarmRecordEntity
+    {
+        AlarmId = "ALM-WEB-CONTROL",
+        RuleKey = "TEST:WEB:ALARM",
+        SourceType = "Test",
+        SourceId = "WEB-ADAPTER",
+        Code = "TEST_ALARM",
+        Title = "隔离告警确认验收",
+        Message = "仅用于私有数据库HTTP确认与留痕验证。",
+        Severity = (int)AlarmSeverity.Error,
+        Status = (int)AlarmLifecycleStatus.Open,
+        FirstOccurredAt = DateTime.Now.AddMinutes(-1),
+        LastObservedAt = DateTime.Now,
+        UpdatedAt = DateTime.Now
+    }).ExecuteCommand();
     var sequence = 0;
     foreach (var type in Enum.GetValues<DispatchTaskStepType>())
     {
@@ -100,12 +115,13 @@ File.WriteAllText(Path.Combine(deploy, "appsettings.json"), JsonSerializer.Seria
     Database = new { Path = databasePath }, Security = new { PipeName = pipeName },
     Plc = new { Enabled = false, AllowWrites = false, SignalCsvPath = "config/plc-signals.csv" },
     Agv = new { Enabled = false, AllowCommands = false, Robots = Array.Empty<object>() }, Map = new { Enabled = false },
+    Alarm = new { Enabled = false },
     TaskCreation = new { Enabled = false }, Dispatching = new { Enabled = false, StationPickupSites = new Dictionary<string,string>{{"TEST-STATION","A"}}, DumperWaitingSite="B", DumperDumpingSite="B" }, AgvCommandOutbox = new { Enabled = false }, DispatchTaskSteps = new { Enabled = false },
     ExecutionIdentityAcquisition = new { Enabled = false }
 }));
 using var service = Launch(Path.Combine(deploy, "AgvDispatch.Service.exe"), deploy, [
     "--Database:Path=" + databasePath, "--Security:PipeName=" + pipeName, "--Plc:Enabled=false", "--Plc:AllowWrites=false", "--Agv:Enabled=false", "--Agv:AllowCommands=false",
-    "--TaskCreation:Enabled=false", "--Dispatching:Enabled=false", "--AgvCommandOutbox:Enabled=false", "--DispatchTaskSteps:Enabled=false", "--ExecutionIdentityAcquisition:Enabled=false", "--Map:Enabled=false"]);
+    "--TaskCreation:Enabled=false", "--Dispatching:Enabled=false", "--AgvCommandOutbox:Enabled=false", "--DispatchTaskSteps:Enabled=false", "--ExecutionIdentityAcquisition:Enabled=false", "--Map:Enabled=false", "--Alarm:Enabled=false"]);
 var serviceOut = service.StandardOutput.ReadToEndAsync(); var serviceErr = service.StandardError.ReadToEndAsync();
 using var listener = new TcpListener(IPAddress.Loopback, 0); listener.Start(); var port = ((IPEndPoint)listener.LocalEndpoint).Port; listener.Stop();
 var engineeringEnabled=args.Contains("--engineering-enabled-guards");
@@ -128,6 +144,9 @@ try
     Check(ready, "真实Service.exe → NamedPipe → WebHost → HTTP可用（私有库/独立管道）");
     var runtimeConfig=await http.GetFromJsonAsync<JsonElement>("/api/config");
     Check(runtimeConfig.GetProperty("engineeringRuntimeApplyEnabled").GetBoolean()==engineeringEnabled,"工程执行应用按独立许可开放，默认关闭");
+    Check(!runtimeConfig.GetProperty("alarmActionsEnabled").GetBoolean(),"告警确认默认关闭，不随只读适配器自动开放");
+    using(var disabledAlarmAction=await http.PostAsJsonAsync("/api/alarms/ALM-NOT-OPEN/acknowledge",new{ alarmId="ALM-NOT-OPEN",comment="隔离测试未启用确认",confirmed=true }))
+        Check(disabledAlarmAction.StatusCode==HttpStatusCode.Forbidden,"告警确认未启用时HTTP端点拒绝写入");
     using(var blockedApply=await http.PostAsJsonAsync("/api/engineering-runtime/apply",new {VersionId="",RequestId=Guid.NewGuid().ToString("N"),ExpectedRevision="",ExpectedCommunicationRevision="",ExpectedContentHash="",ExpectedMapHash="",ConfirmationText="",ActionsReviewed=false}))
         Check(engineeringEnabled ? blockedApply.IsSuccessStatusCode&&!(await blockedApply.Content.ReadFromJsonAsync<TaskParameterResult>(WebJson.Options))!.Accepted : blockedApply.StatusCode==HttpStatusCode.Forbidden,"HTTP 工程应用拒绝缺少明确确认的请求");
     var runtimeState=await http.GetFromJsonAsync<JsonElement>("/api/engineering-runtime/state");
@@ -536,14 +555,43 @@ try
     // A second loopback adapter enables Web operations only against this private Service. Device execution stays disabled.
     using(var controlListener=new TcpListener(IPAddress.Loopback,0)){
         controlListener.Start();var controlPort=((IPEndPoint)controlListener.LocalEndpoint).Port;controlListener.Stop();
-        var controls=bridgeArguments.Select(a=>a.StartsWith("--Web:Port=")?"--Web:Port="+controlPort:a).Concat(["--Web:EnableRecoveryActions=true","--Web:EnableTaskCancellation=true"]).ToArray();
+        var controls=bridgeArguments.Select(a=>a.StartsWith("--Web:Port=")?"--Web:Port="+controlPort:a).Concat(["--Web:EnableRecoveryActions=true","--Web:EnableTaskCancellation=true","--Web:EnableAlarmActions=true"]).ToArray();
         using var controlBridge=candidateRoot==null?Launch("dotnet",workspace,[Path.Combine(workspace,"AgvDispatch.WebHost/bin/Debug/net10.0-windows10.0.19041.0/AgvDispatch.WebHost.dll"),..controls]):Launch(Path.Combine(candidateRoot,"Web/host/AgvDispatch.WebHost.exe"),Path.Combine(candidateRoot,"Web"),controls);
         var controlOut=controlBridge.StandardOutput.ReadToEndAsync();var controlErr=controlBridge.StandardError.ReadToEndAsync();
         try{
             using var controlHttp=new HttpClient{BaseAddress=new Uri($"http://127.0.0.1:{controlPort}"),Timeout=TimeSpan.FromSeconds(12)};
             for(var retry=0;retry<60;retry++){try{if((await controlHttp.GetAsync("/health")).IsSuccessStatusCode)break;}catch(HttpRequestException){}await Task.Delay(100);}
             var capabilities=await controlHttp.GetFromJsonAsync<JsonElement>("/api/config");
-            Check(!capabilities.GetProperty("taskSubmissionEnabled").GetBoolean()&&capabilities.GetProperty("taskCancellationEnabled").GetBoolean()&&capabilities.GetProperty("recoveryActionsEnabled").GetBoolean(),"取消与恢复可独立启用，不开放创建任务");
+            Check(!capabilities.GetProperty("taskSubmissionEnabled").GetBoolean()&&capabilities.GetProperty("taskCancellationEnabled").GetBoolean()&&capabilities.GetProperty("recoveryActionsEnabled").GetBoolean()&&capabilities.GetProperty("alarmActionsEnabled").GetBoolean(),"取消、恢复与告警确认可独立启用，不开放创建任务");
+            using(var alarmIdentityMismatch=await controlHttp.PostAsJsonAsync("/api/alarms/ALM-A/acknowledge",new{ alarmId="ALM-B",comment="隔离测试身份不一致",confirmed=true }))
+                Check(alarmIdentityMismatch.StatusCode==HttpStatusCode.BadRequest,"告警确认拒绝路径与请求体身份不一致");
+            using(var alarmMissingConfirmation=await controlHttp.PostAsJsonAsync("/api/alarms/ALM-A/acknowledge",new{ alarmId="ALM-A",comment="隔离测试缺少确认",confirmed=false }))
+                Check(alarmMissingConfirmation.StatusCode==HttpStatusCode.BadRequest,"告警确认必须明确确认操作边界");
+            using(var alarmMissingRecord=await controlHttp.PostAsJsonAsync("/api/alarms/ALM-NOT-FOUND/acknowledge",new{ alarmId="ALM-NOT-FOUND",comment="隔离测试不存在告警",confirmed=true }))
+            {
+                var alarmResult=await alarmMissingRecord.Content.ReadFromJsonAsync<AlarmOperationResult>(WebJson.Options);
+                Check(alarmMissingRecord.IsSuccessStatusCode&&alarmResult is {Accepted:false}&&alarmResult.Message.Contains("不存在"),
+                    "启用的告警确认沿真实Named Pipe返回原服务结果，不伪造已确认");
+            }
+            using(var alarmAcknowledgedResponse=await controlHttp.PostAsJsonAsync("/api/alarms/ALM-WEB-CONTROL/acknowledge",new{ alarmId="ALM-WEB-CONTROL",comment="隔离测试已联系现场处理",confirmed=true }))
+            {
+                var alarmResult=await alarmAcknowledgedResponse.Content.ReadFromJsonAsync<AlarmOperationResult>(WebJson.Options);
+                Check(alarmAcknowledgedResponse.IsSuccessStatusCode&&alarmResult?.Accepted==true,"HTTP告警确认经真实Service完成开放告警确认");
+            }
+            using(var alarmDb=DatabaseFactory.Create(new(){DatabasePath=databasePath}))
+            {
+                var acknowledgedAlarm=alarmDb.Queryable<AlarmRecordEntity>().Single(item=>item.AlarmId=="ALM-WEB-CONTROL");
+                Check(acknowledgedAlarm.Status==(int)AlarmLifecycleStatus.Acknowledged&&
+                    !string.IsNullOrWhiteSpace(acknowledgedAlarm.AcknowledgedBy)&&
+                    acknowledgedAlarm.AcknowledgedAt is not null&&
+                    acknowledgedAlarm.AcknowledgeComment=="隔离测试已联系现场处理",
+                    "告警确认持久化确认人、时间与现场说明");
+            }
+            using(var alarmReplayResponse=await controlHttp.PostAsJsonAsync("/api/alarms/ALM-WEB-CONTROL/acknowledge",new{ alarmId="ALM-WEB-CONTROL",comment="隔离测试重复确认",confirmed=true }))
+            {
+                var alarmResult=await alarmReplayResponse.Content.ReadFromJsonAsync<AlarmOperationResult>(WebJson.Options);
+                Check(alarmResult is {Accepted:false}&&alarmResult.Message.Contains("不能重复确认"),"已确认告警拒绝重复确认");
+            }
             using var deniedResume=await controlHttp.PostAsJsonAsync("/api/business-run/resume",new BusinessRunResume("fixture",Guid.NewGuid().ToString("N"),DateTimeOffset.UtcNow,"隔离测试未启用业务不得续接运行",true),WebJson.Options);
             Check(deniedResume.StatusCode==HttpStatusCode.Forbidden,"只读业务模式不能续接运行");
             using var missingStage=await controlHttp.PostAsJsonAsync("/api/tasks/WEB-ISOLATED-TASK/cancel",new{requestId=Guid.NewGuid().ToString("N"),taskId="WEB-ISOLATED-TASK",currentStage="PickingUp",reason="隔离测试旧字段不能默认为其他阶段"});

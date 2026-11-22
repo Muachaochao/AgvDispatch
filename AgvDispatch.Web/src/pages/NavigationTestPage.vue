@@ -6,7 +6,7 @@ import type { NavigationAutoDetourRecord, NavigationDetourRecord } from '../navi
 import { actionStateLabel, industrialText } from '../operator-labels';
 const dispatch=useDispatchStore();
 const mapReloadNeeded=ref(false),mapNotice=ref('');
-interface RecordRow {taskId:string;vendorTaskId:string;vehicleId:string;sourceSite:string;targetSite:string;robotMap:string;robotMapMd5:string;state:string;message:string;updatedAt:string;route:string[];currentStation:string|null;x:number|null;y:number|null;observedAt:string|null;detour?:NavigationDetourRecord|null;autoDetour?:NavigationAutoDetourRecord|null}
+interface RecordRow {taskId:string;vendorTaskId:string;vehicleId:string;sourceSite:string;targetSite:string;robotMap:string;robotMapMd5:string;state:string;message:string;updatedAt:string;route:string[];currentStation:string|null;x:number|null;y:number|null;observedAt:string|null;detour?:NavigationDetourRecord|null;autoDetour?:NavigationAutoDetourRecord|null;pauseAttemptedAt?:string|null;pauseVendorTaskId?:string|null;pauseStoppedSamples?:number;pauseStoppedAt?:string|null;resumeAttemptedAt?:string|null}
 interface Status {ready:boolean;blockReason:string|null;enabled:boolean;vehicleId:string;current:RecordRow|null;message:string;autoDetourEnabled:boolean;autoDetourWaitSeconds:number}
 interface Preview {previewId:string;expiresAt:string;vehicleId:string;sourceSite:string;targetSite:string;robotMap:string;robotMapMd5:string;route:string[]}
 interface Stations {vehicleId:string;robotMap:string;robotMapMd5:string;stations:{id:string;x:number;y:number}[];suggestedSourceSite:string|null;capturedAt:string}
@@ -18,15 +18,21 @@ const jackLabels:Record<number,string>={0:'上升中',1:'上升到位',2:'下降
 const status=ref<Status|null>(null),catalog=ref<Stations|null>(null),preview=ref<Preview|null>(null);
 const source=ref(''),target=ref(''),confirmed=ref(false),busy=ref(false),error=ref(''),readError=ref(''),now=ref(Date.now());
 const lastReadAt=ref(0),readCurrent=computed(()=>!readError.value&&lastReadAt.value>0&&now.value-lastReadAt.value<=10000);
-const labels:Record<string,string>={Accepted:'已接受，等待执行',Waiting:'等待中',Running:'运行中',Suspended:'暂停',Completed:'已完成并核对到点',Failed:'失败',Cancelled:'已取消',CancelRequested:'取消待核实',Uncertain:'结果不确定，禁止重发',DetourCancelRequested:'改道等待原导航终结',DetourReady:'改道停稳核验通过',ReviewHold:'改道等待人工复核'};
+const labels:Record<string,string>={Accepted:'已接受，等待执行',Waiting:'等待中',Running:'运行中',PauseIntent:'暂停意图已保存',PauseRequested:'暂停已应答，待停稳核实',PausePending:'暂停已应答，等待状态3',Suspended:'已暂停',Completed:'已完成并核对到点',Failed:'失败',Cancelled:'已取消',CancelRequested:'取消待核实',Uncertain:'结果不确定，禁止重发',ResumeIntent:'继续意图已保存',ResumeRequested:'继续已应答，待运行核实',DetourCancelRequested:'改道等待原导航终结',DetourReady:'改道停稳核验通过',ReviewHold:'改道等待人工复核'};
 const active=computed(()=>!!status.value?.current&&!['Completed','Failed','Cancelled'].includes(status.value.current.state));
 const valid=computed(()=>!!preview.value&&Date.parse(preview.value.expiresAt)>now.value);
 const canInspect=computed(()=>!!catalog.value&&!!source.value&&!!target.value&&source.value!==target.value&&!busy.value&&!active.value&&!readError.value&&status.value?.ready);
 const canSubmit=computed(()=>valid.value&&confirmed.value&&!busy.value&&!active.value&&!readError.value&&status.value?.ready);
 const resumeVehicle=computed(()=>dispatch.snapshot?.status?.agvs.find(v=>v.vehicleId===status.value?.current?.vehicleId));
-const canResume=computed(()=>active.value&&status.value?.current?.state==='Suspended'&&busy.value===false&&
+const canPause=computed(()=>active.value&&status.value?.current?.state==='Running'&&!status.value.current.pauseAttemptedAt&&busy.value===false&&
   !readError.value&&dispatch.fresh&&resumeVehicle.value?.connection==='Online'&&resumeVehicle.value?.quality==='Good'&&
   resumeVehicle.value?.blocked===false&&resumeVehicle.value?.obstacle?.state==='Clear');
+const canResume=computed(()=>active.value&&status.value?.current?.state==='Suspended'&&busy.value===false&&
+  !readError.value&&dispatch.fresh&&resumeVehicle.value?.connection==='Online'&&resumeVehicle.value?.quality==='Good'&&
+  resumeVehicle.value?.blocked===false&&resumeVehicle.value?.obstacle?.state==='Clear'&&
+  (!status.value.current.pauseAttemptedAt||!!status.value.current.pauseStoppedAt));
+const pauseConfirmed=ref(false);
+const resumeConfirmed=ref(false);
 let autoReadAttempted=false;
 let disposed=false,timer:ReturnType<typeof setInterval>|undefined;
 async function api<T>(suffix='',body?:unknown):Promise<T>{const r=await fetch('/api/navigation-test'+suffix,{method:body===undefined?'GET':'POST',headers:body===undefined?{}:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(30000)});const data=await r.json();if(!r.ok)throw new Error(data.detail??data.error??'请求失败');return data;}
@@ -51,8 +57,10 @@ async function submitJack(action:'Up'|'Down'){
  finally{busy.value=false;await refresh();}
 }
 async function cancel(){const r=status.value?.current;if(!r)return;busy.value=true;error.value='';try{await api('/cancel',{taskId:r.taskId});}catch(e){error.value=String(e);}finally{busy.value=false;await refresh();}}
-async function resume(){const r=status.value?.current;if(!r||!canResume.value)return;busy.value=true;error.value='';try{await api('/resume',{taskId:r.taskId});}catch(e){error.value=String(e)+'；请继续查询原任务，不能重复发送继续命令。';}finally{busy.value=false;await refresh();}}
+async function pause(){const r=status.value?.current;if(!r||!canPause.value||!pauseConfirmed.value)return;busy.value=true;error.value='';pauseConfirmed.value=false;try{await api('/pause',{taskId:r.taskId});}catch(e){error.value=String(e)+'；请继续查询原任务，不能重复发送暂停命令。';}finally{busy.value=false;await refresh();}}
+async function resume(){const r=status.value?.current;if(!r||!canResume.value||!resumeConfirmed.value)return;busy.value=true;error.value='';resumeConfirmed.value=false;try{await api('/resume',{taskId:r.taskId});}catch(e){error.value=String(e)+'；请继续查询原任务，不能重复发送继续命令。';}finally{busy.value=false;await refresh();}}
 watch([source,target],invalidate);
+watch(()=>status.value?.current?.state,()=>{pauseConfirmed.value=false;resumeConfirmed.value=false;});
 const runtimeMapIdentity=computed(()=>{const m=dispatch.snapshot?.map;return m?`${m.id}/${m.version}`:'';});
 watch(runtimeMapIdentity,(next,previous)=>{if(!next||!previous||next===previous)return;invalidate();catalog.value=null;source.value='';target.value='';mapReloadNeeded.value=true;autoReadAttempted=false;mapNotice.value='运行地图已变化，旧起终点和路线核验已清除；切换完成且测试模式就绪后自动读取车端站点。';});
 onMounted(async()=>{await refresh();if(!disposed)timer=setInterval(()=>{now.value=Date.now();void refresh();},3000);});
@@ -141,14 +149,25 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);});
    <p>任务编号：{{status.current.vendorTaskId}}</p><p>{{status.current.message}}</p>
    <p v-if="status.current.observedAt">最近车辆观测：{{new Date(status.current.observedAt).toLocaleString()}}<br/>当前站点：{{status.current.currentStation||'站点之间或未知'}} · 坐标：{{status.current.x?.toFixed(3)??'未知'}}，{{status.current.y?.toFixed(3)??'未知'}}</p>
    <p>最近查询：{{new Date(status.current.updatedAt).toLocaleString()}}</p>
-   <button v-if="status.current.state==='Suspended'" :disabled="!canResume" @click="resume">继续暂停的原导航</button>
+   <div v-if="status.current.state==='Running'" class="navigation-control">
+    <p><strong>暂停只控制当前导航任务，不是急停。</strong>发送3001后，后台必须继续观察到原任务状态3、定位有效、无严重报警且车速连续两次接近零，才会开放继续操作。</p>
+    <label class="nav-confirm"><input v-model="pauseConfirmed" type="checkbox" :disabled="busy||!canPause"/>已核对当前测试车、原任务和现场通行条件，理解暂停不等于取消任务</label>
+    <button class="pause-control" :disabled="busy||!canPause||!pauseConfirmed" @click="pause">暂停当前导航</button>
+   </div>
+   <p v-if="status.current.state==='PausePending'||status.current.state==='PauseRequested'" class="notice">3001已应答，但车端尚未进入状态3。当前只查询原任务，不重复发送暂停命令。</p>
+   <p v-if="status.current.pauseAttemptedAt" class="notice">暂停尝试：{{new Date(status.current.pauseAttemptedAt).toLocaleString()}} · 停稳观察 {{status.current.pauseStoppedSamples??0}}/2 · {{status.current.pauseStoppedAt?'已连续确认停稳':'尚未确认停稳'}}</p>
+   <div v-if="status.current.state==='Suspended'" class="navigation-control">
+    <p><strong>继续只恢复同一条原导航，不创建新任务。</strong>发送3002后，后台必须继续查询原任务重新进入运行状态；应答成功不代表车辆已恢复运动或完成。</p>
+    <label class="nav-confirm"><input v-model="resumeConfirmed" type="checkbox" :disabled="busy||!canResume"/>已现场核对车辆、路线、载荷和通行条件，允许原导航继续运行</label>
+    <button :disabled="!canResume||!resumeConfirmed" @click="resume">继续暂停的原导航</button>
+   </div>
    <button :disabled="busy||!active||!status.enabled||(!!status.current.detour&&!status.current.detour.sendAttemptedAt)" @click="cancel">取消本次导航</button>
   </template><p v-else-if="!status||readError">尚未取得可靠的后台任务状态，请先查询原任务。</p><p v-else>后台当前没有已记录的测试任务。</p>
-  <p>收到应答不代表到点完成。只有原任务完成、车辆静止且位置核对到终点，才显示完成。取消不是急停；异常时由现场人员使用车辆急停。断线、超时或后台重启后，只查询原任务，不自动重发。</p>
+  <p>收到应答不代表到点完成、已暂停或已恢复运行。只有原任务完成、车辆静止且位置核对到终点，才显示完成。暂停、继续和取消都不是急停；异常时由现场人员使用车辆急停。断线、超时或后台重启后，只查询原任务，不自动重发。</p>
  </section>
  <NavigationDetourPanel v-if="status?.current" :current="status.current" :enabled="status.enabled" :read-current="readCurrent" :busy="busy" :now="now" :auto-detour-enabled="status.autoDetourEnabled" :auto-detour-wait-seconds="status.autoDetourWaitSeconds" @busy="busy = $event" @changed="refresh"/>
 </main>
 </template>
 <style scoped>
-.nav-test{max-width:1100px;margin:24px auto;padding:0 20px;color:#d4e5f6}.nav-test section{background:#18263b;border:1px solid #344965;border-radius:8px;padding:24px;margin:20px 0}.nav-test h2{font-size:26px}.nav-test p{line-height:1.7;overflow-wrap:anywhere}.fields{display:flex;gap:24px;flex-wrap:wrap}.fields label{display:grid;gap:8px}.nav-test select{min-width:220px;padding:10px;background:#101b2e;border:1px solid #526d8d;border-radius:5px;color:inherit}.nav-test button{padding:11px 18px;background:#254868;color:#e5f7ff;border:1px solid #5c89ab;border-radius:5px;cursor:pointer;margin:8px 10px 8px 0}.nav-test button:disabled{opacity:.45;cursor:not-allowed}.nav-test .send{display:block;background:#126b8c;margin-top:18px}.preview{border-left:3px solid #53c8df;padding:8px 20px;margin-top:20px}.route{font-size:20px;font-weight:600}.error{color:#ffb2ab;background:#4b252c;padding:16px}.notice{color:#abd0df}.jack-status{padding:12px 16px;margin:10px 0;background:#102238;border-left:3px solid #53c8df}.jack-confirm{display:flex;gap:8px;align-items:flex-start;line-height:1.8;margin:16px 0}.jack-confirm input{margin-top:5px}
+ .nav-test{max-width:1100px;margin:24px auto;padding:0 20px;color:var(--ui-text)}.nav-test section{background:var(--ui-surface);border:1px solid var(--ui-line);border-radius:8px;padding:24px;margin:20px 0}.nav-test h2{font-size:26px}.nav-test p{line-height:1.7;overflow-wrap:anywhere}.fields{display:flex;gap:24px;flex-wrap:wrap}.fields label{display:grid;gap:8px}.nav-test select{min-width:220px;padding:10px;background:var(--ui-field-bg);border:1px solid var(--ui-line-strong);border-radius:5px;color:var(--ui-text)}.nav-test button{padding:11px 18px;background:color-mix(in srgb,var(--ui-primary) 16%,var(--ui-surface-raised));color:var(--ui-text);border:1px solid color-mix(in srgb,var(--ui-primary) 45%,var(--ui-line));border-radius:5px;cursor:pointer;margin:8px 10px 8px 0}.nav-test button:disabled{opacity:.45;cursor:not-allowed}.nav-test .send{display:block;background:color-mix(in srgb,var(--ui-primary) 72%,var(--ui-surface-raised));margin-top:18px;color:var(--ui-on-primary,#fff)}.preview{border-left:3px solid var(--ui-primary);padding:8px 20px;margin-top:20px}.route{font-size:20px;font-weight:600}.error{color:var(--ui-text);background:color-mix(in srgb,var(--ui-danger) 10%,var(--ui-surface-raised));border:1px solid color-mix(in srgb,var(--ui-danger) 36%,var(--ui-line));padding:16px;border-radius:6px}.notice{color:var(--ui-text-2)}.jack-status{padding:12px 16px;margin:10px 0;background:var(--ui-surface-raised);border-left:3px solid var(--ui-primary)}.jack-confirm,.nav-confirm{display:flex;gap:8px;align-items:flex-start;line-height:1.8;margin:16px 0}.jack-confirm input,.nav-confirm input{margin-top:5px}.navigation-control{margin:12px 0;padding:12px 14px;border:1px solid color-mix(in srgb,var(--ui-warning) 42%,var(--ui-line));border-radius:7px;background:color-mix(in srgb,var(--ui-warning) 7%,var(--ui-surface-raised))}.navigation-control p{margin:0 0 8px}.pause-control{border-color:color-mix(in srgb,var(--ui-warning) 55%,var(--ui-line))!important;background:color-mix(in srgb,var(--ui-warning) 14%,var(--ui-surface-raised))!important}
 </style>

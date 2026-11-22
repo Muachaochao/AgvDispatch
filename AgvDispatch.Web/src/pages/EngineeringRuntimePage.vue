@@ -61,5 +61,25 @@ onMounted(()=>run(async n=>{const v:any=await store.api('/api/engineering/versio
 </section>
 </template>
 <style scoped>
-.runtime-page{max-width:1300px;margin:auto}.runtime-page.embedded{max-width:none;margin:0;gap:10px}.runtime-page article{border:1px solid #2d4263;border-radius:8px;padding:16px 18px;margin:0;background:#111b32}.runtime-page.embedded>article{display:grid;grid-template-columns:minmax(220px,290px) minmax(0,1fr);gap:8px 22px;align-items:start}.runtime-page.embedded>article>h3{grid-column:1}.runtime-page.embedded>article>p,.runtime-page.embedded>article>nav,.runtime-page.embedded>article>ul,.runtime-page.embedded>article>div,.runtime-page.embedded>article>label{grid-column:1/-1}.runtime-page h3{margin:0 0 8px;color:#c2dfed;font-size:16px}.runtime-page p,.runtime-page li{line-height:1.7;color:#9fb6ca}.runtime-page label{display:grid;gap:7px;margin:12px 0;max-width:900px}.runtime-page .check{display:flex;align-items:center}.runtime-page nav{display:flex;flex-wrap:wrap;gap:10px 18px;margin:12px 0}.runtime-page a{color:#5bd6eb}.runtime-page button{margin:5px 10px 5px 0}.identity{overflow-wrap:anywhere;font-family:Consolas,monospace;font-size:12px}.runtime-page table{width:100%;text-align:left;border-collapse:collapse}.runtime-page td,.runtime-page th{padding:9px;border-bottom:1px solid #30405a}details{max-height:420px;overflow:auto}@media(max-width:900px){.runtime-page.embedded>article{grid-template-columns:1fr}.runtime-page.embedded>article>*{grid-column:1!important}}
+.runtime-page{max-width:1300px;margin:auto}
+.runtime-page.embedded{max-width:none;margin:0;gap:10px}
+.runtime-page article{border:1px solid var(--ui-line);border-radius:var(--ui-radius);padding:16px 18px;margin:0;background:var(--ui-surface)}
+.runtime-page.embedded>article{display:grid;grid-template-columns:minmax(220px,290px) minmax(0,1fr);gap:8px 22px;align-items:start}
+.runtime-page.embedded>article>h3{grid-column:1}
+.runtime-page.embedded>article>p,.runtime-page.embedded>article>nav,.runtime-page.embedded>article>ul,.runtime-page.embedded>article>div,.runtime-page.embedded>article>label{grid-column:1/-1}
+.runtime-page h3{margin:0 0 8px;color:var(--ui-text);font-size:16px}
+.runtime-page p,.runtime-page li{line-height:1.7;color:var(--ui-text-2)}
+.runtime-page label{display:grid;gap:7px;margin:12px 0;max-width:900px;color:var(--ui-text-2)}
+.runtime-page label,.runtime-page article,.runtime-page nav,.runtime-page details{min-width:0;max-width:100%}
+.runtime-page :is(input,select,textarea){width:100%;min-width:0;max-width:100%}
+.runtime-page .check{display:flex;align-items:center}
+.runtime-page nav{display:flex;flex-wrap:wrap;gap:10px 18px;margin:12px 0}
+.runtime-page a{color:var(--ui-primary-strong)}
+.runtime-page button{margin:5px 10px 5px 0}
+.identity{overflow-wrap:anywhere;font-family:Consolas,monospace;font-size:12px;color:var(--ui-text-2)}
+.runtime-page table{width:100%;text-align:left;border-collapse:collapse}
+.runtime-page td,.runtime-page th{padding:9px;border-bottom:1px solid var(--ui-table-line);color:var(--ui-table-text)}
+.runtime-page th{background:var(--ui-table-head);color:var(--ui-text-2)}
+details{max-height:420px;overflow:auto}
+@media(max-width:900px){.runtime-page.embedded>article{grid-template-columns:1fr}.runtime-page.embedded>article>*{grid-column:1!important}}
 </style>

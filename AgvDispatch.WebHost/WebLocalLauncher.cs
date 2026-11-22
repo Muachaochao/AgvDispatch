@@ -70,7 +70,7 @@ internal static class WebLocalLauncher
                     var service=Start(servicePath,serviceArgs);created.Add(service);
                     // Applying an engineering plan only persists validated task parameters.
                     // Dispatch, AGV commands and PLC writes remain independently gated.
-                    var web=Start(webPath,[$"--Web:Port={port}",$"--Web:PipeName={pipe}",$"--Web:EnableTaskSubmission={mode.IsBusiness}","--Web:EnableRecoveryActions=true","--Web:EnableTaskCancellation=true","--Web:EnableEngineeringRuntimeApply=true",$"--Web:ProjectStorePath={storePath}",$"--Web:StaticPath={System.IO.Path.Combine(root,"Web","wwwroot")}"]);
+                    var web=Start(webPath,[$"--Web:Port={port}",$"--Web:PipeName={pipe}",$"--Web:EnableTaskSubmission={mode.IsBusiness}","--Web:EnableRecoveryActions=true","--Web:EnableTaskCancellation=true","--Web:EnableAlarmActions=true","--Web:EnableEngineeringRuntimeApply=true",$"--Web:ProjectStorePath={storePath}",$"--Web:StaticPath={System.IO.Path.Combine(root,"Web","wwwroot")}"]);
                     created.Add(web);session=new(release,Describe(service,servicePath),Describe(web,webPath),mode.NavigationVehicle,mode.PlcCycleVehicle,mode.PlcCycleStation,mode.BusinessVehicle,mode.ForkTest,mode.AutoNavigationDetour,string.Join(",",mode.FleetVehicles),mode.FleetMaxConcurrentTasks,mode.ProductionDispatch,mode.ProductionMaxConcurrentTasks);
                     var pending=statePath+".tmp";File.WriteAllText(pending,JsonSerializer.Serialize(session,new JsonSerializerOptions{WriteIndented=true}));File.Move(pending,statePath,true);
                 }

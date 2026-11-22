@@ -295,15 +295,15 @@ const currentPhase = computed(() => switchStatus.value?.current?.phaseText ?? '�
         <dt>将激活版本</dt><dd>{{ activateMap.publishedVersionId }}</dd>
       </dl>
       <div class="inline-warning">激活将切换后台运行地图。在途任务使用安全切换流程处理。</div>
-      <label style="display:block;margin:14px 0;font-size:12px;color:#8da5c9">
+      <label class="activation-field">
         确认文字（必须与下面的提示完全一致）
-        <input v-model="activateConfirmation" style="width:100%;margin-top:6px" :placeholder="`激活 ${activateMap.name}`" />
+        <input v-model="activateConfirmation" :placeholder="`激活 ${activateMap.name}`" />
       </label>
       <p class="mono">{{ `激活 ${activateMap.name}` }}<small>后台协议会自动转换为 ACTIVATE 指令，现场无需输入英文。</small></p>
-      <label>激活依据<input v-model="activateEvidence" maxlength="1500" placeholder="填写本次现场与地图核对依据" /></label>
-      <label style="display:flex;gap:8px;font-size:12px;color:#8da5c9;margin:8px 0"><input v-model="activateSafetyConfirmed" type="checkbox" />已确认现场安全条件</label>
-      <label style="display:flex;gap:8px;font-size:12px;color:#8da5c9;margin:8px 0"><input v-model="activateVehicleConfirmed" type="checkbox" />已确认车辆地图兼容</label>
-      <label style="display:flex;gap:8px;font-size:12px;color:#dfbd83;margin:8px 0"><input v-model="activateGeometryUpdateConfirmed" type="checkbox" />同一地图仅更新几何：车辆已停稳且定位正常，虽不在正式站点，允许本次安全切换</label>
+      <label class="activation-field">激活依据<input v-model="activateEvidence" maxlength="1500" placeholder="填写本次现场与地图核对依据" /></label>
+      <label class="activation-check"><input v-model="activateSafetyConfirmed" type="checkbox" />已确认现场安全条件</label>
+      <label class="activation-check"><input v-model="activateVehicleConfirmed" type="checkbox" />已确认车辆地图兼容</label>
+      <label class="activation-check warning"><input v-model="activateGeometryUpdateConfirmed" type="checkbox" />同一地图仅更新几何：车辆已停稳且定位正常，虽不在正式站点，允许本次安全切换</label>
     </template>
     <template #footer>
       <button @click="activateOpen = false"><ActionIcon name="close"/>取消</button>
@@ -374,6 +374,7 @@ const currentPhase = computed(() => switchStatus.value?.current?.phaseText ?? '�
 .map-card{display:flex;flex-direction:column;min-width:0;height:auto}
 .map-card-art{height:118px;flex-shrink:0;gap:6px;padding-top:20px}
 .map-card-art>b{width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}
+.map-card-art>small{color:var(--ui-text-2)}
 .map-card h3{overflow-wrap:anywhere;line-height:1.6}
 .map-card>p{min-height:0;overflow-wrap:anywhere;padding-bottom:8px}
 .map-card dl{grid-template-columns:62px minmax(0,1fr);line-height:1.6}
@@ -385,5 +386,10 @@ const currentPhase = computed(() => switchStatus.value?.current?.phaseText ?? '�
 .map-card-art>.el-tag{position:absolute;left:12px;top:11px}
 .map-card>p{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
 .map-empty{grid-column:1/-1;min-height:260px}
+.activation-field{display:grid;gap:7px;margin:14px 0;color:var(--ui-text-2);font-size:12px}
+.activation-field>input{width:100%;min-width:0}
+.activation-check{display:flex;flex-direction:row!important;align-items:flex-start;gap:8px;margin:8px 0;color:var(--ui-text-2);font-size:12px;line-height:1.6}
+.activation-check>input{flex:0 0 auto;margin-top:3px}
+.activation-check.warning{color:var(--ui-warning)}
 @media(max-width:780px){.map-query-toolbar{grid-template-columns:1fr}.map-query-toolbar .el-select{width:100%!important}.map-card footer{grid-template-columns:1fr}}
 </style>

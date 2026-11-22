@@ -209,7 +209,39 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.charge-request-form{display:flex;gap:16px;align-items:end;flex-wrap:wrap}.charge-request-form label{display:grid;gap:8px;flex:1 1 190px;color:#a8bbcf}.charge-request-form input,.charge-request-form select{width:100%;min-width:0}.charge-request p{line-height:1.7;color:#a8bbcf}.charge-request-pending{border-left:3px solid #dfb86a;padding:2px 14px;background:#2b251b}.charge-request-pending button{margin:0 8px 12px 0}
-.charge-section.charge-monitoring{margin-top:0}.charge-monitoring h3{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.charge-monitor-label{display:inline-flex;align-items:center;gap:7px;color:#9bacbf;font-size:12px;font-weight:normal}.charge-monitor-fields{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px;margin:0 0 16px}.charge-monitor-fields>div{min-width:0}.charge-monitor-fields dt{font-size:12px;color:#94a8c0}.charge-monitor-fields dd{margin:8px 0 0;color:#d2dfec}.charge-monitoring p{color:#a8bbcf;line-height:1.8;margin-top:8px}@media(max-width:700px){.charge-monitor-fields{grid-template-columns:repeat(2,minmax(0,1fr))}}
-.charging-page{overflow:auto}.charge-policy{display:flex;gap:24px;flex-wrap:wrap;align-items:center;padding:20px;border:1px solid #2b405b;border-radius:8px;background:#101e31}.charge-policy strong{color:#65d9c2}.charge-notice{padding:14px;border-left:3px solid #dfb86a;background:#2b251b;color:#f3d599}.charge-error{color:#ffaaa7}.charge-explanation{line-height:1.8;color:#a8bbcf}.charge-section{margin-top:25px;padding:20px;background:#101e31;border:1px solid #2b405b;border-radius:8px}.charge-section h3{margin:0 0 18px}.charge-section h3 small{display:inline;margin-left:14px;font-weight:normal}.charge-table-wrap{overflow-x:auto}table{width:100%;border-collapse:collapse;text-align:left}th,td{padding:14px 12px;border-bottom:1px solid #2b405b;vertical-align:top}th{color:#94a8c0;white-space:nowrap}small{display:block;color:#9bacbf;font-size:12px;margin-top:7px}.charge-reason{min-width:230px;max-width:540px;line-height:1.6;overflow-wrap:anywhere}.charge-actions{display:flex;gap:8px;flex-wrap:wrap}button{white-space:nowrap}.charge-review{display:grid;gap:16px;max-width:650px;padding:20px;line-height:1.7}.charge-review label{display:block}.charge-review textarea{display:block;width:100%;margin-top:8px}
+.charge-request-form{display:flex;gap:16px;align-items:end;flex-wrap:wrap}
+.charge-request-form label{display:grid;gap:8px;flex:1 1 190px;color:var(--ui-text-2)}
+.charge-request-form input,.charge-request-form select{width:100%;min-width:0}
+.charge-request p{line-height:1.7;color:var(--ui-text-2)}
+.charge-request-pending{border-left:3px solid var(--ui-warning);padding:2px 14px;background:color-mix(in srgb,var(--ui-warning) 9%,var(--ui-surface))}
+.charge-request-pending button{margin:0 8px 12px 0}
+.charge-section.charge-monitoring{margin-top:0}
+.charge-monitoring h3{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.charge-monitor-label{display:inline-flex;align-items:center;gap:7px;color:var(--ui-text-3);font-size:12px;font-weight:normal}
+.charge-monitor-fields{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px;margin:0 0 16px}
+.charge-monitor-fields>div{min-width:0}
+.charge-monitor-fields dt{font-size:12px;color:var(--ui-text-3)}
+.charge-monitor-fields dd{margin:8px 0 0;color:var(--ui-text)}
+.charge-monitoring p{color:var(--ui-text-2);line-height:1.8;margin-top:8px}
+.charging-page{overflow:auto}
+.charge-policy{display:flex;gap:24px;flex-wrap:wrap;align-items:center;padding:20px;border:1px solid var(--ui-line);border-radius:var(--ui-radius);background:var(--ui-surface-raised)}
+.charge-policy strong{color:var(--ui-success)}
+.charge-notice{padding:14px;border-left:3px solid var(--ui-warning);background:color-mix(in srgb,var(--ui-warning) 9%,var(--ui-surface));color:var(--ui-warning)}
+.charge-error{color:var(--ui-danger)!important}
+.charge-explanation{line-height:1.8;color:var(--ui-text-2)}
+.charge-section{margin-top:25px;padding:20px;background:var(--ui-surface);border:1px solid var(--ui-line);border-radius:var(--ui-radius)}
+.charge-section h3{margin:0 0 18px;color:var(--ui-text)}
+.charge-section h3 small{display:inline;margin-left:14px;font-weight:normal;color:var(--ui-text-3)}
+.charge-table-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;text-align:left}
+th,td{padding:14px 12px;border-bottom:1px solid var(--ui-table-line);vertical-align:top;color:var(--ui-table-text)}
+th{color:var(--ui-text-2);white-space:nowrap}
+small{display:block;color:var(--ui-text-3);font-size:12px;margin-top:7px}
+.charge-reason{min-width:230px;max-width:540px;line-height:1.6;overflow-wrap:anywhere}
+.charge-actions{display:flex;gap:8px;flex-wrap:wrap}
+button{white-space:nowrap}
+.charge-review{display:grid;gap:16px;max-width:650px;padding:20px;line-height:1.7;color:var(--ui-text-2)}
+.charge-review label{display:block;color:var(--ui-text-2)}
+.charge-review textarea{display:block;width:100%;margin-top:8px}
+@media(max-width:700px){.charge-monitor-fields{grid-template-columns:repeat(2,minmax(0,1fr))}}
 </style>

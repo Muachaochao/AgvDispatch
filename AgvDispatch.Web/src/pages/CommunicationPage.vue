@@ -21,4 +21,17 @@ onMounted(load);
 <fieldset :disabled="busy||!data.canManage"><legend>充电桩连接</legend><label><input v-model="data.saved.chargerMonitoringEnabled" type="checkbox"/>后台常驻检查充电桩通信</label><p>每个充电桩使用独立ID绑定；20207/20204为当前车型默认端口，可按桩型号调整。保存后受控重启生效，常驻检查本身不发送1001控制报文。</p><article v-for="(c,i) in data.saved.chargers" :key="i"><label><input v-model="c.enabled" type="checkbox"/>启用此充电桩</label><div class="communication-grid"><label v-for="f in chargerFields" :key="f[0]">{{f[1]}}<input v-model="c[f[0]!]" :type="f[2]" @change="f[2]==='number'&&(c[f[0]!]=Number(c[f[0]!]))"/></label></div><button @click="data.saved.chargers.splice(i,1)">移除此充电桩</button></article><button @click="data.saved.chargers.push({id:'CHARGER-NEW',displayName:'新充电桩',enabled:false,ipAddress:'',ackPort:20207,statusPort:20204})">新增充电桩</button></fieldset>
 <fieldset :disabled="busy||!data.canManage"><legend>充电位与充电桩绑定</legend><p>每个充电位必须绑定一个已配置充电桩；独占资源容量应由地图资源定义保证为1。</p><article v-for="(s,i) in data.saved.chargingSites" :key="i"><label><input v-model="s.commissioned" type="checkbox"/>现场已核定充电、退出和插接方式</label><div class="communication-grid"><label v-for="f in chargingSiteFields" :key="f[0]">{{f[1]}}<input v-model="s[f[0]!]"/></label><label>控制方式<select v-model="s.controlMode"><option value="RobokitScript">反光板识别与插接</option><option value="Relay6005">车端标准6005继电器</option></select></label><label>允许车辆（逗号分隔）<input :value="s.allowedVehicleIds.join(',')" @change="s.allowedVehicleIds=parseIds($event)"/></label></div><button @click="data.saved.chargingSites.splice(i,1)">移除此充电位</button></article><button @click="data.saved.chargingSites.push({id:'CHARGE-NEW',chargerId:data.saved.chargers[0]?.id??'',chargingSiteId:'',exitSiteId:'',resourceId:'',controlMode:'RobokitScript',commissioned:false,allowedVehicleIds:[]})">新增充电位</button></fieldset>
 <h3>后台连接观察</h3><details><summary>查看后台原始连接观察</summary><pre>{{data.plcConnections}}</pre></details><h3>最近保存审计</h3><p v-for="(a,i) in data.audits" :key="i">{{a.at}} · {{a.operator}} · {{a.summary}}</p></template></section></template>
-<style scoped>.communication-page{max-width:1500px;margin:auto}.communication-page.embedded{max-width:none;margin:0}.communication-page p{line-height:1.8}.communication-actions{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:14px 0}.communication-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;margin:16px 0}.communication-grid label{display:grid;gap:7px;font-size:13px}.communication-grid input{min-width:0;width:100%}.communication-page fieldset{border:1px solid #304764;padding:18px;margin:16px 0;min-width:0}.communication-page article{border-bottom:1px solid #304764;padding:16px 0}.communication-page pre{white-space:pre-wrap;overflow-wrap:anywhere}.communication-page a{color:#84d7e9}</style>
+<style scoped>
+.communication-page{max-width:1500px;margin:auto}
+.communication-page.embedded{max-width:none;margin:0}
+.communication-page p{line-height:1.8;color:var(--ui-text-2)}
+.communication-actions{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:14px 0}
+.communication-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;margin:16px 0}
+.communication-grid label{display:grid;gap:7px;font-size:13px;color:var(--ui-text-2)}
+.communication-grid input{min-width:0;width:100%}
+.communication-page fieldset{border:1px solid var(--ui-line);padding:18px;margin:16px 0;min-width:0;background:var(--ui-surface-raised)}
+.communication-page legend{color:var(--ui-text);font-weight:600}
+.communication-page article{border-bottom:1px solid var(--ui-line);padding:16px 0}
+.communication-page pre{white-space:pre-wrap;overflow-wrap:anywhere;color:var(--ui-text-2)}
+.communication-page a{color:var(--ui-primary-strong)}
+</style>

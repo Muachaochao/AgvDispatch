@@ -8,6 +8,7 @@ import { IconBell, IconArrowLeft, IconSearch } from '@tabler/icons-vue';
 import ConsoleDialog from '../ConsoleDialog.vue';
 import type { Alarm, AlarmPage } from '../types';
 import { alarmMessageText, alarmSourceLabel, alarmTitleText } from '../operator-labels';
+import { alarmAcknowledgeError, alarmAcknowledgeRequest } from '../alarm-actions';
 import {
   alarmHistoryError,
   alarmHistoryUrl,
@@ -33,6 +34,13 @@ const queriedAlarms = ref<AlarmPage | null>(null);
 const queryBusy = ref(false);
 const queryError = ref('');
 const selectedAlarm = ref<Alarm | null>(null);
+const acknowledgeTarget = ref<Alarm | null>(null);
+const acknowledgeComment = ref('');
+const acknowledgeConfirmed = ref(false);
+const acknowledgeBusy = ref(false);
+const acknowledgeError = ref('');
+const acknowledgeNotice = ref('');
+const acknowledgeUncertain = ref(false);
 let queryStarted = false;
 let queryEpoch = 0;
 
@@ -48,6 +56,9 @@ const queryChanged = computed(() => JSON.stringify(draftQuery.value) !== JSON.st
 const visibleAlarms = computed(() => queriedAlarms.value?.items ?? []);
 const totalCount = computed(() => queriedAlarms.value?.totalCount ?? 0);
 const summary = computed(() => queriedAlarms.value?.summary ?? { total: 0, open: 0, acknowledged: 0, recovered: 0, critical: 0 });
+const acknowledgeValidation = computed(() => alarmAcknowledgeError(acknowledgeComment.value, acknowledgeConfirmed.value));
+const acknowledgeCanSubmit = computed(() => !!acknowledgeTarget.value && !acknowledgeBusy.value &&
+  !acknowledgeUncertain.value && !acknowledgeValidation.value);
 const hasTimeFilter = computed(() => !!(appliedQuery.value.from || appliedQuery.value.to));
 const appliedFilterText = computed(() => {
   const parts = [];
@@ -141,6 +152,66 @@ function changeAlarmPageSize(size: number) {
   pageSize.value = size;
   void queryAlarms(1, true);
 }
+
+function beginAcknowledge() {
+  const alarm = selectedAlarm.value;
+  if (!alarm || alarm.status !== 'Open' || !store.alarmActionsEnabled || acknowledgeBusy.value) return;
+  acknowledgeTarget.value = alarm;
+  acknowledgeComment.value = '';
+  acknowledgeConfirmed.value = false;
+  acknowledgeError.value = '';
+  acknowledgeNotice.value = '';
+  acknowledgeUncertain.value = false;
+  selectedAlarm.value = null;
+}
+
+function closeAcknowledge() {
+  if (acknowledgeBusy.value) return;
+  acknowledgeTarget.value = null;
+  acknowledgeComment.value = '';
+  acknowledgeConfirmed.value = false;
+  acknowledgeError.value = '';
+  acknowledgeUncertain.value = false;
+}
+
+async function acknowledgeAlarm() {
+  const target = acknowledgeTarget.value;
+  const invalid = alarmAcknowledgeError(acknowledgeComment.value, acknowledgeConfirmed.value);
+  if (!target || acknowledgeBusy.value || acknowledgeUncertain.value || invalid) {
+    acknowledgeError.value = invalid;
+    return;
+  }
+
+  acknowledgeBusy.value = true;
+  acknowledgeError.value = '';
+  acknowledgeNotice.value = '';
+  try {
+    const result = await store.api<{ accepted: boolean; message: string }>(
+      `/api/alarms/${encodeURIComponent(target.alarmId)}/acknowledge`,
+      alarmAcknowledgeRequest(target.alarmId, acknowledgeComment.value)
+    );
+    acknowledgeNotice.value = result.message;
+    if (!result.accepted) acknowledgeError.value = result.message;
+    await queryAlarms(alarmPage.value, false);
+    if (result.accepted) {
+      acknowledgeTarget.value = null;
+      acknowledgeComment.value = '';
+      acknowledgeConfirmed.value = false;
+    }
+  } catch (error) {
+    acknowledgeUncertain.value = true;
+    acknowledgeError.value = `确认结果未确定：${queryMessage(error)}。正在回读告警状态；不会自动重发。`;
+    await queryAlarms(alarmPage.value, false);
+  } finally {
+    acknowledgeBusy.value = false;
+  }
+}
+
+async function closeAcknowledgeAndReload() {
+  acknowledgeUncertain.value = false;
+  closeAcknowledge();
+  await queryAlarms(alarmPage.value, false);
+}
 </script>
 
 <template>
@@ -183,6 +254,7 @@ function changeAlarmPageSize(size: number) {
 
     <div v-if="appliedFilterText" class="active-filter-line"><b>当前条件</b><span>{{ appliedFilterText }}</span></div>
     <p v-if="queryError" class="inline-warning" role="alert">{{ queryError }}</p>
+    <p v-if="acknowledgeNotice" class="inline-success" role="status">{{ acknowledgeNotice }}</p>
 
     <div class="management-table">
       <el-table :data="visibleAlarms" row-key="alarmId" stripe height="100%" table-layout="fixed" class="business-table alarm-table">
@@ -259,7 +331,59 @@ function changeAlarmPageSize(size: number) {
       <p>{{ selectedAlarm.message }}</p>
     </details>
 
-    <div class="inline-warning">此处为只读历史查询。告警确认及现场恢复仍按现有受控流程执行；查看详情不会解除任务、路权或车辆动作限制。</div>
+    <div class="inline-warning">查看详情不会解除任务、路权或车辆动作限制。确认告警只记录现场已接手核对，不会清除告警、恢复故障或代替异常恢复流程。</div>
+    <template #footer>
+      <div class="dialog-footer-actions">
+        <span v-if="selectedAlarm.status === 'Open' && !store.alarmActionsEnabled">Web告警确认未启用，当前只能只读查看。</span>
+        <button @click="selectedAlarm = null">关闭</button>
+        <button v-if="selectedAlarm.status === 'Open'" class="acknowledge-primary" :disabled="!store.alarmActionsEnabled" @click="beginAcknowledge">确认告警…</button>
+      </div>
+    </template>
+  </ConsoleDialog>
+
+  <ConsoleDialog v-if="acknowledgeTarget" title="确认告警 · 核对操作边界" @close="closeAcknowledge">
+    <div class="ack-target">
+      <span>{{ alarmSourceLabel(acknowledgeTarget.sourceType) }} · {{ acknowledgeTarget.sourceId }}</span>
+      <h3>{{ alarmTitleText(acknowledgeTarget.title) }}</h3>
+      <dl>
+        <div><dt>告警编号</dt><dd>{{ acknowledgeTarget.alarmId }}</dd></div>
+        <div><dt>级别</dt><dd><span class="severity" :class="acknowledgeTarget.severity.toLowerCase()">{{ alarmSeverity(acknowledgeTarget.severity) }}</span></dd></div>
+        <div><dt>最近观察</dt><dd>{{ shortTime(acknowledgeTarget.lastObservedAt) }}</dd></div>
+      </dl>
+    </div>
+
+    <div class="ack-boundary">
+      <strong>这次操作只会把告警标记为“已确认”。</strong>
+      <ul>
+        <li>不会清除告警，也不会证明报警条件已经恢复。</li>
+        <li>不会解除任务、路权、PLC、设备或车辆动作限制。</li>
+        <li>不会代替异常恢复、单车导航调试或现场急停。</li>
+      </ul>
+    </div>
+
+    <label class="ack-comment">
+      <span>现场核对说明</span>
+      <textarea v-model="acknowledgeComment" maxlength="1000" :disabled="acknowledgeBusy || acknowledgeUncertain"
+        placeholder="例如：已联系现场确认车辆受阻，正在按原任务核对处置" />
+      <small>{{ acknowledgeComment.trim().length }}/1000 · 至少2个字符</small>
+    </label>
+    <label class="ack-check">
+      <input v-model="acknowledgeConfirmed" type="checkbox" :disabled="acknowledgeBusy || acknowledgeUncertain" />
+      <span>我已核对当前告警对象，理解“确认告警”不等于恢复条件或解除原任务责任</span>
+    </label>
+    <p v-if="acknowledgeValidation && acknowledgeConfirmed" class="inline-warning">{{ acknowledgeValidation }}</p>
+    <p v-if="acknowledgeError" class="inline-warning" role="alert">{{ acknowledgeError }}</p>
+    <p v-if="acknowledgeUncertain" class="ack-uncertain">为避免重复写入，本次申请已冻结。关闭窗口并回读告警状态；只有重新核对待确认告警后才能再次发起。</p>
+
+    <template #footer>
+      <div class="dialog-footer-actions">
+        <button :disabled="acknowledgeBusy" @click="closeAcknowledge">取消</button>
+        <button v-if="acknowledgeUncertain" @click="closeAcknowledgeAndReload">关闭并回读状态</button>
+        <button v-else class="acknowledge-primary" :disabled="!acknowledgeCanSubmit" @click="acknowledgeAlarm">
+          {{ acknowledgeBusy ? '正在确认…' : '确认当前告警' }}
+        </button>
+      </div>
+    </template>
   </ConsoleDialog>
 </template>
 
@@ -344,6 +468,26 @@ function changeAlarmPageSize(size: number) {
 .alarm-raw-message{margin:0 0 17px;padding:12px 14px;border:1px solid #2b405e;border-radius:4px;background:#0d192d;color:#8fa8c5;font-size:11px;line-height:1.7}
 .alarm-raw-message summary{cursor:pointer;color:#78cfe1}
 .alarm-raw-message p{margin:7px 0 0;overflow-wrap:anywhere}
+.dialog-footer-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;width:100%}
+.dialog-footer-actions>span{margin-right:auto;color:var(--ui-text-3);font-size:11px}
+.acknowledge-primary{border-color:color-mix(in srgb,var(--ui-warning) 55%,var(--ui-line))!important;background:color-mix(in srgb,var(--ui-warning) 14%,var(--ui-surface-raised))!important;color:var(--ui-text)!important}
+.ack-target{padding:15px 16px;border:1px solid var(--ui-line);border-radius:8px;background:color-mix(in srgb,var(--ui-warning) 6%,var(--ui-surface-raised))}
+.ack-target>span{color:var(--ui-text-3);font-size:11px}
+.ack-target h3{margin:7px 0 13px;color:var(--ui-text);font-size:17px}
+.ack-target dl{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:0}
+.ack-target dl>div{min-width:0;padding:8px 10px;border-radius:6px;background:var(--ui-surface-soft)}
+.ack-target dt{color:var(--ui-text-3);font-size:10px}
+.ack-target dd{margin:4px 0 0;color:var(--ui-text-2);font:11px Consolas,monospace;overflow-wrap:anywhere}
+.ack-boundary{margin-top:12px;padding:12px 14px;border:1px solid color-mix(in srgb,var(--ui-warning) 36%,var(--ui-line));border-radius:7px;background:color-mix(in srgb,var(--ui-warning) 7%,var(--ui-surface-raised))}
+.ack-boundary strong{color:var(--ui-text)}
+.ack-boundary ul{margin:7px 0 0;padding-left:18px;color:var(--ui-text-2);font-size:11px;line-height:1.8}
+.ack-comment{display:flex;flex-direction:column;gap:6px;margin-top:12px;color:var(--ui-text-2);font-size:11px}
+.ack-comment textarea{min-height:92px;resize:vertical;padding:9px 10px;border:1px solid var(--ui-line-strong);border-radius:6px;background:var(--ui-field);color:var(--ui-text);font:12px/1.65 inherit}
+.ack-comment small{align-self:flex-end;color:var(--ui-text-3)}
+.ack-check{display:flex;align-items:flex-start;gap:8px;margin-top:10px;color:var(--ui-text-2);font-size:11px;line-height:1.6}
+.ack-check input{margin-top:2px}
+.ack-uncertain{margin:8px 0 0;color:var(--ui-warning);font-size:11px;line-height:1.7}
+.inline-success{margin:0;padding:7px 10px;border:1px solid color-mix(in srgb,var(--ui-success) 38%,var(--ui-line));border-radius:6px;background:color-mix(in srgb,var(--ui-success) 7%,var(--ui-surface));color:var(--ui-text-2);font-size:11px}
 @media(max-width:1450px){
   .alarm-query-toolbar{grid-template-columns:minmax(180px,1fr) 106px 106px minmax(290px,1fr) 150px 90px}
   .history-presets{grid-column:5;grid-row:1;justify-self:end}
@@ -363,10 +507,31 @@ function changeAlarmPageSize(size: number) {
   .alarm-summary-strip>div{padding:7px 9px}
 }
 @media(max-width:600px){
+  .alarm-history-page{padding-bottom:76px}
   .alarm-summary-strip{grid-template-columns:repeat(2,1fr)}
   .alarm-result-footer{align-items:flex-start;flex-direction:column}
-  .result-controls{justify-content:space-between;width:100%}
+  .result-controls{justify-content:space-between;width:100%;min-width:0;overflow-x:auto}
+  .result-controls .el-pagination{max-width:100%;overflow-x:auto}
   .alarm-lifecycle{grid-template-columns:1fr}
   .alarm-detail-hero{flex-direction:column}
+  .ack-target dl{grid-template-columns:1fr}
+  .dialog-footer-actions{align-items:stretch;flex-direction:column}
+  .dialog-footer-actions>span{margin:0 0 2px}
+  .dialog-footer-actions button{width:100%}
 }
+.history-presets button{color:var(--ui-text-2)}
+.alarm-detail-hero{border-color:var(--ui-line);background:color-mix(in srgb,var(--ui-primary) 8%,var(--ui-surface-raised))}
+.alarm-detail-hero span{color:var(--ui-text-3)}
+.alarm-detail-hero h3{color:var(--ui-text)}
+.alarm-detail-hero p{color:var(--ui-text-2)}
+.alarm-detail-pills .severity,.alarm-detail-pills .alarm-state{border-color:var(--ui-line-strong);background:var(--ui-surface-soft)}
+.alarm-detail-summary span{color:var(--ui-text-3)}
+.alarm-detail-summary b{color:var(--ui-text)}
+.alarm-lifecycle>div{border-color:var(--ui-line);background:var(--ui-surface-raised)}
+.alarm-lifecycle h4{color:var(--ui-primary-strong)}
+.alarm-lifecycle dt{color:var(--ui-text-3)}
+.alarm-lifecycle dd{color:var(--ui-text-2)}
+.empty-lifecycle{color:var(--ui-text-3)}
+.alarm-raw-message{border-color:var(--ui-line);background:var(--ui-surface-soft);color:var(--ui-text-2)}
+.alarm-raw-message summary{color:var(--ui-primary-strong)}
 </style>

@@ -92,5 +92,21 @@ onMounted(()=>{void load();});
 </section>
 </template>
 <style scoped>
-.recovery-panel{padding:20px;border:1px solid #344c64;background:#111e30;border-radius:10px}.recovery-panel header{display:flex;justify-content:space-between;align-items:center}.recovery-panel h3{font-size:16px;color:#d9e7f5}.recovery-panel small{font-size:12px;color:#8fa9c1;margin-left:12px}.recovery-panel p,.recovery-panel label{font-size:13px;line-height:1.8;color:#b2c9df}.recovery-panel label{display:flex;align-items:center;gap:9px;margin:14px 0;flex-wrap:wrap}.recovery-panel button{margin:5px 10px 5px 0}.exception-list{display:flex;flex-wrap:wrap;margin:16px 0}.selected{border-color:#49bed0;background:#184555}.recovery-panel article{padding:16px;border:1px solid #344c64;border-radius:8px}.recovery-panel details{margin-top:18px;font-size:13px;color:#a9bfd6}.recovery-panel summary{cursor:pointer}.recovery-warning{color:#e7be78!important}.recovery-panel table{width:100%;margin:12px 0}.recovery-panel td{padding:7px;border-bottom:1px solid #344c64}
+.recovery-panel{padding:20px;border:1px solid var(--ui-line);background:var(--ui-surface);border-radius:var(--ui-radius)}
+.recovery-panel header{display:flex;justify-content:space-between;align-items:center}
+.recovery-panel h3{font-size:16px;color:var(--ui-text)}
+.recovery-panel small{font-size:12px;color:var(--ui-text-3);margin-left:12px}
+.recovery-panel p,.recovery-panel label{font-size:13px;line-height:1.8;color:var(--ui-text-2)}
+.recovery-panel label{display:flex;align-items:center;gap:9px;margin:14px 0;flex-wrap:wrap}
+.recovery-panel button{margin:5px 10px 5px 0}
+.recovery-panel .el-button.is-disabled{border-color:var(--ui-line-strong);background:var(--ui-surface-soft);color:var(--ui-text-2);opacity:1}
+.recovery-panel .el-button.is-disabled>span{color:var(--ui-text-2)}
+.exception-list{display:flex;flex-wrap:wrap;margin:16px 0}
+.selected{border-color:var(--ui-primary);background:var(--ui-primary-soft);color:var(--ui-primary-strong)}
+.recovery-panel article{padding:16px;border:1px solid var(--ui-line);border-radius:var(--ui-radius-sm);background:var(--ui-surface)}
+.recovery-panel details{margin-top:18px;font-size:13px;color:var(--ui-text-2)}
+.recovery-panel summary{cursor:pointer}
+.recovery-warning{color:var(--ui-warning)!important}
+.recovery-panel table{width:100%;margin:12px 0}
+.recovery-panel td{padding:7px;border-bottom:1px solid var(--ui-line);color:var(--ui-table-text)}
 </style>

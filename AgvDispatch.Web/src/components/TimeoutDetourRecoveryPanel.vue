@@ -154,14 +154,14 @@ onMounted(() => { void load(); });
 </template>
 
 <style scoped>
-.timeout-recovery{margin-top:28px;padding:18px;border:1px solid #6b5638;background:#201f1c}
+.timeout-recovery{margin-top:28px;padding:18px;border:1px solid var(--ui-line);background:color-mix(in srgb,var(--ui-warning) 7%,var(--ui-surface))}
 .timeout-recovery header{display:flex;gap:12px;align-items:center;justify-content:space-between}
-.timeout-recovery h3{color:#f0cf95;font-size:15px;margin:0}
-.timeout-recovery p,.timeout-recovery label{font-size:12px;line-height:1.9;color:#c8d6e5}
-.timeout-recovery .warning{color:#e7be78}
-.timeout-recovery article{border-left:2px solid #9d743d;padding-left:14px;margin-top:14px}
+.timeout-recovery h3{color:var(--ui-text);font-size:15px;margin:0}
+.timeout-recovery p,.timeout-recovery label{font-size:12px;line-height:1.9;color:var(--ui-text-2)}
+.timeout-recovery .warning{color:var(--ui-warning)}
+.timeout-recovery article{border-left:2px solid var(--ui-warning);padding-left:14px;margin-top:14px}
 .timeout-recovery .confirm-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:4px 16px;margin:14px 0}
-.timeout-recovery textarea{display:block;width:100%;margin-top:8px;background:#0b172a;color:#cee4f7;border:1px solid #3b526c;padding:10px;resize:vertical}
+.timeout-recovery textarea{display:block;width:100%;margin-top:8px;background:var(--ui-field-bg);color:var(--ui-text);border:1px solid var(--ui-line-strong);padding:10px;resize:vertical}
 .timeout-recovery label{margin:8px 0}
 .timeout-recovery button{margin-top:10px}
 </style>
