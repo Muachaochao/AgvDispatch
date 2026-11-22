@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { simulationFresh, scenarioActive, simulationGeometry, simulationTone, simulationLabel, simulationMapFromPublishedVersion, loadCurrentSimulationMap,
   simulationMetricLabel, simulationMetricValue, simulationMetricComparison, simulationReplayCars, simulationVehicleOriginsFromLive,
-  simulationStationBindingsFromCatalog, simulationVehicleVisualState, simulationVehicleVisualColor, simulationVehicleVisualLabel,
+  simulationStationBindingsFromCatalog, simulationActiveVehicleCount,
+  simulationVehicleVisualState, simulationVehicleVisualColor, simulationVehicleVisualLabel,
   simulationObstacleRecoveryLabel,
   type SimulationMapWorkspace, type SimulationStatus } from '../src/simulation.ts';
 import type { Snapshot, WebMap } from '../src/types.ts';
@@ -35,6 +36,41 @@ test('controls require a running model with a recent, non-future device sample',
   for (const input of [null, sample({ enabled: false }), sample({ running: false }), sample({ fresh: false }), sample({ device: null }),
     sample({ device: { time: (now - 6000) / 1000 } }), sample({ device: { time: (now + 3000) / 1000 } }), sample({ device: { time: NaN } })])
     assert.equal(simulationFresh(input, now), false);
+});
+
+test('accelerated fleet samples use the isolated business clock', () => {
+  const origin = now - 120_000;
+  const businessNow = now + 120_000;
+  const accelerated = sample({
+    simulationOriginUnixMs: origin,
+    simulationRate: 2,
+    device: { time: (businessNow - 1000) / 1000 },
+  });
+  assert.equal(simulationFresh(accelerated, now), true);
+  assert.equal(simulationFresh({ ...accelerated, device: { time: (businessNow - 6000) / 1000 } }, now), false);
+  assert.equal(simulationFresh({ ...accelerated, device: { time: (businessNow + 3000) / 1000 } }, now), false);
+  assert.equal(simulationFresh(sample({
+    simulationRate: 2,
+    device: { time: (now + 3000) / 1000 },
+  }), now), false);
+});
+
+test('active task count deduplicates assigned vehicles and follows unfinished task records', () => {
+  const cars = {
+    'AGV-01': { x: 0, y: 0, current_task: null },
+    'AGV-02': { x: 1, y: 0, current_task: 'legacy-command' },
+    'AGV-03': { x: 2, y: 0 },
+  };
+  const tasks = [
+    { taskId: 'task-01', vehicleId: 'AGV-01', stage: 'Dispatching' },
+    { taskId: 'task-02', vehicleId: 'AGV-01', stage: 'GoingToPickup' },
+    { taskId: 'task-03', vehicleId: 'AGV-02', stage: 'Completed' },
+    { taskId: 'task-04', vehicleId: 'AGV-03', stage: 'Cancelled' },
+    { taskId: 'task-05', vehicleId: null, stage: 'WaitingForVehicle' },
+    { taskId: 'task-06', vehicleId: 'AGV-04', stage: 'Failed' },
+  ];
+  assert.equal(simulationActiveVehicleCount(cars, tasks), 2);
+  assert.equal(simulationActiveVehicleCount({}, []), 0);
 });
 
 test('a finished, aborted or unknown scenario never prevents reading original records', () => {
