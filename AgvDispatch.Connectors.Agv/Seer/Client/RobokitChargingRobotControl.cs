@@ -44,7 +44,7 @@ public sealed class RobokitChargingRobotControl(
             throw new InvalidDataException("1007电量超出文档规定的[0,1]范围。");
         return new(vehicleId, level * 100m, OptionalBool(root, "charging"),
             OptionalDouble(root, "current"), OptionalDouble(root, "battery_temp"),
-            OptionalBool(root, "manual_charge"), OptionalBool(root, "auto_charge"), DateTimeOffset.Now);
+            OptionalBool(root, "manual_charge"), OptionalBool(root, "auto_charge"), AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow());
     }
 
     private SeerRobotClient RequireClient(string vehicleId)

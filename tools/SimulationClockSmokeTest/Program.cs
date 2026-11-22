@@ -1,4 +1,5 @@
 using AgvDispatch.Application.Runtime;
+using AgvDispatch.Connectors.Plc;
 
 var checks = 0;
 void Check(bool condition, string message)
@@ -32,6 +33,7 @@ var names = new[]
     "AGV_DISPATCH_DATABASE_PATH"
 };
 var previous = names.ToDictionary(name => name, Environment.GetEnvironmentVariable);
+var originalClock = BusinessClock.Provider;
 try
 {
     foreach (var name in names)
@@ -56,6 +58,12 @@ try
         "late-starting components align to the shared accelerated wall origin");
     Check(isolated.ScaleForBusiness(TimeSpan.FromSeconds(8)) == TimeSpan.FromSeconds(2),
         "business waits and collection periods scale with the selected rate");
+    BusinessClock.Use(isolated);
+    var plc = new PlcConnectionSupervisor(new PlcOptions());
+    var beforeRead = isolated.GetUtcNow();
+    plc.ReportSuccess(TimeSpan.FromMilliseconds(12));
+    Check(plc.Current.LastSuccessfulReadAt >= beforeRead && plc.Current.LastSuccessfulReadAt <= isolated.GetUtcNow(),
+        "PLC feedback timestamps use the business clock expected by the startup gate");
 
     Environment.SetEnvironmentVariable("AGV_DISPATCH_DATABASE_PATH",
         Path.Combine(Path.GetTempPath(), "outside-simulation.db"));
@@ -64,6 +72,7 @@ try
 }
 finally
 {
+    BusinessClock.Use(originalClock);
     foreach (var entry in previous)
         Environment.SetEnvironmentVariable(entry.Key, entry.Value);
 }

@@ -253,7 +253,7 @@ public sealed class SeerRobotClient : IAsyncDisposable
             FindDouble(taskStatus, "percentage"),
             tasks,
             alarms,
-            DateTimeOffset.Now)
+            AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow())
         {
             VelocityX = FindDouble(allStatus, "vx"), VelocityY = FindDouble(allStatus, "vy"),
             AngularVelocity = FindDouble(allStatus, "w"), Charging = FindBoolean(allStatus, "charging"),

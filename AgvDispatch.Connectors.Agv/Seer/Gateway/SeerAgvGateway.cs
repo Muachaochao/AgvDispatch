@@ -25,7 +25,7 @@ public sealed partial class SeerAgvGateway(
             "AGV-SYSTEM",
             "AGV车队",
             state,
-            DateTimeOffset.Now,
+            AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow(),
             $"在线{online}/{robots.Count}"));
     }
 
@@ -219,7 +219,7 @@ public sealed partial class SeerAgvGateway(
                 rows.Any(r=>r.Status==6)?AgvTransportTaskState.Cancelled:AgvTransportTaskState.Completed:
             rows.Any(r=>r.Status is 5 or 6 or 7)?AgvTransportTaskState.Unknown:
             rows.Any(r=>r.Status==3)?AgvTransportTaskState.Suspended:AgvTransportTaskState.GoingToDestination;
-        return new(vendorTaskId,vendorTaskId,state,client.Robot.VehicleId,DateTimeOffset.Now,
+        return new(vendorTaskId,vendorTaskId,state,client.Robot.VehicleId,AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow(),
             $"原车导航全链：{rows.Count}/{ids.Count}段有记录；状态{string.Join(',',rows.Select(r=>$"{r.TaskId}={r.Status}"))}；缺失或仍运行不确认结束。")
         {
             VendorStatusCode = UnambiguousChainRawCode(rows.Select(r => r.Status))
@@ -240,7 +240,7 @@ public sealed partial class SeerAgvGateway(
             var state=!complete || known.Any(r=>r.Status is not (1 or 2 or 3 or 4 or 5 or 6 or 7)) ? AgvTransportTaskState.Unknown :
                 allTerminal ? known.Any(r=>r.Status is 5 or 7) ? AgvTransportTaskState.Failed : known.Any(r=>r.Status==6) ? AgvTransportTaskState.Cancelled : AgvTransportTaskState.Completed :
                 known.Any(r=>r.Status is 5 or 6 or 7) ? AgvTransportTaskState.Unknown : known.Any(r=>r.Status==3) ? AgvTransportTaskState.Suspended : AgvTransportTaskState.GoingToDestination;
-            return new(vendorTaskId,vendorTaskId,state,evidence.Client.Robot.VehicleId,DateTimeOffset.Now,
+            return new(vendorTaskId,vendorTaskId,state,evidence.Client.Robot.VehicleId,AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow(),
                 $"整条3066任务链：{known.Length}/{evidence.Ids.Count}段有记录；状态 {string.Join(",",evidence.Rows.Select(r=>$"{r.TaskId}={r.Status}"))}；缺失/仍运行时不确认结束。")
             {
                 VendorStatusCode = UnambiguousChainRawCode(evidence.Rows.Select(r => r.Status))
@@ -270,7 +270,7 @@ public sealed partial class SeerAgvGateway(
                     vendorTaskId,
                     MapTaskState(task.Status),
                     client.Robot.VehicleId,
-                    DateTimeOffset.Now,
+                    AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow(),
                     $"Robokit状态={task.Status}：{(task.Status == 3 ? "暂停" : task.Status == 7 ? "超时" : "任务状态")}")
                 {
                     VendorStatusCode = task.Status

@@ -14,8 +14,8 @@ public sealed partial class DispatchTaskOrchestrator
     private readonly DispatchAssignmentOptimizer _optimizer = new();
     private void ReportOptimizationGate(string message)
     {
-        if (optimization is null || DateTimeOffset.UtcNow < _nextOptimizationAt) return;
-        _nextOptimizationAt = DateTimeOffset.UtcNow.AddMilliseconds(optimization.Options.IntervalMs);
+        if (optimization is null || _clock.GetUtcNow() < _nextOptimizationAt) return;
+        _nextOptimizationAt = _clock.GetUtcNow().AddMilliseconds(optimization.Options.IntervalMs);
         optimization.ReportLayer("matching", options.Enabled ? "Blocked" : "Disabled", message);
         optimization.Publish(new() { Message = message });
     }
@@ -30,7 +30,7 @@ public sealed partial class DispatchTaskOrchestrator
         IReadOnlyList<DispatchTaskWorkItem> activeTasks, CancellationToken ct)
     {
         var watch = Stopwatch.StartNew();
-        var now = DateTimeOffset.UtcNow;
+        var now = _clock.GetUtcNow();
         var hits = routeCache?.Hits ?? 0; var misses = routeCache?.Misses ?? 0;
         var global = policy.Mode.Equals("Global", StringComparison.OrdinalIgnoreCase);
         ActiveMapRuntimeSnapshot? map;

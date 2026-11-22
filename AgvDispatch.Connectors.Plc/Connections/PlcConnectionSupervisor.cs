@@ -17,7 +17,7 @@ public sealed class PlcConnectionSupervisor : IPlcConnectionSupervisor
             options.DisplayName,
             ConnectionState.Disconnected,
             0,
-            DateTimeOffset.Now,
+            AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow(),
             null,
             null,
             null,
@@ -43,14 +43,14 @@ public sealed class PlcConnectionSupervisor : IPlcConnectionSupervisor
         Update(previous => previous with
         {
             State = ConnectionState.Connecting,
-            UpdatedAt = DateTimeOffset.Now,
+            UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow(),
             Message = $"正在连接Siemens {_options.SiemensSeries} {_options.IpAddress}:{_options.Port}。"
         });
     }
 
     public void ReportSuccess(TimeSpan elapsed)
     {
-        var now = DateTimeOffset.Now;
+        var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow();
         Update(previous => previous with
         {
             State = ConnectionState.Online,
@@ -68,7 +68,7 @@ public sealed class PlcConnectionSupervisor : IPlcConnectionSupervisor
     public void ReportFailure(Exception exception, TimeSpan elapsed)
     {
         ArgumentNullException.ThrowIfNull(exception);
-        var now = DateTimeOffset.Now;
+        var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow();
         Update(previous =>
         {
             var failures = previous.ConsecutiveFailures + 1;
@@ -91,7 +91,7 @@ public sealed class PlcConnectionSupervisor : IPlcConnectionSupervisor
         Update(previous => previous with
         {
             State = ConnectionState.Faulted,
-            UpdatedAt = DateTimeOffset.Now,
+            UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow(),
             Message = message
         });
     }
@@ -101,7 +101,7 @@ public sealed class PlcConnectionSupervisor : IPlcConnectionSupervisor
         Update(previous => previous with
         {
             State = ConnectionState.Disconnected,
-            UpdatedAt = DateTimeOffset.Now,
+            UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow(),
             Message = message
         });
     }

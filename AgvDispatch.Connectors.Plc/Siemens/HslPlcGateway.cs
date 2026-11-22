@@ -168,7 +168,7 @@ public sealed partial class HslPlcGateway : IPlcGateway, IPlcBatchReader, IDispo
                 }
             }
 
-            var readAt = DateTimeOffset.Now;
+            var readAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow();
             return (IReadOnlyList<PlcSignalReading>)points.Select(point => new PlcSignalReading(
                 point.Definition.StationId,
                 point.Definition.VariableName,
@@ -225,7 +225,7 @@ public sealed partial class HslPlcGateway : IPlcGateway, IPlcBatchReader, IDispo
             boxPresent,
             faulted,
             communicationOnline,
-            DateTimeOffset.Now);
+            AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow());
     }
 
     public async Task WriteSignalAsync(

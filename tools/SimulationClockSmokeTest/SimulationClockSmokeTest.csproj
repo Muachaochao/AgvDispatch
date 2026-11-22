@@ -7,5 +7,6 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../AgvDispatch.Application/AgvDispatch.Application.csproj" />
+    <ProjectReference Include="../../AgvDispatch.Connectors.Plc/AgvDispatch.Connectors.Plc.csproj" />
   </ItemGroup>
 </Project>

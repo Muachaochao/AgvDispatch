@@ -131,7 +131,7 @@ public sealed class PlcSignalCache : IPlcSignalCache
             throw new ArgumentOutOfRangeException(nameof(quality));
         }
 
-        var occurredAt = DateTimeOffset.Now;
+        var occurredAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow();
         var changes = new List<PlcSignalChanged>();
         lock (_sync)
         {
