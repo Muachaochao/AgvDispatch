@@ -213,7 +213,20 @@ public sealed class CompletedTransportRouteReleaseService(
                     // actual edge geometry and keep unknown geometry conservatively.
                     var guarded = topology!.Edges.Where(e =>
                         e.ResourceIds.Contains(lease.ResourceId, StringComparer.OrdinalIgnoreCase)).ToArray();
-                    if (guarded.Length == 0 || guarded.Any(e =>
+                    if (guarded.Length == 0)
+                    {
+                        // B07-FIX K1: node-only stop resources (e.g. SIM-STOP-*) carry no polygon and no edge.
+                        // A departed stop is released only when the stopped body is clear of a body-sized
+                        // footprint centred on every carrier node (distance > 2 x envelope radius).
+                        var carriers = map.Definition.Nodes.Where(n =>
+                            n.ResourceIds.Contains(lease.ResourceId, StringComparer.OrdinalIgnoreCase)).ToArray();
+                        if (carriers.Length == 0 || carriers.Any(n =>
+                        {
+                            var d = Math.Sqrt((n.X - x) * (n.X - x) + (n.Y - y) * (n.Y - y));
+                            return !double.IsFinite(d) || d <= 2 * radius;
+                        })) continue;
+                    }
+                    else if (guarded.Any(e =>
                     {
                         if (!MapEdgeGeometry.TryValidate(e, graphNodes![e.From], graphNodes[e.To], out _))
                             return true;
