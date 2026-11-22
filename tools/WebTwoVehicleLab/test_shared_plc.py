@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from multi_twin import Car, SharedPlc
+from simulation_clock import CLOCK
 
 
 class SharedPlcTests(unittest.TestCase):
@@ -43,7 +44,8 @@ class SharedPlcTests(unittest.TestCase):
             b.x, b.y = b.nodes[b.station]['x'], b.nodes[b.station]['y']
             plc.scan_handshakes()
             self.assertIsNotNone(plc.dump_started, 'Either independent car can reach the shared machine')
-            plc.dump_started = time.monotonic() - 6
+            # The shared PLC times dumping on the isolated business clock, not the process monotonic clock.
+            plc.dump_started = CLOCK.monotonic() - 6
             plc.scan_handshakes()
             self.assertTrue(plc.bit(610,3))
             self.assertFalse(plc.bit(0,5), 'The equipment must not invent origin notifications')
