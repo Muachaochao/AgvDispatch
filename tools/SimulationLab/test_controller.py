@@ -168,6 +168,17 @@ class SimulationTests(unittest.TestCase):
         self.assertEqual([v['batteryPercent'] for v in normalized['vehicles']], [22, 24])
         self.assertEqual(normalized['vehicles'][0]['chargingGainPercentPerHour'], 400)
 
+    def test_charging_priority_round_trips_and_disabled_keeps_original_behaviour(self):
+        runtime = object.__new__(Runtime)
+        normalized = runtime._validate_configuration(self.charging_payload())
+        again = runtime._validate_configuration({k: v for k, v in normalized.items() if k != 'plcSignalTable'} |
+                                                dict(plcSignalTable=self.charging_payload()['plcSignalTable']))
+        self.assertEqual(again['chargingPriorityTest'], normalized['chargingPriorityTest'])
+        payload = self.charging_payload(); payload['chargingPriorityTest'] = dict(enabled=False)
+        self.assertNotIn('chargingPriorityTest', runtime._validate_configuration(payload))
+        payload = self.charging_payload(); payload['chargingPriorityTest']['criticalBatteryPercent'] = 30
+        with self.assertRaisesRegex(ValueError, '阈值'): runtime._validate_configuration(payload)
+
     def test_charging_priority_configuration_rejects_unsafe_or_ambiguous_sites(self):
         runtime = object.__new__(Runtime)
         scenarios = []

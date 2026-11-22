@@ -26,6 +26,8 @@ STATION_IDS = ('CNC-001', 'CNC-002')
 VEHICLE_ID = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$')
 TASK_ID = re.compile(r'^[A-Za-z0-9_-]{1,128}$')
 SOURCE_SHA256 = re.compile(r'^[a-f0-9]{64}$')
+MAX_CHARGING_GAIN_PERCENT_PER_HOUR = 1000
+CHARGING_SITE_ID = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
 POINT_TABLE_SOURCE_FIELDS = ('sourceSha256', 'sourceFile', 'sourceDeviceId', 'sourceDeviceName')
 OBSTACLE_RECOVERY_TIMING = {
     'DetourAfterSeconds': 30,
@@ -552,7 +554,13 @@ class Runtime:
         state = self.device()
         memory = bytes.fromhex(state['memory_hex'])
         station_offsets = [station.get('offset', 0) for station in getattr(self, 'lab', {}).get('simulationTopology', {}).get('stations', [])] or [0, 2]
-        if any(c['loaded'] or c['current_task'] or any(t in (1, 2, 3) for t in c['tasks'].values()) for c in state['cars'].values()) or memory[610] != 0 or any(memory[o] & 254 != 10 for o in station_offsets):
+        # A low-battery car may already be driving its own charging session (CHARGE-*-IN/-OUT) when the scenario is
+        # submitted. That motion belongs to the charging service, not to an unclosed business cycle.
+        def charging_only(task_id):
+            return isinstance(task_id, str) and task_id.startswith('CHARGE-')
+        if any(c['loaded'] or (c['current_task'] and not charging_only(c['current_task'])) or
+               any(t in (1, 2, 3) and not charging_only(task_id) for task_id, t in c['tasks'].items())
+               for c in state['cars'].values()) or memory[610] != 0 or any(memory[o] & 254 != 10 for o in station_offsets):
             raise RuntimeError('设备不是空载静止的闭合初态，拒绝自动恢复。')
         page = self.api('/api/tasks')
         summary = page.get('summary')
@@ -787,7 +795,7 @@ class Runtime:
         return table
 
     def _validate_configuration(self, payload):
-        if not isinstance(payload, dict) or set(payload) - {'name', 'mapDefinition', 'stations', 'vehicles', 'dumper', 'inspectionSite', 'plcSignalTable', 'mapIdentity', 'downstreamAdmissionCapacity'}:
+        if not isinstance(payload, dict) or set(payload) - {'name', 'mapDefinition', 'stations', 'vehicles', 'dumper', 'inspectionSite', 'plcSignalTable', 'mapIdentity', 'downstreamAdmissionCapacity', 'chargingPriorityTest'}:
             raise ValueError('新实例配置包含未知字段。')
         navigation = copy.deepcopy(payload.get('mapDefinition'))
         if not isinstance(navigation, dict) or not all(isinstance(navigation.get(key), list) for key in ('nodes', 'edges', 'resources')):
@@ -871,7 +879,10 @@ class Runtime:
         table['mapDefinitionHash'] = map_hash
         stations = normalize_stations(payload.get('stations'), catalog=table['stations'])
         normalized_stations = []
-        typed_topology = any(isinstance(node.get('type'), str) for node in nodes.values())
+        # A map is a typed business topology once it declares Station nodes.  A
+        # legacy untyped map that only gained typed ChargingPoint/WaitingPoint
+        # nodes (charging-priority experiment) keeps the legacy station rules.
+        typed_topology = any(node.get('type') == 'Station' for node in nodes.values())
         for index, station in enumerate(stations):
             pickup = node(station['pickupSite'], '取货点' + str(index + 1))
             if typed_topology and nodes[pickup].get('type') != 'Station':
@@ -959,8 +970,8 @@ class Runtime:
                     not self._finite_number(operation) or not 0.1 <= operation <= 120 or \
                     not self._finite_number(travel_cost) or not 0 <= travel_cost <= 10 or \
                     not self._finite_number(idle_cost) or not 0 <= idle_cost <= 100 or \
-                    not self._finite_number(charging_gain) or not 0 <= charging_gain <= 100:
-                raise ValueError('车辆载荷、电量、速度、加速度、动作时长或耗电参数无效。')
+                    not self._finite_number(charging_gain) or not 0 <= charging_gain <= MAX_CHARGING_GAIN_PERCENT_PER_HOUR:
+                raise ValueError('车辆载荷、电量、速度、加速度、动作时长或耗电参数无效（充电增益须为0至1000%/h）。')
             curve = vehicle.get('voltageCurve')
             if curve is None: curve = [dict(percent=0, voltage=21), dict(percent=100, voltage=26)]
             if not isinstance(curve, list) or not 2 <= len(curve) <= 20:
@@ -1000,11 +1011,76 @@ class Runtime:
         admission = payload.get('downstreamAdmissionCapacity', 0)
         if type(admission) is not int or not 0 <= admission <= 8:
             raise ValueError('下游准入数量须为0至8的整数，0表示不另行限流。')
-        return dict(name=payload.get('name') or navigation.get('name') or 'custom-simulation',
+        charging = self._validate_charging_priority(payload.get('chargingPriorityTest'), nodes, resources,
+                                                    {v['id'] for v in normalized_vehicles})
+        result = dict(name=payload.get('name') or navigation.get('name') or 'custom-simulation',
                     mapDefinition=navigation, stations=normalized_stations,
                     vehicles=normalized_vehicles, dumper=dict(dumpingSite=dumping, waitingSite=waiting, waitingSites=waiting_sites, resourceId=resource_id),
                     inspectionSite=inspection, plcSignalTable=table, mapIdentity=map_identity,
                     downstreamAdmissionCapacity=admission)
+        if charging is not None:
+            result['chargingPriorityTest'] = charging
+        return result
+
+    @classmethod
+    def _validate_charging_priority(cls, value, nodes, resources, vehicle_ids):
+        """Validate the optional charging-priority experiment (充电优先仿真验收 CP01).
+
+        Absent or enabled=false keeps the original simulation behaviour.  Every
+        site must reference an enabled ChargingPoint, a different enabled exit
+        node and a capacity-one ChargingBay resource bound to that point, and may
+        only admit vehicles of this scheme.
+        """
+        if value is None:
+            return None
+        if not isinstance(value, dict) or set(value) - {'enabled', 'startBatteryPercent', 'criticalBatteryPercent',
+                                                        'targetBatteryPercent', 'sites'}:
+            raise ValueError('充电优先实验字段无效。')
+        if type(value.get('enabled')) is not bool:
+            raise ValueError('充电优先实验须明确启用或停用。')
+        if not value['enabled']:
+            return None
+        start = value.get('startBatteryPercent', 25)
+        critical = value.get('criticalBatteryPercent', 15)
+        target = value.get('targetBatteryPercent', 80)
+        if not all(cls._finite_number(v) for v in (start, critical, target)) or not 0 < critical < start < target <= 100:
+            raise ValueError('充电阈值须满足0<严重低电<启动<退出≤100。')
+        sites = value.get('sites')
+        if not isinstance(sites, list) or not 1 <= len(sites) <= 32:
+            raise ValueError('启用充电优先实验时须配置1至32个充电位。')
+        normalized, ids, points, bays = [], set(), set(), set()
+        for site in sites:
+            if not isinstance(site, dict) or set(site) - {'id', 'chargingSiteId', 'exitSiteId', 'resourceId', 'allowedVehicleIds'}:
+                raise ValueError('充电位字段无效。')
+            site_id = site.get('id')
+            if not isinstance(site_id, str) or not CHARGING_SITE_ID.fullmatch(site_id) or site_id.casefold() in ids:
+                raise ValueError('充电位ID须唯一，且只包含字母、数字、-或_。')
+            point = site.get('chargingSiteId')
+            if not isinstance(point, str) or point not in nodes or nodes[point].get('enabled', True) is not True or \
+                    nodes[point].get('type') != 'ChargingPoint' or point in points:
+                raise ValueError(f'充电位{site_id}的充电点必须是已启用且未重复的ChargingPoint。')
+            exit_site = site.get('exitSiteId')
+            if not isinstance(exit_site, str) or exit_site not in nodes or nodes[exit_site].get('enabled', True) is not True or exit_site == point:
+                raise ValueError(f'充电位{site_id}的退出点必须是已启用节点，且不同于充电点。')
+            resource_id = site.get('resourceId')
+            resource = resources.get(resource_id) if isinstance(resource_id, str) else None
+            if resource is None or resource_id in bays:
+                raise ValueError(f'充电位{site_id}的独占资源不存在或重复。')
+            if resource.get('type') != 'ChargingBay':
+                raise ValueError(f'充电位{site_id}的资源必须是ChargingBay。')
+            if resource.get('capacity', 1) != 1:
+                raise ValueError(f'充电位{site_id}的ChargingBay容量必须为1。')
+            if resource_id not in (nodes[point].get('resourceIds') or []):
+                raise ValueError(f'充电位{site_id}的ChargingBay未关联到充电点。')
+            allowed = site.get('allowedVehicleIds')
+            if not isinstance(allowed, list) or not allowed or any(not isinstance(v, str) or v not in vehicle_ids for v in allowed) or \
+                    len(set(allowed)) != len(allowed):
+                raise ValueError(f'充电位{site_id}的允许车辆不能为空，且只能包含本方案车辆。')
+            ids.add(site_id.casefold()); points.add(point); bays.add(resource_id)
+            normalized.append(dict(id=site_id, chargingSiteId=point, exitSiteId=exit_site,
+                                   resourceId=resource_id, allowedVehicleIds=list(allowed)))
+        return dict(enabled=True, startBatteryPercent=start, criticalBatteryPercent=critical,
+                    targetBatteryPercent=target, sites=normalized)
 
     def _default_configuration(self, count):
         table = self._bound_plc_table()
@@ -1311,6 +1387,10 @@ class Runtime:
                 privateFile='plc-signals.source.csv',
                 privateSha256=signal_manifest['privateSha256'])
             settings['Plc']['SignalCsvPath'] = 'config/simulation-signals.csv'
+            # After the private signal table is bound: the charging runtime's communication file mirrors the PLC.
+            self._apply_charging_priority(configuration.get('chargingPriorityTest'), settings, robots, target, port)
+            if configuration.get('chargingPriorityTest'):
+                lab['simulationConfiguration']['chargingPriorityTest'] = copy.deepcopy(configuration['chargingPriorityTest'])
             web.update(Port=lab['webPort'], PipeName=lab['pipe'], ProjectStorePath=str(target / 'projects'), EngineeringStorePath=str(target / 'engineering'))
             for filename, value in [('lab.json', lab), ('service/appsettings.json', settings), ('service-settings.json', settings), ('webhost/appsettings.json', {'Web': web})]:
                 write(target / filename, value)
@@ -1321,6 +1401,58 @@ class Runtime:
             self.__init__(target, template_root=self.template_root, scheme_store=store)
             if store is not None: store.remember(target)
         return self.status()
+
+    @staticmethod
+    def _apply_charging_priority(charging, settings, robots, target, port):
+        """Write the isolated charging-priority runtime (充电优先仿真验收).
+
+        Each vehicle gets its own loopback OtherApiPort (6005 relay) served by the
+        twin.  Sites are written both to Charging:Sites and to the private
+        communication-settings.json, which the Service prefers at startup.
+        RelayControlConfirmed is only set inside this loopback-only instance.
+        """
+        if not charging:
+            settings.pop('Charging', None)
+            return
+        for robot in robots:
+            robot['OtherApiPort'] = port()
+        chargers = [dict(Id=f"SIM-CHG-{index + 1:02}", DisplayName=f"仿真充电桩{index + 1:02}", Enabled=True,
+                         IpAddress='127.0.0.1', AckPort=port(), StatusPort=port())
+                    for index in range(len(charging['sites']))]
+        sites = [dict(Id=site['id'], ChargerId=charger['Id'], ChargerAddress='127.0.0.1',
+                      ChargingSiteId=site['chargingSiteId'], ExitSiteId=site['exitSiteId'], ResourceId=site['resourceId'],
+                      ControlMode='Relay6005', Commissioned=True, AllowedVehicleIds=list(site['allowedVehicleIds']))
+                 for site, charger in zip(charging['sites'], chargers)]
+        settings['Charging'] = dict(settings.get('Charging') or {}, Enabled=True,
+                                    StartBatteryPercent=charging['startBatteryPercent'],
+                                    CriticalBatteryPercent=charging['criticalBatteryPercent'],
+                                    TargetBatteryPercent=charging['targetBatteryPercent'], Sites=sites)
+        settings['RobokitCharging'] = dict(settings.get('RobokitCharging') or {}, RelayControlConfirmed=True,
+                                           VehicleOtherApiPorts={r['VehicleId']: r['OtherApiPort'] for r in robots})
+        settings['ChargerMonitoring'] = dict(settings.get('ChargerMonitoring') or {}, Enabled=False, Addresses=[])
+        # Mirror CommunicationSettingsService.FromLegacy with the PlcOptions defaults: once this file exists the
+        # Service builds the PLC fleet from it, so the device id and timings must equal the appsettings view.
+        legacy = dict(DeviceId='PLC-MAIN', DisplayName='总控PLC', Enabled=False, SiemensSeries='S1200', IpAddress='127.0.0.1', Port=102,
+                      Rack=None, Slot=None, LocalTsap=None, DestTsap=None, ConnectionType=None, PollIntervalMs=500,
+                      ConnectTimeoutMs=3000, ReceiveTimeoutMs=3000, ReconnectDelayMs=3000, StaleAfterMs=5000,
+                      InterruptedFailureThreshold=3, ReadBlockSizeBytes=200, SignalCsvPath='config/plc-signals.csv')
+        plc = {key: settings['Plc'].get(key, default) for key, default in legacy.items()}
+        agv = settings['Agv']
+        configuration = dict(
+            Plcs=[plc],
+            Agvs=[dict(VehicleId=r['VehicleId'], DisplayName=r.get('DisplayName', r['VehicleId']), Enabled=r.get('Enabled', True),
+                       IpAddress=r['IpAddress'], Port=r['Port'], NavigationPort=r['NavigationPort'], OtherApiPort=r['OtherApiPort'])
+                  for r in robots],
+            MapBindings=[], ChargerMonitoringEnabled=False, Chargers=chargers,
+            ChargingSites=[{key: value for key, value in site.items() if key != 'ChargerAddress'} for site in sites],
+            ChargerConfigurationInitialized=True, ChargingSiteConfigurationInitialized=True,
+            AgvEnabled=agv.get('Enabled', True), AgvProtocolVersion=agv.get('ProtocolVersion', 2),
+            AgvPollIntervalMs=agv.get('PollIntervalMs', 500), AgvConnectTimeoutMs=agv.get('ConnectTimeoutMs', 3000),
+            AgvRequestTimeoutMs=agv.get('RequestTimeoutMs', 3000), AgvReconnectDelayMs=agv.get('ReconnectDelayMs', 3000),
+            AgvStaleAfterMs=agv.get('StaleAfterMs', 5000))
+        (target / 'data').mkdir(exist_ok=True)
+        write(target / 'data/communication-settings.json',
+              dict(Version=1, Revision='simulation-charging-priority', Configuration=configuration, Audits=[]))
 
     def start(self):
         with self.lock:
