@@ -6,8 +6,8 @@ import re
 REPORT_ID = re.compile(r'^[a-f0-9]{32}$')
 MAX_REPORT_BYTES = 2 * 1024 * 1024
 MAX_TASK_DETAILS_BYTES = 48 * 1024 * 1024
-# Long factory campaigns retain large raw observations. Read twice in a stream;
-# keep the independent per-line, frame-count and response-size bounds below.
+# Long factory campaigns retain large raw observations. Keep file, line,
+# frame-count and response-size limits independent.
 MAX_REPLAY_BYTES = 2 * 1024 * 1024 * 1024
 MAX_LINE_BYTES = 4 * 1024 * 1024
 MAX_RESPONSE_BYTES = 7 * 1024 * 1024
@@ -188,8 +188,6 @@ def replay(runtime, identity):
                 if len(line) > MAX_LINE_BYTES:
                     raise ValueError('单次采样超出4MB，不能在界面回放，请查看原始证据。')
                 yield line
-    count = sum(1 for _ in lines())
-    stride = max(1, math.ceil(count/1999))
     map_path = run / 'map.json'
     navigation = None
     map_message = None
@@ -206,28 +204,39 @@ def replay(runtime, identity):
     timeline_budget = MAX_RESPONSE_BYTES - map_bytes - 1024
     timeline = []
     timeline_bytes = 0
+    stride = 1
+
+    def append_sample(index, line, final=False):
+        nonlocal stride, timeline, timeline_bytes
+        value = json.loads(line)
+        vehicles = [dict(vehicleId=vehicle, x=car.get('x'), y=car.get('y'), angle=car.get('angle'),
+            site=car.get('station') or car.get('site'), loaded=car.get('loaded'),
+            blocked=car.get('blocked'), blockedByVehicle=car.get('blockedByVehicle'),
+            paused=car.get('paused'), offline=car.get('offline'),
+            waitReason=car.get('waitReason'), taskId=car.get('current_task'))
+            for vehicle, car in value.get('device', {}).get('cars', {}).items()]
+        tasks = [dict(taskId=tid, stationId=task.get('stationId'), vehicleId=task.get('vehicleId'),
+            stage=task.get('stage'), step=task.get('progress'), waitReason=task.get('waitingExplanation'))
+            for tid, task in value.get('tasks', {}).items()]
+        frame = dict(time=value['time'], vehicles=vehicles, tasks=tasks, leases=value.get('leases', []))
+        frame_bytes = len(json.dumps(frame, ensure_ascii=False, allow_nan=False).encode('utf-8')) + 2
+        if frame_bytes > timeline_budget:
+            raise ValueError('单次回放数据过大，请查看实例中的原始采样证据。')
+        timeline.append((index, frame, frame_bytes))
+        timeline_bytes += frame_bytes
+        limit = 2000 if final else 1999
+        while len(timeline) > 1 and (timeline_bytes > timeline_budget or len(timeline) > limit):
+            stride *= 2
+            reduced = [row for row in timeline if row[0] % stride == 0 or (final and row[0] == index)]
+            timeline = reduced if len(reduced) < len(timeline) else [timeline[-1]]
+            timeline_bytes = sum(row[2] for row in timeline)
+
+    count = 0
     for index, line in enumerate(lines()):
-            if index % stride and index != count-1: continue
-            value = json.loads(line)
-            vehicles = [dict(vehicleId=vehicle, x=car.get('x'), y=car.get('y'), angle=car.get('angle'),
-                site=car.get('station') or car.get('site'), loaded=car.get('loaded'),
-                blocked=car.get('blocked'), blockedByVehicle=car.get('blockedByVehicle'),
-                paused=car.get('paused'), offline=car.get('offline'),
-                waitReason=car.get('waitReason'), taskId=car.get('current_task'))
-                for vehicle, car in value.get('device', {}).get('cars', {}).items()]
-            tasks = [dict(taskId=tid, stationId=task.get('stationId'), vehicleId=task.get('vehicleId'),
-                stage=task.get('stage'), step=task.get('progress'), waitReason=task.get('waitingExplanation'))
-                for tid, task in value.get('tasks', {}).items()]
-            frame = dict(time=value['time'], vehicles=vehicles, tasks=tasks, leases=value.get('leases', []))
-            frame_bytes = len(json.dumps(frame, ensure_ascii=False, allow_nan=False).encode('utf-8')) + 2
-            if frame_bytes > timeline_budget:
-                raise ValueError('单次回放数据过大，请查看实例中的原始采样证据。')
-            timeline.append((index, frame, frame_bytes))
-            timeline_bytes += frame_bytes
-            while timeline_bytes > timeline_budget and len(timeline) > 1:
-                stride *= 2
-                reduced = [row for row in timeline if row[0] % stride == 0 or row[0] == count-1]
-                timeline = reduced if len(reduced) < len(timeline) else [timeline[-1]]
-                timeline_bytes = sum(row[2] for row in timeline)
+        count = index + 1
+        if index % stride == 0:
+            append_sample(index, line)
+    if count and timeline[-1][0] != count - 1:
+        append_sample(count - 1, line, final=True)
     return dict(id=identity, timeline=[row[1] for row in timeline], map=navigation, mapMessage=map_message,
                 totalSamples=count, sampled=count > len(timeline))
