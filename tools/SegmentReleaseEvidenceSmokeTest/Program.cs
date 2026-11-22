@@ -26,8 +26,10 @@ var nodeAssessment=Evaluate(nodeContext);
 Check(nodeAssessment.Candidates.Single().EvidenceVerified,"非终点节点资源在前一相邻路段通过且车体离开后即可释放");
 var corridorNodes=new[]
 {
-    new MapNode("L",0,0,MapNodeType.Waypoint,true,[]),
-    new MapNode("R",2,0,MapNodeType.Waypoint,true,[]),
+    // Station endpoints isolate the reciprocal-curve corridor guard: Waypoints
+    // with two or more incident edges also receive automatic junction guards.
+    new MapNode("L",0,0,MapNodeType.Station,true,[]),
+    new MapNode("R",2,0,MapNodeType.Station,true,[]),
     new MapNode("OUT",3,0,MapNodeType.Station,true,[])
 };
 var corridorMap=new MapDefinition("corridor","","LocalCartesian","m",corridorNodes,
