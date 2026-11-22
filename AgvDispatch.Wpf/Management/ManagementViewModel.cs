@@ -29,6 +29,7 @@ public sealed class ManagementViewModel : INotifyPropertyChanged
     private string _paiceState = "等待检查排策智演";
     private string _paiceFrontendState = "未就绪";
     private string _paiceBackendState = "未就绪";
+    private string _paiceSimulationSummary = "等待读取仿真方案和地图版本。";
     private bool _paiceConfigured;
     private bool _paiceRunning;
     private PaiceOwnedRecordState _paiceRecordState;
@@ -55,7 +56,7 @@ public sealed class ManagementViewModel : INotifyPropertyChanged
         _site = site; _operations = new(site); _archives = new(site); _paiceOperations = new(site);
         try { _paiceConfigured = _paiceOperations.Info is not null; }
         catch (Exception ex) { _paiceState = ex.Message; }
-        RefreshCommand = new AsyncAction(async () => { await RefreshAsync(); await ReadConnectionsAsync(); }, () => !IsBusy);
+        RefreshCommand = new AsyncAction(async () => { await RefreshAsync(); await ReadConnectionsAsync(); }, () => !IsBusy && !_refreshing);
         StartCommand = Operation(async () => SetMessage(await _operations.LaunchAsync(false)));
         StopCommand = Operation(async () => { if (Confirm("停止当前日常后台和 Web？\n核对任务、路权、待发命令、充电及在线车辆停稳状态；离线车辆不阻止空闲系统停止。\n此操作不向车辆发送停车指令。")) SetMessage(await _operations.LaunchAsync(true)); });
         RestartCommand = Operation(async () => { if (!Confirm("重启当前日常系统？\n先核对任务清场、充电及在线车辆状态；离线车辆不阻止空闲系统停止。重新启动沿用原有配置。")) return; SetMessage(await _operations.LaunchAsync(true)); SetMessage(await _operations.LaunchAsync(false)); });
@@ -74,6 +75,15 @@ public sealed class ManagementViewModel : INotifyPropertyChanged
         OpenEngineeringCommand = new RelayAction(() => Open(SiteEnvironment.WebUrl + "#/engineering?tab=communication"));
         OpenPipelineCommand = new RelayAction(() => Open(SiteEnvironment.WebUrl + "#/dispatch-pipeline"));
         OpenPaiceCommand = new RelayAction(() => Open((_paiceOperations.Info ?? throw new InvalidOperationException("尚未配置排策智演。")).Url));
+        OpenPaiceEngineeringCommand = new RelayAction(() =>
+        {
+            try
+            {
+                var info = _paiceOperations.Info ?? throw new InvalidOperationException("尚未配置排策智演。");
+                Open(new Uri(new Uri(info.Url), "simulation?mode=main&section=engineering").AbsoluteUri);
+            }
+            catch (Exception ex) { SetMessage("无法打开工程与地图：" + ex.Message); }
+        });
         OpenRecoveryCommand = new RelayAction(() => Open(SiteEnvironment.WebUrl + "#/recovery"));
         OpenSettingsCommand = new RelayAction(() => SelectedPage = 4);
         OpenInformationCommand = new RelayAction(() => SelectedPage = 2);
@@ -134,6 +144,7 @@ public sealed class ManagementViewModel : INotifyPropertyChanged
     public string PaiceFrontendConnection => _paiceFrontendState.StartsWith("已就绪") ? "已连接" : "未连接";
     public string PaiceBackendConnection => _paiceBackendState.StartsWith("健康") ? "已连接" : "未连接";
     public string PaiceSimulationState => _paiceState;
+    public string PaiceSimulationSummary => _paiceSimulationSummary;
     public bool CanStartSystem => CanOperate && _canStart;
     public bool CanStopSystem => CanOperate && _canStop;
     public bool CanRestartSystem => CanOperate && _canStop;
@@ -169,6 +180,7 @@ public sealed class ManagementViewModel : INotifyPropertyChanged
     public ICommand OpenEngineeringCommand { get; }
     public ICommand OpenPipelineCommand { get; }
     public ICommand OpenPaiceCommand { get; }
+    public ICommand OpenPaiceEngineeringCommand { get; }
     public ICommand OpenRecoveryCommand { get; }
     public ICommand OpenSettingsCommand { get; }
     public ICommand OpenInformationCommand { get; }
@@ -186,10 +198,11 @@ public sealed class ManagementViewModel : INotifyPropertyChanged
     public ICommand ExportCommand { get; }
     public ICommand ReadLogCommand { get; }
 
-    public async Task RefreshAsync()
+    public async Task RefreshAsync(bool refreshSimulation = true)
     {
         if (_refreshing || IsBusy) return;
         _refreshing = true;
+        CommandManager.InvalidateRequerySuggested();
         try
         {
             var release = _site.ReadRelease();
@@ -225,7 +238,12 @@ public sealed class ManagementViewModel : INotifyPropertyChanged
                 else _webState = "已就绪 · 127.0.0.1:5199";
             }
             catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or JsonException) { if (webAlive) _webState = "进程存在 · Web 未就绪"; }
-            try { ApplyPaiceObservation(await _paiceOperations.ObserveAsync()); }
+            PaiceSimulationObservation? paice = null;
+            try
+            {
+                paice = await _paiceOperations.ObserveAsync();
+                ApplyPaiceObservation(paice);
+            }
             catch (Exception ex)
             {
                 _paiceConfigured = false;
@@ -234,13 +252,26 @@ public sealed class ManagementViewModel : INotifyPropertyChanged
                 _paiceBackendState = "配置错误";
                 _paiceState = ex.Message;
             }
+            if (refreshSimulation || paice is not { BackendReady: true })
+            {
+                try
+                {
+                    Set(ref _paiceSimulationSummary, paice is null ? _paiceState :
+                        await _paiceOperations.ReadSimulationSummaryAsync(paice), nameof(PaiceSimulationSummary));
+                }
+                catch (Exception ex)
+                {
+                    Set(ref _paiceSimulationSummary, "仿真数据源未确认：" + ex.Message, nameof(PaiceSimulationSummary));
+                }
+            }
             _network = SiteOperations.ReadNetwork();
             _lastCheck = DateTime.Now.ToString("HH:mm:ss") + " 已检查";
         }
-        catch (Exception ex) { _canStart = false; _canStop = false; _serviceState = "配置检查失败"; _webState = "未确认"; _paiceFrontendState = "未确认"; _paiceBackendState = "未确认"; _paiceState = ex.Message; _runtime = ex.Message; _connectionsState = "配置无效，设备状态未确认。"; Connections.Clear(); }
+        catch (Exception ex) { _canStart = false; _canStop = false; _serviceState = "配置检查失败"; _webState = "未确认"; _paiceFrontendState = "未确认"; _paiceBackendState = "未确认"; _paiceState = ex.Message; _runtime = ex.Message; _connectionsState = "配置无效，设备状态未确认。"; Set(ref _paiceSimulationSummary, "仿真数据源未确认。", nameof(PaiceSimulationSummary)); Connections.Clear(); }
         finally
         {
             _refreshing = false;
+            CommandManager.InvalidateRequerySuggested();
             foreach (var name in new[] { nameof(Release), nameof(Paths), nameof(Policy), nameof(ServiceState), nameof(WebState), nameof(PaiceFrontendState), nameof(PaiceBackendState), nameof(PaiceFrontendConnection), nameof(PaiceBackendConnection), nameof(PaiceSimulationState), nameof(Runtime), nameof(Network), nameof(LastCheck), nameof(ConnectionsState), nameof(DatabaseState), nameof(DatabaseConnection), nameof(ProjectConnection), nameof(BackendConnection), nameof(WebConnection), nameof(CanStartSystem), nameof(CanStopSystem), nameof(CanRestartSystem), nameof(CanStartPaiceSimulation), nameof(CanStopPaiceSimulation) }) Changed(name);
         }
     }

@@ -10,7 +10,7 @@ public partial class ManagementWindow : Window
     {
         InitializeComponent(); DataContext = viewModel;
         Loaded += async (_, _) => { await viewModel.RefreshAsync(); await viewModel.ReadConnectionsAsync(); _timer.Start(); };
-        _timer.Tick += async (_, _) => { await viewModel.RefreshAsync(); await viewModel.ReadConnectionsAsync(); };
+        _timer.Tick += async (_, _) => { await viewModel.RefreshAsync(refreshSimulation: false); await viewModel.ReadConnectionsAsync(); };
         Closing += (_, e) =>
         {
             if (!viewModel.IsBusy) return;

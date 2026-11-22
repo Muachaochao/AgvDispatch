@@ -21,9 +21,63 @@ public sealed record PaiceSimulationObservation(
 
 public sealed class PaiceSimulationOperations(SiteEnvironment site)
 {
-    private sealed record OwnedProcess(int Id, string Path, long StartedUtcTicks);
+    private sealed record OwnedProcess(int Id, string Path, long StartedUtcTicks, string? SimulationSource);
 
     public PaiceSimulationInfo? Info => site.ReadPaiceSimulation();
+
+    public async Task<string> ReadSimulationSummaryAsync(PaiceSimulationObservation observation, CancellationToken ct = default)
+    {
+        var info = Info;
+        if (info is null) return "尚未配置排策智演。";
+        var configured = info.SimulationSource;
+        if (!observation.BackendReady)
+            return $"仿真数据源：{configured?.AbsoluteUri ?? "未配置"}\n排策智演后端未就绪。";
+        var actual = observation.RecordState == PaiceOwnedRecordState.Live
+            ? ReadOwnedRecord(info.ProcessRecordPath)
+                .SingleOrDefault(entry => entry.SimulationSource is not null &&
+                    ProcessIdentity.Matches(new(entry.Id, entry.StartedUtcTicks, entry.Path)))?.SimulationSource
+            : null;
+        if (actual is null)
+            return $"仿真数据源：{configured?.AbsoluteUri ?? "未配置"}\n当前进程未登记数据源。通过「服务管理」重新启动排策智演后可核对。";
+        var source = SiteEnvironment.ParseSimulationSource(actual);
+        var summary = $"仿真数据源：{source.AbsoluteUri}";
+        if (configured is not null && configured != source)
+            summary += $"\n已保存新地址：{configured.AbsoluteUri}。重新启动排策智演后生效。";
+        try
+        {
+            using var client = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false, UseProxy = false })
+                { Timeout = TimeSpan.FromSeconds(4) };
+            using var content = JsonDocument.Parse(await client.GetStringAsync(new Uri(source, "api/simulation"), ct));
+            var status = content.RootElement;
+            if (!status.TryGetProperty("enabled", out var enabled) || enabled.ValueKind != JsonValueKind.True)
+                return summary + "\n该入口尚未启用隔离仿真。";
+            var scheme = ReadSelectedScheme(status);
+            var identity = status.TryGetProperty("configuration", out var configuration) &&
+                configuration.ValueKind == JsonValueKind.Object && configuration.TryGetProperty("mapIdentity", out var mapIdentity)
+                ? mapIdentity : default;
+            var version = ReadText(identity, "mapVersionId") ?? "未提供版本号";
+            var instance = ReadText(status, "rootName") ?? "未选实例";
+            var mapName = status.TryGetProperty("map", out var map) ? ReadText(map, "name") : null;
+            return $"{summary}\n所选方案：{scheme}\n当前实例：{instance}\n地图：{mapName ?? "未加载"} · {version}";
+        }
+        catch (Exception error) when (error is HttpRequestException or OperationCanceledException or JsonException or InvalidOperationException)
+        {
+            return summary + "\n仿真状态读取失败：" + error.Message;
+        }
+    }
+
+    private static string ReadSelectedScheme(JsonElement status)
+    {
+        var selected = ReadText(status, "selectedSchemeId");
+        if (selected is not null && status.TryGetProperty("schemes", out var schemes) && schemes.ValueKind == JsonValueKind.Array)
+            foreach (var scheme in schemes.EnumerateArray())
+                if (ReadText(scheme, "id") == selected) return ReadText(scheme, "name") ?? selected;
+        return selected ?? "未选方案";
+    }
+
+    private static string? ReadText(JsonElement element, string name) =>
+        element.ValueKind == JsonValueKind.Object && element.TryGetProperty(name, out var value) &&
+        value.ValueKind == JsonValueKind.String ? value.GetString() : null;
 
     public async Task<PaiceSimulationObservation> ObserveAsync(CancellationToken ct = default)
     {
@@ -51,7 +105,7 @@ public sealed class PaiceSimulationOperations(SiteEnvironment site)
         if (before.RecordState is PaiceOwnedRecordState.Live or PaiceOwnedRecordState.Conflict)
             throw new InvalidOperationException("排策智演启动记录仍有存活或冲突进程，拒绝重复启动。");
         RemoveStaleOwnedRecord(info.ProcessRecordPath);
-        await RunScriptAsync(info.StartScript, TimeSpan.FromMinutes(12), ct);
+        await RunScriptAsync(info.StartScript, TimeSpan.FromMinutes(12), ct, info.SimulationSource is null ? null : site.Root);
         var after = await ObserveAsync(ct);
         if (!after.Running) throw new InvalidOperationException("启动脚本已结束，但排策智演前后端未同时就绪。");
         return after;
@@ -81,8 +135,8 @@ public sealed class PaiceSimulationOperations(SiteEnvironment site)
         if (!File.Exists(path)) return PaiceOwnedRecordState.Missing;
         try
         {
-            var entries = JsonSerializer.Deserialize<OwnedProcess[]>(File.ReadAllText(path), SiteEnvironment.Json);
-            if (entries is null || entries.Length == 0) return PaiceOwnedRecordState.Invalid;
+            var entries = ReadOwnedRecord(path);
+            if (entries.Length == 0) return PaiceOwnedRecordState.Invalid;
             var live = 0;
             foreach (var entry in entries)
             {
@@ -110,6 +164,9 @@ public sealed class PaiceSimulationOperations(SiteEnvironment site)
             return PaiceOwnedRecordState.Invalid;
         }
     }
+
+    private static OwnedProcess[] ReadOwnedRecord(string path) =>
+        JsonSerializer.Deserialize<OwnedProcess[]>(File.ReadAllText(path), SiteEnvironment.Json) ?? [];
 
     public static bool RemoveStaleOwnedRecord(string path)
     {
@@ -160,7 +217,7 @@ public sealed class PaiceSimulationOperations(SiteEnvironment site)
         catch (Exception error) when (error is HttpRequestException or OperationCanceledException) { return false; }
     }
 
-    private static async Task RunScriptAsync(string script, TimeSpan timeout, CancellationToken ct)
+    private static async Task RunScriptAsync(string script, TimeSpan timeout, CancellationToken ct, string? siteRoot = null)
     {
         var powershell = (Environment.GetEnvironmentVariable("PATH") ?? "")
             .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -181,6 +238,11 @@ public sealed class PaiceSimulationOperations(SiteEnvironment site)
         info.ArgumentList.Add("Bypass");
         info.ArgumentList.Add("-File");
         info.ArgumentList.Add(script);
+        if (siteRoot is not null)
+        {
+            info.ArgumentList.Add("-SiteRoot");
+            info.ArgumentList.Add(siteRoot);
+        }
         using var process = Process.Start(info) ?? throw new InvalidOperationException("无法启动排策智演脚本。");
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
         deadline.CancelAfter(timeout);

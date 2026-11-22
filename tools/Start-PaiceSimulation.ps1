@@ -1,11 +1,25 @@
 #requires -Version 7.0
-param([string]$JavaHome='', [string]$MavenPath='', [switch]$Rebuild)
+param([string]$JavaHome='', [string]$MavenPath='', [switch]$Rebuild, [string]$SiteRoot='')
 $ErrorActionPreference='Stop'
 $project=Split-Path $PSScriptRoot
 $application=Join-Path $project 'integrations/PaiceSimulation'
 $runtime=Join-Path $application '.runtime'
 $frontend=Join-Path $application 'agv-frontend'
 $jar=Join-Path $application 'agv-backend/target/agv-backend-1.0.0.jar'
+$siteSettings=Join-Path ($SiteRoot ? $SiteRoot : (Join-Path $project '../发布包')) '最新版Web.json'
+$simulationSource=$null
+if(Test-Path -LiteralPath $siteSettings){
+    $siteConfiguration=Get-Content -LiteralPath $siteSettings -Raw | ConvertFrom-Json
+    if($null -ne $siteConfiguration.paiceSimulation.simulationSource){
+        $sourceUri=$null
+        if(![Uri]::TryCreate($siteConfiguration.paiceSimulation.simulationSource,[UriKind]::Absolute,[ref]$sourceUri) -or
+            $sourceUri.Scheme -ne 'http' -or $sourceUri.Host -ne '127.0.0.1' -or $sourceUri.Port -le 0 -or
+            $sourceUri.AbsolutePath -ne '/' -or $sourceUri.Query -or $sourceUri.Fragment -or $sourceUri.UserInfo){
+            throw '仿真数据源须为本机 http://127.0.0.1:端口/ 地址。'
+        }
+        $simulationSource=$sourceUri.AbsoluteUri
+    }
+}
 New-Item -ItemType Directory -Path $runtime -Force | Out-Null
 $lifecycleLock=[IO.File]::Open((Join-Path $runtime 'lifecycle.lock'),[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
 try {
@@ -40,8 +54,10 @@ if($Rebuild -or !(Test-Path -LiteralPath $jar)){
 }
 $created=@()
 try{
-    $backend=Start-Process -FilePath $java -ArgumentList @('-jar',('"'+$jar+'"'),'--server.address=127.0.0.1','--server.port=5271') -WorkingDirectory $runtime -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $runtime 'backend.stdout.log') -RedirectStandardError (Join-Path $runtime 'backend.stderr.log')
-    $created+=@{id=$backend.Id;startedUtcTicks=$backend.StartTime.ToUniversalTime().Ticks;path=$java}
+    $backendArguments=@('-jar',('"'+$jar+'"'),'--server.address=127.0.0.1','--server.port=5271')
+    if($simulationSource){$backendArguments+="--agv.main-dispatch.base-url=$simulationSource"}
+    $backend=Start-Process -FilePath $java -ArgumentList $backendArguments -WorkingDirectory $runtime -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $runtime 'backend.stdout.log') -RedirectStandardError (Join-Path $runtime 'backend.stderr.log')
+    $created+=@{id=$backend.Id;startedUtcTicks=$backend.StartTime.ToUniversalTime().Ticks;path=$java;simulationSource=$simulationSource}
     $vite=Join-Path $frontend 'node_modules/vite/bin/vite.js'
     $web=Start-Process -FilePath $node -ArgumentList @(('"'+$vite+'"'),'--host','127.0.0.1','--port','5270','--strictPort') -WorkingDirectory $frontend -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $runtime 'frontend.stdout.log') -RedirectStandardError (Join-Path $runtime 'frontend.stderr.log')
     $created+=@{id=$web.Id;startedUtcTicks=$web.StartTime.ToUniversalTime().Ticks;path=$node}

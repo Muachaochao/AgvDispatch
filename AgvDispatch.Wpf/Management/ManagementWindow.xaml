@@ -64,7 +64,10 @@
       <Expander Header="运行详情与调度诊断" Margin="4,15,0,20" Foreground="#777B83"><StackPanel Margin="0,16,0,0"><TextBlock Text="{Binding Runtime}" LineHeight="24" FontSize="12"/><WrapPanel Margin="0,15,0,0"><Button Content="六层调度监控 ↗" Command="{Binding OpenPipelineCommand}"/><Button Content="异常恢复 ↗" Command="{Binding OpenRecoveryCommand}"/></WrapPanel></StackPanel></Expander>
      </StackPanel>
      <StackPanel Visibility="{Binding BackupVisibility}">
-      <ContentControl Content="当前版本" Style="{StaticResource Section}"/><TextBlock Text="{Binding Release}" FontSize="18" Margin="4,8,0,15"/><TextBlock Text="{Binding Paths}" Style="{StaticResource Hint}" Margin="4,0,0,25"/><TextBlock Text="版本切换沿用现有受控发布流程。此页维护同版本数据备份与恢复。" Style="{StaticResource Hint}" FontSize="12"/>
+      <ContentControl Content="当前版本" Style="{StaticResource Section}"/><TextBlock Text="{Binding Release}" FontSize="18" Margin="4,8,0,15"/><TextBlock Text="{Binding Paths}" Style="{StaticResource Hint}" Margin="4,0,0,25"/>
+      <ContentControl Content="排策智演方案与地图" Style="{StaticResource Section}"/>
+      <TextBlock Text="{Binding PaiceSimulationSummary}" Style="{StaticResource Hint}" LineHeight="23" Margin="4,0,0,6"/>
+      <Button Content="打开工程与地图 ↗" Command="{Binding OpenPaiceEngineeringCommand}" HorizontalAlignment="Left" Margin="4,0,0,26"/>
       <ContentControl Content="数据备份" Style="{StaticResource Section}"/><TextBlock Text="包含日常数据库、地图、通信配置和 Web 工程方案。后台与 Web 停止后可创建完整备份。" Style="{StaticResource Hint}"/><WrapPanel><Button Content="创建备份" Style="{StaticResource Primary}" Command="{Binding BackupCommand}"/><Button Content="打开备份目录" Command="{Binding OpenBackupCommand}"/></WrapPanel>
       <ContentControl Content="备份恢复" Style="{StaticResource Section}" Margin="0,30,0,16"/><TextBlock Text="校验同版本备份的清单、哈希及数据库后恢复，原数据另存保留。恢复后不自动启动或放行恢复屏障。" Style="{StaticResource Hint}"/><Button Content="选择备份并恢复…" Command="{Binding RestoreCommand}" HorizontalAlignment="Left"/>
      </StackPanel>

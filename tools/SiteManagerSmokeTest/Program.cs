@@ -42,7 +42,7 @@ internal static class Program
         {
             var actual = new ManagementViewModel(SiteEnvironment.Find(args[1]));
             actual.RefreshAsync().GetAwaiter().GetResult();
-            Console.WriteLine($"{actual.Release}\n后台：{actual.ServiceState}\nWeb：{actual.WebState}\n排策智演前端：{actual.PaiceFrontendState}\n排策智演后端：{actual.PaiceBackendState}\n{actual.Runtime}\n{actual.Paths}");
+            Console.WriteLine($"软件助手：{actual.AssistantVersion}\n{actual.Release}\n后台：{actual.ServiceState}\nWeb：{actual.WebState}\n排策智演前端：{actual.PaiceFrontendState}\n排策智演后端：{actual.PaiceBackendState}\n{actual.PaiceSimulationSummary}\n{actual.Runtime}\n{actual.Paths}");
             return actual.ServiceState == "配置检查失败" ? 1 : 0;
         }
         var temporary = Path.Combine(Path.GetTempPath(), "agv-manager-test-" + Guid.NewGuid().ToString("N"));
@@ -50,12 +50,16 @@ internal static class Program
         try
         {
             var site = Fixture(temporary);
-            Check(site.ReadRelease().ReleaseId == "1.0.0", "Daily release is resolved and both binary identities verified");
+            var releaseId = FixtureReleaseId();
+            Check(site.ReadRelease().ReleaseId == releaseId, "Daily release is resolved and both binary identities verified");
             var paice = site.ReadPaiceSimulation();
             Check(paice is not null && paice.Url == "http://127.0.0.1:5270/" &&
+                  paice.SimulationSource?.AbsoluteUri == "http://127.0.0.1:5200/" &&
                   paice.Directory.EndsWith(Path.Combine("integrations", "PaiceSimulation"), StringComparison.OrdinalIgnoreCase) &&
                   File.Exists(paice.StartScript) && File.Exists(paice.StopScript),
                 "Paice simulation runtime is resolved from the daily site settings");
+            Reject(() => SiteEnvironment.ParseSimulationSource("http://example.com:5200/"), "Non-loopback simulation source is rejected");
+            Reject(() => SiteEnvironment.ParseSimulationSource("http://127.0.0.1:5200/api/"), "Simulation source requires the root URL");
             var staleRecord = Path.Combine(paice!.Directory, ".runtime", "processes.json");
             Directory.CreateDirectory(Path.GetDirectoryName(staleRecord)!);
             File.WriteAllText(staleRecord, JsonSerializer.Serialize(new[] { new { id = 999999, path = paice.Directory, startedUtcTicks = 1L } }));
@@ -136,7 +140,7 @@ internal static class Program
             using (var zip = ZipFile.OpenRead(diagnostics)) Check(zip.Entries.All(e => !e.FullName.EndsWith(".db") && !e.FullName.Contains("appsettings")), "Diagnostics do not include raw database or device configuration");
             var mismatched = JsonNode.Parse(File.ReadAllText(site.SettingsPath))!; mismatched["releaseId"]="other"; File.WriteAllText(site.SettingsPath,mismatched.ToJsonString());
             Reject(() => site.ReadRelease(), "Daily pointer/manifest mismatch rejected");
-            mismatched["releaseId"]="1.0.0"; File.WriteAllText(site.SettingsPath,mismatched.ToJsonString());
+            mismatched["releaseId"]=releaseId; File.WriteAllText(site.SettingsPath,mismatched.ToJsonString());
             Check(typeof(ManagementWindow).Assembly.GetType("AgvDispatch.Wpf.MainWindow") is null, "Historical dispatch shell is absent from production assembly");
             Check(!typeof(ManagementWindow).Assembly.GetReferencedAssemblies().Any(a => a.Name is "Prism.Wpf" or "HandyControl" or "LiveChartsCore" or "AgvDispatch.Infrastructure"), "Production manager has no legacy UI or infrastructure dependency");
             var evidence = args.Length == 0 ? Path.Combine(temporary,"screenshots") : Path.GetFullPath(args[0]); Directory.CreateDirectory(evidence);
@@ -157,16 +161,20 @@ internal static class Program
             var stem=folder.EndsWith("Service")?"AgvDispatch.Service":"AgvDispatch.WebHost";
             File.Copy(assembly,Path.Combine(folder,stem+".dll")); File.WriteAllText(Path.Combine(folder,stem+".exe"),"fixture only");
         }
-        File.WriteAllText(Path.Combine(bundle,"release-manifest.json"),JsonSerializer.Serialize(new { schema="agv-commissioning-release",releaseId="1.0.0",port=5199,pipeName="AgvManager-Isolated-"+Guid.NewGuid().ToString("N") }));
+        var releaseId = FixtureReleaseId();
+        File.WriteAllText(Path.Combine(bundle,"release-manifest.json"),JsonSerializer.Serialize(new { schema="agv-commissioning-release",releaseId,port=5199,pipeName="AgvManager-Isolated-"+Guid.NewGuid().ToString("N") }));
         var paiceDirectory=Path.Combine(root,"integrations","PaiceSimulation"); Directory.CreateDirectory(paiceDirectory);
         var scriptDirectory=Path.Combine(root,"tools"); Directory.CreateDirectory(scriptDirectory);
         var startScript=Path.Combine(scriptDirectory,"Start-PaiceSimulation.ps1"); var stopScript=Path.Combine(scriptDirectory,"Stop-PaiceSimulation.ps1");
         File.WriteAllText(startScript,"# fixture"); File.WriteAllText(stopScript,"# fixture");
-        File.WriteAllText(Path.Combine(root,"最新版Web.json"),JsonSerializer.Serialize(new{directory="fixture",releaseId="1.0.0",url=SiteEnvironment.WebUrl,productionDispatch=false,maxConcurrentTasks=3,paiceSimulation=new{directory=paiceDirectory,startScript,stopScript,url="http://127.0.0.1:5270/"}}));
+        File.WriteAllText(Path.Combine(root,"最新版Web.json"),JsonSerializer.Serialize(new{directory="fixture",releaseId,url=SiteEnvironment.WebUrl,productionDispatch=false,maxConcurrentTasks=3,paiceSimulation=new{directory=paiceDirectory,startScript,stopScript,url="http://127.0.0.1:5270/",simulationSource="http://127.0.0.1:5200/"}}));
         var site=new SiteEnvironment(root); Directory.CreateDirectory(Path.GetDirectoryName(site.DatabasePath)!);
         using(var connection=new SqliteConnection("Pooling=False;Data Source="+site.DatabasePath)) { connection.Open(); using var command=connection.CreateCommand(); command.CommandText="CREATE TABLE marker(Value TEXT); INSERT INTO marker VALUES ('original');"; command.ExecuteNonQuery(); }
         Directory.CreateDirectory(Path.Combine(site.DataRoot,"Web工程方案")); File.WriteAllText(Path.Combine(site.DataRoot,"Web工程方案","marker.txt"),"original"); return site;
     }
+
+    private static string FixtureReleaseId() =>
+        FileVersionInfo.GetVersionInfo(typeof(ManagementWindow).Assembly.Location).ProductVersion!.Split('+')[0];
 
     private static void VerifyPipe(SystemStatusSnapshot status)
     {

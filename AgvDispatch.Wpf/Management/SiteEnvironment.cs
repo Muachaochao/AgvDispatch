@@ -71,7 +71,20 @@ public sealed class SiteEnvironment
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
             uri.Scheme != Uri.UriSchemeHttp || uri.Host != "127.0.0.1" || uri.Port != 5270)
             throw new InvalidDataException("排策智演地址必须为 http://127.0.0.1:5270/。");
-        return new(directory, start, stop, uri.AbsoluteUri);
+        var simulationSource = paice["simulationSource"]?.GetValue<string>();
+        return new(directory, start, stop, uri.AbsoluteUri,
+            simulationSource is null ? null : ParseSimulationSource(simulationSource));
+    }
+
+    public static Uri ParseSimulationSource(string value)
+    {
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var source) ||
+            source.Scheme != Uri.UriSchemeHttp || source.Host != "127.0.0.1" ||
+            string.IsNullOrEmpty(source.Authority) || source.Port <= 0 ||
+            source.AbsolutePath != "/" || source.Query.Length != 0 ||
+            source.Fragment.Length != 0 || source.UserInfo.Length != 0)
+            throw new InvalidDataException("仿真数据源须为本机 http://127.0.0.1:端口/ 地址。");
+        return source;
     }
 
     private string PaicePath(string? value, string name)
@@ -95,7 +108,7 @@ public sealed record ReleaseInfo(string Bundle, string ReleaseId, string PipeNam
     public string SessionPath => Path.Combine(Bundle, "Runtime", "launcher-session.json");
 }
 
-public sealed record PaiceSimulationInfo(string Directory, string StartScript, string StopScript, string Url)
+public sealed record PaiceSimulationInfo(string Directory, string StartScript, string StopScript, string Url, Uri? SimulationSource = null)
 {
     public string RuntimeDirectory => Path.Combine(Directory, ".runtime");
     public string ProcessRecordPath => Path.Combine(RuntimeDirectory, "processes.json");

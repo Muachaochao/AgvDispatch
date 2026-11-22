@@ -23,6 +23,7 @@
     <EnableDefaultPageItems>false</EnableDefaultPageItems>
     <EnableDefaultApplicationDefinition>false</EnableDefaultApplicationDefinition>
     <Product>AGV 软件助手</Product>
+    <Version>1.1.0</Version>
     <ApplicationIcon>Assets\Icons\AppIcon.ico</ApplicationIcon>
   </PropertyGroup>
 
