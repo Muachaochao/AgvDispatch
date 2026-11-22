@@ -24,7 +24,8 @@ await using var robot = new Robot();
 var options = new AgvOptions
 {
     Enabled = true, AllowCommands = true, ConnectTimeoutMs = 500, RequestTimeoutMs = 500,
-    Robots = [new() { VehicleId = "SIM", IpAddress = "127.0.0.1", Port = robot.StatusPort, NavigationPort = robot.StatusPort }]
+    Robots = [new() { VehicleId = "SIM", IpAddress = "127.0.0.1", Port = robot.StatusPort,
+        NavigationPort = robot.StatusPort, OtherApiPort = robot.VehicleOtherPort }]
 };
 await using var connections = new AgvConnectionManager(options);
 var settings = new RobokitChargingRobotControlOptions { OtherApiPort = robot.OtherPort };
@@ -32,15 +33,7 @@ var control = new RobokitChargingRobotControl(options, connections, settings);
 await Fails<InvalidOperationException>(() => control.SetChargingRelayAsync("SIM", true, default), "缺少现场确认时禁止6005");
 Check(robot.Requests.IsEmpty, "充电控制门禁拒绝时不连接设备");
 Check(new RobokitChargingRobotControlOptions().OtherApiPort == 19210, "其他API默认19210");
-settings.VehicleOtherApiPorts["SIM"] = robot.VehicleOtherPort;
-Check(settings.ResolveOtherApiPort("SIM") == robot.VehicleOtherPort &&
-      settings.ResolveOtherApiPort("OTHER") == robot.OtherPort,
-    "每车其他API端口覆盖默认端口");
-settings.VehicleOtherApiPorts["BAD"] = 70000;
-await Fails<InvalidOperationException>(() => settings.ResolveOtherApiPort("BAD").Equals(0)
-    ? Task.CompletedTask
-    : control.SetChargingRelayAsync("BAD", true, default), "拒绝越界车辆其他API端口");
-settings.VehicleOtherApiPorts.Remove("BAD");
+Check(options.Robots.Single().OtherApiPort == robot.VehicleOtherPort, "每车其他API端口覆盖默认端口");
 var battery = await control.ReadBatteryAsync("SIM", default);
 Check(battery.BatteryPercent == 24.5m && battery.Charging == true && battery.Current == 5.2 && battery.Temperature == 32,
     "1007完整电池遥测及电量比例转换");
