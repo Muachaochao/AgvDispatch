@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   pipelineLayerViews, pipelineEvidenceState, pipelineTimestampFresh, pipelineTime, retainPipelineObservation,
+  pipelineBusinessReference, pipelineSimulationCaptureValid,
   filterPipelineRecords, pipelineRecordIsIssue, pipelineRecordState, pipelineInternalLink, pipelineLayerKey,
   pipelineExecutionSummary, type PipelineInspectionSnapshot, type PipelineInspectionLayer, type PipelineRecord
 } from '../src/dispatch-pipeline.ts';
@@ -44,6 +45,20 @@ test('history is judged at its capture time while the same observation becomes s
   assert.equal(pipelineTimestampFresh(new Date(now + 2000).toISOString(), now), false);
   assert.equal(pipelineTimestampFresh('invalid', now), false);
   assert.equal(pipelineTime('0001-01-01T00:00:00Z'), '尚无记录');
+});
+
+test('accelerated isolated observations use the shared business clock for freshness only', () => {
+  const origin = Date.parse('2026-11-22T12:00:00Z');
+  assert.equal(pipelineBusinessReference(now, { originUnixMs: now - 120_000, rate: 2 }), now + 120_000);
+  const businessNow = now + 120_000;
+  const captured = new Date(businessNow - 20_000).toISOString();
+  assert.equal(pipelineSimulationCaptureValid(captured, now, { originUnixMs: now - 120_000, rate: 2 }, 30_000), true);
+  assert.equal(pipelineSimulationCaptureValid(new Date(businessNow - 61_000).toISOString(), now, { originUnixMs: origin, rate: 2 }, 30_000), false);
+  assert.equal(pipelineSimulationCaptureValid(new Date(businessNow + 2_000).toISOString(), now, { originUnixMs: origin, rate: 2 }, 30_000), false);
+  const businessReference = pipelineBusinessReference(now, { originUnixMs: origin, rate: 2 });
+  assert.equal(pipelineEvidenceState('Pass', new Date(businessReference - 2_000).toISOString(), true, businessReference).tone, 'ready');
+  assert.equal(pipelineBusinessReference(now, { originUnixMs: origin }), now);
+  assert.equal(pipelineSimulationCaptureValid(captured, now), pipelineTimestampFresh(captured, now, 30_000));
 });
 
 test('observation retention keys off collection time rather than unchanged optimization cycle and remains immutable and bounded', () => {
