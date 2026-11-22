@@ -30,11 +30,12 @@ public sealed class TrafficSegmentReleaseInspector(ISqlSugarClient database, IAc
     public Task<TrafficSegmentReleaseAssessment> InspectAsync(string stepId, CancellationToken ct)
         => InspectCoreAsync(stepId, null, ct);
 
-    internal async Task<CapturedEvidence?> CaptureAsync(string stepId, CancellationToken ct)
+    internal async Task<(CapturedEvidence? Proof, TrafficSegmentReleaseAssessment Assessment)> CaptureAsync(
+        string stepId, CancellationToken ct)
     {
         CapturedEvidence? captured=null;
-        await InspectCoreAsync(stepId, value=>captured=value, ct);
-        return captured;
+        var assessment = await InspectCoreAsync(stepId, value=>captured=value, ct);
+        return (captured, assessment);
     }
 
     // Must be called under the same execution gate. Issuance is not resource release authorization.

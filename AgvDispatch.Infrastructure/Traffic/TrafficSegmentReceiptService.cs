@@ -19,8 +19,13 @@ public sealed partial class TrafficSegmentReceiptService(ISqlSugarClient databas
     {
         foreach(var item in pending)if(item.Value.ExpiresAt<=Now)pending.TryRemove(item.Key,out _);
         if(pending.Count>=256)return Refuse("未过期凭据达到上限，请稍后重新采集。");
-        var proof=await inspector.CaptureAsync(stepId,ct);
-        if(proof is null)return Refuse("没有合格的后台证据，未签发凭据。");
+        var (proof, assessment) = await inspector.CaptureAsync(stepId, ct);
+        if (proof is null)
+            return Refuse(assessment.Reason) with
+            {
+                Candidates = assessment.Candidates,
+                Progress = assessment.Progress
+            };
         using var access=await gate.EnterAsync(MapExecutionOperation.ExistingWork,ct);
         if(access is null||!gate.CanStartNewWork||!await inspector.IsCurrentAsync(proof,ct))return Refuse("签发前门禁或原状态失效。");
         if(pending.Count>=256)return Refuse("未过期凭据达到上限，请稍后重新采集。");

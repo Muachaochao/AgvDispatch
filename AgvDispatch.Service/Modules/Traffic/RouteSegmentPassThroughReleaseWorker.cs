@@ -17,7 +17,6 @@ namespace AgvDispatch.Service;
 public sealed class RouteSegmentPassThroughReleaseWorker(
     ILogger<RouteSegmentPassThroughReleaseWorker> logger,
     ISqlSugarClient database,
-    ITrafficSegmentReleaseInspector inspector,
     ITrafficSegmentReceiptService receipts,
     ITrafficSegmentCommitService commits,
     TrafficSegmentReleaseMonitor monitor,
@@ -71,12 +70,7 @@ public sealed class RouteSegmentPassThroughReleaseWorker(
             var receipt = await receipts.IssueAsync(step.StepId, ct);
             if (receipt.State != TrafficSegmentReceiptState.Pending || string.IsNullOrWhiteSpace(receipt.ReceiptId))
             {
-                // A short diagnostic pass gives operators the per-resource hold
-                // reason only when no receipt could be issued.
-                var assessment = await inspector.InspectAsync(step.StepId, ct);
-                Record(step, "Held",
-                    assessment.Available ? assessment.Reason : receipt.Reason,
-                    assessment.Candidates, assessment.Progress);
+                Record(step, "Held", receipt.Reason, receipt.Candidates, receipt.Progress);
                 continue;
             }
             Record(step, "PassedPendingRelease",
