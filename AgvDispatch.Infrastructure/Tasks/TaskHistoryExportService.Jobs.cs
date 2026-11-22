@@ -1,4 +1,4 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using AgvDispatch.Application.Abstractions;
 namespace AgvDispatch.Infrastructure.Persistence;
 
@@ -76,7 +76,7 @@ public sealed partial class TaskHistoryExportService
     private void PruneJobs()
     {
         var terminal = _jobs.Values.Where(j => j.Progress.IsTerminal).OrderByDescending(j => j.StartedAt).ToArray();
-        foreach (var job in terminal.Where((j, index) => index >= 256 || j.StartedAt < DateTimeOffset.UtcNow.AddHours(-1)))
+        foreach (var job in terminal.Where((j, index) => index >= 256 || j.StartedAt < AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow().AddHours(-1)))
             if (_jobs.TryRemove(job.Id, out _)) job.Cancel.Dispose();
     }
     private sealed class ExportJob
@@ -85,7 +85,7 @@ public sealed partial class TaskHistoryExportService
         { Id = id; Owner = owner; Filter = filter; Cancel = CancellationTokenSource.CreateLinkedTokenSource(ct); Progress = new(id, "Preparing", "正在登记导出任务"); }
         public readonly object Sync = new();
         public string Id { get; } public string Owner { get; } public TaskHistoryQuery? Filter { get; }
-        public DateTimeOffset StartedAt { get; } = DateTimeOffset.UtcNow;
+        public DateTimeOffset StartedAt { get; } = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow();
         public CancellationTokenSource Cancel { get; }
         public TaskCompletionSource<TaskHistoryExportResult> Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private TaskHistoryExportProgress _progress = null!;

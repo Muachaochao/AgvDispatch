@@ -33,7 +33,7 @@ public sealed partial class MapSwitchService
                 "IdentityMismatch"=>"原切换编号与预期目标不一致，不能借其他切换认定结果。",
                 "Inconsistent"=>"持久化阶段、活动指针或运行图不一致，保留冻结并核对原记录。",
                 _=>"未找到原切换，不等于未执行；请确认原数据库/后台身份，不自动重试。"};
-            result=new(DateTimeOffset.UtcNow,query.ReleaseId,query.ExpectedMapId,query.ExpectedVersionId,outcome,message,row is null?null:Snapshot(row),active?.MapId,active?.ActiveVersionId,dbHash,running?.MapId,running?.VersionId,runtimeHash,gate.Mode,gate.CanStartNewWork,consistent,
+            result=new(AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow(),query.ReleaseId,query.ExpectedMapId,query.ExpectedVersionId,outcome,message,row is null?null:Snapshot(row),active?.MapId,active?.ActiveVersionId,dbHash,running?.MapId,running?.VersionId,runtimeHash,gate.Mode,gate.CanStartNewWork,consistent,
                 ["按原切换编号查询持久化记录，不受最近30条历史列表限制。","数据库指针/阶段在同一只读事务内读取，运行图由原控制门保护。","SHA256只核对本地地图内容，不是厂家MD5或坐标对齐证明。","本接口不激活、取消、恢复派发、释放占用或写设备；门状态不是现场放行许可。"]);
         });
         if(!transaction.IsSuccess)throw new InvalidOperationException("地图激活结果只读复核失败。",transaction.ErrorException);

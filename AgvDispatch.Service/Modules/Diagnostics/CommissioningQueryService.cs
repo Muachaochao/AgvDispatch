@@ -19,7 +19,7 @@ public sealed class CommissioningQueryService(ISystemStatusSnapshotService syste
         var options = await manual.GetOptionsAsync(ct);
         var settings = await communication.GetAsync(user, ct);
         var restore = await recovery.GetAsync(ct);
-        var now = DateTimeOffset.UtcNow;
+        var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow();
         var runtime = BackendBuildIdentity.Read(handshake, creation, steps, outbox);
         var checks = new List<CommissioningCheck>();
         void Add(string id,string group,bool valid,string title,string reason,string target,string action) =>

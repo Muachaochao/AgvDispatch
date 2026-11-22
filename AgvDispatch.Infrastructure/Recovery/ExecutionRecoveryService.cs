@@ -38,7 +38,7 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
     private async Task InitializeCoreAsync(CancellationToken ct)
     {
         barrier.Set(false);
-        _started = DateTimeOffset.Now;
+        _started = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow();
         _sessionId = Guid.NewGuid().ToString("N");
         var active = await database.Queryable<DispatchTaskEntity>()
             .Where(t => t.Stage != (int)DispatchTaskStage.Completed && t.Stage != (int)DispatchTaskStage.Cancelled)
@@ -105,7 +105,7 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
                 ticket, ct, allowOfflineVehicle: ticket.OfflineVehicleConfirmed);
             if (ticket.Verified && (fingerprint != observation.Fingerprint || observation.HardBlock != null || observation.SegmentContinuationBlock != null ||
                 (ticket.MaterialReference != null && (ticket.PhysicalFingerprint != PhysicalFingerprint(observation) ||
-                    ticket.VerifiedAt == null || DateTime.Now - ticket.VerifiedAt > TimeSpan.FromMinutes(5)))))
+                    ticket.VerifiedAt == null || AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime - ticket.VerifiedAt > TimeSpan.FromMinutes(5)))))
             {
                 ticket.Verified = false; ticket.Revision++;
                 await AuditAsync(ticket.TaskId, ticket.StepId, "service", "VerificationRevoked", "确认后物理状态、执行节点或证据有效期变化，恢复重新等待核对。", observation.Evidence, ct);
@@ -166,7 +166,7 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
                 PlcSummary = plcRows.Count == 0 ? "未取得取货工位 / 倒料机 PLC 状态。" : string.Join("；", plcRows.Where(s => s.Enabled).Select(s =>
                     $"{s.StationId}/{s.VariableName}={s.Value?.ToString() ?? "未知"}（{s.Quality}）")),
                 ResourceSummary = (segmentReleases.Count==0?"":"已按证据释放："+string.Join("、",segmentReleases.Select(a=>$"{a.ResourceId}（原步骤 {a.StepId}）"))+"；当前剩余：") + (leases.Count == 0 ? "原任务无占用路权；恢复操作不会自动申请或释放路权。" : string.Join("；", leases.Select(l =>
-                    $"{l.ResourceId} · {l.VehicleId} · 原步骤 {l.OwnerStepId} · {(l.ExpiresAt < DateTime.Now ? "心跳已过期，占用保留" : "占用保留")}"))) });
+                    $"{l.ResourceId} · {l.VehicleId} · 原步骤 {l.OwnerStepId} · {(l.ExpiresAt < AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime ? "心跳已过期，占用保留" : "占用保留")}"))) });
         }
         var audits = await database.Queryable<ExecutionEvidenceEntity>().Where(a => a.SessionId != "")
             .OrderByDescending(a => a.OccurredAt).Take(200).ToListAsync(ct);
@@ -282,7 +282,7 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
                         : "原命令已确认接受且完成，请刷新后补记已到站；禁止重发。";
             }
             ticket.MaterialReference = request.MaterialReference.Trim();
-            ticket.VerifiedAt = DateTime.Now;
+            ticket.VerifiedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
             ticket.PhysicalFingerprint = PhysicalFingerprint(observed with { Step = step });
             ticket.Revision++;
             ticket.Evidence = observed.Evidence;
@@ -324,7 +324,7 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
                 (!closedOffline && ticket.MaterialReference != null &&
                  (ticket.PhysicalFingerprint != PhysicalFingerprint(observed) ||
                   ticket.VerifiedAt == null ||
-                  DateTime.Now - ticket.VerifiedAt > TimeSpan.FromMinutes(5))))
+                  AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime - ticket.VerifiedAt > TimeSpan.FromMinutes(5))))
                 return new(false, observed.HardBlock ?? $"{ticket.TaskId}执行节点已变化，需重新核对。");
             if (observed.Step?.Status == (int)DispatchTaskStepStatus.Executing &&
                 (!VendorMatches(observed.Step, observed.Task!, observed.Vendor) ||
@@ -393,8 +393,8 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
         if (!offlineCloseConfirmed && !confirmedNoVendor && task.CancelVendorId != null &&
             (observed.Vendor == null || observed.Vendor.VendorTaskId != task.CancelVendorId ||
              observed.Vendor.BusinessTaskId != task.CancelVendorId || observed.Vendor.VehicleId != task.CancelVehicleId ||
-             observed.Vendor.UpdatedAt < _started || DateTimeOffset.Now - observed.Vendor.UpdatedAt > settings.StateMaxAge ||
-             observed.Vendor.UpdatedAt > DateTimeOffset.Now.AddSeconds(1) ||
+             observed.Vendor.UpdatedAt < _started || AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow() - observed.Vendor.UpdatedAt > settings.StateMaxAge ||
+             observed.Vendor.UpdatedAt > AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().AddSeconds(1) ||
              observed.Vendor.State is not (AgvTransportTaskState.Cancelled or AgvTransportTaskState.Completed or AgvTransportTaskState.Failed)))
             return await RejectAsync(user, ticket.TicketId, "缺少新鲜、同编号和同车辆的原任务结束记录。", ct);
         if (!settings.CheckPlcSignals) return await RejectAsync(user, ticket.TicketId, "关闭取消必须启用PLC采集并核对原握手清理。", ct);
@@ -412,7 +412,7 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
         }
         bool Cleared(string station, string variable) => signals.TryGet(station, variable, out var signal) && signal.Enabled &&
             signal.Quality == SignalQuality.Good && signal.Value == false && signal.UpdatedAt >= _started &&
-            signal.UpdatedAt <= DateTimeOffset.Now.AddSeconds(1) && DateTimeOffset.Now - signal.UpdatedAt <= settings.StateMaxAge;
+            signal.UpdatedAt <= AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().AddSeconds(1) && AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow() - signal.UpdatedAt <= settings.StateMaxAge;
         if (new[] { "FullBoxRequestAcknowledged", "FullBoxRemoved", "EmptyBoxTaskAcknowledged", "EmptyBoxPlaced" }.Any(v => !Cleared(task.StationId, v)) ||
             !handedOver && (dumper == null || !Cleared(dumper, "AgvAtWaitingPosition") || !Cleared(dumper, "AgvAtDumpingPosition") || stage28&&(!Cleared(dumper,"DumperReady") || !Cleared(dumper,"DumpingCompletedMayLeave"))))
             return await RejectAsync(user, ticket.TicketId, "取货工位或倒料机原握手尚未清理；需现场核对PLC周期，禁止自动复位。", ct);
@@ -421,21 +421,21 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
             var alreadyClosed = task.Stage == (int)DispatchTaskStage.Cancelled;
             if (!alreadyClosed)
             {
-                task.Stage = (int)DispatchTaskStage.Cancelled; task.UpdatedAt = DateTime.Now;
+                task.Stage = (int)DispatchTaskStage.Cancelled; task.UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
                 task.ErrorMessage = request.VehicleOfflineConfirmed
                     ? "取消已关闭：车辆已确认关机离线，安全位置、载荷、PLC握手和路权均完成现场核对。"
                     : "取消已关闭：车辆、载荷、PLC握手和路权均完成现场核对。";
                 await database.Updateable(task).ExecuteCommandAsync(ct);
                 await database.Updateable<DispatchTaskStepEntity>().SetColumns(s => new DispatchTaskStepEntity
-                    { Status = (int)DispatchTaskStepStatus.Cancelled, CompletedAt = DateTime.Now, UpdatedAt = DateTime.Now })
+                    { Status = (int)DispatchTaskStepStatus.Cancelled, CompletedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime, UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime })
                     .Where(s => s.TaskId == task.TaskId && s.Status != (int)DispatchTaskStepStatus.Completed).ExecuteCommandAsync(ct);
             }
             if (observed.Step != null) observed.Step.Status = (int)DispatchTaskStepStatus.Cancelled;
             var equipmentReleased=await database.Deleteable<TaskEquipmentClaimEntity>().Where(e=>e.TaskId==task.TaskId).ExecuteCommandAsync(ct);
-            if(equipmentReleased>0)await database.Insertable(new TaskRuntimeEventEntity{TaskId=task.TaskId,StepId=ticket.StepId,Kind="EquipmentReleased",RecordedAtUtc=DateTime.UtcNow,Reason="原恢复流程核对取消闭合后释放设备归属；操作人："+user.WindowsIdentity}).ExecuteCommandAsync(ct);
+            if(equipmentReleased>0)await database.Insertable(new TaskRuntimeEventEntity{TaskId=task.TaskId,StepId=ticket.StepId,Kind="EquipmentReleased",RecordedAtUtc=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow().UtcDateTime,Reason="原恢复流程核对取消闭合后释放设备归属；操作人："+user.WindowsIdentity}).ExecuteCommandAsync(ct);
             ticket.Verified = true; ticket.MaterialReference = request.MaterialReference.Trim();
             ticket.OfflineVehicleConfirmed = request.VehicleOfflineConfirmed;
-            ticket.VerifiedAt = DateTime.Now;
+            ticket.VerifiedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
             ticket.Revision++; ticket.Fingerprint = await FingerprintAsync(task.TaskId, ct);
             ticket.PhysicalFingerprint = PhysicalFingerprint(observed);
             await database.Updateable(ticket).ExecuteCommandAsync(ct);
@@ -555,7 +555,7 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
             command?.AttemptCount > 0 && vendor == null ? "发送结果不明；车辆历史缺失不能证明未执行，保持等待。" :
             step?.Status == (int)DispatchTaskStepStatus.Executing ? "核对原运输编号、定位和载荷归属后继续；已到站则补记原步骤。" :
             "PLC动作及物料状态需要现场确认；布尔完成位不能证明本次动作已完成。");
-        var evidence = JsonSerializer.Serialize(new { CapturedAt = DateTimeOffset.Now, Boot = _started, task, step, commands, leases, vehicle, vendor,
+        var evidence = JsonSerializer.Serialize(new { CapturedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow(), Boot = _started, task, step, commands, leases, vehicle, vendor,
             Plc = task == null || task.CancelRequestId != null ? signals.GetAll() : signals.GetStation(PlcStation(task, step)),
             Vehicles = ticket.TaskId == SiteTask ? vehicles.GetAll().Where(v => v.Quality != SignalQuality.Disabled).ToArray() : null,
             MapId = map.Current?.MapId, MapVersion = map.Current?.VersionId, Identity = identity, SegmentReleases=segmentReleases, SegmentCommitResults=segmentCommits, SegmentContinuationBlock=segmentBlock,
@@ -569,14 +569,14 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
     {
         if (vehicle == null || vehicle.Connection != ConnectionState.Online || vehicle.Quality != SignalQuality.Good ||
             vehicle.LastSuccessfulPollAt == null || vehicle.LastSuccessfulPollAt < _started ||
-            DateTimeOffset.Now - vehicle.LastSuccessfulPollAt > settings.StateMaxAge || vehicle.LastSuccessfulPollAt > DateTimeOffset.Now.AddSeconds(1))
+            AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow() - vehicle.LastSuccessfulPollAt > settings.StateMaxAge || vehicle.LastSuccessfulPollAt > AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().AddSeconds(1))
             return "车辆状态缺失、离线或不是本次启动后的新鲜采集。";
         if (vehicle.EmergencyStopped != false || vehicle.Blocked != false || vehicle.Alarms.Any(a => a.Severity >= AgvAlarmSeverity.Error)) return "车辆急停、阻塞或报警状态未通过。";
         if (vehicle.X == null || vehicle.Y == null || !double.IsFinite(vehicle.X.Value) || !double.IsFinite(vehicle.Y.Value) ||
             vehicle.LocalizationConfidence == null || !double.IsFinite(vehicle.LocalizationConfidence.Value) || vehicle.LocalizationConfidence < settings.MinimumLocalizationConfidence)
             return "车辆定位证据不足。";
         if (map.Current is { } current && AgvMapPositionAnalyzer.Analyze(vehicle.X, vehicle.Y, vehicle.LocalizationConfidence,
-            vehicle.LastSuccessfulPollAt, current.Definition, DateTimeOffset.Now, settings.StateMaxAge,
+            vehicle.LastSuccessfulPollAt, current.Definition, AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow(), settings.StateMaxAge,
             settings.MinimumLocalizationConfidence, settings.MaximumRouteDeviationMeters).State != AgvMapPositionState.Normal)
             return "车辆实际定位不能匹配当前运行地图。";
         if (stopped && (vehicle.VelocityX == null || vehicle.VelocityY == null || vehicle.AngularVelocity == null ||
@@ -588,7 +588,7 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
     private string? PlcBlock(string? station = null)
     {
         var relevant = (station == null ? signals.GetAll() : signals.GetStation(station)).Where(s => s.Enabled).ToArray();
-        if (relevant.Length == 0 || relevant.Any(s => s.Quality != SignalQuality.Good || s.Value == null || s.UpdatedAt == null || s.UpdatedAt < _started || DateTimeOffset.Now - s.UpdatedAt > settings.StateMaxAge))
+        if (relevant.Length == 0 || relevant.Any(s => s.Quality != SignalQuality.Good || s.Value == null || s.UpdatedAt == null || s.UpdatedAt < _started || AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow() - s.UpdatedAt > settings.StateMaxAge))
             return "PLC采集不完整或未取得本次启动后的新鲜信号。";
         if (relevant.Any(s => s.VariableName == "Faulted" && s.Value != false)) return "PLC存在故障，保持等待。";
         return null;
@@ -650,7 +650,7 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
             if(checkpoint.ContractVersion!=HandshakeExecutionOptions.Version||checkpoint.Phase=="ReviewRequired")return "新契约原始绑定/阶段不可核对，保持等待。";
             var handedOver=await ExitHandoverCompleteAsync(task.TaskId,ct);
             foreach(var baseline in TaskHandshakeStore.Describe(checkpoint).Baseline.Where(b=>b.StationId!="__context"&&(!handedOver||b.StationId==task.StationId)))
-                if(!signals.TryGet(baseline.StationId,baseline.VariableName,out var sample)||!sample.Enabled||sample.Address!=baseline.Address||sample.Quality!=SignalQuality.Good||sample.Value==null||sample.UpdatedAt is not {} time||time<_started||time>DateTimeOffset.Now.AddSeconds(1)||DateTimeOffset.Now-time>settings.StateMaxAge)
+                if(!signals.TryGet(baseline.StationId,baseline.VariableName,out var sample)||!sample.Enabled||sample.Address!=baseline.Address||sample.Quality!=SignalQuality.Good||sample.Value==null||sample.UpdatedAt is not {} time||time<_started||time>AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().AddSeconds(1)||AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow()-time>settings.StateMaxAge)
                     return "新契约原信号地址或本次恢复观察无效，禁止续接。";
             return null; // Resume the persisted phase; the executor still evaluates its own guards. Never reassert earlier notifications.
         }
@@ -680,7 +680,7 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
                 {
                     var prior=original.Where(b=>b.VariableName==pair.Key).ToArray();
                     if(prior.Length!=1||!signals.TryGet(task.StationId,pair.Key,out var signal)||!signal.Enabled||signal.Address!=prior[0].Address||signal.Quality!=SignalQuality.Good||signal.Value!=pair.Value||
-                        signal.UpdatedAt is not {} time||time<_started||time>DateTimeOffset.Now.AddSeconds(1)||DateTimeOffset.Now-time>settings.StateMaxAge)
+                        signal.UpdatedAt is not {} time||time<_started||time>AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().AddSeconds(1)||AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow()-time>settings.StateMaxAge)
                         return "返程后原工位保持信号或本次恢复采集不成立："+pair.Key;
                 }
                 return null; // Only unfreeze; the executor must still prove exit/handoff before writing EmptyBoxPlaced.
@@ -729,7 +729,7 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
     {
         if (vehicle == null || vehicle.Connection != ConnectionState.Online || vehicle.Quality != SignalQuality.Good ||
             vehicle.LastSuccessfulPollAt == null || vehicle.LastSuccessfulPollAt < _started ||
-            DateTimeOffset.Now - vehicle.LastSuccessfulPollAt > settings.StateMaxAge || vehicle.LastSuccessfulPollAt > DateTimeOffset.Now.AddSeconds(1))
+            AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow() - vehicle.LastSuccessfulPollAt > settings.StateMaxAge || vehicle.LastSuccessfulPollAt > AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().AddSeconds(1))
             return "充电车辆状态缺失、离线或不是本次启动后的新鲜采集。";
         if (vehicle.EmergencyStopped != false || vehicle.Blocked != false || vehicle.Alarms.Any(a => a.Severity >= AgvAlarmSeverity.Error))
             return "充电车辆急停、阻塞或报警状态未通过。";
@@ -778,7 +778,7 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
         status.VendorTaskId == (step.VendorTaskId ?? step.StepId) &&
         (task.VendorTaskId == null || task.VendorTaskId == status.VendorTaskId) &&
         status.VehicleId == (step.VehicleId ?? task.VehicleId) && (task.VehicleId == null || status.VehicleId == task.VehicleId) &&
-        status.UpdatedAt >= _started && status.UpdatedAt <= DateTimeOffset.Now.AddSeconds(1) && DateTimeOffset.Now - status.UpdatedAt <= settings.StateMaxAge;
+        status.UpdatedAt >= _started && status.UpdatedAt <= AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().AddSeconds(1) && AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow() - status.UpdatedAt <= settings.StateMaxAge;
     private string? CompletionBlock(DispatchTaskEntity task, DispatchTaskStepEntity step, AgvRobotSnapshot? vehicle, AgvTransportTaskStatus? vendor)
     {
         var physical = VehicleBlock(vehicle, true);
@@ -816,13 +816,13 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
     {
         if (step.Status == (int)DispatchTaskStepStatus.Executing) return;
         if (task.Stage != (int)DispatchTaskStage.SubmittingToAgv || command.Status is 30 or 100) throw new InvalidOperationException("命令/任务绑定状态冲突。");
-        command.Status = (int)AgvCommandStatus.Sent; command.VendorCommandId = vendor.VendorTaskId; command.SentAt = DateTime.Now; command.UpdatedAt = DateTime.Now;
-        step.Status = (int)DispatchTaskStepStatus.Executing; step.VendorTaskId = vendor.VendorTaskId; step.StartedAt ??= DateTime.Now; step.UpdatedAt = DateTime.Now;
+        command.Status = (int)AgvCommandStatus.Sent; command.VendorCommandId = vendor.VendorTaskId; command.SentAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime; command.UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
+        step.Status = (int)DispatchTaskStepStatus.Executing; step.VendorTaskId = vendor.VendorTaskId; step.StartedAt ??= AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime; step.UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
         task.VendorTaskId = vendor.VendorTaskId; task.VehicleId = step.VehicleId;
         task.Stage = (int)((DispatchTaskStepType)step.StepType switch
         { DispatchTaskStepType.GoToPickup => DispatchTaskStage.GoingToPickup, DispatchTaskStepType.DeliverFullBoxToDumper => DispatchTaskStage.GoingToDumper,
           DispatchTaskStepType.EnterDumpingPosition => DispatchTaskStage.Dumping, DispatchTaskStepType.ReturnEmptyBox => DispatchTaskStage.ReturningEmptyBox, _ => throw new InvalidOperationException("非运输命令。") });
-        task.UpdatedAt = DateTime.Now;
+        task.UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
         await database.Updateable(command).ExecuteCommandAsync(ct); await database.Updateable(step).ExecuteCommandAsync(ct); await database.Updateable(task).ExecuteCommandAsync(ct);
     }
     private async Task CompleteStepAsync(DispatchTaskEntity task, DispatchTaskStepEntity step, CancellationToken ct)
@@ -833,14 +833,14 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
         { DispatchTaskStepType.GoToPickup => DispatchTaskStage.PickingUp, DispatchTaskStepType.DeliverFullBoxToDumper => DispatchTaskStage.WaitingForDumper,
           DispatchTaskStepType.EnterDumpingPosition => DispatchTaskStage.Dumping, DispatchTaskStepType.ReturnEmptyBox => DispatchTaskStage.WaitingForPlcConfirmation,
           _ => throw new InvalidOperationException("当前只允许核实运输到站补记。") });
-        step.Status = 50; step.CompletedAt = DateTime.Now; step.UpdatedAt = DateTime.Now;
-        next.Status = 10; next.StartedAt ??= DateTime.Now; next.VehicleId = task.VehicleId; next.UpdatedAt = DateTime.Now;
-        task.VendorTaskId = null; task.ErrorMessage = null; task.UpdatedAt = DateTime.Now;
+        step.Status = 50; step.CompletedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime; step.UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
+        next.Status = 10; next.StartedAt ??= AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime; next.VehicleId = task.VehicleId; next.UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
+        task.VendorTaskId = null; task.ErrorMessage = null; task.UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
         await database.Updateable(step).ExecuteCommandAsync(ct); await database.Updateable(next).ExecuteCommandAsync(ct); await database.Updateable(task).ExecuteCommandAsync(ct);
     }
     private async Task AuditAsync(string task, string step, string user, string decision, string reason, string evidence, CancellationToken ct) =>
         await database.Insertable(new ExecutionEvidenceEntity { Id = Guid.NewGuid().ToString("N"), SessionId = _sessionId, TaskId = task, StepId = step,
-            Operator = user, Kind = decision, Reason = reason, Evidence = evidence, OccurredAt = DateTime.Now }).ExecuteCommandAsync(ct);
+            Operator = user, Kind = decision, Reason = reason, Evidence = evidence, OccurredAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime }).ExecuteCommandAsync(ct);
     private async Task<RecoveryResult> RejectAsync(TrafficUserContext user, string ticketId, string reason, CancellationToken ct)
     {
         var ticket = await database.Queryable<ExecutionRecoveryTicketEntity>().Where(t => t.TicketId == ticketId && t.SessionId == _sessionId).FirstAsync(ct);
@@ -850,7 +850,7 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
     }
     private async Task MarkReleasedAsync(string user, string reason, CancellationToken ct)
     {
-        var affected = await database.Updateable<ExecutionRecoverySessionEntity>().SetColumns(s => new ExecutionRecoverySessionEntity { Released = true, ReleasedAt = DateTime.Now })
+        var affected = await database.Updateable<ExecutionRecoverySessionEntity>().SetColumns(s => new ExecutionRecoverySessionEntity { Released = true, ReleasedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime })
             .Where(s => s.SessionId == _sessionId && !s.Released).ExecuteCommandAsync(ct);
         if (affected != 1) throw new InvalidOperationException("恢复批次放行状态冲突。");
         await AuditAsync("", "", user, "Release", reason, "不重建任务，不释放路权；放行之后仍遵循地图执行屏障。", ct);

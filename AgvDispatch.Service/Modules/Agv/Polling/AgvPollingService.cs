@@ -1,4 +1,5 @@
 using AgvDispatch.Connectors.Agv;
+using AgvDispatch.Application.Runtime;
 
 namespace AgvDispatch.Service;
 
@@ -6,8 +7,12 @@ public sealed class AgvPollingService(
     ILogger<AgvPollingService> logger,
     AgvOptions options,
     AgvConnectionManager connections,
-    AgvStateCache stateCache) : IsolatedBackgroundService
+    AgvStateCache stateCache, TimeProvider? clock = null) : IsolatedBackgroundService
 {
+    private readonly TimeProvider _clock = clock ?? TimeProvider.System;
+    private TimeSpan BusinessDelay(int milliseconds) => _clock is SimulationTimeProvider simulation
+        ? simulation.ScaleForBusiness(TimeSpan.FromMilliseconds(milliseconds))
+        : TimeSpan.FromMilliseconds(milliseconds);
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         if (!options.Enabled)
@@ -46,7 +51,7 @@ public sealed class AgvPollingService(
         {
             if (!client.CommunicationEnabled)
             {
-                await Task.Delay(250, cancellationToken);
+                await Task.Delay(BusinessDelay(250), cancellationToken);
                 continue;
             }
             try
@@ -99,7 +104,7 @@ public sealed class AgvPollingService(
                     : options.PollIntervalMs;
             try
             {
-                await Task.Delay(delay, cancellationToken);
+                await Task.Delay(BusinessDelay(delay), cancellationToken);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {

@@ -31,6 +31,8 @@ foreach (var (cars, workstations) in new[] { (3, 7), (5, 11) })
         string? offlineTask = null; string[] offlineCommands = []; var healthyCompletedBeforeOffline = 0;
         for (var tick = 0; tick < 1800; tick++)
         {
+            if (Environment.GetEnvironmentVariable("AGV_SMOKE_TRACE") == "1" && tick % 50 == 0)
+                Console.WriteLine($"TRACE {cars}车第{round + 1}轮 tick {tick}");
             await f.Tick();
             var active = await f.Repository.GetAssignedTasksAsync(default);
             peak = Math.Max(peak, active.Count);
@@ -171,7 +173,7 @@ sealed class RuntimeFixture(int carCount, int stationCount) : IDisposable
     public void Restart()
     {
         orchestrator?.Dispose(); coordinator?.Dispose(); sender?.Dispose();
-        var executor = new PersistentHandshakeExecutor(store,Signals,Signals,Repository,Writer,traffic,creation,dispatch,handshake,Gateway,map,Gateway,new SyntheticPreflight());
+        var executor = new PersistentHandshakeExecutor(store,Signals,Signals,Repository,Writer,traffic,creation,dispatch,handshake,Gateway,map,Gateway,new SyntheticPreflight(),routePlanner:planner);
         orchestrator = new(NullLogger<DispatchTaskOrchestrator>.Instance,dispatch,Repository,outbox,Gateway,Gateway,map,new MapOptions(),planner,traffic,gate,handshakeOptions:handshake,handshake:executor);
         coordinator = new(new DiagnosticLogger<DispatchTaskStepCoordinator>(),new(),dispatch,creation,Repository,outbox,Signals,Signals,planner,traffic,gate,vehicleStates:Gateway,activeMap:map,handshake:executor);
         sender = new(NullLogger<AgvCommandOutboxDispatcher>.Instance,new(),outbox,Gateway,gate,handshakes:store,taskReader:Writer,handshakeOptions:handshake,handshake:executor);
@@ -192,7 +194,16 @@ sealed class RuntimeFixture(int carCount, int stationCount) : IDisposable
     public async Task Tick()
     {
         Gateway.Advance(Signals,dispatch); Signals.Pulse();
-        await Cycle(orchestrator,"RunCycleAsync"); await Cycle(coordinator,"RunCycleAsync"); await Cycle(sender,"DispatchDueCommandsAsync");
+        var trace = Environment.GetEnvironmentVariable("AGV_SMOKE_TRACE") == "1";
+        if (trace) Console.WriteLine("TRACE orchestrator start");
+        await Cycle(orchestrator,"RunCycleAsync");
+        if (trace) Console.WriteLine("TRACE orchestrator end");
+        if (trace) Console.WriteLine("TRACE coordinator start");
+        await Cycle(coordinator,"RunCycleAsync");
+        if (trace) Console.WriteLine("TRACE coordinator end");
+        if (trace) Console.WriteLine("TRACE sender start");
+        await Cycle(sender,"DispatchDueCommandsAsync");
+        if (trace) Console.WriteLine("TRACE sender end");
     }
     private static Task Cycle(object target,string name) => (Task)target.GetType().GetMethod(name,BindingFlags.Instance|BindingFlags.NonPublic)!.Invoke(target,[CancellationToken.None])!;
     public async Task<string> Diagnostics(List<string> ids) => JsonSerializer.Serialize(new { Positions = Gateway.Positions, Tasks = (await Db.Queryable<DispatchTaskEntity>().Where(t => ids.Contains(t.TaskId)).ToListAsync()).Select(t => new { t.StationId,t.VehicleId,t.Stage }),

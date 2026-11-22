@@ -4,6 +4,7 @@ using AgvDispatch.Domain.Devices;
 using AgvDispatch.Domain.Maps;
 using AgvDispatch.Domain.Tasks;
 using AgvDispatch.Infrastructure.Persistence;
+using AgvDispatch.Application.Runtime;
 
 namespace AgvDispatch.Service;
 
@@ -22,14 +23,17 @@ public sealed class WaitingBayDepartureReleaseWorker(
     HandshakeExecutionOptions handshake,
     MapOptions mapOptions,
     TrafficResourceManager resources,
-    IMapExecutionGate gate) : IsolatedBackgroundService
+    IMapExecutionGate gate, TimeProvider? clock = null) : IsolatedBackgroundService
 {
     private readonly HashSet<string> _blocked = new(StringComparer.OrdinalIgnoreCase);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         if (!dispatch.Enabled || !handshake.Enabled) return;
-        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+        var interval = clock is SimulationTimeProvider simulation
+            ? simulation.ScaleForBusiness(TimeSpan.FromSeconds(1))
+            : TimeSpan.FromSeconds(1);
+        using var timer = new PeriodicTimer(interval);
         while (await timer.WaitForNextTickAsync(stoppingToken))
         {
             try
@@ -43,7 +47,11 @@ public sealed class WaitingBayDepartureReleaseWorker(
                     .ToArray();
                 foreach (var task in atDump)
                 {
-                    if (CanRelease(task, current, waiting, out var reason) is false)
+                    var binding = await resources.GetAsync(task.TaskId, stoppingToken);
+                    var taskWaiting = waiting.ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    if (!string.IsNullOrWhiteSpace(binding?.ResourceId))
+                        taskWaiting.Add(binding.ResourceId);
+                    if (CanRelease(task, current, taskWaiting, out var reason) is false)
                     {
                         if (_blocked.Add(task.TaskId))
                             logger.LogInformation("候车位暂不释放。TaskId={TaskId}, Reason={Reason}", task.TaskId, reason);
@@ -51,7 +59,7 @@ public sealed class WaitingBayDepartureReleaseWorker(
                     }
                     var released = await resources.ReleaseDepartedWaitingBaysAsync(
                         task.TaskId,
-                        waiting,
+                        taskWaiting,
                         "车辆已确认静止到达倒料点，返程路线不再进入候车位；仅释放已离位的独立候车资源。",
                         stoppingToken);
                     if (released > 0)
@@ -121,8 +129,8 @@ public sealed class WaitingBayDepartureReleaseWorker(
 
     private bool Fresh(AgvRobotSnapshot vehicle) =>
         vehicle.LastSuccessfulPollAt is { } at &&
-        at <= DateTimeOffset.UtcNow.AddSeconds(1) &&
-        DateTimeOffset.UtcNow - at <= TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds);
+        at <= (clock ?? TimeProvider.System).GetUtcNow().AddSeconds(1) &&
+        (clock ?? TimeProvider.System).GetUtcNow() - at <= TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds);
 
     private static MapNode? Resolve(MapDefinition definition, string site) =>
         definition.Nodes.Where(node => node.Enabled &&

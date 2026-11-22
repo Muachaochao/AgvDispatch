@@ -97,7 +97,7 @@ public sealed partial class FleetTestPort
                 alreadyThere?FleetTestStandbyReturnStates.Completed:FleetTestStandbyReturnStates.Assigned,
                 alreadyThere?"车辆已在配置待机位，无需发送。":"已分配唯一待机位，等待路线核验。",
                 null,
-                DateTimeOffset.UtcNow)
+                AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow())
             {
                 Route=alreadyThere?[vehicle.CurrentStation!]:[],
                 ResourceTaskId=""
@@ -146,7 +146,7 @@ public sealed partial class FleetTestPort
         {
             VendorTaskId="FLEET-STANDBY-"+run.RunId+"-"+assignment.VehicleId,
             Route=path,
-            UpdatedAt=DateTimeOffset.UtcNow
+            UpdatedAt=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow()
         };
         persistSendIntent(intent);
         // Standby returns are sent one vehicle at a time after all business tasks have
@@ -163,7 +163,7 @@ public sealed partial class FleetTestPort
                 Message="已发送待机导航，车辆返回中。",
                 VendorTaskId=vendorTaskId,
                 Route=path,
-                UpdatedAt=DateTimeOffset.UtcNow
+                UpdatedAt=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow()
             };
         }
         catch(Exception e)
@@ -203,21 +203,21 @@ public sealed partial class FleetTestPort
             {
                 State=FleetTestStandbyReturnStates.Returning,
                 Message="待机导航执行中："+original.State,
-                UpdatedAt=DateTimeOffset.UtcNow
+                UpdatedAt=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow()
             };
         if(!vehicles.TryGet(assignment.VehicleId,out var vehicle)||!Fresh(vehicle.LastSuccessfulPollAt)||
            vehicle.Connection!=ConnectionState.Online||vehicle.Quality!=SignalQuality.Good||
            vehicle.EmergencyStopped!=false||vehicle.Blocked!=false||!LocalizationReady(vehicle)||
            vehicle.Alarms.Any(a=>a.Severity is AgvAlarmSeverity.Error or AgvAlarmSeverity.Fatal))
-            return assignment with {Message="待机导航已完成，车辆健康状态尚待恢复。",UpdatedAt=DateTimeOffset.UtcNow};
+            return assignment with {Message="待机导航已完成，车辆健康状态尚待恢复。",UpdatedAt=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow()};
         var target=StandbyNode(assignment.Site);
         if(!StandbyParkedAt(vehicle,target))
-            return assignment with {Message="待机导航已完成，等待车辆停稳并核对实际停靠位置。",UpdatedAt=DateTimeOffset.UtcNow};
+            return assignment with {Message="待机导航已完成，等待车辆停稳并核对实际停靠位置。",UpdatedAt=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow()};
         return assignment with
         {
             State=FleetTestStandbyReturnStates.Completed,
             Message="车辆已停稳在配置待机位。",
-            UpdatedAt=DateTimeOffset.UtcNow
+            UpdatedAt=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow()
         };
     }
 

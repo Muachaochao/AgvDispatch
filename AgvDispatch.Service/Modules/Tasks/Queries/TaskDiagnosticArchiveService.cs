@@ -31,7 +31,7 @@ public sealed class TaskDiagnosticArchiveService(ITaskCenterQueryService tasks,I
             csv.AppendLine(string.Join(",",new[]{e.Sequence.ToString(),e.TaskId,e.StepId,e.Kind,e.Phase,e.StationId,e.Signal,e.PreviousValue?.ToString()??"",e.Value?.ToString()??"",e.Quality,e.ObservedAt?.ToString("O")??"",e.RecordedAt.ToString("O"),e.Reason,e.Evidence}.Select(Cell)));
         files["runtime-events.csv"]=new UTF8Encoding(true).GetPreamble().Concat(Encoding.UTF8.GetBytes(csv.ToString())).ToArray();
         files["README.txt"]=Encoding.UTF8.GetBytes("联调诊断包：包含导出时任务观察、握手检查点、资源诊断及固定序号窗口内的新运行事件。\n旧执行时间线只包含最近100项，其总数保留在task-detail.json；本包不宣称包含旧原始审计全文。\n信号记录是首次观察与变化采样，不是PLC扫描级录像。任务详情和事件窗口不是跨设备原子快照。\n软件规划契约不证明现场PLC程序已经匹配；手工确认和写回不等于机械完成。\n");
-        var manifest=new {Schema="agv-task-diagnostics",Version=1,TaskId=taskId,CapturedAt=DateTimeOffset.UtcNow,
+        var manifest=new {Schema="agv-task-diagnostics",Version=1,TaskId=taskId,CapturedAt=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow(),
             SoftwareVersion=typeof(TaskDiagnosticArchiveService).Assembly.GetName().Version?.ToString(),first.ThroughSequence,EventCount=events.Count,
             LegacyTimelineReturned=detail.ExecutionTimeline.Count,LegacyTimelineTotal=detail.ExecutionTimelineTotal,
             Files=files.Select(f=>new{Name=f.Key,Bytes=f.Value.Length,Sha256=Convert.ToHexString(SHA256.HashData(f.Value))}).ToArray()};

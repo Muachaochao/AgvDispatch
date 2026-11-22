@@ -1,4 +1,4 @@
-﻿using AgvDispatch.Application.Abstractions;
+using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Infrastructure.Persistence.Entities;
 namespace AgvDispatch.Infrastructure.Persistence;
 public sealed partial class TrafficResourceControlService
@@ -24,9 +24,9 @@ public sealed partial class TrafficResourceControlService
             var leases = await database.Queryable<TrafficResourceLeaseEntity>().ToListAsync(ct);
             var now = (clock ?? TimeProvider.System).GetUtcNow();
             var byTask = tasks.ToDictionary(t => t.TaskId);
-            var cycles = TrafficCycleRiskDetector.Find(requests, byTask, pending, leases, catalog, DateTime.Now);
+            var cycles = TrafficCycleRiskDetector.Find(requests, byTask, pending, leases, catalog, AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime);
             var waiting = requests.Where(r => pending.TryGetValue(r.StepId, out var step) && step.TaskId == r.TaskId)
-                .Select(r => ProjectRequest(r, leases, byTask, DateTime.Now, now)).Where(r => r.State == "Waiting").ToArray();
+                .Select(r => ProjectRequest(r, leases, byTask, AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime, now)).Where(r => r.State == "Waiting").ToArray();
             waiting = waiting.Select(r => cycles.FirstOrDefault(c => c.TaskIds.Contains(r.TaskId, StringComparer.OrdinalIgnoreCase)) is { } cycle
                 ? r with { Reason = r.Reason + " " + cycle.Message } : r).ToArray();
             var resource = query.BlockingResourceId?.Trim();

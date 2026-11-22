@@ -53,7 +53,7 @@ public sealed partial class BusinessRunPort(IManualTaskCreationService manual, I
         }
         return run;
     }
-    private static bool Fresh(DateTimeOffset? time) => time is { } t && t <= DateTimeOffset.UtcNow.AddSeconds(1) && DateTimeOffset.UtcNow - t < TimeSpan.FromSeconds(5);
+    private static bool Fresh(DateTimeOffset? time) => time is { } t && t <= AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow().AddSeconds(1) && AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow() - t < TimeSpan.FromSeconds(5);
     private static bool Stopped(AgvRobotSnapshot v) => Fresh(v.LastSuccessfulPollAt) &&
         v.Connection == ConnectionState.Online && v.Quality == SignalQuality.Good && v.ConsecutiveFailures == 0 &&
         LocalizationConfidenceObservation.IsReady(v) &&
@@ -225,13 +225,13 @@ public sealed partial class BusinessRunPort(IManualTaskCreationService manual, I
     }
     public async Task<string> CreateAsync(BusinessRunRecord run, string station, string requestId, CancellationToken ct)
     {
-        var deadline = DateTimeOffset.UtcNow.AddSeconds(12);
+        var deadline = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow().AddSeconds(12);
         while (true)
         {
             var result = await manual.CreateAsync(TrafficUserContext.LocalOperation(run.Operator),
                 new(requestId, station, run.Plan.VehicleId, 50, run.MapId, run.MapVersionId) { ParameterRevision = run.ParameterRevision }, ct);
             if (result.Accepted && result.TaskId is not null) return result.TaskId;
-            if (!IsRetryableCreationBlock(result.Message) || DateTimeOffset.UtcNow >= deadline)
+            if (!IsRetryableCreationBlock(result.Message) || AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow() >= deadline)
                 throw new InvalidOperationException(result.Message);
             // No vehicle command exists before task creation. Reuse the same durable
             // request id while the station-state poll catches up with the next PLC call.

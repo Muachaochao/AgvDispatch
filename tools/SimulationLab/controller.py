@@ -19,6 +19,7 @@ from urllib.request import Request, urlopen
 from urllib.parse import urlsplit, parse_qs, urlencode
 import uuid
 from datetime import datetime, timezone
+import simulation_clock
 
 WORKSPACE = Path(__file__).resolve().parents[2]
 STATION_IDS = ('CNC-001', 'CNC-002')
@@ -156,6 +157,12 @@ class Runtime:
         self.startup_plan = None
         self.startup_checks = []
         self.startup_thread = None
+        self.simulation_rate = float(self.lab.get('simulationRate', 1))
+        origin_ms = self.lab.get('simulationOriginUnixMs')
+        self.clock = simulation_clock.configure(
+            self.simulation_rate,
+            (origin_ms / 1000) if origin_ms else time.time(),
+        )
         if scheme_store is not None:
             from versions import VersionComparison
             self.version_comparison = VersionComparison(self)
@@ -381,7 +388,7 @@ class Runtime:
         from simulation_reports import history, guidance
         device = self.device()
         with self.lock:
-            now = time.monotonic()
+            now = getattr(self, 'clock', simulation_clock.CLOCK).monotonic()
             recovery_cache = getattr(self, 'recovery_cache', (0, {}))
             if self.phase == 'running' and now - recovery_cache[0] > 1:
                 try:
@@ -429,7 +436,9 @@ class Runtime:
                 self.guidance_cache = (now, guidance(details, device))
             plc_table = self._bound_plc_table()
             return dict(enabled=True, rootName=self.root.name, running=self.phase == 'running', phase=self.phase,
-                        fresh=self.phase == 'running' and 0 <= time.time() - device.get('time', 0) < 5 and bool(self.children) and all(p.poll() is None for p in self.children.values()),
+                        simulationRate=getattr(self, 'simulation_rate', 1),
+                        simulationOriginUnixMs=round(getattr(self, 'clock', simulation_clock.CLOCK).origin_seconds * 1000),
+                        fresh=self.phase == 'running' and 0 <= getattr(self, 'clock', simulation_clock.CLOCK).time() - device.get('time', 0) < 5 and bool(self.children) and all(p.poll() is None for p in self.children.values()),
                         device=device, map=read(self.root / 'navigation.agvmap.json'), scenario=dict(self.scenario), report=self.report,
                         businessPlan=read(self.root / 'business-call-plan.json') if (self.root / 'business-call-plan.json').is_file() else None,
                         runtimeRelease=read(self.root / 'runtime-release.json') if (self.root / 'runtime-release.json').is_file() else None,
@@ -455,22 +464,23 @@ class Runtime:
         device = self.device()
         scenario = self.scenario or {}
         with self.lock:
-            children_running = bool(self.children) and all(p.poll() is None for p in self.children.values())
             return dict(
                 enabled=True,
                 rootName=self.root.name,
                 running=self.phase == 'running',
                 phase=self.phase,
+                simulationRate=getattr(self, 'simulation_rate', 1),
+                simulationOriginUnixMs=round(getattr(self, 'clock', simulation_clock.CLOCK).origin_seconds * 1000),
                 fresh=(
                     self.phase == 'running'
-                    and 0 <= time.time() - device.get('time', 0) < 5
-                    and children_running
+                    and 0 <= getattr(self, 'clock', simulation_clock.CLOCK).time() - device.get('time', 0) < 5
                 ),
                 device=device,
                 scenario=dict(
                     id=scenario.get('id'),
                     name=scenario.get('name'),
                     status=scenario.get('status'),
+                    startedAt=scenario.get('startedAt'),
                     completedRounds=scenario.get('completedRounds', 0),
                     totalRounds=scenario.get('totalRounds', 0),
                     message=scenario.get('message'),
@@ -485,6 +495,9 @@ class Runtime:
     def launch(self, name, arguments, cwd):
         env = os.environ.copy()
         env['AGV_DISPATCH_DATABASE_PATH'] = str(self.root / 'data/agv-dispatch.db')
+        env['AGV_SIMULATION_ROOT'] = str(self.root)
+        env['AGV_SIMULATION_RATE'] = str(self.simulation_rate)
+        env['AGV_SIMULATION_ORIGIN_UNIX_MS'] = str(round(self.clock.origin_seconds * 1000))
         with (self.root / f'simulation-{name}-stdout.log').open('ab') as out, (self.root / f'simulation-{name}-stderr.log').open('ab') as err:
             child = subprocess.Popen(arguments, cwd=cwd, env=env, stdout=out, stderr=err,
                                      creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
@@ -494,6 +507,7 @@ class Runtime:
 
     def wait(self, label, predicate, timeout=90):
         deadline = time.monotonic() + timeout
+        poll_seconds = min(0.3, max(0.01, timeout / 10))
         last_error = ''
         while time.monotonic() < deadline:
             if self.abort.is_set():
@@ -506,7 +520,7 @@ class Runtime:
                 last_error = str(error)
             if any(p.poll() is not None for p in self.children.values()):
                 raise RuntimeError('仿真子进程退出，请查看本实例日志。')
-            self.abort.wait(.3)
+            self.abort.wait(poll_seconds)
         raise TimeoutError(label + ('；' + last_error if last_error else ''))
 
     def connected(self):
@@ -1030,7 +1044,10 @@ class Runtime:
 
     def select_scheme(self, payload, start=False):
         if self.scheme_store is None: raise ValueError('仿真方案存储未初始化。')
-        if 'id' not in payload or set(payload) - {'id', 'business', 'plan', 'vehicleStarts', 'checkOnly'}: raise ValueError('请选择一个保存的方案。')
+        if 'id' not in payload or set(payload) - {'id', 'business', 'plan', 'vehicleStarts', 'checkOnly', 'simulationRate'}: raise ValueError('请选择一个保存的方案。')
+        simulation_rate = payload.get('simulationRate', 1)
+        if isinstance(simulation_rate, bool) or simulation_rate not in (1, 2, 4, 8):
+            raise ValueError('仿真倍率只支持 1、2、4、8。')
         check_only = payload.get('checkOnly', False)
         if type(check_only) is not bool or (start and check_only):
             raise ValueError('检查模式仅用于方案预览。')
@@ -1087,7 +1104,7 @@ class Runtime:
                     dict(name='当前发布程序与算法选项', status='passed' if release else 'unbound'),
                     dict(name='业务呼叫计划', status='passed')]))
         plan_record = business_plan
-        self._create_instance(configuration)
+        self._create_instance(configuration, simulation_rate)
         self.business_plan = plan_record
         if plan_record is not None: write(self.root / 'business-call-plan.json', plan_record)
         self.scheme_store.remember(self.root, value['id'])
@@ -1126,14 +1143,17 @@ class Runtime:
         if self.protocol_runtime is not None or self.equipment_model is not None:
             raise ValueError('请先停止协议服务和设备模型，再创建干净实例。')
         payload = payload or {}
-        if not isinstance(payload, dict) or set(payload) - {'vehicles'}:
-            raise ValueError('新实例仅接受vehicles参数。')
+        if not isinstance(payload, dict) or set(payload) - {'vehicles', 'simulationRate'}:
+            raise ValueError('新实例参数无效。')
+        simulation_rate = payload.get('simulationRate', 1)
+        if isinstance(simulation_rate, bool) or simulation_rate not in (1, 2, 4, 8):
+            raise ValueError('仿真倍率只支持 1、2、4、8。')
         count = payload.get('vehicles', len(self.settings['Agv']['Robots']))
         if type(count) is not int or not 1 <= count <= 8:
             raise ValueError('车队数量须为1至8。')
-        return self._create_instance(self._default_configuration(count))
+        return self._create_instance(self._default_configuration(count), simulation_rate)
 
-    def _create_instance(self, configuration):
+    def _create_instance(self, configuration, simulation_rate=1):
         with self.lock:
             if self.startup_thread and self.startup_thread.is_alive():
                 raise ValueError('一键开测仍在准备，请先停止并等待收尾。')
@@ -1170,7 +1190,11 @@ class Runtime:
                     if value not in used and value not in (5198, 5199): used.add(value); return value
             field_sites = {v['id']: v['initialSite'] for v in configuration['vehicles']}
             bootstrap_sites = self._bootstrap_sites(navigation, configuration)
+            origin_unix_ms = round(time.time() * 1000)
+            self.simulation_rate = float(simulation_rate)
+            self.clock = simulation_clock.configure(self.simulation_rate, origin_unix_ms / 1000)
             lab.update(root=str(target), pipe='Agv28StageLab-' + target.name, webPort=port(), plcPort=port(),
+                simulationRate=self.simulation_rate, simulationOriginUnixMs=origin_unix_ms,
                 multiVehicleSimulation=True, twoVehicleSimulation=len(configuration['vehicles']) == 2,
                 waitingBayProtection=True, mapName=navigation.get('name') or 'custom_simulation',
                 initialSites=field_sites, runtimeInitialSites=bootstrap_sites or field_sites, bootstrapSites=bootstrap_sites,
@@ -1436,7 +1460,8 @@ class Runtime:
             if self.settings['TaskCreation']['AutomaticCreationEnabled'] and any(call.get('vehicleId') for call in request.get('calls', [])):
                 raise ValueError('PLC自动接单由正式调度选择车辆，呼叫计划不能指定车辆。')
             total_units = len(request['calls']) if request['name'] in ('custom-calls', 'dispatch-backlog', 'business-calls') else request['rounds']
-            self.scenario = dict(id=uuid.uuid4().hex, status='running', completedRounds=0, totalRounds=total_units, startedAt=time.time(), message='核对初态', **request)
+            self.scenario = dict(id=uuid.uuid4().hex, status='running', completedRounds=0, totalRounds=total_units,
+                                 startedAt=self.clock.time(), message='核对初态', **request)
             self.worker = threading.Thread(target=execute, args=(self, request), daemon=True); self.worker.start()
         return self.status()
 

@@ -196,7 +196,7 @@ public sealed class DatabaseInitializer : IDatabaseInitializer
         _database.Deleteable<TrafficResourceDefinitionEntity>().ExecuteCommand();
         if (_trafficResources.All.Count > 0)
         {
-            var now = DateTime.Now;
+            var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
             _database.Insertable(_trafficResources.All.Select(resource =>
                 new TrafficResourceDefinitionEntity
                 {

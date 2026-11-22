@@ -200,7 +200,7 @@ public sealed class AlarmService(ISqlSugarClient database) : IAlarmService
             return new AlarmOperationResult(false, "报警确认说明至少需要2个字符。");
         }
 
-        var now = DateTime.Now;
+        var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
         var updated = await database.Updateable<AlarmRecordEntity>()
             .SetColumns(item => new AlarmRecordEntity
             {

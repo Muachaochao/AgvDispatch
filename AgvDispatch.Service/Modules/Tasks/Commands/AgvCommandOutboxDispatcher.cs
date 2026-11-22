@@ -2,6 +2,7 @@ using System.Text.Json;
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Domain.Devices;
 using AgvDispatch.Domain.Tasks;
+using AgvDispatch.Application.Runtime;
 
 namespace AgvDispatch.Service;
 
@@ -14,8 +15,12 @@ public sealed class AgvCommandOutboxDispatcher(
     IExecutionEvidenceJournal? journal = null, ITaskHandshakeStore? handshakes = null, IDispatchTaskRepository? taskReader = null, HandshakeExecutionOptions? handshakeOptions = null,PersistentHandshakeExecutor? handshake = null,
     IRoadClosureService? roadClosures = null, ITrafficResourceManager? trafficResources = null,
     IActiveMapRuntime? activeMap = null, IDispatchPreSendSafetyService? preSendSafety = null,
-    IDispatchPipelineMonitor? pipeline = null) : IsolatedBackgroundService
+    IDispatchPipelineMonitor? pipeline = null, TimeProvider? clock = null) : IsolatedBackgroundService
 {
+    private readonly TimeProvider _clock = clock ?? TimeProvider.System;
+    private TimeSpan BusinessDelay(int milliseconds) => _clock is SimulationTimeProvider simulation
+        ? simulation.ScaleForBusiness(TimeSpan.FromMilliseconds(milliseconds))
+        : TimeSpan.FromMilliseconds(milliseconds);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly Dictionary<string,string> _blockedReasons=new(StringComparer.Ordinal);
 
@@ -56,14 +61,14 @@ public sealed class AgvCommandOutboxDispatcher(
                 logger.LogError(exception, "AGV命令Outbox轮询失败。");
             }
 
-            await Task.Delay(options.PollIntervalMs, stoppingToken);
+            await Task.Delay(BusinessDelay(options.PollIntervalMs), stoppingToken);
         }
     }
 
     private async Task RecoverExpiredClaimsAsync(CancellationToken cancellationToken)
     {
         var count = await outbox.RecoverStaleClaimsAsync(
-            DateTimeOffset.Now.AddMilliseconds(-options.SendingLeaseMs),
+            _clock.GetLocalNow().AddMilliseconds(-options.SendingLeaseMs),
             cancellationToken);
         if (count > 0)
         {
@@ -83,7 +88,7 @@ public sealed class AgvCommandOutboxDispatcher(
         }
 
         var due = await outbox.GetDueCommandsAsync(
-            DateTimeOffset.Now,
+            _clock.GetLocalNow(),
             options.BatchSize,
             cancellationToken);
         if (due.Count == 0) pipeline?.ReportLayer("execution", "Idle", "当前没有到期的持久化命令，等待原任务后续步骤。", 0);
@@ -177,7 +182,7 @@ public sealed class AgvCommandOutboxDispatcher(
             }
             var command = await outbox.TryClaimAsync(
                 candidate.CommandId,
-                DateTimeOffset.Now,
+                _clock.GetLocalNow(),
                 cancellationToken);
             if (command is null)
             {
@@ -236,7 +241,7 @@ public sealed class AgvCommandOutboxDispatcher(
             await outbox.DeferBeforeSendAsync(
                 command.CommandId,
                 exception.Message,
-                DateTimeOffset.Now.Add(delay),
+                _clock.GetLocalNow().Add(delay),
                 cancellationToken);
             pipeline?.ReportLayer(
                 "execution",
@@ -258,7 +263,7 @@ public sealed class AgvCommandOutboxDispatcher(
             await outbox.ScheduleRetryAsync(
                 command.CommandId,
                 exception.Message,
-                DateTimeOffset.Now.Add(delay),
+                _clock.GetLocalNow().Add(delay),
                 terminalSendResult ? 1 : options.MaximumAttempts,
                 cancellationToken);
             pipeline?.ReportLayer(

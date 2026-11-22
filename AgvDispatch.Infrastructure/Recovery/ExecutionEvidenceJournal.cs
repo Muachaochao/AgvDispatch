@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Infrastructure.Persistence.Entities;
 using SqlSugar;
@@ -30,13 +30,13 @@ public sealed class ExecutionEvidenceJournal(ISqlSugarClient database, IExecutio
                 // Store even missing samples. Recovery must not choose a later intent as a new original baseline.
                 var node = System.Text.Json.Nodes.JsonNode.Parse(json);
                 if (node is System.Text.Json.Nodes.JsonObject obj)
-                { obj["ExecutionIdentityBaseline"] = JsonSerializer.SerializeToNode(new ExecutionIdentityBaseline(plc, vehicle, DateTimeOffset.Now)); json = obj.ToJsonString(); }
+                { obj["ExecutionIdentityBaseline"] = JsonSerializer.SerializeToNode(new ExecutionIdentityBaseline(plc, vehicle, AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow())); json = obj.ToJsonString(); }
             }
         }
         await database.Insertable(new ExecutionEvidenceEntity
         {
             Id = Guid.NewGuid().ToString("N"), TaskId = taskId, StepId = stepId,
-            Operator = "service", Kind = kind, Evidence = json, OccurredAt = DateTime.Now
+            Operator = "service", Kind = kind, Evidence = json, OccurredAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime
         }).ExecuteCommandAsync(ct);
     }
     private sealed class Scope(Action restore) : IDisposable

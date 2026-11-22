@@ -26,7 +26,7 @@ public sealed class NamedPipeDiagnostics
         {
             _lastClientIdentity = identity;
             _lastOperation = operation;
-            _lastRequestAt = DateTimeOffset.Now;
+            _lastRequestAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow();
         }
     }
 

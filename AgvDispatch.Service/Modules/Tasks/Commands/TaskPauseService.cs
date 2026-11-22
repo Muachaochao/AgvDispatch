@@ -61,7 +61,7 @@ public sealed class TaskPauseService(ISqlSugarClient database) : ITaskPauseServi
                 return;
             }
 
-            var now = DateTime.Now;
+            var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
             task.PauseRequestId = request.RequestId;
             task.PauseOriginalStage = task.Stage;
             task.PauseStepId = step.StepId;
@@ -157,7 +157,7 @@ public sealed class TaskPauseService(ISqlSugarClient database) : ITaskPauseServi
                 return;
             }
 
-            var now = DateTime.Now;
+            var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
             task.Stage = task.PauseOriginalStage.Value;
             task.ErrorMessage = null;
             task.PauseResumeRequestId = request.RequestId;

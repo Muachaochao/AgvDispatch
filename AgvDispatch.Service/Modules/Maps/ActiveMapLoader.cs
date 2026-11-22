@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Domain.Maps;
@@ -47,7 +47,7 @@ public sealed class ActiveMapLoader(
             project.MapId,
             version.VersionId,
             definition,
-            DateTimeOffset.Now));
+            AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow()));
         var runtimeResources = MapCorridorResources.AllResources(definition);
         resources.Replace(runtimeResources);
         await database.Deleteable<TrafficResourceDefinitionEntity>().ExecuteCommandAsync(cancellationToken);
@@ -59,7 +59,7 @@ public sealed class ActiveMapLoader(
                     ResourceId = resource.Id,
                     ResourceType = (int)resource.Type,
                     Capacity = resource.Capacity,
-                    UpdatedAt = DateTime.Now
+                    UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime
                 }).ToArray()).ExecuteCommandAsync(cancellationToken);
         }
         await mapSwitches.InitializeAsync(cancellationToken);

@@ -107,7 +107,7 @@ public sealed record DispatchOptimizationSnapshot
 {
     public DispatchAssignmentOptions Options { get; init; } = new();
     public string Revision { get; init; } = "initial";
-    public DateTimeOffset CapturedAt { get; init; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset CapturedAt { get; init; } = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow();
     public long CycleNumber { get; init; }
     public double DurationMs { get; init; }
     public int WaitingTaskCount { get; init; }

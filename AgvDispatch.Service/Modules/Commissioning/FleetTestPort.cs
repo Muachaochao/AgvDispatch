@@ -21,7 +21,7 @@ public sealed partial class FleetTestPort(FleetTestOptions options,IBusinessRunS
     private readonly LocalizationConfidenceObservation localizationObservation=new(TimeSpan.FromSeconds(3),localizationClock);
     private static readonly HttpClient lab=new(new SocketsHttpHandler{UseProxy=false,AllowAutoRedirect=false})
         {BaseAddress=new Uri("http://127.0.0.1:10201/"),Timeout=TimeSpan.FromSeconds(5)};
-    private static bool Fresh(DateTimeOffset? at)=>at is {} t&&t<=DateTimeOffset.UtcNow.AddSeconds(1)&&DateTimeOffset.UtcNow-t<TimeSpan.FromSeconds(3);
+    private static bool Fresh(DateTimeOffset? at)=>at is {} t&&t<=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow().AddSeconds(1)&&AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow()-t<TimeSpan.FromSeconds(3);
     // Only the verified manufacturer code is local traffic waiting. Descriptions
     // such as "motor blocked" must not suppress an unrelated error or fatal alarm.
     public static bool IsLocalTrafficObstacleAlarm(string? code,string? message)=>
@@ -187,7 +187,7 @@ public sealed partial class FleetTestPort(FleetTestOptions options,IBusinessRunS
                 v?.Blocked is null?"阻挡状态未知，等待有效采集核对；不作为新任务或完成依据。":
                 AgvObstaclePolicy.IsBlocked(v)?"受阻等待；保留原任务，由该车车端处理，不暂停其他车辆，未验证自主绕障。":"状态数据有效");
             return new FleetTestVehicle(id,v?.CurrentStation,health==null&&localizationReady,message);
-        }).ToArray(),details.ToArray(),DateTimeOffset.UtcNow)
+        }).ToArray(),details.ToArray(),AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow())
         {ConfiguredStations=parameters.Capture().Pickups.Select(p=>p.StationId).ToArray(),MaxConcurrentTasks=dispatch.MaxConcurrentTasks};
     }
     public async Task LabAsync(FleetTestRun run,string action,string[] stations,CancellationToken ct)

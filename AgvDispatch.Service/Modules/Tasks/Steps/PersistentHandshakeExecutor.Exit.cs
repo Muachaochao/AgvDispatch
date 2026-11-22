@@ -166,7 +166,7 @@ public sealed partial class PersistentHandshakeExecutor
         {
             var minimum=options.DumperExit.MinimumObservationIntervalSeconds;
             var maximumAge=TimeSpan.FromSeconds(options.DumperExit.MaximumAgeSeconds);
-            var deadline=DateTimeOffset.UtcNow+maximumAge;
+            var deadline=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow()+maximumAge;
             while(true)
             {
                 ct.ThrowIfCancellationRequested();
@@ -177,7 +177,7 @@ public sealed partial class PersistentHandshakeExecutor
                     _exitSamples.Remove(step.StepId);
                     throw new InvalidOperationException("出区连续采样发生时间倒退或同一时刻状态冲突，等待重新采集。");
                 }
-                var now=DateTimeOffset.UtcNow;
+                var now=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow();
                 if(candidate.ObservedAt>previous.ObservedAt&&now-candidate.ObservedAt<=maximumAge&&
                     (candidate.ObservedAt-previous.ObservedAt).TotalSeconds>=minimum)
                     return candidate;
@@ -188,7 +188,7 @@ public sealed partial class PersistentHandshakeExecutor
         var frame=ReadFrame();
         var minimum=options.DumperExit.MinimumObservationIntervalSeconds;
         var maximumAge=TimeSpan.FromSeconds(options.DumperExit.MaximumAgeSeconds);
-        var sampledAt=DateTimeOffset.UtcNow;
+        var sampledAt=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow();
         var hasPair=_exitSamples.TryGetValue(step.StepId,out var savedPair);
         (DumperExitFrame? First,DumperExitFrame Second)? pair=hasPair?savedPair:null;
         var advancedFromSaved=false;
@@ -229,11 +229,11 @@ public sealed partial class PersistentHandshakeExecutor
         }
         var verifiedPair=pair.Value;
         _exitSamples[step.StepId]=verifiedPair;
-        RequireVerified(verifiedPair.First,verifiedPair.Second,DateTimeOffset.UtcNow);
+        RequireVerified(verifiedPair.First,verifiedPair.Second,AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow());
         var mapCheck=await mapPreflight!.CheckCurrentMapAsync(vehicleId,current.MapId,current.VersionId,ct);
         if(!mapCheck.Accepted)throw new InvalidOperationException("实际出区车端地图核验未通过："+mapCheck.Message);
         var vendor=await agvGateway!.GetTransportTaskStatusAsync(vendorTaskId,ct);
-        var now=DateTimeOffset.UtcNow;
+        var now=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow();
         if(vendor==null||vendor.VendorTaskId!=vendorTaskId||vendor.BusinessTaskId!=vendorTaskId||vendor.VehicleId!=vehicleId||
             vendor.State is not (AgvTransportTaskState.GoingToDestination or AgvTransportTaskState.AtDestination or AgvTransportTaskState.Completed)||
             vendor.UpdatedAt>now.AddSeconds(1)||now-vendor.UpdatedAt>TimeSpan.FromSeconds(options.DumperExit.MaximumAgeSeconds))
@@ -256,7 +256,7 @@ public sealed partial class PersistentHandshakeExecutor
             while(true)
             {
                 ct.ThrowIfCancellationRequested();
-                now=DateTimeOffset.UtcNow;
+                now=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow();
                 if(now>=deadline)throw new InvalidOperationException("车端查询后未在原任务查询有效期内取得两次新鲜出区定位；保持占用，等待采集恢复。");
                 await Task.Delay(TimeSpan.FromMilliseconds(25),ct);
                 var second=ReadFrame();
@@ -267,7 +267,7 @@ public sealed partial class PersistentHandshakeExecutor
                 break;
             }
         }
-        now=DateTimeOffset.UtcNow;
+        now=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow();
         _exitSamples[step.StepId]=verifiedPair;
         RequireVerified(verifiedPair.First,verifiedPair.Second,now);
         if(vendor.UpdatedAt>now.AddSeconds(1)||now-vendor.UpdatedAt>maximumAge)

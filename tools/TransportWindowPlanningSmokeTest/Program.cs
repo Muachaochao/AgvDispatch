@@ -167,6 +167,10 @@ var staging = new GlobalPickupRoutePlanner(options, new AgvOptions { NavigationC
 var blockedDownstream = new HashSet<string> { "DOWNSTREAM" };
 ActiveMapRuntimeSnapshot Activate(MapDefinition map) => new(map.Name, "v1", map, DateTimeOffset.UtcNow);
 var activeStaging = Activate(stagingMap);
+Check(staging.SafeHoldingSites(activeStaging, ["V"]).SequenceEqual(["BAY"]),
+    "活动地图中满足容量和净空的独立等待点可自动补充为候车候选。");
+Check(staging.SafeHoldingSites(activeStaging, ["UNKNOWN"]).Count == 0,
+    "缺少任何车队成员核定包络时不得产生地图候车候选。");
 var partial = staging.TryStage(stagingRoute, activeStaging, blockedDownstream, ["V"]);
 Check(partial is not null && partial.Windows.Count == 2 &&
       partial.Windows[0].Destination == "BAY" && !partial.Windows[0].ResourceIds.Contains("DOWNSTREAM") &&
@@ -192,6 +196,82 @@ Check(followup?.Windows[0].Destination == "BAY", "已接单送箱也能在合格
 Check(staging.PlanFollowup(new FollowupPlanner(stagingRoute), activeStaging, "START", "PICK",
     blockedDownstream, ["V"], dumperExit: "START") is null,
     "返箱首段合并倒料出口保护后如仍有占用，禁止出区。");
+
+var holdingNodes = new[]
+{
+    new MapNode("S", 0, 0, MapNodeType.Station, true, []),
+    new MapNode("A", 2, 0, MapNodeType.Waypoint, true, []),
+    new MapNode("HOLD", 4, 3, MapNodeType.WaitingPoint, true, ["HOLD-LOCK"]) { AllowTrafficStop = true },
+    new MapNode("B", 6, 0, MapNodeType.Waypoint, true, []),
+    new MapNode("C", 8, 0, MapNodeType.Waypoint, true, []),
+    new MapNode("T", 10, 0, MapNodeType.Station, true, [])
+};
+var holdingEdges = new[]
+{
+    new MapEdge("SA", "S", "A", 2, 1, false, true, ["ENTRY"]),
+    new MapEdge("AH", "A", "HOLD", 4, 1, false, true, []),
+    new MapEdge("HB", "HOLD", "B", 4, 1, false, true, []),
+    new MapEdge("AB", "A", "B", 4, 1, false, true, []),
+    new MapEdge("BC", "B", "C", 2, 1, false, true, []),
+    new MapEdge("CT", "C", "T", 2, 1, false, true, ["BLOCKED"])
+};
+var holdingMap = new MapDefinition("HOLDING", "", "RobotWorld", "m", holdingNodes, holdingEdges,
+    [new("ENTRY", TrafficResourceType.Intersection), new("HOLD-LOCK", TrafficResourceType.Station),
+        new("BLOCKED", TrafficResourceType.Intersection)]);
+var directHoldingRoute = new RoutePlan(["S", "A", "B", "C", "T"], ["SA", "AB", "BC", "CT"],
+    ["ENTRY", "BLOCKED"], 10);
+var toHoldingRoute = new RoutePlan(["S", "A", "HOLD"], ["SA", "AH"], ["ENTRY"], 6);
+var fromHoldingRoute = new RoutePlan(["HOLD", "B", "C", "T"], ["HB", "BC", "CT"],
+    ["BLOCKED"], 8);
+var holdingPlanner = new KeyedPlanner(
+    new Dictionary<(string From, string To), RoutePlan>
+    {
+        [("S", "T")] = directHoldingRoute,
+        [("S", "HOLD")] = toHoldingRoute,
+        [("HOLD", "T")] = fromHoldingRoute
+    });
+var viaHolding = staging.TryStageViaHolding(
+    holdingPlanner, Activate(holdingMap), "S", "T", new HashSet<string> { "BLOCKED" }, ["V"]);
+Check(viaHolding is not null && viaHolding.Windows.Count == 2 &&
+      viaHolding.Windows[0].Destination == "HOLD" &&
+      viaHolding.Route.Nodes.SequenceEqual(["S", "A", "HOLD", "B", "C", "T"]) &&
+      !viaHolding.Windows[0].ResourceIds.Contains("BLOCKED"),
+    "普通路线没有安全停点时，应允许经核定净空的独立候车位先驶离，再等待后段释放。");
+
+var throughHoldingNodes = holdingNodes
+    .Select(node => node.Id == "HOLD" ? node with { Id = "THROUGH" } : node)
+    .ToArray();
+var throughHoldingEdges = new[]
+{
+    holdingEdges[0],
+    new MapEdge("AH", "A", "THROUGH", 4, 1, false, true, []),
+    new MapEdge("HB", "THROUGH", "B", 4, 1, false, true, []),
+    holdingEdges[3],
+    holdingEdges[4],
+    holdingEdges[5]
+};
+var throughHoldingPlanner = new KeyedPlanner(
+    new Dictionary<(string From, string To), RoutePlan>
+    {
+        [("S", "T")] = directHoldingRoute,
+        [("S", "THROUGH")] = toHoldingRoute with { Nodes = ["S", "A", "THROUGH"] },
+        [("THROUGH", "T")] = fromHoldingRoute with { Nodes = ["THROUGH", "B", "C", "T"] }
+    });
+Check(staging.TryStageViaHolding(
+        throughHoldingPlanner,
+        Activate(holdingMap with { Nodes = throughHoldingNodes, Edges = throughHoldingEdges }),
+        "S", "T", new HashSet<string> { "BLOCKED" }, ["V"]) is { Windows.Count: 2 } throughStage &&
+      throughStage.Windows[0].Destination == "THROUGH",
+    "独立停点位于两个不同交叉点之间时，只要单入口、单出口和净空都满足，也可用于分段续行。");
+Check(staging.TryStageViaHolding(
+        holdingPlanner, Activate(holdingMap with
+        {
+            Edges = [..holdingEdges, new MapEdge("CROSS", "X1", "X2", 2, 1, false, true, [])],
+            Nodes = [..holdingNodes, new("X1", 4, 1, MapNodeType.Waypoint, true, []),
+                new("X2", 4, 5, MapNodeType.Waypoint, true, [])]
+        }), "S", "T", new HashSet<string> { "BLOCKED" }, ["V"]) is null,
+    "候车位包络覆盖交叉道路时不得成为提前停车点。");
+
 var sent = new AgvTransportCommandPayload("TASK-W01", "V", "START", "BAY", partial!.Windows[0].Path, null)
 {
     Windows = partial.Windows
@@ -245,4 +325,11 @@ sealed class FollowupPlanner(RoutePlan route) : IRoutePlanner
 {
     public RoutePlan? Plan(string source, string destination, IReadOnlySet<string> unavailable) =>
         route.ResourceIds.Any(unavailable.Contains) ? null : route;
+}
+
+sealed class KeyedPlanner(IReadOnlyDictionary<(string From, string To), RoutePlan> routes) : IRoutePlanner
+{
+    public RoutePlan? Plan(string source, string destination, IReadOnlySet<string> unavailable) =>
+        routes.GetValueOrDefault((source, destination)) is { } route &&
+        !route.ResourceIds.Any(unavailable.Contains) ? route : null;
 }

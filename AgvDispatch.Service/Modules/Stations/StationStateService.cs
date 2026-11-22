@@ -4,6 +4,7 @@ using AgvDispatch.Connectors.Plc;
 using AgvDispatch.Domain.Devices;
 using AgvDispatch.Domain.Stations;
 using AgvDispatch.Domain.Tasks;
+using AgvDispatch.Application.Runtime;
 
 namespace AgvDispatch.Service;
 
@@ -14,6 +15,7 @@ public sealed class StationStateService : IsolatedBackgroundService, IStationSta
     private readonly StationStateOptions _options;
     private readonly IPlcSignalCache _signalCache;
     private readonly IActiveTaskLookup _activeTaskLookup;
+    private readonly TimeProvider _clock;
     private readonly string[] _stationIds;
     private readonly Channel<string> _refreshRequests = Channel.CreateUnbounded<string>(
         new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
@@ -28,12 +30,14 @@ public sealed class StationStateService : IsolatedBackgroundService, IStationSta
         StationStateOptions options,
         IPlcSignalCache signalCache,
         IActiveTaskLookup activeTaskLookup,
-        PlcSignalCatalog catalog)
+        PlcSignalCatalog catalog,
+        TimeProvider? clock = null)
     {
         _logger = logger;
         _options = options;
         _signalCache = signalCache;
         _activeTaskLookup = activeTaskLookup;
+        _clock = clock ?? TimeProvider.System;
         _stationIds = catalog.Signals
             .Where(signal => string.Equals(
                 signal.DeviceType, "ChipRemovalStation", StringComparison.OrdinalIgnoreCase))
@@ -100,7 +104,9 @@ public sealed class StationStateService : IsolatedBackgroundService, IStationSta
             while (!stoppingToken.IsCancellationRequested)
             {
                 var signalTask = _refreshRequests.Reader.WaitToReadAsync(stoppingToken).AsTask();
-                var periodicTask = Task.Delay(_options.RefreshIntervalMs, stoppingToken);
+                var periodicTask = Task.Delay(_clock is SimulationTimeProvider simulation
+                    ? simulation.ScaleForBusiness(TimeSpan.FromMilliseconds(_options.RefreshIntervalMs))
+                    : TimeSpan.FromMilliseconds(_options.RefreshIntervalMs), stoppingToken);
                 var completed = await Task.WhenAny(signalTask, periodicTask);
 
                 if (completed == periodicTask)
@@ -122,7 +128,7 @@ public sealed class StationStateService : IsolatedBackgroundService, IStationSta
 
                 foreach (var stationId in stations)
                 {
-                    EvaluateAndUpdate(stationId, DateTimeOffset.Now);
+                    EvaluateAndUpdate(stationId, _clock.GetLocalNow());
                 }
             }
         }
@@ -149,7 +155,7 @@ public sealed class StationStateService : IsolatedBackgroundService, IStationSta
                     group => (IReadOnlyList<ActiveDispatchTask>)group.ToArray(),
                     StringComparer.OrdinalIgnoreCase);
 
-            var evaluatedAt = DateTimeOffset.Now;
+            var evaluatedAt = _clock.GetLocalNow();
             foreach (var stationId in _stationIds)
             {
                 EvaluateAndUpdate(stationId, evaluatedAt);

@@ -20,7 +20,7 @@ public sealed partial class TaskHandshakeStore(ISqlSugarClient database, IActive
             await EnsureReadyAsync(checkpoint.TaskId,checkpoint.StepId,ct);
             if(!await database.Queryable<DispatchTaskStepEntity>().Where(s=>s.TaskId==checkpoint.TaskId&&s.StepId==evidence.TransportStepId&&s.StepType==70&&s.Status==50&&s.VendorTaskId==evidence.VendorTaskId&&s.VehicleId==evidence.VehicleId).AnyAsync(ct))
                 throw new InvalidOperationException("原返程终态与离站证据不匹配。");
-            var now=DateTime.UtcNow;
+            var now=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow().UtcDateTime;
             moved=await database.Updateable<TaskHandshakeEntity>().SetColumns(h=>new TaskHandshakeEntity{Phase="ClearDumpingAfterReturn",Revision=checkpoint.Revision+1,UpdatedAtUtc=now,Reason="原返程完成及新鲜原站定位证据已持久化；不推断更早的中途出区时刻。"})
                 .Where(h=>h.TaskId==checkpoint.TaskId&&h.StepId==checkpoint.StepId&&h.Revision==checkpoint.Revision&&h.Phase=="AwaitReturnEvidence").ExecuteCommandAsync(ct)==1;
             if(moved)await database.Insertable(new TaskRuntimeEventEntity{TaskId=checkpoint.TaskId,StepId=checkpoint.StepId,Kind="ExitVerified",Phase="ClearDumpingAfterReturn",RecordedAtUtc=now,
@@ -39,8 +39,8 @@ public sealed partial class TaskHandshakeStore(ISqlSugarClient database, IActive
             // A v2 handoff removes its claim atomically before return closure. A remaining
             // claim is a contradiction to review, never a reason to infer exit from task completion.
             if(existing!=null){if(existing.TaskId!=taskId)owner=existing.TaskId;return;}
-            await database.Insertable(new TaskEquipmentClaimEntity{EquipmentId=equipmentId,TaskId=taskId,AcquiredAtUtc=DateTime.UtcNow}).ExecuteCommandAsync(ct);
-            await database.Insertable(new TaskRuntimeEventEntity{TaskId=taskId,StepId=stepId,Kind="EquipmentClaimed",StationId=equipmentId,RecordedAtUtc=DateTime.UtcNow,Reason="本轮独占倒料机握手，等待位容量仍由地图交通资源单独管理。"}).ExecuteCommandAsync(ct);
+            await database.Insertable(new TaskEquipmentClaimEntity{EquipmentId=equipmentId,TaskId=taskId,AcquiredAtUtc=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow().UtcDateTime}).ExecuteCommandAsync(ct);
+            await database.Insertable(new TaskRuntimeEventEntity{TaskId=taskId,StepId=stepId,Kind="EquipmentClaimed",StationId=equipmentId,RecordedAtUtc=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow().UtcDateTime,Reason="本轮独占倒料机握手，等待位容量仍由地图交通资源单独管理。"}).ExecuteCommandAsync(ct);
         });
         if(!result.IsSuccess)throw new InvalidOperationException("设备归属申请事务失败，保持等待。",result.ErrorException);
         return owner;
@@ -52,7 +52,7 @@ public sealed partial class TaskHandshakeStore(ISqlSugarClient database, IActive
         {
             if(!await database.Queryable<DispatchTaskEntity>().Where(t=>t.TaskId==taskId && t.Stage==90).AnyAsync(ct))throw new InvalidOperationException("任务尚未完成，不自动释放设备归属。");
             var count=await database.Deleteable<TaskEquipmentClaimEntity>().Where(e=>e.TaskId==taskId).ExecuteCommandAsync(ct);
-            if(count>0)await database.Insertable(new TaskRuntimeEventEntity{TaskId=taskId,Kind="EquipmentReleased",RecordedAtUtc=DateTime.UtcNow,Reason="本轮新契约完成收尾后释放设备归属。"}).ExecuteCommandAsync(ct);
+            if(count>0)await database.Insertable(new TaskRuntimeEventEntity{TaskId=taskId,Kind="EquipmentReleased",RecordedAtUtc=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow().UtcDateTime,Reason="本轮新契约完成收尾后释放设备归属。"}).ExecuteCommandAsync(ct);
         });
         if(!result.IsSuccess)throw new InvalidOperationException("设备归属释放事务失败。",result.ErrorException);
     }
@@ -96,7 +96,7 @@ public sealed partial class TaskHandshakeStore(ISqlSugarClient database, IActive
                 await database.Insertable(new TaskRuntimeEventEntity
                 {
                     TaskId = taskId, StepId = stepId, Kind = "HandshakeRolledBack",
-                    Phase = "TransportBound", RecordedAtUtc = DateTime.UtcNow,
+                    Phase = "TransportBound", RecordedAtUtc = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow().UtcDateTime,
                     Reason = "首段尚未登记车辆命令，回滚未提交绑定，允许按当前推荐车辆和配置重新绑定。"
                 }).ExecuteCommandAsync(ct);
         });
@@ -117,7 +117,7 @@ public sealed partial class TaskHandshakeStore(ISqlSugarClient database, IActive
         {
             await EnsureReadyAsync(step.TaskId, step.StepId, ct);
             var row = new TaskHandshakeEntity { TaskId=step.TaskId,StepId=step.StepId,CycleId=step.TaskId,ContractVersion=contractVersion,
-                Phase=initialPhase,Revision=1,Reason="原始基线，仅证明采集时观察；不等于PLC业务接收。",BaselineJson=JsonSerializer.Serialize(baseline),StartedAtUtc=DateTime.UtcNow,UpdatedAtUtc=DateTime.UtcNow };
+                Phase=initialPhase,Revision=1,Reason="原始基线，仅证明采集时观察；不等于PLC业务接收。",BaselineJson=JsonSerializer.Serialize(baseline),StartedAtUtc=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow().UtcDateTime,UpdatedAtUtc=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow().UtcDateTime };
             await database.Insertable(row).ExecuteCommandAsync(ct);
             await EventAsync(row, "HandshakeStarted", row.Reason, ct);
         });
@@ -144,7 +144,7 @@ public sealed partial class TaskHandshakeStore(ISqlSugarClient database, IActive
         var result = await database.Ado.UseTranAsync(async () =>
         {
             await EnsureReadyAsync(expected.TaskId,expected.StepId,ct);
-            var now=DateTime.UtcNow;
+            var now=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow().UtcDateTime;
             changed = await database.Updateable<TaskHandshakeEntity>().SetColumns(e=>new TaskHandshakeEntity {
                 Phase=phase,Reason=reason,PendingSignal=pendingSignal,PendingValue=pendingValue,NextPhase=nextPhase,Revision=expected.Revision+1,UpdatedAtUtc=now })
                 .Where(e=>e.StepId==expected.StepId && e.TaskId==expected.TaskId && e.Revision==expected.Revision && e.ContractVersion==expected.ContractVersion).ExecuteCommandAsync(ct)==1;
@@ -169,7 +169,7 @@ public sealed partial class TaskHandshakeStore(ISqlSugarClient database, IActive
                 var old=await database.Queryable<TaskSignalLastEntity>().Where(e=>e.Key==key).FirstAsync(ct);
                 if(old!=null && old.Value==signal.Value && old.Quality==signal.Quality && old.Address==signal.Address)continue;
                 await database.Insertable(new TaskRuntimeEventEntity{TaskId=taskId,StepId=stepId,Kind=old==null?"SignalInitial":"SignalChanged",StationId=signal.StationId,
-                    Signal=signal.VariableName,PreviousValue=old?.Value,Value=signal.Value,Quality=signal.Quality,ObservedAtUtc=signal.ObservedAt?.UtcDateTime,RecordedAtUtc=DateTime.UtcNow,
+                    Signal=signal.VariableName,PreviousValue=old?.Value,Value=signal.Value,Quality=signal.Quality,ObservedAtUtc=signal.ObservedAt?.UtcDateTime,RecordedAtUtc=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow().UtcDateTime,
                     Reason=old==null?"首次观察，不推断此前边沿。":"采样观察到值、质量或地址变化；不保证捕获采样间全部变化。"}).ExecuteCommandAsync(ct);
                 var row=new TaskSignalLastEntity{Key=key,TaskId=taskId,StationId=signal.StationId,Signal=signal.VariableName,Value=signal.Value,Quality=signal.Quality,Address=signal.Address};
                 if(old==null)await database.Insertable(row).ExecuteCommandAsync(ct);else await database.Updateable(row).ExecuteCommandAsync(ct);

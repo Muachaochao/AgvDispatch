@@ -26,7 +26,7 @@ public sealed class DispatchCandidateFilter(DispatchOrchestratorOptions options,
             return "车辆急停、阻挡、报警或状态未知。";
         if (robot.Tasks.Any(t => t.Status is 1 or 2 or 3)) return "车端已有未结束任务。";
         var position = AgvMapPositionAnalyzer.Analyze(robot.X, robot.Y, robot.LocalizationConfidence, robot.LastSuccessfulPollAt,
-            activeMap.Current?.Definition, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds),
+            activeMap.Current?.Definition, AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow(), TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds),
             mapOptions.MinimumLocalizationConfidence, mapOptions.MaximumRouteDeviationMeters, reuseGeometry: true);
         if (position.State != AgvMapPositionState.Normal) return "定位无效、过期或偏离地图。";
         if (string.IsNullOrWhiteSpace(vehicle.CurrentStation)) return "车辆当前站点未知。";
@@ -146,6 +146,9 @@ public sealed class DispatchCandidateFilter(DispatchOrchestratorOptions options,
                     ? null : Plan(vehicle.CurrentStation!, pickup, new HashSet<string>());
                 var staged = canStage && nominal is { Nodes.Count: >= 3 }
                     ? pickupStaging!.TryStage(nominal, map!, unavailable, vehicleIds) : null;
+                if (staged is null && canStage && unavailable.Count > 0)
+                    staged = pickupStaging!.TryStageViaHolding(routePlanner, map!, vehicle.CurrentStation!, pickup,
+                        unavailable, vehicleIds);
                 if (staged is not null && (route is null ||
                     EffectiveRouteSeconds(staged.Route, map, policy) + staged.DeferredSeconds < EffectiveRouteSeconds(route, map, policy)))
                     route = staged.Route;
@@ -173,7 +176,7 @@ public sealed class DispatchCandidateFilter(DispatchOrchestratorOptions options,
                 var reference = routePlanner.PlanWithoutVehicleOccupancyForComparison(vehicle.CurrentStation!, pickup);
                 var referenceTravel = reference is null ? estimate.Travel : EstimateRoute(reference, map, policy).Travel;
                 var deferral = detours.RemainingSeconds(task.TaskId, vehicle.VehicleId, map?.VersionId ?? "",
-                    estimate.Travel, referenceTravel, DateTimeOffset.UtcNow);
+                    estimate.Travel, referenceTravel, AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow());
                 if (deferral > 0)
                 {
                     rows.Add(new(vehicle.VehicleId, estimate.Travel, estimate.Travel,

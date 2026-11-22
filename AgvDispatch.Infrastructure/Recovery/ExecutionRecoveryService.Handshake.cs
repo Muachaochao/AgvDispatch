@@ -22,7 +22,7 @@ public sealed partial class ExecutionRecoveryService
             var prior=original.Where(b=>b.VariableName==pair.Key).ToArray();
             if(prior.Length!=1||!signals.TryGet(task.StationId,pair.Key,out var signal)||!signal.Enabled||signal.Address!=prior[0].Address||
                 signal.Quality!=SignalQuality.Good||signal.Value!=pair.Value||signal.UpdatedAt is not {} time||time<_started||
-                time>DateTimeOffset.Now.AddSeconds(1)||DateTimeOffset.Now-time>settings.StateMaxAge)
+                time>AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().AddSeconds(1)||AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow()-time>settings.StateMaxAge)
                 return "取箱后原工位阶段6基线或本次恢复采集不成立："+pair.Key;
         }
         return null; // No PLC write/checkpoint creation here. The original executor must run stage7 after release.
@@ -50,7 +50,7 @@ public sealed partial class ExecutionRecoveryService
         if(parts.Length!=2||state.PendingValue==null||string.IsNullOrWhiteSpace(state.NextPhase))return "待确认写入记录不完整，禁止续接。";
         var original=TaskHandshakeStore.Describe(state).Baseline.FirstOrDefault(s=>s.StationId==parts[0]&&s.VariableName==parts[1]);
         if(!signals.TryGet(parts[0],parts[1],out var value)||!value.Enabled||value.Quality!=SignalQuality.Good||value.Value!=state.PendingValue||original==null||original.Address!=value.Address||value.UpdatedAt is not {} time||
-            DateTimeOffset.Now-time>settings.StateMaxAge||time>DateTimeOffset.Now.AddSeconds(1)||time<_started)
+            AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow()-time>settings.StateMaxAge||time>AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().AddSeconds(1)||time<_started)
             return "待确认写入缺少本次恢复中新鲜、同地址期望值回读；不自动补写或重发。";
         return null;
     }
@@ -61,7 +61,7 @@ public sealed partial class ExecutionRecoveryService
         if(state?.PendingSignal==null)return;
         var block=await HandshakeReviewBlockAsync(taskId,stepId,request,ct);
         if(block!=null)throw new InvalidOperationException(block);
-        var now=DateTime.UtcNow;
+        var now=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow().UtcDateTime;
         var changed=await database.Updateable<TaskHandshakeEntity>().SetColumns(e=>new TaskHandshakeEntity {
             Phase=state.NextPhase!,PendingSignal=null,PendingValue=null,NextPhase=null,Revision=state.Revision+1,UpdatedAtUtc=now,
             Reason="人工核对原写入结果后续接；不等于PLC业务ACK。"}).Where(e=>e.StepId==stepId&&e.TaskId==taskId&&e.Revision==state.Revision).ExecuteCommandAsync(ct);

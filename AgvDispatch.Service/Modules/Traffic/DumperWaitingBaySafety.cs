@@ -1,3 +1,4 @@
+using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Domain.Maps;
 
 namespace AgvDispatch.Service;
@@ -26,12 +27,54 @@ public static class DumperWaitingBaySafety
     {
         var dumping = Resolve(map, dispatch.DumperDumpingSite);
         var all=dispatch.GetDumperWaitingSites().Select(site=>Resolve(map,site)).Where(n=>n is not null).ToArray();
-        var chosen=selectedSite is null?all:all.Where(n=>n!.Id.Equals(Resolve(map,selectedSite)?.Id,StringComparison.OrdinalIgnoreCase)).ToArray();
         if(dumping is null)return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var chosen=selectedSite is null?all:new[]{Resolve(map,selectedSite)}.Where(n=>n is not null).ToArray();
+        if (selectedSite is not null && !IsPhysicalWaitingSite(map, selectedSite, dispatch.DumperDumpingSite))
+            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         return map.Resources.Where(r=>r.Capacity==1 && !dumping.ResourceIds.Contains(r.Id,StringComparer.OrdinalIgnoreCase) &&
             chosen.Any(n=>n!.ResourceIds.Contains(r.Id,StringComparer.OrdinalIgnoreCase)) &&
-            all.Count(n=>n!.ResourceIds.Contains(r.Id,StringComparer.OrdinalIgnoreCase))==1)
+            (selectedSite is not null || all.Count(n=>n!.ResourceIds.Contains(r.Id,StringComparer.OrdinalIgnoreCase))==1))
             .Select(r=>r.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// A selected bay must remain a stopping node after configuration changes.
+    /// The selector applies the stronger vehicle-envelope clearance test before
+    /// binding a map-declared holding site.
+    /// </summary>
+    public static bool IsPhysicalWaitingSite(MapDefinition map, string site, string dumpingSite)
+    {
+        var node = Resolve(map, site);
+        var dumping = Resolve(map, dumpingSite);
+        if (node is not { Enabled: true, Type: MapNodeType.WaitingPoint, AllowTrafficStop: not false } ||
+            dumping is null || node.Id.Equals(dumping.Id, StringComparison.OrdinalIgnoreCase))
+            return false;
+        return map.Resources.Any(resource => resource.Capacity == 1 &&
+            node.ResourceIds.Contains(resource.Id, StringComparer.OrdinalIgnoreCase) &&
+            !dumping.ResourceIds.Contains(resource.Id, StringComparer.OrdinalIgnoreCase) &&
+            map.Nodes.Count(other => other.Enabled &&
+                other.ResourceIds.Contains(resource.Id, StringComparer.OrdinalIgnoreCase)) == 1);
+    }
+
+    /// <summary>
+    /// Equipment admission and the complete entry route form one atomic request.
+    /// A vehicle must never hold the dumper while waiting for an entrance segment
+    /// held by another vehicle that is itself waiting for the dumper.
+    /// </summary>
+    public static IReadOnlyList<string>? EquipmentEntryResources(IRoutePlanner planner,
+        string waitingSite, string dumpingSite, IReadOnlyCollection<string> equipmentResources)
+    {
+        ArgumentNullException.ThrowIfNull(planner);
+        ArgumentException.ThrowIfNullOrWhiteSpace(waitingSite);
+        ArgumentException.ThrowIfNullOrWhiteSpace(dumpingSite);
+        ArgumentNullException.ThrowIfNull(equipmentResources);
+        var route = planner.Plan(waitingSite, dumpingSite, new HashSet<string>());
+        if (route is not { Nodes.Count: >= 2 }) return null;
+        return equipmentResources.Concat(route.ResourceIds)
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Order(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
     }
 
     private static MapNode? Resolve(MapDefinition map, string? site)

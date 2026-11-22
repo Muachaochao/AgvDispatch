@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Domain.Agvs;
 using AgvDispatch.Domain.Devices;
@@ -40,7 +40,7 @@ public sealed class TaskCancellationService(ISqlSugarClient database, IMapExecut
             c.AttemptCount > 0 && !steps.Any(s => s.StepId == c.StepId && s.Status == (int)DispatchTaskStepStatus.Completed))))
             return new(false, "存在其他步骤发送结果不明，须先进行现场恢复核对。");
         task.CancelOriginalStage = task.Stage; task.CancelRequestId = request.RequestId; task.CancelReason = request.Reason.Trim(); task.CancelRequestedBy = user.WindowsIdentity;
-        task.CancelRequestedAt = DateTime.Now; task.CancelNextAttemptAt = DateTime.Now; task.CancelAttemptCount = 0;
+        task.CancelRequestedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime; task.CancelNextAttemptAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime; task.CancelAttemptCount = 0;
         task.CancelStepId = current?.StepId; task.CancelVehicleId = current?.VehicleId ?? task.VehicleId ?? command?.VehicleId;
         task.CancelVendorId = current?.VendorTaskId ?? command?.VendorCommandId;
         task.CancelRequiresPickupNavigation = request.RequirePickupNavigation;
@@ -48,17 +48,17 @@ public sealed class TaskCancellationService(ISqlSugarClient database, IMapExecut
         // A lost send response is queried by the original stable business key, never treated as unsent.
         if (possiblySent && task.CancelVendorId == null) task.CancelVendorId = current?.StepId;
         task.Stage = (int)(possiblySent ? DispatchTaskStage.CancellationPending : DispatchTaskStage.CancellationReview);
-        if (!possiblySent) task.CancelConfirmedAt = DateTime.Now;
+        if (!possiblySent) task.CancelConfirmedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
         task.ErrorMessage = possiblySent ? "取消请求已记录：后续步骤已冻结，等待车辆原任务确认。" : "原运输命令未发送；已冻结后续步骤，等待载荷、PLC和路权现场核对。";
-        task.UpdatedAt = DateTime.Now;
+        task.UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
         var result = await database.Ado.UseTranAsync(async () =>
         {
             await database.Updateable(task).ExecuteCommandAsync(ct);
             await database.Updateable<DispatchTaskStepEntity>().SetColumns(s => new DispatchTaskStepEntity
-                { Status = (int)DispatchTaskStepStatus.ManualIntervention, UpdatedAt = DateTime.Now })
+                { Status = (int)DispatchTaskStepStatus.ManualIntervention, UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime })
                 .Where(s => s.TaskId == task.TaskId && s.Status != (int)DispatchTaskStepStatus.Completed).ExecuteCommandAsync(ct);
             await database.Updateable<AgvCommandOutboxEntity>().SetColumns(c => new AgvCommandOutboxEntity
-                { Status = (int)AgvCommandStatus.Cancelled, UpdatedAt = DateTime.Now, LastError = "任务取消请求冻结原发送队列。" })
+                { Status = (int)AgvCommandStatus.Cancelled, UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime, LastError = "任务取消请求冻结原发送队列。" })
                 .Where(c => c.TaskId == task.TaskId && c.Status != (int)AgvCommandStatus.Sent).ExecuteCommandAsync(ct);
             await AuditAsync(task, "TaskCancellationRequested", user.WindowsIdentity, new { request, steps, commands }, ct);
         });
@@ -90,7 +90,7 @@ public sealed class TaskCancellationService(ISqlSugarClient database, IMapExecut
                 if (noVendorTaskWasCreated)
                 {
                     task.Stage = (int)DispatchTaskStage.CancellationReview;
-                    task.CancelConfirmedAt = DateTime.Now;
+                    task.CancelConfirmedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
                     task.CancelVendorId = null;
                     task.ErrorMessage = "车端未创建任务：发送被明确拒绝或无厂家任务号，车辆无活动任务且已停稳；进入现场核对关闭，禁止补发原命令。";
                     var result = await database.Ado.UseTranAsync(async () =>
@@ -111,14 +111,14 @@ public sealed class TaskCancellationService(ISqlSugarClient database, IMapExecut
                     continue;
                 }
                 var status = await gateway.GetTransportTaskStatusAsync(task.CancelVendorId, ct);
-                var now = DateTimeOffset.Now;
+                var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow();
                 if (status == null || status.VendorTaskId != task.CancelVendorId || status.BusinessTaskId != task.CancelVendorId ||
                     status.VehicleId != task.CancelVehicleId || status.UpdatedAt < new DateTimeOffset(task.CancelRequestedAt!.Value) ||
                     status.UpdatedAt > now.AddSeconds(1) || now - status.UpdatedAt > TimeSpan.FromSeconds(10))
                 { task.ErrorMessage = "车辆原任务记录缺失、过期或归属不符；不能把404或接口返回当作取消成功。"; await SaveAsync(task, ct); continue; }
                 if (status.State is AgvTransportTaskState.Cancelled or AgvTransportTaskState.Completed or AgvTransportTaskState.Failed)
                 {
-                    task.Stage = (int)DispatchTaskStage.CancellationReview; task.CancelConfirmedAt = DateTime.Now;
+                    task.Stage = (int)DispatchTaskStage.CancellationReview; task.CancelConfirmedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
                     task.ErrorMessage = $"车辆原任务确认：{status.State}；后续步骤保持冻结，请核对载荷、PLC和路权后关闭取消。";
                     var result = await database.Ado.UseTranAsync(async () => { await SaveAsync(task, ct); await AuditAsync(task, "TaskCancellationVehicleConfirmed", "service", status, ct); });
                     if (!result.IsSuccess)
@@ -130,14 +130,14 @@ public sealed class TaskCancellationService(ISqlSugarClient database, IMapExecut
                 }
                 if (status.State == AgvTransportTaskState.Unknown)
                 { task.ErrorMessage = "车辆原任务状态未知，保留取消等待。"; await SaveAsync(task, ct); continue; }
-                if (task.CancelSentAt != null || task.CancelNextAttemptAt > DateTime.Now) continue;
+                if (task.CancelSentAt != null || task.CancelNextAttemptAt > AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime) continue;
                 // Save intent before external side effect. A crash/lost response retries only after re-querying the same task.
                 task.CancelAttemptCount = (task.CancelAttemptCount ?? 0) + 1;
-                task.CancelNextAttemptAt = DateTime.Now.AddSeconds(Math.Min(60, 5 * Math.Pow(2, Math.Min(task.CancelAttemptCount.Value - 1, 4))));
+                task.CancelNextAttemptAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime.AddSeconds(Math.Min(60, 5 * Math.Pow(2, Math.Min(task.CancelAttemptCount.Value - 1, 4))));
                 await SaveAsync(task, ct);
                 await AuditAsync(task, "TaskCancellationSendIntent", "service", status, ct);
                 await gateway.CancelTaskAsync(task.CancelVendorId, ct);
-                task.CancelSentAt = DateTime.Now; task.ErrorMessage = "车辆取消接口已接受；等待原任务状态确认，尚未关闭业务任务。";
+                task.CancelSentAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime; task.ErrorMessage = "车辆取消接口已接受；等待原任务状态确认，尚未关闭业务任务。";
                 var accepted = await database.Ado.UseTranAsync(async () =>
                 {
                     await SaveAsync(task, ct);
@@ -156,8 +156,8 @@ public sealed class TaskCancellationService(ISqlSugarClient database, IMapExecut
         }
     }
     private Task<int> SaveAsync(DispatchTaskEntity task, CancellationToken ct)
-    { task.UpdatedAt = DateTime.Now; return database.Updateable(task).ExecuteCommandAsync(ct); }
+    { task.UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime; return database.Updateable(task).ExecuteCommandAsync(ct); }
     private Task<int> AuditAsync(DispatchTaskEntity task, string kind, string user, object evidence, CancellationToken ct) =>
         database.Insertable(new ExecutionEvidenceEntity { Id = Guid.NewGuid().ToString("N"), TaskId = task.TaskId, StepId = task.CancelStepId ?? "",
-            SessionId = "", Operator = user, Kind = kind, Reason = task.CancelReason ?? "", Evidence = JsonSerializer.Serialize(evidence), OccurredAt = DateTime.Now }).ExecuteCommandAsync(ct);
+            SessionId = "", Operator = user, Kind = kind, Reason = task.CancelReason ?? "", Evidence = JsonSerializer.Serialize(evidence), OccurredAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime }).ExecuteCommandAsync(ct);
 }

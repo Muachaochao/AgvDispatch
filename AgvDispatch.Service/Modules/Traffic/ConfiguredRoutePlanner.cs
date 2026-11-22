@@ -142,7 +142,7 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
     private IReadOnlyList<MapDirectedTraversal> OccupiedCorridorTraversals(MapDefinition definition, string logicalSource)
     {
         if (_vehicleStates is null || _mapOptions is null) return [];
-        var now = DateTimeOffset.UtcNow;
+        var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow();
         var maximumAge = TimeSpan.FromSeconds(_mapOptions.PositionStaleSeconds);
         var blocked = new List<MapDirectedTraversal>();
         var vehicles = _vehicleStates.GetAll();

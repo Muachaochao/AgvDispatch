@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'SimulationLab'))
 from device_controls import PLC_DEFAULTS, VEHICLE_DEFAULTS, read_controls
 from footprint import swept_rectangles_overlap, vehicle_extents
 from station_catalog import MEMORY_BYTES, validate_twin_stations
+from simulation_clock import CLOCK
 
 
 class DeviceTwin:
@@ -324,7 +325,7 @@ class DeviceTwin:
             if not self.paused and not self.obstacle and edge_id not in self.blocked_edges:
                 elapsed += 0.1 * self.speed_scale
                 self.consume_battery(seconds=0.1 * self.speed_scale)
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(CLOCK.business_delay(0.1))
         return self.tasks[tid] != 6
 
     async def execute_mechanism(self, tid, operation):
@@ -390,7 +391,7 @@ class DeviceTwin:
                 if prior_blocker is not None and math.hypot(self.x-prior_blocker.x, self.y-prior_blocker.y) < self.body_radius()+prior_blocker.body_radius()+0.15:
                     self.current_speed_mps = 0.0
                     self.consume_battery(seconds=0.1)
-                    await asyncio.sleep(0.1)
+                    await asyncio.sleep(CLOCK.business_delay(0.1))
                     continue
                 self.blocked_by_vehicle = None
                 if not self.paused and not self.obstacle and self.motion_edge not in self.blocked_edges:
@@ -422,7 +423,7 @@ class DeviceTwin:
                         if budget <= 1e-10:
                             break
                     self.motion_percentage = min(1.0, moved_meters / route_length) if route_length else 1.0
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(CLOCK.business_delay(0.1))
                 if not self.moving:
                     self.current_speed_mps = max(0.0, self.current_speed_mps - self.acceleration * 0.1)
                     self.consume_battery(seconds=0.1)
@@ -486,13 +487,13 @@ class DeviceTwin:
             if blocker is not None:
                 self.blocked_by_vehicle = blocker
                 self.current_speed_mps = 0.0
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(CLOCK.business_delay(0.1))
                 continue
             self.blocked_by_vehicle = None
             if self.paused:
                 self.current_speed_mps = max(
                     0.0, self.current_speed_mps-self.acceleration*0.1)
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(CLOCK.business_delay(0.1))
                 continue
             self.current_speed_mps = min(
                 speed, self.current_speed_mps+self.acceleration*0.1)
@@ -519,7 +520,7 @@ class DeviceTwin:
                 if budget <= 1e-10:
                     break
             self.motion_percentage = min(1.0, moved/total)
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(CLOCK.business_delay(0.1))
         self.distance_meters += moved
         self.consume_battery(distance=moved)
         self.current_speed_mps = 0.0
@@ -556,7 +557,7 @@ class DeviceTwin:
         if seconds is None or not active or not self.external_blocked_now():
             self.navigation_blocked_since = None
             return
-        now = time.monotonic()
+        now = CLOCK.monotonic()
         if self.navigation_blocked_since is None:
             self.navigation_blocked_since = now
             self.log('vehicle-navigation-timeout-waiting', task_id=self.current,
@@ -628,17 +629,17 @@ class DeviceTwin:
         wait = self.bit(610, 0)
         if self.sequence28 and wait and not self.last_wait and not self.dumper_reserved and not any(self.bit(610, b) for b in (1, 3, 4)):
             self.dumper_reserved = True
-            self.ready_requested_at = time.monotonic()
+            self.ready_requested_at = CLOCK.monotonic()
         if self.dumper_reserved and wait and self.ready_requested_at is not None:
-            ready = time.monotonic() - self.ready_requested_at >= self.plc_controls['readyDelaySeconds']
+            ready = CLOCK.monotonic() - self.ready_requested_at >= self.plc_controls['readyDelaySeconds']
             self.setbit(610, 2, ready and not self.plc_controls['suppressReady'] and not self.bit(610, 4))
         if self.last_wait and not wait:
             self.setbit(610, 2, False)
         self.last_wait = wait
         if self.bit(610, 1) and self.at_site(self.site(self.semantic_site('dumperSite', '倒料'))):
             if self.dump_started is None:
-                self.dump_started = time.monotonic()
-            if time.monotonic() - self.dump_started >= self.plc_controls['doneDelaySeconds'] and not self.plc_controls['suppressDone'] and not self.bit(610, 4):
+                self.dump_started = CLOCK.monotonic()
+            if CLOCK.monotonic() - self.dump_started >= self.plc_controls['doneDelaySeconds'] and not self.plc_controls['suppressDone'] and not self.bit(610, 4):
                 self.setbit(610, 3, True)
         if self.plc_controls['suppressDone'] or self.bit(610, 4):
             self.setbit(610, 3, False)
@@ -696,7 +697,7 @@ class DeviceTwin:
                          contract=self.contract, dumper_reserved=self.dumper_reserved,
                          batteryPercent=self.battery_percent * 100, batteryVoltage=self.battery_voltage(), charging=self.charging,
                          speedMps=self.current_speed_mps,
-                         distanceMeters=self.distance_meters, simulationControl=self.control_snapshot(), time=time.time(),
+                         distanceMeters=self.distance_meters, simulationControl=self.control_snapshot(), time=CLOCK.time(),
                          stations=self.station_snapshot(),
                          externalInput=dict(sequence=self.input_sequence, accepted=self.input_accepted, error=self.input_error))
             temp = self.root / 'device-state.tmp'
@@ -707,7 +708,7 @@ class DeviceTwin:
                 # Windows readers may briefly hold the previous snapshot. Never
                 # stop virtual PLC scanning because a diagnostic file is busy.
                 pass
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(CLOCK.business_delay(0.1))
 
     def robokit_reply(self, api, request):
         if api == 1100:
@@ -964,7 +965,7 @@ class DeviceTwin:
                     if worker.done():
                         worker.result()
                         raise RuntimeError('Device worker stopped unexpectedly')
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(CLOCK.business_delay(0.2))
         finally:
             for worker in workers:worker.cancel()
             await asyncio.gather(*workers, return_exceptions=True)

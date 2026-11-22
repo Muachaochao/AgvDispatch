@@ -165,7 +165,7 @@ public sealed class DispatchPreSendSafetyService(
             routeEdges[index] = edge.Id;
         }
 
-        var now = DateTimeOffset.UtcNow;
+        var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow();
         foreach (var other in vehicleStates.GetAll().Where(vehicle =>
                      !string.Equals(vehicle.VehicleId, step.VehicleId, StringComparison.OrdinalIgnoreCase)))
         {
@@ -210,7 +210,7 @@ public sealed class DispatchPreSendSafetyService(
         if (vehicle?.Connection != ConnectionState.Online || !vehicleStates.TryGet(vehicleId, out var robot) ||
             robot.Connection != ConnectionState.Online || robot.Quality != SignalQuality.Good)
             return "车辆离线或遥测质量无效。";
-        var now = DateTimeOffset.UtcNow;
+        var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow();
         if (robot.LastSuccessfulPollAt is not { } observed || observed > now.AddSeconds(1) ||
             now - observed > TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds)) return "车辆观察已过期或时间异常。";
         if (robot.EmergencyStopped != false || robot.Blocked != false || AgvObstaclePolicy.IsBlocked(robot) || AgvObstaclePolicy.HasBlockingAlarm(robot))
@@ -275,7 +275,7 @@ public sealed class DispatchPreSendSafetyService(
             if (step.StepType == DispatchTaskStepType.EnterDumpingPosition) conditions.Add((creation.DumperStationId, "DumperReady", true));
             if (step.StepType == DispatchTaskStepType.ReturnEmptyBox) conditions.Add((creation.DumperStationId, "DumpingCompletedMayLeave", true));
         }
-        var now = DateTimeOffset.UtcNow;
+        var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow();
         foreach (var condition in conditions)
         {
             signals.TryGet(condition.Station, condition.Variable, out var sample);

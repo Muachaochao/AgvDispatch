@@ -41,7 +41,7 @@ public sealed class MapManagementService(
             return new(false,"地图仍关联未结束的切换，请先按原记录处理切换。");
         var draft=await database.Queryable<MapVersionEntity>().Where(v=>v.MapId==request.MapId&&v.Status==(int)MapVersionStatus.Draft).FirstAsync(cancellationToken);
         if(draft is null||draft.EditToken!=request.ExpectedEditToken)return new(false,"草稿已变化，请重新读取后移除。");
-        await database.Updateable<MapProjectEntity>().SetColumns(p=>new MapProjectEntity{IsArchived=request.Archived,UpdatedAt=DateTime.Now})
+        await database.Updateable<MapProjectEntity>().SetColumns(p=>new MapProjectEntity{IsArchived=request.Archived,UpdatedAt=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime})
             .Where(p=>p.MapId==request.MapId&&!p.IsActive).ExecuteCommandAsync(cancellationToken);
         await AuditAsync(user,request.MapId,draft.VersionId,request.Archived?"ArchiveMap":"RestoreMap",true,"从目录移除可恢复；保留版本与切换历史。",cancellationToken);
         return new(true,request.Archived?"已从地图目录移除，版本与历史保留可恢复。":"地图已恢复到目录。");
@@ -160,7 +160,7 @@ public sealed class MapManagementService(
             .FirstAsync(cancellationToken);
         if (version is null) return new(false, $"地图不存在可导出的{status}版本。");
 
-        var exportedAt = DateTimeOffset.Now;
+        var exportedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow();
         var envelope = new MapBackupEnvelope(
             "agv-dispatch-map-backup/v1",
             exportedAt,
@@ -234,7 +234,7 @@ public sealed class MapManagementService(
         Demand(user, TrafficPermission.ManageMap);
         var error = ValidateMetadata(request.Name, request.CoordinateSystem, request.Unit, request.CoordinateScale);
         if (error is not null) return new(false, error);
-        var now = DateTime.Now;
+        var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
         var mapId = $"MAP-{Guid.NewGuid():N}";
         var versionId = $"MAPV-{Guid.NewGuid():N}";
         var definition = new MapDefinition(
@@ -304,7 +304,7 @@ public sealed class MapManagementService(
             Unit = request.Unit.Trim()
         };
         var report = validator.Validate(normalized);
-        var now = DateTime.Now;
+        var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
         var currentDraft = await database.Queryable<MapVersionEntity>()
             .Where(item => item.MapId == request.MapId && item.VersionId == request.VersionId &&
                            item.Status == (int)MapVersionStatus.Draft)
@@ -415,7 +415,7 @@ public sealed class MapManagementService(
                 $"地图存在未绑定Robokit站点ID的运行站点，不能发布：{string.Join(',', unmappedStations.Take(10))}。");
         }
 
-        var now = DateTime.Now;
+        var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
         var nextVersionId = $"MAPV-{Guid.NewGuid():N}";
         var transaction = await database.Ado.UseTranAsync(async () =>
         {
@@ -513,7 +513,7 @@ public sealed class MapManagementService(
                 UnderlayIncludedLayersJson = Serialize(includedLayers),
                 UnderlayWidth = request.Width,
                 UnderlayHeight = request.Height,
-                UpdatedAt = DateTime.Now
+                UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime
             })
             .Where(item => item.MapId == request.MapId)
             .ExecuteCommandAsync(cancellationToken);
@@ -538,7 +538,7 @@ public sealed class MapManagementService(
             {
                 CalibrationJson = Serialize(result),
                 CoordinateScale = result.Scale,
-                UpdatedAt = DateTime.Now
+                UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime
             })
             .Where(item => item.MapId == request.MapId)
             .ExecuteCommandAsync(cancellationToken);
@@ -595,7 +595,7 @@ public sealed class MapManagementService(
         if (request.StoppedOffStationGeometryUpdateConfirmed && !compatibleGeometryUpdate)
             return new(false, "同图几何更新确认只适用于节点、道路端点和站点角色均未改变的当前地图版本。");
         // Construct the complete snapshot before committing, so graph construction cannot fail after the DB write.
-        var now = DateTime.Now;
+        var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
         var snapshot = new ActiveMapRuntimeSnapshot(request.MapId, request.VersionId, definition, new DateTimeOffset(now));
         var blockers = await mapSwitches.GetBlockersAsync(definition, cancellationToken,
             requireStoppedStation: !compatibleGeometryUpdate);
@@ -766,7 +766,7 @@ public sealed class MapManagementService(
         Success = success,
         OperatorIdentity = Truncate(user.WindowsIdentity, 256),
         Summary = Truncate(summary, 2000),
-        OccurredAt = DateTime.Now
+        OccurredAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime
     }).ExecuteCommandAsync(cancellationToken);
 
     private sealed class MapDraftConcurrencyException(string message) : InvalidOperationException(message);

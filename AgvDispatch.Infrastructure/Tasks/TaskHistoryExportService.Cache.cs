@@ -1,4 +1,4 @@
-﻿using System.Text.RegularExpressions;
+using System.Text.RegularExpressions;
 using AgvDispatch.Application.Abstractions;
 namespace AgvDispatch.Infrastructure.Persistence;
 
@@ -101,6 +101,6 @@ public sealed partial class TaskHistoryExportService
         }
         var active = _jobs.TryGetValue(id, out var job) && !job.Progress.IsTerminal;
         return (absolute, new(name, kind, new DateTimeOffset(DateTime.SpecifyKind(updated, DateTimeKind.Utc)).ToLocalTime(), size,
-            !active && updated < DateTime.UtcNow.AddDays(-days)));
+            !active && updated < AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow().UtcDateTime.AddDays(-days)));
     }
 }

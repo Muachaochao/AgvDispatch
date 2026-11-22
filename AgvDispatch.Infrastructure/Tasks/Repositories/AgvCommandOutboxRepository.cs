@@ -115,7 +115,7 @@ public sealed class AgvCommandOutboxRepository(ISqlSugarClient database, IActive
                     $"步骤{step.StepId}不是可发送的AGV运输步骤。")
             };
 
-            var now = DateTime.Now;
+            var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
             if (window.Index == 0)
             {
                 if (step.Status != (int)DispatchTaskStepStatus.Ready) return;
@@ -389,7 +389,7 @@ public sealed class AgvCommandOutboxRepository(ISqlSugarClient database, IActive
                     $"步骤{step.StepId}不是可发送的AGV运输步骤。")
             };
 
-            var now = DateTime.Now;
+            var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
             var commandAffected = await database.Updateable<AgvCommandOutboxEntity>()
                 .SetColumns(item => new AgvCommandOutboxEntity
                 {
@@ -477,7 +477,7 @@ public sealed class AgvCommandOutboxRepository(ISqlSugarClient database, IActive
             }
 
             var failed = command.AttemptCount >= maximumAttempts;
-            var now = DateTime.Now;
+            var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
             var message = Truncate(errorMessage);
             await database.Updateable<AgvCommandOutboxEntity>()
                 .SetColumns(item => new AgvCommandOutboxEntity
@@ -541,7 +541,7 @@ public sealed class AgvCommandOutboxRepository(ISqlSugarClient database, IActive
             }
 
             var previousAttempts = Math.Max(0, command.AttemptCount - 1);
-            var now = DateTime.Now;
+            var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
             var message = Truncate(errorMessage);
             await database.Updateable<AgvCommandOutboxEntity>()
                 .SetColumns(item => new AgvCommandOutboxEntity
@@ -590,7 +590,7 @@ public sealed class AgvCommandOutboxRepository(ISqlSugarClient database, IActive
         {
             var transaction = await database.Ado.UseTranAsync(async () =>
             {
-                var now = DateTime.Now;
+                var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
                 var affected = await database.Updateable<AgvCommandOutboxEntity>()
                     .SetColumns(item => new AgvCommandOutboxEntity
                     {

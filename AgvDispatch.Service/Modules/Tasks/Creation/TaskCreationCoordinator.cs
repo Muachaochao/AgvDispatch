@@ -3,6 +3,7 @@ using System.Threading.Channels;
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Domain.Stations;
 using AgvDispatch.Domain.Tasks;
+using AgvDispatch.Application.Runtime;
 
 namespace AgvDispatch.Service;
 
@@ -16,8 +17,12 @@ public sealed class TaskCreationCoordinator(
     TaskParameterRuntime parameters,
     IExecutionEvidenceJournal? journal = null, BusinessRunOwnership? businessRun = null,FleetTestOwnership? fleetOwnership=null,
     IActiveMapRuntime? activeMap = null, DispatchOrchestratorOptions? dispatchOptions = null,
-    IDispatchPipelineMonitor? pipeline = null) : IsolatedBackgroundService
+    IDispatchPipelineMonitor? pipeline = null, TimeProvider? clock = null) : IsolatedBackgroundService
 {
+    private readonly TimeProvider _clock = clock ?? TimeProvider.System;
+    private TimeSpan BusinessDelay(int milliseconds) => _clock is SimulationTimeProvider simulation
+        ? simulation.ScaleForBusiness(TimeSpan.FromMilliseconds(milliseconds))
+        : TimeSpan.FromMilliseconds(milliseconds);
     private readonly Channel<string> _eligibleStations = Channel.CreateUnbounded<string>(
         new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
     private readonly ConcurrentDictionary<string, byte> _queuedStations =
@@ -63,7 +68,7 @@ public sealed class TaskCreationCoordinator(
             while (!stoppingToken.IsCancellationRequested)
             {
                 var stationTask = _eligibleStations.Reader.WaitToReadAsync(stoppingToken).AsTask();
-                var retryTask = Task.Delay(options.AcknowledgementRetryIntervalMs, stoppingToken);
+                var retryTask = Task.Delay(BusinessDelay(options.AcknowledgementRetryIntervalMs), stoppingToken);
                 var completed = await Task.WhenAny(stationTask, retryTask);
 
                 if (completed == retryTask)

@@ -8,6 +8,8 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import simulation_clock
+
 MAX_FRAME = 1024 * 1024
 
 
@@ -92,12 +94,12 @@ class _State:
         self.counters = {}
         self.lock = threading.Lock()
         self.stop_event = threading.Event()
-        self.started_at = time.time()
+        self.started_at = simulation_clock.CLOCK.time()
         self.request_count = 0
         self.last_event = None
 
     def journal(self, value):
-        line = dict(time=time.time(), **value)
+        line = dict(time=simulation_clock.CLOCK.time(), **value)
         with (self.root / 'protocol-events.jsonl').open('a', encoding='utf-8') as stream:
             stream.write(json.dumps(line, ensure_ascii=False) + '\n')
         self.last_event = line
@@ -179,7 +181,7 @@ def start_protocol(root, raw_config):
                     request = _decode(data, config['framing'])
                     rule, response = state.handle(request)
                     delay = float(rule.get('delayMs', 0) / 1000 if rule else 0)
-                    if delay: state.stop_event.wait(delay)
+                    if delay: state.stop_event.wait(simulation_clock.CLOCK.business_delay(delay))
                     if rule and rule.get('drop'): continue
                     self.wfile.write(_encode(response, config['framing'])); self.wfile.flush()
                     if rule and rule.get('close'): break
@@ -192,7 +194,7 @@ def start_protocol(root, raw_config):
                 request = _decode(data, config['framing'])
                 rule, response = state.handle(request)
                 delay = float(rule.get('delayMs', 0) / 1000 if rule else 0)
-                if delay: state.stop_event.wait(delay)
+                if delay: state.stop_event.wait(simulation_clock.CLOCK.business_delay(delay))
                 if not (rule and rule.get('drop')): sock.sendto(_encode(response, config['framing']), self.client_address)
         class Server(socketserver.ThreadingUDPServer): allow_reuse_address = False; daemon_threads = True
         server = Server(('127.0.0.1', config['port']), UdpHandler)
@@ -211,7 +213,7 @@ def start_protocol(root, raw_config):
                                headers={key: value for key, value in self.headers.items()})
                 rule, response = state.handle(request)
                 delay = float(rule.get('delayMs', 0) / 1000 if rule else 0)
-                if delay: state.stop_event.wait(delay)
+                if delay: state.stop_event.wait(simulation_clock.CLOCK.business_delay(delay))
                 if rule and rule.get('drop'): self.close_connection = True; return
                 encoded = _text(response).encode('utf-8')
                 self.send_response(int(rule.get('httpStatus', 200) if rule else 200))

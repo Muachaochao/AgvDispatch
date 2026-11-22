@@ -46,7 +46,7 @@ public sealed class LocalMapEditorStore : ILocalMapEditorStore
     {
         if (string.IsNullOrWhiteSpace(request.Name) || !double.IsFinite(request.CoordinateScale) || request.CoordinateScale <= 0)
             throw new ArgumentException("地图名称和坐标换算比例无效。");
-        var now = DateTimeOffset.Now; var id = Guid.NewGuid().ToString("N");
+        var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow(); var id = Guid.NewGuid().ToString("N");
         var definition = new MapDefinition(request.Name, request.BackgroundFilePath, request.CoordinateSystem, request.Unit, [], [], []);
         return new(new(id, request.Name, request.Description, request.BackgroundFilePath, Path.GetExtension(request.BackgroundFilePath).TrimStart('.').ToUpperInvariant(), request.CoordinateSystem, request.Unit, request.CoordinateScale, "", "", [], null, null, CadUnderlayJobStatus.None, "尚未生成底图", null, false, null, null, now),
             new(Guid.NewGuid().ToString("N"), id, 1, MapVersionStatus.Draft, definition, Validate(definition), "LocalEditor", now, now, null, Guid.NewGuid().ToString("N")), null);
@@ -118,7 +118,7 @@ public sealed class LocalMapEditorStore : ILocalMapEditorStore
             SmapScanPngPath = null, SmapAnnotationPngPath = null,
             CadViewBox = rendered.ViewBox, Calibration = sameSource ? workspace.Project.Calibration : null,
             CadLayers = rendered.AvailableLayers.Select(name => new CadLayerSnapshot(name, rendered.IncludedLayers.Contains(name))).ToArray(), UnderlayStatus = CadUnderlayJobStatus.Ready,
-            UnderlayGeneratedAt = DateTimeOffset.Now, UnderlayMessage = $"本地底图已生成 {request.Width}×{request.Height}", UpdatedAt = DateTimeOffset.Now };
+            UnderlayGeneratedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow(), UnderlayMessage = $"本地底图已生成 {request.Width}×{request.Height}", UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow() };
         var result = workspace with { Project = project }; await SaveAsync(result); return result;
     }
     public async Task<CadDetailResult> GetCadDetailAsync(CadDetailRequest request, CancellationToken cancellationToken)

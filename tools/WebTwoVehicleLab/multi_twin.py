@@ -6,7 +6,9 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'WebSingleVehicleLab'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'SimulationLab'))
 from device_twin import DeviceTwin
+from simulation_clock import CLOCK
 
 
 class Car(DeviceTwin):
@@ -114,7 +116,7 @@ async def run(root):
                         for writer in tuple(car.writers):
                             writer.close()
                     plc.log('network-fault', event=event)
-            state = dict(time=time.time(), cars={r['VehicleId']: snapshot(c) for r,c in zip(robots,cars)},
+            state = dict(time=CLOCK.time(), cars={r['VehicleId']: snapshot(c) for r,c in zip(robots,cars)},
                          memory_hex=plc.memory.hex(), contract=plc.contract,
                          stations=plc.station_snapshot(),
                          dumper_reserved=plc.dumper_reserved,
@@ -126,7 +128,7 @@ async def run(root):
                 temporary.replace(root / 'multi-state.json')
             except PermissionError:
                 pass
-            await asyncio.sleep(.1)
+            await asyncio.sleep(CLOCK.business_delay(.1))
     finally:
         for worker in workers:
             worker.cancel()

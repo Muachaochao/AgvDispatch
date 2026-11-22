@@ -1,4 +1,4 @@
-﻿using AgvDispatch.Application.Abstractions;
+using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Application.Maps;
 using AgvDispatch.Domain.Devices;
 using AgvDispatch.Domain.Maps;
@@ -53,7 +53,7 @@ public sealed partial class ManualTaskCreationService(IManualTaskCreationReposit
         {
             states.TryGet(vehicle.VehicleId, out var state);
             var position = state is null ? null : AgvMapPositionAnalyzer.Analyze(state.X, state.Y, state.LocalizationConfidence,
-                state.LastSuccessfulPollAt, map?.Definition, DateTimeOffset.Now, TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds),
+                state.LastSuccessfulPollAt, map?.Definition, AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow(), TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds),
                 mapOptions.MinimumLocalizationConfidence, mapOptions.MaximumRouteDeviationMeters);
             var block = vehicle.Connection != ConnectionState.Online ? "车辆离线。" :
                 occupied.Contains(vehicle.VehicleId) || !dispatch.IdleOperatingStates.Contains(vehicle.OperatingState, StringComparer.OrdinalIgnoreCase) ? "车辆正在执行任务。" :

@@ -1,4 +1,4 @@
-﻿using AgvDispatch.Application.Abstractions;
+using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Domain.Maps;
 using AgvDispatch.Domain.Tasks;
 using AgvDispatch.Infrastructure.Persistence.Entities;
@@ -119,7 +119,7 @@ public sealed partial class TrafficResourceManager(
 
         string? blockerResource = null;
         string? blockerTask = null;
-        var now = DateTime.Now;
+        var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
         var transaction = await database.Ado.UseTranAsync(async () =>
         {
             var context = await database.Queryable<TrafficRequestEntity>().Where(r => r.StepId == ownerStepId).FirstAsync(cancellationToken);
@@ -387,7 +387,7 @@ public sealed partial class TrafficResourceManager(
     public async Task RenewTaskAsync(string taskId, CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(taskId); ct.ThrowIfCancellationRequested();
-        var now = DateTime.Now;
+        var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
         var result = await database.Ado.UseTranAsync(async () =>
         {
             var leases = await database.Queryable<TrafficResourceLeaseEntity>().Where(l => l.TaskId == taskId).ToListAsync(ct);

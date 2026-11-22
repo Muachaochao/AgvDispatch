@@ -62,7 +62,7 @@ public sealed class MapDefinitionProvider
 
         var json = JsonSerializer.Serialize(new
         {
-            GeneratedAt = DateTimeOffset.Now,
+            GeneratedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow(),
             Map = definition.Name,
             definition.Source,
             definition.CoordinateSystem,

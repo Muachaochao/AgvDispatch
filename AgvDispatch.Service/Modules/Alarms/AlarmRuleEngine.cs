@@ -51,7 +51,7 @@ public sealed class AlarmRuleEngine(
             try
             {
                 var candidates = await EvaluateAsync(stoppingToken);
-                await alarms.SynchronizeAsync(candidates, DateTimeOffset.Now, stoppingToken);
+                await alarms.SynchronizeAsync(candidates, AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow(), stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -225,7 +225,7 @@ public sealed class AlarmRuleEngine(
                     "AGV_EMERGENCY_STOP", $"{agv.DisplayName}急停触发",
                     "AGV上报急停状态，禁止继续派发动作。", AlarmSeverity.Critical));
             }
-            var obstacle = AgvObstacleDiagnostics.Analyze(agv, DateTimeOffset.UtcNow,
+            var obstacle = AgvObstacleDiagnostics.Analyze(agv, AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow(),
                 TimeSpan.FromMilliseconds(agvOptions.StaleAfterMs), recoveryOptions);
             if (obstacle.State is "Blocked" or "Prolonged")
             {
@@ -284,7 +284,7 @@ public sealed class AlarmRuleEngine(
 
     private void AddMapPositionAlarm(List<AlarmCandidate> result, AgvRobotSnapshot agv)
     {
-        var now = DateTimeOffset.Now;
+        var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow();
         var position = AgvMapPositionAnalyzer.Analyze(
             agv.X, agv.Y, agv.LocalizationConfidence, agv.LastSuccessfulPollAt,
             activeMap.Current?.Definition, now, TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds),

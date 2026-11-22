@@ -1,4 +1,4 @@
-﻿using AgvDispatch.Application.Abstractions;
+using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Application.Maps;
 using AgvDispatch.Domain.Maps;
 
@@ -24,7 +24,7 @@ public sealed partial class ManualTaskCreationService
                 {geometry=null;verified=false;issue="构建地图期间运行图或参数变化，未提供定位图。";message=issue;segments=segments.Select(s=>s with{Status="已失效",Message=issue}).ToList();}
             }
             static string Text(string value,int max)=>value.Length<=max?value:value[..max]+"…（显示已限长）";
-            var result=new ManualTaskRoutePreview(request.MapId,request.MapVersionId,request.ParameterRevision,request.StationId,request.VehicleId,current,DateTimeOffset.Now,verified,Text(message,2048),legs.Select(l=>l with{LogicalPath=Text(l.LogicalPath,8192),VendorPath=Text(l.VendorPath,8192),Message=Text(l.Message,1024)}).ToArray(),segments.Select(s=>s with{Message=Text(s.Message,1024)}).ToArray()){ObservationId=observationId,Map=geometry,MapIssue=issue,Steps=geometry is null?[]:stepSource};
+            var result=new ManualTaskRoutePreview(request.MapId,request.MapVersionId,request.ParameterRevision,request.StationId,request.VehicleId,current,AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow(),verified,Text(message,2048),legs.Select(l=>l with{LogicalPath=Text(l.LogicalPath,8192),VendorPath=Text(l.VendorPath,8192),Message=Text(l.Message,1024)}).ToArray(),segments.Select(s=>s with{Message=Text(s.Message,1024)}).ToArray()){ObservationId=observationId,Map=geometry,MapIssue=issue,Steps=geometry is null?[]:stepSource};
             var jsonOptions=new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web);
             token.ThrowIfCancellationRequested();
             if(System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(result,jsonOptions).Length>8*1024*1024)

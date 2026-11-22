@@ -47,8 +47,8 @@ public sealed partial class PlcCycleTestService : BackgroundService, IPlcCycleTe
     {
         if (!user.Has(TrafficPermission.Administer)) throw new UnauthorizedAccessException("需要管理员现场操作权限。");
     }
-    private bool Fresh(DateTimeOffset? time) => time is { } value && value <= DateTimeOffset.UtcNow.AddSeconds(1)
-        && DateTimeOffset.UtcNow - value <= TimeSpan.FromSeconds(_options.MaximumAgeSeconds);
+    private bool Fresh(DateTimeOffset? time) => time is { } value && value <= AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow().AddSeconds(1)
+        && AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow() - value <= TimeSpan.FromSeconds(_options.MaximumAgeSeconds);
     private bool Is(PlcCycleTestEnvironment environment, string station, string signal, bool value) =>
         environment.Signals.Single(s => s.StationId == station && s.VariableName == signal).Value == value;
     private string? EnvironmentBlock(PlcCycleTestEnvironment environment, bool requireStopped, bool baseline)
@@ -165,7 +165,7 @@ public sealed partial class PlcCycleTestService : BackgroundService, IPlcCycleTe
                     fresh.CurrentStation, environment.CurrentStation))
                 throw new InvalidOperationException("武装期间地图或车辆站点变化，请重新核对。");
             ArchiveCurrent();
-            var now = DateTimeOffset.UtcNow;
+            var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow();
             var callAlreadyHigh = Is(environment, _options.StationId, "FullBoxRequested", true);
             _record = new(Guid.NewGuid().ToString("N"), request.RequestId, _options.VehicleId, _options.StationId,
                 request.PickupSite, request.WaitingSite, request.DumpingSite, environment.MapId, environment.MapVersionId,
@@ -236,7 +236,7 @@ public sealed partial class PlcCycleTestService : BackgroundService, IPlcCycleTe
                 {
                     // Persist before every reset write too; a lost response must never
                     // permit a subsequent reset to blindly repeat the operation.
-                    _record = _record with { PendingWrite = new(station, signal, false, "Disarmed", DateTimeOffset.UtcNow, false) };
+                    _record = _record with { PendingWrite = new(station, signal, false, "Disarmed", AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow(), false) };
                     Persist();
                     await _port.WriteAsync(station, signal, false, ct);
                     var readback = await _port.ObserveAsync(ct);
@@ -262,7 +262,7 @@ public sealed partial class PlcCycleTestService : BackgroundService, IPlcCycleTe
                 Stage = "Disarmed",
                 PendingWrite = null,
                 Message = "上一轮记录已安全重置，H输出已回读为0；可开始新一轮。",
-                UpdatedAt = DateTimeOffset.UtcNow
+                UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow()
             };
             Event("现场重置：" + request.Reason.Trim());
             return Status();
@@ -291,12 +291,12 @@ public sealed partial class PlcCycleTestService : BackgroundService, IPlcCycleTe
     private void Event(string message)
     {
         var record = _record!;
-        _record = record with { Events = record.Events.Append(new(DateTimeOffset.UtcNow, record.Stage, message)).ToArray() };
+        _record = record with { Events = record.Events.Append(new(AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow(), record.Stage, message)).ToArray() };
         Persist();
     }
     private void Transition(string stage, string message)
     {
-        _record = _record! with { Stage = stage, Message = message, UpdatedAt = DateTimeOffset.UtcNow };
+        _record = _record! with { Stage = stage, Message = message, UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow() };
         Event(message);
     }
     private void Hold(string reason) => Transition("Hold", reason + " 保留原任务及输出，禁止自动重试。");
@@ -317,7 +317,7 @@ public sealed partial class PlcCycleTestService : BackgroundService, IPlcCycleTe
         try
         {
             if (_record is null || Terminal(_record.Stage)) return;
-            if (DateTimeOffset.UtcNow - _record.UpdatedAt > TimeSpan.FromSeconds(_options.StageTimeoutSeconds))
+            if (AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow() - _record.UpdatedAt > TimeSpan.FromSeconds(_options.StageTimeoutSeconds))
             {
                 Hold($"阶段 {_record.Stage} 超过 {_options.StageTimeoutSeconds} 秒未完成。");
                 return;
@@ -465,8 +465,8 @@ public sealed partial class PlcCycleTestService : BackgroundService, IPlcCycleTe
     {
         _record = _record! with
         {
-            PendingWrite = new(station, signal, value, nextStage, DateTimeOffset.UtcNow, false),
-            UpdatedAt = DateTimeOffset.UtcNow
+            PendingWrite = new(station, signal, value, nextStage, AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow(), false),
+            UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow()
         };
         Persist();
         await _port.WriteAsync(station, signal, value, ct);
@@ -489,7 +489,7 @@ public sealed partial class PlcCycleTestService : BackgroundService, IPlcCycleTe
                 ExpectedRobotMapMd5 = stations.RobotMapMd5
             }, ct);
         _record = _record! with { Children = _record.Children.Append(new("Navigation", preview.PreviewId,
-            null, target, "Sending", DateTimeOffset.UtcNow)).ToArray() };
+            null, target, "Sending", AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow())).ToArray() };
         Persist();
         var record = await _navigation.SubmitAsync(SystemOperator,
             new NavigationTestSubmit(preview.PreviewId, true), ct);
@@ -497,7 +497,7 @@ public sealed partial class PlcCycleTestService : BackgroundService, IPlcCycleTe
         {
             Children = _record.Children.Select(child => child.Kind == "Navigation" && child.RequestId == preview.PreviewId
                 ? child with { RequestId = record.TaskId, VendorTaskId = record.VendorTaskId, State = record.State } : child).ToArray(),
-            UpdatedAt = DateTimeOffset.UtcNow
+            UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow()
         };
         Transition(nextStage, $"已下发 {preview.SourceSite}→{target}，等待车辆实际到站。");
     }
@@ -517,7 +517,7 @@ public sealed partial class PlcCycleTestService : BackgroundService, IPlcCycleTe
         {
             Children = _record.Children.Select(child =>
                 child.Kind == "Navigation" && child.RequestId == record.TaskId
-                    ? child with { State = "Completed", UpdatedAt = DateTimeOffset.UtcNow }
+                    ? child with { State = "Completed", UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow() }
                     : child).ToArray()
         };
         return true;
@@ -533,7 +533,7 @@ public sealed partial class PlcCycleTestService : BackgroundService, IPlcCycleTe
             throw new InvalidOperationException("顶升机构不可用或反馈异常。");
         var requestId = Guid.NewGuid().ToString("N");
         _record = _record! with { Children = _record.Children.Append(new("Jack", requestId, null,
-            action, "Sending", DateTimeOffset.UtcNow)).ToArray() };
+            action, "Sending", AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow())).ToArray() };
         Persist();
         var record = await _navigation.SubmitJackAsync(SystemOperator,
             new(requestId, action, true, true), ct);
@@ -541,7 +541,7 @@ public sealed partial class PlcCycleTestService : BackgroundService, IPlcCycleTe
         {
             Children = _record.Children.Select(child => child.Kind == "Jack" && child.RequestId == requestId
                 ? child with { State = record.State } : child).ToArray(),
-            UpdatedAt = DateTimeOffset.UtcNow
+            UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow()
         };
         Transition(nextStage, record.Message);
     }
@@ -564,7 +564,7 @@ public sealed partial class PlcCycleTestService : BackgroundService, IPlcCycleTe
             {
                 Children = _record.Children.Select(child =>
                     child.Kind == "Jack" && child.RequestId == original.RequestId
-                        ? child with { State = "Completed", UpdatedAt = DateTimeOffset.UtcNow }
+                        ? child with { State = "Completed", UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow() }
                         : child).ToArray()
             };
             return true;

@@ -64,7 +64,7 @@ public sealed class MapTransferLedger(ISqlSugarClient db,IMapExecutionGate gate,
     {
         var result=await db.Ado.UseTranAsync(action);if(!result.IsSuccess)throw new InvalidOperationException("地图传输记录事务失败。",result.ErrorException);
     }
-    private Task Event(MapTransferEntity row,string kind,string actor,object evidence,CancellationToken ct)=>db.Insertable(new MapTransferEventEntity{Id=Guid.NewGuid().ToString("N"),OperationId=row.OperationId,Kind=kind,SessionId=session,Operator=actor,Evidence=JsonSerializer.Serialize(evidence,Json),OccurredAt=DateTime.UtcNow}).ExecuteCommandAsync(ct);
+    private Task Event(MapTransferEntity row,string kind,string actor,object evidence,CancellationToken ct)=>db.Insertable(new MapTransferEventEntity{Id=Guid.NewGuid().ToString("N"),OperationId=row.OperationId,Kind=kind,SessionId=session,Operator=actor,Evidence=JsonSerializer.Serialize(evidence,Json),OccurredAt=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow().UtcDateTime}).ExecuteCommandAsync(ct);
     public async Task InitializeAsync(CancellationToken ct)
     {
         using var control=await gate.EnterControlAsync(ct);if(initialized)return;
@@ -74,7 +74,7 @@ public sealed class MapTransferLedger(ISqlSugarClient db,IMapExecutionGate gate,
             foreach(var r in rows)
             {
                 var state=r.AttemptCount>0||r.State=="Sending"?"Uncertain":r.State=="ReadOnlyPrepared"?"ReviewRequired":r.State;
-                await db.Updateable<MapTransferEntity>().SetColumns(x=>new MapTransferEntity{State=state,UpdatedAt=DateTime.UtcNow}).Where(x=>x.OperationId==r.OperationId).ExecuteCommandAsync(ct);
+                await db.Updateable<MapTransferEntity>().SetColumns(x=>new MapTransferEntity{State=state,UpdatedAt=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow().UtcDateTime}).Where(x=>x.OperationId==r.OperationId).ExecuteCommandAsync(ct);
                 await Event(r,"ServiceRestart","service",new{PreviousState=r.State,RecoveredState=state,NoResend=true},ct);
             }
         });
@@ -92,7 +92,7 @@ public sealed class MapTransferLedger(ISqlSugarClient db,IMapExecutionGate gate,
         if(existing is not null){if(existing.IntentHash!=fingerprint)throw new InvalidOperationException("请求编号已用于不同的地图/车辆/操作人或参数。");return await Snapshot(existing,ct);}
         var version=await db.Queryable<MapVersionEntity>().Where(x=>x.MapId==request.MapId&&x.VersionId==request.VersionId).FirstAsync(ct)??throw new InvalidOperationException("后台目标地图版本不存在。");
         var definition=JsonSerializer.Deserialize<MapDefinition>(version.DefinitionJson,Json)??throw new InvalidDataException("地图定义无效。");
-        var row=new MapTransferEntity{OperationId=Guid.NewGuid().ToString("N"),RequestId=request.RequestId,IntentHash=fingerprint,MapId=request.MapId,VersionId=request.VersionId,VehicleId=request.VehicleId,SourcePath=definition.Source,SourceSha256="",DefinitionHash=Hash(version.DefinitionJson),ExpectedDeviceMd5=request.ExpectedDeviceMd5!,Firmware=request.ConfirmedRobokitVersion,ConfirmationNote=request.ConfirmationNote,Load=request.Load,OwnerSession=session,Operator=user.WindowsIdentity,CreatedAt=DateTime.UtcNow,UpdatedAt=DateTime.UtcNow};
+        var row=new MapTransferEntity{OperationId=Guid.NewGuid().ToString("N"),RequestId=request.RequestId,IntentHash=fingerprint,MapId=request.MapId,VersionId=request.VersionId,VehicleId=request.VehicleId,SourcePath=definition.Source,SourceSha256="",DefinitionHash=Hash(version.DefinitionJson),ExpectedDeviceMd5=request.ExpectedDeviceMd5!,Firmware=request.ConfirmedRobokitVersion,ConfirmationNote=request.ConfirmationNote,Load=request.Load,OwnerSession=session,Operator=user.WindowsIdentity,CreatedAt=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow().UtcDateTime,UpdatedAt=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow().UtcDateTime};
         var sourceErrors=new List<string>();
         var active=runtime.Current;row.ActiveMapId=active?.MapId??"";row.ActiveVersionId=active?.VersionId??"";row.ActiveDefinitionHash=active is null?"":Hash(JsonSerializer.Serialize(active.Definition,Json));
         try
@@ -125,7 +125,7 @@ public sealed class MapTransferLedger(ISqlSugarClient db,IMapExecutionGate gate,
         if(!vehicles.TryGet(row.VehicleId,out var vehicle))result.Add("目标车辆状态缺失。");
         else
         {
-            var age=vehicle.LastSuccessfulPollAt is { } poll?DateTimeOffset.UtcNow-poll:TimeSpan.MaxValue;
+            var age=vehicle.LastSuccessfulPollAt is { } poll?AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow()-poll:TimeSpan.MaxValue;
             if(vehicle.Connection!=ConnectionState.Online||vehicle.Quality!=SignalQuality.Good||age<TimeSpan.Zero||age>TimeSpan.FromSeconds(5))result.Add("目标车辆离线/质量不良/过期/时钟异常。");
             if(vehicle.Blocked!=false||vehicle.EmergencyStopped!=false||vehicle.VelocityX is null||vehicle.VelocityY is null||vehicle.AngularVelocity is null||!double.IsFinite(vehicle.VelocityX.Value)||!double.IsFinite(vehicle.VelocityY.Value)||!double.IsFinite(vehicle.AngularVelocity.Value)||Math.Abs(vehicle.VelocityX.Value)>.01||Math.Abs(vehicle.VelocityY.Value)>.01||Math.Abs(vehicle.AngularVelocity.Value)>.01)result.Add("目标车辆未确认停止或安全状态缺失。");
             if(vehicle.LocalizationConfidence is null||!double.IsFinite(vehicle.LocalizationConfidence.Value)||vehicle.LocalizationConfidence.Value<.5||vehicle.Tasks.Any(t=>t.Status is not (4 or 5 or 6 or 7)))result.Add("目标车辆定位/任务状态未核定。");
@@ -161,7 +161,7 @@ public sealed class MapTransferLedger(ISqlSugarClient db,IMapExecutionGate gate,
         {
             using var budget=CancellationTokenSource.CreateLinkedTokenSource(ct);budget.CancelAfter(TimeSpan.FromSeconds(15));
             var value=await inspector.ReadAsync(new(pinned.VehicleId),budget.Token).WaitAsync(TimeSpan.FromSeconds(15),budget.Token);
-            var fresh=DateTimeOffset.UtcNow-value.CheckedAt;
+            var fresh=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow()-value.CheckedAt;
             observation=new{value.CheckedAt,value.Available,value.Stable,value.Reason,value.RobokitVersion,value.RobotMap,value.RobotMapMd5,value.LoadMapStatus,DesiredMapObserved=value.VehicleId==pinned.VehicleId&&fresh>=TimeSpan.Zero&&fresh<=TimeSpan.FromSeconds(5)&&value.Available&&value.Stable&&value.LoadMapStatus==1&&value.RobokitVersion==pinned.Firmware&&value.RobotMap==pinned.TargetMapName&&value.RobotMapMd5==pinned.ExpectedDeviceMd5,ProofOfThisWrite=false};
         }
         catch(OperationCanceledException)when(ct.IsCancellationRequested){throw;}
@@ -170,7 +170,7 @@ public sealed class MapTransferLedger(ISqlSugarClient db,IMapExecutionGate gate,
         var before=await Snapshot(row,ct);var json=JsonSerializer.Serialize(new{Observation=observation,CurrentBlockers=before.Blockers,WritesEnabled=false,MayResend=false},Json);
         await Transaction(async()=>
         {
-            await db.Updateable<MapTransferEntity>().SetColumns(x=>new MapTransferEntity{LastObservation=json,UpdatedAt=DateTime.UtcNow}).Where(x=>x.OperationId==row.OperationId).ExecuteCommandAsync(ct);
+            await db.Updateable<MapTransferEntity>().SetColumns(x=>new MapTransferEntity{LastObservation=json,UpdatedAt=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow().UtcDateTime}).Where(x=>x.OperationId==row.OperationId).ExecuteCommandAsync(ct);
             await Event(row,"ReadOnlyObservation",user.WindowsIdentity,new{observation,before.Blockers,MayResend=false},ct);
         });
         return await Snapshot(await Row(row.OperationId,ct),ct);

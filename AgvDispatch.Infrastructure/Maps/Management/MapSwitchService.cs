@@ -64,7 +64,7 @@ public sealed partial class MapSwitchService(ISqlSugarClient database, IMapExecu
             .FirstAsync(cancellationToken);
         if (previous?.MapId == request.MapId && previous.ActiveVersionId == request.VersionId)
             return new(false, "该版本已经是运行地图。");
-        var now = DateTime.Now;
+        var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
         // Close first; ambiguous persistence failure must not reopen command sending.
         gate.SetMode(MapExecutionMode.Held);
         await database.Insertable(new MapSwitchEntity
@@ -101,7 +101,7 @@ public sealed partial class MapSwitchService(ISqlSugarClient database, IMapExecu
         var updated = await database.Updateable<MapSwitchEntity>().SetColumns(row => new MapSwitchEntity
         {
             Evidence = row.Evidence + "\n恢复原任务收尾：" + user.WindowsIdentity + ": " + request.Evidence.Trim(),
-            UpdatedAt = DateTime.Now
+            UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime
         }).Where(row => row.ReleaseId == current.ReleaseId && row.Phase == (int)MapSwitchPhase.Draining)
             .ExecuteCommandAsync(cancellationToken);
         if (updated != 1) return new(false, "切换记录已变化，保持暂停。");
@@ -162,7 +162,7 @@ public sealed partial class MapSwitchService(ISqlSugarClient database, IMapExecu
             {
                 Phase = cancel ? (int)MapSwitchPhase.Cancelled : (int)MapSwitchPhase.Completed,
                 Evidence = row.Evidence + "\n" + user.WindowsIdentity + ": " + request.Evidence.Trim(),
-                UpdatedAt = DateTime.Now
+                UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime
             }).Where(row => row.ReleaseId == current.ReleaseId && row.Phase == current.Phase)
             .ExecuteCommandAsync(cancellationToken);
         if (changed != 1) return new(false, "切换记录已变化，保持停止派单。");
@@ -207,7 +207,7 @@ public sealed partial class MapSwitchService(ISqlSugarClient database, IMapExecu
         bool checkTargetMap=true,bool requireStoppedStation=true)
     {
         var blockers = new List<string>();
-        var now = DateTimeOffset.Now;
+        var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow();
         foreach (var id in settings.RequiredVehicleIds.Concat(vehicles.GetAll()
                      .Where(vehicle => vehicle.Quality != SignalQuality.Disabled).Select(vehicle => vehicle.VehicleId))
                      .Distinct(StringComparer.OrdinalIgnoreCase))

@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Domain.Devices;
 using AgvDispatch.Infrastructure.Persistence.Entities;
@@ -30,11 +30,11 @@ public sealed partial class ExecutionRecoveryService
                 string.IsNullOrWhiteSpace(p.CycleId) || p.CycleId.Length > 64 ||
                 string.IsNullOrWhiteSpace(p.ContainerId) || p.ContainerId.Length > 128 ||
                 string.IsNullOrWhiteSpace(p.OriginalBusinessStepId) || p.OriginalBusinessStepId.Length > 64 || p.Quality != SignalQuality.Good || !p.IsCoherent || p.ObservedAt < _started ||
-                p.ObservedAt > DateTimeOffset.Now.AddSeconds(1) || DateTimeOffset.Now - p.ObservedAt > settings.StateMaxAge) ||
+                p.ObservedAt > AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().AddSeconds(1) || AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow() - p.ObservedAt > settings.StateMaxAge) ||
                 loads.Any(v => v.SchemaVersion != 1 || !Enum.IsDefined(v.LoadState) ||
                 v.LoadState == ContainerLoadState.Empty && !string.IsNullOrEmpty(v.ContainerId) ||
                 v.LoadState == ContainerLoadState.Loaded && string.IsNullOrWhiteSpace(v.ContainerId) || v.Quality != SignalQuality.Good || !v.IsCoherent || v.ObservedAt < _started ||
-                v.ObservedAt > DateTimeOffset.Now.AddSeconds(1) || DateTimeOffset.Now - v.ObservedAt > settings.StateMaxAge);
+                v.ObservedAt > AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().AddSeconds(1) || AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow() - v.ObservedAt > settings.StateMaxAge);
             return new(bad ? "Blocked" : "Unavailable", "全场身份核对：须逐任务关联PLC周期与容器；全场物理状态仍需现场确认。",
                 bad ? "全场已接入的身份样本质量、一致性或新鲜时间不合格。" :
                 identityOptions?.RequireMachineIdentity == true && (samples.Count == 0 || loads.Count == 0) ? "身份核验要求已启用，但全场身份字段未接入。" : null);
@@ -67,7 +67,7 @@ public sealed partial class ExecutionRecoveryService
             catch (JsonException) { }
         }
         return ExecutionIdentityVerifier.Verify(task.TaskId, station, business, vendor, vehicleId, plc, load, baseline,
-            _started, DateTimeOffset.Now, settings.StateMaxAge, identityOptions?.RequireMachineIdentity == true);
+            _started, AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow(), settings.StateMaxAge, identityOptions?.RequireMachineIdentity == true);
     }
     private object IdentityFingerprint(Observation observation)
     {

@@ -44,7 +44,7 @@ public sealed class SystemStatusSnapshotService(
         var signals = plcSignals.GetAll();
         var connection = plcConnection.Current;
         var agvs = agvStates.GetAll();
-        var now = DateTimeOffset.Now;
+        var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow();
         var recoveries = obstacleRecovery is null
             ? []
             : await obstacleRecovery.ListSnapshotsAsync(cancellationToken);

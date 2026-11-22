@@ -25,7 +25,7 @@ public sealed partial class ExecutionRecoveryService
         if (leases.Count != 0) hard ??= "充电会话仍持有原充电位或道路；请在充电恢复入口核对停止并实际离位，本页不释放资源。";
         if (charging.Phase != ChargingPhase.Completed) hard ??= "充电会话尚未完成现场核对关闭；请从充电恢复入口处理原会话。";
         if (charging.Phase == ChargingPhase.Completed && (charging.UpdatedAt < _started ||
-            charging.UpdatedAt > DateTimeOffset.Now.AddSeconds(1) || string.IsNullOrWhiteSpace(charging.Operator) || string.IsNullOrWhiteSpace(charging.OperatorEvidence)))
+            charging.UpdatedAt > AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().AddSeconds(1) || string.IsNullOrWhiteSpace(charging.Operator) || string.IsNullOrWhiteSpace(charging.OperatorEvidence)))
             hard ??= "未取得本次启动后带操作人及现场依据的充电关闭记录。";
         if (charging.Phase == ChargingPhase.Completed && (charging.Battery is not { Charging: false, Current: { } current } ||
             !double.IsFinite(current) || charging.Battery.ObservedAt < _started || charging.Battery.ObservedAt > charging.UpdatedAt.AddSeconds(1)))
@@ -56,7 +56,7 @@ public sealed partial class ExecutionRecoveryService
         var identity = new RecoveryIdentityVerification(hard is null ? "ChargingClosed" : "ChargingHold",
             hard ?? "原充电会话已按本次现场核对关闭，原租约归属与停止离位记录一致。", hard);
         var reason = hard ?? "已核对：原充电会话已由现场人员确认停止并实际退出，充电位和道路已释放；不重发任何动作。";
-        var evidence = JsonSerializer.Serialize(new { CapturedAt = DateTimeOffset.Now, Charging = charging,
+        var evidence = JsonSerializer.Serialize(new { CapturedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow(), Charging = charging,
             OriginalChargingOwnership = original, Leases = leases, Commands = commands, Vehicle = vehicle, Identity = identity });
         var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new
             { Charging = charging, OriginalChargingOwnership = original, Leases = leases, Commands = commands }))));

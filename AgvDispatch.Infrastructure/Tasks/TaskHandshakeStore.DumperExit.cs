@@ -20,7 +20,7 @@ public sealed partial class TaskHandshakeStore
         var result = await database.Ado.UseTranAsync(async () =>
         {
             await ValidateExitAsync(checkpoint, evidence, ct);
-            var now = DateTime.UtcNow;
+            var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow().UtcDateTime;
             moved = await database.Updateable<TaskHandshakeEntity>().SetColumns(h => new TaskHandshakeEntity
                 { Phase="ClearDumpingAfterExit", Revision=checkpoint.Revision+1, UpdatedAtUtc=now, Reason="两次整车出区及原返程不再入区证据已保存；仍持有倒料归属，等待PLC闭合。" })
                 .Where(h => h.TaskId==checkpoint.TaskId && h.StepId==checkpoint.StepId && h.Revision==checkpoint.Revision && h.Phase=="AwaitPhysicalExit" && h.ContractVersion==HandshakeExecutionOptions.Version && h.PendingSignal==null).ExecuteCommandAsync(ct)==1;
@@ -47,7 +47,7 @@ public sealed partial class TaskHandshakeStore
             if (!await database.Queryable<TaskEquipmentClaimEntity>().Where(e=>e.TaskId==checkpoint.TaskId && e.EquipmentId==equipmentId).AnyAsync(ct))
                 throw new InvalidOperationException("倒料设备归属已变化，禁止释放其他任务的占用。");
             ValidateDumperClosed(checkpoint,equipmentId,evidence);
-            var now=DateTime.UtcNow;
+            var now=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow().UtcDateTime;
             moved=await database.Updateable<TaskHandshakeEntity>().SetColumns(h=>new TaskHandshakeEntity
                 {Phase="ExitHandoverComplete",Revision=checkpoint.Revision+1,UpdatedAtUtc=now,Reason="PLC退出闭合，已原子交接本任务倒料设备及已核定区域；返箱责任继续。"})
                 .Where(h=>h.TaskId==checkpoint.TaskId && h.StepId==checkpoint.StepId && h.Revision==checkpoint.Revision && h.Phase=="ReleaseDumper" && h.PendingSignal==null && h.ContractVersion==HandshakeExecutionOptions.Version).ExecuteCommandAsync(ct)==1;
@@ -64,10 +64,10 @@ public sealed partial class TaskHandshakeStore
                 if(request==null)throw new InvalidOperationException("原区域请求记录缺失，事务回滚。");
                 var remaining=await database.Queryable<TrafficResourceLeaseEntity>().Where(l=>l.OwnerStepId==group.Key && l.TaskId==checkpoint.TaskId).Select(l=>l.ResourceId).ToListAsync(ct);
                 request.ResourceIds=JsonSerializer.Serialize(remaining.OrderBy(x=>x));request.State=remaining.Count==0?"Released":"Held";
-                request.Reason="28阶段：两次整车出区、原返程后续不再进入且PLC闭合后交接指定倒料区域，其他区域保持。";request.UpdatedAt=DateTime.Now;
+                request.Reason="28阶段：两次整车出区、原返程后续不再进入且PLC闭合后交接指定倒料区域，其他区域保持。";request.UpdatedAt=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
                 await database.Updateable(request).ExecuteCommandAsync(ct);
                 await database.Insertable(new TrafficLifecycleEventEntity {EventId=Guid.NewGuid().ToString("N"),TaskId=checkpoint.TaskId,StepId=group.Key,VehicleId=evidence.VehicleId,
-                    Kind="Released",Reason=request.Reason,ResourceIds=JsonSerializer.Serialize(group.Select(l=>l.ResourceId).Distinct()),OccurredAt=DateTime.Now}).ExecuteCommandAsync(ct);
+                    Kind="Released",Reason=request.Reason,ResourceIds=JsonSerializer.Serialize(group.Select(l=>l.ResourceId).Distinct()),OccurredAt=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime}).ExecuteCommandAsync(ct);
             }
             if(await database.Deleteable<TaskEquipmentClaimEntity>().Where(e=>e.TaskId==checkpoint.TaskId && e.EquipmentId==equipmentId).ExecuteCommandAsync(ct)!=1)
                 throw new InvalidOperationException("倒料设备归属并发变化，事务回滚。");
@@ -91,7 +91,7 @@ public sealed partial class TaskHandshakeStore
             proof.First.MapId!=map.MapId || proof.Second.MapId!=map.MapId || proof.First.MapVersionId!=map.VersionId || proof.Second.MapVersionId!=map.VersionId ||
             proof.First.VehicleId!=proof.VehicleId || proof.Second.VehicleId!=proof.VehicleId || proof.Body.VehicleId!=proof.VehicleId)
             throw new InvalidOperationException("出区证据与原任务、契约、车辆或地图不一致。");
-        var now=DateTimeOffset.UtcNow;
+        var now=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow();
         if(proof.CapturedAt>now.AddSeconds(1) || now-proof.CapturedAt>TimeSpan.FromSeconds(proof.Policy.MaximumAgeSeconds) ||
             proof.VendorObservedAt>now.AddSeconds(1) || now-proof.VendorObservedAt>TimeSpan.FromSeconds(proof.Policy.MaximumAgeSeconds))
             throw new InvalidOperationException("出区任务查询或证据已过期。");
@@ -220,7 +220,7 @@ public sealed partial class TaskHandshakeStore
     private void ValidateDumperClosed(HandshakeCheckpoint checkpoint,string equipmentId,TaskDumperExitProof proof)
     {
         if(liveSignals==null)throw new InvalidOperationException("缺少交接事务中的实时PLC闭合复核，不释放设备。");
-        var now=DateTimeOffset.UtcNow;
+        var now=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow();
         foreach(var name in new[]{"Faulted","AgvAtWaitingPosition","AgvAtDumpingPosition","DumperReady","DumpingCompletedMayLeave"})
         {
             var observed=proof.PlcSignals.Where(s=>s.StationId==equipmentId&&s.VariableName==name).ToArray();

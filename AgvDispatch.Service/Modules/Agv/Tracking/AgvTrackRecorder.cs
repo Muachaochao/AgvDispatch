@@ -1,4 +1,4 @@
-﻿using AgvDispatch.Application.Abstractions;
+using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Application.Maps;
 
 namespace AgvDispatch.Service;
@@ -18,24 +18,24 @@ public sealed class AgvTrackRecorder(
     {
         await database.InitializeAsync(stoppingToken);
         var removed = await tracks.DeleteOlderThanAsync(
-            DateTimeOffset.Now.AddDays(-options.TrackRetentionDays), stoppingToken);
+            AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().AddDays(-options.TrackRetentionDays), stoppingToken);
         logger.LogInformation(
             "AGV轨迹记录启动。采样={Interval}ms，最小位移={Distance}m，保留={Days}天，启动清理={Removed}条",
             options.TrackSamplingIntervalMs,
             options.TrackMinimumDistanceMeters,
             options.TrackRetentionDays,
             removed);
-        var nextCleanup = DateTimeOffset.Now.AddDays(1);
+        var nextCleanup = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().AddDays(1);
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
                 await RecordCycleAsync(stoppingToken);
-                if (DateTimeOffset.Now >= nextCleanup)
+                if (AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow() >= nextCleanup)
                 {
                     await tracks.DeleteOlderThanAsync(
-                        DateTimeOffset.Now.AddDays(-options.TrackRetentionDays), stoppingToken);
-                    nextCleanup = DateTimeOffset.Now.AddDays(1);
+                        AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().AddDays(-options.TrackRetentionDays), stoppingToken);
+                    nextCleanup = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().AddDays(1);
                 }
                 await Task.Delay(options.TrackSamplingIntervalMs, stoppingToken);
             }
@@ -55,7 +55,7 @@ public sealed class AgvTrackRecorder(
     {
         var runtime = activeMap.Current;
         if (runtime is null) return;
-        var now = DateTimeOffset.Now;
+        var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow();
         foreach (var agv in agvStates.GetAll())
         {
             if (agv.X is null || agv.Y is null || agv.LastSuccessfulPollAt is null ||

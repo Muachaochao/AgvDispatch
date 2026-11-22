@@ -32,7 +32,7 @@ public sealed partial class BusinessRunPort
             var run = new BusinessRunRecord("manual-" + active.TaskId,
                 new("manual-" + active.TaskId, "Demand", vehicleId, [active.StationId], 1, "", true),
                 map.Current?.MapId ?? "", map.Current?.VersionId ?? "", parameters.Revision,
-                "loopback-plc-simulator", "Executing", "", 0, active.TaskId, null, null, false, DateTimeOffset.UtcNow);
+                "loopback-plc-simulator", "Executing", "", 0, active.TaskId, null, null, false, AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow());
             await ApplySimulatorFeedbackAsync(run, detail, "cycle-feedback", ct);
         }
     }
@@ -102,7 +102,7 @@ public sealed partial class BusinessRunPort
             if (transport is not { Status: DispatchTaskStepStatus.Completed, StartedAt: { }, CompletedAt: { } } ||
                 transport.VehicleId != run.Plan.VehicleId || string.IsNullOrWhiteSpace(transport.VendorTaskId) ||
                 transport.CompletedAt < transport.StartedAt || transport.CompletedAt < detail.Task.CreatedAt ||
-                transport.CompletedAt > DateTimeOffset.UtcNow)
+                transport.CompletedAt > AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow())
                 throw new InvalidOperationException("模拟箱体反馈缺少本轮原运输步骤完成证据。");
             return transport;
         }

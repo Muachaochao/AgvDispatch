@@ -58,7 +58,7 @@ public sealed partial class FleetTestService : IsolatedBackgroundService, IFleet
     }
     private void Hold(string message)
     {
-        var now=DateTimeOffset.UtcNow;
+        var now=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow();
         run=run! with {Stage="Hold",Message=message,UpdatedAt=now,Holds=[..run.Holds,new(now,message)]};
         ownership.Set(true,false,[]);Save();
         logger.LogWarning("多车测试暂停。RunId={RunId}, Reason={Reason}, TaskIds={TaskIds}",
@@ -69,7 +69,7 @@ public sealed partial class FleetTestService : IsolatedBackgroundService, IFleet
         run=run! with
         {
             StandbyReturns=run.StandbyReturns.Select(r=>r.VehicleId==vehicleId?updated:r).ToArray(),
-            UpdatedAt=DateTimeOffset.UtcNow
+            UpdatedAt=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow()
         };
     }
     private async Task BeginStandbyReturnsAsync(CancellationToken ct)
@@ -81,7 +81,7 @@ public sealed partial class FleetTestService : IsolatedBackgroundService, IFleet
             {
                 Stage="Completed",
                 Message="本组任务及PLC闭合；未配置可用的唯一待机位，因此未发送车辆。",
-                UpdatedAt=DateTimeOffset.UtcNow
+                UpdatedAt=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow()
             };
             Save();
             return;
@@ -91,7 +91,7 @@ public sealed partial class FleetTestService : IsolatedBackgroundService, IFleet
             Stage="ReturningStandby",
             Message="业务任务及PLC已闭合；正在返回各自独立待机位。",
             StandbyReturns=returns,
-            UpdatedAt=DateTimeOffset.UtcNow
+            UpdatedAt=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow()
         };
         Save();
         await AdvanceStandbyReturnsAsync(ct);
@@ -105,7 +105,7 @@ public sealed partial class FleetTestService : IsolatedBackgroundService, IFleet
             {
                 State=FleetTestStandbyReturnStates.Sending,
                 Message="正在核验待机路线并发送车辆。",
-                UpdatedAt=DateTimeOffset.UtcNow
+                UpdatedAt=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow()
             };
             UpdateStandbyReturn(nextReturn.VehicleId,sending);Save();
             try
@@ -120,7 +120,7 @@ public sealed partial class FleetTestService : IsolatedBackgroundService, IFleet
                     UpdateStandbyReturn(nextReturn.VehicleId,nextReturn with
                     {
                         Message="待机路线或交通资源暂不可用，保持原位等待。",
-                        UpdatedAt=DateTimeOffset.UtcNow
+                        UpdatedAt=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow()
                     });
                 }
                 else
@@ -135,7 +135,7 @@ public sealed partial class FleetTestService : IsolatedBackgroundService, IFleet
                 {
                     State=FleetTestStandbyReturnStates.Uncertain,
                     Message=e.Message,
-                    UpdatedAt=DateTimeOffset.UtcNow
+                    UpdatedAt=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow()
                 });
                 Save();
                 throw;
@@ -150,7 +150,7 @@ public sealed partial class FleetTestService : IsolatedBackgroundService, IFleet
                 {
                     State=hasIntent?FleetTestStandbyReturnStates.Uncertain:nextReturn.State,
                     Message=hasIntent?"待机发送或结果保存未完成，保留原命令身份；禁止自动重发，请查询原记录。":"待机发送前核验失败，车辆未发送。",
-                    UpdatedAt=DateTimeOffset.UtcNow
+                    UpdatedAt=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow()
                 });
                 Save();
                 throw;
@@ -173,7 +173,7 @@ public sealed partial class FleetTestService : IsolatedBackgroundService, IFleet
             {
                 Stage="Completed",
                 Message="本组任务、PLC握手及全部车辆待机停靠均已闭合。",
-                UpdatedAt=DateTimeOffset.UtcNow
+                UpdatedAt=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow()
             };
             Save();
             logger.LogInformation("多车测试及待机收尾完成。RunId={RunId}, Returns={Returns}",
@@ -209,7 +209,7 @@ public sealed partial class FleetTestService : IsolatedBackgroundService, IFleet
                         throw new InvalidOperationException("原申请已归档，禁止重放。");
             var identity=await port.ValidateAsync(request,ct);
             if(run!=null)File.Copy(path,path+"."+run.RunId+".history",false);
-            var now=DateTimeOffset.UtcNow;
+            var now=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow();
             run=new(Guid.NewGuid().ToString("N"),request,identity.MapId,identity.Version,identity.Revision,"Running",
                 "准备按用例产生模拟P呼叫；车辆由调度分配。",false,now,now,request.StationIds.Select(id=>new FleetTestCall(id,false,null)).ToArray()){Operator=user.WindowsIdentity};
             Save();
@@ -233,10 +233,10 @@ public sealed partial class FleetTestService : IsolatedBackgroundService, IFleet
             if((action is "resume" or "reconcile")&&run.Stage!="Hold")throw new InvalidOperationException("仅暂停记录可以续接或核对待机路权。");
             if(action=="close"&&!run.StopRequested)throw new InvalidOperationException("先停止新增呼叫，再核对结束记录。");
             executing=true;
-            run=run with {Reviews=[..run.Reviews,new(DateTimeOffset.UtcNow,action,user.WindowsIdentity,request.Reason??"")]};
+            run=run with {Reviews=[..run.Reviews,new(AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow(),action,user.WindowsIdentity,request.Reason??"")]};
             if(action=="stop")
             {
-                run=run with {StopRequested=true,UpdatedAt=DateTimeOffset.UtcNow,Message="停止新增呼叫；原任务与点位保持，等待闭合。"};Save();
+                run=run with {StopRequested=true,UpdatedAt=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow(),Message="停止新增呼叫；原任务与点位保持，等待闭合。"};Save();
                 await port.LabAsync(run,"stop",[],ct);
             }
             else
@@ -256,7 +256,7 @@ public sealed partial class FleetTestService : IsolatedBackgroundService, IFleet
                             ?"待机导航及车辆停靠已核对闭合。"
                             :uncertain?"原待机导航身份或结果仍不确定，继续保留暂停，禁止自动重发。"
                             :"已核对并释放已完成车辆的孤立待机路权，继续原待机返回。",
-                        UpdatedAt=DateTimeOffset.UtcNow
+                        UpdatedAt=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow()
                     };
                     Save();
                 }
@@ -268,14 +268,14 @@ public sealed partial class FleetTestService : IsolatedBackgroundService, IFleet
                     {
                         if(run.StandbyReturns.Any(r=>r.State is FleetTestStandbyReturnStates.Sending or FleetTestStandbyReturnStates.Uncertain))
                             throw new InvalidOperationException("待机导航发送结果不确定，须先核对原车端任务，不能自动重发。");
-                        run=run with {Stage="ReturningStandby",Message="现场核对后续接原待机返回："+request.Reason,UpdatedAt=DateTimeOffset.UtcNow};Save();
+                        run=run with {Stage="ReturningStandby",Message="现场核对后续接原待机返回："+request.Reason,UpdatedAt=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow()};Save();
                     }
                     else
                     {
                         await port.LabAsync(run,"check",[],ct);
                         var pending=run.Calls.Where(c=>c.Released&&c.TaskId==null).Select(c=>c.StationId).ToArray();
                         if(pending.Length>0&&!run.StopRequested)await port.LabAsync(run,"call",pending,ct);
-                        run=run with {Stage="Running",Message="现场核对后续接原任务："+request.Reason,UpdatedAt=DateTimeOffset.UtcNow};Save();
+                        run=run with {Stage="Running",Message="现场核对后续接原任务："+request.Reason,UpdatedAt=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow()};Save();
                     }
                 }
                 else if(action=="close")
@@ -289,7 +289,7 @@ public sealed partial class FleetTestService : IsolatedBackgroundService, IFleet
                         if(reconciled.Any(r=>r.State!=FleetTestStandbyReturnStates.Completed))
                             throw new FleetClosurePendingException("原待机导航或车辆实际停靠尚未闭合，保留原记录及车辆保护；请先核对原待机任务。");
                     }
-                    run=run with {Stage="Completed",Message="现场核对后结束测试记录："+request.Reason,UpdatedAt=DateTimeOffset.UtcNow};Save();
+                    run=run with {Stage="Completed",Message="现场核对后结束测试记录："+request.Reason,UpdatedAt=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow()};Save();
                 }
                 else throw new ArgumentException("未知操作。");
             }
@@ -339,14 +339,14 @@ public sealed partial class FleetTestService : IsolatedBackgroundService, IFleet
                 if(due.Length>0)
                 {
                     // Persist intent before the batch write. An uncertain write is held, never regenerated as a new run.
-                    run=run with {Calls=run.Calls.Select(c=>due.Contains(c.StationId)?c with {Released=true}:c).ToArray(),UpdatedAt=DateTimeOffset.UtcNow};Save();
+                    run=run with {Calls=run.Calls.Select(c=>due.Contains(c.StationId)?c with {Released=true}:c).ToArray(),UpdatedAt=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow()};Save();
                     await port.LabAsync(run,"call",due,ct);
                 }
                 foreach(var call in run.Calls.Where(c=>c.Released&&c.TaskId==null).ToArray())
                 {
                     var taskId=await port.CreateAsync(run,call.StationId,ct);
                     if(taskId==null)continue;
-                    run=run with {Calls=run.Calls.Select(c=>c.StationId==call.StationId?c with {TaskId=taskId}:c).ToArray(),UpdatedAt=DateTimeOffset.UtcNow};Save();
+                    run=run with {Calls=run.Calls.Select(c=>c.StationId==call.StationId?c with {TaskId=taskId}:c).ToArray(),UpdatedAt=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow()};Save();
                     await port.LabAsync(run,"bind",[call.StationId],ct);
                     await port.AcknowledgeAsync(call.StationId,taskId,ct);
                 }
@@ -362,7 +362,7 @@ public sealed partial class FleetTestService : IsolatedBackgroundService, IFleet
                     }
                     else
                     {
-                        run=run with {Stage="Completed",Message="本组任务及PLC闭合；自动回待机已关闭。",UpdatedAt=DateTimeOffset.UtcNow};Save();
+                        run=run with {Stage="Completed",Message="本组任务及PLC闭合；自动回待机已关闭。",UpdatedAt=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow()};Save();
                     }
                 }
             }catch(OperationCanceledException)when(ct.IsCancellationRequested){throw;}

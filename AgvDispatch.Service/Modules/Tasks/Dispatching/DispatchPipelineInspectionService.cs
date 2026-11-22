@@ -23,7 +23,7 @@ public sealed class DispatchPipelineInspectionService(ISqlSugarClient database, 
 
     public async Task<DispatchPipelineInspectionSnapshot> GetAsync(CancellationToken ct)
     {
-        var now = DateTimeOffset.UtcNow;
+        var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow();
         var cycle = await optimization.GetAsync(ct);
         var store = await ReadStoreAsync(ct);
         var robots = vehicles.GetAll().OrderBy(v => v.VehicleId, StringComparer.OrdinalIgnoreCase).ToArray();
@@ -268,7 +268,7 @@ public sealed class DispatchPipelineInspectionService(ISqlSugarClient database, 
             ]
         };
 
-        return new() { CapturedAt = DateTimeOffset.UtcNow, CycleNumber = cycle.CycleNumber,
+        return new() { CapturedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow(), CycleNumber = cycle.CycleNumber,
             // Gate-only publications also increment CycleNumber. Only the compute
             // path records positive elapsed work; do not label a disabled gate as a calculation.
             OptimizationCapturedAt = cycle.DurationMs > 0 ? Valid(cycle.CapturedAt) : null, Mode = cycle.Options.Mode,

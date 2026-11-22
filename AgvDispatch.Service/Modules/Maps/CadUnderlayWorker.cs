@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Infrastructure.Maps;
 using AgvDispatch.Infrastructure.Persistence.Entities;
@@ -62,8 +62,8 @@ public sealed class CadUnderlayWorker(
                     CadViewBoxJson = viewBoxJson,
                     UnderlayStatus = (int)CadUnderlayJobStatus.Ready,
                     UnderlayMessage = message,
-                    UnderlayGeneratedAt = DateTime.Now,
-                    UpdatedAt = DateTime.Now
+                    UnderlayGeneratedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime,
+                    UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime
                 })
                 .Where(item => item.MapId == job.MapId)
                 .ExecuteCommandAsync(cancellationToken);
@@ -93,7 +93,7 @@ public sealed class CadUnderlayWorker(
             {
                 UnderlayStatus = (int)status,
                 UnderlayMessage = storedMessage,
-                UpdatedAt = DateTime.Now
+                UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime
             })
             .Where(item => item.MapId == mapId)
             .ExecuteCommandAsync(cancellationToken);

@@ -1,4 +1,4 @@
-﻿using System.Globalization;
+using System.Globalization;
 using System.IO.Compression;
 using System.Net;
 using System.Security.Cryptography;
@@ -38,7 +38,7 @@ public sealed partial class TaskHistoryExportService(DatabaseOptions options) : 
             var detail = await reader.GetDetailAsync(new TaskDetailRequest(filter.TaskId, false), ct);
             if (detail == null) return new(false, "任务不存在，无法导出处置历史。");
             job.Update("Preparing", "正在准备一致快照", 0, 0, 2);
-            var capturedAt = DateTimeOffset.Now;
+            var capturedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow();
             Directory.CreateDirectory(staging);
             var count = 0;
             using (var csv = new StreamWriter(Path.Combine(staging, "history.csv"), false, new UTF8Encoding(true)))

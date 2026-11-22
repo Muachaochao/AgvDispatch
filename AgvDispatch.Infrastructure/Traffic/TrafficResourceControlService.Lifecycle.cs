@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Infrastructure.Persistence.Entities;
 namespace AgvDispatch.Infrastructure.Persistence;
@@ -23,7 +23,7 @@ public sealed partial class TrafficResourceControlService
         var tasks = taskIds.Length == 0 ? [] : await database.Queryable<DispatchTaskEntity>().Where(t => taskIds.Contains(t.TaskId)).ToListAsync(ct);
         var nowUtc = (clock ?? TimeProvider.System).GetUtcNow();
         var byTask = tasks.ToDictionary(t => t.TaskId);
-        var rows = requests.OrderByDescending(r => r.UpdatedAt).Take(200).Select(r => ProjectRequest(r, leases, byTask, DateTime.Now, nowUtc)).ToArray();
+        var rows = requests.OrderByDescending(r => r.UpdatedAt).Take(200).Select(r => ProjectRequest(r, leases, byTask, AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime, nowUtc)).ToArray();
         var events = await database.Queryable<TrafficLifecycleEventEntity>().OrderBy("rowid DESC").Take(100).ToListAsync(ct);
         return new(nowUtc, rows, events.Select(e => new TrafficLifecycleEvent(e.EventId, e.StepId, e.TaskId, e.VehicleId,
             e.Kind, e.Reason, JsonSerializer.Deserialize<string[]>(e.ResourceIds) ?? [], new(e.OccurredAt)) { WaitingSince = e.WaitingSinceUtc == null ? null : new DateTimeOffset(DateTime.SpecifyKind(e.WaitingSinceUtc.Value,DateTimeKind.Utc)), WaitingStartKnown = e.WaitingStartKnown == true }).ToArray(), requests.Count > 200);

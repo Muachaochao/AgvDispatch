@@ -102,7 +102,7 @@ public sealed class DispatchOrchestrationRepository(ISqlSugarClient database)
             {
                 Stage = (int)DispatchTaskStage.SubmittingToAgv,
                 VehicleId = vehicleId,
-                UpdatedAt = DateTime.Now,
+                UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime,
                 ErrorMessage = null
             })
             .Where(task =>
@@ -125,7 +125,7 @@ public sealed class DispatchOrchestrationRepository(ISqlSugarClient database)
                 Stage = (int)DispatchTaskStage.GoingToPickup,
                 VendorTaskId = vendorTaskId,
                 VehicleId = vehicleId,
-                UpdatedAt = DateTime.Now,
+                UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime,
                 ErrorMessage = null
             })
             .Where(task =>
@@ -164,7 +164,7 @@ public sealed class DispatchOrchestrationRepository(ISqlSugarClient database)
             {
                 Stage = (int)targetStage,
                 VehicleId = vehicleId ?? entity.VehicleId,
-                UpdatedAt = DateTime.Now,
+                UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime,
                 ErrorMessage = error
             })
             .Where(task => task.TaskId == taskId && task.Stage == (int)current)
@@ -185,7 +185,7 @@ public sealed class DispatchOrchestrationRepository(ISqlSugarClient database)
         await database.Updateable<DispatchTaskEntity>()
             .SetColumns(task => new DispatchTaskEntity
             {
-                UpdatedAt = DateTime.Now,
+                UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime,
                 ErrorMessage = message
             })
             .Where(task =>
@@ -222,7 +222,7 @@ public sealed class DispatchOrchestrationRepository(ISqlSugarClient database)
                     $"步骤{step.StepId}不是可由AGV完成的运输步骤。")
             };
 
-            var now = DateTime.Now;
+            var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
             await database.Updateable<DispatchTaskStepEntity>()
                 .SetColumns(item => new DispatchTaskStepEntity
                 {
@@ -302,7 +302,7 @@ public sealed class DispatchOrchestrationRepository(ISqlSugarClient database)
                     $"步骤{step.StepId}不是可由PLC握手完成的步骤。")
             };
 
-            var now = DateTime.Now;
+            var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
             var affected = await database.Updateable<DispatchTaskStepEntity>()
                 .SetColumns(item => new DispatchTaskStepEntity
                 {
@@ -376,7 +376,7 @@ public sealed class DispatchOrchestrationRepository(ISqlSugarClient database)
         var message = errorMessage.Length <= 1000 ? errorMessage : errorMessage[..1000];
         var transaction = await database.Ado.UseTranAsync(async () =>
         {
-            var now = DateTime.Now;
+            var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
             await database.Updateable<DispatchTaskStepEntity>()
                 .SetColumns(step => new DispatchTaskStepEntity
                 {
@@ -423,7 +423,7 @@ public sealed class DispatchOrchestrationRepository(ISqlSugarClient database)
         var stopped = false;
         var transaction = await database.Ado.UseTranAsync(async () =>
         {
-            var now = DateTime.Now;
+            var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
             var stepAffected = await database.Updateable<DispatchTaskStepEntity>()
                 .SetColumns(step => new DispatchTaskStepEntity
                 {
@@ -502,7 +502,7 @@ public sealed class DispatchOrchestrationRepository(ISqlSugarClient database)
             : errorMessage.Length <= 1000 ? errorMessage : errorMessage[..1000];
         var transaction = await database.Ado.UseTranAsync(async () =>
         {
-            var now = DateTime.Now;
+            var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
             await database.Updateable<DispatchTaskStepEntity>()
                 .SetColumns(step => new DispatchTaskStepEntity
                 {

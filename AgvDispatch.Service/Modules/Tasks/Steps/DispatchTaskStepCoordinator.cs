@@ -5,6 +5,7 @@ using AgvDispatch.Domain.Agvs;
 using AgvDispatch.Domain.Devices;
 using AgvDispatch.Domain.Maps;
 using AgvDispatch.Domain.Tasks;
+using AgvDispatch.Application.Runtime;
 
 namespace AgvDispatch.Service;
 
@@ -25,8 +26,12 @@ public sealed class DispatchTaskStepCoordinator(
     IDispatchPreSendSafetyService? preSendSafety = null, DispatchTrafficReservationService? trafficLayer = null,
     IDispatchPipelineMonitor? pipeline = null, DispatchOptimizationService? optimization = null, MapOptions? mapOptions = null,
     AgvOptions? agvOptions = null, GlobalPickupRoutePlanner? pickupStaging = null,
-    DispatchTrafficWakeup? trafficWakeup = null) : IsolatedBackgroundService
+    DispatchTrafficWakeup? trafficWakeup = null, TimeProvider? clock = null) : IsolatedBackgroundService
 {
+    private readonly TimeProvider _clock = clock ?? TimeProvider.System;
+    private TimeSpan BusinessDelay(int milliseconds) => _clock is SimulationTimeProvider simulation
+        ? simulation.ScaleForBusiness(TimeSpan.FromMilliseconds(milliseconds))
+        : TimeSpan.FromMilliseconds(milliseconds);
     private readonly DispatchTrafficReservationService _trafficLayer = trafficLayer ?? new(trafficResources, pipeline, tasks, optimization);
     private readonly Dictionary<string, string> _conditionFingerprints = new(StringComparer.Ordinal);
     private readonly HashSet<string> _observedSteps = new(StringComparer.Ordinal);
@@ -79,9 +84,9 @@ public sealed class DispatchTaskStepCoordinator(
             }
 
             if (RollingRoutes is not null && trafficWakeup is not null)
-                await trafficWakeup.WaitForFollowupAsync(options.PollIntervalMs, stoppingToken);
+                await trafficWakeup.WaitForFollowupAsync((int)BusinessDelay(options.PollIntervalMs).TotalMilliseconds, stoppingToken);
             else
-                await Task.Delay(options.PollIntervalMs, stoppingToken);
+                await Task.Delay(BusinessDelay(options.PollIntervalMs), stoppingToken);
         }
     }
 
@@ -193,8 +198,8 @@ public sealed class DispatchTaskStepCoordinator(
         CancellationToken cancellationToken)
     {
         if (step.StartedAt is not { } startedAt || !TaskTemplateExecutionPolicy.HasTimedOut(
-                startedAt, step.TimeoutSeconds, DateTimeOffset.UtcNow)) return false;
-        var elapsed = DateTimeOffset.UtcNow - startedAt;
+                startedAt, step.TimeoutSeconds, _clock.GetUtcNow())) return false;
+        var elapsed = _clock.GetUtcNow() - startedAt;
 
         var action = TaskTemplateExecutionPolicy.NormalizeTimeoutAction(step.TimeoutAction);
         var node = string.IsNullOrWhiteSpace(step.TemplateNodeId) ? step.StepType.ToString() : step.TemplateNodeId;
@@ -351,8 +356,8 @@ public sealed class DispatchTaskStepCoordinator(
         if (!vehicleStates.TryGet(vehicleId, out var vehicle) || vehicle.Connection != ConnectionState.Online ||
             vehicle.Quality != SignalQuality.Good || vehicle.EmergencyStopped != false || vehicle.Blocked != false ||
             AgvObstaclePolicy.IsBlocked(vehicle) || AgvObstaclePolicy.HasBlockingAlarm(vehicle) ||
-            vehicle.LastSuccessfulPollAt is not { } observed || observed > DateTimeOffset.UtcNow.AddSeconds(1) ||
-            DateTimeOffset.UtcNow - observed > TimeSpan.FromSeconds(mapOptions?.PositionStaleSeconds ?? 5) || vehicle.Tasks.Any(t => t.Status is 1 or 2 or 3)) return false;
+            vehicle.LastSuccessfulPollAt is not { } observed || observed > _clock.GetUtcNow().AddSeconds(1) ||
+            _clock.GetUtcNow() - observed > TimeSpan.FromSeconds(mapOptions?.PositionStaleSeconds ?? 5) || vehicle.Tasks.Any(t => t.Status is 1 or 2 or 3)) return false;
         return current.Definition.Nodes.Any(n => n.Enabled &&
             MapRouteSiteMapper.IsSameNode(current.Definition, n.Id, source) &&
             MapRouteSiteMapper.IsSameNode(current.Definition, n.Id, vehicle.CurrentStation));

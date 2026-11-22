@@ -1,4 +1,4 @@
-﻿using AgvDispatch.Application.Abstractions;
+using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Domain.Tasks;
 using AgvDispatch.Domain.Devices;
 using AgvDispatch.Infrastructure.Persistence.Entities;
@@ -79,7 +79,7 @@ public sealed class ManualReleaseWorkflowService(
                 return;
             }
 
-            var now = DateTime.Now;
+            var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
             var requestId = $"MRR-{Guid.NewGuid():N}";
             await database.Insertable(new TrafficResourceReleaseAuditEntity
             {
@@ -147,7 +147,7 @@ public sealed class ManualReleaseWorkflowService(
     private async Task ExpirePendingRequestsAsync(CancellationToken cancellationToken)
     {
         _ = settings; // Kept for compatibility with existing service registration.
-        var now = DateTime.Now;
+        var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
         await database.Updateable<ManualTrafficReleaseRequestEntity>()
             .SetColumns(item => new ManualTrafficReleaseRequestEntity
             {
@@ -177,7 +177,7 @@ public sealed class ManualReleaseWorkflowService(
             var tolerance = safety?.StoppedVelocityTolerance ?? 0.02;
             if (task.CancelVehicleId == null || vehicles == null || !vehicles.TryGet(task.CancelVehicleId, out var vehicle) ||
                 vehicle.Connection != ConnectionState.Online || vehicle.Quality != SignalQuality.Good || vehicle.LastSuccessfulPollAt == null ||
-                DateTimeOffset.Now - vehicle.LastSuccessfulPollAt > age || vehicle.LastSuccessfulPollAt > DateTimeOffset.Now.AddSeconds(1) ||
+                AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow() - vehicle.LastSuccessfulPollAt > age || vehicle.LastSuccessfulPollAt > AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().AddSeconds(1) ||
                 vehicle.VelocityX == null || vehicle.VelocityY == null || vehicle.AngularVelocity == null ||
                 !double.IsFinite(vehicle.VelocityX.Value) || !double.IsFinite(vehicle.VelocityY.Value) || !double.IsFinite(vehicle.AngularVelocity.Value) ||
                 Math.Abs(vehicle.VelocityX.Value) > tolerance || Math.Abs(vehicle.VelocityY.Value) > tolerance || Math.Abs(vehicle.AngularVelocity.Value) > tolerance ||

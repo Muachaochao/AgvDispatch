@@ -93,6 +93,18 @@ catalog.Replace(MapCorridorResources.AllResources(multiMap));
 var runtime=new ActiveMapRuntimeSnapshot("MULTI","V1",multiMap,DateTimeOffset.Now);
 var planner=new BayPlanner(multiMap);
 var stepOptions=new DispatchTaskStepOptions();
+var entryMap=multiMap with {Edges=multiMap.Edges.Select(edge=>edge.Id=="W2D"?
+    edge with{ResourceIds=["ENTRY-DUMP"]}:edge).ToArray(),
+    Resources=multiMap.Resources.Append(new("ENTRY-DUMP",TrafficResourceType.Intersection)).ToArray()};
+var entryPlanner=new BayPlanner(entryMap);
+var equipmentResources=DumperWaitingBaySafety.EquipmentEntryResources(entryPlanner,"WAIT2","DUMP",["DUMPER"]);
+Check(equipmentResources is not null&&equipmentResources.Contains("DUMPER")&&equipmentResources.Contains("ENTRY-DUMP"),
+    "倒料设备申请同时覆盖设备资源和候车位到倒料位的完整入口路径");
+Check(DumperWaitingBaySafety.EquipmentEntryResources(entryPlanner,"MISSING","DUMP",["DUMPER"]) is null,
+    "入口路径不可达时不取得单独的设备资源");
+Check(DumperWaitingBaySafety.IsPhysicalWaitingSite(multiMap,"WAIT2","DUMP")&&
+    !DumperWaitingBaySafety.IsPhysicalWaitingSite(multiMap,"DUMP","DUMP"),
+    "持久绑定的地图候车位必须是独立容量1的启用停靠点，倒料点不能冒充候车位");
 async Task<DispatchTaskStepWorkItem> MultiStep(string id,string vehicle)
 {
     await db.Insertable(new DispatchTaskEntity{TaskId=id,StationId=id,VehicleId=vehicle,Stage=(int)DispatchTaskStage.PickingUp,CreatedAt=DateTime.Now,UpdatedAt=DateTime.Now}).ExecuteCommandAsync();

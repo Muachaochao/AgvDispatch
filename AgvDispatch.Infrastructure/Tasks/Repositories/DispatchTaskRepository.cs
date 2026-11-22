@@ -63,7 +63,7 @@ public sealed class DispatchTaskRepository(ISqlSugarClient database) : IDispatch
                 return;
             }
 
-            var now = DateTime.Now;
+            var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
             var entity = new DispatchTaskEntity
             {
                 TaskId = CreateTaskId(now),
@@ -143,7 +143,7 @@ public sealed class DispatchTaskRepository(ISqlSugarClient database) : IDispatch
         cancellationToken.ThrowIfCancellationRequested();
         var transaction = await database.Ado.UseTranAsync(async () =>
         {
-            var now = DateTime.Now;
+            var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
             var affected = await database.Updateable<DispatchTaskEntity>()
                 .SetColumns(task => new DispatchTaskEntity
                 {
@@ -191,7 +191,7 @@ public sealed class DispatchTaskRepository(ISqlSugarClient database) : IDispatch
         await database.Updateable<DispatchTaskEntity>()
             .SetColumns(task => new DispatchTaskEntity
             {
-                UpdatedAt = DateTime.Now,
+                UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime,
                 ErrorMessage = message
             })
             .Where(task => task.TaskId == taskId && task.Stage == (int)DispatchTaskStage.Created)

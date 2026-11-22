@@ -14,7 +14,7 @@ public sealed class DeviceMonitoringService(IAgvStateCache vehicles, AgvOptions 
     public async Task<DeviceMonitoringSnapshot> GetSnapshotAsync(CancellationToken cancellationToken)
     {
         var activeTasks = await tasks.GetActiveTasksAsync(cancellationToken);
-        var now = DateTimeOffset.UtcNow;
+        var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow();
         var cachedVehicles = vehicles.GetAll().ToDictionary(v => v.VehicleId, StringComparer.OrdinalIgnoreCase);
         var agvs = options.Robots.Select(robot =>
         {

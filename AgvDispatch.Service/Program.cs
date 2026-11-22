@@ -6,10 +6,15 @@ using AgvDispatch.Infrastructure.Persistence;
 using AgvDispatch.Domain.Maps;
 using AgvDispatch.Infrastructure.Maps;
 using AgvDispatch.Infrastructure.Traffic;
+using AgvDispatch.Application.Runtime;
 using NLog.Extensions.Logging;
 using SqlSugar;
 
+var simulationTime = SimulationTimeProvider.FromEnvironment();
+BusinessClock.Use(simulationTime);
 var builder = Host.CreateApplicationBuilder(args);
+builder.Services.AddSingleton(simulationTime);
+builder.Services.AddSingleton<TimeProvider>(simulationTime);
 
 builder.Services.AddWindowsService(options =>
 {

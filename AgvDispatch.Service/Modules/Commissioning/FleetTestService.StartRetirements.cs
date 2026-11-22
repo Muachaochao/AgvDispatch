@@ -44,7 +44,7 @@ public sealed partial class FleetTestService
             var retired=startRetirements.SingleOrDefault(r=>string.Equals(r.RequestId,request.RequestId,StringComparison.OrdinalIgnoreCase));
             if(retired==null)
             {
-                retired=new(request.RequestId,user.WindowsIdentity,request.Reason.Trim(),DateTimeOffset.UtcNow);
+                retired=new(request.RequestId,user.WindowsIdentity,request.Reason.Trim(),AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow());
                 var updated=startRetirements.Append(retired).ToArray();
                 Directory.CreateDirectory(directory);
                 using(var stream=new FileStream(path+".retired.tmp",FileMode.Create,FileAccess.Write,FileShare.None))

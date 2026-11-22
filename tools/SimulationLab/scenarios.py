@@ -9,6 +9,7 @@ import time
 import uuid
 from contextlib import closing
 from pathlib import Path
+import simulation_clock
 from urllib.error import HTTPError, URLError
 from controller import read, write
 from device_controls import PLC_DEFAULTS
@@ -273,9 +274,10 @@ def separation(a0, a1, b0, b1):
     return math.hypot(dx + vx * t, dy + vy * t)
 
 
-def control_applied(state, controls, vehicle=None):
+def control_applied(state, controls, vehicle=None, now=None):
     """A written input is not a device acknowledgement. Match the applied sequence and fields."""
-    if time.time() - state.get('time', 0) > 3:
+    current = time.time() if now is None else now
+    if current - state.get('time', 0) > 3:
         return None
     observed = state.get('cars', {}).get(vehicle, {}).get('simulationControl', {}) if vehicle else state.get('simulationControl', {})
     if observed.get('sequence') != controls['sequence'] or observed.get('error'):
@@ -289,7 +291,11 @@ def control_applied(state, controls, vehicle=None):
 
 
 def fresh_device_state(runtime, timeout=5):
-    deadline = time.monotonic() + timeout
+    clock = getattr(runtime, 'clock', None)
+    monotonic = clock.monotonic if clock else time.monotonic
+    time_now = clock.time if clock else time.time
+    wait_business = clock.business_delay if clock else lambda value: value
+    deadline = monotonic() + timeout
     while True:
         if runtime.abort.is_set():
             raise InterruptedError('场景已中止，停止等待设备反馈。')
@@ -297,11 +303,11 @@ def fresh_device_state(runtime, timeout=5):
             raise RuntimeError('仿真子进程已退出，不能继续判定。')
         state = runtime.device()
         stamp = state.get('time', 0)
-        if type(stamp) in (int, float) and math.isfinite(stamp) and 0 <= time.time() - stamp <= timeout:
+        if type(stamp) in (int, float) and math.isfinite(stamp) and 0 <= time_now() - stamp <= timeout:
             return state
-        if time.monotonic() >= deadline:
+        if monotonic() >= deadline:
             raise RuntimeError('设备快照过期，不能继续判定。')
-        runtime.abort.wait(.1)
+        runtime.abort.wait(wait_business(.1))
 
 
 def external_input(runtime, sequence):
@@ -563,7 +569,8 @@ class Observer:
                     self.violations.append(dict(kind='envelope-overlap', vehicles=[first, second],
                         distance=distance, dimensions={first: self.footprints[first], second: self.footprints[second]},
                         marginMeters=.05))
-        now = time.monotonic()
+        clock = getattr(self.runtime, 'clock', None)
+        now = clock.monotonic() if clock else time.monotonic()
         current_pairs = set(mutual_wait_pairs(cars))
         requests = query(self.runtime.root,
                          "select TaskId,VehicleId,State,ResourceIds from traffic_request where State='Waiting'")
@@ -616,7 +623,7 @@ class Observer:
         })
         with (self.evidence / 'observations.jsonl').open('a', encoding='utf-8') as stream:
             stream.write(json.dumps(dict(
-                time=time.time(),
+                time=clock.time() if clock else time.time(),
                 device=state,
                 leases=leases,
                 trafficWaitRequests=requests,
@@ -634,10 +641,16 @@ class Observer:
 
 
 def execute(runtime, request):
-    started = time.time()
+    if not hasattr(runtime, 'clock'):
+        runtime.clock = simulation_clock.SimulationClock(1, time.time())
+    if not hasattr(runtime, 'simulation_rate'):
+        runtime.simulation_rate = runtime.clock.rate
+    started = runtime.clock.time()
+    wall_started = time.monotonic()
     evidence = runtime.root / ('simulation-run-' + runtime.scenario['id'])
     evidence.mkdir(exist_ok=False)
-    write(evidence / 'scenario.json', dict(**request, startedAt=started, rootName=runtime.root.name))
+    write(evidence / 'scenario.json', dict(**request, startedAt=started,
+        simulationRate=runtime.simulation_rate, rootName=runtime.root.name))
     if (runtime.root / 'runtime-release.json').is_file():
         write(evidence / 'runtime-release.json', read(runtime.root / 'runtime-release.json'))
     if (runtime.root / 'navigation.agvmap.json').is_file():
@@ -689,6 +702,8 @@ def execute(runtime, request):
     def check(name, passed, detail):
         checks.append(dict(name=name, status='passed' if passed else 'failed', detail=detail))
         if not passed: raise RuntimeError(name + '：' + str(detail))
+    def control_applied_now(state, controls, vehicle=None):
+        return control_applied(state, controls, vehicle, now=runtime.clock.time())
     def create(station, vehicle, trigger=True):
         if trigger:
             write(runtime.root / 'device-input.json', dict(sequence=uuid.uuid4().hex, call=station))
@@ -739,11 +754,11 @@ def execute(runtime, request):
         # guard still fails quickly if the queue truly stops advancing.
         timeout = max(120.0, min(float(request['timeoutSeconds']), 120.0 + len(ordered) * 3.0))
         stall_timeout = 120.0 if len(ordered) > 32 else 60.0
-        deadline = time.monotonic() + timeout
-        last_progress = time.monotonic()
+        deadline = runtime.clock.monotonic() + timeout
+        last_progress = runtime.clock.monotonic()
         last_count = -1
         progress_path = evidence / 'batch-creation-progress.jsonl'
-        while time.monotonic() < deadline:
+        while runtime.clock.monotonic() < deadline:
             if runtime.abort.is_set():
                 raise InterruptedError('批量呼叫建单已中止；已经建出的原任务保留。')
             placeholders = ','.join('?' for _ in ordered)
@@ -776,12 +791,12 @@ def execute(runtime, request):
                 write(evidence / 'task-identities.json', tasks)
             if len(found) != last_count:
                 last_count = len(found)
-                last_progress = time.monotonic()
+                last_progress = runtime.clock.monotonic()
                 runtime.scenario['message'] = f'同时呼叫 {len(ordered)} 个工位；正式后台已建单 {len(found)} 个，等待 {len(ordered) - len(found)} 个。'
                 with progress_path.open('a', encoding='utf-8') as stream:
                     stream.write(json.dumps(
                         dict(
-                            elapsedSeconds=timeout - max(0.0, deadline - time.monotonic()),
+                            elapsedSeconds=timeout - max(0.0, deadline - runtime.clock.monotonic()),
                             createdCount=len(found),
                             requestedCount=len(ordered),
                             firstMissing=next((station for station in ordered if station not in found), None),
@@ -791,12 +806,12 @@ def execute(runtime, request):
             if len(found) == len(ordered):
                 write(evidence / 'batch-creation.json', dict(
                     requestedStations=ordered, createdStations=list(found),
-                    elapsedSeconds=timeout - max(0.0, deadline - time.monotonic()),
+                    elapsedSeconds=timeout - max(0.0, deadline - runtime.clock.monotonic()),
                     waitTimeoutSeconds=timeout))
                 return [found[station] for station in ordered]
             # If no new task appears for the bounded stall window, report the exact stations
             # instead of waiting until the global scenario deadline.
-            if time.monotonic() - last_progress >= stall_timeout:
+            if runtime.clock.monotonic() - last_progress >= stall_timeout:
                 break
             runtime.abort.wait(.25)
         missing = [station for station in ordered if station not in found]
@@ -808,7 +823,7 @@ def execute(runtime, request):
             f'已建 {len(found)}/{len(ordered)}，首个未建工位 {missing[0] if missing else "无"}。')
     def complete(ids):
         nonlocal fault_observed, recovery_hold, auto_detour_sends
-        deadline = time.monotonic() + request['timeoutSeconds']
+        deadline = runtime.clock.monotonic() + request['timeoutSeconds']
         large_batch = request['name'] in ('custom-calls', 'dispatch-backlog', 'business-calls') and len(ids) > 32
 
         def batch_task_details():
@@ -884,13 +899,13 @@ def execute(runtime, request):
                 handover=dict(exitPhysicallyVerified=False),
             )) for tid in ids}
 
-        write(evidence / ('completion-start-' + uuid.uuid4().hex + '.json'), dict(taskIds=list(ids), startedAt=time.time()))
+        write(evidence / ('completion-start-' + uuid.uuid4().hex + '.json'), dict(taskIds=list(ids), startedAt=runtime.clock.time()))
         offline_at = None; fault_vehicle = None; held = set(); restored = False; offline_controls = None
         plc_fault_started = None; plc_recovery_controls = None
         road_block_started = None; road_block_controls = None
         obstacle_scan_started = None; obstacle_armed_at = None; obstacle_started = None
         obstacle_controls = None; obstacle_recovery = None
-        while time.monotonic() < deadline:
+        while runtime.clock.monotonic() < deadline:
             if runtime.abort.is_set(): raise InterruptedError('场景已中止，原任务及占用保留；请核对后恢复。')
             details = batch_task_details() if large_batch else {
                 tid: runtime.api('/api/tasks/' + tid) for tid in ids
@@ -908,7 +923,7 @@ def execute(runtime, request):
                     if not fault_vehicle: raise RuntimeError('倒料完成阶段未取得车辆身份。')
                     runtime.control(dict(vehicles={fault_vehicle: dict(cancelFinalReturnSegments=2)}))
                     applied = runtime.wait('车端返程取消控制未被设备应用',
-                                           lambda: control_applied(runtime.device(), runtime.controls, fault_vehicle), 10)
+                                           lambda: control_applied_now(runtime.device(), runtime.controls, fault_vehicle), 10)
                     write(evidence / 'vendor-cancel-applied.json', dict(taskId=candidate, vehicleId=fault_vehicle, applied=applied))
                     check('车端返程取消已在返程命令前武装到原车辆', True, fault_vehicle)
                     fault_observed = True
@@ -954,7 +969,7 @@ def execute(runtime, request):
                                    if next((step for step in detail['steps']
                                             if step.get('sequence') == target_index + 1), {}).get('status') == 'Executing'), None)
                     if active:
-                        obstacle_scan_started = obstacle_scan_started or time.monotonic()
+                        obstacle_scan_started = obstacle_scan_started or runtime.clock.monotonic()
                         vehicle_id = details[active]['task'].get('vehicleId')
                         car = (state.get('cars') or {}).get(vehicle_id or '', {})
                         navigation = read(runtime.root / 'navigation.agvmap.json')
@@ -965,25 +980,25 @@ def execute(runtime, request):
                                 obstacleAfterSegments=int(car.get('completed_segments') or 0) + 1)}))
                             obstacle_controls = json.loads(json.dumps(runtime.controls))
                             applied = runtime.wait('车端障碍控制未生效',
-                                                   lambda: control_applied(runtime.device(), obstacle_controls, vehicle_id), 10)
-                            obstacle_armed_at = time.monotonic()
+                                                   lambda: control_applied_now(runtime.device(), obstacle_controls, vehicle_id), 10)
+                            obstacle_armed_at = runtime.clock.monotonic()
                             obstacle_recovery = dict(taskId=active, vehicleId=vehicle_id, firstObserved=None)
                             write(evidence / 'obstacle-auto-armed.json',
                                   dict(taskId=active, vehicleId=vehicle_id, edge=car.get('motionEdge'),
                                        completedSegments=car.get('completed_segments'), applied=applied))
-                        elif time.monotonic() - obstacle_scan_started >= 30:
+                        elif runtime.clock.monotonic() - obstacle_scan_started >= 30:
                             check('当前地图存在可自动改道的独立连通道路', False,
                                   '原配送路线持续30秒未经过具有独立备选连接的路段；未注入虚假障碍。')
                 elif obstacle_started is None:
                     car = (state.get('cars') or {}).get(obstacle_recovery['vehicleId'], {})
                     if car.get('blocked') is True and car.get('simulationControl', {}).get('obstacle') is True:
-                        obstacle_started = time.monotonic()
+                        obstacle_started = runtime.clock.monotonic()
                         write(evidence / 'obstacle-auto-triggered.json',
                               dict(taskId=obstacle_recovery['taskId'], vehicleId=obstacle_recovery['vehicleId'],
                                    station=car.get('station'), completedSegments=car.get('completed_segments')))
                         check('车端在合法站点边界先报Blocked', True,
                               dict(taskId=obstacle_recovery['taskId'], station=car.get('station')))
-                    elif time.monotonic() - obstacle_armed_at >= 40:
+                    elif runtime.clock.monotonic() - obstacle_armed_at >= 40:
                         check('车端在合法站点边界先报Blocked', False,
                               '障碍触发控制已应用，但车辆未在限制时间内到达可改道站点。')
                 elif not fault_observed:
@@ -999,7 +1014,7 @@ def execute(runtime, request):
                             obstacle_recovery['firstObserved'] = observed
                         if observed.get('newVendorTaskId') or observed.get('sendAttempted'):
                             obstacle_recovery['sent'] = observed
-                    elapsed = time.monotonic() - obstacle_started
+                    elapsed = runtime.clock.monotonic() - obstacle_started
                     if elapsed >= request['holdSeconds'] + 20 and observed is None:
                         check('后台收到车端障碍并建立恢复记录', False,
                               '超过观察窗口仍未取得原任务、车辆或恢复状态；保留设备与任务现场。')
@@ -1008,7 +1023,7 @@ def execute(runtime, request):
                         runtime.control(dict(vehicles={obstacle_recovery['vehicleId']: dict(
                             obstacle=False, obstacleAfterSegments=None)}))
                         cleared = runtime.wait('障碍清除未生效',
-                                               lambda: control_applied(runtime.device(), runtime.controls,
+                                               lambda: control_applied_now(runtime.device(), runtime.controls,
                                                                        obstacle_recovery['vehicleId']), 10)
                         write(evidence / 'obstacle-auto-recovery.json',
                               dict(clearApplied=cleared, firstObserved=obstacle_recovery.get('firstObserved'),
@@ -1039,7 +1054,7 @@ def execute(runtime, request):
                                    if next((step for step in detail['steps']
                                             if step.get('sequence') == target_index + 1), {}).get('status') == 'Executing'), None)
                     if active:
-                        obstacle_scan_started = obstacle_scan_started or time.monotonic()
+                        obstacle_scan_started = obstacle_scan_started or runtime.clock.monotonic()
                         vehicle_id = details[active]['task'].get('vehicleId')
                         car = (state.get('cars') or {}).get(vehicle_id or '', {})
                         navigation = read(runtime.root / 'navigation.agvmap.json')
@@ -1057,8 +1072,8 @@ def execute(runtime, request):
                             obstacle_controls = json.loads(json.dumps(runtime.controls))
                             applied = runtime.wait(
                                 '车端道路中段障碍控制未生效',
-                                lambda: control_applied(runtime.device(), obstacle_controls, vehicle_id), 10)
-                            obstacle_armed_at = time.monotonic()
+                                lambda: control_applied_now(runtime.device(), obstacle_controls, vehicle_id), 10)
+                            obstacle_armed_at = runtime.clock.monotonic()
                             obstacle_recovery = dict(
                                 taskId=active, vehicleId=vehicle_id, firstObserved=None,
                                 states=[], safeTarget=None, sent=None)
@@ -1067,13 +1082,13 @@ def execute(runtime, request):
                                        edge=car.get('motionEdge'),
                                        station=car.get('station'),
                                        x=car.get('x'), y=car.get('y'), applied=applied))
-                        elif time.monotonic() - obstacle_scan_started >= 30:
+                        elif runtime.clock.monotonic() - obstacle_scan_started >= 30:
                             check('道路中段障碍能够绑定原运输车辆', False,
                                   '满箱运输步骤持续30秒未在道路中移动，未注入虚假障碍。')
                 elif obstacle_started is None:
                     car = (state.get('cars') or {}).get(obstacle_recovery['vehicleId'], {})
                     if car.get('blocked') is True and car.get('simulationControl', {}).get('obstacle') is True:
-                        obstacle_started = time.monotonic()
+                        obstacle_started = runtime.clock.monotonic()
                         write(evidence / 'obstacle-auto-safety-triggered.json',
                               dict(taskId=obstacle_recovery['taskId'],
                                    vehicleId=obstacle_recovery['vehicleId'],
@@ -1084,7 +1099,7 @@ def execute(runtime, request):
                               dict(taskId=obstacle_recovery['taskId'],
                                    vehicleId=obstacle_recovery['vehicleId'],
                                    edge=car.get('motionEdge')))
-                    elif time.monotonic() - obstacle_armed_at >= 15:
+                    elif runtime.clock.monotonic() - obstacle_armed_at >= 15:
                         check('虚拟车在路段中间真实上报Blocked', False,
                               '障碍控制已应用，但车辆未形成车端阻挡反馈。')
                 elif not fault_observed:
@@ -1115,7 +1130,7 @@ def execute(runtime, request):
                         }))
                         cleared = runtime.wait(
                             '道路中段退回后的障碍清除未生效',
-                            lambda: control_applied(
+                            lambda: control_applied_now(
                                 runtime.device(), runtime.controls,
                                 obstacle_recovery['vehicleId']), 10)
                         event_rows = []
@@ -1168,7 +1183,7 @@ def execute(runtime, request):
                               obstacle_recovery.get('sent'))
                         auto_detour_sends += 1
                         fault_observed = True
-                    elif time.monotonic() - obstacle_started >= request['timeoutSeconds']:
+                    elif runtime.clock.monotonic() - obstacle_started >= request['timeoutSeconds']:
                         check('道路中段安全点退回在观察期内完成', False,
                               obstacle_recovery)
             if name == 'road-block-recovery':
@@ -1183,18 +1198,18 @@ def execute(runtime, request):
                             runtime.control(dict(vehicles={vehicle_id: dict(blockedEdges=[edge])}))
                             road_block_controls = json.loads(json.dumps(runtime.controls))
                             applied = runtime.wait('道路阻塞控制未生效',
-                                                   lambda: control_applied(runtime.device(), road_block_controls, vehicle_id), 10)
+                                                   lambda: control_applied_now(runtime.device(), road_block_controls, vehicle_id), 10)
                             write(evidence / 'road-block-applied.json',
                                   dict(taskId=active, vehicleId=vehicle_id, edge=edge, applied=applied))
                             check('道路阻塞在正式运输途中实际生效', True, dict(vehicleId=vehicle_id, edge=edge))
-                            road_block_started = time.monotonic()
-                elif not fault_observed and time.monotonic() - road_block_started >= request['holdSeconds']:
+                            road_block_started = runtime.clock.monotonic()
+                elif not fault_observed and runtime.clock.monotonic() - road_block_started >= request['holdSeconds']:
                     vehicle_id = next(tasks[tid]['vehicle'] for tid in ids if tasks[tid]['vehicle'])
                     check('道路阻塞期间原任务未完成', any(d['task']['stage'] != 'Completed' for d in details.values()),
-                          dict(taskIds=list(ids), elapsed=time.monotonic() - road_block_started))
+                          dict(taskIds=list(ids), elapsed=runtime.clock.monotonic() - road_block_started))
                     runtime.control(dict(vehicles={vehicle_id: dict(blockedEdges=[])}))
                     applied = runtime.wait('道路阻塞解除未生效',
-                                           lambda: control_applied(runtime.device(), runtime.controls, vehicle_id), 10)
+                                           lambda: control_applied_now(runtime.device(), runtime.controls, vehicle_id), 10)
                     write(evidence / 'road-block-released.json', dict(vehicleId=vehicle_id, applied=applied))
                     fault_observed = True
             if name == 'plc-recovery' and plc_fault_started is None:
@@ -1205,18 +1220,18 @@ def execute(runtime, request):
                     signal = 'suppressReady' if request['plcFault'] == 'ready' else 'suppressDone'
                     runtime.control(dict(plc={signal: True}))
                     plc_recovery_controls = json.loads(json.dumps(runtime.controls))
-                    applied = runtime.wait('PLC卡位控制未生效', lambda: control_applied(runtime.device(), plc_recovery_controls), 10)
+                    applied = runtime.wait('PLC卡位控制未生效', lambda: control_applied_now(runtime.device(), plc_recovery_controls), 10)
                     check('PLC卡位在建单执行中实际生效', True, dict(taskId=target, signal=signal, applied=applied))
                     write(evidence / 'plc-fault-applied.json', dict(taskId=target, signal=signal, applied=applied, detail=details[target]))
-                    plc_fault_started = time.monotonic()
-            if name == 'plc-recovery' and plc_fault_started is not None and not fault_observed and time.monotonic() - plc_fault_started >= request['holdSeconds']:
+                    plc_fault_started = runtime.clock.monotonic()
+            if name == 'plc-recovery' and plc_fault_started is not None and not fault_observed and runtime.clock.monotonic() - plc_fault_started >= request['holdSeconds']:
                 target_index = 3 if request['plcFault'] == 'ready' else 5
                 target = next(tid for tid in ids if len(details[tid]['steps']) > target_index)
                 check('卡位期间原任务保持等待且未跳步', details[target]['steps'][target_index]['status'] in ('Ready', 'Executing'),
                       details[target]['steps'][target_index])
                 signal = 'suppressReady' if request['plcFault'] == 'ready' else 'suppressDone'
                 runtime.control(dict(plc={signal: False}))
-                acknowledged = runtime.wait('PLC卡位解除未被设备确认', lambda: control_applied(runtime.device(), runtime.controls), 10)
+                acknowledged = runtime.wait('PLC卡位解除未被设备确认', lambda: control_applied_now(runtime.device(), runtime.controls), 10)
                 write(evidence / 'plc-recovery-applied.json', acknowledged)
                 fault_observed = True
             fault_index = (0 if request.get('restartStage', 'pickup') == 'pickup' else 2) if name == 'service-restart' else 2
@@ -1252,16 +1267,16 @@ def execute(runtime, request):
                     fault_observed = True
                     recovery_hold = True
                     return False
-                runtime.control(dict(vehicles={fault_vehicle: dict(offline=True)})); offline_at = time.monotonic()
+                runtime.control(dict(vehicles={fault_vehicle: dict(offline=True)})); offline_at = runtime.clock.monotonic()
                 offline_controls = json.loads(json.dumps(runtime.controls))
                 write(evidence / 'disconnect.json', dict(taskId=candidate, held=sorted(held), device=runtime.device()))
-            if offline_at and not restored and time.monotonic() - offline_at >= 5:
+            if offline_at and not restored and runtime.clock.monotonic() - offline_at >= 5:
                 car = runtime.device()['cars'][fault_vehicle]
-                check('断连故障已被模型应用', car.get('offline') is True and bool(control_applied(runtime.device(), offline_controls, fault_vehicle)), fault_vehicle)
+                check('断连故障已被模型应用', car.get('offline') is True and bool(control_applied_now(runtime.device(), offline_controls, fault_vehicle)), fault_vehicle)
                 tid = next(t for t in ids if tasks[t]['vehicle'] == fault_vehicle)
                 check('断连保留原路权', held <= {r['ResourceId'] for r in leases if r['TaskId'] == tid}, sorted(held))
                 runtime.control(dict(vehicles={fault_vehicle: dict(offline=False)}))
-                acknowledged = runtime.wait('重连控制未被设备确认', lambda: control_applied(runtime.device(), runtime.controls, fault_vehicle), 10)
+                acknowledged = runtime.wait('重连控制未被设备确认', lambda: control_applied_now(runtime.device(), runtime.controls, fault_vehicle), 10)
                 write(evidence / 'reconnect-applied.json', acknowledged)
                 restored = True; fault_observed = True
             if all(d['task']['stage'] == 'Completed' for d in details.values()):
@@ -1305,14 +1320,14 @@ def execute(runtime, request):
         nonlocal fault_observed, recovery_hold, auto_detour_sends
         case = OBSTACLE_TIMEOUT_CASES[scenario_name]
         target_index = case['index']
-        deadline = time.monotonic() + request['timeoutSeconds']
+        deadline = runtime.clock.monotonic() + request['timeoutSeconds']
         armed = False
         timeout_controls = None
         obstacle_safe_site = None
         vehicle_id = tasks[task_id]['vehicle']
         detail = None
         step = None
-        while time.monotonic() < deadline:
+        while runtime.clock.monotonic() < deadline:
             if runtime.abort.is_set():
                 raise InterruptedError('障碍超时场景已中止；原任务和现场占用保留。')
             detail = runtime.api('/api/tasks/' + task_id)
@@ -1353,7 +1368,7 @@ def execute(runtime, request):
                         navigationTimeoutAfterBlockedSeconds=request['holdSeconds'])}))
                     timeout_controls = json.loads(json.dumps(runtime.controls))
                     applied = runtime.wait('车端障碍与导航超时控制未生效',
-                                           lambda: control_applied(runtime.device(), timeout_controls, vehicle_id), 10)
+                                           lambda: control_applied_now(runtime.device(), timeout_controls, vehicle_id), 10)
                     write(evidence / 'obstacle-timeout-armed.json',
                           dict(taskId=task_id, vehicleId=vehicle_id, stepType=case['step_type'],
                                timeoutAfterBlockedSeconds=request['holdSeconds'], applied=applied,
@@ -1444,7 +1459,7 @@ def execute(runtime, request):
             relocated_controls = json.loads(json.dumps(runtime.controls))
             relocated = runtime.wait(
                 '受控安全点转移控制未生效',
-                lambda: control_applied(runtime.device(), relocated_controls, vehicle_id), 10)
+                lambda: control_applied_now(runtime.device(), relocated_controls, vehicle_id), 10)
             write(evidence / 'safe-site-relocated.json',
                   dict(vehicleId=vehicle_id, safeSite=safe_site, applied=relocated))
             ready = runtime.wait(
@@ -1483,7 +1498,7 @@ def execute(runtime, request):
                 offline=scenario_name == 'obstacle-timeout-manual')}))
             cleared_controls = json.loads(json.dumps(runtime.controls))
             runtime.wait('障碍清除或离线注入未生效',
-                         lambda: control_applied(runtime.device(), cleared_controls, vehicle_id), 10)
+                         lambda: control_applied_now(runtime.device(), cleared_controls, vehicle_id), 10)
             expected = 'SafetyHold' if scenario_name == 'obstacle-timeout-manual' else 'ManualRelocationRequired'
             reassessed = runtime.wait(
                 '超时恢复状态未重新评估',
@@ -1531,7 +1546,7 @@ def execute(runtime, request):
         if request['name'] == 'plc-delay':
             runtime.control(dict(plc=dict(readyDelaySeconds=3, doneDelaySeconds=8)))
             plc_fault_controls = json.loads(json.dumps(runtime.controls))
-            applied = runtime.wait('PLC延迟控制未被设备应用', lambda: control_applied(runtime.device(), plc_fault_controls), 10)
+            applied = runtime.wait('PLC延迟控制未被设备应用', lambda: control_applied_now(runtime.device(), plc_fault_controls), 10)
             write(evidence / 'plc-delay-applied.json', applied)
             check('PLC延迟在建单前被设备确认', True, applied)
             fault_observed = True
@@ -1541,7 +1556,7 @@ def execute(runtime, request):
             loss_controls = json.loads(json.dumps(runtime.controls))
             applied = {
                 vehicle_id: runtime.wait('运输回包丢失控制未生效',
-                                         lambda vehicle_id=vehicle_id: control_applied(runtime.device(), loss_controls, vehicle_id), 10)
+                                         lambda vehicle_id=vehicle_id: control_applied_now(runtime.device(), loss_controls, vehicle_id), 10)
                 for vehicle_id in vehicle_ids
             }
             write(evidence / 'response-loss-applied.json', applied)
@@ -1563,7 +1578,7 @@ def execute(runtime, request):
                     grouped[-1][1].append(call)
             all_created = []
             batch_timeline = []
-            round_started = time.monotonic()
+            round_started = runtime.clock.monotonic()
             station_offsets = {station['stationId']: station['offset'] for station in runtime.lab.get('simulationTopology', {}).get('stations', [])}
             def calls_closed(group_calls):
                 memory = bytes.fromhex(fresh_device_state(runtime)['memory_hex'])
@@ -1575,16 +1590,16 @@ def execute(runtime, request):
                 if not calls_closed(group_calls):
                     closed_since = None
                     return False
-                closed_since = closed_since or time.monotonic()
-                return time.monotonic() - closed_since >= 1.5
+                closed_since = closed_since or runtime.clock.monotonic()
+                return runtime.clock.monotonic() - closed_since >= 1.5
             for due, group in grouped:
-                remaining = due - (time.monotonic() - round_started)
+                remaining = due - (runtime.clock.monotonic() - round_started)
                 if remaining > 0 and runtime.abort.wait(remaining): raise InterruptedError('场景已中止。')
                 if all_created:
                     closed_since = None
                     runtime.wait('上一轮工位握手尚未稳定闭合', lambda: cycles_stable(group), request['timeoutSeconds'])
                 previous_completed_at = batch_timeline[-1]['completedAt'] if batch_timeline else started
-                batch_issued_at = time.time()
+                batch_issued_at = runtime.clock.time()
                 stations = [call['stationId'] for call in group]
                 sequence = uuid.uuid4().hex
                 payload = dict(sequence=sequence, call=stations[0]) if len(stations) == 1 else dict(sequence=sequence, calls=stations)
@@ -1592,7 +1607,7 @@ def execute(runtime, request):
                 applied = runtime.wait('自定义呼叫批次未被设备确认', lambda: external_input(runtime, sequence), 10)
                 check('自定义呼叫批次已由设备应用', applied.get('accepted') is True, applied)
                 write(evidence / ('call-batch-' + str(len(all_created)) + '-' + uuid.uuid4().hex + '.json'),
-                      dict(request=payload, requestedAtSeconds=due, actualElapsedSeconds=time.monotonic()-round_started, applied=applied))
+                      dict(request=payload, requestedAtSeconds=due, actualElapsedSeconds=runtime.clock.monotonic()-round_started, applied=applied))
                 # The PLC already holds all calls in this batch. Poll the
                 # durable task table with one shared deadline so later station
                 # numbers are not judged as missing while earlier calls are
@@ -1604,7 +1619,7 @@ def execute(runtime, request):
                 batch_timeline.append(dict(
                     batchNumber=len(batch_timeline) + 1,
                     issuedAt=batch_issued_at,
-                    completedAt=time.time(),
+                    completedAt=runtime.clock.time(),
                     previousBatchCompletedAt=previous_completed_at,
                     taskIds=list(batch_ids),
                     stations=list(stations)))
@@ -1629,7 +1644,7 @@ def execute(runtime, request):
             # complete 3066 chain had already been accepted by the virtual car.
             runtime.control(dict(vehicles={assigned: dict(cancelFinalReturnSegments=2)}))
             applied = runtime.wait('返程取消控制未被设备应用',
-                                   lambda: control_applied(runtime.device(), runtime.controls, assigned), 10)
+                                   lambda: control_applied_now(runtime.device(), runtime.controls, assigned), 10)
             write(evidence / 'vendor-cancel-armed.json',
                   dict(taskId=task_id, vehicleId=assigned, applied=applied))
             check('车端返程取消已在任何返程命令前武装', True, assigned)
@@ -1642,7 +1657,7 @@ def execute(runtime, request):
             target_index = 3 if request['plcFault'] == 'ready' else 5
             runtime.control(dict(plc={signal: True}))
             applied = runtime.wait('PLC卡位控制未被设备应用',
-                                   lambda: control_applied(runtime.device(), runtime.controls), 10)
+                                   lambda: control_applied_now(runtime.device(), runtime.controls), 10)
             write(evidence / 'plc-fault-armed.json', dict(signal=signal, applied=applied))
             task_id = create(station, vehicle)
             reached = runtime.wait(
@@ -1656,8 +1671,8 @@ def execute(runtime, request):
             blocked_at = reached['steps'][target_index]
             write(evidence / 'plc-fault-observed.json',
                   dict(taskId=task_id, signal=signal, step=blocked_at))
-            start = time.monotonic()
-            while time.monotonic() - start < request['holdSeconds']:
+            start = runtime.clock.monotonic()
+            while runtime.clock.monotonic() - start < request['holdSeconds']:
                 if runtime.abort.wait(.25):
                     raise InterruptedError('PLC卡位保持期间场景已中止。')
             held = runtime.api('/api/tasks/' + task_id)
@@ -1668,7 +1683,7 @@ def execute(runtime, request):
                   held['steps'][target_index])
             runtime.control(dict(plc={signal: False}))
             released = runtime.wait('PLC卡位解除未被设备确认',
-                                    lambda: control_applied(runtime.device(), runtime.controls), 10)
+                                    lambda: control_applied_now(runtime.device(), runtime.controls), 10)
             write(evidence / 'plc-fault-released.json',
                   dict(taskId=task_id, signal=signal, applied=released))
             fault_observed = True
@@ -1800,7 +1815,7 @@ def execute(runtime, request):
                                *TIMEOUT_OBSTACLE_NAMES):
             check('指定阶段故障实际触发', fault_observed, request['name'])
         if request['name'] == 'plc-delay':
-            applied = control_applied(runtime.device(), plc_fault_controls)
+            applied = control_applied_now(runtime.device(), plc_fault_controls)
             check('PLC延迟控制被设备确认', bool(applied), applied)
             runtime.control(dict(plc=dict(readyDelaySeconds=0, doneDelaySeconds=5)))
             runtime.controls['plc'] = {}
@@ -1853,8 +1868,13 @@ def execute(runtime, request):
                  'obstacle-auto-safety-return', *TIMEOUT_OBSTACLE_NAMES) else None,
             taskSummary=summarize_tasks(all_details),
             callRows=runtime.scenario.get('callRows', []),
-            startedAt=started, finishedAt=time.time(), evidenceDirectory=evidence.name,
-            metrics=dict(taskCount=len(tasks), completedRounds=runtime.scenario['completedRounds'], durationSeconds=time.time()-started,
+            simulationRate=runtime.simulation_rate,
+            startedAt=started, finishedAt=runtime.clock.time(), evidenceDirectory=evidence.name,
+            metrics=dict(taskCount=len(tasks), completedRounds=runtime.scenario['completedRounds'],
+                         durationSeconds=runtime.clock.time()-started,
+                         wallDurationSeconds=time.monotonic()-wall_started,
+                         effectiveRate=(runtime.clock.time()-started)/(time.monotonic()-wall_started)
+                             if time.monotonic() > wall_started else None,
                          samples=observer.samples if observer else 0, minimumSeparationMeters=observer.minimum if observer else None,
                          longestUnchangedStepSeconds=observer.max_wait if observer else 0,
                          longestUnchangedStepScope='active-tasks-only-v2',
@@ -1867,5 +1887,5 @@ def execute(runtime, request):
         write(runtime.root / 'simulation-report.json', report)
         runtime.report = report
         runtime.history_cache = (0, [])
-        runtime.guidance_cache = (time.monotonic(), waiting_chain)
+        runtime.guidance_cache = (runtime.clock.monotonic(), waiting_chain)
         runtime.scenario.update(status=result_status, message=message)

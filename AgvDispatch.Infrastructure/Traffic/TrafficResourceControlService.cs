@@ -1,4 +1,4 @@
-﻿using AgvDispatch.Application.Abstractions;
+using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Application.Maps;
 using AgvDispatch.Domain.Maps;
 using AgvDispatch.Domain.Tasks;
@@ -31,7 +31,7 @@ public sealed partial class TrafficResourceControlService(
             task => task.TaskId,
             task => (DispatchTaskStage?)task.Stage,
             StringComparer.OrdinalIgnoreCase);
-        var now = DateTime.Now;
+        var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
         var definitionById = persistedDefinitions.ToDictionary(
             resource => resource.ResourceId,
             StringComparer.OrdinalIgnoreCase);

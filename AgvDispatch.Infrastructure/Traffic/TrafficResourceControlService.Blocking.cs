@@ -28,7 +28,7 @@ public sealed partial class TrafficResourceControlService
                 var task=await database.Queryable<DispatchTaskEntity>().Where(t=>t.TaskId==item.Task).FirstAsync(ct);
                 var step=await database.Queryable<DispatchTaskStepEntity>().Where(s=>s.StepId==item.Step&&s.TaskId==item.Task).FirstAsync(ct);
                 var commands=await database.Queryable<AgvCommandOutboxEntity>().Where(c=>c.StepId==item.Step&&c.TaskId==item.Task).Take(2).Select(c=>new{c.Status,c.VehicleId}).ToListAsync(ct);
-                var projected=row is null?null:ProjectRequest(row,leases,task is null?new Dictionary<string,DispatchTaskEntity>():new Dictionary<string,DispatchTaskEntity>{{task.TaskId,task}},DateTime.Now,now);
+                var projected=row is null?null:ProjectRequest(row,leases,task is null?new Dictionary<string,DispatchTaskEntity>():new Dictionary<string,DispatchTaskEntity>{{task.TaskId,task}},AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime,now);
                 var associated=task is not null&&step is not null&&row is not null&&row.VehicleId==item.Vehicle&&task.VehicleId==item.Vehicle;
                 var lease=leases.FirstOrDefault(l=>l.TaskId==item.Task&&l.OwnerStepId==item.Step&&l.VehicleId==item.Vehicle);
                 if(projected is {State:"Waiting"}&&(task is null||!Enum.IsDefined(typeof(DispatchTaskStage),task.Stage)||task.Stage is 90 or 100 or 110 or 120 or 130||step is null||step.Status is not (0 or 10 or 60)))projected=projected with{State=lease is null?"Inactive":"Held",Reason="原等待步骤已结束或非待执行状态；不沿用历史阻塞关系，占用仍按实际记录显示。"};
@@ -51,7 +51,7 @@ public sealed partial class TrafficResourceControlService
                     var pendingIds=pending.Select(r=>r.StepId).ToArray();
                     var eligible=pendingIds.Length==0?new List<string>():await database.Queryable<DispatchTaskStepEntity>().Where(s=>pendingIds.Contains(s.StepId)&&s.TaskId==item.Task&&(s.Status==0||s.Status==10||s.Status==60)).Select(s=>s.StepId).ToListAsync(ct);
                     foreach(var wait in pending.Take(32).Where(r=>eligible.Contains(r.StepId))){
-                        var p=ProjectRequest(wait,leases,task is null?new Dictionary<string,DispatchTaskEntity>():new Dictionary<string,DispatchTaskEntity>{{task.TaskId,task}},DateTime.Now,now);
+                        var p=ProjectRequest(wait,leases,task is null?new Dictionary<string,DispatchTaskEntity>():new Dictionary<string,DispatchTaskEntity>{{task.TaskId,task}},AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime,now);
                         if(p.State=="Waiting")Link(new(item.Task,item.Step,wait.TaskId,wait.StepId,wait.VehicleId,"TaskWait",null,false,wait.MapId,wait.MapVersionId),item.Depth+1);
                     }
                 }

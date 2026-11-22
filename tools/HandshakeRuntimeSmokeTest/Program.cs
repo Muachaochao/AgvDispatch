@@ -21,12 +21,14 @@ await new DatabaseInitializer(db).InitializeAsync(default);
 var writer=new DispatchTaskRepository(db);var orchestrator=new DispatchOrchestrationRepository(db);var store=new TaskHandshakeStore(db);
 var cache=new Signals();var vehicle=new Vehicles();var map=new ActiveMapRuntime();
 var dumpResource=new TrafficResourceDefinition("DUMP-AREA",TrafficResourceType.Station,1,[new(8,-2),new(12,-2),new(12,2),new(8,2)]);
-map.Replace(new("MAP","V1",new MapDefinition("isolated","","LocalCartesian","m",[new("PICK",0,0,MapNodeType.Station,true,[],"LM1"),new("DUMP",10,0,MapNodeType.Station,true,[dumpResource.Id],"LM2")],[],[dumpResource]),DateTimeOffset.Now));
+map.Replace(new("MAP","V1",new MapDefinition("isolated","","LocalCartesian","m",[new("PICK",0,0,MapNodeType.Station,true,[],"LM1"),new("WAIT",5,0,MapNodeType.WaitingPoint,true,[]),new("DUMP",10,0,MapNodeType.Station,true,[dumpResource.Id],"LM2")],[],[dumpResource]),DateTimeOffset.Now));
+var catalog=new TrafficResourceCatalog([dumpResource]);
+await new DatabaseInitializer(db,catalog).InitializeAsync(default);
 var creation=new DispatchTaskCreationOptions{DumperStationId="DUMPER"};
 var dispatch=new DispatchOrchestratorOptions{DumperWaitingSite="WAIT",DumperDumpingSite="DUMP",StationPickupSites=new(){["CNC"]="PICK",["OTHER"]="PICK"}};
 var options=new HandshakeExecutionOptions{Enabled=true,PlcContractVersion=HandshakeExecutionOptions.Version,StateMaxAgeSeconds=60,
     DumperExit=new(){ResourceIds=[dumpResource.Id],BodyProfiles=[new DumperExitBodyProfile("isolated-profile","AGV",0.5,0.05,true,true)]}};
-var traffic=new TrafficResourceManager(db,new([]),new(TimeSpan.FromSeconds(120)));
+var traffic=new TrafficResourceManager(db,catalog,new(TimeSpan.FromSeconds(120)));
 PersistentHandshakeExecutor Engine()=>new(store,cache,cache,orchestrator,writer,traffic,creation,dispatch,options,vehicle,map,new UnusedGateway(),new UnusedMapPreflight());
 var engine=Engine();
 void Fresh(){cache.Refresh();vehicle.Refresh();}
@@ -65,7 +67,7 @@ for(var i=0;i<8&&(await Current(task)).StepType==DispatchTaskStepType.PickupFull
 Check((await Current(task)).StepType==DispatchTaskStepType.DeliverFullBoxToDumper,"取箱阶段跨轮询完成，原九步顺序保留");
 Check(cache.Get("CNC","EmptyBoxTaskAcknowledged")&&cache.Get("CNC","FullBoxRemoved"),"28阶段返空箱责任与拉走通知保持到返箱收尾");
 
-await SetReady(task,DispatchTaskStepType.WaitForDumperReady);cache.Set("DUMPER","DumperReady",true);
+await SetReady(task,DispatchTaskStepType.WaitForDumperReady);vehicle.CurrentStation="WAIT";cache.Set("DUMPER","DumperReady",true);
 await Tick(task);Check(await Phase(task)=="AwaitReadyBaseline"&&!cache.Get("DUMPER","AgvAtWaitingPosition"),"残留Ready高电平不能当28阶段新周期许可");
 cache.Set("DUMPER","DumperReady",false);await Tick(task);await Tick(task);cache.Set("DUMPER","DumperReady",true);await Tick(task);await Tick(task);
 Check(await Phase(task)=="AwaitReadyConsumed"&&!cache.Get("DUMPER","AgvAtWaitingPosition"),"建立低基线后消费本轮Ready并撤销等待通知");

@@ -15,6 +15,35 @@ from test_runtime_lifecycle import SOURCE_PLC_TABLE
 
 
 class SimulationTests(unittest.TestCase):
+    def test_process_startup_wait_uses_wall_clock_instead_of_simulation_rate(self):
+        runtime = Runtime.__new__(Runtime)
+        runtime.children = {}
+        runtime.abort = Mock()
+        runtime.abort.is_set.return_value = False
+        runtime.clock = Mock()
+        runtime.clock.monotonic.side_effect = AssertionError('启动等待不得读取业务时钟')
+
+        with patch('controller.time.monotonic', side_effect=[0, 0, 0.02, 0.02]):
+            with self.assertRaises(TimeoutError):
+                runtime.wait('启动观察失败', lambda: False, timeout=0.01)
+
+    def test_live_status_includes_scenario_start_for_call_plan_timing(self):
+        runtime = Runtime.__new__(Runtime)
+        runtime.lock = threading.RLock()
+        runtime.root = Path('web-single-vehicle-sim-example')
+        runtime.phase = 'running'
+        runtime.children = {}
+        runtime.error = None
+        runtime.device = lambda: dict(time=time.time(), cars={})
+        call = dict(planIndex=1, stationId='CNC-111', atSeconds=3, status='pending')
+        started = time.time() - 10
+        runtime.scenario = dict(status='running', startedAt=started, callRows=[call])
+
+        scenario = runtime.live_status()['scenario']
+
+        self.assertEqual(scenario['startedAt'], started)
+        self.assertEqual(scenario['callRows'], [call])
+
     def test_dispatch_options_write_is_scoped_to_current_isolated_instance(self):
         runtime = Runtime.__new__(Runtime)
         runtime.lock = threading.RLock()

@@ -265,7 +265,7 @@ public sealed class CommunicationSettingsService : ICommunicationSettingsService
                 _agvOptions.NavigationCommandMode.Equals("GotargetCommissioning",StringComparison.OrdinalIgnoreCase) &&
                 next.Agvs.Count(v=>v.Enabled)>1)
                 throw new InvalidOperationException("当前3051独立测试模式仅允许连接一台车辆，请先切换运行模式。");
-            var audit=new CommunicationSettingsAudit(DateTimeOffset.Now,user.WindowsIdentity,
+            var audit=new CommunicationSettingsAudit(AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow(),user.WindowsIdentity,
                 $"车辆{request.VehicleId}通信{(request.Enabled?"连接":"断开")}，即时生效；保留连接参数与原任务记录。");
             var document=new CommunicationSettingsDocument(1,Guid.NewGuid().ToString("N"),next,_saved.Audits.Prepend(audit).Take(100).ToArray());
             var temp=_path+"."+Guid.NewGuid().ToString("N")+".tmp";
@@ -316,7 +316,7 @@ public sealed class CommunicationSettingsService : ICommunicationSettingsService
                 if(b.CoordinatesVerified && !unchanged && string.IsNullOrWhiteSpace(b.ConfirmationNote))
                     throw new ArgumentException("勾选坐标已核定前须填写核对依据；软件不会自动确认坐标。");
             }
-            var audit = new CommunicationSettingsAudit(DateTimeOffset.Now, user.WindowsIdentity,
+            var audit = new CommunicationSettingsAudit(AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow(), user.WindowsIdentity,
                 $"保存通信配置：PLC={request.Configuration.Plcs.Count}，AGV={request.Configuration.Agvs.Count}，地图绑定={request.Configuration.MapBindings.Count}；服务重启生效。");
             var saved = new CommunicationSettingsDocument(1, Guid.NewGuid().ToString("N"), request.Configuration,
                 _saved.Audits.Prepend(audit).Take(100).ToArray());

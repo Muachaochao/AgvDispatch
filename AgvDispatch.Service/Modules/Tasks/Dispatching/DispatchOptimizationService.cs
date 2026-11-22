@@ -41,7 +41,7 @@ public sealed class DispatchOptimizationService : IDispatchOptimizationService, 
             before = Volatile.Read(ref _snapshot);
             if (!before.Layers.Any(layer => layer.Key == key)) throw new ArgumentException("未知派车层：" + key);
             after = before with { Layers = before.Layers.Select(layer => layer.Key == key
-                ? layer with { State = state, Summary = summary, ItemCount = itemCount, UpdatedAt = DateTimeOffset.UtcNow } : layer).ToArray() };
+                ? layer with { State = state, Summary = summary, ItemCount = itemCount, UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow() } : layer).ToArray() };
         } while (!ReferenceEquals(Interlocked.CompareExchange(ref _snapshot, after, before), before));
     }
     public Task<DispatchOptimizationSnapshot> GetAsync(CancellationToken ct)
@@ -71,7 +71,7 @@ public sealed class DispatchOptimizationService : IDispatchOptimizationService, 
         {
             var previous = Volatile.Read(ref _snapshot);
             if (previous.Revision != request.ExpectedRevision) throw new InvalidOperationException("优化参数已被修改，请重新加载后保存。");
-            var saved = new SavedOptions(1, Guid.NewGuid().ToString("N"), request.Options, DateTimeOffset.UtcNow, user.WindowsIdentity);
+            var saved = new SavedOptions(1, Guid.NewGuid().ToString("N"), request.Options, AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow(), user.WindowsIdentity);
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(_path))!);
             var temp = _path + "." + Guid.NewGuid().ToString("N") + ".tmp";
             try

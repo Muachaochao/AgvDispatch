@@ -2,6 +2,7 @@ using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Domain.Tasks;
 using AgvDispatch.Infrastructure.Persistence.Entities;
 using SqlSugar;
+using AgvDispatch.Application.Runtime;
 
 namespace AgvDispatch.Service;
 
@@ -32,7 +33,10 @@ public sealed class RouteSegmentPassThroughReleaseWorker(
     {
         if (!worker.Enabled || !policy.Enabled || !commit.Enabled) return;
         worker.Validate();
-        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(worker.PollIntervalMs));
+        var interval = clock is SimulationTimeProvider simulation
+            ? simulation.ScaleForBusiness(TimeSpan.FromMilliseconds(worker.PollIntervalMs))
+            : TimeSpan.FromMilliseconds(worker.PollIntervalMs);
+        using var timer = new PeriodicTimer(interval);
         while (await timer.WaitForNextTickAsync(stoppingToken))
         {
             try

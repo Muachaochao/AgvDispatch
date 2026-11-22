@@ -17,7 +17,7 @@ public sealed class TaskSwitchRuntimePort(ISqlSugarClient database, ITaskCancell
 {
     private static TrafficUserContext Operator(TaskSwitchRecord session) => TrafficUserContext.LocalOperation(session.Operator);
     private bool Fresh(DateTimeOffset? stamp, DateTimeOffset? after = null) => stamp is { } t &&
-        t <= DateTimeOffset.Now.AddSeconds(1) && DateTimeOffset.Now - t <= TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds) &&
+        t <= AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().AddSeconds(1) && AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow() - t <= TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds) &&
         (after is null || t >= after);
     private static bool Zero(double? value) => value is { } v && double.IsFinite(v) && Math.Abs(v) < .01;
 
@@ -209,15 +209,15 @@ public sealed class TaskSwitchRuntimePort(ISqlSugarClient database, ITaskCancell
         var result = await database.Ado.UseTranAsync(async () =>
         {
             var changed = await database.Updateable<DispatchTaskEntity>().SetColumns(t => new DispatchTaskEntity
-                { Stage = (int)DispatchTaskStage.Cancelled, UpdatedAt = DateTime.Now, ErrorMessage = "空车受控换单：原运输、箱体、PLC周期及路权已核对闭合。" })
+                { Stage = (int)DispatchTaskStage.Cancelled, UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime, ErrorMessage = "空车受控换单：原运输、箱体、PLC周期及路权已核对闭合。" })
                 .Where(t => t.TaskId == session.SourceTaskId && t.Stage == (int)DispatchTaskStage.CancellationReview && t.CancelRequestId == session.CancelRequestId).ExecuteCommandAsync(ct);
             if (changed != 1) throw new InvalidOperationException("原取消节点已变化，未关闭原任务。");
             await database.Updateable<DispatchTaskStepEntity>().SetColumns(s => new DispatchTaskStepEntity
-                { Status = (int)DispatchTaskStepStatus.Cancelled, CompletedAt = DateTime.Now, UpdatedAt = DateTime.Now })
+                { Status = (int)DispatchTaskStepStatus.Cancelled, CompletedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime, UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime })
                 .Where(s => s.TaskId == session.SourceTaskId && s.Status != (int)DispatchTaskStepStatus.Completed).ExecuteCommandAsync(ct);
             await database.Insertable(new ExecutionEvidenceEntity { Id = Guid.NewGuid().ToString("N"), TaskId = session.SourceTaskId,
                 StepId = "", SessionId = session.SwitchId, Kind = "TaskSwitchOriginalClosed", Operator = session.Operator,
-                Reason = session.Request.Reason, Evidence = System.Text.Json.JsonSerializer.Serialize(new { session.SwitchId, observation }), OccurredAt = DateTime.Now }).ExecuteCommandAsync(ct);
+                Reason = session.Request.Reason, Evidence = System.Text.Json.JsonSerializer.Serialize(new { session.SwitchId, observation }), OccurredAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime }).ExecuteCommandAsync(ct);
         });
         if (!result.IsSuccess) throw new InvalidOperationException("原关闭及证据未一起提交，保持换单冻结。", result.ErrorException);
     }

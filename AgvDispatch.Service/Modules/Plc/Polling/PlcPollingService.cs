@@ -2,6 +2,7 @@
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Connectors.Plc;
 using AgvDispatch.Domain.Devices;
+using AgvDispatch.Application.Runtime;
 
 namespace AgvDispatch.Service;
 
@@ -11,8 +12,9 @@ public sealed class PlcPollingService(
     IPlcBatchReader batchReader,
     PlcSignalCache signalCache,
     PlcConnectionSupervisor connectionSupervisor,
-    IReadOnlySet<string>? stationIds = null) : IsolatedBackgroundService
+    IReadOnlySet<string>? stationIds = null, TimeProvider? clock = null) : IsolatedBackgroundService
 {
+    private readonly TimeProvider _clock = clock ?? TimeProvider.System;
     public Task RunAsync(CancellationToken token) => ExecuteAsync(token);
     private void MarkSignals(SignalQuality quality, string? message) =>
         signalCache.MarkEnabledSignals(quality, message, stationIds);
@@ -97,7 +99,9 @@ public sealed class PlcPollingService(
                 : options.PollIntervalMs;
             try
             {
-                await Task.Delay(delay, stoppingToken);
+                await Task.Delay(_clock is SimulationTimeProvider simulation
+                    ? simulation.ScaleForBusiness(TimeSpan.FromMilliseconds(delay))
+                    : TimeSpan.FromMilliseconds(delay), stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -125,7 +129,7 @@ public sealed class PlcPollingService(
             return;
         }
 
-        var age = DateTimeOffset.Now - connection.LastSuccessfulReadAt.Value;
+        var age = _clock.GetLocalNow() - connection.LastSuccessfulReadAt.Value;
         if (age >= TimeSpan.FromMilliseconds(options.StaleAfterMs))
         {
             MarkSignals(SignalQuality.Stale, errorMessage);

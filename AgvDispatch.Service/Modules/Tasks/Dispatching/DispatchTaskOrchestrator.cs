@@ -6,6 +6,7 @@ using AgvDispatch.Domain.Maps;
 using AgvDispatch.Domain.Tasks;
 using AgvDispatch.Application.Maps;
 using AgvDispatch.Application.Tasks;
+using AgvDispatch.Application.Runtime;
 
 namespace AgvDispatch.Service;
 
@@ -30,8 +31,13 @@ public sealed partial class DispatchTaskOrchestrator(
     ITaskHandshakeStore? handshakes=null, ITransportTimeoutRecoveryService? timeoutRecovery=null,
     CompletedTransportRouteReleaseService? completedRouteRelease=null,
     DispatchTaskStepOptions? stepOptions=null, AgvOptions? agvOptions=null,
-    GlobalPickupRoutePlanner? pickupStaging=null, DispatchTrafficWakeup? trafficWakeup=null) : IsolatedBackgroundService
+    GlobalPickupRoutePlanner? pickupStaging=null, DispatchTrafficWakeup? trafficWakeup=null,
+    TimeProvider? clock=null) : IsolatedBackgroundService
 {
+    private readonly TimeProvider _clock = clock ?? TimeProvider.System;
+    private TimeSpan BusinessDelay(int milliseconds) => _clock is SimulationTimeProvider simulation
+        ? simulation.ScaleForBusiness(TimeSpan.FromMilliseconds(milliseconds))
+        : TimeSpan.FromMilliseconds(milliseconds);
     private readonly IDispatchQueueWindowService _queueLayer = queueLayer ?? new DispatchQueueWindowService(tasks, trafficResources);
     private readonly IDispatchCandidateFilter _candidateLayer = candidateLayer ?? new DispatchCandidateFilter(options, agvGateway, agvStates,
         activeMap, mapOptions, routePlanner, trafficResources, routeCache, businessRun, fleetTest, charging, taskSwitchGuard, pickupStaging);
@@ -88,7 +94,7 @@ public sealed partial class DispatchTaskOrchestrator(
             var interval = optimization is not null && optimization.Options.Mode != "Disabled"
                 ? Math.Min(options.PollIntervalMs, optimization.Options.IntervalMs) : options.PollIntervalMs;
             if (trafficWakeup is null)
-                await Task.Delay(interval, stoppingToken);
+                await Task.Delay(BusinessDelay(interval), stoppingToken);
             else if (await trafficWakeup.WaitAsync(interval, stoppingToken) &&
                 optimization?.Options.Mode.Equals("Global", StringComparison.OrdinalIgnoreCase) == true)
                 _nextOptimizationAt = DateTimeOffset.MinValue;
@@ -149,9 +155,9 @@ public sealed partial class DispatchTaskOrchestrator(
         }
         if (optimization is not null && !optimization.Options.Mode.Equals("Disabled", StringComparison.OrdinalIgnoreCase))
         {
-            if (DateTimeOffset.UtcNow < _nextOptimizationAt) return null;
+            if (_clock.GetUtcNow() < _nextOptimizationAt) return null;
             var policy = optimization.Options;
-            _nextOptimizationAt = DateTimeOffset.UtcNow.AddMilliseconds(policy.IntervalMs);
+            _nextOptimizationAt = _clock.GetUtcNow().AddMilliseconds(policy.IntervalMs);
             var active = submitting.Concat(assigned).ToArray();
             if (policy.Mode.Equals("Global", StringComparison.OrdinalIgnoreCase))
                 return new(policy, availableSlots, active);
@@ -503,8 +509,8 @@ public sealed partial class DispatchTaskOrchestrator(
         CancellationToken cancellationToken)
     {
         if (!TaskTemplateExecutionPolicy.HasTimedOut(
-                task.PolicyStartedAt, task.TimeoutSeconds, DateTimeOffset.UtcNow)) return false;
-        var elapsed = DateTimeOffset.UtcNow - task.PolicyStartedAt;
+                task.PolicyStartedAt, task.TimeoutSeconds, _clock.GetUtcNow())) return false;
+        var elapsed = _clock.GetUtcNow() - task.PolicyStartedAt;
         var action = TaskTemplateExecutionPolicy.NormalizeTimeoutAction(task.TimeoutAction);
         var reason = $"SelectAgv 已等待 {(long)elapsed.TotalSeconds} 秒，超过模板阈值 {task.TimeoutSeconds} 秒；" +
                      $"超时处置 {action}，保留原任务与现场责任，禁止自动重发。";
@@ -556,7 +562,7 @@ public sealed partial class DispatchTaskOrchestrator(
         if (!agvStates.TryGet(vehicleId, out var agv)) return false;
         var position = AgvMapPositionAnalyzer.Analyze(
             agv.X, agv.Y, agv.LocalizationConfidence, agv.LastSuccessfulPollAt,
-            activeMap.Current?.Definition, DateTimeOffset.Now,
+            activeMap.Current?.Definition, _clock.GetLocalNow(),
             TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds),
             mapOptions.MinimumLocalizationConfidence, mapOptions.MaximumRouteDeviationMeters);
         return position.State == AgvMapPositionState.Normal;
@@ -608,8 +614,8 @@ public sealed partial class DispatchTaskOrchestrator(
                         !agvStates.TryGet(task.VehicleId, out var robot) ||
                         robot.Connection != ConnectionState.Online || robot.Quality != SignalQuality.Good ||
                         robot.LastSuccessfulPollAt is not { } observed ||
-                        observed > DateTimeOffset.UtcNow.AddSeconds(1) ||
-                        DateTimeOffset.UtcNow - observed >= TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds) ||
+                        observed > _clock.GetUtcNow().AddSeconds(1) ||
+                        _clock.GetUtcNow() - observed >= TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds) ||
                         robot.Blocked != false || robot.EmergencyStopped != false ||
                         AgvObstaclePolicy.IsBlocked(robot) || AgvObstaclePolicy.HasBlockingAlarm(robot))
                         continue;
@@ -703,7 +709,7 @@ public sealed partial class DispatchTaskOrchestrator(
         if (activeMap.Current is not { } map) return;
         var commandId = task.VendorTaskId!;
         _continuationPreviews.TryGetValue(commandId, out var previous);
-        var now = DateTimeOffset.UtcNow;
+        var now = _clock.GetUtcNow();
         if (ReferenceEquals(previous?.Map, map) && now - previous!.CheckedAt < TimeSpan.FromMilliseconds(500))
             return;
         var payload = previous?.Payload;
@@ -755,7 +761,7 @@ public sealed partial class DispatchTaskOrchestrator(
         // Retain the queue position for a short-lived blockage before accepting
         // a long detour. This clock belongs to the current sent window.
         return _continuationDetours.RemainingSeconds(task.VendorTaskId!, task.VehicleId!, map.VersionId,
-            cost, oldTravel, DateTimeOffset.UtcNow, maximumRatio: 1.5, minimumExtraSeconds: 30) == 0;
+            cost, oldTravel, _clock.GetUtcNow(), maximumRatio: 1.5, minimumExtraSeconds: 30) == 0;
     }
 
     private static AgvTransportCommandPayload? ReadTransportPayload(AgvCommandOutboxItem? command) =>
@@ -784,8 +790,8 @@ public sealed partial class DispatchTaskOrchestrator(
             (activeMap.Current?.Definition is { } definition
                 ? !MapRouteSiteMapper.IsSameNode(definition, robot.CurrentStation, payload.Destination)
                 : !string.Equals(robot.CurrentStation, payload.Destination, StringComparison.OrdinalIgnoreCase)) ||
-            observed > DateTimeOffset.UtcNow.AddSeconds(1) ||
-            DateTimeOffset.UtcNow - observed >= TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds) ||
+            observed > _clock.GetUtcNow().AddSeconds(1) ||
+            _clock.GetUtcNow() - observed >= TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds) ||
             robot.Blocked != false || robot.EmergencyStopped != false ||
             robot.VelocityX is not { } vx || !double.IsFinite(vx) || Math.Abs(vx) > 0.02 ||
             robot.VelocityY is not { } vy || !double.IsFinite(vy) || Math.Abs(vy) > 0.02 ||

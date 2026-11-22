@@ -41,7 +41,7 @@ public sealed class BusinessRunService(IBusinessRunPort port, BusinessRunOwnersh
             run?.ChargeResumePending == true ? run.Plan.StandbySite : null);
     }
     private void Move(string stage, string message)
-    { if (stage == "Hold") ownership.Returning = true; run = run! with { Stage = stage, Message = message, UpdatedAt = DateTimeOffset.UtcNow }; Save(); }
+    { if (stage == "Hold") ownership.Returning = true; run = run! with { Stage = stage, Message = message, UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow() }; Save(); }
     private BusinessRunStatus Status() => new(run, "按需运行不制造呼叫；循环测试由本机PLC工具产生呼叫。收尾后返回待机点。");
     private static void Authorize(TrafficUserContext user)
     { if (!user.Has(TrafficPermission.Administer)) throw new UnauthorizedAccessException("需要管理员权限。"); }
@@ -74,7 +74,7 @@ public sealed class BusinessRunService(IBusinessRunPort port, BusinessRunOwnersh
                 throw new InvalidOperationException("车辆低电量或存在未闭合充电会话，不能启动新业务运行。");
             await port.ValidateAsync(plan, ct);
             var initial = new BusinessRunRecord(Guid.NewGuid().ToString("N"), plan, "", "", "", user.WindowsIdentity,
-                "Preparing", "准备运行", 0, null, null, null, false, DateTimeOffset.UtcNow);
+                "Preparing", "准备运行", 0, null, null, null, false, AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow());
             var observation = await port.ObserveAsync(initial, ct);
             if (observation.Block is { } block) throw new InvalidOperationException(block);
             if (observation.AnyActiveTasks || !observation.AllClosed || !observation.Stopped)
@@ -99,7 +99,7 @@ public sealed class BusinessRunService(IBusinessRunPort port, BusinessRunOwnersh
         {
             if (run is null || run.RunId != request.RunId) throw new ArgumentException("原运行编号不一致。");
             if (run.Stage == "Completed") return Status();
-            run = run with { StopRequested = true, UpdatedAt = DateTimeOffset.UtcNow }; Save();
+            run = run with { StopRequested = true, UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow() }; Save();
             if (run.Plan.Mode == "Cycle")
                 try
                 {
@@ -275,7 +275,7 @@ public sealed class BusinessRunService(IBusinessRunPort port, BusinessRunOwnersh
             { run = run with { Message = "有未参与工位呼叫，保留呼叫等待处理，不宣告无任务返回待机。" }; Save(); return; }
             if (next is null && !run.StopRequested && run.Plan.Mode == "Cycle" &&
                 run.CompletedJobs < run.Plan.Rounds * run.Plan.Stations.Length &&
-                DateTimeOffset.UtcNow - run.UpdatedAt < TimeSpan.FromSeconds(10))
+                AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow() - run.UpdatedAt < TimeSpan.FromSeconds(10))
                 return; // The PLC tool raises the first simulated call just after the run is armed.
             if (next is not null)
             {

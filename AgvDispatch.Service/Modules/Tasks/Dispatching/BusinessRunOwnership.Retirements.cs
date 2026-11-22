@@ -34,7 +34,7 @@ public sealed partial class BusinessRunOwnership
                 throw new InvalidOperationException("缺少持久化原申请身份，不能注销。");
             if (IsRetired(run.PendingRequestId)) return;
             var next = retired.Append(new Retirement(run.PendingRequestId, run.RunId, run.Plan.VehicleId,
-                run.MapId, run.MapVersionId, run.ParameterRevision, run.Operator, DateTimeOffset.UtcNow)).ToArray();
+                run.MapId, run.MapVersionId, run.ParameterRevision, run.Operator, AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow())).ToArray();
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(retirementPath))!);
             var tmp = retirementPath + ".tmp";
             using (var file = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))

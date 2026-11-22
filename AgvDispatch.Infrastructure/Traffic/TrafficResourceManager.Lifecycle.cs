@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Infrastructure.Persistence.Entities;
 namespace AgvDispatch.Infrastructure.Persistence;
@@ -93,7 +93,7 @@ public sealed partial class TrafficResourceManager
                 JsonSerializer.Serialize(activeBlockers.Select(l=>l.ResourceId).Distinct(StringComparer.OrdinalIgnoreCase)),
             OccurredAt=(clock ?? TimeProvider.System).GetUtcNow().LocalDateTime
         }).ExecuteCommandAsync(ct);
-        row.VehicleId = vehicle; row.State = state; row.Reason = reason; row.ResourceIds = ids; row.EdgeIds = edges; row.UpdatedAt = DateTime.Now;
+        row.VehicleId = vehicle; row.State = state; row.Reason = reason; row.ResourceIds = ids; row.EdgeIds = edges; row.UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
         if (route is not null)
         {
             // This timestamp expires only an ungranted queue recommendation. It
@@ -107,7 +107,7 @@ public sealed partial class TrafficResourceManager
         if (changed) await database.Insertable(new TrafficLifecycleEventEntity
         {
             EventId = Guid.NewGuid().ToString("N"), StepId = step, TaskId = task, VehicleId = vehicle,
-            Kind = state, Reason = reason, ResourceIds = ids, WaitingSinceUtc = row.WaitingSinceUtc, WaitingStartKnown = row.WaitingStartKnown, OccurredAt = DateTime.Now
+            Kind = state, Reason = reason, ResourceIds = ids, WaitingSinceUtc = row.WaitingSinceUtc, WaitingStartKnown = row.WaitingStartKnown, OccurredAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime
         }).ExecuteCommandAsync(ct);
     }
     /// <summary>

@@ -92,7 +92,7 @@ public sealed class TaskParameterSettingsService(TaskParameterStorageOptions sto
         if (!validation.Accepted) return validation;
         var revision = Guid.NewGuid().ToString("N");
         var saved = new TaskParameterDocument(1, revision, request.RequestId, request.MapId, request.MapVersionId, request.Configuration,
-            new[] { new TaskParameterAudit(DateTimeOffset.Now, user.WindowsIdentity, revision) }.Concat(_saved?.Audits ?? []).Take(100).ToArray());
+            new[] { new TaskParameterAudit(AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow(), user.WindowsIdentity, revision) }.Concat(_saved?.Audits ?? []).Take(100).ToArray());
         var path = Path.GetFullPath(storage.Path);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
@@ -135,7 +135,7 @@ public sealed class TaskParameterSettingsService(TaskParameterStorageOptions sto
         var revision = Guid.NewGuid().ToString("N");
         var saved = new TaskParameterDocument(1, revision, request.RequestId, request.MapId, request.MapVersionId,
             request.Configuration,
-            new[] { new TaskParameterAudit(DateTimeOffset.Now, user.WindowsIdentity, revision) }
+            new[] { new TaskParameterAudit(AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow(), user.WindowsIdentity, revision) }
                 .Concat(_saved?.Audits ?? []).Take(100).ToArray());
         var path = Path.GetFullPath(storage.Path);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);

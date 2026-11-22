@@ -1,6 +1,7 @@
 ﻿using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Application.Maps;
 using AgvDispatch.Domain.Agvs;
+using AgvDispatch.Application.Runtime;
 
 namespace AgvDispatch.Service;
 
@@ -8,14 +9,15 @@ public sealed class TrafficFlowMonitor(
     ILogger<TrafficFlowMonitor> logger,
     MapOptions options,
     IAgvStateCache agvStates,
-    IActiveMapRuntime activeMap) : IsolatedBackgroundService, ITrafficFlowMonitor
+    IActiveMapRuntime activeMap, TimeProvider? clock = null) : IsolatedBackgroundService, ITrafficFlowMonitor
 {
+    private readonly TimeProvider _clock = clock ?? TimeProvider.System;
     private readonly object _sync = new();
     private readonly Dictionary<string, VehicleMotion> _motions =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, EdgeStateMemory> _edgeStates =
         new(StringComparer.OrdinalIgnoreCase);
-    private TrafficFlowSnapshot _snapshot = new(DateTimeOffset.Now, null, null, [], []);
+    private TrafficFlowSnapshot _snapshot = new(DateTimeOffset.MinValue, null, null, [], []);
     private string? _runtimeVersionId;
 
     public TrafficFlowSnapshot GetSnapshot()
@@ -47,7 +49,9 @@ public sealed class TrafficFlowMonitor(
             try
             {
                 EvaluateOnce();
-                await Task.Delay(options.TrafficMonitorIntervalMs, stoppingToken);
+                await Task.Delay(_clock is SimulationTimeProvider simulation
+                    ? simulation.ScaleForBusiness(TimeSpan.FromMilliseconds(options.TrafficMonitorIntervalMs))
+                    : TimeSpan.FromMilliseconds(options.TrafficMonitorIntervalMs), stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -56,14 +60,16 @@ public sealed class TrafficFlowMonitor(
             catch (Exception exception)
             {
                 logger.LogError(exception, "动态交通监控计算失败；保留上一份快照。");
-                await Task.Delay(options.TrafficMonitorIntervalMs, stoppingToken);
+                await Task.Delay(_clock is SimulationTimeProvider simulation
+                    ? simulation.ScaleForBusiness(TimeSpan.FromMilliseconds(options.TrafficMonitorIntervalMs))
+                    : TimeSpan.FromMilliseconds(options.TrafficMonitorIntervalMs), stoppingToken);
             }
         }
     }
 
     public TrafficFlowSnapshot EvaluateOnce(DateTimeOffset? evaluatedAt = null)
     {
-        var now = evaluatedAt ?? DateTimeOffset.Now;
+        var now = evaluatedAt ?? _clock.GetLocalNow();
         var runtime = activeMap.Current;
         if (runtime is null)
         {

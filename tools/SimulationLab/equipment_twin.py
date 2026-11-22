@@ -7,6 +7,8 @@ import time
 import uuid
 from pathlib import Path
 
+import simulation_clock
+
 
 class EquipmentModel:
     def __init__(self, root):
@@ -17,7 +19,7 @@ class EquipmentModel:
                           direction='Stopped', door='Closed', moving=False, progress=0.0, fault=False,
                           signals={}, signalEvents=[], schedules=[])
         self.travel_seconds = 2.0; self.door_seconds = 1.0
-        self.last_tick = time.time()
+        self.last_tick = simulation_clock.CLOCK.time()
         self._write()
         self.thread = threading.Thread(target=self._run, daemon=True); self.thread.start()
 
@@ -107,7 +109,7 @@ class EquipmentModel:
             if not isinstance(entries, list) or len(entries) > 200: raise ValueError('信号计划须为最多200项数组。')
             if len(entries) + len(self.state['schedules']) > 200:
                 raise ValueError('待执行信号计划总数不能超过200项，请先清除旧计划。')
-            now = time.monotonic()
+            now = simulation_clock.CLOCK.monotonic()
             for entry in entries:
                 if not isinstance(entry, dict) or set(entry) != {'id', 'afterMs', 'set'}:
                     raise ValueError('信号计划条目字段无效。')
@@ -141,15 +143,15 @@ class EquipmentModel:
     def _set_signals(self, value, source):
         validated = self._validate_signals(value)
         self.state['signals'].update(validated)
-        self.state['signalEvents'].append(dict(time=time.time(), source=source, set=validated))
+        self.state['signalEvents'].append(dict(time=simulation_clock.CLOCK.time(), source=source, set=validated))
         self.state['signalEvents'] = self.state['signalEvents'][-200:]
 
     def _run(self):
-        last = time.monotonic()
-        while not self.stop_event.wait(.1):
-            now = time.monotonic(); dt = now - last; last = now
+        last = simulation_clock.CLOCK.monotonic()
+        while not self.stop_event.wait(simulation_clock.CLOCK.business_delay(.1)):
+            now = simulation_clock.CLOCK.monotonic(); dt = now - last; last = now
             with self.lock:
-                self.last_tick = time.time()
+                self.last_tick = simulation_clock.CLOCK.time()
                 due = sorted((entry for entry in self.state['schedules'] if entry['due'] <= now), key=lambda entry: entry['due'])
                 if due:
                     for entry in due:

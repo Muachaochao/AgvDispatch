@@ -26,7 +26,8 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
     IDispatchOrchestrationRepository tasks,IDispatchTaskRepository taskReader,ITrafficResourceManager traffic,
     DispatchTaskCreationOptions creation,DispatchOrchestratorOptions dispatch,HandshakeExecutionOptions options,
     IAgvStateCache vehicles,IActiveMapRuntime map,IAgvGateway? agvGateway=null,IRobokitTaskMapPreflight? mapPreflight=null,
-    DispatchTrafficReservationService? trafficLayer=null, DispatchOptimizationService? optimization=null)
+    DispatchTrafficReservationService? trafficLayer=null, DispatchOptimizationService? optimization=null,
+    IRoutePlanner? routePlanner=null)
 {
     private readonly DispatchTrafficReservationService _trafficLayer = trafficLayer ?? new(traffic, optimization, tasks, optimization);
     public bool Enabled => options.Enabled;
@@ -61,21 +62,28 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
         var binding = root is null ? null : await store.GetAsync(step.TaskId, root.StepId, ct);
         if (binding?.ContractVersion != HandshakeExecutionOptions.Version || !BindingMatches(binding, step)) return null;
         var waiting = await WaitingSiteAsync(step, ct);
+        IReadOnlyList<string> admissionResources = options.DumperExit.ResourceIds;
+        if (routePlanner is not null)
+        {
+            admissionResources = DumperWaitingBaySafety.EquipmentEntryResources(
+                routePlanner, waiting, dispatch.DumperDumpingSite, admissionResources)
+                ?? throw new InvalidOperationException("候车位到倒料位的完整入口路径不可用，不取得单独的设备资源。");
+        }
         if (!await store.OwnsEquipmentAsync(step.TaskId, creation.DumperStationId, ct))
         {
             if (!vehicles.TryGet(step.VehicleId, out var vehicle) || vehicle.Connection != ConnectionState.Online ||
                 vehicle.Quality != SignalQuality.Good || vehicle.EmergencyStopped != false || vehicle.Blocked != false ||
                 AgvObstaclePolicy.IsBlocked(vehicle) || AgvObstaclePolicy.HasBlockingAlarm(vehicle) ||
                 vehicle.Tasks.Any(t => t.Status is 1 or 2 or 3) ||
-                vehicle.LastSuccessfulPollAt is not { } observed || observed > DateTimeOffset.UtcNow.AddSeconds(1) ||
-                DateTimeOffset.UtcNow - observed > TimeSpan.FromSeconds(Math.Clamp(options.StateMaxAgeSeconds, 1, 60)) ||
+                vehicle.LastSuccessfulPollAt is not { } observed || observed > AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow().AddSeconds(1) ||
+                AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow() - observed > TimeSpan.FromSeconds(Math.Clamp(options.StateMaxAgeSeconds, 1, 60)) ||
                 !current.Definition.Nodes.Any(n => n.Enabled &&
                     MapRouteSiteMapper.IsSameNode(current.Definition, n.Id, waiting) &&
                     MapRouteSiteMapper.IsSameNode(current.Definition,
                         n.Id, vehicle.CurrentStation))) return null;
         }
         return new(step.StepId, step.TaskId, step.VehicleId, waiting, dispatch.DumperDumpingSite,
-            [], options.DumperExit.ResourceIds, true, "倒料设备与倒料区按原任务有效优先级排队；已有归属保持不变。")
+            [], admissionResources, true, "倒料设备与完整入口路径按原任务有效优先级原子排队；已有归属保持不变。")
             { MapId = current.MapId, MapVersionId = current.VersionId, WaitingCategory = "Equipment" };
     }
     public async Task BindBeforeTransportAsync(DispatchTaskStepWorkItem step,CancellationToken ct)
@@ -93,7 +101,7 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
         foreach(var signal in observed)
         {
             signals.TryGet(signal.StationId,signal.VariableName,out var sample);
-            if(sample?.Value is not bool value||!TaskSignalPredicate.EvaluateFresh(signal.StationId,signal.VariableName,value,sample,DateTimeOffset.UtcNow,options.StateMaxAgeSeconds).Satisfied)
+            if(sample?.Value is not bool value||!TaskSignalPredicate.EvaluateFresh(signal.StationId,signal.VariableName,value,sample,AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow(),options.StateMaxAgeSeconds).Satisfied)
                 throw new InvalidOperationException("首段运输前13个契约信号必须新鲜有效："+signal.StationId+"/"+signal.VariableName);
         }
         if(!Is(step.StationId,"Faulted",false)||!Is(step.StationId,"CommunicationOnline",true)||!Is(creation.DumperStationId,"Faulted",false))throw new InvalidOperationException("设备故障或通讯异常，不准备新契约首段运输。");
@@ -106,7 +114,7 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
         if (existing is not null && !BindingMatches(existing, step) &&
             !await store.RollbackUncommittedAsync(step.TaskId, step.StepId, ct))
             throw new InvalidOperationException("首段原契约绑定与当前配置不一致。");
-        var baseline=observed.Concat(new[]{new TaskSignalEvidence("__context","Binding",null,"Context",DateTimeOffset.UtcNow,null,Binding(step))}).ToArray();
+        var baseline=observed.Concat(new[]{new TaskSignalEvidence("__context","Binding",null,"Context",AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow(),null,Binding(step))}).ToArray();
         var bound=await store.BeginAsync(step,HandshakeExecutionOptions.Version,"TransportBound",baseline,ct);
         if(!BindingMatches(bound,step))throw new InvalidOperationException("首段原契约绑定与当前配置不一致。");
         foreach(var original in bound.Baseline.Where(b=>b.StationId!="__context"))
@@ -203,7 +211,7 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
     private bool Is(string station,string variable,bool expected)
     {
         signals.TryGet(station,variable,out var s);
-        return TaskSignalPredicate.EvaluateFresh(station,variable,expected,s,DateTimeOffset.UtcNow,options.StateMaxAgeSeconds).Satisfied;
+        return TaskSignalPredicate.EvaluateFresh(station,variable,expected,s,AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow(),options.StateMaxAgeSeconds).Satisfied;
     }
 
     public async Task<bool> ProcessAsync(DispatchTaskStepWorkItem step,CancellationToken ct)
@@ -263,9 +271,9 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
             // Any prior notification on first encounter is ambiguous: do not reset/reissue it.
             var observed=TaskHandshakeSignals.Capture(signals,step.StationId,creation.DumperStationId)
                 .Where(s=>step.StepType is not (DispatchTaskStepType.PlaceEmptyBox or DispatchTaskStepType.CompletePlcHandshake)||s.StationId==step.StationId).ToArray();
-            if(observed.Any(s=>s.Value==null||s.Quality!="Good"||s.ObservedAt==null||DateTimeOffset.UtcNow-s.ObservedAt>TimeSpan.FromSeconds(Math.Clamp(options.StateMaxAgeSeconds,1,60))||s.ObservedAt>DateTimeOffset.UtcNow.AddSeconds(1)))
+            if(observed.Any(s=>s.Value==null||s.Quality!="Good"||s.ObservedAt==null||AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow()-s.ObservedAt>TimeSpan.FromSeconds(Math.Clamp(options.StateMaxAgeSeconds,1,60))||s.ObservedAt>AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow().AddSeconds(1)))
                 throw new InvalidOperationException("新契约初始基线需要13个新鲜有效信号；当前缺失/过期，未创建可执行阶段。");
-            var baseline=observed.Concat(new[]{new TaskSignalEvidence("__context","Binding",null,"Context",DateTimeOffset.UtcNow,null,Binding(step))}).ToArray();
+            var baseline=observed.Concat(new[]{new TaskSignalEvidence("__context","Binding",null,"Context",AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow(),null,Binding(step))}).ToArray();
             var initial=Initial(step.StepType);
             var orphan=step.StepType switch
             {
@@ -353,7 +361,8 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
         if(dispatch.GetDumperWaitingSites().Count<=1)return dispatch.GetDumperWaitingSite()??"";
         var selected=traffic is ITaskWaitingBayAllocator allocator ? await allocator.GetAsync(step.TaskId,ct) : null;
         if(selected is null || selected.VehicleId!=step.VehicleId || selected.MapId!=map.Current?.MapId ||
-            selected.MapVersionId!=map.Current?.VersionId || !dispatch.GetDumperWaitingSites().Contains(selected.WaitingSite,StringComparer.OrdinalIgnoreCase))
+            selected.MapVersionId!=map.Current?.VersionId || map.Current is null ||
+            !DumperWaitingBaySafety.IsPhysicalWaitingSite(map.Current.Definition,selected.WaitingSite,dispatch.DumperDumpingSite))
             throw new InvalidOperationException("原任务持久候车位缺失或绑定不一致，不能用默认点继续握手。");
         return selected.WaitingSite;
     }
@@ -436,7 +445,7 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
         if(returned?.Status!=DispatchTaskStepStatus.Completed||string.IsNullOrWhiteSpace(returned.VendorTaskId)||
             string.IsNullOrWhiteSpace(returned.VehicleId)||
             !vehicles.TryGet(returned.VehicleId,out var vehicle)||vehicle.Connection!=ConnectionState.Online||vehicle.Quality!=SignalQuality.Good||vehicle.LastSuccessfulPollAt is not {} time||
-            DateTimeOffset.UtcNow-time>TimeSpan.FromSeconds(Math.Clamp(options.StateMaxAgeSeconds,1,60))||time>DateTimeOffset.UtcNow.AddSeconds(1))return null;
+            AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow()-time>TimeSpan.FromSeconds(Math.Clamp(options.StateMaxAgeSeconds,1,60))||time>AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow().AddSeconds(1))return null;
         var pickup=dispatch.GetPickupSite(step.StationId);
         var definition=map.Current?.Definition;
         if(definition==null||string.IsNullOrWhiteSpace(pickup))return null;
@@ -448,7 +457,7 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
         if(definition.Nodes.Count(n=>n.Enabled&&string.Equals(string.IsNullOrWhiteSpace(n.AgvSiteId)?n.Id:n.AgvSiteId,vendorSite,StringComparison.OrdinalIgnoreCase))!=1||
             !string.Equals(vehicle.CurrentStation,vendorSite,StringComparison.OrdinalIgnoreCase)||vehicle.EmergencyStopped!=false||vehicle.Blocked!=false||
             AgvObstaclePolicy.IsBlocked(vehicle)||AgvObstaclePolicy.HasBlockingAlarm(vehicle))return null;
-        return new(step.TaskId,step.StepId,returned.VehicleId,returned.StepId,returned.VendorTaskId!,vendorSite,node.Id,map.Current!.MapId,map.Current.VersionId,time,DateTimeOffset.UtcNow);
+        return new(step.TaskId,step.StepId,returned.VehicleId,returned.StepId,returned.VendorTaskId!,vendorSite,node.Id,map.Current!.MapId,map.Current.VersionId,time,AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow());
     }
 
     private async Task WriteAsync(HandshakeCheckpoint checkpoint,string station,string signal,bool value,string next,CancellationToken ct)

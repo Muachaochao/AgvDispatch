@@ -55,7 +55,7 @@ public sealed class PlcCycleTestPort(
             jack is { State: 3, HasLoad: false },
             vehicle.LocalizationConfidence is >= 0.5 &&
                 vehicle.LastSuccessfulPollAt is { } localizedAt &&
-                DateTimeOffset.UtcNow - localizedAt <= TimeSpan.FromSeconds(options.MaximumAgeSeconds),
+                AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow() - localizedAt <= TimeSpan.FromSeconds(options.MaximumAgeSeconds),
             vehicle.Blocked == false && vehicle.EmergencyStopped == false && healthyAlarms,
             observedAt,
             signalRows)
@@ -106,7 +106,7 @@ public sealed class PlcCycleTestPort(
                 throw new InvalidOperationException($"车端路线核验失败：{checkedRoute.Message}");
             routes.Add(new(pair.Item1, pair.Item2, vendorPath));
         }
-        return new(stations.RobotMap, stations.RobotMapMd5, routes, DateTimeOffset.UtcNow);
+        return new(stations.RobotMap, stations.RobotMapMd5, routes, AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow());
     }
 
     public Task WriteAsync(string stationId, string signalName, bool value, CancellationToken ct) =>

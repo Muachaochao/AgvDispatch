@@ -16,7 +16,12 @@ public static class TaskWaitingBayRouter
         var selected = await allocator.GetAsync(step.TaskId, ct);
         if (selected is not null && (selected.VehicleId != step.VehicleId || selected.StepId != step.StepId ||
             selected.MapId != map.MapId || selected.MapVersionId != map.VersionId)) return;
-        var sites = selected is null ? options.GetDumperWaitingSites() : [selected.WaitingSite];
+        if (selected is not null &&
+            !DumperWaitingBaySafety.IsPhysicalWaitingSite(map.Definition, selected.WaitingSite, options.DumperDumpingSite))
+            return;
+        var sites = selected is null
+            ? CandidateSites(pickup, options, map, rolling, vehicleIds)
+            : [selected.WaitingSite];
         var unavailable = await traffic.GetUnavailableResourceIdsAsync(step.TaskId, ct);
         var counts = await allocator.GetSelectionCountsAsync(map.MapId, map.VersionId, ct);
         var ranked = Rank(sites, pickup, planner, unavailable, counts, map, rolling, vehicleIds).FirstOrDefault();
@@ -51,9 +56,11 @@ public static class TaskWaitingBayRouter
         var selected = await allocator.GetAsync(step.TaskId, ct);
         if (selected is not null && (selected.VehicleId != step.VehicleId || selected.StepId != step.StepId ||
             selected.MapId != map.MapId || selected.MapVersionId != map.VersionId ||
-            !options.GetDumperWaitingSites().Contains(selected.WaitingSite, StringComparer.OrdinalIgnoreCase)))
+            !DumperWaitingBaySafety.IsPhysicalWaitingSite(map.Definition, selected.WaitingSite, options.DumperDumpingSite)))
             throw new InvalidOperationException("原任务候车位与车辆、步骤、地图或当前配置不一致，保持原占用待核对。");
-        var sites = selected is null ? options.GetDumperWaitingSites() : [selected.WaitingSite];
+        var sites = selected is null
+            ? CandidateSites(pickup, options, map, rolling, vehicleIds)
+            : [selected.WaitingSite];
         var unavailable = await traffic.GetUnavailableResourceIdsAsync(step.TaskId, ct);
         var counts = await allocator.GetSelectionCountsAsync(map.MapId, map.VersionId, ct);
         var candidates = Rank(sites, pickup, planner, unavailable, counts, map, rolling, vehicleIds);
@@ -99,6 +106,33 @@ public static class TaskWaitingBayRouter
                 { MapId = map.MapId, MapVersionId = map.VersionId }, ct);
         }
         return null;
+    }
+
+    private const int MaximumMapHoldingCandidates = 12;
+
+    private static IReadOnlyList<string> CandidateSites(string pickup, DispatchOrchestratorOptions options,
+        ActiveMapRuntimeSnapshot map, GlobalPickupRoutePlanner? rolling, IReadOnlyCollection<string>? vehicleIds)
+    {
+        var configured = options.GetDumperWaitingSites()
+            .Where(site => !site.Equals(options.DumperDumpingSite, StringComparison.OrdinalIgnoreCase));
+        var mapDeclared = rolling?.SafeHoldingSites(map, vehicleIds ?? []) ?? [];
+        var pickupNode = map.Graph.FindRouteNode(pickup);
+        var nearestMapSites = pickupNode is null
+            ? mapDeclared
+            : mapDeclared
+                .Select(site => (Site: site, Node: map.Graph.FindRouteNode(site)))
+                .Where(item => item.Node is not null)
+                .OrderBy(item => Math.Sqrt(
+                    Math.Pow(item.Node!.X - pickupNode.X, 2) +
+                    Math.Pow(item.Node.Y - pickupNode.Y, 2)))
+                .ThenBy(item => item.Site, StringComparer.OrdinalIgnoreCase)
+                .Take(MaximumMapHoldingCandidates)
+                .Select(item => item.Site)
+                .ToArray();
+        return configured.Concat(nearestMapSites)
+            .Where(site => !string.IsNullOrWhiteSpace(site))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
     }
 
     // Balance only among near-equivalent feasible routes. A history preference
