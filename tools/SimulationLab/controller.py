@@ -568,6 +568,25 @@ class Runtime:
                     vehicleAndLocationConfirmed=True, loadAndOwnershipConfirmed=True, plcCycleConfirmed=True))
             self.api('/api/recovery/release', dict(sessionId=recovery['sessionId'], reason='SIM-ONLY verified idle baseline'))
 
+    def activate_startup_map(self, request):
+        def activate():
+            try:
+                result = self.api('/api/maps/activate', request, allow_rejection=True)
+            except (OSError, ValueError) as error:
+                raise RuntimeError(f'地图激活回执待核对：{error}') from error
+            if result.get('accepted') is True:
+                return True
+            message = result.get('message') or '没有收到地图激活确认'
+            prefix = '禁止切换：'
+            if result.get('accepted') is False and message.startswith(prefix) and all(
+                re.fullmatch(r'[A-Za-z0-9_-]+离线或状态过期|PLC输入状态缺失|PLC输入失效\d+个：.+', reason)
+                for reason in message[len(prefix):].split('；')
+            ):
+                raise ValueError(message)
+            raise RuntimeError(message)
+
+        self.wait('地图激活等待车辆及PLC新鲜反馈超时', activate, timeout=30)
+
     def bootstrap(self):
         if not (self.root / 'map-operation-results.json').exists():
             process = self.launch('map-import', [sys.executable, str(WORKSPACE / 'tools/WebSingleVehicleLab/configure_map.py'), '--root', str(self.root)], WORKSPACE)
@@ -585,7 +604,7 @@ class Runtime:
             if any(switch['current'][k] != v for k, v in target.items()):
                 raise RuntimeError('已有其他切图操作，拒绝覆盖。')
             if switch['current']['phase'] == 'Draining':
-                self.api('/api/maps/activate', dict(**target, confirmationText='ACTIVATE ' + metadata['published']['workspace']['project']['name'],
+                self.activate_startup_map(dict(**target, confirmationText='ACTIVATE ' + metadata['published']['workspace']['project']['name'],
                     siteSafetyConfirmed=True, vehicleMapCompatibilityConfirmed=True, evidence='SIM-ONLY same authored map', expectedReleaseId=switch['current']['releaseId']))
             self.wait('地图恢复门禁等待新观测超时', lambda: self.api('/api/maps/switch/resume', dict(releaseId=switch['current']['releaseId'],
                 siteSafetyConfirmed=True, vehicleMapCompatibilityConfirmed=True, evidence='SIM-ONLY idle virtual map verified'), allow_rejection=True).get('accepted'))

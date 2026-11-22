@@ -15,6 +15,38 @@ from test_runtime_lifecycle import SOURCE_PLC_TABLE
 
 
 class SimulationTests(unittest.TestCase):
+    def test_map_activation_retries_only_freshness_denial_without_changing_request(self):
+        runtime = Runtime.__new__(Runtime)
+        runtime.children = {}
+        runtime.abort = threading.Event()
+        runtime.api = Mock(side_effect=[
+            {'accepted': False, 'message': '禁止切换：AGV-01离线或状态过期；PLC输入失效1223个：CNC-001/Faulted'},
+            {'accepted': True},
+        ])
+        request = {'mapId': 'B07', 'versionId': 'v1', 'expectedReleaseId': 'release'}
+        with patch.object(runtime.abort, 'wait'):
+            runtime.activate_startup_map(request)
+        self.assertEqual(runtime.api.call_count, 2)
+        for call in runtime.api.call_args_list:
+            self.assertEqual(call.args, ('/api/maps/activate', request))
+            self.assertEqual(call.kwargs, {'allow_rejection': True})
+
+    def test_map_activation_preserves_fault_or_uncertain_receipt_without_replay(self):
+        runtime = Runtime.__new__(Runtime)
+        runtime.children = {}
+        runtime.abort = threading.Event()
+        request = {'expectedReleaseId': 'release'}
+        runtime.api = Mock(return_value={
+            'accepted': False, 'message': '禁止切换：AGV-01离线或状态过期；PLC工位故障1个',
+        })
+        with self.assertRaisesRegex(RuntimeError, 'PLC工位故障'):
+            runtime.activate_startup_map(request)
+        runtime.api.assert_called_once()
+        runtime.api = Mock(side_effect=TimeoutError('回执超时'))
+        with self.assertRaisesRegex(RuntimeError, '回执超时'):
+            runtime.activate_startup_map(request)
+        runtime.api.assert_called_once()
+
     def test_process_startup_wait_uses_wall_clock_instead_of_simulation_rate(self):
         runtime = Runtime.__new__(Runtime)
         runtime.children = {}
