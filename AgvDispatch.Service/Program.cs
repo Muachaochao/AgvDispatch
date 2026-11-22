@@ -177,7 +177,7 @@ builder.Services.AddSingleton<IChargingRobotControl, RobokitChargingRobotControl
 var chargingPath = Path.Combine(Path.GetDirectoryName(databaseOptions.DatabasePath)!, "charging-sessions.json");
 var chargingDataDirectory = Path.GetDirectoryName(databaseOptions.DatabasePath)!;
 builder.Services.AddSingleton<IChargingWorkflow>(p => new ScriptChargingWorkflow(chargingScriptOptions,
-    chargingOptions,p.GetRequiredService<AgvOptions>(),chargingDataDirectory));
+    chargingOptions,p.GetRequiredService<AgvOptions>(),chargingDataDirectory,clock:simulationTime));
 builder.Services.AddSingleton<IChargingRecoveryEvidence>(new ChargingSessionStore(chargingPath));
 builder.Services.AddSingleton<IChargingBusinessSafety, ChargingBusinessSafety>();
 builder.Services.AddSingleton<IChargingRuntimePort>(p => new ChargingRuntimePort(chargingOptions,
@@ -189,12 +189,15 @@ builder.Services.AddSingleton<IChargingRuntimePort>(p => new ChargingRuntimePort
         : builder.Configuration.GetValue("NavigationTest:Enabled",false) || builder.Configuration.GetValue("PlcCycleTest:Enabled",false) || builder.Configuration.GetValue("FleetTest:Enabled",false)
             ? "独立导航或联调启动模式禁止自动充电，请核对原测试并切换正式运行模式。"
             : !chargingRobotOptions.RelayControlConfirmed ? "厂家充电继电器及充电桩对接尚未现场核定，自动充电保持排队。" : null,
+    // Vehicle telemetry is stamped on the business clock; freshness and phase timers must use the same clock
+    // or every accelerated simulation sees stale vehicles and never queues charging.
+    clock:simulationTime,
     businessSafety:p.GetRequiredService<IChargingBusinessSafety>(),
     vehicleBlock:id => p.GetRequiredService<BusinessRunOwnership>() is {Active:true} owner &&
         string.Equals(owner.Vehicle,id,StringComparison.OrdinalIgnoreCase) ? "当前车辆业务运行尚未安全交接，等待整轮箱体循环结束。" : null,
     returnSite:id => p.GetRequiredService<BusinessRunOwnership>().GetChargingReturnSite(id)));
 builder.Services.AddSingleton(p => new ChargingService(chargingOptions, p.GetRequiredService<IChargingRuntimePort>(),
-    p.GetRequiredService<IChargingRobotControl>(), chargingPath, p.GetRequiredService<ILogger<ChargingService>>(),
+    p.GetRequiredService<IChargingRobotControl>(), chargingPath, p.GetRequiredService<ILogger<ChargingService>>(), clock:simulationTime,
     workflow:p.GetRequiredService<IChargingWorkflow>(),
     chargerMonitor:p.GetRequiredService<IChargerTelemetryMonitor>()));
 builder.Services.AddSingleton<IChargingService>(p => p.GetRequiredService<ChargingService>());
@@ -327,7 +330,7 @@ builder.Services.AddSingleton<IFleetTestPort>(p=>new FleetTestPort(fleetTestOpti
     p.GetRequiredService<IActiveMapRuntime>(),p.GetRequiredService<IMapExecutionGate>(),taskParameterRuntime,dispatchOrchestratorOptions,taskCreationOptions,
     p.GetRequiredService<HandshakeExecutionOptions>(),p.GetRequiredService<IRobokitTaskMapPreflight>(),p.GetRequiredService<ITrafficResourceControlService>(),
     p.GetRequiredService<IRoutePlanner>(),p.GetRequiredService<ITrafficResourceManager>(),p.GetRequiredService<IAgvGateway>(),
-    PlcCycleTestPort.AllPlcsAreLoopback(plcConnections),p.GetRequiredService<IChargingDispatchGuard>()));
+    PlcCycleTestPort.AllPlcsAreLoopback(plcConnections),p.GetRequiredService<IChargingDispatchGuard>(),simulationTime));
 builder.Services.AddSingleton(p=>new FleetTestService(p.GetRequiredService<IFleetTestPort>(),p.GetRequiredService<FleetTestOwnership>(),
     Path.Combine(Path.GetDirectoryName(databaseOptions.DatabasePath)!,"fleet-test.json"),p.GetRequiredService<ILogger<FleetTestService>>(),fleetTestOptions));
 builder.Services.AddSingleton<IFleetTestService>(p=>p.GetRequiredService<FleetTestService>());
@@ -419,14 +422,14 @@ builder.Configuration.GetSection("TrafficSegmentRelease").Bind(segmentCommitOpti
 segmentCommitOptions.Validate();
 builder.Services.AddSingleton(segmentReleaseWorkerOptions);
 builder.Services.AddSingleton(segmentReleasePolicy);
-builder.Services.AddSingleton(new TrafficSegmentReleaseMonitor());
+builder.Services.AddSingleton(new TrafficSegmentReleaseMonitor(simulationTime));
 builder.Services.AddSingleton<ITrafficBodyEnvelopeProvider, ConfiguredTrafficBodyEnvelopeProvider>();
 builder.Services.AddSingleton<IAuthoritativeTrafficProgressReader, AgvTrafficProgressReader>();
 builder.Services.AddSingleton<TrafficSegmentReleaseInspector>();
 builder.Services.AddSingleton<ITrafficWaitingBayDepartureService>(p=>new TrafficWaitingBayDepartureInspector(
     p.GetRequiredService<ISqlSugarClient>(),p.GetRequiredService<TrafficSegmentReleaseInspector>(),p.GetRequiredService<IMapExecutionGate>(),
     ()=>new(dispatchOrchestratorOptions.GetDumperWaitingSite()??"",dispatchOrchestratorOptions.DumperDumpingSite??""),
-    p.GetService<IAuthoritativeTrafficProgressReader>(),p.GetService<ITrafficGeometryProfileProvider>()));
+    p.GetService<IAuthoritativeTrafficProgressReader>(),p.GetService<ITrafficGeometryProfileProvider>(),simulationTime));
 // Only a read-only diagnostic policy; release/commit remain independently disabled.
 builder.Services.AddSingleton(new TrafficGeometryPreviewPolicy { Enabled=true });
 builder.Services.AddSingleton<ITrafficGeometryPreviewService,TrafficGeometryPreviewService>();
