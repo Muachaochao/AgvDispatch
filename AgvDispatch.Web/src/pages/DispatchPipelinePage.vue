@@ -5,7 +5,7 @@ import { IconArrowRight, IconDownload, IconPlayerPause, IconPlayerPlay, IconRefr
 import { useDispatchStore } from '../stores/dispatch';
 import { assignmentModeLabels, type DispatchAssignmentMode } from '../dispatch-optimization';
 import {
-  pipelineLayerKey, pipelineLayerViews, pipelineTime, pipelineTimestampFresh,
+  pipelineLayerKey, pipelineLayerViews, pipelineTime, pipelineSimulationCaptureValid, pipelineBusinessReference,
   pipelineEvidenceState, pipelineRecordState, pipelineRecordIsIssue, filterPipelineRecords, pipelineInternalLink,
   retainPipelineObservation, pipelineExecutionSummary,
   type PipelineInspectionSnapshot, type PipelineObservation, type PipelineCheck
@@ -15,12 +15,14 @@ import { industrialText } from '../operator-labels';
 const props = defineProps<{
   simulationRead?: (signal: AbortSignal) => Promise<PipelineInspectionSnapshot>;
   simulationTaskLink?: (taskId: string) => { path: string; query: Record<string, string> };
+  simulationClock?: () => Promise<{ originUnixMs?: number; rate?: number } | null>;
 }>();
 const store = props.simulationRead ? null : useDispatchStore(), route = useRoute(), router = useRouter();
 const latest = shallowRef<PipelineInspectionSnapshot>();
 const observations = shallowRef<PipelineObservation[]>([]);
 const fixed = shallowRef<PipelineObservation | null>(null);
 const loading = ref(false), error = ref(''), readAt = ref(0), now = ref(Date.now());
+const simulationClock = ref<{ originUnixMs?: number; rate?: number } | null>(null);
 const search = ref(''), onlyIssues = ref(false), detailElement = ref<HTMLElement>();
 let alive = true, controller: AbortController | undefined;
 let poll: ReturnType<typeof setInterval> | undefined, tick: ReturnType<typeof setInterval> | undefined;
@@ -28,8 +30,9 @@ const liveContext = computed(() => !!props.simulationRead || (!!store && !store.
 const selectedKey = computed(() => pipelineLayerKey(route.query.layer));
 const data = computed(() => fixed.value?.snapshot ?? latest.value);
 const historyMode = computed(() => fixed.value !== null);
-const reference = computed(() => fixed.value ? Date.parse(fixed.value.snapshot.capturedAt) : now.value);
-const currentReadFresh = computed(() => liveContext.value && !error.value && readAt.value > 0 && now.value - readAt.value < 15000 && pipelineTimestampFresh(latest.value?.capturedAt, now.value));
+const reference = computed(() => fixed.value ? Date.parse(fixed.value.snapshot.capturedAt) : pipelineBusinessReference(now.value, simulationClock.value));
+const currentReadFresh = computed(() => liveContext.value && !error.value && readAt.value > 0 && now.value - readAt.value < 15000 &&
+  pipelineSimulationCaptureValid(latest.value?.capturedAt, now.value, simulationClock.value));
 const evidenceFresh = computed(() => historyMode.value || currentReadFresh.value);
 const layers = computed(() => pipelineLayerViews(data.value, evidenceFresh.value, reference.value));
 const selected = computed(() => layers.value.find(layer => layer.key === selectedKey.value) ?? layers.value[0]!);
@@ -73,11 +76,16 @@ async function load() {
   const pending = new AbortController(); controller = pending;
   const timeout = setTimeout(() => pending.abort(), 20000);
   try {
-    const result = props.simulationRead ? await props.simulationRead(pending.signal) : await readFieldPipeline(pending.signal);
-    if (!result || !Array.isArray(result.layers) || !Array.isArray(result.gates) || !pipelineTimestampFresh(result.capturedAt, Date.now(), 30000))
-      throw new Error('后台观察结构或采集时间无效，请核对后台版本与时间。');
+    const [result, clock] = props.simulationRead
+      ? await Promise.all([props.simulationRead(pending.signal), props.simulationClock?.() ?? Promise.resolve(null)])
+      : [await readFieldPipeline(pending.signal), null];
+    if (!result || !Array.isArray(result.layers) || !Array.isArray(result.gates))
+      throw new Error('后台观察结构无效，请核对后台版本。');
+    if (!pipelineSimulationCaptureValid(result.capturedAt, Date.now(), clock, 30000))
+      throw new Error('后台观察采集时间无效或已过期，请核对后台时间。');
     if (alive && liveContext.value) {
       latest.value = result; observations.value = retainPipelineObservation(observations.value, result);
+      simulationClock.value = clock;
       readAt.value = Date.now(); now.value = Date.now(); error.value = '';
     }
   } catch (reason) {
@@ -111,7 +119,7 @@ onUnmounted(() => { alive = false; clearInterval(poll); clearInterval(tick); con
 
     <div class="pipeline-banner" :class="{ historical: historyMode, stale: !evidenceFresh }">
       <div class="pipeline-main-status"><span class="pipeline-context-label">{{historyMode ? '已固定历史观察 · 非当前状态' : currentReadFresh ? '当前后台观察' : '等待有效后台观察'}}</span><strong>{{historyMode ? '当时：' : ''}}{{executionSummary}}</strong><p>{{data?.summary || '后台连接后，这里会显示实际执行开关与各层采集结果。'}}</p></div>
-      <dl class="pipeline-timestamps"><div><dt>{{historyMode ? '固定采集时间' : '本次采集时间'}}</dt><dd>{{pipelineTime(data?.capturedAt)}}</dd></div><div><dt>最近优化计算</dt><dd>{{data?.optimizationCapturedAt ? pipelineTime(data.optimizationCapturedAt) : '尚无计算记录'}}<small v-if="data?.optimizationCapturedAt">第 {{data.cycleNumber}} 轮 · {{mode}}</small><small v-else>{{mode}} · 配置与实际计算分别核对</small></dd></div></dl>
+      <dl class="pipeline-timestamps"><div><dt>{{historyMode ? '固定采集时间' : '本次采集时间'}}</dt><dd>{{pipelineTime(data?.capturedAt)}}</dd><small v-if="simulationRead && simulationClock?.rate && simulationClock.rate > 1">隔离业务时钟 · {{simulationClock.rate}}×</small></div><div><dt>最近优化计算</dt><dd>{{data?.optimizationCapturedAt ? pipelineTime(data.optimizationCapturedAt) : '尚无计算记录'}}<small v-if="data?.optimizationCapturedAt">第 {{data.cycleNumber}} 轮 · {{mode}}</small><small v-else>{{mode}} · 配置与实际计算分别核对</small></dd></div></dl>
     </div>
 
     <section class="pipeline-gates" aria-label="实际运行开关">

@@ -19,6 +19,10 @@ export interface PipelineInspectionSnapshot {
   gates: PipelineGate[]; layers: PipelineInspectionLayer[];
 }
 export interface PipelineObservation { id: string; snapshot: PipelineInspectionSnapshot }
+export interface PipelineClock {
+  originUnixMs?: number | null;
+  rate?: number | null;
+}
 
 export const pipelineDefinitions = [
   { key: 'queue', number: 1, name: 'PLC 呼叫队列', question: '有哪些呼叫正在排队？', input: '工位呼叫与 PLC 应答', output: '保留原编号、原时间的等待任务', link: '/tasks', linkLabel: '业务任务' },
@@ -42,6 +46,25 @@ export function pipelineTime(value?: string | null): string {
 export function pipelineTimestampFresh(stamp: string | null | undefined, reference: number, maxAge = 15000): boolean {
   const time = stamp ? Date.parse(stamp) : Number.NaN;
   return Number.isFinite(reference) && Number.isFinite(time) && time > 0 && time <= reference + 1000 && reference - time < maxAge;
+}
+
+export function pipelineBusinessReference(wallNow: number, clock?: PipelineClock | null) {
+  const origin = clock?.originUnixMs, rate = clock?.rate;
+  if (!Number.isFinite(wallNow) || !Number.isFinite(origin) || !Number.isFinite(rate) ||
+      origin! <= 0 || rate! < 1 || rate! > 8 || wallNow < origin!)
+    return wallNow;
+  return origin! + (wallNow - origin!) * rate!;
+}
+
+export function pipelineSimulationCaptureValid(
+  capturedAt: string | null | undefined,
+  wallNow: number,
+  clock?: PipelineClock | null,
+  maxAge = 30_000,
+) {
+  if (!clock || !Number.isFinite(clock.originUnixMs) || !Number.isFinite(clock.rate))
+    return pipelineTimestampFresh(capturedAt, wallNow, maxAge);
+  return pipelineTimestampFresh(capturedAt, pipelineBusinessReference(wallNow, clock), maxAge);
 }
 
 const knownStates: Record<string, { label: string; tone: string }> = {

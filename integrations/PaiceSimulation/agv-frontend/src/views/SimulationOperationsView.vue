@@ -121,6 +121,10 @@ const diagnostics = computed(() => route.query.view === 'optimization' ? 'optimi
     <Optimization v-else-if="diagnostics === 'optimization'" :simulation-read="signal => request('/dispatch-optimization', undefined, signal)"
       :simulation-save="auth.isAdmin ? (update, signal) => request('/dispatch-optimization/options', update, signal) : undefined"
       :simulation-task-link="taskLink" />
-    <Pipeline v-else :simulation-read="signal => request('/dispatch-pipeline', undefined, signal)" :simulation-task-link="taskLink" />
+    <Pipeline v-else :simulation-read="signal => request('/dispatch-pipeline', undefined, signal)"
+      :simulation-clock="() => request('/live').then((value: any) => ({
+        originUnixMs: value?.simulationOriginUnixMs,
+        rate: value?.simulationRate
+      }))" :simulation-task-link="taskLink" />
   </div>
 </template>
