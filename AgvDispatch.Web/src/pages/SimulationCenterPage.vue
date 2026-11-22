@@ -9,7 +9,7 @@ import { simulationApi as defaultSimulationApi, simulationFresh, simulationGeome
   simulationStationBindingsFromCatalog, simulationVehicleVisualState, simulationVehicleVisualColor,
   simulationVehicleVisualLabel, simulationObstacleRecoveryLabel, simulationActiveVehicleCount,
   type SimulationStatus, type SimulationRun, type SimulationControls, type SimulationReport,
-  type SimulationConfigureRequest, type SimulationMapDefinition, type SimulationCall,
+  type SimulationConfigureRequest, type SimulationChargingSiteConfiguration, type SimulationMapDefinition, type SimulationCall,
   type SimulationRecoveryItem, type SimulationReplay, type SimulationStationConfiguration,
   type SimulationPlcSignalTable, type SimulationStationCatalogEntry,
   type ServicePlcPointTableSnapshot, type SimulationNode, type SimulationVehicle,
@@ -122,6 +122,10 @@ const reportTaskReading = ref(false), reportTaskError = ref('');
 const recordingVideo = ref(false), videoProgress = ref(0);
 const additionalWaitingSites = ref<string[]>([]);
 const downstreamAdmissionCapacity = ref(0);
+// 充电优先实验：可选；停用时创建的实例与原仿真完全一致。
+const chargingEnabled = ref(false);
+const chargingStart = ref(25), chargingCritical = ref(15), chargingTarget = ref(80);
+const chargingSites = ref<SimulationChargingSiteConfiguration[]>([]);
 const inspectionSite = ref(''), dumperResourceId = ref('');
 const customVehicles = ref([
   { id: 'AGV-SIM-01', initialSite: '', radiusMeters: 0.49, lengthMeters: 0.8, widthMeters: 0.52, initialLoaded: false, batteryPercent: 86, speedScale: 0.75,
@@ -271,6 +275,30 @@ const siteOptions = computed(() => groupMapOptions(mapNodes.value, siteTypes,
 const extraWaitingOptions = computed(() => siteOptions.value.map(group => ({
   ...group, options: group.options.filter(option => option.value !== waitingSite.value && option.value !== dumpingSite.value),
 })).filter(group => group.options.length));
+const chargingPointOptions = computed(() => mapNodes.value.filter(node => node.type === 'ChargingPoint')
+  .map(node => ({ value: node.id, label: `${node.id}${node.agvSiteId && node.agvSiteId !== node.id ? ` · ${node.agvSiteId}` : ''}` })));
+const chargingBayOptions = computed(() => (mapDefinition.value?.resources ?? []).filter(resource => resource.type === 'ChargingBay')
+  .map(resource => ({ value: resource.id, label: `${resource.id} · 容量 ${resource.capacity ?? 1}` })));
+function addChargingSite() {
+  const used = new Set(chargingSites.value.map(site => site.chargingSiteId));
+  const point = chargingPointOptions.value.find(option => !used.has(option.value))?.value ?? '';
+  const node = mapNodes.value.find(item => item.id === point);
+  const bay = (node?.resourceIds ?? []).find(id => chargingBayOptions.value.some(option => option.value === id)) ?? '';
+  chargingSites.value.push({ id: `BAY-${String(chargingSites.value.length + 1).padStart(2, '0')}`, chargingSiteId: point,
+    exitSiteId: '', resourceId: bay, allowedVehicleIds: customVehicles.value.map(vehicle => vehicle.id) });
+}
+function onChargingPointChange(site: SimulationChargingSiteConfiguration) {
+  const node = mapNodes.value.find(item => item.id === site.chargingSiteId);
+  const bay = (node?.resourceIds ?? []).find(id => chargingBayOptions.value.some(option => option.value === id));
+  if (bay) site.resourceId = bay;
+}
+function toggleChargingVehicle(site: SimulationChargingSiteConfiguration, id: string, allowed: boolean) {
+  site.allowedVehicleIds = allowed ? [...new Set([...site.allowedVehicleIds, id])] : site.allowedVehicleIds.filter(value => value !== id);
+}
+const chargingQueuePreview = computed(() => customVehicles.value
+  .filter(vehicle => vehicle.batteryPercent <= chargingStart.value)
+  .sort((left, right) => left.batteryPercent - right.batteryPercent)
+  .map(vehicle => `${vehicle.id} ${vehicle.batteryPercent}%`));
 const dumperResourceOptions = computed(() => {
   const bound = new Set(mapNodes.value.find(node => node.id === dumpingSite.value)?.resourceIds ?? []);
   return groupMapOptions(mapResources.value, resourceTypes,
@@ -998,8 +1026,29 @@ const configurationProblems = computed(() => {
       problems.push(`${label}待机耗电参数无效。`);
     if (!voltageCurveValid(vehicle.voltageCurve)) problems.push(`${label}电池电压曲线无效。`);
     if (!Number.isFinite(vehicle.chargingGainPercentPerHour) || vehicle.chargingGainPercentPerHour < 0 ||
-      vehicle.chargingGainPercentPerHour > 100) problems.push(`${label}充电参数无效。`);
+      vehicle.chargingGainPercentPerHour > 1000) problems.push(`${label}充电参数无效（0–1000 %/h）。`);
   });
+  if (chargingEnabled.value) {
+    if (![chargingStart.value, chargingCritical.value, chargingTarget.value].every(Number.isFinite) ||
+      !(chargingCritical.value > 0 && chargingCritical.value < chargingStart.value && chargingStart.value < chargingTarget.value && chargingTarget.value <= 100))
+      problems.push('充电阈值须满足 0 < 严重低电 < 启动 < 退出 ≤ 100。');
+    if (chargingSites.value.length < 1) problems.push('启用充电优先实验时至少配置一个充电位。');
+    const vehicleIds = new Set(customVehicles.value.map(vehicle => vehicle.id));
+    chargingSites.value.forEach((site, index) => {
+      const label = `充电位${index + 1}`;
+      const node = mapNodes.value.find(item => item.id === site.chargingSiteId);
+      if (!/^[A-Za-z0-9_-]{1,64}$/.test(site.id)) problems.push(`${label} ID只能包含字母、数字、-或_。`);
+      if (!node || node.type !== 'ChargingPoint') problems.push(`${label}须选择地图上已启用的充电点（ChargingPoint）。`);
+      if (!site.exitSiteId || site.exitSiteId === site.chargingSiteId || !mapNodes.value.some(item => item.id === site.exitSiteId))
+        problems.push(`${label}须选择不同于充电点的已启用退出点。`);
+      const bay = (mapDefinition.value?.resources ?? []).find(resource => resource.id === site.resourceId);
+      if (!bay || bay.type !== 'ChargingBay' || (bay.capacity ?? 1) !== 1) problems.push(`${label}的独占资源须为容量 1 的 ChargingBay。`);
+      else if (node && !(node.resourceIds ?? []).includes(site.resourceId)) problems.push(`${label}的 ChargingBay 未关联到所选充电点。`);
+      if (!site.allowedVehicleIds.length || site.allowedVehicleIds.some(id => !vehicleIds.has(id))) problems.push(`${label}的允许车辆不能为空，且只能是本方案车辆。`);
+    });
+    for (const key of ['id', 'chargingSiteId', 'resourceId'] as const)
+      if (new Set(chargingSites.value.map(site => site[key].toLowerCase())).size !== chargingSites.value.length) problems.push('充电位 ID、充电点和独占资源均不能重复。');
+  }
   if (new Set(customVehicles.value.map(vehicle => vehicle.id)).size !== customVehicles.value.length)
     problems.push('车辆 ID 不能重复。');
   if (new Set(customVehicles.value.map(vehicle => vehicle.initialSite)).size !== customVehicles.value.length)
@@ -1258,6 +1307,9 @@ function configurationDraft(): SimulationConfigureRequest | null {
     dumper: { dumpingSite: dumpingSite.value, waitingSite: waitingSite.value, waitingSites: [waitingSite.value, ...additionalWaitingSites.value], resourceId: dumperResourceId.value },
     inspectionSite: inspectionSite.value,
     downstreamAdmissionCapacity: downstreamAdmissionCapacity.value,
+    ...(chargingEnabled.value ? { chargingPriorityTest: { enabled: true, startBatteryPercent: chargingStart.value,
+      criticalBatteryPercent: chargingCritical.value, targetBatteryPercent: chargingTarget.value,
+      sites: chargingSites.value.map(site => ({ ...site, allowedVehicleIds: [...site.allowedVehicleIds] })) } } : {}),
     plcSignalTable: { ...plcTableMetadata.value, csvText: plcTableText.value },
     mapIdentity: mapIdentityDraft.value
   };
@@ -1525,6 +1577,11 @@ function accept(next: SimulationStatus) {
     dumpingSite.value = next.configuration.dumper.dumpingSite; dumperResourceId.value = next.configuration.dumper.resourceId;
     inspectionSite.value = next.configuration.inspectionSite;
     downstreamAdmissionCapacity.value = next.configuration.downstreamAdmissionCapacity ?? 0;
+    const charging = next.configuration.chargingPriorityTest;
+    chargingEnabled.value = !!charging?.enabled;
+    chargingStart.value = charging?.startBatteryPercent ?? 25; chargingCritical.value = charging?.criticalBatteryPercent ?? 15;
+    chargingTarget.value = charging?.targetBatteryPercent ?? 80;
+    chargingSites.value = (charging?.sites ?? []).map(site => ({ ...site, allowedVehicleIds: [...site.allowedVehicleIds] }));
     const boundTable = next.configuration.plcSignalTable ?? next.plcSignalTable ?? null;
     if (boundTable) {
       plcTableFileName.value = boundTable.fileName;
@@ -2200,10 +2257,45 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
                   </div>
                   <div class="toolbar"><button :disabled="(vehicle.voltageCurve?.length ?? 0) >= 20" @click="addVoltagePoint(vehicle)">增加曲线点</button><button @click="sortVoltageCurve(vehicle)">按电量排序</button></div>
                 </div>
-                <div class="form-row"><label>充电 / %每小时<input v-model.number="vehicle.chargingGainPercentPerHour" type="number" min="0" max="100" step="0.1" /></label></div>
+                <div class="form-row"><label>充电 / %每小时<input v-model.number="vehicle.chargingGainPercentPerHour" type="number" min="0" max="1000" step="0.1" /><small>仅影响虚拟电池；加速充电只用于缩短测试，报告须记录实际值。</small></label></div>
               </details>
             </div>
             <button :disabled="customVehicles.length >= 8" @click="customVehicles.push({ id: `AGV-SIM-${String(customVehicles.length + 1).padStart(2, '0')}`, initialSite: '', radiusMeters: 0.49, lengthMeters: 0.8, widthMeters: 0.52, initialLoaded: false, batteryPercent: 86, speedScale: 0.75, accelerationMetersPerSecondSquared: 0.6, operationSeconds: 2, travelCostPercentPerMeter: 0.01, idleCostPercentPerHour: 0.1, voltageCurve: [{ percent: 0, voltage: 21 }, { percent: 100, voltage: 26 }], chargingGainPercentPerHour: 20 }); resetVehicleOrigins()">增加车辆</button>
+          </div>
+          <div class="charging-designer">
+            <div class="designer-section-title"><span>03</span><div><b>充电优先实验 · {{ chargingEnabled ? `已启用 · ${chargingSites.length} 个充电位` : '未启用' }}</b><small>低电量车辆先完成当前箱体循环，再按电量从低到高排队充电；达到退出电量后停止输出、驶离并恢复接单。</small></div></div>
+            <label class="loaded-config"><input v-model="chargingEnabled" type="checkbox" :disabled="configurationLocked" @change="chargingEnabled && !chargingSites.length && addChargingSite()" />启用充电优先实验（虚拟 1007 电池与 6005 继电器，每车独立端口）</label>
+            <template v-if="chargingEnabled">
+              <div class="form-row">
+                <label>启动充电 / %<input v-model.number="chargingStart" type="number" min="1" max="99" step="1" /><small>电量不高于此值时排队并停止接新单。</small></label>
+                <label>严重低电 / %<input v-model.number="chargingCritical" type="number" min="1" max="99" step="1" /><small>任何情况下都不再接新业务。</small></label>
+                <label>退出电量 / %<input v-model.number="chargingTarget" type="number" min="2" max="100" step="1" /><small>达到后发送 6005 停止、电流归零再驶离。</small></label>
+              </div>
+              <p class="charging-preview">按当前车辆电量，启动后进入充电队列的顺序：<b>{{ chargingQueuePreview.length ? chargingQueuePreview.join(' → ') : '无（所有车辆高于启动阈值）' }}</b></p>
+              <div v-for="(site, index) in chargingSites" :key="index" class="vehicle-config-row charging-site-row">
+                <label>充电位 ID<input v-model.trim="site.id" maxlength="64" /></label>
+                <label>充电点
+                  <ElSelectV2 v-model="site.chargingSiteId" :options="chargingPointOptions" :disabled="configurationLocked" :teleported="false" class="topology-select" filterable
+                    :aria-label="`${site.id} 的充电点`" placeholder="选择 ChargingPoint" @change="onChargingPointChange(site)" />
+                </label>
+                <label>退出点
+                  <ElSelectV2 v-model="site.exitSiteId" :options="siteOptions" :disabled="configurationLocked" :teleported="false" class="topology-select" filterable
+                    :aria-label="`${site.id} 的退出点`" placeholder="搜索退出节点" />
+                  <small>充完电后先驶到这里再释放充电位；不要选倒料净空内或主道唯一通行点。</small>
+                </label>
+                <label>独占资源
+                  <ElSelectV2 v-model="site.resourceId" :options="chargingBayOptions" :disabled="configurationLocked" :teleported="false" class="topology-select" filterable
+                    :aria-label="`${site.id} 的独占资源`" placeholder="选择 ChargingBay" />
+                </label>
+                <fieldset class="charging-vehicles"><legend>允许车辆</legend>
+                  <label v-for="vehicle in customVehicles" :key="vehicle.id"><input type="checkbox" :checked="site.allowedVehicleIds.includes(vehicle.id)"
+                    @change="toggleChargingVehicle(site, vehicle.id, ($event.target as HTMLInputElement).checked)" />{{ vehicle.id }}</label>
+                </fieldset>
+                <button @click="chargingSites.splice(index, 1)">删除</button>
+              </div>
+              <button :disabled="chargingSites.length >= Math.min(32, chargingPointOptions.length)" @click="addChargingSite">增加充电位</button>
+              <small v-if="!chargingPointOptions.length" class="inline-warning">当前地图没有 ChargingPoint 节点，无法启用充电优先实验。</small>
+            </template>
           </div>
           <div v-if="!configurationValid" class="inline-warning"><b>创建前还需处理：</b><ul><li v-for="problem in configurationProblems" :key="problem">{{ problem }}</li></ul></div>
           <div class="toolbar designer-actions"><button class="primary" :disabled="!available || !!status?.running || starting || active || !configurationValid" @click="configureSimulation">创建自定义隔离实例</button><span>创建后不会自动启动；核对实例名和拓扑后再启动。</span></div>
@@ -2497,6 +2589,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
 .map-node.dense circle{fill:#55779a;stroke-width:1}.map-node.dense text{font-size:10px}.cad-reference{pointer-events:none;filter:grayscale(.35) brightness(1.08)}
 .simulation-page{flex:1;min-height:0;overflow:auto;padding:8px 12px 30px;color:#d3e2f3}.simulation-title{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:8px 0 18px}.simulation-title h2{display:flex;align-items:center;gap:9px;font-size:23px}.simulation-title p{margin-top:9px;color:#94abc8;line-height:1.6}.toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:8px}.new-vehicle-count{display:flex;align-items:center;gap:7px;color:#9cb1cb;font-size:11px}.new-vehicle-count input{width:60px}.scope-label{font-size:11px;color:#7ad4e7;border:1px solid #2b6676;background:#102e3e;padding:4px 8px;border-radius:4px;white-space:nowrap}.environment-panel,.simulation-panel,.configuration-guide{border:1px solid #2b4162;border-radius:6px;background:#101b32;padding:18px}.environment-panel{display:flex;align-items:center;flex-wrap:wrap;gap:20px;margin-bottom:14px}.environment-panel>div:first-child{flex:1;min-width:240px}.environment-panel h3{font-size:16px}.environment-panel p{color:#9cb1cb;line-height:1.6;margin-top:7px;overflow-wrap:anywhere}.environment-state{display:flex;flex-direction:column;gap:8px}.environment-state small{color:#89a0be}.simulation-grid{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(320px,1fr);gap:14px}.simulation-panel{min-width:0}.simulation-panel>header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}.simulation-panel h3{display:flex;align-items:center;gap:8px;font-size:15px}.simulation-panel small{display:block;color:#91a8c3;line-height:1.65;margin-top:12px}.simulation-map{width:100%;height:340px;background:#0c1529;border:1px solid #223654;border-radius:4px}.roads path{fill:none;stroke:#3b5475;stroke-width:4;stroke-linecap:round}.roads path.blocked{stroke:#ef947b;stroke-dasharray:8 6}.edge-controls{border-top:1px solid #2b4162;padding-top:12px;margin-top:15px}.edge-controls summary{cursor:pointer;color:#a9c7dc}.edge-controls p{line-height:1.6;color:#91a8c3;margin:12px 0}.edge-options{max-height:150px;overflow:auto;margin:12px 0}.edge-options label{display:flex;flex-direction:row;align-items:center;gap:8px;padding:5px}.edge-options input{width:15px;min-height:15px}.map-node circle{fill:#90abc8;stroke:#0c1529;stroke-width:2}.map-node text{font-size:12px;fill:#a5b7cc;paint-order:stroke;stroke:#0c1529;stroke-width:4;stroke-linejoin:round}.map-car{color:var(--car-color);transition:transform .5s linear}.map-car>circle{fill:var(--car-color);fill-opacity:.12;stroke:var(--car-color);stroke-width:1.5}.map-car rect{fill:var(--car-color);stroke:#091525;stroke-width:2}.map-car text{fill:var(--car-color);font-size:13px;font-weight:600;paint-order:stroke;stroke:#0c1529;stroke-width:4;stroke-linejoin:round}.map-car.selected>circle{stroke-width:3}.map-car.stale{opacity:.4}.map-car.offline>circle{stroke-dasharray:4 3}.map-caption{display:flex;justify-content:space-between;gap:12px;color:#86a0bf;padding-top:10px;line-height:1.6}.map-empty{min-height:340px;display:grid;place-content:center;color:#839bbb;background:#0c1529;padding:28px;text-align:center}.simulation-panel label{display:flex;flex-direction:column;gap:7px;color:#a5bad2;font-size:12px}.simulation-panel input,.simulation-panel select{width:100%;min-width:0}.simulation-panel fieldset{border:0;padding:0;margin:0 0 16px;min-width:0}.form-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:14px 0}.scenario-panel fieldset>label{margin-bottom:12px}.simulation-page .primary{color:#a6f0ff;border-color:#289db6;background:#134050}.state-pill{display:inline-flex;padding:4px 8px;border:1px solid #3f526d;border-radius:4px;font-size:11px;white-space:nowrap}.state-pill.pass{color:#67e1bb;background:#112f2e;border-color:#286a59}.state-pill.fail{color:#ffacb6;background:#3c2432;border-color:#865064}.state-pill.waiting{color:#f1d08f;background:#342e21;border-color:#75603a}.state-pill.unknown{color:#a2b1c6;background:#1a273c;border-color:#3c4f6a}.scenario-progress{border-top:1px solid #293c59;margin-top:19px;padding-top:16px}.scenario-progress>div{display:flex;justify-content:space-between;color:#a5d5e4}.scenario-progress progress{width:100%;height:6px;margin:12px 0;accent-color:#3ac5cf}.scenario-progress p{line-height:1.7;color:#b1c5dd;overflow-wrap:anywhere}.vehicle-select{max-width:320px}.vehicle-facts{display:grid;grid-template-columns:105px minmax(0,1fr);gap:9px 12px;line-height:1.5;margin:16px 0 19px}.vehicle-facts dt{color:#8fa6c3}.vehicle-facts dd{margin:0;overflow-wrap:anywhere}.speed-control{display:flex;align-items:flex-end;gap:10px;margin-top:15px}.speed-control label{max-width:130px}.plc-faults{margin-top:18px}.report-panel{margin-top:14px}.report-metrics{display:flex;flex-wrap:wrap;gap:12px 28px;padding-bottom:8px}.report-metrics dt{font-size:11px;color:#8da6c3}.report-metrics dd{margin:5px 0;font-size:19px;color:#b7e7ef;font-variant-numeric:tabular-nums}.report-identity{display:flex;flex-wrap:wrap;align-items:center;gap:10px 18px;padding:0 0 15px;color:#99b1ca;line-height:1.6}.report-identity b{color:#c2dbe8}.report-panel>.inline-warning{line-height:1.7;margin-bottom:12px}.report-table{overflow:auto}.report-panel table{width:100%;border-collapse:collapse;text-align:left;line-height:1.6}.report-panel th{font-weight:400;color:#8fa7c6;background:#12223a}.report-panel td,.report-panel th{padding:12px;border-bottom:1px solid #293b56}.report-panel td:first-child{min-width:150px}.report-panel td:last-child{overflow-wrap:anywhere}.report-empty{color:#91a8c3;line-height:1.8;padding:8px 0}.simulation-error,.simulation-notice{padding:12px 15px;line-height:1.6;margin-bottom:14px;border-radius:4px}.simulation-error{background:#402633;border:1px solid #865269;color:#ffbdc8}.simulation-notice{background:#143037;border:1px solid #2c626a;color:#9edfe0}.inline-warning{color:#eac17d;font-size:11px}.scenario-panel>.inline-warning{margin-top:10px}.configuration-guide{margin-bottom:14px}.configuration-guide h3{margin-bottom:10px}.configuration-guide p{line-height:1.8;color:#a0b8d0}.event-panel{margin-top:14px}.event-panel summary{cursor:pointer;color:#a8cedf}.event-panel ol{list-style:none;padding:0;max-height:250px;overflow:auto}.event-panel li{display:flex;gap:16px;line-height:1.7;border-top:1px solid #263a55;padding:9px 0;overflow-wrap:anywhere}.event-panel time{flex:none;color:#8ca5c1}.simulation-boundary{color:#8098b5;line-height:1.8;margin-top:16px;font-size:11px}@media(max-width:1050px){.simulation-grid{grid-template-columns:1fr}.simulation-title{align-items:flex-start}.map-panel{order:0}}@media(max-width:650px){.simulation-page{padding:5px}.simulation-title{flex-direction:column}.environment-panel{padding:14px}.simulation-panel{padding:14px}.simulation-panel>header{align-items:flex-start;flex-wrap:wrap}.simulation-map{height:280px}.form-row{grid-template-columns:1fr}.map-caption{flex-direction:column}.event-panel li{display:block}.event-panel time{display:block}.vehicle-facts{grid-template-columns:85px minmax(0,1fr)}}@media(prefers-reduced-motion:reduce){.map-car{transition:none}}
 .instance-designer{margin-bottom:14px}.designer-intro{line-height:1.75;color:#9db4ce;margin-bottom:14px}.designer-intro code{color:#8ce0e4}.map-import{display:flex;align-items:center;flex-wrap:wrap;gap:12px;padding:12px;background:#0c172b;border:1px solid #263d5b;margin-bottom:14px}.map-import>span{color:#8da7c4;line-height:1.55}.file-picker{max-width:330px}.file-picker input{padding:7px}.plc-table-binding{border:1px solid #294666;background:#0a1628;padding:13px;margin-bottom:14px}.plc-table-summary{display:grid;gap:5px;padding:10px;border:1px solid #23605d;background:#0a2427}.plc-table-summary span{color:#9ed6d0}.plc-table-summary code{display:block;overflow-wrap:anywhere;color:#77aee4;font-size:11px}.topology-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.vehicle-designer{border-top:1px solid #293e5d;margin-top:16px;padding-top:14px}.designer-subhead{display:flex;justify-content:space-between;gap:12px;align-items:baseline;margin-bottom:10px}.designer-subhead small,.designer-actions span{color:#8da4c0}.vehicle-config-row{display:grid;grid-template-columns:1fr 1.3fr .7fr auto;gap:9px;align-items:end;padding:9px 0;border-top:1px solid #223651}.agentel-config-row button{height:34px}.designer-actions{margin-top:15px}.call-plan{border-top:1px solid #2a405f;padding-top:13px;margin-top:14px}.recovery-panel{margin-top:14px}.recovery-panel>p{line-height:1.75;color:#a1b8d1}.recovery-items{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:10px;margin:14px 0}.recovery-items article{border:1px solid #304965;background:#0d192d;padding:12px}.recovery-title{display:flex;justify-content:space-between;gap:10px;margin-bottom:9px}.recovery-items p,.recovery-items small{display:block;color:#9fb6cf;line-height:1.6;overflow-wrap:anywhere;margin:5px 0}.recovery-items button{margin-top:8px}.recovery-confirmations{display:flex;flex-wrap:wrap;gap:18px;margin-top:12px}.recovery-confirmations label{display:flex;flex-direction:row;align-items:center;gap:8px}.recovery-confirmations input{width:16px;min-height:16px}.simulation-panel textarea{width:100%;min-width:0;resize:vertical}@media(max-width:1050px){.topology-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:650px){.topology-grid,.vehicle-config-row{grid-template-columns:1fr}}
+.charging-designer{border-top:1px solid #293e5d;margin-top:16px;padding-top:14px}.charging-designer>.loaded-config{flex-direction:row;align-items:center;gap:8px;margin:6px 0 10px}.charging-designer>.loaded-config input{width:16px;min-height:16px}.charging-preview{color:#b9a6e8;line-height:1.6;margin:8px 0}.charging-designer>.form-row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.vehicle-config-row.charging-site-row{grid-template-columns:minmax(100px,.6fr) repeat(3,minmax(150px,1fr)) minmax(210px,1.3fr) auto;align-items:start}.charging-site-row button{align-self:end}.charging-vehicles{display:flex;flex-wrap:wrap;gap:4px 12px;border:1px solid #2c3f61;padding:6px 9px;margin:0}.charging-vehicles legend{color:#8da4c0;font-size:12px}.charging-vehicles label{display:flex;flex-direction:row;align-items:center;gap:5px;white-space:nowrap}.charging-vehicles input{width:14px;min-height:14px}@media(max-width:1050px){.vehicle-config-row.charging-site-row,.charging-designer>.form-row{grid-template-columns:1fr 1fr}}
 .vehicle-config-row{grid-template-columns:minmax(120px,1fr) minmax(150px,1.3fr) repeat(3,minmax(90px,.65fr)) auto auto}.vehicle-config-row .loaded-config{flex-direction:row;align-items:center;gap:7px}.vehicle-config-row .loaded-config input{width:16px;min-height:16px}.vehicle-config-row button{height:34px}.vehicle-advanced{grid-column:1/-1;border:1px solid #223651;padding:9px}.vehicle-advanced summary{cursor:pointer;color:#8db5ce}.vehicle-advanced .form-row{margin:10px 0 0}
 .protocol-designer{margin-bottom:14px}.protocol-designer>p{line-height:1.75;color:#9fb6cf;margin-bottom:12px}.protocol-grid{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(260px,.8fr);gap:14px}.protocol-grid textarea{font-family:Consolas,monospace;font-size:12px;line-height:1.5;margin-top:10px;background:#091426;color:#bfe6ef}.protocol-grid aside{border:1px solid #2b4162;background:#0b172a;padding:14px}.protocol-grid aside dl{display:grid;grid-template-columns:90px minmax(0,1fr);gap:8px;line-height:1.5}.protocol-grid aside dt{color:#829bb8}.protocol-grid aside dd{margin:0;overflow-wrap:anywhere}.protocol-grid pre{max-height:220px;overflow:auto;background:#07101f;padding:10px;color:#a9d7e2;white-space:pre-wrap;overflow-wrap:anywhere}@media(max-width:850px){.protocol-grid{grid-template-columns:1fr}}
 .voltage-curve-editor{margin-top:12px;border-top:1px solid #223651;padding-top:10px}.voltage-point{display:grid;grid-template-columns:minmax(110px,1fr) minmax(110px,1fr) auto;gap:9px;align-items:end;margin:8px 0}.voltage-point button{height:34px}.voltage-curve-editor .toolbar{margin-top:9px}.equipment-designer{margin-bottom:14px}.equipment-designer>p{line-height:1.75;color:#9fb6cf;margin-bottom:12px}.equipment-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.equipment-grid>div{border:1px solid #2b4162;background:#0b172a;padding:14px;min-width:0}.equipment-grid label{min-width:150px}.equipment-grid textarea{font-family:Consolas,monospace;font-size:12px;line-height:1.5}.equipment-facts{display:grid;grid-template-columns:130px minmax(0,1fr);gap:8px;margin:16px 0;line-height:1.5}.equipment-facts dt{color:#829bb8}.equipment-facts dd{margin:0}.equipment-grid pre{max-height:180px;overflow:auto;background:#07101f;padding:10px;color:#a9d7e2;white-space:pre-wrap}@media(max-width:850px){.equipment-grid{grid-template-columns:1fr}}

@@ -25,6 +25,10 @@ def run_backlog(runtime, request, evidence, observer, tasks, completed, discover
     # initialise together. Keep the default for small scenarios, but allow a
     # bounded larger acknowledgement window for multi-round campaigns.
     call_acceptance_timeout = max(40, min(120, 10 + len(request['calls']) * 4))
+    # The window runs on the business clock, while the Service scans the PLC and creates tasks in wall time.
+    # At 8x a 50 s window is ~6 wall seconds and a busy host produced false "no task" failures; keep the
+    # same wall-time tolerance at every rate.
+    call_acceptance_timeout = round(call_acceptance_timeout * max(1.0, float(getattr(runtime, 'simulation_rate', 1) or 1)))
     deadline = started + max(call['atSeconds'] for call in pending) + request['timeoutSeconds']
     maximum_waiting = maximum_active = maximum_pending = maximum_busy_waiting = 0
     maximum_admission_waiting = 0

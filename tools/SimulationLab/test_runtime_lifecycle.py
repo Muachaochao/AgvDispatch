@@ -133,6 +133,16 @@ class LifecycleTests(unittest.TestCase):
         runtime.api = lambda path: dict(items=[], totalCount=0)
         with self.assertRaisesRegex(RuntimeError, '完整任务汇总'): runtime.idle_review()
 
+    def test_idle_review_ignores_charging_session_motion_but_not_business_tasks(self):
+        runtime = object.__new__(Runtime)
+        memory = bytearray(611); memory[0] = memory[2] = 10
+        cars = {'car': dict(loaded=False, current_task='CHARGE-abc-IN', tasks={'CHARGE-abc-IN': 2})}
+        runtime.device = lambda: dict(memory_hex=memory.hex(), cars=cars)
+        runtime.api = lambda path: dict(items=[], totalCount=1, summary=dict(total=1, completed=0))
+        with self.assertRaisesRegex(RuntimeError, '未闭合任务'): runtime.idle_review()
+        cars['car'] = dict(loaded=False, current_task='TASK-1', tasks={'TASK-1': 2})
+        with self.assertRaisesRegex(RuntimeError, '空载静止'): runtime.idle_review()
+
     def test_raw_symlink_is_rejected_before_resolving_target(self):
         with tempfile.TemporaryDirectory() as name:
             workspace = Path(name)
@@ -263,6 +273,9 @@ class LifecycleTests(unittest.TestCase):
             self.assertTrue(communication['ChargingSiteConfigurationInitialized'])
             self.assertEqual(len(communication['ChargingSites']), 1)
             self.assertEqual(communication['ChargingSites'][0]['ChargingSiteId'], '充电位')
+            # The private file drives the PLC fleet once present: keep the appsettings device identity.
+            self.assertEqual(communication['Plcs'][0]['DeviceId'], runtime.settings['Plc'].get('DeviceId', 'PLC-MAIN'))
+            self.assertEqual(communication['Plcs'][0]['SignalCsvPath'], runtime.settings['Plc']['SignalCsvPath'])
             self.assertEqual(set(runtime.lab['simulationConfiguration']['chargingPriorityTest']['sites'][0]['allowedVehicleIds']),
                              {'AGV-01', 'AGV-02'})
 

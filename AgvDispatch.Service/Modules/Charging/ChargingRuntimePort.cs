@@ -171,24 +171,36 @@ public sealed class ChargingRuntimePort(ChargingOptions options, IAgvStateCache 
         return (await resources.TryAcquireAsync(session.SessionId+"-LOCK",session.SessionId,session.VehicleId,route.ResourceIds,ct)).Acquired;
     }
     public Task RenewAsync(string sessionId,CancellationToken ct)=>resources.RenewTaskAsync(sessionId,ct);
-    // B07-FIX C6: the inbound road is behind the vehicle and, for Relay6005, the return road is never driven by the
-    // charging session (it completes at the exit node). Holding them for the whole charge blocked the shared junctions in
-    // front of the waiting bays and stalled every business vehicle. Keep the bay, the charging point and the exit path.
+    // B07-FIX C6/C8: once the vehicle stands on the charger, only the charging bay and the charging point are kept.
+    // C6 kept the exit path too; on B07 the CHARGE-01 exit J0631 is the only approach to the dumper (J0632→J0631→J0651),
+    // and an exit into the waiting area would hold the shared collector junctions, so a 40-minute charge stopped every
+    // dumping cycle. The exit path is acquired again as ordinary traffic after the stop is verified (AcquireExitAsync).
     public async Task<int> ShrinkToBayAsync(ChargingSession session,CancellationToken ct)
     {
         if(session.Site is null||session.Route is null||map.Current is not {} current||
            current.MapId!=session.Route.MapId||current.VersionId!=session.Route.MapVersionId)return 0;
-        var definition=current.Definition;
         var keep=new HashSet<string>(StringComparer.OrdinalIgnoreCase){session.Site.ResourceId};
-        var exitNodes=session.Route.ExitPath.Select(id=>Node(id)).ToArray();
-        if(exitNodes.Any(n=>n is null))return 0;
-        foreach(var node in exitNodes)keep.UnionWith(node!.ResourceIds);
-        foreach(var (from,to) in exitNodes.Zip(exitNodes.Skip(1)))
-            foreach(var edge in definition.Edges.Where(e=>e.Enabled&&(e.From.Equals(from!.Id,StringComparison.OrdinalIgnoreCase)&&e.To.Equals(to!.Id,StringComparison.OrdinalIgnoreCase)||
-                e.Bidirectional&&e.From.Equals(to!.Id,StringComparison.OrdinalIgnoreCase)&&e.To.Equals(from.Id,StringComparison.OrdinalIgnoreCase))))
-                keep.UnionWith(edge.ResourceIds);
+        if(Node(session.Site.ChargingSiteId) is not {} point)return 0;
+        keep.UnionWith(point.ResourceIds);
         return await resources.ReleaseStepExceptResourcesAsync(session.SessionId+"-LOCK",keep,
-            "车辆已在充电点停稳：保留充电位及出口路线，释放身后来车道路和未使用的返回道路。",ct);
+            "车辆已在充电点停稳：只保留充电位，释放来车道路、出口道路和未使用的返回道路；停充后再按普通交通申请出口。",ct);
+    }
+    public async Task<bool> AcquireExitAsync(ChargingSession session,CancellationToken ct)
+    {
+        if(session.Site is null||session.Route is null||map.Current is not {} current||
+           current.MapId!=session.Route.MapId||current.VersionId!=session.Route.MapVersionId)return false;
+        var nodes=session.Route.ExitPath.Select(id=>Node(id)).ToArray();
+        if(nodes.Length<2||nodes.Any(n=>n is null))return false;
+        var ids=new HashSet<string>(StringComparer.OrdinalIgnoreCase){session.Site.ResourceId};
+        foreach(var node in nodes)ids.UnionWith(node!.ResourceIds);
+        foreach(var (from,to) in nodes.Zip(nodes.Skip(1)))
+            foreach(var edge in current.Definition.Edges.Where(e=>e.Enabled&&(e.From.Equals(from!.Id,StringComparison.OrdinalIgnoreCase)&&e.To.Equals(to!.Id,StringComparison.OrdinalIgnoreCase)||
+                e.Bidirectional&&e.From.Equals(to!.Id,StringComparison.OrdinalIgnoreCase)&&e.To.Equals(from.Id,StringComparison.OrdinalIgnoreCase))))
+                ids.UnionWith(edge.ResourceIds);
+        var stepId=session.SessionId+"-EXIT";
+        await resources.RecordRouteAsync(new(stepId,session.SessionId,session.VehicleId,session.Route.ExitPath[0],session.Route.ExitPath[^1],[],ids.ToArray(),false,
+            "停充已确认：按普通交通申请充电出口路线。") {MapId=session.Route.MapId,MapVersionId=session.Route.MapVersionId},ct);
+        return (await resources.TryAcquireAsync(stepId,session.SessionId,session.VehicleId,ids,ct)).Acquired;
     }
     public Task ReleaseAsync(string sessionId,CancellationToken ct)=>resources.ReleaseTaskAsync(sessionId,ct);
     public Task<string> NavigateAsync(string commandId,string vehicleId,IReadOnlyList<string> path,CancellationToken ct)=>
