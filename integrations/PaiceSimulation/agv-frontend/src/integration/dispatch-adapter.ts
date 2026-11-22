@@ -118,6 +118,8 @@ export interface DispatchWaitRequest {
   blockingClockValid?: boolean;
   state?: string;
   resourceIds?: string[];
+  edgeIds?: string[];
+  heldResourceIds?: string[];
   blockers?: { resourceId: string; vehicleId?: string | null }[];
 }
 export interface DispatchWaitSnapshot {
@@ -147,6 +149,11 @@ export function dispatchWaitSnapshotFresh(snapshot: DispatchWaitSnapshot | null,
   return snapshot?.connected === true && age >= -1000 && age < 10000;
 }
 
+export function isReferenceRoute(request: Pick<DispatchWaitRequest, "waitingCategory" | "reason">) {
+  return request.waitingCategory === "ReferenceRoute"
+    || request.reason?.startsWith("候车位或其路径不可用，保持在原取箱点") === true;
+}
+
 export function dispatchWaitState(task: DispatchWaitTask, requests: readonly DispatchWaitRequest[]): DispatchWaitState {
   if (task.status === "completed" || task.taskStage === "Completed") return { label: "已完成", type: "success" };
   if (task.taskStage === "Cancelled" || task.status === "Cancelled") return { label: "任务取消", type: "info" };
@@ -162,6 +169,7 @@ export function dispatchWaitState(task: DispatchWaitTask, requests: readonly Dis
     && (task.stepNumber == null || (task.stepNumber === 4
       ? item.waitingCategory === "Equipment"
       : [1, 3, 5, 7].includes(task.stepNumber) && item.waitingCategory !== "Equipment")));
+  if (request && isReferenceRoute(request)) return { label: "已派车等候车路线", type: "warning", request };
   if (request && request.waitingCategory !== "Equipment") return { label: "已派车等路权", type: "warning", request };
   if (request || [2, 4, 6, 8, 9].includes(task.stepNumber ?? 0)
     || (task.stepNumber == null && ["PickingUp", "WaitingForDumper", "WaitingForPlcConfirmation"].includes(task.taskStage ?? ""))) {

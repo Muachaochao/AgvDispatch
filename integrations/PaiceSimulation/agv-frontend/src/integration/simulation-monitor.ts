@@ -1,5 +1,5 @@
-import { dispatchWaitBlockers, dispatchWaitDuration, type DispatchCar, type DispatchTaskDetail, type DispatchWaitRequest, type SourceMap } from './dispatch-adapter.ts'
-import type { CallRow, ResourceRow } from './dispatch-api.ts'
+import { dispatchWaitBlockers, dispatchWaitDuration, isReferenceRoute, type DispatchCar, type DispatchTaskDetail, type DispatchWaitRequest, type SourceMap } from './dispatch-adapter.ts'
+import type { CallRow, DispatchStatus, ResourceRow } from './dispatch-api.ts'
 
 export const businessStepNames: Record<string, string> = {
   GoToPickup: '前往工位取满箱', PickupFullBox: '取满箱确认',
@@ -23,6 +23,19 @@ export function elapsedLabel(seconds?: number | null) {
 export function secondsSince(time?: string | null, now = Date.now()) {
   const start = Date.parse(time ?? '')
   return Number.isFinite(start) && start <= now ? (now - start) / 1000 : undefined
+}
+
+export function runTiming(status?: Pick<DispatchStatus, 'simulationRate' | 'device' | 'scenario' | 'report'> | null) {
+  const { device, scenario, report, simulationRate } = status ?? {}
+  const rate = typeof simulationRate === 'number' && Number.isFinite(simulationRate) && simulationRate >= 1
+    ? simulationRate : undefined
+  const matchingReport = scenario?.id ? report?.id === scenario.id
+    : scenario?.startedAt != null ? scenario.startedAt === report?.startedAt : true
+  const start = scenario?.startedAt ?? (matchingReport ? report?.startedAt : undefined)
+  const end = (matchingReport ? report?.finishedAt : undefined) ?? device?.time
+  const businessSeconds = typeof start === 'number' && typeof end === 'number' &&
+    Number.isFinite(start) && Number.isFinite(end) && end >= start ? end - start : undefined
+  return { rate, businessSeconds, wallSeconds: rate && businessSeconds !== undefined ? businessSeconds / rate : undefined }
 }
 
 export function briefReason(text?: string) {
@@ -115,14 +128,15 @@ export function resourceLocations(map?: SourceMap | null, runtime: readonly Reso
 export function resourceRows(resources: readonly ResourceRow[], requests: readonly DispatchWaitRequest[],
   locations: ReadonlyMap<string, ResourceLocation>, search: string, showAll: boolean) {
   const byResource = new Map<string, DispatchWaitRequest[]>()
-  for (const request of requests) for (const id of new Set([
+  const liveRequests = requests.filter(request => !isReferenceRoute(request))
+  for (const request of liveRequests) for (const id of new Set([
     ...(request.blockers ?? []).map(blocker => blocker.resourceId), ...(request.resourceIds ?? []),
   ])) {
     const waits = byResource.get(id) ?? []
     waits.push(request)
     byResource.set(id, waits)
   }
-  const blockers = new Set(requests.flatMap(request => (request.blockers ?? []).map(blocker => blocker.resourceId)))
+  const blockers = new Set(liveRequests.flatMap(request => (request.blockers ?? []).map(blocker => blocker.resourceId)))
   const query = search.trim().toLowerCase()
   return resources.flatMap(resource => {
     const waits = byResource.get(resource.resourceId) ?? []
@@ -137,6 +151,10 @@ export function resourceRows(resources: readonly ResourceRow[], requests: readon
 
 export function summarizeWait(request: DispatchWaitRequest, locations: ReadonlyMap<string, ResourceLocation>, candidate = false, omitDuration = false) {
   const blockers = dispatchWaitBlockers(request.blockers)
+  if (isReferenceRoute(request)) return [
+    !omitDuration && dispatchWaitDuration(request), '暂无可走候车路线',
+    blockers.length > 0 && `参考路线沿线 ${blockers.length} 项占满`,
+  ].filter(Boolean).join(' · ')
   const first = blockers[0]
   const cause = first ? `${first.vehicles.length ? `${first.vehicles.join('、')} 占用` : '持有车待确认'}${locations.get(first.resourceId)?.label ?? first.resourceId}`
     : briefReason(request.reason) || '等待资源放行'
@@ -144,20 +162,26 @@ export function summarizeWait(request: DispatchWaitRequest, locations: ReadonlyM
     blockers.length > 1 && `另有 ${blockers.length - 1} 项`].filter(Boolean).join(' · ')
 }
 
+export function trafficWaitDetails(request: DispatchWaitRequest, now: number) {
+  const blockers = dispatchWaitBlockers(request.blockers)
+  const reference = isReferenceRoute(request)
+  const blockingSeconds = !reference && blockers.length && request.blockingObservationCurrent &&
+    request.blockingStartKnown && request.blockingClockValid !== false
+    ? secondsSince(request.blockingSince, now) ?? null
+    : null
+  return {
+    key: `${request.taskId}/${request.stepId}`, request, blockers, blockingSeconds, reference,
+    holders: [...new Set(blockers.flatMap(blocker => blocker.vehicles))].sort(),
+    resourceCount: request.resourceIds && new Set(request.resourceIds.map(id => id.toUpperCase())).size,
+    heldCount: request.heldResourceIds && new Set(request.heldResourceIds.map(id => id.toUpperCase())).size,
+    segmentCount: request.edgeIds?.length,
+  }
+}
+
 export function trafficWaitRows(requests: readonly DispatchWaitRequest[], now: number) {
   return requests.filter(request => request.state === 'Waiting' && request.waitingCategory !== 'Equipment')
-    .map(request => {
-      const blockers = dispatchWaitBlockers(request.blockers)
-      const blockingSeconds = blockers.length && request.blockingObservationCurrent &&
-        request.blockingStartKnown && request.blockingClockValid !== false
-        ? secondsSince(request.blockingSince, now) ?? null
-        : null
-      return {
-        key: `${request.taskId}/${request.stepId}`, request, blockers, blockingSeconds,
-        holders: [...new Set(blockers.flatMap(blocker => blocker.vehicles))].sort(),
-      }
-    })
-    .sort((a, b) => Number(!!b.blockers.length) - Number(!!a.blockers.length)
+    .map(request => trafficWaitDetails(request, now))
+    .sort((a, b) => Number(a.reference) - Number(b.reference) || Number(!!b.blockers.length) - Number(!!a.blockers.length)
       || (b.request.waitingSeconds ?? -1) - (a.request.waitingSeconds ?? -1))
 }
 

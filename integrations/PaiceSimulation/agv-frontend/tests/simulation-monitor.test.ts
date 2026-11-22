@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { callPresentation, resourceLocations, resourceRows, vehicleTaskKind, routeTarget, trafficWaitRows } from '../src/integration/simulation-monitor.ts'
+import { callPresentation, resourceLocations, resourceRows, vehicleTaskKind, routeTarget, trafficWaitRows, runTiming } from '../src/integration/simulation-monitor.ts'
 
 test('keeps repeated calls separate and explains the previous unfinished cycle only once due', () => {
   const first = { planIndex: 0, stationId: 'CNC-111', atSeconds: 12, status: 'active', taskId: 'A', vehicleId: 'AGV-01' }
@@ -52,4 +52,38 @@ test('uses one row per request and distinguishes request age from the current bl
   assert.equal(rows[0].blockers.length, 2)
   assert.equal(rows[0].blockingSeconds, 10)
   assert.equal(rows[1].blockingSeconds, null)
+})
+
+test('distinguishes reference conflicts from window reservations and existing leases', () => {
+  const resourceIds = Array.from({ length: 97 }, (_, i) => `R${i}`)
+  const blockers = resourceIds.slice(0, 9).map(resourceId => ({ resourceId, vehicleId: 'AGV-02' }))
+  const reference = {
+    taskId: 'A', stepId: 'S', state: 'Waiting', waitingCategory: 'ReferenceRoute',
+    resourceIds, blockers, heldResourceIds: ['P', 'P'], edgeIds: ['E1', 'E2'],
+  }
+  const legacy = { ...reference, waitingCategory: 'Route', reason: '候车位或其路径不可用，保持在原取箱点；未发送命令' }
+  const window = { ...reference, waitingCategory: 'Route', resourceIds: ['R0'], blockers: blockers.slice(0, 1) }
+  for (const request of [reference, legacy]) {
+    const [row] = trafficWaitRows([request], 0)
+    assert.equal(row.reference, true)
+    assert.equal(row.resourceCount, 97)
+    assert.equal(row.blockers.length, 9)
+    assert.equal(row.heldCount, 1)
+    assert.equal(row.segmentCount, 2)
+    const resources = [{ resourceId: 'R0', occupiedCount: 1, capacity: 1 }]
+    assert.equal(resourceRows(resources, [request], new Map(), '', false)[0].blocking, false)
+    assert.equal(resourceRows(resources, [request], new Map(), '', false)[0].waits.length, 0)
+  }
+  assert.equal(trafficWaitRows([window], 0)[0].reference, false)
+  assert.equal(resourceRows([{ resourceId: 'R0', occupiedCount: 1, capacity: 1 }], [window], new Map(), '', false)[0].blocking, true)
+})
+
+test('keeps business seconds and wall time separate and stops at report cutoff', () => {
+  assert.deepEqual(runTiming({ simulationRate: 8, scenario: { startedAt: 100 }, device: { time: 180 } }),
+    { rate: 8, businessSeconds: 80, wallSeconds: 10 })
+  assert.deepEqual(runTiming({ simulationRate: 8, scenario: { id: 'running', startedAt: 100 },
+    report: { id: 'running', startedAt: 100, finishedAt: 164 }, device: { time: 180 } }),
+    { rate: 8, businessSeconds: 64, wallSeconds: 8 })
+  assert.deepEqual(runTiming({ scenario: { id: 'new', startedAt: 100 },
+    report: { id: 'old', startedAt: 20, finishedAt: 60 } }), { rate: undefined, businessSeconds: undefined, wallSeconds: undefined })
 })

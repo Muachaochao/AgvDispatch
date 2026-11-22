@@ -37,9 +37,8 @@ import {
   dispatchViews,
   transportTasks,
   roadnetFingerprint,
-  dispatchIsFresh,
   dispatchRoutePoints,
-  dispatchWaitBlockers,
+  isReferenceRoute,
   dispatchWaitDuration,
   dispatchWaitSnapshotFresh,
   dispatchWaitState,
@@ -61,7 +60,7 @@ import {
 import {
   briefReason, businessStepLabel, businessStepNames as stepNames, callPresentation,
   elapsedLabel, resourceLocations, resourceRows, routeTarget, secondsSince,
-  summarizeWait, trafficWaitRows, vehicleTaskKind,
+  runTiming, summarizeWait, trafficWaitDetails, trafficWaitRows, vehicleTaskKind,
 } from "@/integration/simulation-monitor";
 import {
   mainDispatchStationId,
@@ -145,15 +144,25 @@ let metadataRoot: string | undefined, metadataScenario: string | undefined;
 let lastRenderSource: SourceMap | null = null;
 const clock = ref(Date.now());
 const clockTimer = setInterval(() => (clock.value = Date.now()), 1000);
+const businessNow = computed(() => {
+  const deviceTime = status.value?.device?.time;
+  return typeof deviceTime === "number" && Number.isFinite(deviceTime)
+    ? deviceTime * 1000
+    : clock.value;
+});
 const fresh = computed(
-  () => connected.value && dispatchIsFresh(status.value, clock.value),
+  () =>
+    connected.value &&
+    status.value?.fresh === true &&
+    observedAt.value > 0 &&
+    clock.value - observedAt.value < 5000,
 );
 const cars = computed(() => status.value?.device?.cars ?? {});
 const section = defineModel<DispatchSection>({ required: true });
 const props = defineProps<{ taskId?: string }>();
-const waitFresh = computed(() => connected.value && dispatchWaitSnapshotFresh(monitor.value, clock.value));
+const waitFresh = computed(() => connected.value && dispatchWaitSnapshotFresh(monitor.value, businessNow.value));
 const waitingApplications = computed(() => trafficWaitRows(
-  waitFresh.value ? monitor.value?.traffic?.requests ?? [] : [], clock.value,
+  waitFresh.value ? monitor.value?.traffic?.requests ?? [] : [], businessNow.value,
 ));
 watch(resourcePageCount, count => { resourcePage.value = Math.min(resourcePage.value, count); });
 const waitsByTask = computed(() => {
@@ -169,7 +178,7 @@ const waitsByTask = computed(() => {
 const calls = computed(() => {
   const rows = status.value?.scenario?.callRows ?? status.value?.report?.callRows ?? [];
   const start = status.value?.scenario?.startedAt ?? status.value?.report?.startedAt;
-  const until = scenarioActive.value ? clock.value / 1000 : status.value?.report?.finishedAt ?? status.value?.device?.time;
+  const until = scenarioActive.value ? businessNow.value / 1000 : status.value?.report?.finishedAt ?? status.value?.device?.time;
   const elapsed = start && until ? Math.max(0, until - start) : 0;
   return rows.map(row => {
     const task = tasks.value.find(task => task.taskId === row.taskId);
@@ -277,7 +286,11 @@ const detailWait = computed(() => {
     stepNumber: currentStep.value?.sequence,
   }, waitsByTask.value.get(task.taskId) ?? []);
 });
-const detailBlockers = computed(() => dispatchWaitBlockers(detailWait.value?.request?.blockers));
+const detailTraffic = computed(() => detailWait.value?.request
+  ? trafficWaitDetails(detailWait.value.request, status.value?.device?.time != null
+    ? status.value.device.time * 1000 : clock.value)
+  : undefined);
+const timing = computed(() => runTiming(status.value));
 const highlightedResources = computed(() => Object.fromEntries(
   (resourceIndex.value.get(selectedResourceId.value)?.edgeIds ?? []).map(id => [id, "#be5b20"]),
 ));
@@ -287,8 +300,14 @@ const highlightedBoundary = computed(() => {
 });
 const selectedResource = computed(() => resources.value.find(row => row.resourceId === selectedResourceId.value));
 const selectedResourceWaits = computed(() => waitFresh.value ? (monitor.value?.traffic?.requests ?? []).filter(request =>
-  request.resourceIds?.includes(selectedResourceId.value)
-  || request.blockers?.some(blocker => blocker.resourceId === selectedResourceId.value)) : []);
+  !isReferenceRoute(request) && (request.resourceIds?.includes(selectedResourceId.value)
+  || request.blockers?.some(blocker => blocker.resourceId === selectedResourceId.value))) : []);
+function waitTaskLabel(request: DispatchWaitRequest) {
+  const call = calls.value.find(row => row.taskId === request.taskId);
+  const station = call?.stationId ?? tasks.value.find(task => task.taskId === request.taskId)?.stationId;
+  const step = call?.stepId && call.stepId !== request.stepId ? "" : businessStepLabel(call ?? {});
+  return [station, step].filter(Boolean).join(" · ");
+}
 function waitVehicleLabel(request: DispatchWaitRequest) {
   const assigned = calls.value.find(row => row.taskId === request.taskId)?.vehicleId
     ?? tasks.value.find(row => row.taskId === request.taskId)?.vehicleId;
@@ -394,7 +413,7 @@ const vehicles = computed(() => {
     const step = activeTaskForVehicle(id) === detail.value?.task.taskId && !historicalTask.value ? currentStep.value : undefined;
     const stepNumber = step?.sequence ?? call?.stepNumber;
     const label = businessStepLabel({ stepNumber, stepType: step?.stepType ?? call?.stepType, stepName: call?.stepName });
-    const since = secondsSince(step?.startedAt ?? call?.stepStartedAt, fresh.value ? clock.value : (status.value?.device?.time ?? 0) * 1000);
+    const since = secondsSince(step?.startedAt ?? call?.stepStartedAt, businessNow.value);
     return { id, car, status: observed?.status ?? "UNKNOWN", coordinates: observed,
       wait: fresh.value ? waitForVehicle(id) : undefined,
       kind: vehicleTaskKind(car, !!activeTaskForVehicle(id)),
@@ -654,9 +673,11 @@ async function pollDetails(live: DispatchStatus, revision: number) {
           configuration: full.configuration,
           schemes: full.schemes,
           report: full.report,
+          scenario: full.scenario ? { ...full.scenario, ...live.scenario } : live.scenario,
         }
       : { ...status.value!, ...live };
-    status.value = { ...next, ...status.value, map: next.map, configuration: next.configuration, schemes: next.schemes, history: next.history, report: next.report, startupPlan: full?.startupPlan ?? status.value?.startupPlan };
+    status.value = { ...next, ...status.value, map: next.map, configuration: next.configuration, schemes: next.schemes, scenario: next.scenario, history: next.history, report: next.report, startupPlan: full?.startupPlan ?? status.value?.startupPlan };
+    if (full) status.value = { ...status.value, runtimeRelease: full.runtimeRelease };
     error.value = next.error ?? "";
     if (section.value === 'monitor') {
       const map = next.map ?? null;
@@ -886,8 +907,16 @@ onBeforeUnmount(() => {
         <strong>隔离仿真实例</strong>
         <p class="muted">
           {{ status?.rootName || "尚未连接" }}
+          <template v-if="section === 'monitor' && status?.runtimeRelease">
+            · {{ status.runtimeRelease.releaseId }} · {{ status.runtimeRelease.algorithmMode }}
+          </template>
         </p>
       </div>
+      <el-space v-if="section === 'monitor' && connected && timing.rate" wrap>
+        <el-tag effect="plain">仿真 {{ timing.rate }}×</el-tag>
+        <span v-if="timing.businessSeconds !== undefined">业务用时 {{ elapsedLabel(timing.businessSeconds) }}</span>
+        <span v-if="timing.wallSeconds !== undefined" class="muted">实际约 {{ elapsedLabel(timing.wallSeconds) }}</span>
+      </el-space>
       <el-space wrap
         ><el-tag :type="fresh ? 'success' : 'warning'">{{
           fresh ? "设备反馈有效" : connected ? "设备状态待刷新" : "主工程未连接"
@@ -1280,15 +1309,21 @@ onBeforeUnmount(() => {
               @click="showStepRoute(row.stepId)">看路线</el-button>
           </template></el-table-column>
         </el-table>
-        <div v-if="detailWait?.request" class="wait-summary">
-          <h4>{{ !detail.task.vehicleId ? '候选路线等待' : detailWait.request.waitingCategory === 'Equipment' ? '设备资源等待' : '当前路权等待' }}</h4>
-          <p>{{ detailWait.request.vehicleId }} · {{ dispatchWaitDuration(detailWait.request) }}
-            <span v-if="detailWait.request.source && detailWait.request.destination">
-              · {{ detailWait.request.source }} → {{ detailWait.request.destination }}
+        <div v-if="detailTraffic" class="wait-summary">
+          <h4>{{ detailTraffic.reference ? '候车参考路线' : !detail.task.vehicleId ? '候选路线等待' : detailTraffic.request.waitingCategory === 'Equipment' ? '设备资源等待' : '当前路权等待' }}</h4>
+          <p>{{ detailTraffic.request.vehicleId }} · {{ dispatchWaitDuration(detailTraffic.request) }}
+            <span v-if="detailTraffic.request.source && detailTraffic.request.destination">
+              · {{ detailTraffic.request.source }} → {{ detailTraffic.request.destination }}
             </span>
           </p>
-          <ul v-if="detailBlockers.length">
-            <li v-for="blocker in detailBlockers" :key="blocker.resourceId">
+          <p v-if="detailTraffic.reference">暂无可执行候车路线，参考路线只用于核对沿线冲突。</p>
+          <p>
+            {{ detailTraffic.reference ? '参考资源' : '本次申请资源' }} {{ detailTraffic.resourceCount ?? '—' }} 项
+            · {{ detailTraffic.reference ? '沿线冲突' : '实际阻塞' }} {{ detailTraffic.blockers.length }} 项
+            · 本步骤持有 {{ detailTraffic.heldCount ?? '—' }} 项
+          </p>
+          <ul v-if="detailTraffic.blockers.length">
+            <li v-for="blocker in detailTraffic.blockers" :key="blocker.resourceId">
               <el-button link type="primary" @click="inspectResource(blocker.resourceId, true)">{{ resourceIndex.get(blocker.resourceId)?.label || '阻塞资源' }}</el-button>
               · {{ blocker.vehicles.length ? `${blocker.vehicles.join('、')} 占用` : '持有车辆未知' }}
             </li>
@@ -1378,11 +1413,14 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <p v-if="!waitFresh" class="muted">占用与等待快照暂不可用。</p>
-        <el-table v-if="trafficView === 'requests'" :data="waitingApplications" row-key="key" size="small" empty-text="当前没有路权等待申请">
+        <el-table v-if="trafficView === 'requests'" :data="waitingApplications" row-key="key" size="small" empty-text="当前没有路权等待或候车诊断">
           <el-table-column type="expand">
             <template #default="{ row }">
               <div class="resource-detail">
-                <p>{{ row.request.source || '起点未知' }} → {{ row.request.destination || '目标未知' }}</p>
+                <p>{{ row.request.source || '起点未知' }} → {{ row.request.destination || '目标未知' }}
+                  <span v-if="row.segmentCount !== undefined"> · {{ row.segmentCount }} 段路</span>
+                </p>
+                <p v-if="row.reference" class="muted">暂无可执行候车路线。参考路线只用于核对沿线冲突。</p>
                 <p v-for="blocker in row.blockers" :key="blocker.resourceId">
                   <el-button link type="primary" @click="inspectResource(blocker.resourceId, true)">
                     {{ resourceIndex.get(blocker.resourceId)?.label || blocker.resourceId }}
@@ -1393,20 +1431,25 @@ onBeforeUnmount(() => {
               </div>
             </template>
           </el-table-column>
-          <el-table-column label="等待车" min-width="116"><template #default="{ row }">
+          <el-table-column label="车辆与任务" min-width="170"><template #default="{ row }">
             <el-button link type="primary" @click="openCallTask(row.request.taskId)">{{ waitVehicleLabel(row.request) }}</el-button>
+            <div v-if="waitTaskLabel(row.request)" class="muted">{{ waitTaskLabel(row.request) }}</div>
+          </template></el-table-column>
+          <el-table-column label="路权范围" min-width="145"><template #default="{ row }">
+            {{ row.reference ? '参考路线' : '待批窗口' }} {{ row.resourceCount ?? '—' }} 项
+            <div class="muted">本步骤持有 {{ row.heldCount ?? '—' }} 项</div>
           </template></el-table-column>
           <el-table-column label="占用车" min-width="108"><template #default="{ row }">{{ row.holders.join('、') || '—' }}</template></el-table-column>
-          <el-table-column label="当前阻塞" min-width="158"><template #default="{ row }">
+          <el-table-column label="冲突与阻塞" min-width="158"><template #default="{ row }">
             <template v-if="row.blockers[0]">
+              <div>{{ row.reference ? '沿线冲突' : '实际阻塞' }} {{ row.blockers.length }} 项</div>
               <el-button link type="primary" :title="row.blockers[0].resourceId" @click="inspectResource(row.blockers[0].resourceId, true)">
                 {{ resourceIndex.get(row.blockers[0].resourceId)?.label || row.blockers[0].resourceId }}
               </el-button>
-              <span v-if="row.blockers.length > 1"> 等 {{ row.blockers.length }} 项</span>
             </template>
-            <span v-else>待调度复核</span>
+            <span v-else>{{ row.reference ? '暂无可走候车路线' : '待调度复核' }}</span>
           </template></el-table-column>
-          <el-table-column label="申请已等" min-width="108"><template #default="{ row }">{{ dispatchWaitDuration(row.request) }}</template></el-table-column>
+          <el-table-column label="本次等待" min-width="108"><template #default="{ row }">{{ dispatchWaitDuration(row.request) }}</template></el-table-column>
           <el-table-column label="连续阻塞" min-width="112"><template #default="{ row }">
             {{ row.blockingSeconds !== null ? elapsedLabel(row.blockingSeconds) : '—' }}
           </template></el-table-column>
