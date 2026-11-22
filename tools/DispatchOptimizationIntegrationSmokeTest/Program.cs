@@ -174,7 +174,14 @@ foreach (var change in new[] { "none", "gate", "map", "policy", "slots" })
         .Invoke(f.Orchestrator, [CancellationToken.None])!;
     try
     {
-        await preflight.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var reachedPreflight = await Task.WhenAny(preflight.Started.Task, cycle).WaitAsync(TimeSpan.FromSeconds(5));
+        if (reachedPreflight == cycle)
+        {
+            await cycle;
+            var snapshot = await f.Optimization.GetAsync(default);
+            throw new InvalidOperationException("Dispatch cycle ended before the paused preflight: " + snapshot.Message
+                + " " + string.Join(" ", snapshot.Tasks.Select(task => task.Reason)));
+        }
         f.Gateway.AllowWrites = true;
         await f.SendCycle().WaitAsync(TimeSpan.FromSeconds(3));
         Check(f.Gateway.Writes == 1, "earlier command is sent during pending vehicle map check: " + change);
@@ -400,7 +407,7 @@ sealed class Fixture : IDisposable
         f.Db = DatabaseFactory.Create(new() { DatabasePath = Path.Combine(root, "test.db") });
         var resources = new List<TrafficResourceDefinition>();
         if (shared) resources.Add(new("R", TrafficResourceType.NarrowAisle));
-        if (preflight is not null) resources.Add(new("WAIT-RESOURCE", TrafficResourceType.NarrowAisle));
+        if (preflight is not null) resources.Add(new("WAIT-RESOURCE", TrafficResourceType.Station));
         var catalog = new TrafficResourceCatalog(resources);
         await new DatabaseInitializer(f.Db, catalog).InitializeAsync(default);
         f.Tasks = new(f.Db); f.Repository = new(f.Db); f.Outbox = new(f.Db, f.Map);
@@ -410,7 +417,7 @@ sealed class Fixture : IDisposable
         f.Optimization = new(Path.Combine(root, "optimizer.json"), new() { Mode = mode }, NullLogger<DispatchOptimizationService>.Instance);
         f.States = new(new AgvOptions { Enabled = true, Robots = [new() { VehicleId = "V1" }, new() { VehicleId = "V2" }] });
         var nodes = new[] { "HOME1", "HOME2", "PICK1", "PICK2", "WAIT", "DUMP" }
-            .Select((id, i) => new MapNode(id, i, 0, MapNodeType.Station, true,
+            .Select((id, i) => new MapNode(id, i, 0, id == "WAIT" ? MapNodeType.WaitingPoint : MapNodeType.Station, true,
                 preflight is not null && id == "WAIT" ? ["WAIT-RESOURCE"] : [], id)).ToArray();
         var planner = new FixturePlanner(shared);
         f.Planner = planner;

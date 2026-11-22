@@ -33,9 +33,13 @@ public sealed class DispatchTrafficReservationService(ITrafficResourceManager re
 
     public async Task ObserveWaitingAsync(IReadOnlyList<TrafficRouteObservation> proposals, CancellationToken ct)
     {
+        if (proposals.Count == 0) return;
         var priorities = await PrioritiesAsync(ct);
-        foreach (var observation in proposals) await resources.RecordRouteAsync(WithPriority(observation, priorities), ct);
-        if (proposals.Count > 0) monitor?.ReportLayer("traffic", "Waiting", "必要公共资源尚未释放，保留优先级与原始呼叫顺序。", proposals.Count);
+        foreach (var observation in proposals)
+            if (observation.QueueEligible) await resources.RecordRouteAsync(WithPriority(observation, priorities), ct);
+            else await SuspendRecommendationAsync(observation, ct);
+        var queued = proposals.Count(observation => observation.QueueEligible);
+        monitor?.ReportLayer("traffic", "Waiting", $"首窗排队 {queued} 项，参考路线 {proposals.Count - queued} 项。", queued);
     }
 
     public async Task<TrafficReservationResult> AcquireAsync(TrafficRouteObservation observation, CancellationToken ct)
@@ -44,7 +48,7 @@ public sealed class DispatchTrafficReservationService(ITrafficResourceManager re
         await ObserveAsync(observation, ct);
         var result = await resources.TryAcquireAsync(observation.StepId, observation.TaskId, observation.VehicleId, observation.ResourceIds, ct);
         monitor?.ReportLayer("traffic", result.Acquired ? "Ready" : "Waiting", result.Acquired
-            ? "本候选已取得整条路径所需路权，交由安全层复核。"
+            ? "本候选已取得当前窗口所需路权，交由安全层复核。"
             : $"等待公共资源 {result.BlockingResourceId}，原任务留在队列。", observation.ResourceIds.Count);
         return result;
     }

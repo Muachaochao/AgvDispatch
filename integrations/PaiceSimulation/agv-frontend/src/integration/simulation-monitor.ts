@@ -152,7 +152,9 @@ export function resourceRows(resources: readonly ResourceRow[], requests: readon
 export function summarizeWait(request: DispatchWaitRequest, locations: ReadonlyMap<string, ResourceLocation>, candidate = false, omitDuration = false) {
   const blockers = dispatchWaitBlockers(request.blockers)
   if (isReferenceRoute(request)) return [
-    !omitDuration && dispatchWaitDuration(request), '暂无可走候车路线',
+    candidate && request.vehicleId && `候选 ${request.vehicleId}`,
+    !omitDuration && dispatchWaitDuration(request),
+    candidate ? '暂无可执行首窗' : '暂无可走候车路线',
     blockers.length > 0 && `参考路线沿线 ${blockers.length} 项占满`,
   ].filter(Boolean).join(' · ')
   const first = blockers[0]

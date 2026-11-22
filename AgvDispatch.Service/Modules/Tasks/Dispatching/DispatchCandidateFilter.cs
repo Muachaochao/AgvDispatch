@@ -41,7 +41,7 @@ public sealed class DispatchCandidateFilter(DispatchOrchestratorOptions options,
     public static (double Travel, double TrafficWait) EstimateRoute(RoutePlan route, ActiveMapRuntimeSnapshot? map, DispatchAssignmentOptions policy)
     {
         if (map is null || route.EdgeIds.Count == 0) return (route.Cost, 0);
-        var edges = route.EdgeIds.Select(id => map.Definition.Edges.FirstOrDefault(e => e.Id == id)).ToArray();
+        var edges = route.EdgeIds.Select(id => map.Graph.Edges.GetValueOrDefault(id)).ToArray();
         if (edges.Any(e => e is null)) return (route.Cost, 0);
         var graphTravel = edges.Sum(e => e!.Distance / (e.SpeedLimit > 0 ? e.SpeedLimit : 1));
         var travel = edges.Sum(e => e!.Distance / (e.SpeedLimit > 0 ? Math.Min(e.SpeedLimit, policy.NominalSpeedMetersPerSecond) : policy.NominalSpeedMetersPerSecond));
@@ -200,9 +200,20 @@ public sealed class DispatchCandidateFilter(DispatchOrchestratorOptions options,
                     BatteryRiskSeconds = candidate.BatteryRiskSeconds, StandbyBonusSeconds = candidate.StandbyBonusSeconds });
             }
             if (!result.Edges.Any(e => e.TaskId == task.TaskId) && blocked is { } b)
-                waitingRoutes.Add(new(step.StepId, task.TaskId, b.Vehicle.VehicleId, b.Route.Nodes[0], b.Route.Nodes[^1],
-                    b.Route.EdgeIds, b.Route.ResourceIds, true, "滚动窗口：必要公共资源尚未可用，保留呼叫顺序和动态优先级。")
-                    { MapId = map?.MapId, MapVersionId = map?.VersionId, QueuePriority = score.EffectivePriority });
+            {
+                var first = canStage ? pickupStaging!.PlanInitialWindows(b.Route, map!)[0] : null;
+                var referenceOnly = map is null || first is not null && !first.ResourceIds.Any(unavailable.Contains);
+                var window = referenceOnly ? null : first;
+                waitingRoutes.Add(new(step.StepId, task.TaskId, b.Vehicle.VehicleId,
+                    window?.Source ?? b.Route.Nodes[0], window?.Destination ?? b.Route.Nodes[^1],
+                    window?.EdgeIds ?? b.Route.EdgeIds, window?.ResourceIds ?? b.Route.ResourceIds, true,
+                    referenceOnly ? "参考路线：当前未找到可执行的首窗方案。" : "首窗必要资源尚未可用，按呼叫顺序和动态优先级等待。")
+                {
+                    MapId = map?.MapId, MapVersionId = map?.VersionId,
+                    QueueEligible = !referenceOnly, QueuePriority = referenceOnly ? null : score.EffectivePriority,
+                    WaitingCategory = referenceOnly ? "ReferenceRoute" : "Route"
+                });
+            }
         }
         return result with { WaitingRoutes = waitingRoutes };
     }

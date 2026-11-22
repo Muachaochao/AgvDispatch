@@ -241,15 +241,26 @@ public sealed partial class DispatchTaskOrchestrator
         // Bypass cache at the final check. A recommendation is never proof of a current executable route.
         var route = routePlanner.Plan(current.CurrentStation!, planned.Nodes[^1],
             staged ? new HashSet<string>() : unavailable);
-        if (route is null || !route.Nodes.SequenceEqual(planned.Nodes) || !route.EdgeIds.SequenceEqual(planned.EdgeIds) ||
-            !route.ResourceIds.SequenceEqual(planned.ResourceIds) || !ReferenceEquals(map, activeMap.Current)) return Reject("traffic", "道路、地图或公共资源已变化，重新进入匹配。");
+        StagedPickupRoute? partial = null;
+        if (staged && map is not null && pickupStaging is not null)
+        {
+            var vehicleIds = currentVehicles.Select(v => v.VehicleId).ToArray();
+            if (route is not null && SamePlan(route, planned))
+                partial = pickupStaging.TryStage(route, map, unavailable, vehicleIds);
+            else
+            {
+                // A nominated route via a safe holding bay need not be the shortest full route.
+                partial = pickupStaging.TryStageViaHolding(routePlanner, map, current.CurrentStation!,
+                    planned.Nodes[^1], unavailable, vehicleIds);
+                if (partial is not null) route = partial.Route;
+            }
+        }
+        if (route is null || !SamePlan(route, planned) || !ReferenceEquals(map, activeMap.Current))
+            return Reject("traffic", "道路、地图或公共资源已变化，重新进入匹配。");
         if (staged && (DispatchCandidateFilter.PhysicalPickupOccupants(planned.Nodes[^1], map?.Definition, currentVehicles)
                 .Any(id => !id.Equals(vehicle.VehicleId, StringComparison.OrdinalIgnoreCase)) ||
                 DispatchCandidateFilter.PhysicalIntermediateOccupants(route, map?.Definition, currentVehicles, vehicle.VehicleId).Count > 0))
             return Reject("safety", "取箱工位或路线实际占用已变化，重新进入匹配。");
-        var partial = staged && map is not null
-            ? pickupStaging?.TryStage(route, map, unavailable, currentVehicles.Select(v => v.VehicleId).ToArray())
-            : null;
         if (staged && partial is null && route.ResourceIds.Any(unavailable.Contains))
             return Reject("traffic", "首窗路权或候车点净空不足，重新进入匹配。");
         var windows = partial?.Windows ?? PlanInitialTransportWindows(route, map);
@@ -301,9 +312,13 @@ public sealed partial class DispatchTaskOrchestrator
             ];
         }
 
-        return TransportRouteWindows.Plan(
-            route, map, _stepOptions, agvOptions?.NavigationCommandMode);
+        return pickupStaging?.PlanInitialWindows(route, map) ??
+            TransportRouteWindows.Plan(route, map, _stepOptions, agvOptions?.NavigationCommandMode);
     }
+
+    private static bool SamePlan(RoutePlan left, RoutePlan right) =>
+        left.Nodes.SequenceEqual(right.Nodes) && left.EdgeIds.SequenceEqual(right.EdgeIds) &&
+        left.ResourceIds.SequenceEqual(right.ResourceIds);
 
     private static string? BindingVehicle(HandshakeCheckpoint? checkpoint)
     {

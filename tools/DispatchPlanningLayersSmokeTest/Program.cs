@@ -221,7 +221,35 @@ var policy = new DispatchAssignmentOptions { WindowSize = 1 };
     var blocked = await filter.BuildAsync(queue, costs with { Mode = "Global" }, map.Current, default);
     Check(blocked.Edges.Count == 0 && blocked.WaitingRoutes.Single().TaskId == "TASK" && traffic.Writes == 0 && gateway.Writes == 0,
         "blocked candidate returns waiting observation proposal for layer four while keeping computation read-only");
+    var rollingDefinition = definition with
+    {
+        Nodes = nodes.Append(new MapNode("MID", 5, 0, MapNodeType.WaitingPoint, true, ["BAY"], "MID")
+            { AllowTrafficStop = true }).ToArray(),
+        Edges = [new("FIRST", "HOME1", "MID", 5, 1, false, true, ["R"]),
+            new("SECOND", "MID", "PICK", 5, 1, false, true, ["LATER"])],
+        Resources = [new("R", TrafficResourceType.NarrowAisle), new("LATER", TrafficResourceType.NarrowAisle),
+            new("BAY", TrafficResourceType.Station)]
+    };
+    map.Replace(new("M", "V2", rollingDefinition, now));
+    planner.PickupOverride = new(["HOME1", "MID", "PICK"], ["FIRST", "SECOND"], ["R", "BAY", "LATER"], 10);
+    var rolling = new GlobalPickupRoutePlanner(new() { RollingReservationEnabled = true, RollingWindowMinimumEdges = 1 },
+        new() { NavigationCommandMode = "SpecifiedPath" }, new());
+    var rollingFilter = new DispatchCandidateFilter(options, gateway, states, map, new() { PositionStaleSeconds = 60 },
+        planner, traffic, pickupStaging: rolling);
+    var globalPolicy = costs with { Mode = "Global", ReturnCostWeight = 0 };
+    var firstBlocked = (await rollingFilter.BuildAsync(queue, globalPolicy, map.Current, default)).WaitingRoutes.Single();
+    Check(firstBlocked.QueueEligible && firstBlocked.Destination == "MID" && firstBlocked.EdgeIds.SequenceEqual(["FIRST"]) &&
+        firstBlocked.ResourceIds.Contains("R") && !firstBlocked.ResourceIds.Contains("LATER"),
+        "Global queues only the actual first window's resources when the first window is blocked");
     traffic.Unavailable.Clear();
+    traffic.Unavailable.Add("LATER");
+    var laterBlocked = (await rollingFilter.BuildAsync(queue, globalPolicy, map.Current, default)).WaitingRoutes.Single();
+    Check(laterBlocked.WaitingCategory == "ReferenceRoute" && !laterBlocked.QueueEligible &&
+        laterBlocked.Destination == "PICK" && laterBlocked.ResourceIds.Contains("LATER"),
+        "route blocked only after the first window remains reference-only when safe partial departure cannot be confirmed");
+    traffic.Unavailable.Clear();
+    map.Replace(new("M", "V1", definition, now));
+    planner.PickupOverride = null;
     var switching = new DispatchCandidateFilter(options, gateway, states, map, new() { PositionStaleSeconds = 60 }, planner, traffic,
         taskSwitchGuard: new RejectSwitch());
     var switchGraph = await switching.BuildAsync(queue, costs, map.Current, default);
@@ -276,11 +304,13 @@ sealed class PlanningRoutes : IRoutePlanner
 {
     public double PickupCost = 8;
     public double? ComparisonCost;
+    public RoutePlan? PickupOverride;
     public RoutePlan? PlanWithoutVehicleOccupancyForComparison(string source, string destination) =>
         ComparisonCost is {} cost ? new([source,destination], [], [], cost) : null;
     public RoutePlan? Plan(string source, string destination, IReadOnlySet<string> unavailable) =>
         (source, destination) switch
         {
+            ("HOME1", "PICK") when PickupOverride is { } route => route.ResourceIds.Any(unavailable.Contains) ? null : route,
             ("HOME1", "PICK") when !unavailable.Contains("R") => new([source, destination], ["TO-PICK"], ["R"], PickupCost),
             ("PICK", "HOME1") => new([source, destination], ["RETURN"], [], 4),
             _ => null

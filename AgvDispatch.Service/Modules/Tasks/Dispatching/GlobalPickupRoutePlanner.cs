@@ -18,6 +18,9 @@ public sealed class GlobalPickupRoutePlanner(
     public bool SupportsRollingRoutes => steps.RollingReservationEnabled &&
         agv.NavigationCommandMode.Equals("SpecifiedPath", StringComparison.OrdinalIgnoreCase);
 
+    public IReadOnlyList<AgvTransportRouteWindow> PlanInitialWindows(RoutePlan route, ActiveMapRuntimeSnapshot map) =>
+        TransportRouteWindows.Plan(route, map, steps, agv.NavigationCommandMode);
+
     public IReadOnlyList<string> SafeHoldingSites(ActiveMapRuntimeSnapshot map,
         IReadOnlyCollection<string> vehicleIds)
     {

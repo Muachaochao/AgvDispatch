@@ -1310,13 +1310,13 @@ onBeforeUnmount(() => {
           </template></el-table-column>
         </el-table>
         <div v-if="detailTraffic" class="wait-summary">
-          <h4>{{ detailTraffic.reference ? '候车参考路线' : !detail.task.vehicleId ? '候选路线等待' : detailTraffic.request.waitingCategory === 'Equipment' ? '设备资源等待' : '当前路权等待' }}</h4>
+          <h4>{{ detailTraffic.reference ? '参考路线' : !detail.task.vehicleId ? '候选路线等待' : detailTraffic.request.waitingCategory === 'Equipment' ? '设备资源等待' : '当前路权等待' }}</h4>
           <p>{{ detailTraffic.request.vehicleId }} · {{ dispatchWaitDuration(detailTraffic.request) }}
             <span v-if="detailTraffic.request.source && detailTraffic.request.destination">
               · {{ detailTraffic.request.source }} → {{ detailTraffic.request.destination }}
             </span>
           </p>
-          <p v-if="detailTraffic.reference">暂无可执行候车路线，参考路线只用于核对沿线冲突。</p>
+          <p v-if="detailTraffic.reference">暂无可执行窗口。参考路线用于核对沿线冲突，未加入路权队列。</p>
           <p>
             {{ detailTraffic.reference ? '参考资源' : '本次申请资源' }} {{ detailTraffic.resourceCount ?? '—' }} 项
             · {{ detailTraffic.reference ? '沿线冲突' : '实际阻塞' }} {{ detailTraffic.blockers.length }} 项
@@ -1420,7 +1420,7 @@ onBeforeUnmount(() => {
                 <p>{{ row.request.source || '起点未知' }} → {{ row.request.destination || '目标未知' }}
                   <span v-if="row.segmentCount !== undefined"> · {{ row.segmentCount }} 段路</span>
                 </p>
-                <p v-if="row.reference" class="muted">暂无可执行候车路线。参考路线只用于核对沿线冲突。</p>
+                <p v-if="row.reference" class="muted">参考路线用于核对沿线冲突，未加入路权队列。</p>
                 <p v-for="blocker in row.blockers" :key="blocker.resourceId">
                   <el-button link type="primary" @click="inspectResource(blocker.resourceId, true)">
                     {{ resourceIndex.get(blocker.resourceId)?.label || blocker.resourceId }}
