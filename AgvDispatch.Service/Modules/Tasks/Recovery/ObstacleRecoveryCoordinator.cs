@@ -213,10 +213,14 @@ public sealed class ObstacleRecoveryCoordinator(
                 "现场核对任务编号、车辆、载荷和路控；不得新建同用途任务代替。", cancellationToken);
             return;
         }
-        if (row.SendAttemptedAtUtc is not null && string.IsNullOrWhiteSpace(row.NewVendorTaskId))
+        // A replacement identity is persisted together with the send intent and is
+        // only turned into Executing by the bind transaction. A send that was
+        // interrupted or failed after it may have reached the vehicle, so the record
+        // stays uncertain. It is never resent here; it is only reconciled read-only.
+        if (row.NewVendorTaskId is not null &&
+            row.State is ObstacleRecoveryStates.SendIntent or ObstacleRecoveryStates.Uncertain)
         {
-            await FreezeAsync(row, "替代导航发送意图存在但缺少新厂家编号，结果不确定。",
-                "只查询现车任务，禁止重发；核对车辆位置、载荷和PLC。", cancellationToken);
+            await ReconcileUncertainReplacementAsync(row, now, cancellationToken);
             return;
         }
         if (task.Stage == (int)DispatchTaskStage.Completed)
@@ -267,10 +271,14 @@ public sealed class ObstacleRecoveryCoordinator(
         }
         if (row.NewVendorTaskId is not null)
         {
-            row.State = ObstacleRecoveryStates.Executing;
-            row.Message = "替代路线已发送并绑定原业务任务，等待车辆到点及后续PLC确认。";
-            row.NextAction = "核对新3066车端任务全链、车辆实际运动、PLC反馈和原路权交接。";
-            await SaveAsync(row, cancellationToken);
+            // Only the bind transaction sets Executing. Other states that carry an
+            // identity keep their own meaning and are not rewritten here.
+            if (row.State == ObstacleRecoveryStates.Executing)
+            {
+                row.Message = "替代路线已发送并绑定原业务任务，等待车辆到点及后续PLC确认。";
+                row.NextAction = "核对新3066车端任务全链、车辆实际运动、PLC反馈和原路权交接。";
+                await SaveAsync(row, cancellationToken);
+            }
             return;
         }
         if (!FreshTelemetry(robot, now))
@@ -790,6 +798,44 @@ public sealed class ObstacleRecoveryCoordinator(
         await SaveAsync(row, CancellationToken.None);
         await AddEvidenceAsync(row, "ObstacleDetourSendRejected", row.Message,
             new { Route = route, Attempts = attempts, WaitSeconds = wait.TotalSeconds }, CancellationToken.None);
+    }
+
+    // Read-only reconciliation of an uncertain replacement. It never sends, never
+    // generates a new identity and never releases the route or the original task.
+    private async Task ReconcileUncertainReplacementAsync(ObstacleRecoveryEntity row, DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        if (row.State != ObstacleRecoveryStates.Uncertain)
+        {
+            row.State = ObstacleRecoveryStates.Uncertain;
+            row.Message = "替代导航发送意图已持久化但未绑定，结果不确定；只读对账，禁止重发。";
+            row.NextAction = "按新厂家编号只读查询车端任务链；无法证明时保持不确定，由现场核对。";
+            row.Revision++;
+            await SaveAsync(row, cancellationToken);
+            return;
+        }
+        // Read-only lookups at most every 30 seconds.
+        if (now - new DateTimeOffset(DateTime.SpecifyKind(row.UpdatedAt, DateTimeKind.Utc)) < TimeSpan.FromSeconds(30))
+            return;
+        AgvTransportTaskStatus? status = null;
+        string? failure = null;
+        try
+        {
+            status = await gateway.GetTransportTaskStatusAsync(row.NewVendorTaskId!, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception error)
+        {
+            failure = Truncate(error.Message);
+        }
+        row.Message = failure is not null
+            ? "只读对账失败，替代导航结果仍不确定：" + failure
+            : status is null || status.State == AgvTransportTaskState.Unknown
+                ? "只读对账：车端尚未查到该替代编号，结果仍不确定，禁止重发。"
+                : $"只读对账：车端已查到替代编号，状态{status.State}；仍需现场确认后才能绑定，禁止重发。";
+        row.NextAction = "按新厂家编号、车辆位置、载荷和PLC核对；无法证明时由操作员处置。";
+        row.Revision++;
+        await SaveAsync(row, cancellationToken);
     }
 
     private async Task<IReadOnlyList<string>> ResolveOriginalVendorWindowPathAsync(

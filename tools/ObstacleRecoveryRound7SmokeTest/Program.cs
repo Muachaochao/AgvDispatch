@@ -201,6 +201,50 @@ async Task UncertainSendIsNotResentAsync(string root)
         await Tick();
     Check(h.Gateway.RecoverySendCalls == 1,
         "结果不确定后不重新生成编号、不重复发送替代导航");
+    row = RecoveryRow(h.Db, "TASK-O5B");
+    Check(row.State == ObstacleRecoveryStates.Uncertain && row.NewVendorTaskId is not null &&
+          TaskRow(h.Db, "TASK-O5B").VendorTaskId != row.NewVendorTaskId,
+        "结果不确定状态保持粘滞，直到只读对账和现场处置，不被改写为执行中");
+
+    // A crash after the send intent but before the bind: the same record restarts
+    // uncertain, not executing, and is not sent again.
+    var crash = await ObstacleHarnessFactory.BuildAsync(root, "o6b", ObstacleHarnessFactory.StationGraph(true),
+        start, "TASK-O6B", "STEP-O6B");
+    var crashed = new ObstacleRecoveryEntity
+    {
+        RecoveryId = Guid.NewGuid().ToString("N"),
+        TaskId = "TASK-O6B",
+        StepId = "STEP-O6B",
+        VehicleId = "A",
+        OriginalVendorTaskId = "STEP-O6B",
+        State = ObstacleRecoveryStates.SendIntent,
+        Message = "synthetic persisted send intent",
+        NextAction = "synthetic",
+        BlockedSinceUtc = start.UtcDateTime,
+        OriginalPathJson = "[\"S\",\"H\",\"X\"]",
+        CandidatePathJson = "[\"S\",\"D\",\"X\"]",
+        BlockedEdgeIdsJson = "[\"E-SH\"]",
+        MapId = "MAP-O",
+        MapVersionId = "V1",
+        DefinitionHash = EngineeringRuntimeIdentity.MapHash(ObstacleHarnessFactory.StationGraph(true)),
+        NewVendorTaskId = "OBSTACLERECOVERY-CRASHED",
+        SendAttemptedAtUtc = start.UtcDateTime,
+        CancelRequestedAtUtc = start.UtcDateTime,
+        CancelAttemptedAtUtc = start.UtcDateTime,
+        CancelAcknowledgedAtUtc = start.UtcDateTime,
+        OriginalTerminalAtUtc = start.UtcDateTime,
+        Revision = 1,
+        CreatedAt = start.UtcDateTime,
+        UpdatedAt = start.UtcDateTime
+    };
+    await crash.Db.Insertable(crashed).ExecuteCommandAsync();
+    crash.Clock.SetTo(start.AddSeconds(5));
+    crash.States.ApplyTelemetry("A", ObstacleHarnessFactory.Telemetry(crash.Clock.GetUtcNow(), blocked: true), TimeSpan.Zero);
+    await crash.Coordinator.ObserveOnceAsync(default);
+    crashed = RecoveryRow(crash.Db, "TASK-O6B");
+    Check(crashed.State == ObstacleRecoveryStates.Uncertain && crashed.NewVendorTaskId == "OBSTACLERECOVERY-CRASHED" &&
+          crash.Gateway.RecoverySendCalls == 0,
+        "发送意图已落库但未绑定时重启，记录为结果不确定且不重发");
 }
 
 static ObstacleRecoveryEntity RecoveryRow(ISqlSugarClient db, string taskId) =>
