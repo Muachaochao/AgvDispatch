@@ -221,7 +221,20 @@ public sealed class AgvCommandOutboxDispatcher(
                 throw new InvalidOperationException("AGV接口返回了空的厂家任务编号。");
             }
 
-            if (journal != null) await journal.RecordAsync(command.TaskId, command.StepId, "AgvSendAcknowledged", new { command.CommandId, vendorCommandId }, cancellationToken);
+            // The vehicle has accepted the command. Acknowledgement evidence is best effort: a journal
+            // failure must not leave an accepted command in RetryScheduled.
+            if (journal != null)
+            {
+                try
+                {
+                    await journal.RecordAsync(command.TaskId, command.StepId, "AgvSendAcknowledged", new { command.CommandId, vendorCommandId }, cancellationToken);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                catch (Exception evidenceError)
+                {
+                    logger.LogError(evidenceError, "AGV命令已被车端接受，但确认证据写入失败，仍继续落库为已发送。CommandId={CommandId}, StepId={StepId}", command.CommandId, command.StepId);
+                }
+            }
             await outbox.MarkSentAsync(command.CommandId, vendorCommandId, cancellationToken);
             pipeline?.ReportLayer("execution", "Running", "厂家已确认原命令；执行、反馈、路权交接及恢复继续沿用同一任务和步骤。", 1);
             logger.LogInformation(
