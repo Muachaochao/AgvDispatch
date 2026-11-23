@@ -482,6 +482,20 @@ public sealed class TransportTimeoutRecoveryService(
         return status;
     }
 
+    public async Task<bool> IsObstacleCancellationPendingAsync(
+        string taskId,
+        string vendorTaskId,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(taskId) || string.IsNullOrWhiteSpace(vendorTaskId)) return false;
+        var rows = await database.Queryable<ObstacleRecoveryEntity>()
+            .Where(item => item.TaskId == taskId && item.OriginalVendorTaskId == vendorTaskId)
+            .ToListAsync(cancellationToken);
+        return rows.Any(row => row.CancelRequestedAtUtc is not null &&
+                               row.State != ObstacleRecoveryStates.Recovered &&
+                               row.State != ObstacleRecoveryStates.Executing);
+    }
+
     public async Task<string?> ValidateReplacementPreconditionsAsync(
         string taskId,
         string stepId,

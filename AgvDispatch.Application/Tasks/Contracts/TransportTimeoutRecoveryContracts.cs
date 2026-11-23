@@ -100,4 +100,14 @@ public interface ITransportTimeoutRecoveryService
         string stepId,
         CancellationToken cancellationToken) =>
         Task.FromResult<string?>("当前后台未提供自动改道前置条件核验。");
+
+    /// <summary>True while the obstacle coordinator has persisted a cancellation of
+    /// this vendor task and its replacement is not yet bound. The ordinary
+    /// orchestrator must not finalise the step from the vendor's Failed/Cancelled
+    /// observation in that window.</summary>
+    Task<bool> IsObstacleCancellationPendingAsync(
+        string taskId,
+        string vendorTaskId,
+        CancellationToken cancellationToken) =>
+        Task.FromResult(false);
 }
