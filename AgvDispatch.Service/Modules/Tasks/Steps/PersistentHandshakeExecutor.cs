@@ -287,13 +287,17 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
         }
         if(checkpoint is null)
             throw new InvalidOperationException("握手检查点创建失败，禁止继续执行当前步骤。");
-        if(checkpoint.ContractVersion!=HandshakeExecutionOptions.Version||checkpoint.PendingSignal!=null||checkpoint.Phase=="ReviewRequired")
+        // A WritePending checkpoint carries its intent. It is resolved by reading the PLC back below;
+        // any other pending state (or a version/review conflict) still stops for recovery review.
+        var pendingWrite=checkpoint.Phase=="WritePending"&&checkpoint.PendingSignal!=null&&checkpoint.PendingValue is not null&&checkpoint.NextPhase is not null;
+        if(checkpoint.ContractVersion!=HandshakeExecutionOptions.Version||checkpoint.PendingSignal!=null&&!pendingWrite||checkpoint.Phase=="ReviewRequired")
             throw new InvalidOperationException("原握手存在版本冲突、写入结果未知或缺少原始阶段；保留原周期，进入恢复核对，禁止自动重发。");
         if(!BindingMatches(checkpoint,step))
             throw new InvalidOperationException("地图、站点映射或动作参数与原握手绑定不一致，禁止静默迁移。");
         foreach(var original in checkpoint.Baseline.Where(b=>b.StationId!="__context"))
             if(!signals.TryGet(original.StationId,original.VariableName,out var current)||current.Address!=original.Address)
                 throw new InvalidOperationException("点表映射与原始周期不一致，禁止自动改用新地址。");
+        if(pendingWrite)return await ResolvePendingWriteAsync(checkpoint,ct);
         var station=step.StationId;var dumper=creation.DumperStationId;
         if(step.StepType is DispatchTaskStepType.PickupFullBox or DispatchTaskStepType.PlaceEmptyBox or DispatchTaskStepType.CompletePlcHandshake)
             if(!Is(station,"Faulted",false)||!Is(station,"CommunicationOnline",true))throw new InvalidOperationException("来源工位故障、通讯异常或数据无效，保持握手阶段。");
@@ -469,6 +473,42 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
         await gateway.WriteSignalAsync(station,signal,value,ct);
         var recorded=(await store.GetAsync(checkpoint.TaskId,checkpoint.StepId,ct))!;
         await store.MoveAsync(recorded,next,"写调用成功；不等于PLC业务接收。",null,null,null,ct);
+    }
+    // Level-type boolean signals are idempotent to rewrite. An unknown write is confirmed by reading the
+    // PLC back; a value that still differs is rewritten a bounded number of times, then escalated.
+    private static readonly TimeSpan PendingWriteReadbackWait=TimeSpan.FromSeconds(2);
+    private const int MaximumPendingWriteRewrites=3;
+    // Exit and entry cycles may run on different threads; this map is updated concurrently.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string,(int Rewrites,DateTimeOffset LastWriteAt)> _pendingWrites=new(StringComparer.Ordinal);
+    private async Task<bool> ResolvePendingWriteAsync(HandshakeCheckpoint checkpoint,CancellationToken ct)
+    {
+        var pending=checkpoint.PendingSignal!;var split=pending.IndexOf('/');
+        var station=pending[..split];var signal=pending[(split+1)..];var target=checkpoint.PendingValue!.Value;
+        var key=checkpoint.TaskId+"|"+checkpoint.StepId;
+        if(signals.TryGet(station,signal,out var observed)&&observed.Quality==SignalQuality.Good&&observed.Value==target)
+        {
+            _pendingWrites.TryRemove(key,out _);
+            await store.MoveAsync(checkpoint,checkpoint.NextPhase!,"写入结果已回读等于目标值；读回不等于PLC业务接收。",null,null,null,ct);
+            return true;
+        }
+        var now=AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow();
+        if(!_pendingWrites.TryGetValue(key,out var state))
+        {
+            // First sight of this unknown write (including after a restart): let the PLC poll show it first.
+            _pendingWrites[key]=(0,now);
+            return true;
+        }
+        if(now-state.LastWriteAt<PendingWriteReadbackWait)return true;
+        if(state.Rewrites>=MaximumPendingWriteRewrites)
+            throw new InvalidOperationException($"PLC写入{pending}={target}已重写{MaximumPendingWriteRewrites}次仍未回读确认；保留握手阶段并报警，禁止无限自动重发。");
+        _pendingWrites[key]=(state.Rewrites+1,now);
+        try{await gateway.WriteSignalAsync(station,signal,target,ct);}
+        catch(OperationCanceledException)when(ct.IsCancellationRequested){throw;}
+        catch(Exception)
+        {
+            // The next readback decides; a failed rewrite is counted like any other attempt.
+        }
+        return true;
     }
     private async Task MoveAsync(HandshakeCheckpoint checkpoint,string phase,string reason,CancellationToken ct)
     {

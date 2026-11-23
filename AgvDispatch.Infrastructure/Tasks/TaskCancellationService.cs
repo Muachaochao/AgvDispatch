@@ -14,7 +14,9 @@ public sealed class TaskCancellationService(ISqlSugarClient database, IMapExecut
 {
     public async Task<TaskCancelResult> RequestAsync(TrafficUserContext user, TaskCancelRequest request, CancellationToken ct)
     {
-        if (!user.Has(TrafficPermission.View)) throw new UnauthorizedAccessException("需要本地任务操作权限。");
+        // Cancelling a running transport is an execution-recovery action, the same permission
+        // that pause and resume require. A view-only caller must not be able to cancel.
+        if (!user.Has(TrafficPermission.RecoverExecution)) throw new UnauthorizedAccessException("取消任务需要恢复处置权限。");
         if (!Guid.TryParseExact(request.RequestId, "N", out _) || string.IsNullOrWhiteSpace(request.TaskId) || request.TaskId.Length > 64 ||
             string.IsNullOrWhiteSpace(request.Reason) || request.Reason.Trim().Length is < 10 or > 1000)
             return new(false, "请填写有效请求编号及至少10字、最多1000字的取消依据。");

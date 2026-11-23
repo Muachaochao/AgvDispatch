@@ -41,7 +41,10 @@ Check((options with { StandbyBonusSeconds = 2 }).GetConfigurationError() is not 
 
 var score = optimizer.Score(Task("AGING", 50, 10), options, now);
 Check(score.WaitPriority == 10 && score.EffectivePriority == 60, "waiting priority counted once");
-Check(optimizer.Score(Task("CAP", 50, 90), options, now).WaitPriority == 30, "waiting bonus capped");
+// The default ceiling is the base priority span (100), so a long wait can cover any gap in base priority.
+Check(optimizer.Score(Task("CAP", 50, 90), options, now).WaitPriority == 90 &&
+      optimizer.Score(Task("CAP", 50, 500), options, now).WaitPriority == options.MaxWaitPriority &&
+      options.MaxWaitPriority == 100, "waiting bonus ages to the 100-point ceiling and stops there");
 Check(optimizer.Score(Task("FUTURE", 50, -1), options, now).WaitPriority == 0, "future call timestamp cannot create negative waiting");
 Check(optimizer.Score(Task("DUE") with { Deadline = now }, options, now).DeadlinePriority == 30 &&
       optimizer.Score(Task("NOT-DUE") with { Deadline = now.AddHours(1) }, options, now).DeadlinePriority == 0,

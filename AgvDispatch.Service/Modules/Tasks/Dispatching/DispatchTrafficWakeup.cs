@@ -19,6 +19,9 @@ public sealed class DispatchTrafficWakeup : IDisposable
     public Task<bool> WaitAsync(int fallbackIntervalMs, CancellationToken ct) =>
         _pending.WaitAsync(fallbackIntervalMs, ct);
 
+    public Task<bool> WaitAsync(TimeSpan fallbackInterval, CancellationToken ct) =>
+        _pending.WaitAsync(fallbackInterval, ct);
+
     public Task<bool> WaitForFollowupAsync(int fallbackIntervalMs, CancellationToken ct) =>
         _followup.WaitAsync(fallbackIntervalMs, ct);
 

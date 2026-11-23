@@ -10,6 +10,9 @@ using AgvDispatch.Application.Runtime;
 using NLog.Extensions.Logging;
 using SqlSugar;
 
+// Last resort: an exception that escapes every handler is written to the NLog file before the process ends.
+AppDomain.CurrentDomain.UnhandledException += (_, args) =>
+    NLog.LogManager.GetCurrentClassLogger().Fatal(args.ExceptionObject as Exception, "调度服务发生未处理异常，进程即将退出。");
 var simulationTime = SimulationTimeProvider.FromEnvironment();
 BusinessClock.Use(simulationTime);
 var builder = Host.CreateApplicationBuilder(args);
@@ -19,6 +22,13 @@ builder.Services.AddSingleton<TimeProvider>(simulationTime);
 builder.Services.AddWindowsService(options =>
 {
     options.ServiceName = "AGV铝屑回收调度服务";
+});
+builder.Services.Configure<HostOptions>(options =>
+{
+    // A failed background service stops the host (after logging), so the service manager can restart the process.
+    options.BackgroundServiceExceptionBehavior = BackgroundServiceExceptionBehavior.StopHost;
+    // Graceful stop: PLC flags, vehicle connections and database writes get time to finish before a kill.
+    options.ShutdownTimeout = TimeSpan.FromSeconds(30);
 });
 
 builder.Logging.ClearProviders();
@@ -450,6 +460,9 @@ if (trafficSecurityOptions.ApprovalTimeoutMinutes is < 1 or > 1440)
     throw new InvalidOperationException("Security:ApprovalTimeoutMinutes必须在1到1440之间。");
 }
 builder.Services.AddSingleton(trafficSecurityOptions);
+// Roles are resolved from Security:Users; the pipe grants only what a configured role allows.
+builder.Services.AddSingleton<AgvDispatch.Application.Abstractions.ITrafficAuthorizationService>(_ =>
+    new ConfiguredTrafficAuthorizationService(trafficSecurityOptions));
 builder.Services.AddSingleton<NamedPipeDiagnostics>();
 builder.Services.AddSingleton<ISystemStatusSnapshotService, SystemStatusSnapshotService>();
 builder.Services.AddSingleton<IDeviceMonitoringService, DeviceMonitoringService>();
@@ -508,7 +521,20 @@ builder.Configuration.GetSection(AlarmOptions.SectionName).Bind(alarmOptions);
 builder.Services.AddSingleton(alarmOptions);
 builder.Services.AddHostedService<AlarmRuleEngine>();
 
-var host = builder.Build();
-// Build the schema before any polling/recording background service can query it.
-await host.Services.GetRequiredService<IDatabaseInitializer>().InitializeAsync(CancellationToken.None);
-host.Run();
+try
+{
+    if (dispatchOrchestratorOptions.GetStartupError(agvOptions.Robots.Where(robot => robot.Enabled)
+            .Select(robot => robot.VehicleId).ToArray()) is { } dispatchConfigurationError)
+        throw new InvalidOperationException(dispatchConfigurationError);
+    var host = builder.Build();
+    // Build the schema before any polling/recording background service can query it.
+    await host.Services.GetRequiredService<IDatabaseInitializer>().InitializeAsync(CancellationToken.None);
+    host.Run();
+    return 0;
+}
+catch (Exception error)
+{
+    NLog.LogManager.GetCurrentClassLogger().Fatal(error, "调度服务启动或运行失败，以非零退出码结束。");
+    Console.Error.WriteLine(error);
+    return 1;
+}

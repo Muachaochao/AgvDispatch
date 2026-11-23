@@ -54,8 +54,11 @@ public sealed class DispatchPreSendSafetyService(
             var step = new DispatchTaskStepWorkItem(task.TaskId, task.StationId, command.VehicleId, task.Stage,
                 original.StepId, original.Sequence, original.StepType, original.Status,
                 original.SourceSite, original.DestinationSite, original.UpdatedAt);
+            // Any earlier physical attempt (window 0 or a later window) may have been accepted by
+            // the vehicle, so a retry reconciles by StepId instead of requiring an idle car at the
+            // window start. A later window's car is already moving under the accepted command.
             return await CheckCoreAsync(step, payload.Path, activeMap.Current, preparing: false,
-                recovering: command.AttemptCount > 0 && payload.WindowIndex == 0, ct,
+                recovering: command.AttemptCount > 0, ct,
                 payload.WindowIndex > 0, payload.PreviousVendorTaskId,
                 businessSource, businessDestination);
         }, ct);

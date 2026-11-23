@@ -8,6 +8,9 @@ public sealed class TrafficSecurityOptions
     public string PipeName { get; set; } = "AgvDispatch.Service";
     public int ApprovalTimeoutMinutes { get; set; } = 15;
     public List<TrafficSecurityUserOptions> Users { get; set; } = [];
+    // Windows group name or SID whose members may connect to the pipe as operators. Their
+    // roles come from Users; an account not listed there gets view-only access.
+    public string OperatorGroup { get; set; } = string.Empty;
 }
 
 public sealed class TrafficSecurityUserOptions
@@ -78,7 +81,7 @@ public sealed class ConfiguredTrafficAuthorizationService : ITrafficAuthorizatio
 
         // Never match a different domain's qualified identity by a shared short name.
         if (identity.Contains('\\') || identity.Contains('@'))
-            return new TrafficUserContext(identity, identity, TrafficPermission.None) { Role = TrafficRole.Unassigned };
+            return Unconfigured(identity);
         // GetImpersonationUserName may return either DOMAIN\user or only user,
         // depending on whether the account is local or domain-backed. A short-name
         // fallback is accepted only when it identifies exactly one configured user.
@@ -89,10 +92,12 @@ public sealed class ConfiguredTrafficAuthorizationService : ITrafficAuthorizatio
                 StringComparison.OrdinalIgnoreCase))
             .Take(2)
             .ToArray();
-        return matches.Length == 1
-            ? matches[0]
-            : new TrafficUserContext(identity, identity, TrafficPermission.None) { Role = TrafficRole.Unassigned };
+        return matches.Length == 1 ? matches[0] : Unconfigured(identity);
     }
+
+    // An operator without a configured role may read the snapshot; every mutating operation is denied.
+    private static TrafficUserContext Unconfigured(string identity) =>
+        new(identity, identity, TrafficPermission.View) { Role = TrafficRole.Unassigned };
 
     private static string GetShortName(string identity)
     {

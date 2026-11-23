@@ -58,11 +58,22 @@ await Tick(task);Check(await Phase(task)=="NotifyRemoved","箱体离开推进到
 cache.FailAfterNextWrite=true;try{await Tick(task);throw new Exception("expected write failure");}catch(IOException){}
 var pending=await store.GetAsync(task,(await Current(task)).StepId,default);var writes=cache.Writes;
 Check(pending?.PendingSignal=="CNC/FullBoxRemoved"&&pending.Phase=="WritePending","外部写入结果未知保留原意图和下一阶段");
-engine=Engine();try{await Tick(task);throw new Exception("expected hold");}catch(InvalidOperationException){}
-Check(cache.Writes==writes,"重建执行器不重发结果未知写入");
+engine=Engine();await Tick(task);
+Check(cache.Writes==writes&&await Phase(task)=="NotifyEmptyResponsibility","重建执行器后回读已等于目标值，直接推进且不重发结果未知写入");
 Check(!await store.MoveAsync(pending! with{Revision=pending!.Revision-1},"NotifyEmptyResponsibility","stale",null,null,null,default),"旧revision不能覆盖握手阶段");
-// Test fixture resolves the pending intent explicitly; production uses permissioned recovery review.
-Check(await store.MoveAsync(pending!,pending!.NextPhase!,"isolated explicit review",null,null,null,default),"原待确认阶段经明确核对可CAS续接");
+// Bounded rewrite: every write from here on is dropped by the PLC link. The first two cycles only observe,
+// three rewrites follow at the readback interval, and the fourth due cycle escalates instead of looping.
+var beforeDrops=cache.Writes;cache.DropWrites=4;
+try{await Tick(task);throw new Exception("expected the dropped write to surface");}catch(IOException){}
+await Tick(task);
+for(var rewrite=0;rewrite<3;rewrite++){await Task.Delay(2100);await Tick(task);}
+Check(cache.Writes==beforeDrops+4&&await Phase(task)=="WritePending","未回读确认的写入最多重写三次并保留写入意图");
+await Task.Delay(2100);
+try{await Tick(task);throw new Exception("expected escalation after bounded rewrites");}catch(InvalidOperationException ex)when(ex.Message.Contains("已重写3次")){}
+Check(cache.Writes==beforeDrops+4,"重写用尽后停止自动发送并保留握手阶段");
+// Restarting the executor resets the in-memory counter; the PLC link is healthy again, so readback completes it.
+cache.DropWrites=0;engine=Engine();await Tick(task);await Task.Delay(2100);await Tick(task);await Tick(task);
+Check(cache.Writes==beforeDrops+5&&await Phase(task)=="AwaitPickupReadback","恢复后一次重写经回读确认并推进原阶段");
 for(var i=0;i<8&&(await Current(task)).StepType==DispatchTaskStepType.PickupFullBox;i++)await Tick(task);
 Check((await Current(task)).StepType==DispatchTaskStepType.DeliverFullBoxToDumper,"取箱阶段跨轮询完成，原九步顺序保留");
 Check(cache.Get("CNC","EmptyBoxTaskAcknowledged")&&cache.Get("CNC","FullBoxRemoved"),"28阶段返空箱责任与拉走通知保持到返箱收尾");
@@ -142,7 +153,8 @@ sealed class Signals:IPlcSignalCache,IPlcGateway
     public bool Get(string station,string variable)=>values[station+"/"+variable].Value==true;
     public IReadOnlyList<PlcSignalSnapshot> GetAll()=>values.Values.ToArray();public IReadOnlyList<PlcSignalSnapshot> GetStation(string station)=>values.Values.Where(v=>v.StationId==station).ToArray();
     public bool TryGet(string station,string variable,out PlcSignalSnapshot snapshot)=>values.TryGetValue(station+"/"+variable,out snapshot!);
-    public Task WriteSignalAsync(string station,string variable,bool value,CancellationToken ct){Writes++;WrittenNames.Add(variable);Set(station,variable,value);if(FailAfterNextWrite){FailAfterNextWrite=false;throw new IOException("isolated lost write response");}return Task.CompletedTask;}
+    public int DropWrites;
+    public Task WriteSignalAsync(string station,string variable,bool value,CancellationToken ct){Writes++;WrittenNames.Add(variable);if(DropWrites>0){DropWrites--;throw new IOException("isolated dropped PLC write");}Set(station,variable,value);if(FailAfterNextWrite){FailAfterNextWrite=false;throw new IOException("isolated lost write response");}return Task.CompletedTask;}
     public Task<DeviceConnectionStatus> GetConnectionStatusAsync(CancellationToken ct)=>throw new NotSupportedException();public Task<bool?> ReadSignalAsync(string station,string variable,CancellationToken ct)=>Task.FromResult<bool?>(Get(station,variable));public Task<StationSignal?> ReadStationAsync(string station,CancellationToken ct)=>throw new NotSupportedException();
 }
 sealed class Vehicles:IAgvStateCache

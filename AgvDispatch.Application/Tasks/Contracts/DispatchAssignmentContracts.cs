@@ -9,7 +9,8 @@ public sealed record DispatchAssignmentOptions
     public int CandidatesPerVehicle { get; init; } = 15;
     public int MinimumCandidatesPerTask { get; init; } = 2;
     public double WaitPriorityPerMinute { get; init; } = 1;
-    public double MaxWaitPriority { get; init; } = 30;
+    // Base priority spans 0-100; a ceiling below the span would let a waiting call never catch up.
+    public double MaxWaitPriority { get; init; } = 100;
     public double DeadlineHorizonMinutes { get; init; } = 15;
     public double MaxDeadlinePriority { get; init; } = 30;
     public double MinimumBatteryPercent { get; init; } = 20;

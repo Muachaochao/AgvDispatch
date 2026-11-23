@@ -1,0 +1,80 @@
+using System.Reflection;
+using AgvDispatch.Application.Abstractions;
+using AgvDispatch.Application.Tasks;
+using AgvDispatch.Domain.Maps;
+using AgvDispatch.Domain.Tasks;
+using AgvDispatch.Infrastructure.Persistence;
+using AgvDispatch.Infrastructure.Persistence.Entities;
+using AgvDispatch.Service;
+using Microsoft.Extensions.Logging.Abstractions;
+using SqlSugar;
+
+// D4: a held step timeout is recorded once, not every 500 ms cycle, and the selection
+// wait starts from a stable creation time rather than the task's last status write.
+var checks = 0;
+void Check(bool value, string message) { if (!value) throw new Exception(message); checks++; Console.WriteLine("PASS " + message); }
+var root = Path.Combine(Path.GetTempPath(), "agv-timeout-hold-" + Guid.NewGuid().ToString("N"));
+Directory.CreateDirectory(root);
+using var db = DatabaseFactory.Create(new() { DatabasePath = Path.Combine(root, "isolated.db") });
+var catalog = new TrafficResourceCatalog([new("R", TrafficResourceType.NarrowAisle)]);
+await new DatabaseInitializer(db, catalog).InitializeAsync(default);
+var tasks = new DispatchTaskRepository(db);
+var orchestration = new DispatchOrchestrationRepository(db);
+
+var created = await tasks.TryCreateAsync("ST", "DUMP", 50, default);
+await tasks.MarkAcknowledgedAsync(created.Task.TaskId, default);
+var step = (await tasks.GetStepsAsync(created.Task.TaskId, default)).First();
+
+// Selection start is the creation time and does not move when the task row is rewritten.
+var candidate = (await orchestration.GetDispatchCandidatesAsync(100, default)).Single(t => t.TaskId == created.Task.TaskId);
+await db.Updateable<DispatchTaskEntity>().SetColumns(t => new DispatchTaskEntity { UpdatedAt = DateTime.Now.AddHours(1) })
+    .Where(t => t.TaskId == created.Task.TaskId).ExecuteCommandAsync();
+var rewritten = (await orchestration.GetDispatchCandidatesAsync(100, default)).Single(t => t.TaskId == created.Task.TaskId);
+Check(rewritten.PolicyStartedAt == candidate.PolicyStartedAt && candidate.PolicyStartedAt == candidate.CreatedAt,
+    "the vehicle-selection wait starts at task creation and ignores later status writes");
+
+var clock = new ManualClock(DateTimeOffset.UtcNow);
+var journal = new Journal();
+var coordinator = new DispatchTaskStepCoordinator(NullLogger<DispatchTaskStepCoordinator>.Instance,
+    new DispatchTaskStepOptions(), new DispatchOrchestratorOptions(), new DispatchTaskCreationOptions { DumperStationId = "DUMP" },
+    orchestration, null!, null!, null!, null!, null!, null!, journal: journal, clock: clock);
+var apply = typeof(DispatchTaskStepCoordinator).GetMethod("ApplyTimeoutPolicyAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+async Task<bool> Apply(DispatchTaskStepWorkItem item) => (bool)await (Task<bool>)apply.Invoke(coordinator, [item, CancellationToken.None])!;
+
+var started = clock.Now;
+var item = new DispatchTaskStepWorkItem(created.Task.TaskId, "ST", null, DispatchTaskStage.WaitingForVehicle, step.StepId, step.Sequence,
+    DispatchTaskStepType.GoToPickup, DispatchTaskStepStatus.Ready, step.SourceSite, step.DestinationSite, started)
+{ TemplateNodeId = "select", TimeoutAction = TaskTemplateExecutionPolicy.NotifyAndHold, TimeoutSeconds = 10, StartedAt = started };
+clock.Now = started.AddSeconds(11);
+Check(!await Apply(item), "a timed-out notify-and-hold step is not stopped automatically");
+Check(journal.Holds == 1, "the first timeout hold writes one evidence record");
+for (var i = 0; i < 20; i++)
+{
+    clock.Now = clock.Now.AddMilliseconds(500);
+    await Apply(item);
+}
+Check(journal.Holds == 1, "repeated 500 ms cycles do not rewrite the same timeout hold, even as elapsed seconds grow");
+clock.Now = clock.Now.AddSeconds(60);
+Check(!await Apply(item) && journal.Holds == 1, "the hold stays recorded once while the step remains held");
+Check(await orchestration.GetDispatchCandidatesAsync(100, default) is { } later && later.Any(t => t.TaskId == created.Task.TaskId),
+    "the held task remains an active candidate and keeps its step");
+
+Console.WriteLine($"PASS: {checks} timeout hold checks; isolated SQLite and a manual clock only.");
+
+sealed class ManualClock(DateTimeOffset start) : TimeProvider
+{
+    public DateTimeOffset Now { get; set; } = start;
+    public override DateTimeOffset GetUtcNow() => Now;
+}
+sealed class Journal : IExecutionEvidenceJournal
+{
+    public int Holds;
+    public IDisposable BeginScope(string taskId, string stepId) => new Scope();
+    public Task RecordAsync(string taskId, string stepId, string kind, object evidence, CancellationToken ct)
+    {
+        if (kind == "NodeTimeoutHold") Holds++;
+        return Task.CompletedTask;
+    }
+    public Task RecordCurrentAsync(string kind, object evidence, CancellationToken ct) => Task.CompletedTask;
+    private sealed class Scope : IDisposable { public void Dispose() { } }
+}
