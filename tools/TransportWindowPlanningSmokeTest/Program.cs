@@ -350,6 +350,42 @@ try
 }
 catch (InvalidOperationException error) when (error.Message.Contains("MISSING")) { }
 Console.WriteLine("PASS indexed active-map windows, aliases, unknown edge rejection and map replacement.");
+// Dense safe points: every second node is a safe intersection (A..K, 10 edges).
+var denseNodes = Enumerable.Range(0, 11).Select(i => new MapNode(((char)('A' + i)).ToString(), i, 0,
+    i == 0 || i == 10 ? MapNodeType.Station : i % 2 == 0 ? MapNodeType.Intersection : MapNodeType.Waypoint, true, [])).ToArray();
+var denseEdges = Enumerable.Range(0, 10).Select(i => new MapEdge(denseNodes[i].Id + denseNodes[i + 1].Id,
+    denseNodes[i].Id, denseNodes[i + 1].Id, 1, 1, false, true, ["D" + i])).ToArray();
+var denseMap = new MapDefinition("DENSE", "", "RobotWorld", "m", denseNodes, denseEdges,
+    Enumerable.Range(0, 10).Select(i => new TrafficResourceDefinition("D" + i, TrafficResourceType.SingleLane)).ToArray());
+var denseRoute = new RoutePlan(denseNodes.Select(n => n.Id).ToArray(), denseEdges.Select(e => e.Id).ToArray(),
+    Enumerable.Range(0, 10).Select(i => "D" + i).ToArray(), 10);
+var nearest = TransportRouteWindows.Plan(denseRoute, denseMap, new DispatchTaskStepOptions
+    { RollingReservationEnabled = true, RollingWindowMinimumEdges = 2, RollingWindowMaximumEdges = 6 });
+Check(nearest.Count == 5 && nearest.All(w => w.EdgeIds.Count == 2),
+    "默认 NearestSafeStop 行为不变：每 2 段在最近安全点切窗。");
+var farthestWindows = TransportRouteWindows.Plan(denseRoute, denseMap, new DispatchTaskStepOptions
+{
+    RollingReservationEnabled = true, RollingWindowMinimumEdges = 2, RollingWindowMaximumEdges = 6,
+    RollingWindowBoundary = RollingWindowBoundaries.FarthestWithinMaximum
+});
+Check(farthestWindows.Count == 2 && farthestWindows[0].Destination == "G" && farthestWindows[0].EdgeIds.Count == 6 &&
+      !farthestWindows[0].Final && farthestWindows[1].Final && farthestWindows[1].Source == "G",
+    "FarthestWithinMaximum：在最长 6 段内取最远安全点 G，剩余 4 段不超过最大值则直接作为末窗。");
+var farthestBeyond = TransportRouteWindows.Plan(new RoutePlan(longNodes.Select(node => node.Id).ToArray(),
+        longEdges.Select(edge => edge.Id).ToArray(), ["R1", "R2", "R3", "R4", "R5", "R6"], 6), longMap,
+    new DispatchTaskStepOptions
+    {
+        RollingReservationEnabled = true, RollingWindowMinimumEdges = 2, RollingWindowMaximumEdges = 3,
+        RollingWindowBoundary = RollingWindowBoundaries.FarthestWithinMaximum
+    });
+Check(farthestBeyond.Count == 2 && farthestBeyond[0].Destination == "F",
+    "FarthestWithinMaximum 在最大范围内没有安全点时，仍取范围外最近的安全点，不在普通路径点截断。");
+var farthestNoSafe = TransportRouteWindows.Plan(new RoutePlan(["A", "B", "C", "D", "E", "F"], ["AB", "BC", "CD", "DE", "EF"],
+        ["R1", "R2", "R3", "R4", "R5"], 5), unsafeMap,
+    new DispatchTaskStepOptions { RollingReservationEnabled = true, RollingWindowBoundary = RollingWindowBoundaries.FarthestWithinMaximum });
+Check(farthestNoSafe.Count == 1 && farthestNoSafe[0].Final, "FarthestWithinMaximum 无安全点时保持整条路线单窗口。");
+Console.WriteLine("PASS rolling window boundary: nearest (default) and farthest-within-maximum.");
+
 
 sealed class FollowupPlanner(RoutePlan route) : IRoutePlanner
 {

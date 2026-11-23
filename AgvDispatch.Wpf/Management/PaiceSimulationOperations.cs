@@ -21,6 +21,9 @@ public sealed record PaiceSimulationObservation(
 
 public sealed class PaiceSimulationOperations(SiteEnvironment site)
 {
+    /// <summary>Identity read by the last successful <see cref="ReadSimulationSummaryAsync"/>.</summary>
+    public SimulationIdentity? LastIdentity { get; private set; }
+
     private sealed record OwnedProcess(int Id, string Path, long StartedUtcTicks, string? SimulationSource);
 
     public PaiceSimulationInfo? Info => site.ReadPaiceSimulation();
@@ -58,7 +61,9 @@ public sealed class PaiceSimulationOperations(SiteEnvironment site)
             var version = ReadText(identity, "mapVersionId") ?? "未提供版本号";
             var instance = ReadText(status, "rootName") ?? "未选实例";
             var mapName = status.TryGetProperty("map", out var map) ? ReadText(map, "name") : null;
-            return $"{summary}\n所选方案：{scheme}\n当前实例：{instance}\n地图：{mapName ?? "未加载"} · {version}";
+            var hash = ReadText(identity, "definitionHash");
+            LastIdentity = new(ReadText(status, "rootName"), scheme == "未选方案" ? null : scheme, mapName, hash, ReadText(identity, "mapVersionId"));
+            return $"{summary}\n所选方案：{scheme}\n当前实例：{instance}（实例是一次运行记录，方案与地图不变时实例更新属正常）\n地图：{mapName ?? "未加载"} · {version}{(hash is null ? "" : " · 摘要 " + hash[..Math.Min(12, hash.Length)])}";
         }
         catch (Exception error) when (error is HttpRequestException or OperationCanceledException or JsonException or InvalidOperationException)
         {
@@ -92,7 +97,8 @@ public sealed class PaiceSimulationOperations(SiteEnvironment site)
         var message = running ? "排策智演前端与后端已就绪。"
             : front.Result ? "排策智演前端已就绪，后端未就绪。"
             : back.Result ? "排策智演后端已就绪，前端未就绪。"
-            : record == PaiceOwnedRecordState.Stale ? "检测到失效启动记录，可安全清理后启动。"
+            : record == PaiceOwnedRecordState.Live ? "排策智演半运行：受管进程仍在但端口无响应，点「启动」会先清理再重启。"
+            : record == PaiceOwnedRecordState.Stale ? "检测到失效启动记录，启动时自动清理。"
             : "排策智演未运行。";
         return new(true, front.Result, back.Result, record, message);
     }
@@ -102,32 +108,44 @@ public sealed class PaiceSimulationOperations(SiteEnvironment site)
         var info = Info ?? throw new InvalidOperationException("尚未配置排策智演。");
         var before = await ObserveAsync(ct);
         if (before.Running) return before;
-        if (before.RecordState is PaiceOwnedRecordState.Live or PaiceOwnedRecordState.Conflict)
-            throw new InvalidOperationException("排策智演启动记录仍有存活或冲突进程，拒绝重复启动。");
+        if (before.RecordState is PaiceOwnedRecordState.Conflict or PaiceOwnedRecordState.Invalid)
+            throw new InvalidOperationException("排策智演启动记录无法核实（权限不足或记录损坏），请以同一 Windows 账户运行助手，或人工核对 .runtime/processes.json 后删除。");
+        if (before.RecordState == PaiceOwnedRecordState.Live)
+        {
+            // Half-running: one recorded process survived while the other end is down. The record proves
+            // these processes are ours, so stop exactly them and start a clean pair instead of refusing.
+            await RunScriptAsync(info.StopScript, TimeSpan.FromSeconds(90), ct);
+            before = await ObserveAsync(ct);
+            if (before.FrontendReady || before.BackendReady || before.RecordState == PaiceOwnedRecordState.Live)
+                throw new InvalidOperationException("已停止受管的残留进程，但 5270/5271 仍有响应；端口被其他程序占用，请先关闭占用程序。");
+        }
+        else if (before.FrontendReady || before.BackendReady)
+            throw new InvalidOperationException((before.FrontendReady ? "5270" : "5271") + " 端口已被非本工具启动的程序占用，未重复启动；请关闭该程序后再启动。");
         RemoveStaleOwnedRecord(info.ProcessRecordPath);
         await RunScriptAsync(info.StartScript, TimeSpan.FromMinutes(12), ct, info.SimulationSource is null ? null : site.Root);
         var after = await ObserveAsync(ct);
         if (!after.Running) throw new InvalidOperationException("启动脚本已结束，但排策智演前后端未同时就绪。");
-        return after;
+        return after with { Message = before.RecordState == PaiceOwnedRecordState.Live ? "已清理半运行的残留进程并重新启动排策智演。" : after.Message };
     }
 
     public async Task<PaiceSimulationObservation> StopAsync(CancellationToken ct = default)
     {
         var info = Info ?? throw new InvalidOperationException("尚未配置排策智演。");
         var before = await ObserveAsync(ct);
-        if (before.RecordState == PaiceOwnedRecordState.Conflict || before.RecordState == PaiceOwnedRecordState.Invalid)
+        if (before.RecordState is PaiceOwnedRecordState.Conflict or PaiceOwnedRecordState.Invalid)
             throw new InvalidOperationException("排策智演启动记录身份异常，保留记录并要求人工核对。");
-        if (!before.FrontendReady && !before.BackendReady)
+        if (before.RecordState == PaiceOwnedRecordState.Live)
         {
-            if (before.RecordState == PaiceOwnedRecordState.Stale) RemoveStaleOwnedRecord(info.ProcessRecordPath);
-            return await ObserveAsync(ct);
+            // Stop recorded processes even when neither endpoint answers (a hung or half-started pair).
+            await RunScriptAsync(info.StopScript, TimeSpan.FromSeconds(90), ct);
+            var stopped = await ObserveAsync(ct);
+            if (stopped.FrontendReady || stopped.BackendReady) throw new InvalidOperationException("停止脚本已结束，但仍有排策智演端口在监听。");
+            return stopped;
         }
-        if (before.RecordState != PaiceOwnedRecordState.Live)
-            throw new InvalidOperationException("排策智演端点在运行，但缺少有效的受管进程记录。");
-        await RunScriptAsync(info.StopScript, TimeSpan.FromSeconds(90), ct);
-        var after = await ObserveAsync(ct);
-        if (after.FrontendReady || after.BackendReady) throw new InvalidOperationException("停止脚本已结束，但仍有排策智演端口在监听。");
-        return after;
+        if (before.RecordState == PaiceOwnedRecordState.Stale) RemoveStaleOwnedRecord(info.ProcessRecordPath);
+        if (before.FrontendReady || before.BackendReady)
+            throw new InvalidOperationException("排策智演端点在运行，但不是本工具启动的进程（没有有效记录），未停止。");
+        return await ObserveAsync(ct);
     }
 
     public static PaiceOwnedRecordState ClassifyOwnedRecord(string path)
@@ -146,9 +164,10 @@ public sealed class PaiceSimulationOperations(SiteEnvironment site)
                 {
                     using var process = Process.GetProcessById(entry.Id);
                     if (process.HasExited) continue;
+                    // Same PID, different start time or image: Windows reused the id, the recorded process is gone.
                     if (process.StartTime.ToUniversalTime().Ticks != entry.StartedUtcTicks ||
                         !string.Equals(process.MainModule?.FileName, entry.Path, StringComparison.OrdinalIgnoreCase))
-                        return PaiceOwnedRecordState.Conflict;
+                        continue;
                     live++;
                 }
                 catch (ArgumentException) { }

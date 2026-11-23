@@ -75,10 +75,18 @@ internal static class Program
                   !PaiceSimulationOperations.IsExpectedBackendHealth("""{"code":0,"data":{"service":"agv-backend","status":"DOWN"}}"""),
                 "Paice backend identity requires agv-backend and UP");
             File.WriteAllText(staleRecord, JsonSerializer.Serialize(new[] { new { id = Environment.ProcessId, path = paice.Directory, startedUtcTicks = 1L } }));
-            Check(PaiceSimulationOperations.ClassifyOwnedRecord(staleRecord) == PaiceOwnedRecordState.Conflict,
-                "Mismatched live process identity remains a conflict");
+            // A live PID with another start time/image is a reused id (e.g. after a reboot): the recorded
+            // process is gone. Treating it as a permanent conflict blocked every later start.
+            Check(PaiceSimulationOperations.ClassifyOwnedRecord(staleRecord) == PaiceOwnedRecordState.Stale,
+                "Reused PID with mismatched identity is a stale record, not a permanent conflict");
+            Check(PaiceSimulationOperations.RemoveStaleOwnedRecord(staleRecord) && !File.Exists(staleRecord) &&
+                  !Process.GetCurrentProcess().HasExited,
+                "Stale record from a reused PID is removed without touching the process that now owns the id");
+            File.WriteAllText(staleRecord, "{ not json");
+            Check(PaiceSimulationOperations.ClassifyOwnedRecord(staleRecord) == PaiceOwnedRecordState.Invalid,
+                "Damaged Paice simulation record stays invalid for manual inspection");
             Reject(() => PaiceSimulationOperations.RemoveStaleOwnedRecord(staleRecord),
-                "Conflicting Paice simulation record is retained for inspection");
+                "Invalid Paice simulation record is retained for inspection");
             File.Delete(staleRecord);
             var paiceObservation = new PaiceSimulationOperations(site).ObserveAsync().GetAwaiter().GetResult();
             Check(paiceObservation.Configured && paiceObservation.RecordState == PaiceOwnedRecordState.Missing,
@@ -89,6 +97,15 @@ internal static class Program
                 "Software assistant exposes the independent Paice simulation lifecycle");
             Reject(() => SiteEnvironment.ChildPath(temporary, "../outside"), "Release/path escape rejected");
             Reject(() => SiteEnvironment.ChildPath(temporary, "C:/outside"), "Absolute release path rejected");
+            var baselineStore = new SiteBaselineStore(site);
+            var snapshot = baselineStore.Capture(site.ReadRelease(), new SimulationIdentity("web-single-vehicle-sim-a", "V4F五车十单", "B07-V4F", "ABCDEF0123456789", null));
+            Check(SiteBaselineStore.Compare(baselineStore.Read(), snapshot).Level == "idle", "Site baseline starts unlocked");
+            baselineStore.Lock(snapshot, "fixture");
+            var renewed = SiteBaselineStore.Compare(baselineStore.Read(), snapshot with { SimulationInstance = "web-single-vehicle-sim-b" });
+            Check(renewed.Level == "ok" && renewed.Drift.Count == 0, "A renewed simulation instance with the same scheme and map is not baseline drift");
+            var drifted = SiteBaselineStore.Compare(baselineStore.Read(), snapshot with { MapHash = "FFFF", SchemeName = "V2" });
+            Check(drifted.Level == "warn" && drifted.Drift.Count == 2, "Map and scheme changes are reported as baseline drift");
+            Check(File.Exists(baselineStore.ExportRecord(snapshot, baselineStore.Read(), renewed)), "Version record is exported to the diagnostic folder");
             var archives = new SiteArchives(site);
             var backup = archives.CreateBackup();
             Check(File.Exists(backup), "Stopped-site backup includes a valid SQLite database");

@@ -92,12 +92,15 @@ public static class TransportRouteWindows
             return [Window(route, nodes, edges, 0, route.Nodes.Count - 1, true)];
 
         var minimum = Math.Clamp(options.RollingWindowMinimumEdges, 1, 100);
+        var maximum = Math.Max(minimum, Math.Clamp(options.RollingWindowMaximumEdges, 1, 1000));
+        var farthest = string.Equals(options.RollingWindowBoundary, RollingWindowBoundaries.FarthestWithinMaximum,
+            StringComparison.OrdinalIgnoreCase);
         var windows = new List<AgvTransportRouteWindow>();
         var start = 0;
         while (start < route.Nodes.Count - 1)
         {
             var remainingEdges = route.Nodes.Count - 1 - start;
-            if (remainingEdges <= minimum)
+            if (remainingEdges <= minimum || farthest && remainingEdges <= maximum)
             {
                 windows.Add(Window(route, nodes, edges, start, route.Nodes.Count - 1, true));
                 break;
@@ -109,11 +112,22 @@ public static class TransportRouteWindows
             // when it lies beyond the preferred maximum. If the route contains no
             // interior safe node, keep the whole route as one atomic window.
             var boundary = -1;
-            for (var index = lower; index < route.Nodes.Count - 1; index++)
+            if (farthest)
+            {
+                // Each window ends with a full stop and a renewal; with dense safe points the nearest-stop
+                // rule stops every few metres. Prefer the farthest safe stop the preferred maximum allows.
+                for (var index = Math.Min(start + maximum, route.Nodes.Count - 2); index >= lower; index--)
+                {
+                    if (!IsStableStop(nodes[index], canStageAt)) continue;
+                    boundary = index;
+                    break;
+                }
+            }
+            for (var index = farthest ? Math.Max(lower, start + maximum + 1) : lower;
+                 boundary < 0 && index < route.Nodes.Count - 1; index++)
             {
                 if (!IsStableStop(nodes[index], canStageAt)) continue;
                 boundary = index;
-                break;
             }
 
             if (boundary < 0)
