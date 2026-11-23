@@ -95,7 +95,7 @@ public sealed partial class DispatchTaskOrchestrator(
                 ? Math.Min(options.PollIntervalMs, optimization.Options.IntervalMs) : options.PollIntervalMs;
             if (trafficWakeup is null)
                 await Task.Delay(BusinessDelay(interval), stoppingToken);
-            else if (await trafficWakeup.WaitAsync(interval, stoppingToken) &&
+            else if (await trafficWakeup.WaitAsync(BusinessDelay(interval), stoppingToken) &&
                 optimization?.Options.Mode.Equals("Global", StringComparison.OrdinalIgnoreCase) == true)
                 _nextOptimizationAt = DateTimeOffset.MinValue;
         }
