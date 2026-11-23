@@ -15,6 +15,9 @@ public static class ObstacleRecoveryStates
     public const string SendIntent = "SendIntent";
     public const string Executing = "Executing";
     public const string NoRoute = "NoRoute";
+    // The vehicle is stopped between named stations. No detour is planned from a
+    // historical station; the state is reported and escalates to Alarm on its own timer.
+    public const string NotAtStation = "NotAtStation";
     public const string Warning = "Warning";
     public const string Alarm = "Alarm";
     public const string ClosureSuggested = "ClosureSuggested";

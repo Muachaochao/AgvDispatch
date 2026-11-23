@@ -370,6 +370,21 @@ public sealed class ObstacleRecoveryCoordinator(
                 return;
             }
 
+            if (!IsAtTrustedStation(robot))
+            {
+                // Mid-road or unknown station: a plan from the last reported station
+                // would be a guess. Report it as its own state and keep the task.
+                row.CandidatePathJson = "[]";
+                row.State = elapsed >= options.AlarmAfterSeconds
+                    ? ObstacleRecoveryStates.Alarm
+                    : ObstacleRecoveryStates.NotAtStation;
+                row.Message = $"车端连续受阻{elapsed:0}秒，车辆不在可信命名站点（路段中间或站点未知）；不按历史站点规划替代路线。";
+                row.NextAction = "保留原任务、载荷、PLC责任和路权；车辆需停在可信站点，或由人工安全转移；到站后自动重新评估。";
+                row.Revision++;
+                await SaveAsync(row, cancellationToken);
+                return;
+            }
+
             var plan = await PlanAsync(row, robot, task, step, originalPath, cancellationToken);
             if (plan.Available)
             {
@@ -398,24 +413,13 @@ public sealed class ObstacleRecoveryCoordinator(
             row.CandidatePathJson = "[]";
             row.BlockedEdgeIdsJson = JsonSerializer.Serialize(plan.BlockedEdgeIds, Json);
             row.SafeSite = plan.SafeSite;
-            if (elapsed >= options.ClosureSuggestionAfterSeconds)
-            {
-                await FreezeNoRouteAsync(row, plan.Message, cancellationToken);
-                return;
-            }
+            // Before cancellation a missing route only warns and alarms. The original
+            // navigation keeps running and the task stage is untouched.
             row.State = elapsed >= options.AlarmAfterSeconds ? ObstacleRecoveryStates.Alarm :
                 elapsed >= options.WarningAfterSeconds ? ObstacleRecoveryStates.Warning :
                 ObstacleRecoveryStates.NoRoute;
             row.Message = plan.Message;
-            row.NextAction = row.State switch
-            {
-                ObstacleRecoveryStates.Alarm =>
-                    $"持续受阻{elapsed:0}秒；保持原任务、载荷和责任。建议核对是否封路，仅封锁实际受阻方向及必要上游汇入，不应暂停无关任务。",
-                ObstacleRecoveryStates.Warning =>
-                    $"持续受阻{elapsed:0}秒；继续搜索安全替代路线，并检查车端定位、阻塞范围和邻近车辆。",
-                _ =>
-                    $"未找到安全替代路线；继续保留原任务。{(string.IsNullOrWhiteSpace(plan.SafeSite) ? "" : $"推荐安全点{plan.SafeSite}。")}"
-            };
+            row.NextAction = NoRouteNextAction(row.State, elapsed, plan.SafeSite);
             row.Revision++;
             await SaveAsync(row, cancellationToken);
             return;
@@ -657,18 +661,16 @@ public sealed class ObstacleRecoveryCoordinator(
             allowOriginalRoute: allowClearedOriginalRoute);
         if (!plan.Available)
         {
-            if (elapsed >= options.ClosureSuggestionAfterSeconds)
-            {
-                await FreezeNoRouteAsync(row, plan.Message, cancellationToken);
-                return;
-            }
+            // Not frozen: the cancelled task stays resumable. The next pass plans
+            // again and sends as soon as a route, the stop evidence and the lock pass.
             row.State = elapsed >= options.AlarmAfterSeconds ? ObstacleRecoveryStates.Alarm :
                 elapsed >= options.WarningAfterSeconds ? ObstacleRecoveryStates.Warning :
                 ObstacleRecoveryStates.NoRoute;
             row.Message = "原任务已取消，但当前没有安全替代路线：" + plan.Message;
             row.NextAction = string.IsNullOrWhiteSpace(plan.SafeSite)
-                ? "保持原业务任务冻结证据，检查车端定位与地图；不得让车辆恢复空闲。"
-                : $"推荐安全点{plan.SafeSite}；当前自动退站条件不足，核对载荷、道路、定位和车辆包络后受控转移，禁止直接宣告任务完成。";
+                ? "保持原业务任务与路权，后台继续重新规划；不得让车辆恢复空闲。"
+                : $"推荐安全点{plan.SafeSite}；后台继续重新规划，无替代路线前不得宣告任务完成。" +
+                  (elapsed >= options.ClosureSuggestionAfterSeconds ? "已超过封路建议时间，请人工核对封路。" : "");
             row.SafeSite = plan.SafeSite;
             row.Revision++;
             await SaveAsync(row, cancellationToken);
@@ -1583,15 +1585,20 @@ public sealed class ObstacleRecoveryCoordinator(
         return candidates.Site;
     }
 
-    private async Task FreezeNoRouteAsync(ObstacleRecoveryEntity row, string reason,
-        CancellationToken cancellationToken)
+    private string NoRouteNextAction(string state, double elapsed, string? safeSite)
     {
-        await FreezeAsync(row,
-            $"持续受阻超过{options.ClosureSuggestionAfterSeconds}秒且无替代路线：{reason}",
-            "建议正式封锁实际受阻方向及必要上游汇入；仅影响该路段，其他无冲突任务继续。" +
-            (string.IsNullOrWhiteSpace(row.SafeSite) ? "" : $"推荐安全点{row.SafeSite}；自动3051/3055退站未启用或条件不足，需核对载荷后受控转移。") +
-            " 任务、载荷、PLC责任和路权保留；无法完成时再走取消或换单恢复流程。",
-            cancellationToken);
+        var closure = elapsed >= options.ClosureSuggestionAfterSeconds
+            ? $"已超过{options.ClosureSuggestionAfterSeconds}秒封路建议时间，请人工核对封路（只封锁实际受阻方向及必要上游汇入，不自动封路）；"
+            : "";
+        return state switch
+        {
+            ObstacleRecoveryStates.Alarm =>
+                $"持续受阻{elapsed:0}秒；保持原任务、载荷和责任。{closure}不应暂停无关任务。",
+            ObstacleRecoveryStates.Warning =>
+                $"持续受阻{elapsed:0}秒；继续搜索安全替代路线，并检查车端定位、阻塞范围和邻近车辆。",
+            _ =>
+                $"未找到安全替代路线；继续保留原任务。{(string.IsNullOrWhiteSpace(safeSite) ? "" : $"推荐安全点{safeSite}。")}"
+        };
     }
 
     private async Task FreezeAsync(ObstacleRecoveryEntity row, string message, string nextAction,

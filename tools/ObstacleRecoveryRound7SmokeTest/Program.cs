@@ -27,12 +27,99 @@ Directory.CreateDirectory(directory);
 try
 {
     await CancelPendingOrchestratorAsync(directory);
+    await MidRoadStopIsReportedAsync(directory);
+    await NoRouteNeverFreezesBeforeCancelAsync(directory);
     Console.WriteLine($"PASS: {checks} round-7 obstacle recovery checks; isolated database and synthetic gateway only.");
 }
 finally
 {
     try { Directory.Delete(directory, recursive: true); } catch (IOException) { }
 }
+
+// O2: a vehicle stopped between stations cannot be planned from a historical
+// station. It must be reported as a distinct state, escalate to Alarm on its
+// own timer, and never freeze the business task. Back on a trusted station the
+// same obstacle still yields the normal detour candidate.
+async Task MidRoadStopIsReportedAsync(string root)
+{
+    var start = new DateTimeOffset(2026, 11, 7, 2, 0, 0, TimeSpan.Zero);
+    var h = await ObstacleHarnessFactory.BuildAsync(root, "o2", ObstacleHarnessFactory.StationGraph(true),
+        start, "TASK-O2", "STEP-O2");
+    h.States.ApplyTelemetry("A", ObstacleHarnessFactory.Telemetry(start, blocked: true), TimeSpan.Zero);
+    await h.Coordinator.ObserveOnceAsync(default);
+    for (var second = 5; second <= 125; second += 5)
+    {
+        h.Clock.SetTo(start.AddSeconds(second));
+        h.States.ApplyTelemetry("A", ObstacleHarnessFactory.Telemetry(h.Clock.GetUtcNow(), blocked: true,
+            x: 0.5, y: 0.2, current: null), TimeSpan.Zero);
+        await h.Coordinator.ObserveOnceAsync(default);
+    }
+    var row = RecoveryRow(h.Db, "TASK-O2");
+    var expectedMidRoadState = row.State;
+    Check(expectedMidRoadState == ObstacleRecoveryStates.Alarm, "路段中间受阻超过报警时间后升为报警状态");
+    Check(row.State != ObstacleRecoveryStates.Frozen && row.CancelRequestedAtUtc is null &&
+          h.Gateway.CancelCalls == 0 && h.Gateway.RecoverySendCalls == 0,
+        "路段中间受阻不冻结、不取消原导航、不发送替代路线");
+    var task = TaskRow(h.Db, "TASK-O2");
+    var step = StepRow(h.Db, "STEP-O2");
+    Check(task.Stage == (int)DispatchTaskStage.GoingToPickup &&
+          step.Status == (int)DispatchTaskStepStatus.Executing,
+        "路段中间受阻期间业务任务和步骤保持执行中");
+    Check(row.NextAction.Contains("站点"), "路段中间报警明确提示需要停在可信站点");
+
+    h.Clock.SetTo(start.AddSeconds(130));
+    h.States.ApplyTelemetry("A", ObstacleHarnessFactory.Telemetry(h.Clock.GetUtcNow(), blocked: true), TimeSpan.Zero);
+    await h.Coordinator.ObserveOnceAsync(default);
+    row = RecoveryRow(h.Db, "TASK-O2");
+    Check(row.State == ObstacleRecoveryStates.DetourReady &&
+          ObstacleHarnessFactory.Decode(row.CandidatePathJson).SequenceEqual(["S", "D", "X"]) &&
+          h.Gateway.CancelCalls == 0,
+        "回到可信站点S后，同一障碍仍生成S→D→X替代候选且只读");
+}
+
+// O3: before a cancellation a route-less obstacle only warns and alarms. It must
+// not change the task stage or freeze. When the obstacle clears, the original
+// navigation is still live and the record closes without touching the task.
+async Task NoRouteNeverFreezesBeforeCancelAsync(string root)
+{
+    var start = new DateTimeOffset(2026, 11, 7, 2, 0, 0, TimeSpan.Zero);
+    var h = await ObstacleHarnessFactory.BuildAsync(root, "o3", ObstacleHarnessFactory.StationGraph(false),
+        start, "TASK-O3", "STEP-O3");
+    h.States.ApplyTelemetry("A", ObstacleHarnessFactory.Telemetry(start, blocked: true), TimeSpan.Zero);
+    await h.Coordinator.ObserveOnceAsync(default);
+    for (var second = 5; second <= 305; second += 5)
+    {
+        h.Clock.SetTo(start.AddSeconds(second));
+        h.States.ApplyTelemetry("A", ObstacleHarnessFactory.Telemetry(h.Clock.GetUtcNow(), blocked: true), TimeSpan.Zero);
+        await h.Coordinator.ObserveOnceAsync(default);
+    }
+    var row = RecoveryRow(h.Db, "TASK-O3");
+    var task = TaskRow(h.Db, "TASK-O3");
+    var step = StepRow(h.Db, "STEP-O3");
+    Check(row.State == ObstacleRecoveryStates.Alarm && row.State != ObstacleRecoveryStates.Frozen,
+        "无替代路线超过300秒只升为报警，不冻结恢复记录");
+    Check(task.Stage == (int)DispatchTaskStage.GoingToPickup &&
+          step.Status == (int)DispatchTaskStepStatus.Executing && h.Gateway.CancelCalls == 0,
+        "取消前无路线不改变业务任务阶段、步骤状态，也不取消原导航");
+
+    h.Clock.SetTo(start.AddSeconds(310));
+    h.States.ApplyTelemetry("A", ObstacleHarnessFactory.Telemetry(h.Clock.GetUtcNow(), blocked: false), TimeSpan.Zero);
+    await h.Coordinator.ObserveOnceAsync(default);
+    row = RecoveryRow(h.Db, "TASK-O3");
+    task = TaskRow(h.Db, "TASK-O3");
+    Check(row.State == ObstacleRecoveryStates.Recovered &&
+          task.Stage == (int)DispatchTaskStage.GoingToPickup && h.Gateway.CancelCalls == 0,
+        "障碍清除后记录关闭，原导航仍在执行，任务不被冻结或取消");
+}
+
+static ObstacleRecoveryEntity RecoveryRow(ISqlSugarClient db, string taskId) =>
+    db.Queryable<ObstacleRecoveryEntity>().Single(item => item.TaskId == taskId);
+
+static DispatchTaskEntity TaskRow(ISqlSugarClient db, string taskId) =>
+    db.Queryable<DispatchTaskEntity>().Single(item => item.TaskId == taskId);
+
+static DispatchTaskStepEntity StepRow(ISqlSugarClient db, string stepId) =>
+    db.Queryable<DispatchTaskStepEntity>().Single(item => item.StepId == stepId);
 
 // O1: the coordinator cancelled the original vendor task. The ordinary
 // orchestrator then observes the vendor's Cancelled status on its 1 s pass. It
