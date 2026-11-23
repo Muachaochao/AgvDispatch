@@ -14,16 +14,22 @@ interface DispatchReplay {
   timeline: ReplayFrame[];
   map?: SourceMap | null;
   mapMessage?: string | null;
+  simulationRate?: number;
   sampled?: boolean;
   totalSamples?: number;
 }
 
-const props = defineProps<{ reportId: string }>();
+const props = defineProps<{ reportId: string; simulationRate?: number }>();
 const replay = shallowRef<DispatchReplay | null>(null);
 const frameIndex = ref(0);
 const loading = ref(false);
 const playing = ref(false);
 const playbackRate = ref(1);
+const playbackRates = [0.25, 0.5, 0.75, 1, 2, 4, 8];
+const playbackRateBase = computed(() => {
+  const rate = Number(props.simulationRate ?? replay.value?.simulationRate);
+  return Number.isFinite(rate) && rate > 0 ? rate : 1;
+});
 const videoProgress = ref<number | null>(null);
 const error = ref("");
 const notice = ref("");
@@ -80,11 +86,30 @@ function togglePlayback() {
 }
 watch([playing, playbackRate], ([active, rate], _old, onCleanup) => {
   if (!active) return;
-  const timer = setInterval(() => {
-    if (frameIndex.value < timeline.value.length - 1) frameIndex.value++;
-    else playing.value = false;
-  }, 125 / rate);
-  onCleanup(() => clearInterval(timer));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const schedule = () => {
+    if (!playing.value) return;
+    if (frameIndex.value >= timeline.value.length - 1) {
+      playing.value = false;
+      return;
+    }
+    const current = timeline.value[frameIndex.value]?.time;
+    const next = timeline.value[frameIndex.value + 1]?.time;
+    const simulationDelay = Number.isFinite(current) && Number.isFinite(next)
+      ? Math.max(0, Number(next) - Number(current))
+      : 1;
+    const captureDelay = simulationDelay * 1000 / playbackRateBase.value / rate;
+    timer = setTimeout(() => {
+      if (!playing.value || frameIndex.value >= timeline.value.length - 1) return;
+      frameIndex.value++;
+      if (frameIndex.value < timeline.value.length - 1) schedule();
+      else playing.value = false;
+    }, Math.max(16, captureDelay));
+  };
+  schedule();
+  onCleanup(() => {
+    if (timer) clearTimeout(timer);
+  });
 });
 onBeforeUnmount(() => lifetime.abort());
 
@@ -212,8 +237,9 @@ async function exportVideo() {
       <label v-if="timeline.length > 1" class="replay-rate">
         回放速度
         <select v-model.number="playbackRate" aria-label="回放速度">
-          <option v-for="rate in [1, 2, 4, 8]" :key="rate" :value="rate">{{ rate }}×</option>
+          <option v-for="rate in playbackRates" :key="rate" :value="rate">{{ rate }}×</option>
         </select>
+        <span class="muted">1× = 原录制速度（仿真 {{ playbackRateBase }}×）</span>
       </label>
       <el-button size="small" :disabled="!timeline.length" :loading="videoProgress !== null" @click="exportVideo">
         {{ videoProgress === null ? "导出回放视频" : `正在录制 ${videoProgress}%` }}
@@ -228,6 +254,7 @@ async function exportVideo() {
         <input v-model.number="frameIndex" type="range" min="0" :max="timeline.length - 1" aria-label="回放时间点" @input="playing = false" />
       </label>
       <SimulationWorkshopMap v-if="replay?.map" :definition="replay.map" :cars="cars" :fresh="true"
+        :instant-vehicles="true"
         :selected-vehicle="selectedVehicle" :location="location" @select-vehicle="locateVehicle" />
       <p v-else>{{ replay?.mapMessage || "该轮报告未提供地图快照" }}</p>
       <el-table :data="frame.vehicles ?? []" size="small" empty-text="该采样没有车辆反馈">

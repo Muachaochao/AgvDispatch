@@ -77,8 +77,8 @@ public sealed class SnapshotReader(DispatchPipe pipe)
     public static WebMap? ProjectMap(TrafficMapSnapshot? snapshot)
     {
         if (snapshot?.Definition is not { } definition) return null;
-        if (definition.Nodes.Count > 5000 || definition.Edges.Count > 10000 || definition.Resources.Count > 2000)
-            throw new InvalidDataException("地图超出本版 Web 显示预算（5000节点/10000道路/2000资源）。");
+        if (definition.Nodes.Count > 5000 || definition.Edges.Count > 10000 || definition.Resources.Count > 6000)
+            throw new InvalidDataException("地图超出本版 Web 显示预算（5000节点/10000道路/6000资源）。");
         var nodes = definition.Nodes.ToDictionary(n => n.Id, StringComparer.OrdinalIgnoreCase);
         var warnings = new List<string>();
         var edges = new List<object>();

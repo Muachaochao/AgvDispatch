@@ -63,6 +63,7 @@ export interface DispatchReport {
     id?: string;
     name?: string;
     rootName?: string;
+    simulationRate?: number;
     startedAt?: number;
     finishedAt?: number;
     status?: string;

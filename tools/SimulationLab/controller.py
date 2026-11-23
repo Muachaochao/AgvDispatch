@@ -178,11 +178,32 @@ def instance_keep_count():
 
 def _pid_alive(pid):
     try:
-        os.kill(int(pid), 0)
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    if os.name == 'nt':
+        # os.kill(pid, 0) can raise SystemError on Windows when a stale PID
+        # has been reused by a protected process. Probe the process handle
+        # instead; access denied still means the PID exists.
+        import ctypes
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        handle = kernel.OpenProcess(0x1000, False, pid)
+        if handle:
+            kernel.CloseHandle(handle)
+            return True
+        return ctypes.get_last_error() == 5
+    try:
+        os.kill(pid, 0)
         return True
     except PermissionError:
         return True
-    except (OSError, ValueError, TypeError):
+    except (OSError, ValueError, TypeError, SystemError):
         return False
 
 
@@ -213,7 +234,7 @@ def prune_instance_binaries(artifacts, keep=8, protect=()):
             write(path / 'pruned.json', dict(prunedAt=datetime.now(timezone.utc).isoformat(timespec='seconds'),
                 reason='retention: newest %d instances keep binaries; reports and evidence kept' % keep))
             removed.append(path.name)
-        except (OSError, ValueError):
+        except (OSError, ValueError, SystemError):
             continue
     return removed
 
@@ -1126,7 +1147,7 @@ class Runtime:
         if type(admission) is not int or not 0 <= admission <= 8:
             raise ValueError('下游准入数量须为0至8的整数，0表示不另行限流。')
         charging = self._validate_charging_priority(payload.get('chargingPriorityTest'), nodes, resources,
-                                                    {v['id'] for v in normalized_vehicles})
+                                                    normalized_vehicles)
         result = dict(name=payload.get('name') or navigation.get('name') or 'custom-simulation',
                     mapDefinition=navigation, stations=normalized_stations,
                     vehicles=normalized_vehicles, dumper=dict(dumpingSite=dumping, waitingSite=waiting, waitingSites=waiting_sites, resourceId=resource_id),
@@ -1137,7 +1158,7 @@ class Runtime:
         return result
 
     @classmethod
-    def _validate_charging_priority(cls, value, nodes, resources, vehicle_ids):
+    def _validate_charging_priority(cls, value, nodes, resources, vehicles):
         """Validate the optional charging-priority experiment (充电优先仿真验收 CP01).
 
         Absent or enabled=false keeps the original simulation behaviour.  Every
@@ -1148,17 +1169,38 @@ class Runtime:
         if value is None:
             return None
         if not isinstance(value, dict) or set(value) - {'enabled', 'startBatteryPercent', 'criticalBatteryPercent',
-                                                        'targetBatteryPercent', 'sites'}:
+                                                        'targetBatteryPercent', 'defaultStandbySiteId',
+                                                        'minimumAvailableVehicles', 'maximumVehiclesOutOfService',
+                                                        'preemptionReleaseBatteryPercent', 'sites'}:
             raise ValueError('充电优先实验字段无效。')
         if type(value.get('enabled')) is not bool:
             raise ValueError('充电优先实验须明确启用或停用。')
         if not value['enabled']:
             return None
+        vehicle_ids = {v['id'] for v in vehicles}
         start = value.get('startBatteryPercent', 25)
         critical = value.get('criticalBatteryPercent', 15)
         target = value.get('targetBatteryPercent', 80)
         if not all(cls._finite_number(v) for v in (start, critical, target)) or not 0 < critical < start < target <= 100:
             raise ValueError('充电阈值须满足0<严重低电<启动<退出≤100。')
+        release = value.get('preemptionReleaseBatteryPercent', min(50, target - 1))
+        if not cls._finite_number(release) or not critical < release < target:
+            raise ValueError('抢占放行电量须位于严重电量与目标电量之间。')
+        minimum = value.get('minimumAvailableVehicles', 0)
+        maximum = value.get('maximumVehiclesOutOfService', 0)
+        if any(type(v) is not int or v < 0 or v > len(vehicle_ids) for v in (minimum, maximum)):
+            raise ValueError('车队最少可用车数及同时离线车数上限须为0至车辆数之间的整数。')
+        if maximum and len(vehicle_ids) - maximum < minimum:
+            raise ValueError('同时离线车数上限会使可用车数低于车队最少可用车数。')
+        standby = value.get('defaultStandbySiteId', '')
+        if not isinstance(standby, str):
+            raise ValueError('充电返回待机点必须是节点ID。')
+        standby = standby.strip()
+        if standby:
+            node = nodes.get(standby)
+            if node is None or node.get('enabled', True) is not True or node.get('type') == 'ChargingPoint' or \
+                    node.get('allowTrafficStop') is not True:
+                raise ValueError('充电返回待机点必须是已启用、可停车的非充电节点。')
         sites = value.get('sites')
         if not isinstance(sites, list) or not 1 <= len(sites) <= 32:
             raise ValueError('启用充电优先实验时须配置1至32个充电位。')
@@ -1193,8 +1235,20 @@ class Runtime:
             ids.add(site_id.casefold()); points.add(point); bays.add(resource_id)
             normalized.append(dict(id=site_id, chargingSiteId=point, exitSiteId=exit_site,
                                    resourceId=resource_id, allowedVehicleIds=list(allowed)))
+        if standby and any(site['exitSiteId'] == standby or site['chargingSiteId'] == standby for site in normalized):
+            raise ValueError('充电返回待机点不能是充电出口或充电点。')
+        low_vehicles = [v for v in vehicles if v['batteryPercent'] <= start]
+        if len(low_vehicles) > len(normalized):
+            raise ValueError(
+                f'充电位容量不足：初始低电量车{len(low_vehicles)}辆，超过可用充电位{len(normalized)}个。')
+        unmatched = [v['id'] for v in low_vehicles
+                     if not any(v['id'] in site['allowedVehicleIds'] for site in normalized)]
+        if unmatched:
+            raise ValueError(f"充电位容量不足：低电量车{'、'.join(unmatched)}没有可用充电位。")
         return dict(enabled=True, startBatteryPercent=start, criticalBatteryPercent=critical,
-                    targetBatteryPercent=target, sites=normalized)
+                    targetBatteryPercent=target, defaultStandbySiteId=standby,
+                    minimumAvailableVehicles=minimum, maximumVehiclesOutOfService=maximum,
+                    preemptionReleaseBatteryPercent=release, sites=normalized)
 
     def _default_configuration(self, count):
         table = self._bound_plc_table()
@@ -1265,6 +1319,7 @@ class Runtime:
             raise ValueError('保存的PLC自动呼叫场景不能预先指定车辆；车辆由正式调度选择。')
         value = self.scheme_store.save(payload.get('name'), validated, scenario, payload.get('id'))
         self.scheme_store.remember(self.root, value['id'])
+        self.catalog_cache = (0, {})
         return self.status()
 
     def select_scheme(self, payload, start=False):
@@ -1352,6 +1407,7 @@ class Runtime:
                     self.startup_plan.update(status='failed', message=str(error))
             self.startup_thread = threading.Thread(target=after_start, daemon=True)
             self.startup_thread.start()
+        self.catalog_cache = (0, {})
         return self.status()
 
     def delete_scheme(self, payload):
@@ -1360,6 +1416,7 @@ class Runtime:
         if self.phase == 'running' or self.worker and self.worker.is_alive():
             raise ValueError('请先停止当前仿真，再删除保存方案。')
         self.scheme_store.delete(payload['id'])
+        self.catalog_cache = (0, {})
         return self.status()
 
     def new_instance(self, payload=None):
@@ -1472,9 +1529,33 @@ class Runtime:
             settings['TrafficSegmentRelease'] = dict(Enabled=True, CommitEnabled=True,
                 PollIntervalMs=250, MaximumStepsPerCycle=32, FrameWaitSeconds=1,
                 ReceiptValiditySeconds=15)
+            # Business-time freshness windows are compared against timestamps that
+            # advance on the shared simulation clock. At 8x one 1 s wall poll is
+            # already 8 business seconds old, so every unchanged production value
+            # (3-5 s) would look stale forever: no exit handover, no completed-step
+            # release and no charging observation could ever succeed. Scale only
+            # these freshness windows, never the wall-clock loop intervals.
+            rate = max(1.0, float(simulation_rate))
+            def scaled_freshness(seconds, ceiling):
+                return min(ceiling, max(int(seconds), int(math.ceil(seconds * rate))))
+            settings.setdefault('Map', {})['PositionStaleSeconds'] = scaled_freshness(5, 300)
+            settings.setdefault('HandshakeExecution', {})['StateMaxAgeSeconds'] = scaled_freshness(5, 60)
+            settings['HandshakeExecution'].setdefault('DumperExit', {})['MaximumAgeSeconds'] = scaled_freshness(3, 30)
+            settings.setdefault('Charging', {})['StateMaxAgeSeconds'] = scaled_freshness(5, 60)
+            # Both fields are validated to 2..30 by the service; 30 business
+            # seconds is 3.75 s wall time at 8x, far above one poll interval.
+            settings['TrafficSegmentRelease']['MaximumAgeSeconds'] = max(
+                15 if len(configuration['stations']) > 32 and len(robots) > 1 else 0,
+                scaled_freshness(5, 30))
+            settings['TrafficSegmentRelease']['ReceiptValiditySeconds'] = scaled_freshness(15, 30)
+            # R17: every V5 long corridor is expected to expose a safe stop at
+            # <=24 edges for the planned route families. Runtime staging and
+            # dumper-queue detours can still expose one 34-edge chain, so the
+            # simulation ceiling is 40: high enough to keep the legitimate route,
+            # still far below the 75-81 edge whole-route windows R17 exists to stop.
+            settings['DispatchTaskSteps'] = dict(settings.get('DispatchTaskSteps') or {},
+                                                  RollingWindowHardMaximumEdges=40)
             settings['Dispatching']['MaxConcurrentTasks'] = len(robots)
-            if len(configuration['stations']) > 32 and len(robots) > 1:
-                settings['TrafficSegmentRelease']['MaximumAgeSeconds'] = 15
             if release:
                 settings['DispatchOptimization'] = copy.deepcopy(release['options'])
             # Only loopback PLC calls enter the production creation coordinator.
@@ -1560,7 +1641,12 @@ class Runtime:
         settings['Charging'] = dict(settings.get('Charging') or {}, Enabled=True,
                                     StartBatteryPercent=charging['startBatteryPercent'],
                                     CriticalBatteryPercent=charging['criticalBatteryPercent'],
-                                    TargetBatteryPercent=charging['targetBatteryPercent'], Sites=sites)
+                                    TargetBatteryPercent=charging['targetBatteryPercent'],
+                                    DefaultStandbySiteId=charging['defaultStandbySiteId'],
+                                    MinimumAvailableVehicles=charging['minimumAvailableVehicles'],
+                                    MaximumVehiclesOutOfService=charging['maximumVehiclesOutOfService'],
+                                    PreemptionReleaseBatteryPercent=charging['preemptionReleaseBatteryPercent'],
+                                    Sites=sites)
         settings['RobokitCharging'] = dict(settings.get('RobokitCharging') or {}, RelayControlConfirmed=True,
                                            VehicleOtherApiPorts={r['VehicleId']: r['OtherApiPort'] for r in robots})
         settings['ChargerMonitoring'] = dict(settings.get('ChargerMonitoring') or {}, Enabled=False, Addresses=[])

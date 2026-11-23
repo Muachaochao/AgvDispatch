@@ -125,6 +125,9 @@ const downstreamAdmissionCapacity = ref(0);
 // 充电优先实验：可选；停用时创建的实例与原仿真完全一致。
 const chargingEnabled = ref(false);
 const chargingStart = ref(25), chargingCritical = ref(15), chargingTarget = ref(80);
+const chargingStandbySiteId = ref('');
+const chargingMinimumAvailableVehicles = ref(0), chargingMaximumVehiclesOutOfService = ref(0);
+const chargingPreemptionRelease = ref(50);
 const chargingSites = ref<SimulationChargingSiteConfiguration[]>([]);
 const inspectionSite = ref(''), dumperResourceId = ref('');
 const customVehicles = ref([
@@ -276,6 +279,9 @@ const extraWaitingOptions = computed(() => siteOptions.value.map(group => ({
   ...group, options: group.options.filter(option => option.value !== waitingSite.value && option.value !== dumpingSite.value),
 })).filter(group => group.options.length));
 const chargingPointOptions = computed(() => mapNodes.value.filter(node => node.type === 'ChargingPoint')
+  .map(node => ({ value: node.id, label: `${node.id}${node.agvSiteId && node.agvSiteId !== node.id ? ` · ${node.agvSiteId}` : ''}` })));
+const chargingStandbyOptions = computed(() => mapNodes.value.filter(node => node.enabled !== false &&
+  node.type !== 'ChargingPoint' && node.allowTrafficStop === true)
   .map(node => ({ value: node.id, label: `${node.id}${node.agvSiteId && node.agvSiteId !== node.id ? ` · ${node.agvSiteId}` : ''}` })));
 const chargingBayOptions = computed(() => (mapDefinition.value?.resources ?? []).filter(resource => resource.type === 'ChargingBay')
   .map(resource => ({ value: resource.id, label: `${resource.id} · 容量 ${resource.capacity ?? 1}` })));
@@ -1032,6 +1038,26 @@ const configurationProblems = computed(() => {
     if (![chargingStart.value, chargingCritical.value, chargingTarget.value].every(Number.isFinite) ||
       !(chargingCritical.value > 0 && chargingCritical.value < chargingStart.value && chargingStart.value < chargingTarget.value && chargingTarget.value <= 100))
       problems.push('充电阈值须满足 0 < 严重低电 < 启动 < 退出 ≤ 100。');
+    if (!Number.isInteger(chargingMinimumAvailableVehicles.value) || chargingMinimumAvailableVehicles.value < 0 ||
+      chargingMinimumAvailableVehicles.value > customVehicles.value.length)
+      problems.push('车队最少可用车数须为 0 至车辆数之间的整数。');
+    if (!Number.isInteger(chargingMaximumVehiclesOutOfService.value) || chargingMaximumVehiclesOutOfService.value < 0 ||
+      chargingMaximumVehiclesOutOfService.value > customVehicles.value.length)
+      problems.push('同时离线车数上限须为 0 至车辆数之间的整数。');
+    if (chargingMaximumVehiclesOutOfService.value &&
+      customVehicles.value.length - chargingMaximumVehiclesOutOfService.value < chargingMinimumAvailableVehicles.value)
+      problems.push('同时离线车数上限会使可用车数低于车队最少可用车数。');
+    if (!Number.isFinite(chargingPreemptionRelease.value) ||
+      !(chargingPreemptionRelease.value > chargingCritical.value && chargingPreemptionRelease.value < chargingTarget.value))
+      problems.push('抢占放行电量须位于严重低电与退出电量之间。');
+    if (chargingStandbySiteId.value) {
+      const standby = mapNodes.value.find(node => node.id === chargingStandbySiteId.value);
+      if (!standby || standby.enabled === false || standby.type === 'ChargingPoint' || standby.allowTrafficStop !== true)
+        problems.push('充电返回待机点须选择已启用、可停车的非充电节点。');
+      if (chargingSites.value.some(site => site.exitSiteId === chargingStandbySiteId.value ||
+        site.chargingSiteId === chargingStandbySiteId.value))
+        problems.push('充电返回待机点不能是充电出口或充电点。');
+    }
     if (chargingSites.value.length < 1) problems.push('启用充电优先实验时至少配置一个充电位。');
     const vehicleIds = new Set(customVehicles.value.map(vehicle => vehicle.id));
     chargingSites.value.forEach((site, index) => {
@@ -1309,6 +1335,10 @@ function configurationDraft(): SimulationConfigureRequest | null {
     downstreamAdmissionCapacity: downstreamAdmissionCapacity.value,
     ...(chargingEnabled.value ? { chargingPriorityTest: { enabled: true, startBatteryPercent: chargingStart.value,
       criticalBatteryPercent: chargingCritical.value, targetBatteryPercent: chargingTarget.value,
+      defaultStandbySiteId: chargingStandbySiteId.value.trim(),
+      minimumAvailableVehicles: chargingMinimumAvailableVehicles.value,
+      maximumVehiclesOutOfService: chargingMaximumVehiclesOutOfService.value,
+      preemptionReleaseBatteryPercent: chargingPreemptionRelease.value,
       sites: chargingSites.value.map(site => ({ ...site, allowedVehicleIds: [...site.allowedVehicleIds] })) } } : {}),
     plcSignalTable: { ...plcTableMetadata.value, csvText: plcTableText.value },
     mapIdentity: mapIdentityDraft.value
@@ -1581,6 +1611,10 @@ function accept(next: SimulationStatus) {
     chargingEnabled.value = !!charging?.enabled;
     chargingStart.value = charging?.startBatteryPercent ?? 25; chargingCritical.value = charging?.criticalBatteryPercent ?? 15;
     chargingTarget.value = charging?.targetBatteryPercent ?? 80;
+    chargingStandbySiteId.value = charging?.defaultStandbySiteId ?? '';
+    chargingMinimumAvailableVehicles.value = charging?.minimumAvailableVehicles ?? 0;
+    chargingMaximumVehiclesOutOfService.value = charging?.maximumVehiclesOutOfService ?? 0;
+    chargingPreemptionRelease.value = charging?.preemptionReleaseBatteryPercent ?? 50;
     chargingSites.value = (charging?.sites ?? []).map(site => ({ ...site, allowedVehicleIds: [...site.allowedVehicleIds] }));
     const boundTable = next.configuration.plcSignalTable ?? next.plcSignalTable ?? null;
     if (boundTable) {
@@ -2281,6 +2315,12 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
                 <label>启动充电 / %<input v-model.number="chargingStart" type="number" min="1" max="99" step="1" /><small>电量不高于此值时排队并停止接新单。</small></label>
                 <label>严重低电 / %<input v-model.number="chargingCritical" type="number" min="1" max="99" step="1" /><small>任何情况下都不再接新业务。</small></label>
                 <label>退出电量 / %<input v-model.number="chargingTarget" type="number" min="2" max="100" step="1" /><small>达到后发送 6005 停止、电流归零再驶离。</small></label>
+              </div>
+              <div class="form-row">
+                <label>充电返回待机点<ElSelectV2 v-model="chargingStandbySiteId" :options="chargingStandbyOptions" :disabled="configurationLocked" :teleported="false" class="topology-select" filterable clearable /><small>充满后驶离的专用待机点，不能是充电点或充电出口。</small></label>
+                <label>最少可用车数<input v-model.number="chargingMinimumAvailableVehicles" type="number" min="0" step="1" /><small>低于此数时，非严重低电车辆继续留岗。</small></label>
+                <label>同时离线上限<input v-model.number="chargingMaximumVehiclesOutOfService" type="number" min="0" step="1" /><small>0 表示只受最少可用车数限制。</small></label>
+                <label>抢占放行 / %<input v-model.number="chargingPreemptionRelease" type="number" min="1" max="100" step="1" /><small>严重低电车等桩时，达到此电量的车可提前停充让位。</small></label>
               </div>
               <p class="charging-preview">按当前车辆电量，启动后进入充电队列的顺序：<b>{{ chargingQueuePreview.length ? chargingQueuePreview.join(' → ') : '无（所有车辆高于启动阈值）' }}</b></p>
               <div v-for="(site, index) in chargingSites" :key="index" class="vehicle-config-row charging-site-row">

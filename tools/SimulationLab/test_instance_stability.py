@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 import controller
 from controller import configuration_fingerprint, overlapping_edges, prune_instance_binaries
@@ -109,6 +110,21 @@ class InstanceStabilityTests(unittest.TestCase):
         self.assertTrue((roots[0] / 'pruned.json').exists())
         for kept in roots[1:]:
             self.assertTrue((kept / 'service').exists(), kept.name)
+
+    def test_prune_survives_windows_pid_probe_systemerror(self):
+        roots = []
+        for index in range(2):
+            root = self.root('probe-%d' % index)
+            stamp = time.time() - 100 + index * 10
+            os.utime(root / 'lab.json', (stamp, stamp))
+            roots.append(root)
+        (roots[0] / 'processes.json').write_text(
+            json.dumps([dict(Id=999999, Path='x')]), encoding='utf-8')
+        with patch.object(controller, '_pid_alive',
+                          side_effect=SystemError("<class 'OSError'> returned a result with an exception set")):
+            removed = prune_instance_binaries(self.workspace / 'artifacts', keep=1)
+        self.assertEqual(removed, [])
+        self.assertTrue((roots[0] / 'service').exists())
 
 
 
