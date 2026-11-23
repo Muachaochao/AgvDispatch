@@ -478,7 +478,8 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
     // PLC back; a value that still differs is rewritten a bounded number of times, then escalated.
     private static readonly TimeSpan PendingWriteReadbackWait=TimeSpan.FromSeconds(2);
     private const int MaximumPendingWriteRewrites=3;
-    private readonly Dictionary<string,(int Rewrites,DateTimeOffset LastWriteAt)> _pendingWrites=new(StringComparer.Ordinal);
+    // Exit and entry cycles may run on different threads; this map is updated concurrently.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string,(int Rewrites,DateTimeOffset LastWriteAt)> _pendingWrites=new(StringComparer.Ordinal);
     private async Task<bool> ResolvePendingWriteAsync(HandshakeCheckpoint checkpoint,CancellationToken ct)
     {
         var pending=checkpoint.PendingSignal!;var split=pending.IndexOf('/');
@@ -486,7 +487,7 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
         var key=checkpoint.TaskId+"|"+checkpoint.StepId;
         if(signals.TryGet(station,signal,out var observed)&&observed.Quality==SignalQuality.Good&&observed.Value==target)
         {
-            _pendingWrites.Remove(key);
+            _pendingWrites.TryRemove(key,out _);
             await store.MoveAsync(checkpoint,checkpoint.NextPhase!,"写入结果已回读等于目标值；读回不等于PLC业务接收。",null,null,null,ct);
             return true;
         }
