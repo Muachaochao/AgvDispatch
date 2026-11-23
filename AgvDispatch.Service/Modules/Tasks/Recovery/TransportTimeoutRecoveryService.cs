@@ -410,17 +410,19 @@ public sealed class TransportTimeoutRecoveryService(
             if (route is null || !MapRouteSiteMapper.IsSameSequence(map.Definition,
                     route.Nodes, storedCandidate))
                 return new(false, "新路线资源、道路或地图复核未通过，请重新读取。", Snapshot(row));
-            var reservation = await traffic.TryAcquireAsync(row.StepId, row.TaskId, row.VehicleId,
-                route.ResourceIds, cancellationToken);
-            if (!reservation.Acquired)
-                return new(false, $"新路线等待公共资源 {reservation.BlockingResourceId}，尚未发送。", Snapshot(row));
-
+            // PLC and handshake evidence is checked before any route lease is taken.
+            // A failed check must not leave this task holding an extra candidate route.
             var stepWork = new DispatchTaskStepWorkItem(task.TaskId, task.StationId, row.VehicleId,
                 (DispatchTaskStage)task.Stage, step.StepId, step.Sequence,
                 (DispatchTaskStepType)step.StepType, (DispatchTaskStepStatus)step.Status,
                 step.SourceSite, step.DestinationSite, new DateTimeOffset(step.UpdatedAt));
             if (await ValidateRecoveryPlcAsync(stepWork, step, cancellationToken) is { } plcError)
                 return new(false, plcError, Snapshot(row));
+
+            var reservation = await traffic.TryAcquireAsync(row.StepId, row.TaskId, row.VehicleId,
+                route.ResourceIds, cancellationToken);
+            if (!reservation.Acquired)
+                return new(false, $"新路线等待公共资源 {reservation.BlockingResourceId}，尚未发送。", Snapshot(row));
 
             var newRoot = "TIMEOUTRECOVERY-" + Guid.NewGuid().ToString("N");
             row.State = "Sending";
