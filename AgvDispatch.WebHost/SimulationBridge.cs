@@ -14,7 +14,8 @@ public sealed class SimulationBridge : IAsyncDisposable
     private readonly SemaphoreSlim gate = new(1, 1);
     private readonly HttpClient client;
     private readonly string token = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
-    private readonly string? root, python, controller;
+    private readonly string? root, artifacts, python, controller;
+    private readonly bool autoDiscoverLatest;
     private readonly int port;
     private Process? process;
     private bool disposed;
@@ -27,7 +28,6 @@ public sealed class SimulationBridge : IAsyncDisposable
         client = new HttpClient(new SocketsHttpHandler { AllowAutoRedirect = false, UseProxy = false })
             { Timeout = Timeout.InfiniteTimeSpan };
         if (!Enabled) return;
-        root = RequiredAbsolute(configuration, "Root");
         python = RequiredAbsolute(configuration, "PythonPath");
         controller = RequiredAbsolute(configuration, "ControllerPath");
         port = configuration.GetValue("Web:Simulation:Port", 0);
@@ -39,15 +39,77 @@ public sealed class SimulationBridge : IAsyncDisposable
             !tool.Name.Equals("SimulationLab", StringComparison.OrdinalIgnoreCase) ||
             tool.Parent?.Name.Equals("tools", StringComparison.OrdinalIgnoreCase) != true)
             throw new ArgumentException("仿真控制器必须是工程tools/SimulationLab/controller.py。");
-        var artifacts = Path.Combine(tool.Parent.Parent!.FullName, "artifacts");
+        autoDiscoverLatest = configuration.GetValue("Web:Simulation:AutoDiscoverLatest", false);
+        var expectedArtifacts = Path.GetFullPath(Path.Combine(tool.Parent.Parent!.FullName, "artifacts"));
+        if (autoDiscoverLatest)
+        {
+            artifacts = RequiredAbsolute(configuration, "ArtifactsPath");
+            if (!string.Equals(artifacts, expectedArtifacts, StringComparison.OrdinalIgnoreCase) || !Directory.Exists(artifacts))
+                throw new ArgumentException("Web:Simulation:ArtifactsPath必须是当前工程artifacts目录。");
+            var configuredRoot = configuration["Web:Simulation:Root"];
+            root = string.IsNullOrWhiteSpace(configuredRoot) ? null : ValidateRoot(configuredRoot, artifacts);
+        }
+        else
+        {
+            root = RequiredAbsolute(configuration, "Root");
+            artifacts = Path.GetDirectoryName(root) ?? throw new ArgumentException("仿真目录没有父目录。");
+            if (!string.Equals(Path.GetFullPath(artifacts), expectedArtifacts, StringComparison.OrdinalIgnoreCase))
+                throw new ArgumentException("仿真目录必须是当前工程artifacts下的独立实验目录。");
+            ValidateRoot(root, artifacts);
+        }
+        // Resolve lexical containment above and reject junction/symlink redirection in existing ancestors.
+        foreach (var path in new[] { root, artifacts, controller, python }.Where(value => value is not null).Cast<string>())
+            RejectReparseAncestors(path);
+        client.BaseAddress = new Uri($"http://127.0.0.1:{port}");
+        client.DefaultRequestHeaders.Add("X-Simulation-Token", token);
+    }
+
+    private static string ValidateRoot(string candidate, string artifacts)
+    {
+        if (string.IsNullOrWhiteSpace(candidate) || !Path.IsPathFullyQualified(candidate))
+            throw new ArgumentException("Web:Simulation:Root必须为明确的绝对路径。");
+        var root = Path.GetFullPath(candidate);
         var relative = Path.GetRelativePath(artifacts, root);
         if (relative.Contains(Path.DirectorySeparatorChar) || relative.Contains(Path.AltDirectorySeparatorChar) ||
             !relative.StartsWith("web-single-vehicle-", StringComparison.OrdinalIgnoreCase))
             throw new ArgumentException("仿真目录必须是当前工程artifacts下独立的web-single-vehicle-*实验目录。");
-        // Resolve lexical containment above and reject junction/symlink redirection in existing ancestors.
-        foreach (var path in new[] { root, controller, python }) RejectReparseAncestors(path);
-        client.BaseAddress = new Uri($"http://127.0.0.1:{port}");
-        client.DefaultRequestHeaders.Add("X-Simulation-Token", token);
+        if (!Directory.Exists(root))
+            throw new ArgumentException("仿真目录不存在。");
+        return root;
+    }
+
+    private string DiscoverLatestRoot()
+    {
+        if (artifacts is null || !Directory.Exists(artifacts))
+            throw new InvalidOperationException("仿真artifacts目录不存在。");
+        var candidates = Directory.EnumerateDirectories(artifacts, "web-single-vehicle-*", SearchOption.TopDirectoryOnly)
+            .Select(path => new DirectoryInfo(path))
+            .Where(directory => !directory.Name.Contains("template", StringComparison.OrdinalIgnoreCase))
+            .Select(directory => new
+            {
+                Directory = directory,
+                ObservedAt = File.Exists(Path.Combine(directory.FullName, "lab.json"))
+                    ? File.GetLastWriteTimeUtc(Path.Combine(directory.FullName, "lab.json"))
+                    : directory.LastWriteTimeUtc
+            })
+            .OrderByDescending(candidate => candidate.ObservedAt)
+            .ThenByDescending(candidate => candidate.Directory.Name, StringComparer.Ordinal);
+        foreach (var candidate in candidates)
+        {
+            try
+            {
+                var selected = ValidateRoot(candidate.Directory.FullName, artifacts);
+                if (new[]
+                    {
+                        "lab.json", "navigation.agvmap.json",
+                        Path.Combine("service", "AgvDispatch.Service.exe"),
+                        Path.Combine("webhost", "AgvDispatch.WebHost.exe")
+                    }.All(relative => File.Exists(Path.Combine(selected, relative))))
+                    return selected;
+            }
+            catch (ArgumentException) { }
+        }
+        throw new InvalidOperationException("未找到可用的最新仿真实例；请先在仿真中心创建实例。");
     }
 
     public async Task<IResult> ForwardAsync(HttpMethod method, string path, string? body, CancellationToken ct)
@@ -68,7 +130,7 @@ public sealed class SimulationBridge : IAsyncDisposable
             // Instance preparation copies and verifies the isolated runtime binaries.
             var preparesInstance = method == HttpMethod.Post &&
                 path is "/new-instance" or "/configure" or "/scheme-select" or "/scheme-start";
-            timeout.CancelAfter(TimeSpan.FromSeconds(preparesInstance ? 120 : 45));
+            timeout.CancelAfter(TimeSpan.FromSeconds(preparesInstance ? 300 : 45));
             using var request = new HttpRequestMessage(method, path);
             if (body is not null) request.Content = new StringContent(body, Encoding.UTF8, "application/json");
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
@@ -167,7 +229,8 @@ public sealed class SimulationBridge : IAsyncDisposable
             RedirectStandardOutput = true, RedirectStandardError = true,
             WorkingDirectory = Path.GetDirectoryName(controller!)!
         };
-        foreach (var value in new[] { controller!, "--root", root!, "--port", port.ToString(System.Globalization.CultureInfo.InvariantCulture) })
+        var activeRoot = root ?? DiscoverLatestRoot();
+        foreach (var value in new[] { controller!, "--root", activeRoot, "--port", port.ToString(System.Globalization.CultureInfo.InvariantCulture) })
             info.ArgumentList.Add(value);
         info.Environment["AGV_SIMULATION_TOKEN"] = token;
         diagnostics.Clear();

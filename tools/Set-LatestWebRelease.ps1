@@ -72,8 +72,17 @@ $latestFleetDirectory=Join-Path $latestRoot '高级工具\多车联调'
 $latestFleetText=New-FleetLaunchEntryText -Selection $latestFleetSelection `
     -LauncherEntryName '..\..\启动最新版Web.cmd' -EntryName '启动多车联调Web.cmd'
 [IO.File]::WriteAllText((Join-Path $latestFleetDirectory '启动多车联调Web.cmd'),$latestFleetText,[Text.UTF8Encoding]::new($false))
-@{releaseId=$latestManifest.releaseId;directory=$latestRelative;url="http://127.0.0.1:$($latestManifest.port)/";configurationMigrated=[bool]$latestManifest.siteConfigurationImported;
-    productionDispatch=[bool]$latestProductionSelection.Enabled;maxConcurrentTasks=$latestProductionSelection.MaxConcurrentTasks} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $latestRoot '最新版Web.json') -Encoding utf8
+$latestSettings=[ordered]@{releaseId=$latestManifest.releaseId;directory=$latestRelative;url="http://127.0.0.1:$($latestManifest.port)/";configurationMigrated=[bool]$latestManifest.siteConfigurationImported;
+    productionDispatch=[bool]$latestProductionSelection.Enabled;maxConcurrentTasks=$latestProductionSelection.MaxConcurrentTasks}
+if($latestPrevious -and $latestPrevious.PSObject.Properties.Name -contains 'simulation'){
+    $latestSettings.simulation=$latestPrevious.simulation
+}
+if($latestPrevious -and $latestPrevious.PSObject.Properties.Name -contains 'paiceSimulation'){
+    $latestPaice=$latestPrevious.paiceSimulation | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+    $latestPaice.simulationSource="http://127.0.0.1:$($latestManifest.port)/"
+    $latestSettings.paiceSimulation=$latestPaice
+}
+$latestSettings | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $latestRoot '最新版Web.json') -Encoding utf8
 $latestGuide=@"
 # Web 启动说明
 
