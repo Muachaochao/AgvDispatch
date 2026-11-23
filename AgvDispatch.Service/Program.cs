@@ -450,6 +450,9 @@ if (trafficSecurityOptions.ApprovalTimeoutMinutes is < 1 or > 1440)
     throw new InvalidOperationException("Security:ApprovalTimeoutMinutes必须在1到1440之间。");
 }
 builder.Services.AddSingleton(trafficSecurityOptions);
+// Roles are resolved from Security:Users; the pipe grants only what a configured role allows.
+builder.Services.AddSingleton<AgvDispatch.Application.Abstractions.ITrafficAuthorizationService>(_ =>
+    new ConfiguredTrafficAuthorizationService(trafficSecurityOptions));
 builder.Services.AddSingleton<NamedPipeDiagnostics>();
 builder.Services.AddSingleton<ISystemStatusSnapshotService, SystemStatusSnapshotService>();
 builder.Services.AddSingleton<IDeviceMonitoringService, DeviceMonitoringService>();

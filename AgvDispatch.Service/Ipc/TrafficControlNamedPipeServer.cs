@@ -11,6 +11,7 @@ namespace AgvDispatch.Service;
 public sealed class TrafficControlNamedPipeServer(
     ILogger<TrafficControlNamedPipeServer> logger,
     TrafficSecurityOptions options,
+    ITrafficAuthorizationService authorization,
     IDatabaseInitializer database,
     ITrafficResourceControlService resources,
     ITrafficFlowMonitor trafficFlow,
@@ -116,22 +117,18 @@ public sealed class TrafficControlNamedPipeServer(
     private NamedPipeServerStream CreateServerPipe()
     {
         var security = new PipeSecurity();
-        // Additional instances need CreateNewInstance; ReadWrite alone is insufficient
-        // for a non-administrator service owner.
+        // Only the service account and the configured operators group may connect. Additional instances
+        // need CreateNewInstance; ReadWrite alone is insufficient.
         security.AddAccessRule(new PipeAccessRule(WindowsIdentity.GetCurrent().User!,
             PipeAccessRights.FullControl, AccessControlType.Allow));
+        if (ResolveOperatorGroup(options.OperatorGroup) is { } operators)
+            security.AddAccessRule(new PipeAccessRule(operators,
+                PipeAccessRights.ReadWrite | PipeAccessRights.CreateNewInstance, AccessControlType.Allow));
+        // Denied explicitly so a network logon cannot reach the pipe through \\host\pipe\.
         security.AddAccessRule(new PipeAccessRule(
-            new SecurityIdentifier(WellKnownSidType.AuthenticatedUserSid, null),
-            PipeAccessRights.ReadWrite,
-            AccessControlType.Allow));
-        security.AddAccessRule(new PipeAccessRule(
-            new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
+            new SecurityIdentifier(WellKnownSidType.NetworkSid, null),
             PipeAccessRights.FullControl,
-            AccessControlType.Allow));
-        security.AddAccessRule(new PipeAccessRule(
-            new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null),
-            PipeAccessRights.FullControl,
-            AccessControlType.Allow));
+            AccessControlType.Deny));
         return NamedPipeServerStreamAcl.Create(
             options.PipeName,
             PipeDirection.InOut,
@@ -141,6 +138,16 @@ public sealed class TrafficControlNamedPipeServer(
             0,
             0,
             security);
+    }
+
+    private static SecurityIdentifier? ResolveOperatorGroup(string configured)
+    {
+        var value = configured.Trim();
+        if (value.Length == 0) return null;
+        // A configured value that cannot be resolved fails when the pipe is created, not silently.
+        return value.StartsWith("S-1-", StringComparison.OrdinalIgnoreCase)
+            ? new SecurityIdentifier(value)
+            : (SecurityIdentifier)new NTAccount(value).Translate(typeof(SecurityIdentifier));
     }
 
     private async Task HandleConnectionAsync(NamedPipeServerStream pipe, CancellationToken cancellationToken)
@@ -162,8 +169,8 @@ public sealed class TrafficControlNamedPipeServer(
                 requestId = parsedId.ToString("N");
             // Windows only exposes the client token after at least one read from the pipe.
             identityName = pipe.GetImpersonationUserName();
-            // No software login or role separation. Keep the OS identity only for operation auditing.
-            var user = TrafficUserContext.LocalOperation(identityName);
+            // Roles come from configuration (Security:Users). Unlisted accounts get view-only access.
+            var user = authorization.Resolve(identityName);
             if (!operation.StartsWith("Get", StringComparison.Ordinal))
                 logger.LogInformation("交通控制请求开始。Identity={Identity}, Operation={Operation}, RequestId={RequestId}",
                     identityName, operation, requestId);
