@@ -29,6 +29,7 @@ try
     await CancelPendingOrchestratorAsync(directory);
     await MidRoadStopIsReportedAsync(directory);
     await NoRouteNeverFreezesBeforeCancelAsync(directory);
+    await AcceleratedRateStopEvidenceAsync(directory);
     Console.WriteLine($"PASS: {checks} round-7 obstacle recovery checks; isolated database and synthetic gateway only.");
 }
 finally
@@ -110,6 +111,29 @@ async Task NoRouteNeverFreezesBeforeCancelAsync(string root)
     Check(row.State == ObstacleRecoveryStates.Recovered &&
           task.Stage == (int)DispatchTaskStage.GoingToPickup && h.Gateway.CancelCalls == 0,
         "障碍清除后记录关闭，原导航仍在执行，任务不被冻结或取消");
+}
+
+// O4: stop evidence must not depend on the coordinator's wall-clock poll cadence.
+// At an accelerated simulation rate the telemetry frames are many seconds apart in
+// business time; consecutive stationary frames must still complete the evidence.
+async Task AcceleratedRateStopEvidenceAsync(string root)
+{
+    var start = new DateTimeOffset(2026, 11, 7, 2, 0, 0, TimeSpan.Zero);
+    var h = await ObstacleHarnessFactory.BuildAsync(root, "o4", ObstacleHarnessFactory.StationGraph(true),
+        start, "TASK-O4", "STEP-O4");
+    h.States.ApplyTelemetry("A", ObstacleHarnessFactory.Telemetry(start, blocked: true), TimeSpan.Zero);
+    await h.Coordinator.ObserveOnceAsync(default);
+    for (var second = 8; second <= 128; second += 8)
+    {
+        h.Clock.SetTo(start.AddSeconds(second));
+        h.States.ApplyTelemetry("A", ObstacleHarnessFactory.Telemetry(h.Clock.GetUtcNow(), blocked: true), TimeSpan.Zero);
+        await h.Coordinator.ObserveOnceAsync(default);
+    }
+    var row = RecoveryRow(h.Db, "TASK-O4");
+    Check(h.Gateway.CancelCalls == 1 && row.CancelRequestedAtUtc == start.AddSeconds(120).UtcDateTime,
+        "遥测每8秒一帧（业务时间，类似8倍速）时停稳证据仍成立，并在120秒取消一次");
+    Check(row.State == ObstacleRecoveryStates.AwaitingOriginalTerminal && h.Gateway.RecoverySendCalls == 0,
+        "取消后停稳证据被清空，替代路线仍须在原链终态后重新累计");
 }
 
 static ObstacleRecoveryEntity RecoveryRow(ISqlSugarClient db, string taskId) =>

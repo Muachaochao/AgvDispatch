@@ -1185,7 +1185,7 @@ public sealed class ObstacleRecoveryCoordinator(
             envelope.RadiusFromReportedReferenceMeters <= 0)
             return "缺少已标定且包含最大载箱尺寸的车辆包络。";
         var stopKey = $"RETREAT|{retreat.BlockedSource}|{retreat.BlockedTarget}|{retreat.TargetSite}";
-        if (!StableStopped(row, stopKey, robot.LastSuccessfulPollAt, _clock.GetUtcNow()))
+        if (!StableStopped(row, stopKey, _clock.GetUtcNow()))
             return StableStopReason(row, options.StableStopObservationMs);
         return await timeoutRecovery.ValidateReplacementPreconditionsAsync(
             row.TaskId, row.StepId, cancellationToken);
@@ -1489,16 +1489,25 @@ public sealed class ObstacleRecoveryCoordinator(
         if (envelope is null || !envelope.CalibrationVerified || !envelope.IncludesMaximumPermittedLoad ||
             envelope.RadiusFromReportedReferenceMeters <= 0)
             return "缺少已标定且包含最大载箱尺寸的车辆包络。";
-        if (!StableStopped(row, robot.CurrentStation, robot.LastSuccessfulPollAt, _clock.GetUtcNow()))
+        if (!StableStopped(row, robot.CurrentStation, _clock.GetUtcNow()))
             return StableStopReason(row, options.StableStopObservationMs);
         return await timeoutRecovery.ValidateReplacementPreconditionsAsync(
             row.TaskId, row.StepId, cancellationToken);
     }
 
-    private bool StableStopped(ObstacleRecoveryEntity row, string? key,
-        DateTimeOffset? observedAt, DateTimeOffset now)
+    // Stop evidence is read from the state cache, not from the coordinator's
+    // wall-clock poll cadence. The newest fresh, stationary frame starts or extends
+    // a run. A run continues only while the cache's previous frame lies at or after
+    // the last counted frame and is itself fresh, consecutive and stationary, so a
+    // gap or a moving frame restarts it. Spacing is on the telemetry timeline, so a
+    // simulation rate scales frames and window alike. The run counts as stopped after
+    // two counted frames spanning at least the observation window.
+    private bool StableStopped(ObstacleRecoveryEntity row, string? key, DateTimeOffset now)
     {
-        if (string.IsNullOrWhiteSpace(key) || observedAt is not { } observed || observed > now)
+        var consecutive = vehicles.TryGetConsecutiveTelemetry(row.VehicleId, out var previous, out var latest);
+        if (string.IsNullOrWhiteSpace(key) || latest is null ||
+            latest.LastSuccessfulPollAt is not { } later || later > now ||
+            !StationaryWithGoodPosition(latest))
         {
             ClearStableStop(row);
             return false;
@@ -1506,41 +1515,39 @@ public sealed class ObstacleRecoveryCoordinator(
         var last = row.StableStopLastObservedAtUtc is { } lastValue
             ? new DateTimeOffset(DateTime.SpecifyKind(lastValue, DateTimeKind.Utc))
             : (DateTimeOffset?)null;
-        if (row.StableStopSinceUtc is null || last is null ||
-            !string.Equals(row.StableStopKey, key, StringComparison.OrdinalIgnoreCase) ||
-            observed < last || now < last ||
-            observed - last > TimeSpan.FromMilliseconds(Math.Max(
-                options.PollIntervalMs * 3, options.StableStopObservationMs * 2)))
+        var since = row.StableStopSinceUtc is { } sinceValue
+            ? new DateTimeOffset(DateTime.SpecifyKind(sinceValue, DateTimeKind.Utc))
+            : (DateTimeOffset?)null;
+        var sameRun = since is not null && last is not null &&
+                      string.Equals(row.StableStopKey, key, StringComparison.OrdinalIgnoreCase);
+        var window = TimeSpan.FromMilliseconds(options.StableStopObservationMs);
+        // Re-reading a counted frame adds no evidence.
+        if (sameRun && later == last)
+            return row.StableStopSamples >= 2 && later - since!.Value >= window;
+        var contiguous = consecutive && sameRun && previous is not null &&
+                         previous.LastSuccessfulPollAt is { } earlier &&
+                         StationaryWithGoodPosition(previous) && earlier >= last!.Value && earlier < later;
+        if (!contiguous)
         {
             row.StableStopKey = key;
-            row.StableStopSinceUtc = observed.UtcDateTime;
-            row.StableStopLastObservedAtUtc = observed.UtcDateTime;
+            row.StableStopSinceUtc = later.UtcDateTime;
+            row.StableStopLastObservedAtUtc = later.UtcDateTime;
             row.StableStopSamples = 1;
             return false;
         }
-        // Re-reading a cached poll is not a new observation.
-        if (observed == last)
-            return false;
-        row.StableStopLastObservedAtUtc = observed.UtcDateTime;
+        row.StableStopLastObservedAtUtc = later.UtcDateTime;
         if (row.StableStopSamples < int.MaxValue)
             row.StableStopSamples++;
-        var since = new DateTimeOffset(
-            DateTime.SpecifyKind(row.StableStopSinceUtc.Value, DateTimeKind.Utc));
-        var requiredSamples = Math.Max(2,
-            (int)Math.Ceiling(options.StableStopObservationMs / (double)options.PollIntervalMs) + 1);
-        return observed - since >= TimeSpan.FromMilliseconds(options.StableStopObservationMs) &&
-               row.StableStopSamples >= requiredSamples;
+        return row.StableStopSamples >= 2 && later - since!.Value >= window;
     }
 
     private string StableStopReason(ObstacleRecoveryEntity row, int targetMilliseconds)
     {
-        var since = row.StableStopSinceUtc is { } value
-            ? new DateTimeOffset(DateTime.SpecifyKind(value, DateTimeKind.Utc))
-            : _clock.GetUtcNow();
+        if (row.StableStopSinceUtc is not { } value)
+            return $"尚未取得连续新鲜且静止的车端遥测，停稳观察需不少于{targetMilliseconds}毫秒（业务时钟）。";
+        var since = new DateTimeOffset(DateTime.SpecifyKind(value, DateTimeKind.Utc));
         var elapsed = Math.Max(0, (_clock.GetUtcNow() - since).TotalMilliseconds);
-        var requiredSamples = Math.Max(2,
-            (int)Math.Ceiling(targetMilliseconds / (double)options.PollIntervalMs) + 1);
-        return $"停稳观察{elapsed:0}毫秒，已取得{row.StableStopSamples}/{requiredSamples}个连续样本。";
+        return $"停稳观察{elapsed:0}毫秒（业务时钟，已取得{row.StableStopSamples}个连续遥测帧），需不少于{targetMilliseconds}毫秒。";
     }
 
     private static void ClearStableStop(ObstacleRecoveryEntity row)
