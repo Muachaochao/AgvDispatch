@@ -237,6 +237,12 @@ public sealed partial class DispatchTaskOrchestrator
         using var execution = await executionGate.EnterAsync(MapExecutionOperation.NewWork, ct);
         if (execution is null || !ContextCurrent())
             return Reject("safety", "运行地图、倒料配置、派车策略或新增派车门禁已变化。");
+        // Predecessors are rechecked under the new-work lease: a window selected before a predecessor completed
+        // must not be committed against a stale dependency snapshot.
+        if (task.DependsOnTaskIds.Count > 0 &&
+            !DispatchQueueWindowService.DependenciesComplete(task, (await tasks.GetTaskDependencyStatesAsync(task.DependsOnTaskIds.ToArray(), ct))
+                .ToDictionary(state => state.TaskId, StringComparer.OrdinalIgnoreCase)))
+            return Reject("queue", "前置任务尚未完成，本单保持等待，不预占车辆或路权。");
         var admissionState = await outbox.GetPickupAdmissionAsync(task.TaskId, ct);
         if (!admissionState.Allowed)
         {
