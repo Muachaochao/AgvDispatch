@@ -157,6 +157,7 @@ class Runtime:
         self.equipment_model = None
         self.scheme_store = scheme_store
         self.history_cache = (0, [])
+        self.catalog_cache = (0, {})
         self.guidance_cache = (0, [])
         self.recovery_cache = (0, {})
         self.plc_table_cache = None
@@ -405,7 +406,7 @@ class Runtime:
             updatedAt=timestamp) for item in summary if item.get('taskId')]
 
     def status(self):
-        from simulation_reports import history, guidance
+        from simulation_reports import guidance
         device = self.device()
         fresh = self._fresh_telemetry(device)
         with self.lock:
@@ -431,8 +432,6 @@ class Runtime:
             if self.phase == 'running':
                 try: recovery = self.api('/api/recovery')
                 except Exception as error: recovery = dict(error=str(error), items=[], released=False)
-            if now - self.history_cache[0] > 15:
-                self.history_cache = (now, history(self))
             if self.phase == 'running' and now-self.guidance_cache[0] > 4:
                 details = {}
                 for item in (recovery or {}).get('items', []):
@@ -456,6 +455,7 @@ class Runtime:
                     pass
                 self.guidance_cache = (now, guidance(details, device))
             plc_table = self._bound_plc_table()
+            catalog = self._catalog_payload(now)
             return dict(enabled=True, rootName=self.root.name, running=self.phase == 'running', phase=self.phase,
                         simulationRate=getattr(self, 'simulation_rate', 1),
                         simulationOriginUnixMs=round(getattr(self, 'clock', simulation_clock.CLOCK).origin_seconds * 1000),
@@ -466,12 +466,36 @@ class Runtime:
                         controls=self.controls, error=self.error, configuration=getattr(self, 'lab', {}).get('simulationConfiguration'), recovery=recovery,
                         protocol=self.protocol_status(),
                         equipment=self.equipment_status(),
-                        **(self.scheme_store.catalog() if getattr(self, 'scheme_store', None) else {}),
-                        stationCatalog=plc_table.get('stations', []), history=self.history_cache[1],
+                        **catalog,
+                        stationCatalog=plc_table.get('stations', []),
                         plcSignalTable=self._plc_table_metadata(plc_table),
                         recoveryGuidance=self.guidance_cache[1], startupPlan=self.startup_plan, startupChecks=getattr(self, 'startup_checks', []),
                         versionComparison=self.version_comparison.snapshot() if hasattr(self, 'version_comparison') else None,
                         message='回环设备仿真；合成模型不代表真实固件、机械及安全联锁验收。')
+
+    def _catalog_payload(self, now=None):
+        """Return the saved scheme and report catalog without rebuilding map metadata."""
+        from simulation_reports import history
+
+        now = now if now is not None else getattr(self, 'clock', simulation_clock.CLOCK).monotonic()
+        cached_at, cached = getattr(self, 'catalog_cache', (0, {}))
+        if now - cached_at <= 5 and cached:
+            return copy.deepcopy(cached)
+        history_cache = getattr(self, 'history_cache', (0, []))
+        if now - history_cache[0] > 15:
+            history_cache = (now, history(self))
+            self.history_cache = history_cache
+        store = getattr(self, 'scheme_store', None)
+        catalogue = store.catalog() if store is not None else {}
+        result = dict(
+            schemes=catalogue.get('schemes', []),
+            selectedSchemeId=catalogue.get('selectedSchemeId'),
+            recentInstances=catalogue.get('recentInstances', []),
+            persistenceMessage=catalogue.get('persistenceMessage'),
+            history=copy.deepcopy(history_cache[1]),
+        )
+        self.catalog_cache = (now, result)
+        return copy.deepcopy(result)
 
     def live_status(self):
         """Small read path for high-frequency map animation bridges.
@@ -485,6 +509,8 @@ class Runtime:
         device = self.device()
         scenario = self.scenario or {}
         with self.lock:
+            now = getattr(self, 'clock', simulation_clock.CLOCK).monotonic()
+            catalog = self._catalog_payload(now)
             return dict(
                 enabled=True,
                 rootName=self.root.name,
@@ -507,6 +533,7 @@ class Runtime:
                 ),
                 error=self.error,
                 startupChecks=getattr(self, 'startup_checks', []),
+                **catalog,
                 message='轻量实时状态；正式派车、PLC和路权仍由生产仿真后台负责。',
             )
 
