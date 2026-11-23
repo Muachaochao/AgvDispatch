@@ -186,7 +186,8 @@ public sealed class DispatchCandidateFilter(DispatchOrchestratorOptions options,
                     continue;
                 }
                 var battery = Math.Min(vehicle.BatteryPercent, agvStates.TryGet(vehicle.VehicleId, out var state) ? state.BatteryPercent ?? 0 : 0);
-                var sourceZone = policy.SiteZones.FirstOrDefault(p => p.Key.Equals(vehicle.CurrentStation, StringComparison.OrdinalIgnoreCase)).Value;
+                var sourceZone = policy.SiteZones.FirstOrDefault(p =>
+                    MapRouteSiteMapper.IsSameNode(definition, p.Key, vehicle.CurrentStation)).Value;
                 var estimate = EstimateRoute(route, map, policy);
                 // Compare only; the reference deliberately ignores temporary peers
                 // and leases and must never enter Plans, Outbox or reservations.
