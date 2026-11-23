@@ -332,7 +332,9 @@ internal static class Program
             DefinitionHash="",Revision=30,CreatedAt=now.AddMinutes(-2),UpdatedAt=now.AddSeconds(-1)})
             .ExecuteCommandAsync();
 
-        var options=new ObstacleRecoveryOptions();
+        // This lifecycle check asserts closure on a single fresh clear. The clear-confirmation
+        // window (ClearConfirmSeconds) is covered by ObstacleRecoveryRound7SmokeTest.
+        var options=new ObstacleRecoveryOptions{ClearConfirmSeconds=0};
         var cache=new AgvStateCache(Options("A"));
         cache.ApplyTelemetry("A",Telemetry(DateTimeOffset.UtcNow),TimeSpan.Zero);
         var store=new ObstacleRecoveryStore(db,options);

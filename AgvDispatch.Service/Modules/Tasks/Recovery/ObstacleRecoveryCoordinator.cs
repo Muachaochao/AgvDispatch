@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Domain.Agvs;
@@ -41,6 +42,19 @@ public sealed class ObstacleRecoveryCoordinator(
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private readonly TimeProvider _clock = clock ?? TimeProvider.System;
     private readonly SemaphoreSlim _cycle = new(1, 1);
+    // Retry state for pre-send rejections is kept in memory. A restart only makes the
+    // next attempt earlier; the persisted send intent has already been cleared.
+    private readonly ConcurrentDictionary<string, int> _sendRejections = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, DateTime> _sendRetryAfter = new(StringComparer.Ordinal);
+    // Per-record timing and isolation state. It lives in memory: a restart only makes
+    // the next observation start earlier, and never alters the persisted record.
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _lastFreshSeen = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _clearSince = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _routeWaitSince = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, RecordBackoff> _recordBackoff = new(StringComparer.Ordinal);
+    private sealed record RecordBackoff(int Failures, DateTimeOffset RetryAfter);
+    private ObstacleRecoveryPreSendLimits PreSendLimits => new(
+        options.MinimumLocalizationConfidence, options.StoppedVelocityToleranceMetersPerSecond);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -77,7 +91,8 @@ public sealed class ObstacleRecoveryCoordinator(
             {
                 if (!handledVehicles.Add(row.VehicleId)) continue;
                 if (!vehicles.TryGet(row.VehicleId, out var robot)) continue;
-                await ProcessRecoveryAsync(row, robot, now, cancellationToken);
+                await RunIsolatedAsync(row.RecoveryId, now,
+                    () => ProcessRecoveryAsync(row, robot, now, cancellationToken), cancellationToken);
             }
 
             var executing = await taskReader.GetExecutingTasksAsync(cancellationToken);
@@ -88,17 +103,48 @@ public sealed class ObstacleRecoveryCoordinator(
                          .Select(group => group.OrderBy(item => item.CreatedAt).First()))
             {
                 if (handledVehicles.Contains(task.VehicleId!)) continue;
-                if (!vehicles.TryGet(task.VehicleId!, out var robot) ||
-                    !FreshBlocked(robot, now)) continue;
-                var step = await FindExecutingTransportStepAsync(task, cancellationToken);
-                if (step is null) continue;
-                var row = await CreateRecoveryAsync(task, step, robot, now, cancellationToken);
-                if (row is null) continue;
-                handledVehicles.Add(row.VehicleId);
-                await ProcessRecoveryAsync(row, robot, now, cancellationToken);
+                await RunIsolatedAsync("create:" + task.TaskId, now, async () =>
+                {
+                    if (!vehicles.TryGet(task.VehicleId!, out var robot) ||
+                        !FreshBlocked(robot, now)) return;
+                    var step = await FindExecutingTransportStepAsync(task, cancellationToken);
+                    if (step is null) return;
+                    var row = await CreateRecoveryAsync(task, step, robot, now, cancellationToken);
+                    if (row is null) return;
+                    handledVehicles.Add(row.VehicleId);
+                    await ProcessRecoveryAsync(row, robot, now, cancellationToken);
+                }, cancellationToken);
             }
         }
         finally { _cycle.Release(); }
+    }
+
+    // A failure in one record or one task's creation is logged and backed off. Other
+    // records and vehicles are still observed in the same cycle. The persisted record
+    // is left as it was: no state change is made on the failure path.
+    private async Task RunIsolatedAsync(string key, DateTimeOffset now, Func<Task> work,
+        CancellationToken cancellationToken)
+    {
+        if (_recordBackoff.TryGetValue(key, out var backoff) && now < backoff.RetryAfter)
+            return;
+        try
+        {
+            await work();
+            _recordBackoff.TryRemove(key, out _);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception error)
+        {
+            var failures = (backoff?.Failures ?? 0) + 1;
+            var wait = TimeSpan.FromSeconds(Math.Min(60, Math.Pow(2, Math.Min(failures - 1, 6))));
+            _recordBackoff[key] = new RecordBackoff(failures, now + wait);
+            logger?.LogWarning(error,
+                "障碍恢复单条记录观察失败；原任务、载荷、PLC责任和路权保持不变，{Seconds}秒后隔离重试。Key={Key}",
+                wait.TotalSeconds, key);
+        }
     }
 
     private async Task<ObstacleRecoveryEntity?> CreateRecoveryAsync(
@@ -193,6 +239,7 @@ public sealed class ObstacleRecoveryCoordinator(
         // Interrupted or invalid telemetry cannot contribute to continuous stop evidence.
         if (!FreshTelemetry(robot, now) || !StationaryWithGoodPosition(robot))
             ClearStableStop(row);
+        RealignBlockedStartAfterGap(row, robot, now);
         var blockedSince = new DateTimeOffset(DateTime.SpecifyKind(row.BlockedSinceUtc, DateTimeKind.Utc));
         var elapsed = Math.Max(0, (now - blockedSince).TotalSeconds);
         var originalPath = Deserialize(row.OriginalPathJson);
@@ -206,10 +253,14 @@ public sealed class ObstacleRecoveryCoordinator(
                 "现场核对任务编号、车辆、载荷和路控；不得新建同用途任务代替。", cancellationToken);
             return;
         }
-        if (row.SendAttemptedAtUtc is not null && string.IsNullOrWhiteSpace(row.NewVendorTaskId))
+        // A replacement identity is persisted together with the send intent and is
+        // only turned into Executing by the bind transaction. A send that was
+        // interrupted or failed after it may have reached the vehicle, so the record
+        // stays uncertain. It is never resent here; it is only reconciled read-only.
+        if (row.NewVendorTaskId is not null &&
+            row.State is ObstacleRecoveryStates.SendIntent or ObstacleRecoveryStates.Uncertain)
         {
-            await FreezeAsync(row, "替代导航发送意图存在但缺少新厂家编号，结果不确定。",
-                "只查询现车任务，禁止重发；核对车辆位置、载荷和PLC。", cancellationToken);
+            await ReconcileUncertainReplacementAsync(row, now, cancellationToken);
             return;
         }
         if (task.Stage == (int)DispatchTaskStage.Completed)
@@ -260,10 +311,30 @@ public sealed class ObstacleRecoveryCoordinator(
         }
         if (row.NewVendorTaskId is not null)
         {
-            row.State = ObstacleRecoveryStates.Executing;
-            row.Message = "替代路线已发送并绑定原业务任务，等待车辆到点及后续PLC确认。";
-            row.NextAction = "核对新3066车端任务全链、车辆实际运动、PLC反馈和原路权交接。";
-            await SaveAsync(row, cancellationToken);
+            // Only the bind transaction sets Executing. Other states that carry an
+            // identity keep their own meaning and are not rewritten here.
+            if (row.State == ObstacleRecoveryStates.Executing)
+            {
+                // One cycle covers one replacement. When the step has finished, or the
+                // vehicle is blocked again by an obstacle that began after the bind, the
+                // cycle is closed; the next pass opens a new one for the executing step.
+                if (step.Status is (int)DispatchTaskStepStatus.Completed or (int)DispatchTaskStepStatus.Cancelled)
+                {
+                    await MarkRecoveredAsync(row, robot, "替代导航所属步骤已结束，本轮障碍恢复关闭。", cancellationToken);
+                    return;
+                }
+                if (FreshBlocked(robot, now) && robot.ObstacleSince is { } newBlockage &&
+                    row.SendAttemptedAtUtc is { } boundAt &&
+                    newBlockage > new DateTimeOffset(DateTime.SpecifyKind(boundAt, DateTimeKind.Utc)))
+                {
+                    await MarkRecoveredAsync(row, robot,
+                        "替代导航执行中再次受阻，关闭上一轮并按新的受阻起点开启新一轮。", cancellationToken);
+                    return;
+                }
+                row.Message = "替代路线已发送并绑定原业务任务，等待车辆到点及后续PLC确认。";
+                row.NextAction = "核对新3066车端任务全链、车辆实际运动、PLC反馈和原路权交接。";
+                await SaveAsync(row, cancellationToken);
+            }
             return;
         }
         if (!FreshTelemetry(robot, now))
@@ -275,6 +346,22 @@ public sealed class ObstacleRecoveryCoordinator(
             row.Revision++;
             await SaveAsync(row, cancellationToken);
             return;
+        }
+        // An obstacle that clears must stay clear for ClearConfirmSeconds before the
+        // record closes. A flickering blocked signal would otherwise close and reopen
+        // the record and restart the blockage timer every time.
+        if (AgvObstaclePolicy.IsBlocked(robot))
+            _clearSince.TryRemove(row.RecoveryId, out _);
+        else
+        {
+            var clearStart = _clearSince.GetOrAdd(row.RecoveryId, now);
+            if (now - clearStart < TimeSpan.FromSeconds(options.ClearConfirmSeconds))
+            {
+                row.Message = "车端障碍信号已消失，等待连续清除确认后再结束恢复，避免间歇抖动重置受阻计时。";
+                row.Revision++;
+                await SaveAsync(row, cancellationToken);
+                return;
+            }
         }
         if (!AgvObstaclePolicy.IsBlocked(robot))
         {
@@ -370,6 +457,21 @@ public sealed class ObstacleRecoveryCoordinator(
                 return;
             }
 
+            if (!IsAtTrustedStation(robot))
+            {
+                // Mid-road or unknown station: a plan from the last reported station
+                // would be a guess. Report it as its own state and keep the task.
+                row.CandidatePathJson = "[]";
+                row.State = elapsed >= options.AlarmAfterSeconds
+                    ? ObstacleRecoveryStates.Alarm
+                    : ObstacleRecoveryStates.NotAtStation;
+                row.Message = $"车端连续受阻{elapsed:0}秒，车辆不在可信命名站点（路段中间或站点未知）；不按历史站点规划替代路线。";
+                row.NextAction = "保留原任务、载荷、PLC责任和路权；车辆需停在可信站点，或由人工安全转移；到站后自动重新评估。";
+                row.Revision++;
+                await SaveAsync(row, cancellationToken);
+                return;
+            }
+
             var plan = await PlanAsync(row, robot, task, step, originalPath, cancellationToken);
             if (plan.Available)
             {
@@ -391,6 +493,16 @@ public sealed class ObstacleRecoveryCoordinator(
                         new { plan.Route, plan.BlockedEdgeIds, plan.SafeSite, robot.CurrentStation },
                         cancellationToken);
                 if (!options.AutomaticDetourEnabled) return;
+                // Probe the replacement's public rights before the original navigation is
+                // cancelled, so a queued route never ends the original navigation first.
+                var probe = await traffic.TryAcquireAsync(row.StepId, row.TaskId, row.VehicleId,
+                    plan.Resources, cancellationToken);
+                if (!probe.Acquired)
+                {
+                    await HoldForRouteRightsAsync(row, probe.BlockingResourceId, now, cancellationToken);
+                    return;
+                }
+                _routeWaitSince.TryRemove(row.RecoveryId, out _);
                 await TryRequestCancellationAsync(row, robot, task, step, plan.Route, cancellationToken);
                 return;
             }
@@ -398,24 +510,13 @@ public sealed class ObstacleRecoveryCoordinator(
             row.CandidatePathJson = "[]";
             row.BlockedEdgeIdsJson = JsonSerializer.Serialize(plan.BlockedEdgeIds, Json);
             row.SafeSite = plan.SafeSite;
-            if (elapsed >= options.ClosureSuggestionAfterSeconds)
-            {
-                await FreezeNoRouteAsync(row, plan.Message, cancellationToken);
-                return;
-            }
+            // Before cancellation a missing route only warns and alarms. The original
+            // navigation keeps running and the task stage is untouched.
             row.State = elapsed >= options.AlarmAfterSeconds ? ObstacleRecoveryStates.Alarm :
                 elapsed >= options.WarningAfterSeconds ? ObstacleRecoveryStates.Warning :
                 ObstacleRecoveryStates.NoRoute;
             row.Message = plan.Message;
-            row.NextAction = row.State switch
-            {
-                ObstacleRecoveryStates.Alarm =>
-                    $"持续受阻{elapsed:0}秒；保持原任务、载荷和责任。建议核对是否封路，仅封锁实际受阻方向及必要上游汇入，不应暂停无关任务。",
-                ObstacleRecoveryStates.Warning =>
-                    $"持续受阻{elapsed:0}秒；继续搜索安全替代路线，并检查车端定位、阻塞范围和邻近车辆。",
-                _ =>
-                    $"未找到安全替代路线；继续保留原任务。{(string.IsNullOrWhiteSpace(plan.SafeSite) ? "" : $"推荐安全点{plan.SafeSite}。")}"
-            };
+            row.NextAction = NoRouteNextAction(row.State, elapsed, plan.SafeSite);
             row.Revision++;
             await SaveAsync(row, cancellationToken);
             return;
@@ -648,8 +749,11 @@ public sealed class ObstacleRecoveryCoordinator(
             return;
         }
 
+        // Once the original chain is terminal and the vehicle is no longer blocked, the
+        // original remaining route may be sent again; the inferred blocked edge is no
+        // longer a reason to exclude it.
         var allowClearedOriginalRoute =
-            row.SafetyPointReachedAtUtc is not null &&
+            row.OriginalTerminalAtUtc is not null &&
             !AgvObstaclePolicy.IsBlocked(robot);
         var plan = await PlanAsync(
             row, robot, task, step, originalPath, cancellationToken,
@@ -657,18 +761,16 @@ public sealed class ObstacleRecoveryCoordinator(
             allowOriginalRoute: allowClearedOriginalRoute);
         if (!plan.Available)
         {
-            if (elapsed >= options.ClosureSuggestionAfterSeconds)
-            {
-                await FreezeNoRouteAsync(row, plan.Message, cancellationToken);
-                return;
-            }
+            // Not frozen: the cancelled task stays resumable. The next pass plans
+            // again and sends as soon as a route, the stop evidence and the lock pass.
             row.State = elapsed >= options.AlarmAfterSeconds ? ObstacleRecoveryStates.Alarm :
                 elapsed >= options.WarningAfterSeconds ? ObstacleRecoveryStates.Warning :
                 ObstacleRecoveryStates.NoRoute;
             row.Message = "原任务已取消，但当前没有安全替代路线：" + plan.Message;
             row.NextAction = string.IsNullOrWhiteSpace(plan.SafeSite)
-                ? "保持原业务任务冻结证据，检查车端定位与地图；不得让车辆恢复空闲。"
-                : $"推荐安全点{plan.SafeSite}；当前自动退站条件不足，核对载荷、道路、定位和车辆包络后受控转移，禁止直接宣告任务完成。";
+                ? "保持原业务任务与路权，后台继续重新规划；不得让车辆恢复空闲。"
+                : $"推荐安全点{plan.SafeSite}；后台继续重新规划，无替代路线前不得宣告任务完成。" +
+                  (elapsed >= options.ClosureSuggestionAfterSeconds ? "已超过封路建议时间，请人工核对封路。" : "");
             row.SafeSite = plan.SafeSite;
             row.Revision++;
             await SaveAsync(row, cancellationToken);
@@ -688,6 +790,15 @@ public sealed class ObstacleRecoveryCoordinator(
             await SaveAsync(row, cancellationToken);
             return;
         }
+        if (_sendRetryAfter.TryGetValue(row.RecoveryId, out var retryAfter) &&
+            _clock.GetUtcNow().UtcDateTime < retryAfter)
+        {
+            row.Message = $"上次替代导航发送前被拒绝，{(retryAfter - _clock.GetUtcNow().UtcDateTime).TotalSeconds:0}秒后重新核验并发送。";
+            row.NextAction = "保持原任务、载荷、PLC责任和路权；退避结束后自动重试，发送门禁逐次核验。";
+            row.Revision++;
+            await SaveAsync(row, cancellationToken);
+            return;
+        }
         await traffic.RecordRouteAsync(new TrafficRouteObservation(
             row.StepId, row.TaskId, row.VehicleId, plan.Route[0], plan.Route[^1],
             plan.EdgeIds, plan.Resources, false,
@@ -700,13 +811,10 @@ public sealed class ObstacleRecoveryCoordinator(
             row.StepId, row.TaskId, row.VehicleId, plan.Resources, cancellationToken);
         if (!reservation.Acquired)
         {
-            row.State = ObstacleRecoveryStates.DetourReady;
-            row.Message = $"替代路线等待公共路权{reservation.BlockingResourceId}。";
-            row.NextAction = "保留原任务和已持有路权；按交通队列等待，不绕开安全或公平顺序。";
-            row.Revision++;
-            await SaveAsync(row, cancellationToken);
+            await HoldForRouteRightsAsync(row, reservation.BlockingResourceId, _clock.GetUtcNow(), cancellationToken);
             return;
         }
+        _routeWaitSince.TryRemove(row.RecoveryId, out _);
 
         var newRoot = ObstacleRecoveryTaskIds.NewId();
         row.NewVendorTaskId = newRoot;
@@ -724,14 +832,22 @@ public sealed class ObstacleRecoveryCoordinator(
                 newRoot, row.VehicleId, plan.Route,
                 dispatchOptions.GetAction((DispatchTaskStepType)step.StepType),
                 new DateTimeOffset(DateTime.SpecifyKind(row.BlockedSinceUtc, DateTimeKind.Utc)),
-                row.OriginalVendorTaskId, cancellationToken);
+                row.OriginalVendorTaskId, PreSendLimits, cancellationToken);
             if (!string.Equals(sent, newRoot, StringComparison.Ordinal))
                 throw new InvalidOperationException("替代导航返回编号与持久化意图不一致。");
             await BindReplacementAsync(row, task, step, plan, newRoot, cancellationToken);
+            _sendRejections.TryRemove(row.RecoveryId, out _);
+            _sendRetryAfter.TryRemove(row.RecoveryId, out _);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception error) when (IsPreSendRejection(error))
+        {
+            await RejectReplacementSendAsync(row, plan.Route, error, cancellationToken);
+        }
         catch (Exception error)
         {
+            // The request may have reached the vehicle. Keep it uncertain: this state is
+            // sticky until a read-only reconciliation of the new vendor identity.
             row.State = ObstacleRecoveryStates.Uncertain;
             row.Message = "替代导航发送结果不确定，只查询原新编号并禁止重发：" + Truncate(error.Message);
             row.NextAction = "按新厂家编号查询任务；核对车辆位置、载荷、PLC与原任务编号，无法证明时冻结。";
@@ -740,6 +856,103 @@ public sealed class ObstacleRecoveryCoordinator(
             await AddEvidenceAsync(row, "ObstacleDetourSendUncertain",
                 row.Message, new { NewVendorTaskId = newRoot, Route = plan.Route }, CancellationToken.None);
         }
+    }
+
+    // Refusals raised before any command reached the vehicle. Anything else after
+    // the send attempt (I/O, timeout, partial acceptance) is treated as uncertain.
+    private static bool IsPreSendRejection(Exception error) =>
+        error is AgvRecoverySendRejectedException or AgvCommandRejectedException
+            or NotSupportedException or ArgumentException;
+
+    private async Task RejectReplacementSendAsync(ObstacleRecoveryEntity row, IReadOnlyList<string> route,
+        Exception error, CancellationToken cancellationToken)
+    {
+        var attempts = _sendRejections.AddOrUpdate(row.RecoveryId, 1, (_, count) => count + 1);
+        var wait = TimeSpan.FromSeconds(Math.Min(60,
+            options.SendRejectionRetrySeconds * Math.Pow(2, Math.Min(attempts - 1, 10))));
+        _sendRetryAfter[row.RecoveryId] = _clock.GetUtcNow().UtcDateTime + wait;
+        row.NewVendorTaskId = null;
+        row.SendAttemptedAtUtc = null;
+        row.State = ObstacleRecoveryStates.DetourReady;
+        row.Message = "替代导航发送前被拒绝，未到达车辆，原任务、载荷和路权保持：" + Truncate(error.Message);
+        row.NextAction = $"{wait.TotalSeconds:0}秒后重新核验并尝试发送；未发出的命令不会重复发送。";
+        row.Revision++;
+        await SaveAsync(row, CancellationToken.None);
+        await AddEvidenceAsync(row, "ObstacleDetourSendRejected", row.Message,
+            new { Route = route, Attempts = attempts, WaitSeconds = wait.TotalSeconds }, CancellationToken.None);
+    }
+
+    // Read-only reconciliation of an uncertain replacement. It never sends, never
+    // generates a new identity and never releases the route or the original task.
+    // The replacement waits for public right-of-way. The state reports a defined timeout
+    // after RouteRightWaitTimeoutSeconds, but the wait is still retried. No alarm rule is
+    // added here; the original navigation is not touched by this path.
+    private async Task HoldForRouteRightsAsync(ObstacleRecoveryEntity row, string? blockingResource,
+        DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        var since = _routeWaitSince.GetOrAdd(row.RecoveryId, now);
+        var waited = now - since;
+        var timedOut = waited >= TimeSpan.FromSeconds(options.RouteRightWaitTimeoutSeconds);
+        row.State = timedOut ? ObstacleRecoveryStates.RouteWaitTimeout : ObstacleRecoveryStates.DetourReady;
+        row.Message = $"替代路线等待公共路权{blockingResource}，已等待{waited.TotalSeconds:0}秒；原导航保留，尚未发送替代路线。";
+        row.NextAction = timedOut
+            ? $"公共路权等待超过{options.RouteRightWaitTimeoutSeconds}秒，需人工核对占用车辆与交通队列；仍保留原任务、载荷和路权，后台继续重试。"
+            : "保留原任务和已持有路权；按交通队列等待，不绕开安全或公平顺序。";
+        row.Revision++;
+        await SaveAsync(row, cancellationToken);
+    }
+
+    // A blocked start that spans a telemetry gap (or a restart with no in-process history)
+    // is not continuous blockage. It moves to the state cache's new blockage start.
+    private void RealignBlockedStartAfterGap(ObstacleRecoveryEntity row, AgvRobotSnapshot robot, DateTimeOffset now)
+    {
+        if (!FreshTelemetry(robot, now)) return;
+        var stale = TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds);
+        var gap = !_lastFreshSeen.TryGetValue(row.RecoveryId, out var lastFresh) || now - lastFresh >= stale;
+        _lastFreshSeen[row.RecoveryId] = now;
+        // Once cancellation has been requested the blockage start only paces warnings;
+        // moving it would stall the cancel-path flow, so realignment is pre-cancel only.
+        if (row.CancelRequestedAtUtc is not null || row.OriginalTerminalAtUtc is not null)
+            return;
+        if (gap && AgvObstaclePolicy.IsBlocked(robot) && robot.ObstacleSince is { } blockedAgain &&
+            blockedAgain > new DateTimeOffset(DateTime.SpecifyKind(row.BlockedSinceUtc, DateTimeKind.Utc)))
+            row.BlockedSinceUtc = blockedAgain.UtcDateTime;
+    }
+
+    private async Task ReconcileUncertainReplacementAsync(ObstacleRecoveryEntity row, DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        if (row.State != ObstacleRecoveryStates.Uncertain)
+        {
+            row.State = ObstacleRecoveryStates.Uncertain;
+            row.Message = "替代导航发送意图已持久化但未绑定，结果不确定；只读对账，禁止重发。";
+            row.NextAction = "按新厂家编号只读查询车端任务链；无法证明时保持不确定，由现场核对。";
+            row.Revision++;
+            await SaveAsync(row, cancellationToken);
+            return;
+        }
+        // Read-only lookups at most every 30 seconds.
+        if (now - new DateTimeOffset(DateTime.SpecifyKind(row.UpdatedAt, DateTimeKind.Utc)) < TimeSpan.FromSeconds(30))
+            return;
+        AgvTransportTaskStatus? status = null;
+        string? failure = null;
+        try
+        {
+            status = await gateway.GetTransportTaskStatusAsync(row.NewVendorTaskId!, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception error)
+        {
+            failure = Truncate(error.Message);
+        }
+        row.Message = failure is not null
+            ? "只读对账失败，替代导航结果仍不确定：" + failure
+            : status is null || status.State == AgvTransportTaskState.Unknown
+                ? "只读对账：车端尚未查到该替代编号，结果仍不确定，禁止重发。"
+                : $"只读对账：车端已查到替代编号，状态{status.State}；仍需现场确认后才能绑定，禁止重发。";
+        row.NextAction = "按新厂家编号、车辆位置、载荷和PLC核对；无法证明时由操作员处置。";
+        row.Revision++;
+        await SaveAsync(row, cancellationToken);
     }
 
     private async Task<IReadOnlyList<string>> ResolveOriginalVendorWindowPathAsync(
@@ -815,7 +1028,12 @@ public sealed class ObstacleRecoveryCoordinator(
         var commandId = "CMD-" + Guid.NewGuid().ToString("N");
         var payloadJson = JsonSerializer.Serialize(new AgvTransportCommandPayload(
             newRoot, row.VehicleId, plan.Route[0], plan.Route[^1],
-            plan.Route, dispatchOptions.GetAction((DispatchTaskStepType)step.StepType)), Json);
+            plan.Route, dispatchOptions.GetAction((DispatchTaskStepType)step.StepType))
+        {
+            // The replacement belongs to the original business step; release and
+            // handoff identity checks compare this id with the step.
+            BusinessStepId = row.StepId
+        }, Json);
         var routeSnapshot = TransportRouteSnapshots.Capture(row.TaskId, row.StepId, commandId,
             row.VehicleId, payloadJson, map, request);
         var replacementCommand = new AgvCommandOutboxEntity
@@ -948,6 +1166,15 @@ public sealed class ObstacleRecoveryCoordinator(
                 return;
             }
 
+            if (_sendRetryAfter.TryGetValue(row.RecoveryId, out var retreatRetryAfter) &&
+                _clock.GetUtcNow().UtcDateTime < retreatRetryAfter)
+            {
+                row.Message = $"上次安全点退回发送前被车端拒绝，{(retreatRetryAfter - _clock.GetUtcNow().UtcDateTime).TotalSeconds:0}秒后重新核验。";
+                row.Revision++;
+                await SaveAsync(row, cancellationToken);
+                return;
+            }
+
             var shortTranslation = retreat.RemainingDistanceMeters <= 1.0;
             var retreatMethod = shortTranslation ? "3055-Translation" : "3051-Backward";
             var retreatId = "SAFETYRETURN-" + Guid.NewGuid().ToString("N");
@@ -977,7 +1204,7 @@ public sealed class ObstacleRecoveryCoordinator(
                     options.SafetyPointRetreatMaximumAccelerationMetersPerSecondSquared,
                     retreat.RemainingDistanceMeters,
                     new DateTimeOffset(DateTime.SpecifyKind(row.BlockedSinceUtc, DateTimeKind.Utc)),
-                    row.OriginalVendorTaskId, cancellationToken);
+                    row.OriginalVendorTaskId, PreSendLimits, cancellationToken);
                 if (!string.Equals(sent, retreatId, StringComparison.Ordinal))
                     throw new InvalidOperationException(
                         "安全点退回返回任务编号与持久化意图不一致。");
@@ -1010,6 +1237,25 @@ public sealed class ObstacleRecoveryCoordinator(
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 throw;
+            }
+            catch (Exception error) when (IsPreSendRejection(error))
+            {
+                // Refused before any motion command was accepted: clear the retreat
+                // intent so the gated pass may send again after the backoff.
+                var attempts = _sendRejections.AddOrUpdate(row.RecoveryId, 1, (_, count) => count + 1);
+                var wait = TimeSpan.FromSeconds(Math.Min(60,
+                    options.SendRejectionRetrySeconds * Math.Pow(2, Math.Min(attempts - 1, 10))));
+                _sendRetryAfter[row.RecoveryId] = _clock.GetUtcNow().UtcDateTime + wait;
+                row.SafetyPointRetreatTaskId = null;
+                row.SafetyPointRetreatMethod = null;
+                row.SafetyPointRetreatAttemptedAtUtc = null;
+                row.State = ObstacleRecoveryStates.SafetyHold;
+                row.Message = "安全点退回发送前被拒绝，未到达车辆：" + Truncate(error.Message);
+                row.NextAction = $"{wait.TotalSeconds:0}秒后重新核验；修正门禁条件前禁止绕过核验或重复发送。";
+                row.Revision++;
+                await SaveAsync(row, CancellationToken.None);
+                await AddEvidenceAsync(row, "ObstacleSafetyPointRetreatRejected", row.Message,
+                    new { Attempts = attempts, WaitSeconds = wait.TotalSeconds }, CancellationToken.None);
             }
             catch (Exception error)
             {
@@ -1183,7 +1429,7 @@ public sealed class ObstacleRecoveryCoordinator(
             envelope.RadiusFromReportedReferenceMeters <= 0)
             return "缺少已标定且包含最大载箱尺寸的车辆包络。";
         var stopKey = $"RETREAT|{retreat.BlockedSource}|{retreat.BlockedTarget}|{retreat.TargetSite}";
-        if (!StableStopped(row, stopKey, robot.LastSuccessfulPollAt, _clock.GetUtcNow()))
+        if (!StableStopped(row, stopKey, _clock.GetUtcNow()))
             return StableStopReason(row, options.StableStopObservationMs);
         return await timeoutRecovery.ValidateReplacementPreconditionsAsync(
             row.TaskId, row.StepId, cancellationToken);
@@ -1487,16 +1733,25 @@ public sealed class ObstacleRecoveryCoordinator(
         if (envelope is null || !envelope.CalibrationVerified || !envelope.IncludesMaximumPermittedLoad ||
             envelope.RadiusFromReportedReferenceMeters <= 0)
             return "缺少已标定且包含最大载箱尺寸的车辆包络。";
-        if (!StableStopped(row, robot.CurrentStation, robot.LastSuccessfulPollAt, _clock.GetUtcNow()))
+        if (!StableStopped(row, robot.CurrentStation, _clock.GetUtcNow()))
             return StableStopReason(row, options.StableStopObservationMs);
         return await timeoutRecovery.ValidateReplacementPreconditionsAsync(
             row.TaskId, row.StepId, cancellationToken);
     }
 
-    private bool StableStopped(ObstacleRecoveryEntity row, string? key,
-        DateTimeOffset? observedAt, DateTimeOffset now)
+    // Stop evidence is read from the state cache, not from the coordinator's
+    // wall-clock poll cadence. The newest fresh, stationary frame starts or extends
+    // a run. A run continues only while the cache's previous frame lies at or after
+    // the last counted frame and is itself fresh, consecutive and stationary, so a
+    // gap or a moving frame restarts it. Spacing is on the telemetry timeline, so a
+    // simulation rate scales frames and window alike. The run counts as stopped after
+    // two counted frames spanning at least the observation window.
+    private bool StableStopped(ObstacleRecoveryEntity row, string? key, DateTimeOffset now)
     {
-        if (string.IsNullOrWhiteSpace(key) || observedAt is not { } observed || observed > now)
+        var consecutive = vehicles.TryGetConsecutiveTelemetry(row.VehicleId, out var previous, out var latest);
+        if (string.IsNullOrWhiteSpace(key) || latest is null ||
+            latest.LastSuccessfulPollAt is not { } later || later > now ||
+            !StationaryWithGoodPosition(latest))
         {
             ClearStableStop(row);
             return false;
@@ -1504,41 +1759,39 @@ public sealed class ObstacleRecoveryCoordinator(
         var last = row.StableStopLastObservedAtUtc is { } lastValue
             ? new DateTimeOffset(DateTime.SpecifyKind(lastValue, DateTimeKind.Utc))
             : (DateTimeOffset?)null;
-        if (row.StableStopSinceUtc is null || last is null ||
-            !string.Equals(row.StableStopKey, key, StringComparison.OrdinalIgnoreCase) ||
-            observed < last || now < last ||
-            observed - last > TimeSpan.FromMilliseconds(Math.Max(
-                options.PollIntervalMs * 3, options.StableStopObservationMs * 2)))
+        var since = row.StableStopSinceUtc is { } sinceValue
+            ? new DateTimeOffset(DateTime.SpecifyKind(sinceValue, DateTimeKind.Utc))
+            : (DateTimeOffset?)null;
+        var sameRun = since is not null && last is not null &&
+                      string.Equals(row.StableStopKey, key, StringComparison.OrdinalIgnoreCase);
+        var window = TimeSpan.FromMilliseconds(options.StableStopObservationMs);
+        // Re-reading a counted frame adds no evidence.
+        if (sameRun && later == last)
+            return row.StableStopSamples >= 2 && later - since!.Value >= window;
+        var contiguous = consecutive && sameRun && previous is not null &&
+                         previous.LastSuccessfulPollAt is { } earlier &&
+                         StationaryWithGoodPosition(previous) && earlier >= last!.Value && earlier < later;
+        if (!contiguous)
         {
             row.StableStopKey = key;
-            row.StableStopSinceUtc = observed.UtcDateTime;
-            row.StableStopLastObservedAtUtc = observed.UtcDateTime;
+            row.StableStopSinceUtc = later.UtcDateTime;
+            row.StableStopLastObservedAtUtc = later.UtcDateTime;
             row.StableStopSamples = 1;
             return false;
         }
-        // Re-reading a cached poll is not a new observation.
-        if (observed == last)
-            return false;
-        row.StableStopLastObservedAtUtc = observed.UtcDateTime;
+        row.StableStopLastObservedAtUtc = later.UtcDateTime;
         if (row.StableStopSamples < int.MaxValue)
             row.StableStopSamples++;
-        var since = new DateTimeOffset(
-            DateTime.SpecifyKind(row.StableStopSinceUtc.Value, DateTimeKind.Utc));
-        var requiredSamples = Math.Max(2,
-            (int)Math.Ceiling(options.StableStopObservationMs / (double)options.PollIntervalMs) + 1);
-        return observed - since >= TimeSpan.FromMilliseconds(options.StableStopObservationMs) &&
-               row.StableStopSamples >= requiredSamples;
+        return row.StableStopSamples >= 2 && later - since!.Value >= window;
     }
 
     private string StableStopReason(ObstacleRecoveryEntity row, int targetMilliseconds)
     {
-        var since = row.StableStopSinceUtc is { } value
-            ? new DateTimeOffset(DateTime.SpecifyKind(value, DateTimeKind.Utc))
-            : _clock.GetUtcNow();
+        if (row.StableStopSinceUtc is not { } value)
+            return $"尚未取得连续新鲜且静止的车端遥测，停稳观察需不少于{targetMilliseconds}毫秒（业务时钟）。";
+        var since = new DateTimeOffset(DateTime.SpecifyKind(value, DateTimeKind.Utc));
         var elapsed = Math.Max(0, (_clock.GetUtcNow() - since).TotalMilliseconds);
-        var requiredSamples = Math.Max(2,
-            (int)Math.Ceiling(targetMilliseconds / (double)options.PollIntervalMs) + 1);
-        return $"停稳观察{elapsed:0}毫秒，已取得{row.StableStopSamples}/{requiredSamples}个连续样本。";
+        return $"停稳观察{elapsed:0}毫秒（业务时钟，已取得{row.StableStopSamples}个连续遥测帧），需不少于{targetMilliseconds}毫秒。";
     }
 
     private static void ClearStableStop(ObstacleRecoveryEntity row)
@@ -1583,15 +1836,20 @@ public sealed class ObstacleRecoveryCoordinator(
         return candidates.Site;
     }
 
-    private async Task FreezeNoRouteAsync(ObstacleRecoveryEntity row, string reason,
-        CancellationToken cancellationToken)
+    private string NoRouteNextAction(string state, double elapsed, string? safeSite)
     {
-        await FreezeAsync(row,
-            $"持续受阻超过{options.ClosureSuggestionAfterSeconds}秒且无替代路线：{reason}",
-            "建议正式封锁实际受阻方向及必要上游汇入；仅影响该路段，其他无冲突任务继续。" +
-            (string.IsNullOrWhiteSpace(row.SafeSite) ? "" : $"推荐安全点{row.SafeSite}；自动3051/3055退站未启用或条件不足，需核对载荷后受控转移。") +
-            " 任务、载荷、PLC责任和路权保留；无法完成时再走取消或换单恢复流程。",
-            cancellationToken);
+        var closure = elapsed >= options.ClosureSuggestionAfterSeconds
+            ? $"已超过{options.ClosureSuggestionAfterSeconds}秒封路建议时间，请人工核对封路（只封锁实际受阻方向及必要上游汇入，不自动封路）；"
+            : "";
+        return state switch
+        {
+            ObstacleRecoveryStates.Alarm =>
+                $"持续受阻{elapsed:0}秒；保持原任务、载荷和责任。{closure}不应暂停无关任务。",
+            ObstacleRecoveryStates.Warning =>
+                $"持续受阻{elapsed:0}秒；继续搜索安全替代路线，并检查车端定位、阻塞范围和邻近车辆。",
+            _ =>
+                $"未找到安全替代路线；继续保留原任务。{(string.IsNullOrWhiteSpace(safeSite) ? "" : $"推荐安全点{safeSite}。")}"
+        };
     }
 
     private async Task FreezeAsync(ObstacleRecoveryEntity row, string message, string nextAction,
@@ -1632,6 +1890,8 @@ public sealed class ObstacleRecoveryCoordinator(
     private async Task MarkRecoveredAsync(ObstacleRecoveryEntity row, AgvRobotSnapshot robot,
         string message, CancellationToken cancellationToken)
     {
+        _clearSince.TryRemove(row.RecoveryId, out _);
+        _routeWaitSince.TryRemove(row.RecoveryId, out _);
         row.State = ObstacleRecoveryStates.Recovered;
         row.Message = message;
         row.NextAction = "按原任务后续车端状态、PLC反馈、载荷与路权交接继续核对。";

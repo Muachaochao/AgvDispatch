@@ -655,6 +655,13 @@ public sealed partial class DispatchTaskOrchestrator(
 
                 if (status.State is AgvTransportTaskState.Failed or AgvTransportTaskState.Cancelled)
                 {
+                    // The obstacle coordinator cancelled this vendor task itself and still
+                    // owns the replacement decision. Finalising the step here would end the
+                    // business chain while the vehicle may be stopped with its route held.
+                    if (timeoutRecovery is not null &&
+                        await timeoutRecovery.IsObstacleCancellationPendingAsync(
+                            task.TaskId, task.VendorTaskId, cancellationToken))
+                        continue;
                     if (status.State == AgvTransportTaskState.Failed &&
                         status.VendorStatusCode == 7 &&
                         timeoutRecovery is not null &&

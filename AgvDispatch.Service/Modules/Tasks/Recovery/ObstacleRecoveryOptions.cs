@@ -21,6 +21,13 @@ public sealed class ObstacleRecoveryOptions
     public int AlarmAfterSeconds { get; set; } = 120;
     public int ClosureSuggestionAfterSeconds { get; set; } = 300;
     public int StableStopObservationMs { get; set; } = 500;
+    // Backoff after a send was refused before reaching the vehicle; doubles per refusal, capped at 60 s.
+    public int SendRejectionRetrySeconds { get; set; } = 5;
+    // Obstacle clear must hold for this long before the recovery record closes, so a
+    // flickering blocked signal does not restart the blockage timer. 0 = immediate.
+    public int ClearConfirmSeconds { get; set; } = 3;
+    // A replacement waiting for public right-of-way is reported after this long.
+    public int RouteRightWaitTimeoutSeconds { get; set; } = 60;
     public double StoppedVelocityToleranceMetersPerSecond { get; set; } = 0.02;
     public double MinimumLocalizationConfidence { get; set; } = 0.5;
     public double MaximumStationDeviationMeters { get; set; } = 0.3;
@@ -44,6 +51,12 @@ public sealed class ObstacleRecoveryOptions
             throw new InvalidOperationException("取消终态等待提醒必须在1至3600秒之间；该时间不代表厂家释放时限。");
         if (StableStopObservationMs is < 250 or > 10000)
             throw new InvalidOperationException("ObstacleRecovery:StableStopObservationMs必须在250至10000毫秒之间。");
+        if (ClearConfirmSeconds is < 0 or > 60)
+            throw new InvalidOperationException("ObstacleRecovery:ClearConfirmSeconds必须在0至60秒之间。");
+        if (RouteRightWaitTimeoutSeconds is < 5 or > 3600)
+            throw new InvalidOperationException("ObstacleRecovery:RouteRightWaitTimeoutSeconds必须在5至3600秒之间。");
+        if (SendRejectionRetrySeconds is < 1 or > 300)
+            throw new InvalidOperationException("ObstacleRecovery:SendRejectionRetrySeconds必须在1至300秒之间。");
         if (StoppedVelocityToleranceMetersPerSecond is <= 0 or > 0.2)
             throw new InvalidOperationException("ObstacleRecovery:StoppedVelocityToleranceMetersPerSecond必须在0至0.2之间。");
         if (MinimumLocalizationConfidence is < 0 or > 1)

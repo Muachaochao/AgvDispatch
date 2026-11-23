@@ -149,11 +149,15 @@ try
     row = db.Queryable<ObstacleRecoveryEntity>().Single(item => item.TaskId == taskId);
     Check(gateway.CancelCalls == 0 && row.CancelRequestedAtUtc is null,
           "只读评估和连续停稳通过也不能在120秒观察期前取消");
-    foreach (var second in new[] { 60, 119 })
+    // Telemetry is observed continuously. A gap longer than the stale window is a
+    // telemetry interruption and restarts the blockage timer (O12), so the blockage
+    // is observed every second until the 120-second cancel point.
+    foreach (var second in Enumerable.Range(34, 86))
     {
         clock.Advance(start.AddSeconds(second) - clock.GetUtcNow());
         states.ApplyTelemetry("A", Telemetry(clock.GetUtcNow(), blocked: true), TimeSpan.Zero);
         await coordinator.ObserveOnceAsync(default);
+        if (second is not (60 or 119)) continue;
         row = db.Queryable<ObstacleRecoveryEntity>().Single(item => item.TaskId == taskId);
         Check(gateway.CancelCalls == 0 && gateway.RecoverySendCalls == 0 &&
               row.CancelRequestedAtUtc is null, $"受阻{second}秒仍只读，不取消、不发送替代导航");
@@ -477,7 +481,10 @@ foreach (var (initialVendorState, loseCancelResponse) in new[] {
               retreatRow2.SafetyPointReachedAtUtc is not null,
               "车辆到后方安全站并停稳后才核定为已退站");
 
-        for (var index = 0; index < 2; index++)
+        // The clear must hold for ClearConfirmSeconds (3 s) before the record may resume;
+        // stop evidence then accumulates again from fresh frames (O18). Five frames cover
+        // the hold, the restart and one contiguous stationary pair.
+        for (var index = 0; index < 5; index++)
         {
             clock2.Advance(TimeSpan.FromSeconds(1));
             states2.ApplyTelemetry(
@@ -710,7 +717,7 @@ sealed class RecoveryGateway : IAgvGateway, IAgvObstacleRecoveryGateway,
     }
     public Task<string> CreateObstacleRecoveryTransportTaskAsync(string newVendorTaskId, string vehicleId,
         IReadOnlyList<string> path, AgvTransportAction? action, DateTimeOffset blockedSince,
-        string originalVendorTaskId, CancellationToken cancellationToken)
+        string originalVendorTaskId, ObstacleRecoveryPreSendLimits limits, CancellationToken cancellationToken)
     {
         RecoverySendCalls++;
         NewVendorTaskId = newVendorTaskId;
@@ -722,7 +729,7 @@ sealed class RecoveryGateway : IAgvGateway, IAgvObstacleRecoveryGateway,
         string blockedTargetSite, double maximumSpeedMetersPerSecond,
         double maximumAccelerationMetersPerSecondSquared, double remainingDistanceMeters,
         DateTimeOffset blockedSince,
-        string originalVendorTaskId, CancellationToken cancellationToken)
+        string originalVendorTaskId, ObstacleRecoveryPreSendLimits limits, CancellationToken cancellationToken)
     {
         RetreatSendCalls++;
         RetreatTaskId = retreatVendorTaskId;
