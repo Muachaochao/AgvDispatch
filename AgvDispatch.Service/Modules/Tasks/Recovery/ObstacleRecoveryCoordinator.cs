@@ -930,7 +930,12 @@ public sealed class ObstacleRecoveryCoordinator(
         var commandId = "CMD-" + Guid.NewGuid().ToString("N");
         var payloadJson = JsonSerializer.Serialize(new AgvTransportCommandPayload(
             newRoot, row.VehicleId, plan.Route[0], plan.Route[^1],
-            plan.Route, dispatchOptions.GetAction((DispatchTaskStepType)step.StepType)), Json);
+            plan.Route, dispatchOptions.GetAction((DispatchTaskStepType)step.StepType))
+        {
+            // The replacement belongs to the original business step; release and
+            // handoff identity checks compare this id with the step.
+            BusinessStepId = row.StepId
+        }, Json);
         var routeSnapshot = TransportRouteSnapshots.Capture(row.TaskId, row.StepId, commandId,
             row.VehicleId, payloadJson, map, request);
         var replacementCommand = new AgvCommandOutboxEntity

@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Text.Json;
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Application.Tasks;
 using AgvDispatch.Connectors.Agv;
@@ -175,6 +176,14 @@ async Task PreSendRejectionRetriesAsync(string root)
     Check(h.Gateway.RecoverySendCalls == 2 && row.State == ObstacleRecoveryStates.Executing &&
           row.NewVendorTaskId is not null && task.VendorTaskId == row.NewVendorTaskId,
         "退避结束后重新核验并发送一次，成功后绑定原业务任务");
+    var replacementCommand = h.Db.Queryable<AgvCommandOutboxEntity>()
+        .Where(item => item.TaskId == "TASK-O5A" && item.VendorCommandId == row.NewVendorTaskId)
+        .First();
+    var replacementPayload = JsonSerializer.Deserialize<AgvTransportCommandPayload>(
+        replacementCommand!.PayloadJson, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+    Check(replacementPayload is { BusinessStepId: "STEP-O5A", BusinessTaskId: var businessTask } &&
+          businessTask == row.NewVendorTaskId,
+        "替代3066命令载荷携带原业务步骤号，供到站释放与分段交接核对");
 }
 
 // O5: a failure after the send attempt is uncertain. It must never be resent by
