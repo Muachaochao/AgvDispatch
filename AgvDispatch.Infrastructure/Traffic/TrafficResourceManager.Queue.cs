@@ -34,8 +34,9 @@ public sealed partial class TrafficResourceManager
         // System movements (charging and returning to standby) have no DispatchTask.
         // They participate at ordinary priority zero, FIFO by their durable request,
         // instead of bypassing a valid business queue with a null priority.
+        // B07-FIX C5: a charging bay reservation uses its explicit charging priority; other system movements stay at zero.
         double Priority(TrafficRequestEntity row) => tasks.TryGetValue(row.TaskId, out var task)
-            ? row.QueuePriority ?? task.Priority : 0;
+            ? row.QueuePriority ?? task.Priority : IsChargingBayRequest(row) ? row.QueuePriority ?? 0 : 0;
         DateTime CalledAt(TrafficRequestEntity row) => tasks.TryGetValue(row.TaskId, out var task)
             ? task.CreatedAt : row.RequestedAt;
         bool ValidOwner(TrafficRequestEntity row) => tasks.TryGetValue(row.TaskId, out var task)
@@ -44,7 +45,7 @@ public sealed partial class TrafficResourceManager
                 steps.TryGetValue(row.StepId, out var step) && step.TaskId == row.TaskId && step.Status is 0 or 10 or 40 or 60
             // A missing business task with an explicit optimizer score must not
             // become a new system owner. Only ordinary system requests lack it.
-            : row.QueuePriority is null;
+            : row.QueuePriority is null || IsChargingBayRequest(row);
         // No priority bonus: carrying a full box is a tie-break only. The original
         // effective priority/age policy and existing physical ownership remain authoritative.
         bool FullBoxContinuation(TrafficRequestEntity row) => tasks.TryGetValue(row.TaskId, out var task) &&
@@ -70,6 +71,10 @@ public sealed partial class TrafficResourceManager
                 .Select(id => (ResourceId: id, r.Row.TaskId)))
             .ToLookup(item => item.ResourceId, item => item.TaskId, comparer);
     }
+
+    // B07-FIX C5: a charging bay reservation carries an explicit charging priority and is a system owner, not an optimizer score.
+    private static bool IsChargingBayRequest(TrafficRequestEntity row) =>
+        row.TaskId.StartsWith("CHARGE-", StringComparison.Ordinal) && row.StepId.EndsWith("-LOCK", StringComparison.Ordinal);
 
     private static string[] Resources(TrafficRequestEntity request)
     {

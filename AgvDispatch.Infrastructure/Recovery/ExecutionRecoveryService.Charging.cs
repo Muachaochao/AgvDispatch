@@ -43,13 +43,15 @@ public sealed partial class ExecutionRecoveryService
                     hard ??= "充电关闭记录与当前运行地图版本不一致。";
                 else
                 {
+                    // B07-FIX C1: a relay session with a return road closes at its standby point, so the closing position must match that point.
+                    var closingSiteId = route.ReturnPath.Length >= 2 && route.ReturnSiteId is { } home ? home : site.ExitSiteId;
                     var exits = active.Definition.Nodes.Where(n =>
-                        n.Enabled && MapRouteSiteMapper.IsSameNode(active.Definition, n.Id, site.ExitSiteId)).ToArray();
+                        n.Enabled && MapRouteSiteMapper.IsSameNode(active.Definition, n.Id, closingSiteId)).ToArray();
                     if (exits.Length != 1 || vehicle is null || string.IsNullOrWhiteSpace(vehicle.CurrentStation) ||
                         !MapRouteSiteMapper.IsSameNode(active.Definition, vehicle.CurrentStation, exits[0].Id) ||
                         vehicle.X is not { } x || vehicle.Y is not { } y ||
                         Math.Sqrt(Math.Pow(x - exits[0].X, 2) + Math.Pow(y - exits[0].Y, 2)) > settings.MaximumStationDeviationMeters)
-                        hard ??= "充电关闭后车辆实际位置与原退出点不一致，不能核定离位。";
+                        hard ??= "充电关闭后车辆实际位置与原返回待机点或退出点不一致，不能核定离位。";
                 }
             }
         }
@@ -71,12 +73,21 @@ public sealed partial class ExecutionRecoveryService
             boot.Phase == ChargingPhase.Completed || charging.Site is null || charging.Route is null ||
             JsonSerializer.Serialize(charging.Site) != JsonSerializer.Serialize(originalSite) || JsonSerializer.Serialize(charging.Route) != JsonSerializer.Serialize(originalRoute))
             return "持久充电会话与本次启动保存的车辆、充电位或原地图路线不一致。";
-        if (original.Leases.Any(l => l.TaskId != owner || l.VehicleId != boot.VehicleId || l.OwnerStepId != owner + "-LOCK" ||
+        // B07-FIX C6: after C1 a charging session holds the bay plus its -EXIT or -RETURN road, never the full route set.
+        // Every lease must belong to this session and vehicle and be a subset of the planned route; the bay is required
+        // until the vehicle has left the bay at the exit.
+        var allowedSteps = new[] { owner + "-LOCK", owner + "-EXIT", owner + "-RETURN" };
+        var leaseResources = original.Leases.Select(l => l.ResourceId).ToArray();
+        var phase = boot.Phase == ChargingPhase.Hold ? boot.HeldPhase ?? boot.Phase : boot.Phase;
+        var bayRequired = phase is not (ChargingPhase.Exiting or ChargingPhase.SendingReturn or ChargingPhase.Returning);
+        if (original.Leases.Any(l => l.TaskId != owner || !string.Equals(l.VehicleId, boot.VehicleId, StringComparison.OrdinalIgnoreCase) ||
+            !allowedSteps.Contains(l.OwnerStepId, StringComparer.Ordinal) ||
             l.MapId != originalRoute.MapId || l.MapVersionId != originalRoute.MapVersionId) ||
-            original.Leases.Select(l => l.ResourceId).Distinct(StringComparer.OrdinalIgnoreCase).Count() != original.Leases.Length ||
-            !original.Leases.Select(l => l.ResourceId).ToHashSet(StringComparer.OrdinalIgnoreCase).SetEquals(originalRoute.ResourceIds) ||
-            !originalRoute.ResourceIds.Contains(originalSite.ResourceId, StringComparer.OrdinalIgnoreCase))
-            return "启动时原充电租约的步骤、车辆、地图或资源集合与充电记录不一致。";
+            leaseResources.Distinct(StringComparer.OrdinalIgnoreCase).Count() != leaseResources.Length ||
+            leaseResources.Any(id => !originalRoute.ResourceIds.Contains(id, StringComparer.OrdinalIgnoreCase)) ||
+            !originalRoute.ResourceIds.Contains(originalSite.ResourceId, StringComparer.OrdinalIgnoreCase) ||
+            bayRequired && !leaseResources.Contains(originalSite.ResourceId, StringComparer.OrdinalIgnoreCase))
+            return "启动时原充电租约的步骤、车辆、地图或资源与充电记录不一致。";
         return null;
     }
 }

@@ -91,15 +91,24 @@ queue.Port.Put("B", 10);
 await queue.CyclesAsync(8);
 Check(queue.Port.Navigations.Count == 1 && queue.Port.Navigations[0].Vehicle == "B" && queue.Port.Leases.Count == 1,
     "two vehicles competing for one bay dispatch only the lowest battery vehicle");
-Check(!queue.Service.AllowsNewBusiness("B") && !queue.Service.AllowsNewBusiness("A"),
-    "queued low battery vehicles cannot take another business cycle");
+// B07-FIX C3 (deliberate change): the 24% vehicle is above critical and has no free bay, so it may keep taking short tasks;
+// the 10% vehicle that holds the bay and every critical vehicle stay out of business.
+Check(!queue.Service.AllowsNewBusiness("B") && queue.Service.AllowsNewBusiness("A"),
+    "a reserved low battery vehicle cannot take business, while a queued vehicle above critical with no free bay keeps short tasks");
 
 var busy = new Fixture(evidence, "busy");
 busy.Port.Busy.Add("A");
 await busy.CyclesAsync(4);
 Check(busy.Port.Navigations.Count == 0 && busy.Robot.RelayWrites.Count == 0,
     "unfinished business or equipment responsibility prevents charging motion");
+// B07-FIX C8: a vehicle that falls below critical during its business cycle raises a critical charging alarm while it waits.
+busy.Port.Put("A", 10);
+busy.Port.Busy.Add("A");
+await busy.CyclesAsync(2);
+Check(busy.Service.AlarmCandidates(busy.Clock.GetUtcNow()).Any(c => c.Code == "CHARGING_CRITICAL_WAITING" && c.Severity == AlarmSeverity.Critical) &&
+    !busy.Service.AllowsNewBusiness("A"), "a critical vehicle waiting for its business cycle raises a critical alarm and takes no new business");
 busy.Port.Busy.Clear();
+busy.Port.Put("A", 20);
 await busy.UntilAsync(s => s.Phase == ChargingPhase.GoingToCharger);
 Check(busy.Port.Navigations.Count == 1, "closing the current business cycle allows queued charging");
 
@@ -129,10 +138,16 @@ Check(noCurrent.Current.Phase == ChargingPhase.AwaitingCurrent,
     "negative discharge current cannot establish charging even when Charging is true");
 noCurrent.Clock.Advance(TimeSpan.FromSeconds(noCurrent.Options.CurrentTimeoutSeconds + 1));
 await noCurrent.CyclesAsync(1);
-Check(noCurrent.Current.Phase == ChargingPhase.Hold && noCurrent.Port.Leases.Count == 1,
-    "no-current timeout becomes a held fault with the bay reserved");
+// B07-FIX C9 (deliberate change): a bay with no current after the start timer is a bay fault, not a manual review.
+// It is switched off once, stays reserved, and the vehicle leaves by the normal exit after current is confirmed zero.
+Check(noCurrent.Current.Phase == ChargingPhase.AwaitingStop && noCurrent.Current.BayFaultAt is not null && noCurrent.Port.Leases.Count == 1,
+    "no-current timeout switches the relay off and keeps the bay reserved until the stop is confirmed");
 Check(noCurrent.Robot.RelayWrites.SequenceEqual([true, false]),
-    "no-current timeout makes one protective relay stop before retaining the fault");
+    "no-current timeout makes one protective relay stop before the stop is confirmed");
+noCurrent.Battery(20, false, 0);
+await noCurrent.UntilAsync(s => s.Phase == ChargingPhase.Exiting);
+Check(noCurrent.Port.Navigations.Count == 2 && noCurrent.Port.Leases.Count == 1 && noCurrent.Robot.RelayWrites.SequenceEqual([true, false]),
+    "after current is confirmed zero the vehicle leaves automatically and the bay stays until the exit");
 
 var overTemperature = new Fixture(evidence, "over-temperature");
 await overTemperature.ToChargingAsync();
@@ -157,9 +172,16 @@ Check(taperedCurrent.Current.Phase == ChargingPhase.AwaitingStop && taperedCurre
 var disconnected = new Fixture(evidence, "disconnect");
 await disconnected.ToChargingAsync();
 disconnected.Robot.ReadFailure = new IOException("isolated simulated disconnect");
+// B07-FIX C2 (deliberate change): one failed telemetry read is counted and the charge keeps its phase; the hold comes only
+// after the consecutive failure limit. Either way the bay stays reserved and the vehicle stays out of business.
 await disconnected.CyclesAsync(1);
-Check(disconnected.Current.Phase == ChargingPhase.Hold && disconnected.Port.Leases.Count == 1 && !disconnected.Service.AllowsNewBusiness("A"),
-    "lost charger telemetry never frees the physical bay or returns the vehicle to service");
+Check(disconnected.Current.Phase == ChargingPhase.Charging && disconnected.Current.TransientFailures == 1 &&
+    disconnected.Port.Leases.Count == 1 && !disconnected.Service.AllowsNewBusiness("A"),
+    "a single failed telemetry read is counted without holding the charge or freeing the bay");
+await disconnected.CyclesAsync(disconnected.Options.TransientFailureLimit);
+Check(disconnected.Current.Phase == ChargingPhase.Hold && disconnected.Current.TransientHold && disconnected.Port.Leases.Count == 1 &&
+    !disconnected.Service.AllowsNewBusiness("A") && disconnected.Robot.RelayWrites.SequenceEqual([true]),
+    "consecutive telemetry failures hold the session while the bay stays reserved and the relay is not reopened");
 
 var interrupted = new Fixture(evidence, "execution-gate-interruption");
 await interrupted.ToChargingAsync();
@@ -174,7 +196,8 @@ var stale = new Fixture(evidence, "stale-battery");
 await stale.ToChargingAsync();
 stale.RefreshBatteryTimestamp = false;
 stale.Clock.Advance(TimeSpan.FromSeconds(stale.Options.StateMaxAgeSeconds + 1));
-await stale.CyclesAsync(1);
+// B07-FIX C2: stale evidence holds after the consecutive limit rather than on the first stale reading.
+await stale.CyclesAsync(stale.Options.TransientFailureLimit);
 Check(stale.Current.Phase == ChargingPhase.Hold && stale.Port.Leases.Count == 1,
     "fresh vehicle position cannot replace stale charging-current evidence");
 
@@ -201,8 +224,9 @@ var restart = new Fixture(evidence, "restart-active");
 await restart.ToChargingAsync();
 restart.Restart();
 await restart.CyclesAsync(3);
-Check(restart.Current.Phase == ChargingPhase.Hold && restart.Port.Leases.Count == 1 && restart.Robot.RelayWrites.Count == 1,
-    "backend restart converts active charge to held review without replaying relay start");
+// B07-FIX C14 (deliberate change): an observation-only charge resumes by itself after a restart and never replays the relay start.
+Check(restart.Current.Phase == ChargingPhase.Charging && restart.Port.Leases.Count == 1 && restart.Robot.RelayWrites.Count == 1,
+    "backend restart resumes an observed charge by itself without replaying the relay start");
 
 var uncertainStart = new Fixture(evidence, "uncertain-start");
 await uncertainStart.UntilAsync(s => s.Phase == ChargingPhase.GoingToCharger);
@@ -261,7 +285,8 @@ Check(!repeatedBootStop.Accepted && bootStop.Robot.RelayWrites.SequenceEqual([tr
 
 var review = new Fixture(evidence, "manual-review");
 await review.ToChargingAsync();
-review.Restart();
+// B07-FIX C14 (test setup): a restart no longer holds an observed charge, so the review state is reached by an operator stop.
+await review.Service.RequestStopAsync(admin, new(review.Current.SessionId, "operator review of a stopped charge"), default);
 var unconfirmed = await review.Service.ResolveHoldAsync(admin,
     new(review.Current.SessionId, ChargingHoldDecision.CloseAfterPhysicalExit, "not yet physically reviewed", false, false), default);
 Check(!unconfirmed.Accepted && review.Port.Leases.Count == 1, "manual close without physical confirmations cannot release charge resources");

@@ -17,7 +17,8 @@ public sealed partial class ChargingService
         if(request.RequiredPositiveSeconds is {} seconds && (seconds is <60 or >600))
             return new(false,"计时联调须为连续有效充电60～600秒。");
         var requestId=requestGuid.ToString("N");
-        var vehicleId=request.VehicleId.Trim();
+        // B07-FIX C13: store the vehicle under the canonical id of the state cache, so ordering and ownership checks agree.
+        var vehicleId=port.Vehicles.FirstOrDefault(v=>v.VehicleId.Equals(request.VehicleId.Trim(),StringComparison.OrdinalIgnoreCase))?.VehicleId??request.VehicleId.Trim();
         var returnSite=string.IsNullOrWhiteSpace(request.ReturnSiteId)?null:request.ReturnSiteId.Trim();
         using var lease=await EnterBusinessAsync(ct);
         // Retained request IDs are checked before enablement: a lost HTTP reply
@@ -168,9 +169,12 @@ public sealed partial class ChargingService
 
     private async Task SendReturnAsync(ChargingSession row,CancellationToken ct)
     {
-        if(!row.ShutdownVerified||row.Route is not {ReturnPath.Length:>=2})
+        var scriptMode=row.Site?.ControlMode=="RobokitScript";
+        // Relay mode proves the stop by the battery reading taken at the exit; script mode keeps its shutdown evidence.
+        if(scriptMode&&!row.ShutdownVerified||row.Route is not {ReturnPath.Length:>=2})
         {Hold(row,"返程路径或停充证据缺失，保留充电资源。");return;}
-        var error=await port.ValidateAsync(row,true,ct)??await port.BusyReasonAsync(row.VehicleId,row.SessionId,ct);
+        var check=scriptMode?row:row with {Phase=ChargingPhase.SendingReturn};
+        var error=await port.ValidateAsync(check,true,ct)??await port.BusyReasonAsync(row.VehicleId,row.SessionId,ct);
         if(error is not null)
         {Hold(row,error);return;}
         var commandId=row.SessionId+"-RETURN";

@@ -17,17 +17,74 @@ public sealed class ChargingOptions
     public int StateMaxAgeSeconds { get; set; } = 5;
     public double MinimumChargingCurrent { get; set; } = 0.1;
     public double MaximumTemperature { get; set; } = 45;
+    /// <summary>B07-FIX C2: consecutive failed observations (read, telemetry, validation) before a session is held.</summary>
+    public int TransientFailureLimit { get; set; } = 5;
+    /// <summary>B07-FIX C2: a failing observation is held after this many seconds even when the count is not reached.</summary>
+    public int TransientFailureSeconds { get; set; } = 60;
+    /// <summary>B07-FIX C9: a bay with no current after the start timer is not offered to other vehicles for this long.</summary>
+    public int BayFaultCooldownMinutes { get; set; } = 30;
+    /// <summary>B07-FIX C11: the lowest battery the dispatcher accepts (it must match the dispatch assignment minimum). A
+    /// vehicle must be charged before it falls below this level, so the start threshold may not be lower.</summary>
+    public decimal DispatchMinimumBatteryPercent { get; set; } = 20;
+    /// <summary>B07-FIX C15: at or above this level, a current that has naturally tapered is a normal full-charge stop.</summary>
+    public decimal NearFullBatteryPercent { get; set; } = 95;
+    /// <summary>B07-FIX C15: a charge that gains less than ChargeStallMinimumGainPercent within this many minutes is stopped and held.</summary>
+    public int ChargeStallMinutes { get; set; } = 20;
+    public decimal ChargeStallMinimumGainPercent { get; set; } = 1;
+    /// <summary>B07-FIX C16: vehicles whose firmware does not report battery temperature. Their missing temperature is not a fault;
+    /// it is reported as an alarm instead.</summary>
+    public string[] TemperatureOptionalVehicleIds { get; set; } = [];
     public ChargingSite[] Sites { get; set; } = [];
-    public string? ConfigurationError() =>
+    /// <summary>Dedicated standby point where a charged vehicle returns when no business return site is set. Never an exit,
+    /// never a charging point. Blank means the plan fails until a return site is configured.</summary>
+    public string DefaultStandbySiteId { get; set; } = "";
+    /// <summary>B07-FIX C3: vehicles that must stay in business. A vehicle between the critical and start thresholds is
+    /// withdrawn only when this many others would remain available. Zero (default) applies the bay-availability rule only;
+    /// commissioning sets the fleet minimum explicitly.</summary>
+    public int MinimumAvailableVehicles { get; set; } = 0;
+    /// <summary>B07-FIX C3: most vehicles withdrawn at once (reserved or critical). Zero means no cap beyond the minimum fleet.</summary>
+    public int MaximumVehiclesOutOfService { get; set; } = 0;
+    /// <summary>B07-FIX C4: a charging vehicle above this level (and at least target minus the margin) may be asked to stop
+    /// when a critical vehicle waits for the bay.</summary>
+    public decimal PreemptionReleaseBatteryPercent { get; set; } = 50;
+    public decimal PreemptionTargetMarginPercent { get; set; } = 10;
+    public string? ConfigurationError() => BasicConfigurationError() ?? SiteConfigurationError();
+    private string? BasicConfigurationError() =>
         CriticalBatteryPercent <= 0 || CriticalBatteryPercent > StartBatteryPercent || StartBatteryPercent >= TargetBatteryPercent || TargetBatteryPercent > 100
             ? "充电阈值须满足0<严重电量≤启动电量<退出电量≤100。" :
         PollIntervalMs < 100 || NavigationTimeoutSeconds < 1 || CurrentTimeoutSeconds < 1 || ChargingTimeoutSeconds < 1 || StopTimeoutSeconds < 1 || StateMaxAgeSeconds < 1 ||
+        TransientFailureLimit < 1 || TransientFailureSeconds < 1 ||
         !double.IsFinite(MinimumChargingCurrent) || MinimumChargingCurrent <= 0 || !double.IsFinite(MaximumTemperature) || MaximumTemperature is <= 0 or > 100
             ? "充电超时、采集时效、电流或温度参数无效。" :
         Sites is null || Sites.Any(s => new[] {s.Id,s.ChargingSiteId,s.ExitSiteId,s.ResourceId}.Any(string.IsNullOrWhiteSpace) || s.ChargingSiteId == s.ExitSiteId || s.AllowedVehicleIds is null) ||
         Sites.Select(s=>s.Id).Distinct(StringComparer.OrdinalIgnoreCase).Count()!=Sites.Length || Sites.Select(s=>s.ResourceId).Distinct(StringComparer.OrdinalIgnoreCase).Count()!=Sites.Length ||
         Sites.Select(s=>s.ChargingSiteId).Distinct(StringComparer.OrdinalIgnoreCase).Count()!=Sites.Length
             ? "充电位、出口和独占资源配置无效或重复。" : null;
+    // B07-FIX C11: a shared exit, a standby that is also an exit or a charging point, or a standby that is not a
+    // dedicated point must be rejected before any vehicle is sent.
+    private string? SiteConfigurationError()
+    {
+        if (Sites.Select(s => s.ExitSiteId).Distinct(StringComparer.OrdinalIgnoreCase).Count() != Sites.Length)
+            return "两个充电位共用同一出口，无法同时安全离位，请先核对配置。";
+        if (BayFaultCooldownMinutes < 0)
+            return "充电位故障冷却时间不能为负数。";
+        if (TargetBatteryPercent - StartBatteryPercent < 10m)
+            return "充电启动电量与目标电量至少须相差10个百分点，避免频繁往返。";
+        if (StartBatteryPercent < DispatchMinimumBatteryPercent)
+            return "充电启动电量不能低于派单最低电量，否则车辆会在无法排队前即被派单阻挡。";
+        if (NearFullBatteryPercent <= StartBatteryPercent || NearFullBatteryPercent > 100 || ChargeStallMinutes < 1 || ChargeStallMinimumGainPercent <= 0)
+            return "近满电及充电停滞检测参数无效。";
+        if (MinimumAvailableVehicles < 0 || MaximumVehiclesOutOfService < 0)
+            return "车队最少可用车数及同时离线车数上限不能为负数。";
+        if (PreemptionReleaseBatteryPercent is <= 0 || PreemptionReleaseBatteryPercent <= CriticalBatteryPercent || PreemptionReleaseBatteryPercent >= TargetBatteryPercent ||
+            PreemptionTargetMarginPercent < 0 || PreemptionTargetMarginPercent >= 100)
+            return "抢占放行电量须位于严重电量与目标电量之间，目标余量须非负。";
+        if (DefaultStandbySiteId is not null && DefaultStandbySiteId.Trim().Length > 0 &&
+            Sites.Any(s => s.ExitSiteId.Equals(DefaultStandbySiteId.Trim(), StringComparison.OrdinalIgnoreCase) ||
+                           s.ChargingSiteId.Equals(DefaultStandbySiteId.Trim(), StringComparison.OrdinalIgnoreCase)))
+            return "充电返回待机点不能是充电出口或充电点，须为专用待机位。";
+        return null;
+    }
 }
 
 // Commissioned means the actual dock, relay, current polarity and safe exit have
@@ -49,6 +106,8 @@ public sealed record ChargingRoute(string MapId, string MapVersionId, string[] T
     public string? OriginSiteId { get; init; }
     public string? ReturnSiteId { get; init; }
     public string[] ReturnPath { get; init; } = [];
+    // B07-FIX C5: the road that leads into the bay, plus the bay itself; the only resources reserved at queue time.
+    public string[] InboundResourceIds { get; init; } = [];
 }
 public sealed record ChargingSession(string SessionId, string VehicleId, ChargingPhase Phase, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt, string Message)
 {
@@ -73,6 +132,15 @@ public sealed record ChargingSession(string SessionId, string VehicleId, Chargin
     public ChargingWorkflowKind? ScriptOperationKind { get; init; }
     public ChargingWorkflowStatus? WorkflowStatus { get; init; }
     public bool ShutdownVerified { get; init; }
+    // B07-FIX C2: a held observation resumes by itself once the observation is clear; these count the failures so far.
+    public bool TransientHold { get; init; }
+    // B07-FIX C9: set when the bay gave no current after the start timer; the bay is in cooldown until this + BayFaultCooldownMinutes.
+    public DateTimeOffset? BayFaultAt { get; init; }
+    // B07-FIX C15: the battery level and time of the last observed gain, used to detect a charge that does not progress.
+    public decimal? ChargeProgressPercent { get; init; }
+    public DateTimeOffset? ChargeProgressAt { get; init; }
+    public int TransientFailures { get; init; }
+    public DateTimeOffset? TransientSince { get; init; }
     public string? OriginSiteId => Route?.OriginSiteId;
     public string? ReturnSiteId => Route?.ReturnSiteId;
     public bool HasReservation => Site is not null && Route is not null && Phase != ChargingPhase.Completed;
@@ -100,6 +168,8 @@ public interface IChargingDispatchGuard
 public interface IChargingService : IChargingDispatchGuard
 {
     Task<ChargingStatus> ReadAsync(CancellationToken ct);
+    /// <summary>B07-FIX C9/C12: charging alarms for the alarm rule engine (bay fault cooldown, unknown battery).</summary>
+    IReadOnlyList<AlarmCandidate> AlarmCandidates(DateTimeOffset now) => [];
     Task<ChargingResult> RequestAsync(TrafficUserContext user, ChargingRequest request, CancellationToken ct) =>
         Task.FromResult(new ChargingResult(false, "当前实现不支持手动充电申请。"));
     Task<ChargingResult> RequestStopAsync(TrafficUserContext user, ChargingStopRequest request, CancellationToken ct);
@@ -160,6 +230,10 @@ public interface IChargingRuntimePort
     // B07-FIX C8: exit roads are not held while charging; they are acquired as ordinary traffic once the
     // stop is verified. False keeps the session in AwaitingStop (no Hold) until the exit route is free.
     Task<bool> AcquireExitAsync(ChargingSession session, CancellationToken ct) => Task.FromResult(true);
+    // B07-FIX C1: after the vehicle stands at the exit, the return road is leased and the charging bay released.
+    // False keeps the session at the exit (no Hold) until the return road is free.
+    Task<bool> AcquireReturnAsync(ChargingSession session, CancellationToken ct) => Task.FromResult(true);
+    Task<int> ReleaseBayAtExitAsync(ChargingSession session, CancellationToken ct) => Task.FromResult(0);
     Task<string?> ValidateAsync(ChargingSession session, bool requireStopped, CancellationToken ct);
     Task<string?> ValidateRecoveryCloseAsync(ChargingSession session,CancellationToken ct) => ValidateAsync(session,true,ct);
     bool IsAt(string vehicleId, string siteId);
