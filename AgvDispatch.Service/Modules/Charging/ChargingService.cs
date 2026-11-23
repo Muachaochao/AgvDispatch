@@ -249,6 +249,15 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
         {
             if(port.NewWorkBlockReason is not null)return;
             if(await port.BusyReasonAsync(row.VehicleId,row.SessionId,ct) is {} busy){Hold(row,busy);return;}
+            // B07-FIX C7: the reservation is proven again (idempotently) before any navigation write. If it cannot be
+            // proven, the session returns to the queue with no bay or route, and no command is sent.
+            if(!await port.ReserveAsync(row,ct))
+            {
+                await port.ReleaseAsync(row.SessionId,ct);
+                Save(row with {Site=null,Route=null,Phase=ChargingPhase.Queued,PhaseSince=Now,UpdatedAt=Now,
+                    Message="充电位或路权复核未通过，预留已失效，已退回排队；未发送导航。"});
+                return;
+            }
             await SendNavigationAsync(row,false,ct);return;
         }
         if(row.Phase is ChargingPhase.SendingToCharger or ChargingPhase.SendingExit)

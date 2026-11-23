@@ -78,6 +78,17 @@ returnBusy.Port.ReturnBlocked = false;
 await returnBusy.UntilAsync(s => s.Phase == ChargingPhase.Returning);
 Check(returnBusy.Port.Navigations.Count == 3, "the return navigation is sent once the return road is free");
 
+// C7: a reservation that cannot be proven again before the navigation write returns the session to the queue; no command is sent.
+var phantom = new Fixture(evidence, "phantom-reservation");
+phantom.Port.RefuseReserveCall = 2;
+await phantom.CyclesAsync(1);
+Check(phantom.Current.Phase == ChargingPhase.Queued && phantom.Current.Site is null && phantom.Current.Route is null &&
+    phantom.Port.Navigations.Count == 0 && phantom.Port.SessionLeaseCount(phantom.Current.SessionId) == 0,
+    "a reservation that is refused on the re-check falls back to the queue with no bay, no route and no navigation");
+phantom.Port.RefuseReserveCall = null;
+await phantom.UntilAsync(s => s.Phase == ChargingPhase.GoingToCharger);
+Check(phantom.Port.Navigations.Count == 1, "the queued vehicle is reserved again and navigates once the bay is provably free");
+
 Console.WriteLine($"PASS: {checks} relay return checks.");
 
 sealed class Fixture
@@ -175,6 +186,8 @@ sealed class FakePort(FakeClock clock) : IChargingRuntimePort
     public List<(string Command, string Vehicle, string[] Path)> Navigations { get; } = [];
     public bool ExitOccupied { get; set; }
     public bool ReturnBlocked { get; set; }
+    public int ReserveCalls { get; private set; }
+    public int? RefuseReserveCall { get; set; }
     public int ReleaseCount { get; private set; }
     public IReadOnlyList<AgvRobotSnapshot> Vehicles => vehicles.Values.ToArray();
     public string? NewWorkBlockReason => null;
@@ -217,8 +230,11 @@ sealed class FakePort(FakeClock clock) : IChargingRuntimePort
         { OriginSiteId = Sites[vehicleId], ReturnSiteId = "STANDBY", ReturnPath = ReturnRoute });
     public Task<string?> ValidateAsync(ChargingSession session, bool requireStopped, CancellationToken ct) => Task.FromResult<string?>(null);
     public bool IsAt(string vehicleId, string siteId) => Sites.GetValueOrDefault(vehicleId) == siteId;
-    public Task<bool> ReserveAsync(ChargingSession session, CancellationToken ct) =>
-        Task.FromResult(Take(session.SessionId + "-LOCK", session.SessionId, [In, Bay]));
+    public Task<bool> ReserveAsync(ChargingSession session, CancellationToken ct)
+    {
+        ReserveCalls++;
+        return Task.FromResult(ReserveCalls != RefuseReserveCall && Take(session.SessionId + "-LOCK", session.SessionId, [In, Bay]));
+    }
     public Task<int> ShrinkToBayAsync(ChargingSession session, CancellationToken ct) =>
         Task.FromResult(Trim(session.SessionId + "-LOCK", [Bay]));
     public Task<bool> AcquireExitAsync(ChargingSession session, CancellationToken ct) =>
