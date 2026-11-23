@@ -80,6 +80,33 @@ public sealed class DispatchOrchestratorOptions
             configured.UseDownPgv);
     }
 
+    /// <summary>
+    /// Startup checks that need the configured fleet as well as the dispatch options. Run once before the host
+    /// is built, so a wrong site, pool or concurrency setting stops the service instead of failing in the first cycle.
+    /// </summary>
+    public string? GetStartupError(IReadOnlyCollection<string> configuredVehicleIds)
+    {
+        if (GetConfigurationError() is { } error) return error;
+        if (!Enabled) return null;
+        if (configuredVehicleIds.Count == 0)
+            return "启用调度前必须至少配置一台启用的AGV车辆。";
+        if (MaxConcurrentTasks > configuredVehicleIds.Count)
+            return $"Dispatching:MaxConcurrentTasks({MaxConcurrentTasks})不能超过已配置的AGV车辆数({configuredVehicleIds.Count})。";
+        if (StationPickupSites.Count == 0)
+            return "启用调度前必须配置Dispatching:StationPickupSites，至少一个工位的取货站点。";
+        if (StationPickupSites.Any(pair => string.IsNullOrWhiteSpace(pair.Key) || string.IsNullOrWhiteSpace(pair.Value)))
+            return "Dispatching:StationPickupSites中存在空的工位或取货站点。";
+        var dumperSites = new HashSet<string>(GetDumperWaitingSites().Append(DumperDumpingSite), StringComparer.OrdinalIgnoreCase);
+        if (StationPickupSites.Values.FirstOrDefault(site => dumperSites.Contains(site)) is { } conflict)
+            return $"取货站点{conflict}与倒料候车或倒料站点冲突。";
+        var vehicles = new HashSet<string>(configuredVehicleIds, StringComparer.OrdinalIgnoreCase);
+        var unknown = StationVehiclePools.Values.SelectMany(ids => ids)
+            .FirstOrDefault(id => !vehicles.Contains(id));
+        if (unknown is not null)
+            return $"Dispatching:StationVehiclePools引用了未配置的AGV车辆：{unknown}。";
+        return null;
+    }
+
     public string? GetConfigurationError()
     {
         if (!Enabled)

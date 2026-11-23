@@ -523,6 +523,9 @@ builder.Services.AddHostedService<AlarmRuleEngine>();
 
 try
 {
+    if (dispatchOrchestratorOptions.GetStartupError(agvOptions.Robots.Where(robot => robot.Enabled)
+            .Select(robot => robot.VehicleId).ToArray()) is { } dispatchConfigurationError)
+        throw new InvalidOperationException(dispatchConfigurationError);
     var host = builder.Build();
     // Build the schema before any polling/recording background service can query it.
     await host.Services.GetRequiredService<IDatabaseInitializer>().InitializeAsync(CancellationToken.None);
