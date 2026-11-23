@@ -92,11 +92,28 @@ class SimulationTests(unittest.TestCase):
         call = dict(planIndex=1, stationId='CNC-111', atSeconds=3, status='pending')
         started = time.time() - 10
         runtime.scenario = dict(status='running', startedAt=started, callRows=[call])
+        runtime.clock = Mock()
+        runtime.clock.monotonic.return_value = 20
+        runtime.clock.time.return_value = time.time()
+        runtime.clock.origin_seconds = 10
+        runtime.history_cache = (20, [dict(id='report-1')])
+        runtime.catalog_cache = (0, {})
+        runtime.scheme_store = Mock()
+        runtime.scheme_store.catalog.return_value = dict(
+            schemes=[dict(id='scheme-1', name='五车十单')],
+            selectedSchemeId='scheme-1',
+            recentInstances=[],
+            persistenceMessage=None,
+        )
 
-        scenario = runtime.live_status()['scenario']
+        value = runtime.live_status()
 
+        scenario = value['scenario']
         self.assertEqual(scenario['startedAt'], started)
         self.assertEqual(scenario['callRows'], [call])
+        self.assertEqual(value['schemes'], [dict(id='scheme-1', name='五车十单')])
+        self.assertEqual(value['selectedSchemeId'], 'scheme-1')
+        self.assertEqual(value['history'], [dict(id='report-1')])
 
     def test_run_scenario_does_not_recheck_freshness_through_full_status(self):
         runtime = Runtime.__new__(Runtime)
