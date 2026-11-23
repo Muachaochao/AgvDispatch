@@ -94,6 +94,28 @@ await noPreempt.CyclesAsync(3);
 Check(noPreempt.Session("A")!.StopRequested == false && noPreempt.Session("A")!.Phase == ChargingPhase.Charging,
     "a charging vehicle below the release level is never preempted");
 
+// C12: a vehicle whose battery is unknown is not usable for new business and is not queued for charging.
+var unknown = new Fleet(evidence, "unknown", ["U", "A"], bays: 1);
+unknown.Put("U", 24);
+unknown.Port.ForgetBattery("U");
+unknown.Put("A", 10);
+await unknown.CyclesAsync(2);
+Check(unknown.Session("U") is null && !unknown.Service.AllowsNewBusiness("U"),
+    "a vehicle with an unknown battery is neither queued for charging nor allowed new business");
+unknown.Put("U", 24);
+await unknown.CyclesAsync(1);
+Check(unknown.Session("U") is null && unknown.Service.AllowsNewBusiness("U"),
+    "a vehicle whose battery reads again is judged by that reading: above critical with the bay held, it may take business");
+
+// C13: a manual request with a different letter case is stored under the vehicle id of the state cache.
+var casing = new Fleet(evidence, "casing", ["A", "B"], bays: 2);
+casing.Put("A", 60);
+await casing.CyclesAsync(1);
+var admin = AgvDispatch.Application.Abstractions.TrafficUserContext.LocalOperation("charging-fleet-test");
+var request = await casing.Service.RequestAsync(admin, new(Guid.NewGuid().ToString("N"), "a"), default);
+Check(request.Accepted && casing.Sessions().Count(s => s.VehicleId == "A") == 1 && casing.Sessions().All(s => s.VehicleId == "A"),
+    "a request with a lower-case vehicle id is stored under the canonical vehicle id");
+
 Console.WriteLine($"PASS: {checks} charging queue and fleet checks.");
 
 sealed class Fleet
@@ -181,6 +203,7 @@ sealed class FleetPort(FakeClock clock) : IChargingRuntimePort
             clock.GetUtcNow(), clock.GetUtcNow(), 0, 1, null, 1)
         { VelocityX = 0, VelocityY = 0, AngularVelocity = 0, Charging = charging, BatteryCurrent = current, BatteryTemperature = 25 };
     }
+    public void ForgetBattery(string id) => vehicles[id] = vehicles[id] with { BatteryPercent = null };
     public void Arrive(string vehicle, string station)
     {
         stations[vehicle] = station;

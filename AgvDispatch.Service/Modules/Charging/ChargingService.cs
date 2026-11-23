@@ -17,6 +17,8 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
     private readonly IChargingWorkflow? workflow;
     private readonly IChargerTelemetryMonitor? chargerMonitor;
     private readonly SemaphoreSlim mutex = new(1, 1);
+    // B07-FIX C12: the last battery value that was valid for each vehicle, used only for queue ordering.
+    private readonly Dictionary<string,decimal> lastValidBattery = new(StringComparer.OrdinalIgnoreCase);
     private ChargingSession[] sessions;
     private DateTimeOffset Now => clock.GetUtcNow();
 
@@ -143,8 +145,10 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
         using var execution=await port.EnterExecutionAsync(false,ct);
         if(execution is null)return;
         var blockedByCritical=false;
+        foreach(var vehicle in port.Vehicles.Where(v=>v.BatteryPercent is {} battery && battery>=0 && battery<=100))
+            lastValidBattery[vehicle.VehicleId]=vehicle.BatteryPercent!.Value;
         foreach(var current in sessions.Where(s=>s.Phase!=ChargingPhase.Completed)
-            .OrderBy(s=>port.Vehicles.FirstOrDefault(v=>v.VehicleId==s.VehicleId)?.BatteryPercent??100).ThenBy(s=>s.CreatedAt).ToArray())
+            .OrderBy(s=>lastValidBattery.GetValueOrDefault(s.VehicleId,100m)).ThenBy(s=>s.CreatedAt).ToArray())
         {
             var row=current;
             try

@@ -17,7 +17,8 @@ public sealed partial class ChargingService
         if(request.RequiredPositiveSeconds is {} seconds && (seconds is <60 or >600))
             return new(false,"计时联调须为连续有效充电60～600秒。");
         var requestId=requestGuid.ToString("N");
-        var vehicleId=request.VehicleId.Trim();
+        // B07-FIX C13: store the vehicle under the canonical id of the state cache, so ordering and ownership checks agree.
+        var vehicleId=port.Vehicles.FirstOrDefault(v=>v.VehicleId.Equals(request.VehicleId.Trim(),StringComparison.OrdinalIgnoreCase))?.VehicleId??request.VehicleId.Trim();
         var returnSite=string.IsNullOrWhiteSpace(request.ReturnSiteId)?null:request.ReturnSiteId.Trim();
         using var lease=await EnterBusinessAsync(ct);
         // Retained request IDs are checked before enablement: a lost HTTP reply
