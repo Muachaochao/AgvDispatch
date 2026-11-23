@@ -162,21 +162,21 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
         {
             // The vehicle that will drive this route is never an obstacle on its own future leg.
             if (string.Equals(vehicle.VehicleId, movingVehicleId, StringComparison.OrdinalIgnoreCase)) continue;
-            if (vehicle.Connection != ConnectionState.Online || vehicle.Quality != SignalQuality.Good ||
-                vehicle.X is not { } x || vehicle.Y is not { } y ||
-                vehicle.LocalizationConfidence is not { } confidence ||
-                vehicle.LastSuccessfulPollAt is not { } observed || observed > now.AddSeconds(1) ||
-                now - observed > maximumAge)
-                continue;
             // Completing a business task releases its leases, not its physical
-            // body. A fresh parked peer still blocks its bay and the explicitly
-            // modelled adjacent-road envelope resources. The unique vehicle at
-            // the actual source may depart; a nearest point is never substituted.
+            // body. A parked peer keeps blocking its bay and the explicitly modelled
+            // adjacent-road envelope resources until fresh pose evidence shows it has
+            // left. Offline or stale telemetry therefore falls back to the last known
+            // station, never to "no vehicle here". The unique fresh vehicle at the
+            // actual source may depart; a nearest point is never substituted.
+            var fresh = vehicle.Connection == ConnectionState.Online && vehicle.Quality == SignalQuality.Good &&
+                vehicle.X is not null && vehicle.Y is not null && vehicle.LocalizationConfidence is not null &&
+                vehicle.LastSuccessfulPollAt is { } seenAt && seenAt <= now.AddSeconds(1) &&
+                now - seenAt <= maximumAge;
             var parked = definition.Nodes.SingleOrDefault(n => n.Enabled &&
                 (n.Id.Equals(vehicle.CurrentStation, StringComparison.OrdinalIgnoreCase) ||
                  string.Equals(n.AgvSiteId, vehicle.CurrentStation, StringComparison.OrdinalIgnoreCase)) &&
-                Distance(x, y, n.X, n.Y) <= .15);
-            if (parked is not null && !string.Equals(vehicle.VehicleId, departingId, StringComparison.OrdinalIgnoreCase))
+                (!fresh || Distance(vehicle.X!.Value, vehicle.Y!.Value, n.X, n.Y) <= .15));
+            if (parked is not null && (!fresh || !string.Equals(vehicle.VehicleId, departingId, StringComparison.OrdinalIgnoreCase)))
             {
                 var exclusive = definition.Resources.Where(r => r.Capacity == 1 &&
                     parked.ResourceIds.Contains(r.Id, StringComparer.OrdinalIgnoreCase))
@@ -190,6 +190,12 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
                     if (edge.Bidirectional) blocked.Add(new(edge.Id, edge.To, edge.From));
                 }
             }
+            // Route geometry of a moving vehicle requires fresh, localized telemetry.
+            if (!fresh) continue;
+            var x = vehicle.X!.Value;
+            var y = vehicle.Y!.Value;
+            var confidence = vehicle.LocalizationConfidence!.Value;
+            var observed = vehicle.LastSuccessfulPollAt!.Value;
             var position = AgvMapPositionAnalyzer.Analyze(x, y, confidence, observed, definition, now,
                 maximumAge, _mapOptions.MinimumLocalizationConfidence,
                 _mapOptions.MaximumRouteDeviationMeters, reuseGeometry: true);

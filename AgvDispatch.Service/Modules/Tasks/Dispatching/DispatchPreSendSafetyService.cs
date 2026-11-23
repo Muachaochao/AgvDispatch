@@ -169,10 +169,11 @@ public sealed class DispatchPreSendSafetyService(
         foreach (var other in vehicleStates.GetAll().Where(vehicle =>
                      !string.Equals(vehicle.VehicleId, step.VehicleId, StringComparison.OrdinalIgnoreCase)))
         {
-            if (other.Connection != ConnectionState.Online || other.Quality != SignalQuality.Good ||
-                other.LastSuccessfulPollAt is not { } observed || observed > now.AddSeconds(1) ||
-                now - observed > TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds))
-                continue;
+            // A vehicle whose telemetry is stale or offline still blocks the route station it
+            // was last seen at. Only the position projection below needs fresh evidence (R4).
+            var fresh = other.Connection == ConnectionState.Online && other.Quality == SignalQuality.Good &&
+                other.LastSuccessfulPollAt is { } observed && observed <= now.AddSeconds(1) &&
+                now - observed <= TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds);
 
             var stationIndex = -1;
             if (!string.IsNullOrWhiteSpace(other.CurrentStation))
@@ -187,7 +188,7 @@ public sealed class DispatchPreSendSafetyService(
             // During motion the vendor may return an empty current_station. Use the
             // same bounded map projection as traffic monitoring so a vehicle on one
             // of this window's directed edges still blocks the vehicle behind it.
-            if (stationIndex < 0)
+            if (stationIndex < 0 && fresh)
             {
                 var position = AgvMapPositionAnalyzer.Analyze(other.X, other.Y, other.LocalizationConfidence,
                     other.LastSuccessfulPollAt, runtime.Definition, now,
