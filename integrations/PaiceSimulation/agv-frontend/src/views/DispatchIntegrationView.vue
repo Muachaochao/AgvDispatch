@@ -886,6 +886,21 @@ async function selectReport(id: string) {
   }
 }
 watch(
+  [section, () => status.value?.history, () => status.value?.report?.id],
+  ([activeSection, history, currentReportId]) => {
+    if (
+      activeSection !== "report" ||
+      historicalReportId.value ||
+      currentReportId ||
+      !history?.length
+    ) return;
+    const latest = [...history]
+      .filter(entry => entry.id)
+      .sort((left, right) => (right.finishedAt ?? 0) - (left.finishedAt ?? 0))[0];
+    if (latest?.id) void selectReport(latest.id);
+  },
+);
+watch(
   [() => status.value?.rootName, () => status.value?.scenario?.id],
   () => {
     clearTask();
