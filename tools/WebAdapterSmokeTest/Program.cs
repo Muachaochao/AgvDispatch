@@ -33,6 +33,18 @@ var definition = new MapDefinition("隔离测试地图", "synthetic", "TestCarte
 var projected = SnapshotReader.ProjectMap(new(DateTimeOffset.UtcNow, "MAP-WEB-TEST", "V1", definition, []))!;
 Check(projected.DefinitionHash == EngineeringRuntimeIdentity.MapHash(definition),
     "Web snapshot and backend runtime use the same canonical map hash for enabled editing and routing");
+var v5ScaleResources = Enumerable.Range(0, 2500)
+    .Select(index => new TrafficResourceDefinition("RES-" + index, TrafficResourceType.NarrowAisle, 1, []))
+    .ToArray();
+Check(SnapshotReader.ProjectMap(new(DateTimeOffset.UtcNow, "MAP-WEB-V5", "V1",
+        definition with { Resources = v5ScaleResources }, []))!.Resources.Length == 2500,
+    "Web地图接受2450级资源规模的V5地图");
+var overBudgetResources = Enumerable.Range(0, 6001)
+    .Select(index => new TrafficResourceDefinition("OVER-" + index, TrafficResourceType.NarrowAisle, 1, []))
+    .ToArray();
+Check(ThrowsInvalidData(() => SnapshotReader.ProjectMap(new(DateTimeOffset.UtcNow, "MAP-WEB-OVER", "V1",
+        definition with { Resources = overBudgetResources }, []))),
+    "Web地图仍在资源预算外明确拒绝");
 var projectionJson = JsonSerializer.SerializeToElement(projected, WebJson.Options);
 Check(projectionJson.GetProperty("edges")[0].GetProperty("points").GetArrayLength() == 33, "曲线使用Domain统一采样33点，不退化为直线");
 Check(projectionJson.GetProperty("edges")[0].GetProperty("points")[16].GetProperty("y").GetDouble() > 0, "Bezier中间几何保持弯曲");
@@ -62,6 +74,12 @@ Check(SnapshotReader.ResolvePositionedVehicleIds(false, positionStations, [],
 Check(SnapshotReader.ResolvePositionedVehicleIds(false, positionStations, ["MAPPED"],
     [PositionVehicle("FORK", ConnectionState.Online, SignalQuality.Good, AgvMapPositionState.Normal, "LM1")]).SequenceEqual(["MAPPED"]),
     "已核定业务地图绑定沿用原画车资格");
+
+static bool ThrowsInvalidData(Func<object?> action)
+{
+    try { action(); return false; }
+    catch (InvalidDataException) { return true; }
+}
 
 using (var db = DatabaseFactory.Create(new() { DatabasePath = databasePath }))
 {

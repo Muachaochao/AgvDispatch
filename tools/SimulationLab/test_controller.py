@@ -178,9 +178,15 @@ class SimulationTests(unittest.TestCase):
         self.assertEqual(charging['startBatteryPercent'], 25)
         self.assertEqual(charging['criticalBatteryPercent'], 15)
         self.assertEqual(charging['targetBatteryPercent'], 80)
+        self.assertEqual(charging['defaultStandbySiteId'], '')
+        self.assertEqual(charging['minimumAvailableVehicles'], 0)
+        self.assertEqual(charging['maximumVehiclesOutOfService'], 0)
+        self.assertEqual(charging['preemptionReleaseBatteryPercent'], 50)
         self.assertEqual(charging['sites'], [
             dict(id='B07-CHARGE-01', chargingSiteId='CHARGE-01', exitSiteId='EXIT-01',
                  resourceId='CHARGE-01', allowedVehicleIds=['CAR-1', 'CAR-2']),
+            dict(id='B07-CHARGE-02', chargingSiteId='CHARGE-02', exitSiteId='EXIT-02',
+                 resourceId='CHARGE-02', allowedVehicleIds=['CAR-1', 'CAR-2']),
         ])
         self.assertEqual([v['batteryPercent'] for v in normalized['vehicles']], [22, 24])
         self.assertEqual(normalized['vehicles'][0]['chargingGainPercentPerHour'], 400)
@@ -195,6 +201,20 @@ class SimulationTests(unittest.TestCase):
         self.assertNotIn('chargingPriorityTest', runtime._validate_configuration(payload))
         payload = self.charging_payload(); payload['chargingPriorityTest']['criticalBatteryPercent'] = 30
         with self.assertRaisesRegex(ValueError, '阈值'): runtime._validate_configuration(payload)
+
+    def test_charging_priority_configuration_accepts_fleet_policy_and_dedicated_standby(self):
+        runtime = object.__new__(Runtime)
+        payload = self.charging_payload()
+        next(n for n in payload['mapDefinition']['nodes'] if n['id'] == 'PARK1').update(
+            type='WaitingPoint', allowTrafficStop=True)
+        payload['chargingPriorityTest'].update(
+            defaultStandbySiteId='PARK1', minimumAvailableVehicles=1, maximumVehiclesOutOfService=1,
+            preemptionReleaseBatteryPercent=60)
+        charging = runtime._validate_configuration(payload)['chargingPriorityTest']
+        self.assertEqual(charging['defaultStandbySiteId'], 'PARK1')
+        self.assertEqual(charging['minimumAvailableVehicles'], 1)
+        self.assertEqual(charging['maximumVehiclesOutOfService'], 1)
+        self.assertEqual(charging['preemptionReleaseBatteryPercent'], 60)
 
     def test_charging_priority_configuration_rejects_unsafe_or_ambiguous_sites(self):
         runtime = object.__new__(Runtime)
@@ -211,9 +231,25 @@ class SimulationTests(unittest.TestCase):
         scenarios.append((payload, '允许车辆'))
         payload = self.charging_payload(); payload['vehicles'][0]['chargingGainPercentPerHour'] = 1001
         scenarios.append((payload, '充电增益'))
+        payload = self.charging_payload(); payload['chargingPriorityTest']['defaultStandbySiteId'] = 'CHARGE-01'
+        scenarios.append((payload, '待机点'))
+        payload = self.charging_payload(); payload['chargingPriorityTest']['maximumVehiclesOutOfService'] = 3
+        scenarios.append((payload, '离线'))
         for payload, message in scenarios:
             with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
                 runtime._validate_configuration(payload)
+
+    def test_charging_bay_capacity_covers_initial_low_battery_vehicles(self):
+        runtime = object.__new__(Runtime)
+        payload = self.charging_payload()
+        payload['chargingPriorityTest']['sites'] = payload['chargingPriorityTest']['sites'][:1]
+        with self.assertRaisesRegex(ValueError, '充电位容量不足'):
+            runtime._validate_configuration(payload)
+        payload = self.charging_payload()
+        for site in payload['chargingPriorityTest']['sites']:
+            site['allowedVehicleIds'] = ['CAR-1']
+        with self.assertRaisesRegex(ValueError, '充电位容量不足'):
+            runtime._validate_configuration(payload)
 
     def test_isolated_instances_use_field_tuned_obstacle_timing(self):
         self.assertEqual(OBSTACLE_RECOVERY_TIMING, {
@@ -282,19 +318,29 @@ class SimulationTests(unittest.TestCase):
                  type='ChargingPoint', resourceIds=['CHARGE-01']),
             dict(id='EXIT-01', agvSiteId='EXIT-01', x=6, y=0, enabled=True,
                  type='WaitingPoint', resourceIds=[]),
+            dict(id='CHARGE-02', agvSiteId='CHARGE-02', x=5, y=2, enabled=True,
+                 type='ChargingPoint', resourceIds=['CHARGE-02']),
+            dict(id='EXIT-02', agvSiteId='EXIT-02', x=6, y=2, enabled=True,
+                 type='WaitingPoint', resourceIds=[]),
         ])
         payload['mapDefinition']['edges'].extend([
             dict(id='E-CHARGE-IN', **{'from': 'WAIT', 'to': 'CHARGE-01'}, enabled=True, bidirectional=True),
             dict(id='E-CHARGE-OUT', **{'from': 'CHARGE-01', 'to': 'EXIT-01'}, enabled=True, bidirectional=True),
+            dict(id='E-CHARGE-IN-2', **{'from': 'WAIT', 'to': 'CHARGE-02'}, enabled=True, bidirectional=True),
+            dict(id='E-CHARGE-OUT-2', **{'from': 'CHARGE-02', 'to': 'EXIT-02'}, enabled=True, bidirectional=True),
         ])
-        payload['mapDefinition']['resources'].append(
-            dict(id='CHARGE-01', type='ChargingBay', capacity=1, name='B07一号码头'))
+        payload['mapDefinition']['resources'].extend([
+            dict(id='CHARGE-01', type='ChargingBay', capacity=1, name='B07一号码头'),
+            dict(id='CHARGE-02', type='ChargingBay', capacity=1, name='B07二号码头'),
+        ])
         payload['vehicles'][0].update(batteryPercent=22, chargingGainPercentPerHour=400)
         payload['vehicles'][1].update(batteryPercent=24, chargingGainPercentPerHour=400)
         payload['chargingPriorityTest'] = dict(
             enabled=True, startBatteryPercent=25, criticalBatteryPercent=15, targetBatteryPercent=80,
             sites=[dict(id='B07-CHARGE-01', chargingSiteId='CHARGE-01', exitSiteId='EXIT-01',
-                        resourceId='CHARGE-01', allowedVehicleIds=['CAR-1', 'CAR-2'])])
+                        resourceId='CHARGE-01', allowedVehicleIds=['CAR-1', 'CAR-2']),
+                   dict(id='B07-CHARGE-02', chargingSiteId='CHARGE-02', exitSiteId='EXIT-02',
+                        resourceId='CHARGE-02', allowedVehicleIds=['CAR-1', 'CAR-2'])])
         return payload
 
     def test_inspection_reference_accepts_existing_waiting_bay_but_not_waypoint(self):

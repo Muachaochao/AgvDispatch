@@ -1547,7 +1547,8 @@ onBeforeUnmount(() => {
           :type="displayedReport.status === 'failed' ? 'error' : 'info'"
           :closable="false"
         />
-        <DispatchReplay v-if="displayedReport?.id" :key="displayedReport.id" :report-id="displayedReport.id" />
+        <DispatchReplay v-if="displayedReport?.id" :key="displayedReport.id" :report-id="displayedReport.id"
+          :simulation-rate="displayedReport.simulationRate" />
         <el-table v-if="displayedReport?.waitingChain?.length" :data="displayedReport.waitingChain" size="small">
           <el-table-column prop="stationId" label="工位" width="100" />
           <el-table-column prop="vehicleId" label="车辆" width="100" />

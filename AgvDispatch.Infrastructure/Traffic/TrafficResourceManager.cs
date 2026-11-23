@@ -194,6 +194,24 @@ public sealed partial class TrafficResourceManager(
                 }
             }
 
+            // R5: acquire nothing if this grant would close a wait cycle. The
+            // current request is evaluated as if it already owned the requested
+            // resources; a cycle means another earlier grant must finish first.
+            var cycle = await CycleIfGrantedAsync(context!, ownerStepId, taskId, vehicleId, requested,
+                leasesByResource.SelectMany(leases => leases).ToList(), now, cancellationToken);
+            if (cycle is not null)
+            {
+                var link = cycle.Links.FirstOrDefault(link =>
+                    string.Equals(link.WaitingTaskId, taskId, StringComparison.OrdinalIgnoreCase))
+                    ?? cycle.Links.FirstOrDefault();
+                blockerResource = link?.ResourceId ?? requested[0];
+                blockerTask = link?.HoldingTaskId;
+                await WriteStateAsync(ownerStepId, taskId, vehicleId, "Waiting",
+                    $"授予前等待图检查发现闭合等待风险，禁止本次路权授予；等待{blockerTask}释放资源{blockerResource}。{cycle.Message}",
+                    requested, cancellationToken);
+                return;
+            }
+
             var additions = new List<TrafficResourceLeaseEntity>();
             var renewed = new List<string>();
             foreach (var resourceId in requested)

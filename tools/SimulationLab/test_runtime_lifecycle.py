@@ -186,6 +186,20 @@ class LifecycleTests(unittest.TestCase):
             self.assertEqual(runtime.settings['TrafficSegmentRelease']['ReceiptValiditySeconds'], 15)
             self.assertAlmostEqual(runtime.settings['Dispatching']['DumperTransitClearanceMeters'], 1.13)
 
+    def test_eight_times_freshness_windows_respect_service_option_bounds(self):
+        with tempfile.TemporaryDirectory() as name, patch('controller.WORKSPACE', Path(name)):
+            source = fixture(Path(name))
+            runtime = Runtime(source)
+            runtime.new_instance(dict(vehicles=2, simulationRate=8))
+            settings = runtime.settings
+            self.assertLessEqual(settings['TrafficSegmentRelease']['ReceiptValiditySeconds'], 30)
+            self.assertGreaterEqual(settings['TrafficSegmentRelease']['ReceiptValiditySeconds'], 2)
+            self.assertLessEqual(settings['TrafficSegmentRelease']['MaximumAgeSeconds'], 30)
+            self.assertLessEqual(settings['HandshakeExecution']['DumperExit']['MaximumAgeSeconds'], 30)
+            self.assertGreaterEqual(settings['HandshakeExecution']['StateMaxAgeSeconds'], 8)
+            self.assertLessEqual(settings['Map']['PositionStaleSeconds'], 300)
+            self.assertEqual(settings['DispatchTaskSteps']['RollingWindowHardMaximumEdges'], 40)
+
     def test_clone_rejects_running_instance_and_nonloopback_saved_endpoint(self):
         with tempfile.TemporaryDirectory() as name, patch('controller.WORKSPACE', Path(name)):
             root = fixture(Path(name)); runtime = Runtime(root)
@@ -249,7 +263,7 @@ class LifecycleTests(unittest.TestCase):
                 inspectionSite='停车B',
                 vehicles=[
                     dict(id='AGV-01', initialSite='停车A', batteryPercent=22, chargingGainPercentPerHour=400),
-                    dict(id='AGV-02', initialSite='停车C', batteryPercent=24, chargingGainPercentPerHour=400),
+                    dict(id='AGV-02', initialSite='停车C', batteryPercent=30, chargingGainPercentPerHour=400),
                 ],
                 plcSignalTable=dict(fileName='plc.csv', csvText=SOURCE_PLC_TABLE.read_text(encoding='utf-8-sig')),
                 chargingPriorityTest=dict(

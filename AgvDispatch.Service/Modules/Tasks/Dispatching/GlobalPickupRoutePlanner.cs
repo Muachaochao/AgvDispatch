@@ -99,9 +99,15 @@ public sealed class GlobalPickupRoutePlanner(
         var clearance = FleetClearance(vehicleIds);
         if (clearance is null) return null;
 
+        // R5: a map-authored stop (allowTrafficStop=true Intersection / WaitingPoint /
+        // ChargingPoint / Station) is a valid rolling-window boundary.  Requiring a
+        // fully isolated WaitingPoint here made every conflict-staged long route
+        // exceed the R17 hard maximum (e.g. WAIT-01 -> CNC-075, 67 edges) even when
+        // the map already had marked safe stops, so no task could be dispatched.
+        // IsHoldingSite remains the stricter filter for optional detour candidates
+        // in SafeHoldingSites/TryStageViaHolding.
         var windows = TransportRouteWindows.NormalizeResources(
-            TransportRouteWindows.Plan(route, map, steps, agv.NavigationCommandMode,
-                node => IsHoldingSite(node, map, clearance.Value)), map);
+            TransportRouteWindows.Plan(route, map, steps, agv.NavigationCommandMode), map);
         if (windows.Count < 2 || windows[0].ResourceIds.Any(unavailable.Contains))
             return null;
 

@@ -21,6 +21,7 @@ const props = defineProps<{
   resourceBoundary?: MapPoint[]
   route?: MapPoint[]
   routeColor?: string
+  instantVehicles?: boolean
   location?: { nodeId?: string; edgeIds?: string[]; vehicleId?: string; point?: MapPoint; label?: string } | null
   vehicleProfiles?: { id: string; lengthMeters?: number; widthMeters?: number }[]
   selectNodes?: boolean
@@ -151,7 +152,7 @@ const legend = [
 </script>
 
 <template>
-  <section class="workshop-preview">
+  <section class="workshop-preview" :class="{ 'instant-vehicles': instantVehicles }">
     <header v-if="!compactHeader" class="preview-header">
       <h3 :title="definition?.name">{{ title }}</h3>
       <p v-if="definition">
@@ -224,6 +225,7 @@ const legend = [
 .preview-route-endpoint circle { fill: #25429e; stroke: #fff; stroke-width: 2px; }
 .preview-route-endpoint text { fill: #203653; stroke: #fff; stroke-width: 4px; paint-order: stroke; text-anchor: middle; font-size: 18px; font-weight: 700; }
 .preview-vehicle { cursor: var(--map-cursor-pointer, pointer); transition: transform .45s linear; }
+.workshop-preview.instant-vehicles .preview-vehicle { transition: none; }
 @media (prefers-reduced-motion: reduce) {
   .preview-vehicle { transition: none; }
 }

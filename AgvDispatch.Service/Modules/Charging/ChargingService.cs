@@ -19,6 +19,7 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
     private readonly SemaphoreSlim mutex = new(1, 1);
     // B07-FIX C12: the last battery value that was valid for each vehicle, used only for queue ordering.
     private readonly Dictionary<string,decimal> lastValidBattery = new(StringComparer.OrdinalIgnoreCase);
+    private string? lastCapacityAudit;
     private ChargingSession[] sessions;
     private DateTimeOffset Now => clock.GetUtcNow();
 
@@ -92,6 +93,25 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
             await Task.Delay(TimeSpan.FromMilliseconds(options.PollIntervalMs),clock,stoppingToken);
         }
     }
+    private void AuditChargingCapacity()
+    {
+        var low = port.Vehicles.Where(v => v.Connection == ConnectionState.Online &&
+            v.BatteryPercent is >= 0 and <= 100 && v.BatteryPercent <= options.StartBatteryPercent)
+            .Select(v => v.VehicleId).Distinct(StringComparer.OrdinalIgnoreCase).Order().ToArray();
+        if (low.Length == 0) return;
+        var sites = options.Sites.Where(s => s.Commissioned).ToArray();
+        var uncovered = low.Where(id => !sites.Any(s =>
+            s.AllowedVehicleIds.Contains(id, StringComparer.OrdinalIgnoreCase))).ToArray();
+        var key = string.Join('|', low) + "/" + string.Join('|', sites.Select(s => s.Id));
+        if (key == lastCapacityAudit) return;
+        lastCapacityAudit = key;
+        if (low.Length <= sites.Length && uncovered.Length == 0) return;
+        logger.LogWarning(
+            "C18充电位容量审计：在线低电量车{LowCount}辆（{Vehicles}），已核定充电位{SiteCount}个；" +
+            "未覆盖车辆{Uncovered}。请先扩充可用充电位或调整初始电量/启动阈值，禁止据此直接自动派充。",
+            low.Length, string.Join('、', low), sites.Length,
+            uncovered.Length == 0 ? "无" : string.Join('、', uncovered));
+    }
     private ChargingSession Save(ChargingSession row)
     {
         var next=sessions.Where(s=>s.SessionId!=row.SessionId).Append(row).ToArray();
@@ -153,6 +173,7 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
     public async Task RunCycleAsync(CancellationToken ct)
     {
         using var lease=await EnterBusinessAsync(ct);
+        AuditChargingCapacity();
         if(options.Enabled)
             foreach(var vehicle in port.Vehicles.Where(v=>v.BatteryPercent is >=0&&v.BatteryPercent<=options.StartBatteryPercent&&v.Connection==ConnectionState.Online&&Fresh(v.LastSuccessfulPollAt)))
                 if(!sessions.Any(s=>s.Phase!=ChargingPhase.Completed&&s.VehicleId.Equals(vehicle.VehicleId,StringComparison.OrdinalIgnoreCase))&&
@@ -312,10 +333,20 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
             if(row.TransientFailures>0)row=Save(row with {TransientFailures=0,TransientSince=null,UpdatedAt=Now});
             if(status.State is AgvTransportTaskState.Cancelled or AgvTransportTaskState.Failed or AgvTransportTaskState.Suspended)
             {Hold(row,"车端导航被中止或人工干预："+status.State);return;}
-            if(TimedOut(row,options.NavigationTimeoutSeconds)){Hold(row,"充电导航超时，保留充电位及路权。");return;}
-            if(status.State!=AgvTransportTaskState.Completed)return;
+            // A timeout only applies while the original navigation is still unproven.
+            // A slow but completed arrival at the exit/standby point must be honoured,
+            // otherwise the bay and exit road stay leased forever (C1/C8).
+            if(status.State!=AgvTransportTaskState.Completed)
+            {
+                if(TimedOut(row,options.NavigationTimeoutSeconds)){Hold(row,"充电导航超时，保留充电位及路权。");return;}
+                return;
+            }
             var target=returning?row.Route!.ReturnSiteId:exiting?row.Site!.ExitSiteId:row.Site!.ChargingSiteId;
-            if(target is null||!port.IsAt(row.VehicleId,target))return;
+            if(target is null||!port.IsAt(row.VehicleId,target))
+            {
+                if(TimedOut(row,options.NavigationTimeoutSeconds)){Hold(row,"充电导航超时，保留充电位及路权。");return;}
+                return;
+            }
             if(returning)
             {
                 // B07-FIX C1: the session closes only at the standby point, with the charger confirmed off.

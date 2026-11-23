@@ -182,6 +182,11 @@ def replay(runtime, identity):
     saved_report = read(_bounded_file(run / 'report.json', MAX_REPORT_BYTES))
     if not isinstance(saved_report, dict) or saved_report.get('id') != identity:
         raise ValueError('报告编号与证据目录不一致。')
+    simulation_rate = saved_report.get('simulationRate')
+    if not isinstance(simulation_rate, (int, float)) or simulation_rate <= 0:
+        simulation_rate = (saved_report.get('metrics') or {}).get('effectiveRate')
+    if not isinstance(simulation_rate, (int, float)) or simulation_rate <= 0:
+        simulation_rate = 1
     path = run / 'observations.jsonl'
     _bounded_file(path, MAX_REPLAY_BYTES)
     def lines():
@@ -243,4 +248,4 @@ def replay(runtime, identity):
     if count and timeline[-1][0] != count - 1:
         append_sample(count - 1, line, final=True)
     return dict(id=identity, timeline=[row[1] for row in timeline], map=navigation, mapMessage=map_message,
-                totalSamples=count, sampled=count > len(timeline))
+                simulationRate=simulation_rate, totalSamples=count, sampled=count > len(timeline))
