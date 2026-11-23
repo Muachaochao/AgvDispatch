@@ -574,7 +574,9 @@ public sealed class DispatchOrchestrationRepository(ISqlSugarClient database)
             TimeoutAction = TaskTemplateExecutionPolicy.NormalizeTimeoutAction(node?.TimeoutAction),
             TimeoutSeconds = node?.TimeoutSeconds ?? 0,
             AutoRetry = false,
-            PolicyStartedAt = ToOffset(task.UpdatedAt),
+            // Vehicle-selection wait is measured from creation. UpdatedAt is refreshed by every
+            // status write (including hold records), so it cannot serve as a stable start.
+            PolicyStartedAt = ToOffset(task.CreatedAt),
             DependsOnTaskIds = ReadDependencies(task.DependsOnTaskIdsJson)
         };
     }

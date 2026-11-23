@@ -153,7 +153,11 @@ public sealed class DispatchTaskStepCoordinator(
             }
         }
         var readyIds = readySteps.Select(s => s.StepId).ToHashSet(StringComparer.Ordinal);
-        foreach (var id in _conditionFingerprints.Keys.Where(id => !id.StartsWith("exit:",StringComparison.Ordinal)&&!readyIds.Contains(id)).ToArray()) _conditionFingerprints.Remove(id);
+        // Timeout hold keys ("timeout:<StepId>") live as long as their step stays Ready. Keeping them
+        // is what stops the hold from being re-recorded every cycle.
+        foreach (var id in _conditionFingerprints.Keys.Where(id => !id.StartsWith("exit:",StringComparison.Ordinal) &&
+                     !readyIds.Contains(id.StartsWith(TimeoutHoldKeyPrefix, StringComparison.Ordinal) ? id[TimeoutHoldKeyPrefix.Length..] : id)).ToArray())
+            _conditionFingerprints.Remove(id);
         foreach (var step in readySteps)
         {
             try
@@ -194,6 +198,8 @@ public sealed class DispatchTaskStepCoordinator(
         }
     }
 
+    private const string TimeoutHoldKeyPrefix = "timeout:";
+
     private async Task<bool> ApplyTimeoutPolicyAsync(
         DispatchTaskStepWorkItem step,
         CancellationToken cancellationToken)
@@ -222,14 +228,16 @@ public sealed class DispatchTaskStepCoordinator(
             return stopped;
         }
 
-        var key = "timeout:" + step.StepId;
-        if (!_conditionFingerprints.TryGetValue(key, out var prior) || prior != message)
+        // The fingerprint excludes the elapsed seconds so a held step is recorded once, not every cycle.
+        var key = TimeoutHoldKeyPrefix + step.StepId;
+        var fingerprint = $"{node}|{action}|{step.TimeoutSeconds}";
+        if (!_conditionFingerprints.TryGetValue(key, out var prior) || prior != fingerprint)
         {
             await tasks.RecordReadyStepFailureAsync(step.TaskId, step.StepId, message, cancellationToken);
             await RecordPolicyEvidenceAsync(step, "NodeTimeoutHold",
                 new { step.TemplateNodeId, step.TimeoutSeconds, Action = action, ElapsedSeconds = (long)elapsed.TotalSeconds, Reason = message },
                 cancellationToken);
-            _conditionFingerprints[key] = message;
+            _conditionFingerprints[key] = fingerprint;
             logger.LogWarning(
                 "任务节点超阈值，按策略保持等待。TaskId={TaskId}, StepId={StepId}, Action={Action}, TimeoutSeconds={TimeoutSeconds}",
                 step.TaskId, step.StepId, action, step.TimeoutSeconds);
