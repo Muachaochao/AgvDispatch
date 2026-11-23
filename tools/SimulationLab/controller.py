@@ -138,6 +138,86 @@ class StartupTelemetryUnavailable(ValueError):
     """A saved scenario has not been submitted and may await its next sample."""
 
 
+def overlapping_edges(edges):
+    """Groups of edge ids the C# map validator reports as EDGE_OVERLAP (same endpoints and geometry; two
+    opposite one-way edges are allowed). Disabled edges are validated too, as in the Service."""
+    groups = {}
+    for edge in edges:
+        if not isinstance(edge, dict) or not isinstance(edge.get('from'), str) or not isinstance(edge.get('to'), str):
+            continue
+        a, b = edge['from'], edge['to']
+        reverse = a.casefold() > b.casefold()
+        points = edge.get('controlPoints') or []
+        if reverse: points = list(reversed(points))
+        key = (tuple(sorted((a.casefold(), b.casefold()))), str(edge.get('geometryKind') or 'Line'),
+               tuple((p.get('x'), p.get('y')) if isinstance(p, dict) else None for p in points))
+        groups.setdefault(key, []).append(edge)
+    result = []
+    for group in groups.values():
+        if len(group) < 2: continue
+        if (len(group) == 2 and not any(bool(e.get('bidirectional', True)) for e in group)
+                and group[0]['from'].casefold() == group[1]['to'].casefold() and group[0]['to'].casefold() == group[1]['from'].casefold()):
+            continue
+        result.append([str(e.get('id')) for e in group])
+    return result
+
+
+def configuration_fingerprint(configuration, simulation_rate, release):
+    """Identity of what an instance would run: validated configuration + rate + program release."""
+    body = dict(configuration=configuration, simulationRate=float(simulation_rate),
+                release=(release or {}).get('metadata'))
+    return hashlib.sha256(json.dumps(body, ensure_ascii=False, sort_keys=True, default=str).encode('utf-8')).hexdigest()
+
+
+def instance_keep_count():
+    try:
+        return max(2, min(100, int(os.environ.get('AGV_SIMULATION_KEEP_INSTANCES', '8'))))
+    except ValueError:
+        return 8
+
+
+def _pid_alive(pid):
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except PermissionError:
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def prune_instance_binaries(artifacts, keep=8, protect=()):
+    """Each configuration copies ~90 MB of service/webhost binaries into a new instance. Keep the newest
+    <keep> instances complete; older ones keep lab.json, data, reports and evidence (history and replay stay
+    readable) but lose the copied binaries. Never touches an instance with a live recorded process."""
+    removed = []
+    try:
+        candidates = [p for p in Path(artifacts).glob('web-single-vehicle-sim-*') if p.is_dir() and not p.is_symlink()]
+    except OSError:
+        return removed
+    def stamp(path):
+        try:
+            return (path / 'lab.json').stat().st_mtime
+        except OSError:
+            return 0
+    candidates.sort(key=stamp, reverse=True)
+    for path in candidates[keep:]:
+        if path.name in protect or not (path / 'service').is_dir():
+            continue
+        try:
+            owned = read(path / 'processes.json') if (path / 'processes.json').exists() else []
+            if any(_pid_alive(entry.get('Id')) for entry in owned if isinstance(entry, dict)):
+                continue
+            for directory in ('service', 'webhost'):
+                shutil.rmtree(path / directory, ignore_errors=True)
+            write(path / 'pruned.json', dict(prunedAt=datetime.now(timezone.utc).isoformat(timespec='seconds'),
+                reason='retention: newest %d instances keep binaries; reports and evidence kept' % keep))
+            removed.append(path.name)
+        except (OSError, ValueError):
+            continue
+    return removed
+
+
 class Runtime:
     def __init__(self, root, template_root=None, scheme_store=None):
         self.root, self.lab, self.settings, self.web, self.ports = validate_root(root)
@@ -881,6 +961,13 @@ class Runtime:
                 raise ValueError('地图道路id、起点或终点无效。')
             if edge.get('enabled', True) is True:
                 edges.append((edge['from'], edge['to'], bool(edge.get('bidirectional', True))))
+        overlaps = overlapping_edges(navigation['edges'])
+        if overlaps:
+            # Same rule as MapValidationService.ValidateDuplicateSegments: the Service refuses such a map at
+            # startup ("多个路段使用相同端点和路径几何"), so reject it here instead of passing the preflight.
+            sample = '；'.join(','.join(group) for group in overlaps[:3])
+            raise ValueError(f'地图有{len(overlaps)}组道路使用相同端点和路径几何（后台会拒绝启动），例如：{sample}。'
+                             '常见原因：把一条单向边的反向边改成双向后，原单向边未删除。')
         resources = {}
         for resource in navigation['resources']:
             if not isinstance(resource, dict) or not isinstance(resource.get('id'), str) or resource['id'] in resources:
@@ -1303,6 +1390,12 @@ class Runtime:
             source, lab, settings, web, _ = validate_root(self.template_root)
             from runtime_release import current_release, verify_release
             release = current_release(WORKSPACE)
+            fingerprint = configuration_fingerprint(configuration, simulation_rate, release)
+            if self._reusable_instance(fingerprint):
+                # Same scheme, same rate, same program and never started: keep the instance instead of
+                # creating yet another directory (repeated 应用配置 no longer changes the instance).
+                if self.scheme_store is not None: self.scheme_store.remember(self.root)
+                return self.status()
             target = WORKSPACE / 'artifacts' / ('web-single-vehicle-sim-' + time.strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:6])
             target.mkdir()
             for directory in ('service', 'webhost'):
@@ -1331,6 +1424,7 @@ class Runtime:
             origin_unix_ms = round(time.time() * 1000)
             self.simulation_rate = float(simulation_rate)
             self.clock = simulation_clock.configure(self.simulation_rate, origin_unix_ms / 1000)
+            lab.update(configurationFingerprint=fingerprint, createdAt=datetime.now(timezone.utc).isoformat(timespec='seconds'))
             lab.update(root=str(target), pipe='Agv28StageLab-' + target.name, webPort=port(), plcPort=port(),
                 simulationRate=self.simulation_rate, simulationOriginUnixMs=origin_unix_ms,
                 multiVehicleSimulation=True, twoVehicleSimulation=len(configuration['vehicles']) == 2,
@@ -1427,7 +1521,17 @@ class Runtime:
             store = self.scheme_store
             self.__init__(target, template_root=self.template_root, scheme_store=store)
             if store is not None: store.remember(target)
+            prune_instance_binaries(WORKSPACE / 'artifacts', keep=instance_keep_count(),
+                                    protect={target.name, Path(self.template_root).name})
         return self.status()
+
+    def _reusable_instance(self, fingerprint):
+        root = Path(self.root)
+        if root == Path(self.template_root) or self.lab.get('configurationFingerprint') != fingerprint:
+            return False
+        # Only an instance that never ran: no database, no run evidence, no report.
+        return not ((root / 'data/agv-dispatch.db').exists() or (root / 'simulation-report.json').exists()
+                    or any(root.glob('simulation-run-*')) or (root / 'processes.json').exists())
 
     @staticmethod
     def _apply_charging_priority(charging, settings, robots, target, port):
@@ -1735,8 +1839,17 @@ def cleanup_owned_runtime(runtime, retry_delay=.2):
 
 
 def serve(root, port, token):
-    from schemes import SchemeStore
-    store = SchemeStore(WORKSPACE, root, validate_root)
+    from schemes import STABLE_SCOPE, SchemeStore
+    store = SchemeStore(WORKSPACE, root, validate_root, scope=STABLE_SCOPE)
+    if not store.path.exists():
+        # First start after the stable-scope upgrade: carry over the selection kept under the old
+        # template-derived namespace, so the operator lands on the same instance and scheme.
+        legacy = SchemeStore(WORKSPACE, root, validate_root)
+        if legacy.state.get('selectedRoot'):
+            try:
+                store.remember(legacy._root(legacy.state['selectedRoot']), legacy.state.get('selectedSchemeId'))
+            except (OSError, ValueError, KeyError):
+                pass
     selected, notice = store.restore_root()
     runtime = Runtime(selected, template_root=root, scheme_store=store)
     if notice: runtime.error = notice

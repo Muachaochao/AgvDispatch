@@ -78,10 +78,37 @@ public sealed class SimulationBridge : IAsyncDisposable
         return root;
     }
 
+    private static bool HasRuntime(string root) => new[]
+        {
+            "lab.json", "navigation.agvmap.json",
+            Path.Combine("service", "AgvDispatch.Service.exe"),
+            Path.Combine("webhost", "AgvDispatch.WebHost.exe")
+        }.All(relative => File.Exists(Path.Combine(root, relative)));
+
+    /// <summary>
+    /// The controller records the operator's current instance in simulation-center/current-instance.json.
+    /// Prefer it over "newest lab.json": touching an older instance (report export, restore) must not switch
+    /// the daily 5199 simulation center to another instance.
+    /// </summary>
+    private string? CurrentPointerRoot()
+    {
+        try
+        {
+            var pointer = Path.Combine(artifacts!, "simulation-center", "current-instance.json");
+            if (!File.Exists(pointer) || new FileInfo(pointer).Length > 64 * 1024) return null;
+            using var document = JsonDocument.Parse(File.ReadAllText(pointer));
+            if (!document.RootElement.TryGetProperty("rootName", out var name) || name.ValueKind != JsonValueKind.String) return null;
+            var candidate = ValidateRoot(Path.Combine(artifacts!, name.GetString()!), artifacts!);
+            return HasRuntime(candidate) ? candidate : null;
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException or ArgumentException) { return null; }
+    }
+
     private string DiscoverLatestRoot()
     {
         if (artifacts is null || !Directory.Exists(artifacts))
             throw new InvalidOperationException("仿真artifacts目录不存在。");
+        if (CurrentPointerRoot() is { } current) return current;
         var candidates = Directory.EnumerateDirectories(artifacts, "web-single-vehicle-*", SearchOption.TopDirectoryOnly)
             .Select(path => new DirectoryInfo(path))
             .Where(directory => !directory.Name.Contains("template", StringComparison.OrdinalIgnoreCase))
@@ -99,13 +126,7 @@ public sealed class SimulationBridge : IAsyncDisposable
             try
             {
                 var selected = ValidateRoot(candidate.Directory.FullName, artifacts);
-                if (new[]
-                    {
-                        "lab.json", "navigation.agvmap.json",
-                        Path.Combine("service", "AgvDispatch.Service.exe"),
-                        Path.Combine("webhost", "AgvDispatch.WebHost.exe")
-                    }.All(relative => File.Exists(Path.Combine(selected, relative))))
-                    return selected;
+                if (HasRuntime(selected)) return selected;
             }
             catch (ArgumentException) { }
         }

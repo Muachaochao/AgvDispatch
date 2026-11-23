@@ -24,9 +24,17 @@ def _no_links(path):
             raise ValueError('仿真方案目录不能经过符号链接或目录联接。')
 
 
+STABLE_SCOPE = 'current'
+CURRENT_POINTER = 'current-instance.json'
+
+
 class SchemeStore:
     """Namespace selection state while exposing recipes preserved in older scopes."""
-    def __init__(self, workspace, template_root, validate_root):
+    def __init__(self, workspace, template_root, validate_root, scope=None):
+        """scope=None keeps the historical per-template namespace (tests, ad-hoc labs).
+        The served controller passes STABLE_SCOPE: the daily 5199 WebHost launches the controller with
+        whichever instance is newest, so a template-derived namespace changed on every restart and the
+        selected instance/scheme were forgotten (实例总在变化)."""
         self.workspace = Path(workspace).absolute()
         self.template_root = Path(template_root).absolute()
         self.validate_root = validate_root
@@ -34,8 +42,13 @@ class SchemeStore:
         directory = self.workspace / 'artifacts' / 'simulation-center'
         _no_links(directory)
         directory.mkdir(exist_ok=True, parents=True)
-        scope = hashlib.sha256(str(self.template_root).casefold().encode()).hexdigest()[:16]
+        if scope is None:
+            scope = hashlib.sha256(str(self.template_root).casefold().encode()).hexdigest()[:16]
+        elif not re.fullmatch(r'[a-z0-9-]{1,32}', scope):
+            raise ValueError('方案记录作用域无效。')
         self.path = directory / ('schemes-' + scope + '.json')
+        self.pointer_path = directory / CURRENT_POINTER
+        _no_links(self.pointer_path)
         _no_links(self.path)
         self.notice = None
         self.state = dict(version=1, selectedRoot=None, selectedSchemeId=None,
@@ -195,6 +208,43 @@ class SchemeStore:
             state['selectedSchemeId'] = selected_scheme_id
             state['recentInstances'] = [entry] + [row for row in state['recentInstances'] if row.get('rootName') != root.name][:19]
             self._commit(state)
+            self._write_pointer(root, lab, entry, state.get('selectedSchemeId'))
+
+    def _write_pointer(self, root, lab, entry, scheme_id):
+        """One small, stable file that names the current instance for the site assistant and the WebHost
+        (artifacts/simulation-center/current-instance.json). Written atomically; never contains device data."""
+        configuration = lab.get('simulationConfiguration') or {}
+        identity = configuration.get('mapIdentity') or {}
+        release = {}
+        try:
+            release = json.loads((root / 'runtime-release.json').read_text(encoding='utf-8-sig'))
+        except (OSError, ValueError):
+            pass
+        scheme_name = None
+        if scheme_id:
+            scheme_name = next((row['name'] for row in self._catalog_records()[0] if row.get('id') == scheme_id), None)
+        pointer = dict(schema='agv-simulation-current-instance', version=1, rootName=root.name,
+                       selectedSchemeId=scheme_id, selectedSchemeName=scheme_name,
+                       mapName=entry.get('mapName'), mapDefinitionHash=identity.get('definitionHash'),
+                       mapVersionId=identity.get('mapVersionId'), plcTableSha256=entry.get('plcTableSha256'),
+                       vehicleCount=entry.get('vehicleCount'), stationCount=entry.get('stationCount'),
+                       simulationRate=lab.get('simulationRate'),
+                       configurationFingerprint=lab.get('configurationFingerprint'),
+                       releaseId=release.get('releaseId') or release.get('informationalVersion'),
+                       createdAt=lab.get('createdAt'), updatedAt=entry.get('updatedAt'))
+        temporary = self.pointer_path.with_name(self.pointer_path.name + '.' + str(time.time_ns()) + '.tmp')
+        try:
+            temporary.write_text(json.dumps(pointer, ensure_ascii=False, indent=2), encoding='utf-8')
+            temporary.replace(self.pointer_path)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+
+    def current_pointer(self):
+        try:
+            return json.loads(self.pointer_path.read_text(encoding='utf-8-sig'))
+        except (OSError, ValueError):
+            return None
 
     @staticmethod
     def _summary(scheme):
