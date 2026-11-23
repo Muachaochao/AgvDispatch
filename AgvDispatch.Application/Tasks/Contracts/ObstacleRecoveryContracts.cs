@@ -27,6 +27,20 @@ public static class ObstacleRecoveryStates
     public const string Recovered = "Recovered";
 }
 
+/// <summary>
+/// Raised only when a recovery command is refused before it reaches the vehicle:
+/// the gateway's own preconditions failed, or the vehicle explicitly rejected the
+/// request. The coordinator clears the send intent and retries later. Any other
+/// exception after the send attempt (I/O, timeout, partial acceptance) is uncertain.
+/// </summary>
+public sealed class AgvRecoverySendRejectedException(string message) : InvalidOperationException(message);
+
+/// <summary>Stop-evidence thresholds used by the gateway's pre-send checks. They come
+/// from the coordinator's ObstacleRecovery configuration so both sides agree.</summary>
+public sealed record ObstacleRecoveryPreSendLimits(
+    double MinimumLocalizationConfidence,
+    double StoppedVelocityToleranceMetersPerSecond);
+
 public static class ObstacleRecoveryTaskIds
 {
     public const string Prefix = "OBSTACLERECOVERY-";
@@ -90,6 +104,7 @@ public interface IAgvObstacleRecoveryGateway
         AgvTransportAction? action,
         DateTimeOffset blockedSince,
         string originalVendorTaskId,
+        ObstacleRecoveryPreSendLimits limits,
         CancellationToken cancellationToken);
 }
 
@@ -113,5 +128,6 @@ public interface IAgvSafetyPointRecoveryGateway
         double remainingDistanceMeters,
         DateTimeOffset blockedSince,
         string originalVendorTaskId,
+        ObstacleRecoveryPreSendLimits limits,
         CancellationToken cancellationToken);
 }

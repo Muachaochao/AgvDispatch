@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Domain.Agvs;
@@ -41,6 +42,12 @@ public sealed class ObstacleRecoveryCoordinator(
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private readonly TimeProvider _clock = clock ?? TimeProvider.System;
     private readonly SemaphoreSlim _cycle = new(1, 1);
+    // Retry state for pre-send rejections is kept in memory. A restart only makes the
+    // next attempt earlier; the persisted send intent has already been cleared.
+    private readonly ConcurrentDictionary<string, int> _sendRejections = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, DateTime> _sendRetryAfter = new(StringComparer.Ordinal);
+    private ObstacleRecoveryPreSendLimits PreSendLimits => new(
+        options.MinimumLocalizationConfidence, options.StoppedVelocityToleranceMetersPerSecond);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -690,6 +697,15 @@ public sealed class ObstacleRecoveryCoordinator(
             await SaveAsync(row, cancellationToken);
             return;
         }
+        if (_sendRetryAfter.TryGetValue(row.RecoveryId, out var retryAfter) &&
+            _clock.GetUtcNow().UtcDateTime < retryAfter)
+        {
+            row.Message = $"上次替代导航发送前被拒绝，{(retryAfter - _clock.GetUtcNow().UtcDateTime).TotalSeconds:0}秒后重新核验并发送。";
+            row.NextAction = "保持原任务、载荷、PLC责任和路权；退避结束后自动重试，发送门禁逐次核验。";
+            row.Revision++;
+            await SaveAsync(row, cancellationToken);
+            return;
+        }
         await traffic.RecordRouteAsync(new TrafficRouteObservation(
             row.StepId, row.TaskId, row.VehicleId, plan.Route[0], plan.Route[^1],
             plan.EdgeIds, plan.Resources, false,
@@ -726,14 +742,22 @@ public sealed class ObstacleRecoveryCoordinator(
                 newRoot, row.VehicleId, plan.Route,
                 dispatchOptions.GetAction((DispatchTaskStepType)step.StepType),
                 new DateTimeOffset(DateTime.SpecifyKind(row.BlockedSinceUtc, DateTimeKind.Utc)),
-                row.OriginalVendorTaskId, cancellationToken);
+                row.OriginalVendorTaskId, PreSendLimits, cancellationToken);
             if (!string.Equals(sent, newRoot, StringComparison.Ordinal))
                 throw new InvalidOperationException("替代导航返回编号与持久化意图不一致。");
             await BindReplacementAsync(row, task, step, plan, newRoot, cancellationToken);
+            _sendRejections.TryRemove(row.RecoveryId, out _);
+            _sendRetryAfter.TryRemove(row.RecoveryId, out _);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception error) when (IsPreSendRejection(error))
+        {
+            await RejectReplacementSendAsync(row, plan.Route, error, cancellationToken);
+        }
         catch (Exception error)
         {
+            // The request may have reached the vehicle. Keep it uncertain: this state is
+            // sticky until a read-only reconciliation of the new vendor identity.
             row.State = ObstacleRecoveryStates.Uncertain;
             row.Message = "替代导航发送结果不确定，只查询原新编号并禁止重发：" + Truncate(error.Message);
             row.NextAction = "按新厂家编号查询任务；核对车辆位置、载荷、PLC与原任务编号，无法证明时冻结。";
@@ -742,6 +766,30 @@ public sealed class ObstacleRecoveryCoordinator(
             await AddEvidenceAsync(row, "ObstacleDetourSendUncertain",
                 row.Message, new { NewVendorTaskId = newRoot, Route = plan.Route }, CancellationToken.None);
         }
+    }
+
+    // Refusals raised before any command reached the vehicle. Anything else after
+    // the send attempt (I/O, timeout, partial acceptance) is treated as uncertain.
+    private static bool IsPreSendRejection(Exception error) =>
+        error is AgvRecoverySendRejectedException or AgvCommandRejectedException
+            or NotSupportedException or ArgumentException;
+
+    private async Task RejectReplacementSendAsync(ObstacleRecoveryEntity row, IReadOnlyList<string> route,
+        Exception error, CancellationToken cancellationToken)
+    {
+        var attempts = _sendRejections.AddOrUpdate(row.RecoveryId, 1, (_, count) => count + 1);
+        var wait = TimeSpan.FromSeconds(Math.Min(60,
+            options.SendRejectionRetrySeconds * Math.Pow(2, Math.Min(attempts - 1, 10))));
+        _sendRetryAfter[row.RecoveryId] = _clock.GetUtcNow().UtcDateTime + wait;
+        row.NewVendorTaskId = null;
+        row.SendAttemptedAtUtc = null;
+        row.State = ObstacleRecoveryStates.DetourReady;
+        row.Message = "替代导航发送前被拒绝，未到达车辆，原任务、载荷和路权保持：" + Truncate(error.Message);
+        row.NextAction = $"{wait.TotalSeconds:0}秒后重新核验并尝试发送；未发出的命令不会重复发送。";
+        row.Revision++;
+        await SaveAsync(row, CancellationToken.None);
+        await AddEvidenceAsync(row, "ObstacleDetourSendRejected", row.Message,
+            new { Route = route, Attempts = attempts, WaitSeconds = wait.TotalSeconds }, CancellationToken.None);
     }
 
     private async Task<IReadOnlyList<string>> ResolveOriginalVendorWindowPathAsync(
@@ -950,6 +998,15 @@ public sealed class ObstacleRecoveryCoordinator(
                 return;
             }
 
+            if (_sendRetryAfter.TryGetValue(row.RecoveryId, out var retreatRetryAfter) &&
+                _clock.GetUtcNow().UtcDateTime < retreatRetryAfter)
+            {
+                row.Message = $"上次安全点退回发送前被车端拒绝，{(retreatRetryAfter - _clock.GetUtcNow().UtcDateTime).TotalSeconds:0}秒后重新核验。";
+                row.Revision++;
+                await SaveAsync(row, cancellationToken);
+                return;
+            }
+
             var shortTranslation = retreat.RemainingDistanceMeters <= 1.0;
             var retreatMethod = shortTranslation ? "3055-Translation" : "3051-Backward";
             var retreatId = "SAFETYRETURN-" + Guid.NewGuid().ToString("N");
@@ -979,7 +1036,7 @@ public sealed class ObstacleRecoveryCoordinator(
                     options.SafetyPointRetreatMaximumAccelerationMetersPerSecondSquared,
                     retreat.RemainingDistanceMeters,
                     new DateTimeOffset(DateTime.SpecifyKind(row.BlockedSinceUtc, DateTimeKind.Utc)),
-                    row.OriginalVendorTaskId, cancellationToken);
+                    row.OriginalVendorTaskId, PreSendLimits, cancellationToken);
                 if (!string.Equals(sent, retreatId, StringComparison.Ordinal))
                     throw new InvalidOperationException(
                         "安全点退回返回任务编号与持久化意图不一致。");
@@ -1012,6 +1069,25 @@ public sealed class ObstacleRecoveryCoordinator(
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 throw;
+            }
+            catch (Exception error) when (IsPreSendRejection(error))
+            {
+                // Refused before any motion command was accepted: clear the retreat
+                // intent so the gated pass may send again after the backoff.
+                var attempts = _sendRejections.AddOrUpdate(row.RecoveryId, 1, (_, count) => count + 1);
+                var wait = TimeSpan.FromSeconds(Math.Min(60,
+                    options.SendRejectionRetrySeconds * Math.Pow(2, Math.Min(attempts - 1, 10))));
+                _sendRetryAfter[row.RecoveryId] = _clock.GetUtcNow().UtcDateTime + wait;
+                row.SafetyPointRetreatTaskId = null;
+                row.SafetyPointRetreatMethod = null;
+                row.SafetyPointRetreatAttemptedAtUtc = null;
+                row.State = ObstacleRecoveryStates.SafetyHold;
+                row.Message = "安全点退回发送前被拒绝，未到达车辆：" + Truncate(error.Message);
+                row.NextAction = $"{wait.TotalSeconds:0}秒后重新核验；修正门禁条件前禁止绕过核验或重复发送。";
+                row.Revision++;
+                await SaveAsync(row, CancellationToken.None);
+                await AddEvidenceAsync(row, "ObstacleSafetyPointRetreatRejected", row.Message,
+                    new { Attempts = attempts, WaitSeconds = wait.TotalSeconds }, CancellationToken.None);
             }
             catch (Exception error)
             {

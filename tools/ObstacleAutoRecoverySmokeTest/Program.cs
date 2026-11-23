@@ -710,7 +710,7 @@ sealed class RecoveryGateway : IAgvGateway, IAgvObstacleRecoveryGateway,
     }
     public Task<string> CreateObstacleRecoveryTransportTaskAsync(string newVendorTaskId, string vehicleId,
         IReadOnlyList<string> path, AgvTransportAction? action, DateTimeOffset blockedSince,
-        string originalVendorTaskId, CancellationToken cancellationToken)
+        string originalVendorTaskId, ObstacleRecoveryPreSendLimits limits, CancellationToken cancellationToken)
     {
         RecoverySendCalls++;
         NewVendorTaskId = newVendorTaskId;
@@ -722,7 +722,7 @@ sealed class RecoveryGateway : IAgvGateway, IAgvObstacleRecoveryGateway,
         string blockedTargetSite, double maximumSpeedMetersPerSecond,
         double maximumAccelerationMetersPerSecondSquared, double remainingDistanceMeters,
         DateTimeOffset blockedSince,
-        string originalVendorTaskId, CancellationToken cancellationToken)
+        string originalVendorTaskId, ObstacleRecoveryPreSendLimits limits, CancellationToken cancellationToken)
     {
         RetreatSendCalls++;
         RetreatTaskId = retreatVendorTaskId;

@@ -30,6 +30,8 @@ try
     await MidRoadStopIsReportedAsync(directory);
     await NoRouteNeverFreezesBeforeCancelAsync(directory);
     await AcceleratedRateStopEvidenceAsync(directory);
+    await PreSendRejectionRetriesAsync(directory);
+    await UncertainSendIsNotResentAsync(directory);
     Console.WriteLine($"PASS: {checks} round-7 obstacle recovery checks; isolated database and synthetic gateway only.");
 }
 finally
@@ -134,6 +136,71 @@ async Task AcceleratedRateStopEvidenceAsync(string root)
         "遥测每8秒一帧（业务时间，类似8倍速）时停稳证据仍成立，并在120秒取消一次");
     Check(row.State == ObstacleRecoveryStates.AwaitingOriginalTerminal && h.Gateway.RecoverySendCalls == 0,
         "取消后停稳证据被清空，替代路线仍须在原链终态后重新累计");
+}
+
+// O5: a refusal that happens before any command reaches the vehicle clears the send
+// intent and retries after a backoff; the original task and route stay intact.
+async Task PreSendRejectionRetriesAsync(string root)
+{
+    var start = new DateTimeOffset(2026, 11, 7, 2, 0, 0, TimeSpan.Zero);
+    var h = await ObstacleHarnessFactory.BuildAsync(root, "o5a", ObstacleHarnessFactory.StationGraph(true),
+        start, "TASK-O5A", "STEP-O5A");
+    h.Gateway.OriginalState = AgvTransportTaskState.Cancelled;
+    h.Gateway.NextSendFailure = new AgvRecoverySendRejectedException("synthetic refusal before send");
+    var second = 0;
+    async Task Tick()
+    {
+        h.Clock.SetTo(start.AddSeconds(second));
+        h.States.ApplyTelemetry("A", ObstacleHarnessFactory.Telemetry(h.Clock.GetUtcNow(), blocked: true), TimeSpan.Zero);
+        await h.Coordinator.ObserveOnceAsync(default);
+    }
+    for (; second <= 200 && h.Gateway.RecoverySendCalls == 0; second++)
+        await Tick();
+    var row = RecoveryRow(h.Db, "TASK-O5A");
+    Check(h.Gateway.RecoverySendCalls == 1 && row.NewVendorTaskId is null && row.SendAttemptedAtUtc is null &&
+          row.State == ObstacleRecoveryStates.DetourReady && row.Message.Contains("发送前被拒绝"),
+        "车端发送前拒绝时清除发送意图，回到可重试的绕行就绪状态");
+    Check(TaskRow(h.Db, "TASK-O5A").Stage == (int)DispatchTaskStage.GoingToPickup,
+        "发送前拒绝不改变原业务任务阶段");
+
+    for (var extra = 0; extra < 2; extra++, second++)
+        await Tick();
+    Check(h.Gateway.RecoverySendCalls == 1, "退避期内不重复尝试发送");
+    for (; second <= 260 && h.Gateway.RecoverySendCalls < 2; second++)
+        await Tick();
+    row = RecoveryRow(h.Db, "TASK-O5A");
+    var task = TaskRow(h.Db, "TASK-O5A");
+    Check(h.Gateway.RecoverySendCalls == 2 && row.State == ObstacleRecoveryStates.Executing &&
+          row.NewVendorTaskId is not null && task.VendorTaskId == row.NewVendorTaskId,
+        "退避结束后重新核验并发送一次，成功后绑定原业务任务");
+}
+
+// O5: a failure after the send attempt is uncertain. It must never be resent by
+// this coordinator while the replacement identity is unresolved.
+async Task UncertainSendIsNotResentAsync(string root)
+{
+    var start = new DateTimeOffset(2026, 11, 7, 2, 0, 0, TimeSpan.Zero);
+    var h = await ObstacleHarnessFactory.BuildAsync(root, "o5b", ObstacleHarnessFactory.StationGraph(true),
+        start, "TASK-O5B", "STEP-O5B");
+    h.Gateway.OriginalState = AgvTransportTaskState.Cancelled;
+    h.Gateway.NextSendFailure = new TimeoutException("synthetic response lost after the command was sent");
+    var second = 0;
+    async Task Tick()
+    {
+        h.Clock.SetTo(start.AddSeconds(second));
+        h.States.ApplyTelemetry("A", ObstacleHarnessFactory.Telemetry(h.Clock.GetUtcNow(), blocked: true), TimeSpan.Zero);
+        await h.Coordinator.ObserveOnceAsync(default);
+    }
+    for (; second <= 200 && h.Gateway.RecoverySendCalls == 0; second++)
+        await Tick();
+    var row = RecoveryRow(h.Db, "TASK-O5B");
+    Check(h.Gateway.RecoverySendCalls == 1 && row.NewVendorTaskId is not null &&
+          row.Message.Contains("结果不确定"),
+        "发送后超时记为结果不确定，并保留新厂家编号");
+    for (var extra = 0; extra < 90; extra++, second++)
+        await Tick();
+    Check(h.Gateway.RecoverySendCalls == 1,
+        "结果不确定后不重新生成编号、不重复发送替代导航");
 }
 
 static ObstacleRecoveryEntity RecoveryRow(ISqlSugarClient db, string taskId) =>
