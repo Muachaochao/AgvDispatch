@@ -54,8 +54,10 @@ public sealed class SiteEnvironment
             if (!File.Exists(executable) || !File.Exists(dll) || FileVersionInfo.GetVersionInfo(dll).ProductVersion?.Split('+')[0] != release)
                 throw new InvalidDataException("发布组件缺失或版本不一致：" + executable);
         }
+        var commit = manifest.TryGetProperty("sourceCommit", out var sourceCommit) && sourceCommit.ValueKind == JsonValueKind.String
+            ? sourceCommit.GetString() : null;
         return new(bundle, release, manifest.GetProperty("pipeName").GetString()!, launcher, service,
-            settings["productionDispatch"]?.GetValue<bool>() ?? false, settings["maxConcurrentTasks"]?.GetValue<int>() ?? 1);
+            settings["productionDispatch"]?.GetValue<bool>() ?? false, settings["maxConcurrentTasks"]?.GetValue<int>() ?? 1, commit);
     }
 
     public PaiceSimulationInfo? ReadPaiceSimulation()
@@ -103,7 +105,7 @@ public sealed class SiteEnvironment
     }
 }
 
-public sealed record ReleaseInfo(string Bundle, string ReleaseId, string PipeName, string Launcher, string Service, bool ProductionDispatch, int MaxConcurrentTasks)
+public sealed record ReleaseInfo(string Bundle, string ReleaseId, string PipeName, string Launcher, string Service, bool ProductionDispatch, int MaxConcurrentTasks, string? SourceCommit = null)
 {
     public string SessionPath => Path.Combine(Bundle, "Runtime", "launcher-session.json");
 }

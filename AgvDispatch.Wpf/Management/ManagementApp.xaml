@@ -2,26 +2,67 @@
  xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" ShutdownMode="OnMainWindowClose">
  <Application.Resources>
-  <SolidColorBrush x:Key="Ink" Color="#33363B"/>
-  <SolidColorBrush x:Key="Muted" Color="#888C94"/>
-  <SolidColorBrush x:Key="Line" Color="#EEEEF0"/>
+  <!-- Palette: warm brand orange for actions, neutral greys for chrome, semantic colours only in status pills. -->
+  <SolidColorBrush x:Key="Ink" Color="#1F2329"/>
+  <SolidColorBrush x:Key="Muted" Color="#7A808A"/>
+  <SolidColorBrush x:Key="Line" Color="#E8EAEE"/>
+  <SolidColorBrush x:Key="Canvas" Color="#F5F6F8"/>
+  <SolidColorBrush x:Key="Brand" Color="#F2863D"/>
+  <SolidColorBrush x:Key="BrandHover" Color="#E0742B"/>
+  <SolidColorBrush x:Key="BrandSoft" Color="#FFF3EA"/>
+  <SolidColorBrush x:Key="DangerBrush" Color="#D64545"/>
+
   <Style TargetType="TextBlock"><Setter Property="TextWrapping" Value="Wrap"/></Style>
+
+  <!-- Secondary (outline) button; also the base for all buttons. Disabled = faded, not a grey block. -->
   <Style TargetType="Button">
-   <Setter Property="Padding" Value="14,8"/><Setter Property="Margin" Value="0,0,10,10"/>
+   <Setter Property="Padding" Value="14,7"/><Setter Property="Margin" Value="0,0,8,8"/>
    <Setter Property="Background" Value="White"/><Setter Property="Foreground" Value="{StaticResource Ink}"/>
-   <Setter Property="BorderBrush" Value="{StaticResource Line}"/><Setter Property="BorderThickness" Value="1"/>
-   <Setter Property="Cursor" Value="Hand"/>
+   <Setter Property="BorderBrush" Value="#D9DCE1"/><Setter Property="BorderThickness" Value="1"/>
+   <Setter Property="FontSize" Value="13"/><Setter Property="Cursor" Value="Hand"/>
    <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button">
-    <Border x:Name="Border" CornerRadius="4" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" Padding="{TemplateBinding Padding}">
-     <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="Center"/>
+    <Border x:Name="Border" CornerRadius="6" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" Padding="{TemplateBinding Padding}">
+     <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
     </Border>
-    <ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Border" Property="BorderBrush" Value="#F39B52"/></Trigger><Trigger Property="IsEnabled" Value="False"><Setter TargetName="Border" Property="Background" Value="#A1A1A1"/><Setter TargetName="Border" Property="BorderBrush" Value="#A1A1A1"/><Setter Property="Foreground" Value="White"/></Trigger></ControlTemplate.Triggers>
+    <ControlTemplate.Triggers>
+     <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Border" Property="BorderBrush" Value="{StaticResource Brand}"/></Trigger>
+     <Trigger Property="IsEnabled" Value="False"><Setter TargetName="Border" Property="Opacity" Value="0.42"/><Setter Property="Cursor" Value="Arrow"/></Trigger>
+    </ControlTemplate.Triggers>
    </ControlTemplate></Setter.Value></Setter>
   </Style>
-  <Style x:Key="Primary" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}"><Setter Property="Background" Value="#F59B51"/><Setter Property="Foreground" Value="White"/><Setter Property="BorderThickness" Value="0"/></Style>
-  <Style TargetType="TextBox"><Setter Property="Padding" Value="10,8"/><Setter Property="BorderBrush" Value="{StaticResource Line}"/><Setter Property="VerticalContentAlignment" Value="Center"/><Setter Property="Margin" Value="0,5,0,12"/></Style>
-  <Style x:Key="Card" TargetType="Border"><Setter Property="Background" Value="White"/><Setter Property="BorderBrush" Value="{StaticResource Line}"/><Setter Property="BorderThickness" Value="1"/><Setter Property="CornerRadius" Value="9"/><Setter Property="Padding" Value="22"/><Setter Property="Margin" Value="0,0,0,18"/></Style>
-  <Style x:Key="Title" TargetType="TextBlock"><Setter Property="FontSize" Value="18"/><Setter Property="FontWeight" Value="SemiBold"/><Setter Property="Margin" Value="0,0,0,16"/></Style>
-  <Style x:Key="Hint" TargetType="TextBlock"><Setter Property="Foreground" Value="{StaticResource Muted}"/><Setter Property="Margin" Value="0,0,0,12"/><Setter Property="LineHeight" Value="23"/></Style>
+  <Style x:Key="Primary" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+   <Setter Property="Background" Value="{StaticResource Brand}"/><Setter Property="Foreground" Value="White"/><Setter Property="BorderBrush" Value="{StaticResource Brand}"/>
+   <Style.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter Property="Background" Value="{StaticResource BrandHover}"/></Trigger></Style.Triggers>
+  </Style>
+  <Style x:Key="Danger" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+   <Setter Property="Foreground" Value="{StaticResource DangerBrush}"/><Setter Property="BorderBrush" Value="#F0C4C4"/>
+  </Style>
+  <Style x:Key="Ghost" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+   <Setter Property="Background" Value="Transparent"/><Setter Property="BorderBrush" Value="Transparent"/><Setter Property="Foreground" Value="#3D6E9E"/>
+  </Style>
+
+  <Style TargetType="TextBox"><Setter Property="Padding" Value="10,7"/><Setter Property="BorderBrush" Value="#D9DCE1"/><Setter Property="VerticalContentAlignment" Value="Center"/><Setter Property="Margin" Value="0,0,0,8"/></Style>
+  <Style x:Key="Card" TargetType="Border"><Setter Property="Background" Value="White"/><Setter Property="BorderBrush" Value="{StaticResource Line}"/><Setter Property="BorderThickness" Value="1"/><Setter Property="CornerRadius" Value="10"/><Setter Property="Padding" Value="22,18"/><Setter Property="Margin" Value="0,0,0,16"/></Style>
+  <Style x:Key="Title" TargetType="TextBlock"><Setter Property="FontSize" Value="16"/><Setter Property="FontWeight" Value="SemiBold"/><Setter Property="Margin" Value="0,0,0,12"/></Style>
+  <Style x:Key="Hint" TargetType="TextBlock"><Setter Property="Foreground" Value="{StaticResource Muted}"/><Setter Property="FontSize" Value="12"/><Setter Property="Margin" Value="0,0,0,10"/><Setter Property="LineHeight" Value="20"/></Style>
+
+  <!-- Status pill: set Tag to ok / warn / bad / idle and put a TextBlock inside. -->
+  <Style x:Key="Pill" TargetType="Border">
+   <Setter Property="CornerRadius" Value="11"/><Setter Property="Padding" Value="9,2,11,2"/><Setter Property="HorizontalAlignment" Value="Left"/><Setter Property="VerticalAlignment" Value="Center"/>
+   <Setter Property="Background" Value="#EEF0F3"/><Setter Property="TextElement.Foreground" Value="#6B717B"/>
+   <Style.Triggers>
+    <Trigger Property="Tag" Value="ok"><Setter Property="Background" Value="#E6F4EA"/><Setter Property="TextElement.Foreground" Value="#1E7A3C"/></Trigger>
+    <Trigger Property="Tag" Value="warn"><Setter Property="Background" Value="#FFF4DE"/><Setter Property="TextElement.Foreground" Value="#9A6200"/></Trigger>
+    <Trigger Property="Tag" Value="bad"><Setter Property="Background" Value="#FDE8E8"/><Setter Property="TextElement.Foreground" Value="#B42318"/></Trigger>
+   </Style.Triggers>
+  </Style>
+  <Style x:Key="Dot" TargetType="Ellipse">
+   <Setter Property="Width" Value="7"/><Setter Property="Height" Value="7"/><Setter Property="Margin" Value="0,0,6,0"/><Setter Property="VerticalAlignment" Value="Center"/><Setter Property="Fill" Value="#A3A8B0"/>
+   <Style.Triggers>
+    <DataTrigger Binding="{Binding Tag, RelativeSource={RelativeSource AncestorType=Border}}" Value="ok"><Setter Property="Fill" Value="#2E9E53"/></DataTrigger>
+    <DataTrigger Binding="{Binding Tag, RelativeSource={RelativeSource AncestorType=Border}}" Value="warn"><Setter Property="Fill" Value="#E0A100"/></DataTrigger>
+    <DataTrigger Binding="{Binding Tag, RelativeSource={RelativeSource AncestorType=Border}}" Value="bad"><Setter Property="Fill" Value="#D64545"/></DataTrigger>
+   </Style.Triggers>
+  </Style>
  </Application.Resources>
 </Application>

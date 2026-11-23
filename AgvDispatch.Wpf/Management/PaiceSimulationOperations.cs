@@ -21,6 +21,8 @@ public sealed record PaiceSimulationObservation(
 
 public sealed class PaiceSimulationOperations(SiteEnvironment site)
 {
+    /// <summary>Identity read by the last successful <see cref="ReadSimulationSummaryAsync"/>.</summary>
+    public SimulationIdentity? LastIdentity { get; private set; }
 
     private sealed record OwnedProcess(int Id, string Path, long StartedUtcTicks, string? SimulationSource);
 
@@ -60,6 +62,7 @@ public sealed class PaiceSimulationOperations(SiteEnvironment site)
             var instance = ReadText(status, "rootName") ?? "未选实例";
             var mapName = status.TryGetProperty("map", out var map) ? ReadText(map, "name") : null;
             var hash = ReadText(identity, "definitionHash");
+            LastIdentity = new(ReadText(status, "rootName"), scheme == "未选方案" ? null : scheme, mapName, hash, ReadText(identity, "mapVersionId"));
             return $"{summary}\n所选方案：{scheme}\n当前实例：{instance}（实例是一次运行记录，方案与地图不变时实例更新属正常）\n地图：{mapName ?? "未加载"} · {version}{(hash is null ? "" : " · 摘要 " + hash[..Math.Min(12, hash.Length)])}";
         }
         catch (Exception error) when (error is HttpRequestException or OperationCanceledException or JsonException or InvalidOperationException)

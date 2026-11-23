@@ -174,7 +174,10 @@ $bundleFiles=@(Get-ChildItem -LiteralPath $bundleOutput -File -Recurse | Where-O
     # remain runtime evidence and cannot be hashed as immutable program files.
     [IO.Path]::GetRelativePath($bundleOutput,$_.FullName).Replace('\','/') -notmatch '^(Service|WPF|Web/host)/logs/'
 } | ForEach-Object {@{path=[IO.Path]::GetRelativePath($bundleOutput,$_.FullName);sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant();bytes=$_.Length}})
-@{schema='agv-commissioning-release';version=1;releaseId=$bundleId;createdAt=(Get-Date).ToString('o');runtime='win-x64 self-contained';pipeName=$bundlePipe;port=$WebPort;files=$bundleFiles;siteConfigurationImported=$bundleSiteConfigurationImported;deviceExecutionEnabled=$false} | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $bundleOutput 'release-manifest.json') -Encoding utf8
+# Record the exact source revision so the site assistant can tie a field test to a commit.
+$bundleSourceCommit=$null;$bundleSourceDirty=$null
+try{$bundleSourceCommit=(& git -C (Split-Path $PSScriptRoot) rev-parse HEAD 2>$null);if($LASTEXITCODE){$bundleSourceCommit=$null}else{$bundleSourceDirty=[bool](& git -C (Split-Path $PSScriptRoot) status --porcelain --untracked-files=no 2>$null)}}catch{$bundleSourceCommit=$null}
+@{schema='agv-commissioning-release';version=1;releaseId=$bundleId;sourceCommit=$bundleSourceCommit;sourceDirty=$bundleSourceDirty;createdAt=(Get-Date).ToString('o');runtime='win-x64 self-contained';pipeName=$bundlePipe;port=$WebPort;files=$bundleFiles;siteConfigurationImported=$bundleSiteConfigurationImported;deviceExecutionEnabled=$false} | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $bundleOutput 'release-manifest.json') -Encoding utf8
 Write-Output "Candidate=$bundleOutput"
 Write-Output "Release=$bundleId"
 Write-Output "Evidence=$bundleEvidence"

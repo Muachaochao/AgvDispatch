@@ -19,6 +19,9 @@ public sealed class ManagementViewModel : INotifyPropertyChanged
     private readonly SiteOperations _operations;
     private readonly SiteArchives _archives;
     private readonly PaiceSimulationOperations _paiceOperations;
+    private readonly SiteBaselineStore _baseline;
+    private SiteSnapshot? _currentSnapshot;
+    private BaselineComparison _comparison = new(false, [], ["尚未读取现场版本。"]);
     private bool _refreshing;
     private bool _connectionsRefreshing;
     private bool _busy;
@@ -53,7 +56,7 @@ public sealed class ManagementViewModel : INotifyPropertyChanged
 
     public ManagementViewModel(SiteEnvironment site)
     {
-        _site = site; _operations = new(site); _archives = new(site); _paiceOperations = new(site);
+        _site = site; _operations = new(site); _archives = new(site); _paiceOperations = new(site); _baseline = new(site);
         try { _paiceConfigured = _paiceOperations.Info is not null; }
         catch (Exception ex) { _paiceState = ex.Message; }
         RefreshCommand = new AsyncAction(async () => { await RefreshAsync(); await ReadConnectionsAsync(); }, () => !IsBusy && !_refreshing);
@@ -70,6 +73,26 @@ public sealed class ManagementViewModel : INotifyPropertyChanged
             if (!Confirm("停止独立排策智演前端与后端？\n该操作只停止 5270/5271，不停止 AGV 正式后台，也不向现场车辆发送命令。")) return;
             var observation = await _paiceOperations.StopAsync();
             SetMessage(observation.Message);
+        });
+        StartAllCommand = Operation(async () =>
+        {
+            // One button for a site test: daily system first (PLC/AGV side), then the 排策智演 front/back end.
+            if (_canStart) SetMessage(await _operations.LaunchAsync(false));
+            if (_paiceConfigured && !_paiceRunning) SetMessage((await _paiceOperations.StartAsync()).Message);
+            if (!_canStart && (!_paiceConfigured || _paiceRunning)) SetMessage("系统与排策智演均已在运行，无需重复启动。");
+        });
+        LockBaselineCommand = Operation(() =>
+        {
+            var snapshot = _currentSnapshot ?? throw new InvalidOperationException("尚未读取当前版本，请先刷新。");
+            if (!Confirm($"把当前状态锁定为现场测试基线？\n\n发布版本：{snapshot.ReleaseId}\n仿真方案：{snapshot.SchemeName ?? "—"}\n地图：{snapshot.MapName ?? "—"}\n\n之后任何版本、方案、地图或点表变化都会在助手中提示。原基线自动存入历史。")) return Task.CompletedTask;
+            SetMessage("已锁定现场测试基线：" + _baseline.Lock(snapshot, BaselineNote));
+            return Task.CompletedTask;
+        });
+        ExportRecordCommand = Operation(async () =>
+        {
+            var snapshot = _currentSnapshot ?? throw new InvalidOperationException("尚未读取当前版本，请先刷新。");
+            var file = await Task.Run(() => _baseline.ExportRecord(snapshot, _baseline.Read(), _comparison));
+            SetMessage("版本档案已导出：" + file);
         });
         OpenWebCommand = new RelayAction(() => Open(SiteEnvironment.WebUrl));
         OpenEngineeringCommand = new RelayAction(() => Open(SiteEnvironment.WebUrl + "#/engineering?tab=communication"));
@@ -123,6 +146,29 @@ public sealed class ManagementViewModel : INotifyPropertyChanged
     }
 
     public string[] Pages { get; } = ["服务管理", "版本与备份", "软件信息", "日志管理", "系统设置"];
+    // Status levels drive the coloured pills: ok (green), warn (amber), bad (red), idle (grey).
+    private static string Level(string connection) => connection is "已连接" or "文件可用" or "目录可用" ? "ok" : connection is "未就绪" ? "warn" : connection.Contains("缺失") ? "bad" : "idle";
+    public string DatabaseLevel => Level(DatabaseConnection);
+    public string ProjectLevel => Level(ProjectConnection);
+    public string BackendLevel => _serviceState == "配置检查失败" ? "bad" : Level(BackendConnection);
+    public string WebLevel => _webState.Contains("不匹配") ? "bad" : Level(WebConnection);
+    public string PaiceFrontendLevel => !_paiceConfigured ? "idle" : Level(PaiceFrontendConnection);
+    public string PaiceBackendLevel => !_paiceConfigured ? "idle" : Level(PaiceBackendConnection);
+    public string SystemLevel => _serviceState == "配置检查失败" ? "bad" : BackendConnection == "已连接" && WebConnection == "已连接" ? "ok" : _canStop ? "warn" : "idle";
+    public string SystemHeadline => SystemLevel switch { "ok" => "运行中", "warn" => "部分就绪", "bad" => "配置异常", _ => "已停止" };
+    public string SystemDetail => SystemLevel == "bad" ? _runtime : $"后台 {BackendConnection} · Web {WebConnection}";
+    public string PaiceLevel => !_paiceConfigured ? "idle" : _paiceRunning ? "ok" : _paiceRecordState == PaiceOwnedRecordState.Live || _paiceFrontendState.StartsWith("已就绪") || _paiceBackendState.StartsWith("健康") ? "warn" : "idle";
+    public string PaiceHeadline => PaiceLevel switch { "ok" => "运行中", "warn" => "半运行", _ => _paiceConfigured ? "已停止" : "未配置" };
+    public string BaselineLevel => _comparison.Level;
+    public string BaselineState => _comparison.State;
+    public string BaselineDetail => string.Join(Environment.NewLine, _comparison.Drift.Select(line => "• " + line).Concat(_comparison.Info));
+    public string BaselineNote { get; set; } = "";
+    public string CurrentIdentity => _currentSnapshot is null ? "尚未读取。" :
+        $"发布版本：{_currentSnapshot.ReleaseId}{(_currentSnapshot.SourceCommit is { Length: > 7 } commit ? " · 提交 " + commit[..8] : "")}\n" +
+        $"仿真方案：{_currentSnapshot.SchemeName ?? "—"}\n地图：{_currentSnapshot.MapName ?? "—"}{(_currentSnapshot.MapHash is { Length: > 11 } hash ? " · 摘要 " + hash[..12] : "")}\n" +
+        $"仿真实例：{_currentSnapshot.SimulationInstance ?? "—"}";
+    public string InstanceHeadline => _currentSnapshot?.SchemeName ?? "未选方案";
+    public string InstanceDetail => _currentSnapshot?.SimulationInstance is { } instance ? "实例 " + instance.Replace("web-single-vehicle-sim-", "") : "暂无仿真实例";
     public int SelectedPage { get => _selectedPage; set { if (value < 0 || value >= Pages.Length) return; Set(ref _selectedPage, value); foreach (var name in new[] { nameof(PageTitle), nameof(PageDescription), nameof(OverviewVisibility), nameof(ServiceVisibility), nameof(NetworkVisibility), nameof(ConnectionVisibility), nameof(BackupVisibility), nameof(LogVisibility) }) Changed(name); } }
     public string PageTitle => Pages[SelectedPage];
     public string PageDescription => SelectedPage switch { 0 => "", 1 => "核对当前发布版本，备份与恢复现场数据。", 2 => "查看软件版本、后台观察和数据位置。", 3 => "查看后台日志，导出现场诊断信息。", _ => "维护启动配置，检查网络和设备连接。" };
@@ -149,9 +195,10 @@ public sealed class ManagementViewModel : INotifyPropertyChanged
     public bool CanStopSystem => CanOperate && _canStop;
     public bool CanRestartSystem => CanOperate && _canStop;
     public bool CanStartPaiceSimulation => CanOperate && _paiceConfigured && !_paiceRunning;
+    public bool CanStartAll => CanOperate && (_canStart || (_paiceConfigured && !_paiceRunning));
     public bool CanStopPaiceSimulation => CanOperate && _paiceConfigured &&
-                                          (_paiceRunning || _paiceRecordState == PaiceOwnedRecordState.Stale);
-    public bool IsBusy { get => _busy; private set { Set(ref _busy, value); Changed(nameof(CanOperate)); Changed(nameof(CanStartSystem)); Changed(nameof(CanStopSystem)); Changed(nameof(CanRestartSystem)); Changed(nameof(CanStartPaiceSimulation)); Changed(nameof(CanStopPaiceSimulation)); CommandManager.InvalidateRequerySuggested(); } }
+                                          (_paiceRunning || _paiceRecordState is PaiceOwnedRecordState.Live or PaiceOwnedRecordState.Stale);
+    public bool IsBusy { get => _busy; private set { Set(ref _busy, value); Changed(nameof(CanOperate)); Changed(nameof(CanStartSystem)); Changed(nameof(CanStopSystem)); Changed(nameof(CanRestartSystem)); Changed(nameof(CanStartPaiceSimulation)); Changed(nameof(CanStopPaiceSimulation)); Changed(nameof(CanStartAll)); CommandManager.InvalidateRequerySuggested(); } }
     public bool CanOperate => !IsBusy;
     public string Message => _message;
     public string ServiceState => _serviceState;
@@ -175,6 +222,9 @@ public sealed class ManagementViewModel : INotifyPropertyChanged
     public ICommand StopCommand { get; }
     public ICommand RestartCommand { get; }
     public ICommand StartPaiceCommand { get; }
+    public ICommand StartAllCommand { get; }
+    public ICommand LockBaselineCommand { get; }
+    public ICommand ExportRecordCommand { get; }
     public ICommand StopPaiceCommand { get; }
     public ICommand OpenWebCommand { get; }
     public ICommand OpenEngineeringCommand { get; }
@@ -264,6 +314,12 @@ public sealed class ManagementViewModel : INotifyPropertyChanged
                     Set(ref _paiceSimulationSummary, "仿真数据源未确认：" + ex.Message, nameof(PaiceSimulationSummary));
                 }
             }
+            try
+            {
+                _currentSnapshot = _baseline.Capture(release, _paiceOperations.LastIdentity);
+                _comparison = SiteBaselineStore.Compare(_baseline.Read(), _currentSnapshot);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException) { _comparison = new(false, [], ["现场基线读取失败：" + ex.Message]); }
             _network = SiteOperations.ReadNetwork();
             _lastCheck = DateTime.Now.ToString("HH:mm:ss") + " 已检查";
         }
@@ -272,7 +328,10 @@ public sealed class ManagementViewModel : INotifyPropertyChanged
         {
             _refreshing = false;
             CommandManager.InvalidateRequerySuggested();
-            foreach (var name in new[] { nameof(Release), nameof(Paths), nameof(Policy), nameof(ServiceState), nameof(WebState), nameof(PaiceFrontendState), nameof(PaiceBackendState), nameof(PaiceFrontendConnection), nameof(PaiceBackendConnection), nameof(PaiceSimulationState), nameof(Runtime), nameof(Network), nameof(LastCheck), nameof(ConnectionsState), nameof(DatabaseState), nameof(DatabaseConnection), nameof(ProjectConnection), nameof(BackendConnection), nameof(WebConnection), nameof(CanStartSystem), nameof(CanStopSystem), nameof(CanRestartSystem), nameof(CanStartPaiceSimulation), nameof(CanStopPaiceSimulation) }) Changed(name);
+            foreach (var name in new[] { nameof(Release), nameof(Paths), nameof(Policy), nameof(ServiceState), nameof(WebState), nameof(PaiceFrontendState), nameof(PaiceBackendState), nameof(PaiceFrontendConnection), nameof(PaiceBackendConnection), nameof(PaiceSimulationState), nameof(Runtime), nameof(Network), nameof(LastCheck), nameof(ConnectionsState), nameof(DatabaseState), nameof(DatabaseConnection), nameof(ProjectConnection), nameof(BackendConnection), nameof(WebConnection), nameof(CanStartSystem), nameof(CanStopSystem), nameof(CanRestartSystem), nameof(CanStartPaiceSimulation), nameof(CanStopPaiceSimulation), nameof(CanStartAll),
+                nameof(DatabaseLevel), nameof(ProjectLevel), nameof(BackendLevel), nameof(WebLevel), nameof(PaiceFrontendLevel), nameof(PaiceBackendLevel),
+                nameof(SystemLevel), nameof(SystemHeadline), nameof(SystemDetail), nameof(PaiceLevel), nameof(PaiceHeadline),
+                nameof(BaselineLevel), nameof(BaselineState), nameof(BaselineDetail), nameof(CurrentIdentity), nameof(InstanceHeadline), nameof(InstanceDetail) }) Changed(name);
         }
     }
 
@@ -331,7 +390,7 @@ public sealed class ManagementViewModel : INotifyPropertyChanged
         finally { IsBusy = false; await RefreshAsync(); }
     }, () => !IsBusy && !_refreshing);
     private static string On(bool value) => value ? "启用" : "关闭";
-    private static bool Confirm(string message) => MessageBox.Show(message, "AGV 现场管理工具", MessageBoxButton.OKCancel, MessageBoxImage.Question) == MessageBoxResult.OK;
+    private static bool Confirm(string message) => MessageBox.Show(message, "AGV 软件助手", MessageBoxButton.OKCancel, MessageBoxImage.Question) == MessageBoxResult.OK;
     private void SetMessage(string message) { _message = message; _journal = $"[{DateTime.Now:HH:mm:ss}] {message}\n" + _journal; if (_journal.Length > 30000) _journal = _journal[..30000]; Changed(nameof(Message)); Changed(nameof(Journal)); }
     private void Open(string target) { try { Process.Start(new ProcessStartInfo(target) { UseShellExecute = true }); } catch (Exception ex) { SetMessage("无法打开：" + ex.Message); } }
     private void OpenExisting(string path) { if (Directory.Exists(path)) Open(path); else SetMessage("目录尚不存在：" + path); }
