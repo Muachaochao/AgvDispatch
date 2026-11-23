@@ -130,6 +130,21 @@ var noSafeInterior = TransportRouteWindows.Plan(
     unsafeMap, options);
 Check(noSafeInterior.Count == 1 && noSafeInterior[0].Final,
     "道路中段没有安全点时不得停在任意普通路径点，必须保持整条路线单窗口。");
+try
+{
+    TransportRouteWindows.Plan(
+        new RoutePlan(["A", "B", "C", "D", "E", "F"], ["AB", "BC", "CD", "DE", "EF"],
+            ["R1", "R2", "R3", "R4", "R5"], 5),
+        unsafeMap, new DispatchTaskStepOptions
+        {
+            RollingReservationEnabled = true,
+            RollingWindowMinimumEdges = 2,
+            RollingWindowMaximumEdges = 12,
+            RollingWindowHardMaximumEdges = 4
+        });
+    throw new InvalidOperationException("R17 has no safe point but did not refuse the oversized atomic window.");
+}
+catch (InvalidOperationException error) when (error.Message.Contains("硬上限", StringComparison.Ordinal)) { }
 
 var legacy3051 = TransportRouteWindows.Plan(
     new RoutePlan(["A", "B", "C", "D", "E"], ["AB", "BC", "CD", "DE"],
@@ -194,6 +209,31 @@ Check(partial is not null && partial.Windows.Count == 2 &&
       partial.Windows[0].Destination == "BAY" && !partial.Windows[0].ResourceIds.Contains("DOWNSTREAM") &&
       partial.Windows[1].ResourceIds.Contains("DOWNSTREAM") && partial.DeferredSeconds > 0,
     "后段有租约时，只申请到合格停点的首窗，保留后窗并计入等待成本。");
+
+var junctionNodes = new[]
+{
+    new MapNode("JSTART", 0, 0, MapNodeType.Station, true, []),
+    new MapNode("J1", 3, 0, MapNodeType.Intersection, true, []) { AllowTrafficStop = true },
+    new MapNode("J2", 6, 0, MapNodeType.Intersection, true, []) { AllowTrafficStop = true },
+    new MapNode("JPICK", 9, 0, MapNodeType.Station, true, [])
+};
+var junctionEdges = new[]
+{
+    new MapEdge("JE1", "JSTART", "J1", 3, 1, false, true, ["JENTRY"]),
+    new MapEdge("JE2", "J1", "J2", 3, 1, false, true, ["JMID"]),
+    new MapEdge("JE3", "J2", "JPICK", 3, 1, false, true, ["JFAR"])
+};
+var junctionMap = new MapDefinition("JUNCTION", "", "RobotWorld", "m", junctionNodes, junctionEdges,
+    [new("JENTRY", TrafficResourceType.Intersection), new("JMID", TrafficResourceType.Intersection),
+        new("JFAR", TrafficResourceType.Intersection)]);
+var junctionRoute = new RoutePlan(["JSTART", "J1", "J2", "JPICK"], ["JE1", "JE2", "JE3"],
+    ["JENTRY", "JMID", "JFAR"], 9);
+var junctionStage = staging.TryStage(junctionRoute, Activate(junctionMap), new HashSet<string> { "JFAR" }, ["V"]);
+Check(junctionStage is { Windows.Count: 2 } &&
+      junctionStage.Windows[0].Destination == "J2" && !junctionStage.Windows[0].ResourceIds.Contains("JFAR") &&
+      junctionStage.Windows[1].ResourceIds.Contains("JFAR"),
+    "R5: 冲突分段时，地图明确允许停车的 Intersection 也可作为窗口终点，不能因不是独立候车位而退回整条原子窗口。");
+
 Check(staging.TryStage(stagingRoute, activeStaging, new HashSet<string> { "DOWNSTREAM", "ENTRY" }, ["V"]) is null,
     "首窗资源被占时不能派车。");
 Check(staging.TryStage(stagingRoute, Activate(stagingMap with

@@ -124,6 +124,27 @@ await using (var f = await Fixture.Create(("A", 1), ("B", 1)))
     Check((await f.Control.GetWaitingAsync(new(), default)).CycleRisks.Count == 0,
         "执行中步骤结束后不再沿用闭环风险");
 }
+await using (var f = await Fixture.Create(("R1", 2), ("R2", 1), ("R3", 1)))
+{
+    await f.Task("A"); await f.Task("B");
+    await f.Hold("A", "R1"); await f.Hold("A", "R3"); await f.Hold("B", "R2");
+    await f.Wait("A", "R2");
+    await f.WaitStep("B", "WAIT-B-NEXT", "R3");
+    var denied = await f.Manager.TryAcquireAsync("WAIT-B", "B", "VEH-B", ["R1"], default);
+    Check(!denied.Acquired && denied.BlockingResourceId == "R3" && denied.BlockingTaskId == "A",
+        "R5授予前发现闭合等待时拒绝路权且不产生新租约");
+    var request = await f.Db.Queryable<TrafficRequestEntity>().Where(r => r.StepId == "WAIT-B").FirstAsync();
+    Check(request.State == "Waiting" && request.Reason.Contains("授予前等待图检查") &&
+        !await f.Db.Queryable<TrafficResourceLeaseEntity>().AnyAsync(l => l.TaskId == "B" && l.ResourceId == "R1"),
+        "R5拒绝理由持久化，供调度和现场定位阻塞链");
+}
+await using (var f = await Fixture.Create(("R1", 2), ("R2", 1)))
+{
+    await f.Task("A"); await f.Task("B");
+    await f.Hold("A", "R1"); await f.Hold("B", "R2"); await f.Wait("B", "R1");
+    var granted = await f.Manager.TryAcquireAsync("WAIT-B", "B", "VEH-B", ["R1"], default);
+    Check(granted.Acquired, "R5不影响无闭合等待的容量2正常授予");
+}
 Console.WriteLine($"Traffic cycle analysis: {checks} checks passed. Isolated SQLite only; no vehicle or PLC connection.");
 
 sealed class Fixture : IAsyncDisposable
@@ -162,7 +183,11 @@ sealed class Fixture : IAsyncDisposable
     }
     public async Task Wait(string task, params string[] resources)
     {
-        var step = "WAIT-" + task; await Step(task, step);
+        await WaitStep(task, "WAIT-" + task, resources);
+    }
+    public async Task WaitStep(string task, string step, params string[] resources)
+    {
+        await Step(task, step);
         await Manager.RecordRouteAsync(new(step, task, "VEH-" + task, "FROM", "TO", [], resources, true, "等待容量") { MapId = "M", MapVersionId = "V" }, default);
     }
     public ValueTask DisposeAsync() { Db.Dispose(); return ValueTask.CompletedTask; }

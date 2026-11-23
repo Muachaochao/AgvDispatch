@@ -55,6 +55,9 @@ public sealed class DispatchTaskStepCoordinator(
         if (options.RollingWindowMinimumEdges < 1 ||
             options.RollingWindowMaximumEdges < options.RollingWindowMinimumEdges ||
             options.RollingWindowMaximumEdges > 1000 ||
+            options.RollingWindowHardMaximumEdges is < 0 or > 1000 ||
+            options.RollingWindowHardMaximumEdges > 0 &&
+                options.RollingWindowHardMaximumEdges < options.RollingWindowMaximumEdges ||
             !RollingWindowBoundaries.IsKnown(options.RollingWindowBoundary))
             throw new InvalidOperationException("滚动路权窗口边数配置无效。");
 

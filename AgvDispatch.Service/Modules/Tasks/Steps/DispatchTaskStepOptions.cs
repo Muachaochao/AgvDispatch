@@ -12,6 +12,10 @@ public sealed class DispatchTaskStepOptions
     public bool RollingReservationEnabled { get; set; } = true;
     public int RollingWindowMinimumEdges { get; set; } = 2;
     public int RollingWindowMaximumEdges { get; set; } = 12;
+    // R17: zero disables the hard ceiling for compatibility. When positive, a
+    // route that cannot be split at authored safe stops is refused instead of
+    // silently becoming one oversized atomic window.
+    public int RollingWindowHardMaximumEdges { get; set; }
     // NearestSafeStop (default, unchanged behaviour): cut at the first safe stop after MinimumEdges;
     // MaximumEdges is not used. FarthestWithinMaximum: cut at the farthest safe stop within
     // [MinimumEdges, MaximumEdges] edges, so dense safe points do not force a stop-and-renew every

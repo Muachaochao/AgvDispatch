@@ -97,10 +97,10 @@ var entryMap=multiMap with {Edges=multiMap.Edges.Select(edge=>edge.Id=="W2D"?
     edge with{ResourceIds=["ENTRY-DUMP"]}:edge).ToArray(),
     Resources=multiMap.Resources.Append(new("ENTRY-DUMP",TrafficResourceType.Intersection)).ToArray()};
 var entryPlanner=new BayPlanner(entryMap);
-var equipmentResources=DumperWaitingBaySafety.EquipmentEntryResources(entryPlanner,"WAIT2","DUMP",["DUMPER"]);
+var equipmentResources=DumperWaitingBaySafety.EquipmentEntryResources(entryPlanner,"WAIT2","DUMP",["DUMPER"],entryMap);
 Check(equipmentResources is not null&&equipmentResources.Contains("DUMPER")&&equipmentResources.Contains("ENTRY-DUMP"),
-    "倒料设备申请同时覆盖设备资源和候车位到倒料位的完整入口路径");
-Check(DumperWaitingBaySafety.EquipmentEntryResources(entryPlanner,"MISSING","DUMP",["DUMPER"]) is null,
+    "倒料设备申请覆盖设备资源和最后入口段，不再要求整条候车到倒料链同时空闲");
+Check(DumperWaitingBaySafety.EquipmentEntryResources(entryPlanner,"MISSING","DUMP",["DUMPER"],entryMap) is null,
     "入口路径不可达时不取得单独的设备资源");
 Check(DumperWaitingBaySafety.IsPhysicalWaitingSite(multiMap,"WAIT2","DUMP")&&
     !DumperWaitingBaySafety.IsPhysicalWaitingSite(multiMap,"DUMP","DUMP"),

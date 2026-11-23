@@ -1,4 +1,5 @@
 using System.Text.Json;
+using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Domain.Tasks;
 using AgvDispatch.Infrastructure.Persistence.Entities;
 
@@ -80,5 +81,45 @@ public sealed partial class TrafficResourceManager
     {
         try { return JsonSerializer.Deserialize<string[]>(request.ResourceIds) ?? []; }
         catch (JsonException) { return []; }
+    }
+
+    private async Task<TrafficCycleRisk?> CycleIfGrantedAsync(TrafficRequestEntity context,
+        string ownerStepId, string taskId, string vehicleId, string[] requested,
+        IReadOnlyList<TrafficResourceLeaseEntity> leases, DateTime now, CancellationToken ct)
+    {
+        var waiting = (await database.Queryable<TrafficRequestEntity>()
+                .Where(row => row.State == "Waiting")
+                .ToListAsync(ct))
+            .Where(row => !string.Equals(row.StepId, ownerStepId, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        var taskIds = waiting.Select(row => row.TaskId).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var stepIds = waiting.Select(row => row.StepId).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var tasks = (await database.Queryable<DispatchTaskEntity>()
+                .Where(row => taskIds.Contains(row.TaskId)).ToListAsync(ct))
+            .ToDictionary(row => row.TaskId, StringComparer.OrdinalIgnoreCase);
+        var steps = (await database.Queryable<DispatchTaskStepEntity>()
+                .Where(row => stepIds.Contains(row.StepId)).ToListAsync(ct))
+            .ToDictionary(row => row.StepId, StringComparer.OrdinalIgnoreCase);
+        var hypothetical = leases.ToList();
+        foreach (var resourceId in requested.Where(resourceId =>
+                     !leases.Any(lease => string.Equals(lease.TaskId, taskId, StringComparison.OrdinalIgnoreCase) &&
+                         string.Equals(lease.ResourceId, resourceId, StringComparison.OrdinalIgnoreCase))))
+        {
+            hypothetical.Add(new TrafficResourceLeaseEntity
+            {
+                LeaseId = "HYPOTHETICAL-" + Guid.NewGuid().ToString("N"),
+                ResourceId = resourceId,
+                OwnerStepId = ownerStepId,
+                TaskId = taskId,
+                VehicleId = vehicleId,
+                MapId = context.MapId,
+                MapVersionId = context.MapVersionId,
+                AcquiredAt = now,
+                RenewedAt = now,
+                ExpiresAt = now.Add(settings.LeaseDuration)
+            });
+        }
+        return TrafficCycleRiskDetector.Find(waiting, tasks, steps, hypothetical, catalog, now)
+            .FirstOrDefault(cycle => cycle.TaskIds.Contains(taskId, StringComparer.OrdinalIgnoreCase));
     }
 }

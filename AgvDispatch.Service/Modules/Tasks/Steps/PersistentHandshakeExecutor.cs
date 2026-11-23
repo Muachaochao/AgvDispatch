@@ -66,7 +66,7 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
         if (routePlanner is not null)
         {
             admissionResources = DumperWaitingBaySafety.EquipmentEntryResources(
-                routePlanner, waiting, dispatch.DumperDumpingSite, admissionResources)
+                routePlanner, waiting, dispatch.DumperDumpingSite, admissionResources, current.Definition)
                 ?? throw new InvalidOperationException("候车位到倒料位的完整入口路径不可用，不取得单独的设备资源。");
         }
         if (!await store.OwnsEquipmentAsync(step.TaskId, creation.DumperStationId, ct))

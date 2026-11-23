@@ -49,6 +49,18 @@ public sealed class ActiveMapLoader(
             definition,
             AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow()));
         var runtimeResources = MapCorridorResources.AllResources(definition);
+        var automaticGuards = runtimeResources.Count(resource => MapCorridorResources.IsAutomatic(resource.Id));
+        logger.LogInformation(
+            "地图路权守卫审计。MapId={MapId}, AutomaticCorridorAndJunctionGuards={Guards}, ExplicitResources={Explicit}",
+            project.MapId, automaticGuards, runtimeResources.Count - automaticGuards);
+        // R18: a CAD-sized map can silently add over two thousand implicit
+        // capacity-one guards, serialising every main road. Keep compatibility,
+        // but make the scale visible and require the operator to review explicit
+        // DUAL-LANE/LANE resources before treating throughput as commissioned.
+        if (automaticGuards > 2000)
+            logger.LogWarning(
+                "地图自动路权守卫达到{Guards}个，超过2000个审计阈值。主干道可能被隐式串行化；请显式声明双车道/单行车道资源并复测吞吐。",
+                automaticGuards);
         resources.Replace(runtimeResources);
         await database.Deleteable<TrafficResourceDefinitionEntity>().ExecuteCommandAsync(cancellationToken);
         if (runtimeResources.Count > 0)

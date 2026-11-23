@@ -89,7 +89,9 @@ public static class TransportRouteWindows
         var modeSupportsWindows = navigationCommandMode is null ||
             navigationCommandMode.Equals("SpecifiedPath", StringComparison.OrdinalIgnoreCase);
         if (!options.RollingReservationEnabled || !modeSupportsWindows || route.Nodes.Count < 3)
-            return [Window(route, nodes, edges, 0, route.Nodes.Count - 1, true)];
+            return EnforceHardMaximum(
+                [Window(route, nodes, edges, 0, route.Nodes.Count - 1, true)],
+                route, options.RollingWindowHardMaximumEdges);
 
         var minimum = Math.Clamp(options.RollingWindowMinimumEdges, 1, 100);
         var maximum = Math.Max(minimum, Math.Clamp(options.RollingWindowMaximumEdges, 1, 1000));
@@ -142,7 +144,20 @@ public static class TransportRouteWindows
 
         if (windows.Count == 0 || windows[^1].Final is false)
             windows.Add(Window(route, nodes, edges, start, route.Nodes.Count - 1, true));
-        return windows.Select((window, index) => window with { Index = index }).ToArray();
+        return EnforceHardMaximum(
+            windows.Select((window, index) => window with { Index = index }).ToArray(),
+            route, options.RollingWindowHardMaximumEdges);
+    }
+
+    private static IReadOnlyList<AgvTransportRouteWindow> EnforceHardMaximum(
+        IReadOnlyList<AgvTransportRouteWindow> windows, RoutePlan route, int hardMaximum)
+    {
+        if (hardMaximum <= 0) return windows;
+        var oversized = windows.FirstOrDefault(window => window.EdgeIds.Count > hardMaximum);
+        if (oversized is null) return windows;
+        throw new InvalidOperationException(
+            $"运输路线{route.Nodes[0]}至{route.Nodes[^1]}存在{oversized.EdgeIds.Count}段原子窗口，" +
+            $"超过硬上限{hardMaximum}段；请在地图长走廊增加可停车安全点，禁止发布整条长链原子路权。");
     }
 
     /// <summary>

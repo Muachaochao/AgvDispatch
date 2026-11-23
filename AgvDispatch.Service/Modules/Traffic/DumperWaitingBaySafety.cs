@@ -57,12 +57,13 @@ public static class DumperWaitingBaySafety
     }
 
     /// <summary>
-    /// Equipment admission and the complete entry route form one atomic request.
-    /// A vehicle must never hold the dumper while waiting for an entrance segment
-    /// held by another vehicle that is itself waiting for the dumper.
+    /// Equipment admission keeps the dumper and the final approach edges atomic.
+    /// The remaining waiting/entry chain is reserved by the ordinary rolling route
+    /// windows, so a vehicle no longer waits for every upstream segment to be empty.
     /// </summary>
     public static IReadOnlyList<string>? EquipmentEntryResources(IRoutePlanner planner,
-        string waitingSite, string dumpingSite, IReadOnlyCollection<string> equipmentResources)
+        string waitingSite, string dumpingSite, IReadOnlyCollection<string> equipmentResources,
+        MapDefinition? map = null)
     {
         ArgumentNullException.ThrowIfNull(planner);
         ArgumentException.ThrowIfNullOrWhiteSpace(waitingSite);
@@ -70,7 +71,19 @@ public static class DumperWaitingBaySafety
         ArgumentNullException.ThrowIfNull(equipmentResources);
         var route = planner.Plan(waitingSite, dumpingSite, new HashSet<string>());
         if (route is not { Nodes.Count: >= 2 }) return null;
-        return equipmentResources.Concat(route.ResourceIds)
+        // R19: the equipment admission no longer requires every resource along
+        // the whole waiting-to-dumper chain to be free. Keep the dumper plus the
+        // final two approach edges atomic; the earlier waiting/entry segments are
+        // reserved by the ordinary rolling route windows as the vehicle advances.
+        // Without a map, retain the previous full-route result for compatibility.
+        IReadOnlyCollection<string> approach = route.ResourceIds;
+        if (map is not null && route.EdgeIds.Count > 0)
+        {
+            var approachEdgeIds = route.EdgeIds.TakeLast(2).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            approach = map.Edges.Where(edge => approachEdgeIds.Contains(edge.Id))
+                .SelectMany(edge => edge.ResourceIds).ToArray();
+        }
+        return equipmentResources.Concat(approach)
             .Where(id => !string.IsNullOrWhiteSpace(id))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Order(StringComparer.OrdinalIgnoreCase)
