@@ -31,10 +31,13 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
         if(options.ConfigurationError() is {} error) throw new InvalidOperationException(error);
         store=new(path);
         sessions=store.Load();
-        if(sessions.Any(s=>s.Phase is not (ChargingPhase.Completed or ChargingPhase.Queued or ChargingPhase.WaitingForBusiness or ChargingPhase.Hold)))
+        // B07-FIX C14: observation-only phases resume by themselves. Their next cycle reads battery, position and current
+        // before any write. Phases that were sending a command are held for manual review, with no automatic resend.
+        var restarted=sessions.Select(s=>s.Phase is ChargingPhase.Completed or ChargingPhase.Queued or ChargingPhase.WaitingForBusiness or ChargingPhase.Hold || IsObservationPhase(s.Phase) ? s :
+            s with {HeldPhase=s.Phase,Phase=ChargingPhase.Hold,TransientHold=false,UpdatedAt=Now,Message="后台重启：保留原车辆、充电位与路权；只读核对原命令，禁止自动重发。"}).ToArray();
+        if(restarted.Zip(sessions).Any(pair=>!ReferenceEquals(pair.First,pair.Second)))
         {
-            sessions=sessions.Select(s=>s.Phase is ChargingPhase.Completed or ChargingPhase.Queued or ChargingPhase.WaitingForBusiness or ChargingPhase.Hold ? s :
-                s with {HeldPhase=s.Phase,Phase=ChargingPhase.Hold,UpdatedAt=Now,Message="后台重启：保留原车辆、充电位与路权；只读核对原命令，禁止自动重发。"}).ToArray();
+            sessions=restarted;
             store.Save(sessions);
         }
     }
@@ -96,8 +99,24 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
         next=next.Where(s=>s.Phase!=ChargingPhase.Completed||s.RequestId is not null).Concat(next.Where(s=>s.Phase==ChargingPhase.Completed&&s.RequestId is null).OrderByDescending(s=>s.UpdatedAt).Take(200)).ToArray();
         store.Save(next); Volatile.Write(ref sessions,next); return row;
     }
-    private ChargingSession Move(ChargingSession row,ChargingPhase phase,string message)=>Save(row with {Phase=phase,PhaseSince=Now,UpdatedAt=Now,Message=message});
-    private ChargingSession Hold(ChargingSession row,string reason)=>Save(row with {HeldPhase=row.Phase==ChargingPhase.Hold?row.HeldPhase:row.Phase,Phase=ChargingPhase.Hold,UpdatedAt=Now,Message=reason});
+    private ChargingSession Move(ChargingSession row,ChargingPhase phase,string message)=>Save(row with {Phase=phase,PhaseSince=Now,UpdatedAt=Now,Message=message,TransientHold=false,TransientFailures=0,TransientSince=null});
+    private static bool IsObservationPhase(ChargingPhase phase)=>phase is ChargingPhase.AwaitingCurrent or ChargingPhase.Charging or ChargingPhase.AwaitingStop or
+        ChargingPhase.GoingToCharger or ChargingPhase.Exiting or ChargingPhase.Returning;
+    // B07-FIX C2: a failed observation (read, telemetry, validation or navigation receipt) in an observation phase is counted.
+    // The session is held only after the consecutive limit or the time limit; the hold resumes by itself when observation clears.
+    private bool Transient(ChargingSession row,string reason)
+    {
+        if(!IsObservationPhase(row.Phase))return false;
+        var since=row.TransientSince??Now;
+        var count=row.TransientFailures+1;
+        if(count>=options.TransientFailureLimit||Now-since>=TimeSpan.FromSeconds(options.TransientFailureSeconds))
+            Save(row with {HeldPhase=row.Phase,Phase=ChargingPhase.Hold,TransientHold=true,TransientFailures=count,TransientSince=since,UpdatedAt=Now,
+                Message="观察连续失败达到阈值，暂停并保留充电位及路权；条件恢复后自动续接："+reason});
+        else
+            Save(row with {TransientFailures=count,TransientSince=since,UpdatedAt=Now,Message=$"观察暂时失败（第{count}次），保留原阶段继续监护：{reason}"});
+        return true;
+    }
+    private ChargingSession Hold(ChargingSession row,string reason)=>Save(row with {HeldPhase=row.Phase==ChargingPhase.Hold?row.HeldPhase:row.Phase,Phase=ChargingPhase.Hold,TransientHold=false,UpdatedAt=Now,Message=reason});
     private bool Fresh(DateTimeOffset? stamp)=>stamp is {} t&&t<=Now.AddSeconds(1)&&Now-t<=TimeSpan.FromSeconds(options.StateMaxAgeSeconds);
     private bool TimedOut(ChargingSession row,int seconds)=>Now-row.PhaseSince>TimeSpan.FromSeconds(seconds);
     // Commissioned sites explicitly confirm positive current means charging;
@@ -153,7 +172,7 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
             var row=current;
             try
             {
-                if(row.Phase==ChargingPhase.Hold)continue;
+                if(row.Phase==ChargingPhase.Hold){if(row.TransientHold)await ResumeTransientAsync(row,ct);continue;}
                 if(row.Phase is ChargingPhase.Queued or ChargingPhase.WaitingForBusiness)
                 {
                     if(!options.Enabled || port.NewWorkBlockReason is not null)continue;
@@ -196,7 +215,7 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
             {
                 // Read the latest durable intent, not the pre-send local variable.
                 row=sessions.Single(s=>s.SessionId==row.SessionId);
-                if(row.HasReservation)Hold(row,"充电流程暂停，保留充电位及路权："+e.Message);
+                if(row.HasReservation){if(!Transient(row,e.Message))Hold(row,"充电流程暂停，保留充电位及路权："+e.Message);}
                 else Save(row with {Phase=ChargingPhase.WaitingForBusiness,Message="充电排队条件尚未满足："+e.Message,UpdatedAt=Now});
                 logger.LogWarning(e,"充电流程保持待核对。SessionId={SessionId}",row.SessionId);
                 if(ct.IsCancellationRequested)throw;
@@ -230,7 +249,7 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
             // Thermal/current supervision precedes motion eligibility. A BMS fault
             // may disable navigation while this session's relay still needs off.
             chargeReading=await ReadBatteryAsync(row,ct);
-            row=Save(row with {Battery=chargeReading,UpdatedAt=Now});
+            row=Save(row with {Battery=chargeReading,TransientFailures=0,TransientSince=null,UpdatedAt=Now});
             if(chargeReading.ManualCharge==true){Hold(row,"检测到连接手动充电器信号，禁止驶离并保留原充电资源。");return;}
             if(chargeReading.Temperature is null||chargeReading.Temperature>=options.MaximumTemperature)
             {
@@ -248,7 +267,7 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
             {await StopAsync(row,"对接后未建立有效充电电流，保护停止并保留资源。",ct,true);return;}
         }
         if(await port.ValidateAsync(row,row.Phase is ChargingPhase.Reserved or ChargingPhase.StartingCharge or ChargingPhase.AwaitingStop,ct) is {} error)
-        {Hold(row,error);return;}
+        {if(!Transient(row,error))Hold(row,error);return;}
         if(row.Phase==ChargingPhase.Reserved)
         {
             if(port.NewWorkBlockReason is not null)return;
@@ -272,8 +291,11 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
             var returning=row.Phase==ChargingPhase.Returning;
             var path=returning?row.Route!.ReturnPath:exiting?row.Route!.ExitPath:row.Route!.ToCharger;
             var status=await port.ObserveNavigationAsync(row.VendorTaskId??row.CommandId!,row.VehicleId,path,ct);
-            if(status is null||status.VendorTaskId!=(row.VendorTaskId??row.CommandId)||!string.Equals(status.VehicleId,row.VehicleId,StringComparison.OrdinalIgnoreCase)||!Fresh(status.UpdatedAt)||status.State==AgvTransportTaskState.Unknown)
-            {Hold(row,"原导航任务身份或完整回执不明，禁止推断完成及补发。");return;}
+            if(status is null||!Fresh(status.UpdatedAt)||status.State==AgvTransportTaskState.Unknown)
+            {if(!Transient(row,"原导航回执暂未完整，只读查询原任务。"))Hold(row,"原导航任务回执长期不完整，禁止推断完成及补发。");return;}
+            if(status.VendorTaskId!=(row.VendorTaskId??row.CommandId)||!string.Equals(status.VehicleId,row.VehicleId,StringComparison.OrdinalIgnoreCase))
+            {Hold(row,"原导航任务身份不符，禁止推断完成及补发。");return;}
+            if(row.TransientFailures>0)row=Save(row with {TransientFailures=0,TransientSince=null,UpdatedAt=Now});
             if(status.State is AgvTransportTaskState.Cancelled or AgvTransportTaskState.Failed or AgvTransportTaskState.Suspended)
             {Hold(row,"车端导航被中止或人工干预："+status.State);return;}
             if(TimedOut(row,options.NavigationTimeoutSeconds)){Hold(row,"充电导航超时，保留充电位及路权。");return;}
@@ -358,6 +380,35 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
                 return;
             }
         }
+    }
+
+    // B07-FIX C2: a held observation keeps read-only monitoring. Over-temperature, target reached or a stop request resumes the
+    // normal flow, which relays off exactly once (StopAttempted prevents a second). Otherwise the phase resumes when the
+    // observation is clear again. No command is sent from here.
+    private async Task ResumeTransientAsync(ChargingSession row,CancellationToken ct)
+    {
+        var phase=row.HeldPhase;
+        if(phase is null)return;
+        if(phase is ChargingPhase.AwaitingCurrent or ChargingPhase.Charging or ChargingPhase.AwaitingStop)
+        {
+            ChargingBatteryReading reading;
+            try{reading=await ReadBatteryAsync(row,ct);}
+            catch(Exception){return;}
+            row=Save(row with {Battery=reading,UpdatedAt=Now});
+            if(reading.ManualCharge==true)return;
+            var attention=reading.Temperature is null||reading.Temperature>=options.MaximumTemperature||
+                reading.BatteryPercent>=options.TargetBatteryPercent||row.StopRequested;
+            if(attention)
+            {
+                if(row.StopAttempted)return;
+                Save(row with {Phase=phase.Value,HeldPhase=null,TransientHold=false,TransientFailures=0,TransientSince=null,UpdatedAt=Now,
+                    Message="充电观察恢复：温度、目标或停充申请要求停止，按原流程执行一次断电。"});
+                return;
+            }
+        }
+        if(await port.ValidateAsync(row,false,ct) is not null)return;
+        Save(row with {Phase=phase.Value,HeldPhase=null,TransientHold=false,TransientFailures=0,TransientSince=null,UpdatedAt=Now,
+            Message="观察条件恢复，自动续接原阶段；原充电位及路权保持，原命令只读查询。"});
     }
 
     private async Task<ChargingBatteryReading> ReadBatteryAsync(ChargingSession row,CancellationToken ct)

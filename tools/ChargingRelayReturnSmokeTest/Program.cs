@@ -89,6 +89,65 @@ phantom.Port.RefuseReserveCall = null;
 await phantom.UntilAsync(s => s.Phase == ChargingPhase.GoingToCharger);
 Check(phantom.Port.Navigations.Count == 1, "the queued vehicle is reserved again and navigates once the bay is provably free");
 
+// C2: one failed observation is counted; the session holds only after the consecutive limit, and resumes when observation clears.
+var transient = new Fixture(evidence, "transient-validation");
+await transient.ToChargingAsync();
+transient.Port.ValidationError = "preflight rejected once";
+await transient.CyclesAsync(1);
+Check(transient.Current.Phase == ChargingPhase.Charging && transient.Current.TransientFailures == 1 && transient.Port.LeaseCount == 1,
+    "one rejected map preflight is counted without moving the charge to Hold");
+transient.Port.ValidationError = null;
+await transient.CyclesAsync(1);
+Check(transient.Current.Phase == ChargingPhase.Charging && transient.Current.TransientFailures == 0,
+    "a clear observation resets the consecutive failure count");
+
+var held = new Fixture(evidence, "held-telemetry");
+await held.ToChargingAsync();
+held.Robot.ReadFailure = new IOException("telemetry lost");
+await held.CyclesAsync(held.Options.TransientFailureLimit);
+Check(held.Current.Phase == ChargingPhase.Hold && held.Current.TransientHold && held.Port.LeaseCount == 1 &&
+    held.Robot.RelayWrites.SequenceEqual([true]), "consecutive telemetry failures hold the session with the bay still reserved");
+held.Robot.ReadFailure = null;
+await held.CyclesAsync(2);
+Check(held.Current.Phase == ChargingPhase.Charging && held.Robot.RelayWrites.SequenceEqual([true]),
+    "the held charge resumes by itself when telemetry is readable again, with no relay write");
+
+var overHeated = new Fixture(evidence, "held-over-temperature");
+await overHeated.ToChargingAsync();
+overHeated.Robot.ReadFailure = new IOException("telemetry lost");
+await overHeated.CyclesAsync(overHeated.Options.TransientFailureLimit);
+overHeated.Robot.ReadFailure = null;
+overHeated.Battery(50, true, 4, overHeated.Options.MaximumTemperature + 1);
+await overHeated.CyclesAsync(4);
+Check(overHeated.Current.Phase == ChargingPhase.Hold && overHeated.Robot.RelayWrites.SequenceEqual([true, false]) && overHeated.Port.LeaseCount == 1,
+    "over-temperature while held allows exactly one relay-off and then waits for review");
+await overHeated.CyclesAsync(3);
+Check(overHeated.Robot.RelayWrites.SequenceEqual([true, false]), "the held over-temperature stop is never repeated");
+
+var targetHeld = new Fixture(evidence, "held-target");
+await targetHeld.ToChargingAsync();
+targetHeld.Robot.ReadFailure = new IOException("telemetry lost");
+await targetHeld.CyclesAsync(targetHeld.Options.TransientFailureLimit);
+targetHeld.Robot.ReadFailure = null;
+targetHeld.Battery(80, true, 3);
+await targetHeld.CyclesAsync(4);
+Check(targetHeld.Robot.RelayWrites.SequenceEqual([true, false]) && targetHeld.Port.LeaseCount == 1 &&
+    targetHeld.Current.Phase is ChargingPhase.AwaitingStop or ChargingPhase.Exiting or ChargingPhase.Hold,
+    "a target reached while held relays off exactly once and keeps the bay until the stop is confirmed");
+
+// C14: a restart during observation resumes without a relay write and without Hold.
+var restarted = new Fixture(evidence, "restart-observation");
+await restarted.ToChargingAsync();
+restarted.Battery(80, true, 3);
+await restarted.UntilAsync(s => s.Phase == ChargingPhase.AwaitingStop);
+restarted.Restart();
+await restarted.CyclesAsync(1);
+Check(restarted.Current.Phase == ChargingPhase.AwaitingStop && restarted.Robot.RelayWrites.SequenceEqual([true, false]) &&
+    restarted.Port.LeaseCount == 1, "a restart in AwaitingStop resumes observation without replaying the relay");
+restarted.Battery(80, false, 0);
+await restarted.UntilAsync(s => s.Phase == ChargingPhase.Exiting);
+Check(restarted.Port.Navigations.Count == 2, "after the restart the confirmed stop still leads to the normal exit");
+
 Console.WriteLine($"PASS: {checks} relay return checks.");
 
 sealed class Fixture
@@ -117,6 +176,7 @@ sealed class Fixture
         Robot.Battery = new("A", percent, charging, current, temperature, false, false, Clock.GetUtcNow());
         Port.Put("A", percent, charging, current, temperature);
     }
+    public void Restart() => Service = NewService();
     public void Arrive(string site)
     {
         Port.Sites["A"] = site;
@@ -165,13 +225,17 @@ sealed class FakeRobot(FakeClock clock) : IChargingRobotControl
 {
     public ChargingBatteryReading Battery { get; set; } = new("A", 20, false, 0, 25, false, false, clock.GetUtcNow());
     public List<bool> RelayWrites { get; } = [];
+    public Exception? ReadFailure { get; set; }
     public Task SetChargingRelayAsync(string vehicleId, bool enabled, CancellationToken ct)
     {
         RelayWrites.Add(enabled);
         return Task.CompletedTask;
     }
-    public Task<ChargingBatteryReading> ReadBatteryAsync(string vehicleId, CancellationToken ct) =>
-        Task.FromResult(Battery with { VehicleId = vehicleId });
+    public Task<ChargingBatteryReading> ReadBatteryAsync(string vehicleId, CancellationToken ct)
+    {
+        if (ReadFailure is not null) throw ReadFailure;
+        return Task.FromResult(Battery with { VehicleId = vehicleId });
+    }
 }
 
 // Physical lease model: each leg of the charging route owns its own step, as in the production traffic manager.
@@ -193,6 +257,7 @@ sealed class FakePort(FakeClock clock) : IChargingRuntimePort
     public string? NewWorkBlockReason => null;
     public bool Has(string session, string resource) => leases.Any(l => l.Session == session && l.Resource == resource);
     public int SessionLeaseCount(string session) => leases.Count(l => l.Session == session);
+    public int LeaseCount => leases.Count;
     public void Put(string id, decimal percent, bool charging = false, double current = 0, double temperature = 25)
     {
         Sites.TryAdd(id, "HOME");
@@ -228,7 +293,8 @@ sealed class FakePort(FakeClock clock) : IChargingRuntimePort
     public Task<ChargingRoute?> PlanWithReturnAsync(string vehicleId, ChargingSite site, string? returnSiteId, CancellationToken ct) => Task.FromResult<ChargingRoute?>(
         new("SYNTHETIC-MAP", "V1", [Sites[vehicleId], site.ChargingSiteId], [site.ChargingSiteId, site.ExitSiteId], [In, Bay, Out, Back], 5)
         { OriginSiteId = Sites[vehicleId], ReturnSiteId = "STANDBY", ReturnPath = ReturnRoute });
-    public Task<string?> ValidateAsync(ChargingSession session, bool requireStopped, CancellationToken ct) => Task.FromResult<string?>(null);
+    public string? ValidationError { get; set; }
+    public Task<string?> ValidateAsync(ChargingSession session, bool requireStopped, CancellationToken ct) => Task.FromResult(ValidationError);
     public bool IsAt(string vehicleId, string siteId) => Sites.GetValueOrDefault(vehicleId) == siteId;
     public Task<bool> ReserveAsync(ChargingSession session, CancellationToken ct)
     {

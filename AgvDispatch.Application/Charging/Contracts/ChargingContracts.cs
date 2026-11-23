@@ -17,6 +17,10 @@ public sealed class ChargingOptions
     public int StateMaxAgeSeconds { get; set; } = 5;
     public double MinimumChargingCurrent { get; set; } = 0.1;
     public double MaximumTemperature { get; set; } = 45;
+    /// <summary>B07-FIX C2: consecutive failed observations (read, telemetry, validation) before a session is held.</summary>
+    public int TransientFailureLimit { get; set; } = 5;
+    /// <summary>B07-FIX C2: a failing observation is held after this many seconds even when the count is not reached.</summary>
+    public int TransientFailureSeconds { get; set; } = 60;
     public ChargingSite[] Sites { get; set; } = [];
     /// <summary>Dedicated standby point where a charged vehicle returns when no business return site is set. Never an exit,
     /// never a charging point. Blank means the plan fails until a return site is configured.</summary>
@@ -36,6 +40,7 @@ public sealed class ChargingOptions
         CriticalBatteryPercent <= 0 || CriticalBatteryPercent > StartBatteryPercent || StartBatteryPercent >= TargetBatteryPercent || TargetBatteryPercent > 100
             ? "充电阈值须满足0<严重电量≤启动电量<退出电量≤100。" :
         PollIntervalMs < 100 || NavigationTimeoutSeconds < 1 || CurrentTimeoutSeconds < 1 || ChargingTimeoutSeconds < 1 || StopTimeoutSeconds < 1 || StateMaxAgeSeconds < 1 ||
+        TransientFailureLimit < 1 || TransientFailureSeconds < 1 ||
         !double.IsFinite(MinimumChargingCurrent) || MinimumChargingCurrent <= 0 || !double.IsFinite(MaximumTemperature) || MaximumTemperature is <= 0 or > 100
             ? "充电超时、采集时效、电流或温度参数无效。" :
         Sites is null || Sites.Any(s => new[] {s.Id,s.ChargingSiteId,s.ExitSiteId,s.ResourceId}.Any(string.IsNullOrWhiteSpace) || s.ChargingSiteId == s.ExitSiteId || s.AllowedVehicleIds is null) ||
@@ -106,6 +111,10 @@ public sealed record ChargingSession(string SessionId, string VehicleId, Chargin
     public ChargingWorkflowKind? ScriptOperationKind { get; init; }
     public ChargingWorkflowStatus? WorkflowStatus { get; init; }
     public bool ShutdownVerified { get; init; }
+    // B07-FIX C2: a held observation resumes by itself once the observation is clear; these count the failures so far.
+    public bool TransientHold { get; init; }
+    public int TransientFailures { get; init; }
+    public DateTimeOffset? TransientSince { get; init; }
     public string? OriginSiteId => Route?.OriginSiteId;
     public string? ReturnSiteId => Route?.ReturnSiteId;
     public bool HasReservation => Site is not null && Route is not null && Phase != ChargingPhase.Completed;
