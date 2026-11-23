@@ -476,6 +476,10 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
             result.Add(new AlarmCandidate($"CHARGING:BAY:{row.Site?.ResourceId}:FAULT","Charging",row.Site?.ResourceId??row.SessionId,
                 "CHARGING_BAY_FAULT","充电位故障冷却中",$"充电位{row.Site?.Id}对接后无充电电流，已断电；冷却期内不派其他车辆充电。原车辆：{row.VehicleId}",
                 AlarmSeverity.Error));
+        // B07-FIX C8: a vehicle below critical that is still waiting for its business cycle to close is escalated as critical.
+        foreach(var row in Volatile.Read(ref sessions).Where(s=>s.Phase is ChargingPhase.Queued or ChargingPhase.WaitingForBusiness && IsCritical(s.VehicleId)))
+            result.Add(new AlarmCandidate($"CHARGING:{row.SessionId}:CRITICAL_WAITING","Charging",row.VehicleId,"CHARGING_CRITICAL_WAITING",
+                $"{row.VehicleId}严重低电量，等待业务箱体循环结束",$"{row.Message}；在充电前禁止新业务。",AlarmSeverity.Critical));
         // B07-FIX C11: a vehicle at the start threshold with no commissioned allowed bay, or a bay that cannot be routed to it.
         foreach(var vehicle in port.Vehicles.Where(v=>v.Connection==ConnectionState.Online&&v.BatteryPercent is {} b&&b<=options.StartBatteryPercent))
         {

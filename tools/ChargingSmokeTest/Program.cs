@@ -101,7 +101,14 @@ busy.Port.Busy.Add("A");
 await busy.CyclesAsync(4);
 Check(busy.Port.Navigations.Count == 0 && busy.Robot.RelayWrites.Count == 0,
     "unfinished business or equipment responsibility prevents charging motion");
+// B07-FIX C8: a vehicle that falls below critical during its business cycle raises a critical charging alarm while it waits.
+busy.Port.Put("A", 10);
+busy.Port.Busy.Add("A");
+await busy.CyclesAsync(2);
+Check(busy.Service.AlarmCandidates(busy.Clock.GetUtcNow()).Any(c => c.Code == "CHARGING_CRITICAL_WAITING" && c.Severity == AlarmSeverity.Critical) &&
+    !busy.Service.AllowsNewBusiness("A"), "a critical vehicle waiting for its business cycle raises a critical alarm and takes no new business");
 busy.Port.Busy.Clear();
+busy.Port.Put("A", 20);
 await busy.UntilAsync(s => s.Phase == ChargingPhase.GoingToCharger);
 Check(busy.Port.Navigations.Count == 1, "closing the current business cycle allows queued charging");
 
