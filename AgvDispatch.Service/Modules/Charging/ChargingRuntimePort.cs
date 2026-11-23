@@ -110,7 +110,9 @@ public sealed class ChargingRuntimePort(ChargingOptions options, IAgvStateCache 
         {
             OriginSiteId=source.AgvSiteId,
             ReturnSiteId=home.AgvSiteId,
-            ReturnPath=returning.Nodes.Select(id=>Node(id)!.AgvSiteId!).ToArray()
+            ReturnPath=returning.Nodes.Select(id=>Node(id)!.AgvSiteId!).ToArray(),
+            // B07-FIX C5: only the inbound road and the bay are reserved up front.
+            InboundResourceIds=incoming.ResourceIds.Append(site.ResourceId).Distinct(StringComparer.OrdinalIgnoreCase).ToArray()
         };
     }
     public async Task<string?> ValidateAsync(ChargingSession session,bool requireStopped,CancellationToken ct)
@@ -169,10 +171,18 @@ public sealed class ChargingRuntimePort(ChargingOptions options, IAgvStateCache 
         if(session.Route is null||session.Site is null||await ValidateAsync(session,true,ct) is not null||
             await BusyReasonAsync(session.VehicleId,session.SessionId,ct) is not null)return false;
         var route=session.Route;
-        await resources.RecordRouteAsync(new(session.SessionId+"-LOCK",session.SessionId,session.VehicleId,route.ToCharger[0],route.ToCharger[^1],[],route.ResourceIds,false,
-            "充电会话独占充电位及完整进出道路；异常、断网及重启均不自动释放。") {MapId=route.MapId,MapVersionId=route.MapVersionId},ct);
-        return (await resources.TryAcquireAsync(session.SessionId+"-LOCK",session.SessionId,session.VehicleId,route.ResourceIds,ct)).Acquired;
+        // B07-FIX C5: reserve the inbound road and the bay only. The exit and return roads are leased when the vehicle needs them.
+        var ids=route.InboundResourceIds.Length>0?route.InboundResourceIds:route.ResourceIds;
+        await resources.RecordRouteAsync(new(session.SessionId+"-LOCK",session.SessionId,session.VehicleId,route.ToCharger[0],route.ToCharger[^1],[],ids,false,
+            "充电会话独占充电位及来车道路；出口及返程道路在停充后申请。") {MapId=route.MapId,MapVersionId=route.MapVersionId,QueuePriority=ChargingQueuePriority(session)},ct);
+        return (await resources.TryAcquireAsync(session.SessionId+"-LOCK",session.SessionId,session.VehicleId,ids,ct)).Acquired;
     }
+    // B07-FIX C5: a vehicle at or below the critical battery outranks every ordinary request for the bay, and the lower battery
+    // wins among critical vehicles. Ordinary charging keeps priority zero, so business requests are not displaced.
+    public const double CriticalChargingQueueTier=1_000_000_000;
+    private double ChargingQueuePriority(ChargingSession session)=>
+        vehicles.TryGet(session.VehicleId,out var v)&&v.BatteryPercent is {} battery&&battery<=options.CriticalBatteryPercent
+            ? CriticalChargingQueueTier+(double)(100m-battery) : 0;
     public Task RenewAsync(string sessionId,CancellationToken ct)=>resources.RenewTaskAsync(sessionId,ct);
     // B07-FIX C6/C8: once the vehicle stands on the charger, only the charging bay and the charging point are kept.
     // C6 kept the exit path too; on B07 the CHARGE-01 exit J0631 is the only approach to the dumper (J0632→J0631→J0651),

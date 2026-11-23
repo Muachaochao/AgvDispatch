@@ -65,6 +65,8 @@ public sealed record ChargingRoute(string MapId, string MapVersionId, string[] T
     public string? OriginSiteId { get; init; }
     public string? ReturnSiteId { get; init; }
     public string[] ReturnPath { get; init; } = [];
+    // B07-FIX C5: the road that leads into the bay, plus the bay itself; the only resources reserved at queue time.
+    public string[] InboundResourceIds { get; init; } = [];
 }
 public sealed record ChargingSession(string SessionId, string VehicleId, ChargingPhase Phase, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt, string Message)
 {
