@@ -164,6 +164,7 @@ sealed class RecoveryFake : IAgvGateway, IAgvObstacleRecoveryGateway
     public AgvTransportTaskState OriginalState { get; set; } = AgvTransportTaskState.GoingToDestination;
     // When set, the next replacement send throws this exception instead of accepting.
     public Exception? NextSendFailure { get; set; }
+    public IReadOnlyList<string> SentPath { get; private set; } = [];
 
     public Task<AgvTransportTaskStatus?> GetTransportTaskStatusAsync(string vendorTaskId,
         CancellationToken cancellationToken) => Status(vendorTaskId);
@@ -183,6 +184,7 @@ sealed class RecoveryFake : IAgvGateway, IAgvObstacleRecoveryGateway
         string originalVendorTaskId, ObstacleRecoveryPreSendLimits limits, CancellationToken cancellationToken)
     {
         RecoverySendCalls++;
+        SentPath = path.ToArray();
         if (NextSendFailure is { } failure)
         {
             NextSendFailure = null;

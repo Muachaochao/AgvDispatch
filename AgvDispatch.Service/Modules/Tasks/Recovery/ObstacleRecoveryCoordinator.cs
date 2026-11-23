@@ -275,6 +275,22 @@ public sealed class ObstacleRecoveryCoordinator(
             // identity keep their own meaning and are not rewritten here.
             if (row.State == ObstacleRecoveryStates.Executing)
             {
+                // One cycle covers one replacement. When the step has finished, or the
+                // vehicle is blocked again by an obstacle that began after the bind, the
+                // cycle is closed; the next pass opens a new one for the executing step.
+                if (step.Status is (int)DispatchTaskStepStatus.Completed or (int)DispatchTaskStepStatus.Cancelled)
+                {
+                    await MarkRecoveredAsync(row, robot, "替代导航所属步骤已结束，本轮障碍恢复关闭。", cancellationToken);
+                    return;
+                }
+                if (FreshBlocked(robot, now) && robot.ObstacleSince is { } newBlockage &&
+                    row.SendAttemptedAtUtc is { } boundAt &&
+                    newBlockage > new DateTimeOffset(DateTime.SpecifyKind(boundAt, DateTimeKind.Utc)))
+                {
+                    await MarkRecoveredAsync(row, robot,
+                        "替代导航执行中再次受阻，关闭上一轮并按新的受阻起点开启新一轮。", cancellationToken);
+                    return;
+                }
                 row.Message = "替代路线已发送并绑定原业务任务，等待车辆到点及后续PLC确认。";
                 row.NextAction = "核对新3066车端任务全链、车辆实际运动、PLC反馈和原路权交接。";
                 await SaveAsync(row, cancellationToken);
@@ -667,8 +683,11 @@ public sealed class ObstacleRecoveryCoordinator(
             return;
         }
 
+        // Once the original chain is terminal and the vehicle is no longer blocked, the
+        // original remaining route may be sent again; the inferred blocked edge is no
+        // longer a reason to exclude it.
         var allowClearedOriginalRoute =
-            row.SafetyPointReachedAtUtc is not null &&
+            row.OriginalTerminalAtUtc is not null &&
             !AgvObstaclePolicy.IsBlocked(robot);
         var plan = await PlanAsync(
             row, robot, task, step, originalPath, cancellationToken,

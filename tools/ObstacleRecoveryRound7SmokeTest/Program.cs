@@ -32,6 +32,8 @@ try
     await AcceleratedRateStopEvidenceAsync(directory);
     await PreSendRejectionRetriesAsync(directory);
     await UncertainSendIsNotResentAsync(directory);
+    await BoundCycleClosesAndReopensAsync(directory);
+    await ClearedOriginalRouteResumesAsync(directory);
     Console.WriteLine($"PASS: {checks} round-7 obstacle recovery checks; isolated database and synthetic gateway only.");
 }
 finally
@@ -246,6 +248,125 @@ async Task UncertainSendIsNotResentAsync(string root)
           crash.Gateway.RecoverySendCalls == 0,
         "发送意图已落库但未绑定时重启，记录为结果不确定且不重发");
 }
+
+// O7: a bound replacement belongs to one cycle. Completion of its step closes the
+// cycle, and an obstacle that begins after the bind closes it and opens a new cycle
+// for the same executing step, instead of being ignored.
+async Task BoundCycleClosesAndReopensAsync(string root)
+{
+    var start = new DateTimeOffset(2026, 11, 7, 2, 0, 0, TimeSpan.Zero);
+    var h = await ObstacleHarnessFactory.BuildAsync(root, "o7", ObstacleHarnessFactory.StationGraph(true),
+        start, "TASK-O7", "STEP-O7");
+    h.Gateway.OriginalState = AgvTransportTaskState.Cancelled;
+    var second = 0;
+    async Task Tick(bool blocked)
+    {
+        h.Clock.SetTo(start.AddSeconds(second));
+        h.States.ApplyTelemetry("A", ObstacleHarnessFactory.Telemetry(h.Clock.GetUtcNow(), blocked: blocked), TimeSpan.Zero);
+        await h.Coordinator.ObserveOnceAsync(default);
+        second++;
+    }
+    for (; second <= 200 && RecoveryState(h.Db, "TASK-O7") != ObstacleRecoveryStates.Executing; )
+        await Tick(blocked: true);
+    var bound = RecoveryRow(h.Db, "TASK-O7");
+    Check(bound.State == ObstacleRecoveryStates.Executing && h.Gateway.RecoverySendCalls == 1 &&
+          bound.NewVendorTaskId is not null, "替代导航绑定后进入执行中，只发送一次");
+    for (var clear = 0; clear < 3; clear++)
+        await Tick(blocked: false);
+    Check(RecoveryRow(h.Db, "TASK-O7").State == ObstacleRecoveryStates.Executing,
+        "绑定后车辆解除受阻，替代导航仍在执行，本轮保持执行中");
+
+    await Tick(blocked: true);
+    var closed = RecoveryRow(h.Db, "TASK-O7");
+    Check(closed.State == ObstacleRecoveryStates.Recovered,
+        "替代导航执行中出现新的受阻，关闭上一轮");
+    await Tick(blocked: true);
+    var reopened = RecoveryRow(h.Db, "TASK-O7");
+    Check(reopened.State == ObstacleRecoveryStates.Blocked &&
+          reopened.OriginalVendorTaskId == bound.NewVendorTaskId &&
+          reopened.BlockedSinceUtc == start.AddSeconds(second - 2).UtcDateTime &&
+          h.Gateway.RecoverySendCalls == 1,
+        "新受阻开启新一轮，以当前替代编号为原导航，不重复发送");
+
+    var done = await ObstacleHarnessFactory.BuildAsync(root, "o7b", ObstacleHarnessFactory.StationGraph(true),
+        start, "TASK-O7B", "STEP-O7B");
+    done.Gateway.OriginalState = AgvTransportTaskState.Cancelled;
+    second = 0;
+    var doneTick = done;
+    for (; second <= 200 && RecoveryState(doneTick.Db, "TASK-O7B") != ObstacleRecoveryStates.Executing;)
+    {
+        done.Clock.SetTo(start.AddSeconds(second));
+        done.States.ApplyTelemetry("A", ObstacleHarnessFactory.Telemetry(done.Clock.GetUtcNow(), blocked: true), TimeSpan.Zero);
+        await done.Coordinator.ObserveOnceAsync(default);
+        second++;
+    }
+    await done.Db.Updateable<DispatchTaskStepEntity>()
+        .SetColumns(item => new DispatchTaskStepEntity { Status = (int)DispatchTaskStepStatus.Completed })
+        .Where(item => item.StepId == "STEP-O7B").ExecuteCommandAsync();
+    done.Clock.SetTo(start.AddSeconds(second));
+    done.States.ApplyTelemetry("A", ObstacleHarnessFactory.Telemetry(done.Clock.GetUtcNow(), blocked: false), TimeSpan.Zero);
+    await done.Coordinator.ObserveOnceAsync(default);
+    Check(RecoveryRow(done.Db, "TASK-O7B").State == ObstacleRecoveryStates.Recovered,
+        "替代导航所属步骤完成后，本轮恢复记录关闭");
+}
+
+// O13: once the original chain is terminal and the vehicle is no longer blocked, the
+// original remaining route may be sent again. Before, the inferred blocked edge kept
+// it excluded forever, so the task froze with no route.
+async Task ClearedOriginalRouteResumesAsync(string root)
+{
+    var start = new DateTimeOffset(2026, 11, 7, 2, 0, 0, TimeSpan.Zero);
+    var h = await ObstacleHarnessFactory.BuildAsync(root, "o13", ObstacleHarnessFactory.StationGraph(false),
+        start, "TASK-O13", "STEP-O13");
+    h.Gateway.OriginalState = AgvTransportTaskState.Cancelled;
+    // The earlier cancellation and the terminal observation are already persisted, as
+    // they are after a coordinator cancel; the route then has no alternative.
+    await h.Db.Insertable(new ObstacleRecoveryEntity
+    {
+        RecoveryId = Guid.NewGuid().ToString("N"),
+        TaskId = "TASK-O13",
+        StepId = "STEP-O13",
+        VehicleId = "A",
+        OriginalVendorTaskId = "STEP-O13",
+        State = ObstacleRecoveryStates.AwaitingOriginalTerminal,
+        Message = "synthetic earlier cancellation",
+        NextAction = "synthetic",
+        BlockedSinceUtc = start.UtcDateTime,
+        OriginalPathJson = "[\"S\",\"H\",\"X\"]",
+        CandidatePathJson = "[]",
+        BlockedEdgeIdsJson = "[]",
+        MapId = "MAP-O",
+        MapVersionId = "V1",
+        DefinitionHash = EngineeringRuntimeIdentity.MapHash(ObstacleHarnessFactory.StationGraph(false)),
+        CancelRequestedAtUtc = start.UtcDateTime,
+        CancelAttemptedAtUtc = start.UtcDateTime,
+        CancelAcknowledgedAtUtc = start.UtcDateTime,
+        OriginalTerminalAtUtc = start.UtcDateTime,
+        Revision = 1,
+        CreatedAt = start.UtcDateTime,
+        UpdatedAt = start.UtcDateTime
+    }).ExecuteCommandAsync();
+    var second = 0;
+    async Task Tick(bool blocked)
+    {
+        h.Clock.SetTo(start.AddSeconds(second));
+        h.States.ApplyTelemetry("A", ObstacleHarnessFactory.Telemetry(h.Clock.GetUtcNow(), blocked: blocked), TimeSpan.Zero);
+        await h.Coordinator.ObserveOnceAsync(default);
+        second++;
+    }
+    for (; second <= 130; )
+        await Tick(blocked: true);
+    Check(h.Gateway.RecoverySendCalls == 0 && RecoveryRow(h.Db, "TASK-O13").State != ObstacleRecoveryStates.Frozen,
+        "原链终态但无替代路线且仍受阻时，不发送也不冻结");
+    for (; second <= 160 && h.Gateway.RecoverySendCalls == 0;)
+        await Tick(blocked: false);
+    Check(h.Gateway.RecoverySendCalls == 1 &&
+          h.Gateway.SentPath.SequenceEqual(["S", "H", "X"]),
+        "障碍清除且原链终态后，续发原剩余路线S→H→X");
+}
+
+static string? RecoveryState(ISqlSugarClient db, string taskId) =>
+    db.Queryable<ObstacleRecoveryEntity>().ToList().FirstOrDefault(item => item.TaskId == taskId)?.State;
 
 static ObstacleRecoveryEntity RecoveryRow(ISqlSugarClient db, string taskId) =>
     db.Queryable<ObstacleRecoveryEntity>().Single(item => item.TaskId == taskId);
