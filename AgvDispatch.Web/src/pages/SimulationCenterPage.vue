@@ -1666,6 +1666,17 @@ async function action(name: 'start' | 'stop' | 'run' | 'abort' | 'control' | 'ne
   finally { clearTimeout(timeout); busy.value = false; if (controller === request) controller = undefined; }
   return result;
 }
+function startEnvironmentOrScheme() {
+  if (!requiresFreshInstance.value) {
+    void action('start');
+    return;
+  }
+  if (!selectedScheme.value || !selectedSchemeReady.value) {
+    actionError.value = '当前实例已有设备历史，不能原地启动。请选择一个带 PLC 点表的保存方案。';
+    return;
+  }
+  void action('scheme-start', { id: selectedScheme.value });
+}
 function carControl(values: NonNullable<SimulationControls['vehicles']>[string]) {
   if (!selectedVehicle.value || !canControl.value) return;
   void action('control', { sequence: crypto.randomUUID(), vehicles: { [selectedVehicle.value]: values } } satisfies SimulationControls);
@@ -1931,7 +1942,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
         <small>{{ vehicleIds.length }} 辆车 · {{ onlineVehicleCount }} 辆在线 · {{ configuredStationIds.length }} 个工位</small>
       </div>
       <div class="module-heading-actions">
-        <button class="primary" :disabled="!available || !!status?.running || starting || requiresFreshInstance || cleanupRequired" @click="action('start')"><IconPlayerPlay :size="16" />{{ starting ? '正在启动…' : cleanupRequired ? '启动失败待清理' : requiresFreshInstance ? '请先新建实例' : '启动环境' }}</button>
+        <button class="primary" :disabled="!available || !!status?.running || starting || cleanupRequired || (requiresFreshInstance && (!selectedScheme || !selectedSchemeReady))" :title="requiresFreshInstance ? '旧实例保留设备历史，将按当前保存方案创建干净实例并启动' : '启动当前隔离环境'" @click="startEnvironmentOrScheme"><IconPlayerPlay :size="16" />{{ starting ? '正在启动…' : cleanupRequired ? '启动失败待清理' : requiresFreshInstance ? '新建实例并启动' : '启动环境' }}</button>
         <button :disabled="!available || (!status?.running && !starting && !cleanupRequired)" @click="action('stop')"><IconPlayerStop :size="16" />{{ cleanupRequired ? '停止并清理' : '停止环境' }}</button>
       </div>
     </section>
