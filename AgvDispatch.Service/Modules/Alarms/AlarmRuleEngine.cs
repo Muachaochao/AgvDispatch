@@ -23,7 +23,9 @@ public sealed class AlarmRuleEngine(
     ITrafficResourceControlService trafficResources,
     ITrafficFlowMonitor trafficFlow,
     IAlarmService alarms, IRoadClosureService? roadClosures = null,
-    ObstacleRecoveryStore? obstacleRecovery = null, ObstacleRecoveryOptions? recoveryOptions = null) : IsolatedBackgroundService
+    ObstacleRecoveryStore? obstacleRecovery = null, ObstacleRecoveryOptions? recoveryOptions = null,
+    // B07-FIX C9/C12: charging alarms (bay fault cooldown, unknown battery). Optional, so existing constructions are unchanged.
+    IChargingService? charging = null) : IsolatedBackgroundService
 {
     private readonly Dictionary<string, DateTimeOffset> _offRouteSince =
         new(StringComparer.OrdinalIgnoreCase);
@@ -127,6 +129,8 @@ public sealed class AlarmRuleEngine(
                 $"车辆={string.Join(',', deadlock.VehicleIds)}；{deadlock.Reason}；{deadlock.Suggestion}",
                 AlarmSeverity.Critical));
         }
+        if (charging is not null)
+            result.AddRange(charging.AlarmCandidates(AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow()));
         return result;
     }
 

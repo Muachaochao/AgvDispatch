@@ -148,6 +148,30 @@ restarted.Battery(80, false, 0);
 await restarted.UntilAsync(s => s.Phase == ChargingPhase.Exiting);
 Check(restarted.Port.Navigations.Count == 2, "after the restart the confirmed stop still leads to the normal exit");
 
+// C9: a bay that gave no current is in cooldown for other vehicles and raises an alarm; the vehicle still leaves by the exit.
+var faulted = new Fixture(evidence, "bay-fault-cooldown");
+await faulted.ToAwaitingCurrentAsync();
+faulted.Battery(20, false, 0);
+faulted.Clock.Advance(TimeSpan.FromSeconds(faulted.Options.CurrentTimeoutSeconds + 1));
+await faulted.UntilAsync(s => s.Phase == ChargingPhase.Exiting);
+Check(faulted.Robot.RelayWrites.SequenceEqual([true, false]) && faulted.Current.BayFaultAt is not null,
+    "a bay with no current is switched off once and marked for cooldown before the vehicle leaves");
+Check(faulted.Service.AlarmCandidates(faulted.Clock.GetUtcNow()).Any(c => c.Code == "CHARGING_BAY_FAULT"),
+    "the bay fault raises a charging alarm candidate while the cooldown lasts");
+faulted.Arrive("EXIT");
+await faulted.UntilAsync(s => s.Phase == ChargingPhase.Returning);
+faulted.Arrive("STANDBY");
+await faulted.UntilAsync(s => s.Phase == ChargingPhase.Completed);
+faulted.Port.Put("B", 10);
+await faulted.CyclesAsync(2);
+Check(faulted.Status.Sessions.Last(s => s.VehicleId == "B").HasReservation == false,
+    "another vehicle is not given the faulted bay during its cooldown");
+faulted.Clock.Advance(TimeSpan.FromMinutes(faulted.Options.BayFaultCooldownMinutes + 1));
+await faulted.CyclesAsync(2);
+Check(faulted.Status.Sessions.Last(s => s.VehicleId == "B").HasReservation &&
+    !faulted.Service.AlarmCandidates(faulted.Clock.GetUtcNow()).Any(c => c.Code == "CHARGING_BAY_FAULT"),
+    "after the cooldown the bay is offered again and the alarm clears");
+
 Console.WriteLine($"PASS: {checks} relay return checks.");
 
 sealed class Fixture

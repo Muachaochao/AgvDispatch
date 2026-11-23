@@ -21,6 +21,8 @@ public sealed class ChargingOptions
     public int TransientFailureLimit { get; set; } = 5;
     /// <summary>B07-FIX C2: a failing observation is held after this many seconds even when the count is not reached.</summary>
     public int TransientFailureSeconds { get; set; } = 60;
+    /// <summary>B07-FIX C9: a bay with no current after the start timer is not offered to other vehicles for this long.</summary>
+    public int BayFaultCooldownMinutes { get; set; } = 30;
     public ChargingSite[] Sites { get; set; } = [];
     /// <summary>Dedicated standby point where a charged vehicle returns when no business return site is set. Never an exit,
     /// never a charging point. Blank means the plan fails until a return site is configured.</summary>
@@ -53,6 +55,8 @@ public sealed class ChargingOptions
     {
         if (Sites.Select(s => s.ExitSiteId).Distinct(StringComparer.OrdinalIgnoreCase).Count() != Sites.Length)
             return "两个充电位共用同一出口，无法同时安全离位，请先核对配置。";
+        if (BayFaultCooldownMinutes < 0)
+            return "充电位故障冷却时间不能为负数。";
         if (MinimumAvailableVehicles < 0 || MaximumVehiclesOutOfService < 0)
             return "车队最少可用车数及同时离线车数上限不能为负数。";
         if (PreemptionReleaseBatteryPercent is <= 0 || PreemptionReleaseBatteryPercent <= CriticalBatteryPercent || PreemptionReleaseBatteryPercent >= TargetBatteryPercent ||
@@ -113,6 +117,8 @@ public sealed record ChargingSession(string SessionId, string VehicleId, Chargin
     public bool ShutdownVerified { get; init; }
     // B07-FIX C2: a held observation resumes by itself once the observation is clear; these count the failures so far.
     public bool TransientHold { get; init; }
+    // B07-FIX C9: set when the bay gave no current after the start timer; the bay is in cooldown until this + BayFaultCooldownMinutes.
+    public DateTimeOffset? BayFaultAt { get; init; }
     public int TransientFailures { get; init; }
     public DateTimeOffset? TransientSince { get; init; }
     public string? OriginSiteId => Route?.OriginSiteId;
@@ -142,6 +148,8 @@ public interface IChargingDispatchGuard
 public interface IChargingService : IChargingDispatchGuard
 {
     Task<ChargingStatus> ReadAsync(CancellationToken ct);
+    /// <summary>B07-FIX C9/C12: charging alarms for the alarm rule engine (bay fault cooldown, unknown battery).</summary>
+    IReadOnlyList<AlarmCandidate> AlarmCandidates(DateTimeOffset now) => [];
     Task<ChargingResult> RequestAsync(TrafficUserContext user, ChargingRequest request, CancellationToken ct) =>
         Task.FromResult(new ChargingResult(false, "当前实现不支持手动充电申请。"));
     Task<ChargingResult> RequestStopAsync(TrafficUserContext user, ChargingStopRequest request, CancellationToken ct);

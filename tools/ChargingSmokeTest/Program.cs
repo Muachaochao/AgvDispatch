@@ -131,10 +131,16 @@ Check(noCurrent.Current.Phase == ChargingPhase.AwaitingCurrent,
     "negative discharge current cannot establish charging even when Charging is true");
 noCurrent.Clock.Advance(TimeSpan.FromSeconds(noCurrent.Options.CurrentTimeoutSeconds + 1));
 await noCurrent.CyclesAsync(1);
-Check(noCurrent.Current.Phase == ChargingPhase.Hold && noCurrent.Port.Leases.Count == 1,
-    "no-current timeout becomes a held fault with the bay reserved");
+// B07-FIX C9 (deliberate change): a bay with no current after the start timer is a bay fault, not a manual review.
+// It is switched off once, stays reserved, and the vehicle leaves by the normal exit after current is confirmed zero.
+Check(noCurrent.Current.Phase == ChargingPhase.AwaitingStop && noCurrent.Current.BayFaultAt is not null && noCurrent.Port.Leases.Count == 1,
+    "no-current timeout switches the relay off and keeps the bay reserved until the stop is confirmed");
 Check(noCurrent.Robot.RelayWrites.SequenceEqual([true, false]),
-    "no-current timeout makes one protective relay stop before retaining the fault");
+    "no-current timeout makes one protective relay stop before the stop is confirmed");
+noCurrent.Battery(20, false, 0);
+await noCurrent.UntilAsync(s => s.Phase == ChargingPhase.Exiting);
+Check(noCurrent.Port.Navigations.Count == 2 && noCurrent.Port.Leases.Count == 1 && noCurrent.Robot.RelayWrites.SequenceEqual([true, false]),
+    "after current is confirmed zero the vehicle leaves automatically and the bay stays until the exit");
 
 var overTemperature = new Fixture(evidence, "over-temperature");
 await overTemperature.ToChargingAsync();

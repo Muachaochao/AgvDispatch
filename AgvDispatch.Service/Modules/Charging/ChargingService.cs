@@ -126,7 +126,7 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
     private bool BayFreeFor(string vehicleId,ChargingSession[] rows)
     {
         var free=options.Sites.Count(site=>site.Commissioned&&CanHandleSite(site,vehicleId)&&
-            site.AllowedVehicleIds.Contains(vehicleId,StringComparer.OrdinalIgnoreCase)&&
+            site.AllowedVehicleIds.Contains(vehicleId,StringComparer.OrdinalIgnoreCase)&&!BayCooling(site)&&
             !rows.Any(other=>other.HasReservation&&other.Site!.ResourceId.Equals(site.ResourceId,StringComparison.OrdinalIgnoreCase)));
         var waiting=rows.Count(s=>!s.HasReservation&&(s.Phase is ChargingPhase.Queued or ChargingPhase.WaitingForBusiness)&&
             !s.VehicleId.Equals(vehicleId,StringComparison.OrdinalIgnoreCase));
@@ -180,6 +180,7 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
                     if(busy is not null){Save(row with {Phase=ChargingPhase.WaitingForBusiness,Message=busy,UpdatedAt=Now});continue;}
                     var choices=new List<(ChargingSite Site,ChargingRoute Route)>();
                     foreach(var site in options.Sites.Where(s=>s.Commissioned&&CanHandleSite(s,row.VehicleId)&&s.AllowedVehicleIds.Contains(row.VehicleId,StringComparer.OrdinalIgnoreCase)&&
+                        !BayCooling(s)&&
                         !sessions.Any(other=>other.HasReservation&&other.Site!.ResourceId.Equals(s.ResourceId,StringComparison.OrdinalIgnoreCase))))
                         if(await port.PlanWithReturnAsync(row.VehicleId,site,row.RequestedReturnSiteId,ct) is {} route)choices.Add((site,route));
                     foreach(var candidate in choices.OrderBy(c=>c.Route.Cost).ThenBy(c=>c.Site.Id,StringComparer.Ordinal))
@@ -264,7 +265,7 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
             {await StopAsync(row,"充电中无有效正电流或超过最长充电时间，保护停止并保留资源。",ct,true);return;}
             if(row.Phase==ChargingPhase.AwaitingCurrent&&TimedOut(row,options.CurrentTimeoutSeconds)&&
                (chargeReading.Charging!=true||chargeReading.Current is null||chargeReading.Current<=options.MinimumChargingCurrent))
-            {await StopAsync(row,"对接后未建立有效充电电流，保护停止并保留资源。",ct,true);return;}
+            {await BayFaultStopAsync(row,ct);return;}
         }
         if(await port.ValidateAsync(row,row.Phase is ChargingPhase.Reserved or ChargingPhase.StartingCharge or ChargingPhase.AwaitingStop,ct) is {} error)
         {if(!Transient(row,error))Hold(row,error);return;}
@@ -429,6 +430,17 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
         if(vendor!=commandId)throw new InvalidDataException("充电导航回执身份与原请求不符。");
         Move(row with {VendorTaskId=vendor},exit?ChargingPhase.Exiting:ChargingPhase.GoingToCharger,exit?"停止已确认，执行原退出导航。":"前往已预留充电点，等待原任务完成及实际到位。");
     }
+    // B07-FIX C9: no current after the start timer is a bay or docking fault. The relay is switched off once, the bay goes into
+    // cooldown (persisted on the session, so a restart keeps it) and an alarm is raised. The vehicle leaves by the normal exit
+    // only after current is confirmed zero and its position is confirmed; nothing else is retried automatically.
+    private async Task BayFaultStopAsync(ChargingSession row,CancellationToken ct)
+    {
+        row=Save(row with {BayFaultAt=Now,UpdatedAt=Now});
+        await StopAsync(row,"对接后未建立有效充电电流：保护断电，充电位进入故障冷却；电流归零且位置确认后自动离位。",ct);
+    }
+    private bool BayCooling(ChargingSite site)=>Volatile.Read(ref sessions).Any(s=>s.BayFaultAt is {} at&&
+        s.Site?.ResourceId.Equals(site.ResourceId,StringComparison.OrdinalIgnoreCase)==true&&Now-at<TimeSpan.FromMinutes(options.BayFaultCooldownMinutes));
+
     private async Task StopAsync(ChargingSession row,string message,CancellationToken ct,bool holdAfter=false)
     {
         if(row.StopAttempted){Hold(row,"原停止充电已尝试，禁止自动重发；"+message);return;}
@@ -441,6 +453,20 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
         // Release first. A crash before saving Completed remains conservatively held.
         await port.ReleaseAsync(row.SessionId,ct);
         Move(row,ChargingPhase.Completed,message);
+    }
+
+    public IReadOnlyList<AlarmCandidate> AlarmCandidates(DateTimeOffset now)
+    {
+        var result=new List<AlarmCandidate>();
+        foreach(var row in Volatile.Read(ref sessions).Where(s=>s.BayFaultAt is {} at&&now-at<TimeSpan.FromMinutes(options.BayFaultCooldownMinutes)))
+            result.Add(new AlarmCandidate($"CHARGING:BAY:{row.Site?.ResourceId}:FAULT","Charging",row.Site?.ResourceId??row.SessionId,
+                "CHARGING_BAY_FAULT","充电位故障冷却中",$"充电位{row.Site?.Id}对接后无充电电流，已断电；冷却期内不派其他车辆充电。原车辆：{row.VehicleId}",
+                AlarmSeverity.Error));
+        // B07-FIX C12: an unknown battery is an alarm, and the vehicle is not usable until a reading returns.
+        foreach(var vehicle in port.Vehicles.Where(v=>v.Connection==ConnectionState.Online&&v.BatteryPercent is null))
+            result.Add(new AlarmCandidate($"CHARGING:BATTERY:{vehicle.VehicleId}:UNKNOWN","AGV",vehicle.VehicleId,
+                "AGV_BATTERY_UNKNOWN","车辆电量读数缺失",$"{vehicle.VehicleId}电量未知；充电与派单均按不可用处理，等待有效读数。",AlarmSeverity.Warning));
+        return result;
     }
 
     public async Task<ChargingResult> RequestStopAsync(TrafficUserContext user,ChargingStopRequest request,CancellationToken ct)
