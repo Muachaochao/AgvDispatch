@@ -28,9 +28,12 @@ public sealed class CompletedTransportRouteReleaseService(
     MapOptions mapOptions,
     TrafficSegmentReleasePolicy releasePolicy,
     TrafficResourceManager resources,
-    TimeProvider? clock = null, DispatchTrafficWakeup? trafficWakeup = null)
+    TimeProvider? clock = null, DispatchTrafficWakeup? trafficWakeup = null,
+    ILogger<CompletedTransportRouteReleaseService>? logger = null)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    // Vehicles already reported as lacking a verified body envelope (warned once per vehicle).
+    private static readonly HashSet<string> EnvelopeWarnings = new(StringComparer.OrdinalIgnoreCase);
     private static readonly HashSet<DispatchTaskStepType> TransportSteps =
     [
         DispatchTaskStepType.GoToPickup,
@@ -181,7 +184,15 @@ public sealed class CompletedTransportRouteReleaseService(
             body.RadiusFromReportedReferenceMeters <= 0 ||
             profile.Length != 1 || !double.IsFinite(profile[0].MaximumPositionUncertaintyMeters) ||
             profile[0].MaximumPositionUncertaintyMeters < 0)
+        {
+            // Without a verified envelope no geometric release is possible, so automatic corridor
+            // guards stay leased until the task completes. Surface that once per vehicle (R10).
+            lock (EnvelopeWarnings)
+                if (EnvelopeWarnings.Add(step.VehicleId))
+                    logger?.LogWarning("车体包络缺失或未核定，已完成运输路段无法几何释放，旧路权将保留到任务结束。VehicleId={VehicleId}",
+                        step.VehicleId);
             return new(0, "缺少已核定的完整车体、载荷包络或定位误差界。");
+        }
 
         var destination = destinationMatches[0];
         var destinationResources = destination.ResourceIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
