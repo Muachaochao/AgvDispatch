@@ -18,6 +18,9 @@ public static class ObstacleRecoveryStates
     // The vehicle is stopped between named stations. No detour is planned from a
     // historical station; the state is reported and escalates to Alarm on its own timer.
     public const string NotAtStation = "NotAtStation";
+    // Replacement waiting for public right-of-way beyond RouteRightWaitTimeoutSeconds.
+    // Still retried; the original navigation is kept (no cancel while unprobed).
+    public const string RouteWaitTimeout = "RouteWaitTimeout";
     public const string Warning = "Warning";
     public const string Alarm = "Alarm";
     public const string ClosureSuggested = "ClosureSuggested";

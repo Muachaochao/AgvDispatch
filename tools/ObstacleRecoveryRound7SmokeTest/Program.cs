@@ -32,6 +32,9 @@ try
     await NoRouteNeverFreezesBeforeCancelAsync(directory);
     await AcceleratedRateStopEvidenceAsync(directory);
     await PreSendRejectionRetriesAsync(directory);
+    await TelemetryGapRestartsBlockageAsync(directory);
+    await FlickerDoesNotRestartBlockageAsync(directory);
+    await RecordFailureIsIsolatedAsync(directory);
     await UncertainSendIsNotResentAsync(directory);
     await BoundCycleClosesAndReopensAsync(directory);
     await ClearedOriginalRouteResumesAsync(directory);
@@ -108,9 +111,12 @@ async Task NoRouteNeverFreezesBeforeCancelAsync(string root)
           step.Status == (int)DispatchTaskStepStatus.Executing && h.Gateway.CancelCalls == 0,
         "取消前无路线不改变业务任务阶段、步骤状态，也不取消原导航");
 
-    h.Clock.SetTo(start.AddSeconds(310));
-    h.States.ApplyTelemetry("A", ObstacleHarnessFactory.Telemetry(h.Clock.GetUtcNow(), blocked: false), TimeSpan.Zero);
-    await h.Coordinator.ObserveOnceAsync(default);
+    for (var second = 310; second <= 314; second++)
+    {
+        h.Clock.SetTo(start.AddSeconds(second));
+        h.States.ApplyTelemetry("A", ObstacleHarnessFactory.Telemetry(h.Clock.GetUtcNow(), blocked: false), TimeSpan.Zero);
+        await h.Coordinator.ObserveOnceAsync(default);
+    }
     row = RecoveryRow(h.Db, "TASK-O3");
     task = TaskRow(h.Db, "TASK-O3");
     Check(row.State == ObstacleRecoveryStates.Recovered &&
@@ -372,6 +378,76 @@ async Task ClearedOriginalRouteResumesAsync(string root)
     Check(h.Gateway.RecoverySendCalls == 1 &&
           h.Gateway.SentPath.SequenceEqual(["S", "H", "X"]),
         "障碍清除且原链终态后，续发原剩余路线S→H→X");
+}
+
+// O12: a telemetry interruption longer than the stale window is not continuous
+// blockage. After reconnection the blockage timer starts at the new blockage start.
+async Task TelemetryGapRestartsBlockageAsync(string root)
+{
+    var start = new DateTimeOffset(2026, 11, 7, 2, 0, 0, TimeSpan.Zero);
+    var h = await ObstacleHarnessFactory.BuildAsync(root, "o12", ObstacleHarnessFactory.StationGraph(true),
+        start, "TASK-O12", "STEP-O12");
+    for (var second = 0; second <= 10; second++)
+    {
+        h.Clock.SetTo(start.AddSeconds(second));
+        h.States.ApplyTelemetry("A", ObstacleHarnessFactory.Telemetry(h.Clock.GetUtcNow(), blocked: true), TimeSpan.Zero);
+        await h.Coordinator.ObserveOnceAsync(default);
+    }
+    h.Clock.SetTo(start.AddSeconds(60));
+    h.States.ApplyTelemetry("A", ObstacleHarnessFactory.Telemetry(h.Clock.GetUtcNow(), blocked: true), TimeSpan.Zero);
+    await h.Coordinator.ObserveOnceAsync(default);
+    var row = RecoveryRow(h.Db, "TASK-O12");
+    Check(row.State == ObstacleRecoveryStates.Blocked && row.BlockedSinceUtc == start.AddSeconds(60).UtcDateTime &&
+          h.Gateway.CancelCalls == 0,
+        "遥测中断后恢复仍受阻，受阻起点对齐到恢复后的连续受阻起点，不把中断时间计入");
+}
+
+// O18: an obstacle that clears for an instant must neither close the record nor restart
+// the blockage timer; it closes only after the clear holds for the confirmation period.
+async Task FlickerDoesNotRestartBlockageAsync(string root)
+{
+    var start = new DateTimeOffset(2026, 11, 7, 2, 0, 0, TimeSpan.Zero);
+    var h = await ObstacleHarnessFactory.BuildAsync(root, "o18", ObstacleHarnessFactory.StationGraph(true),
+        start, "TASK-O18", "STEP-O18");
+    async Task Tick(int second, bool blocked)
+    {
+        h.Clock.SetTo(start.AddSeconds(second));
+        h.States.ApplyTelemetry("A", ObstacleHarnessFactory.Telemetry(h.Clock.GetUtcNow(), blocked: blocked), TimeSpan.Zero);
+        await h.Coordinator.ObserveOnceAsync(default);
+    }
+    for (var second = 0; second <= 4; second++) await Tick(second, true);
+    await Tick(5, false);
+    for (var second = 6; second <= 8; second++) await Tick(second, true);
+    var row = RecoveryRow(h.Db, "TASK-O18");
+    Check(row.State != ObstacleRecoveryStates.Recovered && row.BlockedSinceUtc == start.UtcDateTime &&
+          h.Gateway.CancelCalls == 0,
+        "障碍瞬间消失后再次受阻，记录不关闭，受阻计时不从零重新开始");
+    for (var second = 9; second <= 12; second++) await Tick(second, false);
+    row = RecoveryRow(h.Db, "TASK-O18");
+    Check(row.State == ObstacleRecoveryStates.Recovered,
+        "障碍连续清除达到确认时间后才关闭恢复记录");
+}
+
+// O10: one vehicle whose route snapshot is unreadable must not stop observation of
+// another vehicle in the same cycle.
+async Task RecordFailureIsIsolatedAsync(string root)
+{
+    var start = new DateTimeOffset(2026, 11, 7, 2, 0, 0, TimeSpan.Zero);
+    var definition = ObstacleHarnessFactory.StationGraph(true);
+    var h = await ObstacleHarnessFactory.BuildAsync(root, "o10", definition, start, "TASK-O10A", "STEP-O10A",
+        corruptSnapshot: true);
+    await ObstacleHarnessFactory.SeedTransportAsync(h.Db, "TASK-O10B", "STEP-O10B", "B", start, definition);
+    for (var second = 0; second <= 5; second++)
+    {
+        h.Clock.SetTo(start.AddSeconds(second));
+        h.States.ApplyTelemetry("A", ObstacleHarnessFactory.Telemetry(h.Clock.GetUtcNow(), blocked: true), TimeSpan.Zero);
+        h.States.ApplyTelemetry("B", ObstacleHarnessFactory.Telemetry(h.Clock.GetUtcNow(), blocked: true), TimeSpan.Zero);
+        await h.Coordinator.ObserveOnceAsync(default);
+    }
+    var healthy = RecoveryRow(h.Db, "TASK-O10B");
+    Check(healthy.VehicleId == "B" && healthy.State == ObstacleRecoveryStates.Blocked &&
+          RecoveryState(h.Db, "TASK-O10A") is null,
+        "一辆车的路线快照损坏只影响该车，另一辆车的障碍仍按周期观察");
 }
 
 static string? RecoveryState(ISqlSugarClient db, string taskId) =>

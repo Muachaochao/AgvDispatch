@@ -23,7 +23,8 @@ sealed record ObstacleHarness(
     ObstacleRecoveryCoordinator Coordinator,
     ObstacleRecoveryStore Store,
     RecoveryFake Gateway,
-    ManualClock Clock);
+    ManualClock Clock,
+    TrafficResourceManager Traffic);
 
 static class ObstacleHarnessFactory
 {
@@ -47,7 +48,8 @@ static class ObstacleHarnessFactory
             ], []);
 
     public static async Task<ObstacleHarness> BuildAsync(string root, string name, MapDefinition definition,
-        DateTimeOffset start, string taskId, string stepId, ObstacleRecoveryOptions? options = null)
+        DateTimeOffset start, string taskId, string stepId, ObstacleRecoveryOptions? options = null,
+        bool corruptSnapshot = false)
     {
         var clock = new ManualClock(start);
         var db = DatabaseFactory.Create(new() { DatabasePath = Path.Combine(root, name + ".db") });
@@ -65,7 +67,11 @@ static class ObstacleHarnessFactory
             Enabled = true,
             AllowCommands = true,
             StaleAfterMs = 10000,
-            Robots = [new AgvRobotOptions { VehicleId = "A", IpAddress = "127.0.0.1", Enabled = true }]
+            Robots =
+            [
+                new AgvRobotOptions { VehicleId = "A", IpAddress = "127.0.0.1", Enabled = true },
+                new AgvRobotOptions { VehicleId = "B", IpAddress = "127.0.0.2", Enabled = true }
+            ]
         };
         var states = new AgvStateCache(agvOptions, clock);
         var gateway = new RecoveryFake();
@@ -92,8 +98,8 @@ static class ObstacleHarnessFactory
             new DispatchOrchestrationRepository(db), new AgvTransportChainLookup(db), closures,
             traffic, new Envelope(), gate, gateway, new Preconditions(), store, recoveryOptions,
             mapOptions, dispatch, clock, NullLogger<ObstacleRecoveryCoordinator>.Instance);
-        await SeedTransportAsync(db, taskId, stepId, start, definition);
-        return new(db, states, coordinator, store, gateway, clock);
+        await SeedTransportAsync(db, taskId, stepId, "A", start, definition, corruptSnapshot);
+        return new(db, states, coordinator, store, gateway, clock, traffic);
     }
 
     public static AgvRobotTelemetry Telemetry(DateTimeOffset at, bool blocked,
@@ -110,14 +116,15 @@ static class ObstacleHarnessFactory
     public static string[] Decode(string json) =>
         JsonSerializer.Deserialize<string[]>(json, new JsonSerializerOptions(JsonSerializerDefaults.Web)) ?? [];
 
-    // Original executing transport: S→H→X with the immutable send snapshot.
-    static async Task SeedTransportAsync(ISqlSugarClient db, string taskId, string stepId,
-        DateTimeOffset start, MapDefinition definition)
+    // Executing transport S→H→X with its immutable send snapshot. A corrupt snapshot
+    // makes every recovery observation of this vehicle throw, as an unreadable route does.
+    public static async Task SeedTransportAsync(ISqlSugarClient db, string taskId, string stepId,
+        string vehicleId, DateTimeOffset start, MapDefinition definition, bool corruptSnapshot = false)
     {
         var now = start.UtcDateTime;
         await db.Insertable(new DispatchTaskEntity
         {
-            TaskId = taskId, StationId = "CNC-001", VehicleId = "A", VendorTaskId = stepId,
+            TaskId = taskId, StationId = "CNC-" + taskId, VehicleId = vehicleId, VendorTaskId = stepId,
             Stage = (int)DispatchTaskStage.GoingToPickup, Priority = 0, CreatedAt = now, UpdatedAt = now
         }).ExecuteCommandAsync();
         await db.Insertable(new DispatchTaskStepEntity
@@ -125,23 +132,23 @@ static class ObstacleHarnessFactory
             StepId = stepId, TaskId = taskId, Sequence = 1,
             StepType = (int)DispatchTaskStepType.GoToPickup,
             Status = (int)DispatchTaskStepStatus.Executing,
-            SourceSite = "S", DestinationSite = "BUS-X", VehicleId = "A", VendorTaskId = stepId,
+            SourceSite = "S", DestinationSite = "BUS-X", VehicleId = vehicleId, VendorTaskId = stepId,
             CreatedAt = now, UpdatedAt = now, StartedAt = now
         }).ExecuteCommandAsync();
-        var payload = new AgvTransportCommandPayload(stepId, "A", "S", "H", ["S", "H"], null);
+        var payload = new AgvTransportCommandPayload(stepId, vehicleId, "S", "H", ["S", "H"], null);
         var payloadJson = JsonSerializer.Serialize(payload, new JsonSerializerOptions(JsonSerializerDefaults.Web));
-        var snapshotJson = JsonSerializer.Serialize(new TransportRouteSnapshot(
-            1, taskId, stepId, "CMD-1", "A", "MAP-O", "V1", "RobotWorld", EngineeringRuntimeIdentity.MapHash(definition),
+        var snapshotJson = corruptSnapshot ? "{broken" : JsonSerializer.Serialize(new TransportRouteSnapshot(
+            1, taskId, stepId, "CMD-" + stepId, vehicleId, "MAP-O", "V1", "RobotWorld", EngineeringRuntimeIdentity.MapHash(definition),
             TransportRouteSnapshots.Hash(payloadJson), ["S", "H", "X"], ["E-SH", "E-HX"], ["S", "H", "X"]),
             new JsonSerializerOptions(JsonSerializerDefaults.Web));
         await db.Insertable(new AgvCommandOutboxEntity
         {
-            CommandId = "CMD-1", IdempotencyKey = "TEST:" + stepId, TaskId = taskId, StepId = stepId,
-            VehicleId = "A", CommandType = (int)AgvCommandType.Transport,
+            CommandId = "CMD-" + stepId, IdempotencyKey = "TEST:" + stepId, TaskId = taskId, StepId = stepId,
+            VehicleId = vehicleId, CommandType = (int)AgvCommandType.Transport,
             Status = (int)AgvCommandStatus.Sent, PayloadJson = payloadJson,
             ExecutionMapId = "MAP-O", ExecutionMapVersionId = "V1",
             ExecutionRouteSnapshotJson = snapshotJson,
-            ExecutionRouteSnapshotHash = TransportRouteSnapshots.Hash(snapshotJson),
+            ExecutionRouteSnapshotHash = corruptSnapshot ? "BROKEN" : TransportRouteSnapshots.Hash(snapshotJson),
             NextAttemptAt = now, CreatedAt = now, UpdatedAt = now, SentAt = now, VendorCommandId = stepId
         }).ExecuteCommandAsync();
     }
