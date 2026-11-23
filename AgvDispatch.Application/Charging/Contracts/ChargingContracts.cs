@@ -18,7 +18,11 @@ public sealed class ChargingOptions
     public double MinimumChargingCurrent { get; set; } = 0.1;
     public double MaximumTemperature { get; set; } = 45;
     public ChargingSite[] Sites { get; set; } = [];
-    public string? ConfigurationError() =>
+    /// <summary>Dedicated standby point where a charged vehicle returns when no business return site is set. Never an exit,
+    /// never a charging point. Blank means the plan fails until a return site is configured.</summary>
+    public string DefaultStandbySiteId { get; set; } = "";
+    public string? ConfigurationError() => BasicConfigurationError() ?? SiteConfigurationError();
+    private string? BasicConfigurationError() =>
         CriticalBatteryPercent <= 0 || CriticalBatteryPercent > StartBatteryPercent || StartBatteryPercent >= TargetBatteryPercent || TargetBatteryPercent > 100
             ? "充电阈值须满足0<严重电量≤启动电量<退出电量≤100。" :
         PollIntervalMs < 100 || NavigationTimeoutSeconds < 1 || CurrentTimeoutSeconds < 1 || ChargingTimeoutSeconds < 1 || StopTimeoutSeconds < 1 || StateMaxAgeSeconds < 1 ||
@@ -28,6 +32,18 @@ public sealed class ChargingOptions
         Sites.Select(s=>s.Id).Distinct(StringComparer.OrdinalIgnoreCase).Count()!=Sites.Length || Sites.Select(s=>s.ResourceId).Distinct(StringComparer.OrdinalIgnoreCase).Count()!=Sites.Length ||
         Sites.Select(s=>s.ChargingSiteId).Distinct(StringComparer.OrdinalIgnoreCase).Count()!=Sites.Length
             ? "充电位、出口和独占资源配置无效或重复。" : null;
+    // B07-FIX C11: a shared exit, a standby that is also an exit or a charging point, or a standby that is not a
+    // dedicated point must be rejected before any vehicle is sent.
+    private string? SiteConfigurationError()
+    {
+        if (Sites.Select(s => s.ExitSiteId).Distinct(StringComparer.OrdinalIgnoreCase).Count() != Sites.Length)
+            return "两个充电位共用同一出口，无法同时安全离位，请先核对配置。";
+        if (DefaultStandbySiteId is not null && DefaultStandbySiteId.Trim().Length > 0 &&
+            Sites.Any(s => s.ExitSiteId.Equals(DefaultStandbySiteId.Trim(), StringComparison.OrdinalIgnoreCase) ||
+                           s.ChargingSiteId.Equals(DefaultStandbySiteId.Trim(), StringComparison.OrdinalIgnoreCase)))
+            return "充电返回待机点不能是充电出口或充电点，须为专用待机位。";
+        return null;
+    }
 }
 
 // Commissioned means the actual dock, relay, current polarity and safe exit have
@@ -160,6 +176,10 @@ public interface IChargingRuntimePort
     // B07-FIX C8: exit roads are not held while charging; they are acquired as ordinary traffic once the
     // stop is verified. False keeps the session in AwaitingStop (no Hold) until the exit route is free.
     Task<bool> AcquireExitAsync(ChargingSession session, CancellationToken ct) => Task.FromResult(true);
+    // B07-FIX C1: after the vehicle stands at the exit, the return road is leased and the charging bay released.
+    // False keeps the session at the exit (no Hold) until the return road is free.
+    Task<bool> AcquireReturnAsync(ChargingSession session, CancellationToken ct) => Task.FromResult(true);
+    Task<int> ReleaseBayAtExitAsync(ChargingSession session, CancellationToken ct) => Task.FromResult(0);
     Task<string?> ValidateAsync(ChargingSession session, bool requireStopped, CancellationToken ct);
     Task<string?> ValidateRecoveryCloseAsync(ChargingSession session,CancellationToken ct) => ValidateAsync(session,true,ct);
     bool IsAt(string vehicleId, string siteId);

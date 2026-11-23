@@ -43,13 +43,15 @@ public sealed partial class ExecutionRecoveryService
                     hard ??= "充电关闭记录与当前运行地图版本不一致。";
                 else
                 {
+                    // B07-FIX C1: a relay session with a return road closes at its standby point, so the closing position must match that point.
+                    var closingSiteId = route.ReturnPath.Length >= 2 && route.ReturnSiteId is { } home ? home : site.ExitSiteId;
                     var exits = active.Definition.Nodes.Where(n =>
-                        n.Enabled && MapRouteSiteMapper.IsSameNode(active.Definition, n.Id, site.ExitSiteId)).ToArray();
+                        n.Enabled && MapRouteSiteMapper.IsSameNode(active.Definition, n.Id, closingSiteId)).ToArray();
                     if (exits.Length != 1 || vehicle is null || string.IsNullOrWhiteSpace(vehicle.CurrentStation) ||
                         !MapRouteSiteMapper.IsSameNode(active.Definition, vehicle.CurrentStation, exits[0].Id) ||
                         vehicle.X is not { } x || vehicle.Y is not { } y ||
                         Math.Sqrt(Math.Pow(x - exits[0].X, 2) + Math.Pow(y - exits[0].Y, 2)) > settings.MaximumStationDeviationMeters)
-                        hard ??= "充电关闭后车辆实际位置与原退出点不一致，不能核定离位。";
+                        hard ??= "充电关闭后车辆实际位置与原返回待机点或退出点不一致，不能核定离位。";
                 }
             }
         }

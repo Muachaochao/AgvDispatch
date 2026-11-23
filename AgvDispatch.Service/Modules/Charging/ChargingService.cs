@@ -192,24 +192,45 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
         }
         if(row.Phase is ChargingPhase.SendingToCharger or ChargingPhase.SendingExit)
         {Hold(row,"保留未确认的原导航发送意图，禁止自动重发。");return;}
-        if(row.Phase is ChargingPhase.GoingToCharger or ChargingPhase.Exiting)
+        if(row.Phase is ChargingPhase.GoingToCharger or ChargingPhase.Exiting or ChargingPhase.Returning)
         {
             var exiting=row.Phase==ChargingPhase.Exiting;
-            var status=await port.ObserveNavigationAsync(row.VendorTaskId??row.CommandId!,row.VehicleId,exiting?row.Route!.ExitPath:row.Route!.ToCharger,ct);
-            if(status is null||status.VendorTaskId!=(row.VendorTaskId??row.CommandId)||status.VehicleId!=row.VehicleId||!Fresh(status.UpdatedAt)||status.State==AgvTransportTaskState.Unknown)
+            var returning=row.Phase==ChargingPhase.Returning;
+            var path=returning?row.Route!.ReturnPath:exiting?row.Route!.ExitPath:row.Route!.ToCharger;
+            var status=await port.ObserveNavigationAsync(row.VendorTaskId??row.CommandId!,row.VehicleId,path,ct);
+            if(status is null||status.VendorTaskId!=(row.VendorTaskId??row.CommandId)||!string.Equals(status.VehicleId,row.VehicleId,StringComparison.OrdinalIgnoreCase)||!Fresh(status.UpdatedAt)||status.State==AgvTransportTaskState.Unknown)
             {Hold(row,"原导航任务身份或完整回执不明，禁止推断完成及补发。");return;}
             if(status.State is AgvTransportTaskState.Cancelled or AgvTransportTaskState.Failed or AgvTransportTaskState.Suspended)
             {Hold(row,"车端导航被中止或人工干预："+status.State);return;}
             if(TimedOut(row,options.NavigationTimeoutSeconds)){Hold(row,"充电导航超时，保留充电位及路权。");return;}
             if(status.State!=AgvTransportTaskState.Completed)return;
-            if(!port.IsAt(row.VehicleId,exiting?row.Site!.ExitSiteId:row.Site!.ChargingSiteId))return;
+            var target=returning?row.Route!.ReturnSiteId:exiting?row.Site!.ExitSiteId:row.Site!.ChargingSiteId;
+            if(target is null||!port.IsAt(row.VehicleId,target))return;
+            if(returning)
+            {
+                // B07-FIX C1: the session closes only at the standby point, with the charger confirmed off.
+                var homeBattery=await ReadBatteryAsync(row,ct);
+                if(!CurrentStopped(homeBattery)||homeBattery.ManualCharge==true||homeBattery.AutoCharge==true)
+                {Hold(row,"返回待机点后仍有充电信号，保留充电资源待核对。");return;}
+                await CompleteAsync(row with {Battery=homeBattery},"已停止充电、实际离开出口并返回专用待机点；释放充电资源，恢复接单。",ct);return;
+            }
             if(exiting)
             {
                 if(await port.ValidateAsync(row,true,ct) is {} stoppedError){Hold(row,stoppedError);return;}
                 var battery=await ReadBatteryAsync(row,ct);
                 if(!CurrentStopped(battery)||battery.ManualCharge==true||battery.AutoCharge==true)
                 {Hold(row,"退出后仍在充电或停止电流证据不完整，保留充电位。");return;}
-                await CompleteAsync(row with {Battery=battery},"充电已停止，原退出导航完成且实际离位；释放充电资源，恢复接单。",ct);return;
+                if(row.Route!.ReturnPath.Length<2)
+                {await CompleteAsync(row with {Battery=battery},"充电已停止，原退出导航完成且实际离位；释放充电资源，恢复接单。",ct);return;}
+                // B07-FIX C1: the bay is released on arrival; the exit road stays leased until the return road is held.
+                await port.ReleaseBayAtExitAsync(row,ct);
+                if(!await port.AcquireReturnAsync(row,ct))
+                {
+                    const string waiting="已到出口并停充，充电位已释放；返回待机点路线被其他车辆占用，保留出口位置，等待路权后返回。";
+                    if(row.Message!=waiting)Save(row with {Battery=battery,Message=waiting,UpdatedAt=Now});
+                    return;
+                }
+                await SendReturnAsync(row with {Battery=battery},ct);return;
             }
             var released=await port.ShrinkToBayAsync(row,ct);
             row=Move(row,ChargingPhase.StartingCharge,"已完成原导航并核对真实充电点位置，准备车端充电继电器控制。"+
@@ -362,7 +383,8 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
         {
             if(row.Site?.ControlMode=="RobokitScript"&&await ScriptCloseBlockAsync(row,ct) is {} scriptBlock)return new(false,scriptBlock);
             var reading=await ReadBatteryAsync(row,ct);
-            var closingSite=row.Site!.ControlMode=="RobokitScript"?row.Route!.ReturnSiteId??row.Site.ExitSiteId:row.Site.ExitSiteId;
+            // B07-FIX C1: a session that has a return road closes at the dedicated standby point, not at the exit.
+            var closingSite=row.Route!.ReturnPath.Length>=2&&row.Route.ReturnSiteId is {} home?home:row.Site!.ExitSiteId;
             if(!port.IsAt(row.VehicleId,closingSite)||!CurrentStopped(reading)||reading.ManualCharge==true||reading.AutoCharge==true)
                 return new(false,"实际退出位置、停稳、无充电及电流归零须共同确认，不能直接释放充电位。");
             await CompleteAsync(row with {Battery=reading},"现场核对车辆已停止充电并实际退出，关闭原会话并释放资源。依据："+request.Reason,ct);

@@ -168,9 +168,12 @@ public sealed partial class ChargingService
 
     private async Task SendReturnAsync(ChargingSession row,CancellationToken ct)
     {
-        if(!row.ShutdownVerified||row.Route is not {ReturnPath.Length:>=2})
+        var scriptMode=row.Site?.ControlMode=="RobokitScript";
+        // Relay mode proves the stop by the battery reading taken at the exit; script mode keeps its shutdown evidence.
+        if(scriptMode&&!row.ShutdownVerified||row.Route is not {ReturnPath.Length:>=2})
         {Hold(row,"返程路径或停充证据缺失，保留充电资源。");return;}
-        var error=await port.ValidateAsync(row,true,ct)??await port.BusyReasonAsync(row.VehicleId,row.SessionId,ct);
+        var check=scriptMode?row:row with {Phase=ChargingPhase.SendingReturn};
+        var error=await port.ValidateAsync(check,true,ct)??await port.BusyReasonAsync(row.VehicleId,row.SessionId,ct);
         if(error is not null)
         {Hold(row,error);return;}
         var commandId=row.SessionId+"-RETURN";

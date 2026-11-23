@@ -81,12 +81,15 @@ public sealed class ChargingRuntimePort(ChargingOptions options, IAgvStateCache 
         if(!vehicles.TryGet(vehicleId,out var v)||Node(v.CurrentStation??"") is not {} source)return Fail("车辆当前不在地图命名站点上，不能作为充电路线起点。");
         var current=map.Current!;var target=Node(site.ChargingSiteId)!;var exit=Node(site.ExitSiteId)!;
         var selectedHome=string.IsNullOrWhiteSpace(requestedReturnSite)?returnSite?.Invoke(vehicleId):requestedReturnSite.Trim();
-        var homeId=string.IsNullOrWhiteSpace(selectedHome)?source.AgvSiteId!:selectedHome!;
-        var home=Node(homeId);
-        if(home is null)return Fail($"充电后返回点{homeId}不在运行地图上。");
+        // B07-FIX C1: the return point is a dedicated standby. The vehicle's own start point is no longer the default.
+        if(string.IsNullOrWhiteSpace(selectedHome))selectedHome=options.DefaultStandbySiteId?.Trim();
+        if(string.IsNullOrWhiteSpace(selectedHome))return Fail("未配置专用充电返回待机点（Charging:DefaultStandbySiteId 或业务待机点），禁止以车辆起点或出口代替。");
+        var home=Node(selectedHome);
+        if(home is null)return Fail($"充电后返回点{selectedHome}不在运行地图上。");
+        if(options.Sites.Any(s=>Node(s.ExitSiteId)?.Id==home.Id||Node(s.ChargingSiteId)?.Id==home.Id))return Fail($"返回点{home.Id}是充电出口或充电点，须为专用待机位。");
+        if(exit.Id==source.Id||exit.Id==home.Id)return Fail($"充电出口{exit.Id}不能是车辆起点或返回待机点。");
         if(OccupiedByOther(vehicleId,target))return Fail($"充电点{target.Id}被其他车辆占用。");
-        if(OccupiedByOther(vehicleId,exit))return Fail($"充电出口{exit.Id}被其他车辆占用。");
-        if(OccupiedByOther(vehicleId,home))return Fail($"返回点{home.Id}被其他车辆占用。");
+        // B07-FIX C10: exit and return occupancy is rechecked when each leg is acquired (AcquireExitAsync / AcquireReturnAsync).
         // No same-station empty route can stand in for a commissioned docking move.
         if(source.Id==target.Id)return Fail("车辆已在充电点上，不能用空路线代替对接动作。");
         var unavailable=await resources.GetUnavailableResourceIdsAsync("CHARGING-PLAN",ct);
@@ -187,20 +190,55 @@ public sealed class ChargingRuntimePort(ChargingOptions options, IAgvStateCache 
     }
     public async Task<bool> AcquireExitAsync(ChargingSession session,CancellationToken ct)
     {
-        if(session.Site is null||session.Route is null||map.Current is not {} current||
-           current.MapId!=session.Route.MapId||current.VersionId!=session.Route.MapVersionId)return false;
-        var nodes=session.Route.ExitPath.Select(id=>Node(id)).ToArray();
-        if(nodes.Length<2||nodes.Any(n=>n is null))return false;
-        var ids=new HashSet<string>(StringComparer.OrdinalIgnoreCase){session.Site.ResourceId};
+        if(session.Site is null||!SameMap(session)||PathResources(session.Route!.ExitPath) is not {} path)return false;
+        // B07-FIX C10: the exit is checked physically when the stop is confirmed; an occupied exit waits without Hold.
+        if(path.Nodes.Any(n=>OccupiedByOther(session.VehicleId,n)))return false;
+        var ids=path.Ids.Append(session.Site.ResourceId).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var stepId=session.SessionId+"-EXIT";
+        await resources.RecordRouteAsync(new(stepId,session.SessionId,session.VehicleId,session.Route!.ExitPath[0],session.Route.ExitPath[^1],[],ids,false,
+            "停充已确认：按普通交通申请充电出口路线。") {MapId=session.Route.MapId,MapVersionId=session.Route.MapVersionId},ct);
+        return (await resources.TryAcquireAsync(stepId,session.SessionId,session.VehicleId,ids,ct)).Acquired;
+    }
+    // B07-FIX C1: the return road is leased only after the vehicle has stopped and stands at the exit.
+    public async Task<bool> AcquireReturnAsync(ChargingSession session,CancellationToken ct)
+    {
+        if(session.Route is null||!SameMap(session)||session.Route.ReturnPath.Length<2||PathResources(session.Route.ReturnPath) is not {} path)return false;
+        if(path.Nodes.Any(n=>OccupiedByOther(session.VehicleId,n)))return false;
+        var stepId=session.SessionId+"-RETURN";
+        await resources.RecordRouteAsync(new(stepId,session.SessionId,session.VehicleId,session.Route.ReturnPath[0],session.Route.ReturnPath[^1],[],path.Ids,false,
+            "充电已停止并到达出口：按普通交通申请返回待机点路线。") {MapId=session.Route.MapId,MapVersionId=session.Route.MapVersionId},ct);
+        if(!(await resources.TryAcquireAsync(stepId,session.SessionId,session.VehicleId,path.Ids,ct)).Acquired)return false;
+        // The exit road beyond the return road is no longer needed once the return road is held.
+        await resources.ReleaseStepExceptResourcesAsync(session.SessionId+"-EXIT",path.Ids,
+            "返程路权已取得：释放出口路线中返程不需要的部分。",ct);
+        return true;
+    }
+    // B07-FIX C1: at the exit the charging bay is no longer needed and is released at once; the exit road stays leased
+    // until the return road is held, so the vehicle is never without a lease while it waits at the exit.
+    public async Task<int> ReleaseBayAtExitAsync(ChargingSession session,CancellationToken ct)
+    {
+        if(session.Site is null||session.Route is null||PathResources(session.Route.ExitPath) is not {} exit)return 0;
+        var keep=exit.Ids.Where(id=>!id.Equals(session.Site.ResourceId,StringComparison.OrdinalIgnoreCase)).ToArray();
+        var released=await resources.ReleaseStepExceptResourcesAsync(session.SessionId+"-LOCK",[],
+            "车辆已到达充电出口：充电位不再需要，释放充电位及来车道路。",ct);
+        released+=await resources.ReleaseStepExceptResourcesAsync(session.SessionId+"-EXIT",keep,
+            "车辆已到达充电出口：释放充电位，保留出口路线直至返程路权取得。",ct);
+        return released;
+    }
+    private bool SameMap(ChargingSession session)=>map.Current is {} current&&session.Route is not null&&
+        current.MapId==session.Route.MapId&&current.VersionId==session.Route.MapVersionId;
+    private (MapNode[] Nodes,string[] Ids)? PathResources(IReadOnlyList<string> path)
+    {
+        if(map.Current is not {} current||path.Count<2)return null;
+        var nodes=path.Select(id=>Node(id)).ToArray();
+        if(nodes.Any(n=>n is null))return null;
+        var ids=new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach(var node in nodes)ids.UnionWith(node!.ResourceIds);
         foreach(var (from,to) in nodes.Zip(nodes.Skip(1)))
             foreach(var edge in current.Definition.Edges.Where(e=>e.Enabled&&(e.From.Equals(from!.Id,StringComparison.OrdinalIgnoreCase)&&e.To.Equals(to!.Id,StringComparison.OrdinalIgnoreCase)||
                 e.Bidirectional&&e.From.Equals(to!.Id,StringComparison.OrdinalIgnoreCase)&&e.To.Equals(from.Id,StringComparison.OrdinalIgnoreCase))))
                 ids.UnionWith(edge.ResourceIds);
-        var stepId=session.SessionId+"-EXIT";
-        await resources.RecordRouteAsync(new(stepId,session.SessionId,session.VehicleId,session.Route.ExitPath[0],session.Route.ExitPath[^1],[],ids.ToArray(),false,
-            "停充已确认：按普通交通申请充电出口路线。") {MapId=session.Route.MapId,MapVersionId=session.Route.MapVersionId},ct);
-        return (await resources.TryAcquireAsync(stepId,session.SessionId,session.VehicleId,ids,ct)).Acquired;
+        return (nodes.Select(n=>n!).ToArray(),ids.ToArray());
     }
     public Task ReleaseAsync(string sessionId,CancellationToken ct)=>resources.ReleaseTaskAsync(sessionId,ct);
     public Task<string> NavigateAsync(string commandId,string vehicleId,IReadOnlyList<string> path,CancellationToken ct)=>
