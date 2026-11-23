@@ -380,9 +380,10 @@ var pending = (await fixture.Store.GetAsync(a, (await fixture.CurrentAsync(a)).S
 Check(pending.Phase == "WritePending" && pending.PendingSignal == "CNC-001/FullBoxRemoved", "取箱写失应答保留原写意图");
 var beforeRestartWrites = fixture.Signals.Writes.Count;
 fixture.RestartEngine();
-await ExpectHold(() => fixture.TickAsync(a), "重建执行器后不自动重发未知取箱写入");
-Check(fixture.Signals.Writes.Count == beforeRestartWrites, "重启未知写入没有重复PLC写");
-Check(await fixture.Store.MoveAsync(pending, pending.NextPhase!, "isolated explicit recovery review", null, null, null, default), "夹具明确核对原意图后CAS续接");
+await fixture.TickAsync(a);
+// The PLC already shows the applied level, so readback confirms the unknown write without a second PLC write.
+Check(await fixture.PhaseAsync(a) == pending.NextPhase && fixture.Signals.Writes.Count == beforeRestartWrites,
+    "重建执行器回读已生效的取箱写入后直接推进，且不重复PLC写");
 await fixture.TickAsync(a);
 fixture.Signals.Set("CNC-001", "FullBoxRequested", true);
 await fixture.TickAsync(a);
@@ -475,7 +476,7 @@ var exitWriteCount = fixture.Signals.Writes.Count;
 fixture.RestartEngine();
 await fixture.ExitAsync(a);
 Check(fixture.Signals.Writes.Count == exitWriteCount && await fixture.EquipmentOwnerAsync() == a, "清位失应答重启不重写也不提前交接");
-Check(await fixture.Store.MoveAsync(returnCheckpoint, returnCheckpoint.NextPhase!, "isolated explicit exit write review", null, null, null, default), "夹具核对原清位意图后恢复");
+Check(await fixture.ReturnPhaseAsync(a) == returnCheckpoint.NextPhase, "清位回读已生效后确认原意图并推进到原定下一阶段");
 await fixture.ExitAsync(a);
 Check(await fixture.ReturnPhaseAsync(a) == "AwaitDumperClosed" && await fixture.EquipmentOwnerAsync() == a, "PLC Done尚未清零时保持设备与路权");
 fixture.Signals.Set("DUMPER", "DumpingCompletedMayLeave", false);

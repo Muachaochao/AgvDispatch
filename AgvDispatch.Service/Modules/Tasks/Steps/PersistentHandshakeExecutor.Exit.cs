@@ -52,8 +52,11 @@ public sealed partial class PersistentHandshakeExecutor
                 throw new InvalidOperationException("缺少原倒料完成握手，不能补造出区周期。");
             checkpoint=await store.BeginAsync(step,HandshakeExecutionOptions.Version,"AwaitPhysicalExit",binding.Baseline,ct);
         }
-        if(checkpoint.ContractVersion!=HandshakeExecutionOptions.Version||checkpoint.PendingSignal!=null||checkpoint.Phase=="ReviewRequired"||!BindingMatches(checkpoint,step))
+        // A WritePending checkpoint is confirmed by readback, with bounded rewrites (see ResolvePendingWriteAsync).
+        var pendingWrite=checkpoint.Phase=="WritePending"&&checkpoint.PendingSignal!=null&&checkpoint.PendingValue is not null&&checkpoint.NextPhase is not null;
+        if(checkpoint.ContractVersion!=HandshakeExecutionOptions.Version||checkpoint.PendingSignal!=null&&!pendingWrite||checkpoint.Phase=="ReviewRequired"||!BindingMatches(checkpoint,step))
             throw new InvalidOperationException("出区原阶段冲突或写入结果未知，需要恢复核对，禁止重发。");
+        if(pendingWrite){_=await ResolvePendingWriteAsync(checkpoint,ct);return;}
         if(checkpoint.Phase=="ExitHandoverComplete")
         {
             _exitSamples.Remove(step.StepId);
