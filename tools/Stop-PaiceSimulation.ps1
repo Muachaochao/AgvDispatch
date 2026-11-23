@@ -9,7 +9,8 @@ $processes=@()
 foreach($entry in $entries){
     $process=Get-Process -Id $entry.id -ErrorAction SilentlyContinue
     if(!$process){continue}
-    if($process.StartTime.ToUniversalTime().Ticks -ne $entry.startedUtcTicks -or $process.Path -ne $entry.path){throw "进程身份已变化，保留启动记录供核对 $($entry.id)"}
+    # PID reused by another program: the recorded process already exited. Never kill a foreign process.
+    if($process.StartTime.ToUniversalTime().Ticks -ne $entry.startedUtcTicks -or $process.Path -ne $entry.path){continue}
     $processes+=$process
 }
 foreach($process in $processes){$process.Kill();$process.WaitForExit()}
