@@ -172,6 +172,44 @@ Check(faulted.Status.Sessions.Last(s => s.VehicleId == "B").HasReservation &&
     !faulted.Service.AlarmCandidates(faulted.Clock.GetUtcNow()).Any(c => c.Code == "CHARGING_BAY_FAULT"),
     "after the cooldown the bay is offered again and the alarm clears");
 
+// C11: configuration gaps are rejected before any vehicle is sent.
+Check(new ChargingOptions { TargetBatteryPercent = 30 }.ConfigurationError() is not null, "a start and target gap below ten points is rejected");
+Check(new ChargingOptions { StartBatteryPercent = 18, CriticalBatteryPercent = 15 }.ConfigurationError() is not null,
+    "a start threshold below the dispatch minimum battery is rejected");
+Check(new ChargingOptions { Sites = [new("BAY-1", "CHARGER-1", "EXIT", "BAY-1") { Commissioned = true, AllowedVehicleIds = ["A"] },
+    new("BAY-2", "CHARGER-2", "EXIT", "BAY-2") { Commissioned = true, AllowedVehicleIds = ["B"] }] }.ConfigurationError() is not null,
+    "two bays that share one exit are rejected");
+
+// C15: a current that has tapered near full is a normal stop, and a charge that gains nothing for the stall window is held.
+var nearFull = new Fixture(evidence, "near-full-taper", target: 100);
+await nearFull.ToChargingAsync();
+nearFull.Battery(96, true, 0);
+await nearFull.UntilAsync(s => s.Phase == ChargingPhase.AwaitingStop);
+Check(nearFull.Robot.RelayWrites.SequenceEqual([true, false]), "a tapered current near full is a normal stop, not a fault hold");
+var stall = new Fixture(evidence, "charge-stall");
+await stall.ToChargingAsync();
+await stall.CyclesAsync(1);
+stall.Clock.Advance(TimeSpan.FromMinutes(stall.Options.ChargeStallMinutes + 1));
+await stall.CyclesAsync(1);
+Check(stall.Current.Phase == ChargingPhase.Hold && stall.Robot.RelayWrites.SequenceEqual([true, false]),
+    "a charge that gains nothing for the stall window is relayed off once and held for review");
+
+// C16: a vehicle that does not report temperature is exempt by configuration; otherwise the gap stops the charge.
+var exempt = new Fixture(evidence, "temperature-exempt", optionalTemperature: true);
+await exempt.ToChargingAsync();
+exempt.Battery(30, true, 4);
+exempt.Robot.Battery = exempt.Robot.Battery with { Temperature = null };
+await exempt.CyclesAsync(3);
+Check(exempt.Current.Phase == ChargingPhase.Charging && exempt.Robot.RelayWrites.SequenceEqual([true]),
+    "a vehicle exempt from temperature keeps charging without a temperature signal");
+var required = new Fixture(evidence, "temperature-required");
+await required.ToChargingAsync();
+required.Battery(30, true, 4);
+required.Robot.Battery = required.Robot.Battery with { Temperature = null };
+await required.CyclesAsync(1);
+Check(required.Current.Phase == ChargingPhase.Hold && required.Robot.RelayWrites.SequenceEqual([true, false]),
+    "a vehicle that must report temperature is relayed off when the signal is missing");
+
 Console.WriteLine($"PASS: {checks} relay return checks.");
 
 sealed class Fixture
@@ -184,12 +222,13 @@ sealed class Fixture
     private readonly string path;
     public ChargingStatus Status => Service.ReadAsync(default).GetAwaiter().GetResult();
     public ChargingSession Current => Status.Sessions.Last(s => s.VehicleId == "A");
-    public Fixture(string root, string name)
+    public Fixture(string root, string name, decimal target = 80, bool optionalTemperature = false)
     {
         path = Path.Combine(root, name + ".json");
         Port = new(Clock); Robot = new(Clock);
         Options = new() { Enabled = true, Sites = [new("BAY-1", "CHARGER", "EXIT", FakePort.Bay)
-            { Commissioned = true, AllowedVehicleIds = ["A", "B"] }], DefaultStandbySiteId = "STANDBY" };
+            { Commissioned = true, AllowedVehicleIds = ["A", "B"] }], DefaultStandbySiteId = "STANDBY",
+            TargetBatteryPercent = target, TemperatureOptionalVehicleIds = optionalTemperature ? ["A"] : [] };
         Port.Put("A", 20);
         Robot.Battery = new("A", 20, false, 0, 25, false, false, Clock.GetUtcNow());
         Service = NewService();

@@ -23,6 +23,17 @@ public sealed class ChargingOptions
     public int TransientFailureSeconds { get; set; } = 60;
     /// <summary>B07-FIX C9: a bay with no current after the start timer is not offered to other vehicles for this long.</summary>
     public int BayFaultCooldownMinutes { get; set; } = 30;
+    /// <summary>B07-FIX C11: the lowest battery the dispatcher accepts (it must match the dispatch assignment minimum). A
+    /// vehicle must be charged before it falls below this level, so the start threshold may not be lower.</summary>
+    public decimal DispatchMinimumBatteryPercent { get; set; } = 20;
+    /// <summary>B07-FIX C15: at or above this level, a current that has naturally tapered is a normal full-charge stop.</summary>
+    public decimal NearFullBatteryPercent { get; set; } = 95;
+    /// <summary>B07-FIX C15: a charge that gains less than ChargeStallMinimumGainPercent within this many minutes is stopped and held.</summary>
+    public int ChargeStallMinutes { get; set; } = 20;
+    public decimal ChargeStallMinimumGainPercent { get; set; } = 1;
+    /// <summary>B07-FIX C16: vehicles whose firmware does not report battery temperature. Their missing temperature is not a fault;
+    /// it is reported as an alarm instead.</summary>
+    public string[] TemperatureOptionalVehicleIds { get; set; } = [];
     public ChargingSite[] Sites { get; set; } = [];
     /// <summary>Dedicated standby point where a charged vehicle returns when no business return site is set. Never an exit,
     /// never a charging point. Blank means the plan fails until a return site is configured.</summary>
@@ -57,6 +68,12 @@ public sealed class ChargingOptions
             return "两个充电位共用同一出口，无法同时安全离位，请先核对配置。";
         if (BayFaultCooldownMinutes < 0)
             return "充电位故障冷却时间不能为负数。";
+        if (TargetBatteryPercent - StartBatteryPercent < 10m)
+            return "充电启动电量与目标电量至少须相差10个百分点，避免频繁往返。";
+        if (StartBatteryPercent < DispatchMinimumBatteryPercent)
+            return "充电启动电量不能低于派单最低电量，否则车辆会在无法排队前即被派单阻挡。";
+        if (NearFullBatteryPercent <= StartBatteryPercent || NearFullBatteryPercent > 100 || ChargeStallMinutes < 1 || ChargeStallMinimumGainPercent <= 0)
+            return "近满电及充电停滞检测参数无效。";
         if (MinimumAvailableVehicles < 0 || MaximumVehiclesOutOfService < 0)
             return "车队最少可用车数及同时离线车数上限不能为负数。";
         if (PreemptionReleaseBatteryPercent is <= 0 || PreemptionReleaseBatteryPercent <= CriticalBatteryPercent || PreemptionReleaseBatteryPercent >= TargetBatteryPercent ||
@@ -119,6 +136,9 @@ public sealed record ChargingSession(string SessionId, string VehicleId, Chargin
     public bool TransientHold { get; init; }
     // B07-FIX C9: set when the bay gave no current after the start timer; the bay is in cooldown until this + BayFaultCooldownMinutes.
     public DateTimeOffset? BayFaultAt { get; init; }
+    // B07-FIX C15: the battery level and time of the last observed gain, used to detect a charge that does not progress.
+    public decimal? ChargeProgressPercent { get; init; }
+    public DateTimeOffset? ChargeProgressAt { get; init; }
     public int TransientFailures { get; init; }
     public DateTimeOffset? TransientSince { get; init; }
     public string? OriginSiteId => Route?.OriginSiteId;

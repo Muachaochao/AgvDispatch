@@ -252,7 +252,8 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
             chargeReading=await ReadBatteryAsync(row,ct);
             row=Save(row with {Battery=chargeReading,TransientFailures=0,TransientSince=null,UpdatedAt=Now});
             if(chargeReading.ManualCharge==true){Hold(row,"检测到连接手动充电器信号，禁止驶离并保留原充电资源。");return;}
-            if(chargeReading.Temperature is null||chargeReading.Temperature>=options.MaximumTemperature)
+            // B07-FIX C16: a vehicle that does not report temperature is not stopped for it; the alarm reports the gap instead.
+            if(chargeReading.Temperature is null&&TemperatureRequired(row.VehicleId)||chargeReading.Temperature>=options.MaximumTemperature)
             {
                 if(!row.StopAttempted)await StopAsync(row,"电池温度缺失或过温，停止充电并保留资源待人工核对。",ct,true);
                 else Hold(row,"电池温度缺失或过温，停止结果须现场核对。");
@@ -260,9 +261,21 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
             }
             if((row.Phase is ChargingPhase.AwaitingCurrent or ChargingPhase.Charging) && (row.StopRequested||chargeReading.BatteryPercent>=options.TargetBatteryPercent))
             {await StopAsync(row,row.StopRequested?"人工申请停止充电。":"达到目标电量，申请停止充电。",ct);return;}
-            if(row.Phase==ChargingPhase.Charging&&
-               (chargeReading.Charging!=true||chargeReading.Current is null||chargeReading.Current<=options.MinimumChargingCurrent||TimedOut(row,options.ChargingTimeoutSeconds)))
+            var tapered=chargeReading.Charging!=true||chargeReading.Current is null||chargeReading.Current<=options.MinimumChargingCurrent;
+            // B07-FIX C15: near full, a current that has naturally tapered is a normal full-charge stop, not a fault.
+            if(row.Phase==ChargingPhase.Charging&&chargeReading.BatteryPercent>=options.NearFullBatteryPercent&&tapered)
+            {await StopAsync(row,"电量已接近满电且电流自然收敛，按正常停充处理。",ct);return;}
+            if(row.Phase==ChargingPhase.Charging&&(tapered||TimedOut(row,options.ChargingTimeoutSeconds)))
             {await StopAsync(row,"充电中无有效正电流或超过最长充电时间，保护停止并保留资源。",ct,true);return;}
+            // B07-FIX C15: a charge that gains no percentage point within ChargeStallMinutes is stopped and held for review.
+            if(row.Phase==ChargingPhase.Charging)
+            {
+                if(row.ChargeProgressAt is null||row.ChargeProgressPercent is null||
+                   chargeReading.BatteryPercent>=row.ChargeProgressPercent.Value+options.ChargeStallMinimumGainPercent)
+                    row=Save(row with {ChargeProgressPercent=chargeReading.BatteryPercent,ChargeProgressAt=Now,UpdatedAt=Now});
+                else if(Now-row.ChargeProgressAt.Value>=TimeSpan.FromMinutes(options.ChargeStallMinutes))
+                {await StopAsync(row,"充电后电量长时间无增长，疑似未实际充电：保护停止并保留资源。",ct,true);return;}
+            }
             if(row.Phase==ChargingPhase.AwaitingCurrent&&TimedOut(row,options.CurrentTimeoutSeconds)&&
                (chargeReading.Charging!=true||chargeReading.Current is null||chargeReading.Current<=options.MinimumChargingCurrent))
             {await BayFaultStopAsync(row,ct);return;}
@@ -341,7 +354,7 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
             {Hold(row,"充电开启前尚未确认停稳、实际到位及现场互锁。");return;}
             var reading=await ReadBatteryAsync(row,ct);
             if(reading.ManualCharge==true||reading.Charging==true){Hold(row,"检测到已连接手动充电器或已有充电，先核对归属。");return;}
-            if(reading.Temperature is null||reading.Temperature>=options.MaximumTemperature){Hold(row,"电池温度缺失或超过充电上限。");return;}
+            if(reading.Temperature is null&&TemperatureRequired(row.VehicleId)||reading.Temperature>=options.MaximumTemperature){Hold(row,"电池温度缺失或超过充电上限。");return;}
             if(await port.ValidateAsync(row,true,ct) is {} latestError||!port.IsAt(row.VehicleId,row.Site!.ChargingSiteId))
             {Hold(row,"充电开启前最终停稳及现场互锁核对未通过。");return;}
             row=Save(row with {StartAttempted=true,Battery=reading,UpdatedAt=Now,Message="充电开启意图已持久化；6005应答不代表充电电流建立。"});
@@ -397,7 +410,7 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
             catch(Exception){return;}
             row=Save(row with {Battery=reading,UpdatedAt=Now});
             if(reading.ManualCharge==true)return;
-            var attention=reading.Temperature is null||reading.Temperature>=options.MaximumTemperature||
+            var attention=reading.Temperature is null&&TemperatureRequired(row.VehicleId)||reading.Temperature>=options.MaximumTemperature||
                 reading.BatteryPercent>=options.TargetBatteryPercent||row.StopRequested;
             if(attention)
             {
@@ -438,6 +451,7 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
         row=Save(row with {BayFaultAt=Now,UpdatedAt=Now});
         await StopAsync(row,"对接后未建立有效充电电流：保护断电，充电位进入故障冷却；电流归零且位置确认后自动离位。",ct);
     }
+    private bool TemperatureRequired(string vehicleId)=>!options.TemperatureOptionalVehicleIds.Contains(vehicleId,StringComparer.OrdinalIgnoreCase);
     private bool BayCooling(ChargingSite site)=>Volatile.Read(ref sessions).Any(s=>s.BayFaultAt is {} at&&
         s.Site?.ResourceId.Equals(site.ResourceId,StringComparison.OrdinalIgnoreCase)==true&&Now-at<TimeSpan.FromMinutes(options.BayFaultCooldownMinutes));
 
@@ -462,6 +476,21 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
             result.Add(new AlarmCandidate($"CHARGING:BAY:{row.Site?.ResourceId}:FAULT","Charging",row.Site?.ResourceId??row.SessionId,
                 "CHARGING_BAY_FAULT","充电位故障冷却中",$"充电位{row.Site?.Id}对接后无充电电流，已断电；冷却期内不派其他车辆充电。原车辆：{row.VehicleId}",
                 AlarmSeverity.Error));
+        // B07-FIX C11: a vehicle at the start threshold with no commissioned allowed bay, or a bay that cannot be routed to it.
+        foreach(var vehicle in port.Vehicles.Where(v=>v.Connection==ConnectionState.Online&&v.BatteryPercent is {} b&&b<=options.StartBatteryPercent))
+        {
+            var sitesForVehicle=options.Sites.Where(site=>site.Commissioned&&site.AllowedVehicleIds.Contains(vehicle.VehicleId,StringComparer.OrdinalIgnoreCase)).ToArray();
+            if(sitesForVehicle.Length==0)
+                result.Add(new AlarmCandidate($"CHARGING:VEHICLE:{vehicle.VehicleId}:NO_BAY","AGV",vehicle.VehicleId,"CHARGING_NO_BAY_FOR_VEHICLE",
+                    "车辆无可用充电位",$"{vehicle.VehicleId}已达充电启动电量，但没有允许该车使用的已核定充电位；需现场核对配置。",AlarmSeverity.Warning));
+            foreach(var site in sitesForVehicle.Where(site=>port.LastPlanFailure(vehicle.VehicleId,site) is not null))
+                result.Add(new AlarmCandidate($"CHARGING:SITE:{site.Id}:{vehicle.VehicleId}:UNROUTABLE","Charging",site.Id,"CHARGING_SITE_UNROUTABLE",
+                    $"充电位{site.Id}无法规划路线",$"{vehicle.VehicleId}→{site.Id}：{port.LastPlanFailure(vehicle.VehicleId,site)}",AlarmSeverity.Warning));
+        }
+        // B07-FIX C16: a charge running without a battery temperature signal is reported, not silently accepted.
+        foreach(var row in Volatile.Read(ref sessions).Where(s=>s.Phase is ChargingPhase.AwaitingCurrent or ChargingPhase.Charging && s.Battery?.Temperature is null))
+            result.Add(new AlarmCandidate($"CHARGING:TEMPERATURE:{row.SessionId}:MISSING","Charging",row.VehicleId,"CHARGING_TEMPERATURE_MISSING",
+                "电池温度信号缺失",$"{row.VehicleId}充电中未上报电池温度；"+(TemperatureRequired(row.VehicleId)?"该车要求温度信号，充电将保护停止。":"该车已按配置豁免温度信号。"),AlarmSeverity.Warning));
         // B07-FIX C12: an unknown battery is an alarm, and the vehicle is not usable until a reading returns.
         foreach(var vehicle in port.Vehicles.Where(v=>v.Connection==ConnectionState.Online&&v.BatteryPercent is null))
             result.Add(new AlarmCandidate($"CHARGING:BATTERY:{vehicle.VehicleId}:UNKNOWN","AGV",vehicle.VehicleId,
