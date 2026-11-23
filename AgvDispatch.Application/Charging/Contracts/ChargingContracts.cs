@@ -21,6 +21,16 @@ public sealed class ChargingOptions
     /// <summary>Dedicated standby point where a charged vehicle returns when no business return site is set. Never an exit,
     /// never a charging point. Blank means the plan fails until a return site is configured.</summary>
     public string DefaultStandbySiteId { get; set; } = "";
+    /// <summary>B07-FIX C3: vehicles that must stay in business. A vehicle between the critical and start thresholds is
+    /// withdrawn only when this many others would remain available. Zero (default) applies the bay-availability rule only;
+    /// commissioning sets the fleet minimum explicitly.</summary>
+    public int MinimumAvailableVehicles { get; set; } = 0;
+    /// <summary>B07-FIX C3: most vehicles withdrawn at once (reserved or critical). Zero means no cap beyond the minimum fleet.</summary>
+    public int MaximumVehiclesOutOfService { get; set; } = 0;
+    /// <summary>B07-FIX C4: a charging vehicle above this level (and at least target minus the margin) may be asked to stop
+    /// when a critical vehicle waits for the bay.</summary>
+    public decimal PreemptionReleaseBatteryPercent { get; set; } = 50;
+    public decimal PreemptionTargetMarginPercent { get; set; } = 10;
     public string? ConfigurationError() => BasicConfigurationError() ?? SiteConfigurationError();
     private string? BasicConfigurationError() =>
         CriticalBatteryPercent <= 0 || CriticalBatteryPercent > StartBatteryPercent || StartBatteryPercent >= TargetBatteryPercent || TargetBatteryPercent > 100
@@ -38,6 +48,11 @@ public sealed class ChargingOptions
     {
         if (Sites.Select(s => s.ExitSiteId).Distinct(StringComparer.OrdinalIgnoreCase).Count() != Sites.Length)
             return "两个充电位共用同一出口，无法同时安全离位，请先核对配置。";
+        if (MinimumAvailableVehicles < 0 || MaximumVehiclesOutOfService < 0)
+            return "车队最少可用车数及同时离线车数上限不能为负数。";
+        if (PreemptionReleaseBatteryPercent is <= 0 || PreemptionReleaseBatteryPercent <= CriticalBatteryPercent || PreemptionReleaseBatteryPercent >= TargetBatteryPercent ||
+            PreemptionTargetMarginPercent < 0 || PreemptionTargetMarginPercent >= 100)
+            return "抢占放行电量须位于严重电量与目标电量之间，目标余量须非负。";
         if (DefaultStandbySiteId is not null && DefaultStandbySiteId.Trim().Length > 0 &&
             Sites.Any(s => s.ExitSiteId.Equals(DefaultStandbySiteId.Trim(), StringComparison.OrdinalIgnoreCase) ||
                            s.ChargingSiteId.Equals(DefaultStandbySiteId.Trim(), StringComparison.OrdinalIgnoreCase)))

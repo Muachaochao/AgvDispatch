@@ -46,9 +46,19 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
     { private SemaphoreSlim? value=semaphore; public void Dispose()=>Interlocked.Exchange(ref value,null)?.Release(); }
     public bool AllowsNewBusiness(string vehicleId)
     {
-        if(Volatile.Read(ref sessions).Any(s=>s.VehicleId.Equals(vehicleId,StringComparison.OrdinalIgnoreCase)&&s.Phase!=ChargingPhase.Completed))return false;
+        var rows=Volatile.Read(ref sessions);
         var vehicle=port.Vehicles.FirstOrDefault(v=>v.VehicleId.Equals(vehicleId,StringComparison.OrdinalIgnoreCase));
-        return vehicle?.Charging!=true && !(vehicle?.BatteryPercent is {} battery && (battery<=options.CriticalBatteryPercent || options.Enabled && battery<=options.StartBatteryPercent));
+        if(vehicle?.Charging==true)return false;
+        // B07-FIX C12: an unknown battery is not usable; it is never treated as full.
+        if(vehicle?.BatteryPercent is not {} battery)return false;
+        if(battery<=options.CriticalBatteryPercent)return false;
+        if(rows.FirstOrDefault(s=>s.Phase!=ChargingPhase.Completed&&s.VehicleId.Equals(vehicleId,StringComparison.OrdinalIgnoreCase)) is {} active)
+        {
+            if(active.HasReservation)return false;
+            // B07-FIX C3: a queued vehicle with no free bay may keep taking short tasks until a bay is actually free.
+            return !(BayFreeFor(vehicleId,rows)&&WithdrawalAllowed(vehicleId,rows));
+        }
+        return !ShouldWithdraw(vehicleId,battery,rows);
     }
     public AgvTransportChain? FindChain(string commandId)
     {
@@ -91,19 +101,48 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
     // Commissioned sites explicitly confirm positive current means charging;
     // normal negative discharge after relay-off is compatible with safe exit.
     private bool CurrentStopped(ChargingBatteryReading reading)=>reading.Charging==false&&reading.Current is {} current&&double.IsFinite(current)&&current<=options.MinimumChargingCurrent;
+    // B07-FIX C3: a bay is free for this vehicle when more allowed, unreserved bays exist than queued requests from other vehicles.
+    private bool BayFreeFor(string vehicleId,ChargingSession[] rows)
+    {
+        var free=options.Sites.Count(site=>site.Commissioned&&CanHandleSite(site,vehicleId)&&
+            site.AllowedVehicleIds.Contains(vehicleId,StringComparer.OrdinalIgnoreCase)&&
+            !rows.Any(other=>other.HasReservation&&other.Site!.ResourceId.Equals(site.ResourceId,StringComparison.OrdinalIgnoreCase)));
+        var waiting=rows.Count(s=>!s.HasReservation&&(s.Phase is ChargingPhase.Queued or ChargingPhase.WaitingForBusiness)&&
+            !s.VehicleId.Equals(vehicleId,StringComparison.OrdinalIgnoreCase));
+        return free>waiting;
+    }
+    private bool IsCritical(string vehicleId)=>port.Vehicles.FirstOrDefault(v=>v.VehicleId.Equals(vehicleId,StringComparison.OrdinalIgnoreCase))?.BatteryPercent is {} battery&&battery<=options.CriticalBatteryPercent;
+    // B07-FIX C3: a vehicle with an active charging session is out of service. The minimum available fleet and the
+    // out-of-service cap both must hold after this vehicle is withdrawn.
+    private bool WithdrawalAllowed(string vehicleId,ChargingSession[] rows)
+    {
+        var outOfService=rows.Where(s=>s.Phase!=ChargingPhase.Completed)
+            .Select(s=>s.VehicleId).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        if(outOfService.Contains(vehicleId,StringComparer.OrdinalIgnoreCase))return true;
+        var available=port.Vehicles.Where(v=>v.Connection==ConnectionState.Online&&!v.VehicleId.Equals(vehicleId,StringComparison.OrdinalIgnoreCase))
+            .Select(v=>v.VehicleId).Distinct(StringComparer.OrdinalIgnoreCase).Count(id=>!outOfService.Contains(id,StringComparer.OrdinalIgnoreCase));
+        return available>=options.MinimumAvailableVehicles&&(options.MaximumVehiclesOutOfService==0||outOfService.Length+1<=options.MaximumVehiclesOutOfService);
+    }
+    // B07-FIX C3: below critical a vehicle is always withdrawn. Between critical and start it is withdrawn only when a bay is
+    // free and the fleet policy allows it; otherwise it keeps taking short tasks.
+    private bool ShouldWithdraw(string vehicleId,decimal battery,ChargingSession[] rows)=>
+        battery<=options.CriticalBatteryPercent||options.Enabled&&battery<=options.StartBatteryPercent&&
+        BayFreeFor(vehicleId,rows)&&WithdrawalAllowed(vehicleId,rows);
 
     public async Task RunCycleAsync(CancellationToken ct)
     {
         using var lease=await EnterBusinessAsync(ct);
         if(options.Enabled)
             foreach(var vehicle in port.Vehicles.Where(v=>v.BatteryPercent is >=0&&v.BatteryPercent<=options.StartBatteryPercent&&v.Connection==ConnectionState.Online&&Fresh(v.LastSuccessfulPollAt)))
-                if(!sessions.Any(s=>s.Phase!=ChargingPhase.Completed&&s.VehicleId.Equals(vehicle.VehicleId,StringComparison.OrdinalIgnoreCase)))
+                if(!sessions.Any(s=>s.Phase!=ChargingPhase.Completed&&s.VehicleId.Equals(vehicle.VehicleId,StringComparison.OrdinalIgnoreCase))&&
+                   ShouldWithdraw(vehicle.VehicleId,vehicle.BatteryPercent!.Value,sessions))
                     Save(new("CHARGE-"+Guid.NewGuid().ToString("N"),vehicle.VehicleId,ChargingPhase.Queued,Now,Now,"低电量已进入充电队列；等待业务箱体循环及设备责任安全结束。") {TargetBatteryPercent=options.TargetBatteryPercent});
 
         foreach(var row in sessions.Where(s=>s.HasReservation).ToArray())
             await port.RenewAsync(row.SessionId,ct);
         using var execution=await port.EnterExecutionAsync(false,ct);
         if(execution is null)return;
+        var blockedByCritical=false;
         foreach(var current in sessions.Where(s=>s.Phase!=ChargingPhase.Completed)
             .OrderBy(s=>port.Vehicles.FirstOrDefault(v=>v.VehicleId==s.VehicleId)?.BatteryPercent??100).ThenBy(s=>s.CreatedAt).ToArray())
         {
@@ -129,6 +168,11 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
                     if(row.Phase!=ChargingPhase.Reserved)
                     {
                         // Keep the queue explainable: record why no charging bay could be planned instead of waiting silently.
+                        // B07-FIX C4: a critical vehicle whose allowed bays are all held by other sessions may preempt a charging vehicle.
+                        if(row.Phase==ChargingPhase.Queued&&IsCritical(row.VehicleId)&&options.Sites.Any(site=>site.Commissioned&&
+                            site.AllowedVehicleIds.Contains(row.VehicleId,StringComparer.OrdinalIgnoreCase)&&
+                            sessions.Any(other=>other.HasReservation&&other.Site!.ResourceId.Equals(site.ResourceId,StringComparison.OrdinalIgnoreCase))))
+                            blockedByCritical=true;
                         if(choices.Count==0)
                         {
                             var reasons=options.Sites.Where(s=>s.Commissioned&&s.AllowedVehicleIds.Contains(row.VehicleId,StringComparer.OrdinalIgnoreCase))
@@ -154,6 +198,23 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
                 if(ct.IsCancellationRequested)throw;
             }
         }
+        if(blockedByCritical)RequestPreemption();
+    }
+
+    // B07-FIX C4: ask the most-charged eligible vehicle to stop through the normal stop and exit flow, so a critical vehicle
+    // waiting for the bay is not blocked by a vehicle that only needs topping up. One request at a time.
+    private void RequestPreemption()
+    {
+        var rows=sessions;
+        if(rows.Any(s=>s.StopRequested&&s.Phase is ChargingPhase.Charging or ChargingPhase.AwaitingCurrent or ChargingPhase.StoppingCharge or ChargingPhase.AwaitingStop))return;
+        var release=Math.Max(options.PreemptionReleaseBatteryPercent,options.TargetBatteryPercent-options.PreemptionTargetMarginPercent);
+        var candidate=rows.Where(s=>(s.Phase is ChargingPhase.Charging or ChargingPhase.AwaitingCurrent)&&!s.StopRequested&&!s.StopAttempted&&
+                s.Site?.ControlMode!="RobokitScript"&&
+                port.Vehicles.FirstOrDefault(v=>v.VehicleId.Equals(s.VehicleId,StringComparison.OrdinalIgnoreCase))?.BatteryPercent is {} battery&&battery>=release)
+            .OrderByDescending(s=>port.Vehicles.First(v=>v.VehicleId.Equals(s.VehicleId,StringComparison.OrdinalIgnoreCase)).BatteryPercent)
+            .FirstOrDefault();
+        if(candidate is null)return;
+        Save(candidate with {StopRequested=true,UpdatedAt=Now,Message="为低于严重电量的排队车辆让出充电位：申请按正常停充及退出流程释放。"});
     }
 
     private async Task AdvanceAsync(ChargingSession row,CancellationToken ct)

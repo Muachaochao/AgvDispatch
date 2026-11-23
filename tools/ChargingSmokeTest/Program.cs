@@ -91,8 +91,10 @@ queue.Port.Put("B", 10);
 await queue.CyclesAsync(8);
 Check(queue.Port.Navigations.Count == 1 && queue.Port.Navigations[0].Vehicle == "B" && queue.Port.Leases.Count == 1,
     "two vehicles competing for one bay dispatch only the lowest battery vehicle");
-Check(!queue.Service.AllowsNewBusiness("B") && !queue.Service.AllowsNewBusiness("A"),
-    "queued low battery vehicles cannot take another business cycle");
+// B07-FIX C3 (deliberate change): the 24% vehicle is above critical and has no free bay, so it may keep taking short tasks;
+// the 10% vehicle that holds the bay and every critical vehicle stay out of business.
+Check(!queue.Service.AllowsNewBusiness("B") && queue.Service.AllowsNewBusiness("A"),
+    "a reserved low battery vehicle cannot take business, while a queued vehicle above critical with no free bay keeps short tasks");
 
 var busy = new Fixture(evidence, "busy");
 busy.Port.Busy.Add("A");
