@@ -112,6 +112,9 @@ public sealed partial class DispatchTaskOrchestrator(
 
     private async Task<GlobalCycle?> RunCycleUnderGateAsync(CancellationToken cancellationToken)
     {
+        // Vendor status queries are network I/O. They run before the execution gate is taken, so a slow or
+        // silent vehicle cannot hold up dispatch, step advance, handshakes or cancellation for other vehicles.
+        var prefetchedStatuses = await PrefetchExecutingStatusesAsync(cancellationToken);
         using var chargingLease = charging is null ? null : await charging.EnterBusinessAsync(cancellationToken);
         using var execution = await executionGate.EnterAsync(MapExecutionOperation.ExistingWork, cancellationToken);
         if (execution is null) { ReportOptimizationGate("地图恢复或切换门禁尚未放行。" ); return null; }
@@ -122,7 +125,7 @@ public sealed partial class DispatchTaskOrchestrator(
             return null;
         }
 
-        await SynchronizeExecutingTasksAsync(cancellationToken);
+        await SynchronizeExecutingTasksAsync(prefetchedStatuses, cancellationToken);
         await _trafficLayer.PrepareCycleAsync(cancellationToken);
         var submitting = await tasks.GetSubmittingTasksAsync(cancellationToken);
         var assigned = await tasks.GetAssignedTasksAsync(cancellationToken);
@@ -568,7 +571,34 @@ public sealed partial class DispatchTaskOrchestrator(
         return position.State == AgvMapPositionState.Normal;
     }
 
-    private async Task SynchronizeExecutingTasksAsync(CancellationToken cancellationToken)
+    private sealed record PrefetchedTransportStatus(string VendorTaskId, AgvTransportTaskStatus? Status);
+
+    private async Task<IReadOnlyDictionary<string, PrefetchedTransportStatus>> PrefetchExecutingStatusesAsync(
+        CancellationToken cancellationToken)
+    {
+        var executing = (await tasks.GetExecutingTasksAsync(cancellationToken))
+            .Where(task => !string.IsNullOrWhiteSpace(task.VendorTaskId)).ToArray();
+        var fetched = await Task.WhenAll(executing.Select(async task =>
+        {
+            try
+            {
+                return (task.TaskId, new PrefetchedTransportStatus(task.VendorTaskId!,
+                    await agvGateway.GetTransportTaskStatusAsync(task.VendorTaskId!, cancellationToken)));
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+            catch (Exception exception)
+            {
+                // The gated pass re-queries this task and reports the failure in its usual place.
+                logger.LogDebug(exception, "执行中任务状态预取失败，将在执行门禁内重新核对。TaskId={TaskId}", task.TaskId);
+                return (task.TaskId, (PrefetchedTransportStatus?)null);
+            }
+        }));
+        return fetched.Where(entry => entry.Item2 is not null)
+            .ToDictionary(entry => entry.TaskId, entry => entry.Item2!, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private async Task SynchronizeExecutingTasksAsync(IReadOnlyDictionary<string, PrefetchedTransportStatus> prefetched,
+        CancellationToken cancellationToken)
     {
         var executing = await tasks.GetExecutingTasksAsync(cancellationToken);
         var activeCommands = executing.Select(task => task.VendorTaskId).ToHashSet(StringComparer.Ordinal);
@@ -593,9 +623,10 @@ public sealed partial class DispatchTaskOrchestrator(
                 var status = timeoutRecovery is null
                     ? null
                     : await timeoutRecovery.GetReplacementStatusAsync(task, cancellationToken);
-                status ??= await agvGateway.GetTransportTaskStatusAsync(
-                    task.VendorTaskId,
-                    cancellationToken);
+                // Use the pre-gate snapshot only for the same vendor task; anything else is queried under the gate.
+                status ??= prefetched.TryGetValue(task.TaskId, out var snapshot) && snapshot.VendorTaskId == task.VendorTaskId
+                    ? snapshot.Status
+                    : await agvGateway.GetTransportTaskStatusAsync(task.VendorTaskId, cancellationToken);
                 if (status is null)
                 {
                     continue;
