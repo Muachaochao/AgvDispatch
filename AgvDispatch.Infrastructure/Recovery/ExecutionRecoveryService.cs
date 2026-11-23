@@ -24,7 +24,7 @@ public sealed class RecoveryBarrier : IRecoveryBarrier
 public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, RecoveryBarrier barrier,
     IMapExecutionGate gate, IAgvGateway gateway, IAgvStateCache vehicles, IPlcSignalCache signals,
     MapSwitchSafetySettings settings, IActiveMapRuntime map, IExecutionIdentityCache? identities = null, RecoveryIdentityOptions? identityOptions = null,
-    IChargingRecoveryEvidence? chargingRecovery = null) : IExecutionRecoveryService
+    IChargingRecoveryEvidence? chargingRecovery = null, ITrafficResourceManager? traffic = null) : IExecutionRecoveryService
 {
     private string _sessionId = "";
     private DateTimeOffset _started;
@@ -40,6 +40,9 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
         barrier.Set(false);
         _started = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow();
         _sessionId = Guid.NewGuid().ToString("N");
+        // Before the boot snapshot: a Ready step holding leases with no command is an abandoned
+        // acquisition from a crash. Nothing else would ever release it (R7).
+        if (traffic is not null) await traffic.RollbackAbandonedReadyStepLeasesAsync(ct);
         var active = await database.Queryable<DispatchTaskEntity>()
             .Where(t => t.Stage != (int)DispatchTaskStage.Completed && t.Stage != (int)DispatchTaskStage.Cancelled)
             .ToListAsync(ct);

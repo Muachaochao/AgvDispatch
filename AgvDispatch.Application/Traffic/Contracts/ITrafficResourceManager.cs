@@ -36,6 +36,12 @@ public interface ITrafficResourceManager
 
     Task ReleaseStepAsync(string ownerStepId, CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Startup sweep: rolls back leases of Ready steps that have no transport command, left
+    /// behind when a crash interrupted acquisition before registration. Returns the step count.
+    /// </summary>
+    Task<int> RollbackAbandonedReadyStepLeasesAsync(CancellationToken cancellationToken) => Task.FromResult(0);
+
     Task<int> ReleaseStepExceptResourcesAsync(string ownerStepId,
         IReadOnlyCollection<string> keepResourceIds, string reason, CancellationToken cancellationToken) =>
         Task.FromResult(0);
