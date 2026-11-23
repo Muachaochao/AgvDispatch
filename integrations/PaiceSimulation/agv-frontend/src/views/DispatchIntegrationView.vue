@@ -317,6 +317,19 @@ function displayTime(value?: string | null) {
   const time = Date.parse(value ?? "");
   return Number.isFinite(time) ? new Date(time).toLocaleString("zh-CN", { hour12: false }) : "—";
 }
+function schemeOptionLabel(scheme: NonNullable<DispatchStatus["schemes"]>[number]) {
+  const updated = Number.isFinite(scheme.updatedAt)
+    ? new Date(scheme.updatedAt! * 1000).toLocaleString("zh-CN", { hour12: false })
+    : "";
+  return [scheme.name, scheme.vehicleCount ? `${scheme.vehicleCount}车` : "",
+    scheme.stationCount ? `${scheme.stationCount}工位` : "", updated].filter(Boolean).join(" · ");
+}
+function reportOptionLabel(entry: DispatchReport) {
+  const finished = Number.isFinite(entry.finishedAt)
+    ? new Date(entry.finishedAt! * 1000).toLocaleString("zh-CN", { hour12: false })
+    : entry.id || "报告";
+  return [finished, entry.name || "业务仿真", entry.rootName].filter(Boolean).join(" · ");
+}
 async function inspectResource(id: string, focus = false) {
   selectedResourceId.value = id;
   resourceEvents.value = [];
@@ -966,12 +979,13 @@ onBeforeUnmount(() => {
           v-model="selectedScheme"
           style="width: 290px"
           placeholder="选择主工程方案"
+          filterable
           :disabled="experimentBusy"
         >
           <el-option
             v-for="scheme in status?.schemes ?? []"
             :key="scheme.id"
-            :label="`${scheme.name} · ${scheme.vehicleCount ?? '?'}辆`"
+            :label="schemeOptionLabel(scheme)"
             :value="scheme.id"
           />
         </el-select>
@@ -1119,11 +1133,12 @@ onBeforeUnmount(() => {
           v-model="selectedScheme"
           placeholder="选择主工程已保存方案"
           style="width: 240px"
+          filterable
           :disabled="busy || !!status?.running"
           ><el-option
             v-for="scheme in status?.schemes ?? []"
             :key="scheme.id"
-            :label="`${scheme.name} · ${scheme.vehicleCount ?? '?'}辆`"
+            :label="schemeOptionLabel(scheme)"
             :value="scheme.id"
         /></el-select>
         <el-button
@@ -1496,10 +1511,10 @@ onBeforeUnmount(() => {
       <section v-if="section === 'report'" class="panel">
         <div class="panel-heading">
           <h3>业务报告</h3>
-          <el-select :model-value="historicalReportId" class="report-select" aria-label="选择业务报告" @change="selectReport">
+          <el-select :model-value="historicalReportId" class="report-select" aria-label="选择业务报告" filterable @change="selectReport">
             <el-option label="当前报告" value="" />
             <el-option v-for="entry in status?.history ?? []" :key="entry.id" :value="entry.id || ''"
-              :label="`${entry.finishedAt ? new Date(entry.finishedAt * 1000).toLocaleString() : entry.id} · ${entry.name || '业务仿真'}`" />
+              :label="reportOptionLabel(entry)" />
           </el-select>
           <el-button
             :disabled="!displayedReport"
@@ -1508,6 +1523,7 @@ onBeforeUnmount(() => {
             >下载原报告</el-button
           >
         </div>
+        <p v-if="status?.history?.length" class="muted">已从本机全部仿真实例找回 {{ status.history.length }} 份历史报告，选择后可读取原报告和回放。</p>
         <p>{{ reportBusy ? '正在读取报告' : ({ passed: "通过", failed: "失败", aborted: "已中止" } as Record<string, string>)[displayedReport?.status ?? ""] ?? displayedReport?.status ?? "暂无报告" }}</p>
         <el-alert v-if="reportError" :title="reportError" type="error" :closable="false" />
         <el-alert

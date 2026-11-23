@@ -25,7 +25,7 @@ def _no_links(path):
 
 
 class SchemeStore:
-    """Namespace each controller template so isolated verification cannot replace daily selection."""
+    """Namespace selection state while exposing recipes preserved in older scopes."""
     def __init__(self, workspace, template_root, validate_root):
         self.workspace = Path(workspace).absolute()
         self.template_root = Path(template_root).absolute()
@@ -38,48 +38,120 @@ class SchemeStore:
         self.path = directory / ('schemes-' + scope + '.json')
         _no_links(self.path)
         self.notice = None
-        self.state = dict(version=1, selectedRoot=None, selectedSchemeId=None, recentInstances=[], schemes=[])
+        self.state = dict(version=1, selectedRoot=None, selectedSchemeId=None,
+                          recentInstances=[], schemes=[], deletedSchemeIds=[])
+        self._catalog_cache_key = None
+        self._catalog_cache = None
         if self.path.exists():
             try:
-                if self.path.stat().st_size > 64 * 1024 * 1024:
-                    raise ValueError('方案存储超出读取上限。')
-                saved = json.loads(self.path.read_text(encoding='utf-8-sig'), parse_constant=_invalid_constant)
-                if not isinstance(saved, dict) or saved.get('version') != 1 or not isinstance(saved.get('schemes'), list) or not isinstance(saved.get('recentInstances'), list):
-                    raise ValueError('方案存储格式无效。')
-                if len(saved['schemes']) > 40 or len(saved['recentInstances']) > 20:
-                    raise ValueError('方案存储条数无效。')
-                for scheme in saved['schemes']:
-                    if not isinstance(scheme, dict) or not SCHEME_ID.fullmatch(str(scheme.get('id', ''))) or not isinstance(scheme.get('configuration'), dict) or not isinstance(scheme.get('name'), str) or type(scheme.get('updatedAt')) not in (int, float) or not math.isfinite(scheme['updatedAt']):
-                        raise ValueError('方案记录无效。')
-                    config = scheme['configuration']
-                    if not isinstance(config.get('mapDefinition'), dict) or not isinstance(config.get('vehicles'), list) or not isinstance(config.get('stations'), list):
-                        raise ValueError('方案缺少地图、车辆或工位配置。')
-                    if scheme.get('scenario') is not None and not isinstance(scheme['scenario'], dict):
-                        raise ValueError('方案场景记录无效。')
-                if len({scheme['id'] for scheme in saved['schemes']}) != len(saved['schemes']):
-                    raise ValueError('方案编号重复。')
-                for entry in saved['recentInstances']:
-                    if not isinstance(entry, dict) or not ROOT_NAME.fullmatch(str(entry.get('rootName', ''))) or type(entry.get('updatedAt')) not in (int, float) or not math.isfinite(entry['updatedAt']):
-                        raise ValueError('最近实例记录无效。')
-                self.state = saved
+                self.state = self._read_state(self.path)
             except (OSError, ValueError, TypeError) as error:
                 # Preserve damaged evidence; replacing it with a fresh catalogue would lose recipes.
                 self.notice = '最近方案记录无法读取，已保留原文件；当前使用模板。' + str(error)
 
-    def _commit(self, state):
-        if self.notice and self.path.exists():
-            raise ValueError(self.notice + ' 请先备份并修复方案记录。')
-        _no_links(self.path)
+    @staticmethod
+    def _read_state(path):
+        if path.stat().st_size > 64 * 1024 * 1024:
+            raise ValueError('方案存储超出读取上限。')
+        saved = json.loads(path.read_text(encoding='utf-8-sig'), parse_constant=_invalid_constant)
+        if not isinstance(saved, dict) or saved.get('version') != 1 or not isinstance(saved.get('schemes'), list) or not isinstance(saved.get('recentInstances'), list):
+            raise ValueError('方案存储格式无效。')
+        if len(saved['schemes']) > 40 or len(saved['recentInstances']) > 20:
+            raise ValueError('方案存储条数无效。')
+        for scheme in saved['schemes']:
+            if not isinstance(scheme, dict) or not SCHEME_ID.fullmatch(str(scheme.get('id', ''))) or not isinstance(scheme.get('configuration'), dict) or not isinstance(scheme.get('name'), str) or type(scheme.get('updatedAt')) not in (int, float) or not math.isfinite(scheme['updatedAt']):
+                raise ValueError('方案记录无效。')
+            config = scheme['configuration']
+            if not isinstance(config.get('mapDefinition'), dict) or not isinstance(config.get('vehicles'), list) or not isinstance(config.get('stations'), list):
+                raise ValueError('方案缺少地图、车辆或工位配置。')
+            if scheme.get('scenario') is not None and not isinstance(scheme['scenario'], dict):
+                raise ValueError('方案场景记录无效。')
+        if len({scheme['id'] for scheme in saved['schemes']}) != len(saved['schemes']):
+            raise ValueError('方案编号重复。')
+        for entry in saved['recentInstances']:
+            if not isinstance(entry, dict) or not ROOT_NAME.fullmatch(str(entry.get('rootName', ''))) or type(entry.get('updatedAt')) not in (int, float) or not math.isfinite(entry['updatedAt']):
+                raise ValueError('最近实例记录无效。')
+        deleted = saved.get('deletedSchemeIds', [])
+        if (not isinstance(deleted, list) or len(deleted) > 200
+                or any(not isinstance(item, str) or not SCHEME_ID.fullmatch(item) for item in deleted)):
+            raise ValueError('已删除方案记录无效。')
+        saved.setdefault('deletedSchemeIds', [])
+        return saved
+
+    def _write_state(self, path, state):
+        _no_links(path)
         text = json.dumps(state, ensure_ascii=False, indent=2, allow_nan=False)
         if len(text.encode('utf-8')) > 64 * 1024 * 1024:
             raise ValueError('方案总大小超过64MB，请减少地图或方案数量。')
-        temporary = self.path.with_name(self.path.name + '.' + uuid.uuid4().hex + '.tmp')
+        temporary = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
         try:
             temporary.write_text(text, encoding='utf-8')
-            temporary.replace(self.path)
+            temporary.replace(path)
         finally:
             temporary.unlink(missing_ok=True)
+
+    def _commit(self, state):
+        if self.notice and self.path.exists():
+            raise ValueError(self.notice + ' 请先备份并修复方案记录。')
+        self._write_state(self.path, state)
         self.state = state
+        self._catalog_cache_key = None
+
+    def _store_paths(self):
+        directory = self.path.parent
+        paths = []
+        for path in directory.glob('schemes-*.json'):
+            try:
+                _no_links(path)
+                if path.is_file():
+                    paths.append(path)
+            except (OSError, ValueError):
+                continue
+        return sorted(paths)
+
+    def _catalog_records(self):
+        paths = self._store_paths()
+        key = []
+        readable_paths = []
+        for path in paths:
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            key.append((str(path), stat.st_mtime_ns, stat.st_size))
+            readable_paths.append(path)
+        key = tuple(key)
+        if key == self._catalog_cache_key and self._catalog_cache is not None:
+            return self._catalog_cache
+        candidates = []
+        recent = []
+        for path in readable_paths:
+            try:
+                state = self.state if path == self.path else self._read_state(path)
+            except (OSError, ValueError, TypeError):
+                continue
+            candidates.extend((scheme['updatedAt'], path == self.path, scheme)
+                              for scheme in state.get('schemes', []))
+            recent.extend(state.get('recentInstances', []))
+        preferred = {}
+        for timestamp, current, scheme in candidates:
+            previous = preferred.get(scheme['id'])
+            if previous is None or (timestamp, current) > (previous[0], previous[1]):
+                preferred[scheme['id']] = (timestamp, current, scheme)
+        tombstones = set(self.state.get('deletedSchemeIds', []))
+        schemes = [row[2] for key, row in preferred.items() if key not in tombstones]
+        schemes.sort(key=lambda scheme: scheme['updatedAt'], reverse=True)
+        instances = {}
+        for entry in recent:
+            name = entry.get('rootName')
+            previous = instances.get(name)
+            if previous is None or entry.get('updatedAt', 0) > previous.get('updatedAt', 0):
+                instances[name] = entry
+        recent_instances = sorted(instances.values(), key=lambda entry: entry.get('updatedAt', 0),
+                                  reverse=True)[:20]
+        self._catalog_cache_key = key
+        self._catalog_cache = (schemes, recent_instances)
+        return self._catalog_cache
 
     def _root(self, name):
         if not isinstance(name, str) or not ROOT_NAME.fullmatch(name):
@@ -140,15 +212,20 @@ class SchemeStore:
 
     def catalog(self):
         with self.lock:
-            return dict(schemes=[self._summary(row) for row in sorted(self.state['schemes'], key=lambda s: s['updatedAt'], reverse=True)],
+            schemes, recent_instances = self._catalog_records()
+            return dict(schemes=[self._summary(row) for row in schemes],
                         selectedSchemeId=self.state.get('selectedSchemeId'),
-                        recentInstances=copy.deepcopy(self.state['recentInstances']), persistenceMessage=self.notice)
+                        recentInstances=copy.deepcopy(recent_instances), persistenceMessage=self.notice)
 
     def get(self, scheme_id):
         if not isinstance(scheme_id, str) or not SCHEME_ID.fullmatch(scheme_id):
             raise ValueError('请选择有效的仿真方案。')
         with self.lock:
-            value = next((row for row in self.state['schemes'] if row['id'] == scheme_id), None)
+            if scheme_id in self.state.get('deletedSchemeIds', []):
+                values = []
+            else:
+                values, _ = self._catalog_records()
+            value = next((row for row in values if row['id'] == scheme_id), None)
             if value is None:
                 raise ValueError('保存的仿真方案不存在，请刷新方案列表。')
             return copy.deepcopy(value)
@@ -170,6 +247,8 @@ class SchemeStore:
             value = dict(id=scheme_id or uuid.uuid4().hex, name=name.strip(), configuration=copy.deepcopy(configuration),
                          scenario=copy.deepcopy(scenario), updatedAt=time.time())
             state['schemes'] = [row for row in state['schemes'] if row['id'] != value['id']] + [value]
+            state['deletedSchemeIds'] = [item for item in state.get('deletedSchemeIds', [])
+                                         if item != value['id']]
             state['selectedSchemeId'] = value['id']
             self._commit(state)
             return copy.deepcopy(value)
@@ -181,5 +260,7 @@ class SchemeStore:
             state['schemes'] = [row for row in state['schemes'] if row['id'] != scheme_id]
             if state.get('selectedSchemeId') == scheme_id:
                 state['selectedSchemeId'] = None
+            state['deletedSchemeIds'] = list(dict.fromkeys(
+                state.get('deletedSchemeIds', []) + [scheme_id]))
             self._commit(state)
             return self.catalog()

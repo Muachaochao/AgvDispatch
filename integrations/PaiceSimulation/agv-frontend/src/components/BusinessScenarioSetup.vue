@@ -32,6 +32,13 @@ function coordinates(id: string) {
  const site = sitesById.value.get(id)
  return site ? `X ${site.x.toFixed(3)} · Y ${site.y.toFixed(3)}` : ''
 }
+function schemeLabel(scheme: NonNullable<DispatchStatus['schemes']>[number]) {
+ const updated = Number.isFinite(scheme.updatedAt)
+  ? new Date(scheme.updatedAt! * 1000).toLocaleString('zh-CN', { hour12: false })
+  : ''
+ return [scheme.name, scheme.vehicleCount ? `${scheme.vehicleCount}车` : '',
+  scheme.stationCount ? `${scheme.stationCount}工位` : '', updated].filter(Boolean).join(' · ')
+}
 const locked = computed(() => busy.value || !!props.status?.running || ['starting','stopping'].includes(props.status?.phase ?? ''))
 const ready = computed(() => loadedScheme.value === scheme.value && loadedRoot.value === props.status?.rootName && !!loadedScheme.value)
 const input = computed(() => ({ id: scheme.value, simulationRate: simulationRate.value, ...(mode.value === 'single'
@@ -100,10 +107,11 @@ async function start() {
   </div>
   <el-form label-width="100px">
    <el-form-item label="工程方案">
-    <el-select v-model="scheme" :disabled="locked" placeholder="选择已保存的工程方案" style="width: min(600px, 100%)">
-     <el-option v-for="s in status?.schemes ?? []" :key="s.id" :label="s.name" :value="s.id" />
+    <el-select v-model="scheme" :disabled="locked" filterable placeholder="选择已保存的工程方案" style="width: min(600px, 100%)">
+     <el-option v-for="s in status?.schemes ?? []" :key="s.id" :label="schemeLabel(s)" :value="s.id" />
     </el-select>
     <el-button :disabled="locked || !scheme" @click="load">加载方案</el-button>
+    <span class="muted">已合并本机历史方案，共 {{ status?.schemes?.length ?? 0 }} 个，按更新时间倒序。</span>
    </el-form-item>
    <el-form-item label="仿真倍率">
     <el-radio-group v-model="simulationRate" :disabled="locked">

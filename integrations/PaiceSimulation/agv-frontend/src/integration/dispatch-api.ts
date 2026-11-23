@@ -48,9 +48,12 @@ export interface DispatchStatus {
   schemes?: {
     id: string;
     name: string;
+    updatedAt?: number;
     mapName?: string;
     vehicleCount?: number;
     stationCount?: number;
+    scenarioName?: string;
+    plcTableName?: string;
   }[];
   scenario?: { id?: string; name?: string; status?: string; message?: string; startedAt?: number | null; callRows?: CallRow[] };
   history?: DispatchReport[];
@@ -59,6 +62,7 @@ export interface DispatchStatus {
 export interface DispatchReport {
     id?: string;
     name?: string;
+    rootName?: string;
     startedAt?: number;
     finishedAt?: number;
     status?: string;

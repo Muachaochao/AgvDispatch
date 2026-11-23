@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import shutil
 from types import SimpleNamespace
 import tempfile
 import threading
@@ -219,6 +220,42 @@ class ReportTests(unittest.TestCase):
             write(directory / 'report.json', value)
         records = history(self.runtime)
         self.assertEqual([row['id'] for row in records], [self.identity, 'b' * 32])
+
+    def test_history_and_replay_find_reports_from_other_local_instances(self):
+        other_root = self.workspace / 'artifacts/web-single-vehicle-history'
+        shutil.copytree(self.root, other_root)
+        for stale in other_root.glob('simulation-run-*'):
+            shutil.rmtree(stale)
+        pipe = 'Agv28StageLab-history'
+        lab = read(other_root / 'lab.json')
+        lab.update(pipe=pipe, webPort=19104, plcPort=19101, robotPort=19102, navigationPort=19103)
+        write(other_root / 'lab.json', lab)
+        settings = read(other_root / 'service/appsettings.json')
+        settings['Database']['Path'] = str(other_root / 'data/agv-dispatch.db')
+        settings['Security']['PipeName'] = pipe
+        settings['Plc']['Port'] = 19101
+        settings['Agv']['Robots'][0].update(Port=19102, NavigationPort=19103)
+        write(other_root / 'service/appsettings.json', settings)
+        write(other_root / 'service-settings.json', settings)
+        web = read(other_root / 'webhost/appsettings.json')
+        web['Web'].update(Port=19104, PipeName=pipe,
+                          ProjectStorePath=str(other_root / 'projects'),
+                          EngineeringStorePath=str(other_root / 'engineering'))
+        write(other_root / 'webhost/appsettings.json', web)
+        other_identity = 'd' * 32
+        other_run = other_root / ('simulation-run-' + other_identity)
+        other_run.mkdir()
+        write(other_run / 'report.json', dict(id=other_identity, name='历史充电优先', status='passed',
+                                             finishedAt=time.time() + 10))
+        write(other_run / 'map.json', dict(name='历史地图', nodes=[]))
+        (other_run / 'observations.jsonl').write_text(json.dumps(
+            dict(time=7, device=dict(cars={}), tasks={}, leases=[])) + '\n', encoding='utf-8')
+
+        records = history(self.runtime)
+        self.assertEqual(records[0]['id'], other_identity)
+        self.assertEqual(records[0]['rootName'], other_root.name)
+        self.assertEqual(report(self.runtime, other_identity)['name'], '历史充电优先')
+        self.assertEqual(replay(self.runtime, other_identity)['map']['name'], '历史地图')
 
     def test_replay_does_not_read_oversized_map_or_single_line(self):
         self.observations(1)

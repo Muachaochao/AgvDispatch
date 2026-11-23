@@ -29,6 +29,7 @@ const pointMap = ref<InstanceType<typeof EngineeringPointMap>>()
 const selectedSite = ref('')
 const showSignals = ref(false)
 const mapTab = ref<'preview' | 'points'>('preview')
+const schemeCount = computed(() => props.status?.schemes?.length ?? 0)
 let originalConfiguration: Pick<Configuration, 'stations' | 'plcSignalTable' | 'downstreamAdmissionCapacity'> | undefined
 const locked = computed(() => busy.value || props.status?.running || ['starting', 'stopping'].includes(props.status?.phase ?? ''))
 const station = computed(() => configuration.value?.stations.find(row => row.stationId === stationId.value))
@@ -96,6 +97,14 @@ watch(() => props.status?.schemes, schemes => {
     void load()
   }
 }, { immediate: true })
+
+function schemeLabel(scheme: NonNullable<DispatchStatus['schemes']>[number]) {
+  const updated = Number.isFinite(scheme.updatedAt)
+    ? new Date(scheme.updatedAt! * 1000).toLocaleString('zh-CN', { hour12: false })
+    : ''
+  return [scheme.name, scheme.vehicleCount ? `${scheme.vehicleCount}车` : '',
+    scheme.stationCount ? `${scheme.stationCount}工位` : '', updated].filter(Boolean).join(' · ')
+}
 
 async function load() {
   busy.value = true; error.value = ''; notice.value = ''; configuration.value = null; sceneMap.value = null
@@ -235,10 +244,11 @@ async function save() {
 
 <template>
   <section class="panel engineering-panel">
-    <h3>仿真工程方案</h3>
+    <h3>仿真工程方案 <el-tag effect="plain" size="small">{{ schemeCount }} 个可用</el-tag></h3>
+    <p class="muted">已合并本机不同仿真实例保存的工程配置，并按更新时间倒序排列。</p>
     <el-space wrap>
-      <el-select v-model="scheme" placeholder="选择工程方案" aria-label="仿真工程方案" style="width: min(320px, 75vw)" :disabled="busy || editing" @change="load">
-        <el-option v-for="item in status?.schemes ?? []" :key="item.id" :label="item.name" :value="item.id" />
+      <el-select v-model="scheme" filterable placeholder="选择工程方案" aria-label="仿真工程方案" style="width: min(520px, 75vw)" :disabled="busy || editing" @change="load">
+        <el-option v-for="item in status?.schemes ?? []" :key="item.id" :label="schemeLabel(item)" :value="item.id" />
       </el-select>
       <el-button :disabled="!scheme || busy || editing" :loading="busy && !configuration" @click="load">重新加载</el-button>
     </el-space>

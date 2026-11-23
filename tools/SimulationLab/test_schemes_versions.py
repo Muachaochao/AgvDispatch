@@ -101,6 +101,32 @@ class SchemeTests(unittest.TestCase):
         self.assertEqual(two.restore_root(), (other, None))
         self.assertNotEqual(one.path, two.path)
 
+    def test_catalogue_recovers_recipes_saved_under_other_template_namespaces(self):
+        current = self.store()
+        first = current.save('当前方案', self.configuration)
+        other_template = self.root('older-template')
+        older = SchemeStore(self.workspace, other_template, self.validate)
+        changed = copy.deepcopy(self.configuration)
+        changed['vehicles'].append(dict(id='车二'))
+        second = older.save('旧实例中保留的最新方案', changed)
+
+        catalogue = current.catalog()
+        self.assertEqual({row['id'] for row in catalogue['schemes']},
+                         {first['id'], second['id']})
+        self.assertEqual(current.get(second['id'])['configuration'], changed)
+        self.assertEqual(catalogue['schemes'][0]['vehicleCount'], 2)
+
+    def test_delete_hides_indirect_recipe_without_rewriting_its_source_store(self):
+        current = self.store()
+        other_template = self.root('older-template')
+        older = SchemeStore(self.workspace, other_template, self.validate)
+        value = older.save('旧命名空间方案', self.configuration)
+
+        remaining = current.delete(value['id'])
+        self.assertNotIn(value['id'], [row['id'] for row in remaining['schemes']])
+        self.assertIn(value['id'], [row['id'] for row in older.catalog()['schemes']])
+        self.assertEqual(older.get(value['id'])['name'], '旧命名空间方案')
+
 
 class VersionTests(unittest.TestCase):
     def setUp(self):

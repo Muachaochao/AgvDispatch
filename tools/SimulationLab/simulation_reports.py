@@ -91,12 +91,10 @@ def _roots(runtime):
         current, *_ = validate_root(runtime.root)
         roots.append(current)
     except (OSError, ValueError, KeyError): pass
-    store = getattr(runtime, 'scheme_store', None)
-    for entry in store.catalog()['recentInstances'] if store else []:
-        candidate = runtime.root.parent / str(entry.get('rootName', ''))
+    for candidate in runtime.root.parent.glob('web-single-vehicle-*'):
         try:
-            candidate, *_ = validate_root(candidate)
-            if candidate not in roots: roots.append(candidate)
+            current, *_ = validate_root(candidate)
+            if current not in roots: roots.append(current)
         except (OSError, ValueError, KeyError): pass
     return roots
 
@@ -123,7 +121,13 @@ def history(runtime):
             records.append({key:value.get(key) for key in ('id','name','status','message','finishedAt','metrics','firstFailure')}
                            | dict(rootName=root.name))
         except (OSError, ValueError, TypeError): continue
-    return sorted(records, key=lambda item:_finite_time(item.get('finishedAt')), reverse=True)[:100]
+    preferred = {}
+    for record in records:
+        identity = record.get('id')
+        previous = preferred.get(identity)
+        if previous is None or _finite_time(record.get('finishedAt')) > _finite_time(previous.get('finishedAt')):
+            preferred[identity] = record
+    return sorted(preferred.values(), key=lambda item:_finite_time(item.get('finishedAt')), reverse=True)[:100]
 
 
 def find_run(runtime, identity):
