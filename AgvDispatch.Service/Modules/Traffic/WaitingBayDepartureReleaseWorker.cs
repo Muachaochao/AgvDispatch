@@ -41,10 +41,12 @@ public sealed class WaitingBayDepartureReleaseWorker(
                 using var execution = await gate.EnterAsync(MapExecutionOperation.ExistingWork, stoppingToken);
                 if (execution is null || map.Current is not { } current) continue;
                 var waiting = DumperWaitingBaySafety.ExclusiveResourceIds(current.Definition, dispatch);
-                if (waiting.Count == 0) continue;
                 var atDump = (await tasks.GetActiveTasksAsync(stoppingToken))
                     .Where(task => task.Stage == DispatchTaskStage.Dumping)
                     .ToArray();
+                // Tasks that left the dumping stage no longer need their "blocked" log suppression (R14).
+                _blocked.RemoveWhere(id => !atDump.Any(task => string.Equals(task.TaskId, id, StringComparison.OrdinalIgnoreCase)));
+                if (waiting.Count == 0) continue;
                 foreach (var task in atDump)
                 {
                     var binding = await resources.GetAsync(task.TaskId, stoppingToken);
