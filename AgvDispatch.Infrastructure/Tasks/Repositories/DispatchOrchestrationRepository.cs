@@ -9,6 +9,15 @@ namespace AgvDispatch.Infrastructure.Persistence;
 public sealed class DispatchOrchestrationRepository(ISqlSugarClient database)
     : IDispatchOrchestrationRepository
 {
+    // Defaults match DispatchAssignmentOptions (WaitPriorityPerMinute 1, MaxWaitPriority 100 = the base priority span).
+    private const double AgeingPointsPerMinute = 1;
+    private const double AgeingCapPoints = 100;
+    private static double AgedPriority(DispatchTaskEntity task, DateTime now)
+    {
+        var waitedMinutes = Math.Max(0, (now - task.CreatedAt).TotalMinutes);
+        return task.Priority + Math.Min(AgeingCapPoints, waitedMinutes * AgeingPointsPerMinute);
+    }
+
     public async Task<IReadOnlyList<DispatchTaskWorkItem>> GetDispatchCandidatesAsync(
         int maximumCount,
         CancellationToken cancellationToken)
@@ -17,11 +26,16 @@ public sealed class DispatchOrchestrationRepository(ISqlSugarClient database)
         var stage = (int)DispatchTaskStage.WaitingForVehicle;
         var entities = await database.Queryable<DispatchTaskEntity>()
             .Where(task => task.Stage == stage)
-            .OrderByDescending(task => task.Priority)
-            .OrderBy(task => task.CreatedAt)
-            .Take(maximumCount)
             .ToListAsync(cancellationToken);
-        return entities.Select(ToWorkItem).ToArray();
+        // Ageing: a waiting call gains points while it waits, up to the same ceiling the optimiser uses,
+        // so a low-priority station cannot be starved by a steady stream of higher-priority calls.
+        var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
+        return entities
+            .OrderByDescending(task => AgedPriority(task, now))
+            .ThenBy(task => task.CreatedAt)
+            .Take(maximumCount)
+            .Select(ToWorkItem)
+            .ToArray();
     }
 
     public async Task<IReadOnlyList<DispatchTaskWorkItem>> GetSubmittingTasksAsync(
