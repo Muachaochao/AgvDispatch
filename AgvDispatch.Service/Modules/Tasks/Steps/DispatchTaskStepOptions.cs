@@ -12,4 +12,19 @@ public sealed class DispatchTaskStepOptions
     public bool RollingReservationEnabled { get; set; } = true;
     public int RollingWindowMinimumEdges { get; set; } = 2;
     public int RollingWindowMaximumEdges { get; set; } = 12;
+    // NearestSafeStop (default, unchanged behaviour): cut at the first safe stop after MinimumEdges;
+    // MaximumEdges is not used. FarthestWithinMaximum: cut at the farthest safe stop within
+    // [MinimumEdges, MaximumEdges] edges, so dense safe points do not force a stop-and-renew every
+    // few metres; with no safe stop inside the range it falls back to the nearest one beyond it.
+    public string RollingWindowBoundary { get; set; } = RollingWindowBoundaries.NearestSafeStop;
+}
+
+public static class RollingWindowBoundaries
+{
+    public const string NearestSafeStop = "NearestSafeStop";
+    public const string FarthestWithinMaximum = "FarthestWithinMaximum";
+
+    public static bool IsKnown(string? value) =>
+        string.Equals(value, NearestSafeStop, StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(value, FarthestWithinMaximum, StringComparison.OrdinalIgnoreCase);
 }
