@@ -114,7 +114,7 @@ public sealed partial class DispatchTaskOrchestrator(
     {
         // Vendor status queries are network I/O. They run before the execution gate is taken, so a slow or
         // silent vehicle cannot hold up dispatch, step advance, handshakes or cancellation for other vehicles.
-        var prefetchedStatuses = await PrefetchExecutingStatusesAsync(cancellationToken);
+        _prefetchedStatuses = await PrefetchExecutingStatusesAsync(cancellationToken);
         using var chargingLease = charging is null ? null : await charging.EnterBusinessAsync(cancellationToken);
         using var execution = await executionGate.EnterAsync(MapExecutionOperation.ExistingWork, cancellationToken);
         if (execution is null) { ReportOptimizationGate("地图恢复或切换门禁尚未放行。" ); return null; }
@@ -125,7 +125,7 @@ public sealed partial class DispatchTaskOrchestrator(
             return null;
         }
 
-        await SynchronizeExecutingTasksAsync(prefetchedStatuses, cancellationToken);
+        await SynchronizeExecutingTasksAsync(cancellationToken);
         await _trafficLayer.PrepareCycleAsync(cancellationToken);
         var submitting = await tasks.GetSubmittingTasksAsync(cancellationToken);
         var assigned = await tasks.GetAssignedTasksAsync(cancellationToken);
@@ -597,9 +597,14 @@ public sealed partial class DispatchTaskOrchestrator(
             .ToDictionary(entry => entry.TaskId, entry => entry.Item2!, StringComparer.OrdinalIgnoreCase);
     }
 
-    private async Task SynchronizeExecutingTasksAsync(IReadOnlyDictionary<string, PrefetchedTransportStatus> prefetched,
-        CancellationToken cancellationToken)
+    private IReadOnlyDictionary<string, PrefetchedTransportStatus> _prefetchedStatuses =
+        new Dictionary<string, PrefetchedTransportStatus>(StringComparer.OrdinalIgnoreCase);
+
+    private async Task SynchronizeExecutingTasksAsync(CancellationToken cancellationToken)
     {
+        // Consume the pre-gate snapshot for this pass only.
+        var prefetched = _prefetchedStatuses;
+        _prefetchedStatuses = new Dictionary<string, PrefetchedTransportStatus>(StringComparer.OrdinalIgnoreCase);
         var executing = await tasks.GetExecutingTasksAsync(cancellationToken);
         var activeCommands = executing.Select(task => task.VendorTaskId).ToHashSet(StringComparer.Ordinal);
         _continuationDetours.RetainTasks(activeCommands.OfType<string>().ToHashSet(StringComparer.Ordinal));
