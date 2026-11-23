@@ -27,6 +27,11 @@ public sealed class AlarmRuleEngine(
 {
     private readonly Dictionary<string, DateTimeOffset> _offRouteSince =
         new(StringComparer.OrdinalIgnoreCase);
+    // Wait-cycle and wait-timeout alarms come from the same read-only snapshot that the
+    // waiting page uses. It is sampled on a slower cadence than the rule engine itself.
+    private static readonly TimeSpan WaitScanInterval = TimeSpan.FromSeconds(5);
+    private IReadOnlyList<AlarmCandidate> _waitAlarms = [];
+    private DateTimeOffset _nextWaitScanAt = DateTimeOffset.MinValue;
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         if (!options.Enabled)
@@ -119,6 +124,7 @@ public sealed class AlarmRuleEngine(
                 $"任务={lease.TaskId}，步骤={lease.OwnerStepId}，AGV={lease.VehicleId}；路权仍保持锁定。",
                 AlarmSeverity.Error));
         }
+        result.AddRange(await TrafficWaitAlarmsAsync(cancellationToken));
         foreach (var deadlock in trafficFlow.GetSnapshot().Deadlocks)
         {
             result.Add(new AlarmCandidate(
@@ -126,6 +132,64 @@ public sealed class AlarmRuleEngine(
                 "TRAFFIC_DEADLOCK_CANDIDATE", $"路段{deadlock.EdgeId}检测到潜在交通死锁",
                 $"车辆={string.Join(',', deadlock.VehicleIds)}；{deadlock.Reason}；{deadlock.Suggestion}",
                 AlarmSeverity.Critical));
+        }
+        return result;
+    }
+
+    private async Task<IReadOnlyList<AlarmCandidate>> TrafficWaitAlarmsAsync(CancellationToken cancellationToken)
+    {
+        var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow();
+        if (now < _nextWaitScanAt) return _waitAlarms;
+        _nextWaitScanAt = now + WaitScanInterval;
+        try
+        {
+            var page = await trafficResources.GetWaitingAsync(new TrafficWaitingQuery(PageSize: 200), cancellationToken);
+            _waitAlarms = BuildWaitCandidates(page);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "路权等待成环与超时检测失败；保留上一轮等待报警。");
+        }
+        return _waitAlarms;
+    }
+
+    /// <summary>
+    /// Maps the persisted waiting snapshot to TRAFFIC_WAIT_CYCLE (closed resource-wait risk) and
+    /// TRAFFIC_WAIT_TIMEOUT (wait beyond the warning or critical tier) alarms. Detection stays
+    /// read-only: no lease is released and no vehicle is commanded.
+    /// </summary>
+    public static IReadOnlyList<AlarmCandidate> BuildWaitCandidates(TrafficWaitingPage page)
+    {
+        ArgumentNullException.ThrowIfNull(page);
+        var result = new List<AlarmCandidate>();
+        foreach (var cycle in page.CycleRisks)
+        {
+            result.Add(new AlarmCandidate(
+                $"TRAFFIC_WAIT_CYCLE:{cycle.CycleId}", "TrafficFlow", cycle.CycleId,
+                "TRAFFIC_WAIT_CYCLE", $"路权互等成环风险（{cycle.TaskIds.Count}个任务）",
+                $"车辆={string.Join(',', cycle.VehicleIds)}；资源={string.Join(',', cycle.ResourceIds)}；{cycle.Message}",
+                AlarmSeverity.Critical));
+        }
+        foreach (var request in page.Items)
+        {
+            var severity = request.WaitingAlertLevel switch
+            {
+                TrafficWaitingAlertLevel.Critical => AlarmSeverity.Error,
+                TrafficWaitingAlertLevel.Warning => AlarmSeverity.Warning,
+                _ => (AlarmSeverity?)null
+            };
+            if (severity is null) continue;
+            result.Add(new AlarmCandidate(
+                $"TRAFFIC_WAIT_TIMEOUT:{request.StepId}", "TrafficResource", request.StepId,
+                "TRAFFIC_WAIT_TIMEOUT", $"车辆{request.VehicleId}路权等待{(int)(request.WaitingSeconds ?? 0)}秒",
+                $"任务={request.TaskId}，步骤={request.StepId}，等级={request.WaitingAlertLevel}；" +
+                $"阻塞资源={string.Join(',', request.Blockers.Select(blocker => blocker.ResourceId))}；" +
+                "持续等待不自动释放路权，请核对占用方。",
+                severity.Value));
         }
         return result;
     }

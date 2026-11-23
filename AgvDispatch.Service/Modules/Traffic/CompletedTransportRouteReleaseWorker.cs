@@ -33,14 +33,21 @@ public sealed class CompletedTransportRouteReleaseWorker(
                     .Where(task => task.Stage < (int)DispatchTaskStage.Completed)
                     .Select(task => task.TaskId).ToListAsync(stoppingToken);
                 if (activeTaskIds.Count == 0) continue;
+                // Filter by leases first: old completed steps without any lease must not
+                // fill the bounded window and hide newly completed ones (R12).
+                var leasedStepIds = (await database.Queryable<TrafficResourceLeaseEntity>()
+                    .Select(lease => lease.OwnerStepId).Distinct().ToListAsync(stoppingToken)).ToArray();
+                if (leasedStepIds.Length == 0) continue;
                 var completedSteps = await database.Queryable<DispatchTaskStepEntity>()
-                    .Where(step => activeTaskIds.Contains(step.TaskId) &&
+                    .Where(step => activeTaskIds.Contains(step.TaskId) && leasedStepIds.Contains(step.StepId) &&
                         step.Status == (int)DispatchTaskStepStatus.Completed &&
                         (step.StepType == (int)DispatchTaskStepType.GoToPickup ||
                          step.StepType == (int)DispatchTaskStepType.DeliverFullBoxToDumper ||
                          step.StepType == (int)DispatchTaskStepType.EnterDumpingPosition ||
                          step.StepType == (int)DispatchTaskStepType.ReturnEmptyBox))
                     .OrderBy(step => step.UpdatedAt).Take(32).ToListAsync(stoppingToken);
+                var current = completedSteps.Select(step => step.StepId).ToHashSet(StringComparer.Ordinal);
+                foreach (var stepId in _lastReason.Keys.Where(id => !current.Contains(id)).ToArray()) _lastReason.Remove(stepId);
                 foreach (var step in completedSteps)
                 {
                     if (!await HasLeaseAsync(step.TaskId, step.StepId, stoppingToken)) continue;

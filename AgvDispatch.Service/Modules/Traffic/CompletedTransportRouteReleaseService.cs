@@ -28,9 +28,12 @@ public sealed class CompletedTransportRouteReleaseService(
     MapOptions mapOptions,
     TrafficSegmentReleasePolicy releasePolicy,
     TrafficResourceManager resources,
-    TimeProvider? clock = null, DispatchTrafficWakeup? trafficWakeup = null)
+    TimeProvider? clock = null, DispatchTrafficWakeup? trafficWakeup = null,
+    ILogger<CompletedTransportRouteReleaseService>? logger = null)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    // Vehicles already reported as lacking a verified body envelope (warned once per vehicle).
+    private static readonly HashSet<string> EnvelopeWarnings = new(StringComparer.OrdinalIgnoreCase);
     private static readonly HashSet<DispatchTaskStepType> TransportSteps =
     [
         DispatchTaskStepType.GoToPickup,
@@ -93,7 +96,6 @@ public sealed class CompletedTransportRouteReleaseService(
         };
         if (task.Stage != (int)expectedStage || task.CancelRequestId is not null ||
             command.Status != (int)AgvCommandStatus.Sent || command.SentAt is null ||
-            request.State is not ("Acquired" or "Held") ||
             string.IsNullOrWhiteSpace(step.VehicleId) || task.VehicleId != step.VehicleId ||
             command.VehicleId != step.VehicleId || request.VehicleId != step.VehicleId ||
             command.ExecutionMapId != map.MapId || command.ExecutionMapVersionId != map.VersionId ||
@@ -114,14 +116,30 @@ public sealed class CompletedTransportRouteReleaseService(
             : string.IsNullOrWhiteSpace(payload.BusinessStepId) ? payload.BusinessTaskId : payload.BusinessStepId;
         var businessSource = payload?.Windows.Count > 0 ? payload.Windows[0].Source : payload?.Source;
         var businessDestination = payload?.Windows.Count > 0 ? payload.Windows[^1].Destination : payload?.Destination;
-        if (payload?.Path is not { Count: >= 2 } || businessStepId != stepId ||
+        // A replacement command from obstacle recovery carries its own business identity;
+        // it is accepted explicitly, while its leases still belong to this step.
+        if (payload?.Path is not { Count: >= 2 } ||
+            (businessStepId != stepId && !ObstacleRecoveryTaskIds.IsRecoveryTask(businessStepId)) ||
             payload.VehicleId != step.VehicleId ||
             !MapRouteSiteMapper.IsSameNode(map.Definition, step.SourceSite, businessSource) ||
             !MapRouteSiteMapper.IsSameNode(map.Definition, step.DestinationSite, businessDestination))
             return new(0, "原运输载荷与原步骤不一致。");
         var frozen = TransportRouteSnapshots.Read(command);
+        // The request describes the newest window asked for, which may already be a waiting next
+        // window. The frozen snapshot describes the window that was sent: recapture that window.
+        var sentWindow = payload.Windows.Count > 0 && payload.WindowIndex < payload.Windows.Count
+            ? payload.Windows[payload.WindowIndex]
+            : null;
+        var recaptureRequest = sentWindow is null ? request : new TrafficRequestEntity
+        {
+            StepId = request.StepId, TaskId = request.TaskId, VehicleId = request.VehicleId,
+            MapId = request.MapId, MapVersionId = request.MapVersionId, ResourceIds = request.ResourceIds,
+            State = request.State is "Acquired" or "Held" or "NotRequired" ? request.State : "Held",
+            Source = sentWindow.Source, Destination = sentWindow.Destination,
+            EdgeIds = JsonSerializer.Serialize(sentWindow.EdgeIds)
+        };
         var recaptured = TransportRouteSnapshots.Capture(taskId, stepId, command.CommandId,
-            step.VehicleId, command.PayloadJson, map, request);
+            step.VehicleId, command.PayloadJson, map, recaptureRequest);
         if (TransportRouteSnapshots.Serialize(frozen) != TransportRouteSnapshots.Serialize(recaptured))
             return new(0, "发送时路线快照与当前活动地图不一致。");
 
@@ -166,13 +184,22 @@ public sealed class CompletedTransportRouteReleaseService(
             body.RadiusFromReportedReferenceMeters <= 0 ||
             profile.Length != 1 || !double.IsFinite(profile[0].MaximumPositionUncertaintyMeters) ||
             profile[0].MaximumPositionUncertaintyMeters < 0)
+        {
+            // Without a verified envelope no geometric release is possible, so automatic corridor
+            // guards stay leased until the task completes. Surface that once per vehicle (R10).
+            lock (EnvelopeWarnings)
+                if (EnvelopeWarnings.Add(step.VehicleId))
+                    logger?.LogWarning("车体包络缺失或未核定，已完成运输路段无法几何释放，旧路权将保留到任务结束。VehicleId={VehicleId}",
+                        step.VehicleId);
             return new(0, "缺少已核定的完整车体、载荷包络或定位误差界。");
+        }
 
         var destination = destinationMatches[0];
         var destinationResources = destination.ResourceIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var requestedResources = (JsonSerializer.Deserialize<string[]>(request.ResourceIds) ?? [])
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var definitions = map.Definition.Resources.ToDictionary(item => item.Id,
+        // Automatic corridor and node guards exist only in the enriched topology. They are
+        // checked against their real polygon or edge geometry and never released as boundaryless.
+        var topology = MapCorridorResources.Enrich(map.Definition);
+        var definitions = topology.Resources.ToDictionary(item => item.Id,
             StringComparer.OrdinalIgnoreCase);
         var radius = body.RadiusFromReportedReferenceMeters +
             releasePolicy.SafetyMarginMeters + profile[0].MaximumPositionUncertaintyMeters;
@@ -180,21 +207,18 @@ public sealed class CompletedTransportRouteReleaseService(
             !double.IsFinite(releasePolicy.SafetyMarginMeters) || releasePolicy.SafetyMarginMeters < 0.1)
             return new(0, "包络安全余量无效，保留路权。");
         var candidates = new List<TrafficResourceLeaseEntity>();
-        var topology = windowBoundary ? MapCorridorResources.Enrich(map.Definition) : null;
-        var graphNodes = windowBoundary ? map.Definition.Nodes.ToDictionary(n => n.Id, StringComparer.OrdinalIgnoreCase) : null;
+        var graphNodes = map.Definition.Nodes.ToDictionary(n => n.Id, StringComparer.OrdinalIgnoreCase);
         foreach (var lease in leases)
         {
+            // Every lease owned by this step is a candidate. A replacement route can leave
+            // old-route-only leases that the current request no longer lists.
             if (string.IsNullOrWhiteSpace(lease.LeaseId) ||
                 lease.MapId != map.MapId || lease.MapVersionId != map.VersionId ||
-                lease.VehicleId != step.VehicleId ||
-                !requestedResources.Contains(lease.ResourceId))
+                lease.VehicleId != step.VehicleId)
                 continue;
-            // The completed vendor step and exact destination arrival are
-            // authoritative for route resources generated from map edges or
-            // station roles without a polygon (for example AUTO-CORRIDOR-*,
-            // STANDBY-* and DUMPER-WAIT-*). They are still constrained to the
-            // immutable request resource set and destination resources remain
-            // protected. Polygon resources retain the independent envelope check.
+            // Polygon resources, including generated AUTO-CORRIDOR-* guards, are released only when
+            // the complete body envelope is outside them. Boundaryless resources need edge or node
+            // geometry; destination resources always stay protected.
             var hasBoundary = definitions.TryGetValue(lease.ResourceId, out var definition) &&
                 definition.Capacity >= 1 && ValidBoundary(definition.Boundary);
             if (hasBoundary)
@@ -207,33 +231,30 @@ public sealed class CompletedTransportRouteReleaseService(
                 // only unconditional protection: without geometry there is no
                 // independent proof that the complete body has left it.
                 if (destinationResources.Contains(lease.ResourceId)) continue;
-                if (windowBoundary)
+                // Generated corridor guards also have no polygon. Use their
+                // actual edge geometry and keep unknown geometry conservatively.
+                var guarded = topology.Edges.Where(e =>
+                    e.ResourceIds.Contains(lease.ResourceId, StringComparer.OrdinalIgnoreCase)).ToArray();
+                if (guarded.Length == 0)
                 {
-                    // Generated corridor guards also have no polygon. Use their
-                    // actual edge geometry and keep unknown geometry conservatively.
-                    var guarded = topology!.Edges.Where(e =>
-                        e.ResourceIds.Contains(lease.ResourceId, StringComparer.OrdinalIgnoreCase)).ToArray();
-                    if (guarded.Length == 0)
+                    // B07-FIX K1: node-only stop resources (e.g. SIM-STOP-*) carry no polygon and no edge.
+                    // A departed stop is released only when the stopped body is clear of a body-sized
+                    // footprint centred on every carrier node (distance > 2 x envelope radius).
+                    var carriers = map.Definition.Nodes.Where(n =>
+                        n.ResourceIds.Contains(lease.ResourceId, StringComparer.OrdinalIgnoreCase)).ToArray();
+                    if (carriers.Length == 0 || carriers.Any(n =>
                     {
-                        // B07-FIX K1: node-only stop resources (e.g. SIM-STOP-*) carry no polygon and no edge.
-                        // A departed stop is released only when the stopped body is clear of a body-sized
-                        // footprint centred on every carrier node (distance > 2 x envelope radius).
-                        var carriers = map.Definition.Nodes.Where(n =>
-                            n.ResourceIds.Contains(lease.ResourceId, StringComparer.OrdinalIgnoreCase)).ToArray();
-                        if (carriers.Length == 0 || carriers.Any(n =>
-                        {
-                            var d = Math.Sqrt((n.X - x) * (n.X - x) + (n.Y - y) * (n.Y - y));
-                            return !double.IsFinite(d) || d <= 2 * radius;
-                        })) continue;
-                    }
-                    else if (guarded.Any(e =>
-                    {
-                        if (!MapEdgeGeometry.TryValidate(e, graphNodes![e.From], graphNodes[e.To], out _))
-                            return true;
-                        var distance = MapEdgeGeometry.DistanceTo(e, graphNodes[e.From], graphNodes[e.To], x, y);
-                        return !double.IsFinite(distance) || distance <= radius;
+                        var d = Math.Sqrt((n.X - x) * (n.X - x) + (n.Y - y) * (n.Y - y));
+                        return !double.IsFinite(d) || d <= 2 * radius;
                     })) continue;
                 }
+                else if (guarded.Any(e =>
+                {
+                    if (!MapEdgeGeometry.TryValidate(e, graphNodes[e.From], graphNodes[e.To], out _))
+                        return true;
+                    var distance = MapEdgeGeometry.DistanceTo(e, graphNodes[e.From], graphNodes[e.To], x, y);
+                    return !double.IsFinite(distance) || distance <= radius;
+                })) continue;
             }
             candidates.Add(lease);
         }

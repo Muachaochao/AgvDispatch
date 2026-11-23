@@ -72,7 +72,7 @@ public sealed class ManualReleaseWorkflowService(
                 return;
             }
 
-            var task = await GetTerminalTaskAsync(lease.TaskId, cancellationToken);
+            var task = await GetTerminalTaskAsync(lease, cancellationToken);
             if (!task.Allowed)
             {
                 result = Rejected(task.Message);
@@ -160,36 +160,56 @@ public sealed class ManualReleaseWorkflowService(
     }
 
     private async Task<(bool Allowed, string Message, int? Stage)> GetTerminalTaskAsync(
-        string taskId,
+        TrafficResourceLeaseEntity lease,
         CancellationToken cancellationToken)
     {
+        var taskId = lease.TaskId;
         var task = await database.Queryable<DispatchTaskEntity>()
             .Where(item => item.TaskId == taskId)
             .FirstAsync(cancellationToken);
         if (task is null)
         {
-            return (false, $"任务{taskId}记录缺失，无法证明任务已终止。", null);
+            // Return-to-standby and charging-lock leases carry a session id with no business task row.
+            // Their end is proven by the vehicle itself, not by a task. Any other orphan stays refused.
+            if (!IsSystemSessionLease(lease))
+                return (false, $"任务{taskId}记录缺失，无法证明任务已终止。", null);
+            return StoppedIdleEvidenceProblem(lease.VehicleId) is { } problem
+                ? (false, $"会话路权{taskId}没有任务记录，{problem}，禁止人工释放。", null)
+                : (true, string.Empty, null);
         }
         var stage = (DispatchTaskStage)task.Stage;
         if (stage == DispatchTaskStage.CancellationReview && task.CancelConfirmedAt != null)
         {
-            var age = safety?.StateMaxAge ?? TimeSpan.FromSeconds(10);
-            var tolerance = safety?.StoppedVelocityTolerance ?? 0.02;
-            if (task.CancelVehicleId == null || vehicles == null || !vehicles.TryGet(task.CancelVehicleId, out var vehicle) ||
-                vehicle.Connection != ConnectionState.Online || vehicle.Quality != SignalQuality.Good || vehicle.LastSuccessfulPollAt == null ||
-                AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow() - vehicle.LastSuccessfulPollAt > age || vehicle.LastSuccessfulPollAt > AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().AddSeconds(1) ||
-                vehicle.VelocityX == null || vehicle.VelocityY == null || vehicle.AngularVelocity == null ||
-                !double.IsFinite(vehicle.VelocityX.Value) || !double.IsFinite(vehicle.VelocityY.Value) || !double.IsFinite(vehicle.AngularVelocity.Value) ||
-                Math.Abs(vehicle.VelocityX.Value) > tolerance || Math.Abs(vehicle.VelocityY.Value) > tolerance || Math.Abs(vehicle.AngularVelocity.Value) > tolerance ||
-                vehicle.Tasks.Any(t => t.Status is 1 or 2 or 3))
-                return (false, "取消核对任务缺少新鲜停车证据或车辆仍有活动任务，禁止释放原路权。", task.Stage);
-            return (true, string.Empty, task.Stage);
+            return StoppedIdleEvidenceProblem(task.CancelVehicleId) is not null
+                ? (false, "取消核对任务缺少新鲜停车证据或车辆仍有活动任务，禁止释放原路权。", task.Stage)
+                : (true, string.Empty, task.Stage);
         }
         return stage is DispatchTaskStage.Completed or DispatchTaskStage.Faulted or DispatchTaskStage.Cancelled
             ? (true, string.Empty, task.Stage)
             : (false, $"任务{taskId}仍处于{stage}，禁止人工释放路权。", task.Stage);
     }
 
+    private static bool IsSystemSessionLease(TrafficResourceLeaseEntity lease) =>
+        lease.TaskId.StartsWith("STANDBY-", StringComparison.Ordinal) ||
+        lease.OwnerStepId == lease.TaskId + "-LOCK";
+
+    /// <summary>Null when the vehicle has fresh telemetry, is stopped and has no active vehicle task; otherwise the reason.</summary>
+    private string? StoppedIdleEvidenceProblem(string? vehicleId)
+    {
+        if (string.IsNullOrWhiteSpace(vehicleId) || vehicles == null || !vehicles.TryGet(vehicleId, out var vehicle))
+            return "车辆状态缺失";
+        var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow();
+        var age = safety?.StateMaxAge ?? TimeSpan.FromSeconds(10);
+        var tolerance = safety?.StoppedVelocityTolerance ?? 0.02;
+        if (vehicle.Connection != ConnectionState.Online || vehicle.Quality != SignalQuality.Good || vehicle.LastSuccessfulPollAt == null ||
+            now - vehicle.LastSuccessfulPollAt > age || vehicle.LastSuccessfulPollAt > now.AddSeconds(1))
+            return "车辆遥测不新鲜";
+        if (vehicle.VelocityX == null || vehicle.VelocityY == null || vehicle.AngularVelocity == null ||
+            !double.IsFinite(vehicle.VelocityX.Value) || !double.IsFinite(vehicle.VelocityY.Value) || !double.IsFinite(vehicle.AngularVelocity.Value) ||
+            Math.Abs(vehicle.VelocityX.Value) > tolerance || Math.Abs(vehicle.VelocityY.Value) > tolerance || Math.Abs(vehicle.AngularVelocity.Value) > tolerance)
+            return "车辆仍在运动或速度证据缺失";
+        return vehicle.Tasks.Any(t => t.Status is 1 or 2 or 3) ? "车辆仍有活动任务" : null;
+    }
 
     private static ManualReleaseWorkflowItem ToItem(ManualTrafficReleaseRequestEntity row) => new(
         row.RequestId, row.LeaseId, row.ResourceId, row.TaskId, row.VehicleId,

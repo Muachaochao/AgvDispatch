@@ -163,7 +163,9 @@ public sealed class TrafficSegmentReleaseInspector(ISqlSugarClient database, IAc
         var businessStepId = string.IsNullOrWhiteSpace(payload.BusinessStepId)
             ? payload.BusinessTaskId
             : payload.BusinessStepId;
-        if (businessStepId != stepId || payload.VehicleId != vehicle || payload.Path is null ||
+        // A replacement command from obstacle recovery carries its own business identity.
+        if ((businessStepId != stepId && !ObstacleRecoveryTaskIds.IsRecoveryTask(businessStepId)) ||
+            payload.VehicleId != vehicle || payload.Path is null ||
             payload.Path.Count < 2 ||
             payload.Source != payload.Path[0] || payload.Destination != payload.Path[^1] ||
             step.SourceSite is null || step.DestinationSite is null)

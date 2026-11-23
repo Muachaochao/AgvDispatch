@@ -324,7 +324,9 @@ public sealed partial class DispatchTaskOrchestrator(
                         pickupSite, pickupSite, [], [], true, occupiedReason)
                     {
                         MapId = planningMap?.MapId,
-                        MapVersionId = planningMap?.VersionId
+                        MapVersionId = planningMap?.VersionId,
+                        // Diagnostic routes never join the FIFO queue; only real acquisitions do.
+                        QueueEligible = false
                     }, cancellationToken);
                     if (await ApplySelectAgvConditionAsync(
                             task, readyStep, TaskTemplateExecutionPolicy.VehicleUnavailable,
@@ -337,7 +339,7 @@ public sealed partial class DispatchTaskOrchestrator(
                     .OrderBy(v => v.Route?.Cost ?? double.MaxValue).FirstOrDefault();
                 if (diagnostic != null) await trafficResources.RecordRouteAsync(new(readyStep.StepId, task.TaskId, diagnostic.Vehicle.VehicleId,
                     diagnostic.Source, pickupSite, diagnostic.Route?.EdgeIds ?? [], diagnostic.Route?.ResourceIds ?? [], true,
-                    diagnostic.Route == null ? "地图路径不可达或车辆起点无效；车辆已在取货点时必须配置真实已启用的进出闭合路线，禁止同点空路径代替取箱。" : "候选路径被交通资源占用，等待容量释放；诊断路径不会发送车辆。") { MapId = planningMap?.MapId, MapVersionId = planningMap?.VersionId }, cancellationToken);
+                    diagnostic.Route == null ? "地图路径不可达或车辆起点无效；车辆已在取货点时必须配置真实已启用的进出闭合路线，禁止同点空路径代替取箱。" : "候选路径被交通资源占用，等待容量释放；诊断路径不会发送车辆。") { MapId = planningMap?.MapId, MapVersionId = planningMap?.VersionId, QueueEligible = false }, cancellationToken);
                 var routeKey = $"ANY->{pickupSite}";
                 if (_missingRouteWarnings.Add(routeKey))
                 {
@@ -851,13 +853,23 @@ public sealed partial class DispatchTaskOrchestrator(
         // next window. Waiting for the next grant first creates hold-and-wait
         // cycles with a vehicle returning from the dumper.
         if (completedRouteRelease is not null)
-            await completedRouteRelease.ReleaseWindowAsync(task.TaskId, command.StepId, terminal, cancellationToken);
+        {
+            var geometric = await completedRouteRelease.ReleaseWindowAsync(task.TaskId, command.StepId, terminal, cancellationToken);
+            if (geometric.ReleasedCount == 0)
+                logger.LogDebug("窗口边界未释放已通过路权。TaskId={TaskId}, StepId={StepId}, Reason={Reason}",
+                    task.TaskId, command.StepId, geometric.Reason);
+        }
+        // What the step still holds here is the vehicle's current footprint: its stop,
+        // body-covered resources and any bound waiting bay. A failed attempt rolls back
+        // only what this attempt added on top of it.
+        var heldBeforeAttempt = await trafficResources.GetStepHeldResourceIdsAsync(task.TaskId, command.StepId, cancellationToken)
+            ?? [];
         IReadOnlyList<string>? retained = null;
         if (UsesDynamicContinuation && map is not null)
         {
             // Do not let a changed path release the previous window's footprint.
             // Any lease still present after the geometric pass remains protected.
-            retained = await trafficResources.GetStepHeldResourceIdsAsync(task.TaskId, command.StepId, cancellationToken);
+            retained = heldBeforeAttempt;
             var unavailable = await trafficResources.GetUnavailableResourceIdsAsync(task.TaskId, cancellationToken);
             if (windows.Skip(nextIndex).Any(window => window.ResourceIds.Any(unavailable.Contains)) &&
                 PlanRemainingTransport(task, payload, map, unavailable) is { } reroute &&
@@ -878,40 +890,86 @@ public sealed partial class DispatchTaskOrchestrator(
                 windows = windows.Select((window, index) => index == nextIndex ? next : window).ToArray();
             }
         }
+        // A bound capacity-1 waiting bay is task-level: normalization rebuilds window
+        // resources from nodes and edges, so re-attach it to every remaining window.
+        var boundBay = await BoundWaitingBayAsync(task.TaskId, command.StepId, cancellationToken);
+        windows = AttachWaitingBay(windows, nextIndex, boundBay);
+        next = windows[nextIndex];
         var observation = new TrafficRouteObservation(command.StepId, task.TaskId, task.VehicleId,
             next.Source, next.Destination, next.EdgeIds, next.ResourceIds, false,
             "车辆已在安全点停稳，原任务申请下一滚动路权窗口。")
             { MapId = map?.MapId, MapVersionId = map?.VersionId };
         var acquired = await _trafficLayer.AcquireAsync(observation, cancellationToken);
         if (!acquired.Acquired) return TransportWindowAdvanceOutcome.WaitingForTraffic;
-        // Acquire first, then release resources not reused by the next window.
-        // This keeps an overlapping intersection or waiting-bay anchor leased
-        // without a gap while freeing corridors already fully passed.
-        if (retained is null)
-            await trafficResources.ReleaseStepExceptResourcesAsync(command.StepId, next.ResourceIds,
-                "车辆已完整通过上一路权窗口，释放不再复用的资源并保留下一窗口资源。", cancellationToken);
 
         var fullSource = payload.Windows[0].Source;
         var fullDestination = payload.Windows[^1].Destination;
         var prepared = await outbox.TryPrepareTransportWindowAsync(
             task.TaskId, command.StepId, task.VehicleId, fullSource, fullDestination,
             next, windows, task.VendorTaskId, payload.FinalAction, cancellationToken);
-        if (!prepared)
+        if (prepared)
         {
-            var waiting = trafficResources is ITaskWaitingBayAllocator allocator
-                ? await allocator.GetAsync(task.TaskId, cancellationToken)
-                : null;
-            if (retained is null && waiting is null)
-                await trafficResources.ReleaseStepAsync(command.StepId, cancellationToken);
-            else
-                await trafficResources.ReleaseStepExceptResourcesAsync(
-                    command.StepId, waiting is null ? retained! : [..retained ?? [], waiting.ResourceId],
-                    "下一窗口命令准备失败；释放新增的租约，保留原窗口未确认离开的资源和已绑定候车位。",
+            // Acquire first, then release resources not reused by the next window.
+            // Only after the next command is durably prepared may the old footprint go.
+            if (retained is null)
+                await trafficResources.ReleaseStepExceptResourcesAsync(command.StepId,
+                    HandoffKeepSet(next.ResourceIds, heldBeforeAttempt, boundBay),
+                    "车辆已完整通过上一路权窗口，释放不再复用的资源并保留下一窗口资源、候车位及未经几何核验的自动走廊资源。",
                     cancellationToken);
+        }
+        else
+        {
+            // Roll back only the leases this attempt added. The current stop, body-covered
+            // resources and the bound waiting bay stay leased because the vehicle is still there.
+            await trafficResources.ReleaseStepExceptResourcesAsync(command.StepId,
+                RollbackKeepSet(retained ?? heldBeforeAttempt, boundBay),
+                "下一窗口命令准备失败；释放本次新增的租约，保留车辆当前停点、车体覆盖的资源和已绑定候车位。",
+                cancellationToken);
         }
         return prepared
             ? TransportWindowAdvanceOutcome.Prepared
             : TransportWindowAdvanceOutcome.PreparationFailed;
+    }
+
+    private async Task<string?> BoundWaitingBayAsync(string taskId, string stepId, CancellationToken cancellationToken)
+    {
+        if (trafficResources is not ITaskWaitingBayAllocator allocator) return null;
+        var binding = await allocator.GetAsync(taskId, cancellationToken);
+        return binding is not null && string.Equals(binding.StepId, stepId, StringComparison.OrdinalIgnoreCase)
+            ? binding.ResourceId
+            : null;
+    }
+
+    /// <summary>Adds the bound waiting bay to every window from <paramref name="fromIndex"/> on; issued windows are untouched.</summary>
+    public static IReadOnlyList<AgvTransportRouteWindow> AttachWaitingBay(IReadOnlyList<AgvTransportRouteWindow> windows,
+        int fromIndex, string? waitingBayResourceId)
+    {
+        ArgumentNullException.ThrowIfNull(windows);
+        if (string.IsNullOrWhiteSpace(waitingBayResourceId)) return windows;
+        return windows.Select((window, index) => index < fromIndex ? window : window with
+        {
+            ResourceIds = window.ResourceIds.Append(waitingBayResourceId)
+                .Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase).ToArray()
+        }).ToArray();
+    }
+
+    /// <summary>Resources kept after a successful handoff: the next window, the bay, and automatic corridor guards not yet verified clear.</summary>
+    public static IReadOnlyCollection<string> HandoffKeepSet(IEnumerable<string> nextWindowResourceIds,
+        IEnumerable<string> heldBeforeAttempt, string? waitingBayResourceId)
+    {
+        var keep = new HashSet<string>(nextWindowResourceIds, StringComparer.OrdinalIgnoreCase);
+        if (!string.IsNullOrWhiteSpace(waitingBayResourceId)) keep.Add(waitingBayResourceId);
+        foreach (var resource in heldBeforeAttempt)
+            if (MapCorridorResources.IsAutomatic(resource)) keep.Add(resource);
+        return keep;
+    }
+
+    /// <summary>Resources kept after a failed preparation: everything held before the attempt plus the bay.</summary>
+    public static IReadOnlyCollection<string> RollbackKeepSet(IEnumerable<string> heldBeforeAttempt, string? waitingBayResourceId)
+    {
+        var keep = new HashSet<string>(heldBeforeAttempt, StringComparer.OrdinalIgnoreCase);
+        if (!string.IsNullOrWhiteSpace(waitingBayResourceId)) keep.Add(waitingBayResourceId);
+        return keep;
     }
 
     // B07-FIX F1: windows already sent to the vehicle are immutable history. Re-normalizing them

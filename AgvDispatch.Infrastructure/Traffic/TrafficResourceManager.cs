@@ -256,8 +256,32 @@ public sealed partial class TrafficResourceManager(
 
     public Task ReleaseStepAsync(string ownerStepId, CancellationToken ct)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(ownerStepId); ct.ThrowIfCancellationRequested();
-        return ReleaseAsync(null, ownerStepId, false, "运输命令未准备成功，回滚本步骤申请的路权。", ct);
+        ArgumentException.ThrowIfNullOrWhiteSpace(ownerStepId);
+        // Rollback of an acquisition must finish even while the host is stopping: it is one
+        // short local transaction, and a cancelled token would otherwise strand the lease.
+        _ = ct;
+        return ReleaseAsync(null, ownerStepId, false, "运输命令未准备成功，回滚本步骤申请的路权。", CancellationToken.None);
+    }
+
+    public async Task<int> RollbackAbandonedReadyStepLeasesAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var leasedStepIds = await database.Queryable<TrafficResourceLeaseEntity>()
+            .Select(lease => lease.OwnerStepId).Distinct().ToListAsync(cancellationToken);
+        if (leasedStepIds.Count == 0) return 0;
+        var ids = leasedStepIds.ToArray();
+        var readySteps = (await database.Queryable<DispatchTaskStepEntity>()
+            .Where(step => ids.Contains(step.StepId) && step.Status == (int)DispatchTaskStepStatus.Ready)
+            .Select(step => step.StepId).ToListAsync(cancellationToken)).ToArray();
+        if (readySteps.Length == 0) return 0;
+        var commanded = (await database.Queryable<AgvCommandOutboxEntity>()
+            .Where(command => readySteps.Contains(command.StepId))
+            .Select(command => command.StepId).ToListAsync(cancellationToken)).ToHashSet(StringComparer.Ordinal);
+        var abandoned = readySteps.Where(stepId => !commanded.Contains(stepId)).ToArray();
+        foreach (var stepId in abandoned)
+            await ReleaseAsync(null, stepId, false,
+                "启动恢复：步骤仍为就绪且没有任何运输命令，回滚崩溃前取得的路权。", CancellationToken.None);
+        return abandoned.Length;
     }
     public async Task<int> ReleaseStepExceptResourcesAsync(string ownerStepId,
         IReadOnlyCollection<string> keepResourceIds, string reason, CancellationToken ct)

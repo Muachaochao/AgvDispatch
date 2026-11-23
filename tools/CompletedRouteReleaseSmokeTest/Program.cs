@@ -165,19 +165,21 @@ var service = new CompletedTransportRouteReleaseService(database, runtime, vehic
     new TrafficSegmentReleasePolicy { Enabled = true }, manager);
 
 var released = await service.ReleaseAsync("TASK", "STEP", default);
-Check(released.ReleasedCount == 3, "完成到站后释放两个有边界资源及一个自动生成路段资源");
+// R3: SYNTHETIC is not produced by the enriched topology, so it has no geometry to verify
+// and stays leased; only the two bounded resources the vehicle has cleared are released.
+Check(released.ReleasedCount == 2, "完成到站后释放两个有边界资源；无几何核验依据的自动生成路段资源保留");
 Check(!database.Queryable<TrafficResourceLeaseEntity>().Any(item =>
-    item.LeaseId == "LEASE-CORRIDOR" || item.LeaseId == "LEASE-INTERSECTION" ||
-    item.LeaseId == "LEASE-AUTO-CORRIDOR"),
-    "前序有边界路段及自动生成路段租约均已删除");
+    item.LeaseId == "LEASE-CORRIDOR" || item.LeaseId == "LEASE-INTERSECTION") &&
+    database.Queryable<TrafficResourceLeaseEntity>().Any(item => item.LeaseId == "LEASE-AUTO-CORRIDOR"),
+    "前序有边界路段租约已删除，无几何的自动生成路段租约保留");
 Check(database.Queryable<TrafficResourceLeaseEntity>().Any(item =>
     item.LeaseId == "LEASE-FINAL"), "终点资源继续保留");
 request = database.Queryable<TrafficRequestEntity>().Single();
-Check(request.ResourceIds == "[\"FINAL\"]" && request.State == "Held",
-    "路权查询只显示剩余终点资源");
+Check(request.ResourceIds == "[\"AUTO-CORRIDOR-SYNTHETIC\",\"FINAL\"]" && request.State == "Held",
+    "路权查询显示剩余的终点及未核验资源");
 var replay = await service.ReleaseAsync("TASK", "STEP", default);
 Check(replay.ReleasedCount == 0 &&
-    database.Queryable<TrafficResourceLeaseEntity>().Count() == 1,
+    database.Queryable<TrafficResourceLeaseEntity>().Count() == 2,
     "重复扫描幂等且不删除终点");
 
 // Reproduce hold-and-wait at a rolling boundary: our old CORRIDOR is clear,
