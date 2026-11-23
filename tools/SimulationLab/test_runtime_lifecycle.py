@@ -279,6 +279,14 @@ class LifecycleTests(unittest.TestCase):
             self.assertEqual(set(runtime.lab['simulationConfiguration']['chargingPriorityTest']['sites'][0]['allowedVehicleIds']),
                              {'AGV-01', 'AGV-02'})
 
+            non_charging = {key: value for key, value in configuration.items() if key != 'chargingPriorityTest'}
+            runtime = Runtime(runtime.root)
+            runtime._create_instance(non_charging)
+            self.assertNotIn('Charging', runtime.settings)
+            self.assertNotIn('RobokitCharging', runtime.settings)
+            self.assertTrue(all('OtherApiPort' not in robot for robot in runtime.settings['Agv']['Robots']))
+            self.assertFalse((runtime.root / 'data/communication-settings.json').exists())
+
     def test_stop_only_owned_children_and_preserves_original_files(self):
         with tempfile.TemporaryDirectory() as name, patch('controller.WORKSPACE', Path(name)):
             root = fixture(Path(name)); runtime = Runtime(root)

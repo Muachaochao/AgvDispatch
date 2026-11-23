@@ -1440,6 +1440,9 @@ class Runtime:
         """
         if not charging:
             settings.pop('Charging', None)
+            settings.pop('RobokitCharging', None)
+            for robot in robots:
+                robot.pop('OtherApiPort', None)
             return
         for robot in robots:
             robot['OtherApiPort'] = port()
