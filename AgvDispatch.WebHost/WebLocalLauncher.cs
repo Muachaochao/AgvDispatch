@@ -24,6 +24,7 @@ internal static class WebLocalLauncher
             if(index<0||index+1>=args.Length)throw new ArgumentException("Missing --bundle-root.");
             var root=System.IO.Path.GetFullPath(args[index+1]);
             var mode=WebLocalLaunchMode.Parse(WebDailyLaunchSettings.Apply(args));
+            var simulationArguments=WebDailyLaunchSettings.SimulationArguments(args);
             using var manifest=JsonDocument.Parse(File.ReadAllText(System.IO.Path.Combine(root,"release-manifest.json")));
             if(manifest.RootElement.GetProperty("schema").GetString()!="agv-commissioning-release")throw new InvalidDataException("Unsupported release manifest.");
             var release=manifest.RootElement.GetProperty("releaseId").GetString()!;
@@ -70,7 +71,7 @@ internal static class WebLocalLauncher
                     var service=Start(servicePath,serviceArgs);created.Add(service);
                     // Applying an engineering plan only persists validated task parameters.
                     // Dispatch, AGV commands and PLC writes remain independently gated.
-                    var web=Start(webPath,[$"--Web:Port={port}",$"--Web:PipeName={pipe}",$"--Web:EnableTaskSubmission={mode.IsBusiness}","--Web:EnableRecoveryActions=true","--Web:EnableTaskCancellation=true","--Web:EnableAlarmActions=true","--Web:EnableEngineeringRuntimeApply=true",$"--Web:ProjectStorePath={storePath}",$"--Web:StaticPath={System.IO.Path.Combine(root,"Web","wwwroot")}"]);
+                    var web=Start(webPath,[$"--Web:Port={port}",$"--Web:PipeName={pipe}",$"--Web:EnableTaskSubmission={mode.IsBusiness}","--Web:EnableRecoveryActions=true","--Web:EnableTaskCancellation=true","--Web:EnableAlarmActions=true","--Web:EnableEngineeringRuntimeApply=true",$"--Web:ProjectStorePath={storePath}",$"--Web:StaticPath={System.IO.Path.Combine(root,"Web","wwwroot")}",..simulationArguments]);
                     created.Add(web);session=new(release,Describe(service,servicePath),Describe(web,webPath),mode.NavigationVehicle,mode.PlcCycleVehicle,mode.PlcCycleStation,mode.BusinessVehicle,mode.ForkTest,mode.AutoNavigationDetour,string.Join(",",mode.FleetVehicles),mode.FleetMaxConcurrentTasks,mode.ProductionDispatch,mode.ProductionMaxConcurrentTasks);
                     var pending=statePath+".tmp";File.WriteAllText(pending,JsonSerializer.Serialize(session,new JsonSerializerOptions{WriteIndented=true}));File.Move(pending,statePath,true);
                 }
