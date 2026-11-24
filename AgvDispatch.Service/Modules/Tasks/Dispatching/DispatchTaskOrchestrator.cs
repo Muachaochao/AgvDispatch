@@ -872,6 +872,8 @@ public sealed partial class DispatchTaskOrchestrator(
             retained = heldBeforeAttempt;
             var unavailable = await trafficResources.GetUnavailableResourceIdsAsync(task.TaskId, cancellationToken);
             if (windows.Skip(nextIndex).Any(window => window.ResourceIds.Any(unavailable.Contains)) &&
+                (task.Stage != DispatchTaskStage.ReturningEmptyBox || handshake?.Enabled != true ||
+                 await handshake.HandoverVerifiedAsync(task.TaskId, command.StepId, cancellationToken)) &&
                 PlanRemainingTransport(task, payload, map, unavailable) is { } reroute &&
                 IsContinuationWorthTaking(task, payload, map, reroute, next.ResourceIds.Any(unavailable.Contains)))
             {

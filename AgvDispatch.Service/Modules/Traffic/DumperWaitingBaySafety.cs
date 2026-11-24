@@ -57,33 +57,22 @@ public static class DumperWaitingBaySafety
     }
 
     /// <summary>
-    /// Equipment admission keeps the dumper and the final approach edges atomic.
-    /// The remaining waiting/entry chain is reserved by the ordinary rolling route
-    /// windows, so a vehicle no longer waits for every upstream segment to be empty.
+    /// Equipment admission reserves the complete approach together with the dumper.
     /// </summary>
     public static IReadOnlyList<string>? EquipmentEntryResources(IRoutePlanner planner,
         string waitingSite, string dumpingSite, IReadOnlyCollection<string> equipmentResources,
-        MapDefinition? map = null)
+        string vehicleId, IReadOnlySet<string> unavailableResources, int hardMaximumEdges = 0)
     {
         ArgumentNullException.ThrowIfNull(planner);
         ArgumentException.ThrowIfNullOrWhiteSpace(waitingSite);
         ArgumentException.ThrowIfNullOrWhiteSpace(dumpingSite);
         ArgumentNullException.ThrowIfNull(equipmentResources);
-        var route = planner.Plan(waitingSite, dumpingSite, new HashSet<string>());
-        if (route is not { Nodes.Count: >= 2 }) return null;
-        // R19: the equipment admission no longer requires every resource along
-        // the whole waiting-to-dumper chain to be free. Keep the dumper plus the
-        // final two approach edges atomic; the earlier waiting/entry segments are
-        // reserved by the ordinary rolling route windows as the vehicle advances.
-        // Without a map, retain the previous full-route result for compatibility.
-        IReadOnlyCollection<string> approach = route.ResourceIds;
-        if (map is not null && route.EdgeIds.Count > 0)
-        {
-            var approachEdgeIds = route.EdgeIds.TakeLast(2).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            approach = map.Edges.Where(edge => approachEdgeIds.Contains(edge.Id))
-                .SelectMany(edge => edge.ResourceIds).ToArray();
-        }
-        return equipmentResources.Concat(approach)
+        var route = planner.PlanForVehicle(waitingSite, dumpingSite, unavailableResources, vehicleId);
+        if (route is not { Nodes.Count: >= 2 } && unavailableResources.Count > 0)
+            route = planner.PlanForVehicle(waitingSite, dumpingSite, new HashSet<string>(), vehicleId);
+        if (route is not { Nodes.Count: >= 2 } || route.EdgeIds.Count != route.Nodes.Count - 1) return null;
+        if (hardMaximumEdges > 0 && route.EdgeIds.Count > hardMaximumEdges) return null;
+        return equipmentResources.Concat(route.ResourceIds)
             .Where(id => !string.IsNullOrWhiteSpace(id))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Order(StringComparer.OrdinalIgnoreCase)

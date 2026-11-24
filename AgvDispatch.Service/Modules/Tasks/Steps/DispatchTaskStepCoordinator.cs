@@ -345,7 +345,8 @@ public sealed class DispatchTaskStepCoordinator(
             routePlanner.Plan(route.Item1, route.Item2, new HashSet<string>());
         if (plan is not { Nodes.Count: >= 2 } || !VehicleReadyAt(step.VehicleId, route.Item1, current)) return;
         var windows = adaptive?.Windows ?? TransportRouteWindows.Plan(
-            plan, current, options, agvOptions?.NavigationCommandMode);
+            plan, current, options, agvOptions?.NavigationCommandMode,
+            forceAtomic: IsDumperEntryHandshake(step.StepType));
         windows = TransportRouteWindows.NormalizeResources(windows, current);
         if (adaptive is null && step.StepType == DispatchTaskStepType.ReturnEmptyBox)
             windows = TransportRouteWindows.IncludeDumperExitClearance(windows, current.Definition, route.Item1);
@@ -355,6 +356,9 @@ public sealed class DispatchTaskStepCoordinator(
             "后续运输候选已核对，按原任务优先级等待首个安全路权窗口。")
             { MapId = current.MapId, MapVersionId = current.VersionId }, ct);
     }
+
+    private bool IsDumperEntryHandshake(DispatchTaskStepType type) =>
+        handshake?.Enabled == true && type == DispatchTaskStepType.EnterDumpingPosition;
 
     private StagedPickupRoute? PlanFollowup(DispatchTaskStepType type, ActiveMapRuntimeSnapshot? map,
         string source, string destination, IReadOnlySet<string> unavailable) =>
@@ -477,7 +481,8 @@ public sealed class DispatchTaskStepCoordinator(
                 ? [new AgvTransportRouteWindow(0, plan.Nodes[0], plan.Nodes[^1], plan.Nodes,
                     plan.EdgeIds, plan.ResourceIds, true)]
                 : TransportRouteWindows.Plan(
-                    plan, planningMap, options, agvOptions?.NavigationCommandMode);
+                    plan, planningMap, options, agvOptions?.NavigationCommandMode,
+                    forceAtomic: IsDumperEntryHandshake(step.StepType));
             if (planningMap is not null && step.StepType == DispatchTaskStepType.ReturnEmptyBox)
                 windows = TransportRouteWindows.IncludeDumperExitClearance(
                     windows, planningMap.Definition, dumpingSite);

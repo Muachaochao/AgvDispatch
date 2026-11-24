@@ -93,15 +93,39 @@ catalog.Replace(MapCorridorResources.AllResources(multiMap));
 var runtime=new ActiveMapRuntimeSnapshot("MULTI","V1",multiMap,DateTimeOffset.Now);
 var planner=new BayPlanner(multiMap);
 var stepOptions=new DispatchTaskStepOptions();
-var entryMap=multiMap with {Edges=multiMap.Edges.Select(edge=>edge.Id=="W2D"?
-    edge with{ResourceIds=["ENTRY-DUMP"]}:edge).ToArray(),
-    Resources=multiMap.Resources.Append(new("ENTRY-DUMP",TrafficResourceType.Intersection)).ToArray()};
+var entryMap=multiMap with {
+    Nodes=multiMap.Nodes.Concat([
+        new("B",6,3,MapNodeType.Intersection,true,["APPROACH-B"],"B"),
+        new("ENTRY",7,3,MapNodeType.Intersection,true,[],"ENTRY")]).ToArray(),
+    Edges=multiMap.Edges.Where(edge=>edge.Id!="W2D").Concat([
+        new("W2-B","WAIT2","B",1,1,false,true,[]),
+        new("B-ENTRY","B","ENTRY",1,1,false,true,[]),
+        new("ENTRY-D","ENTRY","DUMP",1,1,false,true,["ENTRY-DUMP"])]).ToArray(),
+    Resources=multiMap.Resources.Concat([
+        new("APPROACH-B",TrafficResourceType.Intersection),new("ENTRY-DUMP",TrafficResourceType.Intersection)]).ToArray()};
 var entryPlanner=new BayPlanner(entryMap);
-var equipmentResources=DumperWaitingBaySafety.EquipmentEntryResources(entryPlanner,"WAIT2","DUMP",["DUMPER"],entryMap);
-Check(equipmentResources is not null&&equipmentResources.Contains("DUMPER")&&equipmentResources.Contains("ENTRY-DUMP"),
-    "倒料设备申请覆盖设备资源和最后入口段，不再要求整条候车到倒料链同时空闲");
-Check(DumperWaitingBaySafety.EquipmentEntryResources(entryPlanner,"MISSING","DUMP",["DUMPER"],entryMap) is null,
+var blockedApproach=new HashSet<string>{"APPROACH-B"};
+var equipmentResources=DumperWaitingBaySafety.EquipmentEntryResources(entryPlanner,"WAIT2","DUMP",["DUMPER"],"ENTRY-CAR",blockedApproach);
+Check(equipmentResources is not null&&new[]{"DUMPER","ENTRY-DUMP","APPROACH-B"}.All(equipmentResources.Contains),
+    "倒料准入申请覆盖设备和候车位到倒料位全程，包含最后两段之外的共享路口");
+Check(DumperWaitingBaySafety.EquipmentEntryResources(entryPlanner,"MISSING","DUMP",["DUMPER"],"ENTRY-CAR",blockedApproach) is null,
     "入口路径不可达时不取得单独的设备资源");
+Check(DumperWaitingBaySafety.EquipmentEntryResources(entryPlanner,"WAIT2","DUMP",["DUMPER"],"ENTRY-CAR",blockedApproach,2) is null,
+    "不能发出的超限入口路径不取得倒料设备");
+var entryGraph=new ActiveMapRuntimeSnapshot("ENTRY-MAP","V1",entryMap,DateTimeOffset.Now);
+var approach=entryPlanner.Plan("WAIT2","DUMP",new HashSet<string>())!;
+Check(TransportRouteWindows.Plan(approach,entryGraph,new(){RollingWindowMinimumEdges=1}).Count>1&&
+    TransportRouteWindows.Plan(approach,entryGraph,new(){RollingWindowMinimumEdges=1},forceAtomic:true)
+        .Single().ResourceIds.Contains("APPROACH-B"),
+    "PLC握手后的进场只发送一个完整窗口，路口资源不因普通切窗提前交回");
+catalog.Replace(MapCorridorResources.AllResources(entryMap));
+Check((await manager.TryAcquireAsync("B-HOLDER","B-HOLDER","B-CAR",["APPROACH-B"],default)).Acquired,
+    "另一台车持有候车位前方的共享路口");
+Check(!(await manager.TryAcquireAsync("ENTRY-STEP","ENTRY-TASK","ENTRY-CAR",equipmentResources!,default)).Acquired&&
+    !db.Queryable<TrafficResourceLeaseEntity>().Any(lease=>lease.TaskId=="ENTRY-TASK"),
+    "共享路口被占时不能部分授予倒料设备或末端入口");
+await manager.ReleaseStepAsync("B-HOLDER",default);
+catalog.Replace(MapCorridorResources.AllResources(multiMap));
 Check(DumperWaitingBaySafety.IsPhysicalWaitingSite(multiMap,"WAIT2","DUMP")&&
     !DumperWaitingBaySafety.IsPhysicalWaitingSite(multiMap,"DUMP","DUMP"),
     "持久绑定的地图候车位必须是独立容量1的启用停靠点，倒料点不能冒充候车位");

@@ -27,7 +27,7 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
     DispatchTaskCreationOptions creation,DispatchOrchestratorOptions dispatch,HandshakeExecutionOptions options,
     IAgvStateCache vehicles,IActiveMapRuntime map,IAgvGateway? agvGateway=null,IRobokitTaskMapPreflight? mapPreflight=null,
     DispatchTrafficReservationService? trafficLayer=null, DispatchOptimizationService? optimization=null,
-    IRoutePlanner? routePlanner=null)
+    IRoutePlanner? routePlanner=null, DispatchTaskStepOptions? stepOptions=null)
 {
     private readonly DispatchTrafficReservationService _trafficLayer = trafficLayer ?? new(traffic, optimization, tasks, optimization);
     public bool Enabled => options.Enabled;
@@ -66,8 +66,10 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
         if (routePlanner is not null)
         {
             admissionResources = DumperWaitingBaySafety.EquipmentEntryResources(
-                routePlanner, waiting, dispatch.DumperDumpingSite, admissionResources, current.Definition)
-                ?? throw new InvalidOperationException("候车位到倒料位的完整入口路径不可用，不取得单独的设备资源。");
+                routePlanner, waiting, dispatch.DumperDumpingSite, admissionResources, step.VehicleId,
+                await traffic.GetUnavailableResourceIdsAsync(step.TaskId, ct),
+                stepOptions?.RollingWindowHardMaximumEdges ?? 0)
+                ?? throw new InvalidOperationException("候车位到倒料位没有可核定的完整入口路径，保持候车且不启动本轮PLC握手。");
         }
         if (!await store.OwnsEquipmentAsync(step.TaskId, creation.DumperStationId, ct))
         {
@@ -435,7 +437,12 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
     private async Task<bool> HandoverVerifiedAsync(string taskId,CancellationToken ct)
     {
         var returned=(await taskReader.GetStepsAsync(taskId,ct)).FirstOrDefault(s=>s.StepType==DispatchTaskStepType.ReturnEmptyBox);
-        var proof=returned==null?null:await store.GetAsync(taskId,returned.StepId,ct);
+        return returned is not null && await HandoverVerifiedAsync(taskId, returned.StepId, ct);
+    }
+
+    internal async Task<bool> HandoverVerifiedAsync(string taskId, string returnStepId, CancellationToken ct)
+    {
+        var proof=await store.GetAsync(taskId,returnStepId,ct);
         return proof?.ContractVersion==HandshakeExecutionOptions.Version&&proof.Phase=="ExitHandoverComplete"&&proof.PendingSignal==null;
     }
 

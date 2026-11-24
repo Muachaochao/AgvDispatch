@@ -24,10 +24,11 @@ public static class TransportRouteWindows
     }
 
     public static IReadOnlyList<AgvTransportRouteWindow> Plan(RoutePlan route, ActiveMapRuntimeSnapshot map,
-        DispatchTaskStepOptions options, string? navigationCommandMode = null, Func<MapNode, bool>? canStageAt = null)
+        DispatchTaskStepOptions options, string? navigationCommandMode = null, Func<MapNode, bool>? canStageAt = null,
+        bool forceAtomic = false)
     {
         ArgumentNullException.ThrowIfNull(map);
-        return PlanCore(route, map.Graph.FindRouteNode, map.Graph.Edges, options, navigationCommandMode, canStageAt);
+        return PlanCore(route, map.Graph.FindRouteNode, map.Graph.Edges, options, navigationCommandMode, canStageAt, forceAtomic);
     }
 
     /// <summary>
@@ -77,7 +78,7 @@ public static class TransportRouteWindows
 
     private static IReadOnlyList<AgvTransportRouteWindow> PlanCore(RoutePlan route, Func<string, MapNode?> findNode,
         IReadOnlyDictionary<string, MapEdge> edges, DispatchTaskStepOptions options, string? navigationCommandMode,
-        Func<MapNode, bool>? canStageAt)
+        Func<MapNode, bool>? canStageAt, bool forceAtomic = false)
     {
         ArgumentNullException.ThrowIfNull(route);
         ArgumentNullException.ThrowIfNull(options);
@@ -88,7 +89,7 @@ public static class TransportRouteWindows
         // contract, so only SpecifiedPath/3066 may use rolling route windows.
         var modeSupportsWindows = navigationCommandMode is null ||
             navigationCommandMode.Equals("SpecifiedPath", StringComparison.OrdinalIgnoreCase);
-        if (!options.RollingReservationEnabled || !modeSupportsWindows || route.Nodes.Count < 3)
+        if (forceAtomic || !options.RollingReservationEnabled || !modeSupportsWindows || route.Nodes.Count < 3)
             return EnforceHardMaximum(
                 [Window(route, nodes, edges, 0, route.Nodes.Count - 1, true)],
                 route, options.RollingWindowHardMaximumEdges);
