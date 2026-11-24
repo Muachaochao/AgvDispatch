@@ -36,6 +36,9 @@ public sealed record MapNode(
     // corridor. Null preserves existing, already commissioned map behaviour.
     [System.Text.Json.Serialization.JsonIgnore(Condition=System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public bool? AllowTrafficStop { get; init; }
+    // False excludes this node from dumper staging without affecting route windows.
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public bool? AllowDumperWaiting { get; init; }
 }
 
 public enum MapEdgeGeometryKind

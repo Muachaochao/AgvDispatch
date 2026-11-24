@@ -209,6 +209,13 @@ Check(partial is not null && partial.Windows.Count == 2 &&
       partial.Windows[0].Destination == "BAY" && !partial.Windows[0].ResourceIds.Contains("DOWNSTREAM") &&
       partial.Windows[1].ResourceIds.Contains("DOWNSTREAM") && partial.DeferredSeconds > 0,
     "后段有租约时，只申请到合格停点的首窗，保留后窗并计入等待成本。");
+var trafficOnlyStaging = Activate(stagingMap with
+{
+    Nodes = stagingNodes.Select(node => node.Id == "BAY" ? node with { AllowDumperWaiting = false } : node).ToArray()
+});
+Check(staging.SafeHoldingSites(trafficOnlyStaging, ["V"]).Count == 0 &&
+      staging.TryStage(stagingRoute, trafficOnlyStaging, blockedDownstream, ["V"])?.Windows[0].Destination == "BAY",
+    "禁止倒料等待的节点仍可作为交通窗口终点。");
 
 var junctionNodes = new[]
 {

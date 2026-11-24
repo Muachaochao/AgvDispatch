@@ -397,6 +397,22 @@ class SimulationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, '布尔值'):
                 runtime._validate_configuration(payload)
 
+    def test_traffic_only_node_cannot_be_configured_for_dumper_waiting(self):
+        runtime = object.__new__(Runtime)
+        payload = self.custom_payload()
+        stop = next(node for node in payload['mapDefinition']['nodes'] if node['id'] == 'WAIT')
+        stop['allowDumperWaiting'] = 'false'
+        with self.assertRaisesRegex(ValueError, 'allowDumperWaiting.*布尔值'):
+            runtime._validate_configuration(payload)
+        stop.update(allowTrafficStop=True, allowDumperWaiting=False)
+        with self.assertRaisesRegex(ValueError, '禁止用于倒料等待'):
+            runtime._validate_configuration(payload)
+        payload['dumper']['waitingSite'] = 'PARK1'
+        normalized = runtime._validate_configuration(payload)
+        actual = next(node for node in normalized['mapDefinition']['nodes'] if node['id'] == 'WAIT')
+        self.assertIs(actual['allowTrafficStop'], True)
+        self.assertIs(actual['allowDumperWaiting'], False)
+
     def test_legacy_approach_nodes_cannot_become_route_windows(self):
         runtime = object.__new__(Runtime)
         payload = self.custom_payload()

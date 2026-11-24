@@ -966,10 +966,11 @@ class Runtime:
         nodes = {}
         vendor_ids = set()
         for node in navigation['nodes']:
-            if node.get('allowTrafficStop') is not None and type(node['allowTrafficStop']) is not bool:
-                raise ValueError('路口是否允许交通停车必须为布尔值，不能用文字或数字替代。')
             if not isinstance(node, dict) or any(not isinstance(node.get(key), str) or not node[key].strip() for key in ('id', 'agvSiteId')):
                 raise ValueError('地图节点缺少id或agvSiteId。')
+            for flag in ('allowTrafficStop', 'allowDumperWaiting'):
+                if node.get(flag) is not None and type(node[flag]) is not bool:
+                    raise ValueError(f'地图节点 {flag} 必须为布尔值，不能用文字或数字替代。')
             if node['id'] in nodes or node['agvSiteId'] in vendor_ids:
                 raise ValueError('地图节点id或agvSiteId重复。')
             if not self._finite_number(node.get('x')) or not self._finite_number(node.get('y')):
@@ -1036,6 +1037,8 @@ class Runtime:
         waiting_sites = [node(site, '等待位') for site in waiting_sites]
         if waiting_sites[0] != waiting or len(set(waiting_sites)) != len(waiting_sites) or dumping in waiting_sites:
             raise ValueError('等待位不能重复或与倒料点相同，首项须为主等待位。')
+        if any(nodes[site].get('allowDumperWaiting') is False for site in waiting_sites):
+            raise ValueError('配置的倒料候车位禁止用于倒料等待，请选择其他候车位。')
         if typed_topology and nodes[dumping].get('type') != 'Station':
             raise ValueError('倒料点必须是Station类型节点。')
         resource_id = dumper.get('resourceId')

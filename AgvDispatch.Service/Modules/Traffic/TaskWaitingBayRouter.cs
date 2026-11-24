@@ -114,7 +114,8 @@ public static class TaskWaitingBayRouter
         ActiveMapRuntimeSnapshot map, GlobalPickupRoutePlanner? rolling, IReadOnlyCollection<string>? vehicleIds)
     {
         var configured = options.GetDumperWaitingSites()
-            .Where(site => !site.Equals(options.DumperDumpingSite, StringComparison.OrdinalIgnoreCase));
+            .Where(site => !site.Equals(options.DumperDumpingSite, StringComparison.OrdinalIgnoreCase) &&
+                           map.Graph.FindRouteNode(site)?.AllowDumperWaiting != false);
         var mapDeclared = rolling?.SafeHoldingSites(map, vehicleIds ?? []) ?? [];
         var pickupNode = map.Graph.FindRouteNode(pickup);
         var nearestMapSites = pickupNode is null

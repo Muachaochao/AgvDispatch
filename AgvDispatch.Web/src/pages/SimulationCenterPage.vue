@@ -275,7 +275,14 @@ function groupMapOptions<T>(
 const siteOptions = computed(() => groupMapOptions(mapNodes.value, siteTypes,
   node => node.type === 'WaitingPoint' && node.resourceIds?.includes(`SIM-STOP-${node.id}`) ? 'TrafficStop' : node.type ?? 'Other',
   node => ({ value: node.id, label: node.agvSiteId && node.agvSiteId !== node.id ? `${node.agvSiteId} · ${node.id}` : node.id })));
-const extraWaitingOptions = computed(() => siteOptions.value.map(group => ({
+const dumperWaitingNodes = computed(() => mapNodes.value.filter(node => node.allowDumperWaiting !== false));
+const dumperWaitingOptions = computed(() => {
+  const allowed = new Set(dumperWaitingNodes.value.map(node => node.id));
+  return siteOptions.value.map(group => ({
+    ...group, options: group.options.filter(option => allowed.has(option.value)),
+  })).filter(group => group.options.length);
+});
+const extraWaitingOptions = computed(() => dumperWaitingOptions.value.map(group => ({
   ...group, options: group.options.filter(option => option.value !== waitingSite.value && option.value !== dumpingSite.value),
 })).filter(group => group.options.length));
 const chargingPointOptions = computed(() => mapNodes.value.filter(node => node.type === 'ChargingPoint')
@@ -1010,6 +1017,9 @@ const configurationProblems = computed(() => {
   if (!Number.isInteger(downstreamAdmissionCapacity.value) || downstreamAdmissionCapacity.value < 0 || downstreamAdmissionCapacity.value > 8)
     problems.push('取箱到收尾的并行上限须为 0 至 8 的整数。');
   if (waitingSite.value && waitingSite.value === dumpingSite.value) problems.push('主等待位与倒料位不能相同。');
+  if ([waitingSite.value, ...additionalWaitingSites.value].some(site =>
+    mapNodes.value.some(node => node.id === site && node.allowDumperWaiting === false)))
+    problems.push('配置的倒料候车位禁止用于倒料等待，请选择其他候车位。');
   if (additionalWaitingSites.value.some(site => site === waitingSite.value || site === dumpingSite.value || !mapNodes.value.some(node => node.id === site)))
     problems.push('其他倒料候车位须有效，且与主要候车位、倒料停车点分开。');
   if (customVehicles.value.length < 1 || customVehicles.value.length > 8) problems.push('车辆数量须为1至8辆。');
@@ -1087,8 +1097,8 @@ function stamp(value?: string | number): string {
   const date = new Date(typeof value === 'number' ? value * 1000 : value);
   return Number.isFinite(date.getTime()) ? date.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) : '尚无记录';
 }
-function defaultSite(names: string[], fallbackIndex: number): string {
-  return mapNodes.value.find(node => names.some(name => node.id.includes(name)))?.id ?? mapNodes.value[fallbackIndex]?.id ?? '';
+function defaultSite(names: string[], fallbackIndex: number, nodes = mapNodes.value): string {
+  return nodes.find(node => names.some(name => node.id.includes(name)))?.id ?? nodes[fallbackIndex]?.id ?? '';
 }
 function resetVehicleOrigins() {
   const pickups = stationDrafts.value.map(station => station.pickupSite);
@@ -1131,7 +1141,7 @@ async function loadMapFile(event: Event) {
       { stationId: 'CNC-002', pickupSite: defaultSite(['取货B', 'LM102', 'CNC-002'], 1), signalSource: 'verified' }
     ];
     dumpingSite.value = defaultSite(['倒料', 'LM108'], 2);
-    waitingSite.value = defaultSite(['等待', 'LM107'], 3);
+    waitingSite.value = defaultSite(['等待', 'LM107'], 3, dumperWaitingNodes.value);
     additionalWaitingSites.value = [];
     inspectionSite.value = defaultSite(['检修', '停车'], 4);
     dumperResourceId.value = mapResources.value.find(resource => resource.id.includes('倒料'))?.id ?? mapResources.value[0]?.id ?? '';
@@ -2245,7 +2255,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
               <button :disabled="stationDrafts.length >= MAX_SIMULATION_STATIONS" @click="addStation">增加隔离仿真工位</button><small>本页最多配置 {{ MAX_SIMULATION_STATIONS }} 个工位；可按当前 CAD 仿真图和点表一次自动映射，再逐项修改。现场未确认的点位会保留为“隔离合成点位”。</small>
             </div>
             <label>主要倒料候车位
-              <ElSelectV2 v-model="waitingSite" :options="siteOptions" :disabled="configurationLocked" :teleported="false"
+              <ElSelectV2 v-model="waitingSite" :options="dumperWaitingOptions" :disabled="configurationLocked" :teleported="false"
                 class="topology-select" filterable aria-label="主要倒料候车位" placeholder="搜索候车位编号"
                 @change="additionalWaitingSites = additionalWaitingSites.filter(site => site !== waitingSite); resetVehicleOrigins()" />
               <small>倒料机忙时，载着满箱的车可以先停在这里等。</small>

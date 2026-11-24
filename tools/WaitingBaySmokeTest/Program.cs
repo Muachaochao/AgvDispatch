@@ -15,6 +15,13 @@ var resources=new TrafficResourceDefinition[]{new("BAY",TrafficResourceType.Stat
 var map=new MapDefinition("Synthetic","test","local","m",nodes,
     [new("E1","P1","WAIT",5,1,true,true,[]),new("E2","P2","WAIT",Math.Sqrt(34),1,true,true,[]),new("E3","WAIT","DUMP",5,1,false,true,["DUMPER"])],resources);
 Check(DumperWaitingBaySafety.GetError(map,options,true)==null,"单等待节点绑定独立容量1资源允许多车配置");
+var trafficOnlyMap = map with
+{
+    Nodes = map.Nodes.Select(node => node.Id == "WAIT" ? node with { AllowDumperWaiting = false } : node).ToArray()
+};
+Check(!DumperWaitingBaySafety.IsPhysicalWaitingSite(trafficOnlyMap, "LM-WAIT", "LM-DUMP") &&
+    DumperWaitingBaySafety.GetError(trafficOnlyMap, options, true)?.Contains("禁止用于倒料等待") == true,
+    "交通临停位不能手工配置为倒料候车位，厂家站点别名也受限制");
 Check(DumperWaitingBaySafety.GetError(map,options,false)!=null,"多车缺少持续保持路权契约时拒绝开始新任务");
 Check(DumperWaitingBaySafety.GetError(map with{Nodes=nodes.Select(n=>n.Id=="WAIT"?n with{ResourceIds=[]}:n).ToArray()},options,true)!=null,"未绑定等待资源不能以地图可达代替容量保护");
 Check(DumperWaitingBaySafety.GetError(map with{Resources=resources.Select(r=>r.Id=="BAY"?r with{Capacity=2}:r).ToArray()},options,true)!=null,"单等待点容量2不能当作两车空间");

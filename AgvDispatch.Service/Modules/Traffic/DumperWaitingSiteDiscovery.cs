@@ -24,7 +24,7 @@ public static class DumperWaitingSiteDiscovery
                 node.Enabled &&
                 node.Type == MapNodeType.WaitingPoint &&
                 node.ResourceIds.Contains(resource.Id, StringComparer.OrdinalIgnoreCase)).ToArray();
-            if (nodes.Length != 1) continue;
+            if (nodes.Length != 1 || nodes[0].AllowDumperWaiting == false) continue;
             var site = string.IsNullOrWhiteSpace(nodes[0].AgvSiteId)
                 ? nodes[0].Id
                 : nodes[0].AgvSiteId!;

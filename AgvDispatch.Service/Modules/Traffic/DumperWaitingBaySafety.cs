@@ -8,11 +8,14 @@ public static class DumperWaitingBaySafety
 {
     public static string? GetError(MapDefinition? map, DispatchOrchestratorOptions dispatch, bool holdsRouteLeases)
     {
-        if (dispatch.MaxConcurrentTasks <= 1 && dispatch.GetDumperWaitingSites().Count <= 1) return null;
+        var sites = dispatch.GetDumperWaitingSites();
+        if (map is not null && sites.Append(dispatch.GetDumperWaitingSite())
+                .Any(site => Resolve(map, site)?.AllowDumperWaiting == false))
+            return "配置的倒料候车位禁止用于倒料等待，请选择其他候车位。";
+        if (dispatch.MaxConcurrentTasks <= 1 && sites.Count <= 1) return null;
         if (!holdsRouteLeases) return "多车候车位保护要求启用当前28阶段契约，持续保持路径路权至任务闭环。";
         if (map is null) return "多车候车位保护缺少当前运行地图。";
         var dumping = Resolve(map, dispatch.DumperDumpingSite);
-        var sites=dispatch.GetDumperWaitingSites();
         var waiting=sites.Select(site=>Resolve(map,site)).ToArray();
         if(sites.Count==0 || dumping is null || waiting.Any(n=>n is null || n.Id.Equals(dumping.Id,StringComparison.OrdinalIgnoreCase)) ||
             waiting.Select(n=>n!.Id).Distinct(StringComparer.OrdinalIgnoreCase).Count()!=waiting.Length)
@@ -46,7 +49,7 @@ public static class DumperWaitingBaySafety
     {
         var node = Resolve(map, site);
         var dumping = Resolve(map, dumpingSite);
-        if (node is not { Enabled: true, Type: MapNodeType.WaitingPoint, AllowTrafficStop: not false } ||
+        if (node is not { Enabled: true, Type: MapNodeType.WaitingPoint, AllowTrafficStop: not false, AllowDumperWaiting: not false } ||
             dumping is null || node.Id.Equals(dumping.Id, StringComparison.OrdinalIgnoreCase))
             return false;
         return map.Resources.Any(resource => resource.Capacity == 1 &&
