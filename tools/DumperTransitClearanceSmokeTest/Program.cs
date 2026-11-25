@@ -26,4 +26,21 @@ var disconnected = map with { Edges = map.Edges.Where(e => e.Id is "SN" or "NT")
 Check(disconnected.ToGraph().FindShortestTransportRoute("S", "T", unavailableTraversals:
     DumperTransitClearance.BlockedTraversals(disconnected, "S", "T", "DUMP", 1.35)) is null,
     "没有足够净距的替代路线时保持等待，不缩小车体或穿越");
+var guarded = disconnected with
+{
+    Nodes = disconnected.Nodes.Select(n => n.Id == "T" ? n with { Type = MapNodeType.ChargingPoint }
+        : n.Id == "DUMP" ? n with { ResourceIds = ["DUMP-ZONE"] } : n).ToArray(),
+    Edges = disconnected.Edges.Select(e => e with { ResourceIds = ["DUMP-ZONE"] }).ToArray(),
+    Resources = [new("DUMP-ZONE", TrafficResourceType.Station, 1,
+        [new(-1, -1), new(1, -1), new(1, 1), new(-1, 1)])],
+};
+var guardedEdges = new HashSet<string> { "SN", "NT" };
+var guardedBlocked = DumperTransitClearance.BlockedTraversals(guarded, "S", "T", "DUMP", 1.35, guardedEdges, "DUMP-ZONE");
+Check(guarded.ToGraph().FindShortestTransportRoute("S", "T", unavailableTraversals: guardedBlocked)?
+    .ResourceIds.Contains("DUMP-ZONE") == true, "配置明确且绑定倒料独占路权时允许充电进桩");
+Check(guarded.ToGraph().FindShortestTransportRoute("S", "T", new HashSet<string> { "DUMP-ZONE" },
+    unavailableTraversals: guardedBlocked) is null, "倒料占用时仍拒绝充电进桩");
+Check(DumperTransitClearance.BlockedTraversals(guarded, "T", "S", "DUMP", 1.35, guardedEdges, "DUMP-ZONE").Count == 4
+    && DumperTransitClearance.BlockedTraversals(guarded, "S", "T", "DUMP", 1.35, guardedEdges, "WRONG").Count == 4,
+    "非进桩方向或缺少正确共享资源时保留原限制");
 Console.WriteLine($"PASS {checks} dumper-clearance checks.");
