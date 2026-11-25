@@ -73,3 +73,23 @@ class Charge02SharedAccessTests(unittest.TestCase):
         self.definition["resources"][-1]["boundary"] = rectangle(1.14, -1.2, 3.9, 1.1)
         with self.assertRaisesRegex(ValueError, "停稳"):
             variants.charge02_shared_access(self.definition, self.scheme)
+
+    def test_vertical_inlet_checks_geometry_and_keeps_diagonal_exit(self):
+        self.definition["nodes"].append(dict(id="CAD2-J0652", x=1.64, y=2, resourceIds=[], allowTrafficStop=False))
+        self.definition["nodes"][1]["allowTrafficStop"] = False
+        self.definition["edges"][0]["resourceIds"] = []
+        self.definition["edges"].append(dict(id="CAD2-E01834", bidirectional=True, resourceIds=[],
+                                             **{"from": "CAD2-J0651", "to": "CAD2-J0652"}))
+        candidate, audit = variants.charge02_shared_access(self.definition, self.scheme, vertical_inlet=True)
+        definition = candidate["configuration"]["mapDefinition"]
+        inlet, diagonal, trunk = definition["edges"]
+        self.assertTrue(inlet["enabled"])
+        self.assertFalse(inlet.get("bidirectional", False))
+        self.assertTrue(diagonal["bidirectional"])
+        self.assertIn("DUMPER-001", inlet["resourceIds"])
+        self.assertIn("DUMPER-001", trunk["resourceIds"])
+        self.assertAlmostEqual(audit["verticalInlet"]["distanceFromDumperMeters"], .9)
+
+        definition["areaAnnotations"][0]["boundary"] = rectangle(1.7, .65, 2, 1.2)
+        with self.assertRaisesRegex(ValueError, "固定平台"):
+            variants.validate_charge02_vertical_inlet(definition, candidate["configuration"])
