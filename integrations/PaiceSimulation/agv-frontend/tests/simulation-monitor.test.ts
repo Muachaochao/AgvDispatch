@@ -1,6 +1,20 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { callPresentation, resourceLocations, resourceRows, vehicleTaskKind, routeTarget, trafficWaitRows, runTiming } from '../src/integration/simulation-monitor.ts'
+import * as monitor from '../src/integration/simulation-monitor.ts'
+
+test('shows formal charging evidence after docking and preserves business during a pending charge', () => {
+  const queue = { vehicleId: 'AGV-03', phase: 'WaitingForBusiness', message: 'BAY-02 暂无可用路线' };
+  const charging = { vehicleId: 'AGV-02', phase: 'Charging', site: { id: 'BAY-01' }, battery: { current: 16.5, charging: true } };
+  const sessions = [queue, charging, { vehicleId: 'AGV-02', phase: 'Completed' }];
+  assert.equal(monitor.chargingPresentation(sessions, 'AGV-02', false)?.label, '充电中');
+  assert.equal(monitor.chargingPresentation(sessions, 'AGV-02', false)?.current, 16.5);
+  assert.equal(monitor.chargingPresentation(sessions, 'AGV-03', false)?.label, '排队充电');
+  assert.equal(monitor.chargingPresentation(sessions, 'AGV-03', true)?.label, '业务完成后充电');
+  assert.equal(monitor.chargingPresentation(sessions, 'AGV-03', true)?.pending, true);
+  assert.equal(monitor.chargingPresentation([{ ...charging, phase: 'AwaitingStop', shutdownVerified: true }], 'AGV-02', false)?.label, '等待离桩');
+  assert.equal(monitor.chargingPresentation([{ ...charging, phase: 'Completed' }], 'AGV-02', false), undefined);
+})
 
 test('keeps repeated calls separate and explains the previous unfinished cycle only once due', () => {
   const first = { planIndex: 0, stationId: 'CNC-111', atSeconds: 12, status: 'active', taskId: 'A', vehicleId: 'AGV-01' }
