@@ -115,6 +115,36 @@ class SimulationTests(unittest.TestCase):
         self.assertEqual(value['selectedSchemeId'], 'scheme-1')
         self.assertEqual(value['history'], [dict(id='report-1')])
 
+    def test_live_charging_reads_only_owned_backend_and_omits_completed_sessions(self):
+        runtime = Runtime.__new__(Runtime)
+        runtime.lock = threading.RLock()
+        runtime.root = Path('web-single-vehicle-sim-example')
+        runtime.phase = 'running'
+        runtime.web = {'Port': 58327}
+        runtime.lab = {'simulationConfiguration': {'chargingPriorityTest': {'enabled': True}}}
+        snapshot = {
+            'sessions': [
+                {'vehicleId': 'AGV-02', 'phase': 'Charging', 'site': {'id': 'BAY-01', 'chargerAddress': 'private'},
+                 'battery': {'current': 16.5, 'charging': True}, 'route': {'resourceIds': ['road']}},
+                {'vehicleId': 'AGV-03', 'phase': 'Completed'},
+            ],
+        }
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.read.return_value = json.dumps(snapshot).encode()
+        with patch('controller.urlopen', return_value=response) as request, patch('controller.threading.Thread') as worker:
+            self.assertIsNone(runtime.live_charging_sessions())
+            worker.call_args.kwargs['target'](*worker.call_args.kwargs['args'])
+            self.assertEqual(runtime.live_charging_sessions(), [
+                {'vehicleId': 'AGV-02', 'phase': 'Charging', 'site': {'id': 'BAY-01'},
+                 'battery': {'current': 16.5, 'charging': True}},
+            ])
+            request.assert_called_once_with('http://127.0.0.1:58327/api/charging', timeout=2)
+            self.assertEqual(worker.call_count, 1)
+            runtime.phase = 'stopped'
+            self.assertIsNone(runtime.live_charging_sessions())
+
     def test_run_scenario_does_not_recheck_freshness_through_full_status(self):
         runtime = Runtime.__new__(Runtime)
         runtime.lock = threading.RLock()
