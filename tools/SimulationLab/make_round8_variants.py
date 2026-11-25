@@ -33,6 +33,7 @@ import argparse
 import copy
 import heapq
 import json
+import math
 from collections import defaultdict
 from pathlib import Path
 
@@ -329,6 +330,119 @@ def add_charge02_exit(map_definition: dict) -> bool:
     return True
 
 
+def boundary_box(boundary, name):
+    if not isinstance(boundary, list) or len(boundary) < 3:
+        raise ValueError(f"{name}缺少地图边界。")
+    if any(not isinstance(point, dict) for point in boundary):
+        raise ValueError(f"{name}边界坐标无效。")
+    x = [point.get("x") for point in boundary]
+    y = [point.get("y") for point in boundary]
+    if not all(type(value) in (float, int) and math.isfinite(value) for value in x + y):
+        raise ValueError(f"{name}边界坐标无效。")
+    if min(x) == max(x) or min(y) == max(y):
+        raise ValueError(f"{name}边界没有面积。")
+    return ((min(x), max(x)), (min(y), max(y)))
+
+
+def meets_expanded_box(start, end, box, radius):
+    """Conservative overlap of a straight edge's swept circle and a polygon AABB."""
+    entry, leave = 0.0, 1.0
+    for axis, (low, high) in zip(("x", "y"), box):
+        origin = start[axis]
+        delta = end[axis] - origin
+        if delta == 0:
+            if not low - radius <= origin <= high + radius:
+                return False
+            continue
+        first, last = sorted(((low - radius - origin) / delta, (high + radius - origin) / delta))
+        entry, leave = max(entry, first), min(leave, last)
+        if entry > leave:
+            return False
+    return True
+
+
+def segment_distance(point, start, end):
+    dx, dy = end["x"] - start["x"], end["y"] - start["y"]
+    px, py = point["x"] - start["x"], point["y"] - start["y"]
+    fraction = max(0., min(1., (px * dx + py * dy) / (dx * dx + dy * dy)))
+    return math.hypot(px - fraction * dx, py - fraction * dy)
+
+
+def charge02_shared_access(source_map, source_scheme):
+    """Derive a B07 simulation candidate with checked, guarded diagonal access."""
+    definition = copy.deepcopy(source_map)
+    scheme = copy.deepcopy(source_scheme)
+    configuration = scheme["configuration"]
+    nodes = {node["id"]: node for node in definition["nodes"] if node.get("enabled", True)}
+    resources = {row["id"]: row for row in definition["resources"]}
+    platform = next((area for area in definition.get("areaAnnotations", [])
+                     if area["id"] == "CAD-TERMINAL-PLATFORM"), {})
+    dumper = configuration["dumper"]
+    equipment = resources.get(dumper["resourceId"], {})
+    if (definition.get("unit") != "m" or equipment.get("capacity") != 1
+            or dumper["resourceId"] not in nodes.get(dumper["dumpingSite"], {}).get("resourceIds", [])):
+        raise ValueError("需要米制地图和绑定到倒料位的独占倒料资源。")
+    sites = configuration.get("chargingPriorityTest", {})
+    site_ids = {site["chargingSiteId"]: site["resourceId"] for site in sites.get("sites", [])}
+    if (not sites.get("enabled") or set(site_ids) != {"CHARGE-01", "CHARGE-02"}
+            or len(set(site_ids.values())) != 2
+            or any(resources.get(resource, {}).get("capacity") != 1
+                   or resources.get(resource, {}).get("type") != "ChargingBay"
+                   or resource not in nodes.get(site, {}).get("resourceIds", [])
+                   for site, resource in site_ids.items())):
+        raise ValueError("需要两个已启用且分别绑定独占资源的充电位。")
+    radius = max(max(vehicle.get("radiusMeters", 0),
+                     math.hypot(vehicle.get("lengthMeters", 0), vehicle.get("widthMeters", 0)) / 2)
+                 for vehicle in configuration["vehicles"])
+    if not math.isfinite(radius) or radius <= 0:
+        raise ValueError("车辆包络半径无效。")
+
+    start, dock, other = (nodes[key] for key in ("CAD2-J0631", "CHARGE-02", "CHARGE-01"))
+    diagonal = next((edge for edge in definition["edges"] if edge["id"] == CHARGE_02_EXIT_EDGE), None)
+    if (diagonal is None or not diagonal.get("enabled", True)
+            or (diagonal["from"], diagonal["to"]) != (dock["id"], start["id"])
+            or diagonal.get("geometryKind", "Line") != "Line"):
+        raise ValueError("未找到 B07 二号桩的有效直线斜接驳。")
+    if (start["x"], start["y"]) == (dock["x"], dock["y"]):
+        raise ValueError("二号桩斜接驳端点重合。")
+    fixed = boundary_box(platform.get("boundary"), "固定平台")
+    operating = boundary_box(equipment.get("boundary"), "倒料作业区")
+    if meets_expanded_box(start, dock, fixed, radius):
+        raise ValueError("二号桩斜线包络侵入固定平台，禁止通行。")
+    if segment_distance(other, start, dock) <= 2 * radius:
+        raise ValueError("二号桩斜线包络与一号桩停靠车体相交，禁止通行。")
+    if meets_expanded_box(dock, dock, operating, radius):
+        raise ValueError("二号桩停稳后车体仍占用倒料作业区，无法释放共享路权。")
+    if meets_expanded_box(start, start, operating, radius):
+        raise ValueError("二号桩斜线入口会停在倒料作业区内，不能作为接驳边界。")
+    shared = equipment["id"] if meets_expanded_box(start, dock, operating, radius) else None
+    if shared in dock.get("resourceIds", []):
+        raise ValueError("二号桩停稳后仍会持有倒料资源。")
+    diagonal["bidirectional"] = True
+    diagonal["laneRole"] = "charging-access"
+    diagonal["displayName"] = "二号桩斜线接驳"
+    diagonal["notes"] = ["SIM-ONLY checked against modeled platform and dumper boundaries"]
+    diagonal["resourceIds"] = list(dict.fromkeys(
+        diagonal["resourceIds"] + start["resourceIds"] + [site_ids["CHARGE-02"]]
+        + ([shared] if shared else [])
+    ))
+    for edge in definition["edges"]:
+        if {edge["from"], edge["to"]} == {"CAD2-J0651", "CHARGE-02"}:
+            edge["enabled"] = False
+    validate_resource_references(definition)
+    definition["name"] = f'{source_map["name"]}·二号桩斜线'
+    scheme.pop("id", None)
+    scheme.pop("updatedAt", None)
+    scheme["name"] = "B07·五车十单·双桩斜线进出"
+    configuration.update(name=scheme["name"], mapDefinition=definition, mapIdentity={
+        "mapId": "", "mapVersionId": "", "sourceName": definition["name"],
+    })
+    audit = dict(edgeId=diagonal["id"], fromSite=start["id"], toSite=dock["id"],
+                 radiusMeters=radius, sharedDumperResource=shared, resourceIds=diagonal["resourceIds"],
+                 separationFromOtherParkedCenterMeters=segment_distance(other, start, dock))
+    return scheme, audit
+
+
 def decouple_charge02_approach(map_definition: dict) -> str | None:
     """Let CHARGE-02 be entered from the north without crossing J0631.
 
@@ -533,12 +647,20 @@ def main() -> None:
     parser.add_argument("out")
     parser.add_argument("--max-window-edges", type=int, default=24)
     parser.add_argument("--lane-mode", choices=("oneway", "twoway"), default="oneway")
+    parser.add_argument("--charge02-shared-access", action="store_true")
     args = parser.parse_args()
 
     source_map = load(Path(args.map))
     charging_scheme = load(Path(args.scheme))
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+
+    if args.charge02_shared_access:
+        candidate, audit = charge02_shared_access(source_map, charging_scheme)
+        write(out / "B07-双桩斜线.agvmap.json", candidate["configuration"]["mapDefinition"])
+        write(out / "方案-B07-五车十单-双桩斜线.json", candidate)
+        write(out / "二号桩接驳核对.json", audit)
+        return
 
     map_definition, changed, promoted = build_map(source_map, args.max_window_edges, args.lane_mode)
     stats = window_stats(map_definition)
