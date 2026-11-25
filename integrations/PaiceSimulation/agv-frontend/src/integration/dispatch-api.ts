@@ -8,6 +8,18 @@ import {
 } from "./dispatch-adapter";
 import http from "@/api/http";
 
+export interface DispatchChargingSession {
+  vehicleId: string;
+  phase: string;
+  message?: string;
+  phaseSince?: string;
+  site?: { id?: string; chargingSiteId?: string; exitSiteId?: string } | null;
+  targetBatteryPercent?: number | null;
+  battery?: { batteryPercent?: number | null; current?: number | null; charging?: boolean | null } | null;
+  returnSiteId?: string | null;
+  shutdownVerified?: boolean;
+}
+
 export interface DispatchStatus {
   enabled: boolean;
   running?: boolean;
@@ -31,6 +43,7 @@ export interface DispatchStatus {
   message?: string;
   map?: SourceMap | null;
   device?: { time: number; cars?: Record<string, DispatchCar> } | null;
+  chargingSessions?: DispatchChargingSession[] | null;
   configuration?: {
     vehicles?: { id: string; initialSite: string; initialLoaded?: boolean; speedScale?: number; lengthMeters?: number; widthMeters?: number }[];
     stations?: { stationId: string; pickupSite?: string }[];

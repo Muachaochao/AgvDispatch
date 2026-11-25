@@ -259,6 +259,7 @@ class Runtime:
         self.scheme_store = scheme_store
         self.history_cache = (0, [])
         self.catalog_cache = (0, {})
+        self.charging_observation = (0, None)
         self.guidance_cache = (0, [])
         self.recovery_cache = (0, {})
         self.plc_table_cache = None
@@ -621,6 +622,7 @@ class Runtime:
                 simulationOriginUnixMs=round(getattr(self, 'clock', simulation_clock.CLOCK).origin_seconds * 1000),
                 fresh=self._fresh_telemetry(device),
                 device=device,
+                chargingSessions=self.live_charging_sessions(),
                 scenario=dict(
                     id=scenario.get('id'),
                     name=scenario.get('name'),
@@ -637,6 +639,45 @@ class Runtime:
                 **catalog,
                 message='轻量实时状态；正式派车、PLC和路权仍由生产仿真后台负责。',
             )
+
+    def live_charging_sessions(self):
+        configuration = getattr(self, 'lab', {}).get('simulationConfiguration') or {}
+        charging = configuration.get('chargingPriorityTest') or {}
+        if self.phase != 'running' or not charging.get('enabled'):
+            self.charging_observation = (0, None)
+            return None
+        refresh_at, sessions = getattr(self, 'charging_observation', (0, None))
+        now = time.monotonic()
+        if now >= refresh_at:
+            self.charging_observation = (now + 5, sessions)
+            threading.Thread(target=self._read_live_charging, args=(self.root, self.web['Port']),
+                             daemon=True).start()
+        return sessions
+
+    def _read_live_charging(self, root, port):
+        sessions = None
+        try:
+            with urlopen(f'http://127.0.0.1:{port}/api/charging', timeout=2) as response:
+                snapshot = json.loads(response.read())
+            sessions = []
+            for row in snapshot['sessions']:
+                if row['phase'] == 'Completed':
+                    continue
+                card = {key: row[key] for key in ('vehicleId', 'phase', 'message', 'phaseSince',
+                        'targetBatteryPercent', 'returnSiteId', 'shutdownVerified') if key in row}
+                for key, fields in (
+                    ('site', ('id', 'chargingSiteId', 'exitSiteId')),
+                    ('battery', ('batteryPercent', 'current', 'charging')),
+                ):
+                    if isinstance(row.get(key), dict):
+                        card[key] = {field: row[key][field] for field in fields if field in row[key]}
+                sessions.append(card)
+        except (OSError, ValueError, KeyError, TypeError):
+            sessions = None
+        with self.lock:
+            if self.root == root and self.phase == 'running':
+                refresh_at, _ = self.charging_observation
+                self.charging_observation = (refresh_at, sessions)
 
     def launch(self, name, arguments, cwd):
         env = os.environ.copy()

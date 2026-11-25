@@ -1,5 +1,5 @@
 import { dispatchWaitBlockers, dispatchWaitDuration, isReferenceRoute, type DispatchCar, type DispatchTaskDetail, type DispatchWaitRequest, type SourceMap } from './dispatch-adapter.ts'
-import type { CallRow, DispatchStatus, ResourceRow } from './dispatch-api.ts'
+import type { CallRow, DispatchChargingSession, DispatchStatus, ResourceRow } from './dispatch-api.ts'
 
 export const businessStepNames: Record<string, string> = {
   GoToPickup: '前往工位取满箱', PickupFullBox: '取满箱确认',
@@ -193,6 +193,42 @@ export function vehicleTaskKind(car: Pick<DispatchCar, 'charging' | 'current_tas
   if (car?.current_task?.startsWith('STANDBY-')) return '回待机'
   if (business) return car?.current_task ? '业务 · 导航' : '业务'
   return car?.current_task ? '导航' : car ? '待命' : '未确认'
+}
+
+const chargingLabels: Record<string, string> = {
+  Reserved: '准备前往充电位', SendingToCharger: '准备前往充电位', GoingToCharger: '前往充电位',
+  SendingDock: '准备对接充电位', Docking: '对接充电位', StartingCharge: '启动充电',
+  StartingSession: '启动充电', AwaitingCurrent: '等待充电电流', Charging: '充电中',
+  SessionRunning: '充电中', StoppingCharge: '正在停充', AwaitingStop: '确认已停充',
+  SendingExit: '准备离桩', Exiting: '正在离桩', SendingUndock: '准备离桩',
+  Undocking: '正在离桩', SendingReturn: '准备返回待机点', Returning: '返回待机点',
+  Hold: '充电暂停',
+}
+
+export function chargingPresentation(sessions: readonly DispatchChargingSession[] | null | undefined, vehicleId: string, business: boolean) {
+  const session = sessions?.find(row => row.vehicleId === vehicleId && row.phase !== 'Completed')
+  if (!session) return undefined
+  const { phase, site, battery } = session
+  const pending = phase === 'Queued' || phase === 'WaitingForBusiness'
+  const confirmed = phase === 'Charging' || phase === 'SessionRunning' && battery?.charging === true
+  const label = pending ? business ? '业务完成后充电' : '排队充电'
+    : phase === 'AwaitingStop' && session.shutdownVerified ? '等待离桩'
+    : phase === 'SessionRunning' && !confirmed ? '等待充电确认'
+    : chargingLabels[phase]
+  if (!label) return undefined
+  const target = ['SendingReturn', 'Returning'].includes(phase) ? session.returnSiteId
+    : ['SendingExit', 'Exiting', 'SendingUndock', 'Undocking'].includes(phase) ? site?.exitSiteId
+    : pending || phase === 'Hold' ? undefined : site?.chargingSiteId
+  const current = confirmed && battery?.current != null && battery.current > 0 ? battery.current : null
+  const details = [
+    site?.id,
+    session.targetBatteryPercent == null ? undefined : `目标 ${session.targetBatteryPercent}%`,
+    current == null ? undefined : `${current.toFixed(1)} A`,
+  ].filter(Boolean).join(' · ')
+  return {
+    label, pending, target, details, reason: session.message, phaseSince: session.phaseSince, current,
+    type: confirmed ? 'success' as const : phase === 'Hold' ? 'danger' as const : 'warning' as const,
+  }
 }
 
 export function routeTarget(route?: NonNullable<DispatchTaskDetail['commands']>[number]['route']) {

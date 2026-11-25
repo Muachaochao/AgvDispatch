@@ -58,7 +58,7 @@ import {
   type ResourceRow,
 } from "@/integration/dispatch-api";
 import {
-  briefReason, businessStepLabel, businessStepNames as stepNames, callPresentation,
+  briefReason, businessStepLabel, businessStepNames as stepNames, callPresentation, chargingPresentation,
   elapsedLabel, resourceLocations, resourceRows, routeTarget, secondsSince,
   runTiming, summarizeWait, trafficWaitDetails, trafficWaitRows, vehicleTaskKind,
 } from "@/integration/simulation-monitor";
@@ -423,18 +423,22 @@ const vehicles = computed(() => {
   const ids = [...new Set([...(status.value?.configuration?.vehicles ?? []).map(car => car.id), ...views.keys()])];
   return ids.sort((a, b) => a.localeCompare(b, "zh-CN", { numeric: true })).map(id => {
     const observed = views.get(id), car = cars.value[id], call = activeCallsByVehicle.value.get(id);
-    const step = activeTaskForVehicle(id) === detail.value?.task.taskId && !historicalTask.value ? currentStep.value : undefined;
+    const taskId = activeTaskForVehicle(id);
+    const step = taskId === detail.value?.task.taskId && !historicalTask.value ? currentStep.value : undefined;
     const stepNumber = step?.sequence ?? call?.stepNumber;
     const label = businessStepLabel({ stepNumber, stepType: step?.stepType ?? call?.stepType, stepName: call?.stepName });
-    const since = secondsSince(step?.startedAt ?? call?.stepStartedAt, businessNow.value);
+    const charge = fresh.value && !car?.offline ? chargingPresentation(status.value?.chargingSessions, id, !!taskId) : undefined;
+    const showingCharge = !!charge && (!charge.pending || !taskId);
+    const since = secondsSince(showingCharge ? charge.phaseSince : step?.startedAt ?? call?.stepStartedAt, businessNow.value);
+    const businessTarget = (car?.recovery?.state !== "Recovered" ? car?.recovery?.safetyPointTarget : undefined)
+      || (detail.value?.task.vehicleId === id ? routeTarget(currentCommand.value?.route) : undefined)
+      || step?.destinationSite || call?.destinationSite;
     return { id, car, status: observed?.status ?? "UNKNOWN", coordinates: observed,
       wait: fresh.value ? waitForVehicle(id) : undefined,
-      kind: vehicleTaskKind(car, !!activeTaskForVehicle(id)),
-      step: label ? `${stepNumber}/9 ${label}` : "",
-      target: fresh.value && car && !car.offline
-        ? (car.recovery?.state !== "Recovered" ? car.recovery?.safetyPointTarget : undefined)
-          || (detail.value?.task.vehicleId === id ? routeTarget(currentCommand.value?.route) : undefined)
-          || step?.destinationSite || call?.destinationSite : undefined,
+      charge, showingCharge,
+      kind: showingCharge ? '充电任务' : vehicleTaskKind(car, !!taskId),
+      step: !showingCharge && label ? `${stepNumber}/9 ${label}` : "",
+      target: fresh.value && car && !car.offline ? (showingCharge ? charge.target : businessTarget) : undefined,
       duration: elapsedLabel(car?.recovery?.durationSeconds ?? since),
     };
   });
@@ -451,7 +455,7 @@ const stateName: Record<string, string> = {
   IDLE: "空载待命",
   MOVING: "行驶",
   WAITING: "作业等待",
-  CHARGING: "充电",
+  CHARGING: "充电中",
   OFFLINE: "离线或状态过期",
   FAULT: "暂停或故障",
   BLOCKED: "受阻",
@@ -651,7 +655,7 @@ async function poll() {
       pageAbort.signal,
     );
     if (disposed || revision !== actionRevision) return;
-    status.value = { ...status.value!, ...live };
+    status.value = { ...status.value!, ...live, chargingSessions: live.chargingSessions ?? null };
     observedAt.value = Date.now();
     connected.value = true;
     if (!detailPolling) void pollDetails(live, revision);
@@ -1275,7 +1279,8 @@ onBeforeUnmount(() => {
           <div class="vehicle-title">
             <el-button link type="primary" :aria-pressed="selectedVehicleId === vehicle.id" @click="inspectVehicle(vehicle.id)"><strong>{{ vehicle.id }}</strong></el-button>
             <span class="vehicle-battery" :class="{ 'low-battery': vehicle.car?.batteryPercent != null && vehicle.car.batteryPercent < 25 }">{{ vehicle.car?.batteryPercent != null ? `${vehicle.car.batteryPercent.toFixed(0)}%` : '电量未知' }}</span>
-            <el-tag v-if="vehicle.wait && vehicle.wait.type !== 'primary' && vehicle.status !== 'OFFLINE'" :type="vehicle.wait.type" size="small">{{ vehicle.wait.label }}</el-tag>
+            <el-tag v-if="vehicle.showingCharge && vehicle.charge" :type="vehicle.charge.type" size="small">{{ vehicle.charge.label }}</el-tag>
+            <el-tag v-else-if="vehicle.wait && vehicle.wait.type !== 'primary' && vehicle.status !== 'OFFLINE'" :type="vehicle.wait.type" size="small">{{ vehicle.wait.label }}</el-tag>
             <el-tag v-else size="small" :type="vehicle.status === 'MOVING' || vehicle.status === 'CHARGING' ? 'success' : vehicle.status === 'OFFLINE' || vehicle.status === 'UNKNOWN' ? 'info' : 'warning'">{{ stateName[vehicle.status] || vehicle.status }}</el-tag>
           </div>
           <dl class="vehicle-facts">
@@ -1283,8 +1288,13 @@ onBeforeUnmount(() => {
             <div><dt>任务</dt><dd>{{ vehicle.kind }}<template v-if="vehicle.step"> · {{ vehicle.step }}</template></dd></div>
             <div><dt>下一目标</dt><dd>{{ vehicle.target || '—' }}</dd></div>
             <div v-if="vehicle.duration !== '—'"><dt>已持续</dt><dd>{{ vehicle.duration }}</dd></div>
+            <div v-if="vehicle.charge && (!vehicle.showingCharge || vehicle.charge.details)">
+              <dt>充电</dt>
+              <dd>{{ [!vehicle.showingCharge && vehicle.charge.label, vehicle.charge.details].filter(Boolean).join(' · ') }}</dd>
+            </div>
           </dl>
           <p v-if="vehicle.status === 'OFFLINE' && status?.device?.time" class="muted">最后反馈 {{ new Date(status.device.time * 1000).toLocaleString('zh-CN', { hour12: false }) }}</p>
+          <p v-if="vehicle.charge?.reason" class="wait-summary">{{ vehicle.charge.reason }}</p>
           <p v-if="vehicle.wait?.request" class="wait-summary">{{ waitSummary(vehicle.wait.request) }}</p>
           <p v-else-if="vehicle.car?.waitReason && vehicle.status !== 'OFFLINE'">{{ briefReason(vehicle.car.waitReason) }}</p>
           <p v-if="vehicle.car?.recovery?.message && vehicle.status !== 'OFFLINE'">{{ vehicle.car.recovery.message }}</p>
