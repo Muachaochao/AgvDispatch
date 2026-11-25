@@ -2,7 +2,7 @@
 import { computed, defineAsyncComponent, ref, shallowRef, watch } from 'vue'
 import type { RoadNetPayload } from '@/api/roadnet'
 import { dispatchSceneMap, dispatchViews, workshopMapName, type SourceMap } from '@/integration/dispatch-adapter'
-import { mapBounds, mapNavigationItems, type MapLocation, type MapPoint } from '@/integration/map-navigation'
+import { mapBounds, mapNavigationItems, previewNodePositions, type MapLocation, type MapPoint } from '@/integration/map-navigation'
 import { simulationVehicleVisualColor, simulationVehicleVisualLabel } from '@main-web/simulation'
 import type { DispatchCar } from '@/integration/dispatch-adapter'
 import RoadNetEditor from './RoadNetEditor.vue'
@@ -103,7 +103,9 @@ const routes = computed(() => preview.value?.map.edges.flatMap(edge => {
 }) ?? [])
 const endpointMarkers = computed(() => {
   if (!props.routeEndpoints?.length) return []
-  const nodes = new Map(preview.value?.map.nodes.map(node => [node.id, node]))
+  const map = preview.value?.map
+  if (!map) return []
+  const nodes = previewNodePositions(map.nodes, map.edges)
   return props.routeEndpoints.flatMap(endpoint => {
     const node = nodes.get(endpoint.nodeId)
     return node ? [{ ...endpoint, x: node.x, y: node.y }] : []
@@ -205,7 +207,7 @@ const legend = [
 
     <el-dialog v-model="show3d" :title="`${title} · 3D 预览`" width="min(92vw, 1500px)" top="5vh" destroy-on-close>
       <div v-if="preview" class="preview-3d">
-        <RoadNetScene ref="scene" :roadnet="preview.map" :agvs="agvs" :observed="fresh" exact-geometry
+        <RoadNetScene ref="scene" :roadnet="preview.map" :agvs="agvs" :observed="fresh" exact-vehicle-positions
           :selectable="selectNodes" :selected-node-ids="selectedNodeIds" vehicle-selectable
           @vehicle-select="emit('selectVehicle', $event)" @node-select="selectNode" />
       </div>

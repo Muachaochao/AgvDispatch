@@ -6,7 +6,7 @@ import type { RoadNetPayload } from "@/api/roadnet";
 import type { AgvView } from "@/types";
 import MapNavigationToolbar from "./MapNavigationToolbar.vue";
 import MapOverview from "./MapOverview.vue";
-import { mapBounds, mapNavigationItems, toggleMapFullscreen, type MapBounds, type MapLocation, type MapPoint } from "@/integration/map-navigation";
+import { mapBounds, mapNavigationItems, previewNodePositions, toggleMapFullscreen, type MapBounds, type MapLocation, type MapPoint } from "@/integration/map-navigation";
 
 const props = defineProps<{
   roadnet: RoadNetPayload | null;
@@ -15,7 +15,8 @@ const props = defineProps<{
   observed?: boolean;
   selectable?: boolean;
   vehicleSelectable?: boolean;
-  exactGeometry?: boolean;
+  editableGeometry?: boolean;
+  exactVehiclePositions?: boolean;
   selectedNodeIds?: string[];
 }>();
 
@@ -55,7 +56,9 @@ const netGroup = new THREE.Group();
 const agvGroup = new THREE.Group();
 const pathGroup = new THREE.Group();
 const rawNodes = new Map<string, { id: string; x: number; y: number; type: string }>();
-const displayNodes = new Map<string, { id: string; x: number; y: number; type: string }>();
+const displayNodes = computed(() => previewNodePositions(
+  props.roadnet?.nodes ?? [], props.roadnet?.edges ?? [], !props.editableGeometry,
+));
 const nodeMeshes = new Map<string, THREE.Mesh>();
 const nodeVisuals = new Map<string, THREE.Mesh>();
 let renderedPoints: Array<{ x: number; y: number }> = [];
@@ -293,6 +296,9 @@ function pan(x: number, y: number) {
 }
 
 function locate(item: MapLocation) {
+  if (!camera || !controls) return;
+  const node = item.kind === "node" ? displayNodes.value.get(item.id) : undefined;
+  if (node) item = { ...item, x: node.x, y: node.y };
   located.value = item;
   marked.value = false;
   centerAt(item);
@@ -305,7 +311,7 @@ function locate(item: MapLocation) {
   marker.rotation.x = -Math.PI / 2;
   marker.position.y = 0.08;
   locationGroup.add(marker);
-  const label = makeLabel(item.id, true);
+  const label = makeLabel(item.aliases?.[0] ?? item.id, true);
   label.position.y = 1.05;
   locationGroup.add(label);
   updateNodeSelection();
@@ -322,11 +328,11 @@ function refreshLabels() {
   disposeGroup(labelsGroup);
   if (!showLabels.value || !controls) return;
   const target = controls.target;
-  const nearest = staticItems.value.filter(item => item.kind === "node")
+  const nearest = staticItems.value.filter(item => item.kind === "node" && nodeVisuals.has(item.id))
     .sort((a, b) => Math.hypot(a.x - target.x, a.y - target.z) - Math.hypot(b.x - target.x, b.y - target.z))
     .slice(0, 30);
   for (const item of nearest) {
-    const label = makeLabel(item.id);
+    const label = makeLabel(item.aliases?.[0] ?? item.id);
     label.position.set(item.x, 0.8, item.y);
     label.scale.set(1.8, 0.9, 1);
     labelsGroup.add(label);
@@ -360,6 +366,8 @@ function rebuildRoadNet(net: RoadNetPayload | null) {
   disposeGroup(netGroup);
   nodeMeshes.clear();
   nodeVisuals.clear();
+  rawNodes.clear();
+  renderedPoints = [...displayNodes.value.values()];
   if (!net || net.nodes.length === 0) return;
 
   const nodeMap = new Map(net.nodes.map((n) => [n.id, n]));
@@ -368,48 +376,14 @@ function rebuildRoadNet(net: RoadNetPayload | null) {
   const arrowBatches = new Map<number, THREE.Matrix4[]>();
   const arrowUp = new THREE.Vector3(0, 1, 0);
   const arrowRotation = new THREE.Quaternion();
-  rawNodes.clear();
-  displayNodes.clear();
-  renderedPoints = [];
-  for (const node of net.nodes) {
-    const value = { id: node.id, x: node.x, y: node.y, type: node.type };
-    rawNodes.set(node.id, value);
-    displayNodes.set(node.id, { ...value });
-  }
-  if (dense && !props.exactGeometry) {
-    for (const node of net.nodes) {
-      if (node.type !== "WORKSTATION") continue;
-      const connection = net.edges.find((edge) => {
-        if (edge.from !== node.id && edge.to !== node.id) return false;
-        const other = nodeMap.get(edge.from === node.id ? edge.to : edge.from);
-        return other?.type === "JUNCTION";
-      });
-      if (!connection) continue;
-      const junction = nodeMap.get(
-        connection.from === node.id ? connection.to : connection.from,
-      );
-      if (!junction) continue;
-      const dx = node.x - junction.x;
-      const dy = node.y - junction.y;
-      const length = Math.hypot(dx, dy);
-      const minimumDisplayLength = 1.2;
-      if (length >= minimumDisplayLength) continue;
-      const ux = length > 1e-6 ? dx / length : 0;
-      const uy = length > 1e-6 ? dy / length : (node.y >= junction.y ? 1 : -1);
-      displayNodes.set(node.id, {
-        ...displayNodes.get(node.id)!,
-        x: junction.x + ux * minimumDisplayLength,
-        y: junction.y + uy * minimumDisplayLength,
-      });
-    }
-  }
+  for (const node of net.nodes) rawNodes.set(node.id, node);
 
   for (const edge of net.edges) {
     const from = nodeMap.get(edge.from);
     const to = nodeMap.get(edge.to);
     if (!from || !to) continue;
-    const displayFrom = displayNodes.get(edge.from) ?? from;
-    const displayTo = displayNodes.get(edge.to) ?? to;
+    const displayFrom = displayNodes.value.get(edge.from) ?? from;
+    const displayTo = displayNodes.value.get(edge.to) ?? to;
     const isStationBranch =
       from.type === "WORKSTATION" || to.type === "WORKSTATION";
     const isServiceBranch =
@@ -430,7 +404,7 @@ function rebuildRoadNet(net: RoadNetPayload | null) {
     }
     const vertices = batch.vertices;
 
-    if (edge.points?.length) {
+    if (edge.points && edge.points.length >= 2) {
       const points = edge.points.map((point) => ({ ...point }));
       points[0] = { x: displayFrom.x, y: displayFrom.y };
       points[points.length - 1] = { x: displayTo.x, y: displayTo.y };
@@ -498,7 +472,7 @@ function rebuildRoadNet(net: RoadNetPayload | null) {
   }
 
   for (const node of net.nodes) {
-    const display = displayNodes.get(node.id) ?? node;
+    const display = displayNodes.value.get(node.id) ?? node;
     const isWaitingNode = /^WAIT/.test(node.id);
     if (dense && node.type === "JUNCTION" && !isWaitingNode) continue;
     const color = isWaitingNode ? 0xe7aa42 : NODE_COLORS[node.type] ?? 0x909399;
@@ -584,7 +558,7 @@ function makeLabel(text: string, badge = false): THREE.Sprite {
   ctx.fillStyle = badge ? "#e8f2ff" : "#dbe6f5";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillText(text, 64, 32);
+  ctx.fillText(text, 64, 32, badge ? 112 : 124);
   const texture = new THREE.CanvasTexture(canvas);
   texture.minFilter = THREE.LinearFilter;
   const material = new THREE.SpriteMaterial({
@@ -656,9 +630,10 @@ function updateAgvs(list: AgvView[] | undefined) {
     }
     let x = agv.x;
     let y = agv.y;
-    const station = agv.station ? displayNodes.get(agv.station) : undefined;
+    const station = agv.station ? displayNodes.value.get(agv.station) : undefined;
     const rawStation = agv.station ? rawNodes.get(agv.station) : undefined;
     if (
+      !props.exactVehiclePositions &&
       station &&
       rawStation &&
       ["WAITING", "LOADING", "IDLE", "CHARGING"].includes(agv.status) &&
@@ -760,15 +735,16 @@ function fitView() {
 function loadMap(net: RoadNetPayload | null) {
   clearLocation();
   rebuildRoadNet(net);
-  staticItems.value = mapNavigationItems(net, displayNodes);
+  staticItems.value = mapNavigationItems(net, displayNodes.value);
   fitView();
   if (!net?.nodes.length) viewport.value = null;
 }
 
 watch(
-  () => props.roadnet,
-  (net) => {
+  [() => props.roadnet, () => props.editableGeometry],
+  ([net]) => {
     loadMap(net);
+    updateAgvs(props.agvs);
   },
   { deep: false },
 );
@@ -830,7 +806,7 @@ defineExpose({ drawPath, drawPaths, clearPath, fitView, locate });
       @labels="showLabels = $event" @select-all="marked = true" @clear="clearLocation" />
     <div class="scene-frame">
       <div ref="container" class="scene" :class="{ 'is-dragging': dragging }"></div>
-      <MapOverview :map="roadnet" :view="viewport" :target="located" @center="centerAt" @settled="showLabels && refreshLabels()" />
+      <MapOverview :map="roadnet" :displayed-nodes="displayNodes" :view="viewport" :target="located" @center="centerAt" @settled="showLabels && refreshLabels()" />
     </div>
   </div>
 </template>

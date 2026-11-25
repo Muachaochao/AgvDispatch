@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { NetEdge, NetNode, RoadNetPayload, ValidationError } from '@/api/roadnet'
-import { findMapMatches, mapNavigationItems, type MapLocation, type MapPoint } from '@/integration/map-navigation'
+import { findMapMatches, mapNavigationItems, previewNodePositions, type MapLocation, type MapPoint } from '@/integration/map-navigation'
 
 const props = defineProps<{
   initial: RoadNetPayload
@@ -186,35 +186,7 @@ const hasSelectedOneWay = computed(() =>
 const nodeMap = computed(() => new Map(nodes.value.map((n) => [n.id, n])))
 const denseGraph = computed(() => nodes.value.length > 30)
 const cleanDensePreview = computed(() => denseGraph.value && !editable.value)
-const displayNodeMap = computed(() => {
-  const result = new Map(nodes.value.map((node) => [node.id, { ...node }]))
-  if (!cleanDensePreview.value) return result
-  for (const node of nodes.value) {
-    if (node.type !== 'WORKSTATION') continue
-    const connection = edges.value.find((edge) => {
-      if (edge.from !== node.id && edge.to !== node.id) return false
-      const other = nodeMap.value.get(edge.from === node.id ? edge.to : edge.from)
-      return other?.type === 'JUNCTION'
-    })
-    if (!connection) continue
-    const junction = nodeMap.value.get(
-      connection.from === node.id ? connection.to : connection.from
-    )
-    if (!junction) continue
-    const dx = node.x - junction.x
-    const dy = node.y - junction.y
-    const length = Math.hypot(dx, dy)
-    if (length >= 1.2) continue
-    const ux = length > 1e-6 ? dx / length : 0
-    const uy = length > 1e-6 ? dy / length : (node.y >= junction.y ? 1 : -1)
-    result.set(node.id, {
-      ...result.get(node.id)!,
-      x: junction.x + ux * 1.2,
-      y: junction.y + uy * 1.2
-    })
-  }
-  return result
-})
+const displayNodeMap = computed(() => previewNodePositions(nodes.value, edges.value, !editable.value))
 function displayNode(id: string) {
   return displayNodeMap.value.get(id)
 }
@@ -410,7 +382,7 @@ const hoverInfo = computed(() => {
 
 const searchableItems = computed(() => {
   const types = new Map(nodes.value.map(node => [node.id, TYPE_LABEL[node.type]]))
-  return mapNavigationItems({ nodes: nodes.value, edges: edges.value, integration: props.initial.integration })
+  return mapNavigationItems({ nodes: nodes.value, edges: edges.value, integration: props.initial.integration }, displayNodeMap.value)
     .map(item => {
       const label = item.kind === 'node' ? types.get(item.id) : undefined
       return label ? { ...item, aliases: [...(item.aliases ?? []), label] } : item
@@ -898,7 +870,7 @@ function fitNodes(list: MapPoint[], maxScale = MAX_SCALE) {
 }
 
 function fitView() {
-  fitNodes(nodes.value, 2)
+  fitNodes([...displayNodeMap.value.values()], 2)
 }
 
 function focusMap(nodeIds: string[], edgeIds: string[], point?: MapPoint) {
@@ -907,7 +879,7 @@ function focusMap(nodeIds: string[], edgeIds: string[], point?: MapPoint) {
   const roads = edges.value.filter(edge => selected.has(edge.id))
   selectedEdgeIds.value = roads.map(edge => edge.id)
   const ids = new Set([...selectedNodeIds.value, ...roads.flatMap(edge => [edge.from, edge.to])])
-  const points = [...ids].flatMap(id => nodeMap.value.get(id) ?? [])
+  const points = [...ids].flatMap(id => displayNode(id) ?? [])
   const bounds = point ? [point] : [...points, ...roads.flatMap(edge => edge.points ?? [])]
   if (bounds.length) fitNodes(bounds, 3)
   return bounds.length > 0
@@ -1708,15 +1680,15 @@ function nextSearch() {
   if (item.kind === 'node') {
     selectedNodeIds.value = [item.id]
     selectedEdgeIds.value = []
-    const node = nodeMap.value.get(item.id)
+    const node = displayNode(item.id)
     if (node) fitNodes([node])
   } else {
     selectedEdgeIds.value = [item.id]
     selectedNodeIds.value = []
     const edge = edges.value.find((entry) => entry.id === item.id)
     if (edge) {
-      const from = nodeMap.value.get(edge.from)
-      const to = nodeMap.value.get(edge.to)
+      const from = displayNode(edge.from)
+      const to = displayNode(edge.to)
       if (from && to) fitNodes([from, to])
     }
   }

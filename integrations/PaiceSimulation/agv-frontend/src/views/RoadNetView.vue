@@ -608,7 +608,7 @@ onBeforeUnmount(() => {
       destroy-on-close
     >
       <div class="preview-3d" :class="{ 'is-fullscreen': preview3DFullscreen }">
-        <RoadNetScene v-if="preview3DPayload" ref="roadnetSceneRef" :roadnet="preview3DPayload" :agvs="[]" />
+        <RoadNetScene v-if="preview3DPayload" ref="roadnetSceneRef" :roadnet="preview3DPayload" :editable-geometry="!previewMode" :agvs="[]" />
       </div>
       <template #footer>
         <div class="preview-3d-footer">

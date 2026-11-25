@@ -1,4 +1,4 @@
-import type { RoadNetPayload } from "../api/roadnet.ts";
+import type { NetEdge, NetNode, RoadNetPayload } from "../api/roadnet.ts";
 
 export interface MapPoint { x: number; y: number }
 export interface MapBounds { left: number; top: number; right: number; bottom: number }
@@ -6,6 +6,39 @@ export interface MapLocation extends MapPoint {
   id: string;
   kind: "node" | "edge" | "vehicle";
   aliases?: string[];
+}
+
+export function previewNodePositions(nodes: NetNode[], edges: NetEdge[], preview = true): Map<string, NetNode> {
+  const displayed = new Map(nodes.map(node => [node.id, node]));
+  if (!preview || nodes.length <= 30) return displayed;
+
+  const neighbours = new Map<string, Set<string>>();
+  function connect(station: NetNode, other: NetNode) {
+    if (station.type !== 'WORKSTATION') return;
+    const adjacent = neighbours.get(station.id) ?? new Set<string>();
+    adjacent.add(other.id);
+    neighbours.set(station.id, adjacent);
+  }
+  for (const edge of edges) {
+    const from = displayed.get(edge.from), to = displayed.get(edge.to);
+    if (!from || !to) continue;
+    connect(from, to);
+    connect(to, from);
+  }
+
+  const minimumLength = 1.2;
+  for (const node of nodes) {
+    const adjacent = neighbours.get(node.id);
+    if (adjacent?.size !== 1) continue;
+    const junction = displayed.get(adjacent.values().next().value!);
+    if (junction?.type !== 'JUNCTION') continue;
+    const dx = node.x - junction.x, dy = node.y - junction.y;
+    const length = Math.hypot(dx, dy);
+    if (length <= 1e-6 || length >= minimumLength) continue;
+    const scale = minimumLength / length;
+    displayed.set(node.id, { ...node, x: junction.x + dx * scale, y: junction.y + dy * scale });
+  }
+  return displayed;
 }
 
 export function mapNavigationItems(map: RoadNetPayload | null, displayedNodes?: ReadonlyMap<string, MapPoint>): MapLocation[] {

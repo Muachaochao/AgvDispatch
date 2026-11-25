@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { RoadNetPayload } from '@/api/roadnet'
 import { mapBounds, type MapBounds, type MapPoint } from '@/integration/map-navigation'
 
-const props = defineProps<{ map: RoadNetPayload | null; view?: MapBounds | null; target?: MapPoint | null }>()
+const props = defineProps<{ map: RoadNetPayload | null; displayedNodes?: ReadonlyMap<string, MapPoint>; view?: MapBounds | null; target?: MapPoint | null }>()
 const emit = defineEmits<{ center: [point: MapPoint]; settled: [] }>()
 const canvas = ref<HTMLCanvasElement>()
 const collapsed = ref(false)
@@ -13,7 +13,7 @@ let drag: { id: number; rect: DOMRect } | null = null
 let pending: MapPoint | null = null
 let frame = 0
 const projection = computed(() => {
-  const bounds = mapBounds(props.map?.nodes ?? [])
+  const bounds = mapBounds(props.displayedNodes?.values() ?? props.map?.nodes ?? [])
   if (!bounds) return null
   const scale = Math.min((width - 16) / Math.max(1, bounds.right - bounds.left), (height - 16) / Math.max(1, bounds.bottom - bounds.top))
   const tx = width / 2 - (bounds.left + bounds.right) / 2 * scale
@@ -33,7 +33,11 @@ function renderMap() {
   for (const edge of props.map.edges) {
     const from = byId.get(edge.from), to = byId.get(edge.to)
     if (!from || !to) continue
-    const points = edge.points?.length ? edge.points : [from, to]
+    const points = [
+      props.displayedNodes?.get(from.id) ?? from,
+      ...(edge.points?.slice(1, -1) ?? []),
+      props.displayedNodes?.get(to.id) ?? to
+    ]
     ctx.moveTo(...project(points[0]!))
     for (let i = 1; i < points.length; i++) ctx.lineTo(...project(points[i]!))
   }
@@ -41,7 +45,7 @@ function renderMap() {
   ctx.fillStyle = '#3980b7'
   for (const node of props.map.nodes) {
     if (node.type !== 'WORKSTATION') continue
-    const [x, y] = project(node)
+    const [x, y] = project(props.displayedNodes?.get(node.id) ?? node)
     ctx.fillRect(x - 0.7, y - 0.7, 1.4, 1.4)
   }
 }
@@ -97,7 +101,7 @@ function endDrag(event: PointerEvent) {
   emit('settled')
 }
 
-watch([() => props.map, collapsed], renderMap, { flush: 'post' })
+watch([() => props.map, () => props.displayedNodes, collapsed], renderMap, { flush: 'post' })
 onMounted(renderMap)
 onBeforeUnmount(() => cancelAnimationFrame(frame))
 </script>
