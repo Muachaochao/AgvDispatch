@@ -7,6 +7,8 @@ namespace AgvDispatch.Service;
 
 public sealed class ConfiguredRoutePlanner : IRoutePlanner
 {
+    private static readonly IReadOnlySet<string> B07VerticalInlet = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        { "CAD2-E01834", "CAD2-E01859" };
     private readonly MapGraph? _configuredGraph;
     private readonly MapDefinition? _configuredDefinition;
     private readonly IActiveMapRuntime _activeMap;
@@ -46,11 +48,14 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
     public RoutePlan? PlanForVehicle(string source, string destination, IReadOnlySet<string> unavailableResourceIds,
         string movingVehicleId) => PlanCore(source, destination, unavailableResourceIds, false, movingVehicleId);
 
+    public RoutePlan? PlanChargingApproach(string source, string destination, IReadOnlySet<string> unavailableResourceIds,
+        string movingVehicleId) => PlanCore(source, destination, unavailableResourceIds, false, movingVehicleId, chargingApproach: true);
+
     public RoutePlan? PlanWithoutVehicleOccupancyForComparison(string source, string destination) =>
         PlanCore(source, destination, new HashSet<string>(), true);
 
     private RoutePlan? PlanCore(string source, string destination,
-        IReadOnlySet<string> unavailableResourceIds, bool comparisonOnly, string? movingVehicleId = null)
+        IReadOnlySet<string> unavailableResourceIds, bool comparisonOnly, string? movingVehicleId = null, bool chargingApproach = false)
     {
         var snapshot = _activeMap.Current;
         var closures = _roadClosures?.GetSnapshot();
@@ -63,7 +68,7 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
                 !string.Equals(closures.DefinitionHash, snapshot.DefinitionHash, StringComparison.OrdinalIgnoreCase)))
                 return null;
             return PlanAndMap(activeGraph, activeDefinition, source, destination,
-                unavailableResourceIds, _trafficFlow.GetEdgePenalties(), closures?.BlockedTraversals, comparisonOnly, movingVehicleId);
+                unavailableResourceIds, _trafficFlow.GetEdgePenalties(), closures?.BlockedTraversals, comparisonOnly, movingVehicleId, chargingApproach);
         }
         if (_configuredGraph is not null)
         {
@@ -71,7 +76,8 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
             // configuration graph cannot silently stand in for that identity.
             if (closures?.Closures.Any(c => c.Active) == true) return null;
             return PlanAndMap(_configuredGraph, _configuredDefinition!, source, destination,
-                unavailableResourceIds, _trafficFlow.GetEdgePenalties(), comparisonOnly: comparisonOnly, movingVehicleId: movingVehicleId);
+                unavailableResourceIds, _trafficFlow.GetEdgePenalties(), comparisonOnly: comparisonOnly,
+                movingVehicleId: movingVehicleId, chargingApproach: chargingApproach);
         }
 
         if (closures?.Closures.Any(c => c.Active) == true) return null;
@@ -93,15 +99,19 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
         IReadOnlySet<string> unavailableResourceIds,
         IReadOnlyDictionary<string, double> edgePenalties,
         IReadOnlyCollection<MapDirectedTraversal>? unavailableTraversals = null, bool comparisonOnly = false,
-        string? movingVehicleId = null)
+        string? movingVehicleId = null, bool chargingApproach = false)
     {
         var logicalSource = MapRouteSiteMapper.ResolveLogicalNodeId(definition, source);
         var logicalDestination = MapRouteSiteMapper.ResolveLogicalNodeId(definition, destination);
+        var guardedInlet = chargingApproach && logicalDestination.Equals("CHARGE-02", StringComparison.OrdinalIgnoreCase) &&
+            _legacyOptions.SimulationB07VerticalChargingInlet &&
+            !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("AGV_SIMULATION_ROOT"));
         try
         {
             unavailableTraversals = (unavailableTraversals ?? []).Concat(
                 DumperTransitClearance.BlockedTraversals(definition, logicalSource, logicalDestination,
-                    _legacyOptions.DumperDumpingSite, _legacyOptions.DumperTransitClearanceMeters))
+                    _legacyOptions.DumperDumpingSite, _legacyOptions.DumperTransitClearanceMeters,
+                    guardedInlet ? B07VerticalInlet : null, guardedInlet ? "DUMPER-001" : null))
                 .Concat(comparisonOnly ? [] : OccupiedCorridorTraversals(definition, logicalSource, movingVehicleId))
                 .Distinct().ToArray();
         }

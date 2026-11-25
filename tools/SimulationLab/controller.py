@@ -1439,6 +1439,14 @@ class Runtime:
         return self._create_instance(self._default_configuration(count), simulation_rate)
 
     def _create_instance(self, configuration, simulation_rate=1):
+        navigation = copy.deepcopy(configuration['mapDefinition'])
+        vertical_inlet = any(edge.get('laneRole') == 'charging-vertical-inlet' for edge in navigation['edges'])
+        if vertical_inlet:
+            from make_round8_variants import validate_charge02_vertical_inlet
+            try:
+                validate_charge02_vertical_inlet(navigation, configuration)
+            except (KeyError, TypeError, StopIteration) as error:
+                raise ValueError('二号桩竖线缺少完整的地图或方案数据。') from error
         with self.lock:
             if self.startup_thread and self.startup_thread.is_alive():
                 raise ValueError('一键开测仍在准备，请先停止并等待收尾。')
@@ -1462,7 +1470,6 @@ class Runtime:
                 binary_source = release['directories'][directory] if release else source / directory
                 shutil.copytree(binary_source, target / directory,
                     ignore=shutil.ignore_patterns('data', 'logs', '*.log', '*.db', '*.db-*', 'appsettings*.json'))
-            navigation = copy.deepcopy(configuration['mapDefinition'])
             write(target / 'navigation.agvmap.json', navigation)
             table = configuration['plcSignalTable']
             signal_source = target / 'plc-signals.source.csv'
@@ -1572,6 +1579,7 @@ class Runtime:
             capacity = configuration.get('downstreamAdmissionCapacity', 0)
             settings['DownstreamAdmission'] = dict(Enabled=capacity > 0, Capacity=max(1, capacity))
             settings['Dispatching']['DumperTransitClearanceMeters'] = 2 * max(v['radiusMeters'] for v in configuration['vehicles']) + 0.15
+            settings['Dispatching']['SimulationB07VerticalChargingInlet'] = vertical_inlet
             settings['ObstacleRecovery'] = dict(Enabled=True, AutomaticDetourEnabled=True,
                 AutomaticSafetyPointRetreatEnabled=True,
                 PollIntervalMs=500, **OBSTACLE_RECOVERY_TIMING,

@@ -18,4 +18,7 @@ public interface IRoutePlanner
     /// Every other vehicle, lease, closure and no-through rule still applies.</summary>
     RoutePlan? PlanForVehicle(string source, string destination, IReadOnlySet<string> unavailableResourceIds,
         string movingVehicleId) => Plan(source, destination, unavailableResourceIds);
+
+    RoutePlan? PlanChargingApproach(string source, string destination, IReadOnlySet<string> unavailableResourceIds,
+        string movingVehicleId) => PlanForVehicle(source, destination, unavailableResourceIds, movingVehicleId);
 }
