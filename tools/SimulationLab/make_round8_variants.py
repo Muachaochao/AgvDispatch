@@ -368,7 +368,51 @@ def segment_distance(point, start, end):
     return math.hypot(px - fraction * dx, py - fraction * dy)
 
 
-def charge02_shared_access(source_map, source_scheme):
+def validate_charge02_vertical_inlet(definition, configuration):
+    nodes = {node["id"]: node for node in definition["nodes"] if node.get("enabled", True)}
+    edges = {edge["id"]: edge for edge in definition["edges"]}
+    equipment = next(resource for resource in definition["resources"] if resource["id"] == "DUMPER-001")
+    entry, crossing, dock, other, dumper = (nodes[key] for key in
+        ("CAD2-J0652", "CAD2-J0651", "CHARGE-02", "CHARGE-01", "DUMPER-001"))
+    trunk, inlet = (edges[key] for key in ("CAD2-E01834", "CAD2-E01859"))
+    platform = next(area for area in definition.get("areaAnnotations", [])
+                    if area["id"] == "CAD-TERMINAL-PLATFORM")
+    operating = boundary_box(equipment.get("boundary"), "倒料作业区")
+    fixed = boundary_box(platform.get("boundary"), "固定平台")
+    radius = max(max(vehicle["radiusMeters"], math.hypot(
+        vehicle.get("lengthMeters", 0), vehicle.get("widthMeters", 0)) / 2)
+        for vehicle in configuration["vehicles"])
+    if (definition.get("unit") != "m" or not 0 < radius < math.inf
+            or configuration["dumper"]["resourceId"] != equipment["id"]
+            or configuration["dumper"]["dumpingSite"] != dumper["id"]
+            or equipment["capacity"] != 1 or equipment["id"] not in dumper["resourceIds"]
+            or equipment["id"] in dock["resourceIds"]):
+        raise ValueError("二号桩竖线缺少有效的米制包络或倒料独占资源绑定。")
+    if ((trunk["from"], trunk["to"]) != (crossing["id"], entry["id"]) or not trunk.get("bidirectional")
+            or (inlet["from"], inlet["to"]) != (crossing["id"], dock["id"]) or inlet.get("bidirectional")
+            or any(not edge.get("enabled", True) or edge.get("geometryKind", "Line") != "Line"
+                   or equipment["id"] not in edge["resourceIds"] for edge in (trunk, inlet))
+            or any(edge.get("enabled", True) and (edge["from"], edge["to"]) == (dock["id"], crossing["id"])
+                   for edge in definition["edges"])
+            or any(node.get("allowTrafficStop") is not False for node in (entry, crossing))):
+        raise ValueError("二号桩竖线方向、独占资源或不可停车条件不成立。")
+    if (not math.isclose(entry["x"], crossing["x"], abs_tol=1e-6)
+            or not math.isclose(dock["x"], crossing["x"], abs_tol=1e-6)
+            or not dock["y"] < crossing["y"] < entry["y"]):
+        raise ValueError("二号桩竖线几何与核对路径不一致。")
+    if meets_expanded_box(entry, dock, fixed, radius) or segment_distance(other, entry, dock) <= 2 * radius:
+        raise ValueError("二号桩竖线包络与固定平台或一号桩停靠车体相交。")
+    if (any(meets_expanded_box(node, node, operating, radius) for node in (entry, dock))
+            or not meets_expanded_box(crossing, crossing, operating, radius)
+            or math.hypot(dock["x"] - dumper["x"], dock["y"] - dumper["y"]) <= 2 * radius):
+        raise ValueError("二号桩竖线无法在进入前及停稳后让出倒料作业区。")
+    return dict(edgeIds=[trunk["id"], inlet["id"]], fromSite=entry["id"],
+                toSite=dock["id"], radiusMeters=radius, sharedDumperResource=equipment["id"],
+                distanceFromDumperMeters=segment_distance(dumper, entry, dock),
+                separationFromOtherParkedCenterMeters=segment_distance(other, entry, dock))
+
+
+def charge02_shared_access(source_map, source_scheme, *, vertical_inlet=False):
     """Derive a B07 simulation candidate with checked, guarded diagonal access."""
     definition = copy.deepcopy(source_map)
     scheme = copy.deepcopy(source_scheme)
@@ -440,6 +484,21 @@ def charge02_shared_access(source_map, source_scheme):
     audit = dict(edgeId=diagonal["id"], fromSite=start["id"], toSite=dock["id"],
                  radiusMeters=radius, sharedDumperResource=shared, resourceIds=diagonal["resourceIds"],
                  separationFromOtherParkedCenterMeters=segment_distance(other, start, dock))
+    if vertical_inlet:
+        if shared != "DUMPER-001":
+            raise ValueError("当前方案不具备已核对的二号桩共享接驳。")
+        edges = {edge["id"]: edge for edge in definition["edges"]}
+        for key in ("CAD2-E01834", "CAD2-E01859"):
+            edge = edges[key]
+            edge["enabled"] = True
+            edge["resourceIds"] = list(dict.fromkeys(edge["resourceIds"] + [shared]))
+        edges["CAD2-E01859"]["laneRole"] = "charging-vertical-inlet"
+        audit["verticalInlet"] = validate_charge02_vertical_inlet(definition, configuration)
+        definition["name"] = f'{source_map["name"]}·二号桩竖线进桩'
+        scheme["name"] = "B07·五车十单·双桩竖线进桩"
+        configuration.update(name=scheme["name"], mapIdentity={
+            "mapId": "", "mapVersionId": "", "sourceName": definition["name"],
+        })
     return scheme, audit
 
 
@@ -648,7 +707,10 @@ def main() -> None:
     parser.add_argument("--max-window-edges", type=int, default=24)
     parser.add_argument("--lane-mode", choices=("oneway", "twoway"), default="oneway")
     parser.add_argument("--charge02-shared-access", action="store_true")
+    parser.add_argument("--charge02-vertical-inlet", action="store_true")
     args = parser.parse_args()
+    if args.charge02_vertical_inlet and not args.charge02_shared_access:
+        parser.error("--charge02-vertical-inlet requires --charge02-shared-access")
 
     source_map = load(Path(args.map))
     charging_scheme = load(Path(args.scheme))
@@ -656,9 +718,10 @@ def main() -> None:
     out.mkdir(parents=True, exist_ok=True)
 
     if args.charge02_shared_access:
-        candidate, audit = charge02_shared_access(source_map, charging_scheme)
-        write(out / "B07-双桩斜线.agvmap.json", candidate["configuration"]["mapDefinition"])
-        write(out / "方案-B07-五车十单-双桩斜线.json", candidate)
+        candidate, audit = charge02_shared_access(source_map, charging_scheme, vertical_inlet=args.charge02_vertical_inlet)
+        variant = "双桩竖线进桩" if args.charge02_vertical_inlet else "双桩斜线"
+        write(out / f"B07-{variant}.agvmap.json", candidate["configuration"]["mapDefinition"])
+        write(out / f"方案-B07-五车十单-{variant}.json", candidate)
         write(out / "二号桩接驳核对.json", audit)
         return
 

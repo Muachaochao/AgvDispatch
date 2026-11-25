@@ -96,7 +96,7 @@ public sealed class ChargingRuntimePort(ChargingOptions options, IAgvStateCache 
         if(unavailable.Contains(site.ResourceId))return Fail($"充电位资源{site.ResourceId}已被占用。");
         // B07-FIX C4: legs are planned before the vehicle leaves its bay; its own parked body must not block
         // the way back to that bay (all other vehicles, leases and the dumper clearance still apply).
-        var incoming=planner.PlanForVehicle(source.AgvSiteId!,target.AgvSiteId!,unavailable,vehicleId);
+        var incoming=planner.PlanChargingApproach(source.AgvSiteId!,target.AgvSiteId!,unavailable,vehicleId);
         var outgoing=planner.PlanForVehicle(target.AgvSiteId!,exit.AgvSiteId!,unavailable,vehicleId);
         var returning=planner.PlanForVehicle(exit.AgvSiteId!,home.AgvSiteId!,unavailable,vehicleId);
         if(incoming is not {Nodes.Count:>=2})return Fail($"{source.Id}→{target.Id}在当前可用路权下无路线。");
