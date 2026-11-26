@@ -58,7 +58,7 @@ export function simulationVehicleVisualLabel(car: SimulationVehicle, fresh = tru
     idle: '空载待命'
   }[simulationVehicleVisualState(car, fresh)];
 }
-export interface SimulationNode { id: string; agvSiteId?: string | null; x: number; y: number; type?: string; enabled?: boolean; allowTrafficStop?: boolean; allowDumperWaiting?: boolean | null; resourceIds?: string[] }
+export interface SimulationNode { id: string; agvSiteId?: string | null; x: number; y: number; type?: string; enabled?: boolean; allowTrafficStop?: boolean; allowTransitThrough?: boolean; allowDumperWaiting?: boolean | null; resourceIds?: string[] }
 export interface SimulationEdge { from: string; to: string; id?: string; enabled?: boolean; bidirectional?: boolean; distance?: number; speedLimit?: number; geometryKind?: string; controlPoints?: { x: number; y: number }[] | null; resourceIds?: string[]; vendorPath?: VendorPath | null }
 export interface SimulationResource { id: string; type?: string; capacity?: number; boundary?: { x: number; y: number }[] | null }
 export interface SimulationAreaAnnotation { id?: string; sourceType?: string; text?: string; sourceJson?: string; [key: string]: unknown }
@@ -242,6 +242,8 @@ export interface SimulationChargingPriorityTest {
   energyForecast?: 'Observe' | 'Enforce';
   minimumArrivalBatteryPercent?: number;
   predictionErrorPercent?: number;
+  waitingSiteIds?: string[];
+  estimatedApproachWaitSeconds?: number;
   sites: SimulationChargingSiteConfiguration[];
 }
 export interface SimulationConfigureRequest {
@@ -328,7 +330,7 @@ export interface SimulationReport {
   waitingChain?: { taskId?: string; vehicleId?: string; stationId?: string; stepName?: string; waitReason?: string;
     blockedBy?: string; site?: string; restoreAction?: string; expectedFeedback?: string; x?: number; y?: number }[];
   taskSummary?: SimulationTaskRecord[];
-  energyForecasts?: { taskId: string; stationId: string; vehicleId: string; recordedAt?: string;
+  energyForecasts?: { taskId: string; stationId: string; vehicleId: string; recordedAt?: string; trigger?: 'assignment' | 'continuation' | 'reroute' | 'obstacle'; currentSite?: string | null;
     energy: { currentBatteryPercent: number; finishBatteryPercent: number; atChargerBatteryPercent: number; chargerId: string } }[];
   versionComparison?: SimulationVersionComparison;
 }

@@ -671,6 +671,11 @@ class Runtime:
                 ):
                     if isinstance(row.get(key), dict):
                         card[key] = {field: row[key][field] for field in fields if field in row[key]}
+                waiting = row.get('waitingRoute')
+                if isinstance(waiting, dict) and waiting.get('path'):
+                    card['waitingSiteId'] = waiting['path'][-1]
+                if isinstance(row.get('siteEstimates'), list):
+                    card['siteEstimates'] = row['siteEstimates']
                 sessions.append(card)
         except (OSError, ValueError, KeyError, TypeError):
             sessions = None
@@ -1191,7 +1196,7 @@ class Runtime:
         if type(admission) is not int or not 0 <= admission <= 8:
             raise ValueError('下游准入数量须为0至8的整数，0表示不另行限流。')
         charging = self._validate_charging_priority(payload.get('chargingPriorityTest'), nodes, resources,
-                                                    normalized_vehicles)
+                                                    normalized_vehicles, set(targets))
         result = dict(name=payload.get('name') or navigation.get('name') or 'custom-simulation',
                     mapDefinition=navigation, stations=normalized_stations,
                     vehicles=normalized_vehicles, dumper=dict(dumpingSite=dumping, waitingSite=waiting, waitingSites=waiting_sites, resourceId=resource_id),
@@ -1202,7 +1207,7 @@ class Runtime:
         return result
 
     @classmethod
-    def _validate_charging_priority(cls, value, nodes, resources, vehicles):
+    def _validate_charging_priority(cls, value, nodes, resources, vehicles, business_sites=()):
         """Validate the optional charging-priority experiment (充电优先仿真验收 CP01).
 
         Absent or enabled=false keeps the original simulation behaviour.  Every
@@ -1216,7 +1221,8 @@ class Runtime:
                                                         'targetBatteryPercent', 'defaultStandbySiteId',
                                                         'minimumAvailableVehicles', 'maximumVehiclesOutOfService',
                                                         'preemptionReleaseBatteryPercent', 'energyForecast',
-                                                        'minimumArrivalBatteryPercent', 'predictionErrorPercent', 'sites'}:
+                                                        'minimumArrivalBatteryPercent', 'predictionErrorPercent', 'sites',
+                                                        'waitingSiteIds', 'estimatedApproachWaitSeconds'}:
             raise ValueError('充电优先实验字段无效。')
         if type(value.get('enabled')) is not bool:
             raise ValueError('充电优先实验须明确启用或停用。')
@@ -1290,6 +1296,24 @@ class Runtime:
                                    resourceId=resource_id, allowedVehicleIds=list(allowed)))
         if standby and any(site['exitSiteId'] == standby or site['chargingSiteId'] == standby for site in normalized):
             raise ValueError('充电返回待机点不能是充电出口或充电点。')
+        waiting = value.get('waitingSiteIds', [])
+        traffic_wait = value.get('estimatedApproachWaitSeconds', 0)
+        if not isinstance(waiting, list) or any(not isinstance(site, str) or site not in nodes for site in waiting) or len(set(waiting)) != len(waiting):
+            raise ValueError('等桩位必须为不重复的有效地图节点。')
+        if type(traffic_wait) is not int or not 0 <= traffic_wait <= 3600:
+            raise ValueError('预计进桩路权等待须为0至3600秒。')
+        excluded = set(business_sites) | points | {site['exitSiteId'] for site in normalized} | {standby}
+        for site in waiting:
+            node = nodes[site]
+            ids = node.get('resourceIds') or []
+            parking = resources.get(ids[0]) if len(ids) == 1 else None
+            if (site in excluded or node.get('enabled', True) is not True or node.get('type') != 'WaitingPoint'
+                    or node.get('allowTrafficStop') is not True or node.get('allowTransitThrough', False) is not False
+                    or not parking or parking.get('type') != 'Station' or parking.get('capacity', 1) != 1
+                    or len(parking.get('boundary') or []) < 3
+                    or any(ids[0] in (other.get('resourceIds') or []) for key, other in nodes.items()
+                           if key != site and other.get('enabled', True))):
+                raise ValueError(f'等桩位{site}须为允许停车、带独占边界且不用于业务通行的停车点。')
         low_vehicles = [v for v in vehicles if v['batteryPercent'] <= start]
         unmatched = [v['id'] for v in low_vehicles
                      if not any(v['id'] in site['allowedVehicleIds'] for site in normalized)]
@@ -1299,7 +1323,8 @@ class Runtime:
                     targetBatteryPercent=target, defaultStandbySiteId=standby,
                     minimumAvailableVehicles=minimum, maximumVehiclesOutOfService=maximum,
                     preemptionReleaseBatteryPercent=release, energyForecast=forecast,
-                    minimumArrivalBatteryPercent=arrival, predictionErrorPercent=margin, sites=normalized)
+                    minimumArrivalBatteryPercent=arrival, predictionErrorPercent=margin, sites=normalized,
+                    waitingSiteIds=waiting, estimatedApproachWaitSeconds=traffic_wait)
 
     def _default_configuration(self, count):
         table = self._bound_plc_table()
@@ -1651,6 +1676,9 @@ class Runtime:
             # After the private signal table is bound: the charging runtime's communication file mirrors the PLC.
             self._apply_charging_priority(configuration.get('chargingPriorityTest'), settings, robots, target, port)
             if configuration.get('chargingPriorityTest'):
+                settings['Charging']['EstimatedGainPercentPerMinuteByVehicle'] = {
+                    vehicle['id']: vehicle['chargingGainPercentPerHour'] / 60 for vehicle in configuration['vehicles']}
+            if configuration.get('chargingPriorityTest'):
                 charging = configuration['chargingPriorityTest']
                 lab['simulationConfiguration']['chargingPriorityTest'] = copy.deepcopy(charging)
                 settings['DispatchEnergy'] = dict(
@@ -1715,7 +1743,8 @@ class Runtime:
                                     MinimumAvailableVehicles=charging['minimumAvailableVehicles'],
                                     MaximumVehiclesOutOfService=charging['maximumVehiclesOutOfService'],
                                     PreemptionReleaseBatteryPercent=charging['preemptionReleaseBatteryPercent'],
-                                    Sites=sites)
+                                    WaitingSiteIds=charging.get('waitingSiteIds', []),
+                                    EstimatedApproachWaitSeconds=charging.get('estimatedApproachWaitSeconds', 0), Sites=sites)
         settings['RobokitCharging'] = dict(settings.get('RobokitCharging') or {}, RelayControlConfirmed=True,
                                            VehicleOtherApiPorts={r['VehicleId']: r['OtherApiPort'] for r in robots})
         settings['ChargerMonitoring'] = dict(settings.get('ChargerMonitoring') or {}, Enabled=False, Addresses=[])

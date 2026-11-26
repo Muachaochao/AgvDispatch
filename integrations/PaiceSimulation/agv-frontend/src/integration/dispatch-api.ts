@@ -13,6 +13,9 @@ export interface DispatchChargingSession {
   phase: string;
   message?: string;
   phaseSince?: string;
+  waitingSiteId?: string;
+  siteEstimates?: { siteId: string; bayWaitSeconds?: number | null; trafficWaitSeconds?: number | null;
+    travelSeconds?: number | null; startInSeconds?: number | null }[];
   site?: { id?: string; chargingSiteId?: string; exitSiteId?: string } | null;
   targetBatteryPercent?: number | null;
   battery?: { batteryPercent?: number | null; current?: number | null; charging?: boolean | null } | null;

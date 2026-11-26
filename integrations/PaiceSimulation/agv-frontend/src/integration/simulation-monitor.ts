@@ -202,6 +202,7 @@ const chargingLabels: Record<string, string> = {
   SessionRunning: '充电中', StoppingCharge: '正在停充', AwaitingStop: '确认已停充',
   SendingExit: '准备离桩', Exiting: '正在离桩', SendingUndock: '准备离桩',
   Undocking: '正在离桩', SendingReturn: '准备返回待机点', Returning: '返回待机点',
+  SendingToWaitingSite: '准备前往安全等桩位', GoingToWaitingSite: '前往安全等桩位',
   Hold: '充电暂停',
 }
 
@@ -211,17 +212,21 @@ export function chargingPresentation(sessions: readonly DispatchChargingSession[
   const { phase, site, battery } = session
   const pending = phase === 'Queued' || phase === 'WaitingForBusiness'
   const confirmed = phase === 'Charging' || phase === 'SessionRunning' && battery?.charging === true
-  const label = pending ? business ? '业务完成后充电' : '排队充电'
+  const label = pending ? business ? '业务完成后充电' : session.waitingSiteId ? '安全位等桩' : '排队充电'
     : phase === 'AwaitingStop' && session.shutdownVerified ? '等待离桩'
     : phase === 'SessionRunning' && !confirmed ? '等待充电确认'
     : chargingLabels[phase]
   if (!label) return undefined
-  const target = ['SendingReturn', 'Returning'].includes(phase) ? session.returnSiteId
+  const staging = ['SendingToWaitingSite', 'GoingToWaitingSite'].includes(phase)
+  const target = staging ? session.waitingSiteId : ['SendingReturn', 'Returning'].includes(phase) ? session.returnSiteId
     : ['SendingExit', 'Exiting', 'SendingUndock', 'Undocking'].includes(phase) ? site?.exitSiteId
     : pending || phase === 'Hold' ? undefined : site?.chargingSiteId
   const current = confirmed && battery?.current != null && battery.current > 0 ? battery.current : null
+  const earliest = session.siteEstimates?.filter(estimate => estimate.startInSeconds != null)
+    .sort((a, b) => a.startInSeconds! - b.startInSeconds!)[0]
   const details = [
-    site?.id,
+    site?.id ?? session.waitingSiteId,
+    pending && earliest?.startInSeconds != null ? `${earliest.siteId} 约 ${Math.ceil(earliest.startInSeconds)} 秒` : undefined,
     session.targetBatteryPercent == null ? undefined : `目标 ${session.targetBatteryPercent}%`,
     current == null ? undefined : `${current.toFixed(1)} A`,
   ].filter(Boolean).join(' · ')

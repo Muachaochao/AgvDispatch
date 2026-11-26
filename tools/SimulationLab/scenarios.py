@@ -1900,7 +1900,8 @@ def execute(runtime, request):
                     item = json.loads(row['Evidence'])
                     energy = {key[0].lower() + key[1:]: value for key, value in item['energy'].items()}
                     energy_forecasts.append(dict(taskId=row['TaskId'], stationId=item['stationId'],
-                        vehicleId=item['vehicleId'], recordedAt=row['OccurredAt'], energy=energy))
+                        vehicleId=item['vehicleId'], recordedAt=row['OccurredAt'], energy=energy,
+                        trigger=item.get('trigger', 'assignment'), currentSite=item.get('currentSite')))
             except (sqlite3.Error, ValueError, KeyError, TypeError):
                 energy_forecasts = []
         report = dict(id=runtime.scenario['id'], name=request['name'], status=result_status, message=message, checks=checks,

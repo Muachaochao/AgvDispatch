@@ -57,6 +57,9 @@ export interface ChargerTelemetrySnapshot {
 }
 export interface ChargingSession {
   sessionId: string; vehicleId: string; phase: string; message: string; updatedAt: string; site?: ChargingSite;
+  waitingRoute?: { path: string[] };
+  siteEstimates?: { siteId: string; bayWaitSeconds?: number | null; trafficWaitSeconds?: number | null;
+    travelSeconds?: number | null; startInSeconds?: number | null }[];
   battery?: ChargingBatteryReading; requestId?: string; originSiteId?: string | null; returnSiteId?: string | null;
   requestedReturnSiteId?: string | null; targetBatteryPercent?: number | null; requiredPositiveSeconds?: number | null;
   scriptOperationId?: string | null; workflowStatus?: ChargingWorkflowStatus; shutdownVerified?: boolean;
@@ -70,6 +73,7 @@ export interface ChargingStatus {
 
 export const chargingPhaseLabels: Record<string, string> = {
   Queued: '排队', WaitingForBusiness: '等待业务安全结束', Reserved: '已预留充电位',
+  SendingToWaitingSite: '准备前往安全等桩位', GoingToWaitingSite: '前往安全等桩位',
   SendingToCharger: '前往命令待确认', GoingToCharger: '前往接近点',
   SendingDock: '对接命令待确认', Docking: '识别并低速对接',
   StartingSession: '建立充电会话', SessionRunning: '充电会话运行中',

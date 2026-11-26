@@ -180,13 +180,15 @@ onMounted(() => {
         <p v-if="!status.sessions.length">暂无充电会话。</p>
         <div v-else class="charge-table-wrap"><table><thead><tr><th>车辆 / 充电位</th><th>后台流程阶段</th><th>目标 / 返程</th><th>车辆电池采样</th><th>流程说明</th><th>操作</th></tr></thead><tbody>
           <tr v-for="row in [...status.sessions].reverse()" :key="row.sessionId">
-            <td><strong>{{row.vehicleId}}</strong><small>{{row.site?.id ?? '等待分配'}}</small></td>
+            <td><strong>{{row.vehicleId}}</strong><small>{{row.site?.id ?? row.waitingRoute?.path.at(-1) ?? '等待分配'}}</small></td>
             <td><span :class="{ 'charge-error': row.phase === 'Hold' }">{{phaseLabel(row.phase)}}</span><details><summary>原始阶段</summary><code>{{row.phase}}</code></details><small>{{when(row.updatedAt)}}</small></td>
             <td>{{target(row)}}<small>起点：{{row.originSiteId ?? '待交接后确定'}}</small><small>返程：{{row.returnSiteId ?? row.requestedReturnSiteId ?? '待规划'}}</small></td>
             <td>{{row.battery?.batteryPercent ?? '—'}}%<small>{{row.battery?.current ?? '—'}} A · {{row.battery?.temperature ?? '—'}} ℃</small></td>
             <td class="charge-reason">{{industrialText(row.message)}}
               <template v-if="matchingChargingWorkflow(row)"><small>{{matchingChargingWorkflow(row)?.message}}</small><small>本段连续充电：{{positiveSeconds(row)}} · 停充核验：{{row.shutdownVerified || matchingChargingWorkflow(row)?.shutdownVerified ? '已确认' : '尚未确认'}}</small></template>
-              <small>{{row.sessionId}}</small></td>
+              <details v-if="row.siteEstimates?.length"><summary>候选桩时间</summary>
+                <small v-for="estimate in row.siteEstimates" :key="estimate.siteId">{{ estimate.siteId }} · 空桩 {{ estimate.bayWaitSeconds == null ? '未知' : `${Math.ceil(estimate.bayWaitSeconds)} 秒` }} · 进路 {{ estimate.trafficWaitSeconds == null ? '未知' : `${Math.ceil(estimate.trafficWaitSeconds)} 秒` }} · 行驶 {{ estimate.travelSeconds == null ? '未知' : `${Math.ceil(estimate.travelSeconds)} 秒` }}</small>
+              </details><small>{{row.sessionId}}</small></td>
             <td><div class="charge-actions"><el-button v-if="row.phase !== 'Completed'" size="small" :disabled="pending" @click="open(row, 'stop')">停止申请</el-button>
               <template v-if="row.phase === 'Hold'"><el-button size="small" :disabled="pending" @click="open(row, 'continue')">核对续接</el-button><el-button size="small" :disabled="pending" @click="open(row, 'close')">核对离位</el-button></template></div></td>
           </tr>

@@ -130,6 +130,8 @@ const chargingStart = ref(25), chargingCritical = ref(15), chargingTarget = ref(
 const chargingStandbySiteId = ref('');
 const chargingMinimumAvailableVehicles = ref(0), chargingMaximumVehiclesOutOfService = ref(0);
 const chargingPreemptionRelease = ref(50);
+const chargingWaitingSiteIds = ref<string[]>([]);
+const chargingApproachWaitSeconds = ref(0);
 const chargingSites = ref<SimulationChargingSiteConfiguration[]>([]);
 const inspectionSite = ref(''), dumperResourceId = ref('');
 const customVehicles = ref([
@@ -292,6 +294,20 @@ const chargingPointOptions = computed(() => mapNodes.value.filter(node => node.t
 const chargingStandbyOptions = computed(() => mapNodes.value.filter(node => node.enabled !== false &&
   node.type !== 'ChargingPoint' && node.allowTrafficStop === true)
   .map(node => ({ value: node.id, label: `${node.id}${node.agvSiteId && node.agvSiteId !== node.id ? ` · ${node.agvSiteId}` : ''}` })));
+const chargingWaitingOptions = computed(() => {
+  const excluded = new Set([waitingSite.value, dumpingSite.value, chargingStandbySiteId.value, inspectionSite.value,
+    ...additionalWaitingSites.value, ...stationDrafts.value.map(station => station.pickupSite),
+    ...chargingSites.value.flatMap(site => [site.chargingSiteId, site.exitSiteId])]);
+  const nodes = mapNodes.value;
+  const resources = new Map((mapDefinition.value?.resources ?? []).map(resource => [resource.id, resource]));
+  return nodes.filter(node => {
+    const parking = resources.get(node.resourceIds?.[0] ?? '');
+    return node.enabled !== false && node.type === 'WaitingPoint' && node.allowTrafficStop === true &&
+      node.allowTransitThrough !== true && !excluded.has(node.id) && node.resourceIds?.length === 1 &&
+      parking?.type === 'Station' && (parking.capacity ?? 1) === 1 && (parking.boundary?.length ?? 0) >= 3 &&
+      !nodes.some(other => other.enabled !== false && other.id !== node.id && other.resourceIds?.includes(parking.id));
+  }).map(node => ({ value: node.id, label: node.id })).sort((a, b) => a.label.localeCompare(b.label, 'zh-CN', { numeric: true }));
+});
 const chargingBayOptions = computed(() => (mapDefinition.value?.resources ?? []).filter(resource => resource.type === 'ChargingBay')
   .map(resource => ({ value: resource.id, label: `${resource.id} · 容量 ${resource.capacity ?? 1}` })));
 function addChargingSite() {
@@ -1047,6 +1063,10 @@ const configurationProblems = computed(() => {
       vehicle.chargingGainPercentPerHour > 1000) problems.push(`${label}充电参数无效（0–1000 %/h）。`);
   });
   if (chargingEnabled.value) {
+    if (chargingWaitingSiteIds.value.some(id => !chargingWaitingOptions.value.some(option => option.value === id)))
+      problems.push('等桩位必须使用单独核定的独占停车位，请重新选择。');
+    if (!Number.isInteger(chargingApproachWaitSeconds.value) || chargingApproachWaitSeconds.value < 0 || chargingApproachWaitSeconds.value > 3600)
+      problems.push('预计进桩路权等待须为0至3600秒。');
     if (![chargingArrivalReserve.value, chargingForecastMargin.value].every(Number.isFinite) ||
       chargingArrivalReserve.value <= 0 || chargingForecastMargin.value < 0 ||
       chargingArrivalReserve.value + chargingForecastMargin.value > 100)
@@ -1357,6 +1377,7 @@ function configurationDraft(): SimulationConfigureRequest | null {
       preemptionReleaseBatteryPercent: chargingPreemptionRelease.value,
       energyForecast: chargingEnergyForecast.value,
       minimumArrivalBatteryPercent: chargingArrivalReserve.value, predictionErrorPercent: chargingForecastMargin.value,
+      waitingSiteIds: [...chargingWaitingSiteIds.value], estimatedApproachWaitSeconds: chargingApproachWaitSeconds.value,
       sites: chargingSites.value.map(site => ({ ...site, allowedVehicleIds: [...site.allowedVehicleIds] })) } } : {}),
     plcSignalTable: { ...plcTableMetadata.value, csvText: plcTableText.value },
     mapIdentity: mapIdentityDraft.value
@@ -1630,6 +1651,8 @@ function accept(next: SimulationStatus) {
     chargingEnergyForecast.value = charging?.energyForecast ?? 'Observe';
     chargingArrivalReserve.value = charging?.minimumArrivalBatteryPercent ?? 15;
     chargingForecastMargin.value = charging?.predictionErrorPercent ?? 3;
+    chargingWaitingSiteIds.value = [...(charging?.waitingSiteIds ?? [])];
+    chargingApproachWaitSeconds.value = charging?.estimatedApproachWaitSeconds ?? 0;
     chargingStart.value = charging?.startBatteryPercent ?? 25; chargingCritical.value = charging?.criticalBatteryPercent ?? 15;
     chargingTarget.value = charging?.targetBatteryPercent ?? 80;
     chargingStandbySiteId.value = charging?.defaultStandbySiteId ?? '';
@@ -2350,6 +2373,10 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
                 <label>同时离线上限<input v-model.number="chargingMaximumVehiclesOutOfService" type="number" min="0" step="1" /><small>0 表示只受最少可用车数限制。</small></label>
                 <label>抢占放行 / %<input v-model.number="chargingPreemptionRelease" type="number" min="1" max="100" step="1" /><small>严重低电车等桩时，达到此电量的车可提前停充让位。</small></label>
               </div>
+              <div class="form-row">
+                <label>安全等桩位<ElSelectV2 v-model="chargingWaitingSiteIds" :options="chargingWaitingOptions" :disabled="configurationLocked" :teleported="false" class="topology-select" multiple filterable clearable /><small>{{ chargingWaitingOptions.length ? '双桩占用时只允许去已核定的等桩位。' : '当前地图没有独立等桩位。' }}</small></label>
+                <label>预计进桩路权等待 / 秒<input v-model.number="chargingApproachWaitSeconds" :disabled="configurationLocked" type="number" min="0" max="3600" step="1" /><small>已占用进桩路权的估计时间，用于比较选桩。0 表示未知。</small></label>
+              </div>
               <p class="charging-preview">按当前车辆电量，启动后进入充电队列的顺序：<b>{{ chargingQueuePreview.length ? chargingQueuePreview.join(' → ') : '无（所有车辆高于启动阈值）' }}</b></p>
               <div v-for="(site, index) in chargingSites" :key="index" class="vehicle-config-row charging-site-row">
                 <label>充电位 ID<input v-model.trim="site.id" maxlength="64" /></label>
@@ -2584,9 +2611,10 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
         <p v-if="!report" class="report-empty">尚无报告。运行场景后显示任务、命令、PLC、交通和残留占用检查；未取得证据的项目保留为未核定。</p>
         <template v-else><p v-if="report.message">{{ industrialText(report.message) }}</p><p v-if="firstFailure" class="first-failure"><b>第一失败原因</b>{{ industrialText(firstFailure) }}</p><details v-if="report.versionComparison" class="report-version"><summary>本轮绑定的后台版本与配置</summary><p>{{ industrialText(report.versionComparison.message) }}</p><p>现场：{{ report.versionComparison.field?.informationalVersion || report.versionComparison.field?.buildId || '身份未核定' }} · 仿真：{{ report.versionComparison.simulation?.informationalVersion || report.versionComparison.simulation?.buildId || '身份未核定' }}</p><ul><li v-for="(difference, index) in report.versionComparison.differences ?? []" :key="index">{{ difference.label || '待核定项目' }}：现场 {{ industrialText(difference.field ?? '未取得') }}；仿真 {{ industrialText(difference.simulation ?? '未取得') }}</li></ul></details><dl v-if="metrics.length" class="report-metrics"><div v-for="[key, value] in metrics" :key="key"><dt>{{ simulationMetricLabel(key) }}</dt><dd>{{ simulationMetricValue(value) }}</dd></div></dl>
           <div v-if="report.energyForecasts?.length" class="report-table">
-            <h4>派单时的电量预估</h4>
-            <table><thead><tr><th>工位</th><th>车辆</th><th>接单电量</th><th>预计完工</th><th>预计到桩</th></tr></thead>
-              <tbody><tr v-for="row in report.energyForecasts" :key="row.taskId"><td>{{ row.stationId }}</td><td>{{ row.vehicleId }}</td>
+            <h4>派单与途中电量预估</h4>
+            <table><thead><tr><th>工位</th><th>车辆</th><th>复核时点</th><th>当时电量</th><th>预计完工</th><th>预计到桩</th></tr></thead>
+              <tbody><tr v-for="(row, index) in report.energyForecasts" :key="`${row.taskId}-${index}`"><td>{{ row.stationId }}</td><td>{{ row.vehicleId }}</td>
+                <td>{{ row.trigger === 'obstacle' ? '障碍改道' : row.trigger === 'reroute' ? '重新规划' : row.trigger === 'continuation' ? '滚动续行' : '派单' }}{{ row.currentSite ? ` · ${row.currentSite}` : '' }}</td>
                 <td>{{ row.energy.currentBatteryPercent.toFixed(1) }}%</td><td>{{ row.energy.finishBatteryPercent.toFixed(1) }}%</td>
                 <td>{{ row.energy.atChargerBatteryPercent.toFixed(1) }}% · {{ row.energy.chargerId }}</td>
               </tr></tbody></table>
