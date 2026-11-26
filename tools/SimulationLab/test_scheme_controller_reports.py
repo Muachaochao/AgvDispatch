@@ -181,7 +181,8 @@ class ReportTests(unittest.TestCase):
 
     def test_replay_retains_actual_station_load_and_obstacle_evidence(self):
         car = dict(x=1, y=2, angle=1.5707963267948966, station='CNC-024',
-                   loaded=True, blocked=True, blockedByVehicle='AGV-02', paused=False, offline=False)
+                   loaded=True, blocked=True, blockedByVehicle='AGV-02', paused=False, offline=False,
+                   batteryPercent=24.9, charging=False)
         (self.run / 'observations.jsonl').write_text(json.dumps(
             dict(time=1, device=dict(cars={'AGV-01': car}), tasks={}, leases=[])) + '\n', encoding='utf-8')
         value = replay(self.runtime, self.identity)['timeline'][0]['vehicles'][0]
@@ -190,12 +191,15 @@ class ReportTests(unittest.TestCase):
         self.assertTrue(value['blocked'])
         self.assertEqual(value['blockedByVehicle'], 'AGV-02')
         self.assertEqual(value['angle'], car['angle'])
+        self.assertEqual(value['batteryPercent'], 24.9)
+        self.assertIs(value['charging'], False)
 
     def test_older_replay_keeps_site_and_does_not_invent_load_evidence(self):
         self.observations(1)
         car = replay(self.runtime, self.identity)['timeline'][0]['vehicles'][0]
         self.assertEqual(car['site'], 'S')
         self.assertIsNone(car['loaded'])
+        self.assertIsNone(car['batteryPercent'])
 
     def test_replay_response_size_is_bounded_even_for_large_repeated_waiting_chains(self):
         self.observations(90, '等待' * 2500)

@@ -220,6 +220,7 @@ def replay(runtime, identity):
         value = json.loads(line)
         vehicles = [dict(vehicleId=vehicle, x=car.get('x'), y=car.get('y'), angle=car.get('angle'),
             site=car.get('station') or car.get('site'), loaded=car.get('loaded'),
+            batteryPercent=car.get('batteryPercent'), charging=car.get('charging'),
             blocked=car.get('blocked'), blockedByVehicle=car.get('blockedByVehicle'),
             paused=car.get('paused'), offline=car.get('offline'),
             waitReason=car.get('waitReason'), taskId=car.get('current_task'))

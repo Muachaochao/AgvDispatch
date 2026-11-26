@@ -239,6 +239,9 @@ export interface SimulationChargingPriorityTest {
   enabled: boolean; startBatteryPercent: number; criticalBatteryPercent: number; targetBatteryPercent: number;
   defaultStandbySiteId?: string; minimumAvailableVehicles?: number; maximumVehiclesOutOfService?: number;
   preemptionReleaseBatteryPercent?: number;
+  energyForecast?: 'Observe' | 'Enforce';
+  minimumArrivalBatteryPercent?: number;
+  predictionErrorPercent?: number;
   sites: SimulationChargingSiteConfiguration[];
 }
 export interface SimulationConfigureRequest {
@@ -258,7 +261,7 @@ export interface SimulationGuidance {
   x?: number | null; y?: number | null; taskStage?: string; currentStepStatus?: string; historical?: boolean;
 }
 export interface SimulationReplayFrame {
-  time: number; vehicles?: { vehicleId: string; x: number; y: number; angle?: number; site?: string; waitReason?: string; taskId?: string }[];
+  time: number; vehicles?: { vehicleId: string; x: number; y: number; angle?: number; site?: string; waitReason?: string; taskId?: string; batteryPercent?: number | null; charging?: boolean | null }[];
   tasks?: { taskId: string; stationId?: string; vehicleId?: string; stage?: string; step?: string | number; waitReason?: string }[];
   leases?: unknown[];
 }
@@ -325,6 +328,8 @@ export interface SimulationReport {
   waitingChain?: { taskId?: string; vehicleId?: string; stationId?: string; stepName?: string; waitReason?: string;
     blockedBy?: string; site?: string; restoreAction?: string; expectedFeedback?: string; x?: number; y?: number }[];
   taskSummary?: SimulationTaskRecord[];
+  energyForecasts?: { taskId: string; stationId: string; vehicleId: string; recordedAt?: string;
+    energy: { currentBatteryPercent: number; finishBatteryPercent: number; atChargerBatteryPercent: number; chargerId: string } }[];
   versionComparison?: SimulationVersionComparison;
 }
 

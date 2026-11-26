@@ -97,6 +97,12 @@ var communicationDocument = CommunicationSettingsService.ReadDocument(communicat
 var communicationConfig = communicationDocument?.Configuration ?? CommunicationSettingsService.FromLegacy(plcOptions, agvOptions);
 var chargingOptions = new ChargingOptions();
 builder.Configuration.GetSection("Charging").Bind(chargingOptions);
+var dispatchEnergyOptions = new DispatchEnergyOptions();
+if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("AGV_SIMULATION_ROOT")))
+    builder.Configuration.GetSection("DispatchEnergy").Bind(dispatchEnergyOptions);
+if (!dispatchEnergyOptions.Valid) throw new InvalidOperationException("仿真派单续航参数无效。");
+builder.Services.AddSingleton(dispatchEnergyOptions);
+builder.Services.AddSingleton<DispatchEnergyForecast>();
 var chargerMonitoringOptions = new ChargerMonitoringOptions();
 builder.Configuration.GetSection("ChargerMonitoring").Bind(chargerMonitoringOptions);
 communicationConfig.Chargers ??= [];

@@ -158,27 +158,20 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
     // out-of-service cap both must hold after this vehicle is withdrawn.
     private bool WithdrawalAllowed(string vehicleId,ChargingSession[] rows)
     {
-        var outOfService=rows.Where(s=>s.Phase!=ChargingPhase.Completed)
+        var outOfService=rows.Where(s=>s.HasReservation&&s.Phase!=ChargingPhase.Completed)
             .Select(s=>s.VehicleId).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         if(outOfService.Contains(vehicleId,StringComparer.OrdinalIgnoreCase))return true;
         var available=port.Vehicles.Where(v=>v.Connection==ConnectionState.Online&&!v.VehicleId.Equals(vehicleId,StringComparison.OrdinalIgnoreCase))
             .Select(v=>v.VehicleId).Distinct(StringComparer.OrdinalIgnoreCase).Count(id=>!outOfService.Contains(id,StringComparer.OrdinalIgnoreCase));
         return available>=options.MinimumAvailableVehicles&&(options.MaximumVehiclesOutOfService==0||outOfService.Length+1<=options.MaximumVehiclesOutOfService);
     }
-    // Below critical, queue immediately. Otherwise release a low-battery vehicle into the
-    // charging queue when a bay and the configured fleet withdrawal limits allow it.
-    private bool ShouldWithdraw(string vehicleId,decimal battery,ChargingSession[] rows)=>
-        battery<=options.CriticalBatteryPercent||options.Enabled&&battery<=options.StartBatteryPercent&&
-        BayFreeFor(vehicleId,rows)&&WithdrawalAllowed(vehicleId,rows);
-
     public async Task RunCycleAsync(CancellationToken ct)
     {
         using var lease=await EnterBusinessAsync(ct);
         AuditChargingCapacity();
         if(options.Enabled)
             foreach(var vehicle in port.Vehicles.Where(v=>v.BatteryPercent is >=0&&v.BatteryPercent<=options.StartBatteryPercent&&v.Connection==ConnectionState.Online&&Fresh(v.LastSuccessfulPollAt)))
-                if(!sessions.Any(s=>s.Phase!=ChargingPhase.Completed&&s.VehicleId.Equals(vehicle.VehicleId,StringComparison.OrdinalIgnoreCase))&&
-                   ShouldWithdraw(vehicle.VehicleId,vehicle.BatteryPercent!.Value,sessions))
+                if(!sessions.Any(s=>s.Phase!=ChargingPhase.Completed&&s.VehicleId.Equals(vehicle.VehicleId,StringComparison.OrdinalIgnoreCase)))
                     Save(new("CHARGE-"+Guid.NewGuid().ToString("N"),vehicle.VehicleId,ChargingPhase.Queued,Now,Now,"低电量已进入充电队列；等待业务箱体循环及设备责任安全结束。") {TargetBatteryPercent=options.TargetBatteryPercent});
 
         foreach(var row in sessions.Where(s=>s.HasReservation).ToArray())
@@ -200,10 +193,19 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
                     if(!options.Enabled || port.NewWorkBlockReason is not null)continue;
                     var busy=await port.BusyReasonAsync(row.VehicleId,row.SessionId,ct);
                     if(busy is not null){Save(row with {Phase=ChargingPhase.WaitingForBusiness,Message=busy,UpdatedAt=Now});continue;}
+                    if(row.Phase!=ChargingPhase.Queued)
+                        row=Save(row with {Phase=ChargingPhase.Queued,PhaseSince=Now,UpdatedAt=Now,Message="原任务已闭环，等待可用充电位。"});
+                    var freeSites=options.Sites.Where(s=>s.Commissioned&&CanHandleSite(s,row.VehicleId)&&
+                        s.AllowedVehicleIds.Contains(row.VehicleId,StringComparer.OrdinalIgnoreCase)&&!BayCooling(s)&&
+                        !sessions.Any(other=>other.HasReservation&&other.Site!.ResourceId.Equals(s.ResourceId,StringComparison.OrdinalIgnoreCase))).ToArray();
+                    if(freeSites.Length>0&&!IsCritical(row.VehicleId)&&!WithdrawalAllowed(row.VehicleId,sessions))
+                    {
+                        const string message="等待充电调度名额，已暂停接新单。";
+                        if(row.Message!=message)Save(row with {Message=message,UpdatedAt=Now});
+                        continue;
+                    }
                     var choices=new List<(ChargingSite Site,ChargingRoute Route)>();
-                    foreach(var site in options.Sites.Where(s=>s.Commissioned&&CanHandleSite(s,row.VehicleId)&&s.AllowedVehicleIds.Contains(row.VehicleId,StringComparer.OrdinalIgnoreCase)&&
-                        !BayCooling(s)&&
-                        !sessions.Any(other=>other.HasReservation&&other.Site!.ResourceId.Equals(s.ResourceId,StringComparison.OrdinalIgnoreCase))))
+                    foreach(var site in freeSites)
                         if(await port.PlanWithReturnAsync(row.VehicleId,site,row.RequestedReturnSiteId,ct) is {} route)choices.Add((site,route));
                     foreach(var candidate in choices.OrderBy(c=>c.Route.Cost).ThenBy(c=>c.Site.Id,StringComparer.Ordinal))
                     {

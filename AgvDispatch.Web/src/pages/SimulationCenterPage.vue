@@ -124,6 +124,8 @@ const additionalWaitingSites = ref<string[]>([]);
 const downstreamAdmissionCapacity = ref(0);
 // 充电优先实验：可选；停用时创建的实例与原仿真完全一致。
 const chargingEnabled = ref(false);
+const chargingEnergyForecast = ref<'Observe' | 'Enforce'>('Observe');
+const chargingArrivalReserve = ref(15), chargingForecastMargin = ref(3);
 const chargingStart = ref(25), chargingCritical = ref(15), chargingTarget = ref(80);
 const chargingStandbySiteId = ref('');
 const chargingMinimumAvailableVehicles = ref(0), chargingMaximumVehiclesOutOfService = ref(0);
@@ -1045,6 +1047,10 @@ const configurationProblems = computed(() => {
       vehicle.chargingGainPercentPerHour > 1000) problems.push(`${label}充电参数无效（0–1000 %/h）。`);
   });
   if (chargingEnabled.value) {
+    if (![chargingArrivalReserve.value, chargingForecastMargin.value].every(Number.isFinite) ||
+      chargingArrivalReserve.value <= 0 || chargingForecastMargin.value < 0 ||
+      chargingArrivalReserve.value + chargingForecastMargin.value > 100)
+      problems.push('到桩安全余量须大于 0，预测误差须大于或等于 0，两项合计不得超过 100%。');
     if (![chargingStart.value, chargingCritical.value, chargingTarget.value].every(Number.isFinite) ||
       !(chargingCritical.value > 0 && chargingCritical.value < chargingStart.value && chargingStart.value < chargingTarget.value && chargingTarget.value <= 100))
       problems.push('充电阈值须满足 0 < 严重低电 < 启动 < 退出 ≤ 100。');
@@ -1349,6 +1355,8 @@ function configurationDraft(): SimulationConfigureRequest | null {
       minimumAvailableVehicles: chargingMinimumAvailableVehicles.value,
       maximumVehiclesOutOfService: chargingMaximumVehiclesOutOfService.value,
       preemptionReleaseBatteryPercent: chargingPreemptionRelease.value,
+      energyForecast: chargingEnergyForecast.value,
+      minimumArrivalBatteryPercent: chargingArrivalReserve.value, predictionErrorPercent: chargingForecastMargin.value,
       sites: chargingSites.value.map(site => ({ ...site, allowedVehicleIds: [...site.allowedVehicleIds] })) } } : {}),
     plcSignalTable: { ...plcTableMetadata.value, csvText: plcTableText.value },
     mapIdentity: mapIdentityDraft.value
@@ -1619,6 +1627,9 @@ function accept(next: SimulationStatus) {
     downstreamAdmissionCapacity.value = next.configuration.downstreamAdmissionCapacity ?? 0;
     const charging = next.configuration.chargingPriorityTest;
     chargingEnabled.value = !!charging?.enabled;
+    chargingEnergyForecast.value = charging?.energyForecast ?? 'Observe';
+    chargingArrivalReserve.value = charging?.minimumArrivalBatteryPercent ?? 15;
+    chargingForecastMargin.value = charging?.predictionErrorPercent ?? 3;
     chargingStart.value = charging?.startBatteryPercent ?? 25; chargingCritical.value = charging?.criticalBatteryPercent ?? 15;
     chargingTarget.value = charging?.targetBatteryPercent ?? 80;
     chargingStandbySiteId.value = charging?.defaultStandbySiteId ?? '';
@@ -2325,10 +2336,17 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
                 <label>启动充电 / %<input v-model.number="chargingStart" type="number" min="1" max="99" step="1" /><small>电量不高于此值时排队并停止接新单。</small></label>
                 <label>严重低电 / %<input v-model.number="chargingCritical" type="number" min="1" max="99" step="1" /><small>任何情况下都不再接新业务。</small></label>
                 <label>退出电量 / %<input v-model.number="chargingTarget" type="number" min="2" max="100" step="1" /><small>达到后发送 6005 停止、电流归零再驶离。</small></label>
+                <label>派单续航预估<select v-model="chargingEnergyForecast" :disabled="configurationLocked">
+                  <option value="Observe">只显示预计电量</option><option value="Enforce">余量不足时不派车</option>
+                </select><small>用于全局匹配，在调度诊断查看预计完工和到桩电量。</small></label>
+              </div>
+              <div class="form-row">
+                <label>到桩安全余量 / %<input v-model.number="chargingArrivalReserve" :disabled="configurationLocked" type="number" min="0.1" max="100" step="0.1" /></label>
+                <label>预测误差余量 / 百分点<input v-model.number="chargingForecastMargin" :disabled="configurationLocked" type="number" min="0" max="100" step="0.1" /></label>
               </div>
               <div class="form-row">
                 <label>充电返回待机点<ElSelectV2 v-model="chargingStandbySiteId" :options="chargingStandbyOptions" :disabled="configurationLocked" :teleported="false" class="topology-select" filterable clearable /><small>充满后驶离的专用待机点，不能是充电点或充电出口。</small></label>
-                <label>最少可用车数<input v-model.number="chargingMinimumAvailableVehicles" type="number" min="0" step="1" /><small>低于此数时，非严重低电车辆继续留岗。</small></label>
+                <label>最少可用车数<input v-model.number="chargingMinimumAvailableVehicles" type="number" min="0" step="1" /><small>限制普通低电车辆同时进入充电流程，排队期间暂停接单。</small></label>
                 <label>同时离线上限<input v-model.number="chargingMaximumVehiclesOutOfService" type="number" min="0" step="1" /><small>0 表示只受最少可用车数限制。</small></label>
                 <label>抢占放行 / %<input v-model.number="chargingPreemptionRelease" type="number" min="1" max="100" step="1" /><small>严重低电车等桩时，达到此电量的车可提前停充让位。</small></label>
               </div>
@@ -2565,6 +2583,14 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
         <p v-if="report?.recoveryHold" class="inline-warning">恢复屏障检查已结束，原活动任务保留待核对；该报告不表示完整业务循环已完成。</p>
         <p v-if="!report" class="report-empty">尚无报告。运行场景后显示任务、命令、PLC、交通和残留占用检查；未取得证据的项目保留为未核定。</p>
         <template v-else><p v-if="report.message">{{ industrialText(report.message) }}</p><p v-if="firstFailure" class="first-failure"><b>第一失败原因</b>{{ industrialText(firstFailure) }}</p><details v-if="report.versionComparison" class="report-version"><summary>本轮绑定的后台版本与配置</summary><p>{{ industrialText(report.versionComparison.message) }}</p><p>现场：{{ report.versionComparison.field?.informationalVersion || report.versionComparison.field?.buildId || '身份未核定' }} · 仿真：{{ report.versionComparison.simulation?.informationalVersion || report.versionComparison.simulation?.buildId || '身份未核定' }}</p><ul><li v-for="(difference, index) in report.versionComparison.differences ?? []" :key="index">{{ difference.label || '待核定项目' }}：现场 {{ industrialText(difference.field ?? '未取得') }}；仿真 {{ industrialText(difference.simulation ?? '未取得') }}</li></ul></details><dl v-if="metrics.length" class="report-metrics"><div v-for="[key, value] in metrics" :key="key"><dt>{{ simulationMetricLabel(key) }}</dt><dd>{{ simulationMetricValue(value) }}</dd></div></dl>
+          <div v-if="report.energyForecasts?.length" class="report-table">
+            <h4>派单时的电量预估</h4>
+            <table><thead><tr><th>工位</th><th>车辆</th><th>接单电量</th><th>预计完工</th><th>预计到桩</th></tr></thead>
+              <tbody><tr v-for="row in report.energyForecasts" :key="row.taskId"><td>{{ row.stationId }}</td><td>{{ row.vehicleId }}</td>
+                <td>{{ row.energy.currentBatteryPercent.toFixed(1) }}%</td><td>{{ row.energy.finishBatteryPercent.toFixed(1) }}%</td>
+                <td>{{ row.energy.atChargerBatteryPercent.toFixed(1) }}% · {{ row.energy.chargerId }}</td>
+              </tr></tbody></table>
+          </div>
           <div v-if="report.taskSummary?.length" class="report-table task-records">
             <h4>本轮任务清单 · {{ report.taskSummary.length }} 单 <small>点击任一任务展开九步与交接证据</small></h4>
             <table>
@@ -2627,7 +2653,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
         <template v-if="replay?.timeline.length"><label class="replay-slider">观察时间 · {{ stamp(replayFrame?.time) }} · {{ replayIndex + 1 }}/{{ replay.timeline.length }}<input v-model.number="replayIndex" aria-label="回放时间点" type="range" min="0" :max="replay.timeline.length - 1" step="1" @input="replayPlaying = false" /></label>
           <svg v-if="replay.map && replayGeometry.nodes.length" class="simulation-map replay-map" viewBox="0 0 800 430" role="img" aria-label="历史任务位置回放"><image v-if="showCadReference && replayCadBackground" class="cad-reference" :href="replayCadBackground.href" :x="replayCadBackground.x" :y="replayCadBackground.y" :width="replayCadBackground.width" :height="replayCadBackground.height" :opacity="replayCadBackground.opacity" preserveAspectRatio="none" /><g v-if="replayMapAreas.length" class="map-zones"><g v-for="area in replayMapAreas" :key="area.id"><polygon :points="area.points" :fill="area.fillColor" :fill-opacity="area.fillOpacity" :stroke="area.strokeColor" :stroke-opacity=".55" /><text :x="area.labelX" :y="area.labelY" :fill="area.strokeColor">{{ area.text }}</text></g></g><g class="roads"><path v-for="edge in replayGeometry.edges" :key="edge.key" :d="edge.path" /></g><g v-for="node in replayGeometry.nodes" :key="node.id" class="map-node" :class="{ dense: denseReplay }"><title>{{ mapNodeLabel(node) }} · {{ node.type || '地图节点' }}</title><circle :cx="node.x" :cy="node.y" :r="denseReplay ? (showDenseNodeLabel(node) ? 3 : 1.4) : 3"/><text v-if="!denseReplay || showDenseNodeLabel(node)" :x="node.x + 7" :y="node.y - 7">{{ mapNodeLabel(node) }}</text></g><g v-for="(car, index) in replayGeometry.cars" :key="car.id" class="map-car" :style="{ '--car-color': ['#41d9bf', '#6fb9ff', '#e8bf64', '#cb9aff'][index % 4] }" :transform="`translate(${car.x} ${car.y})`"><circle r="16"/><text x="0" y="-23" text-anchor="middle">{{ car.id }}</text></g></svg>
           <p v-else class="inline-warning">{{ replay.mapMessage || '该轮没有保存完整地图，只显示任务时间轴，不叠加到当前地图。' }}</p>
-          <div class="waiting-chain"><ol><li v-for="car in replayFrame?.vehicles ?? []" :key="car.vehicleId"><b>{{ car.vehicleId }} · {{ car.site || '道路中' }}</b><span>{{ car.taskId || '空闲' }}</span><p>{{ industrialText(car.waitReason || '无阻塞反馈') }}</p></li><li v-for="task in replayFrame?.tasks ?? []" :key="task.taskId"><b>{{ task.taskId }} · {{ task.vehicleId || '等待派车' }}</b><span>{{ task.stationId }} · {{ industrialText(task.step || task.stage || '等待推进') }}</span><p>{{ industrialText(task.waitReason || '无阻塞反馈') }}</p></li></ol></div>
+          <div class="waiting-chain"><ol><li v-for="car in replayFrame?.vehicles ?? []" :key="car.vehicleId"><b>{{ car.vehicleId }} · {{ car.site || '道路中' }}<template v-if="typeof car.batteryPercent === 'number'"> · {{ car.batteryPercent.toFixed(1) }}%</template></b><span>{{ car.charging ? '充电中' : car.taskId || '空闲' }}</span><p>{{ industrialText(car.waitReason || '无阻塞反馈') }}</p></li><li v-for="task in replayFrame?.tasks ?? []" :key="task.taskId"><b>{{ task.taskId }} · {{ task.vehicleId || '等待派车' }}</b><span>{{ task.stationId }} · {{ industrialText(task.step || task.stage || '等待推进') }}</span><p>{{ industrialText(task.waitReason || '无阻塞反馈') }}</p></li></ol></div>
         </template><p v-else-if="replay" class="report-empty">本轮没有可回放的观察采样；不补造位置和任务轨迹。</p>
       </section>
       <details v-if="status?.scenario?.events?.length" class="simulation-panel event-panel"><summary>场景事件 · {{ status.scenario.events.length }} 条</summary><ol><li v-for="(event, index) in [...status.scenario.events].reverse().slice(0, 100)" :key="index"><time>{{ stamp(event.time) }}</time>{{ industrialText(event.message) }}</li></ol></details>

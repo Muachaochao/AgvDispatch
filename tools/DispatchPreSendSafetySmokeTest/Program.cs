@@ -14,6 +14,14 @@ using AgvDispatch.Service;
 
 var checks = 0;
 void Check(bool value, string message) { if (!value) throw new Exception(message); checks++; Console.WriteLine("PASS " + message); }
+var energy = new DispatchEnergyOptions { MinimumArrivalBatteryPercent = 15, PredictionErrorPercent = 2 };
+var rates = new DispatchEnergyProfile { TravelCostPercentPerMeter = .02, IdleCostPercentPerHour = .6, OperationSeconds = 5 };
+var shortEnergy = DispatchEnergyForecast.Calculate(30, 100, 60, 100, 20, "BAY-01", rates, energy);
+var longEnergy = DispatchEnergyForecast.Calculate(30, 700, 60, 100, 20, "BAY-01", rates, energy);
+Check(shortEnergy.Safe && !longEnergy.Safe && shortEnergy.AtChargerBatteryPercent < shortEnergy.FinishBatteryPercent,
+    "the same 30 percent vehicle can finish a short task but lacks arrival reserve for a long task");
+Check(!DispatchEnergyForecast.Calculate(30, 100, 100_000, 100, 20, "BAY-01", rates, energy).Safe,
+    "long waiting can consume the available reserve");
 using var db = DatabaseFactory.Create(new() { DatabasePath = Path.Combine(Path.GetTempPath(), "agv-presend-" + Guid.NewGuid().ToString("N"), "isolated.db") });
 var catalog = new TrafficResourceCatalog([new("R", TrafficResourceType.NarrowAisle)]);
 await new DatabaseInitializer(db, catalog).InitializeAsync(default);

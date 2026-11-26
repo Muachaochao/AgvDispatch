@@ -12,7 +12,7 @@ public sealed class DispatchCandidateFilter(DispatchOrchestratorOptions options,
     IRoutePlanner routePlanner, ITrafficResourceManager trafficResources, DispatchRouteCache? routeCache = null,
     BusinessRunOwnership? businessRun = null, FleetTestOwnership? fleetTest = null,
     IChargingDispatchGuard? charging = null, ITaskSwitchGuard? taskSwitchGuard = null,
-    GlobalPickupRoutePlanner? pickupStaging = null) : IDispatchCandidateFilter
+    GlobalPickupRoutePlanner? pickupStaging = null, DispatchEnergyForecast? energyForecast = null) : IDispatchCandidateFilter
 {
     private readonly AgvDispatch.Application.Tasks.TemporaryDetourDeferral detours = new();
     public string? CheckVehicle(AgvVehicleStatus vehicle, IReadOnlySet<string> occupied, DispatchAssignmentOptions policy)
@@ -96,6 +96,7 @@ public sealed class DispatchCandidateFilter(DispatchOrchestratorOptions options,
         var reasons = vehicles.ToDictionary(v => v.VehicleId, v => CheckVehicle(v, queue.OccupiedVehicles, policy), StringComparer.OrdinalIgnoreCase);
         var result = new DispatchCandidateGraph { Vehicles = vehicles, GeneralReasons = reasons };
         var planningRoutes = new CycleRoutePlanner(routePlanner, routeCache);
+        var dumperWaitingSites = options.GetDumperWaitingSites();
         var reservedStageSites = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var waitingRoutes = new List<TrafficRouteObservation>();
         var canStage = pickupStaging is not null && map is not null &&
@@ -186,6 +187,19 @@ public sealed class DispatchCandidateFilter(DispatchOrchestratorOptions options,
                     continue;
                 }
                 var battery = Math.Min(vehicle.BatteryPercent, agvStates.TryGet(vehicle.VehicleId, out var state) ? state.BatteryPercent ?? 0 : 0);
+                DispatchCandidateEnergy? energy = null;
+                if (energyForecast?.Enabled == true)
+                {
+                    energy = energyForecast.Estimate(vehicle.VehicleId, battery, pickup, options.DumperDumpingSite,
+                        dumperWaitingSites, route, staged?.DeferredSeconds ?? 0, map, planningRoutes, policy);
+                    if (energyForecast.Enforced && energy?.Safe != true)
+                    {
+                        var energyReason = energy is null ? "缺少完整业务或到桩参考路线，无法估算续航。"
+                            : $"预计到桩 {energy.AtChargerBatteryPercent:0.0}%，扣除预测误差后低于安全余量 {energy.MinimumArrivalBatteryPercent:0.0}%。";
+                        rows.Add(new(vehicle.VehicleId, 0, 0, energyReason, false) { Energy = energy });
+                        continue;
+                    }
+                }
                 var sourceZone = policy.SiteZones.FirstOrDefault(p =>
                     MapRouteSiteMapper.IsSameNode(definition, p.Key, vehicle.CurrentStation)).Value;
                 var estimate = EstimateRoute(route, map, policy);
@@ -202,20 +216,29 @@ public sealed class DispatchCandidateFilter(DispatchOrchestratorOptions options,
                         $"先等待并重新匹配，最多再等{Math.Ceiling(deferral):0}秒。未给该候选分配车辆或锁定路线。", false));
                     continue;
                 }
+                var batteryRisk = 1 - (double)battery / 100;
+                if (energyForecast?.Enforced == true && energy is not null)
+                {
+                    var arrivalRisk = 100 - energy.AtChargerBatteryPercent;
+                    var consumption = energy.CurrentBatteryPercent - energy.AtChargerBatteryPercent;
+                    batteryRisk = Math.Clamp((arrivalRisk + consumption) / 200, 0, 1);
+                }
                 var candidate = new DispatchAssignmentCandidate(task.TaskId, vehicle.VehicleId, estimate.Travel)
                 {
                     TrafficWaitSeconds = estimate.TrafficWait + (staged?.DeferredSeconds ?? 0), ReturnSeconds = returnSeconds,
                     CrossZoneSeconds = sourceZone is not null && targetZone is not null && !sourceZone.Equals(targetZone, StringComparison.OrdinalIgnoreCase) ? policy.CrossZoneSeconds : 0,
-                    BatteryRiskSeconds = policy.BatteryRiskSeconds * (1 - (double)battery / 100),
+                    BatteryRiskSeconds = policy.BatteryRiskSeconds * batteryRisk,
                     StandbyBonusSeconds = options.StandbySites.Contains(vehicle.CurrentStation!, StringComparer.OrdinalIgnoreCase) ? policy.StandbyBonusSeconds : 0
                 };
                 result.Edges.Add(candidate); result.Plans[(task.TaskId, vehicle.VehicleId)] = route;
                 if (staged is not null) result.StagedPairs.Add((task.TaskId, vehicle.VehicleId));
                 if (staged is not null) taskStageSite ??= staged.Windows[0].Destination;
-                rows.Add(new(vehicle.VehicleId, candidate.TravelSeconds, candidate.TotalCostSeconds,
-                    staged is null ? "已通过在线、定位、健康、电量、车辆池和路径筛选；发车前仍须实时核验路权。"
-                        : $"首窗可到候车点 {staged.Windows[0].Destination}；后续窗口占用计入预计等待，发车前仍须实时核验。", true)
-                { TrafficWaitSeconds = candidate.TrafficWaitSeconds, ReturnSeconds = candidate.ReturnSeconds, CrossZoneSeconds = candidate.CrossZoneSeconds,
+                var candidateReason = staged is null ? "已通过在线、定位、健康、电量、车辆池和路径筛选；发车前仍须实时核验路权。"
+                    : $"首窗可到候车点 {staged.Windows[0].Destination}；后续窗口占用计入预计等待，发车前仍须实时核验。";
+                if (energyForecast?.Enabled == true && energy is null)
+                    candidateReason += "缺少完整业务或到桩参考路线，当前只观察续航。";
+                rows.Add(new(vehicle.VehicleId, candidate.TravelSeconds, candidate.TotalCostSeconds, candidateReason, true)
+                { Energy = energy, TrafficWaitSeconds = candidate.TrafficWaitSeconds, ReturnSeconds = candidate.ReturnSeconds, CrossZoneSeconds = candidate.CrossZoneSeconds,
                     BatteryRiskSeconds = candidate.BatteryRiskSeconds, StandbyBonusSeconds = candidate.StandbyBonusSeconds });
             }
             if (!result.Edges.Any(e => e.TaskId == task.TaskId) && blocked is { } b)

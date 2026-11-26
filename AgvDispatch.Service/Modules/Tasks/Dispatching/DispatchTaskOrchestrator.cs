@@ -32,7 +32,7 @@ public sealed partial class DispatchTaskOrchestrator(
     CompletedTransportRouteReleaseService? completedRouteRelease=null,
     DispatchTaskStepOptions? stepOptions=null, AgvOptions? agvOptions=null,
     GlobalPickupRoutePlanner? pickupStaging=null, DispatchTrafficWakeup? trafficWakeup=null,
-    TimeProvider? clock=null) : IsolatedBackgroundService
+    TimeProvider? clock=null, IExecutionEvidenceJournal? evidenceJournal=null) : IsolatedBackgroundService
 {
     private readonly TimeProvider _clock = clock ?? TimeProvider.System;
     private TimeSpan BusinessDelay(int milliseconds) => _clock is SimulationTimeProvider simulation

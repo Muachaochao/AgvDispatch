@@ -90,8 +90,13 @@ public sealed record DispatchAssignmentResult
     public double ElapsedMilliseconds { get; init; }
 }
 
+public sealed record DispatchCandidateEnergy(double CurrentBatteryPercent, double BusinessCostPercent,
+    double FinishBatteryPercent, double AtChargerBatteryPercent, string ChargerId,
+    double PredictionErrorPercent, double MinimumArrivalBatteryPercent, bool Safe);
+
 public sealed record DispatchOptimizationCandidate(string VehicleId, double TravelSeconds, double TotalCost, string Reason, bool Eligible)
 {
+    public DispatchCandidateEnergy? Energy { get; init; }
     public double TrafficWaitSeconds { get; init; }
     public double ReturnSeconds { get; init; }
     public double BatteryRiskSeconds { get; init; }
