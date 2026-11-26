@@ -37,7 +37,8 @@ public sealed class ObstacleRecoveryCoordinator(
     MapOptions mapOptions,
     DispatchOrchestratorOptions dispatchOptions,
     TimeProvider? clock = null,
-    ILogger<ObstacleRecoveryCoordinator>? logger = null) : IsolatedBackgroundService
+    ILogger<ObstacleRecoveryCoordinator>? logger = null, DispatchEnergyForecast? energyForecast = null,
+    IRoutePlanner? forecastRoutes = null, IExecutionEvidenceJournal? evidenceJournal = null) : IsolatedBackgroundService
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private readonly TimeProvider _clock = clock ?? TimeProvider.System;
@@ -798,6 +799,26 @@ public sealed class ObstacleRecoveryCoordinator(
             row.Revision++;
             await SaveAsync(row, cancellationToken);
             return;
+        }
+        if (energyForecast?.Enabled == true && forecastRoutes is not null && robot.BatteryPercent is {} battery &&
+            energyForecast.Reassess(row.VehicleId, battery, (DispatchTaskStepType)step.StepType,
+                dispatchOptions.GetPickupSite(task.StationId), dispatchOptions.DumperDumpingSite, dispatchOptions.GetDumperWaitingSites(),
+                new(plan.Route, plan.EdgeIds, plan.Resources, 0), activeMap.Current, forecastRoutes) is {} energy)
+        {
+            var blockedByEnergy = energyForecast.Enforced && !energy.Safe;
+            const string energyHold = "替代路线预计到桩电量不足，保留原任务、载荷和PLC责任，等待低电量处置。";
+            if (evidenceJournal is not null && (!blockedByEnergy || row.Message != energyHold))
+                await evidenceJournal.RecordAsync(row.TaskId, row.StepId, "DispatchEnergyForecast",
+                    new { vehicleId = row.VehicleId, stationId = task.StationId, energy, trigger = "obstacle", currentSite = robot.CurrentStation }, cancellationToken);
+            if (blockedByEnergy)
+            {
+                row.State = ObstacleRecoveryStates.SafetyHold;
+                row.Message = energyHold;
+                row.NextAction = "核对剩余电量与可达安全路线。";
+                row.Revision++;
+                await SaveAsync(row, cancellationToken);
+                return;
+            }
         }
         await traffic.RecordRouteAsync(new TrafficRouteObservation(
             row.StepId, row.TaskId, row.VehicleId, plan.Route[0], plan.Route[^1],

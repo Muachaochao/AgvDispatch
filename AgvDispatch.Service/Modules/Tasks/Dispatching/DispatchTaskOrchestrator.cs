@@ -32,7 +32,7 @@ public sealed partial class DispatchTaskOrchestrator(
     CompletedTransportRouteReleaseService? completedRouteRelease=null,
     DispatchTaskStepOptions? stepOptions=null, AgvOptions? agvOptions=null,
     GlobalPickupRoutePlanner? pickupStaging=null, DispatchTrafficWakeup? trafficWakeup=null,
-    TimeProvider? clock=null, IExecutionEvidenceJournal? evidenceJournal=null) : IsolatedBackgroundService
+    TimeProvider? clock=null, IExecutionEvidenceJournal? evidenceJournal=null, DispatchEnergyForecast? energyForecast=null) : IsolatedBackgroundService
 {
     private readonly TimeProvider _clock = clock ?? TimeProvider.System;
     private TimeSpan BusinessDelay(int milliseconds) => _clock is SimulationTimeProvider simulation
@@ -50,6 +50,7 @@ public sealed partial class DispatchTaskOrchestrator(
     private readonly HashSet<string> _dependencyWaitWarnings =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, TransportContinuationPreview> _continuationPreviews = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (DateTimeOffset At, DispatchCandidateEnergy Energy, string Trigger)> _continuationEnergy = new(StringComparer.Ordinal);
     private readonly TemporaryDetourDeferral _continuationDetours = new();
     private bool UsesDynamicContinuation => optimization?.Options.Mode.Equals("Global", StringComparison.OrdinalIgnoreCase) == true &&
         pickupStaging is { SupportsRollingRoutes: true };
@@ -610,6 +611,8 @@ public sealed partial class DispatchTaskOrchestrator(
         var executing = await tasks.GetExecutingTasksAsync(cancellationToken);
         var activeCommands = executing.Select(task => task.VendorTaskId).ToHashSet(StringComparer.Ordinal);
         _continuationDetours.RetainTasks(activeCommands.OfType<string>().ToHashSet(StringComparer.Ordinal));
+        foreach (var obsolete in _continuationEnergy.Keys.Where(id => !activeCommands.Contains(id)).ToArray())
+            _continuationEnergy.Remove(obsolete);
         foreach (var obsolete in _continuationPreviews.Keys.Where(id => !activeCommands.Contains(id)).ToArray())
             _continuationPreviews.Remove(obsolete);
         foreach (var task in executing)
@@ -890,6 +893,38 @@ public sealed partial class DispatchTaskOrchestrator(
                 next = next with { ResourceIds = next.ResourceIds.Concat(retained)
                     .Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase).ToArray() };
                 windows = windows.Select((window, index) => index == nextIndex ? next : window).ToArray();
+            }
+        }
+        if (energyForecast?.Enabled == true && map is not null && robot.BatteryPercent is {} battery)
+        {
+            var remaining = new RoutePlan([next.Source, windows[^1].Destination],
+                windows.Skip(nextIndex).SelectMany(window => window.EdgeIds).ToArray(), [], 0);
+            var step = task.Stage switch
+            {
+                DispatchTaskStage.GoingToPickup => DispatchTaskStepType.GoToPickup,
+                DispatchTaskStage.ReturningEmptyBox => DispatchTaskStepType.ReturnEmptyBox,
+                _ => DispatchTaskStepType.DeliverFullBoxToDumper
+            };
+            var energy = energyForecast.Reassess(task.VehicleId, battery, step, options.GetPickupSite(task.StationId),
+                options.DumperDumpingSite, options.GetDumperWaitingSites(), remaining, map, routePlanner);
+            if (energy is not null)
+            {
+                var trigger = windows.Skip(nextIndex).SelectMany(window => window.EdgeIds).SequenceEqual(
+                    payload.Windows.Skip(nextIndex).SelectMany(window => window.EdgeIds), StringComparer.OrdinalIgnoreCase)
+                    ? "continuation" : "reroute";
+                var now = _clock.GetUtcNow();
+                if (!_continuationEnergy.TryGetValue(task.VendorTaskId, out var previous) || previous.Trigger != trigger ||
+                    previous.Energy.Safe != energy.Safe || now - previous.At >= TimeSpan.FromSeconds(30))
+                {
+                    if (evidenceJournal is not null)
+                        await evidenceJournal.RecordAsync(task.TaskId, command.StepId, "DispatchEnergyForecast",
+                            new { vehicleId = task.VehicleId, stationId = task.StationId, energy, trigger, currentSite = robot.CurrentStation }, cancellationToken);
+                    _continuationEnergy[task.VendorTaskId] = (now, energy, trigger);
+                    if (!energy.Safe)
+                        logger.LogWarning("续航复核：原任务{TaskId}，车辆{VehicleId}，预计到桩{ArrivalBattery:F1}%，需核对低电量余量。",
+                            task.TaskId, task.VehicleId, energy.AtChargerBatteryPercent);
+                }
+                if (energyForecast.Enforced && !energy.Safe)return TransportWindowAdvanceOutcome.WaitingAtSafePoint;
             }
         }
         // A bound capacity-1 waiting bay is task-level: normalization rebuilds window

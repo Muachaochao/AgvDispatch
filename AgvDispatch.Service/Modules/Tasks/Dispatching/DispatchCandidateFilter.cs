@@ -307,16 +307,22 @@ public sealed class DispatchCandidateFilter(DispatchOrchestratorOptions options,
             return route;
         }
 
-        public RoutePlan? PlanWithoutVehicleOccupancyForComparison(string source, string destination)
+        public RoutePlan? PlanWithoutVehicleOccupancyForComparison(string source, string destination) =>
+            Compare(source, destination, false);
+
+        public RoutePlan? PlanChargingApproachForComparison(string source, string destination) => Compare(source, destination, true);
+
+        private RoutePlan? Compare(string source, string destination, bool charging)
         {
-            var key = "C\u001f" + source + "\u001f" + destination;
+            var key = (charging ? "CH\u001f" : "C\u001f") + source + "\u001f" + destination;
             if (routes.TryGetValue(key, out var cached))
             {
                 Hits++;
                 return cached;
             }
             Misses++;
-            var route = fallback.PlanWithoutVehicleOccupancyForComparison(source, destination);
+            var route = charging ? fallback.PlanChargingApproachForComparison(source, destination)
+                : fallback.PlanWithoutVehicleOccupancyForComparison(source, destination);
             routes[key] = route;
             return route;
         }

@@ -1,6 +1,7 @@
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Application.Maps;
 using AgvDispatch.Domain.Maps;
+using AgvDispatch.Domain.Tasks;
 
 namespace AgvDispatch.Service;
 
@@ -64,7 +65,7 @@ public sealed class DispatchEnergyForecast(DispatchEnergyOptions options, Chargi
         foreach (var site in charging.Sites.Where(site => site.Commissioned &&
             site.AllowedVehicleIds.Contains(vehicleId, StringComparer.OrdinalIgnoreCase)))
         {
-            var chargerLeg = Leg(routes.PlanWithoutVehicleOccupancyForComparison(pickup, site.ChargingSiteId));
+            var chargerLeg = Leg(routes.PlanChargingApproachForComparison(pickup, site.ChargingSiteId));
             if (chargerLeg is null) continue;
             var estimate = Calculate(battery, businessMeters, businessSeconds, chargerLeg.Value.Meters,
                 chargerLeg.Value.Seconds, site.Id, profile, options);
@@ -84,6 +85,67 @@ public sealed class DispatchEnergyForecast(DispatchEnergyOptions options, Chargi
                 route.EdgeIds.Any(edge => !map.Graph.Edges.ContainsKey(edge))) return null;
             var time = DispatchCandidateFilter.EstimateRoute(route, map, policy);
             return (route.EdgeIds.Sum(edge => map.Graph.Edges[edge].Distance), time.Travel + time.TrafficWait);
+        }
+    }
+
+    public DispatchCandidateEnergy? Reassess(string vehicleId, decimal battery, DispatchTaskStepType step,
+        string? pickup, string dumper, IReadOnlyList<string> waitingSites, RoutePlan remaining,
+        ActiveMapRuntimeSnapshot? map, IRoutePlanner routes, double projectedWaitSeconds = 0)
+    {
+        if (!Enabled || map is null || pickup is null || battery is < 0 or > 100 ||
+            !options.Vehicles.TryGetValue(vehicleId, out var profile) || Measure(remaining) is not {} leg)
+            return null;
+        var meters = leg.Meters;
+        var seconds = leg.Seconds + Math.Max(0, projectedWaitSeconds) + profile.OperationSeconds;
+        if (step == DispatchTaskStepType.GoToPickup)
+        {
+            var staging = waitingSites.Select(waiting => (Approach: Between(pickup, waiting), Entry: Between(waiting, dumper)))
+                .Where(x => x.Approach.HasValue && x.Entry.HasValue)
+                .OrderBy(x => x.Approach!.Value.Seconds + x.Entry!.Value.Seconds).FirstOrDefault();
+            if (staging is not { Approach: {} approach, Entry: {} entry })return null;
+            meters += approach.Meters + entry.Meters;
+            seconds += approach.Seconds + entry.Seconds + profile.OperationSeconds;
+        }
+        if (step == DispatchTaskStepType.DeliverFullBoxToDumper)
+        {
+            if (remaining.Nodes.LastOrDefault() is not {} end || Between(end, dumper) is not {} entry)return null;
+            meters += entry.Meters;
+            seconds += entry.Seconds;
+        }
+        if (step != DispatchTaskStepType.ReturnEmptyBox)
+        {
+            if (Between(dumper, pickup) is not {} returnLeg)return null;
+            meters += returnLeg.Meters;
+            seconds += returnLeg.Seconds + profile.OperationSeconds;
+            if (step != DispatchTaskStepType.EnterDumpingPosition)seconds += options.ExpectedDumperWaitSeconds;
+        }
+        DispatchCandidateEnergy? best = null;
+        foreach (var site in charging.Sites.Where(site => site.Commissioned &&
+            site.AllowedVehicleIds.Contains(vehicleId, StringComparer.OrdinalIgnoreCase)))
+        {
+            var approach = MapRouteSiteMapper.IsSameNode(map.Definition, pickup, site.ChargingSiteId) ? (0d, 0d) :
+                Measure(routes.PlanChargingApproachForComparison(pickup, site.ChargingSiteId));
+            if (approach is not {} charger)continue;
+            var forecast = Calculate(battery, meters, seconds, charger.Item1, charger.Item2, site.Id, profile, options);
+            if (best is null || forecast.AtChargerBatteryPercent > best.AtChargerBatteryPercent)best = forecast;
+        }
+        return best;
+
+        (double Meters, double Seconds)? Between(string source, string destination) =>
+            MapRouteSiteMapper.IsSameNode(map.Definition, source, destination) ? (0, 0) :
+                Measure(routes.PlanWithoutVehicleOccupancyForComparison(source, destination));
+
+        (double Meters, double Seconds)? Measure(RoutePlan? route)
+        {
+            if (route is null || route.EdgeIds.Count == 0)return null;
+            double distance = 0, time = 0;
+            foreach (var id in route.EdgeIds)
+            {
+                if (!map.Graph.Edges.TryGetValue(id, out var edge) || edge.SpeedLimit <= 0)return null;
+                distance += edge.Distance;
+                time += edge.Distance / edge.SpeedLimit;
+            }
+            return (distance, time);
         }
     }
 
