@@ -1,3 +1,4 @@
+import type { ReplayCoverage, ReplayEvent } from './replay-evidence';
 import type { Snapshot, WebMap } from './types.ts';
 import type { VendorPath } from './vendor-path.ts';
 import { arcInfo } from './map-editing.ts';
@@ -268,7 +269,7 @@ export interface SimulationReplayFrame {
   tasks?: { taskId: string; stationId?: string; vehicleId?: string; stage?: string; step?: string | number; waitReason?: string }[];
   leases?: unknown[];
 }
-export interface SimulationReplay { id: string; timeline: SimulationReplayFrame[]; map?: SimulationMapDefinition; mapMessage?: string | null; sampled?: boolean }
+export interface SimulationReplay { id: string; timeline: SimulationReplayFrame[]; map?: SimulationMapDefinition; mapMessage?: string | null; sampled?: boolean; simulationRate?: number; events?: ReplayEvent[]; evidence?: ReplayCoverage }
 export interface SimulationRecoveryItem {
   ticketId: string; taskId: string; stepId?: string; stepText: string; state: string; reason: string; verified: boolean;
   revision: number; vehicleId?: string | null; vehicleSummary?: string; plcSummary?: string; resourceSummary?: string; loadSummary?: string;

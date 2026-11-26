@@ -873,10 +873,14 @@ class DeviceTwin:
                 api=struct.unpack_from('>H',header,8)[0]
                 request=json.loads(payload) if payload else {}
                 response=self.robokit_reply(api,request)
-                self.log('robokit', api=api, sequence=struct.unpack_from('>H',header,2)[0], request=request,response=response)
+                sequence = struct.unpack_from('>H', header, 2)[0]
+                self.log('robokit', api=api, sequence=sequence, request=request, response=response)
+                command_ids = ([move['task_id'] for move in request['move_task_list']] if
+                               api == 3066 and response.get('ret_code') == 0 else
+                               [request['task_id']] if api in (3051, 3055) and request.get('task_id') else [])
                 if api == 3066 and response.get('ret_code') == 0 and self.drop_next_response:
                     self.drop_next_response = False
-                    self.log('simulation-response-dropped', api=api, sequence=self.control_sequence)
+                    self.log('simulation-response-dropped', api=api, sequence=self.control_sequence, task_ids=command_ids)
                     return
                 data=json.dumps(response,ensure_ascii=False).encode()
                 result=bytearray(header)
@@ -884,6 +888,8 @@ class DeviceTwin:
                 struct.pack_into('>H',result,8,api+10000)
                 writer.write(result+data)
                 await writer.drain()
+                if command_ids:
+                    self.log('robokit-command-response-written', api=api, sequence=sequence, task_ids=command_ids)
         except (asyncio.IncompleteReadError, ConnectionError):
             pass
         except Exception as ex:

@@ -592,7 +592,7 @@ class Observer:
         now = clock.monotonic() if clock else time.monotonic()
         current_pairs = set(mutual_wait_pairs(cars))
         requests = query(self.runtime.root,
-                         "select TaskId,VehicleId,State,ResourceIds from traffic_request where State='Waiting'")
+                         "select TaskId,VehicleId,State,ResourceIds,Reason from traffic_request where State='Waiting'")
         cycles = resource_wait_cycles(requests, leases, ownership, self.resources, cars, holders=holders)
         for cycle in tuple(self.resource_cycle_started):
             if cycle not in cycles:
@@ -669,7 +669,8 @@ def execute(runtime, request):
     evidence = runtime.root / ('simulation-run-' + runtime.scenario['id'])
     evidence.mkdir(exist_ok=False)
     write(evidence / 'scenario.json', dict(**request, startedAt=started,
-        simulationRate=runtime.simulation_rate, rootName=runtime.root.name))
+        simulationRate=runtime.simulation_rate, rootName=runtime.root.name,
+        simulationOriginUnixMs=round(runtime.clock.origin_seconds * 1000)))
     if (runtime.root / 'runtime-release.json').is_file():
         write(evidence / 'runtime-release.json', read(runtime.root / 'runtime-release.json'))
     if (runtime.root / 'navigation.agvmap.json').is_file():
@@ -1919,6 +1920,7 @@ def execute(runtime, request):
             energyForecasts=energy_forecasts,
             callRows=runtime.scenario.get('callRows', []),
             simulationRate=runtime.simulation_rate,
+            simulationOriginUnixMs=round(runtime.clock.origin_seconds * 1000),
             startedAt=started, finishedAt=runtime.clock.time(), evidenceDirectory=evidence.name,
             metrics=dict(taskCount=len(tasks), completedRounds=runtime.scenario['completedRounds'],
                          durationSeconds=runtime.clock.time()-started,
@@ -1931,6 +1933,42 @@ def execute(runtime, request):
                          obstacleAutoDetourSends=auto_detour_sends,
                          **{key:queue_metrics[key] for key in ('maximumWaitingTasks','maximumActiveTasks','maximumDuePlanCalls','maximumBusyWaitingTasks', 'downstreamAdmissionCapacity', 'maximumAdmissionWaitingTasks') if key in queue_metrics}),
             violations=observer.violations if observer else [], scope='正式后台 + 回环Robokit/S7合成模型；碰撞按车辆长宽与朝向的旋转矩形包络检查，并保留5厘米合成余量；超时可发现长期等待，不构成死锁/公平性证明；不代替现场固件、机械及安全验收。')
+        # Capture only this run's committed release audits; historical replay never queries the database.
+        try:
+            from datetime import datetime, timezone
+            lower = datetime.fromtimestamp(started, timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+            upper = datetime.fromtimestamp(report['finishedAt'], timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+            audit = query(runtime.root, 'select AuditId, TaskId, StepId, VehicleId, ResourceId, LeaseId, EvidenceHash, '
+                          'ReleasedAtUtc from traffic_segment_commit_lease '
+                          'where datetime(ReleasedAtUtc) between ? and ? order by ReleasedAtUtc limit 8001', (lower, upper))
+            write(evidence / 'replay-release-audit.json', audit)
+        except (OSError, sqlite3.Error) as error:
+            report['replayReleaseAuditError'] = str(error)
+        try:
+            from datetime import datetime
+            lower = datetime.fromtimestamp(started).strftime('%Y-%m-%d %H:%M:%S')
+            upper = datetime.fromtimestamp(report['finishedAt']).strftime('%Y-%m-%d %H:%M:%S')
+            recoveries = query(runtime.root, 'select TaskId, StepId, VehicleId, OriginalVendorTaskId, '
+                               'NewVendorTaskId, State, SendAttemptedAt from transport_timeout_recovery '
+                               'where datetime(SendAttemptedAt) between ? and ? order by SendAttemptedAt limit 8001',
+                               (lower, upper))
+            for item in recoveries:
+                item['businessTime'] = datetime.fromisoformat(item['SendAttemptedAt']).timestamp()
+            write(evidence / 'replay-recovery-audit.json', recoveries)
+        except (OSError, ValueError, TypeError, sqlite3.Error) as error:
+            report['replayRecoveryAuditError'] = str(error)
+        try:
+            from datetime import datetime
+            lower = datetime.fromtimestamp(started).strftime('%Y-%m-%d %H:%M:%S')
+            upper = datetime.fromtimestamp(report['finishedAt']).strftime('%Y-%m-%d %H:%M:%S')
+            lifecycle = query(runtime.root, 'select EventId, StepId, TaskId, VehicleId, Kind, Reason, ResourceIds, '
+                              'OccurredAt from traffic_lifecycle_event where datetime(OccurredAt) between ? and ? '
+                              'order by OccurredAt limit 8001', (lower, upper))
+            for item in lifecycle:
+                item['businessTime'] = datetime.fromisoformat(item['OccurredAt']).timestamp()
+            write(evidence / 'replay-traffic-lifecycle.json', lifecycle)
+        except (OSError, ValueError, TypeError, sqlite3.Error) as error:
+            report['replayTrafficAuditError'] = str(error)
         write(evidence / 'report.json', report)
         files = [dict(path=p.name, sha256=hashlib.sha256(p.read_bytes()).hexdigest(), bytes=p.stat().st_size) for p in sorted(evidence.iterdir()) if p.is_file()]
         write(evidence / 'manifest.json', files)
