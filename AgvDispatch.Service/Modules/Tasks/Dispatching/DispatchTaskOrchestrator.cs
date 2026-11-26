@@ -867,6 +867,8 @@ public sealed partial class DispatchTaskOrchestrator(
         // only what this attempt added on top of it.
         var heldBeforeAttempt = await trafficResources.GetStepHeldResourceIdsAsync(task.TaskId, command.StepId, cancellationToken)
             ?? [];
+        var occupiedEdges = map is null ? null : routePlanner.GetVehicleOccupiedEdgeIds(map.Definition, next.Source, task.VehicleId);
+        bool IsPhysicallyBlocked(AgvTransportRouteWindow window) => occupiedEdges is not null && window.EdgeIds.Any(occupiedEdges.Contains);
         IReadOnlyList<string>? retained = null;
         if (UsesDynamicContinuation && map is not null)
         {
@@ -874,11 +876,11 @@ public sealed partial class DispatchTaskOrchestrator(
             // Any lease still present after the geometric pass remains protected.
             retained = heldBeforeAttempt;
             var unavailable = await trafficResources.GetUnavailableResourceIdsAsync(task.TaskId, cancellationToken);
-            if (windows.Skip(nextIndex).Any(window => window.ResourceIds.Any(unavailable.Contains)) &&
+            if (windows.Skip(nextIndex).Any(window => IsPhysicallyBlocked(window) || window.ResourceIds.Any(unavailable.Contains)) &&
                 (task.Stage != DispatchTaskStage.ReturningEmptyBox || handshake?.Enabled != true ||
                  await handshake.HandoverVerifiedAsync(task.TaskId, command.StepId, cancellationToken)) &&
                 PlanRemainingTransport(task, payload, map, unavailable) is { } reroute &&
-                IsContinuationWorthTaking(task, payload, map, reroute, next.ResourceIds.Any(unavailable.Contains)))
+                IsContinuationWorthTaking(task, payload, map, reroute, IsPhysicallyBlocked(next) || next.ResourceIds.Any(unavailable.Contains)))
             {
                 windows = GlobalPickupRoutePlanner.ReplaceRemainingWindows(payload, reroute.Windows);
                 if (map is not null)
@@ -936,6 +938,14 @@ public sealed partial class DispatchTaskOrchestrator(
             next.Source, next.Destination, next.EdgeIds, next.ResourceIds, false,
             "车辆已在安全点停稳，原任务申请下一滚动路权窗口。")
             { MapId = map?.MapId, MapVersionId = map?.VersionId };
+        if (IsPhysicallyBlocked(next))
+        {
+            await _trafficLayer.SuspendRecommendationAsync(observation with
+            {
+                Reason = "下一窗口有车辆实体占位，停在当前安全点等待道路腾空或可用路线。"
+            }, cancellationToken);
+            return TransportWindowAdvanceOutcome.WaitingForTraffic;
+        }
         var acquired = await _trafficLayer.AcquireAsync(observation, cancellationToken);
         if (!acquired.Acquired) return TransportWindowAdvanceOutcome.WaitingForTraffic;
 

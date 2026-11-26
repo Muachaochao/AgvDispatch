@@ -22,7 +22,8 @@ public sealed class DispatchPreSendSafetyService(
     PersistentHandshakeExecutor? handshake = null, ITaskHandshakeStore? handshakes = null,
     IChargingDispatchGuard? charging = null, ITaskSwitchGuard? taskSwitchGuard = null,
     FleetTestOwnership? fleetTest = null, BusinessRunOwnership? businessRun = null,
-    DispatchOptimizationService? optimization = null, IDispatchPipelineMonitor? monitor = null) : IDispatchPreSendSafetyService
+    DispatchOptimizationService? optimization = null, IDispatchPipelineMonitor? monitor = null,
+    IRoutePlanner? routePlanner = null) : IDispatchPreSendSafetyService
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -46,6 +47,10 @@ public sealed class DispatchPreSendSafetyService(
             if (payload is null || businessStepId != command.StepId || payload.VehicleId != command.VehicleId ||
                 payload.Path is not { Count: >= 2 } || payload.Source != payload.Path[0] || payload.Destination != payload.Path[^1])
                 return "待发命令负载与原步骤、车辆或路径端点不一致。";
+            if (command.AttemptCount == 0 && payload.WindowIndex > 0 && activeMap.Current is { } map &&
+                payload.Windows.ElementAtOrDefault(payload.WindowIndex) is { } window &&
+                routePlanner?.GetVehicleOccupiedEdgeIds(map.Definition, payload.Source, command.VehicleId).Overlaps(window.EdgeIds) == true)
+                return "待发续行窗口有车辆实体占位，等待道路腾空。";
             var businessSource = payload.Windows.Count > 0 ? payload.Windows[0].Source : payload.Source;
             var businessDestination = payload.Windows.Count > 0 ? payload.Windows[^1].Destination : payload.Destination;
             var task = (await CurrentTasksAsync(ct)).SingleOrDefault(t => t.TaskId == command.TaskId);

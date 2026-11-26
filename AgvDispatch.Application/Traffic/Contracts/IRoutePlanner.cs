@@ -22,6 +22,10 @@ public interface IRoutePlanner
     RoutePlan? PlanForVehicle(string source, string destination, IReadOnlySet<string> unavailableResourceIds,
         string movingVehicleId) => Plan(source, destination, unavailableResourceIds);
 
+    /// <summary>Roads occupied by other vehicles, independently of traffic leases.</summary>
+    IReadOnlySet<string> GetVehicleOccupiedEdgeIds(MapDefinition definition, string source, string vehicleId) =>
+        System.Collections.Frozen.FrozenSet<string>.Empty;
+
     RoutePlan? PlanChargingApproach(string source, string destination, IReadOnlySet<string> unavailableResourceIds,
         string movingVehicleId) => PlanForVehicle(source, destination, unavailableResourceIds, movingVehicleId);
 }
