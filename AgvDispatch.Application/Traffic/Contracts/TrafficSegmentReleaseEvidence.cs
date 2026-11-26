@@ -17,7 +17,8 @@ public interface IAuthoritativeTrafficProgressReader
         ReadAsync(vehicleId, ct);
 }
 public sealed record TrafficBodyEnvelope(string ProfileId,string VehicleId,string CoordinateFrameId,
-    double RadiusFromReportedReferenceMeters,bool CalibrationVerified,bool IncludesMaximumPermittedLoad);
+    double RadiusFromReportedReferenceMeters,bool CalibrationVerified,bool IncludesMaximumPermittedLoad,
+    double? LengthMeters=null,double? WidthMeters=null);
 public sealed record TrafficSegmentLease(string LeaseId,string ResourceId,string TaskId,string StepId,
     string VehicleId,string MapId,string MapVersionId);
 public sealed record TrafficSegmentReleaseContext(string TaskId,string StepId,string VehicleId,string VendorTaskId,

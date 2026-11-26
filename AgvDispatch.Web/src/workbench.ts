@@ -1,5 +1,5 @@
 import type {VendorPath,VendorSource} from './vendor-path.ts';
-export interface Node { id: string; x: number; y: number; type: string; enabled: boolean; resourceIds: string[]; agvSiteId: string | null; layerId?: string }
+export interface Node { id: string; x: number; y: number; type: string; enabled: boolean; resourceIds: string[]; agvSiteId: string | null; allowTrafficStop?: boolean | null; allowTransitThrough?: boolean | null; allowDumperWaiting?: boolean | null; allowChargingWaiting?: boolean | null; layerId?: string }
 export interface Edge { vendorPath?:VendorPath|null; id: string; from: string; to: string; distance: number; speedLimit: number; enabled: boolean; bidirectional: boolean; resourceIds: string[]; geometryKind: string; controlPoints?: {x:number;y:number}[] | null; layerId?: string }
 export interface Resource { id: string; type: string; capacity: number; boundary?: {x:number;y:number}[] | null; layerId?: string }
 export interface AreaAnnotation {id:string;sourceType:string;text:string;boundary:{x:number;y:number}[];strokeColor:string;fillColor:string;fillOpacity:number;layerId?:string;sourceJson?:string}
@@ -27,7 +27,8 @@ export function validateDefinition(d:Definition):string[] {
   for(const item of [...d.nodes,...d.edges,...d.resources])if(item?.layerId!==undefined&&item.layerId!==null&&!name(item.layerId))errors.push('对象图层编号无效');
   for(const [list,label] of [[d.nodes,'航点'],[d.edges,'道路'],[d.resources,'区域']] as const){const ids=new Set<string>();for(const item of list){if(!item||!name(item.id)||ids.has(item.id.toLowerCase()))errors.push(`${label}编号为空或重复`);else ids.add(item.id.toLowerCase());}}
   const nodes=new Set(d.nodes.map(n=>n?.id));const resources=new Set(d.resources.map(r=>r?.id));
-  for(const n of d.nodes){if(!n||!finite(n.x)||!finite(n.y)||!['Waypoint','Station','Intersection','WaitingPoint','ChargingPoint'].includes(n.type)||typeof n.enabled!=='boolean')errors.push(`航点 ${n?.id} 坐标或类型无效`);}
+  for(const n of d.nodes){if(!n||!finite(n.x)||!finite(n.y)||!['Waypoint','Station','Intersection','WaitingPoint','ChargingPoint'].includes(n.type)||typeof n.enabled!=='boolean')errors.push(`航点 ${n?.id} 坐标或类型无效`);
+    if((['allowTrafficStop','allowTransitThrough','allowDumperWaiting','allowChargingWaiting'] as const).some(key=>n[key]!==undefined&&n[key]!==null&&typeof n[key]!=='boolean'))errors.push(`航点 ${n?.id} 的通行或等待角色属性无效`);}
   for(const e of d.edges){if(!e||!nodes.has(e.from)||!nodes.has(e.to)||e.from===e.to||!finite(e.distance)||e.distance<=0||!finite(e.speedLimit)||e.speedLimit<=0||typeof e.enabled!=='boolean'||typeof e.bidirectional!=='boolean')errors.push(`道路 ${e?.id} 端点、距离或速度无效`);
     if(!e||!['Line','CircularArc','CubicBezier'].includes(e.geometryKind)||(e.geometryKind==='CircularArc'&&e.controlPoints?.length!==1)||(e.geometryKind==='CubicBezier'&&e.controlPoints?.length!==2)||e.controlPoints?.some(p=>!finite(p.x)||!finite(p.y)))errors.push(`道路 ${e?.id} 曲线控制点无效`);}
   for(const r of d.resources){if(!r||!['Intersection','NarrowAisle','SingleLane','Station','ChargingBay'].includes(r.type)||!Number.isInteger(r.capacity)||r.capacity<1||r.capacity>1000||r.boundary?.some(p=>!finite(p.x)||!finite(p.y)))errors.push(`区域 ${r?.id} 类型、容量或边界无效`);}

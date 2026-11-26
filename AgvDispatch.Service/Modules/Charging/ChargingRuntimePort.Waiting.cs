@@ -7,11 +7,18 @@ public sealed partial class ChargingRuntimePort
 {
     private async Task<(MapNode Node, string ResourceId)?> WaitingPoint(string id,string vehicleId,CancellationToken ct)
     {
-        if(map.Current is not {} current || Node(id) is not { Type:MapNodeType.WaitingPoint, AllowTrafficStop:true, AllowTransitThrough:false } node ||
-            options.Sites.Any(site=>Node(site.ChargingSiteId)?.Id==node.Id || Node(site.ExitSiteId)?.Id==node.Id) ||
-            dispatch is null || dispatch.GetDumperWaitingSites().Concat(dispatch.StationPickupSites.Values)
-                .Append(options.DefaultStandbySiteId).Any(site=>Node(site)?.Id==node.Id) ||
-            Node(dispatch.DumperDumpingSite??"")?.Id==node.Id || node.ResourceIds.Count!=1)return null;
+        if(map.Current is not {} current || Node(id) is not {} node || dispatch is null)return null;
+        var dumperWaitingIds=dispatch.GetDumperWaitingSites()
+            .Select(site=>Node(site)?.Id).Where(id=>id is not null).Select(id=>id!).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var chargerExitIds=options.Sites.Select(site=>Node(site.ExitSiteId)?.Id)
+            .Where(id=>id is not null).Select(id=>id!).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var sharedRoleIds=dumperWaitingIds.Concat(chargerExitIds).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var excludedIds=options.Sites.Select(site=>Node(site.ChargingSiteId)?.Id)
+            .Concat(dispatch.StationPickupSites.Values.Select(site=>Node(site)?.Id))
+            .Append(Node(dispatch.DumperDumpingSite??"")?.Id)
+            .Append(Node(options.DefaultStandbySiteId)?.Id)
+            .Where(id=>id is not null).Select(id=>id!).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if(!ChargingWaitingSitePolicy.Allows(node,sharedRoleIds,excludedIds) || node.ResourceIds.Count!=1)return null;
         var resource=current.Definition.Resources.SingleOrDefault(item=>item.Id==node.ResourceIds[0]);
         if(resource is not { Type:TrafficResourceType.Station, Capacity:1, Boundary.Count:>=3 } ||
             current.Definition.Nodes.Any(other=>other.Enabled && other.Id!=node.Id && other.ResourceIds.Contains(resource.Id)))return null;
@@ -21,8 +28,12 @@ public sealed partial class ChargingRuntimePort
         var body=envelopes is null?null:await envelopes.ReadAsync(vehicleId,ct);
         if(body is not { CalibrationVerified:true, IncludesMaximumPermittedLoad:true } ||
             !double.IsFinite(body.RadiusFromReportedReferenceMeters) || body.RadiusFromReportedReferenceMeters<=0)return null;
-        var center=new MapPoint2D(node.X,node.Y);var radius=body.RadiusFromReportedReferenceMeters+0.15;
-        if(!ChargingWaitingGeometry.ContainsBody(center,radius,resource.Boundary))return null;
+        var center=new MapPoint2D(node.X,node.Y);
+        var fits=body is { LengthMeters:>0, WidthMeters:>0 } && double.IsFinite(body.LengthMeters.Value) &&
+            double.IsFinite(body.WidthMeters.Value)
+            ? ChargingWaitingGeometry.ContainsVehicle(center,body.LengthMeters.Value,body.WidthMeters.Value,.15,resource.Boundary)
+            : ChargingWaitingGeometry.ContainsBody(center,body.RadiusFromReportedReferenceMeters+.15,resource.Boundary);
+        if(!fits)return null;
         return (node,resource.Id);
     }
 
@@ -131,8 +142,30 @@ public sealed partial class ChargingRuntimePort
     }
 }
 
+public static class ChargingWaitingSitePolicy
+{
+    public static bool Allows(MapNode node,IEnumerable<string> sharedRoleSiteIds,IEnumerable<string> excludedSiteIds)
+    {
+        var excluded=excludedSiteIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if(excluded.Contains(node.Id) || node is not
+            { Enabled:true, Type:MapNodeType.WaitingPoint, AllowTrafficStop:true, AllowTransitThrough:false } ||
+            node.AllowChargingWaiting is false)return false;
+        return node.AllowChargingWaiting is true ||
+            !sharedRoleSiteIds.Contains(node.Id,StringComparer.OrdinalIgnoreCase);
+    }
+
+    public static string[] ExitParkingResourceIds(MapNode? exit,string chargingResourceId) =>
+        exit?.ResourceIds.Where(id=>!id.Equals(chargingResourceId,StringComparison.OrdinalIgnoreCase)).ToArray()??[];
+}
+
 public static class ChargingWaitingGeometry
 {
+    public static bool ContainsVehicle(MapPoint2D point,double length,double width,double margin,IReadOnlyList<MapPoint2D> polygon) =>
+        double.IsFinite(length) && double.IsFinite(width) && double.IsFinite(margin) &&
+        length>0 && width>0 && margin>=0 &&
+        (ContainsAxisAlignedVehicle(point,length+margin*2,width+margin*2,polygon) ||
+         ContainsAxisAlignedVehicle(point,width+margin*2,length+margin*2,polygon));
+
     public static bool ContainsBody(MapPoint2D point,double radius,IReadOnlyList<MapPoint2D> polygon)
     {
         var inside=false;
@@ -144,6 +177,34 @@ public static class ChargingWaitingGeometry
         }
         return inside;
     }
+
+    private static bool ContainsAxisAlignedVehicle(MapPoint2D point,double length,double width,IReadOnlyList<MapPoint2D> polygon)
+    {
+        var points=new[]
+        {
+            new MapPoint2D(point.X-length/2,point.Y-width/2),
+            new MapPoint2D(point.X+length/2,point.Y-width/2),
+            new MapPoint2D(point.X+length/2,point.Y+width/2),
+            new MapPoint2D(point.X-length/2,point.Y+width/2),
+            new MapPoint2D(point.X,point.Y)
+        };
+        return points.All(corner=>Inside(corner,polygon)) &&
+            points.Zip(points.Skip(1).Append(points[0]),(a,b)=>new MapPoint2D((a.X+b.X)/2,(a.Y+b.Y)/2))
+                .All(midpoint=>Inside(midpoint,polygon));
+    }
+
+    private static bool Inside(MapPoint2D point,IReadOnlyList<MapPoint2D> polygon)
+    {
+        var inside=false;
+        for(int i=0,j=polygon.Count-1;i<polygon.Count;j=i++)
+        {
+            var a=polygon[j];var b=polygon[i];
+            if(Distance(point,a,b)<=1e-8)return true;
+            if((a.Y>point.Y)!=(b.Y>point.Y) && point.X<(b.X-a.X)*(point.Y-a.Y)/(b.Y-a.Y)+a.X)inside=!inside;
+        }
+        return inside;
+    }
+
     private static double Distance(MapPoint2D p,MapPoint2D a,MapPoint2D b)
     {
         var x=b.X-a.X;var y=b.Y-a.Y;var length=x*x+y*y;

@@ -295,18 +295,25 @@ const chargingStandbyOptions = computed(() => mapNodes.value.filter(node => node
   node.type !== 'ChargingPoint' && node.allowTrafficStop === true)
   .map(node => ({ value: node.id, label: `${node.id}${node.agvSiteId && node.agvSiteId !== node.id ? ` · ${node.agvSiteId}` : ''}` })));
 const chargingWaitingOptions = computed(() => {
-  const excluded = new Set([waitingSite.value, dumpingSite.value, chargingStandbySiteId.value, inspectionSite.value,
-    ...additionalWaitingSites.value, ...stationDrafts.value.map(station => station.pickupSite),
-    ...chargingSites.value.flatMap(site => [site.chargingSiteId, site.exitSiteId])]);
+  const businessWaitingSites = new Set([waitingSite.value, ...additionalWaitingSites.value].filter(Boolean));
+  const chargerExitSites = new Set(chargingSites.value.map(site => site.exitSiteId).filter(Boolean));
+  const excluded = new Set([dumpingSite.value, chargingStandbySiteId.value, inspectionSite.value,
+    ...stationDrafts.value.map(station => station.pickupSite),
+    ...chargingSites.value.map(site => site.chargingSiteId)]);
   const nodes = mapNodes.value;
   const resources = new Map((mapDefinition.value?.resources ?? []).map(resource => [resource.id, resource]));
   return nodes.filter(node => {
     const parking = resources.get(node.resourceIds?.[0] ?? '');
     return node.enabled !== false && node.type === 'WaitingPoint' && node.allowTrafficStop === true &&
-      node.allowTransitThrough !== true && !excluded.has(node.id) && node.resourceIds?.length === 1 &&
+      node.allowTransitThrough !== true && node.allowChargingWaiting !== false &&
+      (!(businessWaitingSites.has(node.id) || chargerExitSites.has(node.id)) ||
+        node.allowChargingWaiting === true) &&
+      !excluded.has(node.id) && node.resourceIds?.length === 1 &&
       parking?.type === 'Station' && (parking.capacity ?? 1) === 1 && (parking.boundary?.length ?? 0) >= 3 &&
       !nodes.some(other => other.enabled !== false && other.id !== node.id && other.resourceIds?.includes(parking.id));
-  }).map(node => ({ value: node.id, label: node.id })).sort((a, b) => a.label.localeCompare(b.label, 'zh-CN', { numeric: true }));
+  }).map(node => ({ value: node.id,
+    label: `${node.id}${node.allowChargingWaiting === true ? ' · 可兼作等桩' : ''}` }))
+    .sort((a, b) => a.label.localeCompare(b.label, 'zh-CN', { numeric: true }));
 });
 const chargingBayOptions = computed(() => (mapDefinition.value?.resources ?? []).filter(resource => resource.type === 'ChargingBay')
   .map(resource => ({ value: resource.id, label: `${resource.id} · 容量 ${resource.capacity ?? 1}` })));
@@ -2374,7 +2381,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
                 <label>抢占放行 / %<input v-model.number="chargingPreemptionRelease" type="number" min="1" max="100" step="1" /><small>严重低电车等桩时，达到此电量的车可提前停充让位。</small></label>
               </div>
               <div class="form-row">
-                <label>安全等桩位<ElSelectV2 v-model="chargingWaitingSiteIds" :options="chargingWaitingOptions" :disabled="configurationLocked" :teleported="false" class="topology-select" multiple filterable clearable /><small>{{ chargingWaitingOptions.length ? '双桩占用时只允许去已核定的等桩位。' : '当前地图没有独立等桩位。' }}</small></label>
+                <label>安全等桩位<ElSelectV2 v-model="chargingWaitingSiteIds" :options="chargingWaitingOptions" :disabled="configurationLocked" :teleported="false" class="topology-select" multiple filterable clearable /><small>{{ chargingWaitingOptions.length ? '可选用独立等待位，或在地图中明确标记“可兼作等桩”的倒料候车位。' : '当前地图没有可用的安全等桩位。' }}</small></label>
                 <label>预计进桩路权等待 / 秒<input v-model.number="chargingApproachWaitSeconds" :disabled="configurationLocked" type="number" min="0" max="3600" step="1" /><small>已占用进桩路权的估计时间，用于比较选桩。0 表示未知。</small></label>
               </div>
               <p class="charging-preview">按当前车辆电量，启动后进入充电队列的顺序：<b>{{ chargingQueuePreview.length ? chargingQueuePreview.join(' → ') : '无（所有车辆高于启动阈值）' }}</b></p>

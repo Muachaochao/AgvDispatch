@@ -122,6 +122,32 @@ Check(ChargingWaitingGeometry.ContainsBody(new(0,0),1,parking) &&
     !ChargingWaitingGeometry.ContainsBody(new(0,1.5),1,parking) &&
     !ChargingWaitingGeometry.ContainsBody(new(3,0),1,parking),
     "a staging bay accepts only a body envelope fully inside its parking boundary");
+var cadWaitingBay = new MapPoint2D[] { new(-.55,-.42), new(.55,-.42), new(.55,.42), new(-.55,.42) };
+Check(ChargingWaitingGeometry.ContainsVehicle(new(0,0),.8,.52,.15,cadWaitingBay),
+    "a commissioned vehicle footprint fits the CAD waiting-bay rectangle with safety margin");
+Check(!ChargingWaitingGeometry.ContainsVehicle(new(0,0),.9,.52,.15,cadWaitingBay) &&
+    !ChargingWaitingGeometry.ContainsVehicle(new(.2,0),.8,.52,.15,cadWaitingBay),
+    "an oversized or off-centre vehicle footprint is rejected");
+var sharedWaiting = new MapNode("WAIT-01", 0, 0, MapNodeType.WaitingPoint, true, ["WAIT-01"],
+    "WAIT-01") { AllowTrafficStop = true, AllowTransitThrough = false };
+Check(ChargingWaitingSitePolicy.Allows(sharedWaiting, [], []),
+    "an independent waiting bay keeps the legacy charging-queue behaviour");
+Check(!ChargingWaitingSitePolicy.Allows(sharedWaiting, ["WAIT-01"], []),
+    "an unmarked dumper waiting bay cannot also stage a charging queue");
+Check(ChargingWaitingSitePolicy.Allows(sharedWaiting with { AllowChargingWaiting = true }, ["WAIT-01"], []),
+    "an explicitly authorized dumper waiting bay can also stage a charging queue");
+Check(!ChargingWaitingSitePolicy.Allows(sharedWaiting with { AllowChargingWaiting = false }, [], []),
+    "an explicit charging-waiting veto is authoritative");
+Check(!ChargingWaitingSitePolicy.Allows(sharedWaiting, ["WAIT-01"], []),
+    "an unmarked charger exit cannot stage a charging queue");
+Check(ChargingWaitingSitePolicy.Allows(sharedWaiting with { AllowChargingWaiting = true }, ["WAIT-01"], []),
+    "an explicitly authorized charger exit can stage a charging queue");
+Check(!ChargingWaitingSitePolicy.Allows(sharedWaiting with { AllowChargingWaiting = true }, ["WAIT-01"], ["WAIT-01"]),
+    "a hard-excluded charging or work site remains rejected");
+var chargerExit = new MapNode("WAIT-04", 0, 0, MapNodeType.WaitingPoint, true, ["WAIT-04"], "WAIT-04")
+    { AllowTrafficStop = true, AllowTransitThrough = false, AllowChargingWaiting = true };
+Check(ChargingWaitingSitePolicy.ExitParkingResourceIds(chargerExit, "CHARGE-02").SequenceEqual(["WAIT-04"]),
+    "charging reserves the charger-exit parking resource without reserving the charging bay itself");
 var staging = new Fixture(evidence, "safe-waiting");
 staging.Options.WaitingSiteIds = ["SAFE"];
 staging.Options.Sites = [staging.Options.Sites[0] with { AllowedVehicleIds = ["A", "B", "C"] },

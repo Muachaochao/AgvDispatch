@@ -19,7 +19,7 @@ public sealed record DumperExitFrame(
 public sealed record DumperExitBodyProfile(
     string ProfileId, string VehicleId, double RadiusFromReportedReferenceMeters,
     double MaximumPositionUncertaintyMeters, bool CalibrationVerified,
-    bool IncludesMaximumPermittedLoad);
+    bool IncludesMaximumPermittedLoad, double? LengthMeters = null, double? WidthMeters = null);
 
 public sealed record DumperExitPolicy(
     IReadOnlyList<string> ResourceIds,
