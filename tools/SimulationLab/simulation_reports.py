@@ -3,6 +3,8 @@ import json
 import math
 import re
 
+from replay_events import ReplayEvidence
+
 REPORT_ID = re.compile(r'^[a-f0-9]{32}$')
 MAX_REPORT_BYTES = 2 * 1024 * 1024
 MAX_TASK_DETAILS_BYTES = 48 * 1024 * 1024
@@ -11,6 +13,7 @@ MAX_TASK_DETAILS_BYTES = 48 * 1024 * 1024
 MAX_REPLAY_BYTES = 2 * 1024 * 1024 * 1024
 MAX_LINE_BYTES = 4 * 1024 * 1024
 MAX_RESPONSE_BYTES = 7 * 1024 * 1024
+MAX_REPLAY_FRAMES = 2000
 
 
 def _linked(path):
@@ -187,9 +190,58 @@ def replay(runtime, identity):
         simulation_rate = (saved_report.get('metrics') or {}).get('effectiveRate')
     if not isinstance(simulation_rate, (int, float)) or simulation_rate <= 0:
         simulation_rate = 1
+    clock_source = saved_report
+    if not saved_report.get('simulationOriginUnixMs'):
+        try:
+            lab = read(_bounded_file(run.parent / 'lab.json', MAX_REPORT_BYTES))
+            scenario = read(_bounded_file(run / 'scenario.json', MAX_REPORT_BYTES))
+            origin = _finite_time(lab.get('simulationOriginUnixMs'))
+            if (scenario.get('rootName') == run.parent.name and lab.get('simulationRate') == simulation_rate
+                    and 0 < origin / 1000 <= _finite_time(saved_report.get('startedAt'))):
+                clock_source = dict(saved_report, simulationOriginUnixMs=origin)
+        except (AttributeError, OSError, ValueError, TypeError):
+            pass
+    evidence = ReplayEvidence(clock_source, simulation_rate)
+    try:
+        details = read(_bounded_file(run / 'all-task-details.json', MAX_TASK_DETAILS_BYTES))
+        if isinstance(details, dict):
+            evidence.task_details(details)
+    except (OSError, ValueError, TypeError):
+        evidence.warnings.append('本轮未保留可读取的任务执行日志。')
+    if saved_report.get('replayReleaseAuditError'):
+        evidence.warnings.append('本轮未能保存逐资源释放审计。')
+    evidence.call_rows(saved_report.get('callRows'))
+    try:
+        evidence.release_audit(read(_bounded_file(run / 'replay-release-audit.json', MAX_LINE_BYTES)))
+    except (OSError, ValueError, TypeError):
+        pass
+    try:
+        evidence.recovery_audit(read(_bounded_file(run / 'replay-recovery-audit.json', MAX_LINE_BYTES)))
+    except (OSError, ValueError, TypeError):
+        if saved_report.get('replayRecoveryAuditError'):
+            evidence.warnings.append('本轮未能保存改道续接审计。')
+    try:
+        evidence.traffic_lifecycle(read(_bounded_file(run / 'replay-traffic-lifecycle.json', MAX_LINE_BYTES)))
+    except (OSError, ValueError, TypeError):
+        if saved_report.get('replayTrafficAuditError'):
+            evidence.warnings.append('本轮未能保存路权生命周期日志。')
+    evidence.device_files(run.parent)
+    if evidence.origin is not None and evidence.start is not None and evidence.end is not None:
+        try:
+            receipts = read(_bounded_file(run / 'accepted-3066.json', MAX_LINE_BYTES))
+            if isinstance(receipts, list):
+                for item in receipts:
+                    if isinstance(item, dict):
+                        evidence.device_event(item, item.get('vehicle'))
+        except (OSError, ValueError, TypeError):
+            pass
+    evidence.prepare_positions()
     path = run / 'observations.jsonl'
-    _bounded_file(path, MAX_REPLAY_BYTES)
+    if path.exists() or _linked(path):
+        _bounded_file(path, MAX_REPLAY_BYTES)
     def lines():
+        if not path.exists():
+            return
         with path.open('rb') as stream:
             while True:
                 line = stream.readline(MAX_LINE_BYTES + 1)
@@ -210,30 +262,30 @@ def replay(runtime, identity):
         navigation = None
         map_bytes = 4
         map_message = '地图超出界面响应边界；请在实例中查看原始地图。'
-    timeline_budget = MAX_RESPONSE_BYTES - map_bytes - 1024
+    event_budget = min(2 * 1024 * 1024, max(0, (MAX_RESPONSE_BYTES - map_bytes - 16384) // 3))
+    timeline_budget = MAX_RESPONSE_BYTES - map_bytes - event_budget - 8192
     timeline = []
     timeline_bytes = 0
     stride = 1
 
-    def append_sample(index, line, final=False):
+    def append_sample(index, value, final=False):
         nonlocal stride, timeline, timeline_bytes
-        value = json.loads(line)
         vehicles = [dict(vehicleId=vehicle, x=car.get('x'), y=car.get('y'), angle=car.get('angle'),
-            site=car.get('station') or car.get('site'), loaded=car.get('loaded'),
+            site=car.get('station') or car.get('site'), loaded=car.get('loaded'), moving=car.get('moving'),
             blocked=car.get('blocked'), blockedByVehicle=car.get('blockedByVehicle'),
             paused=car.get('paused'), offline=car.get('offline'),
             waitReason=car.get('waitReason'), taskId=car.get('current_task'))
             for vehicle, car in value.get('device', {}).get('cars', {}).items()]
         tasks = [dict(taskId=tid, stationId=task.get('stationId'), vehicleId=task.get('vehicleId'),
             stage=task.get('stage'), step=task.get('progress'), waitReason=task.get('waitingExplanation'))
-            for tid, task in value.get('tasks', {}).items()]
+            for tid, task in value.get('tasks', {}).items() if isinstance(task, dict)]
         frame = dict(time=value['time'], vehicles=vehicles, tasks=tasks, leases=value.get('leases', []))
         frame_bytes = len(json.dumps(frame, ensure_ascii=False, allow_nan=False).encode('utf-8')) + 2
         if frame_bytes > timeline_budget:
             raise ValueError('单次回放数据过大，请查看实例中的原始采样证据。')
         timeline.append((index, frame, frame_bytes))
         timeline_bytes += frame_bytes
-        limit = 2000 if final else 1999
+        limit = MAX_REPLAY_FRAMES if final else MAX_REPLAY_FRAMES - 1
         while len(timeline) > 1 and (timeline_bytes > timeline_budget or len(timeline) > limit):
             stride *= 2
             reduced = [row for row in timeline if row[0] % stride == 0 or (final and row[0] == index)]
@@ -243,9 +295,13 @@ def replay(runtime, identity):
     count = 0
     for index, line in enumerate(lines()):
         count = index + 1
+        value = json.loads(line)
+        evidence.observe(value)
         if index % stride == 0:
-            append_sample(index, line)
+            append_sample(index, value)
     if count and timeline[-1][0] != count - 1:
-        append_sample(count - 1, line, final=True)
-    return dict(id=identity, timeline=[row[1] for row in timeline], map=navigation, mapMessage=map_message,
+        append_sample(count - 1, value, final=True)
+    events, coverage = evidence.finish(event_budget)
+    return dict(id=identity, timeline=sorted((row[1] for row in timeline), key=lambda frame: frame["time"]), map=navigation, mapMessage=map_message,
+                events=events, evidence=coverage,
                 simulationRate=simulation_rate, totalSamples=count, sampled=count > len(timeline))

@@ -19,6 +19,9 @@ import { actionStateLabel, equipmentDirectionLabel, industrialText } from '../op
 import { useDispatchStore } from '../stores/dispatch';
 import type { Snapshot, TaskDetail, TaskPage, TaskRow, TrafficRequest } from '../types';
 import { resourceHandovers } from '../traffic-display';
+import ReplayEvidence from '../components/ReplayEvidence.vue';
+import ReplaySpeed from '../components/ReplaySpeed.vue';
+import { recordingRate, recordReplayWebm, replayClockFrame, type ReplayEvent } from '../replay-evidence';
 
 type SimulationStage = 'overview' | 'tasks' | 'environment' | 'scenario' | 'faults' | 'manual' | 'results';
 const props = defineProps<{
@@ -103,6 +106,13 @@ const waitingSite = ref(''), dumpingSite = ref('');
 const schemeName = ref(''), selectedScheme = ref(''), selectedHistory = ref(''), comparisonId = ref('');
 const selectedReport = ref<SimulationReport | null>(null), comparisonReport = ref<SimulationReport | null>(null);
 const replay = ref<SimulationReplay | null>(null), replayIndex = ref(0), replayPlaying = ref(false), historyReading = ref(false);
+const replayPlayRate = ref(1), replayExportRate = ref(1), highlightedReplayVehicle = ref('');
+const replayPositionEvent = ref<ReplayEvent>();
+watch(replayIndex, () => { replayPositionEvent.value = undefined; }, { flush: 'sync' });
+let replayExportAbort: AbortController | undefined;
+function cancelReplayExport() { replayExportAbort?.abort(); }
+const replayBaseRate = computed(() => recordingRate(replay.value?.simulationRate));
+const replayEvents = computed(() => replay.value?.events ?? []);
 const manualGuide = ref<SimulationGuidance | null>(null), manualRecovery = ref<SimulationTimeoutRecovery | null>(null);
 const manualRecoveryReading = ref(false), manualRecoveryError = ref('');
 const manualRecoveryReason = ref('仿真中已核对车辆、载荷、PLC和原任务，条件一致后继续');
@@ -218,8 +228,17 @@ const firstFailure = computed(() => typeof report.value?.firstFailure === 'strin
 const versionComparison = computed(() => status.value?.versionComparison);
 const configuredStationIds = computed(() => (status.value?.running ? status.value.configuration?.stations ?? stationDrafts.value : stationDrafts.value).map(station => station.stationId));
 const replayFrame = computed(() => replay.value?.timeline[replayIndex.value]);
+const replayCars = computed(() => {
+  const cars = simulationReplayCars(replayFrame.value);
+  const event = replayPositionEvent.value;
+  if (event?.vehicleId && event.position) {
+    const { x, y, angle, site } = event.position;
+    cars[event.vehicleId] = { ...cars[event.vehicleId], x, y, angle, station: site };
+  }
+  return cars;
+});
 const replayGeometry = computed(() => simulationGeometry((replay.value?.map ?? status.value?.map)?.nodes ?? [],
-  (replay.value?.map ?? status.value?.map)?.edges ?? [], simulationReplayCars(replayFrame.value)));
+  (replay.value?.map ?? status.value?.map)?.edges ?? [], replayCars.value));
 const replayCadBackground = computed(() => simulationCadBackground(replay.value?.map ?? status.value?.map, replayGeometry.value));
 const replayMapAreas = computed(() => simulationAreaOverlays(replay.value?.map ?? status.value?.map, replayGeometry.value));
 const denseReplay = computed(() => replayGeometry.value.nodes.length > 120);
@@ -1788,9 +1807,9 @@ function drawReplayFrame(canvas: HTMLCanvasElement, frame: SimulationReplay['tim
   gradient.addColorStop(0, '#123654'); gradient.addColorStop(1, '#0d1b33');
   ctx.fillStyle = gradient; ctx.fillRect(0, 0, width, 92);
   ctx.fillStyle = '#bceef4'; ctx.font = '700 30px "Microsoft YaHei", sans-serif';
-  const vehicleCount = status.value?.configuration?.vehicles?.length ?? frame.vehicles?.length ?? 0;
-  const stationCount = status.value?.configuration?.stations?.length ?? report.value?.taskSummary?.length ?? 0;
-  ctx.fillText(`${vehicleCount}车${stationCount}工位 · 隔离仿真回放`, 30, 40);
+  const vehicleCount = frame.vehicles?.length ?? 0;
+  const stationCount = replay.value?.map?.nodes.filter(node => node.type === 'Station' && node.enabled !== false).length;
+  ctx.fillText(`${vehicleCount}车 · ${stationCount === undefined ? '工位数未记录' : stationCount + '地图工位'} · 隔离仿真回放`, 30, 40);
   ctx.fillStyle = '#8fb5c9'; ctx.font = '18px "Microsoft YaHei", sans-serif';
   ctx.fillText(`场景：${scenarioNames[report.value?.name ?? ''] ?? report.value?.name ?? '仿真任务'}  ·  报告：${report.value?.id ?? '未提供'}`, 30, 70);
   ctx.fillStyle = '#61d6c2'; ctx.font = '700 17px "Microsoft YaHei", sans-serif';
@@ -1819,9 +1838,8 @@ function drawReplayFrame(canvas: HTMLCanvasElement, frame: SimulationReplay['tim
   const colors = ['#41d9bf', '#6fb9ff', '#e8bf64', '#cb9aff'];
   geometry.cars.forEach((car, carIndex) => {
     const color = colors[carIndex % colors.length];
-    const profile = status.value?.configuration?.vehicles?.find(vehicle => vehicle.id === car.id);
-    const length = (profile?.lengthMeters ?? .8) * geometry.scale;
-    const width = (profile?.widthMeters ?? .52) * geometry.scale;
+    const length = Math.max(9, .8 * geometry.scale);
+    const width = Math.max(6, .52 * geometry.scale);
     ctx.save(); ctx.translate(car.x, car.y); ctx.rotate(-(car.angle ?? 0));
     ctx.fillStyle = color; ctx.globalAlpha = .24; ctx.fillRect(-length / 2, -width / 2, length, width);
     ctx.globalAlpha = 1; ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.strokeRect(-length / 2, -width / 2, length, width);
@@ -1871,57 +1889,58 @@ async function exportReplayVideo() {
     actionError.value = '当前报告没有可导出的回放采样。';
     return;
   }
-  if (typeof MediaRecorder === 'undefined') {
-    actionError.value = '当前浏览器不支持WebM视频录制，请使用最新版Edge或Chrome。';
-    return;
-  }
-  const mimeType = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']
-    .find(type => MediaRecorder.isTypeSupported(type));
-  if (!mimeType) {
-    actionError.value = '当前浏览器没有可用的WebM编码器。';
-    return;
-  }
+  const reportId = replay.value.id;
   const source = replay.value.timeline;
-  const step = Math.max(1, Math.ceil(source.length / 600));
-  const frames = source.filter((_, index) => index % step === 0 || index === source.length - 1);
-  const canvas = document.createElement('canvas'); canvas.width = 1400; canvas.height = 820;
-  const stream = canvas.captureStream(10);
-  const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 2_500_000 });
-  const chunks: BlobPart[] = [];
+  const canvas = document.createElement('canvas'); canvas.width = 1400; canvas.height = 914;
   recordingVideo.value = true; videoProgress.value = 0; actionError.value = '';
+  const speed = replayExportRate.value;
+  const cancellation = new AbortController();
+  replayExportAbort = cancellation;
   try {
-    const finished = new Promise<Blob>((resolve, reject) => {
-      recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data); };
-      recorder.onerror = () => reject(new Error('浏览器视频编码失败。'));
-      recorder.onstop = () => resolve(new Blob(chunks, { type: mimeType }));
-    });
-    recorder.start(1000);
-    for (let index = 0; index < frames.length; index++) {
-      drawReplayFrame(canvas, frames[index]!, index, frames.length);
-      videoProgress.value = Math.round((index + 1) / frames.length * 100);
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
-    await new Promise(resolve => setTimeout(resolve, 250));
-    recorder.stop();
-    const blob = await finished;
-    if (!blob.size) throw new Error('视频没有生成有效内容。');
-    downloadBlob(blob, `simulation-replay-${report.value.id}.webm`);
-    notice.value = `回放视频已导出，共 ${frames.length} 帧；原始 ${source.length} 个观察采样仍保存在完整证据包中。`;
+    const blob = await recordReplayWebm({ canvas, frames: source, events: replayEvents.value,
+      base: replayBaseRate.value, speed, signal: cancellation.signal,
+      draw: (frame, index) => drawReplayFrame(canvas, frame, index, source.length),
+      progress: percent => { videoProgress.value = percent; } });
+    if (cancellation.signal.aborted) return;
+    downloadBlob(blob, 'simulation-replay-' + reportId + '.webm');
+    notice.value = '回放视频已导出 · ' + speed + '×';
   } catch (reason) {
-    actionError.value = reason instanceof Error ? reason.message : String(reason);
+    if (cancellation.signal.aborted) notice.value = '已取消视频导出';
+    else actionError.value = reason instanceof Error ? reason.message : String(reason);
   } finally {
-    for (const track of stream.getTracks()) track.stop();
+    replayExportAbort = undefined;
     recordingVideo.value = false;
   }
 }
-onMounted(() => { void refresh(); poll = setInterval(() => void refresh(), 1500); tick = setInterval(() => {
-  now.value = Date.now();
-  if (replayPlaying.value && replay.value?.timeline.length) {
-    if (replayIndex.value < replay.value.timeline.length - 1) replayIndex.value++;
+function seekReplayEvent(index: number, event: ReplayEvent) {
+  replayPlaying.value = false;
+  replayIndex.value = index;
+  replayPositionEvent.value = event;
+  highlightedReplayVehicle.value = event.vehicleId ?? '';
+}
+function toggleReplay() {
+  if (!replayPlaying.value && replayIndex.value >= (replay.value?.timeline.length ?? 0) - 1) replayIndex.value = 0;
+  replayPlaying.value = !replayPlaying.value;
+}
+watch([replayPlaying, replayPlayRate], ([active, speed], _old, onCleanup) => {
+  const frames = replay.value?.timeline;
+  const start = frames?.[replayIndex.value];
+  if (!active || !frames || !start) return;
+  replayPositionEvent.value = undefined;
+  const started = performance.now();
+  let animation = 0;
+  function update(time: number) {
+    if (!frames || !start) return;
+    replayIndex.value = replayClockFrame(frames, start.time, time - started, replayBaseRate.value, speed);
+    if (replayIndex.value < frames.length - 1) animation = requestAnimationFrame(update);
     else replayPlaying.value = false;
   }
-}, 500); });
-onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); clearInterval(tick); });
+  animation = requestAnimationFrame(update);
+  onCleanup(() => cancelAnimationFrame(animation));
+});
+watch(replay, () => { highlightedReplayVehicle.value = ''; replayPositionEvent.value = undefined; });
+onMounted(() => { void refresh(); poll = setInterval(() => void refresh(), 1500); tick = setInterval(() => { now.value = Date.now(); }, 500); });
+onUnmounted(() => { disposed = true; controller?.abort(); cancelReplayExport(); clearInterval(poll); clearInterval(tick); });
 </script>
 
 <template>
@@ -2618,17 +2637,18 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
       </section>
       <section class="simulation-panel history-panel" aria-labelledby="simulation-history">
         <header><div><p class="section-kicker">历史证据</p><h3 id="simulation-history">历史对比与问题回放</h3></div><span>只读历史，不操作车辆</span></header>
-        <div class="form-row"><label>查看报告<select v-model="selectedHistory" :disabled="historyReading" @change="selectHistory"><option value="">当前实例最近报告</option><option v-for="item in status?.history ?? []" :key="item.id" :value="item.id">{{ stamp(item.finishedAt ?? item.generatedAt) }} · {{ scenarioNames[item.name ?? ''] || '仿真场景' }} · {{ simulationLabel(item.status) }}</option></select></label><label>对比基准<select v-model="comparisonId" @change="compareHistory"><option value="">不对比</option><option v-for="item in status?.history ?? []" :key="item.id" :value="item.id">{{ stamp(item.finishedAt ?? item.generatedAt) }} · {{ scenarioNames[item.name ?? ''] || '仿真场景' }} · {{ simulationLabel(item.status) }}</option></select></label></div>
+        <div class="form-row"><label>查看报告<select v-model="selectedHistory" :disabled="historyReading || recordingVideo" @change="selectHistory"><option value="">当前实例最近报告</option><option v-for="item in status?.history ?? []" :key="item.id" :value="item.id">{{ stamp(item.finishedAt ?? item.generatedAt) }} · {{ scenarioNames[item.name ?? ''] || '仿真场景' }} · {{ simulationLabel(item.status) }}</option></select></label><label>对比基准<select v-model="comparisonId" @change="compareHistory"><option value="">不对比</option><option v-for="item in status?.history ?? []" :key="item.id" :value="item.id">{{ stamp(item.finishedAt ?? item.generatedAt) }} · {{ scenarioNames[item.name ?? ''] || '仿真场景' }} · {{ simulationLabel(item.status) }}</option></select></label></div>
         <p v-if="!(status?.history?.length)" class="report-empty">还没有历史场景。运行后会保留通过、失败和中止结果。</p>
         <p v-if="comparisonReport" class="inline-warning">数值差异仅作比较；请同时核对当轮地图、后台版本和场景参数，增减值不直接代表变好或变坏。</p>
         <div v-if="metricComparison.length" class="report-table"><table><thead><tr><th>指标</th><th>当前报告</th><th>基准报告</th><th>差值</th></tr></thead><tbody><tr v-for="item in metricComparison" :key="item.key"><td>{{ item.label }}</td><td>{{ simulationMetricValue(item.current) }}</td><td>{{ simulationMetricValue(item.previous) }}</td><td>{{ item.delta > 0 ? '+' : '' }}{{ simulationMetricValue(item.delta) }}</td></tr></tbody></table></div>
-        <div class="toolbar"><button :disabled="historyReading || !report?.id" @click="loadReplay">载入本报告时间轴</button><button :disabled="!replay?.timeline.length" @click="replayPlaying = !replayPlaying">{{ replayPlaying ? '暂停回放' : '播放回放' }}</button><button :disabled="historyReading || recordingVideo || !report?.id" @click="exportReplayVideo"><IconDownload :size="16" />{{ recordingVideo ? `正在录制 ${videoProgress}%` : '导出回放视频' }}</button></div>
+        <div class="toolbar"><button :disabled="historyReading || recordingVideo || !report?.id" @click="loadReplay">载入本报告时间轴</button><button :disabled="!replay?.timeline.length" @click="toggleReplay">{{ replayPlaying ? '暂停回放' : '播放回放' }}</button><ReplaySpeed v-if="replay?.timeline.length" v-model="replayPlayRate" label="播放倍速" /><ReplaySpeed v-model="replayExportRate" label="导出倍速" :disabled="recordingVideo" /><button :disabled="historyReading || recordingVideo || !report?.id" @click="exportReplayVideo"><IconDownload :size="16" />{{ recordingVideo ? `正在录制 ${videoProgress}%` : '导出回放视频' }}</button><button v-if="recordingVideo" @click="cancelReplayExport">取消导出</button></div>
         <p v-if="replay?.sampled" class="inline-warning">时间轴已按原始时间顺序抽样，保留最后一帧；完整观察记录仍保存在该轮证据文件中。</p>
         <template v-if="replay?.timeline.length"><label class="replay-slider">观察时间 · {{ stamp(replayFrame?.time) }} · {{ replayIndex + 1 }}/{{ replay.timeline.length }}<input v-model.number="replayIndex" aria-label="回放时间点" type="range" min="0" :max="replay.timeline.length - 1" step="1" @input="replayPlaying = false" /></label>
-          <svg v-if="replay.map && replayGeometry.nodes.length" class="simulation-map replay-map" viewBox="0 0 800 430" role="img" aria-label="历史任务位置回放"><image v-if="showCadReference && replayCadBackground" class="cad-reference" :href="replayCadBackground.href" :x="replayCadBackground.x" :y="replayCadBackground.y" :width="replayCadBackground.width" :height="replayCadBackground.height" :opacity="replayCadBackground.opacity" preserveAspectRatio="none" /><g v-if="replayMapAreas.length" class="map-zones"><g v-for="area in replayMapAreas" :key="area.id"><polygon :points="area.points" :fill="area.fillColor" :fill-opacity="area.fillOpacity" :stroke="area.strokeColor" :stroke-opacity=".55" /><text :x="area.labelX" :y="area.labelY" :fill="area.strokeColor">{{ area.text }}</text></g></g><g class="roads"><path v-for="edge in replayGeometry.edges" :key="edge.key" :d="edge.path" /></g><g v-for="node in replayGeometry.nodes" :key="node.id" class="map-node" :class="{ dense: denseReplay }"><title>{{ mapNodeLabel(node) }} · {{ node.type || '地图节点' }}</title><circle :cx="node.x" :cy="node.y" :r="denseReplay ? (showDenseNodeLabel(node) ? 3 : 1.4) : 3"/><text v-if="!denseReplay || showDenseNodeLabel(node)" :x="node.x + 7" :y="node.y - 7">{{ mapNodeLabel(node) }}</text></g><g v-for="(car, index) in replayGeometry.cars" :key="car.id" class="map-car" :style="{ '--car-color': ['#41d9bf', '#6fb9ff', '#e8bf64', '#cb9aff'][index % 4] }" :transform="`translate(${car.x} ${car.y})`"><circle r="16"/><text x="0" y="-23" text-anchor="middle">{{ car.id }}</text></g></svg>
+          <svg v-if="replay.map && replayGeometry.nodes.length" class="simulation-map replay-map" viewBox="0 0 800 430" role="img" aria-label="历史任务位置回放"><image v-if="showCadReference && replayCadBackground" class="cad-reference" :href="replayCadBackground.href" :x="replayCadBackground.x" :y="replayCadBackground.y" :width="replayCadBackground.width" :height="replayCadBackground.height" :opacity="replayCadBackground.opacity" preserveAspectRatio="none" /><g v-if="replayMapAreas.length" class="map-zones"><g v-for="area in replayMapAreas" :key="area.id"><polygon :points="area.points" :fill="area.fillColor" :fill-opacity="area.fillOpacity" :stroke="area.strokeColor" :stroke-opacity=".55" /><text :x="area.labelX" :y="area.labelY" :fill="area.strokeColor">{{ area.text }}</text></g></g><g class="roads"><path v-for="edge in replayGeometry.edges" :key="edge.key" :d="edge.path" /></g><g v-for="node in replayGeometry.nodes" :key="node.id" class="map-node" :class="{ dense: denseReplay }"><title>{{ mapNodeLabel(node) }} · {{ node.type || '地图节点' }}</title><circle :cx="node.x" :cy="node.y" :r="denseReplay ? (showDenseNodeLabel(node) ? 3 : 1.4) : 3"/><text v-if="!denseReplay || showDenseNodeLabel(node)" :x="node.x + 7" :y="node.y - 7">{{ mapNodeLabel(node) }}</text></g><g v-for="(car, index) in replayGeometry.cars" :key="car.id" class="map-car" :style="{ '--car-color': ['#41d9bf', '#6fb9ff', '#e8bf64', '#cb9aff'][index % 4] }" :transform="`translate(${car.x} ${car.y})`"><circle r="16"/><circle v-if="car.id === highlightedReplayVehicle" r="21" fill="none" stroke="#f2d17b" stroke-width="3"/><text x="0" y="-23" text-anchor="middle">{{ car.id }}</text></g></svg>
           <p v-else class="inline-warning">{{ replay.mapMessage || '该轮没有保存完整地图，只显示任务时间轴，不叠加到当前地图。' }}</p>
           <div class="waiting-chain"><ol><li v-for="car in replayFrame?.vehicles ?? []" :key="car.vehicleId"><b>{{ car.vehicleId }} · {{ car.site || '道路中' }}</b><span>{{ car.taskId || '空闲' }}</span><p>{{ industrialText(car.waitReason || '无阻塞反馈') }}</p></li><li v-for="task in replayFrame?.tasks ?? []" :key="task.taskId"><b>{{ task.taskId }} · {{ task.vehicleId || '等待派车' }}</b><span>{{ task.stationId }} · {{ industrialText(task.step || task.stage || '等待推进') }}</span><p>{{ industrialText(task.waitReason || '无阻塞反馈') }}</p></li></ol></div>
         </template><p v-else-if="replay" class="report-empty">本轮没有可回放的观察采样；不补造位置和任务轨迹。</p>
+        <ReplayEvidence v-if="replay" :events="replayEvents" :frames="replay.timeline" :coverage="replay.evidence" @seek="seekReplayEvent" />
       </section>
       <details v-if="status?.scenario?.events?.length" class="simulation-panel event-panel"><summary>场景事件 · {{ status.scenario.events.length }} 条</summary><ol><li v-for="(event, index) in [...status.scenario.events].reverse().slice(0, 100)" :key="index"><time>{{ stamp(event.time) }}</time>{{ industrialText(event.message) }}</li></ol></details>
     </section>
