@@ -169,6 +169,17 @@ public sealed partial class DispatchTaskOrchestrator
                     prepared[task.TaskId] = vehicle.VehicleId;
                     blockedLayers.Remove(task.TaskId);
                     remaining.RemoveAll(e => e.TaskId == task.TaskId || e.VehicleId == vehicle.VehicleId);
+                    var energy = diagnostics[task.TaskId].FirstOrDefault(row => row.VehicleId == vehicle.VehicleId)?.Energy;
+                    if (energy is not null && evidenceJournal is not null)
+                    {
+                        try
+                        {
+                            await evidenceJournal.RecordAsync(task.TaskId, ready[task.TaskId].StepId, "DispatchEnergyForecast",
+                                new { vehicleId = vehicle.VehicleId, stationId = task.StationId, energy }, ct);
+                        }
+                        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+                        catch (Exception error) { logger.LogWarning(error, "续航预估证据写入失败。TaskId={TaskId}", task.TaskId); }
+                    }
                 }
                 else
                 {

@@ -38,11 +38,10 @@ public sealed class ChargingOptions
     /// <summary>Dedicated standby point where a charged vehicle returns when no business return site is set. Never an exit,
     /// never a charging point. Blank means the plan fails until a return site is configured.</summary>
     public string DefaultStandbySiteId { get; set; } = "";
-    /// <summary>B07-FIX C3: vehicles that must stay in business. A vehicle between the critical and start thresholds is
-    /// withdrawn only when this many others would remain available. Zero (default) applies the bay-availability rule only;
-    /// commissioning sets the fleet minimum explicitly.</summary>
+    /// <summary>Minimum fleet size to retain when reserving a normal charging session.
+    /// Low-battery vehicles waiting without a reservation are counted outside the simultaneous charging limit.</summary>
     public int MinimumAvailableVehicles { get; set; } = 0;
-    /// <summary>B07-FIX C3: most vehicles withdrawn at once (reserved or critical). Zero means no cap beyond the minimum fleet.</summary>
+    /// <summary>Maximum concurrent reservations for normal charging. Zero leaves only the minimum fleet rule.</summary>
     public int MaximumVehiclesOutOfService { get; set; } = 0;
     /// <summary>B07-FIX C4: a charging vehicle above this level (and at least target minus the margin) may be asked to stop
     /// when a critical vehicle waits for the bay.</summary>

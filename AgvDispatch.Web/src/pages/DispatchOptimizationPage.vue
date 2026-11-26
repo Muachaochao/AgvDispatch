@@ -214,7 +214,10 @@ onUnmounted(() => {
                 <td><strong>{{candidate.vehicleId}}</strong><small v-if="candidate.vehicleId === selected.recommendedVehicleId">全局推荐</small></td>
                 <td>{{candidate.eligible ? assignmentNumber(candidate.travelSeconds) + ' 秒' : '—'}}</td>
                 <td>{{candidate.eligible ? assignmentNumber(candidate.totalCost) + ' 秒' : '—'}}<details v-if="candidate.eligible" class="assignment-breakdown"><summary>成本分解</summary><span>拥堵折算 {{assignmentNumber(candidate.trafficWaitSeconds)}} 秒</span><span>返程折算 {{assignmentNumber(candidate.returnSeconds)}} 秒</span><span>电量风险 {{assignmentNumber(candidate.batteryRiskSeconds)}} 秒</span><span>跨区成本 {{assignmentNumber(candidate.crossZoneSeconds)}} 秒</span><span>待机抵扣 {{assignmentNumber(candidate.standbyBonusSeconds)}} 秒</span></details></td>
-                <td class="assignment-reason"><b>{{candidate.eligible ? '可参与匹配' : '已排除'}}</b><small>{{candidate.reason}}</small></td>
+                <td class="assignment-reason"><b>{{candidate.eligible ? '可参与匹配' : '已排除'}}</b><small>{{candidate.reason}}</small>
+                  <small v-if="candidate.energy">当前 {{candidate.energy.currentBatteryPercent.toFixed(1)}}% · 预计完工 {{candidate.energy.finishBatteryPercent.toFixed(1)}}% · 到 {{candidate.energy.chargerId}} {{candidate.energy.atChargerBatteryPercent.toFixed(1)}}%</small>
+                  <small v-if="candidate.energy && !candidate.energy.safe">扣除误差后低于到桩安全余量 {{candidate.energy.minimumArrivalBatteryPercent}}%</small>
+                </td>
               </tr><tr v-if="!selected.candidates.length"><td colspan="4" class="assignment-empty">本轮未生成候选路线，请查看任务等待原因。</td></tr>
             </tbody></table></div>
           </template>

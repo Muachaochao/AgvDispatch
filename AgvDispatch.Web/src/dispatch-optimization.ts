@@ -34,6 +34,16 @@ export interface DispatchOptimizationCandidate {
   batteryRiskSeconds?: number;
   crossZoneSeconds?: number;
   standbyBonusSeconds?: number;
+  energy?: {
+    currentBatteryPercent: number;
+    businessCostPercent: number;
+    finishBatteryPercent: number;
+    atChargerBatteryPercent: number;
+    chargerId: string;
+    predictionErrorPercent: number;
+    minimumArrivalBatteryPercent: number;
+    safe: boolean;
+  } | null;
 }
 
 export interface DispatchOptimizationTask {

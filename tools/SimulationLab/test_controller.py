@@ -269,11 +269,17 @@ class SimulationTests(unittest.TestCase):
             with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
                 runtime._validate_configuration(payload)
 
-    def test_charging_bay_capacity_covers_initial_low_battery_vehicles(self):
+    def test_more_low_battery_vehicles_than_bays_can_queue(self):
         runtime = object.__new__(Runtime)
         payload = self.charging_payload()
         payload['chargingPriorityTest']['sites'] = payload['chargingPriorityTest']['sites'][:1]
-        with self.assertRaisesRegex(ValueError, '充电位容量不足'):
+        result = runtime._validate_configuration(payload)['chargingPriorityTest']
+        self.assertEqual(len(result['sites']), 1)
+        self.assertEqual(result['energyForecast'], 'Observe')
+        payload['chargingPriorityTest']['energyForecast'] = 'Enforce'
+        self.assertEqual(runtime._validate_configuration(payload)['chargingPriorityTest']['energyForecast'], 'Enforce')
+        payload['chargingPriorityTest']['energyForecast'] = 'invalid'
+        with self.assertRaisesRegex(ValueError, '续航预估'):
             runtime._validate_configuration(payload)
         payload = self.charging_payload()
         for site in payload['chargingPriorityTest']['sites']:

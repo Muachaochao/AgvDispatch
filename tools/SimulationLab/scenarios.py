@@ -1890,6 +1890,19 @@ def execute(runtime, request):
         version_end = runtime.version_comparison.refresh() if hasattr(runtime, 'version_comparison') else None
         if version_end: write(evidence / 'version-end.json', version_end)
         queue_metrics = read(evidence / 'queue-summary.json') if (evidence / 'queue-summary.json').exists() else {}
+        energy_forecasts = []
+        if getattr(runtime, 'settings', {}).get('DispatchEnergy', {}).get('Mode') in ('Observe', 'Enforce'):
+            try:
+                for row in query(runtime.root, """select TaskId, Evidence, OccurredAt from execution_evidence
+                        where Kind='DispatchEnergyForecast' order by OccurredAt"""):
+                    if row['TaskId'] not in tasks:
+                        continue
+                    item = json.loads(row['Evidence'])
+                    energy = {key[0].lower() + key[1:]: value for key, value in item['energy'].items()}
+                    energy_forecasts.append(dict(taskId=row['TaskId'], stationId=item['stationId'],
+                        vehicleId=item['vehicleId'], recordedAt=row['OccurredAt'], energy=energy))
+            except (sqlite3.Error, ValueError, KeyError, TypeError):
+                energy_forecasts = []
         report = dict(id=runtime.scenario['id'], name=request['name'], status=result_status, message=message, checks=checks,
             firstFailure=next((str(item['detail']) for item in checks if item['status'] == 'failed'), None),
             waitingChain=waiting_chain, versionComparison=version_start,
@@ -1902,6 +1915,7 @@ def execute(runtime, request):
                  'response-loss', 'road-block-recovery', 'obstacle-auto-detour',
                  'obstacle-auto-safety-return', *TIMEOUT_OBSTACLE_NAMES) else None,
             taskSummary=summarize_tasks(all_details),
+            energyForecasts=energy_forecasts,
             callRows=runtime.scenario.get('callRows', []),
             simulationRate=runtime.simulation_rate,
             startedAt=started, finishedAt=runtime.clock.time(), evidenceDirectory=evidence.name,

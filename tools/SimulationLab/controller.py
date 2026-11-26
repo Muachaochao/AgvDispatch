@@ -1215,7 +1215,8 @@ class Runtime:
         if not isinstance(value, dict) or set(value) - {'enabled', 'startBatteryPercent', 'criticalBatteryPercent',
                                                         'targetBatteryPercent', 'defaultStandbySiteId',
                                                         'minimumAvailableVehicles', 'maximumVehiclesOutOfService',
-                                                        'preemptionReleaseBatteryPercent', 'sites'}:
+                                                        'preemptionReleaseBatteryPercent', 'energyForecast',
+                                                        'minimumArrivalBatteryPercent', 'predictionErrorPercent', 'sites'}:
             raise ValueError('充电优先实验字段无效。')
         if type(value.get('enabled')) is not bool:
             raise ValueError('充电优先实验须明确启用或停用。')
@@ -1225,6 +1226,14 @@ class Runtime:
         start = value.get('startBatteryPercent', 25)
         critical = value.get('criticalBatteryPercent', 15)
         target = value.get('targetBatteryPercent', 80)
+        forecast = value.get('energyForecast', 'Observe')
+        if forecast not in ('Observe', 'Enforce'):
+            raise ValueError('派单续航预估须为 Observe 或 Enforce。')
+        arrival = value.get('minimumArrivalBatteryPercent', 15)
+        margin = value.get('predictionErrorPercent', 3)
+        if (not all(cls._finite_number(v) for v in (arrival, margin))
+                or not 0 < arrival <= 100 or not 0 <= margin or arrival + margin > 100):
+            raise ValueError('到桩安全余量和预测误差无效，两项合计不得超过100%。')
         if not all(cls._finite_number(v) for v in (start, critical, target)) or not 0 < critical < start < target <= 100:
             raise ValueError('充电阈值须满足0<严重低电<启动<退出≤100。')
         release = value.get('preemptionReleaseBatteryPercent', min(50, target - 1))
@@ -1282,9 +1291,6 @@ class Runtime:
         if standby and any(site['exitSiteId'] == standby or site['chargingSiteId'] == standby for site in normalized):
             raise ValueError('充电返回待机点不能是充电出口或充电点。')
         low_vehicles = [v for v in vehicles if v['batteryPercent'] <= start]
-        if len(low_vehicles) > len(normalized):
-            raise ValueError(
-                f'充电位容量不足：初始低电量车{len(low_vehicles)}辆，超过可用充电位{len(normalized)}个。')
         unmatched = [v['id'] for v in low_vehicles
                      if not any(v['id'] in site['allowedVehicleIds'] for site in normalized)]
         if unmatched:
@@ -1292,7 +1298,8 @@ class Runtime:
         return dict(enabled=True, startBatteryPercent=start, criticalBatteryPercent=critical,
                     targetBatteryPercent=target, defaultStandbySiteId=standby,
                     minimumAvailableVehicles=minimum, maximumVehiclesOutOfService=maximum,
-                    preemptionReleaseBatteryPercent=release, sites=normalized)
+                    preemptionReleaseBatteryPercent=release, energyForecast=forecast,
+                    minimumArrivalBatteryPercent=arrival, predictionErrorPercent=margin, sites=normalized)
 
     def _default_configuration(self, count):
         table = self._bound_plc_table()
@@ -1644,7 +1651,17 @@ class Runtime:
             # After the private signal table is bound: the charging runtime's communication file mirrors the PLC.
             self._apply_charging_priority(configuration.get('chargingPriorityTest'), settings, robots, target, port)
             if configuration.get('chargingPriorityTest'):
-                lab['simulationConfiguration']['chargingPriorityTest'] = copy.deepcopy(configuration['chargingPriorityTest'])
+                charging = configuration['chargingPriorityTest']
+                lab['simulationConfiguration']['chargingPriorityTest'] = copy.deepcopy(charging)
+                settings['DispatchEnergy'] = dict(
+                    Mode=charging['energyForecast'],
+                    MinimumArrivalBatteryPercent=charging['minimumArrivalBatteryPercent'],
+                    PredictionErrorPercent=charging['predictionErrorPercent'],
+                    Vehicles={v['id']: dict(TravelCostPercentPerMeter=v['travelCostPercentPerMeter'],
+                        IdleCostPercentPerHour=v['idleCostPercentPerHour'], OperationSeconds=v['operationSeconds'])
+                        for v in configuration['vehicles']})
+                if charging['energyForecast'] == 'Enforce':
+                    settings['Dispatching']['RequireGlobalMatching'] = True
             web.update(Port=lab['webPort'], PipeName=lab['pipe'], ProjectStorePath=str(target / 'projects'), EngineeringStorePath=str(target / 'engineering'))
             for filename, value in [('lab.json', lab), ('service/appsettings.json', settings), ('service-settings.json', settings), ('webhost/appsettings.json', {'Web': web})]:
                 write(target / filename, value)

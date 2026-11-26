@@ -93,6 +93,24 @@ Check(queue.Port.Navigations.Count == 1 && queue.Port.Navigations[0].Vehicle == 
     "two vehicles competing for one bay dispatch only the lowest battery vehicle");
 Check(!queue.Service.AllowsNewBusiness("B") && !queue.Service.AllowsNewBusiness("A"),
     "a vehicle below the charging threshold cannot take new work even while the bay is occupied");
+Check(queue.Status.Sessions.Any(s => s.VehicleId == "A" && s.Phase == ChargingPhase.Queued),
+    "a low battery vehicle is visible in the queue while the only bay is occupied");
+
+var doubleBay = new Fixture(evidence, "double-bay-queue");
+doubleBay.Options.Sites =
+[
+    doubleBay.Options.Sites[0] with { AllowedVehicleIds = ["A", "B", "C"] },
+    new("BAY-2", "CHARGER-2", "EXIT-2", "CHARGE-RESOURCE-2")
+        { Commissioned = true, AllowedVehicleIds = ["A", "B", "C"] }
+];
+doubleBay.Options.MaximumVehiclesOutOfService = 2;
+doubleBay.Port.Put("A", 18); doubleBay.Port.Put("B", 20); doubleBay.Port.Put("C", 22);
+await doubleBay.CyclesAsync(3);
+Check(doubleBay.Port.Navigations.Select(n => n.Vehicle).SequenceEqual(["A", "B"]) &&
+    doubleBay.Status.Sessions.Any(s => s.VehicleId == "C" && s.Phase == ChargingPhase.Queued &&
+        s.Message.Contains("BAY-1：已被其他充电会话预留") && s.Message.Contains("BAY-2：已被其他充电会话预留")) &&
+    !doubleBay.Service.AllowsNewBusiness("C"),
+    "two lower battery vehicles reserve distinct bays while the third remains queued with no movement or new work");
 
 var busy = new Fixture(evidence, "busy");
 busy.Port.Busy.Add("A");
