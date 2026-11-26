@@ -208,6 +208,7 @@ class SimulationTests(unittest.TestCase):
         self.assertEqual(charging['startBatteryPercent'], 25)
         self.assertEqual(charging['criticalBatteryPercent'], 15)
         self.assertEqual(charging['targetBatteryPercent'], 80)
+        self.assertFalse(charging['returnToStandbyAfterCharging'])
         self.assertEqual(charging['defaultStandbySiteId'], '')
         self.assertEqual(charging['minimumAvailableVehicles'], 0)
         self.assertEqual(charging['maximumVehiclesOutOfService'], 0)
@@ -238,9 +239,11 @@ class SimulationTests(unittest.TestCase):
         next(n for n in payload['mapDefinition']['nodes'] if n['id'] == 'PARK1').update(
             type='WaitingPoint', allowTrafficStop=True)
         payload['chargingPriorityTest'].update(
-            defaultStandbySiteId='PARK1', minimumAvailableVehicles=1, maximumVehiclesOutOfService=1,
+            returnToStandbyAfterCharging=True, defaultStandbySiteId='PARK1',
+            minimumAvailableVehicles=1, maximumVehiclesOutOfService=1,
             preemptionReleaseBatteryPercent=60)
         charging = runtime._validate_configuration(payload)['chargingPriorityTest']
+        self.assertTrue(charging['returnToStandbyAfterCharging'])
         self.assertEqual(charging['defaultStandbySiteId'], 'PARK1')
         self.assertEqual(charging['minimumAvailableVehicles'], 1)
         self.assertEqual(charging['maximumVehiclesOutOfService'], 1)
@@ -262,6 +265,40 @@ class SimulationTests(unittest.TestCase):
         charging = runtime._validate_configuration(payload)['chargingPriorityTest']
         self.assertEqual((charging['waitingSiteIds'], charging['estimatedApproachWaitSeconds']), (['CHG-WAIT'], 25))
 
+    def test_dumper_waiting_bay_requires_explicit_charging_role(self):
+        runtime = Runtime.__new__(Runtime)
+        payload = self.charging_payload()
+        wait = next(node for node in payload['mapDefinition']['nodes'] if node['id'] == 'WAIT')
+        wait.update(type='WaitingPoint', allowTrafficStop=True, allowTransitThrough=False,
+                    resourceIds=['PARK-WAIT'])
+        payload['mapDefinition']['resources'].append(dict(
+            id='PARK-WAIT', type='Station', capacity=1,
+            boundary=[dict(x=-1, y=-1), dict(x=1, y=-1), dict(x=1, y=1), dict(x=-1, y=1)]))
+        payload['chargingPriorityTest']['waitingSiteIds'] = ['WAIT']
+        with self.assertRaisesRegex(ValueError, '等桩位WAIT'):
+            runtime._validate_configuration(payload)
+        wait['allowChargingWaiting'] = True
+        charging = runtime._validate_configuration(payload)['chargingPriorityTest']
+        self.assertEqual(charging['waitingSiteIds'], ['WAIT'])
+        wait['allowChargingWaiting'] = False
+        with self.assertRaisesRegex(ValueError, '等桩位WAIT'):
+            runtime._validate_configuration(payload)
+
+    def test_charger_exit_requires_explicit_charging_waiting_role(self):
+        runtime = Runtime.__new__(Runtime)
+        payload = self.charging_payload()
+        exit_node = next(node for node in payload['mapDefinition']['nodes'] if node['id'] == 'EXIT-01')
+        exit_node.update(allowTrafficStop=True, allowTransitThrough=False, resourceIds=['PARK-EXIT'])
+        payload['mapDefinition']['resources'].append(dict(
+            id='PARK-EXIT', type='Station', capacity=1,
+            boundary=[dict(x=-1, y=-1), dict(x=1, y=-1), dict(x=1, y=1), dict(x=-1, y=1)]))
+        payload['chargingPriorityTest']['waitingSiteIds'] = ['EXIT-01']
+        with self.assertRaisesRegex(ValueError, '等桩位EXIT-01'):
+            runtime._validate_configuration(payload)
+        exit_node['allowChargingWaiting'] = True
+        charging = runtime._validate_configuration(payload)['chargingPriorityTest']
+        self.assertEqual(charging['waitingSiteIds'], ['EXIT-01'])
+
     def test_charging_priority_configuration_rejects_unsafe_or_ambiguous_sites(self):
         runtime = object.__new__(Runtime)
         scenarios = []
@@ -277,8 +314,13 @@ class SimulationTests(unittest.TestCase):
         scenarios.append((payload, '允许车辆'))
         payload = self.charging_payload(); payload['vehicles'][0]['chargingGainPercentPerHour'] = 1001
         scenarios.append((payload, '充电增益'))
-        payload = self.charging_payload(); payload['chargingPriorityTest']['defaultStandbySiteId'] = 'CHARGE-01'
+        payload = self.charging_payload(); payload['chargingPriorityTest'].update(
+            returnToStandbyAfterCharging=True, defaultStandbySiteId='CHARGE-01')
         scenarios.append((payload, '待机点'))
+        payload = self.charging_payload(); payload['chargingPriorityTest']['returnToStandbyAfterCharging'] = True
+        scenarios.append((payload, '返程待机点'))
+        payload = self.charging_payload(); payload['chargingPriorityTest']['returnToStandbyAfterCharging'] = 'false'
+        scenarios.append((payload, '布尔'))
         payload = self.charging_payload(); payload['chargingPriorityTest']['maximumVehiclesOutOfService'] = 3
         scenarios.append((payload, '离线'))
         for payload, message in scenarios:
@@ -448,6 +490,10 @@ class SimulationTests(unittest.TestCase):
             payload['mapDefinition']['nodes'][0]['allowTrafficStop'] = invalid
             with self.assertRaisesRegex(ValueError, '布尔值'):
                 runtime._validate_configuration(payload)
+        payload = self.custom_payload()
+        payload['mapDefinition']['nodes'][0]['allowChargingWaiting'] = 'true'
+        with self.assertRaisesRegex(ValueError, 'allowChargingWaiting.*布尔值'):
+            runtime._validate_configuration(payload)
 
     def test_traffic_only_node_cannot_be_configured_for_dumper_waiting(self):
         runtime = object.__new__(Runtime)

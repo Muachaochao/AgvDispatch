@@ -398,6 +398,10 @@ onUnmounted(()=>{++epoch;window.removeEventListener('beforeunload',beforeUnload)
         <el-form-item label="航点类型"><el-select v-model="nodeForm.type"><el-option label="普通航点" value="Waypoint"/><el-option label="业务站点" value="Station"/><el-option label="路口" value="Intersection"/><el-option label="等待位" value="WaitingPoint"/><el-option label="充电位" value="ChargingPoint"/></el-select></el-form-item>
         <el-form-item label="厂家站点编号"><el-input v-model="nodeForm.agvSiteId" placeholder="例如 LM1，按厂家地图填写"/></el-form-item>
         <el-checkbox v-model="nodeForm.enabled">启用航点</el-checkbox>
+         <template v-if="nodeForm.type==='WaitingPoint'">
+          <el-checkbox v-model="nodeForm.allowChargingWaiting">允许兼作充电排队安全等待位</el-checkbox>
+          <el-alert type="info" :closable="false" show-icon title="等待位和充电出口都可显式授权" description="仍需满足独占停车资源容量 1、完整载荷车体边界和实时路权。正在充电的车会预留自己的出口停车资源，等待车不能占用，停充后可直接驶出。"/>
+         </template>
         <el-form-item label="关联共享区域"><el-select v-model="nodeForm.resourceIds" multiple filterable collapse-tags :max-collapse-tags="2" placeholder="未关联"><el-option v-for="r in definition.resources" :key="r.id" :label="r.id" :value="r.id"/></el-select></el-form-item>
        </template>
        <template v-if="kind==='edge'&&edgeForm">

@@ -249,6 +249,7 @@ class LifecycleTests(unittest.TestCase):
                 dict(id='充电出口', agvSiteId='CHARGE-EXIT', x=90, y=0, enabled=True,
                      type='WaitingPoint', resourceIds=[]),
             ])
+            next(node for node in navigation['nodes'] if node['id'] == '停车B')['allowTrafficStop'] = True
             navigation['edges'].extend([
                 dict(id='E-CHARGE-IN', **{'from': '停车A', 'to': '充电位'}, bidirectional=True, enabled=True),
                 dict(id='E-CHARGE-OUT', **{'from': '充电位', 'to': '充电出口'}, bidirectional=True, enabled=True),
@@ -268,6 +269,7 @@ class LifecycleTests(unittest.TestCase):
                 plcSignalTable=dict(fileName='plc.csv', csvText=SOURCE_PLC_TABLE.read_text(encoding='utf-8-sig')),
                 chargingPriorityTest=dict(
                     enabled=True, startBatteryPercent=25, criticalBatteryPercent=15, targetBatteryPercent=80,
+                    returnToStandbyAfterCharging=True, defaultStandbySiteId='停车B',
                     sites=[dict(id='B07-CHARGE-01', chargingSiteId='充电位', exitSiteId='充电出口',
                                 resourceId='CHARGE-01', allowedVehicleIds=['AGV-01', 'AGV-02'])])
             ))
@@ -277,6 +279,8 @@ class LifecycleTests(unittest.TestCase):
             self.assertEqual(charging['StartBatteryPercent'], 25)
             self.assertEqual(charging['CriticalBatteryPercent'], 15)
             self.assertEqual(charging['TargetBatteryPercent'], 80)
+            self.assertTrue(charging['ReturnToStandbyAfterCharging'])
+            self.assertEqual(charging['DefaultStandbySiteId'], '停车B')
             self.assertEqual(charging['Sites'][0]['ChargingSiteId'], '充电位')
             self.assertTrue(charging['Sites'][0]['Commissioned'])
             self.assertTrue(runtime.settings['RobokitCharging']['RelayControlConfirmed'])

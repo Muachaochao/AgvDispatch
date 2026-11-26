@@ -43,10 +43,12 @@ using (var database = DatabaseFactory.Create(new() { DatabasePath = Path.Combine
 var five = new Fleet(evidence, "five", ["A", "B", "C", "D", "E"], bays: 1);
 foreach (var id in five.Vehicles) five.Put(id, 24);
 await five.CyclesAsync(4);
-Check(five.Service.ReadAsync(default).GetAwaiter().GetResult().Sessions.Count(s => s.Phase != ChargingPhase.Completed) == 1,
-    "five vehicles above critical with one bay: only one vehicle is withdrawn from business");
-Check(five.Vehicles.Where(v => v != five.Reserved()).All(v => five.Service.AllowsNewBusiness(v)),
-    "the vehicles still waiting for the bay keep taking short tasks");
+var fleetSessions = five.Service.ReadAsync(default).GetAwaiter().GetResult().Sessions
+    .Where(s => s.Phase != ChargingPhase.Completed).ToArray();
+Check(fleetSessions.Length == five.Vehicles.Length && fleetSessions.Count(s => s.HasReservation) == 1,
+    "five vehicles above critical with one bay: all remain visible, but only one reserves the bay and leaves business");
+Check(five.Vehicles.All(v => !five.Service.AllowsNewBusiness(v)),
+    "vehicles at or below the charging threshold remain protected from new business while they queue");
 five.Put("E", 14);
 await five.CyclesAsync(2);
 Check(five.Service.ReadAsync(default).GetAwaiter().GetResult().Sessions.Any(s => s.VehicleId == "E" && s.Phase != ChargingPhase.Completed) &&
@@ -56,13 +58,15 @@ Check(five.Service.ReadAsync(default).GetAwaiter().GetResult().Sessions.Any(s =>
 var minimum = new Fleet(evidence, "minimum", ["A", "B", "C", "D", "E"], bays: 2, minimumAvailable: 4);
 foreach (var id in minimum.Vehicles) minimum.Put(id, 24);
 await minimum.CyclesAsync(4);
-Check(minimum.Sessions().Count == 1, "the minimum available fleet keeps four vehicles in business while a second bay is free");
+Check(minimum.Sessions().Count(s => s.HasReservation) == 1,
+    "the minimum available fleet blocks a second bay reservation that would breach the floor");
 
 // C3: the out-of-service cap limits simultaneous withdrawals.
 var cap = new Fleet(evidence, "cap", ["A", "B", "C", "D", "E"], bays: 2, maximumOutOfService: 1);
 foreach (var id in cap.Vehicles) cap.Put(id, 24);
 await cap.CyclesAsync(4);
-Check(cap.Sessions().Count == 1, "the out-of-service cap withdraws no more than the configured number of vehicles");
+Check(cap.Sessions().Count(s => s.HasReservation) == 1,
+    "the out-of-service cap allows no more than one reservation");
 
 // C4: a critical vehicle waiting for the only bay asks a charging vehicle above the release level to stop.
 Check(new ChargingOptions().PreemptionReleaseBatteryPercent == 50, "the default preemption release level is 50 percent");
@@ -104,8 +108,8 @@ Check(unknown.Session("U") is null && !unknown.Service.AllowsNewBusiness("U"),
     "a vehicle with an unknown battery is neither queued for charging nor allowed new business");
 unknown.Put("U", 24);
 await unknown.CyclesAsync(1);
-Check(unknown.Session("U") is null && unknown.Service.AllowsNewBusiness("U"),
-    "a vehicle whose battery reads again is judged by that reading: above critical with the bay held, it may take business");
+Check(unknown.Session("U") is { HasReservation: false } && !unknown.Service.AllowsNewBusiness("U"),
+    "a vehicle whose battery reads again is queued for charging and remains protected from new business");
 
 // C13: a manual request with a different letter case is stored under the vehicle id of the state cache.
 var casing = new Fleet(evidence, "casing", ["A", "B"], bays: 2);

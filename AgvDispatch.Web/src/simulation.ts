@@ -58,7 +58,7 @@ export function simulationVehicleVisualLabel(car: SimulationVehicle, fresh = tru
     idle: '空载待命'
   }[simulationVehicleVisualState(car, fresh)];
 }
-export interface SimulationNode { id: string; agvSiteId?: string | null; x: number; y: number; type?: string; enabled?: boolean; allowTrafficStop?: boolean; allowTransitThrough?: boolean; allowDumperWaiting?: boolean | null; resourceIds?: string[] }
+export interface SimulationNode { id: string; agvSiteId?: string | null; x: number; y: number; type?: string; enabled?: boolean; allowTrafficStop?: boolean; allowTransitThrough?: boolean; allowDumperWaiting?: boolean | null; allowChargingWaiting?: boolean | null; resourceIds?: string[] }
 export interface SimulationEdge { from: string; to: string; id?: string; enabled?: boolean; bidirectional?: boolean; distance?: number; speedLimit?: number; geometryKind?: string; controlPoints?: { x: number; y: number }[] | null; resourceIds?: string[]; vendorPath?: VendorPath | null }
 export interface SimulationResource { id: string; type?: string; capacity?: number; boundary?: { x: number; y: number }[] | null }
 export interface SimulationAreaAnnotation { id?: string; sourceType?: string; text?: string; sourceJson?: string; [key: string]: unknown }
@@ -237,6 +237,7 @@ export interface SimulationChargingSiteConfiguration {
 }
 export interface SimulationChargingPriorityTest {
   enabled: boolean; startBatteryPercent: number; criticalBatteryPercent: number; targetBatteryPercent: number;
+  returnToStandbyAfterCharging?: boolean;
   defaultStandbySiteId?: string; minimumAvailableVehicles?: number; maximumVehiclesOutOfService?: number;
   preemptionReleaseBatteryPercent?: number;
   energyForecast?: 'Observe' | 'Enforce';

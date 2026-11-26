@@ -404,7 +404,7 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
             }
             if(returning)
             {
-                // B07-FIX C1: the session closes only at the standby point, with the charger confirmed off.
+                // Legacy or explicitly configured return sessions close at the standby point.
                 var homeBattery=await ReadBatteryAsync(row,ct);
                 if(!CurrentStopped(homeBattery)||homeBattery.ManualCharge==true||homeBattery.AutoCharge==true)
                 {Hold(row,"返回待机点后仍有充电信号，保留充电资源待核对。");return;}
@@ -418,7 +418,8 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
                 {Hold(row,"退出后仍在充电或停止电流证据不完整，保留充电位。");return;}
                 if(row.Route!.ReturnPath.Length<2)
                 {await CompleteAsync(row with {Battery=battery},"充电已停止，原退出导航完成且实际离位；释放充电资源，恢复接单。",ct);return;}
-                // B07-FIX C1: the bay is released on arrival; the exit road stays leased until the return road is held.
+                // A configured return leg is optional. The default path completes at the safe exit
+                // and becomes a dispatch candidate without an extra trip to the standby point.
                 await port.ReleaseBayAtExitAsync(row,ct);
                 if(!await port.AcquireReturnAsync(row,ct))
                 {
@@ -497,8 +498,7 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
         if(phase==ChargingPhase.GoingToWaitingSite)
         {
             var original = row with {Phase=phase.Value};
-            if(row.WaitingRoute is {} route && port.IsAt(row.VehicleId,route.Path[^1]))
-                await ObserveWaitingAsync(original,ct);
+            await ObserveWaitingAsync(original,ct);
             return;
         }
         if(phase is ChargingPhase.AwaitingCurrent or ChargingPhase.Charging or ChargingPhase.AwaitingStop)
@@ -687,7 +687,7 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
         {
             if(row.Site?.ControlMode=="RobokitScript"&&await ScriptCloseBlockAsync(row,ct) is {} scriptBlock)return new(false,scriptBlock);
             var reading=await ReadBatteryAsync(row,ct);
-            // B07-FIX C1: a session that has a return road closes at the dedicated standby point, not at the exit.
+            // A configured return leg closes at its standby point; otherwise the safe exit is the closing position.
             var closingSite=row.Route!.ReturnPath.Length>=2&&row.Route.ReturnSiteId is {} home?home:row.Site!.ExitSiteId;
             if(!port.IsAt(row.VehicleId,closingSite)||!CurrentStopped(reading)||reading.ManualCharge==true||reading.AutoCharge==true)
                 return new(false,"实际退出位置、停稳、无充电及电流归零须共同确认，不能直接释放充电位。");

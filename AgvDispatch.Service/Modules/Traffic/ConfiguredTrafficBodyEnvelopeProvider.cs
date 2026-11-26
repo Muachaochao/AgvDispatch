@@ -25,6 +25,8 @@ public sealed class ConfiguredTrafficBodyEnvelopeProvider(
                     map.Definition.CoordinateSystem,
                     profiles[0].RadiusFromReportedReferenceMeters,
                     profiles[0].CalibrationVerified,
-                    profiles[0].IncludesMaximumPermittedLoad));
+                    profiles[0].IncludesMaximumPermittedLoad,
+                    profiles[0].LengthMeters,
+                    profiles[0].WidthMeters));
     }
 }

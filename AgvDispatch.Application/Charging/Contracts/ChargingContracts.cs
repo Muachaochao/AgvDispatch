@@ -40,9 +40,13 @@ public sealed class ChargingOptions
     public int EstimatedDockExitSeconds { get; set; } = 30;
     public int EstimatedApproachWaitSeconds { get; set; }
     public ChargingSite[] Sites { get; set; } = [];
-    /// <summary>Dedicated standby point where a charged vehicle returns when no business return site is set. Never an exit,
-    /// never a charging point. Blank means the plan fails until a return site is configured.</summary>
+    /// <summary>Optional dedicated standby point for a site that explicitly requires a return after charging.
+    /// It can never be an exit or a charging point.</summary>
     public string DefaultStandbySiteId { get; set; } = "";
+    /// <summary>Charging completes as soon as the vehicle is safely outside the bay with charging stopped.
+    /// Enable this only when the commissioned workflow requires an extra return to DefaultStandbySiteId
+    /// before the vehicle may take new work.</summary>
+    public bool ReturnToStandbyAfterCharging { get; set; }
     /// <summary>Minimum fleet size to retain when reserving a normal charging session.
     /// Low-battery vehicles waiting without a reservation are counted outside the simultaneous charging limit.</summary>
     public int MinimumAvailableVehicles { get; set; } = 0;

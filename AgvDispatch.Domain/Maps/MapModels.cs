@@ -39,6 +39,11 @@ public sealed record MapNode(
     // False excludes this node from dumper staging without affecting route windows.
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public bool? AllowDumperWaiting { get; init; }
+    // Business waiting bays and charger exits require explicit opt-in before
+    // they may also hold a vehicle queued for charging. Work sites and charging
+    // points remain excluded by the charging runtime regardless of this role.
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public bool? AllowChargingWaiting { get; init; }
 }
 
 public enum MapEdgeGeometryKind

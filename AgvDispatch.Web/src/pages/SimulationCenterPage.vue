@@ -127,6 +127,7 @@ const chargingEnabled = ref(false);
 const chargingEnergyForecast = ref<'Observe' | 'Enforce'>('Observe');
 const chargingArrivalReserve = ref(15), chargingForecastMargin = ref(3);
 const chargingStart = ref(25), chargingCritical = ref(15), chargingTarget = ref(80);
+const chargingReturnToStandby = ref(false);
 const chargingStandbySiteId = ref('');
 const chargingMinimumAvailableVehicles = ref(0), chargingMaximumVehiclesOutOfService = ref(0);
 const chargingPreemptionRelease = ref(50);
@@ -295,18 +296,25 @@ const chargingStandbyOptions = computed(() => mapNodes.value.filter(node => node
   node.type !== 'ChargingPoint' && node.allowTrafficStop === true)
   .map(node => ({ value: node.id, label: `${node.id}${node.agvSiteId && node.agvSiteId !== node.id ? ` · ${node.agvSiteId}` : ''}` })));
 const chargingWaitingOptions = computed(() => {
-  const excluded = new Set([waitingSite.value, dumpingSite.value, chargingStandbySiteId.value, inspectionSite.value,
-    ...additionalWaitingSites.value, ...stationDrafts.value.map(station => station.pickupSite),
-    ...chargingSites.value.flatMap(site => [site.chargingSiteId, site.exitSiteId])]);
+  const businessWaitingSites = new Set([waitingSite.value, ...additionalWaitingSites.value].filter(Boolean));
+  const chargerExitSites = new Set(chargingSites.value.map(site => site.exitSiteId).filter(Boolean));
+  const excluded = new Set([dumpingSite.value, chargingStandbySiteId.value, inspectionSite.value,
+    ...stationDrafts.value.map(station => station.pickupSite),
+    ...chargingSites.value.map(site => site.chargingSiteId)]);
   const nodes = mapNodes.value;
   const resources = new Map((mapDefinition.value?.resources ?? []).map(resource => [resource.id, resource]));
   return nodes.filter(node => {
     const parking = resources.get(node.resourceIds?.[0] ?? '');
     return node.enabled !== false && node.type === 'WaitingPoint' && node.allowTrafficStop === true &&
-      node.allowTransitThrough !== true && !excluded.has(node.id) && node.resourceIds?.length === 1 &&
+      node.allowTransitThrough !== true && node.allowChargingWaiting !== false &&
+      (!(businessWaitingSites.has(node.id) || chargerExitSites.has(node.id)) ||
+        node.allowChargingWaiting === true) &&
+      !excluded.has(node.id) && node.resourceIds?.length === 1 &&
       parking?.type === 'Station' && (parking.capacity ?? 1) === 1 && (parking.boundary?.length ?? 0) >= 3 &&
       !nodes.some(other => other.enabled !== false && other.id !== node.id && other.resourceIds?.includes(parking.id));
-  }).map(node => ({ value: node.id, label: node.id })).sort((a, b) => a.label.localeCompare(b.label, 'zh-CN', { numeric: true }));
+  }).map(node => ({ value: node.id,
+    label: `${node.id}${node.allowChargingWaiting === true ? ' · 可兼作等桩' : ''}` }))
+    .sort((a, b) => a.label.localeCompare(b.label, 'zh-CN', { numeric: true }));
 });
 const chargingBayOptions = computed(() => (mapDefinition.value?.resources ?? []).filter(resource => resource.type === 'ChargingBay')
   .map(resource => ({ value: resource.id, label: `${resource.id} · 容量 ${resource.capacity ?? 1}` })));
@@ -1086,7 +1094,9 @@ const configurationProblems = computed(() => {
     if (!Number.isFinite(chargingPreemptionRelease.value) ||
       !(chargingPreemptionRelease.value > chargingCritical.value && chargingPreemptionRelease.value < chargingTarget.value))
       problems.push('抢占放行电量须位于严重低电与退出电量之间。');
-    if (chargingStandbySiteId.value) {
+    if (chargingReturnToStandby.value && !chargingStandbySiteId.value.trim()) {
+      problems.push('启用充电后返回待机时，请选择返程待机点。');
+    } else if (chargingReturnToStandby.value) {
       const standby = mapNodes.value.find(node => node.id === chargingStandbySiteId.value);
       if (!standby || standby.enabled === false || standby.type === 'ChargingPoint' || standby.allowTrafficStop !== true)
         problems.push('充电返回待机点须选择已启用、可停车的非充电节点。');
@@ -1371,7 +1381,8 @@ function configurationDraft(): SimulationConfigureRequest | null {
     downstreamAdmissionCapacity: downstreamAdmissionCapacity.value,
     ...(chargingEnabled.value ? { chargingPriorityTest: { enabled: true, startBatteryPercent: chargingStart.value,
       criticalBatteryPercent: chargingCritical.value, targetBatteryPercent: chargingTarget.value,
-      defaultStandbySiteId: chargingStandbySiteId.value.trim(),
+      returnToStandbyAfterCharging: chargingReturnToStandby.value,
+      defaultStandbySiteId: chargingReturnToStandby.value ? chargingStandbySiteId.value.trim() : '',
       minimumAvailableVehicles: chargingMinimumAvailableVehicles.value,
       maximumVehiclesOutOfService: chargingMaximumVehiclesOutOfService.value,
       preemptionReleaseBatteryPercent: chargingPreemptionRelease.value,
@@ -1655,6 +1666,7 @@ function accept(next: SimulationStatus) {
     chargingApproachWaitSeconds.value = charging?.estimatedApproachWaitSeconds ?? 0;
     chargingStart.value = charging?.startBatteryPercent ?? 25; chargingCritical.value = charging?.criticalBatteryPercent ?? 15;
     chargingTarget.value = charging?.targetBatteryPercent ?? 80;
+    chargingReturnToStandby.value = charging?.returnToStandbyAfterCharging ?? false;
     chargingStandbySiteId.value = charging?.defaultStandbySiteId ?? '';
     chargingMinimumAvailableVehicles.value = charging?.minimumAvailableVehicles ?? 0;
     chargingMaximumVehiclesOutOfService.value = charging?.maximumVehiclesOutOfService ?? 0;
@@ -2352,7 +2364,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
             <button :disabled="customVehicles.length >= 8" @click="customVehicles.push({ id: `AGV-SIM-${String(customVehicles.length + 1).padStart(2, '0')}`, initialSite: '', radiusMeters: 0.49, lengthMeters: 0.8, widthMeters: 0.52, initialLoaded: false, batteryPercent: 86, speedScale: 0.75, accelerationMetersPerSecondSquared: 0.6, operationSeconds: 2, travelCostPercentPerMeter: 0.01, idleCostPercentPerHour: 0.1, voltageCurve: [{ percent: 0, voltage: 21 }, { percent: 100, voltage: 26 }], chargingGainPercentPerHour: 20 }); resetVehicleOrigins()">增加车辆</button>
           </div>
           <div class="charging-designer">
-            <div class="designer-section-title"><span>03</span><div><b>充电优先实验 · {{ chargingEnabled ? `已启用 · ${chargingSites.length} 个充电位` : '未启用' }}</b><small>低电量车辆先完成当前箱体循环，再按电量从低到高排队充电；达到退出电量后停止输出、驶离并恢复接单。</small></div></div>
+            <div class="designer-section-title"><span>03</span><div><b>充电优先实验 · {{ chargingEnabled ? `已启用 · ${chargingSites.length} 个充电位` : '未启用' }}</b><small>低电量车辆先完成当前箱体循环，再按电量从低到高排队。停充后驶到安全出口即释放充电位并恢复接单，不会无条件返回待机点。</small></div></div>
             <label class="loaded-config"><input v-model="chargingEnabled" type="checkbox" :disabled="configurationLocked" @change="chargingEnabled && !chargingSites.length && addChargingSite()" />启用充电优先实验（虚拟 1007 电池与 6005 继电器，每车独立端口）</label>
             <template v-if="chargingEnabled">
               <div class="form-row">
@@ -2368,13 +2380,14 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
                 <label>预测误差余量 / 百分点<input v-model.number="chargingForecastMargin" :disabled="configurationLocked" type="number" min="0" max="100" step="0.1" /></label>
               </div>
               <div class="form-row">
-                <label>充电返回待机点<ElSelectV2 v-model="chargingStandbySiteId" :options="chargingStandbyOptions" :disabled="configurationLocked" :teleported="false" class="topology-select" filterable clearable /><small>充满后驶离的专用待机点，不能是充电点或充电出口。</small></label>
+                <label class="loaded-config"><input v-model="chargingReturnToStandby" :disabled="configurationLocked" type="checkbox" />充电后返回待机点（兼容模式）<small>默认关闭：车辆到安全出口即可接单。只有既有工程明确要求时，才增加一次返待机导航。</small></label>
+                <label v-if="chargingReturnToStandby">返程待机点<ElSelectV2 v-model="chargingStandbySiteId" :options="chargingStandbyOptions" :disabled="configurationLocked" :teleported="false" class="topology-select" filterable clearable /><small>仅在兼容模式开启时使用，不能是充电点或充电出口。</small></label>
                 <label>最少可用车数<input v-model.number="chargingMinimumAvailableVehicles" type="number" min="0" step="1" /><small>限制普通低电车辆同时进入充电流程，排队期间暂停接单。</small></label>
                 <label>同时离线上限<input v-model.number="chargingMaximumVehiclesOutOfService" type="number" min="0" step="1" /><small>0 表示只受最少可用车数限制。</small></label>
                 <label>抢占放行 / %<input v-model.number="chargingPreemptionRelease" type="number" min="1" max="100" step="1" /><small>严重低电车等桩时，达到此电量的车可提前停充让位。</small></label>
               </div>
               <div class="form-row">
-                <label>安全等桩位<ElSelectV2 v-model="chargingWaitingSiteIds" :options="chargingWaitingOptions" :disabled="configurationLocked" :teleported="false" class="topology-select" multiple filterable clearable /><small>{{ chargingWaitingOptions.length ? '双桩占用时只允许去已核定的等桩位。' : '当前地图没有独立等桩位。' }}</small></label>
+                <label>安全等桩位<ElSelectV2 v-model="chargingWaitingSiteIds" :options="chargingWaitingOptions" :disabled="configurationLocked" :teleported="false" class="topology-select" multiple filterable clearable /><small>{{ chargingWaitingOptions.length ? '可选用独立等待位，或在地图中明确标记“可兼作等桩”的倒料候车位。' : '当前地图没有可用的安全等桩位。' }}</small></label>
                 <label>预计进桩路权等待 / 秒<input v-model.number="chargingApproachWaitSeconds" :disabled="configurationLocked" type="number" min="0" max="3600" step="1" /><small>已占用进桩路权的估计时间，用于比较选桩。0 表示未知。</small></label>
               </div>
               <p class="charging-preview">按当前车辆电量，启动后进入充电队列的顺序：<b>{{ chargingQueuePreview.length ? chargingQueuePreview.join(' → ') : '无（所有车辆高于启动阈值）' }}</b></p>
@@ -2387,7 +2400,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(poll); c
                 <label>退出点
                   <ElSelectV2 v-model="site.exitSiteId" :options="siteOptions" :disabled="configurationLocked" :teleported="false" class="topology-select" filterable
                     :aria-label="`${site.id} 的退出点`" placeholder="搜索退出节点" />
-                  <small>充完电后先驶到这里再释放充电位；不要选倒料净空内或主道唯一通行点。</small>
+                  <small>安全离桩点：停充后驶到这里即释放充电位并可直接接单，不是强制返待机的停车路线。不要选倒料净空内或主道唯一通行点。</small>
                 </label>
                 <label>独占资源
                   <ElSelectV2 v-model="site.resourceId" :options="chargingBayOptions" :disabled="configurationLocked" :teleported="false" class="topology-select" filterable

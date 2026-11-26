@@ -134,7 +134,9 @@ public sealed class MapImportService : IMapImportService
             AllowTrafficStop = string.IsNullOrWhiteSpace(Optional(row, "AllowTrafficStop"))
                 ? null : Boolean(row, "AllowTrafficStop", true),
             AllowDumperWaiting = string.IsNullOrWhiteSpace(Optional(row, "AllowDumperWaiting"))
-                ? null : Boolean(row, "AllowDumperWaiting", true)
+                ? null : Boolean(row, "AllowDumperWaiting", true),
+            AllowChargingWaiting = string.IsNullOrWhiteSpace(Optional(row, "AllowChargingWaiting"))
+                ? null : Boolean(row, "AllowChargingWaiting", true)
         }).ToArray();
         var nodeById = nodes
             .GroupBy(node => node.Id, StringComparer.OrdinalIgnoreCase)
@@ -195,7 +197,8 @@ public sealed class MapImportService : IMapImportService
                 LayerId = node.LayerId,
                 AllowTransitThrough = node.AllowTransitThrough,
                 AllowTrafficStop = node.AllowTrafficStop,
-                AllowDumperWaiting = node.AllowDumperWaiting
+                AllowDumperWaiting = node.AllowDumperWaiting,
+                AllowChargingWaiting = node.AllowChargingWaiting
             }).ToArray();
         var nodeById = nodes
             .GroupBy(node => node.Id, StringComparer.OrdinalIgnoreCase)
@@ -471,6 +474,7 @@ public sealed class MapImportService : IMapImportService
         public bool AllowTransitThrough { get; set; }
         public bool? AllowTrafficStop { get; set; }
         public bool? AllowDumperWaiting { get; set; }
+        public bool? AllowChargingWaiting { get; set; }
         public string LayerId { get; set; } = "navigation";
         public string Id { get; set; } = string.Empty;
         public double X { get; set; }

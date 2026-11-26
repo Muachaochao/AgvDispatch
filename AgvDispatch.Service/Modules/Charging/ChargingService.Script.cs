@@ -169,9 +169,14 @@ public sealed partial class ChargingService
         row=Save(row with {Battery=reading,UpdatedAt=Now});
         if(exiting&&row.Route!.ReturnPath.Length>=2)
         {await SendReturnAsync(row,ct);return;}
+        if(exiting)
+        {
+            await CompleteAsync(row,"已完成充电、核验停充并安全驶离充电位；释放充电资源，立即参与接单。",ct);
+            return;
+        }
         if(row.Route!.ReturnSiteId is not {} home||!port.IsAt(row.VehicleId,home))
-        {Hold(row,"充电已结束但尚未返回本轮原待机点，暂不恢复业务派车。");return;}
-        await CompleteAsync(row,"已完成充电、核验停充并返回原待机点；释放充电资源，允许业务恢复。",ct);
+        {Hold(row,"配置了充电后返程，但尚未返回指定待机点，暂不恢复业务派车。");return;}
+        await CompleteAsync(row,"已完成充电、核验停充并返回配置的待机点；释放充电资源，允许业务恢复。",ct);
     }
 
     private async Task SendReturnAsync(ChargingSession row,CancellationToken ct)

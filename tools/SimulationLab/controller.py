@@ -1014,7 +1014,7 @@ class Runtime:
         for node in navigation['nodes']:
             if not isinstance(node, dict) or any(not isinstance(node.get(key), str) or not node[key].strip() for key in ('id', 'agvSiteId')):
                 raise ValueError('地图节点缺少id或agvSiteId。')
-            for flag in ('allowTrafficStop', 'allowDumperWaiting'):
+            for flag in ('allowTrafficStop', 'allowDumperWaiting', 'allowChargingWaiting'):
                 if node.get(flag) is not None and type(node[flag]) is not bool:
                     raise ValueError(f'地图节点 {flag} 必须为布尔值，不能用文字或数字替代。')
             if node['id'] in nodes or node['agvSiteId'] in vendor_ids:
@@ -1196,7 +1196,10 @@ class Runtime:
         if type(admission) is not int or not 0 <= admission <= 8:
             raise ValueError('下游准入数量须为0至8的整数，0表示不另行限流。')
         charging = self._validate_charging_priority(payload.get('chargingPriorityTest'), nodes, resources,
-                                                    normalized_vehicles, set(targets))
+                                                    normalized_vehicles,
+                                                    station_sites={station['pickupSite'] for station in normalized_stations},
+                                                    dumper_waiting_sites=set(waiting_sites),
+                                                    dumping_site=dumping, inspection_site=inspection)
         result = dict(name=payload.get('name') or navigation.get('name') or 'custom-simulation',
                     mapDefinition=navigation, stations=normalized_stations,
                     vehicles=normalized_vehicles, dumper=dict(dumpingSite=dumping, waitingSite=waiting, waitingSites=waiting_sites, resourceId=resource_id),
@@ -1207,7 +1210,8 @@ class Runtime:
         return result
 
     @classmethod
-    def _validate_charging_priority(cls, value, nodes, resources, vehicles, business_sites=()):
+    def _validate_charging_priority(cls, value, nodes, resources, vehicles, *,
+                                    station_sites=(), dumper_waiting_sites=(), dumping_site='', inspection_site=''):
         """Validate the optional charging-priority experiment (充电优先仿真验收 CP01).
 
         Absent or enabled=false keeps the original simulation behaviour.  Every
@@ -1218,7 +1222,8 @@ class Runtime:
         if value is None:
             return None
         if not isinstance(value, dict) or set(value) - {'enabled', 'startBatteryPercent', 'criticalBatteryPercent',
-                                                        'targetBatteryPercent', 'defaultStandbySiteId',
+                                                        'targetBatteryPercent', 'returnToStandbyAfterCharging',
+                                                        'defaultStandbySiteId',
                                                         'minimumAvailableVehicles', 'maximumVehiclesOutOfService',
                                                         'preemptionReleaseBatteryPercent', 'energyForecast',
                                                         'minimumArrivalBatteryPercent', 'predictionErrorPercent', 'sites',
@@ -1251,15 +1256,22 @@ class Runtime:
             raise ValueError('车队最少可用车数及同时离线车数上限须为0至车辆数之间的整数。')
         if maximum and len(vehicle_ids) - maximum < minimum:
             raise ValueError('同时离线车数上限会使可用车数低于车队最少可用车数。')
+        return_to_standby = value.get('returnToStandbyAfterCharging', False)
+        if type(return_to_standby) is not bool:
+            raise ValueError('充电后返回待机开关必须是布尔值。')
         standby = value.get('defaultStandbySiteId', '')
         if not isinstance(standby, str):
             raise ValueError('充电返回待机点必须是节点ID。')
         standby = standby.strip()
-        if standby:
+        if return_to_standby and not standby:
+            raise ValueError('启用充电后返回待机时，必须配置返程待机点。')
+        if return_to_standby and standby:
             node = nodes.get(standby)
             if node is None or node.get('enabled', True) is not True or node.get('type') == 'ChargingPoint' or \
                     node.get('allowTrafficStop') is not True:
                 raise ValueError('充电返回待机点必须是已启用、可停车的非充电节点。')
+        if not return_to_standby:
+            standby = ''
         sites = value.get('sites')
         if not isinstance(sites, list) or not 1 <= len(sites) <= 32:
             raise ValueError('启用充电优先实验时须配置1至32个充电位。')
@@ -1294,7 +1306,7 @@ class Runtime:
             ids.add(site_id.casefold()); points.add(point); bays.add(resource_id)
             normalized.append(dict(id=site_id, chargingSiteId=point, exitSiteId=exit_site,
                                    resourceId=resource_id, allowedVehicleIds=list(allowed)))
-        if standby and any(site['exitSiteId'] == standby or site['chargingSiteId'] == standby for site in normalized):
+        if return_to_standby and any(site['exitSiteId'] == standby or site['chargingSiteId'] == standby for site in normalized):
             raise ValueError('充电返回待机点不能是充电出口或充电点。')
         waiting = value.get('waitingSiteIds', [])
         traffic_wait = value.get('estimatedApproachWaitSeconds', 0)
@@ -1302,13 +1314,19 @@ class Runtime:
             raise ValueError('等桩位必须为不重复的有效地图节点。')
         if type(traffic_wait) is not int or not 0 <= traffic_wait <= 3600:
             raise ValueError('预计进桩路权等待须为0至3600秒。')
-        excluded = set(business_sites) | points | {site['exitSiteId'] for site in normalized} | {standby}
+        exit_sites = {site['exitSiteId'] for site in normalized}
+        excluded = set(station_sites) | points | {dumping_site, inspection_site}
+        if return_to_standby:
+            excluded.add(standby)
         for site in waiting:
             node = nodes[site]
             ids = node.get('resourceIds') or []
             parking = resources.get(ids[0]) if len(ids) == 1 else None
             if (site in excluded or node.get('enabled', True) is not True or node.get('type') != 'WaitingPoint'
                     or node.get('allowTrafficStop') is not True or node.get('allowTransitThrough', False) is not False
+                    or node.get('allowChargingWaiting') is False
+                    or (site in dumper_waiting_sites or site in exit_sites)
+                    and node.get('allowChargingWaiting') is not True
                     or not parking or parking.get('type') != 'Station' or parking.get('capacity', 1) != 1
                     or len(parking.get('boundary') or []) < 3
                     or any(ids[0] in (other.get('resourceIds') or []) for key, other in nodes.items()
@@ -1320,7 +1338,8 @@ class Runtime:
         if unmatched:
             raise ValueError(f"充电位容量不足：低电量车{'、'.join(unmatched)}没有可用充电位。")
         return dict(enabled=True, startBatteryPercent=start, criticalBatteryPercent=critical,
-                    targetBatteryPercent=target, defaultStandbySiteId=standby,
+                    targetBatteryPercent=target, returnToStandbyAfterCharging=return_to_standby,
+                    defaultStandbySiteId=standby,
                     minimumAvailableVehicles=minimum, maximumVehiclesOutOfService=maximum,
                     preemptionReleaseBatteryPercent=release, energyForecast=forecast,
                     minimumArrivalBatteryPercent=arrival, predictionErrorPercent=margin, sites=normalized,
@@ -1739,6 +1758,7 @@ class Runtime:
                                     StartBatteryPercent=charging['startBatteryPercent'],
                                     CriticalBatteryPercent=charging['criticalBatteryPercent'],
                                     TargetBatteryPercent=charging['targetBatteryPercent'],
+                                    ReturnToStandbyAfterCharging=charging['returnToStandbyAfterCharging'],
                                     DefaultStandbySiteId=charging['defaultStandbySiteId'],
                                     MinimumAvailableVehicles=charging['minimumAvailableVehicles'],
                                     MaximumVehiclesOutOfService=charging['maximumVehiclesOutOfService'],
