@@ -22,7 +22,7 @@ public sealed partial class ChargingRuntimePort
         if(body is not { CalibrationVerified:true, IncludesMaximumPermittedLoad:true } ||
             !double.IsFinite(body.RadiusFromReportedReferenceMeters) || body.RadiusFromReportedReferenceMeters<=0)return null;
         var center=new MapPoint2D(node.X,node.Y);var radius=body.RadiusFromReportedReferenceMeters+0.15;
-        if(!ChargingWaitingGeometry.Outside(center,radius,resource.Boundary))return null;
+        if(!ChargingWaitingGeometry.ContainsBody(center,radius,resource.Boundary))return null;
         return (node,resource.Id);
     }
 
@@ -131,9 +131,9 @@ public sealed partial class ChargingRuntimePort
     }
 }
 
-internal static class ChargingWaitingGeometry
+public static class ChargingWaitingGeometry
 {
-    public static bool Outside(MapPoint2D point,double radius,IReadOnlyList<MapPoint2D> polygon)
+    public static bool ContainsBody(MapPoint2D point,double radius,IReadOnlyList<MapPoint2D> polygon)
     {
         var inside=false;
         for(int i=0,j=polygon.Count-1;i<polygon.Count;j=i++)
@@ -142,7 +142,7 @@ internal static class ChargingWaitingGeometry
             if(Distance(point,a,b)<=radius+1e-8)return false;
             if((a.Y>point.Y)!=(b.Y>point.Y) && point.X<(b.X-a.X)*(point.Y-a.Y)/(b.Y-a.Y)+a.X)inside=!inside;
         }
-        return !inside;
+        return inside;
     }
     private static double Distance(MapPoint2D p,MapPoint2D a,MapPoint2D b)
     {

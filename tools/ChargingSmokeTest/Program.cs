@@ -117,6 +117,11 @@ busy.Port.Busy.Add("A");
 await busy.CyclesAsync(4);
 Check(busy.Port.Navigations.Count == 0 && busy.Robot.RelayWrites.Count == 0,
     "unfinished business or equipment responsibility prevents charging motion");
+var parking = new MapPoint2D[] { new(-2,-2), new(2,-2), new(2,2), new(-2,2) };
+Check(ChargingWaitingGeometry.ContainsBody(new(0,0),1,parking) &&
+    !ChargingWaitingGeometry.ContainsBody(new(0,1.5),1,parking) &&
+    !ChargingWaitingGeometry.ContainsBody(new(3,0),1,parking),
+    "a staging bay accepts only a body envelope fully inside its parking boundary");
 var staging = new Fixture(evidence, "safe-waiting");
 staging.Options.WaitingSiteIds = ["SAFE"];
 staging.Options.Sites = [staging.Options.Sites[0] with { AllowedVehicleIds = ["A", "B", "C"] },
