@@ -259,7 +259,7 @@ class Runtime:
         self.scheme_store = scheme_store
         self.history_cache = (0, [])
         self.catalog_cache = (0, {})
-        self.charging_observation = (0, None)
+        self.charging_observation = (0, None, None)
         self.guidance_cache = (0, [])
         self.recovery_cache = (0, {})
         self.plc_table_cache = None
@@ -643,28 +643,39 @@ class Runtime:
     def live_charging_sessions(self):
         configuration = getattr(self, 'lab', {}).get('simulationConfiguration') or {}
         charging = configuration.get('chargingPriorityTest') or {}
-        if self.phase != 'running' or not charging.get('enabled'):
-            self.charging_observation = (0, None)
-            return None
-        refresh_at, sessions = getattr(self, 'charging_observation', (0, None))
-        now = time.monotonic()
-        if now >= refresh_at:
-            self.charging_observation = (now + 5, sessions)
-            threading.Thread(target=self._read_live_charging, args=(self.root, self.web['Port']),
-                             daemon=True).start()
-        return sessions
+        with self.lock:
+            if self.phase != 'running' or not charging.get('enabled'):
+                self.charging_observation = (0, None, None)
+                return None
+            refresh_at, sessions, observed_at = getattr(self, 'charging_observation', (0, None, None))
+            now = time.monotonic()
+            if now >= refresh_at:
+                pending = (float('inf'), sessions, observed_at)
+                self.charging_observation = pending
+                threading.Thread(target=self._read_live_charging, args=(self.root, self.web['Port'], pending),
+                                 daemon=True).start()
+            return sessions if observed_at is not None and now - observed_at <= 20 else None
 
-    def _read_live_charging(self, root, port):
+    def _read_live_charging(self, root, port, pending):
         sessions = None
         try:
-            with urlopen(f'http://127.0.0.1:{port}/api/charging', timeout=2) as response:
+            with urlopen(f'http://127.0.0.1:{port}/api/charging', timeout=8) as response:
                 snapshot = json.loads(response.read())
             sessions = []
             for row in snapshot['sessions']:
-                if row['phase'] == 'Completed':
+                # Relay snapshots from existing releases record verified stop and
+                # exit in the transition message without setting the script flag.
+                relay_exit = row.get('message') == '充电已停止，原退出导航完成且实际离位；释放充电资源，恢复接单。'
+                relay_stop = row.get('message', '').startswith('停充已确认，电流归零；')
+                shutdown_verified = row.get('shutdownVerified') or relay_exit or relay_stop
+                if row['phase'] == 'Completed' and (
+                        not shutdown_verified or not (row.get('site') or {}).get('exitSiteId')
+                        or row.get('returnSiteId')):
                     continue
                 card = {key: row[key] for key in ('vehicleId', 'phase', 'message', 'phaseSince',
                         'targetBatteryPercent', 'returnSiteId', 'shutdownVerified') if key in row}
+                if shutdown_verified:
+                    card['shutdownVerified'] = True
                 for key, fields in (
                     ('site', ('id', 'chargingSiteId', 'exitSiteId')),
                     ('battery', ('batteryPercent', 'current', 'charging')),
@@ -677,12 +688,17 @@ class Runtime:
                 if isinstance(row.get('siteEstimates'), list):
                     card['siteEstimates'] = row['siteEstimates']
                 sessions.append(card)
-        except (OSError, ValueError, KeyError, TypeError):
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
             sessions = None
         with self.lock:
-            if self.root == root and self.phase == 'running':
-                refresh_at, _ = self.charging_observation
-                self.charging_observation = (refresh_at, sessions)
+            if self.root == root and self.phase == 'running' and self.charging_observation is pending:
+                now = time.monotonic()
+                _, previous, observed_at = pending
+                if sessions is None:
+                    delayed = None if previous is None else [dict(row, feedbackDelayed=True) for row in previous]
+                    self.charging_observation = (now + 5, delayed, observed_at)
+                else:
+                    self.charging_observation = (now + 5, sessions, now)
 
     def launch(self, name, arguments, cwd):
         env = os.environ.copy()

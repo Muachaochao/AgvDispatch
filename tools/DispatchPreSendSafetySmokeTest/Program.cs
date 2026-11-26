@@ -259,6 +259,17 @@ cache.Row = cache.Row with { VelocityX = 0, LastSuccessfulPollAt = DateTimeOffse
 await Advance();
 Check(await db.Queryable<AgvCommandOutboxEntity>().CountAsync(c => c.TaskId == stageTask.Task.TaskId) == 1,
     "at the staging bay the vehicle waits while downstream remains occupied");
+await traffic.ReleaseTaskAsync("OTHER-TRANSPORT", default);
+stagingPlanner.OccupiedEdges.Add("FORK-B");
+await Advance();
+Check(await db.Queryable<AgvCommandOutboxEntity>().CountAsync(c => c.TaskId == stageTask.Task.TaskId) == 1 &&
+    !await db.Queryable<TrafficResourceLeaseEntity>().AnyAsync(l => l.TaskId == stageTask.Task.TaskId && l.ResourceId == "FAR"),
+    "a parked peer without a lease blocks rolling continuation before any new command or corridor lease");
+stagingPlanner.OccupiedEdges.Clear();
+await traffic.RecordRouteAsync(new("far-owner", "OTHER-TRANSPORT", "V2", "FORK", "B", ["FORK-B"],
+    ["FAR"], false, "downstream fixture") { MapId = "M", MapVersionId = "V2" }, default);
+Check((await traffic.TryAcquireAsync("far-owner", "OTHER-TRANSPORT", "V2", ["FAR"], default)).Acquired,
+    "the lease-based detour fixture is restored independently of physical occupancy");
 stagingPlanner.DetourOpen = true;
 stagingPlanner.DetourCost = 120;
 await Advance();
@@ -330,6 +341,8 @@ sealed class Planner : IRoutePlanner
 }
 sealed class StagingPlanner : IRoutePlanner
 {
+    public HashSet<string> OccupiedEdges { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public IReadOnlySet<string> GetVehicleOccupiedEdgeIds(MapDefinition definition, string source, string vehicleId) => OccupiedEdges;
     public bool DetourOpen { get; set; }
     public double DetourCost { get; set; } = 10;
     public RoutePlan? Plan(string source, string destination, IReadOnlySet<string> unavailable)

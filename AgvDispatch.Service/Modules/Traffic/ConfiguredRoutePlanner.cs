@@ -157,6 +157,10 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
         return plan is null ? null : MapRouteSiteMapper.ToAgvSitePlan(definition, plan);
     }
 
+    public IReadOnlySet<string> GetVehicleOccupiedEdgeIds(MapDefinition definition, string source, string vehicleId) =>
+        OccupiedCorridorTraversals(definition, MapRouteSiteMapper.ResolveLogicalNodeId(definition, source), vehicleId)
+            .Select(traversal => traversal.EdgeId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
     private IReadOnlyList<MapDirectedTraversal> OccupiedCorridorTraversals(MapDefinition definition, string logicalSource,
         string? movingVehicleId = null)
     {

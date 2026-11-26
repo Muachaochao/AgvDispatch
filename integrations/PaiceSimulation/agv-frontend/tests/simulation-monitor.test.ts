@@ -12,7 +12,7 @@ test('shows formal charging evidence after docking and preserves business during
   assert.equal(monitor.chargingPresentation(sessions, 'AGV-03', false)?.label, '排队充电');
   assert.equal(monitor.chargingPresentation(sessions, 'AGV-03', true)?.label, '业务完成后充电');
   assert.equal(monitor.chargingPresentation(sessions, 'AGV-03', true)?.pending, true);
-  assert.equal(monitor.chargingPresentation([{ ...charging, phase: 'AwaitingStop', shutdownVerified: true }], 'AGV-02', false)?.label, '等待离桩');
+  assert.equal(monitor.chargingPresentation([{ ...charging, phase: 'AwaitingStop', shutdownVerified: true }], 'AGV-02', false)?.label, '等离桩路权');
   assert.equal(monitor.chargingPresentation([{ ...charging, phase: 'Completed' }], 'AGV-02', false), undefined);
 })
 
@@ -23,9 +23,33 @@ test('shows a staging destination and earliest charger independently', () => {
   assert.equal(moving?.target, 'SAFE-2');
   const parked = monitor.chargingPresentation([{ ...row, phase: 'Queued',
     siteEstimates: [{ siteId: 'BAY-01', startInSeconds: 91 }, { siteId: 'BAY-02', startInSeconds: 20 }] }], row.vehicleId, false);
-  assert.equal(parked?.label, '安全位等桩');
+  assert.equal(parked?.label, '等空桩');
   assert.equal(parked?.reason, '等空桩');
   assert.match(parked?.details ?? '', /BAY-02.*20/);
+})
+
+test('distinguishes approach, stop, exit, dispatch and return stages', () => {
+  const row = { vehicleId: 'AGV-02', phase: 'Queued', site: { exitSiteId: 'WAIT-05' }, shutdownVerified: true };
+  for (const [phase, message, label] of [
+    ['Queued', '等空桩：两桩被占用', '等空桩'],
+    ['Queued', '进桩暂未就绪：BAY-01：在当前可用路权下无路线', '等进桩路权'],
+    ['Queued', '没有允许该车使用的已核定充电位。', '排队充电'],
+    ['AwaitingStop', '', '停充确认中'],
+    ['Exiting', '', '驶离充电位'],
+    ['Returning', '', '返安全位'],
+  ]) {
+    const result = monitor.chargingPresentation(
+      [{ ...row, phase, message, shutdownVerified: false, feedbackDelayed: true }], row.vehicleId, false);
+    assert.equal(result?.label, label);
+    assert.equal(result?.feedbackDelayed, true);
+  }
+  const completed = [{ ...row, phase: 'Completed' }];
+  const car = { station: 'WAIT-05', moving: false, current_task: null };
+  assert.equal(monitor.chargingPresentation(completed, row.vehicleId, false, car)?.label, '出口待派');
+  assert.equal(monitor.chargingPresentation(completed, row.vehicleId, true, car), undefined);
+  assert.equal(monitor.chargingPresentation(completed, row.vehicleId, false, { ...car, moving: true }), undefined);
+  assert.equal(monitor.chargingPresentation(completed, row.vehicleId, false, { ...car, current_task: 'new' }), undefined);
+  assert.equal(monitor.chargingPresentation(completed, row.vehicleId, false, { ...car, station: 'WAIT-04' }), undefined);
 })
 
 test('keeps repeated calls separate and explains the previous unfinished cycle only once due', () => {

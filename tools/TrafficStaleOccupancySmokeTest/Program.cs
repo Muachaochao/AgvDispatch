@@ -49,6 +49,20 @@ var staleBlocked = Planner(Robot("V2", "B", false));
 Check(staleBlocked.PlanForVehicle("A", "C", new HashSet<string>(), "V1") is null,
     "遥测过期或离线的停车车辆仍阻塞其最后已知站点及相邻路段（R4）");
 
+// The parked vehicle is on a short CNC spur while its body still covers the through lane.
+var spur = Node("CNC-176", 5, -.053, MapNodeType.Station) with { ResourceIds = ["BAY"] };
+var spurDefinition = definition with
+{
+    Nodes = [.. definition.Nodes, spur],
+    Edges = [definition.Edges[0], definition.Edges[1] with { ResourceIds = ["BAY"] }, Edge("SPUR", "B", spur.Id)],
+    Resources = [new("BAY", TrafficResourceType.Station, 1)],
+};
+var parkedBesideLane = Planner(Robot("V2", spur.Id, true) with { Y = spur.Y });
+Check(parkedBesideLane.GetVehicleOccupiedEdgeIds(spurDefinition, "A", "V1").Contains("BC"),
+    "a parked vehicle on the CNC spur blocks the linked through lane even without a lease");
+Check(!parkedBesideLane.GetVehicleOccupiedEdgeIds(spurDefinition, spur.Id, "V2").Contains("BC"),
+    "the parked vehicle is excluded from its own departure check");
+
 Console.WriteLine($"Traffic stale occupancy: {checks} checks passed.");
 
 sealed class Vehicles(params AgvRobotSnapshot[] snapshots) : IAgvStateCache

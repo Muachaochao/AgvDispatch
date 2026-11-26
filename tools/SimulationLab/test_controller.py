@@ -115,7 +115,7 @@ class SimulationTests(unittest.TestCase):
         self.assertEqual(value['selectedSchemeId'], 'scheme-1')
         self.assertEqual(value['history'], [dict(id='report-1')])
 
-    def test_live_charging_reads_only_owned_backend_and_omits_completed_sessions(self):
+    def test_live_charging_retains_verified_exits_and_bounds_delayed_feedback(self):
         runtime = Runtime.__new__(Runtime)
         runtime.lock = threading.RLock()
         runtime.root = Path('web-single-vehicle-sim-example')
@@ -127,21 +127,43 @@ class SimulationTests(unittest.TestCase):
                 {'vehicleId': 'AGV-02', 'phase': 'Charging', 'site': {'id': 'BAY-01', 'chargerAddress': 'private'},
                  'battery': {'current': 16.5, 'charging': True}, 'route': {'resourceIds': ['road']}},
                 {'vehicleId': 'AGV-03', 'phase': 'Completed'},
+                {'vehicleId': 'AGV-04', 'phase': 'Completed', 'shutdownVerified': True,
+                 'site': {'exitSiteId': 'WAIT-04'}},
+                {'vehicleId': 'AGV-05', 'phase': 'Completed', 'shutdownVerified': False,
+                 'message': '充电已停止，原退出导航完成且实际离位；释放充电资源，恢复接单。',
+                 'site': {'exitSiteId': 'WAIT-05'}},
             ],
         }
         response = Mock()
         response.__enter__ = Mock(return_value=response)
         response.__exit__ = Mock(return_value=False)
         response.read.return_value = json.dumps(snapshot).encode()
-        with patch('controller.urlopen', return_value=response) as request, patch('controller.threading.Thread') as worker:
+        with patch('controller.urlopen', return_value=response) as request, \
+                patch('controller.threading.Thread') as worker, patch('controller.time.monotonic', return_value=100) as clock:
             self.assertIsNone(runtime.live_charging_sessions())
             worker.call_args.kwargs['target'](*worker.call_args.kwargs['args'])
-            self.assertEqual(runtime.live_charging_sessions(), [
+            expected = [
                 {'vehicleId': 'AGV-02', 'phase': 'Charging', 'site': {'id': 'BAY-01'},
                  'battery': {'current': 16.5, 'charging': True}},
-            ])
-            request.assert_called_once_with('http://127.0.0.1:58327/api/charging', timeout=2)
+                {'vehicleId': 'AGV-04', 'phase': 'Completed', 'shutdownVerified': True,
+                 'site': {'exitSiteId': 'WAIT-04'}},
+                {'vehicleId': 'AGV-05', 'phase': 'Completed', 'shutdownVerified': True,
+                 'message': '充电已停止，原退出导航完成且实际离位；释放充电资源，恢复接单。',
+                 'site': {'exitSiteId': 'WAIT-05'}},
+            ]
+            self.assertEqual(runtime.live_charging_sessions(), expected)
+            request.assert_called_once_with('http://127.0.0.1:58327/api/charging', timeout=8)
             self.assertEqual(worker.call_count, 1)
+            clock.return_value = 105
+            self.assertEqual(runtime.live_charging_sessions(), expected)
+            clock.return_value = 110
+            self.assertEqual(runtime.live_charging_sessions(), expected)
+            self.assertEqual(worker.call_count, 2)
+            request.side_effect = TimeoutError()
+            worker.call_args.kwargs['target'](*worker.call_args.kwargs['args'])
+            self.assertEqual(runtime.live_charging_sessions(), [dict(row, feedbackDelayed=True) for row in expected])
+            clock.return_value = 121
+            self.assertIsNone(runtime.live_charging_sessions())
             runtime.phase = 'stopped'
             self.assertIsNone(runtime.live_charging_sessions())
 
