@@ -119,7 +119,9 @@ public sealed class DispatchPreSendSafetyService(
         if (taskSwitchGuard is not null && !await taskSwitchGuard.AllowsVehicleAsync(step.VehicleId!, step.TaskId, null, ct))
             return "车辆受控换单责任尚未交接。";
         if (fleetTest?.Allows(step.TaskId, step.VehicleId!) == false) return "车辆联调责任不允许当前任务。";
-        if (step.StepType == DispatchTaskStepType.GoToPickup && !recovering &&
+        // A validated continuation belongs to the already dispatched pickup, even while charging is queued.
+        var newPickup = step.StepType == DispatchTaskStepType.GoToPickup && !continuationWindow;
+        if (newPickup && !recovering &&
             (!dispatch.AllowsVehicle(step.StationId, step.VehicleId!) || !TaskVehicleSelection.Accepts(task, step.VehicleId!) ||
                 charging?.AllowsNewBusiness(step.VehicleId!) == false ||
                 businessRun?.Returning == true && businessRun.Vehicle == step.VehicleId)) return "工位车辆池、充电或回待机责任不允许新增派车。";
@@ -130,7 +132,7 @@ public sealed class DispatchPreSendSafetyService(
         // a second physical send when acceptance remains uncertain.
         if (!recovering)
         {
-            if (await CheckVehicleAsync(step.VehicleId!, path[0], step.StepType == DispatchTaskStepType.GoToPickup, ct) is { } vehicleError)
+            if (await CheckVehicleAsync(step.VehicleId!, path[0], newPickup, ct) is { } vehicleError)
                 return vehicleError;
             if (await CheckForwardClearanceAsync(step, path, ct) is { } forwardError) return forwardError;
             if (await CheckPlcAsync(step, preparing, continuationWindow, ct) is { } plcError) return plcError;
@@ -219,6 +221,7 @@ public sealed class DispatchPreSendSafetyService(
             now - observed > TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds)) return "车辆观察已过期或时间异常。";
         if (robot.EmergencyStopped != false || robot.Blocked != false || AgvObstaclePolicy.IsBlocked(robot) || AgvObstaclePolicy.HasBlockingAlarm(robot))
             return "车辆急停、阻挡、阻塞报警或健康状态未知。";
+        if (robot.Charging == true) return "车端报告正在充电，不能发送运输命令。";
         if (robot.Tasks.Any(t => t.Status is 1 or 2 or 3) ||
             !dispatch.IdleOperatingStates.Contains(vehicle.OperatingState, StringComparer.OrdinalIgnoreCase)) return "车辆存在未结束的车端任务或尚未空闲。";
         var definition = activeMap.Current?.Definition;

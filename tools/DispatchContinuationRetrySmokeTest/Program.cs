@@ -33,10 +33,11 @@ map.Replace(new("M", "V1", new("fixture", "synthetic", "Cartesian", "m",
     [new("R", TrafficResourceType.NarrowAisle), new("R2", TrafficResourceType.NarrowAisle)]), DateTimeOffset.UtcNow));
 var outbox = new AgvCommandOutboxRepository(db, map);
 var cache = new VehicleCache(); var signals = new Signals(); var gate = new Gate(); var monitor = new Monitor();
+var charging = new ChargingGuard();
 var dispatch = new DispatchOrchestratorOptions { Enabled = true, DumperWaitingSite = "B", DumperDumpingSite = "B" };
 var gateway = DispatchProxy.Create<IAgvGateway, SendGateway>(); var fake = (SendGateway)gateway; fake.Cache = cache;
 var guard = new DispatchPreSendSafetyService(gate, map, cache, gateway, new MapOptions(), dispatch,
-    orchestration, tasks, traffic, new() { DumperStationId = "DUMP" }, signals, new HandshakeExecutionOptions(), monitor: monitor);
+    orchestration, tasks, traffic, new() { DumperStationId = "DUMP" }, signals, new HandshakeExecutionOptions(), charging: charging, monitor: monitor);
 foreach (var item in new[] { ("ST", "Faulted", false), ("ST", "CommunicationOnline", true), ("ST", "BoxPresent", true),
     ("ST", "FullBoxRequestAcknowledged", true), ("DUMP", "Faulted", false), ("ST2", "Faulted", false), ("ST2", "CommunicationOnline", true),
     ("ST2", "BoxPresent", true), ("ST2", "FullBoxRequestAcknowledged", true) }) signals.Put(item.Item1, item.Item2, item.Item3);
@@ -88,6 +89,25 @@ var first = await PrepareContinuationAsync("ST", "V", "V-WINDOW1", "R", "AB", "A
 cache.Row = goodVehicle with { CurrentStation = "B", X = 10, Y = 0, LastSuccessfulPollAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow };
 Check(await guard.CheckPendingCommandAsync(first.Command, default) == null,
     "the continuation command passes the ordinary pre-claim checks while the car is idle at the window start");
+charging.AllowNewBusiness = false;
+cache.Row = cache.Row with { BatteryPercent = 24 };
+Check(await guard.CheckPendingCommandAsync(first.Command, default) == null,
+    "the accepted pickup continues after crossing the charging threshold");
+cache.Row = cache.Row with { BatteryPercent = 18 };
+Check(await guard.CheckPendingCommandAsync(first.Command, default) == null,
+    "the accepted pickup is independent of minimum battery for new work");
+cache.Row = cache.Row with { Charging = true };
+Check(await guard.CheckPendingCommandAsync(first.Command, default) is not null,
+    "confirmed active charging still blocks continuation motion");
+cache.Row = cache.Row with { Charging = false, Blocked = true };
+Check(await guard.CheckPendingCommandAsync(first.Command, default) is not null,
+    "an obstacle still blocks continuation motion");
+cache.Row = cache.Row with { Blocked = false };
+var wrongOwner = JsonSerializer.Deserialize<AgvTransportCommandPayload>(first.Command.PayloadJson, json)!;
+Check(await guard.CheckPendingCommandAsync(first.Command with
+    { PayloadJson = JsonSerializer.Serialize(wrongOwner with { PreviousVendorTaskId = "OTHER" }, json) }, default) is not null,
+    "a continuation must match the prior vendor task identity");
+charging.AllowNewBusiness = true;
 var claimedFirst = await outbox.TryClaimAsync(first.Command.CommandId, DateTimeOffset.UtcNow, default);
 Check(claimedFirst is not null, "the continuation command is claimed once");
 fake.LoseResponseOnce = true;
@@ -219,4 +239,13 @@ sealed class Gate : IMapExecutionGate
 sealed class Monitor : IDispatchPipelineMonitor
 {
     public void ReportLayer(string key, string state, string summary, int? itemCount = null) { }
+}
+
+sealed class ChargingGuard : IChargingDispatchGuard
+{
+    public bool AllowNewBusiness { get; set; } = true;
+    public bool HasActiveSessions => !AllowNewBusiness;
+    public bool OwnsVehicle(string vehicleId) => !AllowNewBusiness;
+    public bool AllowsNewBusiness(string vehicleId) => AllowNewBusiness;
+    public ValueTask<IDisposable> EnterBusinessAsync(CancellationToken ct) => throw new NotSupportedException();
 }
