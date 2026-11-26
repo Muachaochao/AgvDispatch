@@ -497,8 +497,7 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
         if(phase==ChargingPhase.GoingToWaitingSite)
         {
             var original = row with {Phase=phase.Value};
-            if(row.WaitingRoute is {} route && port.IsAt(row.VehicleId,route.Path[^1]))
-                await ObserveWaitingAsync(original,ct);
+            await ObserveWaitingAsync(original,ct);
             return;
         }
         if(phase is ChargingPhase.AwaitingCurrent or ChargingPhase.Charging or ChargingPhase.AwaitingStop)
