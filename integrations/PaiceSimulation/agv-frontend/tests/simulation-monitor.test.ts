@@ -16,6 +16,18 @@ test('shows formal charging evidence after docking and preserves business during
   assert.equal(monitor.chargingPresentation([{ ...charging, phase: 'Completed' }], 'AGV-02', false), undefined);
 })
 
+test('shows a staging destination and earliest charger independently', () => {
+  const row = { vehicleId: 'AGV-03', phase: 'GoingToWaitingSite', waitingSiteId: 'SAFE-2', message: '等空桩' };
+  const moving = monitor.chargingPresentation([row], row.vehicleId, false);
+  assert.equal(moving?.label, '前往安全等桩位');
+  assert.equal(moving?.target, 'SAFE-2');
+  const parked = monitor.chargingPresentation([{ ...row, phase: 'Queued',
+    siteEstimates: [{ siteId: 'BAY-01', startInSeconds: 91 }, { siteId: 'BAY-02', startInSeconds: 20 }] }], row.vehicleId, false);
+  assert.equal(parked?.label, '安全位等桩');
+  assert.equal(parked?.reason, '等空桩');
+  assert.match(parked?.details ?? '', /BAY-02.*20/);
+})
+
 test('keeps repeated calls separate and explains the previous unfinished cycle only once due', () => {
   const first = { planIndex: 0, stationId: 'CNC-111', atSeconds: 12, status: 'active', taskId: 'A', vehicleId: 'AGV-01' }
   const next = { planIndex: 7, stationId: 'CNC-111', atSeconds: 21, status: 'pending' }

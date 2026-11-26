@@ -246,6 +246,22 @@ class SimulationTests(unittest.TestCase):
         self.assertEqual(charging['maximumVehiclesOutOfService'], 1)
         self.assertEqual(charging['preemptionReleaseBatteryPercent'], 60)
 
+    def test_charging_waiting_requires_a_dedicated_parking_resource(self):
+        runtime = Runtime.__new__(Runtime)
+        payload = self.charging_payload()
+        payload['chargingPriorityTest']['waitingSiteIds'] = ['WAIT']
+        with self.assertRaisesRegex(ValueError, '等桩'):
+            runtime._validate_configuration(payload)
+        payload['mapDefinition']['nodes'].append(dict(id='CHG-WAIT', agvSiteId='CHG-WAIT',
+            x=0, y=5, type='WaitingPoint', allowTrafficStop=True, resourceIds=['PARK-CHG']))
+        payload['mapDefinition']['resources'].append(dict(id='PARK-CHG', type='Station',
+            capacity=1, boundary=[dict(x=-1,y=4),dict(x=1,y=4),dict(x=1,y=6),dict(x=-1,y=6)]))
+        payload['mapDefinition']['edges'].append(dict(id='PARK-ACCESS', **{'from': 'PARK1', 'to': 'CHG-WAIT'},
+            enabled=True, bidirectional=True))
+        payload['chargingPriorityTest'].update(waitingSiteIds=['CHG-WAIT'], estimatedApproachWaitSeconds=25)
+        charging = runtime._validate_configuration(payload)['chargingPriorityTest']
+        self.assertEqual((charging['waitingSiteIds'], charging['estimatedApproachWaitSeconds']), (['CHG-WAIT'], 25))
+
     def test_charging_priority_configuration_rejects_unsafe_or_ambiguous_sites(self):
         runtime = object.__new__(Runtime)
         scenarios = []

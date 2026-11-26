@@ -66,6 +66,17 @@ await using (var f = await Fixture.Create(ChargingPhase.Returning, ("RETURN", ["
     Check(!f.Barrier.IsOpen && (await f.Recovery.GetAsync(default)).Items.Single().Reason.Contains("原充电租约"),
         "a return lease owned by another vehicle is rejected");
 }
+await using (var f = await Fixture.CreateWaiting())
+{
+    await f.Boot();
+    Check(!f.Barrier.IsOpen, "a waiting-site session alone requires a fresh physical-exit review after restart");
+    await f.CompleteWaiting();
+    await f.Recovery.InspectAsync(default);
+    var waitStatus = await f.Recovery.GetAsync(default);
+    Check(f.Barrier.IsOpen && f.Gateway.Sends == 0 && f.Gateway.Cancels == 0,
+        "a verified waiting-site exit releases parking and opens recovery without resending navigation: " +
+        string.Join(" | ", waitStatus.Items.Select(item => item.Reason)));
+}
 Console.WriteLine($"Charging return recovery smoke passed: {checks} checks; isolated SQLite and durable JSON only.");
 
 sealed class Fixture : IAsyncDisposable
@@ -78,6 +89,26 @@ sealed class Fixture : IAsyncDisposable
     public RecoveryBarrier Barrier = new();
     public SwitchVehicleCache Vehicles = new();
     public Gateway Gateway = new();
+    public static async Task<Fixture> CreateWaiting()
+    {
+        var f = await Create(ChargingPhase.GoingToWaitingSite, ("PARK", ["ROAD-RET", "BAY"]));
+        f.Session = f.Session with
+        {
+            Site = null, Route = null,
+            WaitingRoute = new("MAP", "V1", ["HOME", "SAFE"], "BAY", ["ROAD-RET", "BAY"], 2),
+            CommandId = f.Session.SessionId + "-WAIT", VendorTaskId = f.Session.SessionId + "-WAIT"
+        };
+        f.Store.Save([f.Session]);
+        return f;
+    }
+    public async Task CompleteWaiting()
+    {
+        await Traffic.ReleaseTaskAsync(Session.SessionId, default);
+        var now = DateTimeOffset.Now;
+        Session = Session with { Phase = ChargingPhase.Completed, UpdatedAt = now, Operator = "fixture\engineer",
+            OperatorEvidence = "本启动后现场确认离开等桩路线与等待位", Battery = new("AGV-01", 24, false, 0, 30, false, false, now) };
+        Store.Save([Session]); Place("OUTSIDE", 4);
+    }
     public static async Task<Fixture> Create(ChargingPhase phase, params (string Step, string[] Resources)[] leases)
     {
         var path = Path.Combine(Path.GetTempPath(), "agv-charge-return-" + Guid.NewGuid().ToString("N"));
@@ -109,13 +140,15 @@ sealed class Fixture : IAsyncDisposable
         var gate = new MapExecutionGate(f.Barrier); gate.SetMode(MapExecutionMode.Running);
         var map = new ActiveMapRuntime();
         map.Replace(new("MAP", "V1", new("synthetic", "fixture", "world", "m",
-            [new("HOME", 0, 0, MapNodeType.WaitingPoint, true, [], "HOME"),
+            [new("HOME", 0, 0, MapNodeType.WaitingPoint, true, [], "HOME") { AllowTrafficStop = true },
              new("CHARGER", 1, 0, MapNodeType.ChargingPoint, true, ["BAY"], "CHARGER"),
              new("EXIT", 2, 0, MapNodeType.WaitingPoint, true, [], "EXIT"),
-             new("STANDBY", 3, 0, MapNodeType.WaitingPoint, true, [], "STANDBY")],
+             new("STANDBY", 3, 0, MapNodeType.WaitingPoint, true, [], "STANDBY"),
+             new("OUTSIDE", 4, 0, MapNodeType.WaitingPoint, true, [], "OUTSIDE") { AllowTrafficStop = true }],
             [new("IN", "HOME", "CHARGER", 1, 0.5, false, true, ["ROAD-IN"]),
              new("OUT", "CHARGER", "EXIT", 1, 0.5, false, true, ["ROAD-OUT"]),
-             new("RET", "EXIT", "STANDBY", 1, 0.5, false, true, ["ROAD-RET"])],
+             new("RET", "EXIT", "STANDBY", 1, 0.5, false, true, ["ROAD-RET"]),
+             new("OUTSIDE-LINK", "STANDBY", "OUTSIDE", 1, 0.5, false, true, ["ROAD-RET"])],
             [new("BAY", TrafficResourceType.ChargingBay, 1), new("ROAD-IN", TrafficResourceType.SingleLane, 1),
              new("ROAD-OUT", TrafficResourceType.SingleLane, 1), new("ROAD-RET", TrafficResourceType.SingleLane, 1)]), DateTimeOffset.Now));
         f.Recovery = new(db, f.Barrier, gate, f.Gateway, f.Vehicles, new SwitchSignalCache(), new(), map, chargingRecovery: store);

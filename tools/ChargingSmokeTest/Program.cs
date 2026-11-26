@@ -117,6 +117,61 @@ busy.Port.Busy.Add("A");
 await busy.CyclesAsync(4);
 Check(busy.Port.Navigations.Count == 0 && busy.Robot.RelayWrites.Count == 0,
     "unfinished business or equipment responsibility prevents charging motion");
+var staging = new Fixture(evidence, "safe-waiting");
+staging.Options.WaitingSiteIds = ["SAFE"];
+staging.Options.Sites = [staging.Options.Sites[0] with { AllowedVehicleIds = ["A", "B", "C"] },
+    new("BAY-2", "CHARGER-2", "EXIT-2", "CHARGE-RESOURCE-2") { Commissioned = true, AllowedVehicleIds = ["A", "B", "C"] }];
+staging.Port.Put("C", 22);
+staging.Port.WaitingRoute = new("SYNTHETIC-MAP", "V1", ["HOME", "SAFE"], "SAFE-RESOURCE", ["ROAD", "SAFE-RESOURCE"], 5);
+staging.Port.Put("B", 24);
+staging.Port.Busy.Add("B");
+await staging.CyclesAsync(3);
+Check(staging.Port.Navigations.Count == 2, "unfinished business prevents charging staging");
+staging.Port.Busy.Clear();
+await staging.CyclesAsync(2);
+var staged = staging.Status.Sessions.Single(x => x.VehicleId == "B");
+Check(staged.Phase == ChargingPhase.GoingToWaitingSite && staging.Port.Navigations.Count == 3 &&
+    staging.Port.IntentPersistedBeforeEveryNavigation, "a full bay sends the waiting vehicle once after a durable intent");
+staging.Restart();
+await staging.CyclesAsync(1);
+Check(staging.Port.Navigations.Count == 3, "restart observes the original waiting navigation without resending");
+staging.Port.Completed.Add(staged.CommandId!);
+await staging.CyclesAsync(1);
+Check(staging.Port.Leases.ContainsKey("ROAD"), "terminal receipt without physical arrival retains the waiting approach");
+staging.Port.Sites["B"] = "SAFE";
+await staging.CyclesAsync(2);
+Check(!staging.Port.Leases.ContainsKey("ROAD") && staging.Port.Leases.ContainsKey("SAFE-RESOURCE") &&
+    !staging.Service.AllowsNewBusiness("B"), "physical waiting arrival releases the approach and keeps the parking lease");
+
+var eta = new Fixture(evidence, "bay-eta");
+eta.Options.Sites = [eta.Options.Sites[0], new("BAY-2", "CHARGER-2", "EXIT-2", "CHARGE-RESOURCE-2")
+    { Commissioned = true, AllowedVehicleIds = ["A", "B"] }];
+eta.Port.ApproachEstimates["BAY-1"] = new(5, 60);
+eta.Port.ApproachEstimates["BAY-2"] = new(20, 0);
+await eta.CyclesAsync(1);
+Check(eta.Current.Site?.Id == "BAY-2", "approach travel and traffic delay determine the earliest charging option");
+
+var nearRelease = new Fixture(evidence, "near-release");
+nearRelease.Options.EstimatedGainPercentPerMinute = 10;
+nearRelease.Options.EstimatedDockExitSeconds = 10;
+await nearRelease.ToChargingAsync();
+nearRelease.Battery(79, true, 4);
+await nearRelease.CyclesAsync(1);
+nearRelease.Options.Sites = [nearRelease.Options.Sites[0], new("BAY-2", "CHARGER-2", "EXIT-2", "CHARGE-RESOURCE-2")
+    { Commissioned = true, AllowedVehicleIds = ["A", "B"] }];
+nearRelease.Port.ApproachEstimates["BAY-1"] = new(5, 20);
+nearRelease.Port.ApproachEstimates["BAY-2"] = new(50, 0);
+nearRelease.Port.Put("B", 24);
+await nearRelease.CyclesAsync(1);
+Check(nearRelease.Status.Sessions.Single(session => session.VehicleId == "B") is { Phase: ChargingPhase.Queued } queueRow &&
+    queueRow.Message.StartsWith("等空桩") && queueRow.SiteEstimates.Any(estimate => estimate.SiteId == "BAY-1" && estimate.StartInSeconds == 25),
+    "an occupied nearby bay is preferred only by its predicted release and traffic time; no navigation is sent before the grant");
+nearRelease.Clock.Advance(TimeSpan.FromSeconds(26));
+nearRelease.Battery(80, false, 0);
+await nearRelease.CyclesAsync(1);
+Check(nearRelease.Status.Sessions.Single(session => session.VehicleId == "B").Site?.Id == "BAY-2",
+    "a stale or exceeded wait estimate does not indefinitely defer an executable bay");
+
 // B07-FIX C8: a vehicle that falls below critical during its business cycle raises a critical charging alarm while it waits.
 busy.Port.Put("A", 10);
 busy.Port.Busy.Add("A");
@@ -547,6 +602,22 @@ sealed class FakePort(FakeClock clock) : IChargingRuntimePort
         Task.FromResult(Busy.Contains(vehicleId) ? "Original business/equipment is still active" : null);
     public Task<ChargingRoute?> PlanAsync(string vehicleId, ChargingSite site, CancellationToken ct) => Task.FromResult<ChargingRoute?>(
         new("SYNTHETIC-MAP", "V1", [Sites[vehicleId], site.ChargingSiteId], [site.ChargingSiteId, site.ExitSiteId], [site.ResourceId], 5));
+    public ChargingWaitingRoute? WaitingRoute { get; set; }
+    public Dictionary<string, ChargingApproachEstimate> ApproachEstimates { get; } = [];
+    public Task<ChargingApproachEstimate?> EstimateApproachAsync(string vehicleId, ChargingSite site, string sessionId,
+        CancellationToken ct) => Task.FromResult(ApproachEstimates.GetValueOrDefault(site.Id));
+    public Task<ChargingWaitingRoute?> PlanWaitingAsync(ChargingSession session, CancellationToken ct) => Task.FromResult(WaitingRoute);
+    public Task<bool> ReserveWaitingAsync(ChargingSession session, CancellationToken ct)
+    {
+        foreach (var id in session.WaitingRoute!.ResourceIds) Leases[id] = session.SessionId;
+        return Task.FromResult(true);
+    }
+    public Task TrimWaitingAsync(ChargingSession session, bool departed, CancellationToken ct)
+    {
+        foreach (var id in session.WaitingRoute!.ResourceIds.Where(id => departed || id != session.WaitingRoute.ParkingResourceId))
+            Leases.Remove(id);
+        return Task.CompletedTask;
+    }
     public Task<string?> ValidateAsync(ChargingSession session, bool requireStopped, CancellationToken ct) =>
         Task.FromResult(ValidationError ?? (requireStopped && !Stopped ? "Vehicle is still moving; no physical stationary proof" : null));
     public bool IsAt(string vehicleId, string siteId) => Sites.GetValueOrDefault(vehicleId) == siteId;

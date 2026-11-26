@@ -31,6 +31,18 @@ var map = new ActiveMapRuntime();
 map.Replace(new("M", "V1", new("fixture", "synthetic", "Cartesian", "m",
     [new("BUS-A", 0, 0, MapNodeType.Station, true, [], "A"), new("BUS-B", 10, 0, MapNodeType.Station, true, [], "B")],
     [new("AB", "BUS-A", "BUS-B", 10, 1, true, true, ["R"])], [new("R", TrafficResourceType.NarrowAisle)]), DateTimeOffset.UtcNow));
+energy.Mode = "Enforce";
+energy.Vehicles["V"] = new() { TravelCostPercentPerMeter = .2 };
+var reassess = new DispatchEnergyForecast(energy, new() { Enabled = true, Sites =
+    [new("BAY", "A", "B", "R") { Commissioned = true, AllowedVehicleIds = ["V"] }] });
+var estimatedRoute = new RoutePlan(["A", "B"], ["AB"], ["R"], 10);
+var forecastPlanner = new ReassessmentRoutePlanner(estimatedRoute);
+var afterWait = reassess.Reassess("V", 24.9m, DispatchTaskStepType.ReturnEmptyBox, "B", "B", [],
+    estimatedRoute, map.Current, forecastPlanner);
+var afterDetour = reassess.Reassess("V", 19m, DispatchTaskStepType.ReturnEmptyBox, "B", "B", [],
+    estimatedRoute with { EdgeIds = ["AB", "AB", "AB"] }, map.Current, forecastPlanner);
+Check(afterWait is { Safe: true, CurrentBatteryPercent: 24.9 } && afterDetour is { Safe: false },
+    "remaining route recalculation accepts a safe continuation below the new-work threshold and rejects an insufficient detour");
 var outbox = new AgvCommandOutboxRepository(db, map);
 var cache = new VehicleCache(); var signalCache = new Signals(); var gate = new Gate(); var monitor = new Monitor();
 var dispatch = new DispatchOrchestratorOptions { Enabled = true, DumperWaitingSite = "B", DumperDumpingSite = "B" };
@@ -365,4 +377,10 @@ sealed class Monitor : IDispatchPipelineMonitor
 {
     public List<string> States = [];
     public void ReportLayer(string key, string state, string summary, int? itemCount = null) { if (key == "safety") States.Add(state); }
+}
+
+sealed class ReassessmentRoutePlanner(RoutePlan route) : IRoutePlanner
+{
+    public RoutePlan? Plan(string source, string destination, IReadOnlySet<string> unavailableResourceIds) => route;
+    public RoutePlan? PlanWithoutVehicleOccupancyForComparison(string source, string destination) => route;
 }
