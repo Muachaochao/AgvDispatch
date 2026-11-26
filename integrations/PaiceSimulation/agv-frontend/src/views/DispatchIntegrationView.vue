@@ -427,7 +427,7 @@ const vehicles = computed(() => {
     const step = taskId === detail.value?.task.taskId && !historicalTask.value ? currentStep.value : undefined;
     const stepNumber = step?.sequence ?? call?.stepNumber;
     const label = businessStepLabel({ stepNumber, stepType: step?.stepType ?? call?.stepType, stepName: call?.stepName });
-    const charge = fresh.value && !car?.offline ? chargingPresentation(status.value?.chargingSessions, id, !!taskId) : undefined;
+    const charge = fresh.value && !car?.offline ? chargingPresentation(status.value?.chargingSessions, id, !!taskId, car) : undefined;
     const showingCharge = !!charge && (!charge.pending || !taskId);
     const since = secondsSince(showingCharge ? charge.phaseSince : step?.startedAt ?? call?.stepStartedAt, businessNow.value);
     const businessTarget = (car?.recovery?.state !== "Recovered" ? car?.recovery?.safetyPointTarget : undefined)
@@ -436,7 +436,7 @@ const vehicles = computed(() => {
     return { id, car, status: observed?.status ?? "UNKNOWN", coordinates: observed,
       wait: fresh.value ? waitForVehicle(id) : undefined,
       charge, showingCharge,
-      kind: showingCharge ? '充电任务' : vehicleTaskKind(car, !!taskId),
+      kind: charge?.atExit ? '待派车' : showingCharge ? '充电任务' : vehicleTaskKind(car, !!taskId),
       step: !showingCharge && label ? `${stepNumber}/9 ${label}` : "",
       target: fresh.value && car && !car.offline ? (showingCharge ? charge.target : businessTarget) : undefined,
       duration: elapsedLabel(car?.recovery?.durationSeconds ?? since),
@@ -1282,6 +1282,7 @@ onBeforeUnmount(() => {
             <el-tag v-if="vehicle.showingCharge && vehicle.charge" :type="vehicle.charge.type" size="small">{{ vehicle.charge.label }}</el-tag>
             <el-tag v-else-if="vehicle.wait && vehicle.wait.type !== 'primary' && vehicle.status !== 'OFFLINE'" :type="vehicle.wait.type" size="small">{{ vehicle.wait.label }}</el-tag>
             <el-tag v-else size="small" :type="vehicle.status === 'MOVING' || vehicle.status === 'CHARGING' ? 'success' : vehicle.status === 'OFFLINE' || vehicle.status === 'UNKNOWN' ? 'info' : 'warning'">{{ stateName[vehicle.status] || vehicle.status }}</el-tag>
+            <el-tag v-if="vehicle.charge?.feedbackDelayed" type="info" size="small">充电反馈延迟</el-tag>
           </div>
           <dl class="vehicle-facts">
             <div><dt>位置</dt><dd>{{ vehicle.car?.station || (vehicle.coordinates ? '站间' : '—') }} · {{ vehicle.car?.loaded == null ? '载荷未知' : vehicle.car.loaded ? '载箱' : '空载' }}</dd></div>

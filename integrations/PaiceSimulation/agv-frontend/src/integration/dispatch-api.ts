@@ -21,6 +21,7 @@ export interface DispatchChargingSession {
   battery?: { batteryPercent?: number | null; current?: number | null; charging?: boolean | null } | null;
   returnSiteId?: string | null;
   shutdownVerified?: boolean;
+  feedbackDelayed?: boolean;
 }
 
 export interface DispatchStatus {
