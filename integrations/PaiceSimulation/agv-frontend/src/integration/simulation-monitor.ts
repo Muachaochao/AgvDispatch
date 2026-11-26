@@ -199,40 +199,57 @@ const chargingLabels: Record<string, string> = {
   Reserved: '准备前往充电位', SendingToCharger: '准备前往充电位', GoingToCharger: '前往充电位',
   SendingDock: '准备对接充电位', Docking: '对接充电位', StartingCharge: '启动充电',
   StartingSession: '启动充电', AwaitingCurrent: '等待充电电流', Charging: '充电中',
-  SessionRunning: '充电中', StoppingCharge: '正在停充', AwaitingStop: '确认已停充',
-  SendingExit: '准备离桩', Exiting: '正在离桩', SendingUndock: '准备离桩',
-  Undocking: '正在离桩', SendingReturn: '准备返回待机点', Returning: '返回待机点',
+  SessionRunning: '充电中', StoppingCharge: '停充确认中', AwaitingStop: '停充确认中',
+  SendingExit: '驶离充电位', Exiting: '驶离充电位', SendingUndock: '驶离充电位',
+  Undocking: '驶离充电位', SendingReturn: '返安全位', Returning: '返安全位',
   SendingToWaitingSite: '准备前往安全等桩位', GoingToWaitingSite: '前往安全等桩位',
   Hold: '充电暂停',
 }
 
-export function chargingPresentation(sessions: readonly DispatchChargingSession[] | null | undefined, vehicleId: string, business: boolean) {
-  const session = sessions?.find(row => row.vehicleId === vehicleId && row.phase !== 'Completed')
+export function chargingPresentation(
+  sessions: readonly DispatchChargingSession[] | null | undefined,
+  vehicleId: string,
+  business: boolean,
+  car?: Pick<DispatchCar, 'station' | 'moving' | 'current_task' | 'charging'>,
+) {
+  const session = sessions?.find(row => row.vehicleId === vehicleId && row.phase !== 'Completed') ??
+    sessions?.filter(row => row.vehicleId === vehicleId && row.phase === 'Completed')
+      .sort((a, b) => (b.phaseSince ?? '').localeCompare(a.phaseSince ?? ''))[0]
   if (!session) return undefined
   const { phase, site, battery } = session
+  const atExit = phase === 'Completed' && session.shutdownVerified && !session.returnSiteId
+    && !business && car?.moving === false && !car.current_task && !car.charging
+    && !!site?.exitSiteId && car.station === site.exitSiteId
+  if (phase === 'Completed' && !atExit) return undefined
   const pending = phase === 'Queued' || phase === 'WaitingForBusiness'
   const confirmed = phase === 'Charging' || phase === 'SessionRunning' && battery?.charging === true
-  const label = pending ? business ? '业务完成后充电' : session.waitingSiteId ? '安全位等桩' : '排队充电'
-    : phase === 'AwaitingStop' && session.shutdownVerified ? '等待离桩'
+  const reason = session.message ?? ''
+  const queueLabel = /等进桩路权|当前可用路权下无路线|充电位或道路被占用/.test(reason) ? '等进桩路权'
+    : /等空桩|安全位等桩/.test(reason) || session.waitingSiteId ? '等空桩' : '排队充电'
+  const label = atExit ? '出口待派'
+    : pending ? business ? '业务完成后充电' : queueLabel
+    : phase === 'AwaitingStop' && session.shutdownVerified ? '等离桩路权'
     : phase === 'SessionRunning' && !confirmed ? '等待充电确认'
     : chargingLabels[phase]
   if (!label) return undefined
   const staging = ['SendingToWaitingSite', 'GoingToWaitingSite'].includes(phase)
   const target = staging ? session.waitingSiteId : ['SendingReturn', 'Returning'].includes(phase) ? session.returnSiteId
     : ['SendingExit', 'Exiting', 'SendingUndock', 'Undocking'].includes(phase) ? site?.exitSiteId
-    : pending || phase === 'Hold' ? undefined : site?.chargingSiteId
+    : phase === 'AwaitingStop' && session.shutdownVerified ? site?.exitSiteId
+    : pending || phase === 'Hold' || atExit ? undefined : site?.chargingSiteId
   const current = confirmed && battery?.current != null && battery.current > 0 ? battery.current : null
   const earliest = session.siteEstimates?.filter(estimate => estimate.startInSeconds != null)
     .sort((a, b) => a.startInSeconds! - b.startInSeconds!)[0]
   const details = [
     site?.id ?? session.waitingSiteId,
     pending && earliest?.startInSeconds != null ? `${earliest.siteId} 约 ${Math.ceil(earliest.startInSeconds)} 秒` : undefined,
-    session.targetBatteryPercent == null ? undefined : `目标 ${session.targetBatteryPercent}%`,
+    atExit || session.targetBatteryPercent == null ? undefined : `目标 ${session.targetBatteryPercent}%`,
     current == null ? undefined : `${current.toFixed(1)} A`,
   ].filter(Boolean).join(' · ')
   return {
-    label, pending, target, details, reason: session.message, phaseSince: session.phaseSince, current,
-    type: confirmed ? 'success' as const : phase === 'Hold' ? 'danger' as const : 'warning' as const,
+    label, pending, atExit, target, details, reason: session.message, phaseSince: session.phaseSince, current,
+    feedbackDelayed: session.feedbackDelayed === true,
+    type: confirmed ? 'success' as const : atExit ? 'info' as const : phase === 'Hold' ? 'danger' as const : 'warning' as const,
   }
 }
 
