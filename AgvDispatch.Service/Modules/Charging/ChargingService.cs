@@ -58,13 +58,14 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
         // B07-FIX C12: an unknown battery is not usable; it is never treated as full.
         if(vehicle?.BatteryPercent is not {} battery)return false;
         if(battery<=options.CriticalBatteryPercent)return false;
+        if(options.Enabled&&battery<=options.StartBatteryPercent)return false;
         if(rows.FirstOrDefault(s=>s.Phase!=ChargingPhase.Completed&&s.VehicleId.Equals(vehicleId,StringComparison.OrdinalIgnoreCase)) is {} active)
         {
             if(active.HasReservation)return false;
-            // B07-FIX C3: a queued vehicle with no free bay may keep taking short tasks until a bay is actually free.
+            // An above-threshold request without a reservation can defer withdrawal until a bay is free.
             return !(BayFreeFor(vehicleId,rows)&&WithdrawalAllowed(vehicleId,rows));
         }
-        return !ShouldWithdraw(vehicleId,battery,rows);
+        return true;
     }
     public AgvTransportChain? FindChain(string commandId)
     {
@@ -164,8 +165,8 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
             .Select(v=>v.VehicleId).Distinct(StringComparer.OrdinalIgnoreCase).Count(id=>!outOfService.Contains(id,StringComparer.OrdinalIgnoreCase));
         return available>=options.MinimumAvailableVehicles&&(options.MaximumVehiclesOutOfService==0||outOfService.Length+1<=options.MaximumVehiclesOutOfService);
     }
-    // B07-FIX C3: below critical a vehicle is always withdrawn. Between critical and start it is withdrawn only when a bay is
-    // free and the fleet policy allows it; otherwise it keeps taking short tasks.
+    // Below critical, queue immediately. Otherwise release a low-battery vehicle into the
+    // charging queue when a bay and the configured fleet withdrawal limits allow it.
     private bool ShouldWithdraw(string vehicleId,decimal battery,ChargingSession[] rows)=>
         battery<=options.CriticalBatteryPercent||options.Enabled&&battery<=options.StartBatteryPercent&&
         BayFreeFor(vehicleId,rows)&&WithdrawalAllowed(vehicleId,rows);
