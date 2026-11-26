@@ -34,6 +34,11 @@ public sealed class ChargingOptions
     /// <summary>B07-FIX C16: vehicles whose firmware does not report battery temperature. Their missing temperature is not a fault;
     /// it is reported as an alarm instead.</summary>
     public string[] TemperatureOptionalVehicleIds { get; set; } = [];
+    public string[] WaitingSiteIds { get; set; } = [];
+    public double EstimatedGainPercentPerMinute { get; set; }
+    public Dictionary<string,double> EstimatedGainPercentPerMinuteByVehicle { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public int EstimatedDockExitSeconds { get; set; } = 30;
+    public int EstimatedApproachWaitSeconds { get; set; }
     public ChargingSite[] Sites { get; set; } = [];
     /// <summary>Dedicated standby point where a charged vehicle returns when no business return site is set. Never an exit,
     /// never a charging point. Blank means the plan fails until a return site is configured.</summary>
@@ -65,6 +70,12 @@ public sealed class ChargingOptions
     {
         if (Sites.Select(s => s.ExitSiteId).Distinct(StringComparer.OrdinalIgnoreCase).Count() != Sites.Length)
             return "两个充电位共用同一出口，无法同时安全离位，请先核对配置。";
+        if (WaitingSiteIds is null || WaitingSiteIds.Any(string.IsNullOrWhiteSpace) ||
+            WaitingSiteIds.Distinct(StringComparer.OrdinalIgnoreCase).Count() != WaitingSiteIds.Length ||
+            EstimatedGainPercentPerMinute is not (>= 0 and <= 100) ||
+            EstimatedGainPercentPerMinuteByVehicle is null || EstimatedGainPercentPerMinuteByVehicle.Values.Any(value=>value is not (>=0 and <=100)) ||
+            EstimatedDockExitSeconds is < 0 or > 3600 || EstimatedApproachWaitSeconds is < 0 or > 3600)
+            return "等桩位或充电时间估算配置无效。";
         if (BayFaultCooldownMinutes < 0)
             return "充电位故障冷却时间不能为负数。";
         if (TargetBatteryPercent - StartBatteryPercent < 10m)
@@ -99,7 +110,7 @@ public sealed record ChargingSite(string Id, string ChargingSiteId, string ExitS
 
 // Append phases: persisted older sessions use the original numeric enum values.
 public enum ChargingPhase { Queued, WaitingForBusiness, Reserved, SendingToCharger, GoingToCharger, StartingCharge, AwaitingCurrent, Charging, StoppingCharge, AwaitingStop, SendingExit, Exiting, Hold, Completed,
-    SendingDock, Docking, StartingSession, SessionRunning, SendingUndock, Undocking, SendingReturn, Returning }
+    SendingDock, Docking, StartingSession, SessionRunning, SendingUndock, Undocking, SendingReturn, Returning, SendingToWaitingSite, GoingToWaitingSite }
 public sealed record ChargingRoute(string MapId, string MapVersionId, string[] ToCharger, string[] ExitPath, string[] ResourceIds, double Cost)
 {
     public string? OriginSiteId { get; init; }
@@ -108,8 +119,18 @@ public sealed record ChargingRoute(string MapId, string MapVersionId, string[] T
     // B07-FIX C5: the road that leads into the bay, plus the bay itself; the only resources reserved at queue time.
     public string[] InboundResourceIds { get; init; } = [];
 }
+public sealed record ChargingWaitingRoute(string MapId, string MapVersionId, string[] Path,
+    string ParkingResourceId, string[] ResourceIds, double Cost);
+public sealed record ChargingApproachEstimate(double TravelSeconds, double? TrafficWaitSeconds);
+public sealed record ChargingSiteEstimate(string SiteId, double? BayWaitSeconds, double? TrafficWaitSeconds, double? TravelSeconds)
+{
+    public double? StartInSeconds => BayWaitSeconds is double bay && TrafficWaitSeconds is double traffic && TravelSeconds is double travel
+        ? Math.Max(bay, traffic) + travel : null;
+}
 public sealed record ChargingSession(string SessionId, string VehicleId, ChargingPhase Phase, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt, string Message)
 {
+    public ChargingWaitingRoute? WaitingRoute { get; init; }
+    public ChargingSiteEstimate[] SiteEstimates { get; init; } = [];
     public ChargingSite? Site { get; init; }
     public ChargingRoute? Route { get; init; }
     public string? CommandId { get; init; }
@@ -143,6 +164,9 @@ public sealed record ChargingSession(string SessionId, string VehicleId, Chargin
     public string? OriginSiteId => Route?.OriginSiteId;
     public string? ReturnSiteId => Route?.ReturnSiteId;
     public bool HasReservation => Site is not null && Route is not null && Phase != ChargingPhase.Completed;
+    public bool HasBayReservation => HasReservation && !(Site!.ControlMode == "Relay6005" &&
+        (Phase == ChargingPhase.Returning || Phase == ChargingPhase.SendingReturn ||
+            Phase == ChargingPhase.Hold && HeldPhase is ChargingPhase.SendingReturn or ChargingPhase.Returning));
 }
 public sealed record ChargingStatus(bool Enabled, ChargingOptions Options, string? BlockReason,
     IReadOnlyList<ChargingSession> Sessions, DateTimeOffset CapturedAt)
@@ -221,6 +245,17 @@ public interface IChargingRuntimePort
     Task<string?> BusyReasonAsync(string vehicleId, string? ownSessionId, CancellationToken ct);
     Task<ChargingRoute?> PlanAsync(string vehicleId, ChargingSite site, CancellationToken ct);
     Task<ChargingRoute?> PlanWithReturnAsync(string vehicleId, ChargingSite site, string? returnSiteId, CancellationToken ct) => PlanAsync(vehicleId,site,ct);
+    Task<ChargingRoute?> PlanForSessionAsync(ChargingSession session, ChargingSite site, CancellationToken ct) =>
+        PlanWithReturnAsync(session.VehicleId, site, session.RequestedReturnSiteId, ct);
+    Task<ChargingApproachEstimate?> EstimateApproachAsync(string vehicleId, ChargingSite site, string sessionId, CancellationToken ct) =>
+        Task.FromResult<ChargingApproachEstimate?>(null);
+    Task<ChargingWaitingRoute?> PlanWaitingAsync(ChargingSession session, CancellationToken ct) => Task.FromResult<ChargingWaitingRoute?>(null);
+    Task<bool> ReserveWaitingAsync(ChargingSession session, CancellationToken ct) => Task.FromResult(false);
+    Task<string?> ValidateWaitingAsync(ChargingSession session, CancellationToken ct) => Task.FromResult<string?>(null);
+    Task<string?> ValidateWaitingRecoveryCloseAsync(ChargingSession session, CancellationToken ct) =>
+        Task.FromResult<string?>("原等桩导航离位核验尚未提供。");
+    Task TrimWaitingAsync(ChargingSession session, bool departed, CancellationToken ct) => Task.CompletedTask;
+    Task ReleaseInboundAsync(ChargingSession session, CancellationToken ct) => ReleaseAsync(session.SessionId, ct);
     /// <summary>Why the last plan for this vehicle and site returned no route (null when unknown or planned).</summary>
     string? LastPlanFailure(string vehicleId, ChargingSite site) => null;
     /// <summary>After the vehicle is verified on the charging point, keep only the bay and the exit path and release the

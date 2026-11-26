@@ -46,7 +46,7 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
     public async ValueTask<IDisposable> EnterBusinessAsync(CancellationToken ct)
     { await mutex.WaitAsync(ct); return new MutexLease(mutex); }
     public bool HasActiveSessions => Volatile.Read(ref sessions).Any(s=>s.Phase!=ChargingPhase.Completed);
-    public bool HasReservedSessions => Volatile.Read(ref sessions).Any(s=>s.HasReservation);
+    public bool HasReservedSessions => Volatile.Read(ref sessions).Any(s=>s.HasReservation || s.Phase!=ChargingPhase.Completed && s.WaitingRoute is not null);
     public bool OwnsVehicle(string vehicleId) => Volatile.Read(ref sessions).Any(s=>s.Phase!=ChargingPhase.Completed&&s.VehicleId.Equals(vehicleId,StringComparison.OrdinalIgnoreCase));
     private sealed class MutexLease(SemaphoreSlim semaphore) : IDisposable
     { private SemaphoreSlim? value=semaphore; public void Dispose()=>Interlocked.Exchange(ref value,null)?.Release(); }
@@ -61,7 +61,7 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
         if(options.Enabled&&battery<=options.StartBatteryPercent)return false;
         if(rows.FirstOrDefault(s=>s.Phase!=ChargingPhase.Completed&&s.VehicleId.Equals(vehicleId,StringComparison.OrdinalIgnoreCase)) is {} active)
         {
-            if(active.HasReservation)return false;
+            if(active.HasReservation || active.WaitingRoute is not null)return false;
             // An above-threshold request without a reservation can defer withdrawal until a bay is free.
             return !(BayFreeFor(vehicleId,rows)&&WithdrawalAllowed(vehicleId,rows));
         }
@@ -70,12 +70,16 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
     public AgvTransportChain? FindChain(string commandId)
     {
         foreach(var row in Volatile.Read(ref sessions))
+        {
+            if(row.WaitingRoute is {} waiting && commandId==row.SessionId+"-WAIT")
+                return new(commandId,row.VehicleId,waiting.Path,1,row.Phase==ChargingPhase.SendingToWaitingSite);
             if(row.Route is {} route)
             {
                 if(commandId==row.SessionId+"-IN")return new(commandId,row.VehicleId,route.ToCharger,1,row.Phase==ChargingPhase.SendingToCharger);
                 if(commandId==row.SessionId+"-OUT")return new(commandId,row.VehicleId,route.ExitPath,1,row.Phase==ChargingPhase.SendingExit);
                 if(commandId==row.SessionId+"-RETURN" && route.ReturnPath.Length>=2)return new(commandId,row.VehicleId,route.ReturnPath,1,row.Phase==ChargingPhase.SendingReturn);
             }
+        }
         return null;
     }
     public async Task<ChargingStatus> ReadAsync(CancellationToken ct)
@@ -122,7 +126,7 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
     }
     private ChargingSession Move(ChargingSession row,ChargingPhase phase,string message)=>Save(row with {Phase=phase,PhaseSince=Now,UpdatedAt=Now,Message=message,TransientHold=false,TransientFailures=0,TransientSince=null});
     private static bool IsObservationPhase(ChargingPhase phase)=>phase is ChargingPhase.AwaitingCurrent or ChargingPhase.Charging or ChargingPhase.AwaitingStop or
-        ChargingPhase.GoingToCharger or ChargingPhase.Exiting or ChargingPhase.Returning;
+        ChargingPhase.GoingToCharger or ChargingPhase.Exiting or ChargingPhase.Returning or ChargingPhase.GoingToWaitingSite;
     // B07-FIX C2: a failed observation (read, telemetry, validation or navigation receipt) in an observation phase is counted.
     // The session is held only after the consecutive limit or the time limit; the hold resumes by itself when observation clears.
     private bool Transient(ChargingSession row,string reason)
@@ -148,7 +152,7 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
     {
         var free=options.Sites.Count(site=>site.Commissioned&&CanHandleSite(site,vehicleId)&&
             site.AllowedVehicleIds.Contains(vehicleId,StringComparer.OrdinalIgnoreCase)&&!BayCooling(site)&&
-            !rows.Any(other=>other.HasReservation&&other.Site!.ResourceId.Equals(site.ResourceId,StringComparison.OrdinalIgnoreCase)));
+            !rows.Any(other=>other.HasBayReservation&&other.Site!.ResourceId.Equals(site.ResourceId,StringComparison.OrdinalIgnoreCase)));
         var waiting=rows.Count(s=>!s.HasReservation&&(s.Phase is ChargingPhase.Queued or ChargingPhase.WaitingForBusiness)&&
             !s.VehicleId.Equals(vehicleId,StringComparison.OrdinalIgnoreCase));
         return free>waiting;
@@ -174,7 +178,7 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
                 if(!sessions.Any(s=>s.Phase!=ChargingPhase.Completed&&s.VehicleId.Equals(vehicle.VehicleId,StringComparison.OrdinalIgnoreCase)))
                     Save(new("CHARGE-"+Guid.NewGuid().ToString("N"),vehicle.VehicleId,ChargingPhase.Queued,Now,Now,"低电量已进入充电队列；等待业务箱体循环及设备责任安全结束。") {TargetBatteryPercent=options.TargetBatteryPercent});
 
-        foreach(var row in sessions.Where(s=>s.HasReservation).ToArray())
+        foreach(var row in sessions.Where(s=>s.HasReservation || s.Phase!=ChargingPhase.Completed && s.WaitingRoute is not null).ToArray())
             await port.RenewAsync(row.SessionId,ct);
         using var execution=await port.EnterExecutionAsync(false,ct);
         if(execution is null)return;
@@ -188,16 +192,36 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
             try
             {
                 if(row.Phase==ChargingPhase.Hold){if(row.TransientHold)await ResumeTransientAsync(row,ct);continue;}
+                if(row.Phase==ChargingPhase.GoingToWaitingSite){await ObserveWaitingAsync(row,ct);continue;}
                 if(row.Phase is ChargingPhase.Queued or ChargingPhase.WaitingForBusiness)
                 {
-                    if(!options.Enabled || port.NewWorkBlockReason is not null)continue;
+                    if(!options.Enabled || port.NewWorkBlockReason is not null || row.StopRequested)continue;
                     var busy=await port.BusyReasonAsync(row.VehicleId,row.SessionId,ct);
                     if(busy is not null){Save(row with {Phase=ChargingPhase.WaitingForBusiness,Message=busy,UpdatedAt=Now});continue;}
                     if(row.Phase!=ChargingPhase.Queued)
                         row=Save(row with {Phase=ChargingPhase.Queued,PhaseSince=Now,UpdatedAt=Now,Message="原任务已闭环，等待可用充电位。"});
-                    var freeSites=options.Sites.Where(s=>s.Commissioned&&CanHandleSite(s,row.VehicleId)&&
-                        s.AllowedVehicleIds.Contains(row.VehicleId,StringComparer.OrdinalIgnoreCase)&&!BayCooling(s)&&
-                        !sessions.Any(other=>other.HasReservation&&other.Site!.ResourceId.Equals(s.ResourceId,StringComparison.OrdinalIgnoreCase))).ToArray();
+                    var eligible=options.Sites.Where(s=>s.Commissioned&&CanHandleSite(s,row.VehicleId)&&
+                        s.AllowedVehicleIds.Contains(row.VehicleId,StringComparer.OrdinalIgnoreCase)&&!BayCooling(s)).ToArray();
+                    var freeSites=eligible.Where(s=>BayOwner(s) is null).ToArray();
+                    if(row.WaitingRoute is {} parked)
+                    {
+                        if(!port.IsAt(row.VehicleId,parked.Path[^1]))
+                        {
+                            UpdateWaitingReason(row,"等桩位定位尚未确认，保留停车资源，暂不派车。");
+                            continue;
+                        }
+                        if(freeSites.Length==0)
+                        {
+                            UpdateWaitingReason(row,"安全位等桩：两桩均被占用，已停在 "+parked.Path[^1]+"。");
+                            if(BayFreeFor(row.VehicleId,sessions)){await port.TrimWaitingAsync(row,true,ct);row=Save(row with {WaitingRoute=null});}
+                            else continue;
+                        }
+                        else
+                        {
+                            await port.TrimWaitingAsync(row,true,ct);
+                            row=Save(row with {WaitingRoute=null,Message="充电位已空闲：从等桩位重新规划。"});
+                        }
+                    }
                     if(freeSites.Length>0&&!IsCritical(row.VehicleId)&&!WithdrawalAllowed(row.VehicleId,sessions))
                     {
                         const string message="等待充电调度名额，已暂停接新单。";
@@ -206,30 +230,58 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
                     }
                     var choices=new List<(ChargingSite Site,ChargingRoute Route)>();
                     foreach(var site in freeSites)
-                        if(await port.PlanWithReturnAsync(row.VehicleId,site,row.RequestedReturnSiteId,ct) is {} route)choices.Add((site,route));
-                    foreach(var candidate in choices.OrderBy(c=>c.Route.Cost).ThenBy(c=>c.Site.Id,StringComparer.Ordinal))
+                        if(await port.PlanForSessionAsync(row,site,ct) is {} route)choices.Add((site,route));
+                    var estimates=new List<ChargingSiteEstimate>();
+                    foreach(var site in eligible)
+                    {
+                        var approach=await port.EstimateApproachAsync(row.VehicleId,site,row.SessionId,ct);
+                        estimates.Add(new(site.Id,EstimateBayWait(BayOwner(site)),approach?.TrafficWaitSeconds,approach?.TravelSeconds));
+                    }
+                    if(!row.SiteEstimates.SequenceEqual(estimates))row=Save(row with {SiteEstimates=estimates.ToArray()});
+                    var earliest=estimates.Where(e=>e.StartInSeconds.HasValue).OrderBy(e=>e.StartInSeconds).FirstOrDefault();
+                    // Only defer an executable route when all executable options have comparable estimates.
+                    var defer=choices.Count>0&&!IsCritical(row.VehicleId)&&earliest is not null&&earliest.StartInSeconds>0 &&
+                        choices.All(c=>estimates.Any(e=>e.SiteId==c.Site.Id && e.StartInSeconds>earliest.StartInSeconds));
+                    if(defer)
+                    {
+                        var reason=freeSites.Any(site=>site.Id==earliest!.SiteId)?"等进桩路权":"等空桩";
+                        UpdateWaitingReason(row,$"{reason}：{earliest!.SiteId}预计最早开始充电（约{earliest.StartInSeconds:0}秒）。");
+                        continue;
+                    }
+                    var reserveReasons=new List<string>();
+                    foreach(var candidate in choices.OrderBy(c=>estimates.First(e=>e.SiteId==c.Site.Id).StartInSeconds??double.PositiveInfinity)
+                        .ThenBy(c=>c.Route.Cost).ThenBy(c=>c.Site.Id,StringComparer.Ordinal))
                     {
                         row=Save(row with {Site=candidate.Site,Route=candidate.Route,Phase=ChargingPhase.Reserved,PhaseSince=Now,UpdatedAt=Now,Message="保存车辆、充电位和完整进出路线归属，申请独占路权。"});
                         if(await port.ReserveAsync(row,ct))break;
-                        row=Save(row with {Site=null,Route=null,Phase=ChargingPhase.Queued,UpdatedAt=Now,Message="充电位或道路被占用，继续排队。"});
+                        await port.ReleaseInboundAsync(row,ct);
+                        reserveReasons.Add(candidate.Site.Id+"："+(port.LastPlanFailure(row.VehicleId,candidate.Site)??"路权预约未通过"));
+                        row=Save(row with {Site=null,Route=null,Phase=ChargingPhase.Queued,PhaseSince=current.PhaseSince,UpdatedAt=Now,Message="充电位或道路被占用，继续排队。"});
                     }
                     if(row.Phase!=ChargingPhase.Reserved)
                     {
+                        if(choices.Count>0)UpdateWaitingReason(row,"等进桩路权："+string.Join("；",reserveReasons));
                         // Keep the queue explainable: record why no charging bay could be planned instead of waiting silently.
                         // B07-FIX C4: a critical vehicle whose allowed bays are all held by other sessions may preempt a charging vehicle.
                         if(row.Phase==ChargingPhase.Queued&&IsCritical(row.VehicleId)&&options.Sites.Any(site=>site.Commissioned&&
                             site.AllowedVehicleIds.Contains(row.VehicleId,StringComparer.OrdinalIgnoreCase)&&
-                            sessions.Any(other=>other.HasReservation&&other.Site!.ResourceId.Equals(site.ResourceId,StringComparison.OrdinalIgnoreCase))))
+                            sessions.Any(other=>other.HasBayReservation&&other.Site!.ResourceId.Equals(site.ResourceId,StringComparison.OrdinalIgnoreCase))))
                             blockedByCritical=true;
+                        if(eligible.Length>0 && freeSites.Length==0 && row.WaitingRoute is null && options.WaitingSiteIds.Length>0)
+                        {
+                            await TrySendWaitingAsync(row,ct);
+                            continue;
+                        }
                         if(choices.Count==0)
                         {
                             var reasons=options.Sites.Where(s=>s.Commissioned&&s.AllowedVehicleIds.Contains(row.VehicleId,StringComparer.OrdinalIgnoreCase))
-                                .Select(s=>sessions.Any(o=>o.HasReservation&&o.Site!.ResourceId.Equals(s.ResourceId,StringComparison.OrdinalIgnoreCase))
+                                .Select(s=>sessions.Any(o=>o.HasBayReservation&&o.Site!.ResourceId.Equals(s.ResourceId,StringComparison.OrdinalIgnoreCase))
                                     ?$"{s.Id}：已被其他充电会话预留"
                                     :!CanHandleSite(s,row.VehicleId)?$"{s.Id}：控制方式未就绪":$"{s.Id}：{port.LastPlanFailure(row.VehicleId,s)??"暂无可用路线"}")
                                 .ToArray();
-                            var message="排队中，暂无可用充电位："+(reasons.Length==0?"没有允许该车使用的已核定充电位。":string.Join("；",reasons));
-                            if(row.Message!=message)Save(row with {Message=message,UpdatedAt=Now});
+                            var message=(eligible.Length>0&&freeSites.Length==0?"等空桩：":"进桩暂未就绪：")+(reasons.Length==0?"没有允许该车使用的已核定充电位。":string.Join("；",reasons));
+                            if(row.WaitingRoute is {} waiting)message=$"已在 {waiting.Path[^1]} 停稳。"+message;
+                            UpdateWaitingReason(row,message);
                         }
                         continue;
                     }
@@ -240,7 +292,7 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
             {
                 // Read the latest durable intent, not the pre-send local variable.
                 row=sessions.Single(s=>s.SessionId==row.SessionId);
-                if(row.HasReservation){if(!Transient(row,e.Message))Hold(row,"充电流程暂停，保留充电位及路权："+e.Message);}
+                if(row.HasReservation || row.WaitingRoute is not null){if(!Transient(row,e.Message))Hold(row,"充电流程暂停，保留充电位及路权："+e.Message);}
                 else Save(row with {Phase=ChargingPhase.WaitingForBusiness,Message="充电排队条件尚未满足："+e.Message,UpdatedAt=Now});
                 logger.LogWarning(e,"充电流程保持待核对。SessionId={SessionId}",row.SessionId);
                 if(ct.IsCancellationRequested)throw;
@@ -314,7 +366,7 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
             // proven, the session returns to the queue with no bay or route, and no command is sent.
             if(!await port.ReserveAsync(row,ct))
             {
-                await port.ReleaseAsync(row.SessionId,ct);
+                await port.ReleaseInboundAsync(row,ct);
                 Save(row with {Site=null,Route=null,Phase=ChargingPhase.Queued,PhaseSince=Now,UpdatedAt=Now,
                     Message="充电位或路权复核未通过，预留已失效，已退回排队；未发送导航。"});
                 return;
@@ -375,6 +427,11 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
                     return;
                 }
                 await SendReturnAsync(row with {Battery=battery},ct);return;
+            }
+            if(row.WaitingRoute is not null)
+            {
+                await port.TrimWaitingAsync(row,true,ct);
+                row=Save(row with {WaitingRoute=null});
             }
             var released=await port.ShrinkToBayAsync(row,ct);
             row=Move(row,ChargingPhase.StartingCharge,"已完成原导航并核对真实充电点位置，准备车端充电继电器控制。"+
@@ -437,6 +494,13 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
     {
         var phase=row.HeldPhase;
         if(phase is null)return;
+        if(phase==ChargingPhase.GoingToWaitingSite)
+        {
+            var original = row with {Phase=phase.Value};
+            if(row.WaitingRoute is {} route && port.IsAt(row.VehicleId,route.Path[^1]))
+                await ObserveWaitingAsync(original,ct);
+            return;
+        }
         if(phase is ChargingPhase.AwaitingCurrent or ChargingPhase.Charging or ChargingPhase.AwaitingStop)
         {
             ChargingBatteryReading reading;
@@ -543,6 +607,11 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
         using var lease=await EnterBusinessAsync(ct);
         var row=sessions.SingleOrDefault(s=>s.SessionId==request.SessionId)??throw new KeyNotFoundException("充电会话不存在。");
         if(row.Phase==ChargingPhase.Completed)return new(true,"充电会话已结束。");
+        if(row.Site is null && row.WaitingRoute is not null)
+        {
+            Hold(row with {Operator=user.WindowsIdentity,OperatorEvidence=request.Reason},"已暂停等桩调度，保留停车和进路；请核对原导航和实际位置。");
+            return new(true,"已暂停等桩调度，原资源继续保留。");
+        }
         if(row.Phase is ChargingPhase.Queued or ChargingPhase.WaitingForBusiness)
         {Move(row with {Operator=user.WindowsIdentity,OperatorEvidence=request.Reason},ChargingPhase.Completed,"人工取消尚未取得资源或发送命令的充电需求。");return new(true,"已取消排队；低电量仍禁止新业务，下轮仍满足启动条件时会重新申请。");}
         if(row.Site?.ControlMode=="RobokitScript")
@@ -592,6 +661,23 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
         using var execution=request.Decision==ChargingHoldDecision.CloseAfterPhysicalExit
             ? await port.EnterRecoveryControlAsync(ct) : await port.EnterExecutionAsync(false,ct);
         if(execution is null)return new(false,"执行门禁尚未放行，保留充电归属。");
+        if(row.Site is null && row.WaitingRoute is not null)
+        {
+            if(request.Decision==ChargingHoldDecision.CloseAfterPhysicalExit)
+            {
+                if(await port.ValidateWaitingRecoveryCloseAsync(row,ct) is {} waitingError)return new(false,waitingError);
+                var reading=await ReadBatteryAsync(row,ct);
+                if(!CurrentStopped(reading)||reading.ManualCharge==true||reading.AutoCharge==true)
+                    return new(false,"车辆充电状态或停充电流尚未确认，保留等桩资源。");
+                await CompleteAsync(row with {Battery=reading,Operator=user.WindowsIdentity,OperatorEvidence=request.Reason},
+                    "已核对车辆实际离开等桩路线及等待位，关闭原会话。",ct);
+                return new(true,"已按实际离位证据关闭等桩会话。");
+            }
+            if(string.IsNullOrWhiteSpace(row.CommandId))return new(false,"缺少原等桩导航身份，只能在实际离位后关闭。");
+            Move(row with {HeldPhase=null,Operator=user.WindowsIdentity,OperatorEvidence=request.Reason},
+                ChargingPhase.GoingToWaitingSite,"只读核对原等桩导航，禁止重发。");
+            return new(true,"已恢复原等桩导航观察。");
+        }
         var validation=request.Decision==ChargingHoldDecision.CloseAfterPhysicalExit
             ? await port.ValidateRecoveryCloseAsync(row,ct) : await port.ValidateAsync(row,false,ct);
         if(validation is {} error)return new(false,error);

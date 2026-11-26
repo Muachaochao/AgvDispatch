@@ -54,6 +54,9 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
     public RoutePlan? PlanWithoutVehicleOccupancyForComparison(string source, string destination) =>
         PlanCore(source, destination, new HashSet<string>(), true);
 
+    public RoutePlan? PlanChargingApproachForComparison(string source, string destination) =>
+        PlanCore(source, destination, new HashSet<string>(), true, chargingApproach: true);
+
     private RoutePlan? PlanCore(string source, string destination,
         IReadOnlySet<string> unavailableResourceIds, bool comparisonOnly, string? movingVehicleId = null, bool chargingApproach = false)
     {

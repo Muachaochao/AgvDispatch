@@ -211,7 +211,9 @@ builder.Services.AddSingleton<IChargingRuntimePort>(p => new ChargingRuntimePort
     businessSafety:p.GetRequiredService<IChargingBusinessSafety>(),
     vehicleBlock:id => p.GetRequiredService<BusinessRunOwnership>() is {Active:true} owner &&
         string.Equals(owner.Vehicle,id,StringComparison.OrdinalIgnoreCase) ? "当前车辆业务运行尚未安全交接，等待整轮箱体循环结束。" : null,
-    returnSite:id => p.GetRequiredService<BusinessRunOwnership>().GetChargingReturnSite(id)));
+    returnSite:id => p.GetRequiredService<BusinessRunOwnership>().GetChargingReturnSite(id),
+    dispatch: p.GetRequiredService<DispatchOrchestratorOptions>(), energy: p.GetRequiredService<DispatchEnergyOptions>(),
+    envelopes: p.GetRequiredService<ITrafficBodyEnvelopeProvider>()));
 builder.Services.AddSingleton(p => new ChargingService(chargingOptions, p.GetRequiredService<IChargingRuntimePort>(),
     p.GetRequiredService<IChargingRobotControl>(), chargingPath, p.GetRequiredService<ILogger<ChargingService>>(), clock:simulationTime,
     workflow:p.GetRequiredService<IChargingWorkflow>(),

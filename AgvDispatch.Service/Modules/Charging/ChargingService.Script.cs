@@ -153,7 +153,14 @@ public sealed partial class ChargingService
         var target=returning?row.Route!.ReturnSiteId:exiting?row.Site!.ExitSiteId:row.Site!.ChargingSiteId;
         if(target is null||!port.IsAt(row.VehicleId,target))return;
         if(!exiting&&!returning)
-        {await BeginScriptAsync(row,ChargingWorkflowKind.Dock,ct);return;}
+        {
+            if(row.WaitingRoute is not null)
+            {
+                await port.TrimWaitingAsync(row,true,ct);
+                row=Save(row with {WaitingRoute=null});
+            }
+            await BeginScriptAsync(row,ChargingWorkflowKind.Dock,ct);return;
+        }
         if(!row.ShutdownVerified)
         {Hold(row,"原会话未取得完整停充核验，禁止释放充电资源。");return;}
         var reading=await ReadBatteryAsync(row,ct);

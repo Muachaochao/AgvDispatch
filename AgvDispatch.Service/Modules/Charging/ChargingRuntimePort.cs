@@ -5,11 +5,11 @@ using AgvDispatch.Domain.Maps;
 
 namespace AgvDispatch.Service;
 
-public sealed class ChargingRuntimePort(ChargingOptions options, IAgvStateCache vehicles, IActiveTaskLookup tasks,
+public sealed partial class ChargingRuntimePort(ChargingOptions options, IAgvStateCache vehicles, IActiveTaskLookup tasks,
     IActiveMapRuntime map, IMapExecutionGate gate, IRoutePlanner planner, ITrafficResourceManager resources,
     ITrafficResourceControlService traffic, IAgvGateway gateway, IRobokitTaskMapPreflight preflight,
     Func<string?>? externalBlock = null, TimeProvider? clock = null, IChargingBusinessSafety? businessSafety = null,
-    Func<string,string?>? vehicleBlock = null, Func<string,string?>? returnSite = null) : IChargingRuntimePort
+    Func<string,string?>? vehicleBlock = null, Func<string,string?>? returnSite = null, DispatchOrchestratorOptions? dispatch = null, DispatchEnergyOptions? energy = null, ITrafficBodyEnvelopeProvider? envelopes = null) : IChargingRuntimePort
 {
     private DateTimeOffset Now => (clock??TimeProvider.System).GetUtcNow();
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string,string> planFailures=new(StringComparer.OrdinalIgnoreCase);
@@ -71,7 +71,13 @@ public sealed class ChargingRuntimePort(ChargingOptions options, IAgvStateCache 
     public async Task<ChargingRoute?> PlanAsync(string vehicleId,ChargingSite site,CancellationToken ct)
         => await PlanWithReturnAsync(vehicleId,site,null,ct);
 
-    public async Task<ChargingRoute?> PlanWithReturnAsync(string vehicleId,ChargingSite site,string? requestedReturnSite,CancellationToken ct)
+    public Task<ChargingRoute?> PlanWithReturnAsync(string vehicleId,ChargingSite site,string? requestedReturnSite,CancellationToken ct) =>
+        PlanCoreAsync(vehicleId,site,requestedReturnSite,"CHARGING-PLAN",ct);
+
+    public Task<ChargingRoute?> PlanForSessionAsync(ChargingSession session,ChargingSite site,CancellationToken ct) =>
+        PlanCoreAsync(session.VehicleId,site,session.RequestedReturnSiteId,session.SessionId,ct);
+
+    private async Task<ChargingRoute?> PlanCoreAsync(string vehicleId,ChargingSite site,string? requestedReturnSite,string sessionId,CancellationToken ct)
     {
         var key=vehicleId+"|"+site.Id;
         ChargingRoute? Fail(string reason){planFailures[key]=reason;return null;}
@@ -92,7 +98,7 @@ public sealed class ChargingRuntimePort(ChargingOptions options, IAgvStateCache 
         // B07-FIX C10: exit and return occupancy is rechecked when each leg is acquired (AcquireExitAsync / AcquireReturnAsync).
         // No same-station empty route can stand in for a commissioned docking move.
         if(source.Id==target.Id)return Fail("车辆已在充电点上，不能用空路线代替对接动作。");
-        var unavailable=await resources.GetUnavailableResourceIdsAsync("CHARGING-PLAN",ct);
+        var unavailable=await resources.GetUnavailableResourceIdsAsync(sessionId,ct);
         if(unavailable.Contains(site.ResourceId))return Fail($"充电位资源{site.ResourceId}已被占用。");
         // B07-FIX C4: legs are planned before the vehicle leaves its bay; its own parked body must not block
         // the way back to that bay (all other vehicles, leases and the dumper clearance still apply).

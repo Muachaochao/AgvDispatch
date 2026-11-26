@@ -36,6 +36,17 @@ public sealed partial class ExecutionRecoveryService
             hard ??= VehicleBlock(vehicle, true);
             if (vehicle is not null && (vehicle.Charging != false || vehicle.Tasks.Any(t => t.Status is not (4 or 5 or 6 or 7))))
                 hard ??= "车辆仍在充电、充电状态未知或有未结束车端任务。";
+            if (charging.WaitingRoute is { } waiting && charging.Site is null)
+            {
+                var active = map.Current;
+                if (active?.MapId != waiting.MapId || active.VersionId != waiting.MapVersionId || vehicle is null ||
+                    string.IsNullOrWhiteSpace(vehicle.CurrentStation) || !MapRouteSiteMapper.TryResolveNode(active.Definition, vehicle.CurrentStation, out var actual) ||
+                    actual is not { Enabled: true, AllowTrafficStop: true } || vehicle.X is not { } x || vehicle.Y is not { } y ||
+                    !double.IsFinite(x) || !double.IsFinite(y) || Math.Sqrt(Math.Pow(x - actual.X, 2) + Math.Pow(y - actual.Y, 2)) > settings.MaximumStationDeviationMeters ||
+                    waiting.Path.Any(site => MapRouteSiteMapper.IsSameNode(active.Definition, site, actual.Id)) ||
+                    actual.ResourceIds.Any(id => waiting.ResourceIds.Contains(id, StringComparer.OrdinalIgnoreCase)))
+                    hard ??= "车辆未确认停在原等桩路线之外，不能核定离位。";
+            }
             if (charging.Route is { } route && charging.Site is { } site)
             {
                 var active = map.Current;
@@ -67,20 +78,34 @@ public sealed partial class ExecutionRecoveryService
 
     private static string? ChargingOwnershipError(string owner, ChargingBootOwnership? original, ChargingSession charging)
     {
-        if (original is null || original.Session is not { Site: { } originalSite, Route: { } originalRoute } boot || original.Leases is not { Length: > 0 })
+        if (original is not { Leases.Length: > 0 })
             return "缺少完整的本次启动充电归属快照，不能凭任务编号或资源消失自动放行。";
-        if (owner != charging.SessionId || owner != boot.SessionId || charging.VehicleId != boot.VehicleId || charging.CreatedAt != boot.CreatedAt ||
-            boot.Phase == ChargingPhase.Completed || charging.Site is null || charging.Route is null ||
+        var boot = original.Session;
+        if (owner != charging.SessionId || owner != boot.SessionId || charging.VehicleId != boot.VehicleId ||
+            charging.CreatedAt != boot.CreatedAt || boot.Phase == ChargingPhase.Completed)
+            return "持久充电会话与本次启动保存的会话、车辆或创建时间不一致。";
+        var park = original.Leases.Where(l => l.OwnerStepId == owner + "-PARK").ToArray();
+        if (park.Length > 0 && (boot.WaitingRoute is not { } waiting ||
+            JsonSerializer.Serialize(waiting) != JsonSerializer.Serialize(charging.WaitingRoute) ||
+            !park.Any(l => l.ResourceId.Equals(waiting.ParkingResourceId,StringComparison.OrdinalIgnoreCase)) ||
+            park.Any(l => l.TaskId != owner || !string.Equals(l.VehicleId, boot.VehicleId, StringComparison.OrdinalIgnoreCase) ||
+                l.MapId != waiting.MapId || l.MapVersionId != waiting.MapVersionId ||
+                !waiting.ResourceIds.Contains(l.ResourceId, StringComparer.OrdinalIgnoreCase))))
+            return "启动时的等桩租约与原车辆、地图或停车资源不一致。";
+        var chargingLeases = original.Leases.Where(l => l.OwnerStepId != owner + "-PARK").ToArray();
+        if (boot.Site is null && boot.Route is null && charging.Site is null && charging.Route is null &&
+            park.Length > 0 && chargingLeases.Length == 0)return null;
+        if (boot.Site is not { } originalSite || boot.Route is not { } originalRoute || charging.Site is null || charging.Route is null ||
             JsonSerializer.Serialize(charging.Site) != JsonSerializer.Serialize(originalSite) || JsonSerializer.Serialize(charging.Route) != JsonSerializer.Serialize(originalRoute))
-            return "持久充电会话与本次启动保存的车辆、充电位或原地图路线不一致。";
+            return "持久充电会话与本次启动保存的充电位或原地图路线不一致。";
         // B07-FIX C6: after C1 a charging session holds the bay plus its -EXIT or -RETURN road, never the full route set.
         // Every lease must belong to this session and vehicle and be a subset of the planned route; the bay is required
         // until the vehicle has left the bay at the exit.
         var allowedSteps = new[] { owner + "-LOCK", owner + "-EXIT", owner + "-RETURN" };
-        var leaseResources = original.Leases.Select(l => l.ResourceId).ToArray();
+        var leaseResources = chargingLeases.Select(l => l.ResourceId).ToArray();
         var phase = boot.Phase == ChargingPhase.Hold ? boot.HeldPhase ?? boot.Phase : boot.Phase;
         var bayRequired = phase is not (ChargingPhase.Exiting or ChargingPhase.SendingReturn or ChargingPhase.Returning);
-        if (original.Leases.Any(l => l.TaskId != owner || !string.Equals(l.VehicleId, boot.VehicleId, StringComparison.OrdinalIgnoreCase) ||
+        if (chargingLeases.Any(l => l.TaskId != owner || !string.Equals(l.VehicleId, boot.VehicleId, StringComparison.OrdinalIgnoreCase) ||
             !allowedSteps.Contains(l.OwnerStepId, StringComparer.Ordinal) ||
             l.MapId != originalRoute.MapId || l.MapVersionId != originalRoute.MapVersionId) ||
             leaseResources.Distinct(StringComparer.OrdinalIgnoreCase).Count() != leaseResources.Length ||
