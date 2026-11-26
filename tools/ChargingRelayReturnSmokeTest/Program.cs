@@ -14,6 +14,8 @@ void Check(bool condition, string description)
 }
 
 Check(new ChargingOptions().ConfigurationError() is null, "default charging options remain valid without a standby point");
+Check(!new ChargingOptions().ReturnToStandbyAfterCharging,
+    "new charging sessions are dispatchable at the safe exit by default");
 Check(new ChargingOptions { Sites = [new("BAY-1", "CHARGER", "EXIT", "BAY") { Commissioned = true, AllowedVehicleIds = ["A"] }], DefaultStandbySiteId = "EXIT" }
     .ConfigurationError() is not null, "a standby point equal to a charging exit is rejected");
 Check(new ChargingOptions { Sites = [new("BAY-1", "CHARGER", "EXIT", "BAY") { Commissioned = true, AllowedVehicleIds = ["A"] }], DefaultStandbySiteId = "STANDBY" }
@@ -22,29 +24,44 @@ Check(new ChargingOptions { Sites = [new("BAY-1", "CHARGER", "EXIT", "BAY") { Co
 var evidence = Path.Combine(Path.GetTempPath(), "agv-charging-return-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(evidence);
 
-// C1: after the stop is confirmed the vehicle drives out, releases the bay at the exit, returns to the dedicated
-// standby point and only then completes the session.
-var full = new Fixture(evidence, "full-return");
+// The default flow completes at the safe exit so the vehicle can immediately accept a call.
+var direct = new Fixture(evidence, "direct-exit");
+await direct.ToChargingAsync();
+direct.Battery(80, true, 3);
+await direct.UntilAsync(s => s.Phase == ChargingPhase.AwaitingStop);
+direct.Battery(80, false, -2);
+await direct.UntilAsync(s => s.Phase == ChargingPhase.Exiting);
+Check(direct.Port.Navigations.Select(n => n.Command.Split('-')[^1]).SequenceEqual(["IN", "OUT"]),
+    "relay exit is driven only after the stop is confirmed by stationary and discharge evidence");
+Check(direct.Port.Has(direct.Current.SessionId, FakePort.Bay), "the charging bay is still held while the vehicle drives out");
+direct.Arrive("EXIT");
+await direct.UntilAsync(s => s.Phase == ChargingPhase.Completed);
+Check(direct.Port.Navigations.Count == 2 && direct.Port.SessionLeaseCount(direct.Current.SessionId) == 0 &&
+    direct.Port.ReleaseCount == 1 && direct.Service.AllowsNewBusiness("A"),
+    "safe exit completes charging, releases every resource and restores dispatch eligibility without a standby trip");
+
+// A commissioned site can still request the legacy return workflow explicitly.
+var full = new Fixture(evidence, "explicit-return", returnAfterCharging: true);
 await full.ToChargingAsync();
 full.Battery(80, true, 3);
 await full.UntilAsync(s => s.Phase == ChargingPhase.AwaitingStop);
 full.Battery(80, false, -2);
 await full.UntilAsync(s => s.Phase == ChargingPhase.Exiting);
-Check(full.Port.Navigations.Select(n => n.Command.Split('-')[^1]).SequenceEqual(["IN", "OUT"]),
-    "relay exit is driven only after the stop is confirmed by stationary and discharge evidence");
-Check(full.Port.Has(full.Current.SessionId, FakePort.Bay), "the charging bay is still held while the vehicle drives out");
 full.Arrive("EXIT");
 await full.UntilAsync(s => s.Phase == ChargingPhase.Returning);
 var returnNavigation = full.Port.Navigations[^1];
-Check(returnNavigation.Command.EndsWith("-RETURN", StringComparison.Ordinal) && returnNavigation.Path.SequenceEqual(FakePort.ReturnRoute),
-    "arrival at the exit sends one return navigation over the planned return road");
-Check(!full.Port.Has(full.Current.SessionId, FakePort.Bay) && full.Port.Has(full.Current.SessionId, FakePort.Back) && full.Port.ReleaseCount == 0,
-    "arrival at the exit releases the charging bay and keeps only the return road");
+Check(returnNavigation.Command.EndsWith("-RETURN", StringComparison.Ordinal) &&
+    returnNavigation.Path.SequenceEqual(FakePort.ReturnRoute),
+    "an explicitly configured return sends one navigation over the planned return road");
+Check(!full.Port.Has(full.Current.SessionId, FakePort.Bay) &&
+    full.Port.Has(full.Current.SessionId, FakePort.Back) && full.Port.ReleaseCount == 0,
+    "an explicitly configured return releases the bay at the exit and keeps only the return road");
 full.Battery(80, false, 0);
 full.Arrive("STANDBY");
 await full.UntilAsync(s => s.Phase == ChargingPhase.Completed);
-Check(full.Port.SessionLeaseCount(full.Current.SessionId) == 0 && full.Port.ReleaseCount == 1 && full.Service.AllowsNewBusiness("A"),
-    "only arrival at the dedicated standby point completes the session and releases every resource");
+Check(full.Port.SessionLeaseCount(full.Current.SessionId) == 0 &&
+    full.Port.ReleaseCount == 1 && full.Service.AllowsNewBusiness("A"),
+    "the optional return completes at its configured standby point");
 
 // C10: an occupied exit found when the stop is confirmed waits for the road without Hold and keeps the bay.
 var exitBusy = new Fixture(evidence, "exit-occupied");
@@ -62,7 +79,7 @@ await exitBusy.UntilAsync(s => s.Phase == ChargingPhase.Exiting);
 Check(exitBusy.Port.Navigations.Count == 2, "the waiting vehicle drives out once the exit is physically free");
 
 // C1: the return road is held before the vehicle leaves the exit; a busy return road waits at the exit, not in Hold.
-var returnBusy = new Fixture(evidence, "return-busy");
+var returnBusy = new Fixture(evidence, "return-busy", returnAfterCharging: true);
 await returnBusy.ToChargingAsync();
 returnBusy.Battery(80, true, 3);
 await returnBusy.UntilAsync(s => s.Phase == ChargingPhase.AwaitingStop);
@@ -159,8 +176,6 @@ Check(faulted.Robot.RelayWrites.SequenceEqual([true, false]) && faulted.Current.
 Check(faulted.Service.AlarmCandidates(faulted.Clock.GetUtcNow()).Any(c => c.Code == "CHARGING_BAY_FAULT"),
     "the bay fault raises a charging alarm candidate while the cooldown lasts");
 faulted.Arrive("EXIT");
-await faulted.UntilAsync(s => s.Phase == ChargingPhase.Returning);
-faulted.Arrive("STANDBY");
 await faulted.UntilAsync(s => s.Phase == ChargingPhase.Completed);
 faulted.Port.Put("B", 10);
 await faulted.CyclesAsync(2);
@@ -210,7 +225,7 @@ await required.CyclesAsync(1);
 Check(required.Current.Phase == ChargingPhase.Hold && required.Robot.RelayWrites.SequenceEqual([true, false]),
     "a vehicle that must report temperature is relayed off when the signal is missing");
 
-Console.WriteLine($"PASS: {checks} relay return checks.");
+Console.WriteLine($"PASS: {checks} relay exit and optional return checks.");
 
 sealed class Fixture
 {
@@ -222,10 +237,12 @@ sealed class Fixture
     private readonly string path;
     public ChargingStatus Status => Service.ReadAsync(default).GetAwaiter().GetResult();
     public ChargingSession Current => Status.Sessions.Last(s => s.VehicleId == "A");
-    public Fixture(string root, string name, decimal target = 80, bool optionalTemperature = false)
+    public Fixture(string root, string name, decimal target = 80, bool optionalTemperature = false,
+        bool returnAfterCharging = false)
     {
         path = Path.Combine(root, name + ".json");
         Port = new(Clock); Robot = new(Clock);
+        Port.ReturnAfterCharging = returnAfterCharging;
         Options = new() { Enabled = true, Sites = [new("BAY-1", "CHARGER", "EXIT", FakePort.Bay)
             { Commissioned = true, AllowedVehicleIds = ["A", "B"] }], DefaultStandbySiteId = "STANDBY",
             TargetBatteryPercent = target, TemperatureOptionalVehicleIds = optionalTemperature ? ["A"] : [] };
@@ -313,6 +330,7 @@ sealed class FakePort(FakeClock clock) : IChargingRuntimePort
     public List<(string Command, string Vehicle, string[] Path)> Navigations { get; } = [];
     public bool ExitOccupied { get; set; }
     public bool ReturnBlocked { get; set; }
+    public bool ReturnAfterCharging { get; set; }
     public int ReserveCalls { get; private set; }
     public int? RefuseReserveCall { get; set; }
     public int ReleaseCount { get; private set; }
@@ -353,9 +371,18 @@ sealed class FakePort(FakeClock clock) : IChargingRuntimePort
     public Task<string?> BusyReasonAsync(string vehicleId, string? ownSessionId, CancellationToken ct) => Task.FromResult<string?>(null);
     public Task<ChargingRoute?> PlanAsync(string vehicleId, ChargingSite site, CancellationToken ct) =>
         PlanWithReturnAsync(vehicleId, site, null, ct);
-    public Task<ChargingRoute?> PlanWithReturnAsync(string vehicleId, ChargingSite site, string? returnSiteId, CancellationToken ct) => Task.FromResult<ChargingRoute?>(
-        new("SYNTHETIC-MAP", "V1", [Sites[vehicleId], site.ChargingSiteId], [site.ChargingSiteId, site.ExitSiteId], [In, Bay, Out, Back], 5)
-        { OriginSiteId = Sites[vehicleId], ReturnSiteId = "STANDBY", ReturnPath = ReturnRoute });
+    public Task<ChargingRoute?> PlanWithReturnAsync(string vehicleId, ChargingSite site, string? returnSiteId, CancellationToken ct)
+    {
+        var resources = ReturnAfterCharging ? new[] { In, Bay, Out, Back } : new[] { In, Bay, Out };
+        return Task.FromResult<ChargingRoute?>(
+            new("SYNTHETIC-MAP", "V1", [Sites[vehicleId], site.ChargingSiteId],
+                [site.ChargingSiteId, site.ExitSiteId], resources, 5)
+            {
+                OriginSiteId = Sites[vehicleId],
+                ReturnSiteId = ReturnAfterCharging ? "STANDBY" : null,
+                ReturnPath = ReturnAfterCharging ? ReturnRoute : []
+            });
+    }
     public string? ValidationError { get; set; }
     public Task<string?> ValidateAsync(ChargingSession session, bool requireStopped, CancellationToken ct) => Task.FromResult(ValidationError);
     public bool IsAt(string vehicleId, string siteId) => Sites.GetValueOrDefault(vehicleId) == siteId;

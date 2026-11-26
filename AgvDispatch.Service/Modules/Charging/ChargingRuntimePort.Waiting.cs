@@ -16,7 +16,7 @@ public sealed partial class ChargingRuntimePort
         var excludedIds=options.Sites.Select(site=>Node(site.ChargingSiteId)?.Id)
             .Concat(dispatch.StationPickupSites.Values.Select(site=>Node(site)?.Id))
             .Append(Node(dispatch.DumperDumpingSite??"")?.Id)
-            .Append(Node(options.DefaultStandbySiteId)?.Id)
+            .Append(options.ReturnToStandbyAfterCharging?Node(options.DefaultStandbySiteId)?.Id:null)
             .Where(id=>id is not null).Select(id=>id!).ToHashSet(StringComparer.OrdinalIgnoreCase);
         if(!ChargingWaitingSitePolicy.Allows(node,sharedRoleIds,excludedIds) || node.ResourceIds.Count!=1)return null;
         var resource=current.Definition.Resources.SingleOrDefault(item=>item.Id==node.ResourceIds[0]);

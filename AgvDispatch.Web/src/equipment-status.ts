@@ -66,7 +66,8 @@ export interface ChargingSession {
 }
 export interface ChargingStatus {
   enabled: boolean; blockReason?: string; capturedAt: string;
-  options: { startBatteryPercent: number; criticalBatteryPercent: number; targetBatteryPercent: number; sites: ChargingSite[]; stateMaxAgeSeconds?: number; allowTimedTests?: boolean };
+  options: { startBatteryPercent: number; criticalBatteryPercent: number; targetBatteryPercent: number; sites: ChargingSite[];
+    stateMaxAgeSeconds?: number; allowTimedTests?: boolean; returnToStandbyAfterCharging?: boolean; defaultStandbySiteId?: string };
   sessions: ChargingSession[];
   chargers?: ChargerTelemetrySnapshot[];
 }

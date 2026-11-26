@@ -208,6 +208,7 @@ class SimulationTests(unittest.TestCase):
         self.assertEqual(charging['startBatteryPercent'], 25)
         self.assertEqual(charging['criticalBatteryPercent'], 15)
         self.assertEqual(charging['targetBatteryPercent'], 80)
+        self.assertFalse(charging['returnToStandbyAfterCharging'])
         self.assertEqual(charging['defaultStandbySiteId'], '')
         self.assertEqual(charging['minimumAvailableVehicles'], 0)
         self.assertEqual(charging['maximumVehiclesOutOfService'], 0)
@@ -238,9 +239,11 @@ class SimulationTests(unittest.TestCase):
         next(n for n in payload['mapDefinition']['nodes'] if n['id'] == 'PARK1').update(
             type='WaitingPoint', allowTrafficStop=True)
         payload['chargingPriorityTest'].update(
-            defaultStandbySiteId='PARK1', minimumAvailableVehicles=1, maximumVehiclesOutOfService=1,
+            returnToStandbyAfterCharging=True, defaultStandbySiteId='PARK1',
+            minimumAvailableVehicles=1, maximumVehiclesOutOfService=1,
             preemptionReleaseBatteryPercent=60)
         charging = runtime._validate_configuration(payload)['chargingPriorityTest']
+        self.assertTrue(charging['returnToStandbyAfterCharging'])
         self.assertEqual(charging['defaultStandbySiteId'], 'PARK1')
         self.assertEqual(charging['minimumAvailableVehicles'], 1)
         self.assertEqual(charging['maximumVehiclesOutOfService'], 1)
@@ -311,8 +314,13 @@ class SimulationTests(unittest.TestCase):
         scenarios.append((payload, '允许车辆'))
         payload = self.charging_payload(); payload['vehicles'][0]['chargingGainPercentPerHour'] = 1001
         scenarios.append((payload, '充电增益'))
-        payload = self.charging_payload(); payload['chargingPriorityTest']['defaultStandbySiteId'] = 'CHARGE-01'
+        payload = self.charging_payload(); payload['chargingPriorityTest'].update(
+            returnToStandbyAfterCharging=True, defaultStandbySiteId='CHARGE-01')
         scenarios.append((payload, '待机点'))
+        payload = self.charging_payload(); payload['chargingPriorityTest']['returnToStandbyAfterCharging'] = True
+        scenarios.append((payload, '返程待机点'))
+        payload = self.charging_payload(); payload['chargingPriorityTest']['returnToStandbyAfterCharging'] = 'false'
+        scenarios.append((payload, '布尔'))
         payload = self.charging_payload(); payload['chargingPriorityTest']['maximumVehiclesOutOfService'] = 3
         scenarios.append((payload, '离线'))
         for payload, message in scenarios:

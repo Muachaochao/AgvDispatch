@@ -86,14 +86,21 @@ public sealed partial class ChargingRuntimePort(ChargingOptions options, IAgvSta
         if(SiteError(site) is {} siteError)return Fail(siteError);
         if(!vehicles.TryGet(vehicleId,out var v)||Node(v.CurrentStation??"") is not {} source)return Fail("车辆当前不在地图命名站点上，不能作为充电路线起点。");
         var current=map.Current!;var target=Node(site.ChargingSiteId)!;var exit=Node(site.ExitSiteId)!;
-        var selectedHome=string.IsNullOrWhiteSpace(requestedReturnSite)?returnSite?.Invoke(vehicleId):requestedReturnSite.Trim();
-        // B07-FIX C1: the return point is a dedicated standby. The vehicle's own start point is no longer the default.
-        if(string.IsNullOrWhiteSpace(selectedHome))selectedHome=options.DefaultStandbySiteId?.Trim();
-        if(string.IsNullOrWhiteSpace(selectedHome))return Fail("未配置专用充电返回待机点（Charging:DefaultStandbySiteId 或业务待机点），禁止以车辆起点或出口代替。");
-        var home=Node(selectedHome);
-        if(home is null)return Fail($"充电后返回点{selectedHome}不在运行地图上。");
-        if(options.Sites.Any(s=>Node(s.ExitSiteId)?.Id==home.Id||Node(s.ChargingSiteId)?.Id==home.Id))return Fail($"返回点{home.Id}是充电出口或充电点，须为专用待机位。");
-        if(exit.Id==source.Id||exit.Id==home.Id)return Fail($"充电出口{exit.Id}不能是车辆起点或返回待机点。");
+        var explicitReturn=requestedReturnSite?.Trim();
+        var selectedHome=!string.IsNullOrWhiteSpace(explicitReturn)
+            ? explicitReturn
+            : options.ReturnToStandbyAfterCharging
+                ? returnSite?.Invoke(vehicleId) ?? options.DefaultStandbySiteId?.Trim()
+                : null;
+        if(options.ReturnToStandbyAfterCharging&&string.IsNullOrWhiteSpace(selectedHome))
+            return Fail("已启用充电后返回待机，但业务返程点和默认待机点均为空。");
+        // A charged vehicle normally becomes dispatchable at the safe exit. A return leg is
+        // created only for an explicit request or when the commissioned site enables it.
+        var home=string.IsNullOrWhiteSpace(selectedHome)?null:Node(selectedHome);
+        if(!string.IsNullOrWhiteSpace(selectedHome)&&home is null)return Fail($"充电后返回点{selectedHome}不在运行地图上。");
+        if(home is not null&&options.Sites.Any(s=>Node(s.ExitSiteId)?.Id==home.Id||Node(s.ChargingSiteId)?.Id==home.Id))
+            return Fail($"返回点{home.Id}是充电出口或充电点，须为专用待机位。");
+        if(exit.Id==source.Id||home is not null&&exit.Id==home.Id)return Fail($"充电出口{exit.Id}不能是车辆起点或返回待机点。");
         if(OccupiedByOther(vehicleId,target))return Fail($"充电点{target.Id}被其他车辆占用。");
         // B07-FIX C10: exit and return occupancy is rechecked when each leg is acquired (AcquireExitAsync / AcquireReturnAsync).
         // No same-station empty route can stand in for a commissioned docking move.
@@ -104,19 +111,21 @@ public sealed partial class ChargingRuntimePort(ChargingOptions options, IAgvSta
         // the way back to that bay (all other vehicles, leases and the dumper clearance still apply).
         var incoming=planner.PlanChargingApproach(source.AgvSiteId!,target.AgvSiteId!,unavailable,vehicleId);
         var outgoing=planner.PlanForVehicle(target.AgvSiteId!,exit.AgvSiteId!,unavailable,vehicleId);
-        var returning=planner.PlanForVehicle(exit.AgvSiteId!,home.AgvSiteId!,unavailable,vehicleId);
+        var returning=home is null?null:planner.PlanForVehicle(exit.AgvSiteId!,home.AgvSiteId!,unavailable,vehicleId);
         if(incoming is not {Nodes.Count:>=2})return Fail($"{source.Id}→{target.Id}在当前可用路权下无路线。");
         if(outgoing is not {Nodes.Count:>=2})return Fail($"{target.Id}→出口{exit.Id}在当前可用路权下无路线。");
-        if(returning is not {Nodes.Count:>=2})return Fail($"出口{exit.Id}→返回点{home.Id}在当前可用路权下无路线。");
-        if(incoming.Nodes.Any(id=>Node(id) is null)||outgoing.Nodes.Any(id=>Node(id) is null)||returning.Nodes.Any(id=>Node(id) is null))return Fail("充电路线含未映射厂家站点的节点。");
+        if(home is not null&&returning is not {Nodes.Count:>=2})return Fail($"出口{exit.Id}→返回点{home.Id}在当前可用路权下无路线。");
+        if(incoming.Nodes.Any(id=>Node(id) is null)||outgoing.Nodes.Any(id=>Node(id) is null)||returning?.Nodes.Any(id=>Node(id) is null)==true)
+            return Fail("充电路线含未映射厂家站点的节点。");
         planFailures.TryRemove(key,out _);
+        var routeResources=incoming.ResourceIds.Concat(outgoing.ResourceIds).Append(site.ResourceId);
+        if(returning is not null)routeResources=routeResources.Concat(returning.ResourceIds);
         return new(current.MapId,current.VersionId,incoming.Nodes.Select(id=>Node(id)!.AgvSiteId!).ToArray(),outgoing.Nodes.Select(id=>Node(id)!.AgvSiteId!).ToArray(),
-            incoming.ResourceIds.Concat(outgoing.ResourceIds).Concat(returning.ResourceIds).Append(site.ResourceId)
-                .Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),incoming.Cost)
+            routeResources.Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),incoming.Cost)
         {
             OriginSiteId=source.AgvSiteId,
-            ReturnSiteId=home.AgvSiteId,
-            ReturnPath=returning.Nodes.Select(id=>Node(id)!.AgvSiteId!).ToArray(),
+            ReturnSiteId=home?.AgvSiteId,
+            ReturnPath=returning?.Nodes.Select(id=>Node(id)!.AgvSiteId!).ToArray()??[],
             // B07-FIX C5: only the inbound road and the bay are reserved up front.
             InboundResourceIds=incoming.ResourceIds.Append(site.ResourceId).Distinct(StringComparer.OrdinalIgnoreCase).ToArray()
         };
@@ -183,7 +192,7 @@ public sealed partial class ChargingRuntimePort(ChargingOptions options, IAgvSta
         var ids=(route.InboundResourceIds.Length>0?route.InboundResourceIds:route.ResourceIds)
             .Concat(ExitParkingResourceIds(session.Site)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         await resources.RecordRouteAsync(new(session.SessionId+"-LOCK",session.SessionId,session.VehicleId,route.ToCharger[0],route.ToCharger[^1],[],ids,false,
-            "充电会话独占充电位及来车道路；出口及返程道路在停充后申请。") {MapId=route.MapId,MapVersionId=route.MapVersionId,QueuePriority=ChargingQueuePriority(session)},ct);
+            "充电会话独占充电位及来车道路；出口道路在停充后申请。") {MapId=route.MapId,MapVersionId=route.MapVersionId,QueuePriority=ChargingQueuePriority(session)},ct);
         return (await resources.TryAcquireAsync(session.SessionId+"-LOCK",session.SessionId,session.VehicleId,ids,ct)).Acquired;
     }
     // B07-FIX C5: a vehicle at or below the critical battery outranks every ordinary request for the bay, and the lower battery
@@ -232,7 +241,7 @@ public sealed partial class ChargingRuntimePort(ChargingOptions options, IAgvSta
         if(!(await resources.TryAcquireAsync(stepId,session.SessionId,session.VehicleId,path.Ids,ct)).Acquired)return false;
         // The exit road beyond the return road is no longer needed once the return road is held.
         await resources.ReleaseStepExceptResourcesAsync(session.SessionId+"-EXIT",path.Ids,
-            "返程路权已取得：释放出口路线中返程不需要的部分。",ct);
+            "可选返程路权已取得：释放出口路线中返程不需要的部分。",ct);
         return true;
     }
     // B07-FIX C1: at the exit the charging bay is no longer needed and is released at once; the exit road stays leased

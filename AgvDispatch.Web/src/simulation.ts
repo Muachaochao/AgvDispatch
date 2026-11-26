@@ -237,6 +237,7 @@ export interface SimulationChargingSiteConfiguration {
 }
 export interface SimulationChargingPriorityTest {
   enabled: boolean; startBatteryPercent: number; criticalBatteryPercent: number; targetBatteryPercent: number;
+  returnToStandbyAfterCharging?: boolean;
   defaultStandbySiteId?: string; minimumAvailableVehicles?: number; maximumVehiclesOutOfService?: number;
   preemptionReleaseBatteryPercent?: number;
   energyForecast?: 'Observe' | 'Enforce';

@@ -151,7 +151,7 @@ onMounted(() => {
         <el-tag effect="plain" type="success">≥{{status.options.targetBatteryPercent}}% 结束充电</el-tag>
       </div>
       <el-alert v-if="status.blockReason" class="charge-notice" type="warning" :closable="false" show-icon :title="status.blockReason" />
-      <p class="charge-explanation">当前箱体循环与设备握手安全结束后，车辆才交给充电调度。充电排队及运行期间不接新业务；确认停止充电、退桩并完成返程后恢复接单，异常时保留原会话和占用。</p>
+      <p class="charge-explanation">当前箱体循环与设备握手安全结束后，车辆才交给充电调度。充电排队及运行期间不接新业务；确认停充并安全驶离充电位后立即释放充电资源并恢复接单。只有工程显式启用“充电后返回待机”时才执行返程。</p>
       <div class="charge-section charge-request"><h3>申请充电</h3>
         <form class="charge-request-form" @submit.prevent="requestCharge()">
           <label>车辆<input v-model="requestVehicle" list="charging-vehicles" maxlength="128" placeholder="选择或输入车辆编号" :disabled="requestLocked" required></label>
@@ -182,7 +182,7 @@ onMounted(() => {
           <tr v-for="row in [...status.sessions].reverse()" :key="row.sessionId">
             <td><strong>{{row.vehicleId}}</strong><small>{{row.site?.id ?? row.waitingRoute?.path.at(-1) ?? '等待分配'}}</small></td>
             <td><span :class="{ 'charge-error': row.phase === 'Hold' }">{{phaseLabel(row.phase)}}</span><details><summary>原始阶段</summary><code>{{row.phase}}</code></details><small>{{when(row.updatedAt)}}</small></td>
-            <td>{{target(row)}}<small>起点：{{row.originSiteId ?? '待交接后确定'}}</small><small>返程：{{row.returnSiteId ?? row.requestedReturnSiteId ?? '待规划'}}</small></td>
+            <td>{{target(row)}}<small>起点：{{row.originSiteId ?? '待交接后确定'}}</small><small>返程：{{row.returnSiteId ?? row.requestedReturnSiteId ?? '无返程（出口直接接单）'}}</small></td>
             <td>{{row.battery?.batteryPercent ?? '—'}}%<small>{{row.battery?.current ?? '—'}} A · {{row.battery?.temperature ?? '—'}} ℃</small></td>
             <td class="charge-reason">{{industrialText(row.message)}}
               <template v-if="matchingChargingWorkflow(row)"><small>{{matchingChargingWorkflow(row)?.message}}</small><small>本段连续充电：{{positiveSeconds(row)}} · 停充核验：{{row.shutdownVerified || matchingChargingWorkflow(row)?.shutdownVerified ? '已确认' : '尚未确认'}}</small></template>
