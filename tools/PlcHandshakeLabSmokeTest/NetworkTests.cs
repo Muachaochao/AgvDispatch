@@ -119,7 +119,7 @@ internal static class NetworkTests
                 await malformed.GetStream().WriteAsync(packet); await Task.Delay(50);
                 Check(Value("CNC-001", 3), "畸形额外数据不能产生部分写入");
             }
-            var code = Environment.GetEnvironmentVariable("HSL_AUTHORIZATION_CODE") ?? Environment.GetEnvironmentVariable("HSL_AUTHORIZATION_CODE", EnvironmentVariableTarget.User);
+            var code = Environment.GetEnvironmentVariable("HSL_AUTHORIZATION_CODE") ?? Environment.GetEnvironmentVariable("HSL_AUTHORIZATION_CODE", EnvironmentVariableTarget.Machine);
             if (string.IsNullOrWhiteSpace(code) || !HslCommunication.Authorization.SetAuthorizationCode(code)) throw new InvalidOperationException("缺少有效本地HSL授权，正式驱动兼容验证未完成。");
             using (var hsl = new SiemensS7Net(SiemensPLCS.S1200, "127.0.0.1") { Port = server.Port, ConnectTimeOut = 3000, ReceiveTimeOut = 3000 })
             {

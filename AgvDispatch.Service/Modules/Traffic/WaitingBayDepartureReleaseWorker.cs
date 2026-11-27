@@ -131,8 +131,8 @@ public sealed class WaitingBayDepartureReleaseWorker(
 
     private bool Fresh(AgvRobotSnapshot vehicle) =>
         vehicle.LastSuccessfulPollAt is { } at &&
-        at <= (clock ?? TimeProvider.System).GetUtcNow().AddSeconds(1) &&
-        (clock ?? TimeProvider.System).GetUtcNow() - at <= TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds);
+        at <= (clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider).GetUtcNow().AddSeconds(1) &&
+        (clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider).GetUtcNow() - at <= TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds);
 
     private static MapNode? Resolve(MapDefinition definition, string site) =>
         definition.Nodes.Where(node => node.Enabled &&

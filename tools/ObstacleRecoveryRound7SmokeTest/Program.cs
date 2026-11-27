@@ -38,6 +38,8 @@ try
     await UncertainSendIsNotResentAsync(directory);
     await BoundCycleClosesAndReopensAsync(directory);
     await ClearedOriginalRouteResumesAsync(directory);
+    await ReportedRoadIsExcludedAsync(directory);
+    await CancellationClearDoesNotReopenBlockedRoadAsync(directory);
     Console.WriteLine($"PASS: {checks} round-7 obstacle recovery checks; isolated database and synthetic gateway only.");
 }
 finally
@@ -328,6 +330,82 @@ async Task BoundCycleClosesAndReopensAsync(string root)
 // O13: once the original chain is terminal and the vehicle is no longer blocked, the
 // original remaining route may be sent again. Before, the inferred blocked edge kept
 // it excluded forever, so the task froze with no route.
+async Task ReportedRoadIsExcludedAsync(string root)
+{
+    var start = new DateTimeOffset(2026, 11, 7, 2, 0, 0, TimeSpan.Zero);
+    var graph = ObstacleHarnessFactory.StationGraph(true);
+    var definition = graph with
+    {
+        Nodes = [.. graph.Nodes, new("Q", -1, 1, MapNodeType.Waypoint, true, [], "Q")],
+        Edges = [.. graph.Edges, new("E-SQ", "S", "Q", 2, 2, false, true, []),
+            new("E-QX", "Q", "BUS-X", 2, 2, false, true, [])]
+    };
+    var harness = await ObstacleHarnessFactory.BuildAsync(root, "r8-road", definition,
+        start, "TASK-R8-ROAD", "STEP-R8-ROAD");
+
+    for (var second = 0; second <= 155 && harness.Gateway.RecoverySendCalls == 0; second++)
+    {
+        harness.Clock.SetTo(start.AddSeconds(second));
+        var cancelled = harness.Gateway.CancelCalls != 0;
+        harness.States.ApplyTelemetry("A", ObstacleHarnessFactory.Telemetry(harness.Clock.GetUtcNow(), !cancelled) with
+        {
+            SourceStation = cancelled ? null : "S",
+            TargetStation = cancelled ? null : "D"
+        }, TimeSpan.Zero);
+        await harness.Coordinator.ObserveOnceAsync(default);
+    }
+
+    Check(harness.Gateway.CancelCalls == 1 && harness.Gateway.RecoverySendCalls == 1 &&
+          harness.Gateway.SentPath.SequenceEqual(["S", "Q", "X"]),
+        "实际受阻边 S→D 和原路径推断边 S→H 均不出现在取消后的替代导航");
+}
+
+async Task CancellationClearDoesNotReopenBlockedRoadAsync(string root)
+{
+    var start = new DateTimeOffset(2026, 11, 7, 2, 0, 0, TimeSpan.Zero);
+    var definition = ObstacleHarnessFactory.StationGraph(false);
+    var harness = await ObstacleHarnessFactory.BuildAsync(root, "r8-clear", definition,
+        start, "TASK-R8-CLEAR", "STEP-R8-CLEAR");
+    var now = start.UtcDateTime;
+    await harness.Db.Insertable(new ObstacleRecoveryEntity
+    {
+        RecoveryId = Guid.NewGuid().ToString("N"),
+        TaskId = "TASK-R8-CLEAR",
+        StepId = "STEP-R8-CLEAR",
+        VehicleId = "A",
+        OriginalVendorTaskId = "STEP-R8-CLEAR",
+        State = ObstacleRecoveryStates.AwaitingOriginalTerminal,
+        Message = "synthetic earlier cancellation",
+        NextAction = "synthetic",
+        BlockedSinceUtc = now.AddSeconds(-150),
+        OriginalPathJson = """["S","H","X"]""",
+        CandidatePathJson = "[]",
+        BlockedEdgeIdsJson = """["E-SH"]""",
+        MapId = "MAP-O",
+        MapVersionId = "V1",
+        DefinitionHash = EngineeringRuntimeIdentity.MapHash(definition),
+        CancelRequestedAtUtc = now.AddSeconds(-5),
+        CancelAttemptedAtUtc = now.AddSeconds(-5),
+        CancelAcknowledgedAtUtc = now.AddSeconds(-4),
+        OriginalTerminalAtUtc = now,
+        Revision = 1,
+        CreatedAt = now,
+        UpdatedAt = now
+    }).ExecuteCommandAsync();
+
+    for (var second = 1; second <= 30; second++)
+    {
+        harness.Clock.SetTo(start.AddSeconds(second));
+        harness.States.ApplyTelemetry("A", ObstacleHarnessFactory.Telemetry(harness.Clock.GetUtcNow(), false), TimeSpan.Zero);
+        await harness.Coordinator.ObserveOnceAsync(default);
+    }
+
+    var row = RecoveryRow(harness.Db, "TASK-R8-CLEAR");
+    Check(harness.Gateway.RecoverySendCalls == 0 &&
+          ObstacleHarnessFactory.Decode(row.BlockedEdgeIdsJson).Contains("E-SH"),
+        "取消完成后仅收到空闲清零，不作为原受阻边已清除的证据");
+}
+
 async Task ClearedOriginalRouteResumesAsync(string root)
 {
     var start = new DateTimeOffset(2026, 11, 7, 2, 0, 0, TimeSpan.Zero);

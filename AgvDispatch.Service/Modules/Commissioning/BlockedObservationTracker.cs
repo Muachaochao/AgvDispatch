@@ -9,7 +9,7 @@ public sealed class BlockedObservationTracker(TimeSpan holdAfter, TimeProvider? 
 {
     private readonly object sync = new();
     private readonly Dictionary<string, DateTimeOffset> since = new(StringComparer.OrdinalIgnoreCase);
-    private readonly TimeProvider time = clock ?? TimeProvider.System;
+    private readonly TimeProvider time = clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider;
 
     public bool Observe(string vehicleId, bool blocked, bool moving, DateTimeOffset? observedAt = null)
     {

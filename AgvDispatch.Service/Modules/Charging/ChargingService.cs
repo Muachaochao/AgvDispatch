@@ -27,7 +27,7 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
         string path, ILogger<ChargingService> logger, TimeProvider? clock = null, IChargingWorkflow? workflow = null,
         IChargerTelemetryMonitor? chargerMonitor = null)
     {
-        this.options=options; this.port=port; this.robot=robot; this.logger=logger; this.clock=clock??TimeProvider.System;
+        this.options=options; this.port=port; this.robot=robot; this.logger=logger; this.clock=clock??AgvDispatch.Application.Runtime.BusinessClock.Provider;
         this.workflow=workflow; this.chargerMonitor=chargerMonitor;
         if(options.ConfigurationError() is {} error) throw new InvalidOperationException(error);
         store=new(path);

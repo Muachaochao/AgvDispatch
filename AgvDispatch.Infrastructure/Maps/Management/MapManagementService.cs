@@ -414,6 +414,29 @@ public sealed class MapManagementService(
             return new(false,
                 $"地图存在未绑定Robokit站点ID的运行站点，不能发布：{string.Join(',', unmappedStations.Take(10))}。");
         }
+        // R3: publishing is the last point where an unreachable operational
+        // node can be caught without stopping a running vehicle. Check the
+        // complete directed station/waiting/charging matrix, not just that each
+        // edge is individually valid.
+        var preflight = MapDeploymentPreflightAnalyzer.Analyze(definition, 50, cancellationToken);
+        if (!preflight.Ready)
+        {
+            var samples = preflight.Entries
+                .Where(entry => !entry.Reachable)
+                .Take(5)
+                .Select(entry => $"{entry.Source}→{entry.Destination}：{entry.Message}")
+                .ToArray();
+            var reasons = new List<string>();
+            if (preflight.UnreachablePairCount > 0)
+                reasons.Add($"有{preflight.UnreachablePairCount}个有向站点对不可达");
+            if (preflight.MissingAgvSiteNodeIds.Count > 0)
+                reasons.Add($"站点未绑定Robokit ID：{string.Join(',', preflight.MissingAgvSiteNodeIds.Take(10))}");
+            if (preflight.DuplicateAgvSiteIds.Count > 0)
+                reasons.Add($"Robokit站点重复绑定：{string.Join(',', preflight.DuplicateAgvSiteIds.Take(10))}");
+            return new(false,
+                $"地图发布前有向路径预检未通过：{string.Join("；", reasons)}。" +
+                (samples.Length == 0 ? string.Empty : " 示例：" + string.Join("；", samples)));
+        }
 
         var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
         var nextVersionId = $"MAPV-{Guid.NewGuid():N}";

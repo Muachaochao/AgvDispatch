@@ -39,8 +39,11 @@ public sealed partial class DispatchTaskOrchestrator
         {
             // Shadow is invoked by the legacy cycle with its original lease held.
             using var chargingLease = global && charging is not null ? await charging.EnterBusinessAsync(ct) : null;
-            using var execution = global ? await executionGate.EnterAsync(MapExecutionOperation.NewWork, ct) : null;
-            if (global && (execution is null || !ReferenceEquals(policy, optimization?.Options))) return;
+            // Planning reads the map and vehicle status but does not claim work. A
+            // shared execution lease keeps the map stable without blocking other
+            // vehicles behind candidate/status queries.
+            using var planning = global ? await executionGate.EnterAsync(MapExecutionOperation.ExistingWork, ct) : null;
+            if (global && (planning is null || !ReferenceEquals(policy, optimization?.Options))) return;
             map = activeMap.Current;
             if (global && options.EngineeringMapError(map) is not null) return;
             optimization?.ReportLayer("queue", "Running", "读取持久化呼叫，固定既有任务和路权，按优先级与呼叫时间选择窗口。");
@@ -244,6 +247,12 @@ public sealed partial class DispatchTaskOrchestrator
             MapRouteSiteMapper.IsSameNode(map?.Definition, planned.Nodes[^1], options.GetPickupSite(task.StationId)) &&
             waitingSites.SequenceEqual(options.GetDumperWaitingSites(), StringComparer.Ordinal);
 
+        // D2: vendor vehicle status is network I/O. Read it before taking the
+        // exclusive new-work lease; the outbox revalidates the same vehicle at
+        // the physical send boundary anyway.
+        var currentVehicles = await agvGateway.GetVehiclesAsync(ct);
+        var current = currentVehicles.SingleOrDefault(v => v.VehicleId == vehicle.VehicleId);
+        if (current is null) return Reject("safety", "车辆状态已丢失。");
         using var chargingLease = charging is null ? null : await charging.EnterBusinessAsync(ct);
         using var execution = await executionGate.EnterAsync(MapExecutionOperation.NewWork, ct);
         if (execution is null || !ContextCurrent())
@@ -262,14 +271,12 @@ public sealed partial class DispatchTaskOrchestrator
                 { MapId=map?.MapId, MapVersionId=map?.VersionId }, ct);
             return Reject("traffic", admissionState.Reason);
         }
-        var currentVehicles = await agvGateway.GetVehiclesAsync(ct);
-        var current = currentVehicles.SingleOrDefault(v => v.VehicleId == vehicle.VehicleId);
         var active = (await tasks.GetSubmittingTasksAsync(ct)).Concat(await tasks.GetAssignedTasksAsync(ct)).ToArray();
         if (active.Length >= options.MaxConcurrentTasks) return Reject("traffic", "车队并发槽位已用完。");
         var busy = active
             .Where(t => t.VehicleId is not null).Select(t => t.VehicleId!).ToHashSet(StringComparer.OrdinalIgnoreCase);
         busy.UnionWith(await trafficResources.GetHeldVehicleIdsAsync(ct));
-        var exclusion = current is null ? "车辆状态已丢失。" : VehicleExclusion(current, busy, policy);
+        var exclusion = VehicleExclusion(current, busy, policy);
         if (exclusion is not null) return Reject("safety", exclusion);
         if (!MapRouteSiteMapper.IsSameNode(map?.Definition, current!.CurrentStation, vehicle.CurrentStation))
             return Reject("safety", "车辆起点已变化，留待下一周期重新规划。");

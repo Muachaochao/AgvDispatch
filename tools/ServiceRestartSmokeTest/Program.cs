@@ -43,14 +43,55 @@ internal static class Program
             var relative=Path.GetRelativePath(source,file);if(relative.StartsWith("data"+Path.DirectorySeparatorChar)||relative.StartsWith("logs"+Path.DirectorySeparatorChar))continue;
             var target=Path.Combine(deploy,relative);Directory.CreateDirectory(Path.GetDirectoryName(target)!);File.Copy(file,target);
         }
+        Directory.CreateDirectory(Path.Combine(deploy,"config"));
+        File.Copy(Path.Combine("AgvDispatch.Service","config","plc-lab-signals.csv"),
+            Path.Combine(deploy,"config","plc-lab-signals.csv"), true);
         var pipe="AgvRestart-"+Guid.NewGuid().ToString("N");var dbPath=Path.Combine(root,"test.db");
         var config=new
         {
-            Database=new{Path=dbPath},Security=new{PipeName=pipe},
-            Plc=new{Enabled=false,AllowWrites=false,SignalCsvPath="config/plc-signals.csv"},
-            Agv=new{Enabled=false,AllowCommands=false,Robots=Array.Empty<object>()},Map=new{Enabled=false},
+            Database=new{Path=dbPath},Security=new
+            {
+                PipeName=pipe,
+                Users=new[]
+                {
+                    new
+                    {
+                        WindowsIdentity=$"{Environment.UserDomainName}\\{Environment.UserName}",
+                        DisplayName="restart smoke test",
+                        Role="Administrator"
+                    }
+                }
+            },
+            Plc=new{Enabled=false,AllowWrites=false,SignalCsvPath="config/plc-lab-signals.csv"},
+            Agv=new
+            {
+                Enabled=false,
+                AllowCommands=false,
+                Robots=new[]
+                {
+                    new
+                    {
+                        Enabled=true,
+                        VehicleId="SIM-CNC-RUN",
+                        IpAddress="127.0.0.1",
+                        Port=19204,
+                        NavigationPort=19206
+                    }
+                }
+            },
+            Map=new{Enabled=false},
             TaskCreation=new{Enabled=true,DumperStationId="DUMPER-SIM"},
-            Dispatching=new{Enabled=true,DumperWaitingSite="WAIT",DumperDumpingSite="DUMP"},
+            Dispatching=new
+            {
+                Enabled=true,
+                DumperWaitingSite="WAIT",
+                DumperDumpingSite="DUMP",
+                StationPickupSites=new Dictionary<string,string>
+                {
+                    ["CNC-RUN"]="HOME",
+                    ["CNC-SEND"]="HOME"
+                }
+            },
             AgvCommandOutbox=new{Enabled=true},DispatchTaskSteps=new{Enabled=true},
             ExecutionIdentityAcquisition=new{Enabled=false},RecoveryIdentity=new{RequireMachineIdentity=false}
         };

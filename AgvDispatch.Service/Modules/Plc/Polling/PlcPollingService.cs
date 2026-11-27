@@ -14,7 +14,10 @@ public sealed class PlcPollingService(
     PlcConnectionSupervisor connectionSupervisor,
     IReadOnlySet<string>? stationIds = null, TimeProvider? clock = null) : IsolatedBackgroundService
 {
-    private readonly TimeProvider _clock = clock ?? TimeProvider.System;
+    private readonly TimeProvider _clock = clock ?? BusinessClock.Provider;
+    private DateTimeOffset? _heartbeatChangedAt;
+    private bool? _heartbeatValue;
+    private bool _heartbeatStale;
     public Task RunAsync(CancellationToken token) => ExecuteAsync(token);
     private void MarkSignals(SignalQuality quality, string? message) =>
         signalCache.MarkEnabledSignals(quality, message, stationIds);
@@ -58,16 +61,42 @@ public sealed class PlcPollingService(
                 stopwatch.Stop();
 
                 var wasOnline = connectionSupervisor.Current.State == ConnectionState.Online;
-                signalCache.ApplyReadings(readings);
+                var heartbeatFresh = CheckHeartbeat(readings, out var heartbeatError);
+                if (heartbeatFresh)
+                {
+                    signalCache.ApplyReadings(readings);
+                }
+                else
+                {
+                    MarkSignals(SignalQuality.Stale, heartbeatError);
+                }
                 connectionSupervisor.ReportSuccess(stopwatch.Elapsed);
 
                 if (!wasOnline)
                 {
+                    _heartbeatChangedAt = null;
+                    _heartbeatValue = null;
+                    _heartbeatStale = false;
                     logger.LogInformation(
                         "PLC采集恢复正常。DeviceId={DeviceId}，读取点位={ReadingCount}，耗时={ElapsedMs:F1}ms",
                         options.DeviceId,
                         readings.Count,
                         stopwatch.Elapsed.TotalMilliseconds);
+                }
+                if (!heartbeatFresh && !_heartbeatStale)
+                {
+                    _heartbeatStale = true;
+                    logger.LogWarning(
+                        "PLC心跳停滞，数据按过期处理。DeviceId={DeviceId}，点位={Station}/{Variable}，超时={TimeoutMs}ms，原因={Reason}",
+                        options.DeviceId, options.HeartbeatStationId, options.HeartbeatVariableName,
+                        options.HeartbeatTimeoutMs, heartbeatError);
+                }
+                else if (heartbeatFresh && _heartbeatStale)
+                {
+                    _heartbeatStale = false;
+                    logger.LogInformation(
+                        "PLC心跳恢复。DeviceId={DeviceId}，点位={Station}/{Variable}",
+                        options.DeviceId, options.HeartbeatStationId, options.HeartbeatVariableName);
                 }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -134,5 +163,38 @@ public sealed class PlcPollingService(
         {
             MarkSignals(SignalQuality.Stale, errorMessage);
         }
+    }
+
+    private bool CheckHeartbeat(IReadOnlyList<PlcSignalReading> readings, out string? error)
+    {
+        error = null;
+        if (options.HeartbeatTimeoutMs <= 0) return true;
+
+        var reading = readings.FirstOrDefault(item =>
+            string.Equals(item.StationId, options.HeartbeatStationId, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(item.VariableName, options.HeartbeatVariableName, StringComparison.OrdinalIgnoreCase));
+        if (reading is null)
+        {
+            error =
+                $"PLC心跳点位{options.HeartbeatStationId}/{options.HeartbeatVariableName}未在本次采集返回，数据按过期处理。";
+            return false;
+        }
+
+        var observedAt = reading.ReadAt.ToUniversalTime();
+        if (_heartbeatValue != reading.Value)
+        {
+            _heartbeatValue = reading.Value;
+            _heartbeatChangedAt = observedAt;
+            return true;
+        }
+
+        _heartbeatChangedAt ??= observedAt;
+        var age = _clock.GetUtcNow() - _heartbeatChangedAt.Value;
+        if (age <= TimeSpan.FromMilliseconds(options.HeartbeatTimeoutMs)) return true;
+
+        error =
+            $"PLC心跳点位{options.HeartbeatStationId}/{options.HeartbeatVariableName}已{age.TotalMilliseconds:F0}毫秒未变化，" +
+            $"超过{options.HeartbeatTimeoutMs}毫秒阈值；TCP仍连通但PLC程序数据不再新鲜。";
+        return false;
     }
 }

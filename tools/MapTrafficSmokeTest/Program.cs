@@ -90,6 +90,37 @@ Require(graph.FindShortestRoute("D", "A")?.Nodes.SequenceEqual(new[] { "D", "X",
     "双向路段反向规划失败。");
 Require(graph.FindShortestRoute("U", "V") is not null && graph.FindShortestRoute("V", "U") is null,
     "单向路段不应允许反向穿越。");
+var guardedDefinition = new MapDefinition(
+    "node guards", "", "LocalCartesian", "m",
+    [
+        new MapNode("A", 0, 0, MapNodeType.Station, true, [], "LM-A"),
+        new MapNode("X", 1, 0, MapNodeType.Intersection, true, [], "LM-X"),
+        new MapNode("B", 2, 0, MapNodeType.Station, true, [], "LM-B"),
+        new MapNode("Y", 0, 1, MapNodeType.Waypoint, true, [], "LM-Y")
+    ],
+    [
+        new MapEdge("AX", "A", "X", 1, 1, false, true, []),
+        new MapEdge("XB", "X", "B", 1, 1, false, true, []),
+        new MapEdge("XY", "X", "Y", 1, 1, false, true, []),
+        new MapEdge("YA", "Y", "A", 1, 1, false, true, [])
+    ],
+    []);
+var guardedTopology = MapCorridorResources.Enrich(guardedDefinition);
+var stationGuard = guardedTopology.Resources.Single(resource =>
+    resource.Type == TrafficResourceType.Station &&
+    guardedTopology.Edges.Where(edge => edge.Id is "AX" or "YA")
+        .All(edge => edge.ResourceIds.Contains(resource.Id, StringComparer.OrdinalIgnoreCase)));
+var intersectionGuard = guardedTopology.Resources.Single(resource =>
+    resource.Type == TrafficResourceType.Intersection &&
+    guardedTopology.Edges.Where(edge => edge.Id is "AX" or "XB" or "XY")
+        .All(edge => edge.ResourceIds.Contains(resource.Id, StringComparer.OrdinalIgnoreCase)));
+Require(guardedTopology.Edges.Single(edge => edge.Id == "AX").ResourceIds.Count(id =>
+        MapCorridorResources.IsAutomatic(id)) == 2,
+    "R3车站与路口应各自生成可释放的自动守卫，且都绑定到进站路段。");
+Require(stationGuard.Id != intersectionGuard.Id &&
+        MapCorridorResources.IsAutomatic(stationGuard.Id) &&
+        MapCorridorResources.IsAutomatic(intersectionGuard.Id),
+    "R3自动守卫必须按车站和路口分别编号，不能相互替代。");
 var mappedDefinition = new MapDefinition(
     "Mapped", "test", "LocalCartesian", "m",
     [
@@ -504,6 +535,41 @@ try
         CancellationToken.None);
     Require(secondMap.Accepted && (await mapManager.GetMapsAsync(mapViewer, CancellationToken.None)).Count == 2,
         "地图模块必须支持多个独立地图项目。");
+    var preflightDefinition = new MapDefinition(
+        "preflight", "", "LocalCartesian", "m",
+        [
+            new MapNode("PA", 0, 0, MapNodeType.Station, true, [], "LM-PA"),
+            new MapNode("PB", 1, 0, MapNodeType.Station, true, [], "LM-PB"),
+            new MapNode("PC", 2, 0, MapNodeType.Station, true, [], "LM-PC")
+        ],
+        [
+            new MapEdge("PA-PB", "PA", "PB", 1, 1, true, true, []),
+            new MapEdge("PB-PC", "PB", "PC", 1, 1, false, true, [])
+        ],
+        []);
+    var preflightSaved = await mapManager.SaveDraftAsync(
+        mapEditor,
+        new SaveMapDraftRequest(
+            secondMap.Workspace!.Project.MapId,
+            secondMap.Workspace.Draft.VersionId,
+            secondMap.Workspace.Project.Name,
+            secondMap.Workspace.Project.Description,
+            secondMap.Workspace.Project.BackgroundFilePath,
+            "LocalCartesian",
+            "m",
+            1,
+            preflightDefinition,
+            secondMap.Workspace.Draft.EditToken),
+        CancellationToken.None);
+    Require(preflightSaved.Accepted && !preflightSaved.Workspace!.Draft.Validation.IsValid &&
+        !MapDeploymentPreflightAnalyzer.Analyze(preflightDefinition).Ready,
+        "R3有向不可达地图草稿可保存但必须同时被校验和发布预检识别。");
+    var preflightPublish = await mapManager.PublishAsync(
+        mapEditor,
+        new PublishMapRequest(preflightSaved.Workspace.Project.MapId, preflightSaved.Workspace.Draft.VersionId),
+        CancellationToken.None);
+    Require(!preflightPublish.Accepted && preflightPublish.Message.Contains("不能发布"),
+        "R3存在不可达运行站点时，地图发布必须被阻断。");
 
     var manager = new TrafficResourceManager(
         database,

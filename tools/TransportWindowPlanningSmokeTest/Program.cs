@@ -248,6 +248,13 @@ Check(staging.TryStage(stagingRoute, Activate(stagingMap with
     blockedDownstream, ["V"]) is null, "双向共用路段不能成为提前发车的等待落脚点。");
 Check(staging.TryStage(stagingRoute, activeStaging, blockedDownstream, ["V", "UNKNOWN"]) is null,
     "车队缺少核定车体时不得使用提前派车模式。");
+var cappedStaging = new GlobalPickupRoutePlanner(new DispatchTaskStepOptions { RollingWindowHardMaximumEdges = 2 },
+    new AgvOptions { NavigationCommandMode = "SpecifiedPath" }, handshake);
+var unsafeStaging = Activate(stagingMap with
+    { Edges = [stagingEdges[0], stagingEdges[1], stagingEdges[2] with { Bidirectional = true }] });
+Check(cappedStaging.TryStage(stagingRoute, unsafeStaging, blockedDownstream, ["V"]) is null &&
+      cappedStaging.TryStage(stagingRoute, activeStaging, blockedDownstream, ["V"])?.Windows[0].Destination == "BAY",
+    "跳过窗口超限的候选路线后，仍可选用同批合规候选。");
 Check(staging.TryStage(stagingRoute, Activate(stagingMap with
     {
         Nodes = [..stagingNodes, new("CROSS1", 6.1, -2, MapNodeType.Waypoint, true, []),

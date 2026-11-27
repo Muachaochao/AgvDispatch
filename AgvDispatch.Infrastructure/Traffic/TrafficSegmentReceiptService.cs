@@ -12,7 +12,7 @@ public sealed partial class TrafficSegmentReceiptService(ISqlSugarClient databas
 {
     private readonly string sessionId=Guid.NewGuid().ToString("N");
     private readonly ConcurrentDictionary<string,Pending> pending=[];
-    private DateTimeOffset Now=>(clock??TimeProvider.System).GetUtcNow();
+    private DateTimeOffset Now=>(clock??AgvDispatch.Application.Runtime.BusinessClock.Provider).GetUtcNow();
     private static TrafficSegmentReceiptView Refuse(string reason)=>new(null,TrafficSegmentReceiptState.Unavailable,reason,null,0);
 
     public async Task<TrafficSegmentReceiptView> IssueAsync(string stepId,CancellationToken ct)

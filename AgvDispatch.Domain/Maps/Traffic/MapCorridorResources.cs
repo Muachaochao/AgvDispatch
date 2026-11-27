@@ -103,14 +103,16 @@ public static class MapCorridorResources
             }
         }
 
-        // A pair of one-way edges can meet at a shared Waypoint without having
+        // A pair of one-way edges can meet at a shared node without having
         // identical geometry (for example V13 LM22->LM25 and LM24->LM25).
         // Per-route corridor hashes then differ and both vehicles enter the same
         // merge from opposite sides. Add one runtime-only capacity-one guard to
-        // every incident edge of non-station Waypoints so the merge is serialized
-        // by the formal traffic lease before any vehicle command is sent.
+        // every incident edge of Waypoints, Intersections and Stations so the
+        // junction or work position is serialized by the formal traffic lease
+        // before any vehicle command is sent.
         foreach (var node in nodeMap.Values.Where(node =>
-                     node.Enabled && node.Type == MapNodeType.Waypoint))
+                     node.Enabled && node.Type is
+                         MapNodeType.Waypoint or MapNodeType.Intersection or MapNodeType.Station))
         {
             var incident = edgeArray.Where(edge => edge.Enabled &&
                 (edge.From.Equals(node.Id, StringComparison.OrdinalIgnoreCase) ||
@@ -118,17 +120,26 @@ public static class MapCorridorResources
             if (incident.Length < 2)
                 continue;
             // A map author may already bind one capacity-one resource to every
-            // incident edge. That resource serializes this exact junction and
-            // usually has a compact node boundary, so adding the wider automatic
-            // guard would duplicate the gate and keep it leased at nearby safe
-            // points. Reuse the authored guard only when it is independently
-            // releasable from geometry.
+            // incident edge. That resource already serializes this exact
+            // junction, so adding the wider automatic guard would duplicate the
+            // gate and keep it leased at nearby safe points.
             if (HasSharedReleasableJunctionResource(incident, resourceArray))
+                continue;
+            // The corridor pass above may already have installed one exact
+            // guard on every incident edge. Do not stack a second gate on the
+            // same junction, which would keep an extra lease alive at nearby
+            // safe points.
+            if (HasSharedAutomaticJunctionGuard(incident, additions))
                 continue;
             var resourceId = CreateResourceId("NODE|" + CoordinateKey(node), usedIds);
             automaticResources.Add(new TrafficResourceDefinition(
                 resourceId,
-                TrafficResourceType.SingleLane,
+                node.Type switch
+                {
+                    MapNodeType.Intersection => TrafficResourceType.Intersection,
+                    MapNodeType.Station => TrafficResourceType.Station,
+                    _ => TrafficResourceType.SingleLane
+                },
                 1,
                 Boundary(incident, nodeMap))
             {
@@ -163,14 +174,24 @@ public static class MapCorridorResources
             shared.IntersectWith(edge.ResourceIds);
         return resources.Any(resource =>
             shared.Contains(resource.Id) &&
-            resource.Capacity == 1 &&
-            ValidBoundary(resource.Boundary));
+            resource.Capacity == 1);
     }
 
-    private static bool ValidBoundary(IReadOnlyList<MapPoint2D>? boundary) =>
-        boundary is { Count: >= 3 } &&
-        boundary.All(point => point is not null &&
-            double.IsFinite(point.X) && double.IsFinite(point.Y));
+    private static bool HasSharedAutomaticJunctionGuard(
+        IReadOnlyList<MapEdge> incident,
+        IReadOnlyDictionary<string, List<string>> additions)
+    {
+        if (!additions.TryGetValue(incident[0].Id, out var first) || first.Count == 0)
+            return false;
+        var shared = first.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var edge in incident.Skip(1))
+        {
+            if (!additions.TryGetValue(edge.Id, out var ids)) return false;
+            shared.IntersectWith(ids);
+            if (shared.Count == 0) return false;
+        }
+        return shared.Count > 0;
+    }
 
     private static string GeometryKey(MapEdge edge, IReadOnlyDictionary<string, MapNode> nodes)
     {

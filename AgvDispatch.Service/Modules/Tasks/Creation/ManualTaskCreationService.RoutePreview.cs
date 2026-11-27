@@ -37,7 +37,7 @@ public sealed partial class ManualTaskCreationService
         static bool Valid(string? value,int max)=>!string.IsNullOrWhiteSpace(value)&&value.Length<=max;
         if(!Valid(request.StationId,32)||!Valid(request.VehicleId,32)||!Valid(request.MapId,64)||!Valid(request.MapVersionId,64)||!Valid(request.ParameterRevision,128))return Result(false,"工位、车辆、地图版本或参数修订无效。");
         ManualTaskCreationOptions options;ActiveMapRuntimeSnapshot? map;
-        using(await gate.EnterControlAsync(token)){map=activeMap.Current;options=await GetOptionsCoreAsync(token);}
+        map=activeMap.Current;options=await GetOptionsCoreAsync(token);
         if(map is null||map.MapId!=request.MapId||map.VersionId!=request.MapVersionId||parameters.Revision!=request.ParameterRevision)return Result(false,"运行地图或任务参数已变化，请刷新创建选项。");
         var station=options.Stations.FirstOrDefault(s=>s.StationId==request.StationId);var vehicle=options.Vehicles.FirstOrDefault(v=>v.VehicleId==request.VehicleId);
         if(station is null||vehicle is null)return Result(false,"所选工位或车辆不属于当前后台配置。");
@@ -67,7 +67,7 @@ public sealed partial class ManualTaskCreationService
         var check=await robokitMap.CheckAsync(request.VehicleId,current,station.PickupSite,options.WaitingSite,options.DumpingSite,map.MapId,map.VersionId,token);
         token.ThrowIfCancellationRequested();
         ManualTaskCreationOptions latest;
-        using(await gate.EnterControlAsync(token)){latest=await GetOptionsCoreAsync(token);}
+        latest=await GetOptionsCoreAsync(token);
         var latestVehicle=latest.Vehicles.FirstOrDefault(v=>v.VehicleId==request.VehicleId);var latestStation=latest.Stations.FirstOrDefault(s=>s.StationId==request.StationId);
         if(!ReferenceEquals(map,activeMap.Current)||parameters.Revision!=request.ParameterRevision||!gate.CanStartNewWork||!latest.Available||latestStation is not {Available:true,ConfigurationValid:true}||latestVehicle is not {Available:true}||!MapRouteSiteMapper.IsSameNode(map.Definition,latestVehicle.CurrentSite,current))
         {

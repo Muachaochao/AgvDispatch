@@ -25,7 +25,9 @@ var definition = new MapDefinition("repeat-test", "", "LocalCartesian", "m", nod
 var graph = definition.ToGraph();
 var cycle = graph.FindShortestTransportRoute("PICK", "PICK")!;
 Check(cycle.Nodes.SequenceEqual(new[] { "PICK", "EXIT", "PICK" }) && cycle.EdgeIds.SequenceEqual(new[] { "PX", "PX" }) && cycle.Cost == 4, "same-station transport uses real exit and reverse edges, with positive cost");
-Check(cycle.ResourceIds.SequenceEqual(new[] { "R" }), "outward and return resources are carried by the cycle");
+Check(cycle.ResourceIds.Contains("R") &&
+      cycle.ResourceIds.Count(id => MapCorridorResources.IsAutomatic(id)) == 1,
+    "outward and return resources plus the pickup station guard are carried by the cycle");
 Check(graph.FindShortestRoute("PICK", "PICK") is { Nodes.Count: 1, Cost: 0 }, "generic shortest-path query retains zero-length semantics");
 Check(graph.FindShortestTransportRoute("PICK", "WAIT")!.EdgeIds.SequenceEqual(new[] { "PW" }), "ordinary different-station route is unchanged");
 Check(graph.FindShortestTransportRoute("PICK", "PICK", new HashSet<string> { "R" })!.Nodes.SequenceEqual(new[] { "PICK", "WAIT", "DUMP", "PICK" }), "blocked exit resource selects an enabled directed alternative cycle");
@@ -62,9 +64,11 @@ var corridorDefinition = new MapDefinition(
 var corridorGraph = corridorDefinition.ToGraph();
 var forwardPlan = corridorGraph.FindShortestRoute("L", "R")!;
 var reversePlan = corridorGraph.FindShortestRoute("R", "L")!;
-var corridorResourceId = corridorGraph.Resources.Keys.Single(id => MapCorridorResources.IsAutomatic(id));
-Check(forwardPlan.ResourceIds.SequenceEqual([corridorResourceId]) &&
-      reversePlan.ResourceIds.SequenceEqual([corridorResourceId]),
+var corridorResourceId = corridorGraph.Resources.Keys.Single(id =>
+    MapCorridorResources.IsAutomatic(id) &&
+    corridorGraph.Resources[id].Type == TrafficResourceType.SingleLane);
+Check(forwardPlan.ResourceIds.Contains(corridorResourceId) &&
+      reversePlan.ResourceIds.Contains(corridorResourceId),
     "opposing curved edges share one automatic corridor resource");
 Check(corridorGraph.Resources[corridorResourceId] is
       { Type: TrafficResourceType.SingleLane, Capacity: 1, Boundary.Count: 4 },
@@ -238,7 +242,8 @@ dispatch.DumperDumpingSite = "DUMP";
 routeStates.CurrentSite = "LM-PICK";
 runtime.Replace(new("MAP","V1",definition,DateTimeOffset.Now));dispatch.StandbySites=[];
 using var db = DatabaseFactory.Create(new() { DatabasePath = Path.Combine(Path.GetTempPath(), "agv-pickup-repeat-" + Guid.NewGuid().ToString("N") + ".db") });
-var catalog = new TrafficResourceCatalog(resources); await new DatabaseInitializer(db, catalog).InitializeAsync(default);
+var catalog = new TrafficResourceCatalog(MapCorridorResources.AllResources(definition));
+await new DatabaseInitializer(db, catalog).InitializeAsync(default);
 var tasks = new DispatchTaskRepository(db); var orchestration = new DispatchOrchestrationRepository(db); var outbox = new AgvCommandOutboxRepository(db, runtime);
 var creation = new DispatchTaskCreationOptions(); var parameters = new TaskParameterRuntime(dispatch, creation);
 var gate = new MapExecutionGate(); gate.SetMode(MapExecutionMode.Running);

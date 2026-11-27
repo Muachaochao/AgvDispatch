@@ -93,11 +93,16 @@ internal static class Program
         var sender=new AgvCommandOutboxDispatcher(NullLogger<AgvCommandOutboxDispatcher>.Instance,new(),outbox,gateway,gate);
         var steps=new DispatchTaskStepCoordinator(NullLogger<DispatchTaskStepCoordinator>.Instance,new(),dispatch,creation,orchestration,outbox,plc,plc,planner,traffic,gate,vehicleStates:states,activeMap:map);
         var pipeName="AgvIntegration-"+Guid.NewGuid().ToString("N");
+        var security=new TrafficSecurityOptions { PipeName=pipeName, Users=[
+            new() { WindowsIdentity=Environment.UserDomainName+"\\"+Environment.UserName, Role="Administrator" }
+        ] };
+        var authorization=new ConfiguredTrafficAuthorizationService(security);
         // Unused endpoints fail closed; the exercised endpoints use their real services.
         var args=typeof(TrafficControlNamedPipeServer).GetConstructors().Single().GetParameters().Select(p=>p.ParameterType switch
         {
-            var t when t==typeof(Microsoft.Extensions.Logging.ILogger<TrafficControlNamedPipeServer>) => (object)NullLogger<TrafficControlNamedPipeServer>.Instance,
-            var t when t==typeof(TrafficSecurityOptions) => new TrafficSecurityOptions { PipeName=pipeName },
+            var t when t==typeof(Microsoft.Extensions.Logging.ILogger<TrafficControlNamedPipeServer>) => (object)new ConsoleLogger<TrafficControlNamedPipeServer>(),
+            var t when t==typeof(TrafficSecurityOptions) => security,
+            var t when t==typeof(ITrafficAuthorizationService) => authorization,
             var t when t==typeof(IDatabaseInitializer) => init,
             var t when t==typeof(ITrafficResourceControlService) => control,
             var t when t==typeof(ITrafficFlowMonitor) => flow,

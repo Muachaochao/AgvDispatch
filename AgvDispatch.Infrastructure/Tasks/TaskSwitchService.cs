@@ -13,7 +13,7 @@ public sealed class TaskSwitchService(ISqlSugarClient database, ITaskSwitchPort 
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private readonly SemaphoreSlim mutex = new(1, 1);
     private bool initialized;
-    private DateTime Now => (clock ?? TimeProvider.System).GetUtcNow().UtcDateTime;
+    private DateTime Now => (clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider).GetUtcNow().UtcDateTime;
 
     public async Task InitializeAsync(CancellationToken ct)
     {

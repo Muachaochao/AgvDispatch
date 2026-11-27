@@ -42,6 +42,23 @@ var gateway = DispatchProxy.Create<IAgvGateway, StatusGateway>();
 var fake = (StatusGateway)gateway;
 var gate = new MapExecutionGate();
 gate.SetMode(MapExecutionMode.Running);
+Task<IDisposable> control;
+using (var first = await gate.EnterAsync(MapExecutionOperation.ExistingWork, default))
+{
+    Check(first is not null, "the first execution lease is admitted");
+    using var second = await gate.EnterAsync(MapExecutionOperation.ExistingWork, default)
+        .AsTask().WaitAsync(TimeSpan.FromSeconds(2));
+    Check(second is not null, "a second vehicle operation shares the execution lease");
+    control = gate.EnterControlAsync(default).AsTask();
+    await Task.Delay(50);
+    Check(!control.IsCompleted, "map control waits for all execution leases to finish");
+    await Task.WhenAny(control, Task.Delay(50));
+    Check(!control.IsCompleted, "map control remains exclusive while execution work is active");
+}
+using (await control.WaitAsync(TimeSpan.FromSeconds(2)))
+    Check(control.IsCompletedSuccessfully, "map control is admitted after the execution leases are released");
+using (await gate.EnterControlAsync(default).AsTask().WaitAsync(TimeSpan.FromSeconds(2)))
+    Check(true, "map control can be reacquired after the first control lease is released");
 var orchestrator = new DispatchTaskOrchestrator(NullLogger<DispatchTaskOrchestrator>.Instance,
     new DispatchOrchestratorOptions(), orchestration, outbox, gateway, new AgvStateCache(new AgvOptions()), map,
     new MapOptions(), new NoRoutes(), traffic, gate);

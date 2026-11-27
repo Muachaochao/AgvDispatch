@@ -17,7 +17,6 @@ public sealed partial class ManualTaskCreationService(IManualTaskCreationReposit
 {
     public async Task<ManualTaskCreationOptions> GetOptionsAsync(CancellationToken ct)
     {
-        using var lease = await gate.EnterControlAsync(ct);
         return await GetOptionsCoreAsync(ct);
     }
     private async Task<ManualTaskCreationOptions> GetOptionsCoreAsync(CancellationToken ct)
@@ -152,8 +151,6 @@ public sealed partial class ManualTaskCreationService(IManualTaskCreationReposit
                    receipt.DependsOnTaskIds.SequenceEqual(request.DependsOnTaskIds, StringComparer.OrdinalIgnoreCase)
                 ? new(true, false, receipt.TaskId, "该请求已经创建任务，未重复提交。")
                 : new(false, false, null, "请求编号已用于不同参数，请核对任务。");
-        using var lease = await gate.EnterAsync(MapExecutionOperation.NewWork, ct);
-        if (lease is null) return new(false, false, null, "当前不允许新任务，请等待地图切换或恢复完成。");
         if (businessRun?.IsRetired(request.RequestId) == true)
             return new(false, false, null, "原申请已核对注销，禁止重放或迟到创建；请查询原运行。");
         if (businessRun?.Active == true && businessRun.RequestId != request.RequestId && !switchReplacement)
@@ -173,6 +170,7 @@ public sealed partial class ManualTaskCreationService(IManualTaskCreationReposit
         }
         if (request.ParameterRevision != parameters.Revision)
             return new(false, false, null, "任务参数已变化，请刷新创建选项后提交。");
+        var preflightMap = activeMap.Current;
         var options = await GetOptionsCoreAsync(ct);
         if (options.MapId != request.MapId || options.MapVersionId != request.MapVersionId)
             return new(false, false, null, "运行地图已变化，请刷新创建选项。");
@@ -208,6 +206,34 @@ public sealed partial class ManualTaskCreationService(IManualTaskCreationReposit
                 latestStation is not {Available:true})
                 return new(false,false,null,"车端核验期间运行地图、参数、工位或车辆状态变化；未创建任务，请刷新。");
         }
+        // D2: the manual-create preflight above reads vehicle status and (when
+        // configured) performs the Robokit map check. Both are network I/O and
+        // must not hold the map/execution gate. Take the gate only for the final
+        // local revalidation and the atomic insert.
+        using var lease = await gate.EnterAsync(MapExecutionOperation.NewWork, ct);
+        if (lease is null) return new(false, false, null, "当前不允许新任务，请等待地图切换或恢复完成。");
+        if (!gate.CanStartNewWork || !ReferenceEquals(activeMap.Current, preflightMap) ||
+            activeMap.Current?.MapId != options.MapId || activeMap.Current?.VersionId != options.MapVersionId)
+            return new(false, false, null, "预检期间运行地图或执行门禁已变化；未创建任务，请刷新。");
+        if (businessRun?.IsRetired(request.RequestId) == true || businessRun?.Active == true && businessRun.RequestId != request.RequestId && !switchReplacement)
+            return new(false, false, null, "预检期间持续运行状态已变化；未创建任务，请刷新。");
+        if (request.ParameterRevision != parameters.Revision)
+            return new(false, false, null, "预检期间任务参数已变化；未创建任务，请刷新。");
+        var committedStation = stations.TryGet(request.StationId, out var stationState) ? stationState : null;
+        if (committedStation is null || !committedStation.CanCreateTask || committedStation.SignalQuality != SignalQuality.Good)
+            return new(false, false, null, committedStation?.BlockReason ?? "预检期间工位状态已变化；未创建任务，请刷新。");
+        vehicles = vehicleCandidates.Where(vehicle =>
+        {
+            if (!states.TryGet(vehicle.VehicleId, out var state) || state.Connection != ConnectionState.Online ||
+                state.Quality != SignalQuality.Good || state.Blocked is not false || state.EmergencyStopped is not false)
+                return false;
+            return MapRouteSiteMapper.IsSameNode(activeMap.Current?.Definition, state.CurrentStation, vehicle.CurrentSite);
+        });
+        if (!vehicles.Any())
+            return new(false, false, null, "预检期间车辆状态已变化；未创建任务，请刷新。");
+        if (request.RequestedVehicleId is { } committedRequestedVehicle &&
+            !vehicles.Any(vehicle => vehicle.VehicleId.Equals(committedRequestedVehicle, StringComparison.OrdinalIgnoreCase)))
+            return new(false, false, null, $"预检期间车辆 {committedRequestedVehicle} 已不可用；未创建任务，请刷新。");
         var result = await repository.TryCreateManualAsync(request, creation.DumperStationId, user.WindowsIdentity, ct,
             parameters.Capture().TaskTemplate);
         if (!result.Created)

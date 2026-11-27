@@ -79,7 +79,7 @@ public sealed class TransportTimeoutRecoveryService(
                 "超时已确认，但恢复证据评估失败：" + error.Message + "；任务已冻结，禁止自动改道或重发。");
         }
         var message = assessment.Message;
-        var now = (clock ?? TimeProvider.System).GetLocalNow().DateTime;
+        var now = (clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider).GetLocalNow().DateTime;
         var captured = false;
         var transaction = await database.Ado.UseTranAsync(async () =>
         {
@@ -665,7 +665,7 @@ public sealed class TransportTimeoutRecoveryService(
                     checkpoint.PendingSignal is not null ||
                     checkpoint.Phase is not ("TransportBound" or "ReadyToComplete"))
                     return "首段原28阶段绑定缺失、待确认或阶段不一致，禁止发送恢复导航。";
-                var now = (clock ?? TimeProvider.System).GetUtcNow();
+                var now = (clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider).GetUtcNow();
                 foreach (var expected in checkpoint.Baseline.Where(row => row.StationId != "__context"))
                 {
                     if (!signals.TryGet(expected.StationId, expected.VariableName, out var sample) ||
@@ -700,7 +700,7 @@ public sealed class TransportTimeoutRecoveryService(
             {
                 signals.TryGet(station, variable, out var sample);
                 return TaskSignalPredicate.EvaluateFresh(station, variable, expected, sample,
-                    (clock ?? TimeProvider.System).GetUtcNow(), handshakeOptions?.StateMaxAgeSeconds ?? 5).Satisfied;
+                    (clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider).GetUtcNow(), handshakeOptions?.StateMaxAgeSeconds ?? 5).Satisfied;
             }
             if (!Fresh(work.StationId!, "Faulted", false) ||
                 !Fresh(work.StationId!, "CommunicationOnline", true) ||
@@ -748,7 +748,7 @@ public sealed class TransportTimeoutRecoveryService(
             row.SendAttemptedAt is not null, row.LastError ?? "", row.Revision,
             new DateTimeOffset(DateTime.SpecifyKind(row.UpdatedAt, DateTimeKind.Local)));
 
-    private DateTime NowLocal => (clock ?? TimeProvider.System).GetLocalNow().DateTime;
+    private DateTime NowLocal => (clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider).GetLocalNow().DateTime;
     private static DispatchTaskStage TargetStage(DispatchTaskStepType stepType) => stepType switch
     {
         DispatchTaskStepType.GoToPickup => DispatchTaskStage.GoingToPickup,
@@ -781,7 +781,7 @@ public sealed class TransportTimeoutRecoveryService(
             return Result(TransportTimeoutRecoveryOutcome.SafetyHold, robot?.CurrentStation, [],
                 "车辆通信或遥测无效，任务已冻结；恢复通信并现场核对前禁止改道或重发。");
 
-        var now = (clock ?? TimeProvider.System).GetUtcNow();
+        var now = (clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider).GetUtcNow();
         if (robot.LastSuccessfulPollAt is not { } observed || observed > now.AddSeconds(1) ||
             now - observed >= TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds))
             return Result(TransportTimeoutRecoveryOutcome.SafetyHold, robot.CurrentStation, [],

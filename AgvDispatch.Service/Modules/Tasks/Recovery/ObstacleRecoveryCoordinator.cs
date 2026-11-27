@@ -41,7 +41,7 @@ public sealed class ObstacleRecoveryCoordinator(
     IRoutePlanner? forecastRoutes = null, IExecutionEvidenceJournal? evidenceJournal = null) : IsolatedBackgroundService
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
-    private readonly TimeProvider _clock = clock ?? TimeProvider.System;
+    private readonly TimeProvider _clock = clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider;
     private readonly SemaphoreSlim _cycle = new(1, 1);
     // Retry state for pre-send rejections is kept in memory. A restart only makes the
     // next attempt earlier; the persisted send intent has already been cleared.
@@ -51,6 +51,7 @@ public sealed class ObstacleRecoveryCoordinator(
     // the next observation start earlier, and never alters the persisted record.
     private readonly ConcurrentDictionary<string, DateTimeOffset> _lastFreshSeen = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, DateTimeOffset> _clearSince = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _blockedAfterTerminal = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, DateTimeOffset> _routeWaitSince = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, RecordBackoff> _recordBackoff = new(StringComparer.Ordinal);
     private sealed record RecordBackoff(int Failures, DateTimeOffset RetryAfter);
@@ -341,6 +342,8 @@ public sealed class ObstacleRecoveryCoordinator(
         if (!FreshTelemetry(robot, now))
         {
             ClearStableStop(row);
+            _clearSince.TryRemove(row.RecoveryId, out _);
+            _blockedAfterTerminal.TryRemove(row.RecoveryId, out _);
             row.State = ObstacleRecoveryStates.SafetyHold;
             row.Message = "车辆遥测或通信不新鲜，暂停自动恢复推进。";
             row.NextAction = "恢复通信和稳定定位后只读查询原任务；不得取消、改道、释放载荷或路权。";
@@ -352,7 +355,12 @@ public sealed class ObstacleRecoveryCoordinator(
         // record closes. A flickering blocked signal would otherwise close and reopen
         // the record and restart the blockage timer every time.
         if (AgvObstaclePolicy.IsBlocked(robot))
+        {
             _clearSince.TryRemove(row.RecoveryId, out _);
+            if (row.OriginalTerminalAtUtc is { } terminal &&
+                robot.LastSuccessfulPollAt is { } observed && observed.UtcDateTime > terminal)
+                _blockedAfterTerminal[row.RecoveryId] = observed;
+        }
         else
         {
             var clearStart = _clearSince.GetOrAdd(row.RecoveryId, now);
@@ -509,7 +517,8 @@ public sealed class ObstacleRecoveryCoordinator(
             }
 
             row.CandidatePathJson = "[]";
-            row.BlockedEdgeIdsJson = JsonSerializer.Serialize(plan.BlockedEdgeIds, Json);
+            if (plan.BlockedEdgeIds.Count != 0)
+                row.BlockedEdgeIdsJson = JsonSerializer.Serialize(plan.BlockedEdgeIds, Json);
             row.SafeSite = plan.SafeSite;
             // Before cancellation a missing route only warns and alarms. The original
             // navigation keeps running and the task stage is untouched.
@@ -535,7 +544,17 @@ public sealed class ObstacleRecoveryCoordinator(
         CancellationToken cancellationToken,
         bool safetyPointRetreat = false)
     {
-        using var control = await executionGate.EnterControlAsync(cancellationToken);
+        // D2: cancelling an already-running task is existing work. A shared
+        // execution lease keeps the map stable for the vendor call without
+        // serializing dispatch, steps or releases for every other vehicle.
+        using var control = await executionGate.EnterAsync(MapExecutionOperation.ExistingWork, cancellationToken);
+        if (control is null)
+        {
+            row.Message = "地图切换或恢复门禁暂未放行，保留原任务和取消意图。";
+            row.Revision++;
+            await SaveAsync(row, cancellationToken);
+            return;
+        }
         var refusal = safetyPointRetreat
             ? await SafetyPointRetreatSafetyReasonAsync(row, robot, cancellationToken)
             : await AutomaticSafetyReasonAsync(row, robot, candidate, cancellationToken);
@@ -656,7 +675,15 @@ public sealed class ObstacleRecoveryCoordinator(
         double elapsed,
         CancellationToken cancellationToken)
     {
-        using var control = await executionGate.EnterControlAsync(cancellationToken);
+        using var control = await executionGate.EnterAsync(MapExecutionOperation.ExistingWork, cancellationToken);
+        if (control is null)
+        {
+            row.State = ObstacleRecoveryStates.SafetyHold;
+            row.Message = "地图切换或恢复门禁暂未放行，保留原任务与路权。";
+            row.Revision++;
+            await SaveAsync(row, cancellationToken);
+            return;
+        }
         if (originalPath.Count < 2)
         {
             await FreezeAsync(row, "原导航路径快照缺失，无法核定取消范围。",
@@ -750,16 +777,18 @@ public sealed class ObstacleRecoveryCoordinator(
             return;
         }
 
-        // Once the original chain is terminal and the vehicle is no longer blocked, the
-        // original remaining route may be sent again; the inferred blocked edge is no
-        // longer a reason to exclude it.
         var allowClearedOriginalRoute =
             row.OriginalTerminalAtUtc is not null &&
-            !AgvObstaclePolicy.IsBlocked(robot);
+            robot.Blocked == false &&
+            !AgvObstaclePolicy.IsBlocked(robot) &&
+            _blockedAfterTerminal.TryGetValue(row.RecoveryId, out var postTerminalBlockedAt) &&
+            robot.LastObstacleClearedAt is { } clearedAt && clearedAt > postTerminalBlockedAt;
         var plan = await PlanAsync(
             row, robot, task, step, originalPath, cancellationToken,
             excludeInferredBlocked: !allowClearedOriginalRoute,
             allowOriginalRoute: allowClearedOriginalRoute);
+        if (plan.BlockedEdgeIds.Count != 0)
+            row.BlockedEdgeIdsJson = JsonSerializer.Serialize(plan.BlockedEdgeIds, Json);
         if (!plan.Available)
         {
             // Not frozen: the cancelled task stays resumable. The next pass plans
@@ -1141,7 +1170,15 @@ public sealed class ObstacleRecoveryCoordinator(
             await ContinueSafetyPointRetreatCoreAsync(row, robot, cancellationToken);
             return;
         }
-        using var control = await executionGate.EnterControlAsync(cancellationToken);
+        using var control = await executionGate.EnterAsync(MapExecutionOperation.ExistingWork, cancellationToken);
+        if (control is null)
+        {
+            row.State = ObstacleRecoveryStates.SafetyHold;
+            row.Message = "地图切换或恢复门禁暂未放行，安全点退回保持待命。";
+            row.Revision++;
+            await SaveAsync(row, cancellationToken);
+            return;
+        }
         await ContinueSafetyPointRetreatCoreAsync(row, robot, cancellationToken);
     }
 
@@ -1646,23 +1683,41 @@ public sealed class ObstacleRecoveryCoordinator(
             return RouteAssessment.Refuse("车辆当前点不在原路线中段，无法唯一确定实际受阻下一段。");
         var nextSite = originalPath[positions[0].index + 1];
         var next = MapRouteSiteMapper.ResolveLogicalNodeId(map.Definition, nextSite);
-        var inferred = map.Definition.Edges.Where(edge => edge.Enabled &&
-                (string.Equals(edge.From, current[0].Id, StringComparison.OrdinalIgnoreCase) &&
-                 string.Equals(edge.To, next, StringComparison.OrdinalIgnoreCase) ||
-                 edge.Bidirectional &&
-                 string.Equals(edge.From, next, StringComparison.OrdinalIgnoreCase) &&
-                 string.Equals(edge.To, current[0].Id, StringComparison.OrdinalIgnoreCase)))
+        var blockedEdges = Deserialize(row.BlockedEdgeIdsJson).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (excludeInferredBlocked)
+        {
+            var inferred = map.Definition.Edges.Where(edge => edge.Enabled &&
+                SupportsDirection(edge, current[0].Id, next)).ToArray();
+            if (inferred.Length == 0)
+                return RouteAssessment.Refuse("原车端地图在后台工程图中没有对应前向道路。");
+            blockedEdges.UnionWith(inferred.Select(edge => edge.Id));
+
+            if (AgvObstaclePolicy.IsBlocked(robot) &&
+                (!string.IsNullOrWhiteSpace(robot.SourceStation) || !string.IsNullOrWhiteSpace(robot.TargetStation)))
+            {
+                var reportedTarget = MapRouteSiteMapper.ResolveLogicalNodeId(map.Definition, robot.TargetStation);
+                var reported = map.Definition.Edges.Where(edge => edge.Enabled &&
+                    SupportsDirection(edge, current[0].Id, reportedTarget)).ToArray();
+                if (!MapRouteSiteMapper.IsSameNode(map.Definition, current[0].Id, robot.SourceStation) ||
+                    !map.Definition.Nodes.Any(node => node.Enabled &&
+                        node.Id.Equals(reportedTarget, StringComparison.OrdinalIgnoreCase)) ||
+                    reported.Length == 0)
+                    return RouteAssessment.Refuse("车端受阻路段与当前可信站点或运行地图不一致，暂不自动改道。");
+                blockedEdges.UnionWith(reported.Select(edge => edge.Id));
+            }
+        }
+        else
+            blockedEdges.Clear();
+
+        var blockedTraversals = map.Definition.Edges.Where(edge => edge.Enabled && blockedEdges.Contains(edge.Id))
             .SelectMany(edge => edge.Bidirectional
                 ? new[]
                 {
-                    new MapDirectedTraversal(edge.Id, current[0].Id, next),
-                    new MapDirectedTraversal(edge.Id, next, current[0].Id)
+                    new MapDirectedTraversal(edge.Id, edge.From, edge.To),
+                    new MapDirectedTraversal(edge.Id, edge.To, edge.From)
                 }
-                : new[] { new MapDirectedTraversal(edge.Id, current[0].Id, next) })
-            .ToList();
-        if (inferred.Count == 0)
-            return RouteAssessment.Refuse("原车端地图在后台工程图中没有对应前向道路。");
-        var unavailableTraversals = (excludeInferredBlocked ? inferred : [])
+                : new[] { new MapDirectedTraversal(edge.Id, edge.From, edge.To) });
+        var unavailableTraversals = blockedTraversals
             .Concat(closures.BlockedTraversals)
             .Distinct()
             .ToArray();
@@ -1694,22 +1749,32 @@ public sealed class ObstacleRecoveryCoordinator(
             unavailableTraversals, protectedNodes, cancellationToken);
         if (route is null)
             return new(false, $"已推断受阻道路为{robot.CurrentStation}→{nextSite}，当前路网没有安全替代路线。",
-                [], unavailableTraversals.Select(item => item.EdgeId).Distinct().ToArray(), safeSite);
+                [], blockedEdges.ToArray(), safeSite);
         var sitePlan = MapRouteSiteMapper.ToAgvSitePlan(map.Definition, route);
         if (sitePlan.Nodes.Count < 2 ||
             !MapRouteSiteMapper.IsSameNode(map.Definition, sitePlan.Nodes[0], robot.CurrentStation) ||
             !MapRouteSiteMapper.IsSameNode(map.Definition, sitePlan.Nodes[^1], step.DestinationSite) ||
+            sitePlan.Nodes.Zip(sitePlan.Nodes.Skip(1)).Any(pair => unavailableTraversals.Any(traversal =>
+                MapRouteSiteMapper.IsSameNode(map.Definition, traversal.FromNodeId, pair.First) &&
+                MapRouteSiteMapper.IsSameNode(map.Definition, traversal.ToNodeId, pair.Second))) ||
             (!allowOriginalRoute &&
              sitePlan.Nodes.SequenceEqual(originalPath, StringComparer.OrdinalIgnoreCase)))
             return new(false, "规划结果与实际起点、原目的站或避障要求不一致。",
-                sitePlan.Nodes, unavailableTraversals.Select(item => item.EdgeId).Distinct().ToArray(), safeSite);
+                sitePlan.Nodes, blockedEdges.ToArray(), safeSite);
         return new(true, $"已形成替代路线：{string.Join("→", sitePlan.Nodes)}。",
-            sitePlan.Nodes, unavailableTraversals.Select(item => item.EdgeId).Distinct().ToArray(), safeSite)
+            sitePlan.Nodes, blockedEdges.ToArray(), safeSite)
         {
             Resources = route.ResourceIds,
             EdgeIds = route.EdgeIds
         };
     }
+
+    private static bool SupportsDirection(MapEdge edge, string source, string target) =>
+        string.Equals(edge.From, source, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(edge.To, target, StringComparison.OrdinalIgnoreCase) ||
+        edge.Bidirectional &&
+        string.Equals(edge.To, source, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(edge.From, target, StringComparison.OrdinalIgnoreCase);
 
     private async Task<string?> AutomaticSafetyReasonAsync(
         ObstacleRecoveryEntity row,
@@ -1912,6 +1977,7 @@ public sealed class ObstacleRecoveryCoordinator(
         string message, CancellationToken cancellationToken)
     {
         _clearSince.TryRemove(row.RecoveryId, out _);
+        _blockedAfterTerminal.TryRemove(row.RecoveryId, out _);
         _routeWaitSince.TryRemove(row.RecoveryId, out _);
         row.State = ObstacleRecoveryStates.Recovered;
         row.Message = message;

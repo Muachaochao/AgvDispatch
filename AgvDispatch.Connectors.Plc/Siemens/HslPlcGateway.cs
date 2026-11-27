@@ -52,12 +52,13 @@ public sealed partial class HslPlcGateway : IPlcGateway, IPlcBatchReader, IDispo
         {
             authorizationCode = Environment.GetEnvironmentVariable(
                 _options.AuthorizationCodeEnvironmentVariable,
-                EnvironmentVariableTarget.User);
+                EnvironmentVariableTarget.Machine);
         }
 
         if (string.IsNullOrWhiteSpace(authorizationCode))
         {
-            _startupError = $"未设置环境变量{_options.AuthorizationCodeEnvironmentVariable}。";
+            _startupError =
+                $"未设置机器级环境变量{_options.AuthorizationCodeEnvironmentVariable}；请用系统管理员设置 Machine 作用域，服务不会回退读取用户级变量。";
             _supervisor.ReportFault(_startupError);
             return;
         }

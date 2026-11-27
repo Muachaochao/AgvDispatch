@@ -11,7 +11,7 @@ public sealed partial class ChargingRuntimePort(ChargingOptions options, IAgvSta
     Func<string?>? externalBlock = null, TimeProvider? clock = null, IChargingBusinessSafety? businessSafety = null,
     Func<string,string?>? vehicleBlock = null, Func<string,string?>? returnSite = null, DispatchOrchestratorOptions? dispatch = null, DispatchEnergyOptions? energy = null, ITrafficBodyEnvelopeProvider? envelopes = null) : IChargingRuntimePort
 {
-    private DateTimeOffset Now => (clock??TimeProvider.System).GetUtcNow();
+    private DateTimeOffset Now => (clock??AgvDispatch.Application.Runtime.BusinessClock.Provider).GetUtcNow();
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string,string> planFailures=new(StringComparer.OrdinalIgnoreCase);
     public string? LastPlanFailure(string vehicleId,ChargingSite site)=>planFailures.TryGetValue(vehicleId+"|"+site.Id,out var reason)?reason:null;
     public IReadOnlyList<AgvRobotSnapshot> Vehicles => vehicles.GetAll();

@@ -46,15 +46,31 @@ public sealed class CadDetailNamedPipeServer(TrafficSecurityOptions options, ICa
     private NamedPipeServerStream CreatePipe()
     {
         var security = new PipeSecurity();
-        // A non-elevated console host also needs permission to create additional listener instances.
+        // This endpoint is read-only, but CAD/PLC geometry is still site data.
+        // Restrict it to the service account and the configured operator group;
+        // never grant every authenticated Windows account.
         using var owner = WindowsIdentity.GetCurrent();
-        if (owner.User is { } sid) security.AddAccessRule(new PipeAccessRule(sid, PipeAccessRights.FullControl, AccessControlType.Allow));
-        security.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(WellKnownSidType.AuthenticatedUserSid, null), PipeAccessRights.ReadWrite, AccessControlType.Allow));
+        if (owner.User is { } sid)
+            security.AddAccessRule(new PipeAccessRule(sid, PipeAccessRights.FullControl, AccessControlType.Allow));
+        if (ResolveOperatorGroup(options.OperatorGroup) is { } operators)
+            security.AddAccessRule(new PipeAccessRule(operators,
+                PipeAccessRights.ReadWrite | PipeAccessRights.CreateNewInstance, AccessControlType.Allow));
         security.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null), PipeAccessRights.FullControl, AccessControlType.Allow));
         security.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null), PipeAccessRights.FullControl, AccessControlType.Allow));
+        security.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(WellKnownSidType.NetworkSid, null),
+            PipeAccessRights.FullControl, AccessControlType.Deny));
         return NamedPipeServerStreamAcl.Create(options.PipeName + ".cad-detail", PipeDirection.InOut,
             NamedPipeServerStream.MaxAllowedServerInstances, PipeTransmissionMode.Byte,
             PipeOptions.Asynchronous | PipeOptions.WriteThrough, 0, 0, security);
+    }
+
+    private static SecurityIdentifier? ResolveOperatorGroup(string configured)
+    {
+        var value = configured.Trim();
+        if (value.Length == 0) return null;
+        return value.StartsWith("S-1-", StringComparison.OrdinalIgnoreCase)
+            ? new SecurityIdentifier(value)
+            : (SecurityIdentifier)new NTAccount(value).Translate(typeof(SecurityIdentifier));
     }
 
     private async Task HandleAsync(NamedPipeServerStream pipe, CancellationToken ct)

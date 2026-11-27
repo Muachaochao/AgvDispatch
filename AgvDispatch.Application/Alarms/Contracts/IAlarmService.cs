@@ -24,6 +24,12 @@ public sealed record AlarmCandidate(
     string Message,
     AlarmSeverity Severity);
 
+public sealed record AlarmSynchronizationPolicy(int CriticalRecoveryHoldSeconds = 30)
+{
+    public TimeSpan CriticalRecoveryHold =>
+        TimeSpan.FromSeconds(Math.Clamp(CriticalRecoveryHoldSeconds, 0, 3600));
+}
+
 public sealed record AlarmSnapshot(
     string AlarmId,
     string RuleKey,
@@ -70,7 +76,8 @@ public interface IAlarmService
     Task SynchronizeAsync(
         IReadOnlyCollection<AlarmCandidate> candidates,
         DateTimeOffset observedAt,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        AlarmSynchronizationPolicy? policy = null);
 
     Task<IReadOnlyList<AlarmSnapshot>> GetRecentAsync(
         int maximumCount,

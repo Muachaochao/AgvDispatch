@@ -107,8 +107,8 @@ public sealed class CompletedTransportRouteReleaseService(
         if (windowBoundary && (terminal!.State != AgvTransportTaskState.Completed ||
             terminal.VendorTaskId != command.VendorCommandId || terminal.VehicleId != step.VehicleId ||
             task.VendorTaskId != command.VendorCommandId || step.VendorTaskId != command.VendorCommandId ||
-            terminal.UpdatedAt > (clock ?? TimeProvider.System).GetUtcNow().AddSeconds(1) ||
-            (clock ?? TimeProvider.System).GetUtcNow() - terminal.UpdatedAt > TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds) ||
+            terminal.UpdatedAt > (clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider).GetUtcNow().AddSeconds(1) ||
+            (clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider).GetUtcNow() - terminal.UpdatedAt > TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds) ||
             payload is null || payload.WindowIndex < 0 || payload.WindowIndex >= payload.Windows.Count - 1))
             return new(0, "当前窗口未取得新鲜的原厂家命令完成证据，保留路权。");
         var businessStepId = payload is null
@@ -143,7 +143,7 @@ public sealed class CompletedTransportRouteReleaseService(
         if (TransportRouteSnapshots.Serialize(frozen) != TransportRouteSnapshots.Serialize(recaptured))
             return new(0, "发送时路线快照与当前活动地图不一致。");
 
-        var generatedAt = (clock ?? TimeProvider.System).GetUtcNow();
+        var generatedAt = (clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider).GetUtcNow();
         if (!vehicles.TryGet(step.VehicleId, out var vehicle) ||
             vehicle.Connection != ConnectionState.Online || vehicle.Quality != SignalQuality.Good ||
             vehicle.LastSuccessfulPollAt is not { } observed ||

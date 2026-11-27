@@ -29,7 +29,7 @@ public sealed class RouteSegmentPassThroughReleaseWorker(
     private readonly Dictionary<string, string> _lastReason = new(StringComparer.Ordinal);
     // A step whose two-frame progress was not proven waits a frame budget before the next
     // attempt, so one stuck vehicle cannot delay every other vehicle's release on each poll.
-    private readonly Dictionary<string, DateTimeOffset> _retryAfter = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, long> _backoffStartedAt = new(StringComparer.Ordinal);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -64,29 +64,35 @@ public sealed class RouteSegmentPassThroughReleaseWorker(
                  step.StepType == (int)DispatchTaskStepType.DeliverFullBoxToDumper ||
                  step.StepType == (int)DispatchTaskStepType.EnterDumpingPosition ||
                  step.StepType == (int)DispatchTaskStepType.ReturnEmptyBox))
+            .Where(step => SqlFunc.Subqueryable<TrafficResourceLeaseEntity>()
+                .Where(lease => lease.OwnerStepId == step.StepId && lease.TaskId == step.TaskId).Any())
             .OrderBy(step => step.UpdatedAt)
             .Take(worker.MaximumStepsPerCycle)
             .ToListAsync(ct);
         // Forget bookkeeping of steps that have left the running set.
         var running = steps.Select(step => step.StepId).ToHashSet(StringComparer.Ordinal);
-        foreach (var stepId in _retryAfter.Keys.Where(id => !running.Contains(id)).ToArray()) _retryAfter.Remove(stepId);
+        foreach (var stepId in _backoffStartedAt.Keys.Where(id => !running.Contains(id)).ToArray()) _backoffStartedAt.Remove(stepId);
         foreach (var stepId in _lastReason.Keys.Where(id => !running.Contains(id)).ToArray()) _lastReason.Remove(stepId);
-        var clockNow = clock ?? TimeProvider.System;
+        var clockNow = clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider;
+        var retryDelay = TimeSpan.FromSeconds(worker.FrameWaitSeconds);
+        if (clockNow is SimulationTimeProvider simulation)
+            retryDelay = simulation.ScaleForBusiness(retryDelay);
         foreach (var step in steps)
         {
             ct.ThrowIfCancellationRequested();
-            if (_retryAfter.TryGetValue(step.StepId, out var retryAt) && clockNow.GetUtcNow() < retryAt) continue;
-            var started = System.Diagnostics.Stopwatch.GetTimestamp();
+            if (_backoffStartedAt.TryGetValue(step.StepId, out var backoff) &&
+                clockNow.GetElapsedTime(backoff) < retryDelay) continue;
+            var started = clockNow.GetTimestamp();
             var receipt = await receipts.IssueAsync(step.StepId, ct);
             if (receipt.State != TrafficSegmentReceiptState.Pending || string.IsNullOrWhiteSpace(receipt.ReceiptId))
             {
                 // Only a check that actually waited for frames is backed off; an idle step is re-read at once.
-                if (System.Diagnostics.Stopwatch.GetElapsedTime(started) >= TimeSpan.FromSeconds(1))
-                    _retryAfter[step.StepId] = clockNow.GetUtcNow() + TimeSpan.FromSeconds(worker.FrameWaitSeconds);
+                if (clockNow.GetElapsedTime(started) >= TimeSpan.FromSeconds(1))
+                    _backoffStartedAt[step.StepId] = clockNow.GetTimestamp();
                 Record(step, "Held", receipt.Reason, receipt.Candidates, receipt.Progress);
                 continue;
             }
-            _retryAfter.Remove(step.StepId);
+            _backoffStartedAt.Remove(step.StepId);
             Record(step, "PassedPendingRelease",
                 $"两帧进度与完整车体已证明 {receipt.CandidateCount} 项资源通过；正在原子提交。",
                 receipt.Candidates, receipt.Progress);
@@ -116,14 +122,18 @@ public sealed class RouteSegmentPassThroughReleaseWorker(
         IReadOnlyList<TrafficSegmentReleaseCandidate> candidates,
         TrafficSegmentProgressSummary? progress)
     {
-        var now = (clock ?? TimeProvider.System).GetUtcNow();
+        var now = (clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider).GetUtcNow();
         monitor.Update(new(step.TaskId, step.StepId, step.VehicleId ?? "", state, reason, now, candidates, progress));
-        var key = step.StepId + ":" + state + ":" + reason;
+        var heldReasons = string.Join("；", candidates.Where(candidate => !candidate.EvidenceVerified)
+            .GroupBy(candidate => candidate.Reason, StringComparer.Ordinal)
+            .OrderBy(group => group.Key, StringComparer.Ordinal)
+            .Select(group => $"{group.Count()}项 {group.Key}"));
+        var key = $"{state}:{reason}:{heldReasons}";
         if (_lastReason.TryGetValue(step.StepId, out var previous) && previous == key) return;
         _lastReason[step.StepId] = key;
         logger.LogInformation(
-            "通过即释放观察。TaskId={TaskId}, StepId={StepId}, VehicleId={VehicleId}, State={State}, Reason={Reason}, Verified={Verified}",
-            step.TaskId, step.StepId, step.VehicleId ?? "", state, reason,
+            "通过即释放观察。TaskId={TaskId}, StepId={StepId}, VehicleId={VehicleId}, State={State}, Reason={Reason}, HeldReasons={HeldReasons}, Verified={Verified}",
+            step.TaskId, step.StepId, step.VehicleId ?? "", state, reason, heldReasons,
             string.Join(',', candidates.Where(candidate => candidate.EvidenceVerified)
                 .Select(candidate => candidate.ResourceId)));
     }

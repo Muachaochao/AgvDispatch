@@ -58,6 +58,20 @@ try
         "late-starting components align to the shared accelerated wall origin");
     Check(isolated.ScaleForBusiness(TimeSpan.FromSeconds(8)) == TimeSpan.FromSeconds(2),
         "business waits and collection periods scale with the selected rate");
+
+    var jumping = new JumpClock(DateTimeOffset.UtcNow);
+    var monotonic = new MonotonicTimeProvider(jumping);
+    var beforeRollback = monotonic.GetUtcNow();
+    jumping.Now = beforeRollback.AddHours(-2);
+    Thread.Sleep(30);
+    var afterRollback = monotonic.GetUtcNow();
+    Check(afterRollback >= beforeRollback &&
+          afterRollback < beforeRollback.AddMinutes(1),
+        "system clock rollback cannot move business freshness backwards");
+    jumping.Now = beforeRollback.AddHours(2);
+    Check(monotonic.GetUtcNow() >= beforeRollback.AddHours(2),
+        "forward wall-clock jumps remain visible to freshness checks");
+
     BusinessClock.Use(isolated);
     var plc = new PlcConnectionSupervisor(new PlcOptions());
     var beforeRead = isolated.GetUtcNow();
@@ -78,3 +92,9 @@ finally
 }
 
 Console.WriteLine($"Simulation clock smoke test passed ({checks} checks).");
+
+sealed class JumpClock(DateTimeOffset now) : TimeProvider
+{
+    public DateTimeOffset Now { get; set; } = now;
+    public override DateTimeOffset GetUtcNow() => Now;
+}

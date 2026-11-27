@@ -68,11 +68,16 @@ internal static class TestBackend
         var orchestrator=new DispatchTaskOrchestrator(logs.CreateLogger<DispatchTaskOrchestrator>(),dispatch,orchestration,outbox,gateway,states,map,mapOptions,planner,traffic,gate);
         var sender=new AgvCommandOutboxDispatcher(logs.CreateLogger<AgvCommandOutboxDispatcher>(),new(){PollIntervalMs=100},outbox,gateway,gate);
         var steps=new DispatchTaskStepCoordinator(logs.CreateLogger<DispatchTaskStepCoordinator>(),new(){PollIntervalMs=100},dispatch,creation,orchestration,outbox,plc,plc,planner,traffic,gate,vehicleStates:states,activeMap:map);
+        var security=new TrafficSecurityOptions { PipeName=pipeName, Users=[
+            new() { WindowsIdentity=Environment.UserDomainName+"\\"+Environment.UserName, Role="Administrator" }
+        ] };
+        var authorization=new ConfiguredTrafficAuthorizationService(security);
         // Unused endpoints fail closed; the exercised endpoints use their real services.
         var args=typeof(TrafficControlNamedPipeServer).GetConstructors().Single().GetParameters().Select(p=>p.ParameterType switch
         {
             var t when t==typeof(Microsoft.Extensions.Logging.ILogger<TrafficControlNamedPipeServer>) => (object)logs.CreateLogger<TrafficControlNamedPipeServer>(),
-            var t when t==typeof(TrafficSecurityOptions) => new TrafficSecurityOptions { PipeName=pipeName },
+            var t when t==typeof(TrafficSecurityOptions) => security,
+            var t when t==typeof(ITrafficAuthorizationService) => authorization,
             var t when t==typeof(IDatabaseInitializer) => init,
             var t when t==typeof(ITrafficResourceControlService) => control,
             var t when t==typeof(ITrafficFlowMonitor) => flow,

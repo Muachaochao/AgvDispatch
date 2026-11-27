@@ -12,7 +12,7 @@ public sealed partial class TrafficResourceManager
             EventId = Guid.NewGuid().ToString("N"), StepId = step, TaskId = task, VehicleId = vehicle,
             Kind = kind, Reason = reason,
             ResourceIds = JsonSerializer.Serialize(ids.Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase)),
-            OccurredAt = (clock ?? TimeProvider.System).GetUtcNow().LocalDateTime
+            OccurredAt = (clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider).GetUtcNow().LocalDateTime
         }).ExecuteCommandAsync(ct);
 
     public async Task RecordRouteAsync(TrafficRouteObservation route, CancellationToken ct)
@@ -50,7 +50,7 @@ public sealed partial class TrafficResourceManager
         var changed = old == null || old.State != state || old.Reason != reason || old.VehicleId != vehicle || old.ResourceIds != ids || old.EdgeIds != edges || route != null && (old.MapId != route.MapId || old.MapVersionId != route.MapVersionId || old.Source != route.Source || old.Destination != route.Destination || old.WaitingCategory != route.WaitingCategory);
         var previousWait = old?.WaitingSinceUtc;
         var row = old ?? new TrafficRequestEntity { StepId = step, TaskId = task,
-            RequestedAt = (clock ?? TimeProvider.System).GetUtcNow().LocalDateTime };
+            RequestedAt = (clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider).GetUtcNow().LocalDateTime };
         var contextChanged = old != null && (old.VehicleId != vehicle || route != null &&
             (old.MapId != route.MapId || old.MapVersionId != route.MapVersionId || old.Source != route.Source || old.Destination != route.Destination));
         var previousBlocking = row.BlockingKey;
@@ -58,9 +58,9 @@ public sealed partial class TrafficResourceManager
         if (state == "Waiting")
         {
             if (old?.State != "Waiting" || contextChanged)
-            { row.WaitingSinceUtc = (clock ?? TimeProvider.System).GetUtcNow().UtcDateTime; row.WaitingStartKnown = true; }
+            { row.WaitingSinceUtc = (clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider).GetUtcNow().UtcDateTime; row.WaitingStartKnown = true; }
             else if (row.WaitingSinceUtc == null)
-            { row.WaitingSinceUtc = (clock ?? TimeProvider.System).GetUtcNow().UtcDateTime; row.WaitingStartKnown = false; }
+            { row.WaitingSinceUtc = (clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider).GetUtcNow().UtcDateTime; row.WaitingStartKnown = false; }
         }
         else { row.WaitingSinceUtc = null; row.WaitingStartKnown = null; }
         changed |= previousWait != row.WaitingSinceUtc;
@@ -72,7 +72,7 @@ public sealed partial class TrafficResourceManager
         {
             if (previousBlocking is null or "[]" || contextChanged)
             {
-                row.BlockingSinceUtc = (clock ?? TimeProvider.System).GetUtcNow().UtcDateTime;
+                row.BlockingSinceUtc = (clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider).GetUtcNow().UtcDateTime;
                 row.BlockingStartKnown = previousBlocking != null || !wasWaiting || contextChanged;
                 blockingEvent = "BlockingStarted";
             }
@@ -80,7 +80,7 @@ public sealed partial class TrafficResourceManager
         }
         else if (previousBlocking is not (null or "[]"))
         {
-            row.LastBlockingClearedUtc = (clock ?? TimeProvider.System).GetUtcNow().UtcDateTime;
+            row.LastBlockingClearedUtc = (clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider).GetUtcNow().UtcDateTime;
             row.BlockingSinceUtc = null; row.BlockingStartKnown = null; blockingEvent = "BlockingCleared";
         }
         row.BlockingKey = blockingKey;
@@ -93,7 +93,7 @@ public sealed partial class TrafficResourceManager
                 row.BlockingStartKnown==true ? "本轮调度首次观察到当前资源容量阻塞。" : "历史请求首次补记资源阻塞，起点仅为观察下界。",
             ResourceIds=blockingEvent=="BlockingCleared" ? JsonSerializer.Serialize((JsonSerializer.Deserialize<string[][]>(previousBlocking!)??[]).Select(a=>a[0]).Distinct(StringComparer.OrdinalIgnoreCase)) :
                 JsonSerializer.Serialize(activeBlockers.Select(l=>l.ResourceId).Distinct(StringComparer.OrdinalIgnoreCase)),
-            OccurredAt=(clock ?? TimeProvider.System).GetUtcNow().LocalDateTime
+            OccurredAt=(clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider).GetUtcNow().LocalDateTime
         }).ExecuteCommandAsync(ct);
         row.VehicleId = vehicle; row.State = state; row.Reason = reason; row.ResourceIds = ids; row.EdgeIds = edges; row.UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
         if (route is not null)
@@ -101,7 +101,7 @@ public sealed partial class TrafficResourceManager
             // This timestamp expires only an ungranted queue recommendation. It
             // never expires, revokes or releases a traffic lease.
             row.QueuePriority = route.QueuePriority;
-            row.QueueObservedAtUtc = route.QueueEligible ? (clock ?? TimeProvider.System).GetUtcNow().UtcDateTime : null;
+            row.QueueObservedAtUtc = route.QueueEligible ? (clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider).GetUtcNow().UtcDateTime : null;
         }
         if (route != null) { row.Source = route.Source; row.Destination = route.Destination; row.MapId = route.MapId; row.MapVersionId = route.MapVersionId; row.WaitingCategory = route.WaitingCategory; }
         if (old == null) await database.Insertable(row).ExecuteCommandAsync(ct);

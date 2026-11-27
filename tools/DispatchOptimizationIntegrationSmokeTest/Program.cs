@@ -126,11 +126,11 @@ using (var f = await Fixture.Create("Global", shared: true))
     f.Planner.Routes[("HOME1", "PICK1")] =
         new RoutePlan(["HOME1", "APPROACH", "SAFE", "PICK1"],
             ["HOME1-APPROACH", "APPROACH-SAFE", "SAFE-PICK1"], ["R", "DOWNSTREAM"], 3);
-    f.Map.Replace(new("M", "V2",
-        new("optimization-window-test", "", "LocalCartesian", "m", nodes, targetEdges,
-            [new TrafficResourceDefinition("R", TrafficResourceType.NarrowAisle),
-             new TrafficResourceDefinition("DOWNSTREAM", TrafficResourceType.NarrowAisle)]),
-        DateTimeOffset.UtcNow));
+    var windowDefinition = new MapDefinition("optimization-window-test", "", "LocalCartesian", "m", nodes, targetEdges,
+        [new TrafficResourceDefinition("R", TrafficResourceType.NarrowAisle),
+         new TrafficResourceDefinition("DOWNSTREAM", TrafficResourceType.NarrowAisle)]);
+    f.Catalog.Replace(MapCorridorResources.AllResources(windowDefinition));
+    f.Map.Replace(new("M", "V2", windowDefinition, DateTimeOffset.UtcNow));
     f.Dispatch.StationVehiclePools["CNC1"] = ["V1"];
     var task = await f.Call("CNC1", 80);
     await f.Cycle();
@@ -142,9 +142,12 @@ using (var f = await Fixture.Create("Global", shared: true))
           payload.Windows[0].EdgeIds.SequenceEqual(["HOME1-APPROACH", "APPROACH-SAFE"]) &&
           !payload.Windows[0].ResourceIds.Contains("DOWNSTREAM"),
         "global first-leg dispatch reserves only its nearest safe window; downstream exit remains free");
-    Check(f.Db.Queryable<TrafficResourceLeaseEntity>().Where(x => x.TaskId == task).ToList()
-            .Select(x => x.ResourceId).SequenceEqual(["R"]),
-        "global first-leg dispatch does not pre-lease a later shared corridor");
+    var firstWindowLeases = f.Db.Queryable<TrafficResourceLeaseEntity>().Where(x => x.TaskId == task).ToList()
+        .Select(x => x.ResourceId).ToArray();
+    Check(firstWindowLeases.Contains("R") &&
+          !firstWindowLeases.Contains("DOWNSTREAM") &&
+          firstWindowLeases.All(id => id == "R" || MapCorridorResources.IsAutomatic(id)),
+        "global first-leg dispatch does not pre-lease the downstream shared corridor");
 }
 
 using (var f = await Fixture.Create("Global"))
@@ -402,9 +405,10 @@ using (var f = await Fixture.Create("Global"))
     await f.Cycle();
     f.Gateway.AllowWrites = true;
     await f.SendCycle();
+    var notRequiredLeases = f.Db.Queryable<TrafficResourceLeaseEntity>().ToList().Select(l => l.ResourceId).ToArray();
     Check(f.Gateway.Writes == 1 && f.Db.Queryable<AgvCommandOutboxEntity>().Single().AttemptCount == 1 &&
-          f.Db.Queryable<TrafficResourceLeaseEntity>().Count() == 0,
-        "real sender accepts validated NotRequired route without inventing a public-resource lease");
+          notRequiredLeases.All(MapCorridorResources.IsAutomatic),
+        "real sender accepts a validated route whose only leases are automatic node guards");
 }
 
 Console.WriteLine($"Dispatch optimization integration: {checks} checks passed; temporary SQLite, synthetic telemetry and stub gateway only. No network or physical AGV/PLC access.");
@@ -422,6 +426,7 @@ sealed class Fixture : IDisposable
     public ActiveMapRuntime Map { get; } = new();
     public FakeGateway Gateway { get; } = new();
     public ProbeTraffic Traffic { get; private set; } = null!;
+    public TrafficResourceCatalog Catalog { get; private set; } = null!;
     public FixturePlanner Planner { get; private set; } = null!;
     public AgvStateCache States { get; private set; } = null!;
 
@@ -437,6 +442,7 @@ sealed class Fixture : IDisposable
         if (shared) resources.Add(new("R", TrafficResourceType.NarrowAisle));
         if (preflight is not null) resources.Add(new("WAIT-RESOURCE", TrafficResourceType.Station));
         var catalog = new TrafficResourceCatalog(resources);
+        f.Catalog = catalog;
         await new DatabaseInitializer(f.Db, catalog).InitializeAsync(default);
         f.Tasks = new(f.Db); f.Repository = new(f.Db); f.Outbox = new(f.Db, f.Map);
         f.Traffic = new(new TrafficResourceManager(f.Db, catalog, new(TimeSpan.FromMinutes(1))));
@@ -450,7 +456,9 @@ sealed class Fixture : IDisposable
         var planner = new FixturePlanner(shared);
         f.Planner = planner;
         var edges = planner.Routes.Select(p => new MapEdge(p.Value.EdgeIds[0], p.Key.Item1, p.Key.Item2, p.Value.Cost, 1, false, true, p.Value.ResourceIds)).ToArray();
-        f.Map.Replace(new("M", "V1", new("optimization-test", "", "LocalCartesian", "m", nodes, edges, resources), DateTimeOffset.UtcNow));
+        var initialDefinition = new MapDefinition("optimization-test", "", "LocalCartesian", "m", nodes, edges, resources);
+        catalog.Replace(MapCorridorResources.AllResources(initialDefinition));
+        f.Map.Replace(new("M", "V1", initialDefinition, DateTimeOffset.UtcNow));
         f.Apply("V1"); f.Apply("V2");
         var gate = f.Gate; gate.SetMode(MapExecutionMode.Running);
         f.Orchestrator = new(NullLogger<DispatchTaskOrchestrator>.Instance, f.Dispatch, f.Repository, f.Outbox,

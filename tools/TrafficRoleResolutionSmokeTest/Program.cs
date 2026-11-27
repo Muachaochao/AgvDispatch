@@ -56,4 +56,36 @@ Rejects(Options(new TrafficSecurityUserOptions { WindowsIdentity = @"PLANT\x", R
 Rejects(Options(new TrafficSecurityUserOptions { WindowsIdentity = @"PLANT\x", Role = "Operator" }, new TrafficSecurityUserOptions { WindowsIdentity = @"plant\X", Role = "Monitor" }),
     "a duplicate account is rejected at startup");
 
+TrafficSecurityStartupValidator.Validate(Options(), false, @"PLANT\svc");
+Check(true, "read-only deployment may start without operator accounts");
+
+void RejectsStartup(TrafficSecurityOptions options, bool mutating, string processIdentity, string label)
+{
+    try { TrafficSecurityStartupValidator.Validate(options, mutating, processIdentity); }
+    catch (InvalidOperationException) { Check(true, label); return; }
+    throw new Exception(label + " was accepted");
+}
+
+RejectsStartup(Options(), true, @"PLANT\svc",
+    "a write-capable deployment with no configured users is rejected");
+RejectsStartup(Options(new TrafficSecurityUserOptions { WindowsIdentity = @"PLANT\mon", Role = "Monitor" }),
+    true, @"PLANT\svc", "a monitor-only user cannot unlock write-capable deployment");
+RejectsStartup(Options(new TrafficSecurityUserOptions { WindowsIdentity = @"PLANT\op", Role = "Operator" }),
+    true, @"PLANT\svc", "a write user outside the pipe owner and without OperatorGroup is rejected");
+Check(IsStartupAccepted(new TrafficSecurityOptions
+{
+    Users = [new TrafficSecurityUserOptions { WindowsIdentity = @"PLANT\svc", Role = "Administrator" }]
+}, true, @"PLANT\svc"), "the local service account can be the sole write operator");
+Check(IsStartupAccepted(new TrafficSecurityOptions
+{
+    OperatorGroup = "AGV Operators",
+    Users = [new TrafficSecurityUserOptions { WindowsIdentity = @"PLANT\op", Role = "Operator" }]
+}, true, @"PLANT\svc"), "a configured operator group admits a remote write operator");
+
+bool IsStartupAccepted(TrafficSecurityOptions options, bool mutating, string processIdentity)
+{
+    try { TrafficSecurityStartupValidator.Validate(options, mutating, processIdentity); return true; }
+    catch (InvalidOperationException) { return false; }
+}
+
 Console.WriteLine($"PASS: {checks} role resolution checks; no pipe or Windows identity required.");

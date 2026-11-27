@@ -135,7 +135,7 @@ public sealed partial class TrafficResourceManager(
             {
                 if (context.TaskId != taskId || context.VehicleId != vehicleId)
                     throw new InvalidOperationException("交通排队请求的步骤、任务或车辆身份不一致。");
-                context.QueueObservedAtUtc = (clock ?? TimeProvider.System).GetUtcNow().UtcDateTime;
+                context.QueueObservedAtUtc = (clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider).GetUtcNow().UtcDateTime;
                 await database.Updateable<TrafficRequestEntity>()
                     .SetColumns(r => r.QueueObservedAtUtc == context.QueueObservedAtUtc)
                     .Where(r => r.StepId == ownerStepId).ExecuteCommandAsync(cancellationToken);

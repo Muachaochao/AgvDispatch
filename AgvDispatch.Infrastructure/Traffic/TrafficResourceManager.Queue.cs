@@ -10,7 +10,7 @@ public sealed partial class TrafficResourceManager
     private async Task<ILookup<string, string>> LoadQueuePredecessorsAsync(TrafficRequestEntity? current,
         string taskId, string[] requested, ILookup<string, TrafficResourceLeaseEntity> leases, CancellationToken ct)
     {
-        var now = (clock ?? TimeProvider.System).GetUtcNow().UtcDateTime;
+        var now = (clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider).GetUtcNow().UtcDateTime;
         var comparer = StringComparer.OrdinalIgnoreCase;
         var requestedIds = requested.ToHashSet(comparer);
         static ILookup<string, string> Empty() => Array.Empty<string>().ToLookup(id => id);

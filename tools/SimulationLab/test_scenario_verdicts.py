@@ -91,6 +91,9 @@ def commands():
 
 def query(root, sql, parameters=()):
     if 'select ResourceId from' in sql: return []
+    if any(table in sql for table in (
+        'traffic_segment_commit_lease', 'transport_timeout_recovery', 'traffic_lifecycle_event'
+    )): return []
     if 'traffic_resource_lease' in sql: return [dict(ResourceId='bay', TaskId='original-task')]
     if 'agv_command_outbox' in sql: return commands()
     raise AssertionError(sql)

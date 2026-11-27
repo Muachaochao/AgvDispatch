@@ -37,7 +37,7 @@ public sealed class StationStateService : IsolatedBackgroundService, IStationSta
         _options = options;
         _signalCache = signalCache;
         _activeTaskLookup = activeTaskLookup;
-        _clock = clock ?? TimeProvider.System;
+        _clock = clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider;
         _stationIds = catalog.Signals
             .Where(signal => string.Equals(
                 signal.DeviceType, "ChipRemovalStation", StringComparison.OrdinalIgnoreCase))

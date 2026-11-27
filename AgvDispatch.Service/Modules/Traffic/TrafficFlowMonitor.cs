@@ -11,7 +11,7 @@ public sealed class TrafficFlowMonitor(
     IAgvStateCache agvStates,
     IActiveMapRuntime activeMap, TimeProvider? clock = null) : IsolatedBackgroundService, ITrafficFlowMonitor
 {
-    private readonly TimeProvider _clock = clock ?? TimeProvider.System;
+    private readonly TimeProvider _clock = clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider;
     private readonly object _sync = new();
     private readonly Dictionary<string, VehicleMotion> _motions =
         new(StringComparer.OrdinalIgnoreCase);

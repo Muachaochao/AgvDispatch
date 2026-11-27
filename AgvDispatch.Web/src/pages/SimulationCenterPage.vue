@@ -1449,11 +1449,9 @@ function scenarioDraft(): SimulationRun {
 }
 function addStation() {
   const used = new Set(stationDrafts.value.map(station => station.stationId));
-  const verified = plcStationCatalog.value.find(station => station.signalSource === 'verified' && !used.has(station.stationId));
-  const bound = plcStationCatalog.value.find(station => !used.has(station.stationId));
   const next = Array.from({ length: 999 }, (_, index) => `CNC-${String(index + 1).padStart(3, '0')}`).find(id => !used.has(id))!;
-  stationDrafts.value.push({ stationId: verified?.stationId ?? bound?.stationId ?? next, pickupSite: '',
-    signalSource: verified ? 'verified' : 'isolated-synthetic' });
+  stationDrafts.value.push({ stationId: next, pickupSite: '',
+    signalSource: 'isolated-synthetic' });
   stationFilter.value = '';
   stationPage.value = stationPageCount.value;
 }

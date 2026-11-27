@@ -11,7 +11,7 @@ public sealed class ObstacleRecoveryStore(
     TimeProvider? clock = null)
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
-    private readonly TimeProvider _clock = clock ?? TimeProvider.System;
+    private readonly TimeProvider _clock = clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider;
 
     public async Task<ObstacleRecoveryEntity?> FindAsync(string taskId, string stepId, CancellationToken cancellationToken) =>
         await database.Queryable<ObstacleRecoveryEntity>()

@@ -354,9 +354,9 @@ try {
   await wait(()=>evaluate(`document.querySelector('.plc-table-summary')?.textContent.includes('mock-four-stations.csv')&&document.querySelector('.plc-table-summary')?.textContent.includes('aaaaaaaaaaaa')`),'Point table binding loaded');
   check('Scheme canvas requires an explicit PLC table and retains its source hash', await evaluate(`document.querySelector('.plc-table-binding').textContent.includes('3 工位')&&document.querySelector('.plc-table-binding').textContent.includes('${'a'.repeat(12)}')`));
   await click('增加隔离仿真工位');
-  await evaluate(`(()=>{const row=document.querySelectorAll('.station-config-row')[2];const site=row.querySelector('select');site.value='PARK';site.dispatchEvent(new Event('change',{bubbles:true}));const priority=row.querySelectorAll('input')[1];priority.value='90';priority.dispatchEvent(new Event('input',{bubbles:true}))})()`);
-  check('Additional station requires explicit isolated point semantics and supports a dispatch priority', await evaluate(`document.querySelectorAll('.station-config-row').length===3&&document.querySelectorAll('.station-config-row')[2].textContent.includes('现场未确认')&&document.querySelectorAll('.station-config-row')[2].querySelectorAll('input')[1].value==='90'`));
-  await evaluate(`(()=>{const e=document.querySelectorAll('.station-config-row')[2].querySelectorAll('select')[1];e.value='verified';e.dispatchEvent(new Event('change',{bubbles:true}))})()`);
+  await evaluate(`(()=>{const row=document.querySelectorAll('.station-config-row')[2];const site=row.querySelectorAll('input')[1];site.value='PARK';site.dispatchEvent(new Event('change',{bubbles:true}));const priority=row.querySelectorAll('input')[2];priority.value='90';priority.dispatchEvent(new Event('input',{bubbles:true}))})()`);
+  check('Additional station requires explicit isolated point semantics and supports a dispatch priority', await evaluate(`document.querySelectorAll('.station-config-row').length===3&&document.querySelectorAll('.station-config-row')[2].textContent.includes('现场未确认')&&document.querySelectorAll('.station-config-row')[2].querySelectorAll('input')[2].value==='90'`));
+  await evaluate(`(()=>{const e=document.querySelectorAll('.station-config-row')[2].querySelector('select');e.value='verified';e.dispatchEvent(new Event('change',{bubbles:true}))})()`);
   check('Unconfirmed field station cannot be saved as a verified PLC point-table mapping', await disabled('创建自定义隔离实例'));
   await evaluate(`document.querySelectorAll('.station-config-row')[2].querySelector('button').click()`);
   await click('增加曲线点');

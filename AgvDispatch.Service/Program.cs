@@ -524,6 +524,14 @@ var taskStepOptions = new DispatchTaskStepOptions();
 builder.Configuration.GetSection(DispatchTaskStepOptions.SectionName).Bind(taskStepOptions);
 builder.Services.AddSingleton(taskStepOptions);
 builder.Services.AddHostedService<DispatchTaskStepCoordinator>();
+var mutatingCapabilityEnabled =
+    plcOptions.AllowWrites || agvOptions.AllowCommands ||
+    chargingOptions.Enabled || chargingScriptOptions.Enabled ||
+    taskCreationOptions.Enabled || dispatchOrchestratorOptions.Enabled ||
+    outboxOptions.Enabled || taskStepOptions.Enabled ||
+    handshakeOptions.Enabled || segmentCommitOptions.Enabled ||
+    plcCycleTestOptions.Enabled || fleetTestOptions.Enabled;
+TrafficSecurityStartupValidator.Validate(trafficSecurityOptions, mutatingCapabilityEnabled);
 var alarmOptions = new AlarmOptions();
 builder.Configuration.GetSection(AlarmOptions.SectionName).Bind(alarmOptions);
 builder.Services.AddSingleton(alarmOptions);

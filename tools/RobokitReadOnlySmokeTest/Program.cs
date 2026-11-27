@@ -198,6 +198,30 @@ options.MapBindings.Clear();
 var guardedGateway=new SeerAgvGateway(cache,manager,options,null,preflight);
 try{await guardedGateway.CreateTransportTaskAsync("BLOCKED","SIM",new[]{"LM1","LM2"},null,default);throw new Exception("无绑定仍发送");}catch(InvalidOperationException e)when(e.Message.Contains("核验")){checks++;}
 Check(robot.Types.Count(t=>t.Type==3066)==sendsBeforeGuard,"发送门禁失败没有3066副作用");
+cache.ApplyTelemetry("SIM",new AgvRobotTelemetry(0,0,0,0.95,"LM1",null,90,true,false,"Blocked",null,null,null,[],[],DateTimeOffset.Now)
+{
+    VelocityX=0,VelocityY=0,AngularVelocity=0,Charging=false
+},TimeSpan.FromMilliseconds(1));
+var recoverySends=robot.Types.Count(t=>t.Type==3066);
+var recoveryGateway=new SeerAgvGateway(cache,manager,options,null,new RejectRecoveryRouteGuard());
+try
+{
+    await recoveryGateway.CreateObstacleRecoveryTransportTaskAsync(
+        "OBSTACLERECOVERY-GUARD","SIM",new[]{"LM1","LM2"},null,
+        DateTimeOffset.Now.AddSeconds(-5),"ORIGINAL-TASK",
+        new ObstacleRecoveryPreSendLimits(0.5,0.05),default);
+    throw new Exception("O5网关路线核验拒绝仍发送3066");
+}
+catch(AgvRecoverySendRejectedException e)when(e.Message.Contains("路线核验"))
+{
+    Check(robot.Types.Count(t=>t.Type==3066)==recoverySends,
+        "O5网关发送前路线拒绝归类为确定未发送，3066次数保持为零");
+}
+await Task.Delay(20);
+cache.ApplyTelemetry("SIM",new AgvRobotTelemetry(0,0,0,0.95,"LM1",null,90,false,false,"Idle",null,null,null,[],[],DateTimeOffset.Now)
+{
+    VelocityX=0,VelocityY=0,AngularVelocity=0,Charging=false
+},TimeSpan.FromMilliseconds(1));
 var directory=Path.Combine(Path.GetTempPath(),"agv-chain-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(directory);
 using(var db=DatabaseFactory.Create(new(){DatabasePath=Path.Combine(directory,"test.db")}))
 {
@@ -276,6 +300,16 @@ sealed class PresendChain : IAgvTransportChainLookup
         Task.FromResult<AgvTransportChain?>(businessTaskId=="PRESEND-ROOT"
             ? new(businessTaskId,"SIM",new[]{"LM1","LM2","LM3"},1,true)
             : null);
+}
+
+sealed class RejectRecoveryRouteGuard : IRobokitTaskMapPreflight
+{
+    public Task<RobokitTaskMapCheck> CheckAsync(string vehicleId,string currentSite,string pickup,string waiting,
+        string dumping,string mapId,string versionId,CancellationToken ct) =>
+        Task.FromResult(new RobokitTaskMapCheck(false,"测试用完整任务核验未配置。"));
+
+    public Task<RobokitTaskMapCheck> CheckRouteAsync(string vehicleId,IReadOnlyList<string> path,CancellationToken ct) =>
+        Task.FromResult(new RobokitTaskMapCheck(false,"测试用路线核验明确拒绝。"));
 }
 
 sealed class Robot : IAsyncDisposable

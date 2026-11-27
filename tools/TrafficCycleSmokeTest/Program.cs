@@ -145,6 +145,26 @@ await using (var f = await Fixture.Create(("R1", 2), ("R2", 1)))
     var granted = await f.Manager.TryAcquireAsync("WAIT-B", "B", "VEH-B", ["R1"], default);
     Check(granted.Acquired, "R5不影响无闭合等待的容量2正常授予");
 }
+await using (var f = await Fixture.Create(("LANE-WEST", 1), ("LANE-EAST", 1)))
+{
+    await f.Task("A"); await f.Task("B");
+    await f.Hold("A", "LANE-WEST"); await f.Hold("B", "LANE-EAST");
+    await f.Wait("A", "LANE-EAST"); await f.Wait("B", "LANE-WEST");
+    var second = await f.Manager.TryAcquireAsync("WAIT-B", "B", "VEH-B", ["LANE-WEST"], default);
+    Check(!second.Acquired && second.BlockingTaskId == "A" && second.BlockingResourceId == "LANE-WEST",
+        "R5对向单车道第二台车获权前被拒绝，阻塞链指向对向车辆");
+    Check(!await f.Db.Queryable<TrafficResourceLeaseEntity>().AnyAsync(l =>
+            l.TaskId == "B" && l.ResourceId == "LANE-WEST"),
+        "R5拒绝授予时不产生对向路段的新租约，车辆保持各自原位而不进入互锁");
+    var request = await f.Db.Queryable<TrafficRequestEntity>().Where(r => r.StepId == "WAIT-B").FirstAsync();
+    Check(request.State == "Waiting" &&
+        (request.Reason.Contains("容量已满") || request.Reason.Contains("授予前等待图检查")),
+        "R5拒绝原因在授予前持久化，对向车辆不会同时进入单车道");
+    var risk = (await f.Control.GetWaitingAsync(new(), default)).CycleRisks.Single();
+    Check(risk.TaskIds.OrderBy(id => id).SequenceEqual(["A", "B"]) &&
+        risk.ResourceIds.OrderBy(id => id).SequenceEqual(["LANE-EAST", "LANE-WEST"]),
+        "R5现场诊断仍能显示对向单车道闭合等待的两车与两段证据");
+}
 Console.WriteLine($"Traffic cycle analysis: {checks} checks passed. Isolated SQLite only; no vehicle or PLC connection.");
 
 sealed class Fixture : IAsyncDisposable

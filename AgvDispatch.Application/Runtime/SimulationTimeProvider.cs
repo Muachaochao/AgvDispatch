@@ -1,11 +1,53 @@
+using System.Diagnostics;
+
 namespace AgvDispatch.Application.Runtime;
 
 public static class BusinessClock
 {
-    public static TimeProvider Provider { get; private set; } = TimeProvider.System;
+    public static TimeProvider Provider { get; private set; } = MonotonicTimeProvider.WallClock;
 
     public static void Use(TimeProvider provider) =>
         Provider = provider ?? throw new ArgumentNullException(nameof(provider));
+}
+
+/// <summary>
+/// Wall-clock time that never moves backwards in this process. A system clock
+/// rollback keeps the business clock advancing at stopwatch pace, so freshness
+/// checks do not suddenly consider every device stale.
+/// </summary>
+public sealed class MonotonicTimeProvider : TimeProvider
+{
+    private readonly object _sync = new();
+    private readonly TimeProvider _inner;
+    private DateTimeOffset _last;
+    private long _lastTimestamp;
+
+    public static MonotonicTimeProvider WallClock { get; } = new(TimeProvider.System);
+
+    public MonotonicTimeProvider(TimeProvider inner)
+    {
+        _inner = inner ?? throw new ArgumentNullException(nameof(inner));
+        _last = _inner.GetUtcNow();
+        _lastTimestamp = Stopwatch.GetTimestamp();
+    }
+
+    public override DateTimeOffset GetUtcNow()
+    {
+        lock (_sync)
+        {
+            var wall = _inner.GetUtcNow();
+            var timestamp = Stopwatch.GetTimestamp();
+            var elapsed = Stopwatch.GetElapsedTime(_lastTimestamp, timestamp);
+            var expected = _last + elapsed;
+            // A forward wall-clock jump is accepted (conservative: old data
+            // becomes stale). A backward jump is ignored and business time
+            // continues from the last observation.
+            var next = wall >= expected ? wall : expected;
+            _last = next;
+            _lastTimestamp = timestamp;
+            return next;
+        }
+    }
 }
 
 /// <summary>

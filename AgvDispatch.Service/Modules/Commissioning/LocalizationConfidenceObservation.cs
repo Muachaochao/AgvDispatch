@@ -11,7 +11,7 @@ public sealed class LocalizationConfidenceObservation(TimeSpan holdAfter, TimePr
 {
     private readonly object sync = new();
     private readonly Dictionary<string, (DateTimeOffset Last, DateTimeOffset? LowSince)> samples = new(StringComparer.OrdinalIgnoreCase);
-    private readonly TimeProvider time = clock ?? TimeProvider.System;
+    private readonly TimeProvider time = clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider;
 
     public static bool IsReady(AgvRobotSnapshot snapshot) =>
         snapshot.LocalizationConfidence is { } confidence && double.IsFinite(confidence) && confidence is >= .5 and <= 1;

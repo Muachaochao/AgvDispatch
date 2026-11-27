@@ -24,7 +24,7 @@ public sealed class TrafficSegmentReleaseMonitor(TimeProvider? clock = null)
 
     public void Update(TrafficSegmentReleaseObservation observation)
     {
-        var now = (clock ?? TimeProvider.System).GetUtcNow();
+        var now = (clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider).GetUtcNow();
         foreach (var item in _latest)
             if (now - item.Value.ObservedAt > TimeSpan.FromHours(1))
                 _latest.TryRemove(item.Key, out _);
@@ -36,7 +36,7 @@ public sealed class TrafficSegmentReleaseMonitor(TimeProvider? clock = null)
 
     public IReadOnlyList<TrafficSegmentReleaseObservation> Active(TimeSpan maximumAge)
     {
-        var now = (clock ?? TimeProvider.System).GetUtcNow();
+        var now = (clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider).GetUtcNow();
         return Get().Where(value => now - value.ObservedAt <= maximumAge).ToArray();
     }
 }

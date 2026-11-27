@@ -1,4 +1,5 @@
 using AgvDispatch.Application.Abstractions;
+using AgvDispatch.Application.Runtime;
 using AgvDispatch.Domain.Agvs;
 using AgvDispatch.Domain.Devices;
 
@@ -29,7 +30,7 @@ public sealed class AgvStateCache : IAgvStateCache
 
     public AgvStateCache(AgvOptions options, TimeProvider? clock = null)
     {
-        _clock = clock ?? TimeProvider.System;
+        _clock = clock ?? BusinessClock.Provider;
         _staleAfter = TimeSpan.FromMilliseconds(Math.Max(1, options.StaleAfterMs));
         foreach (var robot in options.Robots.Where(r=>!options.Enabled||!r.Enabled)) _disconnected.Add(robot.VehicleId);
         var now = _clock.GetUtcNow();

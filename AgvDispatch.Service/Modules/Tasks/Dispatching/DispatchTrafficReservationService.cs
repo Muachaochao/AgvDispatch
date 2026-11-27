@@ -14,7 +14,7 @@ public sealed class DispatchTrafficReservationService(ITrafficResourceManager re
         var rows = (await tasks.GetDispatchCandidatesAsync(int.MaxValue, ct))
             .Concat(await tasks.GetAssignedTasksAsync(ct)).Concat(await tasks.GetSubmittingTasksAsync(ct));
         var policy = optimization?.Options ?? new DispatchAssignmentOptions();
-        var now = (clock ?? TimeProvider.System).GetUtcNow();
+        var now = (clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider).GetUtcNow();
         return rows.DistinctBy(t => t.TaskId, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(t => t.TaskId, t => DispatchTaskPriority.Score(t, policy, now), StringComparer.OrdinalIgnoreCase);
     }

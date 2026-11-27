@@ -58,7 +58,9 @@ public sealed class AlarmRuleEngine(
             try
             {
                 var candidates = await EvaluateAsync(stoppingToken);
-                await alarms.SynchronizeAsync(candidates, AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow(), stoppingToken);
+                await alarms.SynchronizeAsync(candidates,
+                    AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow(), stoppingToken,
+                    new AlarmSynchronizationPolicy(options.CriticalRecoveryHoldSeconds));
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {

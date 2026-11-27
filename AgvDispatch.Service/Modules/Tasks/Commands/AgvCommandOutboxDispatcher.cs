@@ -17,7 +17,7 @@ public sealed class AgvCommandOutboxDispatcher(
     IActiveMapRuntime? activeMap = null, IDispatchPreSendSafetyService? preSendSafety = null,
     IDispatchPipelineMonitor? pipeline = null, TimeProvider? clock = null) : IsolatedBackgroundService
 {
-    private readonly TimeProvider _clock = clock ?? TimeProvider.System;
+    private readonly TimeProvider _clock = clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider;
     private TimeSpan BusinessDelay(int milliseconds) => _clock is SimulationTimeProvider simulation
         ? simulation.ScaleForBusiness(TimeSpan.FromMilliseconds(milliseconds))
         : TimeSpan.FromMilliseconds(milliseconds);

@@ -34,7 +34,7 @@ public sealed partial class DispatchTaskOrchestrator(
     GlobalPickupRoutePlanner? pickupStaging=null, DispatchTrafficWakeup? trafficWakeup=null,
     TimeProvider? clock=null, IExecutionEvidenceJournal? evidenceJournal=null, DispatchEnergyForecast? energyForecast=null) : IsolatedBackgroundService
 {
-    private readonly TimeProvider _clock = clock ?? TimeProvider.System;
+    private readonly TimeProvider _clock = clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider;
     private TimeSpan BusinessDelay(int milliseconds) => _clock is SimulationTimeProvider simulation
         ? simulation.ScaleForBusiness(TimeSpan.FromMilliseconds(milliseconds))
         : TimeSpan.FromMilliseconds(milliseconds);
@@ -116,15 +116,17 @@ public sealed partial class DispatchTaskOrchestrator(
         // Vendor status queries are network I/O. They run before the execution gate is taken, so a slow or
         // silent vehicle cannot hold up dispatch, step advance, handshakes or cancellation for other vehicles.
         _prefetchedStatuses = await PrefetchExecutingStatusesAsync(cancellationToken);
-        using var chargingLease = charging is null ? null : await charging.EnterBusinessAsync(cancellationToken);
-        using var execution = await executionGate.EnterAsync(MapExecutionOperation.ExistingWork, cancellationToken);
-        if (execution is null) { ReportOptimizationGate("地图恢复或切换门禁尚未放行。" ); return null; }
+        // D2: the connection heartbeat is also vendor network I/O. Do not hold
+        // the map/execution gate while waiting for a silent vehicle.
         var connection = await agvGateway.GetConnectionStatusAsync(cancellationToken);
         if (connection.State is not (ConnectionState.Online or ConnectionState.Degraded))
         {
             ReportOptimizationGate("AGV通信未就绪，保留等待队列。");
             return null;
         }
+        using var chargingLease = charging is null ? null : await charging.EnterBusinessAsync(cancellationToken);
+        using var execution = await executionGate.EnterAsync(MapExecutionOperation.ExistingWork, cancellationToken);
+        if (execution is null) { ReportOptimizationGate("地图恢复或切换门禁尚未放行。" ); return null; }
 
         await SynchronizeExecutingTasksAsync(cancellationToken);
         await _trafficLayer.PrepareCycleAsync(cancellationToken);

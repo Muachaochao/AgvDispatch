@@ -10,7 +10,7 @@ public sealed partial class TrafficResourceControlService
         if(string.IsNullOrWhiteSpace(query.TaskId)||query.TaskId.Length>64||string.IsNullOrWhiteSpace(query.StepId)||query.StepId.Length>64)throw new ArgumentException("任务与等待步骤编号无效。");
         TrafficBlockingDetails? result=null;
         var transaction=await database.Ado.UseTranAsync(async()=>{
-            var now=(clock??TimeProvider.System).GetUtcNow();
+            var now=(clock??AgvDispatch.Application.Runtime.BusinessClock.Provider).GetUtcNow();
             var root=await database.Queryable<TrafficRequestEntity>().Where(r=>r.StepId==query.StepId&&r.TaskId==query.TaskId).FirstAsync(ct);
             if(root is null){result=new(now,query.TaskId,query.StepId,false,"原等待记录已不存在或归属变化，请刷新队列。",[],[],[],false,false,false);return;}
             // Relationships and their evidence share one read snapshot. Do not build a chain from the capped lifecycle page.

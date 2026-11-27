@@ -16,7 +16,7 @@ public sealed class ExecutionIdentityAcquisition
         IEnumerable<IPlcExecutionIdentityReader> plcs, IEnumerable<IVehicleContainerIdentityReader> vehicles, TimeProvider? clock = null)
     {
         _options = options; _cache = cache;
-        var time = clock ?? TimeProvider.System;
+        var time = clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider;
         _adapters = plcs.Select(p => (IdentityReadAdapter)new PlcIdentityReadAdapter(p, time, options.CoherentReadAttempts))
             .Concat(vehicles.Select(v => (IdentityReadAdapter)new VehicleIdentityReadAdapter(v, time))).ToArray();
         if (options.PollIntervalMs is < 100 or > 60000 || options.ReadTimeoutMs is < 50 or > 60000 || options.CoherentReadAttempts is < 1 or > 5)

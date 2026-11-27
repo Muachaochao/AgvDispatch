@@ -17,7 +17,7 @@ public sealed class ScriptChargingWorkflow(ChargingScriptOptions settings, Charg
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
     { Converters = { new JsonStringEnumConverter() } };
     private static readonly Regex Identifier = new("^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$", RegexOptions.CultureInvariant);
-    private DateTimeOffset Now => (clock ?? TimeProvider.System).GetUtcNow();
+    private DateTimeOffset Now => (clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider).GetUtcNow();
     private string Root => Path.GetFullPath(Path.IsPathRooted(settings.EvidenceDirectory)
         ? settings.EvidenceDirectory : Path.Combine(dataDirectory, settings.EvidenceDirectory));
 

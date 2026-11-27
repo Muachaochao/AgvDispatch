@@ -9,7 +9,7 @@ public sealed class TrafficGeometryPreviewService(TrafficSegmentReleaseInspector
 {
     public async Task<TrafficGeometryPreviewSnapshot> ReadAsync(TrafficGeometryPreviewQuery query,CancellationToken ct)
     {
-        var time=clock??TimeProvider.System;
+        var time=clock??AgvDispatch.Application.Runtime.BusinessClock.Provider;
         string? mapId=null,version=null;
         TrafficGeometryRouteSummary? first=null,second=null;
         TrafficGeometryPreviewSnapshot Refuse(string reason)=>new(time.GetUtcNow(),null,mapId,version,first,second,reason,null);

@@ -45,7 +45,7 @@ public sealed class TrafficSegmentReleaseInspector(ISqlSugarClient database, IAc
         try
         {
             var current=await LoadAsync(captured.Context.StepId,ct,deleted,transition);
-            var now=(clock??TimeProvider.System).GetUtcNow();
+            var now=(clock??AgvDispatch.Application.Runtime.BusinessClock.Provider).GetUtcNow();
             // Capture already evaluated both frames against this exact route, geometry and policy.
             // Only their freshness can change while the transaction verifies the same snapshot.
             return current.Fingerprint==captured.Fingerprint && ReferenceEquals(current.Map,captured.Map) &&
@@ -86,7 +86,7 @@ public sealed class TrafficSegmentReleaseInspector(ISqlSugarClient database, IAc
                     return Refuse("采集期间原任务、命令、路线、租约或活动地图发生变化，请重新采集。");
                 if(policyJson!=JsonSerializer.Serialize(policy))return Refuse("采集期间评估配置变化，请重新采集。");
                 var context=after.Context with { Body = body };
-                var assessedAt=(clock??TimeProvider.System).GetUtcNow();
+                var assessedAt=(clock??AgvDispatch.Application.Runtime.BusinessClock.Provider).GetUtcNow();
                 var assessment=TrafficSegmentReleaseEvaluator.Evaluate(context,evidence,policy,assessedAt);
                 if(assessment.Available && assessment.Candidates.Any(c=>c.EvidenceVerified) && evidence is not null)
                     capture?.Invoke(new(after.Fingerprint,after.Map,context,evidence,policyJson,assessedAt,

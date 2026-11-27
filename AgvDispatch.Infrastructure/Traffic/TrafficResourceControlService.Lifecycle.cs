@@ -21,7 +21,7 @@ public sealed partial class TrafficResourceControlService
         }
         var taskIds = requests.Select(r => r.TaskId).ToArray();
         var tasks = taskIds.Length == 0 ? [] : await database.Queryable<DispatchTaskEntity>().Where(t => taskIds.Contains(t.TaskId)).ToListAsync(ct);
-        var nowUtc = (clock ?? TimeProvider.System).GetUtcNow();
+        var nowUtc = (clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider).GetUtcNow();
         var byTask = tasks.ToDictionary(t => t.TaskId);
         var rows = requests.OrderByDescending(r => r.UpdatedAt).Take(200).Select(r => ProjectRequest(r, leases, byTask, AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime, nowUtc)).ToArray();
         var events = await database.Queryable<TrafficLifecycleEventEntity>().OrderBy("rowid DESC").Take(100).ToListAsync(ct);

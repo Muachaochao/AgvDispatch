@@ -4,7 +4,11 @@ namespace AgvDispatch.Infrastructure.Maps;
 
 public sealed class MapExecutionGate(IRecoveryBarrier? recovery = null,IMapTransferRecoveryBarrier? mapTransfers=null) : IMapExecutionGate
 {
-    private readonly SemaphoreSlim _mutex = new(1, 1);
+    private readonly object _sync = new();
+    private readonly LinkedList<Waiter> _readers = new();
+    private readonly LinkedList<Waiter> _writers = new();
+    private int _activeReaders;
+    private bool _writerActive;
     private int _mode = (int)MapExecutionMode.Starting;
     public MapExecutionMode Mode => (MapExecutionMode)Volatile.Read(ref _mode);
     public bool CanStartNewWork => Mode == MapExecutionMode.Running && recovery?.IsOpen != false && mapTransfers?.IsOpen!=false;
@@ -30,24 +34,133 @@ public sealed class MapExecutionGate(IRecoveryBarrier? recovery = null,IMapTrans
 
     public async ValueTask<IDisposable?> EnterAsync(MapExecutionOperation operation, CancellationToken cancellationToken)
     {
-        await _mutex.WaitAsync(cancellationToken);
-        if (recovery?.IsOpen != false && mapTransfers?.IsOpen!=false && (Mode == MapExecutionMode.Running ||
-            (Mode == MapExecutionMode.Draining && operation == MapExecutionOperation.ExistingWork)))
-            return new Lease(_mutex);
-        _mutex.Release();
-        return null;
+        if (!Allows(operation)) return null;
+        // ExistingWork is a shared execution lease. A slow vendor query may keep a
+        // map switch waiting, but it must not serialize dispatch, steps, release and
+        // outbox work for every other vehicle. NewWork and control operations take
+        // the exclusive side so their local read-modify-write remains atomic.
+        var shared = operation == MapExecutionOperation.ExistingWork;
+        var waiter = await EnqueueAsync(shared, cancellationToken);
+        if (!Allows(operation))
+        {
+            Release(shared);
+            return null;
+        }
+        return new Lease(this, shared);
     }
 
     public async ValueTask<IDisposable> EnterControlAsync(CancellationToken cancellationToken)
     {
-        await _mutex.WaitAsync(cancellationToken);
-        return new Lease(_mutex);
+        await EnqueueAsync(shared: false, cancellationToken);
+        return new Lease(this, shared: false);
     }
 
     public void SetMode(MapExecutionMode mode) => Volatile.Write(ref _mode, (int)mode);
-    private sealed class Lease(SemaphoreSlim mutex) : IDisposable
+
+    private bool Allows(MapExecutionOperation operation)
     {
-        private SemaphoreSlim? _mutex = mutex;
-        public void Dispose() => Interlocked.Exchange(ref _mutex, null)?.Release();
+        if (recovery?.IsOpen == false || mapTransfers?.IsOpen == false) return false;
+        return Mode == MapExecutionMode.Running ||
+            Mode == MapExecutionMode.Draining && operation == MapExecutionOperation.ExistingWork;
+    }
+
+    private ValueTask<Waiter> EnqueueAsync(bool shared, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var waiter = new Waiter();
+        LinkedListNode<Waiter> node;
+        lock (_sync)
+        {
+            if (!_writerActive && shared && _writers.Count == 0)
+            {
+                _activeReaders++;
+                waiter.Completed = true;
+                waiter.Source.SetResult();
+                return ValueTask.FromResult(waiter);
+            }
+            if (!_writerActive && !shared && _activeReaders == 0 && _writers.Count == 0)
+            {
+                _writerActive = true;
+                waiter.Completed = true;
+                waiter.Source.SetResult();
+                return ValueTask.FromResult(waiter);
+            }
+            node = (shared ? _readers : _writers).AddLast(waiter)!;
+        }
+        waiter.Registration = cancellationToken.Register(() => Cancel(waiter, node));
+        return WaitAsync(waiter);
+    }
+
+    private static async ValueTask<Waiter> WaitAsync(Waiter waiter)
+    {
+        await waiter.Source.Task.ConfigureAwait(false);
+        waiter.Registration.Dispose();
+        return waiter;
+    }
+
+    private void Cancel(Waiter waiter, LinkedListNode<Waiter> node)
+    {
+        lock (_sync)
+        {
+            if (waiter.Completed) return;
+            node.List?.Remove(node);
+            waiter.Completed = true;
+            waiter.Source.TrySetCanceled();
+            GrantLocked();
+        }
+    }
+
+    private void Release(bool shared)
+    {
+        lock (_sync)
+        {
+            if (shared)
+            {
+                if (_activeReaders > 0) _activeReaders--;
+            }
+            else
+            {
+                _writerActive = false;
+            }
+            GrantLocked();
+        }
+    }
+
+    private void GrantLocked()
+    {
+        if (_writerActive) return;
+        if (_writers.First is { } writer)
+        {
+            if (_activeReaders != 0) return;
+            _writers.RemoveFirst();
+            if (writer.Value.Completed) return;
+            _writerActive = true;
+            writer.Value.Completed = true;
+            writer.Value.Source.TrySetResult();
+            return;
+        }
+        // No writer is waiting. Release all readers that queued while the
+        // previous exclusive lease was active.
+        while (_readers.First is { } reader)
+        {
+            _readers.RemoveFirst();
+            if (reader.Value.Completed) continue;
+            _activeReaders++;
+            reader.Value.Completed = true;
+            reader.Value.Source.TrySetResult();
+        }
+    }
+
+    private sealed class Waiter
+    {
+        public readonly TaskCompletionSource Source = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public CancellationTokenRegistration Registration;
+        public bool Completed;
+    }
+
+    private sealed class Lease(MapExecutionGate gate, bool shared) : IDisposable
+    {
+        private MapExecutionGate? _gate = gate;
+        public void Dispose() => Interlocked.Exchange(ref _gate, null)?.Release(shared);
     }
 }

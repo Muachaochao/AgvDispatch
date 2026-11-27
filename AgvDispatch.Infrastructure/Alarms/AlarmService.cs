@@ -9,7 +9,8 @@ public sealed class AlarmService(ISqlSugarClient database) : IAlarmService
     public async Task SynchronizeAsync(
         IReadOnlyCollection<AlarmCandidate> candidates,
         DateTimeOffset observedAt,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        AlarmSynchronizationPolicy? policy = null)
     {
         ArgumentNullException.ThrowIfNull(candidates);
         cancellationToken.ThrowIfCancellationRequested();
@@ -22,6 +23,7 @@ public sealed class AlarmService(ISqlSugarClient database) : IAlarmService
         }
 
         var now = observedAt.LocalDateTime;
+        var criticalHold = (policy ?? new AlarmSynchronizationPolicy()).CriticalRecoveryHold;
         var transaction = await database.Ado.UseTranAsync(async () =>
         {
             var active = await database.Queryable<AlarmRecordEntity>()
@@ -50,6 +52,16 @@ public sealed class AlarmService(ISqlSugarClient database) : IAlarmService
                 }
                 else
                 {
+                    // A critical alarm may be visible for only one evaluation
+                    // cycle when the producer moves to another state. Keep the
+                    // unacknowledged critical record open for the configured
+                    // hold so it cannot disappear before an operator sees it.
+                    if (existing.Severity >= (int)AlarmSeverity.Critical &&
+                        existing.Status == (int)AlarmLifecycleStatus.Open &&
+                        now - existing.LastObservedAt < criticalHold)
+                    {
+                        continue;
+                    }
                     await database.Updateable<AlarmRecordEntity>()
                         .SetColumns(item => new AlarmRecordEntity
                         {

@@ -17,7 +17,7 @@ public sealed class TrafficWaitingBayDepartureInspector(ISqlSugarClient database
     private static readonly TrafficSegmentReleasePolicy EvidencePolicy=new(){Enabled=true};
     public async Task<TrafficWaitingBayDepartureAssessment> ReadAsync(TrafficWaitingBayDepartureQuery query,CancellationToken ct)
     {
-        var time=clock??TimeProvider.System;var started=time.GetUtcNow();
+        var time=clock??AgvDispatch.Application.Runtime.BusinessClock.Provider;var started=time.GetUtcNow();
         TrafficSegmentReleaseContext? original=null;
         TrafficWaitingBayDepartureAssessment Refuse(string reason)=>new(time.GetUtcNow(),null,query?.StepId??"",query?.ResourceId??"",
             original?.TaskId,original?.VehicleId,original?.MapId,original?.MapVersionId,false,false,reason,[]);

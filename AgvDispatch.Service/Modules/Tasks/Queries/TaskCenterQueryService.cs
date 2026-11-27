@@ -105,7 +105,7 @@ public sealed partial class TaskCenterQueryService(ITaskCenterReadRepository rep
         if(checkpoint!=null && current is not null)
         {
             conditions=checkpoint.ContractVersion==HandshakeExecutionOptions.Version
-                ?PersistedHandshakeConditions.Observe(checkpoint,current.StepType,task.StationId,options.DumperStationId,signals,(clock??TimeProvider.System).GetUtcNow(),handshakeOptions?.StateMaxAgeSeconds??5).ToList()
+                ?PersistedHandshakeConditions.Observe(checkpoint,current.StepType,task.StationId,options.DumperStationId,signals,(clock??AgvDispatch.Application.Runtime.BusinessClock.Provider).GetUtcNow(),handshakeOptions?.StateMaxAgeSeconds??5).ToList()
                 :[];
             explanation=$"持久化阶段：{checkpoint.Phase}；周期{checkpoint.CycleId}；修订{checkpoint.Revision}。{checkpoint.Reason}";
             if(checkpoint.PendingSignal!=null)explanation+=" 原写入结果待人工核对，不自动重发。";
@@ -114,7 +114,7 @@ public sealed partial class TaskCenterQueryService(ITaskCenterReadRepository rep
         if(PendingHandover(detail,current) is {} handover)
         {
             conditions=PersistedHandshakeConditions.Observe(handover,DispatchTaskStepType.ReturnEmptyBox,task.StationId,options.DumperStationId,signals,
-                (clock??TimeProvider.System).GetUtcNow(),handshakeOptions?.StateMaxAgeSeconds??5).ToList();
+                (clock??AgvDispatch.Application.Runtime.BusinessClock.Provider).GetUtcNow(),handshakeOptions?.StateMaxAgeSeconds??5).ToList();
             explanation=$"等待倒料区交接完成，尚未进入放箱通知。原返程交接阶段：{handover.Phase}；修订{handover.Revision}。{handover.Reason}";
             if(handover.PendingSignal!=null)explanation+=" 原写入结果待人工核对，不自动重发。";
             explanation+=" 应核对原交接及车辆证据，不应手工置位空箱放到位通知。";
@@ -140,7 +140,7 @@ public sealed partial class TaskCenterQueryService(ITaskCenterReadRepository rep
 
     private TaskCenterDetail EnrichSteps(TaskCenterDetail detail, string? currentStepId)
     {
-        var now = (clock ?? TimeProvider.System).GetUtcNow();
+        var now = (clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider).GetUtcNow();
         var thresholds = parameters?.StepTimeouts.ToDictionary(row => row.StepType, row => row.Seconds);
         var terminal = detail.Task.Stage is DispatchTaskStage.Completed or DispatchTaskStage.Cancelled or DispatchTaskStage.Faulted or DispatchTaskStage.CancellationReview;
         var steps = detail.Steps.Select(step =>

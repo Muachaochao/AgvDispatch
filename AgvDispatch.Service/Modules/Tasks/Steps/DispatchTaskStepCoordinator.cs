@@ -28,7 +28,7 @@ public sealed class DispatchTaskStepCoordinator(
     AgvOptions? agvOptions = null, GlobalPickupRoutePlanner? pickupStaging = null,
     DispatchTrafficWakeup? trafficWakeup = null, TimeProvider? clock = null) : IsolatedBackgroundService
 {
-    private readonly TimeProvider _clock = clock ?? TimeProvider.System;
+    private readonly TimeProvider _clock = clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider;
     private TimeSpan BusinessDelay(int milliseconds) => _clock is SimulationTimeProvider simulation
         ? simulation.ScaleForBusiness(TimeSpan.FromMilliseconds(milliseconds))
         : TimeSpan.FromMilliseconds(milliseconds);

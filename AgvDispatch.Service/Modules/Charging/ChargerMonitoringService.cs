@@ -11,7 +11,7 @@ public sealed class ChargerMonitoringService(ChargerMonitoringOptions options,
     ILogger<ChargerMonitoringService> logger, TimeProvider? clock = null)
     : BackgroundService, IChargerTelemetryMonitor
 {
-    private readonly TimeProvider clock = clock ?? TimeProvider.System;
+    private readonly TimeProvider clock = clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider;
     private ChargerTelemetrySnapshot[] snapshots = [];
 
     public IReadOnlyList<ChargerTelemetrySnapshot> Read() => Volatile.Read(ref snapshots);

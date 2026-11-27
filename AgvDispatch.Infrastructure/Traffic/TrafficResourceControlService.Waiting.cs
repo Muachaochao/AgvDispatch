@@ -24,7 +24,7 @@ public sealed partial class TrafficResourceControlService
             // waits for traffic. Excluding status 40 hides real reservation cycles.
             var pending = steps.Where(s => s.Status is 0 or 10 or 40 or 60).ToDictionary(s => s.StepId);
             var leases = await database.Queryable<TrafficResourceLeaseEntity>().ToListAsync(ct);
-            var now = (clock ?? TimeProvider.System).GetUtcNow();
+            var now = (clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider).GetUtcNow();
             var byTask = tasks.ToDictionary(t => t.TaskId);
             var cycles = TrafficCycleRiskDetector.Find(requests, byTask, pending, leases, catalog, AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime);
             var waiting = requests.Where(r => pending.TryGetValue(r.StepId, out var step) && step.TaskId == r.TaskId)

@@ -31,6 +31,11 @@ public sealed class PlcOptions
     public int ReadBlockSizeBytes { get; set; } = 200;
     public string SignalCsvPath { get; set; } = "config/plc-signals.csv";
     public string AuthorizationCodeEnvironmentVariable { get; set; } = "HSL_AUTHORIZATION_CODE";
+    // Optional PLC program heartbeat. When configured, a read that keeps returning
+    // the same heartbeat value beyond this window is stale even if TCP still works.
+    public string HeartbeatStationId { get; set; } = string.Empty;
+    public string HeartbeatVariableName { get; set; } = string.Empty;
+    public int HeartbeatTimeoutMs { get; set; }
 
     internal string? GetConfigurationError()
     {
@@ -73,6 +78,22 @@ public sealed class PlcOptions
         if (ReadBlockSizeBytes is < 1 or > 65535)
         {
             return "PLC批量读取块大小必须在1到65535字节之间。";
+        }
+
+        var heartbeatConfigured = !string.IsNullOrWhiteSpace(HeartbeatStationId) ||
+            !string.IsNullOrWhiteSpace(HeartbeatVariableName) || HeartbeatTimeoutMs != 0;
+        if (heartbeatConfigured)
+        {
+            if (string.IsNullOrWhiteSpace(HeartbeatStationId) ||
+                string.IsNullOrWhiteSpace(HeartbeatVariableName))
+            {
+                return "PLC心跳必须同时配置HeartbeatStationId和HeartbeatVariableName。";
+            }
+
+            if (HeartbeatTimeoutMs < PollIntervalMs * 2 || HeartbeatTimeoutMs > 300_000)
+            {
+                return "PLC心跳超时至少为采集周期的2倍，且不能超过300000毫秒。";
+            }
         }
 
         return null;

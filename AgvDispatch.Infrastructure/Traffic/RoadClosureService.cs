@@ -15,7 +15,7 @@ public sealed class RoadClosureService(ISqlSugarClient database, IActiveMapRunti
     private State _state = new(false, 0, []);
     private sealed record State(bool Ready, long Revision, IReadOnlyList<RoadClosureRecord> Closures);
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
-    private DateTime UtcNow => (clock ?? TimeProvider.System).GetUtcNow().UtcDateTime;
+    private DateTime UtcNow => (clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider).GetUtcNow().UtcDateTime;
 
     public async Task InitializeAsync(CancellationToken cancellationToken)
     {

@@ -114,6 +114,17 @@ internal sealed record WebLocalLaunchMode(string NavigationVehicle, string PlcCy
         $"--NavigationTest:ForkEnabled={ForkTest}",
         $"--NavigationTest:AutoDetourEnabled={AutoNavigationDetour}",
         $"--PlcCycleTest:Enabled={(IsPlcCycle ? "true" : "false")}",
-        $"--PlcCycleTest:VehicleId={PlcCycleVehicle}", $"--PlcCycleTest:StationId={PlcCycleStation}"
+        $"--PlcCycleTest:VehicleId={PlcCycleVehicle}", $"--PlcCycleTest:StationId={PlcCycleStation}",
+        // A local one-click business/test launch can only write under the
+        // interactive account that owns this process. The pipe ACL already
+        // restricts access to that account; this is not a shared operator role.
+        ..(IsBusiness || NavigationVehicle.Length > 0 || IsPlcCycle
+            ? new[]
+            {
+                $"--Security:Users:0:WindowsIdentity={Environment.UserDomainName}\\{Environment.UserName}",
+                "--Security:Users:0:DisplayName=本机日常操作",
+                "--Security:Users:0:Role=Administrator"
+            }
+            : [])
     ];
 }

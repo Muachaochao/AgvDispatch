@@ -46,8 +46,9 @@ public sealed class GlobalPickupRoutePlanner(
         if (clear is { Nodes.Count: >= 2 } && double.IsFinite(clear.Cost))
         {
             var windows = ProtectExit(TransportRouteWindows.NormalizeResources(
-                TransportRouteWindows.Plan(clear, map, steps, agv.NavigationCommandMode), map));
-            if (!windows[0].ResourceIds.Any(unavailable.Contains)) best = new(clear, windows, 0);
+                TransportRouteWindows.PlanCandidate(clear, map, steps, agv.NavigationCommandMode), map));
+            if (windows.Count != 0 && !windows[0].ResourceIds.Any(unavailable.Contains))
+                best = new(clear, windows, 0);
         }
         if (!SupportsRollingRoutes || unavailable.Count == 0) return best;
 
@@ -99,15 +100,12 @@ public sealed class GlobalPickupRoutePlanner(
         var clearance = FleetClearance(vehicleIds);
         if (clearance is null) return null;
 
-        // R5: a map-authored stop (allowTrafficStop=true Intersection / WaitingPoint /
-        // ChargingPoint / Station) is a valid rolling-window boundary.  Requiring a
-        // fully isolated WaitingPoint here made every conflict-staged long route
-        // exceed the R17 hard maximum (e.g. WAIT-01 -> CNC-075, 67 edges) even when
-        // the map already had marked safe stops, so no task could be dispatched.
-        // IsHoldingSite remains the stricter filter for optional detour candidates
-        // in SafeHoldingSites/TryStageViaHolding.
+        // A waiting bay used to stage a vehicle before a blocked window must
+        // clear adjacent lanes. Keep the other map-authored rolling stop roles.
         var windows = TransportRouteWindows.NormalizeResources(
-            TransportRouteWindows.Plan(route, map, steps, agv.NavigationCommandMode), map);
+            TransportRouteWindows.PlanCandidate(route, map, steps, agv.NavigationCommandMode,
+                canStageAt: node => node.Type != MapNodeType.WaitingPoint ||
+                    IsHoldingSite(node, map, clearance.Value)), map);
         if (windows.Count < 2 || windows[0].ResourceIds.Any(unavailable.Contains))
             return null;
 
