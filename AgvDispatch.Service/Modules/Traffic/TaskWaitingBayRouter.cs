@@ -24,7 +24,8 @@ public static class TaskWaitingBayRouter
             : [selected.WaitingSite];
         var unavailable = await traffic.GetUnavailableResourceIdsAsync(step.TaskId, ct);
         var counts = await allocator.GetSelectionCountsAsync(map.MapId, map.VersionId, ct);
-        var ranked = Rank(sites, pickup, planner, unavailable, counts, map, options, selected?.ResourceId, rolling, vehicleIds).FirstOrDefault();
+        var transit = selected is null ? await traffic.GetOthersRemainingRouteResourceIdsAsync(step.TaskId, ct) : null;
+        var ranked = Rank(sites, pickup, planner, unavailable, counts, map, options, selected?.ResourceId, rolling, vehicleIds, transit).FirstOrDefault();
         if (ranked.Plan is null)
         {
             await ObserveReferenceAsync(step, pickup, sites, planner, unavailable, map, trafficLayer, ct);
@@ -60,7 +61,8 @@ public static class TaskWaitingBayRouter
         var unavailable = await traffic.GetUnavailableResourceIdsAsync(step.TaskId, ct);
         var counts = await allocator.GetSelectionCountsAsync(map.MapId, map.VersionId, ct);
         var layer = trafficLayer ?? new DispatchTrafficReservationService(traffic);
-        var candidates = Rank(sites, pickup, planner, unavailable, counts, map, options, selected?.ResourceId, rolling, vehicleIds);
+        var transit = selected is null ? await traffic.GetOthersRemainingRouteResourceIdsAsync(step.TaskId, ct) : null;
+        var candidates = Rank(sites, pickup, planner, unavailable, counts, map, options, selected?.ResourceId, rolling, vehicleIds, transit);
         foreach (var candidate in candidates)
         {
             var resource = candidate.Resource;
@@ -141,12 +143,22 @@ public static class TaskWaitingBayRouter
     private static (string Site, string Resource, RoutePlan? Plan, IReadOnlyList<AgvTransportRouteWindow>? Windows, double Cost)[] Rank(
         IReadOnlyList<string> sites, string pickup, IRoutePlanner planner, IReadOnlySet<string> unavailable,
         IReadOnlyDictionary<string, int> counts, ActiveMapRuntimeSnapshot map, DispatchOrchestratorOptions options,
-        string? boundResource, GlobalPickupRoutePlanner? rolling, IReadOnlyCollection<string>? vehicleIds)
+        string? boundResource, GlobalPickupRoutePlanner? rolling, IReadOnlyCollection<string>? vehicleIds,
+        IReadOnlySet<string>? othersTransit = null)
     {
-        var candidates = sites.Select(site => (Site: site, Resource: boundResource ??
+        var bays = sites.Select(site => (Site: site, Resource: boundResource ??
                 DumperWaitingBaySafety.ExclusiveResourceIds(map.Definition, options, site)
                     .Order(StringComparer.Ordinal).FirstOrDefault()))
             .Where(candidate => candidate.Resource is not null && !unavailable.Contains(candidate.Resource))
+            .ToArray();
+        // B07-R8: a bay booked by a follower must not lie on the remaining route of another vehicle
+        // already travelling to the dumper. The booking is held for the whole step, so the leader
+        // would stop in front of it while the follower waits behind the leader (2026-11-27 build,
+        // Mac replay: AGV-05 booked SIM-SAFE-CAD2-E01832 that AGV-04 had to pass to reach WAIT-03).
+        // Only when every bay is on such a route is the former choice kept.
+        if (othersTransit is { Count: > 0 } && bays.Any(bay => !othersTransit.Contains(bay.Resource!)))
+            bays = bays.Where(bay => !othersTransit.Contains(bay.Resource!)).ToArray();
+        var candidates = bays
             .Select(candidate =>
         {
             var proposal = rolling?.PlanFollowup(planner, map, pickup, candidate.Site, unavailable, vehicleIds ?? []);

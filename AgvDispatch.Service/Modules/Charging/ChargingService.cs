@@ -299,6 +299,26 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
             }
         }
         if(blockedByCritical)RequestPreemption();
+        else if(options.Enabled&&options.BusinessDemandReleaseBatteryPercent>0)await RequestBusinessReleaseAsync(ct);
+    }
+
+    // B07-R8: business-first release. Orders waiting with no free vehicle outrank topping a vehicle up to
+    // the target: the most-charged vehicle above the configured level stops through the normal flow.
+    private async Task RequestBusinessReleaseAsync(CancellationToken ct)
+    {
+        var rows=sessions;
+        if(rows.Any(s=>s.StopRequested&&s.Phase is ChargingPhase.Charging or ChargingPhase.AwaitingCurrent or ChargingPhase.StoppingCharge or ChargingPhase.AwaitingStop))return;
+        decimal? Battery(ChargingSession s)=>port.Vehicles.FirstOrDefault(v=>v.VehicleId.Equals(s.VehicleId,StringComparison.OrdinalIgnoreCase))?.BatteryPercent;
+        var candidate=rows.Where(s=>(s.Phase is ChargingPhase.Charging or ChargingPhase.AwaitingCurrent)&&!s.StopRequested&&!s.StopAttempted&&
+                s.Site?.ControlMode!="RobokitScript"&&Battery(s) is {} battery&&battery>=options.BusinessDemandReleaseBatteryPercent)
+            .OrderByDescending(s=>Battery(s)).FirstOrDefault();
+        if(candidate is null)return;
+        var outOfService=rows.Where(s=>s.Phase!=ChargingPhase.Completed).Select(s=>s.VehicleId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var demand=await port.UnservedBusinessTasksAsync(outOfService,ct);
+        if(demand<=0)return;
+        Save(candidate with {StopRequested=true,UpdatedAt=Now,
+            Message=$"业务优先：{demand}单等待空闲车，电量已达{Battery(candidate):F1}%（≥{options.BusinessDemandReleaseBatteryPercent}%），按正常停充及退出流程提前离桩接单。"});
+        logger.LogInformation("业务优先提前离桩。SessionId={SessionId}, VehicleId={VehicleId}, WaitingOrders={Demand}",candidate.SessionId,candidate.VehicleId,demand);
     }
 
     // B07-FIX C4: ask the most-charged eligible vehicle to stop through the normal stop and exit flow, so a critical vehicle
@@ -336,7 +356,7 @@ public sealed partial class ChargingService : IsolatedBackgroundService, IChargi
                 return;
             }
             if((row.Phase is ChargingPhase.AwaitingCurrent or ChargingPhase.Charging) && (row.StopRequested||chargeReading.BatteryPercent>=options.TargetBatteryPercent))
-            {await StopAsync(row,row.StopRequested?"人工申请停止充电。":"达到目标电量，申请停止充电。",ct);return;}
+            {await StopAsync(row,row.StopRequested?(row.Message.StartsWith("业务优先")?row.Message:"人工申请停止充电。"):"达到目标电量，申请停止充电。",ct);return;}
             var tapered=chargeReading.Charging!=true||chargeReading.Current is null||chargeReading.Current<=options.MinimumChargingCurrent;
             // B07-FIX C15: near full, a current that has naturally tapered is a normal full-charge stop, not a fault.
             if(row.Phase==ChargingPhase.Charging&&chargeReading.BatteryPercent>=options.NearFullBatteryPercent&&tapered)

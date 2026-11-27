@@ -934,6 +934,30 @@ public sealed partial class DispatchTaskOrchestrator(
         var boundBay = await BoundWaitingBayAsync(task.TaskId, command.StepId, cancellationToken);
         windows = AttachWaitingBay(windows, nextIndex, boundBay);
         next = windows[nextIndex];
+        if (_stepOptions.PartialWindowAcquisition && map is not null && string.IsNullOrWhiteSpace(boundBay))
+        {
+            var unavailableNow = await trafficResources.GetUnavailableResourceIdsAsync(task.TaskId, cancellationToken);
+            var blockedNow = next.ResourceIds.Where(unavailableNow.Contains).ToArray();
+            if (blockedNow.Length > 0)
+            {
+                var holders = await trafficResources.GetBlockingHoldersAsync(task.TaskId, blockedNow, cancellationToken);
+                var currentMap = map;
+                var decision = PartialWindowAdvance.Plan(windows, nextIndex, currentMap.Graph.FindRouteNode,
+                    window => TransportRouteWindows.NormalizeResources([window], currentMap)[0].ResourceIds,
+                    unavailableNow, holders,
+                    site => (IReadOnlyCollection<string>?)currentMap.Graph.FindRouteNode(site)?.ResourceIds ?? [],
+                    retained, _stepOptions.PartialWindowMinimumEdges);
+                if (decision.Windows is not null)
+                {
+                    windows = decision.Windows;
+                    next = windows[nextIndex];
+                    logger.LogInformation("{Reason} TaskId={TaskId}, StepId={StepId}, VehicleId={VehicleId}, Holders={Holders}",
+                        decision.Reason, task.TaskId, command.StepId, task.VehicleId,
+                        string.Join(',', holders!.Select(holder => holder.VehicleId).Distinct()));
+                }
+                else LogPartialRefusal(task.TaskId, command.StepId, decision.Reason);
+            }
+        }
         var observation = new TrafficRouteObservation(command.StepId, task.TaskId, task.VehicleId,
             next.Source, next.Destination, next.EdgeIds, next.ResourceIds, false,
             "车辆已在安全点停稳，原任务申请下一滚动路权窗口。")
@@ -976,6 +1000,15 @@ public sealed partial class DispatchTaskOrchestrator(
         return prepared
             ? TransportWindowAdvanceOutcome.Prepared
             : TransportWindowAdvanceOutcome.PreparationFailed;
+    }
+
+    private readonly Dictionary<string, string> _partialRefusals = new(StringComparer.Ordinal);
+    private void LogPartialRefusal(string taskId, string stepId, string reason)
+    {
+        if (_partialRefusals.TryGetValue(stepId, out var previous) && previous == reason) return;
+        if (_partialRefusals.Count > 512) _partialRefusals.Clear();
+        _partialRefusals[stepId] = reason;
+        logger.LogInformation("分批路权未采用：{Reason} TaskId={TaskId}, StepId={StepId}", reason, taskId, stepId);
     }
 
     private async Task<string?> BoundWaitingBayAsync(string taskId, string stepId, CancellationToken cancellationToken)
