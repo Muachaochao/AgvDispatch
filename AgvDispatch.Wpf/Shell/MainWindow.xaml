@@ -28,10 +28,10 @@
             <Setter Property="Height" Value="38"/><Setter Property="HorizontalContentAlignment" Value="Left"/>
             <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
             <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button">
-                <Border x:Name="ActionSurface" Background="{DynamicResource MutedSurfaceBrush}" CornerRadius="6" Padding="12,0">
+                <Border x:Name="ActionSurface" Background="{DynamicResource MutedSurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="6" Padding="12,0">
                     <ContentPresenter HorizontalAlignment="Left" VerticalAlignment="Center"/>
                 </Border>
-                <ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="ActionSurface" Property="Background" Value="{DynamicResource AccentMutedBrush}"/></Trigger></ControlTemplate.Triggers>
+                <ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="ActionSurface" Property="Background" Value="{DynamicResource AccentMutedBrush}"/><Setter TargetName="ActionSurface" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/></Trigger></ControlTemplate.Triggers>
             </ControlTemplate></Setter.Value></Setter>
         </Style>
     </Window.Resources>
@@ -42,7 +42,7 @@
             <RowDefinition Height="0" />
         </Grid.RowDefinitions>
 
-        <Border Grid.Row="0" Background="{DynamicResource HeaderBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,0,1">
+        <Border Grid.Row="0" Background="{DynamicResource HeaderBrush}" BorderBrush="{DynamicResource HeaderAccentLineBrush}" BorderThickness="0,0,0,1">
             <Grid Margin="18,0">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
@@ -52,50 +52,51 @@
                 </Grid.ColumnDefinitions>
 
                 <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
-                    <Border x:Name="HeaderBrandIcon" Width="36" Height="36" CornerRadius="9" BorderBrush="#6ED6F4" BorderThickness="1" Margin="0,0,12,0">
-                        <Border.Background><LinearGradientBrush StartPoint="0,0" EndPoint="1,1"><GradientStop Color="#2BAFD9" Offset="0"/><GradientStop Color="#1378B9" Offset="1"/></LinearGradientBrush></Border.Background>
+                    <Border x:Name="HeaderBrandIcon" Width="36" Height="36" CornerRadius="8" BorderBrush="#22D3EE" BorderThickness="1" Margin="0,0,12,0">
+                        <Border.Effect><DropShadowEffect Color="#22D3EE" BlurRadius="14" ShadowDepth="0" Opacity="0.35"/></Border.Effect>
+                        <Border.Background><LinearGradientBrush StartPoint="0,0" EndPoint="1,1"><GradientStop Color="#0E7490" Offset="0"/><GradientStop Color="#155E75" Offset="1"/></LinearGradientBrush></Border.Background>
                         <Viewbox Margin="5" Stretch="Uniform"><Canvas Width="28" Height="28">
                             <Path Data="M5,15 L5,9 Q5,6 8,6 L16,6 Q19,6 19,9 L19,15 M8,6 L8,3 L16,3 L16,6 M3,15 L23,15 L23,22 L3,22 Z M8,10 L16,10" Stroke="White" StrokeThickness="1.8" StrokeLineJoin="Round"/>
                             <Ellipse Width="4" Height="4" Fill="White" Canvas.Left="5" Canvas.Top="22"/><Ellipse Width="4" Height="4" Fill="White" Canvas.Left="17" Canvas.Top="22"/>
-                            <Path Data="M22,5 L26,5 L26,11 M23,8 L26,11 L28,8" Stroke="#B9F3FF" StrokeThickness="1.6" StrokeLineJoin="Round"/>
-                            <Rectangle Width="7" Height="2" RadiusX="1" RadiusY="1" Fill="#B9F3FF" Canvas.Left="9.5" Canvas.Top="18"/>
+                            <Path Data="M22,5 L26,5 L26,11 M23,8 L26,11 L28,8" Stroke="#67E8F9" StrokeThickness="1.6" StrokeLineJoin="Round"/>
+                            <Rectangle Width="7" Height="2" RadiusX="1" RadiusY="1" Fill="#67E8F9" Canvas.Left="9.5" Canvas.Top="18"/>
                         </Canvas></Viewbox>
                     </Border>
                     <StackPanel VerticalAlignment="Center">
-                        <TextBlock Text="铝屑回收智能调度平台" Foreground="White" FontSize="16" FontWeight="SemiBold" />
-                        <TextBlock Text="AGV FLEET &amp; TRAFFIC CONTROL" Foreground="#FF83A8BD" FontSize="9" FontWeight="SemiBold" />
+                        <TextBlock Text="铝屑回收智能调度平台" Foreground="#E6F1FF" FontSize="16" FontWeight="SemiBold" />
+                        <TextBlock Text="AGV FLEET &amp; TRAFFIC CONTROL" Foreground="#22D3EE" Opacity="0.85" FontSize="9" FontWeight="SemiBold" />
                     </StackPanel>
                 </StackPanel>
 
-                <Border Grid.Column="2" BorderBrush="#3F6DAF" BorderThickness="1,0,0,0" Padding="24,0,0,0" VerticalAlignment="Center">
-                    <StackPanel><TextBlock Text="{Binding CurrentPage}" Foreground="White" FontSize="15" FontWeight="SemiBold" />
-                        <TextBlock Text="{Binding ClientBuild}" ToolTip="{Binding ClientBuild}" Foreground="#ABC7D8" FontSize="10" MaxWidth="350" TextTrimming="CharacterEllipsis" />
+                <Border Grid.Column="2" BorderBrush="#2C4A6E" BorderThickness="1,0,0,0" Padding="24,0,0,0" VerticalAlignment="Center">
+                    <StackPanel><TextBlock Text="{Binding CurrentPage}" Foreground="#E6F1FF" FontSize="15" FontWeight="SemiBold" />
+                        <TextBlock Text="{Binding ClientBuild}" ToolTip="{Binding ClientBuild}" Foreground="#A9BCD3" FontSize="10" MaxWidth="350" TextTrimming="CharacterEllipsis" />
                     </StackPanel>
                 </Border>
 
                 <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
-                    <Border x:Name="HeaderClockPanel" Height="36" CornerRadius="8" Background="#142E4B" BorderBrush="#436483" BorderThickness="1" Padding="12,0" Margin="0,0,12,0"
+                    <Border x:Name="HeaderClockPanel" Height="36" CornerRadius="8" Background="#0B1524" BorderBrush="#1E3350" BorderThickness="1" Padding="12,0" Margin="0,0,12,0"
                             ToolTip="{Binding CurrentTimestamp}" AutomationProperties.Name="{Binding CurrentTimestamp}">
                         <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                            <TextBlock x:Name="HeaderClockDate" Text="{Binding HeaderDate}" Foreground="#F5FAFF" FontFamily="Bahnschrift, Consolas" FontSize="17" FontWeight="SemiBold" VerticalAlignment="Center"/>
-                            <Border Background="#23445F" BorderBrush="#3E6986" BorderThickness="1" CornerRadius="5" Padding="7,3" Margin="9,0,0,0" VerticalAlignment="Center">
-                                <TextBlock x:Name="HeaderClockWeekday" Text="{Binding HeaderWeekday}" Foreground="#9FE7F7" FontSize="11" FontWeight="SemiBold"/>
+                            <TextBlock x:Name="HeaderClockDate" Text="{Binding HeaderDate}" Foreground="#E6F1FF" FontFamily="Bahnschrift, Consolas" FontSize="17" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                            <Border Background="#1F22D3EE" BorderBrush="#4022D3EE" BorderThickness="1" CornerRadius="5" Padding="7,3" Margin="9,0,0,0" VerticalAlignment="Center">
+                                <TextBlock x:Name="HeaderClockWeekday" Text="{Binding HeaderWeekday}" Foreground="#67E8F9" FontSize="11" FontWeight="SemiBold"/>
                             </Border>
-                            <Border Width="1" Height="18" Background="#476B8B" Margin="12,0"/>
-                            <TextBlock x:Name="HeaderClock" Text="{Binding HeaderTime}" Foreground="#F5FAFF" FontFamily="Bahnschrift, Consolas" FontSize="24" FontWeight="SemiBold" VerticalAlignment="Center" Width="65" TextAlignment="Right"/>
-                            <TextBlock Text=":" Foreground="#72D9F3" FontFamily="Bahnschrift, Consolas" FontSize="21" VerticalAlignment="Center"/>
-                            <TextBlock x:Name="HeaderClockSeconds" Text="{Binding HeaderSeconds}" Foreground="#72D9F3" FontFamily="Bahnschrift, Consolas" FontSize="21" Width="27" VerticalAlignment="Center" TextAlignment="Center"/>
+                            <Border Width="1" Height="18" Background="#2C4A6E" Margin="12,0"/>
+                            <TextBlock x:Name="HeaderClock" Text="{Binding HeaderTime}" Foreground="#E6F1FF" FontFamily="Bahnschrift, Consolas" FontSize="24" FontWeight="SemiBold" VerticalAlignment="Center" Width="65" TextAlignment="Right"/>
+                            <TextBlock Text=":" Foreground="#22D3EE" FontFamily="Bahnschrift, Consolas" FontSize="21" VerticalAlignment="Center"/>
+                            <TextBlock x:Name="HeaderClockSeconds" Text="{Binding HeaderSeconds}" Foreground="#22D3EE" FontFamily="Bahnschrift, Consolas" FontSize="21" Width="27" VerticalAlignment="Center" TextAlignment="Center"/>
                         </StackPanel>
                     </Border>
                     <ToggleButton x:Name="SettingsToggle" ToolTip="外观设置" Height="32" Padding="12,0">
-                        <ToggleButton.Template><ControlTemplate TargetType="ToggleButton"><Border x:Name="SettingsSurface" Background="#22445F" BorderBrush="#3B5E78" BorderThickness="1" CornerRadius="6" Padding="{TemplateBinding Padding}"><ContentPresenter VerticalAlignment="Center"/></Border>
-                            <ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="SettingsSurface" Property="Background" Value="#315D7B"/></Trigger><Trigger Property="IsChecked" Value="True"><Setter TargetName="SettingsSurface" Property="Background" Value="#315D7B"/></Trigger></ControlTemplate.Triggers>
+                        <ToggleButton.Template><ControlTemplate TargetType="ToggleButton"><Border x:Name="SettingsSurface" Background="#0F1C2F" BorderBrush="#2C4A6E" BorderThickness="1" CornerRadius="6" Padding="{TemplateBinding Padding}"><ContentPresenter VerticalAlignment="Center"/></Border>
+                            <ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="SettingsSurface" Property="Background" Value="#142640"/><Setter TargetName="SettingsSurface" Property="BorderBrush" Value="#22D3EE"/></Trigger><Trigger Property="IsChecked" Value="True"><Setter TargetName="SettingsSurface" Property="Background" Value="#1F22D3EE"/><Setter TargetName="SettingsSurface" Property="BorderBrush" Value="#22D3EE"/></Trigger></ControlTemplate.Triggers>
                         </ControlTemplate></ToggleButton.Template>
-                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE713;" FontFamily="Segoe MDL2 Assets" FontSize="14" Foreground="White" Margin="0,0,7,0" VerticalAlignment="Center"/><TextBlock Text="设置" Foreground="White" FontSize="12"/></StackPanel>
+                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE713;" FontFamily="Segoe MDL2 Assets" FontSize="14" Foreground="#67E8F9" Margin="0,0,7,0" VerticalAlignment="Center"/><TextBlock Text="设置" Foreground="#E6F1FF" FontSize="12"/></StackPanel>
                     </ToggleButton>
                     <Popup x:Name="SettingsPopup" PlacementTarget="{Binding ElementName=SettingsToggle}" Placement="Bottom" VerticalOffset="8" StaysOpen="False" AllowsTransparency="True"
                            IsOpen="{Binding IsChecked, ElementName=SettingsToggle, Mode=TwoWay}" DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
-                        <Border Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="10" Padding="16" Width="300">
+                        <Border Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderStrongBrush}" BorderThickness="1" CornerRadius="8" Padding="16" Width="300">
                             <StackPanel>
                                 <TextBlock Text="设置" FontSize="17" FontWeight="SemiBold" Margin="0,0,0,14"/>
                                 <Button Command="{Binding ToggleThemeCommand}" Style="{StaticResource SettingsActionStyle}">
@@ -118,10 +119,13 @@
                 <DockPanel>
                     <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="20,10,8,4">
                         <ToggleButton x:Name="SidebarToggle" IsChecked="{Binding IsSidebarExpanded, Mode=TwoWay}" ToolTip="{Binding SidebarToggleHint}" AutomationProperties.Name="{Binding SidebarToggleHint}" Width="34" Height="32" Cursor="Hand">
-                            <ToggleButton.Template><ControlTemplate TargetType="ToggleButton"><Border x:Name="ToggleSurface" Background="{DynamicResource MutedSurfaceBrush}" CornerRadius="7"><ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/></Border><ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="ToggleSurface" Property="Background" Value="{DynamicResource AccentMutedBrush}"/></Trigger></ControlTemplate.Triggers></ControlTemplate></ToggleButton.Template>
+                            <ToggleButton.Template><ControlTemplate TargetType="ToggleButton"><Border x:Name="ToggleSurface" Background="{DynamicResource MutedSurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="7"><ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/></Border><ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="ToggleSurface" Property="Background" Value="{DynamicResource AccentMutedBrush}"/><Setter TargetName="ToggleSurface" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/></Trigger></ControlTemplate.Triggers></ControlTemplate></ToggleButton.Template>
                             <TextBlock Text="{Binding SidebarToggleGlyph}" FontFamily="Segoe MDL2 Assets" Foreground="{DynamicResource AccentBrush}" FontSize="15"/>
                         </ToggleButton>
-                        <TextBlock Text="功能导航" Foreground="{DynamicResource TextSecondaryBrush}" FontSize="11" FontWeight="SemiBold" Margin="10,0,0,0" VerticalAlignment="Center" Visibility="{Binding IsSidebarExpanded, Converter={StaticResource SidebarVisibility}}"/>
+                        <StackPanel Orientation="Horizontal" Margin="10,0,0,0" VerticalAlignment="Center" Visibility="{Binding IsSidebarExpanded, Converter={StaticResource SidebarVisibility}}">
+                            <Border Width="3" Height="11" CornerRadius="1.5" Background="{DynamicResource AccentBrush}" Margin="0,0,8,0" VerticalAlignment="Center"/>
+                            <TextBlock Text="功能导航" Style="{StaticResource SectionHeaderTextStyle}"/>
+                        </StackPanel>
                     </StackPanel>
                     <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="6,6">
                         <StackPanel>
@@ -136,7 +140,7 @@
                                                 <ColumnDefinition Width="*" />
                                                 <ColumnDefinition Width="Auto" />
                                             </Grid.ColumnDefinitions>
-                                            <Border Grid.Column="0" Width="32" Height="32" CornerRadius="7" Background="{DynamicResource AccentMutedBrush}">
+                                            <Border Grid.Column="0" Width="32" Height="32" CornerRadius="7" Background="{DynamicResource AccentMutedBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1">
                                                 <Image Source="{Binding Icon}" Width="19" Height="19" Stretch="Uniform" />
                                             </Border>
                                             <StackPanel Grid.Column="1" VerticalAlignment="Center" Visibility="{Binding DataContext.IsSidebarExpanded, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource SidebarVisibility}}">

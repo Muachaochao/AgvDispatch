@@ -12,6 +12,10 @@
   <Setter Property="MinHeight" Value="32"/>
   <Setter Property="VerticalContentAlignment" Value="Center"/>
   <Setter Property="hc:BorderElement.CornerRadius" Value="6"/>
+  <Style.Triggers>
+   <Trigger Property="IsMouseOver" Value="True"><Setter Property="BorderBrush" Value="{DynamicResource BorderStrongBrush}"/></Trigger>
+   <Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}"/><Setter Property="Effect" Value="{DynamicResource AccentGlowEffect}"/></Trigger>
+  </Style.Triggers>
  </Style>
  <Style TargetType="TextBox" BasedOn="{StaticResource AppTextBoxStyle}"/>
  <Style x:Key="AppComboBoxStyle" TargetType="ComboBox" BasedOn="{StaticResource ComboBoxExtend}">
@@ -22,19 +26,24 @@
   <Setter Property="Padding" Value="10,6"/>
   <Setter Property="FontSize" Value="13"/>
   <Setter Property="hc:BorderElement.CornerRadius" Value="6"/>
+  <Style.Triggers>
+   <Trigger Property="IsMouseOver" Value="True"><Setter Property="BorderBrush" Value="{DynamicResource BorderStrongBrush}"/></Trigger>
+   <Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}"/><Setter Property="Effect" Value="{DynamicResource AccentGlowEffect}"/></Trigger>
+  </Style.Triggers>
  </Style>
  <Style TargetType="ComboBox" BasedOn="{StaticResource AppComboBoxStyle}"/>
  <Style x:Key="AppButtonStyle" TargetType="Button" BasedOn="{StaticResource ButtonDefault}">
   <Setter Property="Cursor" Value="Hand"/>
   <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
   <Setter Property="Background" Value="{DynamicResource SurfaceBrush}"/>
-  <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+  <Setter Property="BorderBrush" Value="{DynamicResource BorderStrongBrush}"/>
   <Setter Property="Height" Value="Auto"/>
   <Setter Property="MinHeight" Value="32"/>
   <Setter Property="Padding" Value="14,6"/>
   <Setter Property="FontSize" Value="13"/>
   <Setter Property="hc:BorderElement.CornerRadius" Value="6"/>
   <Style.Triggers>
+   <Trigger Property="IsMouseOver" Value="True"><Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}"/></Trigger>
    <Trigger Property="IsKeyboardFocused" Value="True"><Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}"/></Trigger>
   </Style.Triggers>
  </Style>
@@ -43,30 +52,53 @@
   <Setter Property="Cursor" Value="Hand"/>
   <Setter Property="FontSize" Value="13"/>
   <Setter Property="Foreground" Value="White"/>
-  <Setter Property="Background" Value="{DynamicResource PrimaryBrush}"/>
-  <Setter Property="BorderBrush" Value="{DynamicResource PrimaryBrush}"/>
+  <Setter Property="Background" Value="{DynamicResource PrimaryGradientBrush}"/>
+  <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
+  <Setter Property="BorderThickness" Value="1"/>
+  <Setter Property="FontWeight" Value="SemiBold"/>
   <Setter Property="Height" Value="Auto"/>
   <Setter Property="MinHeight" Value="32"/>
   <Setter Property="Padding" Value="14,6"/>
   <Setter Property="hc:BorderElement.CornerRadius" Value="6"/>
+  <Style.Triggers>
+   <Trigger Property="IsMouseOver" Value="True"><Setter Property="Effect" Value="{DynamicResource AccentGlowEffect}"/></Trigger>
+   <Trigger Property="IsKeyboardFocused" Value="True"><Setter Property="Effect" Value="{DynamicResource AccentGlowEffect}"/></Trigger>
+  </Style.Triggers>
+ </Style>
+ <!-- Destructive action: outlined in danger colour, keeps page background so it never competes with the primary. -->
+ <Style x:Key="AppDangerButtonStyle" TargetType="Button" BasedOn="{StaticResource AppButtonStyle}">
+  <Setter Property="Foreground" Value="{DynamicResource DangerBrush}"/>
+  <Setter Property="BorderBrush" Value="{DynamicResource DangerBrush}"/>
+  <Setter Property="Background" Value="{DynamicResource SurfaceBrush}"/>
+  <Style.Triggers>
+   <Trigger Property="IsMouseOver" Value="True"><Setter Property="Background" Value="{DynamicResource DangerMutedBrush}"/><Setter Property="BorderBrush" Value="{DynamicResource DangerBrush}"/></Trigger>
+  </Style.Triggers>
  </Style>
  <Style x:Key="AppDataGridCellStyle" TargetType="DataGridCell" BasedOn="{StaticResource DataGridCellStyle}">
   <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
   <Setter Property="BorderThickness" Value="0"/>
   <Setter Property="VerticalContentAlignment" Value="Center"/>
   <Style.Triggers>
-   <Trigger Property="IsSelected" Value="True"><Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/><Setter Property="Background" Value="{DynamicResource AccentMutedBrush}"/></Trigger>
+   <Trigger Property="IsSelected" Value="True"><Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/><Setter Property="Background" Value="{DynamicResource AccentMutedBrush}"/><Setter Property="BorderBrush" Value="{DynamicResource AccentMutedBrush}"/></Trigger>
    <Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}"/><Setter Property="BorderThickness" Value="1"/></Trigger>
   </Style.Triggers>
  </Style>
  <Style TargetType="DataGridCell" BasedOn="{StaticResource AppDataGridCellStyle}"/>
  <Style x:Key="AppDataGridHeaderStyle" TargetType="DataGridColumnHeader" BasedOn="{StaticResource DataGridColumnHeaderStyle}">
-  <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
+  <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}"/>
   <Setter Property="Background" Value="{DynamicResource MutedSurfaceBrush}"/>
   <Setter Property="Padding" Value="10,8"/>
   <Setter Property="FontWeight" Value="SemiBold"/>
-  <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+  <Setter Property="BorderBrush" Value="{DynamicResource BorderStrongBrush}"/>
   <Setter Property="BorderThickness" Value="0,0,0,1"/>
+ </Style>
+ <Style x:Key="AppDataGridRowStyle" TargetType="DataGridRow" BasedOn="{StaticResource DataGridRowStyle}">
+  <Style.Triggers>
+   <MultiTrigger>
+    <MultiTrigger.Conditions><Condition Property="IsMouseOver" Value="True"/><Condition Property="IsSelected" Value="False"/></MultiTrigger.Conditions>
+    <Setter Property="Background" Value="{DynamicResource HoverSurfaceBrush}"/>
+   </MultiTrigger>
+  </Style.Triggers>
  </Style>
  <Style x:Key="AppDataGridStyle" TargetType="DataGrid">
   <Setter Property="FontSize" Value="13"/>
@@ -78,18 +110,20 @@
   <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
   <Setter Property="Background" Value="{DynamicResource SurfaceBrush}"/>
   <Setter Property="RowBackground" Value="{DynamicResource SurfaceBrush}"/>
-  <Setter Property="AlternatingRowBackground" Value="{DynamicResource MutedSurfaceBrush}"/>
+  <Setter Property="AlternatingRowBackground" Value="{DynamicResource SoftSurfaceBrush}"/>
   <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
   <Setter Property="HorizontalGridLinesBrush" Value="{DynamicResource BorderBrush}"/>
   <Setter Property="RowHeight" Value="38"/>
   <Setter Property="ColumnHeaderHeight" Value="38"/>
   <Setter Property="ColumnHeaderStyle" Value="{StaticResource AppDataGridHeaderStyle}"/>
   <Setter Property="CellStyle" Value="{StaticResource AppDataGridCellStyle}"/>
+  <Setter Property="RowStyle" Value="{StaticResource AppDataGridRowStyle}"/>
  </Style>
  <Style TargetType="DataGrid" BasedOn="{StaticResource AppDataGridStyle}"/>
  <Style TargetType="ToolTip" BasedOn="{StaticResource {x:Type ToolTip}}">
   <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
-  <Setter Property="Background" Value="{DynamicResource SurfaceBrush}"/>
+  <Setter Property="Background" Value="{DynamicResource MutedSurfaceBrush}"/>
+  <Setter Property="BorderBrush" Value="{DynamicResource BorderStrongBrush}"/>
   <Setter Property="MaxWidth" Value="600"/>
   <Setter Property="Padding" Value="10,7"/>
  </Style>
@@ -102,7 +136,7 @@
   <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
   <Setter Property="Padding" Value="14,8"/>
   <Setter Property="MinHeight" Value="36"/>
-  <Style.Triggers><Trigger Property="IsSelected" Value="True"><Setter Property="Foreground" Value="{DynamicResource AccentBrush}"/></Trigger></Style.Triggers>
+  <Style.Triggers><Trigger Property="IsSelected" Value="True"><Setter Property="Foreground" Value="{DynamicResource AccentBrush}"/><Setter Property="FontWeight" Value="SemiBold"/></Trigger></Style.Triggers>
  </Style>
  <Style TargetType="ListBox" BasedOn="{StaticResource {x:Type ListBox}}">
   <Setter Property="Background" Value="{DynamicResource SurfaceBrush}"/>
