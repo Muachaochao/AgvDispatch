@@ -5,8 +5,28 @@ public sealed record TrafficReservationResult(
     string? BlockingResourceId = null,
     string? BlockingTaskId = null);
 
+/// <summary>
+/// B07-R8 partial window acquisition: one vehicle whose lease currently blocks a
+/// requested resource, with everything it may still need on its present transport step.
+/// Known=false means its future cannot be proven (charging lock, manual lease, parked or
+/// command not readable); callers must then keep the atomic window.
+/// </summary>
+public sealed record TrafficBlockingHolder(
+    string VehicleId,
+    string TaskId,
+    string OwnerStepId,
+    bool Known,
+    IReadOnlyList<string> BlockedResourceIds,
+    IReadOnlyList<string> RemainingRouteResourceIds,
+    string? FinalDestination,
+    string Reason);
+
 public interface ITrafficResourceManager
 {
+    /// <summary>Null when the implementation cannot describe holders (partial advance is then refused).</summary>
+    Task<IReadOnlyList<TrafficBlockingHolder>?> GetBlockingHoldersAsync(string requestingTaskId,
+        IReadOnlyCollection<string> resourceIds, CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<TrafficBlockingHolder>?>(null);
     // Explicit layer-four lifecycle work; candidate route readers must stay read-only.
     Task PrepareDispatchCycleAsync(CancellationToken cancellationToken) => Task.CompletedTask;
     // A lease remains fixed even when a previous prepare crashed before assigning

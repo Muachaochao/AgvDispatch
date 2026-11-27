@@ -198,7 +198,7 @@ public static class TransportRouteWindows
             .ToArray();
     }
 
-    private static bool IsStableStop(MapNode node, Func<MapNode, bool>? canStageAt) =>
+    internal static bool IsStableStop(MapNode node, Func<MapNode, bool>? canStageAt) =>
         node is { Enabled: true, AllowTrafficStop: not false } &&
             node.Type is MapNodeType.Station or MapNodeType.WaitingPoint or MapNodeType.ChargingPoint or MapNodeType.Intersection &&
             (canStageAt is null || canStageAt(node));
