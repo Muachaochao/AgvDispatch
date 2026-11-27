@@ -120,6 +120,46 @@ var request = await casing.Service.RequestAsync(admin, new(Guid.NewGuid().ToStri
 Check(request.Accepted && casing.Sessions().Count(s => s.VehicleId == "A") == 1 && casing.Sessions().All(s => s.VehicleId == "A"),
     "a request with a lower-case vehicle id is stored under the canonical vehicle id");
 
+// B07-R8 business-first release: orders waiting with no free vehicle stop a vehicle that has reached the
+// release level, through the normal stop and exit flow; no demand or a lower battery keeps it charging.
+Check(new ChargingOptions().BusinessDemandReleaseBatteryPercent == 0, "business-first release is off by default");
+Check(new ChargingOptions { Sites = [], BusinessDemandReleaseBatteryPercent = 20 }.ConfigurationError() is not null &&
+      new ChargingOptions { Sites = [], BusinessDemandReleaseBatteryPercent = 80 }.ConfigurationError() is not null &&
+      new ChargingOptions { Sites = [], BusinessDemandReleaseBatteryPercent = 40 }.ConfigurationError() is null,
+    "the business-first release level must lie between the start and target levels");
+var business = new Fleet(evidence, "business", ["A", "B"], bays: 1, businessRelease: 40);
+business.Put("A", 24);
+await business.ToChargingAsync("A");
+business.Put("A", 45, true, 4);
+business.Put("B", 60);
+business.Port.Demand = 0;
+await business.CyclesAsync(3);
+Check(business.Session("A")!.StopRequested == false && business.Session("A")!.Phase == ChargingPhase.Charging,
+    "without waiting orders a vehicle above the release level keeps charging to the target");
+business.Port.Demand = 2;
+business.Put("A", 35, true, 4);
+await business.CyclesAsync(3);
+Check(business.Session("A")!.StopRequested == false, "below the release level a vehicle keeps charging even when orders wait");
+business.Put("A", 45, true, 4);
+await business.CyclesAsync(3);
+Check(business.Session("A")!.StopRequested && business.Session("A")!.Phase is not ChargingPhase.Completed,
+    "orders waiting with no free vehicle: the vehicle at 45 percent is asked to stop through the normal flow");
+business.Put("A", 45, false, 0);
+await business.CyclesAsync(2);
+business.Port.Arrive("A", "EXIT-1");
+await business.CyclesAsync(2);
+business.Port.Arrive("A", "STANDBY");
+await business.CyclesAsync(3);
+Check(business.Session("A") is null || business.Session("A")!.Phase == ChargingPhase.Completed,
+    "the released vehicle completes the normal exit and becomes available for business");
+var businessOff = new Fleet(evidence, "business-off", ["A", "B"], bays: 1);
+businessOff.Put("A", 24);
+await businessOff.ToChargingAsync("A");
+businessOff.Put("A", 45, true, 4);
+businessOff.Port.Demand = 3;
+await businessOff.CyclesAsync(3);
+Check(businessOff.Session("A")!.StopRequested == false, "with the option off, waiting orders never stop charging early");
+
 Console.WriteLine($"PASS: {checks} charging queue and fleet checks.");
 
 sealed class Fleet
@@ -129,14 +169,15 @@ sealed class Fleet
     public FleetRobot Robot { get; }
     public ChargingService Service { get; }
     public string[] Vehicles { get; }
-    public Fleet(string root, string name, string[] vehicles, int bays, int minimumAvailable = 0, int maximumOutOfService = 0)
+    public Fleet(string root, string name, string[] vehicles, int bays, int minimumAvailable = 0, int maximumOutOfService = 0, decimal businessRelease = 0)
     {
         Vehicles = vehicles;
         Port = new(Clock); Robot = new(Clock);
         var sites = Enumerable.Range(1, bays).Select(i => new ChargingSite("BAY-" + i, "CHARGER-" + i, "EXIT-" + i, "BAY-" + i)
             { Commissioned = true, AllowedVehicleIds = vehicles }).ToArray();
         var options = new ChargingOptions { Enabled = true, Sites = sites, DefaultStandbySiteId = "STANDBY",
-            MinimumAvailableVehicles = minimumAvailable, MaximumVehiclesOutOfService = maximumOutOfService };
+            MinimumAvailableVehicles = minimumAvailable, MaximumVehiclesOutOfService = maximumOutOfService,
+            BusinessDemandReleaseBatteryPercent = businessRelease };
         Service = new(options, Port, Robot, Path.Combine(root, name + ".json"), NullLogger<ChargingService>.Instance, Clock);
     }
     public void Put(string vehicle, decimal percent, bool charging = false, double current = 0)
@@ -199,6 +240,8 @@ sealed class FleetPort(FakeClock clock) : IChargingRuntimePort
     public HashSet<string> Completed { get; } = [];
     public IReadOnlyList<AgvRobotSnapshot> Vehicles => vehicles.Values.ToArray();
     public string? NewWorkBlockReason => null;
+    public int Demand { get; set; }
+    public Task<int> UnservedBusinessTasksAsync(IReadOnlySet<string> outOfService, CancellationToken ct) => Task.FromResult(Demand);
     public void Put(string id, decimal percent, bool charging = false, double current = 0)
     {
         stations.TryAdd(id, "HOME-" + id);

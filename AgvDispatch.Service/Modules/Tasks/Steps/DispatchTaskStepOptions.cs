@@ -21,6 +21,12 @@ public sealed class DispatchTaskStepOptions
     // [MinimumEdges, MaximumEdges] edges, so dense safe points do not force a stop-and-renew every
     // few metres; with no safe stop inside the range it falls back to the nearest one beyond it.
     public string RollingWindowBoundary { get; set; } = RollingWindowBoundaries.NearestSafeStop;
+    // B07-R8 batch route rights: when the next rolling window is partly held by vehicles that
+    // are only passing through (their remaining route never needs the stretch in front of us),
+    // advance to the farthest free safe stop instead of waiting for the whole window. Any
+    // unknown holder (charging, manual, parked, unreadable command) keeps the atomic window.
+    public bool PartialWindowAcquisition { get; set; } = true;
+    public int PartialWindowMinimumEdges { get; set; } = 1;
 }
 
 public static class RollingWindowBoundaries

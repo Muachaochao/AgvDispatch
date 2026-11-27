@@ -89,6 +89,7 @@ import { applyUiTheme, preferredTheme } from './ui-theme';
 import './console.css';
 import './status-polish.css';
 import './design-system.css';
+import './cockpit-theme.css';
 
 applyUiTheme(preferredTheme());
 

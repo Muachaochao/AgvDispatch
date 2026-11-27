@@ -1,4 +1,4 @@
-using AgvDispatch.Domain.Agvs;
+﻿using AgvDispatch.Domain.Agvs;
 
 namespace AgvDispatch.Application.Abstractions;
 
@@ -56,6 +56,11 @@ public sealed class ChargingOptions
     /// when a critical vehicle waits for the bay.</summary>
     public decimal PreemptionReleaseBatteryPercent { get; set; } = 50;
     public decimal PreemptionTargetMarginPercent { get; set; } = 10;
+    /// <summary>B07-R8 business-first release. Zero (default) disables it. When orders wait and no
+    /// in-service vehicle is free, the most-charged vehicle at or above this level is asked to stop
+    /// through the normal stop and exit flow, so it can take the order instead of topping up to the
+    /// target. Must lie above the start level so the released vehicle does not queue again at once.</summary>
+    public decimal BusinessDemandReleaseBatteryPercent { get; set; }
     public string? ConfigurationError() => BasicConfigurationError() ?? SiteConfigurationError();
     private string? BasicConfigurationError() =>
         CriticalBatteryPercent <= 0 || CriticalBatteryPercent > StartBatteryPercent || StartBatteryPercent >= TargetBatteryPercent || TargetBatteryPercent > 100
@@ -93,6 +98,9 @@ public sealed class ChargingOptions
         if (PreemptionReleaseBatteryPercent is <= 0 || PreemptionReleaseBatteryPercent <= CriticalBatteryPercent || PreemptionReleaseBatteryPercent >= TargetBatteryPercent ||
             PreemptionTargetMarginPercent < 0 || PreemptionTargetMarginPercent >= 100)
             return "抢占放行电量须位于严重电量与目标电量之间，目标余量须非负。";
+        if (BusinessDemandReleaseBatteryPercent != 0 &&
+            (BusinessDemandReleaseBatteryPercent <= StartBatteryPercent || BusinessDemandReleaseBatteryPercent >= TargetBatteryPercent))
+            return "业务优先离桩电量须为0（关闭）或位于启动电量与目标电量之间。";
         if (DefaultStandbySiteId is not null && DefaultStandbySiteId.Trim().Length > 0 &&
             Sites.Any(s => s.ExitSiteId.Equals(DefaultStandbySiteId.Trim(), StringComparison.OrdinalIgnoreCase) ||
                            s.ChargingSiteId.Equals(DefaultStandbySiteId.Trim(), StringComparison.OrdinalIgnoreCase)))
@@ -244,6 +252,8 @@ public interface IChargingRuntimePort
 {
     IReadOnlyList<AgvRobotSnapshot> Vehicles { get; }
     string? NewWorkBlockReason { get; }
+    /// <summary>B07-R8: orders waiting for a vehicle minus free in-service vehicles (zero when unknown).</summary>
+    Task<int> UnservedBusinessTasksAsync(IReadOnlySet<string> outOfServiceVehicleIds, CancellationToken ct) => Task.FromResult(0);
     ValueTask<IDisposable?> EnterExecutionAsync(bool newWork, CancellationToken ct);
     ValueTask<IDisposable?> EnterRecoveryControlAsync(CancellationToken ct) => EnterExecutionAsync(false,ct);
     Task<string?> BusyReasonAsync(string vehicleId, string? ownSessionId, CancellationToken ct);

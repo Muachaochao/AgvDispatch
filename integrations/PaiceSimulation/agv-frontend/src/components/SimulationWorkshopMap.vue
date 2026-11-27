@@ -143,6 +143,13 @@ function selectNode(node: { id: string; type: string }) {
 }
 watch([() => props.location, editor, scene], focusLocation, { flush: 'post' })
 watch([overlays, scene], ([paths, mapScene]) => mapScene?.drawPaths(paths), { flush: 'post' })
+// Route colours match the overview road highlights (AgvDispatch.Web SimulationCenterPage overviewRoadHighlights).
+const roadLegend = [
+  { text: '当前段 · 路权已占用', color: '#087968', dashed: false },
+  { text: '后续路段 · 待申请', color: '#3456c8', dashed: true },
+  { text: '等待路权 / 阻塞', color: '#b64c2f', dashed: false },
+  { text: '返程路段', color: '#a96c10', dashed: true }
+]
 const legend = [
   { text: '执行中', color: '#41d9bf' },
   { text: '作业等待／载箱待命', color: '#e8bf64' },
@@ -201,9 +208,16 @@ const legend = [
       </RoadNetEditor>
     </div>
     <div v-else class="preview-empty"><slot name="empty">当前没有可预览的地图。</slot></div>
-    <ul v-if="agvs.length" class="vehicle-legend" aria-label="车辆状态图例">
-      <li v-for="item in legend" :key="item.text"><i :style="{ background: item.color }" />{{ item.text }}</li>
-    </ul>
+    <div v-if="agvs.length" class="map-legend-groups">
+      <ul class="vehicle-legend" aria-label="车辆状态图例">
+        <li class="legend-title">车辆</li>
+        <li v-for="item in legend" :key="item.text"><i :style="{ background: item.color }" />{{ item.text }}</li>
+      </ul>
+      <ul class="vehicle-legend road-legend" aria-label="道路与路权图例">
+        <li class="legend-title">道路与路权</li>
+        <li v-for="item in roadLegend" :key="item.text"><i class="road-swatch" :class="{ dashed: item.dashed }" :style="{ borderTopColor: item.color }" />{{ item.text }}</li>
+      </ul>
+    </div>
 
     <el-dialog v-model="show3d" :title="`${title} · 3D 预览`" width="min(92vw, 1500px)" top="5vh" destroy-on-close>
       <div v-if="preview" class="preview-3d">
@@ -247,7 +261,12 @@ const legend = [
 .preview-vehicle:is(.selected, :hover, :focus-visible) text,
 .preview-vehicle .visible-label { visibility: visible; }
 .preview-vehicle:is(.selected, :focus-visible) rect { stroke: #25429e; stroke-width: 2.8; }
-.vehicle-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 0; margin: 12px 0 0; list-style: none; color: var(--ui-text-3); font-size: 12px; }
+.map-legend-groups { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 12px; padding: 8px 12px; border: 1px solid var(--ui-line); border-radius: 10px; background: var(--ui-surface-soft); }
+.vehicle-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; padding: 0; margin: 0; list-style: none; color: var(--ui-text-2, var(--ui-text-3)); font-size: 12px; }
+.road-legend { padding-left: 18px; border-left: 1px solid var(--ui-line); }
+.vehicle-legend .legend-title { color: var(--ui-text-3); font-size: 11px; font-weight: 600; letter-spacing: 1px; }
+.vehicle-legend i.road-swatch { width: 22px; height: 0; border-radius: 2px; border-top: 4px solid; }
+.vehicle-legend i.road-swatch.dashed { border-top-style: dashed; border-top-width: 3px; }
 .vehicle-legend li { display: flex; align-items: center; gap: 5px; }
 .vehicle-legend i { display: block; width: 8px; height: 8px; border-radius: 50%; }
 </style>

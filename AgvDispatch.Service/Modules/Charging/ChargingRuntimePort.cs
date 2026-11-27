@@ -31,6 +31,17 @@ public sealed partial class ChargingRuntimePort(ChargingOptions options, IAgvSta
         if(v.Alarms.Any(a=>a.Severity is AgvAlarmSeverity.Error or AgvAlarmSeverity.Fatal))return "车辆存在错误或严重报警，保留现场核对。";
         return requireStopped&&!Stopped(v)?"车辆未确认停稳或仍有未结束的车端任务。":null;
     }
+    public async Task<int> UnservedBusinessTasksAsync(IReadOnlySet<string> outOfServiceVehicleIds,CancellationToken ct)
+    {
+        var active=await tasks.GetActiveTasksAsync(ct);
+        var waiting=active.Count(t=>string.IsNullOrWhiteSpace(t.VehicleId));
+        if(waiting==0)return 0;
+        var busy=active.Where(t=>!string.IsNullOrWhiteSpace(t.VehicleId)).Select(t=>t.VehicleId!).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var free=vehicles.GetAll().Count(v=>v.Connection==ConnectionState.Online&&Fresh(v.LastSuccessfulPollAt)&&
+            !busy.Contains(v.VehicleId)&&!outOfServiceVehicleIds.Contains(v.VehicleId)&&
+            v.BatteryPercent is {} battery&&battery>options.StartBatteryPercent);
+        return Math.Max(0,waiting-free);
+    }
     public async Task<string?> BusyReasonAsync(string vehicleId,string? ownSessionId,CancellationToken ct)
     {
         if(externalBlock?.Invoke() is {} block)return block;
