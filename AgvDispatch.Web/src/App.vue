@@ -40,7 +40,6 @@ const clockTime = computed(() => timeFormatter.format(store.now));
 const connectionState = computed(() => store.fresh ? '已连接' : store.snapshot ? '断连 / 数据过期' : store.error ? '未连接' : '连接中');
 const lastObservation = computed(() => store.snapshot ? `最近采样 ${shortTime(store.snapshot.receivedAt)}` : '尚无后台观察');
 const chargerMonitor = computed(() => chargerMonitoringState(charging.status, charging.loadError, store.now));
-const simulationPage = computed(() => route.path.startsWith('/simulation-center'));
 
 const navigation = [
   { path: '/', label: '调度大屏', icon: IconLayoutDashboard },
@@ -127,7 +126,7 @@ onUnmounted(() => {
     </router-view>
 
     <footer v-if="store.engineeringSimulationOnly" class="engineering-isolated-footer">工程隔离模拟 · 设备、任务与现场恢复接口已禁用 · 不连接真车或PLC · 现场5199未改动</footer>
-    <footer v-else-if="!simulationPage" class="equipment-strip">
+    <footer v-else class="equipment-strip">
       <b>设备状态<small>连接与执行许可</small></b>
       <button v-for="device in plcDevices" :key="device.id" title="查看设备通信与执行门禁" @click="router.push('/commissioning')">
         <IconCpu :size="19" /><span>{{ device.name }}</span>
