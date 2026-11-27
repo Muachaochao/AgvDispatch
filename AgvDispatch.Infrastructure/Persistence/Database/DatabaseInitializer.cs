@@ -48,6 +48,11 @@ public sealed class DatabaseInitializer : IDatabaseInitializer
         _database.Ado.ExecuteCommand("PRAGMA journal_mode=WAL;");
         _database.Ado.ExecuteCommand("PRAGMA synchronous=NORMAL;");
         _database.Ado.ExecuteCommand("PRAGMA busy_timeout=30000;");
+        var schemaVersion = _database.Ado.SqlQuery<int>("PRAGMA user_version;").FirstOrDefault();
+        if (schemaVersion > DatabaseSchemaVersion.Current)
+            throw new InvalidOperationException(
+                $"数据库架构版本{schemaVersion}高于当前程序支持的{DatabaseSchemaVersion.Current}；" +
+                "请使用对应版本的程序，禁止由旧程序改写新库。");
         _database.DbMaintenance.CreateDatabase();
         _database.CodeFirst.InitTables<
             DispatchTaskEntity,
@@ -206,6 +211,18 @@ public sealed class DatabaseInitializer : IDatabaseInitializer
                     UpdatedAt = now
                 }).ToArray()).ExecuteCommand();
         }
+        _database.CodeFirst.InitTables<SchemaMigrationEntity>();
+        if (!_database.Queryable<SchemaMigrationEntity>()
+                .Any(row => row.Version == DatabaseSchemaVersion.Current))
+        {
+            _database.Insertable(new SchemaMigrationEntity
+            {
+                Version = DatabaseSchemaVersion.Current,
+                AppliedAtUtc = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow().UtcDateTime,
+                ApplicationVersion = typeof(DatabaseInitializer).Assembly.GetName().Version?.ToString() ?? "unknown"
+            }).ExecuteCommand();
+        }
+        _database.Ado.ExecuteCommand($"PRAGMA user_version={DatabaseSchemaVersion.Current};");
     }
 
     public Task<bool> CanConnectAsync(CancellationToken cancellationToken)

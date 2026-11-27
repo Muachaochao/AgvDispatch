@@ -39,7 +39,8 @@ public sealed class TrafficControlNamedPipeServer(
     IRoadClosureService? roadClosures=null, IDispatchOptimizationService? dispatchOptimization=null,
     IDispatchPipelineInspectionService? dispatchPipeline=null,
     ITransportTimeoutRecoveryService? timeoutRecovery=null,
-    ITaskPauseService? taskPause=null) : IsolatedBackgroundService
+    ITaskPauseService? taskPause=null,
+    DispatchTrafficWakeup? dispatchWakeup=null) : IsolatedBackgroundService
 {
     private async Task<RobokitInspectionSnapshot> InspectRobokitAsync(TrafficUserContext user,RobokitInspectionQuery query,CancellationToken ct)
     {
@@ -478,10 +479,9 @@ public sealed class TrafficControlNamedPipeServer(
                     Deserialize<MaximumCountRequest>(request.Payload).MaximumCount,
                     cancellationToken)),
             TrafficControlOperations.SubmitRelease =>
-                Success(await workflow.SubmitAsync(
-                    user,
+                await SubmitReleaseAsync(user,
                     Deserialize<SubmitManualReleaseRequest>(request.Payload),
-                    cancellationToken)),
+                    cancellationToken),
             TrafficControlOperations.ReviewRelease =>
                 Success(await workflow.ReviewAsync(
                     user,
@@ -499,6 +499,16 @@ public sealed class TrafficControlNamedPipeServer(
     private static T Deserialize<T>(JsonElement payload) =>
         payload.Deserialize<T>(JsonOptions) ??
         throw new InvalidDataException($"请求参数{typeof(T).Name}为空。");
+
+    private async Task<TrafficControlPipeResponse> SubmitReleaseAsync(
+        TrafficUserContext user, SubmitManualReleaseRequest request, CancellationToken cancellationToken)
+    {
+        var result = await workflow.SubmitAsync(user, request, cancellationToken);
+        // G28/R16: a committed manual release is a real capacity change. Wake
+        // dispatch immediately instead of waiting for the fallback poll.
+        if (result.Accepted) dispatchWakeup?.Publish();
+        return Success(result);
+    }
 
     private static TrafficControlPipeResponse Success<T>(T payload) =>
         new(true, null, JsonSerializer.SerializeToElement(payload, JsonOptions));

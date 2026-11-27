@@ -71,10 +71,13 @@ internal static class Program
         robot.PauseNextStatus();
         var pausedProcess=cancel.ProcessAsync(default);
         await robot.StatusStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await db.Updateable<DispatchTaskEntity>().SetColumns(t=>t.Priority==777)
+            .Where(t=>t.TaskId==id).ExecuteCommandAsync();
         using(var parallel=await gate.EnterAsync(MapExecutionOperation.ExistingWork,default).AsTask().WaitAsync(TimeSpan.FromSeconds(2)))
             Check(parallel is not null,"取消状态查询持有共享执行租约，其他车辆工作不被单车间查询串行 "+mode);
         robot.ReleaseStatus();
         await pausedProcess;
+        Check(Row().Priority==777,"取消服务只写取消相关列，不覆盖并发修改的优先级 "+mode);
         if(mode==CancelMode.ResponseLost)
         {
             Check(Row().Stage==120 && Row().CancelSentAt==null && Row().CancelConfirmedAt==null,"3003已接收但响应断连时保留未确认意图");

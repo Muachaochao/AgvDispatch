@@ -47,6 +47,10 @@ var databaseOptions = new DatabaseOptions
 builder.Services.AddSingleton(databaseOptions);
 builder.Services.AddSingleton<ISqlSugarClient>(_ => DatabaseFactory.Create(databaseOptions));
 builder.Services.AddSingleton<IDatabaseInitializer, DatabaseInitializer>();
+var databaseBackupOptions = new DatabaseBackupOptions();
+builder.Configuration.GetSection("DatabaseBackup").Bind(databaseBackupOptions);
+builder.Services.AddSingleton(databaseBackupOptions);
+builder.Services.AddHostedService<DatabaseBackupService>();
 builder.Services.AddSingleton<IActiveTaskLookup, DispatchTaskReadRepository>();
 builder.Services.AddSingleton<ITaskCenterReadRepository, TaskCenterReadRepository>();
 builder.Services.AddSingleton<ITaskHistoryExportService, TaskHistoryExportService>();

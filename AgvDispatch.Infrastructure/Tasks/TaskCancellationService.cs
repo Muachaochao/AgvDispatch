@@ -56,7 +56,10 @@ public sealed class TaskCancellationService(ISqlSugarClient database, IMapExecut
         task.UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
         var result = await database.Ado.UseTranAsync(async () =>
         {
-            await database.Updateable(task).ExecuteCommandAsync(ct);
+            // D14: cancellation owns only its own columns. A full-row update here
+            // would overwrite priority, vehicle or other edits made concurrently
+            // by dispatch after this row was read.
+            await SaveCancellationAsync(task, ct);
             await database.Updateable<DispatchTaskStepEntity>().SetColumns(s => new DispatchTaskStepEntity
                 { Status = (int)DispatchTaskStepStatus.ManualIntervention, UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime })
                 .Where(s => s.TaskId == task.TaskId && s.Status != (int)DispatchTaskStepStatus.Completed).ExecuteCommandAsync(ct);
@@ -163,7 +166,33 @@ public sealed class TaskCancellationService(ISqlSugarClient database, IMapExecut
         }
     }
     private Task<int> SaveAsync(DispatchTaskEntity task, CancellationToken ct)
-    { task.UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime; return database.Updateable(task).ExecuteCommandAsync(ct); }
+    {
+        task.UpdatedAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
+        return SaveCancellationAsync(task, ct);
+    }
+    private Task<int> SaveCancellationAsync(DispatchTaskEntity task, CancellationToken ct) =>
+        database.Updateable<DispatchTaskEntity>()
+            .SetColumns(t => new DispatchTaskEntity
+            {
+                CancelRequestId = task.CancelRequestId,
+                CancelOriginalStage = task.CancelOriginalStage,
+                CancelStepId = task.CancelStepId,
+                CancelVendorId = task.CancelVendorId,
+                CancelVehicleId = task.CancelVehicleId,
+                CancelReason = task.CancelReason,
+                CancelRequestedBy = task.CancelRequestedBy,
+                CancelRequestedAt = task.CancelRequestedAt,
+                CancelNextAttemptAt = task.CancelNextAttemptAt,
+                CancelSentAt = task.CancelSentAt,
+                CancelConfirmedAt = task.CancelConfirmedAt,
+                CancelAttemptCount = task.CancelAttemptCount,
+                CancelRequiresPickupNavigation = task.CancelRequiresPickupNavigation,
+                Stage = task.Stage,
+                ErrorMessage = task.ErrorMessage,
+                UpdatedAt = task.UpdatedAt
+            })
+            .Where(t => t.TaskId == task.TaskId)
+            .ExecuteCommandAsync(ct);
     private Task<int> AuditAsync(DispatchTaskEntity task, string kind, string user, object evidence, CancellationToken ct) =>
         database.Insertable(new ExecutionEvidenceEntity { Id = Guid.NewGuid().ToString("N"), TaskId = task.TaskId, StepId = task.CancelStepId ?? "",
             SessionId = "", Operator = user, Kind = kind, Reason = task.CancelReason ?? "", Evidence = JsonSerializer.Serialize(evidence), OccurredAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime }).ExecuteCommandAsync(ct);
