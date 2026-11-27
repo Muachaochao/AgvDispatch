@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import heapq
 import json
 import math
+from bisect import bisect_right
 
 MAX_DEVICE_LOG_BYTES = 32 * 1024 * 1024
 MAX_EVENTS = 8000
@@ -84,6 +85,7 @@ class ReplayEvidence:
         self.previous_tasks = {}
         self.have_task_sample = False
         self.device_receipts = set()
+        self.charging_relays = {}
         self.position_targets = deque()
         self.latest_observation = None
 
@@ -98,7 +100,9 @@ class ReplayEvidence:
         if self.latest_observation and time == self.latest_observation[0]:
             self.attach_position(row)
         relevant_release = kind == 'traffic-release' and (extra.get('detail') or {}).get('waitingRelated')
-        if (relevant_release or group == 'anomaly' or kind in {
+        if kind == 'charging-relay':
+            priority = 4
+        elif (relevant_release or group == 'anomaly' or kind in {
             'task-created', 'command-sent', 'device-accepted', 'device-rejected',
             'movement-start', 'movement-complete', 'plc-bit', 'plc-call',
             'robokit-command-response-written', 'AgvSendIntent', 'AgvSendAcknowledged',
@@ -243,9 +247,15 @@ class ReplayEvidence:
         if wall is None:
             return
         time = self.origin + (wall - self.origin) * self.rate
+        kind = item.get('kind')
+        if kind == 'charging-relay' and vehicle and type(item.get('status')) is bool and self.origin <= time <= self.end:
+            status, station = item['status'], item.get('station')
+            self.charging_relays.setdefault(vehicle, []).append((time, status, station))
+            self.add(time, kind, 'task', '充电继电器开启' if status else '充电继电器关闭',
+                     '设备事件日志', vehicleId=vehicle, detail=dict(status=status, station=station))
+            return
         if time < self.start or time > self.end:
             return
-        kind = item.get('kind')
         if not isinstance(kind, str):
             return
         raw = {key: item[key] for key in ('address', 'before', 'value', 'byte', 'bit', 'hex', 'reason',
@@ -308,8 +318,22 @@ class ReplayEvidence:
                                                                vendorCommandId=vendor if isinstance(vendor, str) else None)
 
     def prepare_positions(self):
+        for relays in self.charging_relays.values():
+            relays.sort(key=lambda entry: entry[0])
         self.position_targets = deque(sorted((row for _, _, row in self.events if row.get('vehicleId')),
                                              key=lambda row: row['time']))
+
+    def charging_at(self, vehicle, car, time):
+        if car.get('charging') is True or 'chargingRelay' in car:
+            return car.get('charging')
+        relays = self.charging_relays.get(vehicle, [])
+        index = bisect_right(relays, time, key=lambda entry: entry[0]) - 1
+        if index >= 0:
+            _, enabled, station = relays[index]
+            if enabled and station and station == (car.get('station') or car.get('site')) and (
+                    car.get('moving') is False and not car.get('current_task')):
+                return True
+        return car.get('charging')
 
     def attach_position(self, row):
         if self.latest_observation is None:

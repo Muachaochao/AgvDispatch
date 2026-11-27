@@ -272,15 +272,22 @@ def replay(runtime, identity):
         nonlocal stride, timeline, timeline_bytes
         vehicles = [dict(vehicleId=vehicle, x=car.get('x'), y=car.get('y'), angle=car.get('angle'),
             site=car.get('station') or car.get('site'), loaded=car.get('loaded'), moving=car.get('moving'),
-            batteryPercent=car.get('batteryPercent'), charging=car.get('charging'),
+            batteryPercent=car.get('batteryPercent'), charging=evidence.charging_at(vehicle, car, value['time']),
             blocked=car.get('blocked'), blockedByVehicle=car.get('blockedByVehicle'),
             paused=car.get('paused'), offline=car.get('offline'),
             waitReason=car.get('waitReason'), taskId=car.get('current_task'))
             for vehicle, car in value.get('device', {}).get('cars', {}).items()]
-        tasks = [dict(taskId=tid, stationId=task.get('stationId'), vehicleId=task.get('vehicleId'),
-            stage=task.get('stage'), step=task.get('progress'), waitReason=task.get('waitingExplanation'))
-            for tid, task in value.get('tasks', {}).items() if isinstance(task, dict)]
-        frame = dict(time=value['time'], vehicles=vehicles, tasks=tasks, leases=value.get('leases', []))
+        tasks = []
+        for tid, task in value.get('tasks', {}).items():
+            if not isinstance(task, dict):
+                continue
+            stage = task.get('stage')
+            row = dict(taskId=tid, stationId=task.get('stationId'), vehicleId=task.get('vehicleId'), stage=stage)
+            if stage not in ('Completed', 'Faulted', 'Cancelled'):
+                row.update(step=task.get('progress'), waitReason=task.get('waitingExplanation'))
+            tasks.append(row)
+        # Lease snapshots still feed replay events, where changes have timestamps.
+        frame = dict(time=value['time'], vehicles=vehicles, tasks=tasks)
         frame_bytes = len(json.dumps(frame, ensure_ascii=False, allow_nan=False).encode('utf-8')) + 2
         if frame_bytes > timeline_budget:
             raise ValueError('单次回放数据过大，请查看实例中的原始采样证据。')

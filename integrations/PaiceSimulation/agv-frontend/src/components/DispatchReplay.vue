@@ -16,6 +16,8 @@ interface ReplayVehicle extends Point {
   waitReason?: string;
   loaded?: boolean;
   moving?: boolean;
+  batteryPercent?: number | null;
+  charging?: boolean | null;
   offline?: boolean;
   blocked?: boolean;
   blockedByVehicle?: string;
@@ -72,6 +74,7 @@ const cars = computed<Record<string, DispatchCar>>(() => {
   (frame.value?.vehicles ?? []).filter(validPosition).map(car => [car.vehicleId, {
     x: car.x, y: car.y, angle: car.angle, station: car.site, waitReason: car.waitReason,
     loaded: car.loaded, moving: car.moving, offline: car.offline, blocked: car.blocked, paused: car.paused,
+    batteryPercent: car.batteryPercent ?? undefined, charging: car.charging ?? undefined,
     blockedByVehicle: car.blockedByVehicle, current_task: car.taskId,
   }]));
   const event = positionEvent.value;
@@ -95,8 +98,7 @@ const stageNames: Record<string, string> = {
 };
 const terminalStages = new Set(["Completed", "Faulted", "Cancelled"]);
 const vehicleCards = computed(() => (frame.value?.vehicles ?? []).map(car => {
-  const task = (frame.value?.tasks ?? []).find(item => item.vehicleId === car.vehicleId && !terminalStages.has(item.stage ?? ""))
-    ?? (frame.value?.tasks ?? []).find(item => item.vehicleId === car.vehicleId);
+  const task = (frame.value?.tasks ?? []).find(item => item.vehicleId === car.vehicleId && !terminalStages.has(item.stage ?? ""));
   return { car, task, state: vehicleState(car, task) };
 }).sort((left, right) => {
   if (left.car.vehicleId === selectedVehicle.value) return -1;
@@ -173,18 +175,24 @@ function taskSummary(task?: ReplayTask) {
   return sources[0]!.trim().slice(0, 90);
 }
 function vehicleState(car: ReplayVehicle, task?: ReplayTask) {
-  const waitReason = task?.waitReason || car.waitReason;
   if (car.offline) return { label: "离线", tone: "muted" };
   if (car.paused) return { label: "暂停", tone: "danger" };
-  if (car.blocked || waitReason) return { label: "等待", tone: "warning" };
+  if (car.blocked) return { label: "受阻等待", tone: "warning" };
+  if (car.charging) return { label: "充电中", tone: "moving" };
   if (car.moving) return { label: "行驶中", tone: "moving" };
+  if (car.waitReason || task?.waitReason) return { label: "等待", tone: "warning" };
   if (task && !terminalStages.has(task.stage ?? "")) return { label: "执行任务", tone: "moving" };
   if (car.loaded) return { label: "载箱待命", tone: "waiting" };
+  if (car.loaded == null) return { label: "停驶", tone: "idle" };
   return { label: "空载待命", tone: "idle" };
+}
+function batteryLabel(car: ReplayVehicle) {
+  return typeof car.batteryPercent === "number" && Number.isFinite(car.batteryPercent)
+    ? `${car.batteryPercent.toFixed(1)}%` : "电量未记录";
 }
 function vehicleSummary(task?: ReplayTask, waitReason?: string) {
   const summary = taskSummary(task);
-  return summary === "当前步骤没有等待说明" ? waitReason || summary : summary;
+  return waitReason || (task ? summary : "");
 }
 function selectVehicleCard(vehicleId: string) {
   locateVehicle(vehicleId);
@@ -441,7 +449,7 @@ async function exportVideo() {
         <div class="transport-clock">
           <span>{{ displayDate(frame.time) }}</span>
           <strong>{{ displayClock(frame.time) }}</strong>
-          <small>采样 {{ frameIndex + 1 }} / {{ timeline.length }}</small>
+          <small>回放帧 {{ frameIndex + 1 }} / {{ timeline.length }}</small>
         </div>
         <label class="replay-scrubber">
           <span class="sr-only">回放时间点</span>
@@ -481,7 +489,7 @@ async function exportVideo() {
         </article>
         <article :class="{ caution: replay?.evidence?.warnings?.length }">
           <span>证据完整度</span>
-          <strong>{{ replay?.evidence?.warnings?.length ? "有缺口" : "已对齐" }}</strong>
+          <strong>{{ replay?.evidence?.warnings?.length ? "有缺口" : !replay?.evidence ? "仅有采样" : "已对齐" }}</strong>
           <p>{{ replay?.evidence?.warnings?.[0] || `记录倍率 ${playbackRateBase}× · 事件 ${events.length} 条` }}</p>
         </article>
       </section>
@@ -501,7 +509,7 @@ async function exportVideo() {
             <div class="stage-focus" :class="selectedCard?.state.tone">
               <span v-if="positionEvent">已定位事件</span>
               <span v-else>当前车辆</span>
-              <strong>{{ positionEvent?.title || vehicleSummary(selectedCard?.task, selectedCard?.car.waitReason) }}</strong>
+              <strong>{{ positionEvent?.title || vehicleSummary(selectedCard?.task, selectedCard?.car.waitReason) || selectedCard?.state.label }}</strong>
               <small v-if="positionEvent">{{ displayTime(positionEvent.time) }}</small>
             </div>
           </header>
@@ -529,12 +537,12 @@ async function exportVideo() {
                 <i />
                 <b>{{ item.car.vehicleId }}</b>
                 <em>{{ item.state.label }}</em>
-                <small>{{ item.car.site || "位置未返回" }}</small>
+                <small>{{ batteryLabel(item.car) }} · {{ item.car.site || "位置未返回" }}</small>
               </span>
               <span class="vehicle-taskline">
-                {{ item.task ? `${item.task.stationId} · ${stageLabel(item.task.stage)}` : "当前没有业务任务" }}
+                {{ item.car.charging ? "正在补电" : item.task ? `${item.task.stationId} · ${stageLabel(item.task.stage)}` : "当前没有业务任务" }}
               </span>
-              <span class="vehicle-reason">{{ vehicleSummary(item.task, item.car.waitReason) }}</span>
+              <span v-if="vehicleSummary(item.task, item.car.waitReason)" class="vehicle-reason">{{ vehicleSummary(item.task, item.car.waitReason) }}</span>
             </button>
             <p v-if="!vehicleCards.length" class="board-empty">当前采样没有车辆反馈。</p>
           </div>
@@ -544,7 +552,8 @@ async function exportVideo() {
               <div><dt>当前位置</dt><dd>{{ selectedCard.car.site || "未返回" }}</dd></div>
               <div><dt>原始坐标</dt><dd>{{ validPosition(selectedCard.car) ? `${selectedCard.car.x.toFixed(2)}, ${selectedCard.car.y.toFixed(2)}` : "未返回" }}</dd></div>
               <div><dt>当前任务</dt><dd>{{ shortTaskId(selectedCard.task?.taskId) }}</dd></div>
-              <div><dt>载荷状态</dt><dd>{{ selectedCard.car.loaded ? "载箱" : "空载" }}</dd></div>
+              <div><dt>电量</dt><dd>{{ batteryLabel(selectedCard.car) }}</dd></div>
+              <div><dt>载荷状态</dt><dd>{{ selectedCard.car.loaded == null ? "未记录" : selectedCard.car.loaded ? "载箱" : "空载" }}</dd></div>
             </dl>
             <ol v-if="recentVehicleEvents.length" class="focus-events">
               <li v-for="event in recentVehicleEvents" :key="event.time + event.kind + event.title">
