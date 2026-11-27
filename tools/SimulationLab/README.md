@@ -2,15 +2,7 @@
 
 仿真测试中心让正式 Service、任务接口、Outbox、SQLite、Robokit TCP 和 S7 采集写入连接本机虚拟设备。虚拟车辆收到运输命令后沿路线运动，虚拟 PLC 根据设备到位、箱体和倒料计时产生反馈。控制器不通过改任务终态、改数据库或移动坐标使业务“通过”。
 
-日常入口从“工程工具 → 仿真测试中心”进入。七个页面各自使用独立地址：
-
-- 运行总览：`http://127.0.0.1:5199/#/simulation-center`
-- 任务运行：`http://127.0.0.1:5199/#/simulation-center/tasks`
-- 环境与地图：`http://127.0.0.1:5199/#/simulation-center/environment`
-- 场景编排：`http://127.0.0.1:5199/#/simulation-center/scenario`
-- 故障处理：`http://127.0.0.1:5199/#/simulation-center/faults`
-- 人工处置：`http://127.0.0.1:5199/#/simulation-center/manual-recovery`
-- 监测与报告：`http://127.0.0.1:5199/#/simulation-center/results`
+日常操作统一进入 [排策智演的仿真中心](http://127.0.0.1:5270/simulation?mode=main)，在页面中选择运行总览、任务运行、环境与地图、场景编排、故障处理、人工处置或监测与报告。5199 保留供排策智演调用的仿真接口。
 
 私有调度实例使用临时端口、独立管道与数据库；这些端口用于隔离验证，不是另一个日常版本。初次准备工具还会生成临时控制台，用于安装前验证；同一个仿真实例只能由一个控制台管理。
 
@@ -199,4 +191,4 @@ npm --prefix AgvDispatch.Web run test:simulation-browser
 python tools/SimulationLab/run_regression.py --url http://127.0.0.1:<已启用控制台端口>
 ```
 
-浏览器回归只使用隔离的模拟HTTP响应；不能替代实际Service/Robokit/S7场景。`run_regression.py`会实际创建仿真任务，默认最后运行重启场景并保留恢复现场，不能用在连接实车或现场PLC的配置中。它和人工页面操作不要同时编排同一实例。实车固件、PLC程序、机械动作、定位和安全联锁仍需现场验证。
+浏览器回归单独构建仿真页面夹具，只使用隔离的模拟HTTP响应。夹具不随5199日常前端发布，不能替代实际Service/Robokit/S7场景。`run_regression.py`会实际创建仿真任务，默认最后运行重启场景并保留恢复现场，不能用在连接实车或现场PLC的配置中。它和人工页面操作不要同时编排同一实例。实车固件、PLC程序、机械动作、定位和安全联锁仍需现场验证。

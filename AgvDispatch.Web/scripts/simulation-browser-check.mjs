@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 
 const project = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-const dist = process.env.AGV_SIMULATION_WEB_DIST ? resolve(process.env.AGV_SIMULATION_WEB_DIST) : resolve(project, 'AgvDispatch.Web/dist');
+const dist = process.env.AGV_SIMULATION_WEB_DIST ? resolve(process.env.AGV_SIMULATION_WEB_DIST) : resolve(project, 'artifacts/simulation-browser-fixture');
 const profile = resolve(project, '.codex-tmp', `simulation-browser-${Date.now()}`);
 mkdirSync(profile, { recursive: true });
 const binary = ['C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', 'C:/Program Files/Google/Chrome/Application/chrome.exe'].find(existsSync);
