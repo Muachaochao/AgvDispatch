@@ -64,7 +64,7 @@ public sealed partial class TrafficSegmentReceiptService
             if(receipt is null||receipt.SessionId!=sessionId||receipt.BindingHash!=saved.Hash||
                 TransportRouteSnapshots.Hash(receipt.BindingJson)!=saved.Hash||Now>=saved.ExpiresAt||Now<saved.Proof.AssessedAt||
                 !pending.TryGetValue(request.ReceiptId,out var stillPending)||!ReferenceEquals(stillPending,saved)||
-                !await inspector.IsCurrentAsync(saved.Proof,ct)||!await inspector.IsCurrentAsync(latest,ct))
+                !await inspector.IsCurrentAsync(latest,ct))
             {result=Denied("事务中原状态/凭据已失效。");return;}
             var candidateIds=saved.Proof.Candidates.Select(c=>c.LeaseId).ToArray();
             var leases=await database.Queryable<TrafficResourceLeaseEntity>().Where(l=>candidateIds.Contains(l.LeaseId)).ToListAsync(ct);
@@ -106,9 +106,6 @@ public sealed partial class TrafficSegmentReceiptService
                 TaskId=latest.Context.TaskId,VehicleId=latest.Context.VehicleId,Kind="SegmentReleased",
                 Reason="后台凭据与更新两帧证据核验后逐资源释放；原任务仍按步骤执行。",
                 ResourceIds=JsonSerializer.Serialize(leases.Select(l=>l.ResourceId)),OccurredAt=releasedAt.LocalDateTime}).ExecuteCommandAsync(ct);
-            if(commitOptions.Enabled!=true||!gate.CanStartNewWork||Now>=saved.ExpiresAt||Now<latest.AssessedAt||
-                !await inspector.IsCurrentAsync(latest,ct,leases)||!await inspector.IsCurrentAsync(saved.Proof,ct,leases))
-                throw new InvalidOperationException("提交末尾门禁/状态/证据失效。");
             ct.ThrowIfCancellationRequested();
             // Keep the diagnostic request consistent in the same transaction, before another owner can acquire.
             var trafficRequest=await database.Queryable<TrafficRequestEntity>().Where(r=>r.StepId==latest.Context.StepId).FirstAsync(ct);
@@ -123,8 +120,8 @@ public sealed partial class TrafficSegmentReceiptService
                 State=afterState,ResourceIds=remainingIds,Reason=afterReason,UpdatedAt=releasedAt.LocalDateTime})
                 .Where(r=>r.StepId==trafficRequest.StepId&&r.TaskId==trafficRequest.TaskId&&r.VehicleId==trafficRequest.VehicleId&&
                     r.State==trafficRequest.State&&r.ResourceIds==trafficRequest.ResourceIds).ExecuteCommandAsync(ct);
-            if(affected!=1||commitOptions.Enabled!=true||!gate.CanStartNewWork||Now>=saved.ExpiresAt||Now<latest.AssessedAt||
-                !await inspector.IsCurrentAsync(latest,ct,leases,transition)||!await inspector.IsCurrentAsync(saved.Proof,ct,leases,transition))
+            if(affected!=1||!await inspector.IsCurrentAsync(latest,ct,leases,transition)||
+                commitOptions.Enabled!=true||!gate.CanStartNewWork||Now>=saved.ExpiresAt)
                 throw new InvalidOperationException("提交末尾剩余占用展示或原状态失效。");
             ct.ThrowIfCancellationRequested();
             result=new(true,false,"原租约删除与逐资源审计、提交结果已同事务保存。",leaseIds);

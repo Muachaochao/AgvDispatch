@@ -45,10 +45,12 @@ public sealed class TrafficSegmentReleaseInspector(ISqlSugarClient database, IAc
         try
         {
             var current=await LoadAsync(captured.Context.StepId,ct,deleted,transition);
+            var now=(clock??TimeProvider.System).GetUtcNow();
+            // Capture already evaluated both frames against this exact route, geometry and policy.
+            // Only their freshness can change while the transaction verifies the same snapshot.
             return current.Fingerprint==captured.Fingerprint && ReferenceEquals(current.Map,captured.Map) &&
-                captured.PolicyJson==JsonSerializer.Serialize(policy) &&
-                TrafficSegmentReleaseEvaluator.Evaluate(captured.Context,captured.Evidence,policy,
-                    (clock??TimeProvider.System).GetUtcNow()).Candidates.Any(c=>c.EvidenceVerified);
+                captured.PolicyJson==JsonSerializer.Serialize(policy) && now>=captured.AssessedAt &&
+                now-captured.Evidence.First.ObservedAt<=TimeSpan.FromSeconds(captured.MaximumAgeSeconds);
         }
         catch(Exception ex) when(ex is InvalidDataException or JsonException or ArgumentException){return false;}
     }

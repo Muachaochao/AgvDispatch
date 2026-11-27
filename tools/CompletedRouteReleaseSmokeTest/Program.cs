@@ -190,10 +190,12 @@ var extended = map with { Nodes = map.Nodes
         .Select(node => node.Id == "C"
             ? node with { ResourceIds = ["FINAL", "STOP-CLEAR", "STOP-KEEP"] }
             : node)
-        .Append(new MapNode("D",20,0,MapNodeType.Station,true,["NEXT"])).ToArray(),
+        .Append(new MapNode("D",20,0,MapNodeType.WaitingPoint,true,["NEXT","BAY"])).ToArray(),
     Edges=map.Edges.Append(new MapEdge("CD","C","D",10,1,false,true,["NEXT"])).ToArray(),
     Resources=map.Resources
         .Append(new TrafficResourceDefinition("NEXT",TrafficResourceType.Station))
+        .Append(new TrafficResourceDefinition("BAY",TrafficResourceType.Station,1,
+            [new(19,-1),new(21,-1),new(21,1),new(19,1)]))
         .Append(new TrafficResourceDefinition("STOP-KEEP",TrafficResourceType.Station))
         .Append(new TrafficResourceDefinition("NEXT-CLEAR",TrafficResourceType.NarrowAisle,1,
             [new(14,-1),new(16,-1),new(16,1),new(14,1)]))
@@ -202,20 +204,21 @@ var extended = map with { Nodes = map.Nodes
         .ToArray() };
 runtime.Replace(new("MAP","V1",extended,DateTimeOffset.UtcNow));
 var currentWindow=new AgvTransportRouteWindow(0,"A","C",["A","B","C"],["AB","BC"],
-    ["CORRIDOR","FINAL","INTERSECTION","AUTO-CORRIDOR-SYNTHETIC","NEXT-CLEAR","STOP-CLEAR","STOP-KEEP"],false);
+    ["CORRIDOR","FINAL","INTERSECTION","AUTO-CORRIDOR-SYNTHETIC","NEXT-CLEAR","STOP-CLEAR","STOP-KEEP","BAY"],false);
 var nextWindow=new AgvTransportRouteWindow(1,"C","D",["C","D"],["CD"],["FINAL","NEXT"],true);
-var nextWindowWithClearCorridor=nextWindow with { ResourceIds=["FINAL","NEXT","NEXT-CLEAR"] };
+var nextWindowWithClearCorridor=nextWindow with { ResourceIds=["FINAL","NEXT","NEXT-CLEAR","BAY"] };
 payload=JsonSerializer.Serialize(new AgvTransportCommandPayload("STEP","AGV","A","C",["A","B","C"],null)
     {BusinessStepId="STEP",WindowCount=2,Windows=[currentWindow,nextWindowWithClearCorridor]},new JsonSerializerOptions(JsonSerializerDefaults.Web));
 request.ResourceIds=JsonSerializer.Serialize(currentWindow.ResourceIds);request.State="Held";
 snapshotJson=TransportRouteSnapshots.Serialize(TransportRouteSnapshots.Capture("TASK","STEP","CMD","AGV",payload,runtime.Current!,request));
 windowDb.Insertable(request).ExecuteCommand();
-var windowTask=database.Queryable<DispatchTaskEntity>().Single();windowTask.Stage=(int)DispatchTaskStage.GoingToPickup;windowTask.VendorTaskId="STEP";windowDb.Insertable(windowTask).ExecuteCommand();
-var windowStep=database.Queryable<DispatchTaskStepEntity>().Single();windowStep.Status=(int)DispatchTaskStepStatus.Executing;windowStep.DestinationSite="D";windowDb.Insertable(windowStep).ExecuteCommand();
+var windowTask=database.Queryable<DispatchTaskEntity>().Single();windowTask.Stage=(int)DispatchTaskStage.GoingToDumper;windowTask.VendorTaskId="STEP";windowDb.Insertable(windowTask).ExecuteCommand();
+var windowStep=database.Queryable<DispatchTaskStepEntity>().Single();windowStep.Status=(int)DispatchTaskStepStatus.Executing;windowStep.StepType=(int)DispatchTaskStepType.DeliverFullBoxToDumper;windowStep.DestinationSite="D";windowDb.Insertable(windowStep).ExecuteCommand();
 var windowCommand=database.Queryable<AgvCommandOutboxEntity>().Single();windowCommand.PayloadJson=payload;windowCommand.ExecutionRouteSnapshotJson=snapshotJson;windowCommand.ExecutionRouteSnapshotHash=TransportRouteSnapshots.Hash(snapshotJson);windowDb.Insertable(windowCommand).ExecuteCommand();
 var batchAcquiredAt = new DateTime(2026, 11, 22, 3, 55, 25, 270);
-foreach(var resource in new[]{"FINAL","CORRIDOR","INTERSECTION","AUTO-CORRIDOR-SYNTHETIC","NEXT-CLEAR","STOP-CLEAR","STOP-KEEP"})
+foreach(var resource in new[]{"FINAL","CORRIDOR","INTERSECTION","AUTO-CORRIDOR-SYNTHETIC","NEXT-CLEAR","STOP-CLEAR","STOP-KEEP","BAY"})
  windowDb.Insertable(new TrafficResourceLeaseEntity{LeaseId="BOUNDARY-"+resource,ResourceId=resource,TaskId="TASK",OwnerStepId="STEP",VehicleId="AGV",MapId="MAP",MapVersionId="V1",AcquiredAt=batchAcquiredAt,RenewedAt=DateTime.Now,ExpiresAt=DateTime.Now.AddMinutes(2)}).ExecuteCommand();
+windowDb.Insertable(new TaskWaitingBayEntity{TaskId="TASK",StepId="STEP",VehicleId="AGV",MapId="MAP",MapVersionId="V1",WaitingSite="D",ResourceId="BAY",SelectedAt=DateTime.Now}).ExecuteCommand();
 // Reproduce the persisted batch format found in the B07 release refusal,
 // independently of how this provider writes a single DateTime parameter.
 windowDb.Ado.ExecuteCommand("UPDATE traffic_resource_lease SET AcquiredAt = '2026-11-22 03:55:25.270' WHERE LeaseId = 'BOUNDARY-CORRIDOR'");
@@ -236,6 +239,7 @@ var boundaryReleased=await windowService.ReleaseWindowAsync("TASK","STEP",Termin
 Check(boundaryReleased.ReleasedCount==4,"下一窗口被占用时，先按完整包络释放已通过的旧路段、路口、复用走廊及已明确离开的当前停点多边形资源");
 Check(windowDb.Queryable<TrafficResourceLeaseEntity>().Any(l=>l.ResourceId=="FINAL")&&windowDb.Queryable<TrafficResourceLeaseEntity>().Any(l=>l.LeaseId=="OTHER-NEXT")&&windowDb.Queryable<TrafficResourceLeaseEntity>().Any(l=>l.ResourceId=="AUTO-CORRIDOR-SYNTHETIC"),"保留当前停点、他车下一窗口和无几何依据的未知走廊，未删他车路权");
 Check(!windowDb.Queryable<TrafficResourceLeaseEntity>().Any(l=>l.LeaseId=="BOUNDARY-NEXT-CLEAR"),"下一窗口复用但车体已完全离开的旧资源也先释放，避免先占后等");
+Check(windowDb.Queryable<TrafficResourceLeaseEntity>().Any(l=>l.LeaseId=="BOUNDARY-BAY"),"中途停稳时保留已为原任务预订的下游倒料候车位");
 Check(windowDb.Queryable<TrafficResourceLeaseEntity>().Any(l=>l.LeaseId=="BOUNDARY-STOP-KEEP"),"当前停点无几何依据的资源继续保留，不按站点列表笼统阻塞相邻有边界资源");
 Check(!windowDb.Queryable<TrafficResourceLeaseEntity>().Any(l=>l.LeaseId=="BOUNDARY-STOP-CLEAR"),"当前停点列出的有边界资源只有在完整车体包络已离开时才释放");
 Check((await windowManager.TryAcquireAsync("OTHER-STEP","OTHER","OTHER-CAR",["CORRIDOR"],default)).Acquired,"返箱车可取得前车真正释放的路权，不再被已走过路段挡住");
