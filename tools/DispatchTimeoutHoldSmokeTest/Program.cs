@@ -59,6 +59,48 @@ Check(!await Apply(item) && journal.Holds == 1, "the hold stays recorded once wh
 Check(await orchestration.GetDispatchCandidatesAsync(100, default) is { } later && later.Any(t => t.TaskId == created.Task.TaskId),
     "the held task remains an active candidate and keeps its step");
 
+var defaultItem = item with
+{
+    TemplateNodeId = "",
+    TimeoutAction = TaskTemplateExecutionPolicy.NotifyAndHold,
+    TimeoutSeconds = 0,
+    StartedAt = clock.Now
+};
+clock.Now = clock.Now.AddSeconds(901);
+Check(await Apply(defaultItem) && journal.Stopped == 1,
+    "a task without a template still receives the visible per-step watchdog and stops automation");
+Check((await tasks.GetStepsAsync(created.Task.TaskId, default)).Single(row => row.StepId == step.StepId).Status ==
+      DispatchTaskStepStatus.ManualIntervention,
+    "the implicit watchdog leaves the original step and responsibility visible for manual recovery");
+
+var stepOptions = new DispatchTaskStepOptions();
+var noConfiguration = TaskWatchdogPolicyResolver.ResolveStep(DispatchTaskStepType.GoToPickup, "", 0,
+    null, stepOptions, null);
+Check(noConfiguration is { TimeoutSeconds: 900, Action: TaskTemplateExecutionPolicy.ManualRecovery, Source: "Default" },
+    "the Implicit watchdog defaults are configurable, bounded, and use manual recovery instead of indefinite hold");
+
+var parameterRuntime = new TaskParameterRuntime(new DispatchOrchestratorOptions(),
+    new DispatchTaskCreationOptions { DumperStationId = "DUMP" });
+var defaultTimeouts = Enum.GetValues<DispatchTaskStepType>()
+    .Select(type => new TaskStepTimeoutParameter(type, type == DispatchTaskStepType.PickupFullBox ? 7 : 0)).ToArray();
+var parameterConfiguration = new TaskParameterConfiguration("DUMP", "WAIT", "DMP",
+    [new TaskPickupParameter("ST", "PICK")],
+    [
+        new(DispatchTaskStepType.GoToPickup, "Wait", null, null, null, null),
+        new(DispatchTaskStepType.DeliverFullBoxToDumper, "Wait", null, null, null, null),
+        new(DispatchTaskStepType.EnterDumpingPosition, "Wait", null, null, null, null),
+        new(DispatchTaskStepType.ReturnEmptyBox, "Wait", null, null, null, null)
+    ])
+{
+    WaitingSites = ["WAIT"],
+    StepTimeouts = defaultTimeouts
+};
+parameterRuntime.Apply(new(1, "r1", "request", "MAP", "VERSION", parameterConfiguration, []));
+var savedPolicy = TaskWatchdogPolicyResolver.ResolveStep(DispatchTaskStepType.PickupFullBox, "", 0,
+    null, stepOptions, parameterRuntime);
+Check(savedPolicy is { TimeoutSeconds: 7, Source: "Parameters" },
+    "a persisted task-parameter threshold overrides the fail-safe default without changing its zero-disables semantics");
+
 Console.WriteLine($"PASS: {checks} timeout hold checks; isolated SQLite and a manual clock only.");
 
 sealed class ManualClock(DateTimeOffset start) : TimeProvider
@@ -69,10 +111,12 @@ sealed class ManualClock(DateTimeOffset start) : TimeProvider
 sealed class Journal : IExecutionEvidenceJournal
 {
     public int Holds;
+    public int Stopped;
     public IDisposable BeginScope(string taskId, string stepId) => new Scope();
     public Task RecordAsync(string taskId, string stepId, string kind, object evidence, CancellationToken ct)
     {
         if (kind == "NodeTimeoutHold") Holds++;
+        if (kind == "NodeTimeoutStopped") Stopped++;
         return Task.CompletedTask;
     }
     public Task RecordCurrentAsync(string kind, object evidence, CancellationToken ct) => Task.CompletedTask;

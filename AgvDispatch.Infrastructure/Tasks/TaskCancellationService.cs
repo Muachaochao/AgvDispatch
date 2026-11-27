@@ -2,6 +2,7 @@ using System.Text.Json;
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Domain.Agvs;
 using AgvDispatch.Domain.Devices;
+using AgvDispatch.Domain.Maps;
 using AgvDispatch.Domain.Tasks;
 using AgvDispatch.Infrastructure.Persistence.Entities;
 using SqlSugar;
@@ -69,7 +70,11 @@ public sealed class TaskCancellationService(ISqlSugarClient database, IMapExecut
     }
     public async Task ProcessAsync(CancellationToken ct)
     {
-        using var lease = await gate.EnterControlAsync(ct);
+        // Vendor status and cancellation calls may block on one vehicle. They are
+        // existing work, not map-control work: share this lease with the rest of
+        // the fleet so a silent vehicle cannot stop dispatch, charging or release.
+        using var lease = await gate.EnterAsync(MapExecutionOperation.ExistingWork, ct);
+        if (lease is null) return;
         var tasks = await database.Queryable<DispatchTaskEntity>().Where(t => t.Stage == (int)DispatchTaskStage.CancellationPending).Take(20).ToListAsync(ct);
         foreach (var task in tasks)
         {

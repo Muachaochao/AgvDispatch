@@ -38,7 +38,8 @@ public sealed class ObstacleRecoveryCoordinator(
     DispatchOrchestratorOptions dispatchOptions,
     TimeProvider? clock = null,
     ILogger<ObstacleRecoveryCoordinator>? logger = null, DispatchEnergyForecast? energyForecast = null,
-    IRoutePlanner? forecastRoutes = null, IExecutionEvidenceJournal? evidenceJournal = null) : IsolatedBackgroundService
+    IRoutePlanner? forecastRoutes = null, IExecutionEvidenceJournal? evidenceJournal = null,
+    IRoutePlanner? routePlanner = null) : IsolatedBackgroundService
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private readonly TimeProvider _clock = clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider;
@@ -1743,14 +1744,22 @@ public sealed class ObstacleRecoveryCoordinator(
                 node.Enabled && node.Id.Equals(id, StringComparison.OrdinalIgnoreCase)))
             .ToArray();
         protectedNodes.UnionWith(occupiedByOtherVehicles);
-        var route = map.Graph.FindShortestTransportRoute(current[0].Id, destination[0].Id,
-            unavailableResources, null, protectedNodes, unavailableTraversals);
         var safeSite = await RecommendSafeSiteAsync(map, current[0].Id, unavailableResources,
             unavailableTraversals, protectedNodes, cancellationToken);
+        // Recovery must use the same no-through, dumper-clearance, occupied-
+        // corridor and directed-closure rules as ordinary dispatching. The
+        // graph fallback is retained only for isolated tests that do not
+        // construct a planner; production always supplies one.
+        var planned = routePlanner is null
+            ? map.Graph.FindShortestTransportRoute(current[0].Id, destination[0].Id,
+                unavailableResources, null, protectedNodes, unavailableTraversals)
+            : routePlanner.PlanForVehicle(robot.CurrentStation, step.DestinationSite!,
+                unavailableResources, row.VehicleId, unavailableTraversals);
+        var route = planned;
         if (route is null)
             return new(false, $"已推断受阻道路为{robot.CurrentStation}→{nextSite}，当前路网没有安全替代路线。",
                 [], blockedEdges.ToArray(), safeSite);
-        var sitePlan = MapRouteSiteMapper.ToAgvSitePlan(map.Definition, route);
+        var sitePlan = routePlanner is null ? MapRouteSiteMapper.ToAgvSitePlan(map.Definition, route) : route;
         if (sitePlan.Nodes.Count < 2 ||
             !MapRouteSiteMapper.IsSameNode(map.Definition, sitePlan.Nodes[0], robot.CurrentStation) ||
             !MapRouteSiteMapper.IsSameNode(map.Definition, sitePlan.Nodes[^1], step.DestinationSite) ||

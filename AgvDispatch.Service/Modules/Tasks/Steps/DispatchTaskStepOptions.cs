@@ -1,3 +1,5 @@
+using AgvDispatch.Domain.Tasks;
+
 namespace AgvDispatch.Service;
 
 public sealed class DispatchTaskStepOptions
@@ -27,6 +29,29 @@ public sealed class DispatchTaskStepOptions
     // unknown holder (charging, manual, parked, unreadable command) keeps the atomic window.
     public bool PartialWindowAcquisition { get; set; } = true;
     public int PartialWindowMinimumEdges { get; set; } = 1;
+
+    // D6 fail-safe watchdogs are used only when the task has no template node
+    // and no persisted task-parameter timeout. An explicit template or saved
+    // parameter value, including zero, always wins.
+    public int SelectAgvTimeoutSeconds { get; set; } = 300;
+    public string DefaultTimeoutAction { get; set; } = TaskTemplateExecutionPolicy.ManualRecovery;
+    public Dictionary<string, int> DefaultStepTimeoutSeconds { get; set; } = new(StringComparer.OrdinalIgnoreCase)
+    {
+        [nameof(DispatchTaskStepType.GoToPickup)] = 900,
+        [nameof(DispatchTaskStepType.PickupFullBox)] = 300,
+        [nameof(DispatchTaskStepType.DeliverFullBoxToDumper)] = 900,
+        [nameof(DispatchTaskStepType.WaitForDumperReady)] = 1800,
+        [nameof(DispatchTaskStepType.EnterDumpingPosition)] = 600,
+        [nameof(DispatchTaskStepType.DumpFullBox)] = 1800,
+        [nameof(DispatchTaskStepType.ReturnEmptyBox)] = 900,
+        [nameof(DispatchTaskStepType.PlaceEmptyBox)] = 300,
+        [nameof(DispatchTaskStepType.CompletePlcHandshake)] = 300
+    };
+
+    public int GetDefaultStepTimeoutSeconds(DispatchTaskStepType stepType) =>
+        DefaultStepTimeoutSeconds.TryGetValue(stepType.ToString(), out var seconds)
+            ? Math.Clamp(seconds, 0, 604800)
+            : 1800;
 }
 
 public static class RollingWindowBoundaries

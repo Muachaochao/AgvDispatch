@@ -7,7 +7,7 @@ namespace AgvDispatch.Service;
 public sealed partial class TaskCenterQueryService(ITaskCenterReadRepository repository,
     IPlcSignalCache signals, DispatchTaskCreationOptions options, TaskParameterRuntime? parameters = null,
     TimeProvider? clock = null, HandshakeExecutionOptions? handshakeOptions = null,
-    ITrafficResourceControlService? trafficControl = null) : ITaskCenterQueryService
+    ITrafficResourceControlService? trafficControl = null, DispatchTaskStepOptions? stepOptions = null) : ITaskCenterQueryService
 {
     public Task<TaskListPage> QueryAsync(TaskListQuery query, CancellationToken cancellationToken) =>
         repository.QueryAsync(query, cancellationToken);
@@ -141,7 +141,6 @@ public sealed partial class TaskCenterQueryService(ITaskCenterReadRepository rep
     private TaskCenterDetail EnrichSteps(TaskCenterDetail detail, string? currentStepId)
     {
         var now = (clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider).GetUtcNow();
-        var thresholds = parameters?.StepTimeouts.ToDictionary(row => row.StepType, row => row.Seconds);
         var terminal = detail.Task.Stage is DispatchTaskStage.Completed or DispatchTaskStage.Cancelled or DispatchTaskStage.Faulted or DispatchTaskStage.CancellationReview;
         var steps = detail.Steps.Select(step =>
         {
@@ -167,8 +166,11 @@ public sealed partial class TaskCenterQueryService(ITaskCenterReadRepository rep
                 elapsed = $"{(int)duration.TotalHours:00}:{duration.Minutes:00}:{duration.Seconds:00}";
                 if (step.CompletedAt is null && terminal) elapsed += "（截至任务结束）";
             }
-            var threshold = templateNode?.TimeoutSeconds ?? thresholds?.GetValueOrDefault(step.StepType) ?? 0;
-            var timeoutAction = TaskTemplateExecutionPolicy.NormalizeTimeoutAction(templateNode?.TimeoutAction);
+            var timeoutPolicy = TaskWatchdogPolicyResolver.ResolveStep(
+                step.StepType, templateNode?.Id, templateNode?.TimeoutSeconds ?? 0,
+                templateNode?.TimeoutAction, stepOptions ?? new(), parameters);
+            var threshold = timeoutPolicy.TimeoutSeconds;
+            var timeoutAction = timeoutPolicy.Action;
             var failurePolicy = TaskTemplateExecutionPolicy.NormalizeFailurePolicy(templateNode?.FailurePolicy);
             var timedOut = !terminal && step.StepId == currentStepId && durationStartedAt is not null &&
                 step.CompletedAt is null && threshold > 0 && duration.TotalSeconds >= threshold;

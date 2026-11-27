@@ -1,6 +1,7 @@
 using AgvDispatch.Application.Abstractions;
 using AgvDispatch.Domain.Agvs;
 using AgvDispatch.Domain.Devices;
+using AgvDispatch.Domain.Maps;
 using AgvDispatch.Domain.Tasks;
 using AgvDispatch.Infrastructure.Persistence.Entities;
 using SqlSugar;
@@ -46,7 +47,9 @@ public sealed class TaskSwitchRuntimePort(ISqlSugarClient database, ITaskCancell
     public async Task<TaskSwitchInspection> InspectSourceAsync(TaskSwitchRequest request, CancellationToken ct)
     {
         var options = await creation.GetOptionsAsync(ct);
-        using var lease = await gate.EnterControlAsync(ct);
+        using var lease = await gate.EnterAsync(MapExecutionOperation.ExistingWork, ct);
+        if (lease is null) return new("", map.Current?.MapId ?? "", map.Current?.VersionId ?? "",
+            parameters.Revision, ["地图或启动恢复门禁未放行。"]);
         var blockers = new List<string>(); Context(blockers);
         var source = await Source(request.TaskId, ct);
         var vehicleId = source?.VehicleId ?? "";
@@ -125,10 +128,13 @@ public sealed class TaskSwitchRuntimePort(ISqlSugarClient database, ITaskCancell
 
     public async Task<TaskSwitchClosureObservation> ObserveCloseAsync(TaskSwitchRecord session, CancellationToken ct)
     {
-        using var lease = await gate.EnterControlAsync(ct);
+        using var lease = await gate.EnterAsync(MapExecutionOperation.ExistingWork, ct);
+        if (lease is null) return new(false, false, map.Current?.MapId ?? "", map.Current?.VersionId ?? "",
+            parameters.Revision, ["地图或启动恢复门禁未放行。"]);
         return await ObserveCore(session, ct);
     }
-    private async Task<TaskSwitchClosureObservation> ObserveCore(TaskSwitchRecord session, CancellationToken ct)
+    private async Task<TaskSwitchClosureObservation> ObserveCore(TaskSwitchRecord session, CancellationToken ct,
+        bool readVehicleProbe = true)
     {
         var blockers = new List<string>(); Context(blockers);
         var source = await Source(session.SourceTaskId, ct);
@@ -157,8 +163,11 @@ public sealed class TaskSwitchRuntimePort(ISqlSugarClient database, ITaskCancell
             if (await database.Queryable<AgvCommandOutboxEntity>().AnyAsync(c => c.VehicleId == session.VehicleId &&
                 c.Status != (int)AgvCommandStatus.Sent && c.Status != (int)AgvCommandStatus.Cancelled, ct))
                 blockers.Add("原车辆仍有未闭合命令队列。");
-            var probeEvidence = await probe.ReadAsync(session.VehicleId, ct);
-            if (!probeEvidence.TasksKnown) blockers.AddRange(probeEvidence.BusinessCleanupBlockers.Where(reason => reason.StartsWith("车端全任务列表", StringComparison.Ordinal)));
+            if (readVehicleProbe)
+            {
+                var probeEvidence = await probe.ReadAsync(session.VehicleId, ct);
+                if (!probeEvidence.TasksKnown) blockers.AddRange(probeEvidence.BusinessCleanupBlockers.Where(reason => reason.StartsWith("车端全任务列表", StringComparison.Ordinal)));
+            }
             return CleanupObservation(source.Stage == (int)DispatchTaskStage.Completed && blockers.Count == 0,
                 source.Stage == (int)DispatchTaskStage.Completed);
 
@@ -177,9 +186,12 @@ public sealed class TaskSwitchRuntimePort(ISqlSugarClient database, ITaskCancell
         if (!confirmed) return Observation(false, false);
         var after = new DateTimeOffset(source!.CancelConfirmedAt!.Value);
         Health(session.VehicleId, blockers, true, after);
-        var evidence = await probe.ReadAsync(session.VehicleId, ct); blockers.AddRange(evidence.Blockers);
-        if (!evidence.EmptyAndLowered || !Fresh(evidence.ObservedAt, after)) blockers.Add("停止后尚未取得新鲜空载、顶升下降反馈；到站取箱动作可能已经发生。");
-        if (!evidence.TasksKnown || !evidence.NoActiveTasks) blockers.Add("车端完整任务列表尚未确认全部终结。");
+        if (readVehicleProbe)
+        {
+            var evidence = await probe.ReadAsync(session.VehicleId, ct); blockers.AddRange(evidence.Blockers);
+            if (!evidence.EmptyAndLowered || !Fresh(evidence.ObservedAt, after)) blockers.Add("停止后尚未取得新鲜空载、顶升下降反馈；到站取箱动作可能已经发生。");
+            if (!evidence.TasksKnown || !evidence.NoActiveTasks) blockers.Add("车端完整任务列表尚未确认全部终结。");
+        }
         var leases = await database.Queryable<TrafficResourceLeaseEntity>().Where(l => l.TaskId == session.SourceTaskId || l.VehicleId == session.VehicleId).ToListAsync(ct);
         if (leases.Count > 0) blockers.Add("原路权仍保留：" + string.Join("、", leases.Select(l => l.ResourceId)) + "。须核实实际离区并通过交通资源处置；本流程不自动释放。");
         if (await database.Queryable<TaskEquipmentClaimEntity>().AnyAsync(e => e.TaskId == session.SourceTaskId, ct)) blockers.Add("原任务仍持有设备归属。");
@@ -201,11 +213,23 @@ public sealed class TaskSwitchRuntimePort(ISqlSugarClient database, ITaskCancell
 
     public async Task CloseOriginalAsync(TaskSwitchRecord session, CancellationToken ct)
     {
+        // Probe the vehicle and read the current evidence without the exclusive
+        // map-control lease. The final short transaction rechecks the local
+        // database/signals while holding control, so a map switch cannot slip
+        // between observation and commit.
+        var observed = await ObserveCloseAsync(session, ct);
+        if (observed.OriginalClosed && observed.Blockers.Length == 0) return;
+        if (!observed.CanCloseOriginal || observed.Blockers.Length > 0 ||
+            observed.MapId != session.MapId || observed.MapVersionId != session.MapVersionId ||
+            observed.ParameterRevision != session.ParameterRevision)
+            throw new InvalidOperationException("原任务尚不满足自动关闭：" + string.Join("；", observed.Blockers));
         using var lease = await gate.EnterControlAsync(ct);
-        var observation = await ObserveCore(session, ct);
-        if (observation.OriginalClosed && observation.Blockers.Length == 0) return;
-        if (!observation.CanCloseOriginal || observation.Blockers.Length > 0 || observation.MapId != session.MapId || observation.MapVersionId != session.MapVersionId || observation.ParameterRevision != session.ParameterRevision)
-            throw new InvalidOperationException("原任务尚不满足自动关闭：" + string.Join("；", observation.Blockers));
+        if (map.Current?.MapId != session.MapId || map.Current?.VersionId != session.MapVersionId ||
+            parameters.Revision != session.ParameterRevision)
+            throw new InvalidOperationException("原任务关闭前地图或参数已变化，保留原责任。");
+        var local = await ObserveCore(session, ct, readVehicleProbe: false);
+        if (!local.CanCloseOriginal || local.Blockers.Length > 0)
+            throw new InvalidOperationException("原任务责任在提交前发生变化：" + string.Join("；", local.Blockers));
         var result = await database.Ado.UseTranAsync(async () =>
         {
             var changed = await database.Updateable<DispatchTaskEntity>().SetColumns(t => new DispatchTaskEntity
@@ -217,7 +241,7 @@ public sealed class TaskSwitchRuntimePort(ISqlSugarClient database, ITaskCancell
                 .Where(s => s.TaskId == session.SourceTaskId && s.Status != (int)DispatchTaskStepStatus.Completed).ExecuteCommandAsync(ct);
             await database.Insertable(new ExecutionEvidenceEntity { Id = Guid.NewGuid().ToString("N"), TaskId = session.SourceTaskId,
                 StepId = "", SessionId = session.SwitchId, Kind = "TaskSwitchOriginalClosed", Operator = session.Operator,
-                Reason = session.Request.Reason, Evidence = System.Text.Json.JsonSerializer.Serialize(new { session.SwitchId, observation }), OccurredAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime }).ExecuteCommandAsync(ct);
+                Reason = session.Request.Reason, Evidence = System.Text.Json.JsonSerializer.Serialize(new { session.SwitchId, observation = observed, local }), OccurredAt = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime }).ExecuteCommandAsync(ct);
         });
         if (!result.IsSuccess) throw new InvalidOperationException("原关闭及证据未一起提交，保持换单冻结。", result.ErrorException);
     }

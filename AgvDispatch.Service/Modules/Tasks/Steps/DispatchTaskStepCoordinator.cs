@@ -26,7 +26,8 @@ public sealed class DispatchTaskStepCoordinator(
     IDispatchPreSendSafetyService? preSendSafety = null, DispatchTrafficReservationService? trafficLayer = null,
     IDispatchPipelineMonitor? pipeline = null, DispatchOptimizationService? optimization = null, MapOptions? mapOptions = null,
     AgvOptions? agvOptions = null, GlobalPickupRoutePlanner? pickupStaging = null,
-    DispatchTrafficWakeup? trafficWakeup = null, TimeProvider? clock = null) : IsolatedBackgroundService
+    DispatchTrafficWakeup? trafficWakeup = null, TimeProvider? clock = null,
+    TaskParameterRuntime? parameters = null) : IsolatedBackgroundService
 {
     private readonly TimeProvider _clock = clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider;
     private TimeSpan BusinessDelay(int milliseconds) => _clock is SimulationTimeProvider simulation
@@ -207,13 +208,15 @@ public sealed class DispatchTaskStepCoordinator(
         DispatchTaskStepWorkItem step,
         CancellationToken cancellationToken)
     {
+        var policy = TaskWatchdogPolicyResolver.ForStep(step, options, parameters);
+        if (policy.TimeoutSeconds <= 0) return false;
         if (step.StartedAt is not { } startedAt || !TaskTemplateExecutionPolicy.HasTimedOut(
-                startedAt, step.TimeoutSeconds, _clock.GetUtcNow())) return false;
+                startedAt, policy.TimeoutSeconds, _clock.GetUtcNow())) return false;
         var elapsed = _clock.GetUtcNow() - startedAt;
 
-        var action = TaskTemplateExecutionPolicy.NormalizeTimeoutAction(step.TimeoutAction);
+        var action = policy.Action;
         var node = string.IsNullOrWhiteSpace(step.TemplateNodeId) ? step.StepType.ToString() : step.TemplateNodeId;
-        var message = $"任务节点 {node} 已运行 {(long)elapsed.TotalSeconds} 秒，超过阈值 {step.TimeoutSeconds} 秒；" +
+        var message = $"任务节点 {node} 已运行 {(long)elapsed.TotalSeconds} 秒，超过阈值 {policy.TimeoutSeconds} 秒；" +
                       $"超时处置为 {action}。保留原步骤、路权和设备责任，禁止自动重发。";
         if (TaskTemplateExecutionPolicy.StopsAutomationForTimeout(action))
         {
@@ -222,28 +225,28 @@ public sealed class DispatchTaskStepCoordinator(
             if (stopped)
             {
                 await RecordPolicyEvidenceAsync(step, "NodeTimeoutStopped",
-                    new { step.TemplateNodeId, step.TimeoutSeconds, Action = action, ElapsedSeconds = (long)elapsed.TotalSeconds, Reason = message },
+                    new { step.TemplateNodeId, TimeoutSeconds = policy.TimeoutSeconds, policy.Source, Action = action, ElapsedSeconds = (long)elapsed.TotalSeconds, Reason = message },
                     cancellationToken);
                 logger.LogWarning(
                     "任务节点超时并按策略停止自动执行。TaskId={TaskId}, StepId={StepId}, Action={Action}, TimeoutSeconds={TimeoutSeconds}",
-                    step.TaskId, step.StepId, action, step.TimeoutSeconds);
+                    step.TaskId, step.StepId, action, policy.TimeoutSeconds);
             }
             return stopped;
         }
 
         // The fingerprint excludes the elapsed seconds so a held step is recorded once, not every cycle.
         var key = TimeoutHoldKeyPrefix + step.StepId;
-        var fingerprint = $"{node}|{action}|{step.TimeoutSeconds}";
+        var fingerprint = $"{node}|{action}|{policy.TimeoutSeconds}|{policy.Source}";
         if (!_conditionFingerprints.TryGetValue(key, out var prior) || prior != fingerprint)
         {
             await tasks.RecordReadyStepFailureAsync(step.TaskId, step.StepId, message, cancellationToken);
             await RecordPolicyEvidenceAsync(step, "NodeTimeoutHold",
-                new { step.TemplateNodeId, step.TimeoutSeconds, Action = action, ElapsedSeconds = (long)elapsed.TotalSeconds, Reason = message },
+                new { step.TemplateNodeId, TimeoutSeconds = policy.TimeoutSeconds, policy.Source, Action = action, ElapsedSeconds = (long)elapsed.TotalSeconds, Reason = message },
                 cancellationToken);
             _conditionFingerprints[key] = fingerprint;
             logger.LogWarning(
                 "任务节点超阈值，按策略保持等待。TaskId={TaskId}, StepId={StepId}, Action={Action}, TimeoutSeconds={TimeoutSeconds}",
-                step.TaskId, step.StepId, action, step.TimeoutSeconds);
+                step.TaskId, step.StepId, action, policy.TimeoutSeconds);
         }
         return false;
     }
@@ -370,11 +373,9 @@ public sealed class DispatchTaskStepCoordinator(
     private bool VehicleReadyAt(string vehicleId, string source, ActiveMapRuntimeSnapshot current)
     {
         if (vehicleStates is null) return true; // Optional compatibility adapter; runtime always provides telemetry.
-        if (!vehicleStates.TryGet(vehicleId, out var vehicle) || vehicle.Connection != ConnectionState.Online ||
-            vehicle.Quality != SignalQuality.Good || vehicle.EmergencyStopped != false || vehicle.Blocked != false ||
-            AgvObstaclePolicy.IsBlocked(vehicle) || AgvObstaclePolicy.HasBlockingAlarm(vehicle) ||
-            vehicle.LastSuccessfulPollAt is not { } observed || observed > _clock.GetUtcNow().AddSeconds(1) ||
-            _clock.GetUtcNow() - observed > TimeSpan.FromSeconds(mapOptions?.PositionStaleSeconds ?? 5) || vehicle.Tasks.Any(t => t.Status is 1 or 2 or 3)) return false;
+        if (!vehicleStates.TryGet(vehicleId, out var vehicle)) return false;
+        var maximumAge = TimeSpan.FromSeconds(mapOptions?.PositionStaleSeconds ?? 5);
+        if (VehicleReadiness.Check(vehicle, null, _clock.GetUtcNow(), maximumAge) is not null) return false;
         return current.Definition.Nodes.Any(n => n.Enabled &&
             MapRouteSiteMapper.IsSameNode(current.Definition, n.Id, source) &&
             MapRouteSiteMapper.IsSameNode(current.Definition, n.Id, vehicle.CurrentStation));

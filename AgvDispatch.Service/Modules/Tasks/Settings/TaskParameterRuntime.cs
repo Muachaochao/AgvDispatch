@@ -14,6 +14,9 @@ public sealed class TaskParameterRuntime(DispatchOrchestratorOptions dispatch, D
     private IReadOnlyList<TaskStepTimeoutParameter> _stepTimeouts = Enum.GetValues<DispatchTaskStepType>()
         .Select(type => new TaskStepTimeoutParameter(type, 0)).ToArray();
     public IReadOnlyList<TaskStepTimeoutParameter> StepTimeouts => _stepTimeouts;
+    public bool HasRuntimeConfiguration => _configuration is not null;
+    public int GetStepTimeoutSeconds(DispatchTaskStepType stepType) =>
+        _stepTimeouts.FirstOrDefault(row => row.StepType == stepType)?.Seconds ?? 0;
     public string Revision { get; private set; } = "initial";
     private TaskParameterConfiguration? _configuration;
     public TaskParameterConfiguration Capture() => _configuration is not null ? Clone(_configuration) : new(creation.DumperStationId, dispatch.GetDumperWaitingSite() ?? "", dispatch.DumperDumpingSite,

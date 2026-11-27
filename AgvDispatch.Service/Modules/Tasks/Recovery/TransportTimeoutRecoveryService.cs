@@ -34,7 +34,8 @@ public sealed class TransportTimeoutRecoveryService(
     IPlcSignalCache? signals = null,
     DispatchTaskCreationOptions? creation = null,
     DispatchOrchestratorOptions? dispatch = null,
-    ILogger<TransportTimeoutRecoveryService>? logger = null) : ITransportTimeoutRecoveryService
+    ILogger<TransportTimeoutRecoveryService>? logger = null,
+    IRoutePlanner? routePlanner = null) : ITransportTimeoutRecoveryService
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private readonly SemaphoreSlim _execute = new(1, 1);
@@ -360,7 +361,14 @@ public sealed class TransportTimeoutRecoveryService(
         {
             if (executionGate.Mode != MapExecutionMode.Running)
                 return new(false, "地图切换或启动恢复门禁未处于运行状态，禁止发送恢复导航。");
-            using var control = await executionGate.EnterControlAsync(cancellationToken);
+            // The original navigation is already terminal; this is existing-work
+            // recovery. Keep the gate shared so a slow vendor/PLC check for this
+            // vehicle cannot serialize every other vehicle's work. Map switching
+            // still waits for this lease and the final binding is conditional.
+            using var execution = await executionGate.EnterAsync(
+                MapExecutionOperation.ExistingWork, cancellationToken);
+            if (execution is null)
+                return new(false, "地图执行门禁未放行，禁止发送恢复导航。");
             var row = await database.Queryable<TransportTimeoutRecoveryEntity>()
                 .Where(item => item.TaskId == request.TaskId)
                 .OrderByDescending(item => item.UpdatedAt)
@@ -639,8 +647,12 @@ public sealed class TransportTimeoutRecoveryService(
                 : new[] { new MapDirectedTraversal(edge.Id, source, next) }).ToList();
         if (roadClosures is not null) blocked.AddRange((await roadClosures.ListAsync(cancellationToken)).BlockedTraversals);
         var unavailable = await traffic.GetUnavailableResourceIdsAsync(row.TaskId, cancellationToken);
+        var traversals = blocked.Distinct().ToArray();
+        if (routePlanner is not null)
+            return routePlanner.PlanForVehicle(row.CurrentStation!, row.DestinationSite,
+                unavailable, row.VehicleId, traversals);
         var logical = map.Graph.FindShortestTransportRoute(source, destination, unavailable, null, null,
-            blocked.Distinct().ToArray());
+            traversals);
         return logical is null ? null : MapRouteSiteMapper.ToAgvSitePlan(map.Definition, logical);
     }
 

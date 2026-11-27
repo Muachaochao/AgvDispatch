@@ -4,7 +4,8 @@ using AgvDispatch.Domain.Tasks;
 namespace AgvDispatch.Service;
 
 public sealed class DispatchQueueWindowService(IDispatchOrchestrationRepository tasks,
-    ITrafficResourceManager trafficResources, DispatchAssignmentOptimizer? optimizer = null) : IDispatchQueueWindowService
+    ITrafficResourceManager trafficResources, DispatchAssignmentOptimizer? optimizer = null,
+    DispatchTaskStepOptions? stepOptions = null) : IDispatchQueueWindowService
 {
     private readonly DispatchAssignmentOptimizer _optimizer = optimizer ?? new();
 
@@ -68,10 +69,11 @@ public sealed class DispatchQueueWindowService(IDispatchOrchestrationRepository 
     private async Task<bool> StopIfSelectionTimedOutAsync(DispatchTaskWorkItem task, DispatchTaskStepWorkItem step,
         DateTimeOffset startedAt, DateTimeOffset now, CancellationToken ct)
     {
-        if (!TaskTemplateExecutionPolicy.HasTimedOut(startedAt, task.TimeoutSeconds, now)) return false;
-        var action = TaskTemplateExecutionPolicy.NormalizeTimeoutAction(task.TimeoutAction);
+        var policy = TaskWatchdogPolicyResolver.ForSelection(task, stepOptions ?? new());
+        if (!TaskTemplateExecutionPolicy.HasTimedOut(startedAt, policy.TimeoutSeconds, now)) return false;
+        var action = policy.Action;
         if (!TaskTemplateExecutionPolicy.StopsAutomationForTimeout(action)) return false;
-        var reason = $"SelectAgv 已等待 {(long)(now - startedAt).TotalSeconds} 秒，超过模板阈值 {task.TimeoutSeconds} 秒；" +
+        var reason = $"SelectAgv 已等待 {(long)(now - startedAt).TotalSeconds} 秒，超过阈值 {policy.TimeoutSeconds} 秒（来源 {policy.Source}）；" +
                      $"超时处置 {action}，保留原任务与现场责任，禁止自动重发。";
         return await tasks.StopReadyStepForPolicyAsync(task.TaskId, step.StepId, action, reason, ct);
     }

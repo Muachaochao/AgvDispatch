@@ -218,17 +218,13 @@ public sealed class DispatchPreSendSafetyService(
     private async Task<string?> CheckVehicleAsync(string vehicleId, string source, bool newBusiness, CancellationToken ct)
     {
         var vehicle = (await agvGateway.GetVehiclesAsync(ct)).SingleOrDefault(v => v.VehicleId == vehicleId);
-        if (vehicle?.Connection != ConnectionState.Online || !vehicleStates.TryGet(vehicleId, out var robot) ||
-            robot.Connection != ConnectionState.Online || robot.Quality != SignalQuality.Good)
+        if (vehicle is null || !vehicleStates.TryGet(vehicleId, out var robot))
             return "车辆离线或遥测质量无效。";
         var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow();
-        if (robot.LastSuccessfulPollAt is not { } observed || observed > now.AddSeconds(1) ||
-            now - observed > TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds)) return "车辆观察已过期或时间异常。";
-        if (robot.EmergencyStopped != false || robot.Blocked != false || AgvObstaclePolicy.IsBlocked(robot) || AgvObstaclePolicy.HasBlockingAlarm(robot))
-            return "车辆急停、阻挡、阻塞报警或健康状态未知。";
-        if (robot.Charging == true) return "车端报告正在充电，不能发送运输命令。";
-        if (robot.Tasks.Any(t => t.Status is 1 or 2 or 3) ||
-            !dispatch.IdleOperatingStates.Contains(vehicle.OperatingState, StringComparer.OrdinalIgnoreCase)) return "车辆存在未结束的车端任务或尚未空闲。";
+        var minimum = newBusiness ? (decimal)(optimization?.Options.MinimumBatteryPercent ?? 20) : (decimal?)null;
+        if (VehicleReadiness.Check(robot, vehicle, now, TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds),
+                dispatch.IdleOperatingStates, minimum, rejectCharging: true) is { } readiness)
+            return readiness;
         var definition = activeMap.Current?.Definition;
         if (!SameSite(definition, vehicle.CurrentStation, source) ||
             !SameSite(definition, robot.CurrentStation, source))
@@ -237,10 +233,6 @@ public sealed class DispatchPreSendSafetyService(
             robot.LastSuccessfulPollAt, activeMap.Current?.Definition, now, TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds),
             mapOptions.MinimumLocalizationConfidence, mapOptions.MaximumRouteDeviationMeters);
         if (position.State != AgvMapPositionState.Normal) return "车辆定位核验未通过：" + position.Message;
-        var minimum = (decimal)(optimization?.Options.MinimumBatteryPercent ?? 20);
-        if (newBusiness && (robot.BatteryPercent is null or < 0 or > 100 || robot.BatteryPercent < minimum ||
-            vehicle.BatteryPercent is < 0 or > 100 || vehicle.BatteryPercent < minimum))
-            return "电量未知或低于新业务最低电量。";
         return null;
     }
 

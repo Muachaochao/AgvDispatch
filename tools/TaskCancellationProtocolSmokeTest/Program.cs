@@ -68,7 +68,13 @@ internal static class Program
             Check(robot.CancelCount==0 && Row().Stage==120,"未知状态不发送取消且不放行"); robot.State=2;
         }
         if(mode is CancelMode.AlreadyCompleted or CancelMode.AlreadyFailed) robot.State=mode==CancelMode.AlreadyCompleted?4:5;
-        await cancel.ProcessAsync(default);
+        robot.PauseNextStatus();
+        var pausedProcess=cancel.ProcessAsync(default);
+        await robot.StatusStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        using(var parallel=await gate.EnterAsync(MapExecutionOperation.ExistingWork,default).AsTask().WaitAsync(TimeSpan.FromSeconds(2)))
+            Check(parallel is not null,"取消状态查询持有共享执行租约，其他车辆工作不被单车间查询串行 "+mode);
+        robot.ReleaseStatus();
+        await pausedProcess;
         if(mode==CancelMode.ResponseLost)
         {
             Check(Row().Stage==120 && Row().CancelSentAt==null && Row().CancelConfirmedAt==null,"3003已接收但响应断连时保留未确认意图");
@@ -114,6 +120,9 @@ sealed class CancelRobot : IAsyncDisposable
     readonly CancelMode mode; string? accepted; int state=2;
     public int State { get=>Volatile.Read(ref state); set=>Volatile.Write(ref state,value); }
     public int CreateCount { get; private set; } public int CancelCount { get; private set; } public List<string> Targets { get; }=[];
+    public TaskCompletionSource StatusStarted { get; private set; }=new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public TaskCompletionSource StatusRelease { get; private set; }=new(TaskCreationOptions.RunContinuationsAsynchronously);
+    int pauseNextStatus;
     public AgvRobotOptions Configuration { get; }
     public CancelRobot(CancelMode mode) {this.mode=mode; listener.Start(); Configuration=new(){VehicleId="SIM",IpAddress="127.0.0.1",Port=((IPEndPoint)listener.LocalEndpoint).Port}; Configuration.NavigationPort=Configuration.Port;server=Task.Run(Accept);}
     async Task Accept()
@@ -130,6 +139,11 @@ sealed class CancelRobot : IAsyncDisposable
             {
                 var header=new byte[16]; await stream.ReadExactlyAsync(header,stop.Token);var len=BinaryPrimitives.ReadInt32BigEndian(header.AsSpan(4,4));if(len<0||len>1048576)throw new Exception("Bad frame");
                 var body=new byte[len];await stream.ReadExactlyAsync(body,stop.Token);using var request=JsonDocument.Parse(body);var type=BinaryPrimitives.ReadUInt16BigEndian(header.AsSpan(8,2));object response;bool drop=false;
+                if(type==1110&&Interlocked.Exchange(ref pauseNextStatus,0)==1)
+                {
+                    StatusStarted.TrySetResult();
+                    await StatusRelease.Task.WaitAsync(stop.Token);
+                }
                 lock(sync)
                 {
                     if(type==3066) {var moves=request.RootElement.GetProperty("move_task_list");accepted=moves[moves.GetArrayLength()-1].GetProperty("task_id").GetString();CreateCount++;response=new{ret_code=0};}
@@ -150,5 +164,12 @@ sealed class CancelRobot : IAsyncDisposable
         }
         catch(Exception e) when(e is OperationCanceledException or EndOfStreamException or IOException or SocketException){}
     }
+    public void PauseNextStatus()
+    {
+        StatusStarted=new(TaskCreationOptions.RunContinuationsAsynchronously);
+        StatusRelease=new(TaskCreationOptions.RunContinuationsAsynchronously);
+        Interlocked.Exchange(ref pauseNextStatus,1);
+    }
+    public void ReleaseStatus()=>StatusRelease.TrySetResult();
     public async ValueTask DisposeAsync(){stop.Cancel();listener.Stop();await server;Task[] pending;lock(sync)pending=clients.ToArray();try{await Task.WhenAll(pending);}finally{stop.Dispose();}}
 }

@@ -49,7 +49,7 @@ static class ObstacleHarnessFactory
 
     public static async Task<ObstacleHarness> BuildAsync(string root, string name, MapDefinition definition,
         DateTimeOffset start, string taskId, string stepId, ObstacleRecoveryOptions? options = null,
-        bool corruptSnapshot = false)
+        bool corruptSnapshot = false, IRoutePlanner? routePlanner = null)
     {
         var clock = new ManualClock(start);
         var db = DatabaseFactory.Create(new() { DatabasePath = Path.Combine(root, name + ".db") });
@@ -97,7 +97,8 @@ static class ObstacleHarnessFactory
         var coordinator = new ObstacleRecoveryCoordinator(db, states, map,
             new DispatchOrchestrationRepository(db), new AgvTransportChainLookup(db), closures,
             traffic, new Envelope(), gate, gateway, new Preconditions(), store, recoveryOptions,
-            mapOptions, dispatch, clock, NullLogger<ObstacleRecoveryCoordinator>.Instance);
+            mapOptions, dispatch, clock, NullLogger<ObstacleRecoveryCoordinator>.Instance,
+            routePlanner: routePlanner);
         await SeedTransportAsync(db, taskId, stepId, "A", start, definition, corruptSnapshot);
         return new(db, states, coordinator, store, gateway, clock, traffic);
     }
