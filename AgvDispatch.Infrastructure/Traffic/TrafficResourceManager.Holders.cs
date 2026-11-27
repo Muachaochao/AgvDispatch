@@ -81,4 +81,35 @@ public sealed partial class TrafficResourceManager
         }
         return holders;
     }
+
+    public async Task<IReadOnlySet<string>> GetOthersRemainingRouteResourceIdsAsync(string requestingTaskId,
+        CancellationToken cancellationToken)
+    {
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var steps = (await database.Queryable<DispatchTaskStepEntity>()
+                .Where(item => item.Status == (int)DispatchTaskStepStatus.Executing && item.TaskId != requestingTaskId)
+                .ToListAsync(cancellationToken))
+            .Where(item => TransportStepTypes.Contains(item.StepType) && !string.IsNullOrWhiteSpace(item.VendorTaskId));
+        foreach (var step in steps)
+        {
+            var command = (await database.Queryable<AgvCommandOutboxEntity>()
+                .Where(item => item.StepId == step.StepId && item.CommandType == (int)AgvCommandType.Transport &&
+                    item.VendorCommandId == step.VendorTaskId).ToListAsync(cancellationToken)).FirstOrDefault();
+            if (command is null) continue;
+            try
+            {
+                var payload = JsonSerializer.Deserialize<AgvTransportCommandPayload>(command.PayloadJson, HolderJson);
+                if (payload is not null && payload.WindowIndex >= 0)
+                    foreach (var window in payload.Windows.Skip(payload.WindowIndex)) result.UnionWith(window.ResourceIds);
+            }
+            catch (JsonException) { }
+        }
+        foreach (var request in await database.Queryable<TrafficRequestEntity>()
+                     .Where(item => item.TaskId != requestingTaskId && item.State == "Waiting").ToListAsync(cancellationToken))
+        {
+            try { result.UnionWith(JsonSerializer.Deserialize<string[]>(request.ResourceIds) ?? []); }
+            catch (JsonException) { }
+        }
+        return result;
+    }
 }

@@ -27,6 +27,10 @@ public interface ITrafficResourceManager
     Task<IReadOnlyList<TrafficBlockingHolder>?> GetBlockingHoldersAsync(string requestingTaskId,
         IReadOnlyCollection<string> resourceIds, CancellationToken cancellationToken) =>
         Task.FromResult<IReadOnlyList<TrafficBlockingHolder>?>(null);
+    /// <summary>B07-R8: every resource other executing transport steps may still use (sent window,
+    /// later windows, pending request). Empty when unknown.</summary>
+    Task<IReadOnlySet<string>> GetOthersRemainingRouteResourceIdsAsync(string requestingTaskId, CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlySet<string>>(new HashSet<string>(StringComparer.OrdinalIgnoreCase));
     // Explicit layer-four lifecycle work; candidate route readers must stay read-only.
     Task PrepareDispatchCycleAsync(CancellationToken cancellationToken) => Task.CompletedTask;
     // A lease remains fixed even when a previous prepare crashed before assigning
