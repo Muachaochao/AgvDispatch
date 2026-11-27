@@ -196,6 +196,13 @@ public sealed class CompletedTransportRouteReleaseService(
 
         var destination = destinationMatches[0];
         var destinationResources = destination.ResourceIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var waitingBay = (DispatchTaskStepType)step.StepType == DispatchTaskStepType.DeliverFullBoxToDumper
+            ? await resources.GetAsync(taskId, ct)
+            : null;
+        // The destination bay belongs to the whole transport step, including intermediate stops.
+        var reservedBay = waitingBay is not null && waitingBay.StepId == stepId &&
+            waitingBay.VehicleId == step.VehicleId && waitingBay.MapId == map.MapId &&
+            waitingBay.MapVersionId == map.VersionId ? waitingBay.ResourceId : null;
         // Automatic corridor and node guards exist only in the enriched topology. They are
         // checked against their real polygon or edge geometry and never released as boundaryless.
         var topology = MapCorridorResources.Enrich(map.Definition);
@@ -214,7 +221,8 @@ public sealed class CompletedTransportRouteReleaseService(
             // old-route-only leases that the current request no longer lists.
             if (string.IsNullOrWhiteSpace(lease.LeaseId) ||
                 lease.MapId != map.MapId || lease.MapVersionId != map.VersionId ||
-                lease.VehicleId != step.VehicleId)
+                lease.VehicleId != step.VehicleId ||
+                string.Equals(lease.ResourceId, reservedBay, StringComparison.OrdinalIgnoreCase))
                 continue;
             // Polygon resources, including generated AUTO-CORRIDOR-* guards, are released only when
             // the complete body envelope is outside them. Boundaryless resources need edge or node

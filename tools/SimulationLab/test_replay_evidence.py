@@ -75,6 +75,28 @@ class ReplayEvidenceTests(unittest.TestCase):
         self.assertFalse(value['evidence']['clockAligned'])
         self.assertTrue(value['evidence']['warnings'])
 
+    def test_legacy_vehicle_charging_uses_time_aligned_relay_at_the_same_station(self):
+        write(self.run / 'report.json', dict(id=self.identity, startedAt=104, finishedAt=120,
+            simulationRate=2, simulationOriginUnixMs=100000))
+        robot = self.root / 'robots' / 'AGV-02'
+        robot.mkdir(parents=True)
+        rows = [dict(time=time, kind='charging-relay', status=status, station='CHARGE-01')
+                for time, status in ((101, True), (106, False))]
+        (robot / 'device-events.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in rows),
+                                                  encoding='utf-8')
+        def sample(time, **changes):
+            car = dict(station='CHARGE-01', moving=False, charging=False, batteryPercent=55)
+            car.update(changes)
+            return dict(time=time, device=dict(cars={'AGV-02': car}), tasks={}, leases=[])
+        samples = [sample(104), sample(105, station='WAIT-01'), sample(106, moving=True),
+                   sample(107, chargingRelay=False), sample(112)]
+        (self.run / 'observations.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in samples),
+                                                                    encoding='utf-8')
+        result = replay(self.runtime, self.identity)
+        self.assertEqual([frame['vehicles'][0]['charging'] for frame in result['timeline']],
+                         [True, False, False, False, False])
+        self.assertEqual([row['time'] for row in result['events'] if row['kind'] == 'charging-relay'], [112])
+
     def test_audited_release_and_recovery_keep_identity_source_and_time(self):
         write(self.run / 'report.json', dict(id=self.identity, startedAt=100, finishedAt=140,
             simulationRate=2, simulationOriginUnixMs=90000))
