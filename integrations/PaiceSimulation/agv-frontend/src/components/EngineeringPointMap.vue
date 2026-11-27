@@ -91,7 +91,10 @@ function paint() {
   if (el.width !== pixelWidth) el.width = pixelWidth
   if (el.height !== pixelHeight) el.height = pixelHeight
   ctx.setTransform(ratio, 0, 0, ratio, 0, 0)
-  ctx.fillStyle = '#f3f7fc'
+  // Theme colours come from CSS custom properties (cockpit workspace); light defaults stay as before.
+  const style = getComputedStyle(el)
+  const themed = (name: string, fallback: string) => style.getPropertyValue(name).trim() || fallback
+  ctx.fillStyle = themed('--point-map-bg', '#f3f7fc')
   ctx.fillRect(0, 0, width, height)
   const extent = bounds.value
   if (!extent) return
@@ -108,7 +111,7 @@ function paint() {
   ctx.save()
   ctx.translate(x(0), y(0))
   ctx.scale(scale, scale)
-  ctx.strokeStyle = '#a0b4c9'
+  ctx.strokeStyle = themed('--point-map-road', '#a0b4c9')
   ctx.lineWidth = 1 / scale
   ctx.stroke(roadPaths.value.normal)
   ctx.strokeStyle = '#7540a8'
@@ -135,14 +138,14 @@ function paint() {
     path.moveTo(cx + radius, cy)
     path.arc(cx, cy, radius, 0, Math.PI * 2)
   }
-  ctx.fillStyle = marked.value ? '#7950a3' : '#acbac9'
+  ctx.fillStyle = marked.value ? '#7950a3' : themed('--point-map-junction', '#acbac9')
   ctx.fill(junctions)
-  ctx.fillStyle = marked.value ? '#7950a3' : '#197c9d'
+  ctx.fillStyle = marked.value ? '#7950a3' : themed('--point-map-station', '#197c9d')
   ctx.fill(stations)
   if (labels.value) {
     const occupied = new Set<string>()
     ctx.font = '10px system-ui'
-    ctx.fillStyle = '#3b4a60'
+    ctx.fillStyle = themed('--point-map-label', '#3b4a60')
     for (const item of items.value) {
       const cx = x(item.x), cy = y(item.y)
       if (cx < 0 || cy < 12 || cx > width || cy > height) continue
