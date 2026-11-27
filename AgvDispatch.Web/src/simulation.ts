@@ -499,3 +499,40 @@ export function simulationGeometry(nodes: SimulationNode[], edges: SimulationEdg
     }),
     cars: Object.entries(cars).filter(([, car]) => Number.isFinite(car.x) && Number.isFinite(car.y)).map(([id, car]) => ({ ...car, id, ...position(car) })) };
 }
+
+export type SimulationKpiKey = 'completed' | 'vehicles' | 'waiting' | 'averageWait';
+export interface SimulationKpi {
+  key: SimulationKpiKey; label: string; value: string; detail: string;
+  tone: 'pass' | 'running' | 'waiting' | 'idle';
+}
+export interface SimulationKpiInput {
+  tasks: { total: number; completed: number } | null | undefined;
+  activeVehicles: number;
+  vehicleCount: number;
+  trafficRequests: readonly { state?: string | null; waitingSeconds?: number | null; waitingClockValid?: boolean | null }[] | null | undefined;
+}
+export function simulationWaitText(seconds: number): string {
+  if (!Number.isFinite(seconds)) return '—';
+  const total = Math.max(0, Math.round(seconds));
+  return total < 60 ? `${total} 秒` : `${Math.floor(total / 60)} 分 ${total % 60} 秒`;
+}
+// Display-only summary for the simulation KPI strip. Missing evidence stays "—" rather than zero.
+export function simulationKpis(input: SimulationKpiInput): SimulationKpi[] {
+  const tasks = input.tasks && input.tasks.total > 0 ? input.tasks : null;
+  const requests = input.trafficRequests ?? null;
+  const waiting = requests?.filter(request => request.state === 'Waiting') ?? [];
+  const timed = waiting.map(request => request.waitingSeconds)
+    .filter((value, index): value is number => typeof value === 'number' && Number.isFinite(value) && waiting[index]!.waitingClockValid !== false);
+  const average = timed.length ? timed.reduce((sum, value) => sum + value, 0) / timed.length : null;
+  return [
+    { key: 'completed', label: '完成单数', value: tasks ? String(tasks.completed) : '—', detail: tasks ? `/ ${tasks.total} 单` : '尚无任务',
+      tone: tasks && tasks.completed >= tasks.total ? 'pass' : tasks ? 'running' : 'idle' },
+    { key: 'vehicles', label: '运行车辆', value: input.vehicleCount > 0 ? String(input.activeVehicles) : '—',
+      detail: input.vehicleCount > 0 ? `/ ${input.vehicleCount} 辆` : '尚无车辆反馈', tone: input.activeVehicles > 0 ? 'running' : 'idle' },
+    { key: 'waiting', label: '等待路权', value: requests ? String(waiting.length) : '—', detail: requests ? '条申请' : '路权快照不可用',
+      tone: !requests ? 'idle' : waiting.length ? 'waiting' : 'pass' },
+    { key: 'averageWait', label: '平均等待', value: average === null ? '—' : simulationWaitText(average),
+      detail: !requests ? '路权快照不可用' : !waiting.length ? '当前无等待' : average === null ? '等待计时不可用' : `${timed.length} 条计时有效`,
+      tone: average === null ? 'idle' : average >= 60 ? 'waiting' : 'running' }
+  ];
+}
