@@ -19,38 +19,35 @@
   <Grid.ColumnDefinitions><ColumnDefinition Width="232"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
 
   <!-- Navigation -->
-  <Border Background="{StaticResource Aside}" BorderBrush="{StaticResource Line}" BorderThickness="0,0,1,0">
+  <Border Background="White" BorderBrush="{StaticResource Line}" BorderThickness="0,0,1,0">
    <DockPanel Margin="18,26,18,18">
     <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="10,0,0,36">
-     <Border Width="36" Height="36" CornerRadius="8" Margin="0,0,12,0" BorderBrush="{StaticResource Accent}" BorderThickness="1" Effect="{StaticResource Glow}">
-      <Border.Background><LinearGradientBrush StartPoint="0,0" EndPoint="1,1"><GradientStop Color="#0E7490" Offset="0"/><GradientStop Color="#155E75" Offset="1"/></LinearGradientBrush></Border.Background>
+     <Border Width="36" Height="36" CornerRadius="9" Margin="0,0,12,0">
+      <Border.Background><LinearGradientBrush StartPoint="0,0" EndPoint="1,1"><GradientStop Color="#FC795B" Offset="0"/><GradientStop Color="#F7A150" Offset="1"/></LinearGradientBrush></Border.Background>
       <TextBlock Text="AGV" Foreground="White" FontWeight="Bold" FontSize="11" HorizontalAlignment="Center" VerticalAlignment="Center"/>
      </Border>
      <StackPanel VerticalAlignment="Center"><TextBlock Text="AGV 软件助手" FontSize="17" FontWeight="SemiBold"/><TextBlock Text="现场服务 · 版本 · 诊断" FontSize="11" Foreground="{StaticResource Muted}"/></StackPanel>
     </StackPanel>
-    <Border DockPanel.Dock="Bottom" Background="{StaticResource Surface}" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8" Padding="12,10" Margin="0,20,0,0">
+    <Border DockPanel.Dock="Bottom" Background="{StaticResource Canvas}" CornerRadius="8" Padding="12,10" Margin="0,20,0,0">
      <StackPanel>
       <TextBlock FontSize="11" Foreground="{StaticResource Muted}"><Run Text="助手 "/><Run Text="{Binding AssistantVersion, Mode=OneWay}"/></TextBlock>
       <TextBlock Text="{Binding Release}" FontSize="11" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,3,0,6"/>
-      <TextBlock FontSize="11"><Hyperlink Command="{Binding OpenWebCommand}" Foreground="{StaticResource Accent}" TextDecorations="None">127.0.0.1:5199 ↗</Hyperlink></TextBlock>
+      <TextBlock FontSize="11"><Hyperlink Command="{Binding OpenWebCommand}" Foreground="#3D6E9E" TextDecorations="None">127.0.0.1:5199 ↗</Hyperlink></TextBlock>
      </StackPanel>
     </Border>
     <ListBox ItemsSource="{Binding Pages}" SelectedIndex="{Binding SelectedPage}" Background="Transparent" BorderThickness="0" VerticalAlignment="Top" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
      <ListBox.ItemContainerStyle><Style TargetType="ListBoxItem">
       <Setter Property="Padding" Value="16,11"/><Setter Property="Margin" Value="0,0,0,6"/><Setter Property="HorizontalContentAlignment" Value="Stretch"/>
-      <Setter Property="Foreground" Value="{StaticResource Ink2}"/><Setter Property="FontSize" Value="14"/><Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Foreground" Value="#3A3F47"/><Setter Property="FontSize" Value="14"/><Setter Property="Cursor" Value="Hand"/>
       <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ListBoxItem">
-       <Grid>
-        <Border x:Name="Nav" CornerRadius="7" Padding="{TemplateBinding Padding}" Background="Transparent" BorderBrush="Transparent" BorderThickness="1"><StackPanel Orientation="Horizontal"><TextBlock x:Name="Glyph" FontFamily="Segoe MDL2 Assets" Text="&#xE713;" FontSize="16" Foreground="{StaticResource Muted}" Margin="0,0,14,0" VerticalAlignment="Center"/><ContentPresenter VerticalAlignment="Center"/></StackPanel></Border>
-        <Border x:Name="Indicator" Width="3" HorizontalAlignment="Left" Margin="0,9" CornerRadius="1.5" Background="{StaticResource Accent}" Effect="{StaticResource Glow}" Visibility="Collapsed"/>
-       </Grid>
+       <Border x:Name="Nav" CornerRadius="8" Padding="{TemplateBinding Padding}" Background="Transparent"><StackPanel Orientation="Horizontal"><TextBlock x:Name="Glyph" FontFamily="Segoe MDL2 Assets" Text="&#xE713;" FontSize="16" Foreground="#8F95A0" Margin="0,0,14,0" VerticalAlignment="Center"/><ContentPresenter VerticalAlignment="Center"/></StackPanel></Border>
        <ControlTemplate.Triggers>
         <DataTrigger Binding="{Binding}" Value="服务管理"><Setter TargetName="Glyph" Property="Text" Value="&#xE80F;"/></DataTrigger>
         <DataTrigger Binding="{Binding}" Value="版本与备份"><Setter TargetName="Glyph" Property="Text" Value="&#xE896;"/></DataTrigger>
         <DataTrigger Binding="{Binding}" Value="软件信息"><Setter TargetName="Glyph" Property="Text" Value="&#xE946;"/></DataTrigger>
         <DataTrigger Binding="{Binding}" Value="日志管理"><Setter TargetName="Glyph" Property="Text" Value="&#xE9D9;"/></DataTrigger>
-        <Trigger Property="IsSelected" Value="True"><Setter Property="Foreground" Value="{StaticResource AccentStrong}"/><Setter Property="FontWeight" Value="SemiBold"/><Setter TargetName="Glyph" Property="Foreground" Value="{StaticResource Accent}"/><Setter TargetName="Nav" Property="Background" Value="{StaticResource BrandSoft}"/><Setter TargetName="Indicator" Property="Visibility" Value="Visible"/></Trigger>
-        <MultiTrigger><MultiTrigger.Conditions><Condition Property="IsMouseOver" Value="True"/><Condition Property="IsSelected" Value="False"/></MultiTrigger.Conditions><Setter TargetName="Nav" Property="Background" Value="{StaticResource Hover}"/><Setter TargetName="Nav" Property="BorderBrush" Value="{StaticResource Line}"/><Setter Property="Foreground" Value="{StaticResource Ink}"/></MultiTrigger>
+        <Trigger Property="IsSelected" Value="True"><Setter Property="Foreground" Value="#C2551A"/><Setter Property="FontWeight" Value="SemiBold"/><Setter TargetName="Glyph" Property="Foreground" Value="#F2863D"/><Setter TargetName="Nav" Property="Background" Value="{StaticResource BrandSoft}"/></Trigger>
+        <MultiTrigger><MultiTrigger.Conditions><Condition Property="IsMouseOver" Value="True"/><Condition Property="IsSelected" Value="False"/></MultiTrigger.Conditions><Setter TargetName="Nav" Property="Background" Value="#F2F3F5"/></MultiTrigger>
        </ControlTemplate.Triggers>
       </ControlTemplate></Setter.Value></Setter>
      </Style></ListBox.ItemContainerStyle>
@@ -96,7 +93,7 @@
        <Border Style="{StaticResource Metric}"><StackPanel>
         <DockPanel><Border DockPanel.Dock="Right" Style="{StaticResource Pill}" Tag="{Binding BaselineLevel}"><StackPanel Orientation="Horizontal"><Ellipse Style="{StaticResource Dot}"/><TextBlock Text="基线" FontSize="11"/></StackPanel></Border><TextBlock Text="现场测试基线" Style="{StaticResource MetricLabel}"/></DockPanel>
         <TextBlock Text="{Binding BaselineState}" Style="{StaticResource MetricValue}"/>
-        <TextBlock Style="{StaticResource MetricDetail}"><Hyperlink Command="{Binding OpenBackupPageCommand}" Foreground="{StaticResource Accent}" TextDecorations="None">查看与锁定 →</Hyperlink></TextBlock>
+        <TextBlock Style="{StaticResource MetricDetail}"><Hyperlink Command="{Binding OpenBackupPageCommand}" Foreground="#3D6E9E" TextDecorations="None">查看与锁定 →</Hyperlink></TextBlock>
        </StackPanel></Border>
       </UniformGrid>
 
@@ -175,7 +172,7 @@
        </StackPanel>
       </Border>
 
-      <Expander Header="运行详情与调度诊断" Margin="2,0,0,16" Foreground="{StaticResource Ink2}"><Border Style="{StaticResource Card}" Margin="0,10,0,0"><StackPanel><TextBlock Text="{Binding Runtime}" LineHeight="22" FontSize="12"/><WrapPanel Margin="0,12,0,0"><Button Content="六层调度监控 ↗" Command="{Binding OpenPipelineCommand}"/><Button Content="异常恢复 ↗" Command="{Binding OpenRecoveryCommand}"/></WrapPanel></StackPanel></Border></Expander>
+      <Expander Header="运行详情与调度诊断" Margin="2,0,0,16" Foreground="#5B616B"><Border Style="{StaticResource Card}" Margin="0,10,0,0"><StackPanel><TextBlock Text="{Binding Runtime}" LineHeight="22" FontSize="12"/><WrapPanel Margin="0,12,0,0"><Button Content="六层调度监控 ↗" Command="{Binding OpenPipelineCommand}"/><Button Content="异常恢复 ↗" Command="{Binding OpenRecoveryCommand}"/></WrapPanel></StackPanel></Border></Expander>
      </StackPanel>
 
      <!-- ========== 版本与备份 ========== -->
@@ -185,8 +182,8 @@
         <DockPanel Margin="0,0,0,10"><Border DockPanel.Dock="Right" Style="{StaticResource Pill}" Tag="{Binding BaselineLevel}"><StackPanel Orientation="Horizontal"><Ellipse Style="{StaticResource Dot}"/><TextBlock Text="{Binding BaselineState}" FontSize="12"/></StackPanel></Border><TextBlock Text="现场测试基线" Style="{StaticResource Title}" Margin="0"/></DockPanel>
         <TextBlock Text="把“发布版本 + 仿真方案 + 地图摘要 + PLC 点表 + 倍率”锁定为一次现场测试的基线。之后任何一项变化都会在这里和首页提示；仿真实例每次干净配置都会更新，方案与地图不变时只作提示，不算变化。" Style="{StaticResource Hint}"/>
         <Grid Margin="0,6,0,10"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="20"/><ColumnDefinition/></Grid.ColumnDefinitions>
-         <Border Background="{StaticResource Raised}" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8" Padding="14,12"><StackPanel><TextBlock Text="当前" FontWeight="SemiBold" Margin="0,0,0,6"/><TextBlock Text="{Binding CurrentIdentity}" LineHeight="22" FontSize="12"/></StackPanel></Border>
-         <Border Grid.Column="2" Background="{StaticResource Raised}" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8" Padding="14,12"><StackPanel><TextBlock Text="与基线比较" FontWeight="SemiBold" Margin="0,0,0,6"/><TextBlock Text="{Binding BaselineDetail}" LineHeight="22" FontSize="12"/></StackPanel></Border>
+         <Border Background="{StaticResource Canvas}" CornerRadius="8" Padding="14,12"><StackPanel><TextBlock Text="当前" FontWeight="SemiBold" Margin="0,0,0,6"/><TextBlock Text="{Binding CurrentIdentity}" LineHeight="22" FontSize="12"/></StackPanel></Border>
+         <Border Grid.Column="2" Background="{StaticResource Canvas}" CornerRadius="8" Padding="14,12"><StackPanel><TextBlock Text="与基线比较" FontWeight="SemiBold" Margin="0,0,0,6"/><TextBlock Text="{Binding BaselineDetail}" LineHeight="22" FontSize="12"/></StackPanel></Border>
         </Grid>
         <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
          <TextBox Text="{Binding BaselineNote, UpdateSourceTrigger=PropertyChanged}" ToolTip="基线备注，例如：B07 V4F 五车十单 现场联调 第1轮" Margin="0,0,12,8"/>
@@ -211,8 +208,8 @@
      <!-- ========== 日志管理 ========== -->
      <StackPanel Visibility="{Binding LogVisibility}">
       <Border Style="{StaticResource Card}"><StackPanel><DockPanel Margin="0,0,0,8"><WrapPanel DockPanel.Dock="Right"><Button Content="读取最近日志" Command="{Binding ReadLogCommand}" Style="{StaticResource Primary}"/><Button Content="导出诊断包" Command="{Binding ExportCommand}"/><Button Content="打开诊断目录" Command="{Binding OpenDiagnosticCommand}" Margin="0,0,0,8"/></WrapPanel><TextBlock Text="后台日志" Style="{StaticResource Title}"/></DockPanel>
-       <TextBox Text="{Binding LogText, Mode=OneWay}" IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap" FontFamily="Consolas, Microsoft YaHei UI" FontSize="12" Height="320" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" Background="{StaticResource Deep}"/></StackPanel></Border>
-      <Border Style="{StaticResource Card}"><StackPanel><TextBlock Text="本次管理操作" Style="{StaticResource Title}"/><TextBox Text="{Binding Journal, Mode=OneWay}" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" Height="140" VerticalScrollBarVisibility="Auto" Background="{StaticResource Deep}"/></StackPanel></Border>
+       <TextBox Text="{Binding LogText, Mode=OneWay}" IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap" FontFamily="Consolas, Microsoft YaHei UI" FontSize="12" Height="320" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" Background="#FAFBFC"/></StackPanel></Border>
+      <Border Style="{StaticResource Card}"><StackPanel><TextBlock Text="本次管理操作" Style="{StaticResource Title}"/><TextBox Text="{Binding Journal, Mode=OneWay}" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" Height="140" VerticalScrollBarVisibility="Auto" Background="#FAFBFC"/></StackPanel></Border>
      </StackPanel>
 
      <!-- ========== 系统设置 ========== -->
@@ -221,13 +218,13 @@
       <Border Style="{StaticResource Card}"><StackPanel><TextBlock Text="网络配置与检查" Style="{StaticResource Title}"/><TextBlock Text="{Binding Network}" LineHeight="24" Margin="0,0,0,12" FontFamily="Consolas, Microsoft YaHei UI"/><WrapPanel><Button Content="Windows 网络设置 ↗" Command="{Binding NetworkSettingsCommand}"/><Button Content="复制前端地址" Command="{Binding CopyUrlCommand}"/></WrapPanel><TextBlock Text="当前前端仅允许本机访问：http://127.0.0.1:5199/。修改电脑 IP 不会自动开放远程访问。" Style="{StaticResource Hint}"/>
        <Grid Margin="0,8,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="12"/><ColumnDefinition Width="100"/><ColumnDefinition Width="12"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox Text="{Binding ProbeAddress, UpdateSourceTrigger=PropertyChanged}" ToolTip="目标 IP 地址"/><TextBox Grid.Column="2" Text="{Binding ProbePort, UpdateSourceTrigger=PropertyChanged}" ToolTip="端口"/><Button Grid.Column="4" Content="测试连接" Command="{Binding ProbeCommand}" VerticalAlignment="Top" Margin="0"/></Grid><TextBlock Text="{Binding ProbeResult}" Style="{StaticResource Hint}"/></StackPanel></Border>
       <Border Style="{StaticResource Card}"><StackPanel><DockPanel Margin="0,0,0,6"><Button DockPanel.Dock="Right" Content="打开通信配置 ↗" Command="{Binding OpenEngineeringCommand}" Margin="0"/><TextBlock Text="设备通信配置" Style="{StaticResource Title}"/></DockPanel><TextBlock Text="{Binding ConnectionsState}" Style="{StaticResource Hint}"/>
-       <DataGrid ItemsSource="{Binding Connections}" AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False" HeadersVisibility="Column" GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="{StaticResource Line}" BorderBrush="{StaticResource Line}" Background="{StaticResource Surface}" RowHeight="38" MinHeight="50" MaxHeight="300" FontSize="12"><DataGrid.Columns><DataGridTextColumn Header="设备" Binding="{Binding Id}" Width="110"/><DataGridTextColumn Header="类型" Binding="{Binding Kind}" Width="56"/><DataGridTextColumn Header="当前地址" Binding="{Binding ActiveEndpoint}" Width="150"/><DataGridTextColumn Header="已保存地址" Binding="{Binding SavedEndpoint}" Width="150"/><DataGridTextColumn Header="后台观察" Binding="{Binding State}" Width="*" MinWidth="150"/></DataGrid.Columns></DataGrid></StackPanel></Border>
+       <DataGrid ItemsSource="{Binding Connections}" AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False" HeadersVisibility="Column" GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="{StaticResource Line}" BorderBrush="{StaticResource Line}" Background="White" RowHeight="38" MinHeight="50" MaxHeight="300" FontSize="12"><DataGrid.Columns><DataGridTextColumn Header="设备" Binding="{Binding Id}" Width="110"/><DataGridTextColumn Header="类型" Binding="{Binding Kind}" Width="56"/><DataGridTextColumn Header="当前地址" Binding="{Binding ActiveEndpoint}" Width="150"/><DataGridTextColumn Header="已保存地址" Binding="{Binding SavedEndpoint}" Width="150"/><DataGridTextColumn Header="后台观察" Binding="{Binding State}" Width="*" MinWidth="150"/></DataGrid.Columns></DataGrid></StackPanel></Border>
      </StackPanel>
     </StackPanel>
    </ScrollViewer>
 
    <!-- Status bar -->
-   <Border Grid.Row="2" Background="{StaticResource Surface}" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8" Padding="14,9" Margin="0,12,0,0"><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{Binding Message}" Foreground="{StaticResource Ink2}" FontSize="12" MaxHeight="40" TextTrimming="CharacterEllipsis" ToolTip="{Binding Message}"/><TextBlock Grid.Column="1" Text="{Binding LastCheck}" Foreground="{StaticResource Muted}" FontSize="11" Margin="15,0,0,0" VerticalAlignment="Center"/></Grid></Border>
+   <Border Grid.Row="2" Background="White" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8" Padding="14,9" Margin="0,12,0,0"><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{Binding Message}" Foreground="#4A5059" FontSize="12" MaxHeight="40" TextTrimming="CharacterEllipsis" ToolTip="{Binding Message}"/><TextBlock Grid.Column="1" Text="{Binding LastCheck}" Foreground="{StaticResource Muted}" FontSize="11" Margin="15,0,0,0" VerticalAlignment="Center"/></Grid></Border>
   </Grid>
  </Grid>
 </Window>
