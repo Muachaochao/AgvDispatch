@@ -2260,6 +2260,10 @@ public sealed class ObstacleRecoveryCoordinator(
         _blockedAfterTerminal.TryRemove(row.RecoveryId, out _);
         _routeWaitSince.TryRemove(row.RecoveryId, out _);
         _closureRetryAfter.TryRemove(row.RecoveryId, out _);
+        _lastFreshSeen.TryRemove(row.RecoveryId, out _);
+        _sendRejections.TryRemove(row.RecoveryId, out _);
+        _sendRetryAfter.TryRemove(row.RecoveryId, out _);
+        _recordBackoff.TryRemove(row.RecoveryId, out _);
         row.State = ObstacleRecoveryStates.Recovered;
         row.Message = message;
         row.NextAction = "按原任务后续车端状态、PLC反馈、载荷与路权交接继续核对。";

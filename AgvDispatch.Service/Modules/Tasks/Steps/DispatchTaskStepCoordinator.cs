@@ -49,18 +49,8 @@ public sealed class DispatchTaskStepCoordinator(
             return;
         }
 
-        if (options.PollIntervalMs < 100 || options.BatchSize < 1)
-        {
-            throw new InvalidOperationException("DispatchTaskSteps配置无效。");
-        }
-        if (options.RollingWindowMinimumEdges < 1 ||
-            options.RollingWindowMaximumEdges < options.RollingWindowMinimumEdges ||
-            options.RollingWindowMaximumEdges > 1000 ||
-            options.RollingWindowHardMaximumEdges is < 0 or > 1000 ||
-            options.RollingWindowHardMaximumEdges > 0 &&
-                options.RollingWindowHardMaximumEdges < options.RollingWindowMaximumEdges ||
-            !RollingWindowBoundaries.IsKnown(options.RollingWindowBoundary))
-            throw new InvalidOperationException("滚动路权窗口边数配置无效。");
+        if (options.GetConfigurationError() is { } stepConfigurationError)
+            throw new InvalidOperationException(stepConfigurationError);
 
         var configurationError = dispatchOptions.GetConfigurationError();
         if (configurationError is not null)

@@ -14,4 +14,18 @@ public sealed class DispatchTaskCreationOptions
         ? priority : DefaultPriority;
     public int AcknowledgementRetryIntervalMs { get; set; } = 3000;
     public string DumperStationId { get; set; } = "DUMPER-001";
+
+    public string? GetConfigurationError()
+    {
+        if (DefaultPriority is < 0 or > 100)
+            return "TaskCreation:DefaultPriority必须在0到100之间。";
+        if (StationPriorities.Any(pair =>
+                string.IsNullOrWhiteSpace(pair.Key) || pair.Value is < 0 or > 100))
+            return "TaskCreation:StationPriorities中的工位不能为空，优先级必须在0到100之间。";
+        if (AcknowledgementRetryIntervalMs is < 100 or > 60000)
+            return "TaskCreation:AcknowledgementRetryIntervalMs必须在100到60000之间。";
+        if (Enabled && string.IsNullOrWhiteSpace(DumperStationId))
+            return "TaskCreation:DumperStationId不能为空。";
+        return null;
+    }
 }

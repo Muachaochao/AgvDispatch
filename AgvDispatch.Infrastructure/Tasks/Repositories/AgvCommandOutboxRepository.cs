@@ -9,11 +9,23 @@ using SqlSugar;
 
 namespace AgvDispatch.Infrastructure.Persistence;
 
-public sealed class AgvCommandOutboxRepository(ISqlSugarClient database, IActiveMapRuntime? activeMap = null,
-    DownstreamAdmissionOptions? admission = null)
+public sealed class AgvCommandOutboxRepository
     : IAgvCommandOutboxRepository
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private readonly ISqlSugarClient _database;
+    private readonly IActiveMapRuntime? activeMap;
+    private readonly DownstreamAdmissionOptions? admission;
+
+    public AgvCommandOutboxRepository(ISqlSugarClient database, IActiveMapRuntime? activeMap = null,
+        DownstreamAdmissionOptions? admission = null)
+    {
+        _database = database;
+        this.activeMap = activeMap;
+        this.admission = admission;
+    }
+
+    private ISqlSugarClient database => _database;
 
     public async Task<DownstreamAdmissionSnapshot> GetPickupAdmissionAsync(string taskId, CancellationToken ct)
     {
@@ -56,6 +68,8 @@ public sealed class AgvCommandOutboxRepository(ISqlSugarClient database, IActive
         AgvTransportAction? action,
         CancellationToken cancellationToken)
     {
+        await using var databaseLease =
+            await DatabaseTransactionGate.EnterAsync(_database, cancellationToken);
         ArgumentException.ThrowIfNullOrWhiteSpace(taskId);
         ArgumentException.ThrowIfNullOrWhiteSpace(stepId);
         ArgumentException.ThrowIfNullOrWhiteSpace(vehicleId);
@@ -82,7 +96,7 @@ public sealed class AgvCommandOutboxRepository(ISqlSugarClient database, IActive
         cancellationToken.ThrowIfCancellationRequested();
 
         var prepared = false;
-        var transaction = await database.Ado.UseTranAsync(async () =>
+        Func<ISqlSugarClient, Task<DbResult<bool>>> transactionBody = database => database.Ado.UseTranAsync(async () =>
         {
             var step = await database.Queryable<DispatchTaskStepEntity>()
                 .Where(item =>
@@ -220,6 +234,7 @@ public sealed class AgvCommandOutboxRepository(ISqlSugarClient database, IActive
             }).ExecuteCommandAsync(cancellationToken);
             prepared = true;
         });
+        var transaction = await DatabaseTransactionGate.RunIsolatedAsync(_database, transactionBody, cancellationToken);
 
         if (!transaction.IsSuccess)
         {
@@ -269,6 +284,8 @@ public sealed class AgvCommandOutboxRepository(ISqlSugarClient database, IActive
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        await using var databaseLease =
+            await DatabaseTransactionGate.EnterAsync(_database, cancellationToken);
         var pending = (int)AgvCommandStatus.Pending;
         var retry = (int)AgvCommandStatus.RetryScheduled;
         var localNow = now.LocalDateTime;
@@ -293,7 +310,7 @@ public sealed class AgvCommandOutboxRepository(ISqlSugarClient database, IActive
         var retry = (int)AgvCommandStatus.RetryScheduled;
         var now = claimedAt.LocalDateTime;
         var claimedThisCall = false;
-        var transaction = await database.Ado.UseTranAsync(async () =>
+        Func<ISqlSugarClient, Task<DbResult<bool>>> transactionBody = database => database.Ado.UseTranAsync(async () =>
         {
             var affected = await database.Updateable<AgvCommandOutboxEntity>()
                 .SetColumns(item => new AgvCommandOutboxEntity
@@ -332,6 +349,7 @@ public sealed class AgvCommandOutboxRepository(ISqlSugarClient database, IActive
                     .ExecuteCommandAsync(cancellationToken);
             }
         });
+        var transaction = await DatabaseTransactionGate.RunIsolatedAsync(_database, transactionBody, cancellationToken);
         if (!transaction.IsSuccess)
         {
             throw new InvalidOperationException(
@@ -357,7 +375,9 @@ public sealed class AgvCommandOutboxRepository(ISqlSugarClient database, IActive
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(vendorCommandId);
         cancellationToken.ThrowIfCancellationRequested();
-        var transaction = await database.Ado.UseTranAsync(async () =>
+        await using var databaseLease =
+            await DatabaseTransactionGate.EnterAsync(_database, cancellationToken);
+        Func<ISqlSugarClient, Task<DbResult<bool>>> transactionBody = database => database.Ado.UseTranAsync(async () =>
         {
             var command = await database.Queryable<AgvCommandOutboxEntity>()
                 .Where(item => item.CommandId == commandId)
@@ -449,6 +469,7 @@ public sealed class AgvCommandOutboxRepository(ISqlSugarClient database, IActive
                     $"AGV命令{commandId}关联的任务或步骤状态已被并发修改。");
             }
         });
+        var transaction = await DatabaseTransactionGate.RunIsolatedAsync(_database, transactionBody, cancellationToken);
         if (!transaction.IsSuccess)
         {
             throw new InvalidOperationException(
@@ -465,7 +486,9 @@ public sealed class AgvCommandOutboxRepository(ISqlSugarClient database, IActive
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var transaction = await database.Ado.UseTranAsync(async () =>
+        await using var databaseLease =
+            await DatabaseTransactionGate.EnterAsync(_database, cancellationToken);
+        Func<ISqlSugarClient, Task<DbResult<bool>>> transactionBody = database => database.Ado.UseTranAsync(async () =>
         {
             var command = await database.Queryable<AgvCommandOutboxEntity>()
                 .Where(item => item.CommandId == commandId)
@@ -514,6 +537,7 @@ public sealed class AgvCommandOutboxRepository(ISqlSugarClient database, IActive
                 .Where(task => task.TaskId == command.TaskId)
                 .ExecuteCommandAsync(cancellationToken);
         });
+        var transaction = await DatabaseTransactionGate.RunIsolatedAsync(_database, transactionBody, cancellationToken);
         if (!transaction.IsSuccess)
         {
             throw new InvalidOperationException(
@@ -529,7 +553,9 @@ public sealed class AgvCommandOutboxRepository(ISqlSugarClient database, IActive
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var transaction = await database.Ado.UseTranAsync(async () =>
+        await using var databaseLease =
+            await DatabaseTransactionGate.EnterAsync(_database, cancellationToken);
+        Func<ISqlSugarClient, Task<DbResult<bool>>> transactionBody = database => database.Ado.UseTranAsync(async () =>
         {
             var command = await database.Queryable<AgvCommandOutboxEntity>()
                 .Where(item => item.CommandId == commandId)
@@ -566,6 +592,7 @@ public sealed class AgvCommandOutboxRepository(ISqlSugarClient database, IActive
                 .Where(step => step.StepId == command.StepId)
                 .ExecuteCommandAsync(cancellationToken);
         });
+        var transaction = await DatabaseTransactionGate.RunIsolatedAsync(_database, transactionBody, cancellationToken);
         if (!transaction.IsSuccess)
         {
             throw new InvalidOperationException(
@@ -579,6 +606,8 @@ public sealed class AgvCommandOutboxRepository(ISqlSugarClient database, IActive
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        await using var databaseLease =
+            await DatabaseTransactionGate.EnterAsync(_database, cancellationToken);
         var stale = await database.Queryable<AgvCommandOutboxEntity>()
             .Where(item =>
                 item.Status == (int)AgvCommandStatus.Sending &&
@@ -588,7 +617,7 @@ public sealed class AgvCommandOutboxRepository(ISqlSugarClient database, IActive
         var recovered = 0;
         foreach (var command in stale)
         {
-            var transaction = await database.Ado.UseTranAsync(async () =>
+            Func<ISqlSugarClient, Task<DbResult<bool>>> transactionBody = database => database.Ado.UseTranAsync(async () =>
             {
                 var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetLocalNow().LocalDateTime;
                 var affected = await database.Updateable<AgvCommandOutboxEntity>()
@@ -619,6 +648,7 @@ public sealed class AgvCommandOutboxRepository(ISqlSugarClient database, IActive
                     recovered++;
                 }
             });
+            var transaction = await DatabaseTransactionGate.RunIsolatedAsync(_database, transactionBody, cancellationToken);
             if (!transaction.IsSuccess)
             {
                 throw new InvalidOperationException(

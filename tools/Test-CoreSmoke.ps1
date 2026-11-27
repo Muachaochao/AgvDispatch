@@ -4,11 +4,18 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
+& pwsh -NoProfile -File (Join-Path $PSScriptRoot 'Test-ArchitectureGuards.ps1') -Root $root
+if ($LASTEXITCODE -ne 0) {
+    throw '架构守卫失败。'
+}
+
 $projects = @(
     'tools/TaskCancellationProtocolSmokeTest/TaskCancellationProtocolSmokeTest.csproj',
     'tools/DatabaseBackupSmokeTest/DatabaseBackupSmokeTest.csproj',
+    'tools/DatabaseConnectionSettingsSmokeTest/DatabaseConnectionSettingsSmokeTest.csproj',
     'tools/TrafficWindowRollbackSmokeTest/TrafficWindowRollbackSmokeTest.csproj',
     'tools/DispatchPreSendSafetySmokeTest/DispatchPreSendSafetySmokeTest.csproj',
+    'tools/OutboxVehicleConcurrencySmokeTest/OutboxVehicleConcurrencySmokeTest.csproj',
     'tools/DispatchTimeoutHoldSmokeTest/DispatchTimeoutHoldSmokeTest.csproj',
     'tools/CompletedRouteReleaseSmokeTest/CompletedRouteReleaseSmokeTest.csproj',
     'tools/MapSwitchSmokeTest/MapSwitchSmokeTest.csproj',
@@ -44,7 +51,9 @@ foreach ($project in $projects)
     Write-Host "=== $project ==="
     # Do not pass dotnet-run flags after the project: console smoke tests
     # interpret an unexpected argument as a replay archive path.
-    & dotnet run --project $path -c Release --no-restore
+    # Restore per test project: most smoke projects are intentionally outside
+    # the solution, so a solution restore alone does not create their assets.
+    & dotnet run --project $path -c Release
     if ($LASTEXITCODE -ne 0)
     {
         $failures += "$project (exit $LASTEXITCODE)"

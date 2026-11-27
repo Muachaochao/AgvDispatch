@@ -49,6 +49,7 @@ builder.Services.AddSingleton<ISqlSugarClient>(_ => DatabaseFactory.Create(datab
 builder.Services.AddSingleton<IDatabaseInitializer, DatabaseInitializer>();
 var databaseBackupOptions = new DatabaseBackupOptions();
 builder.Configuration.GetSection("DatabaseBackup").Bind(databaseBackupOptions);
+databaseBackupOptions.Validate();
 builder.Services.AddSingleton(databaseBackupOptions);
 builder.Services.AddHostedService<DatabaseBackupService>();
 builder.Services.AddSingleton<IActiveTaskLookup, DispatchTaskReadRepository>();
@@ -290,6 +291,8 @@ builder.Services.AddHostedService<AgvPollingService>();
 builder.Services.AddHostedService<AgvTrackRecorder>();
 var stationStateOptions = new StationStateOptions();
 builder.Configuration.GetSection(StationStateOptions.SectionName).Bind(stationStateOptions);
+if (stationStateOptions.GetConfigurationError() is { } stationStateConfigurationError)
+    throw new InvalidOperationException(stationStateConfigurationError);
 builder.Services.AddSingleton(stationStateOptions);
 builder.Services.AddSingleton<StationStateService>();
 builder.Services.AddSingleton<IStationStateService>(
@@ -299,6 +302,8 @@ builder.Services.AddSingleton<IHostedService>(
     provider => provider.GetRequiredService<StationStateService>());
 var taskCreationOptions = new DispatchTaskCreationOptions();
 builder.Configuration.GetSection(DispatchTaskCreationOptions.SectionName).Bind(taskCreationOptions);
+if (taskCreationOptions.GetConfigurationError() is { } taskCreationConfigurationError)
+    throw new InvalidOperationException(taskCreationConfigurationError);
 builder.Services.AddSingleton(taskCreationOptions);
 builder.Services.AddHostedService<TaskCreationCoordinator>();
 var dispatchOrchestratorOptions = new DispatchOrchestratorOptions();
@@ -519,6 +524,8 @@ builder.Services.AddHostedService<TaskSwitchWorker>();
 builder.Services.AddHostedService<DispatchTaskOrchestrator>();
 var outboxOptions = new AgvCommandOutboxOptions();
 builder.Configuration.GetSection(AgvCommandOutboxOptions.SectionName).Bind(outboxOptions);
+if (outboxOptions.GetConfigurationError() is { } outboxConfigurationError)
+    throw new InvalidOperationException(outboxConfigurationError);
 builder.Services.AddSingleton(outboxOptions);
 builder.Services.AddHostedService<AgvCommandOutboxDispatcher>();
 builder.Services.AddHostedService<CompletedTransportRouteReleaseWorker>();
@@ -526,6 +533,8 @@ builder.Services.AddHostedService<WaitingBayDepartureReleaseWorker>();
 builder.Services.AddHostedService<RouteSegmentPassThroughReleaseWorker>();
 var taskStepOptions = new DispatchTaskStepOptions();
 builder.Configuration.GetSection(DispatchTaskStepOptions.SectionName).Bind(taskStepOptions);
+if (taskStepOptions.GetConfigurationError() is { } taskStepConfigurationError)
+    throw new InvalidOperationException(taskStepConfigurationError);
 builder.Services.AddSingleton(taskStepOptions);
 builder.Services.AddHostedService<DispatchTaskStepCoordinator>();
 var mutatingCapabilityEnabled =
@@ -538,6 +547,8 @@ var mutatingCapabilityEnabled =
 TrafficSecurityStartupValidator.Validate(trafficSecurityOptions, mutatingCapabilityEnabled);
 var alarmOptions = new AlarmOptions();
 builder.Configuration.GetSection(AlarmOptions.SectionName).Bind(alarmOptions);
+if (alarmOptions.GetConfigurationError() is { } alarmConfigurationError)
+    throw new InvalidOperationException(alarmConfigurationError);
 builder.Services.AddSingleton(alarmOptions);
 builder.Services.AddHostedService<AlarmRuleEngine>();
 

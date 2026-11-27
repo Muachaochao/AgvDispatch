@@ -52,6 +52,30 @@ public sealed class DispatchTaskStepOptions
         DefaultStepTimeoutSeconds.TryGetValue(stepType.ToString(), out var seconds)
             ? Math.Clamp(seconds, 0, 604800)
             : 1800;
+
+    public string? GetConfigurationError()
+    {
+        if (!Enabled) return null;
+        if (PollIntervalMs < 100) return "DispatchTaskSteps:PollIntervalMs不能小于100ms。";
+        if (BatchSize < 1) return "DispatchTaskSteps:BatchSize必须大于0。";
+        if (RollingWindowMinimumEdges < 1 ||
+            RollingWindowMaximumEdges < RollingWindowMinimumEdges ||
+            RollingWindowMaximumEdges > 1000 ||
+            RollingWindowHardMaximumEdges is < 0 or > 1000 ||
+            RollingWindowHardMaximumEdges > 0 &&
+                RollingWindowHardMaximumEdges < RollingWindowMaximumEdges)
+            return "DispatchTaskSteps滚动路权窗口边数配置无效。";
+        if (!RollingWindowBoundaries.IsKnown(RollingWindowBoundary))
+            return "DispatchTaskSteps:RollingWindowBoundary必须是NearestSafeStop或FarthestWithinMaximum。";
+        if (PartialWindowMinimumEdges < 1) return "DispatchTaskSteps:PartialWindowMinimumEdges必须大于0。";
+        if (SelectAgvTimeoutSeconds is < 0 or > 604800)
+            return "DispatchTaskSteps:SelectAgvTimeoutSeconds必须在0到604800之间。";
+        if (!TaskTemplateExecutionPolicy.IsKnownTimeoutAction(DefaultTimeoutAction))
+            return "DispatchTaskSteps:DefaultTimeoutAction无效。";
+        if (DefaultStepTimeoutSeconds.Any(pair => pair.Value is < 0 or > 604800))
+            return "DispatchTaskSteps:DefaultStepTimeoutSeconds必须在0到604800之间。";
+        return null;
+    }
 }
 
 public static class RollingWindowBoundaries

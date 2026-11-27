@@ -1,5 +1,7 @@
 using System.Text.Json;
+using System.Collections.Concurrent;
 using AgvDispatch.Application.Abstractions;
+using AgvDispatch.Domain.Agvs;
 using AgvDispatch.Domain.Devices;
 using AgvDispatch.Domain.Tasks;
 using AgvDispatch.Application.Runtime;
@@ -22,7 +24,7 @@ public sealed class AgvCommandOutboxDispatcher(
         ? simulation.ScaleForBusiness(TimeSpan.FromMilliseconds(milliseconds))
         : TimeSpan.FromMilliseconds(milliseconds);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
-    private readonly Dictionary<string,string> _blockedReasons=new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string,string> _blockedReasons=new(StringComparer.Ordinal);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -92,105 +94,143 @@ public sealed class AgvCommandOutboxDispatcher(
             options.BatchSize,
             cancellationToken);
         if (due.Count == 0) pipeline?.ReportLayer("execution", "Idle", "当前没有到期的持久化命令，等待原任务后续步骤。", 0);
-        foreach (var candidate in due)
-        {
-            if (preSendSafety is not null && await preSendSafety.CheckPendingCommandAsync(candidate, cancellationToken) is { } rejected)
-            {
-                pipeline?.ReportLayer("execution", "Waiting", "原命令等待安全层放行：" + rejected, due.Count);
-                continue;
-            }
-            // A degraded fleet can still serve healthy cars. Do not claim an
-            // offline car's command: claiming records a possible send attempt,
-            // which cannot later be treated as proof that nothing was sent.
-            var vehicles = await agvGateway.GetVehiclesAsync(cancellationToken);
-            var vehicle = vehicles.SingleOrDefault(item => item.VehicleId == candidate.VehicleId);
-            if (vehicle?.Connection != ConnectionState.Online)
-            {
-                continue;
-            }
-            if (trafficResources is not null)
-            {
-                try
-                {
-                    var payload = JsonSerializer.Deserialize<AgvTransportCommandPayload>(candidate.PayloadJson, JsonOptions)
-                        ?? throw new InvalidOperationException("待发送路径为空。");
-                    if (payload.Path.Count < 2) throw new InvalidOperationException("待发送路径不完整。");
-                    var map = activeMap?.Current;
-                    if (await trafficResources.CheckStepReservationAsync(candidate.StepId, candidate.TaskId, candidate.VehicleId,
-                        map?.MapId, map?.VersionId, payload.Path[0], payload.Path[^1], cancellationToken) is { } reason)
-                        throw new InvalidOperationException(reason);
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-                catch (Exception ex)
-                {
-                    if (!_blockedReasons.TryGetValue(candidate.CommandId, out var old) || old != ex.Message)
-                    {
-                        logger.LogWarning("发送前持久化路权核验未通过，保留原Outbox，不领取、不发送。CommandId={CommandId}, Reason={Reason}", candidate.CommandId, ex.Message);
-                        _blockedReasons[candidate.CommandId] = ex.Message;
-                    }
-                    continue;
-                }
-            }
-            if (roadClosures is not null && candidate.AttemptCount == 0)
-            {
-                try
-                {
-                    var payload = JsonSerializer.Deserialize<AgvTransportCommandPayload>(candidate.PayloadJson, JsonOptions)
-                        ?? throw new InvalidOperationException("待发送路径为空。");
-                    // Do not consume an attempt for a known closed route. The gateway
-                    // independently holds the same road gate during the actual send.
-                    using var check = await roadClosures.EnterRouteSendAsync(payload.Path, cancellationToken);
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-                catch (Exception ex)
-                {
-                    if (!_blockedReasons.TryGetValue(candidate.CommandId, out var previous) || previous != ex.Message)
-                    {
-                        logger.LogWarning("道路封锁核验未通过，保留原Outbox，不领取、不发送。CommandId={CommandId}, Reason={Reason}", candidate.CommandId, ex.Message);
-                        _blockedReasons[candidate.CommandId] = ex.Message;
-                    }
-                    continue;
-                }
-            }
-            if(handshakes!=null&&taskReader!=null)
-            {
-                var root=(await taskReader.GetStepsAsync(candidate.TaskId,cancellationToken)).FirstOrDefault(s=>s.StepType==DispatchTaskStepType.GoToPickup);
-                var binding=root==null?null:await handshakes.GetAsync(candidate.TaskId,root.StepId,cancellationToken);
-                if(binding!=null&&(handshakeOptions?.Enabled!=true||handshakeOptions.PlcContractVersion!=HandshakeExecutionOptions.Version||binding.ContractVersion!=HandshakeExecutionOptions.Version)||binding==null&&handshakeOptions?.Enabled==true)
-                {
-                    logger.LogDebug("命令契约与当前握手模式不一致，保留原Outbox，不领取、不发送。TaskId={TaskId}",candidate.TaskId);
-                    continue;
-                }
-            }
-            if(preSendSafety is null && handshakeOptions?.Enabled==true)
-            {
-                try
-                {
-                    if(handshake==null||handshakes==null||taskReader==null)throw new InvalidOperationException("28阶段发送缺少持久化执行及契约核验依赖。");
-                    var payload = JsonSerializer.Deserialize<AgvTransportCommandPayload>(candidate.PayloadJson, JsonOptions);
-                    await handshake.ValidatePendingTransportAsync(candidate.TaskId,candidate.StepId,candidate.VehicleId,
-                        payload?.WindowIndex > 0,cancellationToken);
-                    _blockedReasons.Remove(candidate.CommandId);
-                }
-                catch(OperationCanceledException)when(cancellationToken.IsCancellationRequested){throw;}
-                catch(Exception ex)
-                {
-                    if(!_blockedReasons.TryGetValue(candidate.CommandId,out var previous)||previous!=ex.Message)
-                    {logger.LogWarning("28阶段原命令暂不领取/发送，等待当前条件成立。CommandId={CommandId}, Reason={Reason}",candidate.CommandId,ex.Message);_blockedReasons[candidate.CommandId]=ex.Message;}
-                    continue;
-                }
-            }
-            var command = await outbox.TryClaimAsync(
-                candidate.CommandId,
-                _clock.GetLocalNow(),
-                cancellationToken);
-            if (command is null)
-            {
-                continue;
-            }
+        if (due.Count == 0) return;
 
-            await SendAsync(command, cancellationToken);
+        // A command for one vehicle is strictly serial, but unrelated vehicles must not
+        // share a single head-of-line send loop. Fetch telemetry once per cycle, then
+        // process each vehicle in order with a bounded number of concurrent vehicles.
+        var vehicles = await agvGateway.GetVehiclesAsync(cancellationToken);
+        await Parallel.ForEachAsync(
+            due.GroupBy(item => item.VehicleId, StringComparer.OrdinalIgnoreCase),
+            new ParallelOptions
+            {
+                CancellationToken = cancellationToken,
+                MaxDegreeOfParallelism = options.MaximumConcurrentVehicles
+            },
+            async (vehicleCommands, ct) =>
+            {
+                foreach (var candidate in vehicleCommands.OrderBy(item => item.NextAttemptAt).ThenBy(item => item.CreatedAt))
+                {
+                    try
+                    {
+                        await DispatchCandidateAsync(candidate, vehicles, ct);
+                    }
+                    catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (Exception exception)
+                    {
+                        // One vehicle's database or vendor failure must not starve the rest
+                        // of the fleet. The durable command remains claimable on the next cycle.
+                        logger.LogError(exception,
+                            "AGV命令按车辆隔离发送失败，其他车辆继续。CommandId={CommandId}, VehicleId={VehicleId}",
+                            candidate.CommandId, candidate.VehicleId);
+                    }
+                }
+            });
+    }
+
+    private async Task DispatchCandidateAsync(
+        AgvCommandOutboxItem candidate,
+        IReadOnlyList<AgvVehicleStatus> vehicles,
+        CancellationToken cancellationToken)
+    {
+        if (preSendSafety is not null && await preSendSafety.CheckPendingCommandAsync(candidate, cancellationToken) is { } rejected)
+        {
+            pipeline?.ReportLayer("execution", "Waiting", "原命令等待安全层放行：" + rejected);
+            return;
         }
+        // A degraded fleet can still serve healthy cars. Do not claim an
+        // offline car's command: claiming records a possible send attempt,
+        // which cannot later be treated as proof that nothing was sent.
+        var vehicle = vehicles.SingleOrDefault(item => item.VehicleId == candidate.VehicleId);
+        if (vehicle?.Connection != ConnectionState.Online)
+        {
+            return;
+        }
+        if (trafficResources is not null)
+        {
+            try
+            {
+                var payload = JsonSerializer.Deserialize<AgvTransportCommandPayload>(candidate.PayloadJson, JsonOptions)
+                    ?? throw new InvalidOperationException("待发送路径为空。");
+                if (payload.Path.Count < 2) throw new InvalidOperationException("待发送路径不完整。");
+                var map = activeMap?.Current;
+                if (await trafficResources.CheckStepReservationAsync(candidate.StepId, candidate.TaskId, candidate.VehicleId,
+                    map?.MapId, map?.VersionId, payload.Path[0], payload.Path[^1], cancellationToken) is { } reason)
+                    throw new InvalidOperationException(reason);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+            catch (Exception ex)
+            {
+                if (!_blockedReasons.TryGetValue(candidate.CommandId, out var old) || old != ex.Message)
+                {
+                    logger.LogWarning("发送前持久化路权核验未通过，保留原Outbox，不领取、不发送。CommandId={CommandId}, Reason={Reason}", candidate.CommandId, ex.Message);
+                    _blockedReasons[candidate.CommandId] = ex.Message;
+                }
+                return;
+            }
+        }
+        if (roadClosures is not null && candidate.AttemptCount == 0)
+        {
+            try
+            {
+                var payload = JsonSerializer.Deserialize<AgvTransportCommandPayload>(candidate.PayloadJson, JsonOptions)
+                    ?? throw new InvalidOperationException("待发送路径为空。");
+                // Do not consume an attempt for a known closed route. The gateway
+                // independently holds the same road gate during the actual send.
+                using var check = await roadClosures.EnterRouteSendAsync(payload.Path, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+            catch (Exception ex)
+            {
+                if (!_blockedReasons.TryGetValue(candidate.CommandId, out var previous) || previous != ex.Message)
+                {
+                    logger.LogWarning("道路封锁核验未通过，保留原Outbox，不领取、不发送。CommandId={CommandId}, Reason={Reason}", candidate.CommandId, ex.Message);
+                    _blockedReasons[candidate.CommandId] = ex.Message;
+                }
+                return;
+            }
+        }
+        if(handshakes!=null&&taskReader!=null)
+        {
+            var root=(await taskReader.GetStepsAsync(candidate.TaskId,cancellationToken)).FirstOrDefault(s=>s.StepType==DispatchTaskStepType.GoToPickup);
+            var binding=root==null?null:await handshakes.GetAsync(candidate.TaskId,root.StepId,cancellationToken);
+            if(binding!=null&&(handshakeOptions?.Enabled!=true||handshakeOptions.PlcContractVersion!=HandshakeExecutionOptions.Version||binding.ContractVersion!=HandshakeExecutionOptions.Version)||binding==null&&handshakeOptions?.Enabled==true)
+            {
+                logger.LogDebug("命令契约与当前握手模式不一致，保留原Outbox，不领取、不发送。TaskId={TaskId}",candidate.TaskId);
+                return;
+            }
+        }
+        if(preSendSafety is null && handshakeOptions?.Enabled==true)
+        {
+            try
+            {
+                if(handshake==null||handshakes==null||taskReader==null)throw new InvalidOperationException("28阶段发送缺少持久化执行及契约核验依赖。");
+                var payload = JsonSerializer.Deserialize<AgvTransportCommandPayload>(candidate.PayloadJson, JsonOptions);
+                await handshake.ValidatePendingTransportAsync(candidate.TaskId,candidate.StepId,candidate.VehicleId,
+                    payload?.WindowIndex > 0,cancellationToken);
+                _blockedReasons.TryRemove(candidate.CommandId, out _);
+            }
+            catch(OperationCanceledException)when(cancellationToken.IsCancellationRequested){throw;}
+            catch(Exception ex)
+            {
+                if(!_blockedReasons.TryGetValue(candidate.CommandId,out var previous)||previous!=ex.Message)
+                {logger.LogWarning("28阶段原命令暂不领取/发送，等待当前条件成立。CommandId={CommandId}, Reason={Reason}",candidate.CommandId,ex.Message);_blockedReasons[candidate.CommandId]=ex.Message;}
+                return;
+            }
+        }
+        var command = await outbox.TryClaimAsync(
+            candidate.CommandId,
+            _clock.GetLocalNow(),
+            cancellationToken);
+        if (command is null)
+        {
+            return;
+        }
+
+        await SendAsync(command, cancellationToken);
     }
 
     private async Task SendAsync(
@@ -236,6 +276,7 @@ public sealed class AgvCommandOutboxDispatcher(
                 }
             }
             await outbox.MarkSentAsync(command.CommandId, vendorCommandId, cancellationToken);
+            _blockedReasons.TryRemove(command.CommandId, out _);
             pipeline?.ReportLayer("execution", "Running", "厂家已确认原命令；执行、反馈、路权交接及恢复继续沿用同一任务和步骤。", 1);
             logger.LogInformation(
                 "AGV命令发送成功。CommandId={CommandId}, StepId={StepId}, VendorCommandId={VendorCommandId}, Attempt={Attempt}",
@@ -279,6 +320,7 @@ public sealed class AgvCommandOutboxDispatcher(
                 _clock.GetLocalNow().Add(delay),
                 terminalSendResult ? 1 : options.MaximumAttempts,
                 cancellationToken);
+            if (terminalSendResult) _blockedReasons.TryRemove(command.CommandId, out _);
             pipeline?.ReportLayer(
                 "execution",
                 terminalSendResult ? "Failed" : "Waiting",

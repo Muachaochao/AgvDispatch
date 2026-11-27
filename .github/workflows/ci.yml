@@ -14,8 +14,11 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
-      - name: Restore service
-        run: dotnet restore AgvDispatch.Service/AgvDispatch.Service.csproj
+      - name: Architecture guards
+        shell: pwsh
+        run: ./tools/Test-ArchitectureGuards.ps1
+      - name: Restore solution
+        run: dotnet restore AgvDispatch.sln -m:1
       - name: Build service
         run: dotnet build AgvDispatch.Service/AgvDispatch.Service.csproj -c Release --no-restore -m:1
       - name: Build web host

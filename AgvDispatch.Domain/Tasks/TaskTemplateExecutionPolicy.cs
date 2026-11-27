@@ -31,6 +31,9 @@ public static class TaskTemplateExecutionPolicy
         _ => NotifyAndHold
     };
 
+    public static bool IsKnownTimeoutAction(string? value) =>
+        value is Pause or ManualRecovery or Terminate or NotifyAndHold;
+
     public static bool StopsAutomation(string? policy) =>
         NormalizeFailurePolicy(policy) is Pause or ManualRecovery or Terminate;
 
