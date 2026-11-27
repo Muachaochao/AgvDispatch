@@ -75,35 +75,28 @@ function fill(username: string, password: string) {
   display: flex;
   align-items: center;
   justify-content: center;
-  background:
-    radial-gradient(900px 520px at 25% 20%, rgba(34, 211, 238, .16), transparent 65%),
-    radial-gradient(700px 480px at 85% 90%, rgba(167, 139, 250, .1), transparent 60%),
-    linear-gradient(rgba(34, 211, 238, .03) 1px, transparent 1px) 0 0 / 100% 36px,
-    linear-gradient(90deg, rgba(34, 211, 238, .03) 1px, transparent 1px) 0 0 / 36px 100%,
-    #050a12;
+  background: radial-gradient(circle at 20% 20%, #1f3b73 0%, #0d1b33 60%, #060c18 100%);
 }
 
 .login-card {
   width: 400px;
   padding: 36px 32px 24px;
-  border: 1px solid rgba(34, 211, 238, .28);
-  background: linear-gradient(180deg, rgba(15, 28, 47, .96), rgba(8, 17, 30, .96));
-  border-radius: 16px;
-  box-shadow: 0 24px 70px rgba(0, 0, 0, .6), 0 0 40px rgba(34, 211, 238, .08), inset 0 1px 0 rgba(103, 232, 249, .1);
+  background: #fff;
+  border-radius: 14px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
 }
 
 .brand h1 {
   margin: 0 0 6px;
   font-size: 26px;
   letter-spacing: 2px;
-  color: #effbff;
-  text-shadow: 0 0 18px rgba(34, 211, 238, .35);
+  color: #1f3b73;
 }
 
 .brand p {
   margin: 0 0 24px;
   font-size: 13px;
-  color: #7c91ab;
+  color: #909399;
   line-height: 1.5;
 }
 

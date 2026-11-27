@@ -1,73 +1,45 @@
 .paice-workspace {
-  /* Cockpit dark theme (2026-11-27); tokens mirror AgvDispatch.Web/src/cockpit-theme.css. */
-  --workspace-bg: #060b14;
-  --ui-page: #060b14;
-  --ui-text: #e6f1ff;
-  --ui-text-2: #a9bcd3;
-  --ui-text-3: #7c91ab;
-  --ui-surface: #0b1524;
-  --ui-surface-raised: #0f1c2f;
-  --ui-surface-soft: #0d1828;
-  --ui-surface-hover: #142640;
-  --ui-line: #1e3350;
-  --ui-line-strong: #2c4a6e;
-  --ui-table-head: #0f1c2f;
-  --ui-primary: #22d3ee;
-  --ui-primary-strong: #67e8f9;
-  --ui-primary-soft: rgba(34, 211, 238, .12);
-  --ui-success: #34d399;
-  --ui-warning: #fbbf24;
-  --ui-danger: #f87171;
-  --ui-info: #a78bfa;
-  --ui-panel-bg: linear-gradient(180deg, rgba(15, 28, 47, .97), rgba(10, 19, 33, .97));
-  --ui-panel-edge: inset 0 1px 0 rgba(103, 232, 249, .07);
-  --workspace-panel-bg: var(--ui-panel-bg);
-  --workspace-selected: rgba(34, 211, 238, .12);
-  --workspace-selected-border: rgba(34, 211, 238, .45);
-  --workspace-success: #34d399;
-  --workspace-success-bg: rgba(52, 211, 153, .1);
-  --workspace-success-border: rgba(52, 211, 153, .4);
-  --workspace-warning: #fbbf24;
-  --workspace-warning-bg: rgba(251, 191, 36, .1);
-  --workspace-warning-border: rgba(251, 191, 36, .42);
-  --workspace-danger: #f87171;
-  --workspace-danger-bg: rgba(248, 113, 113, .1);
-  --workspace-danger-border: rgba(248, 113, 113, .45);
-  --workspace-info: #a78bfa;
-  --workspace-info-bg: rgba(167, 139, 250, .1);
-  --workspace-info-border: rgba(167, 139, 250, .42);
-  --workspace-shadow: 0 12px 30px rgba(0, 4, 10, .35), inset 0 1px 0 rgba(103, 232, 249, .07);
-  --workspace-glow: 0 0 0 1px rgba(34, 211, 238, .38), 0 0 18px rgba(34, 211, 238, .22);
-  --el-color-primary: #22c3dc;
-  --el-color-primary-dark-2: #1aa3b9;
-  --el-color-primary-light-3: #4fd3e6;
-  --el-color-primary-light-5: #7fdfed;
-  --el-color-primary-light-7: #0f4f5d;
-  --el-color-primary-light-8: #0c3b47;
-  --el-color-primary-light-9: #0a2a34;
+  --workspace-bg: #eef2f7;
+  --ui-text: #172338;
+  --ui-text-2: #34445c;
+  --ui-text-3: #56667c;
+  --ui-surface: #fff;
+  --ui-surface-raised: #f7f9fd;
+  --ui-surface-soft: #f1f5fa;
+  --ui-line: #dbe3ef;
+  --ui-table-head: #f0f4fa;
+  --ui-primary: #3456c8;
+  --ui-primary-strong: #25429e;
+  --workspace-selected: #eaf0ff;
+  --workspace-success: #146148;
+  --workspace-success-bg: #e8f7ee;
+  --workspace-warning: #86500e;
+  --workspace-warning-bg: #fff3df;
+  --workspace-danger: #a12b44;
+  --workspace-danger-bg: #fcebf0;
+  --workspace-shadow: 0 2px 6px #23395d08;
+  --el-color-primary: var(--ui-primary);
+  --el-color-primary-dark-2: var(--ui-primary-strong);
+  --el-color-primary-light-3: #5673d0;
+  --el-color-primary-light-5: #7b91da;
+  --el-color-primary-light-7: #aebbea;
+  --el-color-primary-light-8: #cad5f4;
+  --el-color-primary-light-9: var(--workspace-selected);
   --el-text-color-primary: var(--ui-text);
   --el-text-color-regular: var(--ui-text-2);
   --el-text-color-secondary: var(--ui-text-3);
   --el-border-color: var(--ui-line);
   --el-border-color-light: var(--ui-line);
   --el-fill-color-light: var(--ui-surface-soft);
-  --el-bg-color: var(--ui-surface);
-  --el-bg-color-overlay: var(--ui-surface-raised);
-  --el-fill-color-blank: var(--ui-surface);
-  color-scheme: dark;
-  background:
-    radial-gradient(1100px 520px at 60% -12%, rgba(34, 211, 238, .09), transparent 62%),
-    linear-gradient(rgba(34, 211, 238, .02) 1px, transparent 1px) 0 0 / 100% 32px,
-    linear-gradient(90deg, rgba(34, 211, 238, .02) 1px, transparent 1px) 0 0 / 32px 100%,
-    #060b14;
+  color-scheme: light;
 }
 
 .paice-workspace .panel {
   min-width: 0;
   border: 1px solid var(--ui-line);
-  border-radius: 12px;
+  border-radius: 10px;
   padding: clamp(14px, 1.4vw, 20px);
-  background: var(--workspace-panel-bg);
+  background: var(--ui-surface);
   box-shadow: var(--workspace-shadow);
 }
 
@@ -107,10 +79,9 @@
 
 .paice-workspace .workspace-actions > a:hover,
 .paice-workspace .workspace-actions > a[aria-current="page"] {
-  border-color: var(--workspace-selected-border);
+  border-color: #bfcef6;
   background: var(--workspace-selected);
   color: var(--ui-primary-strong);
-  box-shadow: 0 0 14px rgba(34, 211, 238, .12);
 }
 
 .paice-workspace .workspace-actions .el-button > span { gap: 7px; }
@@ -155,18 +126,17 @@
 
 .paice-workspace .simulation-operations button:not(:disabled, .workshop-preview *):hover { background: var(--ui-surface-soft); }
 .paice-workspace .simulation-operations button:is(.primary, .accent-button) {
-  border-color: rgba(34, 211, 238, .8);
-  background: linear-gradient(180deg, #0e7490, #155e75);
-  color: #ecfeff;
+  border-color: var(--ui-primary);
+  background: var(--ui-primary);
+  color: #fff;
   font-weight: 600;
 }
 .paice-workspace .simulation-operations button:is(.primary, .accent-button):not(:disabled):hover {
-  background: linear-gradient(180deg, #0f86a6, #16708a);
-  box-shadow: var(--workspace-glow);
+  background: var(--ui-primary-strong);
 }
 .paice-workspace .simulation-operations button:disabled:not(.workshop-preview *) { opacity: .55; cursor: default; }
 .paice-workspace :is(button, a, summary, select, input, textarea):focus-visible {
-  outline: 2px solid #67e8f9;
+  outline: 2px solid #6483e9;
   outline-offset: 2px;
 }
 
@@ -303,16 +273,16 @@
 .paice-workspace .simulation-operations :is(
   .state-pill.pass, .simulation-notice, .assignment-success, .assignment-mode.global, .pipeline-status-badge.ready,
   .pipeline-layer.ready .pipeline-layer-state strong, .task-step-list > li.completed, .plc-table-summary
-) { border-color: var(--workspace-success-border); background: var(--workspace-success-bg); color: var(--workspace-success); }
+) { border-color: #b7dfcb; background: var(--workspace-success-bg); color: var(--workspace-success); }
 .paice-workspace .simulation-operations :is(
   .state-pill.waiting, .task-waiting-copy, .task-waiting-signal, .task-step-list > li.current, .manual-next-step, .pipeline-alert,
   .pipeline-status-badge.waiting, .pipeline-layer:is(.waiting, .stale) .pipeline-layer-state strong,
   .task-table tbody tr.traffic-waiting:not(.selected)
-) { border-color: var(--workspace-warning-border); background: var(--workspace-warning-bg); color: var(--workspace-warning); }
+) { border-color: #ead1aa; background: var(--workspace-warning-bg); color: var(--workspace-warning); }
 .paice-workspace .simulation-operations :is(
   .state-pill.fail, .simulation-error, .first-failure, .task-counts article.fault, .task-step-list > li.failed,
   .pipeline-status-badge.blocked, .pipeline-layer.blocked .pipeline-layer-state strong
-) { border-color: var(--workspace-danger-border); background: var(--workspace-danger-bg); color: var(--workspace-danger); }
+) { border-color: #efbdc9; background: var(--workspace-danger-bg); color: var(--workspace-danger); }
 .paice-workspace .simulation-operations :is(.inline-warning, .manual-next-step b, .task-step-list p, .report-task-nine-steps p,
   .assignment-table tr.excluded td, .assignment-layer-tag) { color: var(--workspace-warning); }
 .paice-workspace .simulation-operations :is(.task-waiting-signal, .recovery-reason) { color: var(--workspace-warning) !important; }
@@ -360,15 +330,15 @@
 }
 .paice-workspace .simulation-operations .pipeline-search input { border: 0; background: transparent; }
 .paice-workspace .simulation-operations .pipeline-banner.stale {
-  border-color: var(--workspace-warning-border);
+  border-color: #ead1aa;
   background: var(--workspace-warning-bg);
 }
 .paice-workspace .simulation-operations :is(.pipeline-banner.historical, .pipeline-history-note) {
-  border-color: var(--workspace-info-border);
-  background: var(--workspace-info-bg);
-  color: #c4b5fd;
+  border-color: #d6c7e9;
+  background: #f3eef9;
+  color: #5c3e78;
 }
-.paice-workspace .simulation-operations .pipeline-banner.historical .pipeline-context-label { color: #c4b5fd; }
+.paice-workspace .simulation-operations .pipeline-banner.historical .pipeline-context-label { color: #5c3e78; }
 
 /* Put the map first and use an adjacent rail for live fleet information. */
 .paice-workspace .simulation-operations .embedded .simulation-workspace:has(.overview-stage) {
@@ -407,7 +377,7 @@
 
 .paice-workspace .simulation-operations .business-story {
   padding: 14px !important;
-  background: var(--workspace-panel-bg) !important;
+  background: var(--ui-surface) !important;
   border-color: var(--ui-line) !important;
 }
 .paice-workspace .simulation-operations .business-story h3 { font-size: 16px; }
@@ -465,103 +435,3 @@
   .paice-workspace .simulation-operations .simulation-panel > header { flex-wrap: wrap; }
   .paice-workspace .simulation-operations .map-caption { flex-wrap: wrap; }
 }
-
-
-/* ---------- Cockpit dark layer for shared map components (2026-11-27) ----------
-   RoadNetEditor / SimulationWorkshopMap draw with light SVG presentation attributes.
-   Author CSS overrides presentation attributes, so the map is re-coloured here without
-   touching editor logic. Attribute selectors keep state colours (selected/connect/error). */
-html.dark .paice-workspace :is(.canvas-wrap, .canvas-wrap.is-maximized, .canvas-wrap:fullscreen) {
-  border-color: #1a2d47;
-  background: radial-gradient(900px 480px at 50% 40%, rgba(34, 211, 238, .05), transparent 70%), #07101d;
-}
-html.dark .paice-workspace .canvas-wrap path[stroke="#eef2f7"] { stroke: #0f1c2f; }
-html.dark .paice-workspace .canvas-wrap path[stroke="#dde5ef"] { stroke: #16283f; }
-html.dark .paice-workspace .canvas-wrap rect[fill="#fbfdff"] { fill: #07101d; }
-html.dark .paice-workspace .canvas-wrap .map-border { stroke: #2c4a6e; }
-html.dark .paice-workspace .canvas-wrap .map-ticks line { stroke: #1e3350; }
-html.dark .paice-workspace .canvas-wrap .map-ticks text { fill: #6b819b; }
-html.dark .paice-workspace .canvas-wrap .node-dot[stroke="#ffffff"] { stroke: #07101d; }
-html.dark .paice-workspace .canvas-wrap .node-dot[stroke="#1f3b73"] { stroke: #67e8f9; filter: drop-shadow(0 0 4px rgba(34, 211, 238, .7)); }
-html.dark .paice-workspace .canvas-wrap :is(line, path)[stroke="#1f3b73"] { stroke: #67e8f9; }
-html.dark .paice-workspace .canvas-wrap path[fill="#1f3b73"] { fill: #67e8f9; }
-html.dark .paice-workspace .canvas-wrap :is(line, path)[stroke="#8fa3bd"] { stroke: #3e7ea0; }
-html.dark .paice-workspace .canvas-wrap path[fill="#8fa3bd"] { fill: #3e7ea0; }
-html.dark .paice-workspace .canvas-wrap text[fill="#606266"] { fill: #a9bcd3; paint-order: stroke; stroke: #07101d; stroke-width: 3px; }
-html.dark .paice-workspace .canvas-wrap text[fill="#7a8aa3"] { fill: #6b819b; }
-html.dark .paice-workspace .canvas-wrap :is(.marquee, .mini-viewport) { fill: rgba(34, 211, 238, .08); stroke: #22d3ee; }
-html.dark .paice-workspace :is(.map-legend, .overlay-toggle, .scale-bar, .coords, .minimap-collapse) {
-  border-color: #1e3350;
-  background: rgba(11, 21, 36, .92);
-  color: #a9bcd3;
-  backdrop-filter: blur(6px);
-}
-html.dark .paice-workspace .map-legend .legend-head { color: #e6f1ff; }
-html.dark .paice-workspace .overlay-toggle:hover { color: #67e8f9; border-color: rgba(34, 211, 238, .5); }
-html.dark .paice-workspace .legend-symbol { color: #7c91ab; }
-html.dark .paice-workspace .scale-line { border-color: #7c91ab; }
-html.dark .paice-workspace .minimap { border-color: #1e3350; background: #08111e; }
-html.dark .paice-workspace .minimap rect[fill="#f7fbff"] { fill: #08111e; }
-html.dark .paice-workspace .minimap line[stroke="#b6cbe8"] { stroke: #2c4a6e; }
-html.dark .paice-workspace :is(.toolbar-secondary) { border-top-color: #1a2d47; }
-html.dark .paice-workspace :is(.hint, .muted, .stat-row, .error-row, .size-editor label) { color: #7c91ab; }
-html.dark .paice-workspace :is(.side-title, .orient-text) { color: #e6f1ff; }
-html.dark .paice-workspace .side-tabs { background: #0d1828; }
-html.dark .paice-workspace .side-tabs button { color: #7c91ab; }
-html.dark .paice-workspace .side-tabs button:hover { color: #67e8f9; }
-html.dark .paice-workspace .side-tabs button.active { background: #142640; color: #e6f1ff; box-shadow: inset 0 -2px 0 #22d3ee; }
-html.dark .paice-workspace .side-block { border-color: #1e3350; background: #0b1524; }
-html.dark .paice-workspace .popover-divider { background: #1e3350; }
-html.dark .paice-workspace .context-menu { border-color: #2c4a6e; background: #0f1c2f; box-shadow: 0 16px 36px rgba(0, 4, 10, .6); }
-html.dark .paice-workspace .context-menu button { color: #e6f1ff; }
-html.dark .paice-workspace .context-menu button:hover { background: #142640; color: #67e8f9; }
-html.dark .paice-workspace .help-table td { border-bottom-color: #1a2d47; color: #a9bcd3; }
-html.dark .paice-workspace .help-table td:first-child { color: #e6f1ff; }
-html.dark .paice-workspace :is(.connect-hint, .badge-sample) { color: #fcd34d; background: rgba(251, 191, 36, .1); border-color: rgba(251, 191, 36, .45); }
-html.dark .paice-workspace .task-badge { fill: #1c1708; }
-html.dark .paice-workspace .task-count { fill: #0b1524; }
-html.dark .paice-workspace :is(.task-badge-text, .task-count-text) { fill: #fcd34d; }
-html.dark .paice-workspace .preview-vehicle text { fill: #e6f1ff; stroke: #060b14; }
-html.dark .paice-workspace .preview-vehicle rect { stroke: #060b14; }
-html.dark .paice-workspace .preview-vehicle path { fill: #04121c; }
-html.dark .paice-workspace .preview-vehicle:is(.selected, :focus-visible) rect { stroke: #67e8f9; filter: drop-shadow(0 0 6px rgba(34, 211, 238, .8)); }
-html.dark .paice-workspace .preview-route { filter: drop-shadow(0 0 4px currentColor); }
-html.dark .paice-workspace .preview-route-endpoint circle { fill: #22d3ee; stroke: #060b14; }
-html.dark .paice-workspace .preview-route-endpoint text { fill: #e6f1ff; stroke: #060b14; }
-
-/* Element Plus tables and tags inside the workspace */
-html.dark .paice-workspace .el-table {
-  --el-table-bg-color: transparent;
-  --el-table-tr-bg-color: transparent;
-  --el-table-header-bg-color: #0f1c2f;
-  --el-table-header-text-color: #8fb4cc;
-  --el-table-row-hover-bg-color: rgba(34, 211, 238, .06);
-  --el-table-border-color: #1a2d47;
-  --el-table-text-color: #c9d8ea;
-}
-html.dark .paice-workspace .el-table th.el-table__cell { font-size: 12px; font-weight: 600; letter-spacing: .5px; }
-html.dark .paice-workspace .el-tag { border-radius: 999px; font-weight: 600; }
-html.dark .paice-workspace .el-tag.el-tag--success { --el-tag-text-color: #6ee7b7; --el-tag-bg-color: rgba(52, 211, 153, .1); --el-tag-border-color: rgba(52, 211, 153, .45); }
-html.dark .paice-workspace .el-tag.el-tag--warning { --el-tag-text-color: #fcd34d; --el-tag-bg-color: rgba(251, 191, 36, .1); --el-tag-border-color: rgba(251, 191, 36, .45); }
-html.dark .paice-workspace .el-tag.el-tag--danger { --el-tag-text-color: #fca5a5; --el-tag-bg-color: rgba(248, 113, 113, .1); --el-tag-border-color: rgba(248, 113, 113, .45); }
-html.dark .paice-workspace .el-tag.el-tag--info { --el-tag-text-color: #a9bcd3; --el-tag-bg-color: rgba(124, 145, 171, .1); --el-tag-border-color: #2c4a6e; }
-html.dark .paice-workspace .el-tag.el-tag--primary { --el-tag-text-color: #67e8f9; --el-tag-bg-color: rgba(34, 211, 238, .1); --el-tag-border-color: rgba(34, 211, 238, .45); }
-
-/* Secondary pages: engineering import, point map, native simulation and task sets. */
-html.dark .paice-workspace {
-  --point-map-bg: #07101d;
-  --point-map-road: #2f5f80;
-  --point-map-junction: #4b6b8a;
-  --point-map-station: #22d3ee;
-  --point-map-label: #a9bcd3;
-}
-html.dark .paice-workspace .engineering-viewport > canvas { border-color: #1a2d47; }
-html.dark .paice-workspace .engineering-map:fullscreen { background: #060b14; }
-html.dark .paice-workspace .map-overview { border-color: #2c4a6e; background: #08111e; }
-html.dark .paice-workspace .overview-toggle { color: #a9bcd3; background: #0f1c2f; }
-html.dark .paice-workspace .overview-viewport { border-color: #22d3ee; background: rgba(34, 211, 238, .1); }
-html.dark .paice-workspace .point-inspection { background: #0d1828; }
-html.dark .paice-workspace .incident-roads li { border-bottom-color: #1a2d47; }
-html.dark .paice-workspace .excluded-list { background: rgba(251, 191, 36, .08); }
-html.dark .paice-workspace .validation-errors { background: rgba(248, 113, 113, .08); }
-html.dark .paice-workspace .map-mode-label { color: #67e8f9; background: rgba(34, 211, 238, .1); }
