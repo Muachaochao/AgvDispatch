@@ -149,7 +149,9 @@ function logout() {
 }
 
 .aside {
-  background: #131d30;
+  position: relative;
+  background: linear-gradient(180deg, #08111e, #050a12);
+  border-right: 1px solid #1a2d47;
   display: flex;
   flex-direction: column;
 }
@@ -161,17 +163,19 @@ function logout() {
   min-height: 68px;
   padding: 0 16px;
   flex-shrink: 0;
-  border-bottom: 1px solid #ffffff14;
+  border-bottom: 1px solid #1a2d47;
 }
 
 .brand {
   display: flex;
   align-items: center;
   gap: 10px;
-  color: #f6f8fc;
+  color: #effbff;
   font-size: 18px;
   font-weight: 650;
+  letter-spacing: 2px;
   text-decoration: none;
+  text-shadow: 0 0 16px rgba(34, 211, 238, .3);
 }
 
 .brand-mark {
@@ -179,20 +183,22 @@ function logout() {
   place-items: center;
   width: 34px;
   height: 34px;
-  border-radius: 8px;
-  background: #3858d0;
-  color: #fff;
+  border-radius: 9px;
+  border: 1px solid rgba(103, 232, 249, .6);
+  background: linear-gradient(145deg, #0e7490, #164e63);
+  color: #ecfeff;
+  box-shadow: 0 0 14px rgba(34, 211, 238, .35), inset 0 1px 0 rgba(255, 255, 255, .15);
 }
 
 .menu {
   flex: 1;
   overflow-y: auto;
   padding: 6px 10px 18px;
-  scrollbar-color: #43516a transparent;
+  scrollbar-color: #2c4a6e transparent;
 }
 
 .menu section { margin: 16px 0; }
-.menu h2 { margin: 0 0 6px 12px; font-size: 12px; font-weight: 550; color: #a1afc5; }
+.menu h2 { margin: 0 0 6px 12px; font-size: 11px; font-weight: 600; letter-spacing: 1.6px; color: #5f7896; }
 .menu a, .menu summary {
   display: flex;
   align-items: center;
@@ -200,30 +206,34 @@ function logout() {
   min-height: 40px;
   padding: 7px 11px;
   margin: 2px 0;
-  border-radius: 7px;
-  color: #c6d1e3;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: #a9bcd3;
   text-decoration: none;
   font-size: 14px;
+  transition: background .15s, color .15s, border-color .15s;
 }
 
-.menu a > svg, .menu summary > svg { flex: none; color: #a7b8d5; }
+.menu a > svg, .menu summary > svg { flex: none; color: #6b8aa8; }
 .menu summary { list-style: none; cursor: pointer; }
 .menu summary::-webkit-details-marker { display: none; }
 .menu .chevron { margin-left: auto; }
 .menu details[open] .chevron { transform: rotate(180deg); }
 .menu details a { margin-left: 12px; font-size: 13px; }
 .menu a:hover, .menu summary:hover {
-  background: #ffffff12;
-  color: #fff;
+  border-color: #1e3350;
+  background: #0f1c2f;
+  color: #e6f1ff;
 }
 
 .menu a.selected {
-  background: #29438d;
-  color: #fff;
-  box-shadow: inset 3px 0 #8ba6ff;
+  border-color: rgba(34, 211, 238, .4);
+  background: linear-gradient(90deg, rgba(34, 211, 238, .18), rgba(34, 211, 238, .03));
+  color: #ecfeff;
+  box-shadow: inset 3px 0 #22d3ee, 0 0 18px rgba(34, 211, 238, .12);
 }
 
-.menu a.selected > svg { color: #dce5ff; }
+.menu a.selected > svg { color: #67e8f9; filter: drop-shadow(0 0 4px rgba(34, 211, 238, .6)); }
 .workspace-content { min-width: 0; min-height: 0; }
 
 .header, .header-left, .header-right {
@@ -235,16 +245,31 @@ function logout() {
   --el-header-height: 68px;
   justify-content: space-between;
   gap: 12px;
+  position: relative;
   padding: 0 clamp(14px, 2vw, 28px);
-  background: var(--ui-surface);
-  border-bottom: 1px solid var(--ui-line);
+  background: linear-gradient(90deg, rgba(34, 211, 238, .06), transparent 40%), linear-gradient(180deg, #0b1524, #08111e);
+  border-bottom: 1px solid #1a2d47;
+}
+
+.header::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(34, 211, 238, .8), rgba(34, 211, 238, .2) 45%, transparent 80%);
+  box-shadow: 0 0 8px rgba(34, 211, 238, .4);
+  pointer-events: none;
 }
 
 .header-left, .header-right { gap: 12px; min-width: 0; }
 .header h1 {
   margin: 0;
+  color: #f1f8ff;
   font-size: clamp(18px, 1.55vw, 23px);
   font-weight: 680;
+  letter-spacing: 1px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -286,9 +311,9 @@ function logout() {
     width: min(260px, 86vw);
   }
   .aside.menu-open { display: flex; }
-  .menu-backdrop { display: block; position: fixed; z-index: 902; inset: 0; background: #0f172a80; }
+  .menu-backdrop { display: block; position: fixed; z-index: 902; inset: 0; background: rgba(3, 7, 13, .75); }
   .menu-toggle, .menu-close { display: inline-flex; }
-  .menu-close { border-color: #ffffff24; background: transparent; color: #f6f8fc; }
+  .menu-close { border-color: #1e3350; background: transparent; color: #e6f1ff; }
 }
 
 @media (max-width: 420px) {

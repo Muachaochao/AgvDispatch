@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { defineAsyncComponent, computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { IconPlayerPlay, IconPlayerStop, IconRefresh, IconDownload, IconFlask, IconRobot } from '@tabler/icons-vue';
+import { IconPlayerPlay, IconPlayerStop, IconRefresh, IconDownload, IconFlask, IconRobot, IconPlayerPause, IconPlayerSkipBack, IconPlayerSkipForward, IconPlayerTrackPrev, IconPlayerTrackNext, IconBattery2, IconBox } from '@tabler/icons-vue';
 import { ElSelectV2 } from 'element-plus';
 import 'element-plus/es/components/select-v2/style/css';
-import { simulationApi as defaultSimulationApi, simulationFresh, simulationGeometry, simulationLabel, loadCurrentSimulationMap, simulationTone, scenarioActive, simulationVehicleOriginsFromLive,
+import { simulationKpis, simulationApi as defaultSimulationApi, simulationFresh, simulationGeometry, simulationLabel, loadCurrentSimulationMap, simulationTone, scenarioActive, simulationVehicleOriginsFromLive,
   simulationMetricLabel, simulationMetricValue, simulationMetricComparison, simulationReplayCars,
   simulationStationBindingsFromCatalog, simulationVehicleVisualState, simulationVehicleVisualColor,
   simulationVehicleVisualLabel, simulationObstacleRecoveryLabel, simulationActiveVehicleCount,
@@ -986,8 +986,21 @@ const vehicleStories = computed(() => Object.entries(cars.value).map(([id, car])
     tone === 'running' ? `当前位置：${humanLocation(car.station)}，速度 ${car.speedMps?.toFixed(2) ?? '—'} m/s。` :
     tone === 'waiting' ? industrialText(car.waitReason || (car.loaded ? '车上有箱，等待下一步作业条件。' : '车辆有任务，但当前没有移动。')) :
     `已停在${humanLocation(car.station)}，${car.loaded ? '车上有箱' : '空载'}。`;
-  return { id, tone, state, action, location: humanLocation(car.station) };
+  const battery = typeof car.batteryPercent === 'number' && Number.isFinite(car.batteryPercent) ? Math.max(0, Math.min(100, car.batteryPercent)) : null;
+  return { id, tone, state, action, location: humanLocation(car.station), color: vehicleMapColor(car), battery,
+    loaded: !!car.loaded, charging: !!car.charging };
 }));
+// Display-only KPI strip: missing task or route-right evidence stays "—" (see docs/architecture/UI主题与控件规范.md).
+const simulationKpiItems = computed(() => simulationKpis({
+  tasks: simulationTaskPage.value || simulationTasks.value.length ? { total: taskCounts.value.total, completed: taskCounts.value.completed } : null,
+  activeVehicles: modeledTaskCount.value, vehicleCount: vehicleIds.value.length,
+  trafficRequests: status.value?.running && taskRuntimeSnapshot.value?.traffic ? taskRuntimeSnapshot.value.traffic.requests : null
+}));
+const scenarioProgress = computed(() => {
+  const scenario = status.value?.scenario;
+  const total = scenario?.totalRounds ?? 0, done = scenario?.completedRounds ?? 0;
+  return total > 0 ? { done, total, percent: Math.round(Math.min(1, done / total) * 100) } : null;
+});
 const overviewHeadline = computed(() => {
   if (!connected.value) return '暂时看不到仿真环境';
   if (!status.value?.enabled) return '还没有准备仿真环境';
@@ -1964,6 +1977,20 @@ function seekReplayEvent(index: number, event: ReplayEvent) {
   replayPositionEvent.value = event;
   highlightedReplayVehicle.value = event.vehicleId ?? '';
 }
+function stepReplay(delta: number) {
+  const last = (replay.value?.timeline.length ?? 1) - 1;
+  replayPlaying.value = false;
+  replayIndex.value = Math.max(0, Math.min(last, replayIndex.value + delta));
+}
+function seekReplayEdge(edge: 'start' | 'end') {
+  replayPlaying.value = false;
+  replayIndex.value = edge === 'start' ? 0 : Math.max(0, (replay.value?.timeline.length ?? 1) - 1);
+}
+const replayFrameSummary = computed(() => {
+  const vehicles = replayFrame.value?.vehicles ?? [];
+  return { vehicles: vehicles.length, busy: vehicles.filter(car => !!car.taskId).length,
+    waiting: vehicles.filter(car => !!car.waitReason).length, tasks: replayFrame.value?.tasks?.length ?? 0 };
+});
 function toggleReplay() {
   if (!replayPlaying.value && replayIndex.value >= (replay.value?.timeline.length ?? 0) - 1) replayIndex.value = 0;
   replayPlaying.value = !replayPlaying.value;
@@ -2028,10 +2055,15 @@ onUnmounted(() => { disposed = true; controller?.abort(); cancelReplayExport(); 
           <button class="primary overview-next-action" :disabled="busy || reading" @click="followNextAction">{{ nextAction.button }}</button>
         </div>
         <div class="vehicle-story-list">
-          <article v-for="item in vehicleStories" :key="item.id" :class="item.tone">
+          <article v-for="item in vehicleStories" :key="item.id" :class="item.tone" :style="{ '--story-color': item.color }">
             <div><b>{{ item.id }}</b><span>{{ item.state }}</span></div>
             <small>{{ item.location }}</small>
             <p>{{ item.action }}</p>
+            <footer v-if="item.battery !== null || item.loaded || item.charging" class="story-meta">
+              <span v-if="item.battery !== null" class="story-battery" :class="{ low: item.battery < 25 }" :title="`电量 ${item.battery.toFixed(0)}%`"><IconBattery2 :size="13" aria-hidden="true" /><i aria-hidden="true"><em :style="{ width: item.battery + '%' }"></em></i>{{ item.battery.toFixed(0) }}%</span>
+              <span v-if="item.loaded" class="story-tag load"><IconBox :size="12" aria-hidden="true" />载箱</span>
+              <span v-if="item.charging" class="story-tag charging">充电中</span>
+            </footer>
           </article>
         </div>
         <div class="toolbar quick-actions"><button class="primary" @click="openStage('scenario')">选择场景</button><button @click="openStage('faults')">制造异常</button><button @click="openStage('results')">查看结果</button></div>
@@ -2057,6 +2089,17 @@ onUnmounted(() => { disposed = true; controller?.abort(); cancelReplayExport(); 
     </section>
 
     <section v-if="activeStage === 'overview'" class="stage-surface overview-stage">
+      <section class="sim-kpi-strip" aria-label="仿真运行指标">
+        <article v-for="kpi in simulationKpiItems" :key="kpi.key" :class="['sim-kpi', `kpi-${kpi.key}`, `tone-${kpi.tone}`]">
+          <span>{{ kpi.label }}</span><b>{{ kpi.value }}</b><small>{{ kpi.detail }}</small>
+        </article>
+        <article class="sim-kpi kpi-scenario" :class="active ? 'tone-running' : 'tone-idle'">
+          <span>场景进度</span>
+          <b>{{ scenarioProgress ? `${scenarioProgress.done}/${scenarioProgress.total}` : '—' }}</b>
+          <small>{{ active ? '轮 · 运行中' : scenarioProgress ? '轮 · 未运行' : '尚未运行场景' }}</small>
+          <i v-if="scenarioProgress" class="sim-kpi-progress" aria-hidden="true"><em :style="{ width: scenarioProgress.percent + '%' }"></em></i>
+        </article>
+      </section>
       <details class="instance-details">
         <summary>技术实例信息</summary>
         <p>{{ status?.rootName || '尚未选择仿真实例' }} · 最近采样 {{ snapshotTime }}</p>
@@ -2082,7 +2125,10 @@ onUnmounted(() => { disposed = true; controller?.abort(); cancelReplayExport(); 
             </g>
           </svg>
           <div v-else class="map-empty"><strong>当前没有可显示的位置反馈</strong><span>启动环境后，这里会显示车辆在全厂里的实际位置。</span></div>
-          <div class="map-run-legend"><span><i class="map-legend-dot running"></i>执行中</span><span><i class="map-legend-dot waiting"></i>作业等待/载箱待命</span><span><i class="map-legend-dot idle"></i>空载待命</span><span><i class="map-legend-dot blocked"></i>道路受阻</span><span><i class="map-legend-dot fault"></i>暂停/故障</span><span><i class="map-legend-dot offline"></i>离线/状态过期</span><span><i class="map-load-legend"></i>箱 = 当前载箱</span></div>
+          <div class="map-legend-bar">
+            <div class="map-run-legend" aria-label="车辆状态图例"><b class="legend-title">车辆</b><span><i class="map-legend-dot running"></i>执行中</span><span><i class="map-legend-dot waiting"></i>作业等待/载箱待命</span><span><i class="map-legend-dot idle"></i>空载待命</span><span><i class="map-legend-dot blocked"></i>道路受阻</span><span><i class="map-legend-dot fault"></i>暂停/故障</span><span><i class="map-legend-dot offline"></i>离线/状态过期</span><span><i class="map-load-legend"></i>箱 = 当前载箱</span></div>
+            <div class="map-road-legend" aria-label="道路与路权图例"><b class="legend-title">道路与路权</b><span><i class="road-swatch held"></i>当前段 · 路权已占用</span><span><i class="road-swatch requested"></i>后续路段 · 待申请</span><span><i class="road-swatch waiting"></i>等待路权</span><span><i class="road-swatch blocked"></i>阻塞 / 障碍</span><span><i class="road-swatch return"></i>返程路段</span></div>
+          </div>
           <div class="map-caption"><span>彩色分区依次为一组、二组、三组、四组和末组；站点详细名称可悬停查看。{{ showCadReference && cadBackground ? ' CAD参考层只用于核对位置。' : '' }}</span><span>{{ vehicleIds.length }} 辆 · {{ offlineVehicleCount }} 辆离线</span></div>
         </section>
         </slot>
@@ -2708,12 +2754,23 @@ onUnmounted(() => { disposed = true; controller?.abort(); cancelReplayExport(); 
         <p v-if="!(status?.history?.length)" class="report-empty">还没有历史场景。运行后会保留通过、失败和中止结果。</p>
         <p v-if="comparisonReport" class="inline-warning">数值差异仅作比较；请同时核对当轮地图、后台版本和场景参数，增减值不直接代表变好或变坏。</p>
         <div v-if="metricComparison.length" class="report-table"><table><thead><tr><th>指标</th><th>当前报告</th><th>基准报告</th><th>差值</th></tr></thead><tbody><tr v-for="item in metricComparison" :key="item.key"><td>{{ item.label }}</td><td>{{ simulationMetricValue(item.current) }}</td><td>{{ simulationMetricValue(item.previous) }}</td><td>{{ item.delta > 0 ? '+' : '' }}{{ simulationMetricValue(item.delta) }}</td></tr></tbody></table></div>
-        <div class="toolbar"><button :disabled="historyReading || recordingVideo || !report?.id" @click="loadReplay">载入本报告时间轴</button><button :disabled="!replay?.timeline.length" @click="toggleReplay">{{ replayPlaying ? '暂停回放' : '播放回放' }}</button><ReplaySpeed v-if="replay?.timeline.length" v-model="replayPlayRate" label="播放倍速" /><ReplaySpeed v-model="replayExportRate" label="导出倍速" :disabled="recordingVideo" /><button :disabled="historyReading || recordingVideo || !report?.id" @click="exportReplayVideo"><IconDownload :size="16" />{{ recordingVideo ? `正在录制 ${videoProgress}%` : '导出回放视频' }}</button><button v-if="recordingVideo" @click="cancelReplayExport">取消导出</button></div>
+        <div class="toolbar replay-toolbar"><button class="primary" :disabled="historyReading || recordingVideo || !report?.id" @click="loadReplay">载入本报告时间轴</button><span class="replay-toolbar-spacer"></span><ReplaySpeed v-model="replayExportRate" label="导出倍速" :disabled="recordingVideo" /><button :disabled="historyReading || recordingVideo || !report?.id" @click="exportReplayVideo"><IconDownload :size="16" />{{ recordingVideo ? `正在录制 ${videoProgress}%` : '导出回放视频' }}</button><button v-if="recordingVideo" @click="cancelReplayExport">取消导出</button></div>
         <p v-if="replay?.sampled" class="inline-warning">时间轴已按原始时间顺序抽样，保留最后一帧；完整观察记录仍保存在该轮证据文件中。</p>
-        <template v-if="replay?.timeline.length"><label class="replay-slider">观察时间 · {{ stamp(replayFrame?.time) }} · {{ replayIndex + 1 }}/{{ replay.timeline.length }}<input v-model.number="replayIndex" aria-label="回放时间点" type="range" min="0" :max="replay.timeline.length - 1" step="1" @input="replayPlaying = false" /></label>
-          <svg v-if="replay.map && replayGeometry.nodes.length" class="simulation-map replay-map" viewBox="0 0 800 430" role="img" aria-label="历史任务位置回放"><image v-if="showCadReference && replayCadBackground" class="cad-reference" :href="replayCadBackground.href" :x="replayCadBackground.x" :y="replayCadBackground.y" :width="replayCadBackground.width" :height="replayCadBackground.height" :opacity="replayCadBackground.opacity" preserveAspectRatio="none" /><g v-if="replayMapAreas.length" class="map-zones"><g v-for="area in replayMapAreas" :key="area.id"><polygon :points="area.points" :fill="area.fillColor" :fill-opacity="area.fillOpacity" :stroke="area.strokeColor" :stroke-opacity=".55" /><text :x="area.labelX" :y="area.labelY" :fill="area.strokeColor">{{ area.text }}</text></g></g><g class="roads"><path v-for="edge in replayGeometry.edges" :key="edge.key" :d="edge.path" /></g><g v-for="node in replayGeometry.nodes" :key="node.id" class="map-node" :class="{ dense: denseReplay }"><title>{{ mapNodeLabel(node) }} · {{ node.type || '地图节点' }}</title><circle :cx="node.x" :cy="node.y" :r="denseReplay ? (showDenseNodeLabel(node) ? 3 : 1.4) : 3"/><text v-if="!denseReplay || showDenseNodeLabel(node)" :x="node.x + 7" :y="node.y - 7">{{ mapNodeLabel(node) }}</text></g><g v-for="(car, index) in replayGeometry.cars" :key="car.id" class="map-car" :style="{ '--car-color': ['#41d9bf', '#6fb9ff', '#e8bf64', '#cb9aff'][index % 4] }" :transform="`translate(${car.x} ${car.y})`"><circle r="16"/><circle v-if="car.id === highlightedReplayVehicle" r="21" fill="none" stroke="#f2d17b" stroke-width="3"/><text x="0" y="-23" text-anchor="middle">{{ car.id }}</text></g></svg>
+        <template v-if="replay?.timeline.length"><div class="replay-transport" role="group" aria-label="回放播放控制">
+            <div class="replay-transport-buttons">
+              <button class="icon-only" title="回到第一帧" aria-label="回到第一帧" :disabled="replayIndex <= 0" @click="seekReplayEdge('start')"><IconPlayerSkipBack :size="16" /></button>
+              <button class="icon-only" title="上一帧" aria-label="上一帧" :disabled="replayIndex <= 0" @click="stepReplay(-1)"><IconPlayerTrackPrev :size="16" /></button>
+              <button class="replay-play primary" :aria-pressed="replayPlaying" @click="toggleReplay"><IconPlayerPause v-if="replayPlaying" :size="16" /><IconPlayerPlay v-else :size="16" />{{ replayPlaying ? '暂停回放' : '播放回放' }}</button>
+              <button class="icon-only" title="下一帧" aria-label="下一帧" :disabled="replayIndex >= replay.timeline.length - 1" @click="stepReplay(1)"><IconPlayerTrackNext :size="16" /></button>
+              <button class="icon-only" title="跳到最后一帧" aria-label="跳到最后一帧" :disabled="replayIndex >= replay.timeline.length - 1" @click="seekReplayEdge('end')"><IconPlayerSkipForward :size="16" /></button>
+            </div>
+            <label class="replay-slider"><span class="replay-clock"><b>{{ stamp(replayFrame?.time) }}</b><small>第 {{ replayIndex + 1 }} / {{ replay.timeline.length }} 帧</small></span><input v-model.number="replayIndex" aria-label="回放时间点" type="range" min="0" :max="replay.timeline.length - 1" step="1" :style="{ '--replay-progress': (replay.timeline.length > 1 ? replayIndex / (replay.timeline.length - 1) * 100 : 100) + '%' }" @input="replayPlaying = false" /></label>
+            <ReplaySpeed v-model="replayPlayRate" label="播放倍速" />
+            <dl class="replay-frame-kpis" aria-label="当前帧概况"><div><dt>车辆</dt><dd>{{ replayFrameSummary.vehicles }}</dd></div><div><dt>执行任务</dt><dd>{{ replayFrameSummary.busy }}</dd></div><div :class="{ warn: replayFrameSummary.waiting }"><dt>等待中</dt><dd>{{ replayFrameSummary.waiting }}</dd></div></dl>
+          </div>
+          <svg v-if="replay.map && replayGeometry.nodes.length" class="simulation-map replay-map" viewBox="0 0 800 430" role="img" aria-label="历史任务位置回放"><image v-if="showCadReference && replayCadBackground" class="cad-reference" :href="replayCadBackground.href" :x="replayCadBackground.x" :y="replayCadBackground.y" :width="replayCadBackground.width" :height="replayCadBackground.height" :opacity="replayCadBackground.opacity" preserveAspectRatio="none" /><g v-if="replayMapAreas.length" class="map-zones"><g v-for="area in replayMapAreas" :key="area.id"><polygon :points="area.points" :fill="area.fillColor" :fill-opacity="area.fillOpacity" :stroke="area.strokeColor" :stroke-opacity=".55" /><text :x="area.labelX" :y="area.labelY" :fill="area.strokeColor">{{ area.text }}</text></g></g><g class="roads"><path v-for="edge in replayGeometry.edges" :key="edge.key" :d="edge.path" /></g><g v-for="node in replayGeometry.nodes" :key="node.id" class="map-node" :class="{ dense: denseReplay }"><title>{{ mapNodeLabel(node) }} · {{ node.type || '地图节点' }}</title><circle :cx="node.x" :cy="node.y" :r="denseReplay ? (showDenseNodeLabel(node) ? 3 : 1.4) : 3"/><text v-if="!denseReplay || showDenseNodeLabel(node)" :x="node.x + 7" :y="node.y - 7">{{ mapNodeLabel(node) }}</text></g><g v-for="(car, index) in replayGeometry.cars" :key="car.id" class="map-car" :style="{ '--car-color': ['#41d9bf', '#6fb9ff', '#e8bf64', '#cb9aff'][index % 4] }" :transform="`translate(${car.x} ${car.y})`"><circle r="16"/><circle class="replay-car-core" r="6"/><circle v-if="car.id === highlightedReplayVehicle" r="21" fill="none" stroke="#f2d17b" stroke-width="3"/><text x="0" y="-23" text-anchor="middle">{{ car.id }}</text></g></svg>
           <p v-else class="inline-warning">{{ replay.mapMessage || '该轮没有保存完整地图，只显示任务时间轴，不叠加到当前地图。' }}</p>
-          <div class="waiting-chain"><ol><li v-for="car in replayFrame?.vehicles ?? []" :key="car.vehicleId"><b>{{ car.vehicleId }} · {{ car.site || '道路中' }}<template v-if="typeof car.batteryPercent === 'number'"> · {{ car.batteryPercent.toFixed(1) }}%</template></b><span>{{ car.charging ? '充电中' : car.taskId || '空闲' }}</span><p>{{ industrialText(car.waitReason || '无阻塞反馈') }}</p></li><li v-for="task in replayFrame?.tasks ?? []" :key="task.taskId"><b>{{ task.taskId }} · {{ task.vehicleId || '等待派车' }}</b><span>{{ task.stationId }} · {{ industrialText(task.step || task.stage || '等待推进') }}</span><p>{{ industrialText(task.waitReason || '无阻塞反馈') }}</p></li></ol></div>
+          <div class="waiting-chain replay-frame-cards"><ol><li v-for="car in replayFrame?.vehicles ?? []" :key="car.vehicleId" :class="{ waiting: !!car.waitReason, highlighted: car.vehicleId === highlightedReplayVehicle }"><b>{{ car.vehicleId }} · {{ car.site || '道路中' }}<template v-if="typeof car.batteryPercent === 'number'"> · {{ car.batteryPercent.toFixed(1) }}%</template></b><span>{{ car.charging ? '充电中' : car.taskId || '空闲' }}</span><p>{{ industrialText(car.waitReason || '无阻塞反馈') }}</p></li><li v-for="task in replayFrame?.tasks ?? []" :key="task.taskId" class="task" :class="{ waiting: !!task.waitReason }"><b>{{ task.taskId }} · {{ task.vehicleId || '等待派车' }}</b><span>{{ task.stationId }} · {{ industrialText(task.step || task.stage || '等待推进') }}</span><p>{{ industrialText(task.waitReason || '无阻塞反馈') }}</p></li></ol></div>
         </template><p v-else-if="replay" class="report-empty">本轮没有可回放的观察采样；不补造位置和任务轨迹。</p>
         <ReplayEvidence v-if="replay" :events="replayEvents" :frames="replay.timeline" :coverage="replay.evidence" @seek="seekReplayEvent" />
       </section>
@@ -2942,4 +2999,99 @@ onUnmounted(() => { disposed = true; controller?.abort(); cancelReplayExport(); 
 .station-page-tools{margin:0 0 12px}
 .station-page-tools input{width:min(100%,260px)}
 .station-page-tools span{font-variant-numeric:tabular-nums}
+/* ---- Cockpit simulation viewing (2026-11-27): KPI strip, vehicle cards, grouped legend, replay transport ---- */
+.sim-kpi-strip{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin:0 0 10px}
+.sim-kpi{position:relative;display:grid;grid-template-columns:1fr;align-content:center;gap:2px;min-width:0;min-height:74px;padding:11px 14px 11px 16px;overflow:hidden;border:1px solid var(--ui-line,#1e3350);border-radius:12px;background:var(--ui-panel-bg,linear-gradient(180deg,#0f1c2f,#0a1321));box-shadow:var(--ui-panel-edge,inset 0 1px 0 rgba(103,232,249,.07))}
+.sim-kpi::before{content:"";position:absolute;left:0;top:12px;bottom:12px;width:3px;border-radius:0 3px 3px 0;background:var(--kpi-accent,#22d3ee);box-shadow:0 0 10px var(--kpi-accent,#22d3ee)}
+.sim-kpi>span{color:var(--ui-text-3,#7c91ab);font-size:11px;letter-spacing:.8px}
+.sim-kpi>b{color:var(--ui-text,#e6f1ff);font:650 26px/1.15 "Cascadia Mono",Consolas,"SF Mono",ui-monospace,monospace;font-variant-numeric:tabular-nums;letter-spacing:.5px}
+.sim-kpi>small{display:block;margin:0;color:var(--ui-text-3,#7c91ab);font-size:11px;line-height:1.3}
+.sim-kpi.kpi-completed{--kpi-accent:var(--ui-success,#34d399)}
+.sim-kpi.kpi-vehicles{--kpi-accent:var(--ui-primary,#22d3ee)}
+.sim-kpi.kpi-waiting{--kpi-accent:var(--ui-warning,#fbbf24)}
+.sim-kpi.kpi-averageWait{--kpi-accent:var(--ui-info,#a78bfa)}
+.sim-kpi.kpi-scenario{--kpi-accent:#60a5fa}
+.sim-kpi.tone-idle::before{opacity:.35;box-shadow:none}
+.sim-kpi.tone-waiting>b{color:var(--ui-warning,#fbbf24)}
+.sim-kpi.tone-waiting{border-color:color-mix(in srgb,var(--ui-warning,#fbbf24) 40%,var(--ui-line,#1e3350))}
+.sim-kpi-progress{display:block;height:4px;margin-top:6px;border-radius:99px;background:var(--ui-line,#1e3350);overflow:hidden}
+.sim-kpi-progress em{display:block;height:100%;border-radius:inherit;background:linear-gradient(90deg,#22d3ee,#60a5fa);box-shadow:0 0 8px rgba(34,211,238,.6)}
+.overview-status-title b{white-space:normal!important;overflow-wrap:anywhere}
+.overview-next-action{width:100%;min-width:0;white-space:normal}
+.vehicle-story-list article{position:relative;border-radius:9px;border-left-color:var(--story-color,#7e91a8)!important;background:linear-gradient(90deg,color-mix(in srgb,var(--story-color,#7e91a8) 9%,transparent),transparent 60%),var(--ui-surface,#0a1728);transition:border-color .15s,background .15s}
+.vehicle-story-list article b{color:var(--ui-text,#d9edf4)}
+.vehicle-story-list article p{color:var(--ui-text-2,#a5bdd0)}
+.vehicle-story-list article small{color:var(--ui-text-3,#7e9ab5)}
+.vehicle-story-list article:hover{border-color:color-mix(in srgb,var(--story-color,#7e91a8) 55%,transparent)}
+.vehicle-story-list article>div>span{padding:1px 7px;border-radius:99px;color:color-mix(in srgb,var(--story-color,#6fd7df) 72%,var(--ui-text,#e6f1ff))!important;background:color-mix(in srgb,var(--story-color,#6fd7df) 13%,transparent);font-weight:600;white-space:nowrap}
+.vehicle-story-list article.running>div>b::before{content:"";display:inline-block;width:6px;height:6px;margin-right:6px;border-radius:50%;vertical-align:middle;background:var(--story-color);box-shadow:0 0 8px var(--story-color);animation:story-pulse 1.6s ease-in-out infinite}
+@keyframes story-pulse{50%{opacity:.35}}
+.story-meta{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;margin-top:6px;color:var(--ui-text-3,#7c91ab);font-size:10px}
+.story-battery{display:inline-flex;align-items:center;gap:5px;font-variant-numeric:tabular-nums}
+.story-battery i{display:block;width:42px;height:5px;border-radius:99px;background:var(--ui-line,#1e3350);overflow:hidden}
+.story-battery em{display:block;height:100%;background:var(--ui-success,#34d399)}
+.story-battery.low{color:var(--ui-danger,#f87171)}
+.story-battery.low em{background:var(--ui-danger,#f87171)}
+.story-tag{display:inline-flex;align-items:center;gap:3px;padding:0 6px;border:1px solid var(--ui-line-strong,#2c4a6e);border-radius:99px;color:var(--ui-text-2,#a9bcd3)}
+.story-tag.load{color:#e8bf64;border-color:rgba(232,191,100,.45)}
+.story-tag.charging{color:var(--ui-success,#34d399);border-color:color-mix(in srgb,var(--ui-success,#34d399) 45%,transparent)}
+.map-legend-bar{display:flex;flex-wrap:wrap;gap:8px 18px;margin-top:10px;padding:8px 12px;border:1px solid var(--ui-line,#1e3350);border-radius:10px;background:var(--ui-surface-soft,#0d1828)}
+.map-legend-bar .map-run-legend,.map-legend-bar .map-road-legend{position:static!important;display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;max-width:none;margin:0;padding:0;border:0;background:transparent;color:var(--ui-text-2,#a9bcd3);font-size:11px}
+.map-legend-bar .map-road-legend{padding-left:18px;border-left:1px solid var(--ui-line,#1e3350)}
+.map-legend-bar span{display:inline-flex;align-items:center;gap:6px}
+.legend-title{color:var(--ui-text-3,#7c91ab);font-size:10px;font-weight:600;letter-spacing:1px}
+.map-legend-bar .map-legend-dot{width:8px;height:8px;box-shadow:0 0 6px currentColor}
+.road-swatch{display:inline-block;width:24px;height:0;border-top:4px solid #477f96;border-radius:2px}
+.road-swatch.held{border-top-color:#5ff5da;filter:drop-shadow(0 0 3px #33cdb6)}
+.road-swatch.requested{border-top:3px dashed #54cce3}
+.road-swatch.waiting{border-top:4px dashed #ff8a6c;filter:drop-shadow(0 0 3px #e85f45)}
+.road-swatch.blocked{border-top:5px solid #ff9b7d}
+.road-swatch.return{border-top:3px dashed #ffc76b}
+.replay-toolbar{align-items:flex-end}
+.replay-toolbar-spacer{flex:1}
+.replay-transport{position:sticky;top:0;z-index:6;display:grid;grid-template-columns:auto minmax(220px,1fr) auto auto;align-items:center;gap:10px 16px;margin:14px 0 12px;padding:10px 14px;border:1px solid color-mix(in srgb,var(--ui-primary,#22d3ee) 35%,var(--ui-line,#1e3350));border-radius:12px;background:color-mix(in srgb,var(--ui-surface-raised,#0f1c2f) 94%,transparent);backdrop-filter:blur(8px);box-shadow:0 10px 26px rgba(0,4,10,.35),inset 0 1px 0 rgba(103,232,249,.08)}
+.replay-transport-buttons{display:flex;align-items:center;gap:6px}
+.replay-transport-buttons .icon-only{width:34px;min-width:34px;padding:0;border-radius:8px}
+.replay-transport-buttons .replay-play{min-width:116px;border-radius:99px}
+.replay-transport .replay-slider{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:12px;margin:0;color:var(--ui-text-2,#a9bcd3)}
+.replay-clock{display:grid;line-height:1.25}
+.replay-clock b{color:var(--ui-text,#e6f1ff);font:600 13px "Cascadia Mono",Consolas,ui-monospace,monospace;font-variant-numeric:tabular-nums}
+.replay-clock small{margin:0!important;color:var(--ui-text-3,#7c91ab);font-size:10px}
+.replay-transport input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:6px;min-height:6px;padding:0;border:0;border-radius:99px;background:linear-gradient(90deg,var(--ui-primary,#22d3ee) var(--replay-progress,0%),var(--ui-line,#1e3350) var(--replay-progress,0%))}
+.replay-transport input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border:2px solid var(--ui-primary,#22d3ee);border-radius:50%;background:var(--ui-surface,#0b1524);box-shadow:0 0 10px rgba(34,211,238,.55);cursor:pointer}
+.replay-transport input[type=range]::-moz-range-thumb{width:14px;height:14px;border:2px solid var(--ui-primary,#22d3ee);border-radius:50%;background:var(--ui-surface,#0b1524)}
+.replay-transport,.replay-toolbar{--replay-speed-bg:var(--ui-surface,#0b1524);--replay-speed-border:var(--ui-line-strong,#2c4a6e);--replay-speed-color:var(--ui-text,#e6f1ff);--replay-speed-label:var(--ui-text-3,#7c91ab);--replay-speed-focus:var(--ui-primary,#22d3ee)}
+.replay-transport :deep(.replay-speed),.replay-toolbar :deep(.replay-speed){display:inline-grid;grid-template-columns:auto 52px 12px;gap:0 6px;min-height:40px;padding:3px 10px;font-size:12px}
+.replay-transport :deep(.replay-speed>span),.replay-toolbar :deep(.replay-speed>span){grid-column:auto;font-size:10px;letter-spacing:.5px}
+.replay-transport :deep(.replay-speed input),.replay-toolbar :deep(.replay-speed input){width:52px;min-height:0;padding:0}
+.replay-frame-kpis{display:flex;gap:6px;margin:0}
+.replay-frame-kpis div{min-width:58px;padding:4px 9px;border:1px solid var(--ui-line,#1e3350);border-radius:8px;background:var(--ui-surface,#0b1524);text-align:center}
+.replay-frame-kpis dt{color:var(--ui-text-3,#7c91ab);font-size:10px}
+.replay-frame-kpis dd{margin:0;color:var(--ui-text,#e6f1ff);font:600 15px "Cascadia Mono",Consolas,ui-monospace,monospace}
+.replay-frame-kpis div.warn{border-color:rgba(251,191,36,.5)}
+.replay-frame-kpis div.warn dd{color:var(--ui-warning,#fbbf24)}
+.replay-map{height:clamp(360px,52vh,620px)!important}
+.replay-map .map-car>circle:first-child{fill-opacity:.18;stroke-width:2.5}
+.replay-map .replay-car-core{fill:var(--car-color);stroke:none;filter:drop-shadow(0 0 4px var(--car-color))}
+.replay-frame-cards ol{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:8px;padding:0;list-style:none}
+.replay-frame-cards li{min-width:0;padding:9px 11px;border:1px solid var(--ui-line,#1e3350);border-left:3px solid var(--ui-primary,#22d3ee);border-radius:9px;background:var(--ui-surface,#0b1524);line-height:1.5}
+.replay-frame-cards li.task{border-left-color:#60a5fa}
+.replay-frame-cards li.waiting{border-left-color:var(--ui-warning,#fbbf24)}
+.replay-frame-cards li.waiting p{color:var(--ui-warning,#fbbf24)}
+.replay-frame-cards li.highlighted{box-shadow:0 0 0 1px #f2d17b,0 0 14px rgba(242,209,123,.25)}
+.replay-frame-cards li b{display:block;color:var(--ui-text,#e6f1ff);font-size:12px}
+.replay-frame-cards li span{display:block;color:var(--ui-text-2,#a9bcd3);font-size:11px}
+.replay-frame-cards li p{margin:3px 0 0;color:var(--ui-text-3,#7c91ab);font-size:11px}
+.event-panel{padding:12px 16px!important}
+.event-panel summary{font-weight:600;color:var(--ui-text,#e6f1ff)}
+.event-panel ol{position:relative;margin:10px 0 0;padding-left:16px!important}
+.event-panel ol::before{content:"";position:absolute;left:4px;top:4px;bottom:4px;width:1px;background:var(--ui-line,#1e3350)}
+.event-panel li{position:relative;border-top:0!important;padding:6px 0!important;color:var(--ui-text-2,#a9bcd3)}
+.event-panel li::before{content:"";position:absolute;left:-15px;top:13px;width:7px;height:7px;border-radius:50%;background:var(--ui-primary,#22d3ee);box-shadow:0 0 6px rgba(34,211,238,.6)}
+.event-panel time{min-width:150px;color:var(--ui-text-3,#7c91ab);font-family:"Cascadia Mono",Consolas,ui-monospace,monospace;font-size:11px}
+.business-overview-grid{min-height:0!important}
+.business-overview-grid .simulation-map,.business-overview-grid .map-empty{height:clamp(420px,calc(100vh - 430px),860px)!important;min-height:0}
+@media(max-width:1280px){.sim-kpi-strip{grid-template-columns:repeat(3,minmax(0,1fr))}.replay-transport{grid-template-columns:auto minmax(200px,1fr)}}
+@media(max-width:760px){.sim-kpi-strip{grid-template-columns:repeat(2,minmax(0,1fr))}.replay-transport{grid-template-columns:1fr}.map-legend-bar .map-road-legend{padding-left:0;border-left:0}}
+@media(prefers-reduced-motion:reduce){.vehicle-story-list article.running>div>b::before{animation:none}}
 </style>

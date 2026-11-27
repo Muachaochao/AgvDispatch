@@ -34,27 +34,29 @@
                                 <VisualState x:Name="Disabled"/>
                             </VisualStateGroup>
                         </VisualStateManager.VisualStateGroups>
-                        <Border x:Name="SelectionBar" Width="4" HorizontalAlignment="Left" Margin="0,7,0,7"
-                                Background="{DynamicResource AccentBrush}" CornerRadius="2" Opacity="0" RenderTransformOrigin="0.5,0.5">
+                        <!-- Cockpit indicator: thin cyan bar with a soft glow, only visible on the selected item. -->
+                        <Border x:Name="SelectionBar" Width="3" HorizontalAlignment="Left" Margin="1,10,0,10"
+                                Background="{DynamicResource AccentBrush}" CornerRadius="2" Opacity="0" RenderTransformOrigin="0.5,0.5"
+                                Effect="{DynamicResource AccentGlowSoftEffect}">
                             <Border.RenderTransform><ScaleTransform ScaleY="0.35"/></Border.RenderTransform>
                         </Border>
                         <Border x:Name="Root" Margin="7,0,7,0" Background="{TemplateBinding Background}" RenderTransformOrigin="0.5,0.5"
-                                CornerRadius="8" Padding="{TemplateBinding Padding}" BorderBrush="Transparent" BorderThickness="1">
+                                CornerRadius="7" Padding="{TemplateBinding Padding}" BorderBrush="Transparent" BorderThickness="1">
                             <Border.RenderTransform><TransformGroup><ScaleTransform/><TranslateTransform/></TransformGroup></Border.RenderTransform>
                             <ContentPresenter VerticalAlignment="Center" HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" />
                         </Border>
                     </Grid>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Root" Property="Background" Value="{DynamicResource AccentMutedBrush}" />
-                            <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
+                            <Setter TargetName="Root" Property="Background" Value="{DynamicResource HoverSurfaceBrush}" />
+                            <Setter TargetName="Root" Property="BorderBrush" Value="{DynamicResource BorderBrush}" />
                         </Trigger>
                         <Trigger Property="IsPressed" Value="True">
                             <Setter TargetName="Root" Property="Opacity" Value="0.8" />
                         </Trigger>
                         <DataTrigger Binding="{Binding IsSelected}" Value="True">
                             <Setter TargetName="Root" Property="Background" Value="{DynamicResource AccentMutedBrush}" />
-                            <Setter TargetName="Root" Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+                            <Setter TargetName="Root" Property="BorderBrush" Value="{DynamicResource AccentMutedBrush}" />
                             <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
                             <DataTrigger.EnterActions><BeginStoryboard><Storyboard>
                                 <DoubleAnimation Storyboard.TargetName="SelectionBar" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.16"/>
@@ -74,6 +76,35 @@
     <Style x:Key="HeaderStatusPillStyle" TargetType="Border">
         <Setter Property="CornerRadius" Value="12" />
         <Setter Property="Padding" Value="10,5" />
+        <Setter Property="VerticalAlignment" Value="Center" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}" />
+        <Setter Property="Background" Value="{DynamicResource MutedSurfaceBrush}" />
+    </Style>
+
+    <!-- Status chips: set Tag to ok / warn / bad / info; text inside inherits the chip colour. -->
+    <Style x:Key="StatusChipStyle" TargetType="Border">
+        <Setter Property="CornerRadius" Value="11" />
+        <Setter Property="Padding" Value="9,3,11,3" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="VerticalAlignment" Value="Center" />
+        <Setter Property="HorizontalAlignment" Value="Left" />
+        <Setter Property="Background" Value="{DynamicResource MutedSurfaceBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}" />
+        <Setter Property="TextElement.Foreground" Value="{DynamicResource OfflineBrush}" />
+        <Style.Triggers>
+            <Trigger Property="Tag" Value="ok"><Setter Property="Background" Value="{DynamicResource SuccessMutedBrush}" /><Setter Property="BorderBrush" Value="{DynamicResource SuccessMutedBrush}" /><Setter Property="TextElement.Foreground" Value="{DynamicResource SuccessBrush}" /></Trigger>
+            <Trigger Property="Tag" Value="warn"><Setter Property="Background" Value="{DynamicResource WarningMutedBrush}" /><Setter Property="BorderBrush" Value="{DynamicResource WarningMutedBrush}" /><Setter Property="TextElement.Foreground" Value="{DynamicResource WarningBrush}" /></Trigger>
+            <Trigger Property="Tag" Value="bad"><Setter Property="Background" Value="{DynamicResource DangerMutedBrush}" /><Setter Property="BorderBrush" Value="{DynamicResource DangerMutedBrush}" /><Setter Property="TextElement.Foreground" Value="{DynamicResource DangerBrush}" /></Trigger>
+            <Trigger Property="Tag" Value="info"><Setter Property="Background" Value="{DynamicResource InfoMutedBrush}" /><Setter Property="BorderBrush" Value="{DynamicResource InfoMutedBrush}" /><Setter Property="TextElement.Foreground" Value="{DynamicResource InfoBrush}" /></Trigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- Small uppercase-like section label used above groups (sidebar, cards). -->
+    <Style x:Key="SectionHeaderTextStyle" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="11" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Foreground" Value="{DynamicResource TextTertiaryBrush}" />
         <Setter Property="VerticalAlignment" Value="Center" />
     </Style>
 
@@ -96,5 +127,8 @@
         <Setter Property="CornerRadius" Value="8" />
         <Setter Property="Padding" Value="18" />
         <Setter Property="Margin" Value="0,0,14,0" />
+        <Style.Triggers>
+            <Trigger Property="IsMouseOver" Value="True"><Setter Property="BorderBrush" Value="{DynamicResource BorderStrongBrush}" /></Trigger>
+        </Style.Triggers>
     </Style>
 </ResourceDictionary>

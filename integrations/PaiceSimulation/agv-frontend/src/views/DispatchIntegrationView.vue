@@ -14,6 +14,7 @@ import EngineeringSchemeEditor from "@/components/EngineeringSchemeEditor.vue";
 import SimulationWorkshopMap from "@/components/SimulationWorkshopMap.vue";
 import DispatchMapImport from "@/components/DispatchMapImport.vue";
 import DispatchReplay from "@/components/DispatchReplay.vue";
+import { simulationKpis } from "@main-web/simulation";
 import {
   getRoadNet,
   listRoadNets,
@@ -249,6 +250,13 @@ function pickMapNode(node: { id: string; type: string }) {
   const call = stationCalls.find(row => row.status === "active") ?? stationCalls.at(-1);
   if (call) void openCall(call);
 }
+// Display-only KPI strip shared with 5199 (docs/reference/simulation-monitor.md).
+const monitorKpis = computed(() => simulationKpis({
+  tasks: calls.value.length ? { total: calls.value.length, completed: calls.value.filter(row => row.wait.type === "success").length } : null,
+  activeVehicles: vehicles.value.filter(vehicle => !!activeTaskForVehicle(vehicle.id)).length,
+  vehicleCount: vehicles.value.length,
+  trafficRequests: waitFresh.value ? monitor.value?.traffic?.requests ?? [] : null,
+}));
 function activeTaskForVehicle(vehicleId: string) {
   if (!status.value?.running) return undefined;
   return activeCallsByVehicle.value.get(vehicleId)?.taskId
@@ -1238,6 +1246,11 @@ onBeforeUnmount(() => {
         <el-table-column label="详情" width="82"><template #default="{ row }"><el-button link type="primary" @click="openCall(row)">查看</el-button></template></el-table-column>
       </el-table>
     </section>
+    <section v-if="section === 'monitor'" class="monitor-kpis" aria-label="仿真运行指标">
+      <article v-for="kpi in monitorKpis" :key="kpi.key" :class="['monitor-kpi', `kpi-${kpi.key}`, `tone-${kpi.tone}`]">
+        <span>{{ kpi.label }}</span><b>{{ kpi.value }}</b><small>{{ kpi.detail }}</small>
+      </article>
+    </section>
     <div v-if="section === 'monitor'" class="dispatch-body">
       <section id="fleet-map" class="panel dispatch-scene">
         <SimulationWorkshopMap :definition="status?.map" :cars="cars" :fresh="fresh"
@@ -1644,6 +1657,7 @@ onBeforeUnmount(() => {
 .dispatch-page > .experiment-launcher {
   order: 2;
 }
+.dispatch-page > .monitor-kpis { order: 2; }
 .dispatch-page > .dispatch-body { order: 2; }
 .dispatch-page > .business-setup { order: 2; }
 .dispatch-page > .workflow-nav { order: 1; }
@@ -1684,10 +1698,51 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 .vehicles .panel-heading h3, .resource-panel .panel-heading h3 { margin: 0; }
+.monitor-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+.monitor-kpi {
+  position: relative;
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 12px 16px 12px 18px;
+  overflow: hidden;
+  border: 1px solid var(--ui-line);
+  border-radius: 12px;
+  background: var(--workspace-panel-bg, var(--ui-surface));
+  box-shadow: var(--workspace-shadow);
+}
+.monitor-kpi::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 12px;
+  bottom: 12px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--kpi-accent);
+  box-shadow: 0 0 10px var(--kpi-accent);
+}
+.monitor-kpi span { color: var(--ui-text-3); font-size: 12px; letter-spacing: .6px; }
+.monitor-kpi b { color: var(--ui-text); font: 650 28px/1.15 "Cascadia Mono", Consolas, "SF Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+.monitor-kpi small { color: var(--ui-text-3); font-size: 12px; }
+.monitor-kpi.kpi-completed { --kpi-accent: var(--workspace-success); }
+.monitor-kpi.kpi-vehicles { --kpi-accent: var(--ui-primary); }
+.monitor-kpi.kpi-waiting { --kpi-accent: var(--workspace-warning); }
+.monitor-kpi.kpi-averageWait { --kpi-accent: var(--workspace-info, #a78bfa); }
+.monitor-kpi.tone-idle::before { opacity: .35; box-shadow: none; }
+.monitor-kpi.tone-waiting { border-color: color-mix(in srgb, var(--workspace-warning) 45%, var(--ui-line)); }
+.monitor-kpi.tone-waiting b { color: var(--workspace-warning); }
+@media (max-width: 900px) { .monitor-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .vehicle-row {
-  padding: 10px;
-  border: 1px solid var(--ui-border, #e0e7f0);
-  border-radius: 8px;
+  position: relative;
+  padding: 10px 10px 10px 13px;
+  border: 1px solid var(--ui-border, var(--ui-line));
+  border-radius: 10px;
+  background: var(--ui-surface-raised);
 }
 .vehicle-selected { background: var(--el-color-primary-light-9); border-color: var(--el-color-primary-light-5); }
 .vehicle-title {
@@ -1698,14 +1753,14 @@ onBeforeUnmount(() => {
 }
 .vehicle-title .el-tag { margin-left: auto; }
 .vehicle-battery { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.low-battery { color: #a34d17; }
+.low-battery { color: var(--workspace-danger, #a34d17); }
 .vehicle-facts { display: grid; gap: 4px; margin: 8px 0 0; font-size: 12px; }
 .vehicle-facts div { display: grid; grid-template-columns: 4em minmax(0, 1fr); gap: 6px; }
 .vehicle-facts dt { color: var(--ui-text-3); }
 .vehicle-facts dd { margin: 0; overflow-wrap: anywhere; }
 .vehicle-row p {
   font-size: 13px;
-  color: #606266;
+  color: var(--ui-text-2, #606266);
   margin: 8px 0;
   overflow-wrap: anywhere;
 }
@@ -1733,7 +1788,7 @@ onBeforeUnmount(() => {
 .resource-detail, .call-detail {
   margin: 12px 0;
   padding: 12px;
-  border: 1px solid var(--ui-border, #e0e7f0);
+  border: 1px solid var(--ui-border, var(--ui-line));
   border-radius: 8px;
 }
 .resource-detail h4 { margin: 0; }
