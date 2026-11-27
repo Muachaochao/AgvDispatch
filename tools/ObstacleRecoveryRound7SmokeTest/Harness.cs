@@ -24,7 +24,8 @@ sealed record ObstacleHarness(
     ObstacleRecoveryStore Store,
     RecoveryFake Gateway,
     ManualClock Clock,
-    TrafficResourceManager Traffic);
+    TrafficResourceManager Traffic,
+    IRoadClosureService Closures);
 
 static class ObstacleHarnessFactory
 {
@@ -100,7 +101,7 @@ static class ObstacleHarnessFactory
             mapOptions, dispatch, clock, NullLogger<ObstacleRecoveryCoordinator>.Instance,
             routePlanner: routePlanner);
         await SeedTransportAsync(db, taskId, stepId, "A", start, definition, corruptSnapshot);
-        return new(db, states, coordinator, store, gateway, clock, traffic);
+        return new(db, states, coordinator, store, gateway, clock, traffic, closures);
     }
 
     public static AgvRobotTelemetry Telemetry(DateTimeOffset at, bool blocked,

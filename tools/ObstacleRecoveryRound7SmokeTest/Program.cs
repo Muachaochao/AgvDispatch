@@ -30,6 +30,8 @@ try
     await CancelPendingOrchestratorAsync(directory);
     await MidRoadStopIsReportedAsync(directory);
     await NoRouteNeverFreezesBeforeCancelAsync(directory);
+    await AutomaticClosureIsBoundedAsync(directory);
+    await RearVehicleBlocksRetreatAsync(directory);
     await AcceleratedRateStopEvidenceAsync(directory);
     await PreSendRejectionRetriesAsync(directory);
     await TelemetryGapRestartsBlockageAsync(directory);
@@ -129,6 +131,120 @@ async Task NoRouteNeverFreezesBeforeCancelAsync(string root)
     Check(row.State == ObstacleRecoveryStates.Recovered &&
           task.Stage == (int)DispatchTaskStage.GoingToPickup && h.Gateway.CancelCalls == 0,
         "障碍清除后记录关闭，原导航仍在执行，任务不被冻结或取消");
+}
+
+// O15: a long blockage closes only the reported directed edge, never the
+// reverse direction, and the temporary closure is released after a confirmed
+// clear. The switch remains available for sites that require manual approval.
+async Task AutomaticClosureIsBoundedAsync(string root)
+{
+    var start = new DateTimeOffset(2026, 11, 7, 2, 30, 0, TimeSpan.Zero);
+    var options = new ObstacleRecoveryOptions
+    {
+        Enabled = true,
+        AutomaticDetourEnabled = false,
+        AutomaticClosureEnabled = true,
+        DetourAfterSeconds = 10,
+        WarningAfterSeconds = 20,
+        AlarmAfterSeconds = 30,
+        ClosureSuggestionAfterSeconds = 60,
+        AutomaticClosureAfterSeconds = 30,
+        ClearConfirmSeconds = 3,
+        StableStopObservationMs = 500
+    };
+    var h = await ObstacleHarnessFactory.BuildAsync(root, "o15",
+        ObstacleHarnessFactory.StationGraph(true), start, "TASK-O15", "STEP-O15", options);
+    h.States.ApplyTelemetry("A", ObstacleHarnessFactory.Telemetry(start, blocked: true), TimeSpan.Zero);
+    await h.Coordinator.ObserveOnceAsync(default);
+    for (var second = 5; second <= 35; second += 5)
+    {
+        h.Clock.SetTo(start.AddSeconds(second));
+        h.States.ApplyTelemetry("A",
+            ObstacleHarnessFactory.Telemetry(h.Clock.GetUtcNow(), blocked: true), TimeSpan.Zero);
+        await h.Coordinator.ObserveOnceAsync(default);
+    }
+    var snapshot = await h.Closures.ListAsync(default);
+    var closure = snapshot.Closures.SingleOrDefault(item =>
+        item.Active && item.Source == "ObstacleAuto");
+    Check(closure is not null && closure.EdgeId == "E-SH" &&
+          closure.Traversals.Count == 1 &&
+          closure.Traversals[0].FromNodeId == "S" &&
+          closure.Traversals[0].ToNodeId == "H" &&
+          !closure.Bidirectional,
+        "持续受阻达到阈值后只自动封闭车端上报的有向边，不封反向");
+
+    h.Clock.SetTo(start.AddSeconds(40));
+    h.States.ApplyTelemetry("A",
+        ObstacleHarnessFactory.Telemetry(h.Clock.GetUtcNow(), blocked: false), TimeSpan.Zero);
+    await h.Coordinator.ObserveOnceAsync(default);
+    h.Clock.SetTo(start.AddSeconds(44));
+    h.States.ApplyTelemetry("A",
+        ObstacleHarnessFactory.Telemetry(h.Clock.GetUtcNow(), blocked: false), TimeSpan.Zero);
+    await h.Coordinator.ObserveOnceAsync(default);
+    snapshot = await h.Closures.ListAsync(default);
+    Check(snapshot.Closures.All(item => !item.Active ||
+          !string.Equals(item.Source, "ObstacleAuto", StringComparison.Ordinal)),
+        "障碍连续清除后自动临时封路解除，不留下静默永久封路");
+}
+
+// O16: before a 3051/3055 retreat, another vehicle inside the rear corridor
+// must block the motion even when the original chain is terminal. Moving that
+// vehicle out of the corridor allows the normal stop/PLC checks to continue.
+async Task RearVehicleBlocksRetreatAsync(string root)
+{
+    var start = new DateTimeOffset(2026, 11, 7, 3, 0, 0, TimeSpan.Zero);
+    var options = new ObstacleRecoveryOptions
+    {
+        Enabled = true,
+        AutomaticDetourEnabled = false,
+        AutomaticSafetyPointRetreatEnabled = true,
+        AutomaticClosureEnabled = false,
+        DetourAfterSeconds = 5,
+        CancelAfterSeconds = 10,
+        WarningAfterSeconds = 20,
+        AlarmAfterSeconds = 30,
+        ClosureSuggestionAfterSeconds = 60,
+        StableStopObservationMs = 500,
+        SafetyPointMaximumRetreatDistanceMeters = 5
+    };
+    var h = await ObstacleHarnessFactory.BuildAsync(root, "o16",
+        ObstacleHarnessFactory.StationGraph(true), start, "TASK-O16", "STEP-O16", options);
+    h.States.ApplyTelemetry("A",
+        ObstacleHarnessFactory.Telemetry(start, blocked: true, x: .4, y: 0, current: null)
+            with { SourceStation = "S", TargetStation = "H" }, TimeSpan.Zero);
+    h.States.ApplyTelemetry("B",
+        ObstacleHarnessFactory.Telemetry(start, blocked: false, x: .1, y: 0, current: null),
+        TimeSpan.Zero);
+    await h.Coordinator.ObserveOnceAsync(default);
+    h.Clock.SetTo(start.AddSeconds(6));
+    h.States.ApplyTelemetry("A",
+        ObstacleHarnessFactory.Telemetry(h.Clock.GetUtcNow(), blocked: true, x: .4, y: 0, current: null)
+            with { SourceStation = "S", TargetStation = "H" }, TimeSpan.Zero);
+    h.States.ApplyTelemetry("B",
+        ObstacleHarnessFactory.Telemetry(h.Clock.GetUtcNow(), blocked: false, x: .1, y: 0, current: null),
+        TimeSpan.Zero);
+    await h.Coordinator.ObserveOnceAsync(default);
+    var row = RecoveryRow(h.Db, "TASK-O16");
+    Check(row.State == ObstacleRecoveryStates.SafetyPointReady &&
+          row.Message.Contains("后方", StringComparison.Ordinal) &&
+          h.Gateway.CancelCalls == 0 && h.Gateway.RecoverySendCalls == 0,
+        "后方走廊有车时即使满足停稳/定位条件也禁止取消原链和倒走");
+
+    h.Clock.SetTo(start.AddSeconds(10.2));
+    h.States.ApplyTelemetry("A",
+        ObstacleHarnessFactory.Telemetry(h.Clock.GetUtcNow(), blocked: true, x: .4, y: 0, current: null)
+            with { SourceStation = "S", TargetStation = "H" }, TimeSpan.Zero);
+    h.States.ApplyTelemetry("B",
+        ObstacleHarnessFactory.Telemetry(h.Clock.GetUtcNow(), blocked: false, x: 10, y: 10, current: null),
+        TimeSpan.Zero);
+    await h.Coordinator.ObserveOnceAsync(default);
+    h.Clock.SetTo(start.AddSeconds(10.8));
+    h.States.ApplyTelemetry("A",
+        ObstacleHarnessFactory.Telemetry(h.Clock.GetUtcNow(), blocked: true, x: .4, y: 0, current: null)
+            with { SourceStation = "S", TargetStation = "H" }, TimeSpan.Zero);
+    await h.Coordinator.ObserveOnceAsync(default);
+    Check(h.Gateway.CancelCalls == 1,
+        "后方车辆驶离且停稳时间满足后才允许取消原链接续退站");
 }
 
 // O4: stop evidence must not depend on the coordinator's wall-clock poll cadence.

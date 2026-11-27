@@ -136,6 +136,66 @@ await using (var f = await Fixture.Create())
 }
 await using (var f = await Fixture.Create())
 {
+    var id = await f.Prepare();
+    var step = await f.Step(id);
+    var command = (await f.Outbox.GetDueCommandsAsync(DateTimeOffset.Now, 10, ct)).Single();
+    await f.Outbox.TryClaimAsync(command.CommandId, DateTimeOffset.Now, ct);
+    await f.Outbox.MarkSentAsync(command.CommandId, step.StepId, ct);
+    var now = DateTime.Now;
+    await f.Db.Updateable<DispatchTaskStepEntity>()
+        .SetColumns(s => new DispatchTaskStepEntity
+        {
+            Status = (int)DispatchTaskStepStatus.Executing,
+            VendorTaskId = s.StepId,
+            StartedAt = now,
+            UpdatedAt = now
+        }).Where(s => s.StepId == step.StepId).ExecuteCommandAsync();
+    await f.Db.Updateable<DispatchTaskEntity>()
+        .SetColumns(t => new DispatchTaskEntity
+        {
+            Stage = (int)DispatchTaskStage.GoingToPickup,
+            VendorTaskId = step.StepId,
+            VehicleId = "AGV-01",
+            UpdatedAt = now
+        }).Where(t => t.TaskId == id).ExecuteCommandAsync();
+    await f.Db.Insertable(new ObstacleRecoveryEntity
+    {
+        RecoveryId = Guid.NewGuid().ToString("N"),
+        TaskId = id,
+        StepId = step.StepId,
+        VehicleId = "AGV-01",
+        OriginalVendorTaskId = step.StepId,
+        State = ObstacleRecoveryStates.AwaitingOriginalTerminal,
+        BlockedSinceUtc = now.AddSeconds(-130),
+        OriginalPathJson = "[\"SITE-A\",\"SITE-B\"]",
+        CandidatePathJson = "[]",
+        MapId = f.Map.Current!.MapId,
+        MapVersionId = f.Map.Current.VersionId,
+        DefinitionHash = EngineeringRuntimeIdentity.MapHash(f.Map.Current.Definition),
+        CancelRequestedAtUtc = now,
+        Revision = 1,
+        CreatedAt = now,
+        UpdatedAt = now
+    }).ExecuteCommandAsync();
+    f.Gateway.Status = new(step.StepId, step.StepId, AgvTransportTaskState.Cancelled,
+        "AGV-01", DateTimeOffset.Now);
+    await f.Boot();
+    f.Fresh();
+    await f.Recovery.InspectAsync(ct);
+    var request = await Request(f, id);
+    var decision = await f.Recovery.DecideAsync(admin, request, ct);
+    Check(decision.Accepted,
+        "取消后、替代发送前重启时，恢复页识别障碍恢复记录并允许继续：" + decision.Message);
+    var status = await f.Recovery.GetAsync(ct);
+    Check(status.Items.Single(i => i.TaskId == id).Reason.Contains("障碍恢复"),
+        "恢复条目明确由原障碍恢复流程续接而不把原导航重发");
+    Check((await f.Recovery.ReleaseAsync(admin,
+        new(status.SessionId, "原导航取消已确认，放行后仅由障碍恢复重新核验替代路线"), ct)).Accepted &&
+        f.Barrier.IsOpen && f.Gateway.Sends == 0 && f.Gateway.Cancels == 0,
+        "放行打开执行屏障但不重发原导航或取消，替代路线由协调器另行核验");
+}
+await using (var f = await Fixture.Create())
+{
     var id = await f.Prepare(); var command = (await f.Outbox.GetDueCommandsAsync(DateTimeOffset.Now, 10, ct)).Single();
     await f.Outbox.TryClaimAsync(command.CommandId, DateTimeOffset.Now, ct);
     await f.Boot(); f.Fresh(); await f.Recovery.InspectAsync(ct);
@@ -253,6 +313,8 @@ await using (var f = await Fixture.Create())
     var command = (await f.Outbox.GetDueCommandsAsync(DateTimeOffset.Now, 10, ct)).Single();
     await f.Outbox.TryClaimAsync(command.CommandId, DateTimeOffset.Now, ct);
     var step = await f.Step(id);
+    f.Gate = new MapExecutionGate();
+    f.Gate.SetMode(MapExecutionMode.Running);
     var cancellation = new TaskCancellationService(f.Db, f.Gate, f.Gateway);
     await cancellation.RequestAsync(admin, new(Guid.NewGuid().ToString("N"), id, DispatchTaskStage.SubmittingToAgv, "测试接受回执落库失败后仍核对原车辆任务"), ct);
     f.Gateway.Status = new(step.StepId, step.StepId, AgvTransportTaskState.GoingToDestination, "AGV-01", DateTimeOffset.Now);
@@ -315,6 +377,8 @@ await using (var f = await Fixture.Create(new MapSwitchSafetySettings
         ErrorMessage = rejected
     }).Where(t => t.TaskId == id).ExecuteCommandAsync();
 
+    f.Gate = new MapExecutionGate();
+    f.Gate.SetMode(MapExecutionMode.Running);
     var cancellation = new TaskCancellationService(f.Db, f.Gate, f.Gateway);
     var request = new TaskCancelRequest(Guid.NewGuid().ToString("N"), id, DispatchTaskStage.Faulted,
         "厂家控制器已释放，发送前明确拒绝且车端未创建任务，申请取消并保留原失败证据。");

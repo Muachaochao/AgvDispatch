@@ -42,6 +42,9 @@ public sealed class ObstacleRecoveryCoordinator(
     IRoutePlanner? routePlanner = null) : IsolatedBackgroundService
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    private const string AutomaticClosureRequestPrefix = "OBSTACLE-AUTO-";
+    private static readonly TrafficUserContext AutomaticClosureUser =
+        TrafficUserContext.LocalOperation("service:obstacle-recovery");
     private readonly TimeProvider _clock = clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider;
     private readonly SemaphoreSlim _cycle = new(1, 1);
     // Retry state for pre-send rejections is kept in memory. A restart only makes the
@@ -54,6 +57,7 @@ public sealed class ObstacleRecoveryCoordinator(
     private readonly ConcurrentDictionary<string, DateTimeOffset> _clearSince = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, DateTimeOffset> _blockedAfterTerminal = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, DateTimeOffset> _routeWaitSince = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _closureRetryAfter = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, RecordBackoff> _recordBackoff = new(StringComparer.Ordinal);
     private sealed record RecordBackoff(int Failures, DateTimeOffset RetryAfter);
     private ObstacleRecoveryPreSendLimits PreSendLimits => new(
@@ -63,11 +67,12 @@ public sealed class ObstacleRecoveryCoordinator(
     {
         if (!options.Enabled) return;
         logger?.LogInformation(
-            "车端障碍恢复已启用。AutomaticDetour={AutomaticDetour}, AssessmentAfter={DetourAfter}s, CancelAfter={CancelAfter}s, CancelWaitWarning={CancelWaitWarning}s, WarningAfter={WarningAfter}s, AlarmAfter={AlarmAfter}s, ClosureAfter={ClosureAfter}s",
+            "车端障碍恢复已启用。AutomaticDetour={AutomaticDetour}, AssessmentAfter={DetourAfter}s, CancelAfter={CancelAfter}s, CancelWaitWarning={CancelWaitWarning}s, WarningAfter={WarningAfter}s, AlarmAfter={AlarmAfter}s, ClosureAfter={ClosureAfter}s, AutomaticClosure={AutomaticClosure}, AutomaticClosureAfter={AutomaticClosureAfter}s",
             options.AutomaticDetourEnabled, options.DetourAfterSeconds,
             options.CancelAfterSeconds, options.CancelTerminalWaitWarningSeconds,
             options.WarningAfterSeconds, options.AlarmAfterSeconds,
-            options.ClosureSuggestionAfterSeconds);
+            options.ClosureSuggestionAfterSeconds, options.AutomaticClosureEnabled,
+            options.AutomaticClosureAfterSeconds);
         using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(options.PollIntervalMs));
         while (await timer.WaitForNextTickAsync(stoppingToken))
         {
@@ -375,6 +380,10 @@ public sealed class ObstacleRecoveryCoordinator(
         }
         if (!AgvObstaclePolicy.IsBlocked(robot))
         {
+            // The clear has already held for ClearConfirmSeconds. Reopen the
+            // temporary directed closure even while the original chain is still
+            // waiting for its terminal state; the obstacle itself is gone.
+            await ReleaseAutomaticClosureAsync(row, cancellationToken);
             if (row.CancelRequestedAtUtc is null && row.OriginalTerminalAtUtc is null)
             {
                 ClearStableStop(row);
@@ -410,6 +419,11 @@ public sealed class ObstacleRecoveryCoordinator(
 
         if (row.CancelRequestedAtUtc is null && row.OriginalTerminalAtUtc is null)
         {
+            if (options.AutomaticClosureEnabled &&
+                elapsed >= options.AutomaticClosureAfterSeconds)
+                await TryEnsureAutomaticClosureAsync(
+                    row, robot, originalPath, elapsed, now, cancellationToken);
+
             if (options.AutomaticSafetyPointRetreatEnabled &&
                 !IsAtTrustedStation(robot))
             {
@@ -1487,11 +1501,85 @@ public sealed class ObstacleRecoveryCoordinator(
             !envelope.IncludesMaximumPermittedLoad ||
             envelope.RadiusFromReportedReferenceMeters <= 0)
             return "缺少已标定且包含最大载箱尺寸的车辆包络。";
+        // O16: a retreat is a real motion command. Prove that no other vehicle
+        // or lease currently occupies the rear corridor or the target station.
+        var rearClearance = await SafetyPointRetreatRearClearanceReasonAsync(
+            row, robot, retreat, envelope, cancellationToken);
+        if (rearClearance is not null)
+            return rearClearance;
         var stopKey = $"RETREAT|{retreat.BlockedSource}|{retreat.BlockedTarget}|{retreat.TargetSite}";
         if (!StableStopped(row, stopKey, _clock.GetUtcNow()))
             return StableStopReason(row, options.StableStopObservationMs);
         return await timeoutRecovery.ValidateReplacementPreconditionsAsync(
             row.TaskId, row.StepId, cancellationToken);
+    }
+
+    private async Task<string?> SafetyPointRetreatRearClearanceReasonAsync(
+        ObstacleRecoveryEntity row,
+        AgvRobotSnapshot robot,
+        SafetyPointRetreatAssessment retreat,
+        TrafficBodyEnvelope ownEnvelope,
+        CancellationToken cancellationToken)
+    {
+        var map = activeMap.Current;
+        if (map is null)
+            return "当前运行地图不可用。";
+        var sourceMatches = map.Definition.Nodes.Where(node => node.Enabled &&
+            MapRouteSiteMapper.IsSameNode(map.Definition, node.Id, retreat.BlockedSource)).ToArray();
+        var targetMatches = map.Definition.Nodes.Where(node => node.Enabled &&
+            MapRouteSiteMapper.IsSameNode(map.Definition, node.Id, retreat.BlockedTarget)).ToArray();
+        if (sourceMatches.Length != 1 || targetMatches.Length != 1)
+            return "后方安全站或受阻路段端点不能唯一确定。";
+        var source = sourceMatches[0];
+        var target = targetMatches[0];
+        var edge = map.Definition.Edges.FirstOrDefault(item =>
+            item.Enabled &&
+            string.Equals(item.Id, retreat.BlockedEdgeId, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(item.From, source.Id, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(item.To, target.Id, StringComparison.OrdinalIgnoreCase));
+        if (edge is null)
+            return "后方安全站与原受阻有向边不一致。";
+
+        var requiredResources = edge.ResourceIds
+            .Concat(source.ResourceIds)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var unavailable = await traffic.GetUnavailableResourceIdsAsync(
+            row.TaskId, cancellationToken);
+        var occupied = requiredResources.Where(unavailable.Contains).ToArray();
+        if (occupied.Length != 0)
+            return $"后方路段或安全站的公有路权仍被其他任务占用：{string.Join(",", occupied)}。";
+
+        if (robot.X is not { } ownX || !double.IsFinite(ownX) ||
+            robot.Y is not { } ownY || !double.IsFinite(ownY))
+            return "本车实时坐标不可用，无法证明后方走廊净空。";
+        var points = MapEdgeGeometry.Flatten(edge, source, target, 0.01);
+        var ownProgress = NearestPolylineProgress(points, ownX, ownY).AlongMeters;
+        var baseClearance = ownEnvelope.RadiusFromReportedReferenceMeters +
+                            options.SafetyPointRetreatRearClearanceMeters;
+        foreach (var other in vehicles.GetAll().Where(item =>
+                     !string.Equals(item.VehicleId, row.VehicleId,
+                         StringComparison.OrdinalIgnoreCase)))
+        {
+            if (!string.IsNullOrWhiteSpace(other.CurrentStation) &&
+                MapRouteSiteMapper.IsSameNode(map.Definition, other.CurrentStation, source.Id))
+                return $"后方安全站{source.AgvSiteId ?? source.Id}仍被{other.VehicleId}占用。";
+            if (other.X is not { } otherX || !double.IsFinite(otherX) ||
+                other.Y is not { } otherY || !double.IsFinite(otherY))
+                continue;
+            var lateral = MapEdgeGeometry.DistanceTo(edge, source, target, otherX, otherY);
+            var otherEnvelope = await envelopes.ReadAsync(other.VehicleId, cancellationToken);
+            var clearance = baseClearance +
+                (otherEnvelope?.RadiusFromReportedReferenceMeters ?? 0.5);
+            if (lateral > clearance)
+                continue;
+            var progress = NearestPolylineProgress(points, otherX, otherY).AlongMeters;
+            // A vehicle between this vehicle and the rear station (or beside it)
+            // makes the retreat unsafe. A vehicle ahead toward the obstacle is
+            // already handled by the blocked-edge rule and does not block moving back.
+            if (progress <= ownProgress + 0.5)
+                return $"后方走廊内有{other.VehicleId}（距本车后方约{Math.Max(0, ownProgress - progress):0.00}米），禁止自动倒走。";
+        }
+        return null;
     }
 
     private SafetyPointRetreatAssessment PlanSafetyPointRetreat(
@@ -1785,6 +1873,189 @@ public sealed class ObstacleRecoveryCoordinator(
         string.Equals(edge.To, source, StringComparison.OrdinalIgnoreCase) &&
         string.Equals(edge.From, target, StringComparison.OrdinalIgnoreCase);
 
+    private static string AutomaticClosureRequestId(ObstacleRecoveryEntity row) =>
+        AutomaticClosureRequestPrefix + row.RecoveryId;
+
+    // O15: close only the directed edge the vehicle actually reported. This is
+    // deliberately not a coordinate-derived fence: without a reported edge or a
+    // unique original-path segment the coordinator keeps the human suggestion.
+    private async Task TryEnsureAutomaticClosureAsync(
+        ObstacleRecoveryEntity row,
+        AgvRobotSnapshot robot,
+        IReadOnlyList<string> originalPath,
+        double elapsedSeconds,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        if (_closureRetryAfter.TryGetValue(row.RecoveryId, out var retryAfter) &&
+            now < retryAfter)
+            return;
+        try
+        {
+            var map = activeMap.Current;
+            if (map is null) return;
+            var snapshot = await roadClosures.ListAsync(cancellationToken);
+            if (!snapshot.Ready || snapshot.IdentityConflict ||
+                !string.Equals(snapshot.MapId, map.MapId, StringComparison.Ordinal) ||
+                !string.Equals(snapshot.VersionId, map.VersionId, StringComparison.Ordinal) ||
+                !string.Equals(snapshot.DefinitionHash,
+                    EngineeringRuntimeIdentity.MapHash(map.Definition),
+                    StringComparison.OrdinalIgnoreCase))
+                return;
+            var requestId = AutomaticClosureRequestId(row);
+            if (snapshot.Closures.Any(closure =>
+                    closure.Active && string.Equals(closure.RequestId, requestId,
+                        StringComparison.OrdinalIgnoreCase)))
+                return;
+            var direction = ResolveBlockedDirection(row, robot, originalPath, map.Definition);
+            if (direction is null)
+            {
+                logger?.LogDebug(
+                    "障碍自动封路未采用：车端受阻有向边与当前运行地图不能唯一对应。RecoveryId={RecoveryId}",
+                    row.RecoveryId);
+                return;
+            }
+            var result = await roadClosures.CreateAsync(AutomaticClosureUser,
+                new RoadClosureCreateRequest(
+                    requestId, map.MapId, map.VersionId,
+                    EngineeringRuntimeIdentity.MapHash(map.Definition),
+                    direction.EdgeId, direction.FromNodeId, direction.ToNodeId, false,
+                    $"车端Blocked/52200连续{elapsedSeconds:0}秒，自动临时封闭实际受阻方向" +
+                    $"{direction.FromNodeId}→{direction.ToNodeId}；障碍连续清除后自动解除。",
+                    "ObstacleAuto"),
+                cancellationToken);
+            if (!result.Accepted)
+            {
+                _closureRetryAfter[row.RecoveryId] = now.AddSeconds(30);
+                logger?.LogWarning(
+                    "障碍自动封路未建立。RecoveryId={RecoveryId}, Message={Message}",
+                    row.RecoveryId, result.Message);
+                return;
+            }
+            _closureRetryAfter.TryRemove(row.RecoveryId, out _);
+            await AddEvidenceAsync(row, "ObstacleClosureCreated",
+                "障碍持续超过自动封路阈值；仅封闭车端上报的实际受阻有向边，供其他车辆绕行。",
+                new
+                {
+                    result.Closure?.ClosureId,
+                    direction.EdgeId,
+                    direction.FromNodeId,
+                    direction.ToNodeId,
+                    Bidirectional = false,
+                    elapsedSeconds
+                }, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception error)
+        {
+            _closureRetryAfter[row.RecoveryId] = now.AddSeconds(30);
+            logger?.LogWarning(error,
+                "障碍自动封路失败；保留原任务和人工封路建议。RecoveryId={RecoveryId}",
+                row.RecoveryId);
+        }
+    }
+
+    private async Task ReleaseAutomaticClosureAsync(
+        ObstacleRecoveryEntity row,
+        CancellationToken cancellationToken)
+    {
+        var requestId = AutomaticClosureRequestId(row);
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            try
+            {
+                var snapshot = await roadClosures.ListAsync(cancellationToken);
+                var closure = snapshot.Closures.FirstOrDefault(item =>
+                    item.Active && string.Equals(item.RequestId, requestId,
+                        StringComparison.OrdinalIgnoreCase));
+                if (closure is null) return;
+                var result = await roadClosures.ReleaseAsync(AutomaticClosureUser,
+                    new RoadClosureReleaseRequest(
+                        "OBSTACLE-AUTO-RELEASE-" + row.RecoveryId + "-" + attempt,
+                        closure.ClosureId, snapshot.Revision,
+                        "车端Blocked/52200已连续清除；解除本次自动临时封路。", true),
+                    cancellationToken);
+                if (result.Accepted)
+                {
+                    await AddEvidenceAsync(row, "ObstacleClosureReleased",
+                        "车端障碍连续清除；本次自动临时封路已解除。",
+                        new { closure.ClosureId, closure.EdgeId, result.Revision },
+                        cancellationToken);
+                    return;
+                }
+                if (!result.Message.Contains("版本已变化", StringComparison.Ordinal))
+                {
+                    logger?.LogWarning(
+                        "障碍自动封路解除未通过。RecoveryId={RecoveryId}, Message={Message}",
+                        row.RecoveryId, result.Message);
+                    return;
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception error)
+            {
+                logger?.LogWarning(error,
+                    "障碍自动封路解除失败；留待操作员复核。RecoveryId={RecoveryId}",
+                    row.RecoveryId);
+                return;
+            }
+        }
+    }
+
+    private static BlockedDirection? ResolveBlockedDirection(
+        ObstacleRecoveryEntity row,
+        AgvRobotSnapshot robot,
+        IReadOnlyList<string> originalPath,
+        MapDefinition map)
+    {
+        var persistedEdges = Deserialize(row.BlockedEdgeIdsJson)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var sourceId = string.IsNullOrWhiteSpace(robot.SourceStation)
+            ? null
+            : MapRouteSiteMapper.ResolveLogicalNodeId(map, robot.SourceStation);
+        var targetId = string.IsNullOrWhiteSpace(robot.TargetStation)
+            ? null
+            : MapRouteSiteMapper.ResolveLogicalNodeId(map, robot.TargetStation);
+        if (string.IsNullOrWhiteSpace(sourceId) || string.IsNullOrWhiteSpace(targetId))
+        {
+            if (string.IsNullOrWhiteSpace(robot.CurrentStation))
+                return null;
+            var positions = originalPath.Select((site, index) => (site, index))
+                .Where(item => MapRouteSiteMapper.IsSameNode(
+                    map, item.site, robot.CurrentStation))
+                .ToArray();
+            if (positions.Length != 1 || positions[0].index + 1 >= originalPath.Count)
+                return null;
+            sourceId ??= MapRouteSiteMapper.ResolveLogicalNodeId(
+                map, robot.CurrentStation);
+            targetId ??= MapRouteSiteMapper.ResolveLogicalNodeId(
+                map, originalPath[positions[0].index + 1]);
+        }
+        if (string.IsNullOrWhiteSpace(sourceId) || string.IsNullOrWhiteSpace(targetId))
+            return null;
+
+        var candidates = persistedEdges.Count != 0
+            ? map.Edges.Where(edge => edge.Enabled && persistedEdges.Contains(edge.Id))
+            : map.Edges.Where(edge => edge.Enabled);
+        foreach (var edge in candidates)
+        {
+            if (SupportsDirection(edge, sourceId, targetId))
+                return new(edge.Id, sourceId, targetId);
+        }
+        return null;
+    }
+
+    private sealed record BlockedDirection(
+        string EdgeId,
+        string FromNodeId,
+        string ToNodeId);
+
     private async Task<string?> AutomaticSafetyReasonAsync(
         ObstacleRecoveryEntity row,
         AgvRobotSnapshot robot,
@@ -1988,6 +2259,7 @@ public sealed class ObstacleRecoveryCoordinator(
         _clearSince.TryRemove(row.RecoveryId, out _);
         _blockedAfterTerminal.TryRemove(row.RecoveryId, out _);
         _routeWaitSince.TryRemove(row.RecoveryId, out _);
+        _closureRetryAfter.TryRemove(row.RecoveryId, out _);
         row.State = ObstacleRecoveryStates.Recovered;
         row.Message = message;
         row.NextAction = "按原任务后续车端状态、PLC反馈、载荷与路权交接继续核对。";

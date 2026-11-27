@@ -22,8 +22,14 @@ public sealed record RoadClosureSnapshot(bool Ready, long Revision, string? MapI
             string.Equals(c.VersionId, VersionId, StringComparison.Ordinal) &&
             string.Equals(c.DefinitionHash, DefinitionHash, StringComparison.OrdinalIgnoreCase))
         .SelectMany(c => c.Traversals).Distinct().ToArray();
-    public bool IdentityConflict => Closures.Any(c => c.Active && c.MapId == MapId && c.VersionId == VersionId &&
-        !string.Equals(c.DefinitionHash, DefinitionHash, StringComparison.OrdinalIgnoreCase));
+    // An active closure belongs to the map identity on which it was created.
+    // After a version switch it must remain a visible conflict until an operator
+    // explicitly reviews and releases it; silently dropping it would reopen the
+    // sealed road on the new map without evidence.
+    public bool IdentityConflict => Closures.Any(c => c.Active &&
+        (!string.Equals(c.MapId, MapId, StringComparison.Ordinal) ||
+         !string.Equals(c.VersionId, VersionId, StringComparison.Ordinal) ||
+         !string.Equals(c.DefinitionHash, DefinitionHash, StringComparison.OrdinalIgnoreCase)));
 }
 public sealed record RoadClosureResult(bool Accepted, string Message, long Revision, RoadClosureRecord? Closure);
 public sealed record RoadClosurePreview(bool Available, string Message, long Revision, string? MapId,

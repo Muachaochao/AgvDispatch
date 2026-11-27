@@ -20,6 +20,13 @@ public sealed class ObstacleRecoveryOptions
     public int WarningAfterSeconds { get; set; } = 60;
     public int AlarmAfterSeconds { get; set; } = 120;
     public int ClosureSuggestionAfterSeconds { get; set; } = 300;
+    // O15: after a blocked directed edge has persisted past this threshold, close
+    // only that reported direction so queued vehicles can plan around it. The
+    // closure is released only after the obstacle has stayed clear for
+    // ClearConfirmSeconds. Keep the toggle for sites that require a human to
+    // approve every road closure.
+    public bool AutomaticClosureEnabled { get; set; } = true;
+    public int AutomaticClosureAfterSeconds { get; set; } = 300;
     public int StableStopObservationMs { get; set; } = 500;
     // Backoff after a send was refused before reaching the vehicle; doubles per refusal, capped at 60 s.
     public int SendRejectionRetrySeconds { get; set; } = 5;
@@ -34,6 +41,9 @@ public sealed class ObstacleRecoveryOptions
     public double SafetyPointMaximumRetreatDistanceMeters { get; set; } = 5;
     public double SafetyPointRetreatMaximumSpeedMetersPerSecond { get; set; } = 0.1;
     public double SafetyPointRetreatMaximumAccelerationMetersPerSecondSquared { get; set; } = 0.15;
+    // Additional gap beyond both calibrated body radii when proving the rear
+    // corridor is clear of another vehicle before a 3051/3055 retreat.
+    public double SafetyPointRetreatRearClearanceMeters { get; set; } = 0.2;
 
     public void Validate()
     {
@@ -45,6 +55,8 @@ public sealed class ObstacleRecoveryOptions
             AlarmAfterSeconds <= WarningAfterSeconds ||
             ClosureSuggestionAfterSeconds <= AlarmAfterSeconds)
             throw new InvalidOperationException("障碍恢复升级阈值必须依次为只读评估、预警、报警、建议封路。");
+        if (AutomaticClosureAfterSeconds < AlarmAfterSeconds || AutomaticClosureAfterSeconds > 3600)
+            throw new InvalidOperationException("ObstacleRecovery:AutomaticClosureAfterSeconds必须不小于报警时间且不超过3600秒。");
         if (CancelAfterSeconds < DetourAfterSeconds || CancelAfterSeconds > 3600)
             throw new InvalidOperationException("取消观察时间必须不小于只读评估时间且不超过3600秒。");
         if (CancelTerminalWaitWarningSeconds is < 1 or > 3600)
@@ -69,5 +81,7 @@ public sealed class ObstacleRecoveryOptions
             throw new InvalidOperationException("ObstacleRecovery:SafetyPointRetreatMaximumSpeedMetersPerSecond必须在0至0.3m/s之间。");
         if (SafetyPointRetreatMaximumAccelerationMetersPerSecondSquared is <= 0 or > 1)
             throw new InvalidOperationException("ObstacleRecovery:SafetyPointRetreatMaximumAccelerationMetersPerSecondSquared必须在0至1m/s²之间。");
+        if (SafetyPointRetreatRearClearanceMeters is < 0 or > 2)
+            throw new InvalidOperationException("ObstacleRecovery:SafetyPointRetreatRearClearanceMeters必须在0至2米之间。");
     }
 }

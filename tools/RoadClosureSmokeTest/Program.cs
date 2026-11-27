@@ -96,8 +96,11 @@ try
     await Rejects(async () => { using var lease = await restart.EnterRouteSendAsync(["LM1", "LM3"], default); }, "restored closure blocks direct send after process restart");
     await GatewayChecks.Run(restart, Check);
     runtime.Replace(new("MAP", "V2", definition, DateTimeOffset.UtcNow));
-    Check(closure.GetSnapshot().BlockedTraversals.Count == 0 && planner.Plan("LM1", "LM3", new HashSet<string>())!.Nodes.Count == 2,
-        "closures are bound to map version and cannot silently apply to a different version");
+    Check(closure.GetSnapshot().IdentityConflict && closure.GetSnapshot().BlockedTraversals.Count == 0 &&
+          planner.Plan("LM1", "LM3", new HashSet<string>()) is null,
+        "an active closure from a previous map version stays a visible conflict and blocks planning");
+    await Rejects(async () => { using var lease = await closure.EnterRouteSendAsync(["LM1", "LM3"], default); },
+        "map version switch with an active old closure blocks final sends until review");
     runtime.Replace(new("MAP", "V1", definition with { Name = "changed-without-version" }, DateTimeOffset.UtcNow));
     Check(closure.GetSnapshot().IdentityConflict && planner.Plan("LM1", "LM3", new HashSet<string>()) is null,
         "same-version definition mutation blocks planning until persistence is reviewed");

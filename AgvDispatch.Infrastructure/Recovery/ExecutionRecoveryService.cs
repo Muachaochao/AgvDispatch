@@ -201,6 +201,8 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
         var step = observed.Step;
         var completedIntermediateWindow = task is not null && step is not null &&
             CompletedIntermediateWindowAtSafePoint(step, observed.Command, observed.Vendor, observed.Vehicle);
+        var obstacleRecoveryPending = task is not null && step is not null &&
+            await ObstacleRecoveryAwaitingReplacementAsync(step, observed.Vendor, ct);
         if (request.Decision == RecoveryDecision.CloseCancelled)
             return await CloseCancelledAsync(user, request, ticket, observed, ct);
         var recoveringFault = task?.Stage == (int)DispatchTaskStage.Faulted && step?.Status == (int)DispatchTaskStepStatus.Failed &&
@@ -225,7 +227,8 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
             else if (step.Status == (int)DispatchTaskStepStatus.Executing)
             {
                 if (!VendorMatches(step, task, observed.Vendor) ||
-                    (!Running(observed.Vendor!.State) && !completedIntermediateWindow))
+                    (!Running(observed.Vendor!.State) && !completedIntermediateWindow &&
+                     !obstacleRecoveryPending))
                     return await RejectAsync(user, request.TicketId, "原运输任务未获车辆确认，不能继续。已完成运输请使用到站补记；历史缺失保持等待。", ct);
             }
             else if (observed.Command != null)
@@ -278,7 +281,9 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
             {
                 ticket.Verified = observed.Vendor?.State != AgvTransportTaskState.Completed ||
                     completedIntermediateWindow;
-                ticket.Reason = completedIntermediateWindow
+                ticket.Reason = obstacleRecoveryPending
+                    ? "原导航已由障碍恢复取消且厂家任务已终态；放行后由原任务重新核验并发送替代路线，不重发原导航。"
+                    : completedIntermediateWindow
                     ? "当前滚动窗口已到安全点并停稳；恢复放行后由原任务申请下一窗口，不重发当前命令。"
                     : ticket.Verified
                         ? "人工核对：继续原节点，原任务/步骤/命令编号保留。"
@@ -333,7 +338,9 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
                 (!VendorMatches(observed.Step, observed.Task!, observed.Vendor) ||
                  (!Running(observed.Vendor!.State) &&
                   !CompletedIntermediateWindowAtSafePoint(
-                      observed.Step, observed.Command, observed.Vendor, observed.Vehicle))))
+                      observed.Step, observed.Command, observed.Vendor, observed.Vehicle) &&
+                  !await ObstacleRecoveryAwaitingReplacementAsync(
+                      observed.Step, observed.Vendor, ct))))
                 return new(false, "放行前原运输状态发生变化，请重新核对并补记到站。");
         }
         var result = await database.Ado.UseTranAsync(() => MarkReleasedAsync(user.WindowsIdentity, request.Reason.Trim(), ct));
@@ -775,6 +782,27 @@ public sealed partial class ExecutionRecoveryService(ISqlSugarClient database, R
         {
             return false;
         }
+    }
+    private async Task<bool> ObstacleRecoveryAwaitingReplacementAsync(
+        DispatchTaskStepEntity step, AgvTransportTaskStatus? vendor, CancellationToken ct)
+    {
+        if (step.Status != (int)DispatchTaskStepStatus.Executing ||
+            vendor?.State is not (AgvTransportTaskState.Completed or AgvTransportTaskState.Failed or
+                AgvTransportTaskState.Cancelled))
+            return false;
+        var current = map.Current;
+        if (current is null) return false;
+        var originalVendorTaskId = step.VendorTaskId ?? step.StepId;
+        var definitionHash = EngineeringRuntimeIdentity.MapHash(current.Definition);
+        return await database.Queryable<ObstacleRecoveryEntity>()
+            .Where(row => row.TaskId == step.TaskId && row.StepId == step.StepId &&
+                row.OriginalVendorTaskId == originalVendorTaskId &&
+                row.State != ObstacleRecoveryStates.Recovered &&
+                row.NewVendorTaskId == null && row.SendAttemptedAtUtc == null &&
+                row.CancelRequestedAtUtc != null &&
+                row.MapId == current.MapId && row.MapVersionId == current.VersionId &&
+                row.DefinitionHash == definitionHash)
+            .AnyAsync(ct);
     }
     private bool VendorMatches(DispatchTaskStepEntity step, DispatchTaskEntity task, AgvTransportTaskStatus? status) =>
         status != null && status.BusinessTaskId == (step.VendorTaskId ?? step.StepId) &&
