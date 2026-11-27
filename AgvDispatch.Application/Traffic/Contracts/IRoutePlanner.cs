@@ -22,6 +22,16 @@ public interface IRoutePlanner
     RoutePlan? PlanForVehicle(string source, string destination, IReadOnlySet<string> unavailableResourceIds,
         string movingVehicleId) => Plan(source, destination, unavailableResourceIds);
 
+    /// <summary>
+    /// Plans an existing-work recovery route while also excluding directed
+    /// traversals reported by the vehicle or by a road closure. Implementations
+    /// that do not support this optional constraint fall back to the ordinary
+    /// vehicle-aware plan; callers must still verify the returned path.
+    /// </summary>
+    RoutePlan? PlanForVehicle(string source, string destination, IReadOnlySet<string> unavailableResourceIds,
+        string movingVehicleId, IReadOnlyCollection<MapDirectedTraversal> blockedTraversals) =>
+        PlanForVehicle(source, destination, unavailableResourceIds, movingVehicleId);
+
     /// <summary>Roads occupied by other vehicles, independently of traffic leases.</summary>
     IReadOnlySet<string> GetVehicleOccupiedEdgeIds(MapDefinition definition, string source, string vehicleId) =>
         System.Collections.Frozen.FrozenSet<string>.Empty;

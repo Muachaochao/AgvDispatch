@@ -73,12 +73,10 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
         }
         if (!await store.OwnsEquipmentAsync(step.TaskId, creation.DumperStationId, ct))
         {
-            if (!vehicles.TryGet(step.VehicleId, out var vehicle) || vehicle.Connection != ConnectionState.Online ||
-                vehicle.Quality != SignalQuality.Good || vehicle.EmergencyStopped != false || vehicle.Blocked != false ||
-                AgvObstaclePolicy.IsBlocked(vehicle) || AgvObstaclePolicy.HasBlockingAlarm(vehicle) ||
-                vehicle.Tasks.Any(t => t.Status is 1 or 2 or 3) ||
-                vehicle.LastSuccessfulPollAt is not { } observed || observed > AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow().AddSeconds(1) ||
-                AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow() - observed > TimeSpan.FromSeconds(Math.Clamp(options.StateMaxAgeSeconds, 1, 60)) ||
+            if (!vehicles.TryGet(step.VehicleId, out var vehicle) ||
+                VehicleReadiness.Check(vehicle, null,
+                    AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow(),
+                    TimeSpan.FromSeconds(Math.Clamp(options.StateMaxAgeSeconds, 1, 60))) is not null ||
                 !current.Definition.Nodes.Any(n => n.Enabled &&
                     MapRouteSiteMapper.IsSameNode(current.Definition, n.Id, waiting) &&
                     MapRouteSiteMapper.IsSameNode(current.Definition,

@@ -18,21 +18,17 @@ public sealed class DispatchCandidateFilter(DispatchOrchestratorOptions options,
     public string? CheckVehicle(AgvVehicleStatus vehicle, IReadOnlySet<string> occupied, DispatchAssignmentOptions policy)
     {
         if (occupied.Contains(vehicle.VehicleId)) return "已有派发任务或有效路权，保持原车辆责任。";
-        if (vehicle.Connection != ConnectionState.Online) return "车辆离线。";
-        if (!options.IdleOperatingStates.Contains(vehicle.OperatingState, StringComparer.OrdinalIgnoreCase)) return "车辆未空闲。";
-        if (!agvStates.TryGet(vehicle.VehicleId, out var robot) || robot.Connection != ConnectionState.Online || robot.Quality != SignalQuality.Good)
+        if (!agvStates.TryGet(vehicle.VehicleId, out var robot))
             return "车辆遥测质量无效。";
-        if (robot.EmergencyStopped != false || robot.Blocked != false || AgvObstaclePolicy.IsBlocked(robot) || AgvObstaclePolicy.HasBlockingAlarm(robot))
-            return "车辆急停、阻挡、报警或状态未知。";
-        if (robot.Tasks.Any(t => t.Status is 1 or 2 or 3)) return "车端已有未结束任务。";
+        var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow();
+        if (VehicleReadiness.Check(robot, vehicle, now, TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds),
+                options.IdleOperatingStates, (decimal)policy.MinimumBatteryPercent) is { } readiness)
+            return readiness;
         var position = AgvMapPositionAnalyzer.Analyze(robot.X, robot.Y, robot.LocalizationConfidence, robot.LastSuccessfulPollAt,
-            activeMap.Current?.Definition, AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow(), TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds),
+            activeMap.Current?.Definition, now, TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds),
             mapOptions.MinimumLocalizationConfidence, mapOptions.MaximumRouteDeviationMeters, reuseGeometry: true);
         if (position.State != AgvMapPositionState.Normal) return "定位无效、过期或偏离地图。";
         if (string.IsNullOrWhiteSpace(vehicle.CurrentStation)) return "车辆当前站点未知。";
-        if (robot.BatteryPercent is null || robot.BatteryPercent < (decimal)policy.MinimumBatteryPercent || vehicle.BatteryPercent < (decimal)policy.MinimumBatteryPercent ||
-            robot.BatteryPercent > 100 || vehicle.BatteryPercent > 100)
-            return "电量未知、无效或低于业务最低电量。";
         if (charging?.AllowsNewBusiness(vehicle.VehicleId) == false) return "充电责任或电量门禁尚未放行。";
         if (businessRun?.Returning == true && vehicle.VehicleId == businessRun.Vehicle) return "正在执行回待机位收尾。";
         return null;

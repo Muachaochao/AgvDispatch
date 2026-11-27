@@ -54,8 +54,9 @@ finally
 async Task MidRoadStopIsReportedAsync(string root)
 {
     var start = new DateTimeOffset(2026, 11, 7, 2, 0, 0, TimeSpan.Zero);
+    var planner = new RecordingPlanner();
     var h = await ObstacleHarnessFactory.BuildAsync(root, "o2", ObstacleHarnessFactory.StationGraph(true),
-        start, "TASK-O2", "STEP-O2");
+        start, "TASK-O2", "STEP-O2", routePlanner: planner);
     h.States.ApplyTelemetry("A", ObstacleHarnessFactory.Telemetry(start, blocked: true), TimeSpan.Zero);
     await h.Coordinator.ObserveOnceAsync(default);
     for (var second = 5; second <= 125; second += 5)
@@ -86,6 +87,10 @@ async Task MidRoadStopIsReportedAsync(string root)
           ObstacleHarnessFactory.Decode(row.CandidatePathJson).SequenceEqual(["S", "D", "X"]) &&
           h.Gateway.CancelCalls == 0,
         "回到可信站点S后，同一障碍仍生成S→D→X替代候选且只读");
+    Check(planner.Calls.Count == 1 && planner.Calls[0].Source == "S" &&
+          planner.Calls[0].Destination == "BUS-X" && planner.Calls[0].Vehicle == "A" &&
+          planner.Calls[0].Blocked.Any(edge => edge.EdgeId == "E-SH"),
+        "障碍恢复必须调用统一规划器，并把推断出的受阻有向边交给规划器");
 }
 
 // O3: before a cancellation a route-less obstacle only warns and alarms. It must
@@ -671,6 +676,25 @@ static async Task Sync(DispatchTaskOrchestrator orchestrator) =>
     await (Task)typeof(DispatchTaskOrchestrator)
         .GetMethod("SynchronizeExecutingTasksAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
         .Invoke(orchestrator, [CancellationToken.None])!;
+
+sealed record PlannerCall(string Source, string Destination, string Vehicle,
+    IReadOnlyCollection<MapDirectedTraversal> Blocked);
+
+sealed class RecordingPlanner : IRoutePlanner
+{
+    public List<PlannerCall> Calls { get; } = [];
+
+    public RoutePlan? Plan(string source, string destination,
+        IReadOnlySet<string> unavailableResourceIds) => null;
+
+    public RoutePlan? PlanForVehicle(string source, string destination,
+        IReadOnlySet<string> unavailableResourceIds, string movingVehicleId,
+        IReadOnlyCollection<MapDirectedTraversal> blockedTraversals)
+    {
+        Calls.Add(new(source, destination, movingVehicleId, blockedTraversals.ToArray()));
+        return new(["S", "D", "X"], ["E-SD", "E-DX"], [], 2);
+    }
+}
 
 // Vendor view after the coordinator's cancel: the original chain reports Cancelled.
 sealed class VendorCancelledGateway : IAgvGateway

@@ -516,11 +516,13 @@ public sealed partial class DispatchTaskOrchestrator(
         DispatchTaskStepWorkItem readyStep,
         CancellationToken cancellationToken)
     {
+        var policy = TaskWatchdogPolicyResolver.ForSelection(task, _stepOptions);
+        if (policy.TimeoutSeconds <= 0) return false;
         if (!TaskTemplateExecutionPolicy.HasTimedOut(
-                task.PolicyStartedAt, task.TimeoutSeconds, _clock.GetUtcNow())) return false;
+                task.PolicyStartedAt, policy.TimeoutSeconds, _clock.GetUtcNow())) return false;
         var elapsed = _clock.GetUtcNow() - task.PolicyStartedAt;
-        var action = TaskTemplateExecutionPolicy.NormalizeTimeoutAction(task.TimeoutAction);
-        var reason = $"SelectAgv 已等待 {(long)elapsed.TotalSeconds} 秒，超过模板阈值 {task.TimeoutSeconds} 秒；" +
+        var action = policy.Action;
+        var reason = $"SelectAgv 已等待 {(long)elapsed.TotalSeconds} 秒，超过阈值 {policy.TimeoutSeconds} 秒（来源 {policy.Source}）；" +
                      $"超时处置 {action}，保留原任务与现场责任，禁止自动重发。";
         if (!TaskTemplateExecutionPolicy.StopsAutomationForTimeout(action))
         {
@@ -528,7 +530,7 @@ public sealed partial class DispatchTaskOrchestrator(
             {
                 logger.LogWarning(
                     "SelectAgv 超时，按模板策略保持派车窗口。TaskId={TaskId}, Action={Action}, TimeoutSeconds={TimeoutSeconds}",
-                    task.TaskId, action, task.TimeoutSeconds);
+                    task.TaskId, action, policy.TimeoutSeconds);
             }
             return false;
         }
@@ -539,7 +541,7 @@ public sealed partial class DispatchTaskOrchestrator(
             _selectWaitTimeouts.Remove(task.TaskId + ":timeout");
             logger.LogWarning(
                 "SelectAgv 超时，按模板策略冻结任务。TaskId={TaskId}, Action={Action}, TimeoutSeconds={TimeoutSeconds}",
-                task.TaskId, action, task.TimeoutSeconds);
+                task.TaskId, action, policy.TimeoutSeconds);
         }
         return stopped;
     }
@@ -655,12 +657,8 @@ public sealed partial class DispatchTaskOrchestrator(
                     if (string.IsNullOrWhiteSpace(task.VehicleId) ||
                         !string.Equals(task.VehicleId, status.VehicleId, StringComparison.OrdinalIgnoreCase) ||
                         !agvStates.TryGet(task.VehicleId, out var robot) ||
-                        robot.Connection != ConnectionState.Online || robot.Quality != SignalQuality.Good ||
-                        robot.LastSuccessfulPollAt is not { } observed ||
-                        observed > _clock.GetUtcNow().AddSeconds(1) ||
-                        _clock.GetUtcNow() - observed >= TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds) ||
-                        robot.Blocked != false || robot.EmergencyStopped != false ||
-                        AgvObstaclePolicy.IsBlocked(robot) || AgvObstaclePolicy.HasBlockingAlarm(robot))
+                        VehicleReadiness.Check(robot, null, _clock.GetUtcNow(),
+                            TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds)) is not null)
                         continue;
                     var windowOutcome = await TryAdvanceTransportWindowAsync(task, status, cancellationToken);
                     if (windowOutcome != TransportWindowAdvanceOutcome.NotApplicable)
@@ -834,15 +832,12 @@ public sealed partial class DispatchTaskOrchestrator(
         if (open is not null) return TransportWindowAdvanceOutcome.ExistingOpenCommand;
 
         if (!agvStates.TryGet(task.VehicleId, out var robot) ||
-            robot.LastSuccessfulPollAt is not { } observed ||
-            robot.Connection != ConnectionState.Online || robot.Quality != SignalQuality.Good ||
+            VehicleReadiness.Check(robot, null, _clock.GetUtcNow(),
+                TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds)) is not null ||
             string.IsNullOrWhiteSpace(robot.CurrentStation) ||
             (activeMap.Current?.Definition is { } definition
                 ? !MapRouteSiteMapper.IsSameNode(definition, robot.CurrentStation, payload.Destination)
                 : !string.Equals(robot.CurrentStation, payload.Destination, StringComparison.OrdinalIgnoreCase)) ||
-            observed > _clock.GetUtcNow().AddSeconds(1) ||
-            _clock.GetUtcNow() - observed >= TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds) ||
-            robot.Blocked != false || robot.EmergencyStopped != false ||
             robot.VelocityX is not { } vx || !double.IsFinite(vx) || Math.Abs(vx) > 0.02 ||
             robot.VelocityY is not { } vy || !double.IsFinite(vy) || Math.Abs(vy) > 0.02 ||
             robot.AngularVelocity is not { } va || !double.IsFinite(va) || Math.Abs(va) > 0.02)

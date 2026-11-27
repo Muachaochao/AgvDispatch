@@ -48,6 +48,11 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
     public RoutePlan? PlanForVehicle(string source, string destination, IReadOnlySet<string> unavailableResourceIds,
         string movingVehicleId) => PlanCore(source, destination, unavailableResourceIds, false, movingVehicleId);
 
+    public RoutePlan? PlanForVehicle(string source, string destination, IReadOnlySet<string> unavailableResourceIds,
+        string movingVehicleId, IReadOnlyCollection<MapDirectedTraversal> blockedTraversals) =>
+        PlanCore(source, destination, unavailableResourceIds, false, movingVehicleId,
+            blockedTraversals: blockedTraversals);
+
     public RoutePlan? PlanChargingApproach(string source, string destination, IReadOnlySet<string> unavailableResourceIds,
         string movingVehicleId) => PlanCore(source, destination, unavailableResourceIds, false, movingVehicleId, chargingApproach: true);
 
@@ -58,7 +63,8 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
         PlanCore(source, destination, new HashSet<string>(), true, chargingApproach: true);
 
     private RoutePlan? PlanCore(string source, string destination,
-        IReadOnlySet<string> unavailableResourceIds, bool comparisonOnly, string? movingVehicleId = null, bool chargingApproach = false)
+        IReadOnlySet<string> unavailableResourceIds, bool comparisonOnly, string? movingVehicleId = null,
+        bool chargingApproach = false, IReadOnlyCollection<MapDirectedTraversal>? blockedTraversals = null)
     {
         var snapshot = _activeMap.Current;
         var closures = _roadClosures?.GetSnapshot();
@@ -71,7 +77,9 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
                 !string.Equals(closures.DefinitionHash, snapshot.DefinitionHash, StringComparison.OrdinalIgnoreCase)))
                 return null;
             return PlanAndMap(activeGraph, activeDefinition, source, destination,
-                unavailableResourceIds, _trafficFlow.GetEdgePenalties(), closures?.BlockedTraversals, comparisonOnly, movingVehicleId, chargingApproach);
+                unavailableResourceIds, _trafficFlow.GetEdgePenalties(),
+                (closures?.BlockedTraversals ?? []).Concat(blockedTraversals ?? []).Distinct().ToArray(),
+                comparisonOnly, movingVehicleId, chargingApproach);
         }
         if (_configuredGraph is not null)
         {
@@ -79,7 +87,8 @@ public sealed class ConfiguredRoutePlanner : IRoutePlanner
             // configuration graph cannot silently stand in for that identity.
             if (closures?.Closures.Any(c => c.Active) == true) return null;
             return PlanAndMap(_configuredGraph, _configuredDefinition!, source, destination,
-                unavailableResourceIds, _trafficFlow.GetEdgePenalties(), comparisonOnly: comparisonOnly,
+                unavailableResourceIds, _trafficFlow.GetEdgePenalties(), blockedTraversals ?? [],
+                comparisonOnly: comparisonOnly,
                 movingVehicleId: movingVehicleId, chargingApproach: chargingApproach);
         }
 
