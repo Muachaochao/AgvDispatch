@@ -26,6 +26,7 @@ def _no_links(path):
 
 STABLE_SCOPE = 'current'
 CURRENT_POINTER = 'current-instance.json'
+MAX_SCHEME_BYTES = 64 * 1024 * 1024
 
 
 class SchemeStore:
@@ -64,9 +65,15 @@ class SchemeStore:
 
     @staticmethod
     def _read_state(path):
-        if path.stat().st_size > 64 * 1024 * 1024:
+        with path.open('rb') as source:
+            data = source.read(2 * MAX_SCHEME_BYTES + 1)
+        if len(data) > 2 * MAX_SCHEME_BYTES:
             raise ValueError('方案存储超出读取上限。')
-        saved = json.loads(path.read_text(encoding='utf-8-sig'), parse_constant=_invalid_constant)
+        if len(data) > MAX_SCHEME_BYTES:
+            data = data.replace(b'\r\n', b'\n')
+        if len(data) > MAX_SCHEME_BYTES:
+            raise ValueError('方案存储超出读取上限。')
+        saved = json.loads(data.decode('utf-8-sig'), parse_constant=_invalid_constant)
         if not isinstance(saved, dict) or saved.get('version') != 1 or not isinstance(saved.get('schemes'), list) or not isinstance(saved.get('recentInstances'), list):
             raise ValueError('方案存储格式无效。')
         if len(saved['schemes']) > 40 or len(saved['recentInstances']) > 20:
@@ -93,12 +100,12 @@ class SchemeStore:
 
     def _write_state(self, path, state):
         _no_links(path)
-        text = json.dumps(state, ensure_ascii=False, indent=2, allow_nan=False)
-        if len(text.encode('utf-8')) > 64 * 1024 * 1024:
+        data = json.dumps(state, ensure_ascii=False, separators=(',', ':'), allow_nan=False).encode('utf-8')
+        if len(data) > MAX_SCHEME_BYTES:
             raise ValueError('方案总大小超过64MB，请减少地图或方案数量。')
         temporary = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
         try:
-            temporary.write_text(text, encoding='utf-8')
+            temporary.write_bytes(data)
             temporary.replace(path)
         finally:
             temporary.unlink(missing_ok=True)

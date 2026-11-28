@@ -368,6 +368,48 @@ def segment_distance(point, start, end):
     return math.hypot(px - fraction * dx, py - fraction * dy)
 
 
+def validate_charging_exit_turn_clearance(definition, charging, waiting_sites, vehicles):
+    from footprint import rectangles_overlap
+
+    if definition.get("unit") != "m":
+        return
+    nodes = {node["id"]: node for node in definition["nodes"] if node.get("enabled", True)}
+    approaches = defaultdict(set)
+    for edge in definition["edges"]:
+        if (edge.get("enabled", True) and edge.get("laneRole") == "waiting-bay" and
+                edge.get("geometryKind", "Line") == "Line" and edge["from"] in nodes and edge["to"] in nodes):
+            approaches[edge["from"]].add(edge["to"])
+            approaches[edge["to"]].add(edge["from"])
+    stops = set(waiting_sites) | set(charging["waitingSiteIds"])
+    stops.update(vehicle["initialSite"] for vehicle in vehicles)
+    stops.update(site["exitSiteId"] for site in charging["sites"])
+    length = max(vehicle["lengthMeters"] for vehicle in vehicles)
+    width = max(vehicle["widthMeters"] for vehicle in vehicles)
+
+    def pose_at(node_id, angle):
+        node = nodes[node_id]
+        return dict(x=node["x"], y=node["y"], angle=angle, lengthMeters=length, widthMeters=width)
+
+    def heading(junction_id, bay_id):
+        junction, bay = nodes[junction_id], nodes[bay_id]
+        return math.atan2(bay["y"] - junction["y"], bay["x"] - junction["x"])
+
+    for site in charging["sites"]:
+        exit_id = site["exitSiteId"]
+        for junction in sorted(approaches[exit_id]):
+            parked = pose_at(exit_id, heading(junction, exit_id))
+            for other in sorted((approaches[junction] & stops) - {exit_id}):
+                turning = pose_at(junction, heading(junction, other))
+                if rectangles_overlap(parked, turning, margin=0.05):
+                    raise ValueError(f"充电出口 {exit_id} 的停车包络占用 {junction} → {other} 的转向空间。"
+                                     "请调整充电出口或候车位配置，再运行仿真。")
+                other_parked = pose_at(other, heading(junction, other))
+                turning_to_exit = pose_at(junction, heading(junction, exit_id))
+                if rectangles_overlap(other_parked, turning_to_exit, margin=0.05):
+                    raise ValueError(f"停靠位 {other} 的停车包络占用 {junction} → {exit_id} 的充电退出空间。"
+                                     "请调整充电出口或候车位配置，再运行仿真。")
+
+
 def validate_charge02_vertical_inlet(definition, configuration):
     nodes = {node["id"]: node for node in definition["nodes"] if node.get("enabled", True)}
     edges = {edge["id"]: edge for edge in definition["edges"]}

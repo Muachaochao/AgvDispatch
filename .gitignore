@@ -1,10 +1,17 @@
 bin/
 obj/
+node_modules/
 .vs/
 artifacts/
 data/
 logs/
 .codex-tmp/
+.runtime/
+.staging/
+.worktrees/
+.pytest_cache/
+/target/
+/DispatchingSystem/
 *.user
 *.suo
 *.db-shm
@@ -36,6 +43,12 @@ __pycache__/
 # Local configuration, credentials and commercial licenses. Keep examples only.
 appsettings*.json
 !appsettings.example.json
+# Root-level copies produced by publishing the Service into the repository root.
+/appsettings.example.json
+/packages.lock.json
+/NLog.config
+/AgvDispatch.Service.deps.json
+/AgvDispatch.Service.runtimeconfig.json
 .env
 .env.*
 !.env.example
@@ -71,6 +84,8 @@ id_ed25519*
 *.dll
 *.pdb
 /AgvDispatch.Service/config/plc-signals.csv
+/AgvDispatch.Service/config/engineering-*.csv
+/tools/SingleCarCharging/*.json
 /docs/vendor/
 /docs/commissioning/
 /docs/reports/

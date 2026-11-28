@@ -162,10 +162,12 @@ def overlapping_edges(edges):
     return result
 
 
-def configuration_fingerprint(configuration, simulation_rate, release):
+def configuration_fingerprint(configuration, simulation_rate, release, selection_timeout=None):
     """Identity of what an instance would run: validated configuration + rate + program release."""
     body = dict(configuration=configuration, simulationRate=float(simulation_rate),
                 release=(release or {}).get('metadata'))
+    if selection_timeout is not None:
+        body['selectAgvTimeoutSeconds'] = selection_timeout
     return hashlib.sha256(json.dumps(body, ensure_ascii=False, sort_keys=True, default=str).encode('utf-8')).hexdigest()
 
 
@@ -1222,6 +1224,9 @@ class Runtime:
                     inspectionSite=inspection, plcSignalTable=table, mapIdentity=map_identity,
                     downstreamAdmissionCapacity=admission)
         if charging is not None:
+            if not charging['returnToStandbyAfterCharging']:
+                from make_round8_variants import validate_charging_exit_turn_clearance
+                validate_charging_exit_turn_clearance(navigation, charging, waiting_sites, normalized_vehicles)
             result['chargingPriorityTest'] = charging
         return result
 
@@ -1495,7 +1500,11 @@ class Runtime:
                     dict(name='当前发布程序与算法选项', status='passed' if release else 'unbound'),
                     dict(name='业务呼叫计划', status='passed')]))
         plan_record = business_plan
-        self._create_instance(configuration, simulation_rate)
+        selection_timeout = None
+        if (configuration.get('chargingPriorityTest', {}).get('enabled') and scenario and
+                scenario['name'] in ('business-calls', 'dispatch-backlog') and len(scenario['calls']) > 1):
+            selection_timeout = math.ceil(scenario['timeoutSeconds'])
+        self._create_instance(configuration, simulation_rate, selection_timeout=selection_timeout)
         self.business_plan = plan_record
         if plan_record is not None: write(self.root / 'business-call-plan.json', plan_record)
         self.scheme_store.remember(self.root, value['id'])
@@ -1546,7 +1555,7 @@ class Runtime:
             raise ValueError('车队数量须为1至8。')
         return self._create_instance(self._default_configuration(count), simulation_rate)
 
-    def _create_instance(self, configuration, simulation_rate=1):
+    def _create_instance(self, configuration, simulation_rate=1, *, selection_timeout=None):
         navigation = copy.deepcopy(configuration['mapDefinition'])
         vertical_inlet = any(edge.get('laneRole') == 'charging-vertical-inlet' for edge in navigation['edges'])
         if vertical_inlet:
@@ -1566,7 +1575,7 @@ class Runtime:
             source, lab, settings, web, _ = validate_root(self.template_root)
             from runtime_release import current_release, verify_release
             release = current_release(WORKSPACE)
-            fingerprint = configuration_fingerprint(configuration, simulation_rate, release)
+            fingerprint = configuration_fingerprint(configuration, simulation_rate, release, selection_timeout)
             if self._reusable_instance(fingerprint):
                 # Same scheme, same rate, same program and never started: keep the instance instead of
                 # creating yet another directory (repeated 应用配置 no longer changes the instance).
@@ -1673,6 +1682,11 @@ class Runtime:
             # still far below the 75-81 edge whole-route windows R17 exists to stop.
             settings['DispatchTaskSteps'] = dict(settings.get('DispatchTaskSteps') or {},
                                                   RollingWindowHardMaximumEdges=40)
+            if selection_timeout is not None:
+                steps = settings['DispatchTaskSteps']
+                default_timeout = steps.get('SelectAgvTimeoutSeconds', 300)
+                if default_timeout > 0:
+                    steps['SelectAgvTimeoutSeconds'] = max(default_timeout, selection_timeout)
             settings['Dispatching']['MaxConcurrentTasks'] = len(robots)
             if release:
                 settings['DispatchOptimization'] = copy.deepcopy(release['options'])
@@ -1688,6 +1702,7 @@ class Runtime:
             settings['DownstreamAdmission'] = dict(Enabled=capacity > 0, Capacity=max(1, capacity))
             settings['Dispatching']['DumperTransitClearanceMeters'] = 2 * max(v['radiusMeters'] for v in configuration['vehicles']) + 0.15
             settings['Dispatching']['SimulationB07VerticalChargingInlet'] = vertical_inlet
+            settings['Dispatching']['SimulationDeferSharedChargingExitReservation'] = bool(configuration.get('chargingPriorityTest'))
             settings['ObstacleRecovery'] = dict(Enabled=True, AutomaticDetourEnabled=True,
                 AutomaticSafetyPointRetreatEnabled=True,
                 PollIntervalMs=500, **OBSTACLE_RECOVERY_TIMING,

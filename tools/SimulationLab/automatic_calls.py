@@ -77,8 +77,12 @@ def run_backlog(runtime, request, evidence, observer, tasks, completed, discover
                 if tasks[tid]['vehicle'] and tid not in assignments:
                     assignments[tid] = tasks[tid]['vehicle']
                     event('assigned', taskId=tid, vehicleId=tasks[tid]['vehicle'], stationId=tasks[tid]['station'])
-                if details[tid]['task']['stage'] in ('Faulted', 'Cancelled'):
-                    raise RuntimeError('积压任务出现故障或取消：' + tid)
+                if detail['task']['stage'] in ('Faulted', 'Cancelled'):
+                    reason = detail['task'].get('errorMessage') or detail.get('waitingExplanation') or detail['task']['stage']
+                    station = tasks[tid]['station']
+                    rows[index]['waitingExplanation'] = reason
+                    event('failed', taskId=tid, stationId=station, reason=reason)
+                    raise RuntimeError(f'工位 {station} 的任务 {tid} 未完成：{reason}')
                 if details[tid]['task']['stage'] == 'Completed':
                     detail = details[tid]
                     check('积压原任务九步完成并有出区证据', len(detail['steps']) == 9 and
