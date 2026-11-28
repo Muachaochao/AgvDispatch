@@ -163,8 +163,8 @@ var savedA=await manager.GetAsync(ma.TaskId,default);
 var managerAfterRestart=new TrafficResourceManager(db,catalog,new(TimeSpan.FromSeconds(1)));
 Check(await managerAfterRestart.GetAsync(ma.TaskId,default)==savedA,"重建服务后保留原任务、车辆、地图及候车位");
 await manager.ReleaseStepAsync(ma.StepId,default);
-var retried=await TaskWaitingBayRouter.AcquireAsync(ma,"P2",multiOptions,runtime,planner,managerAfterRestart,managerAfterRestart,stepOptions,default);
-Check(retried?.Site==savedA!.WaitingSite,"命令准备回滚后再次规划仍只使用原绑定候车位");
+var retried=await TaskWaitingBayRouter.AcquireAsync(ma,"P1",multiOptions,runtime,planner,managerAfterRestart,managerAfterRestart,stepOptions,default);
+Check(retried?.Site==savedA!.WaitingSite,"命令准备回滚后从原取箱点再次规划仍只使用原绑定候车位");
 var refused=false;
 try { await TaskWaitingBayRouter.AcquireAsync(ma with{VehicleId="OTHER"},"P1",multiOptions,runtime,planner,managerAfterRestart,managerAfterRestart,stepOptions,default); }
 catch(InvalidOperationException){refused=true;}
@@ -201,6 +201,10 @@ var atomic=await Task.WhenAll(new[]{atomicA,atomicB}.Select(step=>Task.Run(async
 })));
 Check(atomic.Count(success=>success)==1&&db.Queryable<TaskWaitingBayEntity>().Where(b=>b.ResourceId=="ATOMIC-BAY").Count()==1&&
     db.Queryable<TrafficResourceLeaseEntity>().Where(l=>l.ResourceId=="ATOMIC-BAY").Count()==1,"双连接并发选同一候车位只提交一个绑定及一个占用，无失败方残留");
+// The synthetic tasks in the previous fixture have finished. Their
+// corridor leases cannot be carried into the replacement fixture map.
+foreach (var finished in new[] { ma, mb, atomicA, atomicB })
+    await manager.ReleaseTaskAsync(finished.TaskId, default);
 // Five available physical bays must not collapse to a single shortest destination.
 var fiveSites = Enumerable.Range(1, 5).Select(i => $"FIVE-W{i}").ToArray();
 var fiveMap = map with

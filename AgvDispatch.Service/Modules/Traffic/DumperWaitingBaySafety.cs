@@ -12,6 +12,9 @@ public static class DumperWaitingBaySafety
         if (map is not null && sites.Append(dispatch.GetDumperWaitingSite())
                 .Any(site => Resolve(map, site)?.AllowDumperWaiting == false))
             return "配置的倒料候车位禁止用于倒料等待，请选择其他候车位。";
+        if (map is not null && sites.Append(dispatch.GetDumperWaitingSite())
+                .Any(site => Resolve(map, site)?.AllowTransitThrough == true))
+            return "倒料候车位不能使用允许穿行的通道节点，请选择独立泊位。";
         if (dispatch.MaxConcurrentTasks <= 1 && sites.Count <= 1) return null;
         if (!holdsRouteLeases) return "多车候车位保护要求启用当前28阶段契约，持续保持路径路权至任务闭环。";
         if (map is null) return "多车候车位保护缺少当前运行地图。";
@@ -49,7 +52,8 @@ public static class DumperWaitingBaySafety
     {
         var node = Resolve(map, site);
         var dumping = Resolve(map, dumpingSite);
-        if (node is not { Enabled: true, Type: MapNodeType.WaitingPoint, AllowTrafficStop: not false, AllowDumperWaiting: not false } ||
+        if (node is not { Enabled: true, Type: MapNodeType.WaitingPoint, AllowTrafficStop: not false,
+                AllowDumperWaiting: not false, AllowTransitThrough: false } ||
             dumping is null || node.Id.Equals(dumping.Id, StringComparison.OrdinalIgnoreCase))
             return false;
         return map.Resources.Any(resource => resource.Capacity == 1 &&

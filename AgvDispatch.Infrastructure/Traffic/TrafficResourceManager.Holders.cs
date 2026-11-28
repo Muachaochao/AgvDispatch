@@ -104,12 +104,8 @@ public sealed partial class TrafficResourceManager
             }
             catch (JsonException) { }
         }
-        foreach (var request in await database.Queryable<TrafficRequestEntity>()
-                     .Where(item => item.TaskId != requestingTaskId && item.State == "Waiting").ToListAsync(cancellationToken))
-        {
-            try { result.UnionWith(JsonSerializer.Deserialize<string[]>(request.ResourceIds) ?? []); }
-            catch (JsonException) { }
-        }
+        // Unissued requests, including reference paths, are handled by the
+        // traffic queue. Only a persisted executing route can rule out a bay here.
         return result;
     }
 }

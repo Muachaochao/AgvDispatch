@@ -20,7 +20,7 @@ public static class TaskWaitingBayRouter
             !DumperWaitingBaySafety.IsPhysicalWaitingSite(map.Definition, selected.WaitingSite, options.DumperDumpingSite))
             return;
         var sites = selected is null
-            ? CandidateSites(pickup, options, map, rolling, vehicleIds)
+            ? CandidateSites(options, map)
             : [selected.WaitingSite];
         var unavailable = await traffic.GetUnavailableResourceIdsAsync(step.TaskId, ct);
         var counts = await allocator.GetSelectionCountsAsync(map.MapId, map.VersionId, ct);
@@ -33,7 +33,9 @@ public static class TaskWaitingBayRouter
         }
         var windows = ranked.Windows ?? TransportRouteWindows.Plan(
             ranked.Plan, map, stepOptions, navigationCommandMode);
-        var first = TransportRouteWindows.NormalizeResources(windows, map)[0];
+        windows = TransportRouteWindows.NormalizeResources(windows, map);
+        var first = PreferBayWindow(windows, map, stepOptions, traffic: unavailable,
+            occupiedEdges: planner.GetVehicleOccupiedEdgeIds(map.Definition, pickup, step.VehicleId!))[0];
         var resources = first.ResourceIds.Append(ranked.Resource).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         await trafficLayer.ObserveAsync(new(step.StepId, step.TaskId, step.VehicleId!, first.Source, first.Destination,
             first.EdgeIds, resources, true, "独立候车位和首个路权窗口按原任务优先级排队；尚未选位或授予路权。")
@@ -56,13 +58,14 @@ public static class TaskWaitingBayRouter
             !DumperWaitingBaySafety.IsPhysicalWaitingSite(map.Definition, selected.WaitingSite, options.DumperDumpingSite)))
             throw new InvalidOperationException("原任务候车位与车辆、步骤、地图或当前配置不一致，保持原占用待核对。");
         var sites = selected is null
-            ? CandidateSites(pickup, options, map, rolling, vehicleIds)
+            ? CandidateSites(options, map)
             : [selected.WaitingSite];
         var unavailable = await traffic.GetUnavailableResourceIdsAsync(step.TaskId, ct);
         var counts = await allocator.GetSelectionCountsAsync(map.MapId, map.VersionId, ct);
         var layer = trafficLayer ?? new DispatchTrafficReservationService(traffic);
         var transit = selected is null ? await traffic.GetOthersRemainingRouteResourceIdsAsync(step.TaskId, ct) : null;
         var candidates = Rank(sites, pickup, planner, unavailable, counts, map, options, selected?.ResourceId, rolling, vehicleIds, transit);
+        var occupiedEdges = planner.GetVehicleOccupiedEdgeIds(map.Definition, pickup, step.VehicleId!);
         foreach (var candidate in candidates)
         {
             var resource = candidate.Resource;
@@ -76,14 +79,26 @@ public static class TaskWaitingBayRouter
                     ResourceIds = window.ResourceIds.Append(resource).Distinct(StringComparer.OrdinalIgnoreCase)
                         .Order(StringComparer.OrdinalIgnoreCase).ToArray()
                 }).ToArray();
-            var first = windows[0];
+            var preferred = PreferBayWindow(windows, map, stepOptions, unavailable, occupiedEdges);
+            var first = preferred[0];
             var observation = new TrafficRouteObservation(step.StepId, step.TaskId, step.VehicleId!, first.Source, first.Destination,
                 first.EdgeIds, first.ResourceIds, false, $"选择候车位{candidate.Site}（本地图已选{counts.GetValueOrDefault(candidate.Site)}次）；仅在可达且路权可申请的泊位中均衡选择，保留原绑定和离位核验。")
                 { MapId = map.MapId, MapVersionId = map.VersionId };
             var binding = selected ?? new(step.TaskId, step.VehicleId!, step.StepId, map.MapId, map.VersionId, candidate.Site, resource);
             var result = await layer.AcquireWaitingBayAsync(observation, binding, allocator, ct);
             if (result.Acquired)
-                return (candidate.Site, candidate.Plan, windows);
+                return (candidate.Site, candidate.Plan, preferred);
+            if (!ReferenceEquals(preferred, windows))
+            {
+                first = windows[0];
+                var staged = observation with
+                {
+                    Source = first.Source, Destination = first.Destination,
+                    EdgeIds = first.EdgeIds, ResourceIds = first.ResourceIds
+                };
+                if ((await layer.AcquireWaitingBayAsync(staged, binding, allocator, ct)).Acquired)
+                    return (candidate.Site, candidate.Plan, windows);
+            }
         }
         if (candidates.Length == 0)
         {
@@ -110,32 +125,56 @@ public static class TaskWaitingBayRouter
             { MapId = map.MapId, MapVersionId = map.VersionId, WaitingCategory = "ReferenceRoute" }, ct);
     }
 
-    private const int MaximumMapHoldingCandidates = 12;
-
-    private static IReadOnlyList<string> CandidateSites(string pickup, DispatchOrchestratorOptions options,
-        ActiveMapRuntimeSnapshot map, GlobalPickupRoutePlanner? rolling, IReadOnlyCollection<string>? vehicleIds)
-    {
-        var configured = options.GetDumperWaitingSites()
-            .Where(site => !site.Equals(options.DumperDumpingSite, StringComparison.OrdinalIgnoreCase) &&
-                           map.Graph.FindRouteNode(site)?.AllowDumperWaiting != false);
-        var mapDeclared = rolling?.SafeHoldingSites(map, vehicleIds ?? []) ?? [];
-        var pickupNode = map.Graph.FindRouteNode(pickup);
-        var nearestMapSites = pickupNode is null
-            ? mapDeclared
-            : mapDeclared
-                .Select(site => (Site: site, Node: map.Graph.FindRouteNode(site)))
-                .Where(item => item.Node is not null)
-                .OrderBy(item => Math.Sqrt(
-                    Math.Pow(item.Node!.X - pickupNode.X, 2) +
-                    Math.Pow(item.Node.Y - pickupNode.Y, 2)))
-                .ThenBy(item => item.Site, StringComparer.OrdinalIgnoreCase)
-                .Take(MaximumMapHoldingCandidates)
-                .Select(item => item.Site)
-                .ToArray();
-        return configured.Concat(nearestMapSites)
-            .Where(site => !string.IsNullOrWhiteSpace(site))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
+    private static IReadOnlyList<string> CandidateSites(DispatchOrchestratorOptions options,
+        ActiveMapRuntimeSnapshot map) =>
+        options.GetDumperWaitingSites()
+            .Where(site => DumperWaitingBaySafety.IsPhysicalWaitingSite(map.Definition, site, options.DumperDumpingSite))
             .ToArray();
+
+    public static IReadOnlyList<AgvTransportRouteWindow> PreferBayWindow(
+        IReadOnlyList<AgvTransportRouteWindow> windows, ActiveMapRuntimeSnapshot map,
+        DispatchTaskStepOptions options, IReadOnlySet<string> traffic, IReadOnlySet<string> occupiedEdges,
+        int start = 0)
+    {
+        if (start < 0 || windows.Count - start < 2 || windows[start].Final || !windows[^1].Final)
+            return windows;
+
+        bool HasConflict(AgvTransportRouteWindow window) =>
+            window.ResourceIds.Any(traffic.Contains) || window.EdgeIds.Any(occupiedEdges.Contains);
+
+        var first = windows[start];
+        if (HasConflict(first)) return windows;
+
+        var hardLimit = options.RollingWindowHardMaximumEdges;
+        var upstreamLimit = hardLimit > 0
+            ? Math.Min(hardLimit, options.RollingWindowMaximumEdges) : options.RollingWindowMaximumEdges;
+        var edgeCount = first.EdgeIds.Count;
+        var end = start;
+        // Merge only consecutive available windows. Reserve the whole bounded
+        // prefix in one grant before sending and stop at an existing safe boundary.
+        for (var index = start + 1; index < windows.Count; index++)
+        {
+            var candidate = windows[index];
+            var limit = candidate.Final && index == start + 1 && hardLimit > 0 ? hardLimit : upstreamLimit;
+            edgeCount += candidate.EdgeIds.Count;
+            if (edgeCount > limit || HasConflict(candidate) ||
+                !MapRouteSiteMapper.IsSameNode(map.Definition, windows[index - 1].Destination, candidate.Source))
+                break;
+
+            end = index;
+        }
+        if (end == start) return windows;
+
+        var joined = windows.Skip(start).Take(end - start + 1).ToArray();
+        var merged = new AgvTransportRouteWindow(first.Index, first.Source, windows[end].Destination,
+            first.Path.Concat(joined.Skip(1).SelectMany(window => window.Path.Skip(1))).ToArray(),
+            joined.SelectMany(window => window.EdgeIds).ToArray(),
+            joined.SelectMany(window => window.ResourceIds).Distinct(StringComparer.OrdinalIgnoreCase)
+                .Order(StringComparer.OrdinalIgnoreCase).ToArray(),
+            windows[end].Final);
+
+        return windows.Take(start).Append(merged).Concat(windows.Skip(end + 1)
+            .Select((window, offset) => window with { Index = first.Index + offset + 1 })).ToArray();
     }
 
     // Balance only among near-equivalent feasible routes. A history preference
@@ -155,8 +194,7 @@ public static class TaskWaitingBayRouter
         // already travelling to the dumper. The booking is held for the whole step, so the leader
         // would stop in front of it while the follower waits behind the leader (2026-11-27 build,
         // Mac replay: AGV-05 booked SIM-SAFE-CAD2-E01832 that AGV-04 had to pass to reach WAIT-03).
-        // Only when every bay is on such a route is the former choice kept.
-        if (othersTransit is { Count: > 0 } && bays.Any(bay => !othersTransit.Contains(bay.Resource!)))
+        if (othersTransit is { Count: > 0 })
             bays = bays.Where(bay => !othersTransit.Contains(bay.Resource!)).ToArray();
         var candidates = bays
             .Select(candidate =>

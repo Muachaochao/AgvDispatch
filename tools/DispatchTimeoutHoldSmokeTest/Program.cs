@@ -42,9 +42,25 @@ var apply = typeof(DispatchTaskStepCoordinator).GetMethod("ApplyTimeoutPolicyAsy
 async Task<bool> Apply(DispatchTaskStepWorkItem item) => (bool)await (Task<bool>)apply.Invoke(coordinator, [item, CancellationToken.None])!;
 
 var started = clock.Now;
-var item = new DispatchTaskStepWorkItem(created.Task.TaskId, "ST", null, DispatchTaskStage.WaitingForVehicle, step.StepId, step.Sequence,
-    DispatchTaskStepType.GoToPickup, DispatchTaskStepStatus.Ready, step.SourceSite, step.DestinationSite, started)
-{ TemplateNodeId = "select", TimeoutAction = TaskTemplateExecutionPolicy.NotifyAndHold, TimeoutSeconds = 10, StartedAt = started };
+var queued = (await orchestration.GetReadyStepsAsync(100, default)).Single(row => row.StepId == step.StepId);
+clock.Now = queued.StartedAt!.Value.AddSeconds(901);
+Check(!await Apply(queued) && journal.Stopped == 0 && journal.Holds == 0 &&
+      (await orchestration.GetDispatchCandidatesAsync(100, default)).Any(row => row.TaskId == queued.TaskId),
+    "a GoToPickup step waiting for selection remains queued past the execution timeout");
+Check(!await Apply(queued with { TemplateNodeId = "pickup", TimeoutAction = TaskTemplateExecutionPolicy.Terminate,
+    TimeoutSeconds = 1 }) && journal.Stopped == 0,
+    "a GoToPickup template timeout cannot stop a task still waiting for selection");
+
+await db.Updateable<DispatchTaskEntity>().SetColumns(task => new DispatchTaskEntity
+    { Stage = (int)DispatchTaskStage.PickingUp, VehicleId = "AGV-01" })
+    .Where(task => task.TaskId == created.Task.TaskId).ExecuteCommandAsync();
+var pickup = (await tasks.GetStepsAsync(created.Task.TaskId, default)).Single(row => row.StepType == DispatchTaskStepType.PickupFullBox);
+await db.Updateable<DispatchTaskStepEntity>().SetColumns(row => new DispatchTaskStepEntity
+    { Status = (int)DispatchTaskStepStatus.Ready, VehicleId = "AGV-01", StartedAt = started.LocalDateTime })
+    .Where(row => row.StepId == pickup.StepId).ExecuteCommandAsync();
+var item = (await orchestration.GetReadyStepsAsync(100, default)).Single(row => row.StepId == pickup.StepId)
+    with { TemplateNodeId = "pickup-box", TimeoutAction = TaskTemplateExecutionPolicy.NotifyAndHold,
+        TimeoutSeconds = 10, StartedAt = started };
 clock.Now = started.AddSeconds(11);
 Check(!await Apply(item), "a timed-out notify-and-hold step is not stopped automatically");
 Check(journal.Holds == 1, "the first timeout hold writes one evidence record");
@@ -56,8 +72,8 @@ for (var i = 0; i < 20; i++)
 Check(journal.Holds == 1, "repeated 500 ms cycles do not rewrite the same timeout hold, even as elapsed seconds grow");
 clock.Now = clock.Now.AddSeconds(60);
 Check(!await Apply(item) && journal.Holds == 1, "the hold stays recorded once while the step remains held");
-Check(await orchestration.GetDispatchCandidatesAsync(100, default) is { } later && later.Any(t => t.TaskId == created.Task.TaskId),
-    "the held task remains an active candidate and keeps its step");
+Check((await orchestration.GetReadyStepsAsync(100, default)).Any(row => row.StepId == pickup.StepId),
+    "the held work step remains ready");
 
 var defaultItem = item with
 {
@@ -69,7 +85,7 @@ var defaultItem = item with
 clock.Now = clock.Now.AddSeconds(901);
 Check(await Apply(defaultItem) && journal.Stopped == 1,
     "a task without a template still receives the visible per-step watchdog and stops automation");
-Check((await tasks.GetStepsAsync(created.Task.TaskId, default)).Single(row => row.StepId == step.StepId).Status ==
+Check((await tasks.GetStepsAsync(created.Task.TaskId, default)).Single(row => row.StepId == pickup.StepId).Status ==
       DispatchTaskStepStatus.ManualIntervention,
     "the implicit watchdog leaves the original step and responsibility visible for manual recovery");
 

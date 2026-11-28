@@ -18,6 +18,7 @@ public sealed class DispatchOrchestratorOptions
     public string DumperDumpingSite { get; set; } = string.Empty;
     public double DumperTransitClearanceMeters { get; set; }
     public bool SimulationB07VerticalChargingInlet { get; set; }
+    public bool SimulationDeferSharedChargingExitReservation { get; set; }
     public string[] IdleOperatingStates { get; set; } = ["Idle", "空闲"];
     public bool AllowUnconfiguredDirectRoutes { get; set; }
     public Dictionary<string, string> StationPickupSites { get; set; } =

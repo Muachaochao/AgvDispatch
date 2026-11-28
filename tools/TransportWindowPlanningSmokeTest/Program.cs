@@ -209,6 +209,20 @@ Check(partial is not null && partial.Windows.Count == 2 &&
       partial.Windows[0].Destination == "BAY" && !partial.Windows[0].ResourceIds.Contains("DOWNSTREAM") &&
       partial.Windows[1].ResourceIds.Contains("DOWNSTREAM") && partial.DeferredSeconds > 0,
     "后段有租约时，只申请到合格停点的首窗，保留后窗并计入等待成本。");
+var bayApproach = TransportRouteWindows.NormalizeResources(
+    TransportRouteWindows.Plan(stagingRoute, activeStaging, options), activeStaging);
+var empty = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+var directBayApproach = TaskWaitingBayRouter.PreferBayWindow(bayApproach, activeStaging, options, empty, empty);
+Check(bayApproach.Count == 2 && directBayApproach is [var direct] && direct.Final && direct.Destination == "PICK" &&
+      direct.Path.SequenceEqual(stagingRoute.Nodes) && direct.EdgeIds.SequenceEqual(stagingRoute.EdgeIds) &&
+      direct.ResourceIds.ToHashSet().SetEquals(bayApproach.SelectMany(window => window.ResourceIds)),
+    "实际候车位末段全通时直达，保留全路径和全部必需资源。");
+Check(ReferenceEquals(TaskWaitingBayRouter.PreferBayWindow(bayApproach, activeStaging, options, blockedDownstream, empty), bayApproach) &&
+      ReferenceEquals(TaskWaitingBayRouter.PreferBayWindow(bayApproach, activeStaging, options, empty, new HashSet<string> { "E3" }), bayApproach),
+    "候车入口有租约或实体占位时保留原分段窗口。");
+Check(ReferenceEquals(TaskWaitingBayRouter.PreferBayWindow(bayApproach, activeStaging,
+        new DispatchTaskStepOptions { RollingWindowHardMaximumEdges = 2 }, empty, empty), bayApproach),
+    "直达候车位的合并窗口也必须遵守硬上限。");
 var trafficOnlyStaging = Activate(stagingMap with
 {
     Nodes = stagingNodes.Select(node => node.Id == "BAY" ? node with { AllowDumperWaiting = false } : node).ToArray()
@@ -235,6 +249,20 @@ var junctionMap = new MapDefinition("JUNCTION", "", "RobotWorld", "m", junctionN
         new("JFAR", TrafficResourceType.Intersection)]);
 var junctionRoute = new RoutePlan(["JSTART", "J1", "J2", "JPICK"], ["JE1", "JE2", "JE3"],
     ["JENTRY", "JMID", "JFAR"], 9);
+var upstreamOptions = new DispatchTaskStepOptions
+    { RollingWindowMinimumEdges = 1, RollingWindowMaximumEdges = 2, RollingWindowHardMaximumEdges = 4 };
+var upstreamMap = Activate(junctionMap);
+var upstream = TransportRouteWindows.NormalizeResources(
+    TransportRouteWindows.Plan(junctionRoute, upstreamMap, upstreamOptions), upstreamMap);
+var nearer = TaskWaitingBayRouter.PreferBayWindow(upstream, upstreamMap, upstreamOptions,
+    new HashSet<string> { "JFAR" }, empty);
+Check(upstream.Count == 3 && nearer.Count == 2 && nearer[0].Destination == "J2" && !nearer[0].Final &&
+      nearer[1].Index == 1 && nearer[1].Source == "J2" && nearer[1].Final &&
+      !nearer[0].ResourceIds.Contains("JFAR"),
+    "候车区上游合并连续可用窗，止于已有安全点并保留受阻末窗。");
+var arrivedVia = TaskWaitingBayRouter.PreferBayWindow(upstream, upstreamMap, upstreamOptions, empty, empty, start: 1);
+Check(ReferenceEquals(arrivedVia[0], upstream[0]) && arrivedVia[1].Index == 1 && arrivedVia[1].Final,
+    "合并后续窗口保留已下发窗口和下一条指令编号。");
 var junctionStage = staging.TryStage(junctionRoute, Activate(junctionMap), new HashSet<string> { "JFAR" }, ["V"]);
 Check(junctionStage is { Windows.Count: 2 } &&
       junctionStage.Windows[0].Destination == "J2" && !junctionStage.Windows[0].ResourceIds.Contains("JFAR") &&

@@ -7,7 +7,8 @@ namespace AgvDispatch.Service;
 public sealed partial class TaskCenterQueryService(ITaskCenterReadRepository repository,
     IPlcSignalCache signals, DispatchTaskCreationOptions options, TaskParameterRuntime? parameters = null,
     TimeProvider? clock = null, HandshakeExecutionOptions? handshakeOptions = null,
-    ITrafficResourceControlService? trafficControl = null, DispatchTaskStepOptions? stepOptions = null) : ITaskCenterQueryService
+    ITrafficResourceControlService? trafficControl = null, DispatchTaskStepOptions? stepOptions = null,
+    DispatchOptimizationService? optimization = null) : ITaskCenterQueryService
 {
     public Task<TaskListPage> QueryAsync(TaskListQuery query, CancellationToken cancellationToken) =>
         repository.QueryAsync(query, cancellationToken);
@@ -52,12 +53,20 @@ public sealed partial class TaskCenterQueryService(ITaskCenterReadRepository rep
             }
             else
             {
-                var dispatch = current is null || trafficControl is null ? null :
-                    await trafficControl.GetDispatchDiagnosisAsync(task.TaskId, current.StepId, cancellationToken);
-                explanation = dispatch is null
-                    ? "等待可用车辆、工位映射、可行路径和交通资源；尚未形成候选派车记录。"
-                    : $"{dispatch.VehicleId} 已作为候选，已规划 {dispatch.Source}→{dispatch.Destination}；" +
-                      $"派车状态 {dispatch.State}：{dispatch.Reason}";
+                var matching = optimization is null ? null : await optimization.GetAsync(cancellationToken);
+                var latest = matching?.Tasks.FirstOrDefault(item => item.TaskId == task.TaskId);
+                var age = (clock ?? AgvDispatch.Application.Runtime.BusinessClock.Provider).GetUtcNow() - matching?.CapturedAt;
+                if (latest is not null && age is { TotalSeconds: >= 0 and <= 20 } && string.IsNullOrEmpty(latest.DispatchedVehicleId))
+                    explanation = latest.Reason;
+                else
+                {
+                    var dispatch = current is null || trafficControl is null ? null :
+                        await trafficControl.GetDispatchDiagnosisAsync(task.TaskId, current.StepId, cancellationToken);
+                    explanation = dispatch is null
+                        ? "等待可用车辆、工位映射、可行路径和交通资源；尚未形成候选派车记录。"
+                        : $"{dispatch.VehicleId} 已作为候选，已规划 {dispatch.Source}→{dispatch.Destination}；" +
+                          $"派车状态 {dispatch.State}：{dispatch.Reason}";
+                }
             }
         }
         else if (current?.Status == DispatchTaskStepStatus.Ready)

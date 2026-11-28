@@ -198,6 +198,10 @@ public sealed class DispatchTaskStepCoordinator(
         DispatchTaskStepWorkItem step,
         CancellationToken cancellationToken)
     {
+        if (step.StepType == DispatchTaskStepType.GoToPickup &&
+            step.TaskStage == DispatchTaskStage.WaitingForVehicle)
+            return false;
+
         var policy = TaskWatchdogPolicyResolver.ForStep(step, options, parameters);
         if (policy.TimeoutSeconds <= 0) return false;
         if (step.StartedAt is not { } startedAt || !TaskTemplateExecutionPolicy.HasTimedOut(
@@ -750,6 +754,7 @@ public sealed class DispatchTaskStepCoordinator(
             if (step.StepType == DispatchTaskStepType.CompletePlcHandshake)
             {
                 await trafficResources.ReleaseTaskAsync(step.TaskId, cancellationToken);
+                trafficWakeup?.Publish();
             }
 
             logger.LogInformation(

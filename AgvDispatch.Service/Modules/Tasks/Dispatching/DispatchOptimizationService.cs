@@ -1,5 +1,6 @@
 using System.Text.Json;
 using AgvDispatch.Application.Abstractions;
+using Microsoft.Extensions.Logging;
 
 namespace AgvDispatch.Service;
 

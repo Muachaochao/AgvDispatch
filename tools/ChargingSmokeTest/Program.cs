@@ -148,6 +148,10 @@ var chargerExit = new MapNode("WAIT-04", 0, 0, MapNodeType.WaitingPoint, true, [
     { AllowTrafficStop = true, AllowTransitThrough = false, AllowChargingWaiting = true };
 Check(ChargingWaitingSitePolicy.ExitParkingResourceIds(chargerExit, "CHARGE-02").SequenceEqual(["WAIT-04"]),
     "charging reserves the charger-exit parking resource without reserving the charging bay itself");
+Check(ChargingWaitingSitePolicy.ExitParkingResourceIds(chargerExit, "CHARGE-02", deferSharedBusinessExit: true).Length == 0 &&
+      ChargingWaitingSitePolicy.ExitParkingResourceIds(chargerExit with { AllowChargingWaiting = false }, "CHARGE-02",
+          deferSharedBusinessExit: true).SequenceEqual(["WAIT-04"]),
+    "an isolated shared business exit may be reserved at departure, with ordinary exit reservations preserved");
 var staging = new Fixture(evidence, "safe-waiting");
 staging.Options.WaitingSiteIds = ["SAFE"];
 staging.Options.Sites = [staging.Options.Sites[0] with { AllowedVehicleIds = ["A", "B", "C"] },

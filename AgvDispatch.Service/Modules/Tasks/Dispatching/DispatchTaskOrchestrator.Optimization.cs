@@ -12,6 +12,7 @@ public sealed partial class DispatchTaskOrchestrator
 {
     private DateTimeOffset _nextOptimizationAt;
     private readonly DispatchAssignmentOptimizer _optimizer = new();
+    private readonly Dictionary<string, DateTimeOffset> _pickupLookaheadUntil = new(StringComparer.OrdinalIgnoreCase);
     private void ReportOptimizationGate(string message)
     {
         if (optimization is null || _clock.GetUtcNow() < _nextOptimizationAt) return;
@@ -49,6 +50,21 @@ public sealed partial class DispatchTaskOrchestrator
             optimization?.ReportLayer("queue", "Running", "读取持久化呼叫，固定既有任务和路权，按优先级与呼叫时间选择窗口。");
             queue = await _queueLayer.LoadAsync(policy, activeTasks, now, ct);
             optimization?.ReportLayer("queue", "Ready", $"持久化等待 {queue.Waiting.Length} 单，本轮窗口 {queue.Window.Count} 单；窗口外及固定任务继续保留。", queue.Waiting.Length);
+            if (slots == 0)
+            {
+                const string reason = "执行并发已满，等待业务任务完成并释放车辆。";
+                optimization!.ReportLayer("candidates", "Waiting", reason);
+                optimization.ReportLayer("matching", "Waiting", reason);
+                optimization.Publish(new()
+                {
+                    CapturedAt = now, WaitingTaskCount = queue.Waiting.Length, WindowTaskCount = queue.Window.Count,
+                    Message = reason,
+                    Tasks = queue.Window.Select(score => new DispatchOptimizationTask(score.TaskId, score.StationId,
+                        score.CalledAt, score.BasePriority, score.EffectivePriority, score.WaitingSeconds / 60,
+                        null, null, null, reason, []) { BlockedLayer = "matching" }).ToArray()
+                });
+                return;
+            }
             optimization?.ReportLayer("candidates", "Running", "筛选健康、能力车辆池、电量、区域和合法路线，不申请路权、不登记命令。");
             graph = await _candidateLayer.BuildAsync(queue, policy, map, ct);
             if (global) await _trafficLayer.ObserveWaitingAsync(graph.WaitingRoutes, ct);
@@ -61,9 +77,9 @@ public sealed partial class DispatchTaskOrchestrator
         // First-leg handshake binding is the durable vehicle commitment. Once it
         // exists, do not let rematching alternate vehicles while the traffic
         // request still points at the previous attempt.
+        var boundVehicles = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         if (handshakes is not null)
         {
-            var boundVehicles = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             foreach (var task in work)
             {
                 if (!ready.TryGetValue(task.TaskId, out var firstStep)) continue;
@@ -74,6 +90,8 @@ public sealed partial class DispatchTaskOrchestrator
                 edges = edges.Where(edge => !boundVehicles.TryGetValue(edge.TaskId, out var vehicle) ||
                     string.Equals(edge.VehicleId, vehicle, StringComparison.OrdinalIgnoreCase)).ToList();
         }
+        if (global && map is not null)
+            await PreferNearbyReleasingVehiclesAsync(queue, graph, edges, boundVehicles, activeTasks, map, policy, now, ct);
         optimization?.ReportLayer("candidates", edges.Count == 0 && window.Count > 0 ? "Waiting" : "Ready",
             $"通过硬约束 {generalReasons.Count(p => p.Value is null)} 台车，形成 {edges.Count} 条可执行候选边。", edges.Count);
         optimization?.ReportLayer("matching", "Running", "最小费用最大流计算；只有等待任务与未占用车辆参与。");
@@ -201,7 +219,9 @@ public sealed partial class DispatchTaskOrchestrator
             score.BasePriority, score.EffectivePriority, score.WaitingSeconds / 60,
             result.Assignments.FirstOrDefault(a => a.TaskId == score.TaskId)?.VehicleId,
             greedy.GetValueOrDefault(score.TaskId)?.VehicleId, prepared.GetValueOrDefault(score.TaskId),
-            taskReasons.GetValueOrDefault(score.TaskId) ?? result.Unassigned.FirstOrDefault(u => u.TaskId == score.TaskId)?.Reason ??
+            taskReasons.GetValueOrDefault(score.TaskId) ??
+                (!edges.Any(e => e.TaskId == score.TaskId) ? DescribeUnavailableCandidates(diagnostics[score.TaskId], graph, score.TaskId) : null) ??
+                result.Unassigned.FirstOrDefault(u => u.TaskId == score.TaskId)?.Reason ??
                 (global ? "本轮未登记，等待下一周期。" : "影子推荐：实际派车沿用现有编排流程。"), diagnostics[score.TaskId])
             { BlockedLayer = prepared.ContainsKey(score.TaskId) ? null : blockedLayers.GetValueOrDefault(score.TaskId) ??
                 (!ready.ContainsKey(score.TaskId) ? "queue" : !edges.Any(e => e.TaskId == score.TaskId) ? "candidates" :
@@ -221,6 +241,104 @@ public sealed partial class DispatchTaskOrchestrator
                 (slots == 0 ? "并发槽位已满，既有任务保持不动。" : "等待任务继续保存在原队列。") +
                 (waiting.Count != work.Length ? $" {waiting.Count - work.Length} 个已有车辆或路权的任务保持固定。" : "")
         }, !global, !global && improved);
+    }
+
+    private static string? DescribeUnavailableCandidates(IReadOnlyList<DispatchOptimizationCandidate> candidates,
+        DispatchCandidateGraph graph, string taskId)
+    {
+        var routeWait = graph.WaitingRoutes.FirstOrDefault(row => row.TaskId == taskId);
+        if (routeWait is not null) return routeWait.Reason;
+        var reasons = candidates.Where(row => !row.Eligible).GroupBy(row => row.Reason)
+            .Select(group => $"{group.Count()}台：{group.Key}").ToArray();
+        return reasons.Length == 0 ? null : "无可派车辆。 " + string.Join("；", reasons);
+    }
+
+    private async Task PreferNearbyReleasingVehiclesAsync(DispatchQueueWindow queue, DispatchCandidateGraph graph,
+        List<DispatchAssignmentCandidate> edges, IReadOnlyDictionary<string, string> boundVehicles,
+        IReadOnlyList<DispatchTaskWorkItem> active, ActiveMapRuntimeSnapshot map, DispatchAssignmentOptions policy,
+        DateTimeOffset now, CancellationToken ct)
+    {
+        const int horizon = 60;
+        const int requiredSavings = 30;
+        foreach (var id in _pickupLookaheadUntil.Keys.Where(id => !queue.Work.Any(task => task.TaskId == id)).ToArray())
+            _pickupLookaheadUntil.Remove(id);
+        if (edges.Count == 0) return;
+
+        var nearRelease = active.Where(task => task.VehicleId is not null &&
+                task.Stage is DispatchTaskStage.ReturningEmptyBox or DispatchTaskStage.WaitingForPlcConfirmation)
+            .Select(task => (VehicleId: task.VehicleId!, Finish: options.GetPickupSite(task.StationId), TailSeconds: 15))
+            .ToList();
+        if (charging is IChargingService charger)
+        {
+            var status = await charger.ReadAsync(ct);
+            nearRelease.AddRange(status.Sessions.Where(session => session.Phase == ChargingPhase.Exiting &&
+                    session.ShutdownVerified && session.Route?.ExitPath.Length >= 2 && session.Route.ReturnPath.Length < 2)
+                .Select(session => (session.VehicleId, (string?)session.Route!.ExitPath[^1], 10)));
+        }
+        var forecasts = new List<(string VehicleId, string Finish, double Delay, decimal Battery)>();
+        foreach (var release in nearRelease)
+        {
+            var vehicle = graph.Vehicles.FirstOrDefault(vehicle => vehicle.VehicleId.Equals(release.VehicleId, StringComparison.OrdinalIgnoreCase));
+            if (vehicle?.CurrentStation is not { Length: > 0 } current || release.Finish is not { Length: > 0 } finish ||
+                vehicle.Connection != ConnectionState.Online || !agvStates.TryGet(vehicle.VehicleId, out var robot) ||
+                robot.Quality != SignalQuality.Good || robot.EmergencyStopped != false || robot.Blocked != false ||
+                robot.LastSuccessfulPollAt is not { } poll || now - poll > TimeSpan.FromSeconds(mapOptions.PositionStaleSeconds) ||
+                robot.BatteryPercent is not { } battery || battery <= (decimal)policy.MinimumBatteryPercent ||
+                !queue.OccupiedVehicles.Contains(vehicle.VehicleId) && graph.GeneralReasons.GetValueOrDefault(vehicle.VehicleId) is null)
+                continue;
+            var delay = (double)release.TailSeconds;
+            if (!MapRouteSiteMapper.IsSameNode(map.Definition, current, finish))
+            {
+                var remaining = routePlanner.PlanWithoutVehicleOccupancyForComparison(current, finish);
+                if (remaining is null) continue;
+                var estimate = EstimateRoute(remaining, map, policy);
+                delay += estimate.Travel + estimate.TrafficWait;
+            }
+            if (delay <= horizon) forecasts.Add((vehicle.VehicleId, finish, delay, battery));
+        }
+        if (forecasts.Count == 0) return;
+        var considered = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var work = queue.Work.ToDictionary(task => task.TaskId, StringComparer.OrdinalIgnoreCase);
+        var inputs = queue.Input.ToDictionary(task => task.TaskId, StringComparer.OrdinalIgnoreCase);
+        foreach (var score in queue.Window)
+        {
+            if (boundVehicles.ContainsKey(score.TaskId) || inputs[score.TaskId].Deadline is { } due && due <= now.AddSeconds(horizon) ||
+                _pickupLookaheadUntil.TryGetValue(score.TaskId, out var expires) && expires <= now) continue;
+            var task = work[score.TaskId];
+            var pickup = options.GetPickupSite(task.StationId);
+            var immediate = edges.Where(edge => edge.TaskId == task.TaskId)
+                .Select(edge => edge.TravelSeconds + edge.TrafficWaitSeconds).DefaultIfEmpty(0).Min();
+            if (pickup is null || immediate < 2 * horizon) continue;
+            var best = immediate - requiredSavings;
+            string? nearer = null;
+            foreach (var forecast in forecasts)
+            {
+                if (considered.Contains(forecast.VehicleId) || !options.AllowsVehicle(task.StationId, forecast.VehicleId) ||
+                    !TaskVehicleSelection.Accepts(task, forecast.VehicleId) ||
+                    fleetTest?.Allows(task.TaskId, forecast.VehicleId) == false) continue;
+                var route = routePlanner.PlanWithoutVehicleOccupancyForComparison(forecast.Finish, pickup);
+                if (route is not { Nodes.Count: >= 2 }) continue;
+                var estimate = EstimateRoute(route, map, policy);
+                var arrival = forecast.Delay + estimate.Travel + estimate.TrafficWait;
+                if (arrival >= best) continue;
+                if (energyForecast?.Enforced == true && energyForecast.Estimate(forecast.VehicleId, forecast.Battery,
+                        pickup, options.DumperDumpingSite, options.GetDumperWaitingSites(), route, forecast.Delay,
+                        map, routePlanner, policy)?.Safe != true) continue;
+                best = arrival;
+                nearer = forecast.VehicleId;
+            }
+            if (nearer is null) continue;
+            considered.Add(nearer);
+            if (!_pickupLookaheadUntil.TryGetValue(score.TaskId, out expires))
+            {
+                expires = now.AddSeconds(horizon);
+                _pickupLookaheadUntil[score.TaskId] = expires;
+                logger.LogInformation("缩短取箱行程：任务 {TaskId} 暂等预计释放车辆 {VehicleId}。当前预计 {NowSeconds:F0} 秒，释放后预计 {ForecastSeconds:F0} 秒。",
+                    score.TaskId, nearer, immediate, best);
+            }
+            graph.TaskReasons[score.TaskId] = $"预计 {nearer} 收尾后可更早抵达取箱点（约 {best:0} 秒，当前派车约 {immediate:0} 秒），最多再观察 {Math.Ceiling((expires - now).TotalSeconds)} 秒，车辆和路权仍待实际确认。";
+            edges.RemoveAll(edge => edge.TaskId == score.TaskId);
+        }
     }
 
     private async Task<string?> CheckOptimizedVehicleMapAsync(AgvVehicleStatus vehicle, RoutePlan planned,

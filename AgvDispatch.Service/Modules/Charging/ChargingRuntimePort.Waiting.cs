@@ -154,8 +154,10 @@ public static class ChargingWaitingSitePolicy
             !sharedRoleSiteIds.Contains(node.Id,StringComparer.OrdinalIgnoreCase);
     }
 
-    public static string[] ExitParkingResourceIds(MapNode? exit,string chargingResourceId) =>
-        exit?.ResourceIds.Where(id=>!id.Equals(chargingResourceId,StringComparison.OrdinalIgnoreCase)).ToArray()??[];
+    public static string[] ExitParkingResourceIds(MapNode? exit, string chargingResourceId, bool deferSharedBusinessExit = false) =>
+        deferSharedBusinessExit && exit is { AllowChargingWaiting: true, AllowTransitThrough: false }
+            ? []
+            : exit?.ResourceIds.Where(id => !id.Equals(chargingResourceId, StringComparison.OrdinalIgnoreCase)).ToArray() ?? [];
 }
 
 public static class ChargingWaitingGeometry

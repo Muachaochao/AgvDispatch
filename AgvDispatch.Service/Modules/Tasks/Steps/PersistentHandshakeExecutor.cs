@@ -27,7 +27,8 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
     DispatchTaskCreationOptions creation,DispatchOrchestratorOptions dispatch,HandshakeExecutionOptions options,
     IAgvStateCache vehicles,IActiveMapRuntime map,IAgvGateway? agvGateway=null,IRobokitTaskMapPreflight? mapPreflight=null,
     DispatchTrafficReservationService? trafficLayer=null, DispatchOptimizationService? optimization=null,
-    IRoutePlanner? routePlanner=null, DispatchTaskStepOptions? stepOptions=null)
+    IRoutePlanner? routePlanner=null, DispatchTaskStepOptions? stepOptions=null,
+    DispatchTrafficWakeup? dispatchWakeup=null)
 {
     private readonly DispatchTrafficReservationService _trafficLayer = trafficLayer ?? new(traffic, optimization, tasks, optimization);
     public bool Enabled => options.Enabled;
@@ -353,7 +354,10 @@ public sealed partial class PersistentHandshakeExecutor(ITaskHandshakeStore stor
                     _=>false
                 };
                 if(valid&&await tasks.CompleteReadyStepAsync(step.TaskId,step.StepId,ct)&&step.StepType==DispatchTaskStepType.CompletePlcHandshake)
-                {await traffic.ReleaseTaskAsync(step.TaskId,ct);}
+                {
+                    await traffic.ReleaseTaskAsync(step.TaskId,ct);
+                    dispatchWakeup?.Publish();
+                }
                 break;
             default:throw new InvalidOperationException("未知持久化握手阶段，禁止回退或重跑："+checkpoint.Phase);
         }

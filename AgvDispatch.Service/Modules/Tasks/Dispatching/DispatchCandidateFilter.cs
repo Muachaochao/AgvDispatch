@@ -18,6 +18,9 @@ public sealed class DispatchCandidateFilter(DispatchOrchestratorOptions options,
     public string? CheckVehicle(AgvVehicleStatus vehicle, IReadOnlySet<string> occupied, DispatchAssignmentOptions policy)
     {
         if (occupied.Contains(vehicle.VehicleId)) return "已有派发任务或有效路权，保持原车辆责任。";
+        var chargingBlocked = charging?.AllowsNewBusiness(vehicle.VehicleId) == false;
+        if (chargingBlocked && charging!.OwnsVehicle(vehicle.VehicleId))
+            return "充电会话未完成停充、离桩和释放确认。";
         if (!agvStates.TryGet(vehicle.VehicleId, out var robot))
             return "车辆遥测质量无效。";
         var now = AgvDispatch.Application.Runtime.BusinessClock.Provider.GetUtcNow();
@@ -29,7 +32,7 @@ public sealed class DispatchCandidateFilter(DispatchOrchestratorOptions options,
             mapOptions.MinimumLocalizationConfidence, mapOptions.MaximumRouteDeviationMeters, reuseGeometry: true);
         if (position.State != AgvMapPositionState.Normal) return "定位无效、过期或偏离地图。";
         if (string.IsNullOrWhiteSpace(vehicle.CurrentStation)) return "车辆当前站点未知。";
-        if (charging?.AllowsNewBusiness(vehicle.VehicleId) == false) return "充电责任或电量门禁尚未放行。";
+        if (chargingBlocked) return "充电责任或电量门禁尚未放行。";
         if (businessRun?.Returning == true && vehicle.VehicleId == businessRun.Vehicle) return "正在执行回待机位收尾。";
         return null;
     }

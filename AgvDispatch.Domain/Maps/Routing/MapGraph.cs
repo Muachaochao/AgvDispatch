@@ -253,6 +253,27 @@ public sealed class MapGraph
             totalCost);
     }
 
+    internal HashSet<string> FindReachableNodes(string source, CancellationToken cancellationToken)
+    {
+        var reached = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { source };
+        var pending = new Queue<string>();
+        pending.Enqueue(source);
+
+        while (pending.TryDequeue(out var current))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            foreach (var traversal in _outgoing[current])
+            {
+                if (traversal.Edge.Enabled && _nodes[traversal.To].Enabled && reached.Add(traversal.To))
+                {
+                    pending.Enqueue(traversal.To);
+                }
+            }
+        }
+
+        return reached;
+    }
+
     private void ValidateResourceReferences(IEnumerable<string> resourceIds, string owner)
     {
         foreach (var resourceId in resourceIds)

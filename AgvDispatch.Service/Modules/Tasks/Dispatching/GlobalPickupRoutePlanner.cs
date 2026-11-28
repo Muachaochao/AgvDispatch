@@ -31,7 +31,8 @@ public sealed class GlobalPickupRoutePlanner(
         var clearance = FleetClearance(vehicleIds);
         if (clearance is null) return [];
         return map.Definition.Nodes
-            .Where(node => node.Enabled && node.AllowDumperWaiting != false && IsHoldingSite(node, map, clearance.Value))
+            .Where(node => node.Enabled && !node.AllowTransitThrough &&
+                node.AllowDumperWaiting != false && IsHoldingSite(node, map, clearance.Value))
             .Select(node => string.IsNullOrWhiteSpace(node.AgvSiteId) ? node.Id : node.AgvSiteId!)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Order(StringComparer.OrdinalIgnoreCase)

@@ -222,7 +222,8 @@ builder.Services.AddSingleton<IChargingRuntimePort>(p => new ChargingRuntimePort
 builder.Services.AddSingleton(p => new ChargingService(chargingOptions, p.GetRequiredService<IChargingRuntimePort>(),
     p.GetRequiredService<IChargingRobotControl>(), chargingPath, p.GetRequiredService<ILogger<ChargingService>>(), clock:simulationTime,
     workflow:p.GetRequiredService<IChargingWorkflow>(),
-    chargerMonitor:p.GetRequiredService<IChargerTelemetryMonitor>()));
+    chargerMonitor:p.GetRequiredService<IChargerTelemetryMonitor>(),
+    dispatchWakeup:p.GetRequiredService<DispatchTrafficWakeup>()));
 builder.Services.AddSingleton<IChargingService>(p => p.GetRequiredService<ChargingService>());
 builder.Services.AddSingleton<IChargingDispatchGuard>(p => p.GetRequiredService<ChargingService>());
 builder.Services.AddHostedService(p => p.GetRequiredService<ChargingService>());

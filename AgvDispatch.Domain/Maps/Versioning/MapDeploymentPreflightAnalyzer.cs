@@ -66,12 +66,12 @@ public static class MapDeploymentPreflightAnalyzer
         var reachable = 0;
         foreach (var source in operational)
         {
+            var reachableNodes = graph.FindReachableNodes(source.Id, cancellationToken);
             foreach (var destination in operational)
             {
                 if (ReferenceEquals(source, destination)) continue;
                 cancellationToken.ThrowIfCancellationRequested();
-                var plan = graph.FindShortestRoute(source.Id, destination.Id);
-                if (plan is null)
+                if (!reachableNodes.Contains(destination.Id))
                 {
                     failures.Add(new MapRouteMatrixEntry(
                         source.Id, destination.Id, false, null, 0, [], "按当前路段方向不可达"));
@@ -80,6 +80,7 @@ public static class MapDeploymentPreflightAnalyzer
                 reachable++;
                 if (successes.Count < maximumSuccessfulSamples)
                 {
+                    var plan = graph.FindShortestRoute(source.Id, destination.Id)!;
                     successes.Add(new MapRouteMatrixEntry(
                         source.Id, destination.Id, true, plan.Cost, plan.EdgeIds.Count,
                         plan.ResourceIds, "可达"));

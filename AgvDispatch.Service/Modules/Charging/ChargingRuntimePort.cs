@@ -197,11 +197,8 @@ public sealed partial class ChargingRuntimePort(ChargingOptions options, IAgvSta
         if(session.Route is null||session.Site is null||await ValidateAsync(session,true,ct) is not null||
             await BusyReasonAsync(session.VehicleId,session.SessionId,ct) is not null)return false;
         var route=session.Route;
-        // Reserve only the exit parking resource during charging, not its roads. A waiting
-        // vehicle can safely share an explicitly authorized charger exit, but it cannot
-        // occupy that stop while this session depends on it to clear the charging bay.
         var ids=(route.InboundResourceIds.Length>0?route.InboundResourceIds:route.ResourceIds)
-            .Concat(ExitParkingResourceIds(session.Site)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            .Concat(AdvanceExitParkingResourceIds(session.Site)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         await resources.RecordRouteAsync(new(session.SessionId+"-LOCK",session.SessionId,session.VehicleId,route.ToCharger[0],route.ToCharger[^1],[],ids,false,
             "充电会话独占充电位及来车道路；出口道路在停充后申请。") {MapId=route.MapId,MapVersionId=route.MapVersionId,QueuePriority=ChargingQueuePriority(session)},ct);
         return (await resources.TryAcquireAsync(session.SessionId+"-LOCK",session.SessionId,session.VehicleId,ids,ct)).Acquired;
@@ -224,12 +221,19 @@ public sealed partial class ChargingRuntimePort(ChargingOptions options, IAgvSta
         var keep=new HashSet<string>(StringComparer.OrdinalIgnoreCase){session.Site.ResourceId};
         if(Node(session.Site.ChargingSiteId) is not {} point)return 0;
         keep.UnionWith(point.ResourceIds);
-        keep.UnionWith(ExitParkingResourceIds(session.Site));
+        keep.UnionWith(AdvanceExitParkingResourceIds(session.Site));
         return await resources.ReleaseStepExceptResourcesAsync(session.SessionId+"-LOCK",keep,
-            "车辆已在充电点停稳：保留充电位及已预占的出口停车资源，释放来车道路、出口道路和未使用的返回道路；停充后再按普通交通申请出口。",ct);
+            "车辆已在充电点停稳：释放充电期间不需要的资源；停充后再按普通交通申请出口。",ct);
     }
-    private string[] ExitParkingResourceIds(ChargingSite site) =>
-        ChargingWaitingSitePolicy.ExitParkingResourceIds(Node(site.ExitSiteId),site.ResourceId);
+    private string[] AdvanceExitParkingResourceIds(ChargingSite site)
+    {
+        var exit = Node(site.ExitSiteId);
+        var defer = dispatch?.SimulationDeferSharedChargingExitReservation == true &&
+            site.ControlMode == "Relay6005" &&
+            !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("AGV_SIMULATION_ROOT")) &&
+            dispatch.GetDumperWaitingSites().Any(id => Node(id)?.Id == exit?.Id);
+        return ChargingWaitingSitePolicy.ExitParkingResourceIds(exit, site.ResourceId, defer);
+    }
     public async Task<bool> AcquireExitAsync(ChargingSession session,CancellationToken ct)
     {
         if(session.Site is null||!SameMap(session)||PathResources(session.Route!.ExitPath) is not {} path)return false;

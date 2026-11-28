@@ -155,10 +155,6 @@ public sealed partial class DispatchTaskOrchestrator(
         }
         var occupiedSlots = submitting.Count + assigned.Count;
         var availableSlots = options.MaxConcurrentTasks - occupiedSlots;
-        if (availableSlots <= 0)
-        {
-            return null;
-        }
         if (optimization is not null && !optimization.Options.Mode.Equals("Disabled", StringComparison.OrdinalIgnoreCase))
         {
             if (_clock.GetUtcNow() < _nextOptimizationAt) return null;
@@ -166,9 +162,11 @@ public sealed partial class DispatchTaskOrchestrator(
             _nextOptimizationAt = _clock.GetUtcNow().AddMilliseconds(policy.IntervalMs);
             var active = submitting.Concat(assigned).ToArray();
             if (policy.Mode.Equals("Global", StringComparison.OrdinalIgnoreCase))
-                return new(policy, availableSlots, active);
+                return new(policy, Math.Max(0, availableSlots), active);
+            if (availableSlots <= 0) return null;
             await RunOptimizationAsync(policy, availableSlots, active, cancellationToken);
         }
+        if (availableSlots <= 0) return null;
         await RunLegacyDispatchAsync(submitting, assigned, availableSlots, cancellationToken);
         return null;
     }
@@ -931,7 +929,8 @@ public sealed partial class DispatchTaskOrchestrator(
         var boundBay = await BoundWaitingBayAsync(task.TaskId, command.StepId, cancellationToken);
         windows = AttachWaitingBay(windows, nextIndex, boundBay);
         next = windows[nextIndex];
-        if (_stepOptions.PartialWindowAcquisition && map is not null && string.IsNullOrWhiteSpace(boundBay))
+        if (_stepOptions.PartialWindowAcquisition && map is not null &&
+            (boundBay is null || task.Stage == DispatchTaskStage.GoingToDumper))
         {
             var unavailableNow = await trafficResources.GetUnavailableResourceIdsAsync(task.TaskId, cancellationToken);
             var blockedNow = next.ResourceIds.Where(unavailableNow.Contains).ToArray();
@@ -946,7 +945,7 @@ public sealed partial class DispatchTaskOrchestrator(
                     retained, _stepOptions.PartialWindowMinimumEdges);
                 if (decision.Windows is not null)
                 {
-                    windows = decision.Windows;
+                    windows = AttachWaitingBay(decision.Windows, nextIndex, boundBay);
                     next = windows[nextIndex];
                     logger.LogInformation("{Reason} TaskId={TaskId}, StepId={StepId}, VehicleId={VehicleId}, Holders={Holders}",
                         decision.Reason, task.TaskId, command.StepId, task.VehicleId,
@@ -967,7 +966,31 @@ public sealed partial class DispatchTaskOrchestrator(
             }, cancellationToken);
             return TransportWindowAdvanceOutcome.WaitingForTraffic;
         }
-        var acquired = await _trafficLayer.AcquireAsync(observation, cancellationToken);
+        TrafficReservationResult? acquired = null;
+        if (task.Stage == DispatchTaskStage.GoingToDumper && boundBay is not null &&
+            map is not null && occupiedEdges is not null && windows.Count - nextIndex >= 2)
+        {
+            var unavailable = await trafficResources.GetUnavailableResourceIdsAsync(task.TaskId, cancellationToken);
+            var preferred = TaskWaitingBayRouter.PreferBayWindow(windows, map, _stepOptions,
+                unavailable, occupiedEdges, nextIndex);
+            if (!ReferenceEquals(preferred, windows))
+            {
+                var direct = preferred[nextIndex];
+                acquired = await _trafficLayer.AcquireAsync(observation with
+                {
+                    Destination = direct.Destination, EdgeIds = direct.EdgeIds, ResourceIds = direct.ResourceIds,
+                    Reason = direct.Final ? "末段路权可申请，合并剩余窗口直达已绑定候车位。"
+                        : "候车位上游连续路权可申请，合并窗口向候车区推进。"
+                }, cancellationToken);
+                if (acquired.Acquired)
+                {
+                    windows = preferred;
+                    next = direct;
+                }
+            }
+        }
+        if (acquired?.Acquired != true)
+            acquired = await _trafficLayer.AcquireAsync(observation, cancellationToken);
         if (!acquired.Acquired) return TransportWindowAdvanceOutcome.WaitingForTraffic;
 
         var fullSource = payload.Windows[0].Source;
