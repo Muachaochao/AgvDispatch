@@ -130,6 +130,60 @@ var noSafeInterior = TransportRouteWindows.Plan(
     unsafeMap, options);
 Check(noSafeInterior.Count == 1 && noSafeInterior[0].Final,
     "道路中段没有安全点时不得停在任意普通路径点，必须保持整条路线单窗口。");
+
+var pocketNodes = new[]
+{
+    new MapNode("P-START", 0, 0, MapNodeType.Station, true, []),
+    new MapNode("P-B", 2, 0, MapNodeType.Waypoint, true, []),
+    new MapNode("P-C", 4, 0, MapNodeType.Intersection, true, []) { AllowTrafficStop = false },
+    new MapNode("SIM-ROAD-HOLD-P-C", 4, 1.8, MapNodeType.WaitingPoint, true, ["P-LOCK"])
+    {
+        AllowTrafficStop = true, AllowDumperWaiting = false, AllowChargingWaiting = false,
+        AllowTransitThrough = false
+    },
+    new MapNode("P-D", 6, 0, MapNodeType.Waypoint, true, []),
+    new MapNode("P-END", 8, 0, MapNodeType.Station, true, [])
+};
+var pocketEdges = new[]
+{
+    new MapEdge("PB", "P-START", "P-B", 2, 1, false, true, ["P-R1"]),
+    new MapEdge("BC", "P-B", "P-C", 2, 1, false, true, ["P-R2"]),
+    new MapEdge("CD", "P-C", "P-D", 2, 1, false, true, ["P-R3"]),
+    new MapEdge("DE", "P-D", "P-END", 2, 1, false, true, ["P-R4"]),
+    new MapEdge("P-IN", "P-C", "SIM-ROAD-HOLD-P-C", 1.8, .4, false, true, ["P-LOCK"]),
+    new MapEdge("P-OUT", "SIM-ROAD-HOLD-P-C", "P-C", 1.8, .4, false, true, ["P-LOCK"])
+};
+var pocketMap = new MapDefinition("POCKET", "", "RobotWorld", "m", pocketNodes, pocketEdges,
+    [new("P-R1", TrafficResourceType.SingleLane), new("P-R2", TrafficResourceType.SingleLane),
+        new("P-R3", TrafficResourceType.SingleLane), new("P-R4", TrafficResourceType.SingleLane),
+        new("P-LOCK", TrafficResourceType.Station)]);
+var pocketPlan = TransportRouteWindows.Plan(
+    new RoutePlan(["P-START", "P-B", "P-C", "P-D", "P-END"], ["PB", "BC", "CD", "DE"], [], 8),
+    pocketMap, new DispatchTaskStepOptions
+    {
+        RollingReservationEnabled = true, RollingWindowMinimumEdges = 2, RollingWindowMaximumEdges = 3
+    });
+Check(pocketPlan.Count == 2 && !pocketPlan[0].Final &&
+      pocketPlan[0].Destination == "SIM-ROAD-HOLD-P-C" &&
+      pocketPlan[0].Path.SequenceEqual(["P-START", "P-B", "P-C", "SIM-ROAD-HOLD-P-C"]) &&
+      pocketPlan[0].EdgeIds[^1] == "P-IN" &&
+      pocketPlan[1].Path.SequenceEqual(["SIM-ROAD-HOLD-P-C", "P-C", "P-D", "P-END"]) &&
+      pocketPlan[1].EdgeIds[0] == "P-OUT" &&
+      pocketPlan[0].ResourceIds.Contains("P-R2") && pocketPlan[0].ResourceIds.Contains("P-LOCK") &&
+      !pocketPlan[0].ResourceIds.Contains("P-R3") && pocketPlan[1].ResourceIds.Contains("P-R3") &&
+      pocketPlan[1].ResourceIds.Contains("P-R4"),
+    "主干道旁停位应成为可续租窗口终点，停入旁停位并核减前一窗的后段资源。");
+var invalidPocketMap = pocketMap with
+{
+    Nodes = pocketNodes.Select(node => node.Id == "SIM-ROAD-HOLD-P-C"
+        ? node with { AllowChargingWaiting = true }
+        : node).ToArray()
+};
+var invalidPocketPlan = TransportRouteWindows.Plan(
+    new RoutePlan(["P-START", "P-B", "P-C", "P-D", "P-END"], ["PB", "BC", "CD", "DE"], [], 8),
+    invalidPocketMap, options);
+Check(invalidPocketPlan.Count == 1 && invalidPocketPlan[0].Final,
+    "充电候车或可穿行属性不合规的旁停位不得被当作停车窗口终点。");
 try
 {
     TransportRouteWindows.Plan(

@@ -1,5 +1,5 @@
 import unittest
-from add_safe_stops import add_stops, localize_split_intersections
+from add_safe_stops import add_main_lane_pockets, add_stops, localize_split_intersections
 
 
 class SafeStopTests(unittest.TestCase):
@@ -42,6 +42,64 @@ class SafeStopTests(unittest.TestCase):
         self.assertTrue(all(e['resourceIds']==['ROAD'] for e in result['edges']))
         self.assertEqual(sum(e['distance'] for e in result['edges']),20)
         self.assertEqual(result['nodes'][:2],original['nodes'])
+
+    def test_main_lane_pocket_uses_a_separate_berth_and_preserves_existing_directions(self):
+        original = self.fixture()
+        original['nodes'][4]['resourceIds'] = ['X-4']
+        for edge in original['edges']:
+            edge.update(laneRole='eastbound', bidirectional=True)
+        result, audit = add_main_lane_pockets(original)
+        self.assertEqual(len(audit['addedStops']), 1)
+        berth = result['nodes'][-1]
+        self.assertEqual(result['nodes'][:-1], original['nodes'])
+        self.assertEqual(result['edges'][:-2], original['edges'])
+        self.assertEqual(audit['addedStops'][0]['anchor'], '4')
+        self.assertGreaterEqual(audit['addedStops'][0]['nearestLaneMeters'], 1.5)
+        self.assertTrue(berth['allowTrafficStop'])
+        self.assertFalse(berth['allowDumperWaiting'])
+        self.assertFalse(berth['allowChargingWaiting'])
+        self.assertEqual([(e['from'], e['to']) for e in result['edges'][-2:]],
+                         [('4', berth['id']), (berth['id'], '4')])
+
+    def test_main_lane_pocket_uses_the_side_away_from_a_branch(self):
+        original = dict(unit='m',
+            nodes=[dict(id='A',x=0,y=0,type='Waypoint',enabled=True,resourceIds=[]),
+                   dict(id='C',x=10,y=0,type='Waypoint',enabled=True,resourceIds=['X-C']),
+                   dict(id='D',x=20,y=0,type='Waypoint',enabled=True,resourceIds=[]),
+                   dict(id='BRANCH',x=10,y=3,type='Waypoint',enabled=True,resourceIds=[])],
+            edges=[dict(id='AC',**{'from':'A','to':'C'},enabled=True,geometryKind='Line',laneRole='eastbound'),
+                   dict(id='CD',**{'from':'C','to':'D'},enabled=True,geometryKind='Line',laneRole='eastbound'),
+                   dict(id='b1',**{'from':'C','to':'BRANCH'},enabled=True,geometryKind='Line',laneRole='cnc-access'),
+                   dict(id='b2',**{'from':'BRANCH','to':'C'},enabled=True,geometryKind='Line',laneRole='cnc-access')],
+            resources=[])
+        _, audit = add_main_lane_pockets(original)
+        stop = next(row for row in audit['addedStops'] if row['anchor'] == 'C')
+        self.assertLess(stop['position'][1], 0)
+        self.assertEqual(stop['side'], 1)
+
+    def test_main_lane_pocket_rejects_turns_and_occupied_sides(self):
+        turn = dict(unit='m',
+            nodes=[dict(id='A',x=0,y=0,type='Waypoint',enabled=True,resourceIds=[]),
+                   dict(id='C',x=10,y=0,type='Waypoint',enabled=True,resourceIds=['X-C']),
+                   dict(id='UP',x=10,y=3,type='Waypoint',enabled=True,resourceIds=[])],
+            edges=[dict(id='AC',**{'from':'A','to':'C'},enabled=True,geometryKind='Line',laneRole='eastbound'),
+                   dict(id='up',**{'from':'C','to':'UP'},enabled=True,geometryKind='Line',laneRole='northbound')],
+            resources=[])
+        _, audit = add_main_lane_pockets(turn)
+        self.assertEqual(audit['addedStops'], [])
+
+        blocked = dict(unit='m',
+            nodes=[dict(id='A',x=0,y=0,type='Waypoint',enabled=True,resourceIds=[]),
+                   dict(id='C',x=10,y=0,type='Waypoint',enabled=True,resourceIds=['X-C']),
+                   dict(id='D',x=20,y=0,type='Waypoint',enabled=True,resourceIds=[])],
+            edges=[dict(id='AC',**{'from':'A','to':'C'},enabled=True,geometryKind='Line',laneRole='eastbound'),
+                   dict(id='CD',**{'from':'C','to':'D'},enabled=True,geometryKind='Line',laneRole='eastbound')],
+            resources=[])
+        blocked['nodes'].extend([
+            dict(id='DOCK-N',x=10,y=1.1,type='Station',enabled=True,resourceIds=['DOCK-N']),
+            dict(id='DOCK-S',x=10,y=-1.1,type='Station',enabled=True,resourceIds=['DOCK-S'])])
+        _, audit = add_main_lane_pockets(blocked)
+        self.assertEqual(audit['addedStops'], [])
 
     def test_half_edge_retains_near_junction_and_shared_road_only(self):
         nodes = dict(A=dict(x=0,y=0), S=dict(x=5,y=0), B=dict(x=10,y=0))
