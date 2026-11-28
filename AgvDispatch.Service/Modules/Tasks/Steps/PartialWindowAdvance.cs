@@ -27,7 +27,8 @@ public static class PartialWindowAdvance
         IReadOnlyList<TrafficBlockingHolder>? holders,
         Func<string, IReadOnlyCollection<string>> destinationResources,
         IReadOnlyCollection<string>? retained = null,
-        int minimumEdges = 1)
+        int minimumEdges = 1,
+        IReadOnlySet<string>? occupiedEdges = null)
     {
         ArgumentNullException.ThrowIfNull(windows);
         if (nextIndex < 1 || nextIndex >= windows.Count) return new(null, "只拆分尚未下发的后续窗口。");
@@ -54,6 +55,7 @@ public static class PartialWindowAdvance
             if (findNode(next.Path[cut]) is not { } node || !TransportRouteWindows.IsStableStop(node, null)) continue;
             var prefix = new AgvTransportRouteWindow(next.Index, next.Source, next.Path[cut],
                 next.Path.Take(cut + 1).ToArray(), next.EdgeIds.Take(cut).ToArray(), [], false);
+            if (occupiedEdges?.Overlaps(prefix.EdgeIds) == true) continue;
             var prefixResources = resourcesOf(prefix);
             if (prefixResources.Any(unavailable.Contains)) continue;
             if (prefixResources.Any(future.Contains)) continue;

@@ -100,6 +100,7 @@ public static class TransportRouteWindows
                 [Window(route, nodes, edges, 0, route.Nodes.Count - 1, true)],
                 route, options.RollingWindowHardMaximumEdges, skipOversizedCandidate);
 
+        var layBys = FindLayBys(findNode, edges);
         var minimum = Math.Clamp(options.RollingWindowMinimumEdges, 1, 100);
         var maximum = Math.Max(minimum, Math.Clamp(options.RollingWindowMaximumEdges, 1, 1000));
         var farthest = string.Equals(options.RollingWindowBoundary, RollingWindowBoundaries.FarthestWithinMaximum,
@@ -121,21 +122,42 @@ public static class TransportRouteWindows
             // when it lies beyond the preferred maximum. If the route contains no
             // interior safe node, keep the whole route as one atomic window.
             var boundary = -1;
+            bool CanStop(int index) =>
+                IsStableStop(nodes[index], canStageAt) || layBys.ContainsKey(nodes[index].Id);
             if (farthest)
             {
                 // Each window ends with a full stop and a renewal; with dense safe points the nearest-stop
                 // rule stops every few metres. Prefer the farthest safe stop the preferred maximum allows.
                 for (var index = Math.Min(start + maximum, route.Nodes.Count - 2); index >= lower; index--)
                 {
-                    if (!IsStableStop(nodes[index], canStageAt)) continue;
+                    if (!CanStop(index)) continue;
                     boundary = index;
                     break;
                 }
             }
+            else
+            {
+                var authored = -1;
+                for (var index = lower; index < route.Nodes.Count - 1; index++)
+                {
+                    if (!IsStableStop(nodes[index], canStageAt)) continue;
+                    authored = index;
+                    break;
+                }
+                var pocket = -1;
+                for (var index = Math.Min(start + maximum, route.Nodes.Count - 2); index >= lower; index--)
+                {
+                    if (!layBys.ContainsKey(nodes[index].Id)) continue;
+                    pocket = index;
+                    break;
+                }
+                boundary = authored >= 0 && authored <= start + maximum ? authored : pocket;
+                if (boundary < 0) boundary = authored;
+            }
             for (var index = farthest ? Math.Max(lower, start + maximum + 1) : lower;
                  boundary < 0 && index < route.Nodes.Count - 1; index++)
             {
-                if (!IsStableStop(nodes[index], canStageAt)) continue;
+                if (!CanStop(index)) continue;
                 boundary = index;
             }
 
@@ -151,9 +173,103 @@ public static class TransportRouteWindows
 
         if (windows.Count == 0 || windows[^1].Final is false)
             windows.Add(Window(route, nodes, edges, start, route.Nodes.Count - 1, true));
+        windows = UseLayByStops(windows, findNode, edges, layBys);
         return EnforceHardMaximum(
             windows.Select((window, index) => window with { Index = index }).ToArray(),
             route, options.RollingWindowHardMaximumEdges, skipOversizedCandidate);
+    }
+
+    private sealed record LayByStop(string Anchor, string Site, string EntryEdge, string ExitEdge);
+
+    private static IReadOnlyDictionary<string, LayByStop> FindLayBys(
+        Func<string, MapNode?> findNode, IReadOnlyDictionary<string, MapEdge> edges)
+    {
+        var result = new Dictionary<string, LayByStop>(StringComparer.OrdinalIgnoreCase);
+        var byEndpoints = edges.Values
+            .Where(edge => edge.Enabled && !edge.Bidirectional && edge.VendorPath is null)
+            .GroupBy(edge => (edge.From, edge.To), StringTupleComparer.Instance)
+            .ToDictionary(group => group.Key, group => group.First(), StringTupleComparer.Instance);
+        foreach (var entry in byEndpoints.Values)
+        {
+            if (!entry.To.StartsWith("SIM-ROAD-HOLD-", StringComparison.OrdinalIgnoreCase)) continue;
+            if (findNode(entry.To) is not
+                {
+                    Enabled: true,
+                    Type: MapNodeType.WaitingPoint,
+                    AllowTrafficStop: true,
+                    AllowDumperWaiting: false,
+                    AllowChargingWaiting: false,
+                    AllowTransitThrough: false
+                } site) continue;
+            if (findNode(entry.From) is not { Enabled: true } anchor) continue;
+            if (anchor.Id.StartsWith("WAIT-", StringComparison.OrdinalIgnoreCase) ||
+                anchor.Id.StartsWith("DUMPER-", StringComparison.OrdinalIgnoreCase) ||
+                anchor.Id.StartsWith("CHARGE-", StringComparison.OrdinalIgnoreCase) ||
+                anchor.Type is MapNodeType.Station or MapNodeType.ChargingPoint) continue;
+            if (anchor.Type == MapNodeType.WaitingPoint &&
+                !anchor.Id.StartsWith("SIM-SAFE-", StringComparison.OrdinalIgnoreCase)) continue;
+            if (!byEndpoints.TryGetValue((site.Id, anchor.Id), out var exit)) continue;
+            result.TryAdd(anchor.Id, new LayByStop(anchor.Id, site.Id, entry.Id, exit.Id));
+        }
+        return result;
+    }
+
+    private static List<AgvTransportRouteWindow> UseLayByStops(
+        IReadOnlyList<AgvTransportRouteWindow> windows,
+        Func<string, MapNode?> findNode,
+        IReadOnlyDictionary<string, MapEdge> edges,
+        IReadOnlyDictionary<string, LayByStop> layBys)
+    {
+        var result = windows.ToList();
+        for (var index = 0; index < result.Count - 1; index++)
+        {
+            var first = result[index];
+            var second = result[index + 1];
+            if (first.Final || !string.Equals(first.Destination, second.Source, StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (findNode(first.Destination) is not { } anchor ||
+                !layBys.TryGetValue(anchor.Id, out var layBy) ||
+                !edges.ContainsKey(layBy.EntryEdge) || !edges.ContainsKey(layBy.ExitEdge)) continue;
+            result[index] = Rebuild(first, index,
+                [.. first.Path, layBy.Site], [.. first.EdgeIds, layBy.EntryEdge],
+                first.Path[0], layBy.Site, first.Final, findNode, edges);
+            result[index + 1] = Rebuild(second, index + 1,
+                [layBy.Site, .. second.Path], [layBy.ExitEdge, .. second.EdgeIds],
+                layBy.Site, second.Destination, second.Final, findNode, edges);
+        }
+        return result;
+    }
+
+    private static AgvTransportRouteWindow Rebuild(
+        AgvTransportRouteWindow source, int index, IReadOnlyList<string> path,
+        IReadOnlyList<string> edgeIds, string sourceSite, string destination, bool final,
+        Func<string, MapNode?> findNode, IReadOnlyDictionary<string, MapEdge> edges)
+    {
+        if (path.Count != edgeIds.Count + 1)
+            throw new InvalidOperationException("旁停位窗口的节点与路段不连续。");
+        var nodes = path.Select(site => findNode(site) ??
+            throw new InvalidOperationException($"旁停位窗口引用了未知节点{site}。")).ToArray();
+        return source with
+        {
+            Index = index,
+            Source = sourceSite,
+            Destination = destination,
+            Path = path,
+            EdgeIds = edgeIds,
+            ResourceIds = Resources(nodes, edgeIds, edges),
+            Final = final
+        };
+    }
+
+    private sealed class StringTupleComparer : IEqualityComparer<(string From, string To)>
+    {
+        public static readonly StringTupleComparer Instance = new();
+        public bool Equals((string From, string To) x, (string From, string To) y) =>
+            StringComparer.OrdinalIgnoreCase.Equals(x.From, y.From) &&
+            StringComparer.OrdinalIgnoreCase.Equals(x.To, y.To);
+        public int GetHashCode((string From, string To) value) => HashCode.Combine(
+            StringComparer.OrdinalIgnoreCase.GetHashCode(value.From),
+            StringComparer.OrdinalIgnoreCase.GetHashCode(value.To));
     }
 
     private static IReadOnlyList<AgvTransportRouteWindow> EnforceHardMaximum(

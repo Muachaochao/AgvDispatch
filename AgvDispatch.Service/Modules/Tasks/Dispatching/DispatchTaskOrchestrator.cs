@@ -942,7 +942,7 @@ public sealed partial class DispatchTaskOrchestrator(
                     window => TransportRouteWindows.NormalizeResources([window], currentMap)[0].ResourceIds,
                     unavailableNow, holders,
                     site => (IReadOnlyCollection<string>?)currentMap.Graph.FindRouteNode(site)?.ResourceIds ?? [],
-                    retained, _stepOptions.PartialWindowMinimumEdges);
+                    retained, _stepOptions.PartialWindowMinimumEdges, occupiedEdges);
                 if (decision.Windows is not null)
                 {
                     windows = AttachWaitingBay(decision.Windows, nextIndex, boundBay);

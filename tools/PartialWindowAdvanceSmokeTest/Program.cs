@@ -51,6 +51,13 @@ Check(!d.Windows[1].ResourceIds.Contains("L5") && !d.Windows[1].ResourceIds.Cont
     "前段资源只含自身路段与停点，不含被占资源");
 Check(d.Windows[2].ResourceIds.Contains("L5") && d.Windows[2].ResourceIds.Contains("X-N5"), "剩余窗口仍申请被占资源与终点");
 
+var physicallyBlocked = PartialWindowAdvance.Plan(windows, 1, id => nodes.GetValueOrDefault(id),
+    ResourcesOf, blockedL5, [Passing("L5")], Parking, occupiedEdges: new HashSet<string> { "E3" });
+Check(physicallyBlocked.Windows?[1].Destination == "N1",
+    "最远停点前方有车体占位时选更近的可用安全点");
+Check(PartialWindowAdvance.Plan(windows, 1, id => nodes.GetValueOrDefault(id), ResourcesOf,
+    blockedL5, [Passing("L5")], Parking, occupiedEdges: new HashSet<string> { "E1" }).Windows is null,
+    "首段有车体占位时保持原地");
 var unknown = new TrafficBlockingHolder("AGV-C", "CHARGE-1", "CHARGE-1-LOCK", false, ["L5"], [], null, "充电锁");
 Check(PartialWindowAdvance.Plan(windows, 1, id => nodes.GetValueOrDefault(id), ResourcesOf, blockedL5, [unknown], Parking).Windows is null,
     "占用方未来路线不可证明（充电/人工/停车）：保持整窗等待");
